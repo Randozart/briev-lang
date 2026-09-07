@@ -61,7 +61,7 @@ circt.clock_hz: 0;
 spirv_row_cooperative: 1;
 spirv_coopmat: 1;
 spirv_coopmat_tile_rows: 4;
-spirv_coopmat_subgroups: 1;
+spirv_coopmat_subgroups: 2;
 // 2026-09-02 (plan 2026-09-02-cuda-race B3): FP16-accumulate tensor tier —
 // separate numerics contract (gate rel <= 1e-2 vs the f32-acc tier).
 spirv_coopmat_f16acc: 1;

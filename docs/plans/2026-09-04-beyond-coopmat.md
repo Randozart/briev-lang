@@ -72,6 +72,12 @@ with a VERDICT row, losers reverted:
   stagger pre-measured 2026-09-05: REJECTED 1.148× — the phase-lock is
   L2-broadcast efficiency; D4 must INCREASE panel sharing
   (per-subgroup smem B slices), never desynchronize the panel clock.)*
+  *(D4 measured 2026-09-05 at ~10ms era: S=2 REJECTED 7% slower —
+  3 WGs/SM hurt L2 sharing. RETESTED 2026-09-07 at the 5.3ms era:
+  VERDICT REVERSED — S=2 LANDED as default (+7-8%, 8 warps/SM hide
+  the fill DRAM latency; S=4 rejected at 2 WGs/SM). The knob is
+  era-conditional: occupancy pays once the pipeline is fill-latency
+  bound.)*
 
 Target: 16.5 → 20–22 TFLOP/s at 4096³ if the pipeline is the binding
 constraint (Stage 0's cost-share probe says which).
