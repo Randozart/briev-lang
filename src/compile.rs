@@ -2120,6 +2120,7 @@ node go [done == false][done == true] {
             ssr: false,
             dev: false,
             accel_cpu_fallback: None,
+            isr_mechanism: None,
         }
     }
 

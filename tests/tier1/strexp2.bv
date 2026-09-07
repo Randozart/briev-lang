@@ -1,0 +1,4 @@
+let saved: String = "hi";
+export defn state_str(name: String) -> String {
+    term saved;
+};

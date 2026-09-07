@@ -104,7 +104,7 @@ fn test_extract_exports_from_source() {
         export defn multiply(a: Int, b: Int) -> Int { term a * b; };
     "#;
     let items = parse_bv(source);
-    let info = extract_bridge_info(&items, "test-bridge");
+    let info = extract_bridge_info(&items, "test-bridge", None);
     assert_eq!(info.name, "test-bridge");
     assert_eq!(info.exports.len(), 2, "should find 2 export functions");
     assert_eq!(info.frgns.len(), 0, "no frgn declarations");
@@ -124,7 +124,7 @@ fn test_extract_bridge_info_from_test_bridge() {
     let source = std::fs::read_to_string("examples/test-bridge.bv")
         .expect("test-bridge.bv should exist");
     let items = parse_bv(&source);
-    let info = extract_bridge_info(&items, "test-bridge");
+    let info = extract_bridge_info(&items, "test-bridge", None);
     assert_eq!(info.name, "test-bridge");
     assert!(!info.exports.is_empty(), "should find at least one export");
 }
@@ -132,7 +132,7 @@ fn test_extract_bridge_info_from_test_bridge() {
 #[test]
 fn test_extract_bridge_info_empty_program() {
     let items = vec![];
-    let info = extract_bridge_info(&items, "empty");
+    let info = extract_bridge_info(&items, "empty", None);
     assert_eq!(info.name, "empty");
     assert_eq!(info.exports.len(), 0);
     assert_eq!(info.frgns.len(), 0);

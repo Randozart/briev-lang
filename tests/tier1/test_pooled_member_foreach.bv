@@ -1,0 +1,45 @@
+// 2026-08-18 (pooled-member foreach): `foreach x in obj.items` where `items`
+// is a pooled member List field. Previously the tier-2 iterable resolution
+// only looked up BARE names (slot `{prefix}.items`, column type
+// `Vector(List<Int>, [Anonymous(1)])`) — the foreach panicked at
+// emit_stmt.rs:262. Expected output:
+//   sum(items) = 6, count = 3, sum via member body = 6
+obj Ledger {
+    items: List<Int>;
+    op Count() -> Int { term items.Count#(); };
+    op At(i: Int) -> Int { term items[i]; };
+    op InsertAt: put(#Lh, #Rh);
+    op Init: init(#Lh, #Rh);
+    txn init(v: Int) [true][items.^Size == 0] {
+        let e: List<Int> = [];
+        items = e;
+    };
+    defn put(e: Int) { items <- e; };
+    defn total() -> Int {
+        let acc: Int = 0;
+        foreach x in items {
+            acc = acc + x;
+        };
+        term acc;
+    };
+};
+
+let ledger: Ledger = 0;
+let done: Bool = false;
+
+node go [done == false][done == true] {
+    when done == false {
+        ledger <- 1;
+        ledger <- 2;
+        ledger <- 3;
+        let s: Int = 0;
+        foreach x in ledger.items {
+            s = s + x;
+        };
+        println!(s);
+        println!(ledger.Count#());
+        println!(ledger.total());
+        done = true;
+    };
+    term;
+};

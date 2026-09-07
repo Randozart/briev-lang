@@ -1,0 +1,30 @@
+// Test Char type
+let c: Char = 'A';
+let newline: Char = '\n';
+let emoji: Char = '\u{1F600}';
+
+defn test_char_classification() -> Bool {
+    [is_whitespace(' ')] {
+        [is_digit('5')] {
+            [is_alpha('A')] {
+                term true;
+            };
+        };
+    };
+    term false;
+};
+
+defn test_char_conversion() -> Bool {
+    let upper = to_upper('a');
+    let lower = to_lower('Z');
+    [upper == 'A'] {
+        [lower == 'z'] {
+            term true;
+        };
+    };
+    term false;
+};
+
+txn main() [test_char_classification()][test_char_conversion()] {
+    term;
+};

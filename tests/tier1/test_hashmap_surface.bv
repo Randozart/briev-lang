@@ -1,0 +1,54 @@
+// 2026-08-18 (Phase E): the FULL HashMap op surface in one reactive node —
+// insert/get/contains/remove/Count#/keys/values/entries/foreach over the
+// entries() List. Expected output:
+//   get(2) = 20, contains(3) = true, contains(99) = false, Count# = 5,
+//   sum(keys) = 10, sum(values) = 100, sum(keys via entries) = 10,
+//   after remove(1): Count# = 4, sum(keys) = 9
+import { HashMap } from "std/collections.bv";
+
+let m: HashMap<Int, Int> = 32;
+let i: Int = 0;
+let done: Bool = false;
+
+node go [done == false][done == true] {
+    when i < 5 {
+        m.insert((i, i * 10));
+        i = i + 1;
+    };
+    when i == 5 {
+        println!(m.get(2));       // 20
+        println!(m.contains(3));  // true
+        println!(m.contains(99)); // false
+        println!(m.Count#());     // 5
+        let ks: List<Int> = m.keys();
+        let ksum: Int = 0;
+        foreach k in ks {
+            ksum = ksum + k;
+        };
+        println!(ksum);           // 10
+        let vs: List<Int> = m.values();
+        let vsum: Int = 0;
+        foreach v in vs {
+            vsum = vsum + v;
+        };
+        println!(vsum);           // 100
+        let es: List<(Int, Int)> = m.entries();
+        let esum: Int = 0;
+        foreach p in es {
+            let (pk, pv) = p;
+            esum = esum + pk;
+        };
+        println!(esum);           // 10
+        let r: Int = m.remove(1);
+        println!(r);              // 10
+        println!(m.Count#());     // 4
+        let ks2: List<Int> = m.keys();
+        let ksum2: Int = 0;
+        foreach k in ks2 {
+            ksum2 = ksum2 + k;
+        };
+        println!(ksum2);          // 9
+        done = true;
+    };
+    term;
+};

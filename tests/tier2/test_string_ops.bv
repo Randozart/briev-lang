@@ -1,0 +1,40 @@
+// Test string operations
+let s: String = "Hello, World!";
+
+defn test_case_conversion() -> Bool {
+    [to_lower_str("HELLO") == "hello"] {
+        [to_upper_str("hello") == "HELLO"] {
+            term true;
+        };
+    };
+    term false;
+};
+
+defn test_trim() -> Bool {
+    [trim_str("  hello  ") == "hello"] {
+        term true;
+    };
+    term false;
+};
+
+defn test_reverse() -> Bool {
+    [reverse_str("hello") == "olleh"] {
+        term true;
+    };
+    term false;
+};
+
+defn test_char_classification() -> Bool {
+    [is_whitespace_str("   ")] {
+        [is_alpha_str("hello")] {
+            [is_numeric_str("123")] {
+                term true;
+            };
+        };
+    };
+    term false;
+};
+
+txn main() [test_case_conversion()][test_trim() && test_reverse() && test_char_classification()] {
+    term;
+};

@@ -1,0 +1,49 @@
+// Test HashMap, HashSet, Stack, Queue
+let map: HashMap<String, Int>;
+let set: HashSet<String>;
+let stack: Stack<Int>;
+let queue: Queue<String>;
+
+defn test_hashmap() -> Bool {
+    let m = new_map<String, Int>();
+    m = m.insert("key", 42);
+    [m.contains_key("key")] {
+        [m.get("key").is_some()] {
+            term true;
+        };
+    };
+    term false;
+};
+
+defn test_hashset() -> Bool {
+    let s = new_set<String>();
+    s = s.insert("item");
+    [s.contains("item")] {
+        term true;
+    };
+    term false;
+};
+
+defn test_stack() -> Bool {
+    let s = new_stack();
+    s = s.push(1);
+    s = s.push(2);
+    [s.len() == 2] {
+        term true;
+    };
+    term false;
+};
+
+defn test_queue() -> Bool {
+    let q = new_queue();
+    q = q.enqueue("first");
+    q = q.enqueue("second");
+    [q.len() == 2] {
+        term true;
+    };
+    term false;
+};
+
+txn main() [test_hashmap()][test_hashset() && test_stack() && test_queue()] {
+    term;
+};

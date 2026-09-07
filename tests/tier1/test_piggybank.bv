@@ -1,0 +1,29 @@
+// 2026-08-18 (Phase D): PiggyBank happy path — put 3 coins, smash, verify the
+// drained list. Expected output:
+//   size-of-drained = 3, sum = 6, jar empty after smash (second smash = 0)
+import { PiggyBank } from "std/collections.bv";
+
+let piggy: PiggyBank<Int> = 0;
+let done: Bool = false;
+
+node go [done == false][done == true] {
+    when done == false {
+        piggy <- 1;
+        piggy <- 2;
+        piggy <- 3;
+        let all: List<Int>;
+        all ~<- piggy;
+        let n: Int = all.Count#();
+        println!(n);
+        let s: Int = 0;
+        foreach x in all {
+            s = s + x;
+        };
+        println!(s);
+        let all2: List<Int>;
+        all2 ~<- piggy;
+        println!(all2.Count#());
+        done = true;
+    };
+    term;
+};

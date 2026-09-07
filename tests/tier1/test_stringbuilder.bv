@@ -1,0 +1,19 @@
+// Test StringBuilder
+let builder: StringBuilder;
+
+defn test_builder() -> Bool {
+    let sb = new_builder();
+    sb = sb.append_char('H');
+    sb = sb.append_char('e');
+    sb = sb.append_char('l');
+    sb = sb.append_char('l');
+    sb = sb.append_char('o');
+    [sb.to_string() == "Hello"] {
+        term true;
+    };
+    term false;
+};
+
+txn main() [test_builder()][true] {
+    term;
+};
