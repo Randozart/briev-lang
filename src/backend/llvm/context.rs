@@ -876,6 +876,14 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     // pairs. Allows hoisting guards whose swan song references let-bindings (e.g.
     // `energy` in nbody) by re-emitting the entire guard body post-loop.
     pub pending_post_hoist: Vec<Vec<Statement>>,
+    // 2026-09-07 (swan-song dominance fix): let-local names referenced by the
+    // pending post-hoist. In the countable-loop body each such `let` binds
+    // through a preheader-flushed alloca (let_binding_allocas) instead of its
+    // body-defined SSA register, so the exit-block hoisted print reads a
+    // dominating slot holding the last-iteration value. Body-defined SSA
+    // registers do not dominate the exit block (zero-trip path) — async-ready-
+    // gate repro: `produced` (briev_await result) used by the post-loop print.
+    pub swan_song_locals: std::collections::HashSet<String>,
     pub pending_cleanup: Vec<Statement>,
     // 2026-07-03: Native-typed backedge values for per-field phi loops.
     // Populated by emit_memory_field_store when it computes the typed value
@@ -1104,6 +1112,7 @@ impl FunctionContext {
             is_static_bound: false,
             pending_metadata: String::new(),
             pending_post_hoist: Vec::new(),
+            swan_song_locals: std::collections::HashSet::new(),
             pending_cleanup: Vec::new(),
             pending_phi_native_backedge: HashMap::new(),
             // 2026-07-21: Default false enables Path A (zero memory traffic).

@@ -5566,3 +5566,25 @@ runtime, proj_bytes excluded the y region, and the kernel's y stores
 were out-of-range (dropped under robustness = silent zeros; faulting =
 fence-timeout "wedge"). Harness rule: n_fields MUST equal the table
 length; derive offsets from the generated runner (the authority).
+
+## 2026-09-07 — nbody_newton output drift (7th decimal) vs C reference [PRE-EXISTING, opened during noalias slice]
+
+**Symptom:** `BOUND=2048 BODYCOUNT=500` nbody_newton prints `-0.169207186`; the C
+reference prints `-0.169208214` (differs at the 7th decimal, one line of output).
+Fast-math reassociation: no FMA contraction in either binary (objdump: 0 vfmadd
+sites); the drift is vectorization/scheduling order over the pairwise energy sum.
+
+**Build status:** nbody_newton FAILED to build at 5d1d7e45 (invalid IR:
+"Instruction does not dominate all uses" — swan-song print used a loop-body
+register from the exit block). The swan-song dominance fix (this slice) restored
+the build. Parity therefore cannot have been exact at HEAD either way.
+
+**Last known parity:** 2026-07-31 frontend-dispatch Phase 3
+(benchmarks/results/2026-07-31-frontend-dispatch-phase3.md: nbody_newton 0.82x,
+MATCH). Regression window: 2026-07-31..2026-09-05 — isolate with
+`git log --oneline` over src/backend/llvm emission between those eras and an
+A/B on the actual .ll (Performance Recovery Protocol, AGENTS.md Rule 20).
+
+**Not caused by this slice:** the fix only changes the POST-LOOP exit block
+(clears loop SSA maps so the swan song loads %State); in-loop arithmetic is
+byte-identical. The async examples (17 / 111) produce exact correct output.

@@ -306,7 +306,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 _ => {}
             }
             let mut via_scaffolded_construction = false;
-            let val = match expr {
+            let mut val = match expr {
                 Some(crate::ast::Expr::Identifier(alias))
                     if backend.fun.closure_lets.contains_key(alias) =>
                 {
@@ -520,6 +520,40 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // 2026-07-18: Track alloca bindings so identifier codegen loads values.
             if expr.is_none() {
                 backend.fun.let_binding_allocas.insert(val.name.clone());
+            }
+            // 2026-09-07 (swan-song dominance fix): a let-local READ by the
+            // pending post-hoist binds through an alloca (deferred to the loop
+            // preheader with the other struct allocas) instead of its body SSA
+            // register — the exit-block hoisted print loads the slot, which
+            // dominates the exit and holds the last-iteration value. A body
+            // register referenced from the exit block is a dominance violation
+            // (async-ready-gate: `produced` from briev_await). Mirrors the
+            // reassigned-lets entry-alloca path above.
+            let is_struct_ty = match &val.ty {
+                Type::Custom(n) | Type::Applied(n, _) => backend.ctx.struct_types.contains_key(n),
+                _ => false,
+            };
+            if backend.fun.swan_song_locals.contains(name)
+                && !backend.fun.let_binding_allocas.contains(&val.name)
+                && !is_struct_ty
+                && !backend.is_coll_type(&val.ty)
+            {
+                let slot_ty = backend.llvm_type(&val.ty);
+                let slot = backend.fun.next_reg_with_prefix("sslv");
+                if backend.fun.defer_struct_allocas {
+                    backend.fun.pending_struct_allocas.push(
+                        format!("  {} = alloca {}, align 8", slot, slot_ty),
+                    );
+                } else {
+                    writeln!(out, "{}{} = alloca {}, align 8", indent, slot, slot_ty).ok();
+                }
+                let store_val = backend.ensure_typed_value(
+                    out, indent, &slot_ty, &val.name,
+                    Some(val.ty.clone()), None,
+                );
+                writeln!(out, "{}store {} {}, ptr {}", indent, slot_ty, store_val, slot).ok();
+                backend.fun.let_binding_allocas.insert(slot.clone());
+                val = crate::backend::llvm::TypedRegister { name: slot, ty: val.ty.clone() };
             }
             // 2026-07-24: Transfer struct literal alloca tracking from result
             // register to variable name, so &let_var retrieves the stack address.

@@ -141,15 +141,21 @@ impl LlvmBackend {
                 writeln!(out, "  {} = trunc i8 {} to i1", pr_i1, pr).ok();
                 writeln!(out, "  br i1 {}, label %{}, label %{}", pr_i1, b, c).ok();
                 writeln!(out, "{}:", b).ok();
-                // Inline txn body instead of `call @txn_name` — shares the
-                // arena across all txns in the tick and avoids function-call
-                // overhead. The body inherits the arena allocated above.
-                // 2026-08-31 (plan abv-gpu-by-default): an ACCEL kernel node
-                // dispatches through its WRAPPER (@txn_<name>: lazy runtime
-                // init + device/verdict gate + launch + counter fast-forward),
-                // not an inlined body — inlining bypassed the GPU lane and
-                // every accel program silently ran CPU-only.
+                // 2026-09-07 (noalias via dispatch): for multi-txn ticks,
+                // call @txn_<name> as a separate function instead of inlining.
+                // The @txn_* function carries `noalias nocapture` on its %state
+                // parameter (state_ptr_param), so LLVM can promote field loads
+                // to SSA registers within the transaction body — impossible
+                // when the body is inlined into reactor_tick.
+                //
+                // Single-txn ticks stay inlined: no benefit from a function
+                // boundary when there's only one txn.
+                //
+                // Accel kernel nodes always dispatch through their wrapper
+                // (@txn_<name>: runtime init + device gate + launch).
                 if self.accel_kernel_idx.contains_key(txn_name) {
+                    writeln!(out, "  call void @txn_{}(ptr %state)", txn_name).ok();
+                } else if dispatch.len() >= 2 {
                     writeln!(out, "  call void @txn_{}(ptr %state)", txn_name).ok();
                 } else {
                     self.emit_inline_txn_body(out, "  ", txns, txn_name);

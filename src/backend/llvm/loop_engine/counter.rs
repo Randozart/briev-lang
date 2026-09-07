@@ -498,6 +498,22 @@ impl LlvmBackend {
         // (float_math_nonzero p22 fix). Use OR to preserve pre-existing value.
         if !self.fun.pending_post_hoist.is_empty() {
             self.fun.needs_state_stores_in_body = true;
+            // 2026-09-07 (swan-song dominance fix): let-locals referenced by
+            // the hoist must bind through preheader-flushed allocas so the
+            // exit-block print reads a dominating slot. State fields already
+            // store via Path B; constants resolve at emission; everything
+            // else in a hoisted statement is a body local.
+            let fields = self.ctx.field_index_map.clone();
+            let constants = self.ctx.constants.keys().cloned().collect::<std::collections::HashSet<_>>();
+            let mut locals = std::collections::HashSet::new();
+            for block in &self.fun.pending_post_hoist {
+                collect_hoist_identifiers_expr_stmts(block, &fields, &constants, &mut locals);
+            }
+            for (bi, blk) in self.fun.pending_post_hoist.iter().enumerate() {
+                for (si, st) in blk.iter().enumerate() {
+                }
+            }
+            self.fun.swan_song_locals = locals;
         }
 
         // 2026-07-17: pending_post_hoist (provided by the frontend swan-song
@@ -574,6 +590,19 @@ impl LlvmBackend {
         // The hoisted prints must resolve via phi registers or %State loads.
         self.fun.last_val_temps.clear();
         self.fun.last_val_types.clear();
+        // 2026-09-07 (swan-song dominance fix): clear the loop SSA maps too.
+        // pending_phi_backedge carries body-defined registers (assigns and
+        // guard merges register their written value there), phi_field_regs
+        // carries the header phis. A body register referenced from the exit
+        // block is invalid on the zero-trip path (dominance violation —
+        // async-events/nbody_newton), and a header phi holds the pre-loop
+        // value there while the watchdog path can exit early. Post-loop field
+        // reads must be %State loads: the body stored final values via Path B
+        // (needs_state_stores_in_body is set whenever a hoist is pending, see
+        // the body prologue). Same rationale as the two clears above — the
+        // exit block is outside the loop's SSA domain.
+        self.fun.pending_phi_backedge.clear();
+        self.fun.phi_field_regs.clear();
         let hoist = self.fun.pending_post_hoist.clone();
         self.emit_hoisted_post_loop_prints(out, &hoist);
         self.emit_state_store_i64_by_idx(out, "  ", counter_idx, &counter_name);
@@ -1703,6 +1732,42 @@ impl LlvmBackend {
             match stmt {
                 Statement::Let { name, expr: Some(e), .. } => {
                     let reg = self.emit_expr(out, e, "  ");
+                    // 2026-09-07 (swan-song dominance fix): a let-local read by
+                    // the pending post-hoist binds through a preheader-flushed
+                    // alloca (pending_struct_allocas) instead of its body SSA
+                    // register — the exit-block hoisted print loads the slot,
+                    // which dominates the exit and holds the last-iteration
+                    // value. Body-defined registers referenced from the exit
+                    // block are a dominance violation (async-ready-gate:
+                    // `produced` from briev_await). This arm mirrors the
+                    // emit_stmt.rs Let hook — the countable body has its own
+                    // statement walk and never routes through emit_statement.
+                    let is_struct_ty = match &reg.ty {
+                        crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => {
+                            self.ctx.struct_types.contains_key(n)
+                        }
+                        _ => false,
+                    };
+                    let reg = if self.fun.swan_song_locals.contains(name)
+                        && !self.fun.let_binding_allocas.contains(&reg.name)
+                        && !is_struct_ty
+                        && !self.is_coll_type(&reg.ty)
+                    {
+                        let slot_ty = self.llvm_type(&reg.ty);
+                        let slot = self.fun.next_reg_with_prefix("sslv");
+                        self.fun.pending_struct_allocas.push(
+                            format!("  {} = alloca {}, align 8", slot, slot_ty),
+                        );
+                        let store_val = self.ensure_typed_value(
+                            out, "  ", &slot_ty, &reg.name,
+                            Some(reg.ty.clone()), None,
+                        );
+                        writeln!(out, "  store {} {}, ptr {}", slot_ty, store_val, slot).ok();
+                        self.fun.let_binding_allocas.insert(slot.clone());
+                        crate::backend::llvm::TypedRegister { name: slot, ty: reg.ty.clone() }
+                    } else {
+                        reg
+                    };
                     self.fun.last_val_temps.insert(name.clone(), reg.name.clone());
                     self.fun.last_val_types.insert(name.clone(), reg.ty.clone());
                     // 2026-08-26 (async Phase C): track defn-spawn / handle-
@@ -2085,4 +2150,82 @@ impl LlvmBackend {
         }
     }
 
+}
+
+// ── 2026-09-07 (swan-song dominance fix) ────────────────────────────
+//
+// Collect the free identifiers of a pending post-hoist. Names that are state
+// fields or constants resolve at the emission site (%State load / immediate);
+// everything else is a body-local whose SSA register does not dominate the
+// exit block — those names must bind through preheader-flushed allocas
+// (FunctionContext.swan_song_locals consulted by the Statement::Let emitter).
+
+fn collect_hoist_identifiers_expr_stmts(
+    stmts: &[Statement],
+    fields: &HashMap<String, usize>,
+    constants: &std::collections::HashSet<String>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    for s in stmts {
+        collect_hoist_identifiers_stmt(s, fields, constants, out);
+    }
+}
+
+fn collect_hoist_identifiers_stmt(
+    s: &Statement,
+    fields: &HashMap<String, usize>,
+    constants: &std::collections::HashSet<String>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match s {
+        Statement::Expression(e) | Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) => {
+            collect_hoist_identifiers(e, fields, constants, out);
+        }
+        Statement::Let { expr: Some(e), .. } => {
+            collect_hoist_identifiers(e, fields, constants, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_hoist_identifiers(
+    e: &Expr,
+    fields: &HashMap<String, usize>,
+    constants: &std::collections::HashSet<String>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match e {
+        Expr::Identifier(n) => {
+            if !fields.contains_key(n) && !constants.contains(n) {
+                out.insert(n.clone());
+            }
+        }
+        Expr::BinaryOp(_, l, r) | Expr::Index(l, r) => {
+            collect_hoist_identifiers(l, fields, constants, out);
+            collect_hoist_identifiers(r, fields, constants, out);
+        }
+        Expr::UnaryOp(_, x) => collect_hoist_identifiers(x, fields, constants, out),
+        Expr::Call(_, args, _) => {
+            for a in args {
+                collect_hoist_identifiers(a, fields, constants, out);
+            }
+        }
+        Expr::Field(base, _) => collect_hoist_identifiers(base, fields, constants, out),
+        Expr::MethodCall(recv, _, args, _) => {
+            collect_hoist_identifiers(recv, fields, constants, out);
+            for a in args {
+                collect_hoist_identifiers(a, fields, constants, out);
+            }
+        }
+        Expr::Reflect(recv, _, _) => collect_hoist_identifiers(recv, fields, constants, out),
+        // 2026-09-07: the frontend swan-song hoist wraps the guard body as an
+        // Expression(Block([...])) — walk the inner statements too
+        // (async-ready-gate repro).
+        Expr::Block(stmts) => {
+            for s in stmts {
+                collect_hoist_identifiers_stmt(s, fields, constants, out);
+            }
+        }
+        _ => {}
+    }
 }
