@@ -5161,6 +5161,8 @@ impl LlvmBackend {
         analysis: &crate::backend::AnalysisResults,
         info: InternalFoldInfo,
     ) {
+        // 2026-09-07: reset cur_block for the fresh function.
+        self.fun.cur_block = None;
         writeln!(out, "define void @txn_{}({}) local_unnamed_addr #0 noinline {{", name, self.ctx.state_ptr_param).ok();
         writeln!(out, "  entry:").ok();
         self.fun.txn_name = name.to_string();

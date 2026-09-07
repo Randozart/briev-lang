@@ -1209,8 +1209,27 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // (`all ~<- piggy`) emits with the scalar Int FALLBACK type —
                     // resolve its DECLARED type so the insert gate rejects the
                     // push and falls through to the extract.
+                    // 2026-09-07 (tuple-literal push): a STRUCT LITERAL value
+                    // (`(keys[i], vals[i])`) also emits with the fallback Int
+                    // type — the emitted register carries no tuple info. When
+                    // the value is a Tuple expr, resolve its element types from
+                    // the sub-expressions so the push gate sees the real type.
                     let val_ty = match value.as_ref() {
-                        crate::ast::Expr::Identifier(n) => backend.resolve_id_type(n).unwrap_or_else(|| val.ty.clone()),
+                        crate::ast::Expr::Identifier(n) => {
+                            backend.resolve_id_type(n).unwrap_or_else(|| val.ty.clone())
+                        }
+                        crate::ast::Expr::Tuple(elems) => {
+                            let etys = elems.iter().map(|e| {
+                                match e {
+                                    crate::ast::Expr::Identifier(n) => {
+                                        backend.resolve_id_type(n)
+                                            .unwrap_or_else(|| crate::ast::Type::int())
+                                    }
+                                    _ => crate::ast::Type::int(),
+                                }
+                            }).collect();
+                            crate::ast::Type::Tuple(etys)
+                        }
                         _ => val.ty.clone(),
                     };
                     let matches = elem_ty.as_ref().map_or(true, |et| {
@@ -1223,8 +1242,16 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         // fall through to the extract.
                         let bare_generic = matches!(et, crate::ast::Type::Custom(n)
                             if n.len() == 1 && n.chars().next().unwrap().is_uppercase());
+                        // 2026-09-07 (tuple-literal push): a Tuple element type
+                        // with generic params (e.g. `(K, V)`) matches a concrete
+                        // tuple of the same arity — the generic params are
+                        // instantiated to the element types at the use site.
+                        let tuple_arity_match = matches!((et, &val_ty),
+                            (crate::ast::Type::Tuple(a), crate::ast::Type::Tuple(b))
+                                if a.len() == b.len());
                         bare_generic
                             || *et == val_ty
+                            || tuple_arity_match
                             || (matches!(et, crate::ast::Type::Custom(n) if n == "Int")
                                 && matches!(&val_ty, crate::ast::Type::Custom(n) if n == "Int"))
                     });

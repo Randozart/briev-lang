@@ -361,6 +361,14 @@ impl LlvmBackend {
         attrs: &str,
         capture: bool,
     ) {
+        // 2026-09-07 (init-block phi predecessor fix): a fresh function starts
+        // with NO current block — the previous function's cur_block (a txn's
+        // guard.end_N or a match's .match_end_N) is a label in that function,
+        // not this one. Citing it as a phi predecessor here would name a
+        // cross-function block (hash_ops_idio: %guard.end232 in txn_work cited
+        // from main's phi). Reset so init_pred resolves to "entry" unless a
+        // block-emitting init runs IN THIS function.
+        self.fun.cur_block = None;
         writeln!(
             out,
             "define i32 @main(i32 %argc, ptr %argv) local_unnamed_addr {} {{",

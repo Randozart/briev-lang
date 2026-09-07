@@ -2928,7 +2928,16 @@ impl LlvmBackend {
         // the same node body — the reactor emits a body more than once, and a
         // stale self-slot temp from the first pass would make the second
         // pass's reads resolve to the wrong register.
-        let saved_cur_block = self.fun.cur_block.clone();
+        // 2026-09-07 (init-block phi predecessor fix): the save/restore of
+        // cur_block was removed. The previous version restored the pre-call
+        // block, which prevented a state field's `op Init` (HashMap.init's
+        // match) from updating cur_block for the countdown header's init_pred
+        // capture. The cross-function leak that motivated the save/restore is
+        // now handled by the cur_block = None reset at every function start
+        // (emit_main_header + txn define sites). The intra-function case
+        // (body blocks in the same function) is correct to leave cur_block on
+        // the body's end block — subsequent emissions in the same function
+        // are dominated by it.
         let (params, body): (Vec<(String, Type)>, Vec<crate::ast::Statement>) = match member {
             crate::ast::TopLevel::Transaction(t) => (
                 t.parameters.iter().map(|(n, ty)| (n.clone(), ty.clone())).collect(),
@@ -3045,13 +3054,10 @@ impl LlvmBackend {
         self.fun.last_val_types = saved_lvt_types;
         // 2026-09-07 (foreach dominance fix): the body's blocks (a nested
         // foreach's header/body/end, a guard's then/end, a match's
-        // .match_end_N) are LOCAL to this call. The caller's continuation
-        // emits after them in the SAME function; if cur_block is left on a
-        // body block, a later `let`'s swan-song flush slot lands AFTER that
-        // body block, where body-internal uses (a nested foreach reading the
-        // slot) break dominance. The body's own blocks are all dominated by
-        // the block the call was made in, so restore it.
-        self.fun.cur_block = saved_cur_block;
+        // 2026-09-07 (init-block phi predecessor fix): cur_block save/restore
+        // removed — see the rationale at the top of this function. The body's
+        // end block is the correct cur_block for subsequent emissions in the
+        // same function (the init_pred capture relies on it).
         // 2026-08-13 (member term inside a callable txn): the member body's
         // `term X` must record member_result, NOT terminate the ENCLOSING txn.
         // With callable_txn_result left set, an inlined `op At` body (`term

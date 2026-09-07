@@ -3364,6 +3364,9 @@ impl LlvmBackend {
             // and emit_folded_multi_main can reference the function (they call
             // @txn_{name}). Without this, the definition is @<name> but the
             // call is @txn_<name> — undefined reference error at link time.
+            // 2026-09-07: reset cur_block — a fresh function has no current
+            // block; the previous function's label is not a valid predecessor.
+            self.fun.cur_block = None;
             writeln!(out, "define void @txn_{}({}) local_unnamed_addr {}{}{} {{", name, self.ctx.state_ptr_param, txn_attr, alwaysinline, meta_attrs).ok();
             writeln!(out, "  entry:").ok();
             // Arena for body emission — same rationale as the standard path:
@@ -3625,6 +3628,8 @@ impl LlvmBackend {
             } else {
                 format!("txn_{}", name)
             };
+            // 2026-09-07: reset cur_block for the fresh function.
+            self.fun.cur_block = None;
             writeln!(out, "define void @{}({}) local_unnamed_addr {}{}{} {{", cpu_name, self.ctx.state_ptr_param, local_txn_attr, alwaysinline, meta_attrs).ok();
             writeln!(out, "  entry:").ok();
             self.fun.ssa_old_int_regs.clear();
@@ -3942,6 +3947,8 @@ impl LlvmBackend {
         // `self` mutably (gen_reg, emit_state_gep, emit_work_item_count).
         let forced = self.accel_entries[name].forced;
         let n_kernels = self.accel_kernel_idx.len();
+        // 2026-09-07: reset cur_block for the fresh function.
+        self.fun.cur_block = None;
         writeln!(out, "define void @txn_{}({}) local_unnamed_addr {{", name, self.ctx.state_ptr_param).ok();
         writeln!(out, "entry:").ok();
         writeln!(out, "  %ready = load i32, ptr @briev_accel_ready").ok();

@@ -5622,9 +5622,9 @@ batched, version-dag, ssa_main, emit_main), reset `cur_block = None` after init
 so `init_pred` resolves to `"entry"` (byte-identical IR when no
 block-emitting init ran).
 
-## 2026-09-07 — test_hashmap_surface dominance (%t765 ptrtoint) [PRE-EXISTING, OPEN]
+ ## 2026-09-07 — test_hashmap_surface dominance (%t765 ptrtoint) [FIXED]
 
-**Symptom:** even after the phi fix, `clang -O3 -flto` rejects
+**Symptom:** even after the phi fix, `clang -O3 -flto` rejected
 `tests/tier1/test_hashmap_surface.bv` with
 "Instruction does not dominate all uses! %t765 = ptrtoint ptr %t767 to i64".
 
@@ -5634,11 +5634,37 @@ block-emitting init ran).
 `foreach.hdr803` — blocks NOT dominated by `guard.then740` (the insert only
 runs when the guard is true). Clang's dominance check rejects the use.
 
-**Status:** PRE-EXISTING — fails identically on the baseline worktree
-(`../briev-compiler-baseline` at 5d1d7e45). NOT a regression from this slice.
-The `emit_member_body` cur_block save/restore (this slice) did not resolve it —
-the bug is structural (the alloc is in the wrong CFG position relative to its
-consumers), not a cur_block leak. Likely fix: store the insert result to an
-alloca before the guard branch; the foreach loads it from the slot. Deferred —
-requires a structural change to how guarded op-member allocs flow into
-nested-foreach reads, which is a separate slice.
+**Root cause (two-part):**
+1. **Arrow-push type check skipped the tuple push.** In `emit_stmt.rs`
+   `Statement::ArrowAssign`, the `val_ty` resolution only handled
+   `Expr::Identifier` (resolving the bound type). A tuple literal
+   `(keys[i], vals[i])` fell to `val.ty.clone()` which is the fallback
+   `Custom("Int")`. The `matches` comparison then failed against
+   `Tuple([K, V])`, so the push was SKIPPED — the tuple node was allocated
+   inside the guard but never stored into the list's data array. The last
+   node's handle leaked out and was read after the loop.
+2. **Cross-function `cur_block` leak.** The `cur_block` on `self.fun`
+   persisted across function emissions. A txn's `guard.end_N` or a match's
+   `.match_end_N` leaked into the next function's `init_pred` capture,
+   citing a label from a different function as a phi predecessor.
+
+**Fix (three-part):**
+1. `emit_stmt.rs` `Statement::ArrowAssign`: extended `val_ty` resolution for
+   `Expr::Tuple` — resolve each element's type (identifiers via
+   `resolve_id_type`, fallback to `Type::int()`), producing `Type::Tuple`.
+   Added `tuple_arity_match` to the `matches` gate: a `Tuple([K, V])` element
+   type matches a concrete `Tuple([Int, Int])` value of the same arity.
+2. `helpers.rs` `emit_main_header` + `emit_toplevel.rs` (3 txn define sites) +
+   `mod.rs` (1 txn define site): reset `self.fun.cur_block = None` at every
+   function start. A fresh function has no current block; the previous
+   function's labels are not valid predecessors.
+3. `emit_expr.rs` `emit_member_body`: removed the `cur_block` save/restore.
+   The save/restore prevented a state field's `op Init` (HashMap.init's
+   match) from updating `cur_block` for the countdown header's `init_pred`
+   capture. The cross-function leak it was guarding against is now handled
+   by the function-start resets.
+
+**Verification:** `test_hashmap_surface.bv` compiles clean and prints all 9
+correct values (20/true/false/5/10/100/10/10/4/9). `hash_ops_idio` parity
+restored (24999995000000). 2076 tests green. float_math/mandelbrot/
+linked_list compile clean.
