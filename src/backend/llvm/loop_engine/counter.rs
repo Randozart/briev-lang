@@ -498,22 +498,7 @@ impl LlvmBackend {
         // (float_math_nonzero p22 fix). Use OR to preserve pre-existing value.
         if !self.fun.pending_post_hoist.is_empty() {
             self.fun.needs_state_stores_in_body = true;
-            // 2026-09-07 (swan-song dominance fix): let-locals referenced by
-            // the hoist must bind through preheader-flushed allocas so the
-            // exit-block print reads a dominating slot. State fields already
-            // store via Path B; constants resolve at emission; everything
-            // else in a hoisted statement is a body local.
-            let fields = self.ctx.field_index_map.clone();
-            let constants = self.ctx.constants.keys().cloned().collect::<std::collections::HashSet<_>>();
-            let mut locals = std::collections::HashSet::new();
-            for block in &self.fun.pending_post_hoist {
-                collect_hoist_identifiers_expr_stmts(block, &fields, &constants, &mut locals);
-            }
-            for (bi, blk) in self.fun.pending_post_hoist.iter().enumerate() {
-                for (si, st) in blk.iter().enumerate() {
-                }
-            }
-            self.fun.swan_song_locals = locals;
+            self.collect_swan_song_locals();
         }
 
         // 2026-07-17: pending_post_hoist (provided by the frontend swan-song
@@ -1337,6 +1322,27 @@ impl LlvmBackend {
     // caller falls back to PerFieldPhi (emit_countable_main).
     //
     // See docs/plans/2026-07-30-flat-node-decomposition.md §11.
+
+    /// 2026-09-07 (swan-song dominance fix): collect the let-local names the
+    /// pending post-hoist reads. State fields and constants resolve at the
+    /// emission site; everything else is a body local whose SSA register does
+    /// not dominate the loop-exit block. Shared by every fold engine that
+    /// emits the post-hoist (PerFieldPhi, version-DAG).
+    fn collect_swan_song_locals(&mut self) {
+        let fields = self.ctx.field_index_map.clone();
+        let constants = self
+            .ctx
+            .constants
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let mut locals = std::collections::HashSet::new();
+        for block in &self.fun.pending_post_hoist {
+            collect_hoist_identifiers_expr_stmts(block, &fields, &constants, &mut locals);
+        }
+        self.fun.swan_song_locals = locals;
+    }
+
     pub(crate) fn emit_version_dag_main(
         &mut self,
         out: &mut String,
@@ -1376,6 +1382,39 @@ impl LlvmBackend {
         if body_terminates {
             return false;
         }
+        // 2026-09-07 (swan-song dominance fix): the exit block references the
+        // post-hoist, whose let-locals must bind through ENTRY-block allocas
+        // (entry dominates the guard-present block and the end block). Body
+        // allocas defer to pending_struct_allocas and flush into the entry
+        // block before the loop text — same shape as emit_countable_main's
+        // loop_buf (the split happens inside, at the entry→header boundary).
+        if !self.fun.pending_post_hoist.is_empty() {
+            self.collect_swan_song_locals();
+            self.fun.defer_struct_allocas = true;
+        }
+        let wrote = self.emit_version_dag_main_inner(
+            out, counter_idx, total_idx, total_const_name, bound_literal,
+            body, write_set, is_decreasing, counter_var, free_after,
+        );
+        self.fun.defer_struct_allocas = false;
+        wrote
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_version_dag_main_inner(
+        &mut self,
+        out: &mut String,
+        counter_idx: usize,
+        total_idx: Option<usize>,
+        total_const_name: Option<&str>,
+        bound_literal: Option<i64>,
+        body: &[Statement],
+        write_set: &HashSet<String>,
+        is_decreasing: bool,
+        counter_var: Option<&str>,
+        free_after: &[String],
+    ) -> bool {
+        use crate::analysis::node_decompose::{PredicateClass, Segment, split_into_segments};
         let segments = split_into_segments(body);
 
         // Locate the single runtime guard and collect [pre] / [post] statements.
@@ -1458,6 +1497,13 @@ impl LlvmBackend {
 
         let counter_ty = self.ctx.field_types.get(counter_idx)
             .cloned().unwrap_or_else(|| "i64".to_string());
+        // 2026-09-07 (swan-song dominance fix): the loop text (header → ret)
+        // buffers so the deferred swan-song-local allocas flush into the still
+        // open ENTRY block before the loop text — identical to
+        // emit_countable_main's loop_buf pattern.
+        let mut vd_loop = String::new();
+        let real_out = out;
+        let out = &mut vd_loop;
         writeln!(out, "  br label %{}", header_label).ok();
 
         // ── Header: per-field phis ───────────────────────────────────
@@ -1647,6 +1693,13 @@ impl LlvmBackend {
         }
         let hoist = self.fun.pending_post_hoist.clone();
         if !hoist.is_empty() {
+            // 2026-09-07 (swan-song dominance fix): clear pending_phi_backedge
+            // with the other loop SSA maps — it carries guard-present/absent
+            // body registers (e.g. mandelbrot's %t207 from .vd3_present) that
+            // do NOT dominate this end block (a sibling of the header). The
+            // final values were just stored to %State above; hoisted reads
+            // resolve via %State loads or the entry-block swan-song slots.
+            self.fun.pending_phi_backedge.clear();
             self.fun.phi_field_regs.clear();
             self.fun.last_val_temps.clear();
             for group in &hoist {
@@ -1659,6 +1712,10 @@ impl LlvmBackend {
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
         writeln!(out).ok();
+        // 2026-09-07: splice — deferred swan-song-local allocas land in the
+        // still-open entry block, then the buffered loop text follows.
+        self.flush_pending_struct_allocas(real_out);
+        real_out.push_str(&vd_loop);
         true
     }
 
