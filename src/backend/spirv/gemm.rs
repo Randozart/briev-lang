@@ -255,6 +255,17 @@ impl GemmPlan {
         }
     }
 
+    /// 2026-09-07 (single-buffer rung): smem stages per buffer. 1 = the
+    /// single-buffer form (half the smem → 2× resident WGs/SM; the fill is
+    /// barrier-serialized with the mma either way, so the spare stage buys
+    /// no overlap at any stage count). Clamped to 1..2.
+    pub(crate) fn coopmat_stages() -> u32 {
+        crate::config_tuning::ir_lowering()
+            .spirv_coopmat_stages
+            .max(1)
+            .min(2)
+    }
+
     pub(crate) fn coopmat_tile_rows(plan_m: i64) -> u32 {
         let mut r = crate::config_tuning::ir_lowering()
             .spirv_coopmat_tile_rows
@@ -3000,7 +3011,8 @@ fn emit_coopmat_smem(
     // D4: per-subgroup B smem base — each subgroup fills its own B slice.
     // Layout: [sub0_stage0, sub0_stage1, sub1_stage0, sub1_stage1, ...]
     let b_stage_elems = pps * 4 * 256;
-    let sub_b_base_elems = 2 * b_stage_elems; // both stages per subgroup
+    let stages = GemmPlan::coopmat_stages();
+    let sub_b_base_elems = stages * b_stage_elems; // all stages per subgroup
     // sub_b_offset = sub_id × sub_b_base_elems (runtime — different per subgroup)
     let sub_b_offset = if subgroups > 1 {
         let sub_b_elems_c = u32_const(builder, sub_b_base_elems);
@@ -3008,7 +3020,7 @@ fn emit_coopmat_smem(
     } else {
         u32_const(builder, 0)
     };
-    for stage in 0..2u32 {
+    for stage in 0..stages {
         for pi in 0..pps {
             let a_off = u32_const(
                 builder,
@@ -3065,10 +3077,10 @@ fn emit_coopmat_smem(
         id
     };
 
-    // Stage parity.
+    // Stage index: stages=2 → kt parity, stages=1 → 0 (single buffer).
     let s = {
-        let one = u32_const(builder, 1);
-        u32_binop(builder, spirv::Op::BitwiseAnd, kt_u, one)
+        let mask = u32_const(builder, stages - 1);
+        u32_binop(builder, spirv::Op::BitwiseAnd, kt_u, mask)
     };
 
     // Load A fragments from smem: pps panels × tile_rows strips. Pairs
@@ -3077,6 +3089,20 @@ fn emit_coopmat_smem(
     // stride-16 fragment walk is unchanged (the production form).
     let c_a_se = u32_const(builder, a_stage_elems);
     let stage_off_a = u32_binop(builder, spirv::Op::IMul, s, c_a_se);
+    // 2026-09-07 (anti-WAR refill): the refill writes the OTHER stage
+    // (1-s) so it never races the in-flight CM loads of stage s — the
+    // workgroup barrier between the mma and the refill becomes
+    // unnecessary (double-buffer only). The refill fills stage 1-s with
+    // panel kt+1 (read at the next iteration); the CM loads keep reading
+    // stage s (panel kt). Single-buffer (stages=1) has no spare stage —
+    // refill offset 0, barrier retained.
+    let refill_stage = if stages > 1 {
+        let one = u32_const(builder, 1);
+        u32_binop(builder, spirv::Op::BitwiseXor, s, one)
+    } else {
+        u32_const(builder, 0)
+    };
+    let stage_off_a_refill = u32_binop(builder, spirv::Op::IMul, refill_stage, c_a_se);
     let a_panel_stride = (tile_rows * 256) as usize;
     let mut frag_as: Vec<Word> = Vec::new();
     for pi in 0..pps as usize {
@@ -3118,16 +3144,20 @@ fn emit_coopmat_smem(
     let c_b_ss = u32_const(builder, b_stage_size);
     // D4: each subgroup reads from its own B slice in smem_b.
     // Layout: [sub0_stage0, sub0_stage1, sub1_stage0, sub1_stage1, ...]
-    // sub_b_base = sub_id × 2 × b_stage_size (skip other subgroups' stages)
+    // sub_b_base = sub_id × stages × b_stage_size (skip other subgroups' stages)
     // stage_off_b = sub_b_base + s × b_stage_size (stage within this subgroup's slice)
     let sub_b_base = if subgroups > 1 {
-        let two_b = u32_const(builder, 2 * b_stage_size);
-        u32_binop(builder, spirv::Op::IMul, io.sub_id, two_b)
+        let stages_b = u32_const(builder, stages * b_stage_size);
+        u32_binop(builder, spirv::Op::IMul, io.sub_id, stages_b)
     } else {
         u32_const(builder, 0)
     };
     let stage_off_b_raw = u32_binop(builder, spirv::Op::IMul, s, c_b_ss);
     let stage_off_b = u32_binop(builder, spirv::Op::IAdd, sub_b_base, stage_off_b_raw);
+    // Anti-WAR refill B offset: write the OTHER stage (1-s) — see the A
+    // refill comment above.
+    let stage_off_b_refill_raw = u32_binop(builder, spirv::Op::IMul, refill_stage, c_b_ss);
+    let stage_off_b_refill = u32_binop(builder, spirv::Op::IAdd, sub_b_base, stage_off_b_refill_raw);
     let mut frag_bs: Vec<Word> = Vec::new();
     for pi in 0..pps as usize {
         let pi_c = u32_const(builder, (pi * 4 * 256) as u32);
@@ -3169,22 +3199,24 @@ fn emit_coopmat_smem(
     // D2 prefetch (below) and the post-barrier stores both consume it.
     let refill_meta: Vec<(Word, Word, Word)> = (0..pps)
         .map(|pi| {
-            // The panel index is RUNTIME: (kt_pair + 2)*pps + pi — stage
-            // s is re-read at pair-iteration kt+2 (its next same-parity
-            // visit), so it must hold the panels of THAT step. (+2, not
-            // +1: an off-by-one-pair filled the panels the other stage
-            // needed, and every read after the first got stale data.)
+            // The panel index is RUNTIME: (kt_pair + 1)*pps + pi. The refill
+            // targets the buffer that the load at iteration kt+1 reads
+            // (the anti-WAR refill writes the OTHER stage 1-s, so it fills
+            // the panels of the very next iteration — the double-buffer
+            // fills the same-parity stage kt+2, the single-buffer fills
+            // the one stage. The +1, never +stages: writing the other
+            // stage means the next read is one iteration away.)
             // 2026-09-05: the index wraps with UMod groups — the old
             // clamp compared panel units against a ×16 constant (never
             // fired for pps=1), so the tail iteration filled a panel
             // index past K (a benign-but-dirty OOB read into a
             // never-read stage).
             let raw = {
-                let two = u32_const(builder, 2);
+                let one = u32_const(builder, 1);
                 let pps_c = u32_const(builder, pps);
                 let pi_c = u32_const(builder, pi as u32);
-                let pair2 = u32_binop(builder, spirv::Op::IAdd, kt_u, two);
-                let base = u32_binop(builder, spirv::Op::IMul, pair2, pps_c);
+                let pair1 = u32_binop(builder, spirv::Op::IAdd, kt_u, one);
+                let base = u32_binop(builder, spirv::Op::IMul, pair1, pps_c);
                 let raw = u32_binop(builder, spirv::Op::IAdd, base, pi_c);
                 if stagger {
                     u32_binop(builder, spirv::Op::IAdd, raw, start_panel)
@@ -3194,9 +3226,9 @@ fn emit_coopmat_smem(
             };
             let kt_fill = u32_binop(builder, spirv::Op::UMod, raw, groups_c);
             let a_off_c = u32_const(builder, (pi as usize * a_panel_stride) as u32);
-            let a_off = u32_binop(builder, spirv::Op::IAdd, stage_off_a, a_off_c);
+            let a_off = u32_binop(builder, spirv::Op::IAdd, stage_off_a_refill, a_off_c);
             let b_off_c = u32_const(builder, (pi as usize * 4 * 256) as u32);
-            let b_off = u32_binop(builder, spirv::Op::IAdd, stage_off_b, b_off_c);
+            let b_off = u32_binop(builder, spirv::Op::IAdd, stage_off_b_refill, b_off_c);
             (kt_fill, a_off, b_off)
         })
         .collect();
@@ -3249,8 +3281,18 @@ fn emit_coopmat_smem(
     // Smem refill landing: with the D2 prefetch the values are already
     // in registers — only the smem stores remain after the barrier.
     // Without it the fused fill (DRAM loads + stores) runs here.
+    // Smem refill landing: with the D2 prefetch the values are already
+    // in registers — only the smem stores remain. Without it the fused
+    // fill (DRAM loads + stores) runs here.
+    // 2026-09-07 (anti-WAR refill): the refill writes the OTHER stage
+    // (1-s) — it cannot race the in-flight CM loads of stage s — so the
+    // workgroup barrier between the mma and the refill is dropped for the
+    // double-buffer. The single-buffer (stages=1) fills the ONE stage the
+    // loads just read: the barrier stays (WAR).
     {
-        emit_wg_barrier(builder);
+        if prefetch || stages == 1 {
+            emit_wg_barrier(builder);
+        }
 
         if prefetch {
             for (vals, &(_, a_off, b_off)) in refill_vals.iter().zip(refill_meta.iter()) {

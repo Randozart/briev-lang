@@ -225,8 +225,13 @@ pub fn emit_kernel(
         // D1: panels per stage doubles the per-stage footprint.
         let pps = gemm::GemmPlan::coopmat_panels_per_stage(plan.k);
         let subgroups = gemm::GemmPlan::coopmat_subgroups();
-        let a_elems = (2 * pps * r * 16 * 16) as u32;  // 2 stages × pps panels × R strips × 256
-        let b_elems_one = (2 * pps * 4 * 16 * 16) as u32;  // one subgroup's B: 2 stages × pps × 4 × 256
+        // 2026-09-07: `stages` (1 = single-buffer) scales the footprint —
+        // single-buffer halves smem → 2× resident WGs/SM at 48KB. The fill
+        // is barrier-serialized with the mma regardless, so the double
+        // buffer's spare stage buys no overlap — only smem it occupies.
+        let stages = gemm::GemmPlan::coopmat_stages();
+        let a_elems = (stages * pps * r * 16 * 16) as u32;  // stages × pps panels × R strips × 256
+        let b_elems_one = (stages * pps * 4 * 16 * 16) as u32;  // one subgroup's B: stages × pps × 4 × 256
         let b_elems = b_elems_one * subgroups;  // S subgroups each own a B slice
         let (a_len, b_len) = if view_width > 0 {
             (
