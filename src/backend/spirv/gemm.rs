@@ -3371,16 +3371,17 @@ fn emit_coopmat_smem(
     }
 
     // Smem refill landing: with the D2 prefetch the values are already
-    // in registers — only the smem stores remain after the barrier.
-    // Without it the fused fill (DRAM loads + stores) runs here.
-    // Smem refill landing: with the D2 prefetch the values are already
     // in registers — only the smem stores remain. Without it the fused
     // fill (DRAM loads + stores) runs here.
     // 2026-09-07 (anti-WAR refill): the refill writes the OTHER stage
     // (1-s) — it cannot race the in-flight CM loads of stage s — so the
     // workgroup barrier between the mma and the refill is dropped for the
-    // double-buffer. The single-buffer (stages=1) fills the ONE stage the
-    // loads just read: the barrier stays (WAR).
+    // FUSED double-buffer fill. The D2 prefetch KEEPS the barrier:
+    // measured 4.55ms with vs 4.80ms without — the barrier lets the mma
+    // issue cleanly before the store phase contends for issue slots (the
+    // DRAM latency is already hidden by the loop-top loads, so the
+    // barrier costs nothing there). The single-buffer (stages=1) fills
+    // the ONE stage the loads just read: the barrier stays (WAR).
     {
         if prefetch || stages == 1 {
             emit_wg_barrier(builder);
