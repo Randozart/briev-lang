@@ -969,6 +969,15 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-09-07 (swan-song dominance fix): the post-hoist (.cde_ block)
+        // reads body let-locals (e.g. hash_ops_idio's `sum`) whose SSA
+        // registers live in .cdb_ and do NOT dominate .cde_ (a header
+        // sibling). Route them through entry-block allocas — same mechanism
+        // as PerFieldPhi and version-DAG.
+        if !self.fun.pending_post_hoist.is_empty() {
+            self.fun.needs_state_stores_in_body = true;
+            self.collect_swan_song_locals();
+        }
         let c0 = self.fun.txn_counter;
         self.fun.txn_counter += 1;
         let bound_reg = self.fun.next_reg_with_prefix("cdb");
@@ -1008,6 +1017,17 @@ impl LlvmBackend {
         } else {
             None
         };
+        // 2026-09-07 (swan-song dominance fix): buffer the loop text so the
+        // deferred swan-song-local allocas flush into the still-open ENTRY
+        // block before the loop — same shape as the PerFieldPhi and
+        // version-DAG folds. The body's let-bindings (e.g. hash_ops_idio's
+        // `sum`) are read by the post-hoist; their SSA registers live in
+        // .cdb_ and do not dominate .cde_ (a header sibling).
+        let mut cd_buf = String::new();
+        let real_out = out;
+        {
+        let out = &mut cd_buf;
+        self.fun.defer_struct_allocas = true;
         writeln!(out, "  br label %.cd_{}", c0).ok();
 
         // ── Header ──────────────────────────────────────────────
@@ -1301,6 +1321,10 @@ impl LlvmBackend {
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
         writeln!(out).ok();
+        }
+        self.fun.defer_struct_allocas = false;
+        self.flush_pending_struct_allocas(real_out);
+        real_out.push_str(&cd_buf);
         let _ = txn_name;
     }
 
