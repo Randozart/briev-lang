@@ -5587,4 +5587,58 @@ A/B on the actual .ll (Performance Recovery Protocol, AGENTS.md Rule 20).
 
 **Not caused by this slice:** the fix only changes the POST-LOOP exit block
 (clears loop SSA maps so the swan song loads %State); in-loop arithmetic is
-byte-identical. The async examples (17 / 111) produce exact correct output.
+ byte-identical. The async examples (17 / 111) produce exact correct output.
+
+## 2026-09-07 — emit_match phi double-write + missing label (init-block phi predecessor slice) [FIXED]
+
+**Symptom:** `test_hashmap_surface.bv` (and any program whose state field's
+`op Init` body emits blocks — currently only `HashMap.init`'s `match capacity`)
+produced LLVM IR with the merge-block label MISSING and the phi line doubled:
+
+```
+  br label %.match_end_4
+.match_end_4:                                   <- label written by the fix
+  %t2 = phi   %t2 = phi i64 [ 0, %.match_next_4_1 ], ...   <- doubled prefix
+```
+
+The `phi` local in `emit_match` (emit_expr.rs) is built as
+`"  {v} = phi {ty} [...]"` — it already carries its own `  {v} = phi ...`
+prefix. The emission must be the bare `writeln!(out, "{}", phi)`; re-supplying
+`indent`/`v`/`= phi` in front of it double-writes. A mid-session edit also
+dropped the `writeln!(out, "{}:", end_label)` that emits the label.
+
+**Fix:** restore `writeln!(out, "{}:", end_label)` before the phi; keep the
+bare `writeln!(out, "{}", phi)`. The `phi` string is self-contained.
+
+**Root cause of the slice's motivation:** a state field's `op Init` that emits
+blocks (HashMap.init's match) leaves `cur_block` on the match's `.match_end_N`.
+Loop headers emitted after init cited a hardcoded `%entry` predecessor, but the
+init's `br` actually lands in `.match_end_N` — the header phis named a
+non-predecessor. Fix: capture `init_pred = cur_block.unwrap_or("entry")` after
+`emit_inline_init_stores` and cite it in the counter + per-field phis (all
+engines: folded, perfieldphi, countable, version-dag, batched, countdown). In
+emitters whose header is reached by a single `br` from entry (countable_main,
+batched, version-dag, ssa_main, emit_main), reset `cur_block = None` after init
+so `init_pred` resolves to `"entry"` (byte-identical IR when no
+block-emitting init ran).
+
+## 2026-09-07 — test_hashmap_surface dominance (%t765 ptrtoint) [PRE-EXISTING, OPEN]
+
+**Symptom:** even after the phi fix, `clang -O3 -flto` rejects
+`tests/tier1/test_hashmap_surface.bv` with
+"Instruction does not dominate all uses! %t765 = ptrtoint ptr %t767 to i64".
+
+**Structure:** the SSA main loop body runs `HashMap.insert` inside a guard
+(`guard.then740`), which allocates a node (`%t766 = malloc`, `%t767 = bitcast`,
+`%t765 = ptrtoint`). The handle `%t765` is then read in `foreach.end724` and
+`foreach.hdr803` — blocks NOT dominated by `guard.then740` (the insert only
+runs when the guard is true). Clang's dominance check rejects the use.
+
+**Status:** PRE-EXISTING — fails identically on the baseline worktree
+(`../briev-compiler-baseline` at 5d1d7e45). NOT a regression from this slice.
+The `emit_member_body` cur_block save/restore (this slice) did not resolve it —
+the bug is structural (the alloc is in the wrong CFG position relative to its
+consumers), not a cur_block leak. Likely fix: store the insert result to an
+alloca before the guard branch; the foreach loads it from the slot. Deferred —
+requires a structural change to how guarded op-member allocs flow into
+nested-foreach reads, which is a separate slice.

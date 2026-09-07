@@ -536,7 +536,6 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             if backend.fun.swan_song_locals.contains(name)
                 && !backend.fun.let_binding_allocas.contains(&val.name)
                 && !is_struct_ty
-                && !backend.is_coll_type(&val.ty)
             {
                 let slot_ty = backend.llvm_type(&val.ty);
                 let slot = backend.fun.next_reg_with_prefix("sslv");

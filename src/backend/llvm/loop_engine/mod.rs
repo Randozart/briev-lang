@@ -231,6 +231,15 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
     self.emit_main_header(out, "#0", true);
     self.emit_state_base(out);
     self.emit_inline_init_stores(out, "%state");
+    // 2026-09-07 (init-block phi predecessor fix): a state field's `op
+    // Init` may emit blocks (HashMap.init's match) — emit_main_header
+    // started a fresh function with cur_block = None, so after init the
+    // insertion block is the init's FINAL block, not entry. Reset it:
+    // this emitter's loop header (.loop) is reached by a single `br`
+    // from entry, and any block-emitting init has already stored its
+    // result to state — citing the stale block would make the header
+    // phis name a block that is not their predecessor.
+    self.fun.cur_block = None;
     // 2026-07-14: Initialize thread pool for async programs
     if self.has_async_txns && !self.is_lightweight_async {
         writeln!(out, "  call void @__thread_pool_init__(i32 {}, ptr @thread_pool_fns)",

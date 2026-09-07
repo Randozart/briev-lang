@@ -339,7 +339,16 @@ impl LlvmBackend {
         } else {
             None
         };
-
+        // 2026-09-07 (init-block cur_block fix): the init stores above may have
+        // emitted blocks (a HashMap.init `match` leaves the emitter in its
+        // .match_end_N). The loop's `br` + `.ss_main_loop:` header emit into
+        // that block — valid for the br (entry's successor), but a STALE
+        // cur_block would make the loop body's swan-song lets bind through a
+        // flush slot that lands AFTER the `br` (the flush happens before the
+        // loop text is appended), which the loop body then references without
+        // dominance. Reset so the body's allocas flush into the header's own
+        // preheader (entry, before the `br`).
+        self.fun.cur_block = None;
         // 2026-07-18: Allocate convergence tracking slot in entry (not in loop)
         if let Some(ref slot) = active_slot {
             writeln!(out, "  {} = alloca i64, align 8", slot).ok();

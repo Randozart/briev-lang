@@ -104,6 +104,11 @@ impl LlvmBackend {
         let bound_reg = self.fun.next_reg_with_prefix("flb");
         self.emit_countable_load_bound(out, &bound_reg, total_idx, total_const_name, bound_literal, c0);
         let (init_name, _) = self.emit_state_load_i64_by_idx(out, "  ", counter_idx);
+        // 2026-09-07 (init-block phi predecessor fix): cite the block the
+        // init load + `br` emit into (self.fun.cur_block, or "entry" when no
+        // block-emitting init ran) as the header's init predecessor.
+        let init_pred = self.fun.cur_block.clone()
+            .unwrap_or_else(|| "entry".to_string());
         // 2026-07-18: Preallocate push targets before the loop body.
         // Collects all Assign(Ident, _) targets from the body and allocates
         // (bound + 2) * 8 bytes per target from the arena (or @malloc if
@@ -133,16 +138,16 @@ impl LlvmBackend {
         let counter_ty = self.ctx.field_types.get(counter_idx)
             .cloned().unwrap_or_else(|| "i64".to_string());
         if is_decreasing {
-            writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %{}.latch ]",
-                counter_name, counter_ty, init_name, next, label_prefix).ok();
+            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{}.latch ]",
+                counter_name, counter_ty, init_name, init_pred, next, label_prefix).ok();
             // 2026-07-17: Fixed comparison direction. For decreasing counters we
             // want `counter > 0` (continue while still above the bound), not
             // `counter < bound` (which would exit immediately for decreasing).
             let cmp = self.narrow_counter_for_bound(out, "flc", &counter_ty, &counter_name);
             writeln!(out, "  {} = icmp sgt i64 {}, {}", done_reg, cmp, bound_reg).ok();
         } else {
-            writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %{}.latch ]",
-                counter_name, counter_ty, init_name, next, label_prefix).ok();
+            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{}.latch ]",
+                counter_name, counter_ty, init_name, init_pred, next, label_prefix).ok();
             // 2026-07-17: Fixed comparison direction. For increasing counters we
             // want `counter < bound` (continue while below the bound), not
             // `counter > bound` (which would exit immediately).
@@ -296,6 +301,13 @@ impl LlvmBackend {
             self.emit_main_header(out, "#0", true);
             self.emit_state_base(out);
             self.emit_inline_init_stores(out, "%state");
+            // 2026-09-07 (init-block phi predecessor fix): a state field's
+            // `op Init` may emit blocks (HashMap.init's match). In MAIN mode
+            // the loop header's single predecessor is `entry` (reached by a
+            // plain `br`), so reset the stale block — the init has already
+            // stored its result to state. In TXN mode (is_main=false) the
+            // caller's cur_block is the loop's true predecessor and is kept.
+            self.fun.cur_block = None;
         }
         // 2026-08-13 (reactor fix): buffer the loop construction so the
         // deferred struct-literal allocas can be flushed into the PREHEADER
@@ -323,6 +335,14 @@ impl LlvmBackend {
             let (init_f, _) = self.emit_state_load_i64_by_idx(out, "  ", idx);
             phi_field_init.insert((*fname).clone(), init_f);
         }
+        // 2026-09-07 (init-block phi predecessor fix): the init loads emit
+        // into self.fun.cur_block — the block the loop `br` targets. When a
+        // state field's `op Init` emits blocks (HashMap.init's match), that
+        // is the match's .match_end_N, not entry. Cite it in the header phis.
+        // Falls back to "entry" when no block-emitting init ran (byte-identical
+        // IR).
+        let init_pred = self.fun.cur_block.clone()
+            .unwrap_or_else(|| "entry".to_string());
 
         // 2026-07-29: Clear vector phi state — disabled inside emit_countable_main.
         // The dispatch-level detection in mod.rs still checks for vector phi groups,
@@ -368,11 +388,11 @@ impl LlvmBackend {
         let counter_ty = self.ctx.field_types.get(counter_idx)
             .cloned().unwrap_or_else(|| "i64".to_string());
         if is_decreasing {
-            writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %.cm_latch ]",
-                counter_name, counter_ty, init_name, next).ok();
+            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cm_latch ]",
+                counter_name, counter_ty, init_name, init_pred, next).ok();
         } else {
-            writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %.cm_latch ]",
-                counter_name, counter_ty, init_name, next).ok();
+            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cm_latch ]",
+                counter_name, counter_ty, init_name, init_pred, next).ok();
         }
 
         // 2026-07-17: Per-field phi nodes — one per written field.
@@ -399,8 +419,8 @@ impl LlvmBackend {
             let phi_ty = self.ctx.field_index_map.get(fname.as_str())
                 .and_then(|idx| self.ctx.field_types.get(*idx))
                 .cloned().unwrap_or_else(|| "i64".to_string());
-            writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %.cm_latch ]",
-                phi_f, phi_ty, init_f, be_f).ok();
+            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cm_latch ]",
+                phi_f, phi_ty, init_f, init_pred, be_f).ok();
             self.fun.phi_field_regs.insert((*fname).clone(), phi_f);
             self.fun.backedge_field_regs.insert((*fname).clone(), be_f);
         }
@@ -661,6 +681,10 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-09-07 (init-block phi predecessor fix): a state field's `op
+        // Init` may emit blocks (HashMap.init's match). The outer header's
+        // single predecessor is `entry`, so reset the stale block.
+        self.fun.cur_block = None;
         // 2026-08-13 (reactor fix): buffer the batched loop so deferred
         // struct-literal allocas flush into the PREHEADER (before the loop) —
         // an in-loop alloca makes clang -O3 peel the loop + emit a bogus exit
@@ -686,6 +710,11 @@ impl LlvmBackend {
         }
         let init_name = phi_field_init.get(counter_var)
             .cloned().unwrap_or_else(|| "0".to_string());
+        // 2026-09-07 (init-block phi predecessor fix): cite the block the init
+        // loads + `br` emit into (self.fun.cur_block, or "entry" when no
+        // block-emitting init ran) as the outer header's init predecessor.
+        let init_pred = self.fun.cur_block.clone()
+            .unwrap_or_else(|| "entry".to_string());
 
         let exit_label = format!(".oexit_{}", c0);
         let inner_exit_label = format!(".inner_exit_{}", c0);
@@ -700,10 +729,10 @@ impl LlvmBackend {
         let next_oh = self.fun.next_reg_with_prefix("ohn");
         let counter_ty = self.ctx.field_types.get(counter_idx)
             .cloned().unwrap_or_else(|| "i64".to_string());
-        writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %.ol_{} ]",
-            oh_counter, counter_ty, init_name, next_oh, c0).ok();
-        writeln!(out, "  {} = phi i64 [ {}, %entry ], [ {}, %.ol_{} ]",
-            oh_bound, bound_reg, bound_reg, c0).ok();
+        writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.ol_{} ]",
+            oh_counter, counter_ty, init_name, init_pred, next_oh, c0).ok();
+        writeln!(out, "  {} = phi i64 [ {}, %{} ], [ {}, %.ol_{} ]",
+            oh_bound, bound_reg, init_pred, bound_reg, c0).ok();
 
         let mut oh_field_regs: HashMap<String, String> = HashMap::new();
         let mut oh_latch_regs: HashMap<String, String> = HashMap::new();
@@ -718,8 +747,8 @@ impl LlvmBackend {
             let phi_ty = self.ctx.field_index_map.get(fname.as_str())
                 .and_then(|idx| self.ctx.field_types.get(*idx))
                 .cloned().unwrap_or_else(|| "i64".to_string());
-            writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %.ol_{} ]",
-                oh_f, phi_ty, init_f, ol_f, c0).ok();
+            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.ol_{} ]",
+                oh_f, phi_ty, init_f, init_pred, ol_f, c0).ok();
             oh_field_regs.insert((*fname).clone(), oh_f);
             oh_latch_regs.insert((*fname).clone(), ol_f);
         }
@@ -1002,6 +1031,16 @@ impl LlvmBackend {
             .cloned().unwrap_or_else(|| "0".to_string());
         let counter_ty = self.ctx.field_types.get(counter_idx)
             .cloned().unwrap_or_else(|| "i64".to_string());
+        // 2026-09-07 (init-block phi predecessor fix): the init loads above
+        // emit into self.fun.cur_block — the block the loop `br` targets.
+        // When a state field's `op Init` body emits blocks (HashMap.init's
+        // `match capacity`), cur_block is the match's `.match_end_N`, NOT
+        // entry. The header's true predecessor is cur_block, so the phis
+        // must cite it, not `%entry`. When no block-emitting init ran,
+        // cur_block is None and init_pred falls back to "entry" (identical
+        // IR to today).
+        let init_pred = self.fun.cur_block.clone()
+            .unwrap_or_else(|| "entry".to_string());
         // 2026-08-01 (D2): a `within N ms` watchdog deadline captures the
         // monotonic clock at loop entry; the .cdw_ check fires when the
         // elapsed time exceeds the deadline even if the liveliness condition
@@ -1036,10 +1075,14 @@ impl LlvmBackend {
         let c_next = self.fun.next_reg_with_prefix("cdn");
         let c_rem = self.fun.next_reg_with_prefix("cdr");
         let c_rem_latch = self.fun.next_reg_with_prefix("cdl");
-        writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %.cdl_{} ]",
-            c_counter, counter_ty, init_name, c_next, c0).ok();
-        writeln!(out, "  {} = phi i64 [ {}, %entry ], [ {}, %.cdl_{} ]",
-            c_rem, batch_size, c_rem_latch, c0).ok();
+        // 2026-09-07 (init-block phi predecessor fix): cite init_pred (the
+        // block the init loads + `br` emit into) instead of hardcoded %entry.
+        // init_pred == "entry" when no block-emitting init ran (byte-identical
+        // IR); it is the match's .match_end_N when HashMap.init's match ran.
+        writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cdl_{} ]",
+            c_counter, counter_ty, init_name, init_pred, c_next, c0).ok();
+        writeln!(out, "  {} = phi i64 [ {}, %{} ], [ {}, %.cdl_{} ]",
+            c_rem, batch_size, init_pred, c_rem_latch, c0).ok();
 
         self.fun.phi_field_regs.clear();
         self.fun.backedge_field_regs.clear();
@@ -1056,8 +1099,8 @@ impl LlvmBackend {
             let phi_ty = self.ctx.field_index_map.get(fname.as_str())
                 .and_then(|idx| self.ctx.field_types.get(*idx))
                 .cloned().unwrap_or_else(|| "i64".to_string());
-            writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %.cdl_{} ]",
-                f_reg, phi_ty, init_f, f_be, c0).ok();
+            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cdl_{} ]",
+                f_reg, phi_ty, init_f, init_pred, f_be, c0).ok();
             self.fun.phi_field_regs.insert((*fname).clone(), f_reg);
             self.fun.backedge_field_regs.insert((*fname).clone(), f_be);
         }
@@ -1493,6 +1536,10 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-09-07 (init-block phi predecessor fix): a state field's `op
+        // Init` may emit blocks (HashMap.init's match). The version-DAG
+        // header's single predecessor is `entry`, so reset the stale block.
+        self.fun.cur_block = None;
         let bound_reg = self.fun.next_reg_with_prefix("vdb");
         self.emit_countable_load_bound(out, &bound_reg, total_idx, total_const_name, bound_literal, c0);
         let (init_name, _) = self.emit_state_load_i64_by_idx(out, "  ", counter_idx);
@@ -1508,6 +1555,11 @@ impl LlvmBackend {
             let (init_f, _) = self.emit_state_load_i64_by_idx(out, "  ", idx);
             phi_field_init.insert((*fname).clone(), init_f);
         }
+        // 2026-09-07 (init-block phi predecessor fix): cite the block the
+        // init loads + `br` emit into (self.fun.cur_block, or "entry" when no
+        // block-emitting init ran) as the header's init predecessor.
+        let init_pred = self.fun.cur_block.clone()
+            .unwrap_or_else(|| "entry".to_string());
 
         // Pre-generate backedge register names: one set for the latch, one for
         // the present block (both are header predecessors). The counter's
@@ -1550,8 +1602,8 @@ impl LlvmBackend {
             .cloned().unwrap_or_else(|| self.fun.next_reg_with_prefix("bl"));
         let be_p_count = be_present_regs.get(&counter_key)
             .cloned().unwrap_or_else(|| self.fun.next_reg_with_prefix("bp"));
-        writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %{} ], [ {}, %{} ]",
-            counter_name, counter_ty, init_name, be_l_count, latch_label,
+        writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
+            counter_name, counter_ty, init_name, init_pred, be_l_count, latch_label,
             be_p_count, present_label).ok();
         for fname in &sorted_fields {
             if let Some(cv) = counter_var {
@@ -1581,8 +1633,8 @@ impl LlvmBackend {
                     // Skipped — no phi, no backedge, body writes dropped.
                 }
                 _ => {
-                    writeln!(out, "  {} = phi {} [ {}, %entry ], [ {}, %{} ], [ {}, %{} ]",
-                        phi_f, phi_ty, init_f, be_l, latch_label, be_p, present_label).ok();
+                    writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
+                        phi_f, phi_ty, init_f, init_pred, be_l, latch_label, be_p, present_label).ok();
                     self.fun.phi_field_regs.insert((*fname).clone(), phi_f);
                 }
             }

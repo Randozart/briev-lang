@@ -2922,12 +2922,13 @@ impl LlvmBackend {
         let saved_bindings = self.fun.let_bindings.clone();
         let saved_types = self.fun.let_binding_types.clone();
         let saved_orig = self.fun.let_original_types.clone();
+        let saved_lvt = self.fun.last_val_temps.clone();
+        let saved_lvt_types = self.fun.last_val_types.clone();
         // 2026-07-31 (A5d): last_val_temps must NOT leak across emissions of
         // the same node body — the reactor emits a body more than once, and a
         // stale self-slot temp from the first pass would make the second
         // pass's reads resolve to the wrong register.
-        let saved_lvt = self.fun.last_val_temps.clone();
-        let saved_lvt_types = self.fun.last_val_types.clone();
+        let saved_cur_block = self.fun.cur_block.clone();
         let (params, body): (Vec<(String, Type)>, Vec<crate::ast::Statement>) = match member {
             crate::ast::TopLevel::Transaction(t) => (
                 t.parameters.iter().map(|(n, ty)| (n.clone(), ty.clone())).collect(),
@@ -3042,6 +3043,15 @@ impl LlvmBackend {
         self.fun.let_original_types = saved_orig;
         self.fun.last_val_temps = saved_lvt;
         self.fun.last_val_types = saved_lvt_types;
+        // 2026-09-07 (foreach dominance fix): the body's blocks (a nested
+        // foreach's header/body/end, a guard's then/end, a match's
+        // .match_end_N) are LOCAL to this call. The caller's continuation
+        // emits after them in the SAME function; if cur_block is left on a
+        // body block, a later `let`'s swan-song flush slot lands AFTER that
+        // body block, where body-internal uses (a nested foreach reading the
+        // slot) break dominance. The body's own blocks are all dominated by
+        // the block the call was made in, so restore it.
+        self.fun.cur_block = saved_cur_block;
         // 2026-08-13 (member term inside a callable txn): the member body's
         // `term X` must record member_result, NOT terminate the ENCLOSING txn.
         // With callable_txn_result left set, an inlined `op At` body (`term
@@ -4948,7 +4958,6 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         if heterogeneous {
             result_ty = synth_ty;
         }
-        writeln!(out, "{}:", end_label).ok();
         let llvm_ty = self.llvm_type(&result_ty);
         let default_val = if llvm_ty == "ptr" {
             "null".to_string()
@@ -4964,6 +4973,15 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         for (reg, label, _) in &phi_incoming {
             phi.push_str(&format!(", [ {}, %{} ]", reg, label));
         }
+        // 2026-09-07 (init-block phi predecessor fix): a match lowers to a
+        // diamond of blocks — the caller's continuation runs at the MERGE
+        // block, not the caller's previous cur_block. A loop header emitted
+        // after this match cites the merge as its init predecessor; leaving
+        // the stale block would cite a block whose `br` was never emitted
+        // (async-events-compiled: %guard.end106 cited as a loop predecessor
+        // when the match's br to it was never written). The `phi` string
+        // already carries its own `  {v} = phi ...` prefix, so write it bare.
+        writeln!(out, "{}:", end_label).ok();
         writeln!(out, "{}", phi).ok();
         // The merge block is now the insertion point — a nested caller must
         // cite THIS block as its phi predecessor, not our last arm.
