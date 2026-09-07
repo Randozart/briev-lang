@@ -82,6 +82,20 @@ with a VERDICT row, losers reverted:
 Target: 16.5 → 20–22 TFLOP/s at 4096³ if the pipeline is the binding
 constraint (Stage 0's cost-share probe says which).
 
+**2026-09-07 session: 5.3 → 4.55 ms (23.3 → 30.2 TFLOP/s) at 4096³.** Three
+rungs landed behind the in-process A/B: **D4-retest S=2** (default → 2,
++7-8% — the D4 rejection was era-conditional: at the 5.3ms baseline the
+extra warps hide the fill DRAM latency), **1-barrier anti-WAR refill**
+(the loop refill writes the OTHER stage, dropping the workgroup barrier
+between the mma and the fused fill — +5-9%), and **D2 register-prefetch
+at S=2** (+8-11% — the S=1 rejection was register-bound, and the S>1
+load/store phases had a per-subgroup-B addressing bug, now fixed).
+Null/rejected at the current era: single-buffer (occupancy not binding),
+R=8/R=2 (R=4 optimal confirmed), quad fill, pps=2, S=4. The portable
+path now runs against its structural limits: in-order fills,
+workgroup barriers, m16n16 coopmat loads at the smem bandwidth minimum
+(4-way = 512B/128B-per-cycle, NOT a fixable conflict).
+
 ## Stage 1.5 — Profiling & Fill Optimization (**ACTIVE**)
 
 **2026-09-05.** Vulkan timestamp queries landed (commit a9313540).
