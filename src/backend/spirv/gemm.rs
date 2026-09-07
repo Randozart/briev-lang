@@ -2756,31 +2756,83 @@ fn emit_smem_fill_quad_unit(
 /// D2 load phase: the whole fill's DRAM half — one value per unit,
 /// issued as straight-line loads (the caller positions these during the
 /// mma phase; the values sit in registers until the first barrier).
+/// D2 load phase: the whole fill's DRAM half — every unit's value is
+/// loaded into registers (the smem stores land after the barrier in the
+/// store phase). S=1: one cooperative loop over the A+B flat space.
+/// S>1 (2026-09-07 fix): the fused fill walks TWO phases — A cooperative
+/// (all S×32 threads, c_wg stride) then B per-subgroup (each subgroup's
+/// own 32 lanes, c32 stride, offset past the A region). The single
+/// cooperative loop collapsed the per-subgroup B regions (every subgroup
+/// modulo-mapped the whole B space onto its own slice → misplaced
+/// stores, rel ~3e-2). Mirror the two-phase walk here so the values
+/// land in the order the store phase expects.
 fn emit_fill_load_phase(
     builder: &mut super::SpirvBuilder,
     p: &SmemFillParams,
     panel_kt: Word,
 ) -> Vec<Word> {
-    // D4: flat stride = 32 × subgroups
-    let c_wg = u32_const(builder, 32 * p.subgroups);
-    (0..p.elems_per_lane as usize)
-        .map(|u| {
+    let view_w = if p.quad { 4u32 } else { 2 };
+    if p.subgroups > 1 {
+        let c_wg = u32_const(builder, 32 * p.subgroups);
+        let c32 = u32_const(builder, 32);
+        let a_pairs = p.a_stage_elems / view_w;
+        let a_pairs_c = u32_const(builder, a_pairs);
+        let a_per_lane = a_pairs / (32 * p.subgroups);
+        let b_per_lane = (p.b_stage_elems / view_w) / 32;
+        let mut vals = Vec::with_capacity((a_per_lane + b_per_lane) as usize);
+        // Phase 1: A (cooperative).
+        for u in 0..a_per_lane as usize {
             let uflat = {
                 let u_c = u32_const(builder, u as u32);
                 let mul = u32_binop(builder, spirv::Op::IMul, u_c, c_wg);
                 u32_binop(builder, spirv::Op::IAdd, p.lane, mul)
             };
-            if p.quad {
+            let v = if p.quad {
                 emit_fill_quad_dram(builder, p, uflat, panel_kt)
             } else {
                 emit_fill_pair_dram(builder, p, uflat, panel_kt)
-            }
-        })
-        .collect()
+            };
+            vals.push(v);
+        }
+        // Phase 2: B (per-subgroup, offset past the A region).
+        for u in 0..b_per_lane as usize {
+            let raw = {
+                let u_c = u32_const(builder, u as u32);
+                let mul = u32_binop(builder, spirv::Op::IMul, u_c, c32);
+                u32_binop(builder, spirv::Op::IAdd, p.lane, mul)
+            };
+            let uflat = u32_binop(builder, spirv::Op::IAdd, raw, a_pairs_c);
+            let v = if p.quad {
+                emit_fill_quad_dram(builder, p, uflat, panel_kt)
+            } else {
+                emit_fill_pair_dram(builder, p, uflat, panel_kt)
+            };
+            vals.push(v);
+        }
+        vals
+    } else {
+        // D4: flat stride = 32 × subgroups (subgroups=1 → 32)
+        let c_wg = u32_const(builder, 32 * p.subgroups);
+        (0..p.elems_per_lane as usize)
+            .map(|u| {
+                let uflat = {
+                    let u_c = u32_const(builder, u as u32);
+                    let mul = u32_binop(builder, spirv::Op::IMul, u_c, c_wg);
+                    u32_binop(builder, spirv::Op::IAdd, p.lane, mul)
+                };
+                if p.quad {
+                    emit_fill_quad_dram(builder, p, uflat, panel_kt)
+                } else {
+                    emit_fill_pair_dram(builder, p, uflat, panel_kt)
+                }
+            })
+            .collect()
+    }
 }
 
 /// D2 store phase: the whole fill's smem half — the loaded values land
-/// in the staged smem slots after the barrier.
+/// in the staged smem slots after the barrier. Mirrors the load phase's
+/// flat walk (S=1 single loop; S>1 A-cooperative then B-per-subgroup).
 fn emit_fill_store_phase(
     builder: &mut super::SpirvBuilder,
     p: &SmemFillParams,
@@ -2788,7 +2840,47 @@ fn emit_fill_store_phase(
     a_off: Word,
     b_off: Word,
 ) {
-    // D4: flat stride = 32 × subgroups
+    let view_w = if p.quad { 4u32 } else { 2 };
+    if p.subgroups > 1 {
+        let c_wg = u32_const(builder, 32 * p.subgroups);
+        let c32 = u32_const(builder, 32);
+        let a_pairs = p.a_stage_elems / view_w;
+        let a_pairs_c = u32_const(builder, a_pairs);
+        let a_per_lane = a_pairs / (32 * p.subgroups);
+        let b_per_lane = (p.b_stage_elems / view_w) / 32;
+        let mut i = 0usize;
+        // Phase 1: A (cooperative).
+        for u in 0..a_per_lane as usize {
+            let uflat = {
+                let u_c = u32_const(builder, u as u32);
+                let mul = u32_binop(builder, spirv::Op::IMul, u_c, c_wg);
+                u32_binop(builder, spirv::Op::IAdd, p.lane, mul)
+            };
+            if p.quad {
+                emit_fill_quad_smem(builder, p, uflat, vals[i], a_off, b_off);
+            } else {
+                emit_fill_pair_smem(builder, p, uflat, vals[i], a_off, b_off);
+            }
+            i += 1;
+        }
+        // Phase 2: B (per-subgroup).
+        for u in 0..b_per_lane as usize {
+            let raw = {
+                let u_c = u32_const(builder, u as u32);
+                let mul = u32_binop(builder, spirv::Op::IMul, u_c, c32);
+                u32_binop(builder, spirv::Op::IAdd, p.lane, mul)
+            };
+            let uflat = u32_binop(builder, spirv::Op::IAdd, raw, a_pairs_c);
+            if p.quad {
+                emit_fill_quad_smem(builder, p, uflat, vals[i], a_off, b_off);
+            } else {
+                emit_fill_pair_smem(builder, p, uflat, vals[i], a_off, b_off);
+            }
+            i += 1;
+        }
+        return;
+    }
+    // D4: flat stride = 32 × subgroups (subgroups=1 → 32)
     let c_wg = u32_const(builder, 32 * p.subgroups);
     for (u, val) in vals.iter().enumerate() {
         let uflat = {

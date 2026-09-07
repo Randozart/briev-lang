@@ -68,7 +68,7 @@ spirv_coopmat_f16acc: 1;
 spirv_coopmat_smem: 1;
 spirv_coopmat_fill_pairs: 1;
 spirv_coopmat_fill_quad: 0;
-spirv_coopmat_fill_prefetch: 0;
+spirv_coopmat_fill_prefetch: 1;
 spirv_coopmat_stagger: 0;
 spirv_coopmat_panels_per_stage: 1;
 spirv_coopmat_stages: 2;
