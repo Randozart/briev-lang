@@ -124,13 +124,38 @@ per-element tile/row/col decomposition. Next rung after O1.
 
 Conservative estimate: O1+O2 → 3.4–4.0 ms → 29–35 TFLOP/s.
 
-## Stage 2 — Briev PTX tier (**OPTIONAL escape hatch** — demoted by Stage 0)
+**Stage 1 portable exhaustion (2026-09-08).** The portable path is at
+its structural limit at 4.55 ms / 30.2 TFLOP/s. Ceiling re-measured
+this era: **50.1 ms/launch = unchanged** (driver did NOT regress the
+coopmat path; HW peak intact, re-arm condition #1 not met). The
+production-vs-ceiling gap (30.2 vs 107 TF) is the DRAM-fill +
+pipeline, and the portable levers are spent:
+- **Acc granularity is the wall.** m16n16 coopmat acc = 8 f16/lane per
+  subgroup; ggml's mma.sync m16n8k16 = 4 f32/lane. The coarser acc
+  caps how many B-tiles fit in registers before spill: 4 B-tiles
+  (64 N) is the max; 8 B-tiles (128 N, the ggml tile) spills (16 acc
+  frags = 128 f16 regs/lane). Wider tiles (the L2-reuse win) are
+  register-infeasible in the portable tier.
+- **DRAM B re-read** is the floor: B = 32 MB, re-read by 64 M-tiles =
+  2 GB; at 360 GB/s that is 5.5 ms alone — L2 supplies ~30% of the
+  rest (we hit 4.55). Only a deeper async pipeline (cp.async) or a
+  finer-acc tile (PTX) beats this.
+- **SPIR-V has no async global→workgroup copy.** The D2 register
+  prefetch hides the DRAM *latency* but cannot raise DRAM
+  *bandwidth utilization* beyond what the fused fill already achieves.
 
-Stage 0 measured the portable path at the hardware tensor peak; this
-tier only re-arms if a future driver era regresses the coopmat ceiling
-(re-run the microkernel per driver era, doctrine §6) or a workload
-needs `ldmatrix`/`cp.async`-class scheduling the lowering cannot
-express. The engineering notes below remain valid if it re-arms.
+Re-arm condition #2 (the workload needs `ldmatrix`/`cp.async`-class
+scheduling the lowering cannot express) IS met: reaching the 42 TF
+anchor needs cp.async multi-stage + finer acc, neither expressible in
+the portable tier.
+
+## Stage 2 — Briev PTX tier (**RE-ARMED 2026-09-08** — condition #2 met)
+
+Stage 0 measured the portable path at the hardware tensor peak; the
+portable tier is now confirmed at its structural limit (Stage 1
+exhaustion above). This tier re-arms because the workload needs
+`ldmatrix`/`cp.async`-class scheduling the SPIR-V lowering cannot
+express (condition #2). The engineering notes below are the build plan.
 
 - **S1 — driver module** `lib/runtime/briev_dev_cuda.c`: cuInit /
   cuModuleLoadData / cuLaunchKernel in the existing driver-plugin
