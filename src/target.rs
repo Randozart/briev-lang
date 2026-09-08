@@ -14,6 +14,7 @@ pub enum BackendKind {
     Gpu,
     Spirv,
     Vm,
+    Ptx,
 }
 
 /// One entry from config/targets.dbvl.
@@ -376,7 +377,8 @@ impl TargetConfig {
             "gpu" => Ok(BackendKind::Gpu),
             "spirv" => Ok(BackendKind::Spirv),
             "vm" => Ok(BackendKind::Vm),
-            _ => Err(format!("unknown backend '{}'. Supported: llvm, circt, webstack, vm", name)),
+            "ptx" => Ok(BackendKind::Ptx),
+            _ => Err(format!("unknown backend '{}'. Supported: llvm, circt, webstack, vm, spirv, ptx", name)),
         }
     }
 }

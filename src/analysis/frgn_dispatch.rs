@@ -227,6 +227,7 @@ pub fn resolve_single_frgn(
             BackendKind::Gpu => "GPU",
             BackendKind::Spirv => "SPIR-V",
             BackendKind::Vm => "VM",
+            BackendKind::Ptx => "PTX",
         }
     )))
 }

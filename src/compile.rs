@@ -404,6 +404,11 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         BackendKind::Spirv => {
             briev_compiler::backend::spirv::normalizer::normalize(&mut items, &mut universe, int_bits)?;
         }
+        BackendKind::Ptx => {
+            // The PTX tier reuses the SPIR-V normalizer + accel analysis:
+            // same frontend-driven kernel selection, different emitter.
+            briev_compiler::backend::spirv::normalizer::normalize(&mut items, &mut universe, int_bits)?;
+        }
         BackendKind::Vm => {
             // 2026-08-10: VM is untyped but the universe must be populated
             // uniformly — minimal shared registration, nothing backend-specific.
@@ -708,7 +713,9 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 
     // 2026-07-15: SPIR-V writes inside codegen (binary format), skip outer write
     // 2026-07-25: Vm backend also writes inside codegen (.lair is binary)
-    if opts.backend != BackendKind::Spirv && opts.backend != BackendKind::Vm {
+    // 2026-09-08: PTX writes inside codegen (.ptx is text but artifacts are
+    // managed by the arm, like the .spv path).
+    if opts.backend != BackendKind::Spirv && opts.backend != BackendKind::Vm && opts.backend != BackendKind::Ptx {
         if let Some(parent) = std::path::Path::new(&out_path).parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)
@@ -1181,14 +1188,14 @@ fn codegen(
     // skips this gate.
     if matches!(
         opts.backend,
-        BackendKind::Llvm | BackendKind::Circt | BackendKind::Spirv | BackendKind::Vm
+        BackendKind::Llvm | BackendKind::Circt | BackendKind::Spirv | BackendKind::Vm | BackendKind::Ptx
     ) {
         let caps = match opts.backend {
             // 2026-08-22 (Phase 7c): LLVM joins the gate — its surface is
             // full EXCEPT the staged port/cell execution.
             BackendKind::Llvm => briev_compiler::backend::llvm::CAPABILITIES,
             BackendKind::Circt => briev_compiler::backend::circt::CirctBackend::CAPABILITIES,
-            BackendKind::Spirv => briev_compiler::backend::spirv::CAPABILITIES,
+            BackendKind::Spirv | BackendKind::Ptx => briev_compiler::backend::spirv::CAPABILITIES,
             _ => briev_compiler::backend::vm::CAPABILITIES,
         };
         // 2026-08-31 (plan abv-gpu-by-default): the SPIR-V gate is
@@ -1198,7 +1205,8 @@ fn codegen(
         // remaining items — stdlib defns the prelude injects, host-only
         // transactions — never reach the backend and must not fail its
         // surface gate. Other backends lower whole programs: full scope.
-        let cap_errors = if opts.backend == BackendKind::Spirv {
+        // 2026-09-08: PTX shares this — same frontend kernel selection.
+        let cap_errors = if opts.backend == BackendKind::Spirv || opts.backend == BackendKind::Ptx {
             let kernel_items: Vec<briev_compiler::ast::TopLevel> = items
                 .iter()
                 .filter_map(|item| match item {
@@ -1543,6 +1551,59 @@ fn codegen(
             println!("wrote {}", runner_path);
             output = String::new();
             ".spv"
+        }
+        BackendKind::Ptx => {
+            // 2026-09-08 (plan 2026-09-08-ptx-tier-execution S2a): the PTX
+            // tier emits PTX TEXT blobs for the same frontend-selected
+            // kernels the SPIR-V backend lowers (same accel analysis +
+            // normalizer). The blob rides the identical `RunnerKernel` shape
+            // and `emit_runner`/`prepare_run` dispatch — the CUDA driver
+            // JITs the PTX via cuModuleLoadData. S2a surface: GEMM-shaped
+            // kernels only (see build_ptx_kernels' error).
+            let kernels = briev_compiler::backend::ptx::build_ptx_kernels(
+                items,
+                universe,
+                opts.int_bits,
+                &analysis.accel,
+            )?;
+            let out = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?;
+            let out_path = out.replace(".ll", ".ptx");
+            if kernels.len() == 1 {
+                std::fs::write(&out_path, &kernels[0].spirv)
+                    .map_err(|e| format!("cannot write '{}': {}", out_path, e))?;
+                println!("wrote {}", out_path);
+            } else {
+                let stem = std::path::Path::new(&out_path)
+                    .with_extension("")
+                    .to_string_lossy()
+                    .to_string();
+                for k in &kernels {
+                    let p = format!("{}_{}.ptx", stem, k.name);
+                    std::fs::write(&p, &k.spirv)
+                        .map_err(|e| format!("cannot write '{}': {}", p, e))?;
+                    println!("wrote {}", p);
+                }
+            }
+            let runner =
+                briev_compiler::backend::spirv::runner::emit_runner(items, universe, opts.int_bits, &kernels)?;
+            let runner_path = out_path.replace(".ptx", "_runner.c");
+            std::fs::write(&runner_path, &runner)
+                .map_err(|e| format!("cannot write '{}': {}", runner_path, e))?;
+            let rt_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("lib/runtime");
+            let rt_dir_out = std::path::Path::new(&runner_path)
+                .parent()
+                .map(|d| d.to_path_buf())
+                .unwrap_or_else(std::path::PathBuf::new);
+            for rt_file in ["briev_accel_rt.c", "briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+                let dest = rt_dir_out.join(rt_file);
+                std::fs::copy(rt_dir.join(rt_file), &dest).map_err(|e| {
+                    format!("cannot copy runtime '{}' to '{}': {}", rt_file, dest.display(), e)
+                })?;
+            }
+            println!("wrote {}", runner_path);
+            output = String::new();
+            ".ptx"
         }
         BackendKind::Vm => {
             // 2026-07-25: VM backend emits .lair bytecode
