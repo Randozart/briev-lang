@@ -75,7 +75,21 @@ backend-contracts §2). Surface declared in `capabilities.rs`. `--backend ptx`.
 |------|------|
 | S1 | PTX saxpy harness: exact vs host reference on BOTH devices (3060 + 1070 Ti) — **PASS (RTX 3060, 1D + 2D + batch)** |
 | S2a | `--backend ptx` routes an existing GEMM `.abv`; y == SPIR-V path (rel 0.0) — **PASS (gemm_bench on PTX blob: max_rel_err 0.000e+00 @4096³)** |
-| S3 | single-mma / single-ldmatrix microtests with known fragments — **IN PROGRESS** |
+| S3 | single-mma / single-ldmatrix microtests with known fragments — **PASS** |
+
+### S3 fragment layout (device-verified, RTX 3060, exact rel 0)
+
+`mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32` — the locked lane mapping:
+
+- **A fragment** (4 × .b32, each packs 2 f16):
+  `reg0={A[g][2t],A[g][2t+1]}  reg1={A[g+8][2t],A[g+8][2t+1]}  reg2={A[g][2t+8],A[g][2t+9]}  reg3={A[g+8][2t+8],A[g+8][2t+9]}`
+  (rows interleave with k-halves: reg1 is the OTHER ROW's k0-7, not this row's k8-15.)
+- **B fragment** (2 × .b32): `reg0={B[2t][g],B[2t+1][g]}  reg1={B[2t+8][g],B[2t+9][g]}`
+- **C/D fragment** (4 × .f32): `reg0=C[g][2t] reg1=C[g][2t+1] reg2=C[g+8][2t] reg3=C[g+8][2t+1]`
+
+where `g = lane>>2`, `t = lane&3`. Address rule: `row stride × row + col × elem` — the row stride is ALREADY in bytes (32 for A/C, 16 for B); never left-shift the row part. Both the driver-JIT path and the pre-compiled cubin path load and run exactly.
+
+Debug pitfalls recorded: (1) a naive hand-rolled f16 encoder corrupts 0.0/small values (exp underflow wraps to 0x4000=2.0) — use proper RNE; (2) the "driver-JIT rc 218" was a symptom of a bad-address PTX, not a driver version issue — both JIT and cubin work once the PTX is correct.
 | S4 | shape portfolio correctness (2048³/4096³/8192³/skinny-K/small), tier gates 5e-3/1e-2 |
 | S5 | ≥42.0 TFLOP/s at 4096³ (ledger row) |
 | S6 | `derive --stochastic` tile sweep → config cache |

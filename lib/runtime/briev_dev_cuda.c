@@ -319,6 +319,7 @@ static int briev_dev_cuda_launch(void* handle, const void* proj, size_t proj_byt
         return 0;
     }
     if (k->mapped_host == NULL || k->bytes < proj_bytes) {
+        if (g_verbose) fprintf(stderr, "[cuda] launch prime bytes=%zu\n", proj_bytes);
         if (k->mapped_host && p_cuMemFreeHost) {
             p_cuMemFreeHost(k->mapped_host);
         }
@@ -384,6 +385,10 @@ static int briev_dev_cuda_launch_dev2d(void* handle, size_t nx, size_t ny,
         return 1;
     }
     size_t bytes = k->bytes;
+    if (g_verbose) fprintf(stderr, "[cuda] launch_dev2d bytes=%zu dev=%llx host=%p nx=%zu ny=%zu full=%d ndirty=%u\n", bytes, (unsigned long long)k->dev, (void*)k->mapped_host, nx, ny, full_sync, n_dirty);
+    if (k->dev == 0 || k->mapped_host == NULL || bytes == 0) {
+        return 0;
+    }
     if (full_sync || n_dirty == 0) {
         if (p_cuMemcpyHtoD(k->dev, k->mapped_host, bytes) != CUDA_SUCCESS) {
             return 0;
