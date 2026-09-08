@@ -258,10 +258,10 @@ target matters.
 
 ## Phase 8: Housekeeping (parallel, low priority)
 
-| Task | Notes |
-|------|-------|
-| Protocol proof codec bodies | Unblocks hard-error gate in `protocol_graph.rs` |
-| `brievc run x.abv` native subcommand | Currently 6-line shell wrapper |
-| Resident-launch policy for `.bv` offload | Analysis gate: all readers of resident array must be kernels |
-| Old plan file review/closure | Housekeeping |
+| Task | Status | Notes |
+|------|--------|-------|
+| Protocol proof codec bodies | DONE (archived) | `protocols.bv.archive` removed all active bindings; hard-error gate active at `protocol_graph.rs:176` |
+| `brievc run x.abv` native subcommand | DONE (pre-existing) | Native in-process runner at `compile.rs:1510` — no shell wrapper needed |
+| Resident-launch policy for `.bv` offload | Deferred | Requires new analysis gate — dedicated session needed |
+| Old plan file review/closure | Deferred | Housekeeping |
 | HashMap rehash PHI verification warnings | Known, non-blocking |
