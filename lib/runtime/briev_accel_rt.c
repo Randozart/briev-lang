@@ -144,6 +144,7 @@ typedef struct BrievDeviceDriver {
                            uint32_t n, void* state);
 } BrievDeviceDriver;
 
+extern BrievDeviceDriver briev_dev_cuda;
 extern BrievDeviceDriver briev_dev_vulkan;
 extern BrievDeviceDriver briev_dev_opencl;
 
@@ -166,7 +167,9 @@ static const BrievKernelDesc* g_descs = NULL;
 
 static const BrievDeviceDriver* select_driver(void) {
     const char* env = getenv("BRIEV_ACCEL_DEVICE");
-    const BrievDeviceDriver* chain[] = { &briev_dev_vulkan, &briev_dev_opencl, NULL };
+    // 2026-09-08 (plan 2026-09-08-ptx-tier-execution S1): CUDA first — the
+    // perf tier (PTX tensor cores). Falls to Vulkan when libcuda is absent.
+    const BrievDeviceDriver* chain[] = { &briev_dev_cuda, &briev_dev_vulkan, &briev_dev_opencl, NULL };
     if (env != NULL && env[0] != '\0') {
         for (int i = 0; chain[i] != NULL; i++) {
             if (strcmp(chain[i]->name, env) == 0) {
@@ -669,6 +672,7 @@ int briev_accel_probe(void (*cpu_fn)(void*), void (*gpu_fn)(void*), void* ctx,
 // per-driver header comments) until hardened against real hardware.
 // ────────────────────────────────────────────────────────────────────────────
 
+#include "briev_dev_cuda.c"
 #include "briev_dev_vulkan.c"
 #include "briev_dev_opencl.c"
 
