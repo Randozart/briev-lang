@@ -1,5 +1,9 @@
 # Briev Documentation Index
 
+> **PARTIALLY STALE (2026-09-08).** Reference section numbers predate the
+> 2026-08-05 spec conformance migration. The authoritative language-surface
+> index is `docs/reference/MASTER-SYNTAX-REFERENCE.md`.
+
 ## Quick Navigation
 
 ### Getting Started

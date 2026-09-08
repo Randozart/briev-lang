@@ -459,6 +459,44 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
     }
 }
 
+/// 2026-09-08: every name the registry serves. Kept in one place so the
+/// master-syntax-reference completeness test (src/vocab.rs) can iterate the
+/// registry without string-scraping the match. MUST be updated when an
+/// intrinsic is added — the test that consumes it will not find the new name
+/// in the doc otherwise, which is exactly the drift it exists to catch.
+pub const REGISTERED_INTRINSICS: &[&str] = &[
+    "Error#",
+    "Add#", "Sub#", "Mul#", "Div#", "Rem#", "Neg#", "Abs#",
+    "Eq#", "Neq#", "Lt#", "Gt#", "Le#", "Ge#",
+    "BitAnd#", "BitOr#", "BitXor#", "Shl#", "Shr#", "BitNot#",
+    "BitReverse#", "Popcount#", "LeadingZeros#", "TrailingZeros#",
+    "Not#",
+    "Deref#", "Index#", "Ptr#", "PtrAdd#", "PtrSub#", "PtrDiff#", "PtrEq#", "PtrLt#",
+    "Capacity#", "Resize#", "EnsureCap#", "TrimCap#",
+    "Sqrt#", "Sin#", "Cos#", "Fabs#", "Ceil#", "Floor#", "Exp#", "Pow#",
+    "Print#",
+    "Malloc#", "Alloc#", "Free#", "Load#", "Store#",
+    "VolatileLoad#", "VolatileStore#", "Copy#", "Fill#",
+    "Concat#", "CharCount#", "Length#", "ToInt#", "ToFloat#", "ToString#",
+    "Get#", "Insert#",
+    "Count#", "At#", "Slice#", "InsertAt#", "ExtractFrom#", "CopyFrom#",
+    "GetGlobalId#", "GetGlobalSize#", "GetLocalId#", "WorkgroupSize#",
+    "GetGroupId#", "GetNumGroups#", "Dims#", "SubgroupFAdd#", "Barrier#",
+    "Spawn#", "SpawnWithOutput#", "SetEnv#", "GetCwd#", "ChDir#",
+    "AddressOf#", "CallPtr#",
+    "CancelRequested#", "ClearCancel#",
+    "SysCall#", "SysConf#",
+    "AtomicLoad#", "AtomicStore#", "AtomicCas#", "AtomicXchg#", "AtomicAdd#",
+    "AtomicSub#", "AtomicOr#", "AtomicAnd#", "AtomicXor#",
+    "AtomicLoadN#", "AtomicStoreN#",
+    "SimdAdd#", "SimdSub#", "SimdMul#", "SimdFma#",
+    "Fence#",
+    "DlOpen#", "DlSym#", "DlClose#",
+    "StrSplit#", "EnvGet#", "SysQuery#", "TimeNow#",
+    "HttpFetch#", "ShellCmd#",
+    "Backtrace#",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

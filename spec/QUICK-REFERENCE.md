@@ -1,5 +1,11 @@
 # Briev Quick Reference
 
+> **SUPERSEDED (2026-09-08).** Stale (v0.10.0, 2026-04-20) — teaches removed
+> syntax (`state`, `sig #out`, `frgn!`, `unbinding`, `Result.is_ok()`). The
+> current master reference is
+> `docs/reference/MASTER-SYNTAX-REFERENCE.md`, generated from code. Kept for
+> historical context only.
+
 ## Syntax at a Glance
 
 ### Basic Declarations

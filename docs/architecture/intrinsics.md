@@ -1,5 +1,11 @@
 # Intrinsics: `name#()` Syntax
 
+> **SUPERSEDED (2026-09-08).** Stale (2026-06-11) — lowercase-era inventory
+> (`sqrt#`, `pop#`, `size#`), references removed `inop`/`Expr::IntrinsicCall`.
+> The current intrinsic inventory is in
+> `docs/reference/MASTER-SYNTAX-REFERENCE.md` §3, sourced from
+> `src/intrinsic_signatures.rs`. Kept for historical context only.
+
 **Date added:** 2026-06-11
 **Status:** Implementation complete (14 system/data intrinsics added 2026-06-11, 29 total)
 

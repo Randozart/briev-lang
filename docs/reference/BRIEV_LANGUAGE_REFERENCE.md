@@ -1,5 +1,13 @@
 # Briev Language Reference Guide
 
+> **SUPERSEDED (2026-09-08).** This reference predates the 2026-08-05
+> spec-conformance migration and teaches removed syntax (`state`, `sig`,
+> `rstruct`, `syscall`, `meld`, `frgn!`, `|>`, `:>`, `<:`, `~/`, `escape`,
+> `#pragma`). The current master reference is
+> [MASTER-SYNTAX-REFERENCE.md](MASTER-SYNTAX-REFERENCE.md), generated from
+> code (`src/vocab.rs`, `src/lexer.rs`, `src/intrinsic_signatures.rs`).
+> Kept for historical context only.
+
 **Version:** v0.16.0
 **Date:** 2026-07-09
 **Status:** Development (Phase 2/3 complete: Strong Bits thesis, intrinsic reduction)

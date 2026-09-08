@@ -518,6 +518,44 @@ mod tests {
             "a name cannot be both canonical and removed"
         );
     }
+
+    /// 2026-09-08: the code→doc completeness gate. Every canonical keyword
+    /// (vocab) and every registered intrinsic (intrinsic_signatures.rs) MUST
+    /// appear in docs/reference/MASTER-SYNTAX-REFERENCE.md. One-directional:
+    /// new code breaks this test until the doc catches up; doc edits never do.
+    /// The doc is included as a byte string so it can't silently drift from
+    /// what the test actually checks.
+    #[test]
+    fn master_syntax_reference_covers_every_keyword_and_intrinsic() {
+        let doc = include_str!("../docs/reference/MASTER-SYNTAX-REFERENCE.md");
+        // A keyword/intrinsic is "covered" if it appears in the doc as a
+        // word boundary (`  <name>` or `` `<name>` ``). Removed/reserved
+        // surface is excluded — section 12 records it deliberately, and
+        // section 1's `pvt`/`sed` table covers the reserved pair.
+        let vocab = LanguageVocab::canonical();
+        let mut missing: Vec<String> = Vec::new();
+        for kw in &vocab.keywords {
+            if kw.status != VocabStatus::Canonical {
+                continue;
+            }
+            if !doc.contains(&format!("`{}`", kw.name))
+                && !doc.contains(&format!("`{}", kw.name))
+                && !doc.contains(&format!(" {} ", kw.name))
+            {
+                missing.push(format!("keyword `{}`", kw.name));
+            }
+        }
+        for name in crate::intrinsic_signatures::REGISTERED_INTRINSICS {
+            if !doc.contains(&format!("`{}`", name)) {
+                missing.push(format!("intrinsic `{}`", name));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "MASTER-SYNTAX-REFERENCE.md is missing: {}",
+            missing.join(", ")
+        );
+    }
 }
 
 // ── 2026-08-22 (spec-conformance plan Phase 2): did-you-mean support ─────
