@@ -172,6 +172,19 @@ Key files:
 
 ## 5. NEXT (priority order — start here in a new session)
 
+> **2026-09-08 update:** items 1–6 below are ALL DONE as of 2026-09-04.
+> M1 ledger + harness (gemv_bench.c), O2 FMA (KEEP, ledger row), O3 float4
+> (VERDICT: below 20% threshold — KEPT as infra, GEMV is DRAM-bound, split-K
+> is the lever), resident policy (`analyze_resident_safety` at
+> `src/analysis/accel.rs:1482`, gated in LLVM backend), multi-const runner
+> fix (test `multi_const_bounds_resolve_each_const_distinctly` pins it),
+> `brievc run` (native in-process runner at `compile.rs:1510`). The GEMM
+> campaign closed at 0.708ms = 24.3 TFLOP/s (95% of RTX 3060 FP16-acc
+> tensor peak) — see `docs/plans/2026-09-08-gemm-occupancy-campaign.md`.
+> Remaining: the beyond-coopmat Stage 1 pipeline work (D1–D4) is the live
+> lever; Stage 2 PTX tier is DEMOTED to optional (portable path reaches HW
+> tensor peak — ledger 2026-09-04c).
+
 1. **M1 benchmark harness + first ledger number.** GEMV M=K=4096: warm-up
    separated from steady-state, GPU vs single-thread CPU vs llama.cpp
    GEMV on the same box. Write into the ledger in
