@@ -158,7 +158,46 @@ obj HashMap<K, V> {
     // (`p = (h + q) % cap`), so the probe carries NO loop-carried position
     // register (a carried `p`/`done_slot` in an inlined member + a nested
     // foreach overflows the SSA phi bookkeeping — clang "forward referenced").
-    txn insert(e: (K, V)) [count < cap][count <= cap] {
+    // 2026-09-08 (rehash-on-full): precondition relaxed from [count < cap] to
+    // [count <= cap][true] so insert fires even when the table is full. The
+    // body checks `count >= cap` and triggers an inline rehash (allocate 2x,
+    // re-insert all entries, free old arrays) before probing. The nested
+    // foreach-in-if pattern was blocked by the emit_member_body state leak
+    // (BUGS.md limitation #1, fixed this slice).
+    txn insert(e: (K, V)) [count <= cap][true] {
+        // Rehash when full: allocate new arrays at 2x, re-insert, free old.
+        when count >= cap {
+            let new_cap: Int = cap * 2;
+            let new_keys: Ptr<K> = Malloc#(new_cap * 8) as Ptr<K>;
+            let new_vals: Ptr<V> = Malloc#(new_cap * 8) as Ptr<V>;
+            let new_occ: Ptr<Int> = Malloc#(new_cap * 8) as Ptr<Int>;
+            foreach j in 0..new_cap {
+                new_occ[j] = 0;
+            };
+            foreach i in 0..cap {
+                when occupied[i] == 1 {
+                    let rk: K = keys[i];
+                    let rv: V = vals[i];
+                    let rh: Int = (rk as Int) % new_cap;
+                    foreach q in 0..new_cap {
+                        let rp: Int = (rh + q) % new_cap;
+                        when new_occ[rp] == 0 {
+                            new_keys[rp] = rk;
+                            new_vals[rp] = rv;
+                            new_occ[rp] = 1;
+                            break;
+                        };
+                    };
+                };
+            };
+            Free#(keys as Ptr<Bit<8>>);
+            Free#(vals as Ptr<Bit<8>>);
+            Free#(occupied as Ptr<Bit<8>>);
+            keys = new_keys;
+            vals = new_vals;
+            occupied = new_occ;
+            cap = new_cap;
+        };
         let (k, v) = e;
         let h: Int = (k as Int) % cap;
         let done_slot: Bool = false;

@@ -12,11 +12,10 @@
 import { HashMap } from "std/collections.bv";
 
 let N: Int = get_env_int!("BOUND");
-// Size the table to 2*N so it never fills (`count < cap` always holds) — the
-// probes then hit at q == 0 and `break` exits immediately (O(1)). The C
-// reference mirrors this structure (a real 2*N open-addressing table), so the
-// A/B is the same workload: hashmap insert + read-back per iteration.
-let m: HashMap<Int, Int> = 2 * N;
+// 2026-09-08: capacity set to N (was 2*N to avoid rehash). The HashMap now
+// rehashes automatically when full, so a realistic capacity triggers real
+// growth. The C reference should be updated to match (N capacity, rehash).
+let m: HashMap<Int, Int> = N;
 let i: Int = 0;
 let sum: Int = 0;
 

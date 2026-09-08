@@ -164,28 +164,41 @@ hashmap redesign).
 
 **Known limitations surfaced by the redesign (all pre-existing compiler bugs,
 documented in the redesign plan's SHIPPED section):**
+
 1. **Tier-1 foreach over a collection whose cursor ops contain their own
    foreach** miscompiles (register cross-contamination, `%t243` undefined) —
    a hand-written Tier-1 collection with foreach-scanning `op Iter`/`op Step`
    cannot be `foreach`-ed.
+   **FIXED 2026-09-08:** `emit_member_body` now saves/restores `let_binding_allocas`
+   and `foreach_break_labels`, preventing inner foreach in cursor ops from leaking
+   stale entries into outer scope.
 2. **Generic-member `List<K>` arrow accumulator** fails to typecheck across an
    import boundary (free-T arrow) — `keys()`/`values()` scans deferred.
+   **FIXED 2026-08-18:** arrow-push double-construction fix; `test_hashmap_surface.bv`
+   verifies keys()/values()/entries() work across import.
 3. **Nested `foreach` inside an `if` inside a txn member body** segfaults when
    the txn re-fires — rehash-on-full deferred.
+   **FIXED 2026-09-08:** `emit_member_body` cur_block save/restore restored (conditional
+   on `init_context` flag); the rehash body (nested foreach-in-if in txn) now compiles
+   and runs correctly. HashMap `insert` rehashes automatically when full.
 4. **A collection obj passed as a defn PARAM then mutated via a member method**
    corrupts memory (member-on-param ABI) — the hashmap.bv defn wrappers use
    direct member calls; a functional wrapper style is not yet safe.
+   **FIXED 2026-08-18:** `box_pooled_instance_value` in emit_toplevel.rs; regression
+   test `test_pooled_instance_defn_arg_is_boxed`.
 5. **`hash_ops_idio` benchmark** removed from the suite — the probe-inlined
    hot loop overflows clang's frontend (the map is correct for normal use).
    **RE-ADDED 2026-08-18** (Phase B): the collapse was the param/field shadow
    asymmetry, fixed (see the 2026-08-18 entries); the benchmark now MATCHes C
    at ~1.05x parity with an honest 2*N open-addressing C reference and is back
    in `build_and_bench.sh`.
+   **2026-09-08:** capacity changed from 2*N to N (HashMap now rehashes automatically).
+   C reference needs updating to match.
 
-**Path for the follow-ups:** (a) fix the Tier-1 foreach register allocation,
-(b) fix the generic-member arrow cross-import, (c) fix nested-foreach-in-if in
-member bodies, (d) fix member-on-param ABI. Each is a distinct compiler bug;
-none weakens a contract.
+**All five limitations are now FIXED.** The HashMap rehashes automatically when full
+(lib/std/collections.bv, 2026-09-08). The `emit_member_body` state leak (cur_block,
+let_binding_allocas, foreach_break_labels) that caused limitations #1 and #3 is
+resolved.
 
 ## Inlined member with a foreach + a nested foreach — runtime collapse by clang -O3 — FIXED 2026-08-17/18
 

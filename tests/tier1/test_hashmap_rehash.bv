@@ -1,0 +1,29 @@
+// test_hashmap_rehash.bv — verify HashMap rehashes when full.
+// Creates a HashMap with capacity 4, inserts 8 elements (triggers at least one
+// rehash at element 5), then verifies all 8 are retrievable.
+// Expected output: 10 20 30 40 50 60 70 80 8
+
+import { HashMap } from "std/collections.bv";
+
+let m: HashMap<Int, Int> = 4;
+let i: Int = 0;
+let done: Bool = false;
+
+node go [done == false][done == true] {
+    when i < 8 {
+        m.insert((i + 1, (i + 1) * 10));
+        i = i + 1;
+    };
+    when i == 8 {
+        println!(m.get(1));
+        println!(m.get(2));
+        println!(m.get(3));
+        println!(m.get(4));
+        println!(m.get(5));
+        println!(m.get(6));
+        println!(m.get(7));
+        println!(m.get(8));
+        println!(m.Count#());
+        done = true;
+    };
+};

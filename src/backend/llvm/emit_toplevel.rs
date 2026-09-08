@@ -1375,7 +1375,7 @@ impl LlvmBackend {
                     ty: Type::Custom(type_key.clone()),
                 };
                 let out_tmp = self.fun.gen_reg();
-                self.emit_member_body(
+                self.emit_init_member_body(
                     out,
                     &out_tmp,
                     super::emit_expr::MemberInvocation {
@@ -1441,7 +1441,7 @@ impl LlvmBackend {
                 };
                 if let Some(empty_member) = empty_member {
                     let out_tmp = self.fun.gen_reg();
-                    self.emit_member_body(
+                    self.emit_init_member_body(
                         out,
                         &out_tmp,
                         super::emit_expr::MemberInvocation {
@@ -1458,7 +1458,7 @@ impl LlvmBackend {
                 let arg_tmp = self.fun.gen_reg();
                 let first = self.emit_expr_inner(out, &arg_tmp, &elems[0], indent);
                 let out_tmp = self.fun.gen_reg();
-                self.emit_member_body(
+                self.emit_init_member_body(
                     out,
                     &out_tmp,
                     super::emit_expr::MemberInvocation {
@@ -1484,7 +1484,7 @@ impl LlvmBackend {
                         let arg_tmp = self.fun.gen_reg();
                         let ar = self.emit_expr_inner(out, &arg_tmp, e, indent);
                         let out_tmp = self.fun.gen_reg();
-                        self.emit_member_body(
+                        self.emit_init_member_body(
                             out,
                             &out_tmp,
                             super::emit_expr::MemberInvocation {
@@ -1513,7 +1513,7 @@ impl LlvmBackend {
             arg_regs.push((vr.name, vr.ty));
         }
         let out_tmp = self.fun.gen_reg();
-        self.emit_member_body(out, &out_tmp, super::emit_expr::MemberInvocation { recv_reg: &recv_reg, type_name: &type_key, member: &member, arg_regs: &arg_regs, prefix: None }, indent);
+        self.emit_init_member_body(out, &out_tmp, super::emit_expr::MemberInvocation { recv_reg: &recv_reg, type_name: &type_key, member: &member, arg_regs: &arg_regs, prefix: None }, indent);
         // Store the instance address into the field slot.
         let gep = self.fun.gen_reg();
         writeln!(out, "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}", indent, gep, idx).ok();
@@ -1525,6 +1525,22 @@ impl LlvmBackend {
         writeln!(out, "{}store {} {}, ptr {}", indent, field_ty, addr, gep).ok();
         let _ = field_name;
         true
+    }
+
+    /// 2026-09-08: wrapper around emit_member_body that sets init_context.
+    /// The init path (HashMap.init's match) needs cur_block to persist for the
+    /// countdown header's init_pred capture — init_context skips the restore.
+    fn emit_init_member_body(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        inv: super::emit_expr::MemberInvocation<'_>,
+        indent: &str,
+    ) -> super::TypedRegister {
+        self.fun.init_context = true;
+        let r = self.emit_member_body(out, v, inv, indent);
+        self.fun.init_context = false;
+        r
     }
 
     /// 2026-08-12 (Iterable protocol): construct a LOCAL collection value
