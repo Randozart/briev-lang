@@ -8,6 +8,10 @@
 If a feature is missing here but present in code, it is a bug in this document
 (the `code → doc` completeness test in `src/vocab.rs` catches it).
 
+**Companion indexes:** [BACKEND-SUPPORT-MATRIX.md](BACKEND-SUPPORT-MATRIX.md)
+(which backend implements what) · [LEGACY-SURFACE-INDEX.md](LEGACY-SURFACE-INDEX.md)
+(removed syntax still in the codebase).
+
 ---
 
 ## 1. Reserved keywords
