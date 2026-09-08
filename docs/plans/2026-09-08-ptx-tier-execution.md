@@ -76,6 +76,8 @@ backend-contracts §2). Surface declared in `capabilities.rs`. `--backend ptx`.
 | S1 | PTX saxpy harness: exact vs host reference on BOTH devices (3060 + 1070 Ti) — **PASS (RTX 3060, 1D + 2D + batch)** |
 | S2a | `--backend ptx` routes an existing GEMM `.abv`; y == SPIR-V path (rel 0.0) — **PASS (gemm_bench on PTX blob: max_rel_err 0.000e+00 @4096³)** |
 | S3 | single-mma / single-ldmatrix microtests with known fragments — **PASS** |
+| S3b | full tensor GEMM kernel into `--backend ptx` — **PASS (f32-y and f16-y exact vs double ref across 16/48/64/96/128/256 shapes; end-to-end runner dispatches once + fast-forwards)** |
+| S3b | full tensor GEMM kernel into `--backend ptx` — **PASS** |
 
 ### S3 fragment layout (device-verified, RTX 3060, exact rel 0)
 
