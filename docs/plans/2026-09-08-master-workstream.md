@@ -263,5 +263,5 @@ target matters.
 | Protocol proof codec bodies | DONE (archived) | `protocols.bv.archive` removed all active bindings; hard-error gate active at `protocol_graph.rs:176` |
 | `brievc run x.abv` native subcommand | DONE (pre-existing) | Native in-process runner at `compile.rs:1510` — no shell wrapper needed |
 | Resident-launch policy for `.bv` offload | DONE (pre-existing) | `analyze_resident_safety()` at `accel.rs:1482`, consumed by LLVM backend at `mod.rs:2354` |
-| Old plan file review/closure | Deferred | Housekeeping |
+| Old plan file review/closure | DONE | Curated status index at `docs/plans/INDEX.md` — live vs closed vs historical |
 | HashMap rehash PHI verification warnings | Known, non-blocking |
