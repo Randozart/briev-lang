@@ -1708,6 +1708,56 @@ fn test_llvm_generates_transaction() {
 }
 
 #[test]
+fn test_llvm_emits_sync_block_body() {
+    // 2026-09-08 (deprecation audit): `sync { }` is the LEGACY spelling of
+    // `mutex { }`. It was silently DROPPED by the `_ =>` catch-all in
+    // emit_statement — the body vanished from the IR. Regression: the body
+    // must emit exactly like a mutex section (inline serial execution).
+    let mut backend = LlvmBackend::new();
+    let program = vec![
+        TopLevel::StateDecl(StateDecl {
+            name: "count".to_string(),
+            ty: Type::int(),
+            span: None,
+        }),
+        TopLevel::Transaction(Transaction {
+            name: "increment".to_string(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: default_contract(),
+            body: vec![
+                Statement::SyncBlock(vec![Statement::Assign(
+                    Expr::Identifier("count".to_string()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("count".to_string())),
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                )]),
+                Statement::Term(None),
+            ],
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
+        }),
+    ];
+    let output = backend.generate(&program, None);
+    // The body's increment must survive codegen — the silent-drop path
+    // emitted no `add` for the SyncBlock's inner assignment.
+    assert!(
+        output.contains("add nsw i64"),
+        "SyncBlock body was silently dropped:\n{}",
+        output
+    );
+}
+
+#[test]
 fn test_llvm_has_noalias() {
     let mut backend = LlvmBackend::new();
     let program = vec![

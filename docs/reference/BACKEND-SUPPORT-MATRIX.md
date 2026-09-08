@@ -69,7 +69,7 @@ rejected with compile error (capability gate or `record_unsupported`) · **—
 | match stmt | ✅ | ⚠️ int patterns | ❌ | ❌ (declared true, no arm) | ✅ |
 | foreach | ✅ | ❌ | ✅ (range only) | ❌ | ✅ |
 | inline asm | ⚠️ SILENT DROP (`inline_asm:true`, no arm) | ❌ | ❌ | ❌ | ⚠️ |
-| concurrency sections | ⚠️ SILENT DROP (`concurrency_sections:true`, `SyncBlock` no arm) | ❌ | ❌ | ❌ | ⚠️ |
+| concurrency sections | ✅ (sync/mutex emit inline; FIXED 2026-09-08) | ❌ | ❌ | ❌ | ⚠️ |
 | defer | ✅ | ❌ | ❌ | ❌ | ✅ |
 | lifetime hints (free/keep) | ✅ | ❌ | ❌ | ❌ | ✅ |
 | metadata assign | ⚠️ SILENT DROP (`metadata_assign:true`, no arm) | ❌ | ❌ | ❌ | ⚠️ |
@@ -145,7 +145,7 @@ Non-whitelisted → hard compile error.
 ### LLVM
 | Gap | Type |
 |---|---|
-| `SyncBlock`, `InlineAsm`, `MetadataAssignment`, `TrgBinding` | **SILENT DROP** — declared true, no emit arm (emit_stmt.rs:2136 catch-all) |
+| `InlineAsm`, `MetadataAssignment`, `TrgBinding` | **SILENT DROP** — declared true, no emit arm (emit_stmt.rs catch-all) |
 | `IsType` | constant-true stub |
 | `DerivationBlock`/`FormattingAnnotation` | constant-0 stub |
 | `Expr::Within` | deadline/fallback discarded; only inner expr emitted |

@@ -60,7 +60,7 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | `defer` | Cleanup block (runs on term/rollback/endprogram) |
 | `mutex` | Serial section |
 | `barrier` | Group barrier block |
-| `sync` | Group synchronization modifier (`sync<group>`) |
+| `sync` | Group synchronization modifier (`sync<group>`) — bare `sync { }` block deprecated (§13, use `mutex { }`) |
 
 ### Storage / layout / concurrency qualifiers
 
@@ -94,7 +94,7 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | Keyword | Meaning |
 |---|---|
 | `match` | Pattern match |
-| `foreach` | Iteration |
+| `foreach` | Iteration — paren form `foreach (x in list)` deprecated (§13) |
 | `break` | Exit nearest foreach |
 | `when` | Guarded block |
 
@@ -238,7 +238,7 @@ Tagged `[legacy]` = registered/unreachable or emitter-only; see notes.
 
 ### Collections
 
-Legacy: `Get#` `[legacy]` `Insert#` `[legacy]`
+Legacy: `Get#` `[legacy]` `Insert#` `[legacy]` — use `At#` / `InsertAt#` instead
 Generative op-member forms (dispatch to declared `op` members):
 `Count#` `At#` `Slice#` `InsertAt#` `ExtractFrom#` `CopyFrom#`
 
@@ -424,8 +424,8 @@ Rust plugin macros (`src/plugin/`):
 
 | Macro | Plugin |
 |---|---|
-| `print!(...)` | print_plugin |
-| `println!(...)` | print_plugin |
+| `print!(...)` | print_plugin — single-value form `print!(value)` deprecated (§13) |
+| `println!(...)` | print_plugin — single-value form deprecated (§13) |
 | `get_env!(name)` | env_plugin |
 | `get_env_int!(name)` | env_plugin |
 | `get_env_or_default!(name, dflt)` | env_plugin (stdlib-backed) |
@@ -438,7 +438,7 @@ Rust plugin macros (`src/plugin/`):
 
 | Form | Meaning |
 |---|---|
-| `!> key: value;` | Module/declaration metadata (non-physical: `ctd`, `accel`, ...) |
+| `!> key: value;` | Module/declaration metadata `[deprecated → spec]` (see §13) |
 | `spec <PascalCase>: value;` | Physical-layout metadata (`Bits`, `MaxBits`, `Bytes`, `Align`, `Endian`) |
 | `[pre][post]` | Contract pair on defn/txn/node |
 | `[pre]]` | Pre-only contract |
@@ -489,3 +489,25 @@ vocab (`src/vocab.rs:240-269`) records these as **removed**: `sig`, `state`,
 `None`, `some`, `none`, `cycles`, `seconds`, `minute`, `minutes`,
 `nanoseconds`. Removed lexical forms include `:>`, `<:`, `|>`, `++`, `#pragma`,
 `#!exit`, `#?`, `#[`, and legacy duration aliases.
+
+---
+
+## 13. Deprecated (still works, do not use)
+
+These forms still parse and compile, but are explicitly marked legacy in code
+or docs. Use the modern replacement. Deprecated ≠ removed: a removed form is
+rejected with an error (§12); a deprecated form still works but may disappear
+in a future release.
+
+| Deprecated form | Modern replacement | Deprecation marker |
+|---|---|---|
+| `foreach (item in list)` paren form | `foreach item in list` | `parser/statements.rs:286` "tolerated legacy form" |
+| `sync { }` block | `mutex { }` | `lexer.rs:190` "replaces the legacy sync {}" |
+| `!> key: value;` annotation metadata | `spec <PascalCase>: value;` | `parser/definitions.rs:2443` "annotation form (legacy)" |
+| `print!(value)` / `println!(value)` single-value | `print!("fmt {0}", args)` format form | `plugin/print_plugin.rs:16` "legacy single-value form" |
+| `Get#` / `Insert#` intrinsics | `At#` / `InsertAt#` | `intrinsic_signatures.rs:167` "legacy Get#/Insert#" |
+| `ToInt#` / `ToFloat#` / `ToString#` | casts (`as`) / stdlib | tagged `[legacy: fall-to-external]` |
+| `maxbits <~ N;` grammar | `spec MaxBits: N;` | `import_resolver.rs:1376` "legacy" |
+
+**Tolerated, not deprecated:** `node name()` empty parens (`node name` is
+primary; the parens are legal and skipped).

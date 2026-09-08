@@ -49,7 +49,8 @@ keywords "the lexer recognizes" — no such tokens exist. Passes only because
 | `.port` on `trg` | `statements.rs:315`, `definitions.rs:1435` | grammar drop (no `port` field) |
 | `<- &queue;` `&` marker | `statements.rs:111,506` | comment-only |
 | duration aliases `seconds/minute/cycles` | `definitions.rs:1585-1641` | only `cyc/ns/ms/s/min` accepted |
-| **`foreach (item in list)` paren form** | `statements.rs:286-290` | **(b) STILL PARSED** — tolerated legacy |
+| **`foreach (item in list)` paren form** | `statements.rs:286-290` | **(b) STILL PARSED** — deprecated, see MASTER §13 |
+| **`sync { }` block** | `lexer.rs:190`; `statements.rs:88,336-343` | **(b) STILL PARSED** — deprecated → `mutex { }`; LLVM emission FIXED 2026-09-08 (was silent-drop) |
 
 ---
 
@@ -156,12 +157,19 @@ Not part of the current compile pipeline; active shipped surface in `lib/`.
 | Category | Count | Notable |
 |---|---|---|
 | (a) lexed removed tokens | 3 | `meld`, `pvt`, `sed` |
-| (b) parsed legacy forms | 2 | `foreach (x in list)`, `sync { }` block |
+| (b) deprecated-but-works | 7 | `foreach (x in list)`, `sync { }`, `!>`, single-value `print!`, `Get#`/`Insert#`, `ToInt#`/`ToFloat#`/`ToString#`, `maxbits <~ N;` — see MASTER §13 |
+| (b2) tolerated legacy parse | 1 | `foreach (x in list)` paren form; `node name()` empty parens (tolerated, not deprecated) |
 | (c) rejected-with-error | 15+ | §2 |
 | (d) dead codegen/analysis | ~26 | 5 LLVM arms, 1 dup, ~12 AST variants, 3 dead fields, 1 dead diagnostic, 2 dead whitelist items |
 | (e) documented-only | ~15 | 12 stale feature docs, `#!exit`/`#on_exit`, stale lexer test, `lib/compiler/*.bv` |
 
+> **2026-09-08 (deprecation audit):** the two "parsed legacy forms" are now
+> separated. `sync { }` was **fixed** — it previously silently dropped its body
+> on the LLVM backend (no `SyncBlock` emit arm); it now emits like `mutex { }`
+> (emit_stmt.rs, regression test `test_llvm_emits_sync_block_body`). The full
+> deprecated-but-works list lives in `MASTER-SYNTAX-REFERENCE.md` §13.
+
 **Highest-value cleanup targets:** (d) `Expr::If`/`Expr::IsType`/
 `TopLevel::StateDecl`/`Signature` dead variants and the 5 dead LLVM intrinsic
-arms; (e) the 12 stale `features/*.md` docs; (b) the two tolerated legacy
-parse forms.
+arms; (e) the 12 stale `features/*.md` docs; (b) the deprecated-but-works
+forms (migrate call sites, then reject).

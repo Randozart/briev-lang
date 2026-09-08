@@ -1558,6 +1558,19 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             backend.fun.defer_bodies.push(body.clone());
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
+        Statement::SyncBlock(stmts) => {
+            // 2026-09-08 (deprecation audit): `sync { }` is the LEGACY spelling
+            // of `mutex { }` (lexer.rs "replaces the legacy sync {}"). It was
+            // previously swallowed by the `_ =>` catch-all — the body silently
+            // vanished. Emit it exactly like Mutex (a serial section emits
+            // inline; sequential execution is the default). `sync<group>` is
+            // the SEPARATE group-barrier modifier and is unaffected.
+            let mut last = TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
+            for stmt in stmts {
+                last = emit_statement(backend, out, stmt, indent);
+            }
+            last
+        }
         Statement::Mutex(stmts) => {
             // 2026-08-09 (Phase 10): `mutex` is a serial section — sequential
             // execution IS the default (a modifier must never be a speedup),
