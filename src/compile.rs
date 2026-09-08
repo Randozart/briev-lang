@@ -1542,7 +1542,7 @@ fn codegen(
                 .parent()
                 .map(|d| d.to_path_buf())
                 .unwrap_or_else(std::path::PathBuf::new);
-            for rt_file in ["briev_accel_rt.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+            for rt_file in ["briev_accel_rt.c", "briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
                 let dest = rt_dir_out.join(rt_file);
                 std::fs::copy(rt_dir.join(rt_file), &dest).map_err(|e| {
                     format!("cannot copy runtime '{}' to '{}': {}", rt_file, dest.display(), e)

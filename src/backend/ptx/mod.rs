@@ -148,10 +148,16 @@ pub fn build_ptx_kernels(
             && plan.n % 16 == 0
             && plan.k % 16 == 0;
 
-        let (ptx, cooperative) = if tensor {
+        let (ptx, ptx_tensor, count_expr) = if tensor {
+            // The warp-tile kernel decodes one block per (M/32)*(N/16)
+            // tile from ctaid.y. count_expr stays M*N — the runner's
+            // fast-forward uses it for the counter (the .abv gate
+            // `[i < M*N]` must go false after ONE dispatch); the
+            // ptx_tensor dispatch geometry computes ny = count/512 blocks.
             (
                 tensor::tensor_gemm_ptx(plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem),
-                true, // 32-lane cooperative dispatch: nx=32, ny=(M/32)*(N/16)
+                true,
+                e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
             )
         } else {
             if a_elem != 4 {
@@ -164,7 +170,11 @@ pub fn build_ptx_kernels(
                     name, a_elem
                 ));
             }
-            (naive_gemm_ptx(plan.m, plan.n, plan.k, a_elem, a_off, b_off, y_off), false)
+            (
+                naive_gemm_ptx(plan.m, plan.n, plan.k, a_elem, a_off, b_off, y_off),
+                false,
+                e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+            )
         };
 
         out.push(RunnerKernel {
@@ -172,12 +182,13 @@ pub fn build_ptx_kernels(
             spirv: ptx.into_bytes(),
             image_plans: Vec::new(),
             index_var: e.shape.index_var.clone(),
-            count_expr: e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+            count_expr,
             work_cols: None,
-            cooperative,
+            cooperative: false,
             tiled: false,
             tensor: false,
             tensor_tile_rows: 1,
+            ptx_tensor,
         });
     }
     Ok(out)

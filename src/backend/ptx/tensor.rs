@@ -41,7 +41,7 @@ pub fn tensor_gemm_ptx(
     debug_assert!(k % 16 == 0, "tensor tier: K%16");
     let a_row = k * 2; // A row stride (bytes): K f16
     let b_row = n * 2; // B row stride (bytes): N f16
-    let y_row = n * 4; // C row stride (bytes): N f32
+    let y_row = n * (y_elem as i64); // C row stride (bytes): N × y element size
     let mut out = String::new();
 
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
@@ -81,7 +81,7 @@ pub fn tensor_gemm_ptx(
     out.push_str(&format!("    mov.u64 %rd3, {};\n", b_off));
     out.push_str("    add.u64 %rd3, %rd1, %rd3;\n");
     out.push_str("    add.u64 %rd3, %rd3, %rd4;\n");
-    // rd6 = proj + y_off + m_cta*32*y_row + n_cta*64 (n_cta*16 cols * 4 bytes)
+    // rd6 = proj + y_off + m_cta*32*y_row + n_cta*16*y_elem
     out.push_str("    mov.u32 %r9, %r3;\n");
     out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 32 * y_row));
     out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
@@ -89,7 +89,7 @@ pub fn tensor_gemm_ptx(
     out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
     out.push_str("    mov.u32 %r9, %r4;\n");
-    out.push_str("    mul.lo.u32 %r9, %r9, 64;\n");
+    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 16 * (y_elem as i64)));
     out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
 
@@ -260,5 +260,16 @@ mod tests {
                 "tile store c{}", cb);
         }
     }
-}
 
+    #[test]
+    fn tensor_gemm_ptx_f16_y_stride_is_n_elem_not_n4() {
+        // f16 y: row stride must be N*2 (not N*4 — the f32 stride). The
+        // S3b f16-store OOB bug used N*4 for a 2-byte y.
+        let ptx = tensor_gemm_ptx(32, 16, 16, 0, 1024, 4096, 2);
+        assert!(ptx.contains("mul.lo.u32 %r14, %r6, 32;"), "y_row=N*2=32: {ptx}");
+        assert!(ptx.contains("cvt.rn.f16.f32 %t0, %c0;"), "f16 cvt");
+        assert!(ptx.contains("st.global.u16 [%rd5], %t0;"), "f16 store");
+        // n_cta*16*y_elem = n_cta*32 for f16 (NOT *64)
+        assert!(ptx.contains("mul.lo.u32 %r9, %r9, 32;"), "n_cta col = 16*2: {ptx}");
+    }
+}

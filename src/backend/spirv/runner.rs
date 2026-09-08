@@ -72,6 +72,11 @@ pub struct RunnerKernel {
     /// runner's dispatch formula and the kernel's grid decode can never
     /// disagree (a mismatch = out-of-range tiles = garbage output).
     pub tensor_tile_rows: u32,
+    /// PTX tensor warp-tile kernel (plan 2026-09-08-ptx-tier-execution
+    /// S3b): one 32×16 C tile per 32-lane block, decoded from ctaid.y.
+    /// The count expr is the WORK count (M*N, the counter fast-forward);
+    /// the dispatch launches ny = count/(32*16) blocks.
+    pub ptx_tensor: bool,
 }
 
 /// The SSBO layout EXACTLY as the kernel sees it (name-sorted, real element
@@ -661,6 +666,7 @@ pub fn build_kernels(
             } else {
                 1
             },
+            ptx_tensor: false,
         });
     }
     Ok(out)
@@ -762,6 +768,15 @@ fn emit_kernel_node(
 /// fallback. Coverage is identical in all three; only the hardware routing
 /// of the work-item id differs.
 fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
+    if k.ptx_tensor {
+        // PTX tensor warp-tile (S3b): one 32×16 C tile per 32-lane block,
+        // decoded from ctaid.y. count = M*N work items (the counter
+        // fast-forward), blocks = count/(32*16). nx=32 → the driver's
+        // launch_dev2d dispatches exactly ny blocks.
+        return format!(
+            "      if (n_{ci} > 0 && !briev_accel_launch_resident_2d({kidx}, state, 32, n_{ci} / (32 * 16))) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
+        );
+    }
     if k.tensor {
         // Tensor GEMM (R 16-row strips × 64 cols per workgroup, R =
         // k.tensor_tile_rows — the SAME clamp the kernel emitter used):
