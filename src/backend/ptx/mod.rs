@@ -17,6 +17,8 @@ use crate::backend::spirv::gemm::GemmPlan;
 use crate::backend::spirv::runner::RunnerKernel;
 use crate::type_universe::TypeUniverse;
 
+pub mod tensor;
+
 /// PTX entry point name — the CUDA driver's `create_kernel` resolves "main"
 /// (`cuModuleGetFunction`). Must never drift from `briev_dev_cuda.c`.
 const ENTRY: &str = "main";
@@ -127,22 +129,44 @@ pub fn build_ptx_kernels(
         let b_off = find_off(&plan.b_field)?;
         let y_off = find_off(&plan.y_field)?;
 
-        // f32-only for S2a (elem_bytes 4). f16 arrives with S3's tensor path.
+        // f16 a/b → the tensor tier (S3b mma kernel); f32 → the naive tier.
+        // The tensor tier needs M%32, N%16, K%16 (warp-tile geometry).
         let a_elem = layout
             .fields
             .iter()
             .find(|f| f.name == plan.a_field)
             .map(|f| f.elem_bytes)
             .unwrap_or(4);
-        if a_elem != 4 {
-            return Err(format!(
-                "ptx: node '{}': element size {} bytes — the S2a naive tier is f32 \
-                 only (f16 needs the S3 tensor path)",
-                name, a_elem
-            ));
-        }
+        let y_elem = layout
+            .fields
+            .iter()
+            .find(|f| f.name == plan.y_field)
+            .map(|f| f.elem_bytes)
+            .unwrap_or(4);
+        let tensor = a_elem == 2
+            && plan.m % 32 == 0
+            && plan.n % 16 == 0
+            && plan.k % 16 == 0;
 
-        let ptx = naive_gemm_ptx(plan.m, plan.n, plan.k, a_elem, a_off, b_off, y_off);
+        let (ptx, cooperative) = if tensor {
+            (
+                tensor::tensor_gemm_ptx(plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem),
+                true, // 32-lane cooperative dispatch: nx=32, ny=(M/32)*(N/16)
+            )
+        } else {
+            if a_elem != 4 {
+                return Err(format!(
+                    "ptx: node '{}': element size {} bytes — the PTX tier supports \
+                     f32 (naive) or f16 with M%32=N%16=K%16=0 (tensor). f16 shapes \
+                     that do not tile are not supported yet.\n  why: the tensor \
+                     warp-tile geometry fixes M%32, N%16, K%16\n  fix: pad the \
+                     shape to multiples of 32/16/16, or use --backend spirv",
+                    name, a_elem
+                ));
+            }
+            (naive_gemm_ptx(plan.m, plan.n, plan.k, a_elem, a_off, b_off, y_off), false)
+        };
+
         out.push(RunnerKernel {
             name: name.clone(),
             spirv: ptx.into_bytes(),
@@ -150,7 +174,7 @@ pub fn build_ptx_kernels(
             index_var: e.shape.index_var.clone(),
             count_expr: e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
             work_cols: None,
-            cooperative: false,
+            cooperative,
             tiled: false,
             tensor: false,
             tensor_tile_rows: 1,

@@ -303,7 +303,13 @@ static int cuda_launch_grid(BrievCudaKernel* k, size_t nx, size_t ny,
         }
         return 0;
     }
-    return p_cuStreamSynchronize(cu_stream) == CUDA_SUCCESS;
+    rc = p_cuStreamSynchronize(cu_stream);
+    if (rc != CUDA_SUCCESS && g_verbose) {
+        const char* estr = "?";
+        if (p_cuGetErrorString) p_cuGetErrorString(rc, &estr);
+        fprintf(stderr, "[briev_accel/cuda] cuStreamSynchronize failed: %s (rc %d)\n", estr, rc);
+    }
+    return rc == CUDA_SUCCESS;
 }
 
 // Full-copy launch: seeds the persistent page-locked host mirror + device
