@@ -35,6 +35,14 @@ read for context, treat as historical record.
 ledger (M1 GEMV → O2/O3 → GEMM f32/f16 → mma ceiling → CUDA race). Add new
 rows there, never rewrite old ones.
 
+## Full landscape reference
+
+`docs/architecture/gpu-backend-strategy.md` is the complete, evaluated
+optimization-space document (Roofline reality, emitter routes, async
+pipelines, Briev beat-CUDA levers, multi-vendor matrix, roadmap). Use it
+for any GPU-direction question; the stage/execution plans are the concrete
+campaigns.
+
 ## How to classify a plan you're about to touch
 
 1. Grep for `Status:`/`**Status:**` in the first 25 lines — most recent plans carry one.

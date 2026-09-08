@@ -313,6 +313,7 @@ contracts.
 | **Session report (2026-07-31)** | `docs/2026-07-31-session-report.md` |
 | **Bug diagnoses** | `BUGS.md` |
 | **Architecture overview** | `docs/architecture/overview.md` |
+| **GPU backend strategy (full optimization landscape)** | `docs/architecture/gpu-backend-strategy.md` — Roofline reality, emitter-route evaluation (hand-PTX vs LLVM NVPTX vs SPIR-V), async pipelines (cp.async/ldmatrix), Briev "beat CUDA" levers (cross-node fusion, zero-divergence vectorization, bank-conflict synthesis), multi-vendor matrix, roadmap |
 | **Backend type dispatch** | `docs/architecture/backend-type-dispatch.md` — read first before backend type code |
 | **LLVM backend architecture** | `docs/architecture/backend-architecture.md` — read first before LLVM backend changes |
 | **Casting protocol** | `docs/architecture/casting-protocol.md` |
