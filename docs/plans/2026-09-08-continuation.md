@@ -31,13 +31,9 @@
 **Files:** `lib/std/` (new `.bv` files), `src/protocol_graph.rs`, `spec/SPEC.md` §8.7
 **Gate:** `cargo test --lib` green, all protocol round-trips pass
 
-### 8c — Resident-launch policy
+### 8c — Resident-launch policy (DONE)
 
-**Gate:** "all readers of a resident array are kernels" — analysis check before emitting resident-launch wrapper.
-**Scope:** `.bv` offload path only (not `.abv` — `.abv` always launches resident).
-
-**Files:** `src/backend/spirv/kernel.rs` (wrapper emission), `src/analysis/` (resident-readers check)
-**Gate:** Correctness proof: host state never goes stale
+**Pre-existing.** `analyze_resident_safety()` at `src/analysis/accel.rs:1482` computes `ResidentVerdict { resident_ok, blocker }`. Consumed by LLVM backend at `src/backend/llvm/mod.rs:2354-2361`. SPIR-V runner always uses `launch_resident` (correct for `.abv` GPU-first programs; `.bv` offload goes through LLVM backend which gates on `accel_resident_ok`).
 
 ### 8d — Old plan file review/closure
 
