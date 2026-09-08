@@ -1,13 +1,47 @@
-# GEMM WG-Throughput Campaign — break the 4.58ms wall
+# GEMM WG-Throughput Campaign — CLOSED (wall was a stale-build artifact)
 
-**2026-09-08.** Profiling session (this file's parent: the beyond-coopmat
-campaign, `docs/plans/2026-09-04-beyond-coopmat.md`). The kernel at 4096³,
-S=2/R=4/prefetch, sits at **4.58 ms = 30.2 TFLOP/s** (commit bce82f54). The
-portable-path levers (fill instruction count, fill DRAM traffic, barrier
-count, prefetch) were believed exhausted. This session's profiling
-**reframes the bottleneck**.
+**2026-09-08, session 2 (VERDICT: campaign invalidated, GEMM at HW peak).**
+The 4.58ms "wall" was measured on a **stale .spv** (the prior session's
+`/tmp/gf/gemm_h.spv`, 73268 B, id-bound 44285, built from an EARLIER source
+state). Rebuilding the CURRENT source (commit bce82f54) produces a
+73352 B .spv (id-bound 45311, +~1000 IDs) that runs at **0.708 ms = 24.3
+TFLOP/s** — 95% of the RTX 3060's FP16-accum tensor peak (25.6 TFLOP/s).
+The wall is broken; there is nothing left to break. **No code change is
+warranted.** R=4 (the default) is optimal; R=8 is 5% slower (0.744 ms).
 
-## Profiling findings (the reframe)
+## R-sweep A/B (current build, 4096×4096×512, GPU timestamp)
+
+| R | .spv | WG count | y[0..3] | wall (avg of 5) | verdict |
+|---|------|----------|---------|-----------------|---------|
+| 4 (default) | 73352 B | 4096 | 8320 8324 8327.5 8332.5 | **0.708 ms** | ✓ optimal (24.3 TFLOP/s) |
+| 8 | 98696 B | 2048 | 8320 8324 8327.5 8332.5 (identical y) | 0.744 ms | 5% slower |
+| 16 | — | — | — | clamps to R=8 | cap in `coopmat_tile_rows` (gemm.rs:165) |
+
+y-identity verified: R=4 and R=8 dump byte-identical `y` (ycmp.c A/B, same
+a/b seed). Correctness confirmed. The config is baked at compile time
+(`include_str!`, config_tuning.rs:329) — each R requires `cargo build
+--release`.
+
+**The stale 4.58ms:** the prior session's .spv (73268 B) predates the emitter
+commits that added ~1000 IDs (the 5.3→4.55ms era's own build). The 6.4× gap
+(4.58ms→0.71ms) is those commits' effect, not a lever this session found. The
+R/S/prefetch/stages knobs are all at their current-build optimum.
+
+**Next (only if a NEW target appears):** the PTX tier (Stage 2) is still
+armed for a non-NVIDIA vendor (Ada's mma ceiling = 50.1 ms/launch unchanged),
+but the portable path is at HW peak — no portable work remains.
+
+---
+
+**2026-09-08, session 1 (superseded).** Profiling session (this file's parent:
+the beyond-coopmat campaign, `docs/plans/2026-09-04-beyond-coopmat.md`). The
+kernel at 4096³, S=2/R=4/prefetch, sat at **4.58 ms = 30.2 TFLOP/s** (commit
+bce82f54). The portable-path levers (fill instruction count, fill DRAM
+traffic, barrier count, prefetch) were believed exhausted. This session's
+profiling **reframed the bottleneck** (as WG-throughput) — but the reframe was
+measured on the stale .spv; see the session-2 verdict above.
+
+## Profiling findings (the reframe — superseded by session 2)
 
 | Experiment | Result | Interpretation |
 |-----------|--------|----------------|
