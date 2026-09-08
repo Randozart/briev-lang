@@ -586,6 +586,20 @@ pub(crate) fn u32_shr(builder: &mut super::SpirvBuilder, val: Word, shift: u32) 
     id
 }
 
+/// Emit BitwiseAnd for power-of-two modulo: val % 2^n → val & (2^n - 1).
+pub(crate) fn u32_and(builder: &mut super::SpirvBuilder, val: Word, mask: u32) -> Word {
+    let c = u32_const(builder, mask);
+    let ty = builder.u32_type();
+    let id = builder.gen_id();
+    builder.emit(Instruction::new(
+        spirv::Op::BitwiseAnd,
+        Some(ty),
+        Some(id),
+        vec![Operand::IdRef(val), Operand::IdRef(c)],
+    ));
+    id
+}
+
 fn widen_u2i(builder: &mut super::SpirvBuilder, v: Word, int_ty: Word) -> Word {
     let ulong = builder.builder.type_int(64, 0);
     let wide = builder.gen_id();
@@ -1956,6 +1970,11 @@ struct SmemFillParams {
     sub_id: Word,
     tiles_x_c: Word,
     b_stage_elems_c: Word,
+    /// Bitwise AND mask for b_stage_elems (b_stage_elems - 1, valid when
+    /// b_stage_elems is power-of-two — always true: pps × 4 × 256).
+    b_stage_elems_mask: Word,
+    /// Bitwise AND mask for b_stage_pairs (b_stage_elems/2 - 1).
+    b_stage_pairs_mask: Word,
     subgroups: u32,
     /// Compile-time tile element counts for the split A/B fill (S>1).
     a_stage_elems: u32,
@@ -2169,7 +2188,7 @@ fn emit_smem_fill(
         // D4: b_flat_within = b_flat % b_stage_elems (index within THIS
         // subgroup's B slice — the DRAM source uses this for the tile
         // column; the smem dest uses the full b_flat for the contiguous layout).
-        let b_flat_within = u32_binop(builder, spirv::Op::UMod, b_flat, p.b_stage_elems_c);
+        let b_flat_within = u32_and(builder, b_flat, p.b_stage_elems_mask);
         // B tile index: b_flat_within / 256 gives j in 0..3.
         let b_tile_idx = u32_shr(builder, b_flat_within, 8);
         // A source: (band_m16 + r*16 + row) * K + panel_kt*16 + col
@@ -2408,8 +2427,7 @@ fn emit_fill_pair_dram(
     let b_flat = u32_binop(builder, spirv::Op::ISub, flat2, p.a_stage_elems_c);
     // D4: b_flat_within = b_flat % b_stage_elems (pair units) — index
     // within THIS subgroup's B slice for the DRAM source tile column.
-    let b_stage_pairs = u32_shr(builder, p.b_stage_elems_c, 1);
-    let b_flat_within = u32_binop(builder, spirv::Op::UMod, b_flat, b_stage_pairs);
+    let b_flat_within = u32_and(builder, b_flat, p.b_stage_pairs_mask);
     let b_tile_idx = u32_shr(builder, b_flat_within, 8);
     // A pair source: row2*(K/2) + kt*8 + col_pair (all even/2 exact).
     let a_src = {
@@ -2492,7 +2510,7 @@ fn emit_fill_pair_smem(
     let b_flat = u32_binop(builder, spirv::Op::ISub, flat2, p.a_stage_elems_c);
     // D4: b_flat_within = b_flat % b_stage_elems — index within THIS
     // subgroup's B slice for the smem dest.
-    let b_flat_within = u32_binop(builder, spirv::Op::UMod, b_flat, p.b_stage_elems_c);
+    let b_flat_within = u32_and(builder, b_flat, p.b_stage_elems_mask);
     // Smem v2f16 destination: (base + flat2)/2 — exact (all offsets
     // even). The pair index IS the v2f16 element index.
     let idx = {
@@ -2606,7 +2624,7 @@ fn emit_fill_quad_dram(
     let b_flat4 = u32_binop(builder, spirv::Op::ISub, flat4, p.a_stage_elems_c);
     // D4: b_flat4_within = b_flat4 % b_stage_elems — index within THIS
     // subgroup's B slice for the DRAM source tile column.
-    let b_flat4_within = u32_binop(builder, spirv::Op::UMod, b_flat4, p.b_stage_elems_c);
+    let b_flat4_within = u32_and(builder, b_flat4, p.b_stage_elems_mask);
     let b_tile_idx = u32_shr(builder, b_flat4_within, 8);
     // A quad source: row2*(K/4) + kt*4 + col4/4 (K ÷4; all exact).
     let a_src = {
@@ -2690,7 +2708,7 @@ fn emit_fill_quad_smem(
     let b_flat4 = u32_binop(builder, spirv::Op::ISub, flat4, p.a_stage_elems_c);
     // D4: b_flat4_within = b_flat4 % b_stage_elems — index within THIS
     // subgroup's B slice for the smem dest.
-    let b_flat4_within = u32_binop(builder, spirv::Op::UMod, b_flat4, p.b_stage_elems_c);
+    let b_flat4_within = u32_and(builder, b_flat4, p.b_stage_elems_mask);
     // Smem v4f16 destination: (base + flat4)/4 — exact (all offsets ÷4).
     let idx = {
         let id = builder.gen_id();
@@ -3059,6 +3077,8 @@ fn emit_coopmat_smem(
 
     let prefetch = pairs && GemmPlan::coopmat_fill_prefetch();
     let b_stage_elems_c = u32_const(builder, b_stage_elems);
+    let b_stage_elems_mask = u32_const(builder, b_stage_elems - 1);
+    let b_stage_pairs_mask = u32_const(builder, b_stage_elems / 2 - 1);
     let fill_params = SmemFillParams {
         smem_a, smem_b, f16_wg_ptr, f16_ssbo_ptr,
         a_stage_elems_c, a_member_c, b_member_c,
@@ -3070,6 +3090,8 @@ fn emit_coopmat_smem(
         sub_id: io.sub_id,
         tiles_x_c: tiles_x_c.clone(),
         b_stage_elems_c,
+        b_stage_elems_mask,
+        b_stage_pairs_mask,
         subgroups,
         a_stage_elems,
         b_stage_elems,
@@ -3093,9 +3115,8 @@ fn emit_coopmat_smem(
     // last panel for groups ≥ 16 (the tensor-tier minimum).
     let stagger = GemmPlan::coopmat_stagger() && groups % 8 == 0 && groups >= 16;
     let start_panel: Word = if stagger {
-        let c8 = u32_const(builder, 8);
         let per = u32_const(builder, groups / 8);
-        let bucket = u32_binop(builder, spirv::Op::UMod, wgid_x, c8);
+        let bucket = u32_and(builder, wgid_x, 7);
         u32_binop(builder, spirv::Op::IMul, bucket, per)
     } else {
         u32_const(builder, 0)

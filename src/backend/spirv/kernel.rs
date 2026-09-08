@@ -378,9 +378,8 @@ pub fn emit_kernel(
                     vec![Operand::IdRef(lid), Operand::LiteralBit32(0)],
                 ));
                 let c4 = super::gemm::u32_const(builder, 4);
-                let c32 = super::gemm::u32_const(builder, 32);
                 let y4 = super::gemm::u32_binop(builder, spirv::Op::IMul, ly, c4);
-                let x32 = super::gemm::u32_binop(builder, spirv::Op::UDiv, lx, c32);
+                let x32 = super::gemm::u32_shr(builder, lx, 5);
                 Some(super::gemm::u32_binop(builder, spirv::Op::IAdd, y4, x32))
             } else {
                 None
