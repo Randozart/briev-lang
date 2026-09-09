@@ -119,15 +119,21 @@ Examples:
 
 | Extension | Role | Canonical target path |
 |---|---|---|
-| `.bv` | General Briev | LLVM/native; optional configured offload |
-| `.ebv` | Embedded Briev | LLVM embedded target profile |
+| `.bv` | General Briev — hosted **and** freestanding (triple-driven) | LLVM/native; optional configured offload |
+| `.ebv` | Electronics Briev (PCB design, closed-world strict) | Electronics |
 | `.abv` | Accelerator Briev | Direct SPIR-V through `rspirv` |
-| `.cbv` | Circuit Briev | CIRCT |
+| `.sbv` | Silicon Briev | CIRCT |
 | `.rbv` | Rendered Briev | Webstack |
 | `.dbv` | Structured Data Briev | Data parser |
 | `.dbvl` | Line-oriented Data Briev | Streaming data parser |
 
-`.dbvs`, `.sbv`, `.srbv`, `.sebv`, `.c.bv`, and other compact or legacy variants are not part of the language.
+`.dbvs`, `.cbv`, `.srbv`, `.sebv`, `.c.bv`, and other compact or legacy variants are not part of the language.
+
+> **2026-09-09 (family realignment).** Embedded Briev is folded into `.bv`:
+> the runtime is Briev-native everywhere (§3.4), so freestanding is a target
+> configuration, not a source variant. Electronics Briev (`.ebv`) is the
+> closed-world strict PCB variant (§3.5). Silicon Briev (`.sbv`) reclaims the
+> formerly forbidden `.sbv` extension; Circuit Briev (`.cbv`) is retired.
 
 ### 3.2 Dotted profiles
 
@@ -136,7 +142,7 @@ Profiles precede the base extension as separate dotted segments.
 ```text
 main.s.bv
 ui.s.rbv
-kernel.f.ebv
+kernel.f.bv
 ```
 
 #### `.s` — strict verification
@@ -177,6 +183,47 @@ The compiler learns nothing hardcoded about individual axioms; the vocabulary of
 Target restrictions are declared in configuration and validated once in the frontend. A backend does not independently invent a source-language subset.
 
 Target-specific sibling modules may coexist. Extensionless imports select the variant configured for the active target. Every sibling variant must satisfy the same exported interface and trait contracts.
+
+### 3.4 Briev-native runtime
+
+The default runtime is Briev-native: the compiler and standard library do not
+depend on a C runtime (no `briev_rt.c`, no libc) to build or run any program.
+System interaction reaches the OS through:
+
+- the `SysCall#` intrinsic, which emits platform inline asm (`syscall` on
+  x86_64, `svc #0` on aarch64);
+- compiler-captured process state (`argv`, `environ`); and
+- Briev-native standard library wrappers over those primitives.
+
+Foreign C interop remains a **user-facing** feature, never a compiler
+dependency: `frgn ... from #System` (→ the selected system library),
+`from "path"`, `#Link<name>`, and GLUE bridges are unchanged.
+
+Consequently there is one runtime for every target. Freestanding (bare-metal)
+compilation is selected by a freestanding target triple — the same triple
+families that gate `halt;` — or a target profile override, not by a source
+variant. Hosted and freestanding builds differ only in allocator growth (the
+hosted arena may grow via `brk`/`mmap`; the freestanding arena is fixed) and
+available platform surface. The language surface is identical.
+
+### 3.5 Electronics Briev
+
+Electronics Briev (`.ebv`) applies the Briev philosophy — topology, contracts,
+nodal reasoning, compile-time proving — to printed circuit boards. Its core
+fundamentals follow physical electronic components (`Resistor`, `Capacitor`,
+`IC`, `Connector`) with physical metadata (`value`, `package`, `footprint`,
+`rating`), not software types.
+
+Electronics is a **closed system**: no OS, no dynamic allocation, no open-world
+FFI, no concurrency ambiguity. Strict semantics are therefore mandatory —
+every program either proves its contracts or fails; there is no unresolved
+case. Electrical contracts (`[max_current <= 2A]`, `[voltage <= 3.3V]`) are
+verified at compile time over the net topology.
+
+Nets are **derived** as the transitive closure of explicit pin connections
+(`r1.pin(1) <-> led1.pin(2);`). Naming is opt-in for contract and metadata
+binding (`let vbus = r1.pin(1) <-> led1.pin(2);`). A single-pin net (a dangling
+pin) is a compile error, never a silent board defect.
 
 ## 4. Lexical conventions
 
@@ -1701,17 +1748,17 @@ A trigger with a numeric address (`trg sensor @ 0x1000;`) is an MMIO INPUT
 pin whose VALUE is a readable `Int` in transaction and definition bodies on
 every target:
 
-- native/embedded (`ll`): the read lowers to a `volatile` load at the
+- native (`ll`): the read lowers to a `volatile` load at the
   static address through the boxed-pointer ABI (`VolatileLoad#` shares the
   same convention for computed pointers);
-- circuits (`cbv`): the pin becomes an `@top` input port; ports emit
+- silicon (`sbv`): the pin becomes an `@top` input port; ports emit
   ADDRESS-SORTED so separately compiled partitions agree on bus layout.
 
 Pins are driven by hardware — programs only observe them. Assignment to an
 @-addressed trigger is a compile error (declare a separate output `let`
 field, or use `VolatileStore#` over a computed pointer for output
 registers). Dynamic (`@ *ptr`) and symbolic address forms have no static
-pin: on `cbv` they are capability errors; on native surfaces they flow
+pin: on `sbv` they are capability errors; on native surfaces they flow
 through the existing pointer/deref paths.
 
 `trg!` does not exist. Local asynchronous suspension uses ports, nodes, spawned tasks, and `await`.
@@ -2267,8 +2314,10 @@ can never read). A drain must therefore be the tilde form: `~<- queue`.
 ## 19. Foreign functions, export, and GLUE
 
 Process/environment intrinsics: `Spawn#`, `SpawnWithOutput#`, `SetEnv#`,
-`GetCwd#`, `ChDir#`, and `Barrier#` are compiler-known with C runtime
-backing (`__briev_spawn` etc.).
+`GetCwd#`, `ChDir#`, and `Barrier#` are compiler-known with **Briev-native
+runtime** backing — they lower to `SysCall#` inline asm
+(`fork`/`execve`/`getcwd`/`chdir`/`clock_gettime`) and compiler-captured
+process state, never to a C runtime dependency (§3.4).
 
 ### 19.1 Foreign declaration
 
@@ -2577,7 +2626,7 @@ The canonical formatter must satisfy parse-format-parse AST equivalence. SPEC ex
 
 ### 23.4 Repository conformance
 
-CI parses and typechecks every active shipped `.bv`, `.ebv`, `.abv`, `.cbv`, `.rbv`, `.dbv`, and `.dbvl` file under its declared target/profile.
+CI parses and typechecks every active shipped `.bv`, `.ebv`, `.abv`, `.sbv`, `.rbv`, `.dbv`, and `.dbvl` file under its declared target/profile.
 
 Excluded legacy material belongs under `archive/`.
 
