@@ -1,0 +1,49 @@
+// Spike: float_format(x, 9) over the FULL float_cases.bv corpus.
+// Output must be byte-identical to goldens/float_cases.stdout.
+import { float_format } from "std/float_fmt.bv";
+let done: Bool = false;
+node go [done == false][done == true] {
+    when done == false {
+        println!("{}", float_format(0.0, 9));
+        println!("{}", float_format(1.0, 9));
+        println!("{}", float_format(-1.0, 9));
+        println!("{}", float_format(0.5, 9));
+        println!("{}", float_format(-0.5, 9));
+        println!("{}", float_format(3.14, 9));
+        println!("{}", float_format(-3.14, 9));
+        println!("{}", float_format(2.7182818, 9));
+        println!("{}", float_format(100.0, 9));
+        println!("{}", float_format(1000.0, 9));
+        println!("{}", float_format(0.1, 9));
+        println!("{}", float_format(0.2, 9));
+        println!("{}", float_format(0.3, 9));
+        println!("{}", float_format(0.25, 9));
+        println!("{}", float_format(0.125, 9));
+        println!("{}", float_format(1e-9, 9));
+        println!("{}", float_format(1e9, 9));
+        println!("{}", float_format(123456789.0, 9));
+        println!("{}", float_format(12345678.0, 9));
+        println!("{}", float_format(1234567.0, 9));
+        println!("{}", float_format(123456.0, 9));
+        println!("{}", float_format(12345.0, 9));
+        println!("{}", float_format(1234.0, 9));
+        println!("{}", float_format(123.0, 9));
+        println!("{}", float_format(12.0, 9));
+        println!("{}", float_format(1.5e308, 9));
+        println!("{}", float_format(5e-324, 9));
+        println!("{}", float_format(1.000000005, 9));
+        println!("{}", float_format(999999999.0, 9));
+        println!("{}", float_format(0.999999999, 9));
+        println!("{}", float_format(1e-5, 9));
+        println!("{}", float_format(1e-4, 9));
+        println!("{}", float_format(1e-3, 9));
+        println!("{}", float_format(1e-2, 9));
+        println!("{}", float_format(-0.0, 9));
+        println!("{}", float_format(1.0 / 0.0, 9));
+        println!("{}", float_format(-1.0 / 0.0, 9));
+        println!("{}", float_format(0.0 / 0.0, 9));
+        println!("{}", float_format(-0.0 / 0.0, 9));
+        done = true;
+    };
+    term;
+};

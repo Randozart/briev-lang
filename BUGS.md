@@ -33,6 +33,35 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## float → Data → Int bitcast emitted invalid LLVM — FIXED 2026-09-09
+
+**Date:** 2026-09-09 (parity spike)
+**Symptom:** `(f as Data) as Int` on a float32 emitted `bitcast float %x to
+i64` — LLVM requires same-width bitcast. clang rejected
+`invalid cast opcode for cast from 'float' to 'i64'`. The raw float
+bit-pattern read (needed by the pure-Briev float formatter) was impossible.
+**Fix:** `emit_expr.rs` — the cast-chain Bitcast lane now emits `float → i32`
+then `zext i32 → i64` (both the chain loop and `emit_single_cast_lane`).
+**Undo:** revert the `cur_ll == "float"` arms in both sites.
+
+## Tuple-returning defn with a String field mis-lays the String as i64 — OPEN 2026-09-09
+
+**Date:** 2026-09-09 (parity spike)
+**Symptom:** a `defn` returning `(String, Int)` (or any tuple containing a
+String) compiles to IR where the String field is `load i64`'d out of the
+tuple struct, then fed to `__print_str(ptr ...)` — clang rejects
+`'%t31' defined with type 'i64' but expected 'ptr'`. Int-only tuples
+(`(Int, Int)`, `(Int, Int, Int)`) work fine.
+**Repro:** `defn pair(x: Int) -> (String, Int) { term ("ab", x); }` then
+`let (a, b) = pair(3); println!("{} {}", a, b);` — IR fails to compile.
+**Root cause (hypothesis):** the tuple layout/load path stores the String
+field in an i64 slot instead of a ptr; the String ABI (length-prefixed
+buffer ptr) is not preserved through tuple packing. Not yet traced.
+**Workaround in spike:** split into a String-returning function and an
+Int-returning function (duplicate the shared computation).
+**Fix path:** trace tuple pack/unpack in emit_expr.rs (the struct { i64, ... }
+layout for String fields); String fields must be `ptr` slots.
+
 ## PiggyBank Phase D — arrow dispatch + sealed-op gaps (FIXED 2026-08-18)
 
 **Date:** 2026-08-18 (implementing the plan's PiggyBank)

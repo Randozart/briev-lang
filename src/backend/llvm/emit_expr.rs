@@ -6197,6 +6197,19 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, dst, cur, dst_ll).ok();
                     } else if cur_ll.starts_with('i') && dst_ll == "ptr" {
                         writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, dst, cur_ll, cur).ok();
+                    } else if cur_ll == "float" && dst_ll.starts_with('i') {
+                        // 2026-09-09 (parity spike): a `float` (32-bit) cannot
+                        // bitcast straight to an i64 — LLVM requires
+                        // same-width bitcast first (`float → Data → Int` raw
+                        // bit-pattern read). float → i32, then zext to i64.
+                        let dw = dst_ll[1..].parse::<u64>().unwrap_or(64);
+                        if dw == 32 {
+                            writeln!(out, "{}{} = bitcast float {} to i32", indent, dst, cur).ok();
+                        } else {
+                            let w32 = format!("%{}.f32w", dst.trim_start_matches('%'));
+                            writeln!(out, "{}{} = bitcast float {} to i32", indent, w32, cur).ok();
+                            writeln!(out, "{}{} = zext i32 {} to {}", indent, dst, w32, dst_ll).ok();
+                        }
                     } else if cur_ll != dst_ll
                         && cur_ll.starts_with('i')
                         && dst_ll.starts_with('i')
@@ -6350,8 +6363,17 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
     ) {
         match lane {
             crate::casting::graph::LaneKind::Bitcast => {
-                writeln!(out, "{}{} = bitcast {} {} to i64",
-                    indent, dst, src_ll, src_name).ok();
+                // 2026-09-09 (parity spike): a `float` (32-bit) cannot
+                // bitcast straight to i64 — LLVM requires same-width
+                // bitcast then a zext. `double` (64-bit) bitcasts directly.
+                if src_ll == "float" {
+                    let w32 = format!("%{}.f32w", dst.trim_start_matches('%'));
+                    writeln!(out, "{}{} = bitcast float {} to i32", indent, w32, src_name).ok();
+                    writeln!(out, "{}{} = zext i32 {} to i64", indent, dst, w32).ok();
+                } else {
+                    writeln!(out, "{}{} = bitcast {} {} to i64",
+                        indent, dst, src_ll, src_name).ok();
+                }
             }
             crate::casting::graph::LaneKind::IntToFloat => {
                 writeln!(out, "{}{} = sitofp {} {} to double",

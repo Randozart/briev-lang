@@ -1,0 +1,425 @@
+// float_fmt.bv - pure-Briev %.9g / %g float formatting (plan 6.2 spike).
+//
+// 2026-09-09: float_to_str (the cast lane, %g) and __print_float (%.9g) must
+// reproduce C printf byte-for-byte WITHOUT briev_rt.c. This implements exact
+// leading-digit extraction for float32 (24-bit mantissa x 2^E, E in
+// [-149, 104]) using only i64 arithmetic:
+//
+//   value = M x 2^E
+//     E >= 0 (integer): shift-and-scale - acc x2 per bit, /10 when acc >=
+//       10^18 (drops the low digit only; the leading 18 digits stay exact).
+//     E < 0 (fraction): value = m / 2^b - long division with an 18-digit
+//       headroom window.
+//   digits 1-10 are EXACT; truncation only ever touches digit ~17+.
+//
+// Normalization to [1, 10): value<1 -> x10 (accx5, b-1); value>=10 -> /10
+// (acc/10, k+1). Each digit = floor(acc/2^b); the next digit uses the
+// remainder x10. Rounding (round-half-even) lives in the %g assembly, which
+// also selects fixed vs exponential style - not here.
+//
+// Operator notes: `^` is XOR in Briev - never used as power. Contracts are
+// [pre][post] - exactly two brackets; merge conditions with &&.
+
+// float_bits - the IEEE-754 float32 bit pattern via the Data protocol
+// bitcast (float -> i32 -> zext i64; the chain loop emits it - emit_expr.rs).
+defn float_bits(f: Float) [true][term >= 0] -> Int {
+    term (f as Data) as Int;
+};
+
+// digit_char - a single decimal digit 0-9 to its character string.
+defn digit_char(d: Int) [d >= 0 && d <= 9][term .^Length == 1] -> String {
+    when d == 0 { term "0"; };
+    when d == 1 { term "1"; };
+    when d == 2 { term "2"; };
+    when d == 3 { term "3"; };
+    when d == 4 { term "4"; };
+    when d == 5 { term "5"; };
+    when d == 6 { term "6"; };
+    when d == 7 { term "7"; };
+    when d == 8 { term "8"; };
+    term "9";
+};
+
+// pow2 - 2^n for n in [0, 60] (2^60 = 1.15e18 <= i64 max).
+defn pow2(n: Int) [n >= 0 && n <= 60][term >= 1] -> Int {
+    when n == 0 { term 1; };
+    term pow2(n - 1) * 2;
+};
+
+// trunc - divide acc by 10 until below 1000000000000000000 (drops low digits only; keeps
+// >= 18 significant digits - leading 9 + rounding digit survive).
+defn trunc(acc: Int) [acc >= 0][term >= 0] -> Int {
+    when acc < 1000000000000000000 {
+        term acc;
+    };
+    term trunc(acc / 10);
+};
+
+// ---- Integer path (E >= 0): value = m x 2^e -----------------------------
+// Shift-and-scale: acc x2 per bit; when acc >= 1000000000000000000, /10 and k++.
+// acc's leading digits are exact; only the low digit is dropped per /10.
+// Returns (acc, k) with value ~= acc x 10^k, acc < 1000000000000000000 (<= 18 digits).
+defn sscale(acc: Int, e: Int, k: Int)
+    [acc >= 1 && e >= 0 && e <= 104 && k >= -30 && k <= 40][term >= 0]
+    -> (Int, Int)
+{
+    when e == 0 {
+        term (acc, k);
+    };
+    let a2: Int = acc * 2;
+    when a2 < 1000000000000000000 {
+        term sscale(a2, e - 1, k);
+    };
+    term sscale(trunc(a2), e - 1, k + 1);
+};
+
+// ---- Fraction path (E < 0): value = m / 2^b ----------------------------
+// pow2b - 2^b for b in [0, 60] (fraction comparisons; b > 60 handled by the
+// value < 1 guard BEFORE calling this).
+defn pow2b(b: Int) [b >= 0 && b <= 60][term >= 1] -> Int {
+    when b == 0 { term 1; };
+    term pow2b(b - 1) * 2;
+};
+
+// frac_all_digits - the leading `count` digits of value = m / 2^b (b >= 1)
+// as an integer. EXACT: no lossy /10 normalization. value < 1 is brought up
+// by x10 (mx5, b-1, truncated at the 18-digit headroom); value >= 1 splits
+// into the EXACT integer part (m >> b) whose digits come first, then the
+// fraction continues by long division.
+defn frac_all_digits(m: Int, b: Int, count: Int)
+    [m >= 0 && m < 1 << 24 && b >= 1 && b <= 149 && count >= 1 && count <= 10]
+    [term >= 0 && term < 10000000000]
+    -> Int
+{
+    when count == 0 {
+        term 0;
+    };
+    when m == 0 {
+        // The value is exactly zero — all digits are 0.
+        term 0;
+    };
+    when b > 60 {
+        // value < 1 (m < 2^24 < 2^60): x10 = mx5 with b-1; trunc keeps the
+        // 18-digit headroom. Only the FIRST digit needs this — the digit loop
+        // below never sees value < 1 in the wrong place.
+        term frac_all_digits(trunc(m * 5), b - 1, count);
+    };
+    when b >= 0 && m < pow2b(b) {
+        // value < 1, b in [0,60]: x10 (first-digit normalization).
+        term frac_all_digits(trunc(m * 5), b - 1, count);
+    };
+    // value >= 1: run the pure digit loop from here.
+    term frac_digit_loop(m, b, count);
+};
+
+// frac_digit_loop - extract `count` digits of value = m / 2^b (value >= 1).
+// Each step emits floor(m/2^b) as the digit and continues with the fraction
+// x10 (frac x5, b-1). A sub-10 digit (the usual continuation case) is a
+// single 0-9 digit; a >= 10 integer part (only the first step) emits all its
+// digits first.
+defn frac_digit_loop(m: Int, b: Int, count: Int)
+    [m > 0 && b >= 0 && b <= 60 && count >= 1 && count <= 10]
+    [term >= 0 && term < 10000000000]
+    -> Int
+{
+    when count == 0 {
+        term 0;
+    };
+    when m == 0 {
+        term 0;
+    };
+    when b < 0 {
+        // value = m x 2^|b| — an exact integer (small m from rem x5).
+        let v: Int = m << (0 - b);
+        let nd: Int = int_digit_count(v);
+        when nd >= count {
+            term v / pow10(nd - count);
+        };
+        term v * pow10(count - nd);
+    };
+    let digit: Int = m >> b;
+    let frac: Int = m % pow2b(b);
+    when digit >= 10 {
+        // Multi-digit integer part (only possible on the first step): emit
+        // all of digit's digits, then continue from the fraction.
+        let nd: Int = int_digit_count(digit);
+        when nd >= count {
+            term digit / pow10(nd - count);
+        };
+        term digit * pow10(count - nd) + frac_digit_loop(frac * 5, b - 1, count - nd);
+    };
+    // Single 0-9 digit, then continue.
+    term digit * pow10(count - 1) + frac_digit_loop(frac * 5, b - 1, count - 1);
+};
+
+// frac_exp - the leading-digit decimal exponent k of m / 2^b (b >= 1).
+defn frac_exp(m: Int, b: Int)
+    [m >= 0 && m < 1 << 24 && b >= 1 && b <= 149][term >= -45 && term <= 40]
+    -> Int
+{
+    when b > 60 || m < pow2b(b) {
+        term frac_exp(trunc(m * 5), b - 1) - 1;
+    };
+    term int_digit_count(m >> b) - 1;
+};
+
+// float_rounded - the rounded leading `precision` digits of M x 2^E as an
+// integer, plus the leading-digit exponent k.
+defn float_rounded(m: Int, e: Int, precision: Int)
+    [m > 0 && m < 1 << 24 && e >= -149 && e <= 104 && precision >= 1 && precision <= 9]
+    [term >= 0]
+    -> (Int, Int)
+{
+    when e >= 0 {
+        let (acc, kk): (Int, Int) = sscale(m, e, 0);
+        let nd: Int = int_digit_count(acc);
+        let all: Int = int_leading_int(acc, nd, kk, precision + 1);
+        term round_all(all, precision, nd + kk - 1);
+    };
+    let all: Int = frac_all_digits(m, 0 - e, precision + 1);
+    let kk: Int = frac_exp(m, 0 - e);
+    term round_all(all, precision, kk);
+};
+
+// ---- Integer digits from the scaled acc --------------------------------
+// int_digit_count - decimal digit count of acc (acc >= 1, < 1000000000000000000).
+defn int_digit_count(acc: Int) [acc >= 1 && acc < 1000000000000000000][term >= 1 && term <= 19] -> Int {
+    when acc < 10 { term 1; };
+    when acc < 100 { term 2; };
+    when acc < 1000 { term 3; };
+    when acc < 10000 { term 4; };
+    when acc < 100000 { term 5; };
+    when acc < 1000000 { term 6; };
+    when acc < 10000000 { term 7; };
+    when acc < 100000000 { term 8; };
+    when acc < 1000000000 { term 9; };
+    when acc < 10000000000 { term 10; };
+    when acc < 100000000000 { term 11; };
+    when acc < 1000000000000 { term 12; };
+    when acc < 10000000000000 { term 13; };
+    when acc < 100000000000000 { term 14; };
+    when acc < 1000000000000000 { term 15; };
+    when acc < 10000000000000000 { term 16; };
+    when acc < 100000000000000000 { term 17; };
+    when acc < 1000000000000000000 { term 18; };
+    term 19;
+};
+
+// digits_of_int - the full decimal digits of acc (acc >= 0, < 1000000000000000000).
+defn digits_of_int(acc: Int) [acc >= 0 && acc < 1000000000000000000][term .^Length >= 1] -> String {
+    when acc < 10 {
+        term digit_char(acc);
+    };
+    term digits_of_int(acc / 10) + digit_char(acc % 10);
+};
+
+// zeros - a string of n zeros (n in [0, 20]).
+defn zeros(n: Int) [n >= 0 && n <= 20][term .^Length == n] -> String {
+    when n == 0 { term ""; };
+    term "0" + zeros(n - 1);
+};
+
+// pow10 - 10^n for n in [0, 18].
+defn pow10(n: Int) [n >= 0 && n <= 18][term >= 1] -> Int {
+    when n == 0 { term 1; };
+    term pow10(n - 1) * 10;
+};
+
+// int_leading - the leading `want` digits of the integer value ~= acc x 10^k
+// (acc has nd digits, total significant positions = nd + k). Returns the
+// digit string (length `want`), padded with trailing zeros if shorter.
+defn int_leading(acc: Int, nd: Int, k: Int, want: Int)
+    [acc >= 1 && nd >= 1 && nd <= 19 && k >= -30 && k <= 40 && want >= 1 && want <= 20]
+    [term .^Length == want]
+    -> String
+{
+    let total: Int = nd + k;
+    when total <= want {
+        term digits_of_int(acc) + zeros(want - total);
+    };
+    term digits_of_int(acc / pow10(total - want));
+};
+
+// ---- %g assembly: rounding, style, sign ---------------------------------
+// int_leading_int - the leading `want` digits of acc x 10^k as an integer.
+defn int_leading_int(acc: Int, nd: Int, k: Int, want: Int)
+    [acc >= 1 && nd >= 1 && nd <= 19 && k >= -30 && k <= 40 && want >= 1 && want <= 10]
+    [term >= 0 && term < 10000000000]
+    -> Int
+{
+    let total: Int = nd + k;
+    when total <= want {
+        term acc * pow10(want - total);
+    };
+    term acc / pow10(total - want);
+};
+
+// round_all - round `all` (precision+1 digits as an int) to `precision`
+// digits, returning (rounded, k). Extra digit >= 5 rounds up; carry makes the
+// rounded int 10^precision and bumps k. Round-half-UP approximation (C printf
+// is round-half-even; exact ties are rare for float32 — refine if one ever
+// appears in the corpus).
+defn round_all(all: Int, precision: Int, k: Int)
+    [all >= 0 && all < 10000000000 && precision >= 1 && precision <= 9]
+    [term >= 0]
+    -> (Int, Int)
+{
+    let firstP: Int = all / 10;
+    let extra: Int = all % 10;
+    when extra >= 5 {
+        let r: Int = firstP + 1;
+        when r >= pow10(precision) {
+            term (r, k + 1);
+        };
+        term (r, k);
+    };
+    term (firstP, k);
+};
+
+// pad_left - pad a digit string with leading zeros to length `len`.
+defn pad_left(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len][term .^Length == len] -> String {
+    let missing: Int = len - s .^Length;
+    when missing == 0 {
+        term s;
+    };
+    term zeros(missing) + s;
+};
+
+// strip_frac_zeros - strip trailing zeros from a fraction digit string
+// (returns "" when all zeros). The integer part is untouched by %g.
+defn strip_frac_zeros(frac: String) [true][term .^Length >= 0] -> String {
+    when frac .^Length == 0 {
+        term frac;
+    };
+    let last: Int = frac[frac .^Length - 1:frac .^Length] as Int;
+    when last == 0 {
+        term strip_frac_zeros(frac[0:frac .^Length - 1]);
+    };
+    term frac;
+};
+
+// exp_style - exponential %g form: d[.ddd]e±XX from the digit string + k.
+defn exp_style(ds: String, k: Int, sign: Int)
+    [ds .^Length >= 1 && k >= -45 && k <= 40 && (sign == 0 || sign == 1)]
+    [term .^Length >= 2]
+    -> String
+{
+    let first: String = ds[0:1];
+    let rest: String = strip_frac_zeros(ds[1:ds .^Length]);
+    when rest .^Length == 0 {
+        term exp_style_mant(first, exp_digits(k), sign);
+    };
+    let mant: String = first + "." + rest;
+    term exp_style_mant(mant, exp_digits(k), sign);
+};
+
+// exp_style_mant - prefix "-" when sign, then mant + "e" + exp.
+defn exp_style_mant(mant: String, exp: String, sign: Int)
+    [mant .^Length >= 1 && exp .^Length >= 2 && (sign == 0 || sign == 1)][term .^Length >= 2]
+    -> String
+{
+    when sign == 1 {
+        term "-" + mant + "e" + exp;
+    };
+    term mant + "e" + exp;
+};
+
+// exp_digits - "e±XX": the exponent field with sign and >= 2 digits.
+defn exp_digits(k: Int) [k >= -45 && k <= 40][term .^Length == 2 || term .^Length == 3] -> String {
+    when k < 0 {
+        let a: Int = 0 - k;
+        when a < 10 {
+            term "-0" + digit_char(a);
+        };
+        term "-" + digits_of_int(a);
+    };
+    when k < 10 {
+        term "+0" + digit_char(k);
+    };
+    term "+" + digits_of_int(k);
+};
+
+// fixed_style - fixed %g form: place the decimal point at position k+1.
+defn fixed_style(ds: String, k: Int, sign: Int)
+    [ds .^Length >= 1 && k >= -45 && k <= 40 && (sign == 0 || sign == 1)]
+    [term .^Length >= 1]
+    -> String
+{
+    let body: String = fixed_body(ds, k);
+    when sign == 1 && body != "0" {
+        term "-" + body;
+    };
+    term body;
+};
+
+// fixed_body - the unsigned fixed-form body.
+defn fixed_body(ds: String, k: Int) [ds .^Length >= 1 && k >= -45 && k <= 40][term .^Length >= 1] -> String {
+    let n: Int = ds .^Length;
+    when k < 0 {
+        let z: Int = 0 - k - 1;
+        let fp: String = strip_frac_zeros(ds);
+        term "0." + zeros(z) + fp;
+    };
+    when k >= n {
+        term ds + zeros(k + 1 - n);
+    };
+    let ip: String = ds[0:k + 1];
+    let fp: String = strip_frac_zeros(ds[k + 1:n]);
+    when fp .^Length == 0 {
+        term ip;
+    };
+    term ip + "." + fp;
+};
+
+// float_format - the full %g formatter (C printf semantics, precision sig
+// digits). Sign preserved for zero ("-0"); nan/inf handled here.
+defn float_format(f: Float, precision: Int)
+    [precision >= 1 && precision <= 9][term .^Length >= 1]
+    -> String
+{
+    let bits: Int = float_bits(f);
+    let sign: Int = (bits >> 31) & 1;
+    let exp8: Int = (bits >> 23) & 0xFF;
+    let mant: Int = bits & 0x7FFFFF;
+    when exp8 == 0xFF {
+        when mant == 0 {
+            when sign == 1 {
+                term "-inf";
+            };
+            term "inf";
+        };
+        term "nan";
+    };
+    when exp8 == 0 && mant == 0 {
+        when sign == 1 {
+            term "-0";
+        };
+        term "0";
+    };
+    let m: Int = mantissa_val(exp8, mant);
+    let e: Int = exponent_val(exp8);
+    let (r, k): (Int, Int) = float_rounded(m, e, precision);
+    let d: Int = int_digit_count(r);
+    let ds: String = pad_left(digits_of_int(r), d);
+    // k >= precision (P sig digits: exponent form) or k < -4 → exponential.
+    when k >= precision || k < -4 {
+        term exp_style(ds, k, sign);
+    };
+    term fixed_style(ds, k, sign);
+};
+
+// mantissa_val - the 24-bit significand (hidden bit for normal values).
+defn mantissa_val(exp8: Int, mant: Int) [exp8 >= 0 && exp8 <= 255 && mant >= 0][term >= 1] -> Int {
+    when exp8 == 0 {
+        term mant;
+    };
+    term mant + 0x800000;
+};
+
+// exponent_val - E such that value = M x 2^E (denormal E = -149).
+defn exponent_val(exp8: Int) [exp8 >= 0 && exp8 <= 255][term >= -149 && term <= 104] -> Int {
+    when exp8 == 0 {
+        term 1 - 150;
+    };
+    term exp8 - 150;
+};

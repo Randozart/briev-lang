@@ -262,7 +262,19 @@ fn referenced_function_names(item: &TopLevel) -> Vec<String> {
             crate::ast::Statement::Term(None) => {}
             crate::ast::Statement::EndProgram(Some(e)) => expr_calls(e, acc),
             crate::ast::Statement::EndProgram(None) => {}
-            crate::ast::Statement::Guarded(_, b) | crate::ast::Statement::Block(b) => {
+            crate::ast::Statement::Guarded(cond, b) => {
+                // 2026-09-09 (parity spike): the guard CONDITION is an
+                // expression too — `when value_ge_10(acc, b) { ... }`. Before
+                // this fix the condition's calls were missed, so a helper
+                // called ONLY from a guard position was dropped from the
+                // transitive import closure and the backend emitted an
+                // undefined `@value_ge_10`.
+                expr_calls(cond, acc);
+                for s in b {
+                    stmt_calls(s, acc);
+                }
+            }
+            crate::ast::Statement::Block(b) => {
                 for s in b {
                     stmt_calls(s, acc);
                 }
@@ -1602,6 +1614,46 @@ fn test_named_import_pulls_transitive_function_deps() {
         result.iter().filter_map(|i| match i {
             TopLevel::Definition(d) => Some(d.name.clone()),
             TopLevel::Transaction(t) => Some(t.name.clone()),
+            _ => None,
+        }).collect::<Vec<_>>()
+    );
+}
+
+/// 2026-09-09 (parity spike): a helper called ONLY from a `when` GUARD
+/// position must still be pulled by the transitive import closure. Before
+/// this fix `referenced_function_names` recursed into Guarded bodies but not
+/// the guard CONDITION, so `when value_ge_10(acc, b) { ... }` dropped the
+/// helper and the backend emitted an undefined `@value_ge_10`.
+#[test]
+fn test_named_import_pulls_guard_condition_deps() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("mod.bv"),
+        "defn helper(x: Int) [x >= 0][term == true || term == false] -> Bool {\n\
+             term x > 0;\n\
+         };\n\
+         defn use_helper(x: Int) -> Int {\n\
+             when helper(x) {\n\
+                 term 1;\n\
+             };\n\
+             term 0;\n\
+         };\n",
+    )
+    .unwrap();
+    let src = dir.path().join("main.bv");
+    fs::write(&src, "").unwrap();
+    let items = vec![TopLevel::Import(Import::literal(
+        "mod.bv".to_string(),
+        vec![("use_helper".to_string(), "use_helper".to_string())],
+    ))];
+    let mut resolver = ImportResolver::new();
+    resolver.add_search_path(dir.path().to_path_buf());
+    let result = resolver.resolve_imports(items, &src).unwrap();
+    assert!(
+        result.iter().any(|i| matches!(i, TopLevel::Definition(d) if d.name == "helper")),
+        "a defn called only from a when-guard condition must be pulled by the import closure; got: {:?}",
+        result.iter().filter_map(|i| match i {
+            TopLevel::Definition(d) => Some(d.name.clone()),
             _ => None,
         }).collect::<Vec<_>>()
     );
