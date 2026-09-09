@@ -200,6 +200,227 @@ pub fn tensor_gemm_ptx(
     out
 }
 
+/// Smem-staged tensor GEMM (S3b+). Same 32×16 warp-tile geometry as
+/// `tensor_gemm_ptx` but A/B tiles stage through shared memory per kstep
+/// and the fragments come from `ldmatrix` (x4 for A, x2.trans for B) —
+/// the S3b+ fragment recipes, device-verified:
+///   A: smem row-major, `ldmatrix.m8n8.x4` → exact A fragment
+///   B: smem row-major, `ldmatrix.m8n8.x2.trans` → exact B fragment
+/// `cp.async` multi-stage arrives in the next rung; this is the smem +
+/// coalesced-fill foundation.
+pub fn tensor_gemm_ptx_smem(
+    m: i64,
+    n: i64,
+    k: i64,
+    a_off: u64,
+    b_off: u64,
+    y_off: u64,
+    y_elem: u32,
+) -> String {
+    debug_assert!(m % 32 == 0 && n % 16 == 0 && k % 16 == 0);
+    let a_row = k * 2;
+    let b_row = n * 2;
+    let y_row = n * (y_elem as i64);
+    let mut out = String::new();
+
+    out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
+    out.push_str(".visible .entry main (.param .b64 proj_param)\n{\n");
+    out.push_str("    .reg .b64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd5b, %rd5c;\n");
+    out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
+    out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19;\n");
+    out.push_str("    .reg .b32  %a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7, %b0, %b1, %b2, %b3, %t0;\n");
+    out.push_str("    .reg .f32  %c0, %c1, %c2, %c3, %c4, %c5, %c6, %c7, %c8, %c9;\n");
+    out.push_str("    .reg .f32  %c10, %c11, %c12, %c13, %c14, %c15;\n");
+    out.push_str("    .reg .pred %p1;\n");
+    out.push_str("    .shared .align 16 .b8 asmem[1024];\n"); // 32x16 f16 A tile
+    out.push_str("    .shared .align 16 .b8 bsmem[512];\n");  // 16x16 f16 B tile
+    out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+
+    // Block decode from ctaid.y.
+    out.push_str("    mov.u32 %r1, %ctaid.y;\n");
+    out.push_str(&format!("    mov.u32 %r2, {};\n", n / 16));
+    out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
+    out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
+    out.push_str("    mov.u32 %r5, %tid.x;\n");
+    out.push_str("    setp.ge.u32 %p1, %r5, 32;\n");
+    out.push_str("    @%p1 ret;\n");
+    out.push_str("    shr.u32 %r6, %r5, 2;    // g\n");
+    out.push_str("    and.b32 %r7, %r5, 3;    // t\n");
+    out.push_str("    shl.b32 %r8, %r7, 1;    // 2t\n");
+
+    // rd2 = a tile base (a_off + m_cta*32*a_row).
+    out.push_str("    mov.u32 %r9, %r3;\n");
+    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 32 * a_row));
+    out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
+    out.push_str(&format!("    mov.u64 %rd2, {};\n", a_off));
+    out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+    out.push_str("    add.u64 %rd2, %rd2, %rd4;\n");
+    // rd3 = b tile base (b_off + n_cta*32).
+    out.push_str("    mov.u32 %r9, %r4;\n");
+    out.push_str("    mul.lo.u32 %r9, %r9, 32;\n");
+    out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
+    out.push_str(&format!("    mov.u64 %rd3, {};\n", b_off));
+    out.push_str("    add.u64 %rd3, %rd1, %rd3;\n");
+    out.push_str("    add.u64 %rd3, %rd3, %rd4;\n");
+    // rd6 = y base (y_off + m_cta*32*y_row + n_cta*16*y_elem).
+    out.push_str("    mov.u32 %r9, %r3;\n");
+    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 32 * y_row));
+    out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
+    out.push_str(&format!("    mov.u64 %rd6, {};\n", y_off));
+    out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
+    out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
+    out.push_str("    mov.u32 %r9, %r4;\n");
+    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 16 * (y_elem as i64)));
+    out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
+    out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
+
+    for i in 0..16 {
+        out.push_str(&format!("    mov.f32 %c{}, 0f00000000;\n", i));
+    }
+
+    // K loop.
+    out.push_str("    mov.u32 %r10, 0;  // kstep\nKLOOP:\n");
+    out.push_str(&format!("    setp.ge.u32 %p1, %r10, {};\n", k));
+    out.push_str("    @%p1 bra KEND;\n");
+
+    // A fill: thread t (0-31) copies A row t (16 f16 = 32 B) global→asmem.
+    // Global: rd2 + t*a_row + kstep*2 (kstep is element column offset).
+    out.push_str("    mov.u32 %r11, %r5;\n");
+    out.push_str(&format!("    mul.lo.u32 %r12, %r11, {};\n", a_row));
+    out.push_str("    mov.u32 %r13, %r10;\n");
+    out.push_str("    mul.lo.u32 %r13, %r13, 2;\n");
+    out.push_str("    add.u32 %r12, %r12, %r13;\n");
+    out.push_str("    mul.wide.u32 %rd4, %r12, 1;\n");
+    out.push_str("    add.u64 %rd5, %rd2, %rd4;\n");
+    out.push_str("    mov.u64 %rd4, asmem;\n");
+    out.push_str("    mul.wide.u32 %rd5b, %r11, 32;\n");
+    out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+    for _ in 0..8 {
+        out.push_str("    ld.global.b32 %t0, [%rd5]; st.shared.b32 [%rd4], %t0;\n");
+        out.push_str("    add.u64 %rd5, %rd5, 4; add.u64 %rd4, %rd4, 4;\n");
+    }
+
+    // B fill: thread t fills B row (t%16), 8 f16 at cols (t/16)*8, global→bsmem.
+    // Global: rd3 + (kstep + row)*b_row + (t/16)*16.
+    out.push_str("    mov.u32 %r11, %r5;\n");
+    out.push_str("    and.b32 %r12, %r11, 15;   // row = t%16\n");
+    out.push_str("    shr.u32 %r13, %r11, 4;    // half = t/16\n");
+    out.push_str("    mov.u32 %r14, %r10;\n");
+    out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", b_row)); // kstep*b_row
+    out.push_str(&format!("    mul.lo.u32 %r15, %r12, {};\n", b_row));
+    out.push_str("    add.u32 %r14, %r14, %r15;\n");
+    out.push_str("    mov.u32 %r15, %r13;\n");
+    out.push_str("    mul.lo.u32 %r15, %r15, 16;\n");
+    out.push_str("    add.u32 %r14, %r14, %r15;\n");
+    out.push_str("    mul.wide.u32 %rd4, %r14, 1;\n");
+    out.push_str("    add.u64 %rd5, %rd3, %rd4;\n");
+    out.push_str("    mov.u64 %rd4, bsmem;\n");
+    out.push_str(&format!("    mul.lo.u32 %r15, %r12, {};\n", 32)); // row*32 bytes
+    out.push_str("    mul.wide.u32 %rd5b, %r15, 1;\n");
+    out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+    out.push_str("    mul.wide.u32 %rd5c, %r13, 16;\n");
+    out.push_str("    add.u64 %rd4, %rd4, %rd5c;\n");
+    for _ in 0..4 {
+        out.push_str("    ld.global.b32 %t0, [%rd5]; st.shared.b32 [%rd4], %t0;\n");
+        out.push_str("    add.u64 %rd5, %rd5, 4; add.u64 %rd4, %rd4, 4;\n");
+    }
+
+    out.push_str("    bar.sync 0;\n");
+
+    // A fragments: ldmatrix.x4 for half 0 (asmem) and half 1 (asmem+512).
+    // addr(l) = asmem + ((m/2)*8 + l%8)*32 + (m%2)*16, m=l/8. (locked)
+    out.push_str("    mov.u64 %rd4, asmem;\n");
+    out.push_str("    mov.u32 %r11, %r5;\n");
+    out.push_str("    shr.u32 %r12, %r11, 3;\n");
+    out.push_str("    and.b32 %r13, %r11, 7;\n");
+    out.push_str("    and.b32 %r14, %r12, 1;\n");
+    out.push_str("    shr.u32 %r15, %r12, 1;\n");
+    out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
+    out.push_str("    add.u32 %r15, %r15, %r13;\n");
+    out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+    out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
+    out.push_str("    add.u32 %r16, %r15, %r14;\n");
+    out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
+    out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+    out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
+    out.push_str("    add.u64 %rd5, %rd5, 512;\n");
+    out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a4, %a5, %a6, %a7}, [%rd5];\n");
+
+    // B fragments: ldmatrix.x2.trans for ng=0 (bsmem) and ng=1 (bsmem+16).
+    // addr(l) = bsmem + (m*8 + (l%16)%8)*32 + ((l%16)/8)*16, m=l/16. (locked)
+    for ng in 0..2 {
+        out.push_str("    mov.u64 %rd4, bsmem;\n");
+        out.push_str(&format!("    add.u64 %rd4, %rd4, {};\n", ng * 16));
+        out.push_str("    mov.u32 %r11, %r5;\n");
+        out.push_str("    shr.u32 %r12, %r11, 4;\n");
+        out.push_str("    and.b32 %r13, %r11, 15;\n");
+        out.push_str("    and.b32 %r14, %r13, 7;\n");
+        out.push_str("    shr.u32 %r16, %r13, 3;\n");
+        out.push_str("    mul.lo.u32 %r15, %r12, 8;\n");
+        out.push_str("    add.u32 %r15, %r15, %r14;\n");
+        out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+        out.push_str("    mul.lo.u32 %r16, %r16, 16;\n");
+        out.push_str("    add.u32 %r17, %r15, %r16;\n");
+        out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
+        out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+        if ng == 0 {
+            out.push_str("    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%b0, %b1}, [%rd5];\n");
+        } else {
+            out.push_str("    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%b2, %b3}, [%rd5];\n");
+        }
+    }
+
+    // 4 mma: (mh, ng).
+    for mh in 0..2 {
+        for ng in 0..2 {
+            let cb = 4 * (mh * 2 + ng);
+            let (a0, a1, a2, a3) = if mh == 0 { ("a0", "a1", "a2", "a3") } else { ("a4", "a5", "a6", "a7") };
+            let (b0, b1) = if ng == 0 { ("b0", "b1") } else { ("b2", "b3") };
+            out.push_str(&format!(
+                "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{%{}, %{}, %{}, %{}}}, {{%{}, %{}}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
+                cb, cb + 1, cb + 2, cb + 3, a0, a1, a2, a3, b0, b1, cb, cb + 1, cb + 2, cb + 3
+            ));
+        }
+    }
+
+    out.push_str("    bar.sync 0;\n");
+    out.push_str("    add.u32 %r10, %r10, 16;\n");
+    out.push_str("    bra.uni KLOOP;\nKEND:\n");
+
+    // Store C (same as tensor_gemm_ptx).
+    for mh in 0..2 {
+        for ng in 0..2 {
+            let cb = 4 * (mh * 2 + ng);
+            for (coff, row_off, col_off) in [
+                (0i64, 0i64, 0i64),
+                (1, 0, 1),
+                (2, 8, 0),
+                (3, 8, 1),
+            ] {
+                let cname = format!("c{}", cb + coff);
+                out.push_str(&format!("    mov.u32 %r13, {};\n", (16 * mh + row_off) * y_row));
+                out.push_str(&format!("    mul.lo.u32 %r14, %r6, {};\n", y_row));
+                out.push_str("    add.u32 %r13, %r13, %r14;\n");
+                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", ng * 8 * (y_elem as i64)));
+                out.push_str("    mov.u32 %r14, %r8;\n");
+                out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", y_elem));
+                out.push_str("    add.u32 %r13, %r13, %r14;\n");
+                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", col_off * (y_elem as i64)));
+                out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
+                out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
+                if y_elem == 4 {
+                    out.push_str(&format!("    st.global.f32 [%rd5], %{};\n", cname));
+                } else {
+                    out.push_str(&format!("    cvt.rn.f16.f32 %t0, %{};\n", cname));
+                    out.push_str("    st.global.u16 [%rd5], %t0;\n");
+                }
+            }
+        }
+    }
+    out.push_str("    ret;\n}\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +492,33 @@ mod tests {
         assert!(ptx.contains("st.global.u16 [%rd5], %t0;"), "f16 store");
         // n_cta*16*y_elem = n_cta*32 for f16 (NOT *64)
         assert!(ptx.contains("mul.lo.u32 %r9, %r9, 32;"), "n_cta col = 16*2: {ptx}");
+    }
+}
+
+#[cfg(test)]
+mod dump_smem {
+    use super::*;
+    #[test]
+    fn dump() {
+        let ptx = tensor_gemm_ptx_smem(64, 64, 64, 0, 8192, 16384, 4);
+        std::fs::write("/tmp/opencode/tgemm_smem64.ptx", &ptx).unwrap();
+    }
+    #[test]
+    fn dump_k16() {
+        let ptx = tensor_gemm_ptx_smem(32, 16, 16, 0, 1024, 4096, 4);
+        std::fs::write("/tmp/opencode/tgemm_smem_k16.ptx", &ptx).unwrap();
+    }
+    #[test]
+    fn dump_k32() {
+        /* M=32, N=16, K=32: a_row=64, A=2048B, B=1024B, C=2048B */
+        let ptx = tensor_gemm_ptx_smem(32, 16, 32, 0, 2048, 3072, 4);
+        std::fs::write("/tmp/opencode/tgemm_smem_k32.ptx", &ptx).unwrap();
+    }
+    #[test]
+    fn dump_k64() {
+        /* M=64, N=64, K=64: a_row=128, b_row=128, y_row=256
+           A=8192, B=8192, C=16384 */
+        let ptx = tensor_gemm_ptx_smem(64, 64, 64, 0, 8192, 16384, 4);
+        std::fs::write("/tmp/opencode/tgemm_smem_k64.ptx", &ptx).unwrap();
     }
 }
