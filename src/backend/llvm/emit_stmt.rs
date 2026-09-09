@@ -147,8 +147,27 @@ fn collect_foreach_assigned(stmts: &[Statement], out: &mut std::collections::Has
     for s in stmts {
         match s {
             Statement::Assign(Expr::Identifier(name), _) => { out.insert(name.clone()); }
+            Statement::ArrowAssign { target: Some(t), .. } => {
+                // 2026-09-08 (audit): arrow-push/extract stores into a local
+                // (`acc <- q`) — the plain-copy path stores to the target via
+                // emit_arrow_store, so a foreach-local target needs an alloca
+                // slot or each iteration reads the stale pre-loop register.
+                if let Expr::Identifier(name) = t.as_ref() {
+                    out.insert(name.clone());
+                }
+            }
             Statement::Guarded(_, body) => collect_foreach_assigned(body, out),
             Statement::Block(body) | Statement::SyncBlock(body) => collect_foreach_assigned(body, out),
+            // 2026-09-08 (audit): Mutex/Barrier bodies emit inline per
+            // iteration — assignments inside them must be tracked or the
+            // alloca slot is missing and the iteration re-reads the stale
+            // pre-loop register.
+            Statement::Mutex(body) | Statement::Barrier { body, .. } => collect_foreach_assigned(body, out),
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    collect_foreach_assigned(&arm.body, out);
+                }
+            }
             Statement::Foreach { body, .. } => collect_foreach_assigned(body, out),
             _ => {}
         }
@@ -1183,7 +1202,13 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         } else {
                             let v = backend.emit_expr(out, value, indent);
                             let reg = backend.fun.gen_reg();
-                            writeln!(out, "{}{} = call i64 @__eprint_str(ptr {})", indent, reg, v.name).ok();
+                            // 2026-09-08 (anti-pattern audit): resolve the
+                            // stderr printer symbol via frgn_map; fallback is
+                            // the C symbol (io.bv declares frgn__eprint_str).
+                            let sym = backend.ctx.frgn_map.get("frgn__eprint_str")
+                                .map(|sig| sig.name.clone())
+                                .unwrap_or_else(|| "__eprint_str".to_string());
+                            writeln!(out, "{}{} = call i64 @{}(ptr {})", indent, reg, sym, v.name).ok();
                         }
                         return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
                     }

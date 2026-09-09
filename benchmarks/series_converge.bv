@@ -13,8 +13,7 @@ let last: Float = 0.0;
 let x: Float = 0.5;
 
 defn print_best(v: Float) -> Float {
-    __print_float(v);
-    __print_char(10);
+    println!("{}", v);
     term v;
 };
 

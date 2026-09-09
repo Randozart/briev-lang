@@ -3,7 +3,6 @@
 // Falls back to CPU when Vulkan/OpenCL is unavailable.
 
 frgn __get_env_int(name: Ptr<Byte>) -> Int from #System;
-frgn __print_int(n: Int) -> Bool from #System;
 
 let N: Int = __get_env_int("BOUND");    // NOTE: harness uses BOUND env var
 
@@ -21,7 +20,7 @@ node saxpy_loop
 
 let i: Int = 0;
 node report [i < 1][i == 1] {
-    __print_int(N);
+    println!(N);
     i = i + 1;
     term;
 };

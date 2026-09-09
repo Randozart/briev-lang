@@ -39,8 +39,7 @@ node tick [
     count = count + 1;
     when count % 5000000 == 0 {
         let trace: Float = p00 + p11 + p22;
-        __print_float(x0 + x1 + x2 + trace);
-        __print_char(10);
+        println!("{}", x0 + x1 + x2 + trace);
     };
     term;
 };

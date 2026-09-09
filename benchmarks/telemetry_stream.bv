@@ -19,8 +19,7 @@ node tick [
     m2 = m2 + delta * delta;
     count = count + 1;
     when count % 1000000 == 0 {
-        __print_float(ema + m2);
-        __print_char(10);
+        println!("{}", ema + m2);
     };
     term;
 };

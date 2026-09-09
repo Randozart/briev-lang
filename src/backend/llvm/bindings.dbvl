@@ -17,7 +17,10 @@ Sqrt#      -> call double @llvm.sqrt.f64(double %0)
 // 2026-08-01 (audit): Print#/PrintChar# removed — the generic Print#
 // convenience intrinsic emits the __print_int/__print_str/__print_float/
 // __print_char/__print_bool family directly (protocol-category dispatch), not
-// printf. See src/backend/llvm/intrinsics.rs.
+// printf. 2026-09-08 (anti-pattern audit): the C symbols now resolve through
+// the frgn_map (lib/std/ffi/io.bv declares frgn__print_* → __print_*); the
+// --no-stdlib fallback keeps the intrinsic's own C symbol. See
+// src/backend/llvm/intrinsics.rs.
 Malloc#    -> call ptr @malloc(i64 %0)
 Free#      -> call void @free(ptr %0)
 Memcpy#    -> call ptr @memcpy(ptr %0, ptr %1, i64 %2)

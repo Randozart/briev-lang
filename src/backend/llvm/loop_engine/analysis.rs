@@ -262,10 +262,11 @@ pub fn build_let_field_refs(
 /// Check if an expression is an output-related FFI call.
 pub fn is_output_call(expr: &Expr) -> bool {
     match expr {
+        // 2026-09-08 (anti-pattern audit): Print#/Println# are the ONLY
+        // canonical output intrinsics — print! / println! lower to them via
+        // the print plugin. The raw __print_* frgn names were a second
+        // hardcoded copy; benchmark call sites migrated to println!().
         Expr::Call(name, _, _) if name == "Print#" || name == "Println#" => true,
-        // 2026-07-19: Stdlib print functions (replaced Print#/PutChar# intrinsics)
-        Expr::Call(name, _, _) if name == "__print_int" || name == "__print_float"
-            || name == "__print_str" || name == "__print_char" => true,
         _ => false,
     }
 }
@@ -293,11 +294,10 @@ pub fn observable_field_refs(
     result
 }
 
-/// Check if an expression contains a __print_* call (observable output).
+/// Check if an expression contains a Print#/Println# call (observable output).
 fn contains_output_call(expr: &Expr) -> bool {
     match expr {
-        Expr::Call(name, _, _) => name == "__print_int" || name == "__print_float"
-            || name == "__print_str" || name == "__print_char",
+        Expr::Call(name, _, _) => name == "Print#" || name == "Println#",
         Expr::Block(stmts) => stmts.iter().any(|s| matches!(s, Statement::Expression(e) if contains_output_call(e))),
         _ => false,
     }

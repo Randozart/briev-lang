@@ -70,8 +70,7 @@ node tick [
 
     count = count + 1;
     when count % 5000000 == 0 {
-        __print_float(m00 + m11 + m22 + m33);
-        __print_char(10);
+        println!("{}", m00 + m11 + m22 + m33);
     };
     term;
 };

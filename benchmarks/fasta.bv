@@ -15,7 +15,7 @@ const IC: Int = 29573;
 // expression so the LCG advances correctly each tick.
 node fasta [count < N][count == N] {
     seed = (seed * IA + IC) % IM;
-    __print_char(seed % 26 + 97);
+    print!((seed % 26 + 97) as Char);
     count = count + 1;
     term;
 };

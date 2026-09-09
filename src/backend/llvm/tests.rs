@@ -566,6 +566,87 @@ fn test_foreach_range_emits_counted_loop() {
         "foreach must emit a loop exit label");
 }
 
+/// 2026-09-08 (audit): a foreach-local assigned inside a `Mutex`/`Barrier`/
+/// `Match` body must still get an alloca slot (those bodies emit inline per
+/// iteration). Regression: collect_foreach_assigned's `_ => {}` catch-all
+/// skipped them — the body read the stale pre-loop register every iteration.
+#[test]
+fn test_foreach_assigned_inside_mutex_gets_alloca() {
+    let body = vec![
+        Statement::Let {
+            name: "acc".to_string(),
+            names: vec![],
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+        },
+        Statement::Foreach {
+            item: "i".to_string(),
+            list: Box::new(Expr::Range {
+                start: Box::new(Expr::Decimal(0)),
+                end: Box::new(Expr::Decimal(5)),
+                inclusive: true,
+            }),
+            body: vec![Statement::Mutex(vec![Statement::Assign(
+                Expr::Identifier("acc".to_string()),
+                Expr::BinaryOp(
+                    crate::ast::BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("acc".to_string())),
+                    Box::new(Expr::Identifier("i".to_string())),
+                ),
+            )])],
+        },
+        Statement::Term(None),
+    ];
+    let node = TopLevel::Transaction(Transaction {
+        name: "s".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: Contract {
+            pre_condition: Expr::Bool(true),
+            post_condition: Expr::Bool(true),
+            watchdog: None,
+            explicit: false,
+            span: None,
+        post_authority: false},
+        body,
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    });
+    let mut backend = LlvmBackend::new();
+    let output = backend.generate(&vec![node], None);
+    // The bug: without recursion into Mutex, the body created a FRESH alloca
+    // each iteration, seeded it with the stale pre-loop value, and never
+    // accumulated. The fix seeds the loop-carried alloca BEFORE the header
+    // and the body LOADS from it. Discriminator: a pre-header alloca that is
+    // LOADED after the `foreach.body` label. (The counter's alloca is also
+    // pre-header but is loaded in the header, not the body — so this pattern
+    // uniquely marks the loop-carried accumulator.)
+    let body_pos = output.find("foreach.body").expect("foreach body label");
+    let (before_hdr, _) = output.split_at(output.find("foreach.hdr").expect("foreach header"));
+    let (_, after_body) = output.split_at(body_pos);
+    let pre_allocas: Vec<String> = before_hdr
+        .split('\n')
+        .filter_map(|l| {
+            let l = l.trim();
+            let rest = l.strip_prefix('%')?;
+            let name = rest.split(' ').next()?;
+            if l.contains("alloca i64") { Some(name.to_string()) } else { None }
+        })
+        .collect();
+    assert!(!pre_allocas.is_empty(), "loop-carried alloca must be seeded before the header; got:\n{output}");
+    let body_load = pre_allocas.iter().any(|r| after_body.contains(&format!("load i64, ptr %{r}")));
+    assert!(body_load,
+        "loop body must LOAD from a pre-header alloca (accumulation, not stale-read); got:\n{output}");
+}
+
 /// A program with `foreach(i in 0..=5) { if i == 3 { acc = 42; break; } }` —
 /// exercises the `break` early-exit lowering (2026-08-17).
 fn foreach_break_program() -> Vec<TopLevel> {

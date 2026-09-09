@@ -26,8 +26,7 @@ node tick [
     err_prev = err;
     count = count + 1;
     when count % 1000000 == 0 {
-        __print_float(output + pv);
-        __print_char(10);
+        println!("{}", output + pv);
     };
     term;
 };

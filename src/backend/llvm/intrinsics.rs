@@ -2033,30 +2033,35 @@ fn emit_intrinsic_print(
         "String" => {
             // A Briev String value IS the ptr to a length-prefixed
             // [len][bytes] buffer; __print_str takes that pointer.
-            writeln!(out, "{}{} = call i64 @__print_str(ptr {})", indent, v, a.name).ok();
+            let sym = frgn_symbol(backend, "frgn__print_str", "__print_str");
+            writeln!(out, "{}{} = call i64 @{}(ptr {})", indent, v, sym, a.name).ok();
         }
         "Char" => {
             if backend.fun.boxed_scalar_regs.contains(&a.name) {
                 // A boxed Char param is already i64 — pass directly.
-                writeln!(out, "{}{} = call i64 @__print_char(i64 {})", indent, v, a.name).ok();
+                let sym = frgn_symbol(backend, "frgn__print_char", "__print_char");
+                writeln!(out, "{}{} = call i64 @{}(i64 {})", indent, v, sym, a.name).ok();
             } else {
                 // Native Char regs are i32 (literal/let/field/cast) —
                 // widen to the i64 ABI before the call.
                 let wide = backend.fun.gen_reg();
                 writeln!(out, "{}{} = zext i32 {} to i64", indent, wide, a.name).ok();
-                writeln!(out, "{}{} = call i64 @__print_char(i64 {})", indent, v, wide).ok();
+                let sym = frgn_symbol(backend, "frgn__print_char", "__print_char");
+                writeln!(out, "{}{} = call i64 @{}(i64 {})", indent, v, sym, wide).ok();
             }
         }
         "Bool" => {
             if backend.fun.boxed_scalar_regs.contains(&a.name) {
                 // A boxed Bool param is already i64 0/1 — pass directly.
-                writeln!(out, "{}{} = call i64 @__print_bool(i64 {})", indent, v, a.name).ok();
+                let sym = frgn_symbol(backend, "frgn__print_bool", "__print_bool");
+                writeln!(out, "{}{} = call i64 @{}(i64 {})", indent, v, sym, a.name).ok();
             } else {
                 // Bool regs are i8 (Expr::Bool emits `add i8 0, 1/0`);
                 // widen to the i64 ABI before the call.
                 let wide = backend.fun.gen_reg();
                 writeln!(out, "{}{} = zext i8 {} to i64", indent, wide, a.name).ok();
-                writeln!(out, "{}{} = call i64 @__print_bool(i64 {})", indent, v, wide).ok();
+                let sym = frgn_symbol(backend, "frgn__print_bool", "__print_bool");
+                writeln!(out, "{}{} = call i64 @{}(i64 {})", indent, v, sym, wide).ok();
             }
         }
         "Float" => {
@@ -2065,17 +2070,34 @@ fn emit_intrinsic_print(
             // 2026-08-01 C3 fix).
             let unboxed = backend.fun.reg_float_cache.get(&a.name).cloned()
                 .unwrap_or_else(|| a.name.clone());
-            let (arg_llvm, fn_name) = if a.ty == Type::float64() {
-                ("double", "__print_float64")
+            let (arg_llvm, briev_name, fallback_c) = if a.ty == Type::float64() {
+                ("double", "frgn__print_float64", "__print_float64")
             } else {
-                ("float", "__print_float")
+                ("float", "frgn__print_float", "__print_float")
             };
-            writeln!(out, "{}{} = call i64 @{}({} {})", indent, v, fn_name, arg_llvm, unboxed).ok();
+            let sym = frgn_symbol(backend, briev_name, fallback_c);
+            writeln!(out, "{}{} = call i64 @{}({} {})", indent, v, sym, arg_llvm, unboxed).ok();
         }
         _ => {
             let llvm_ty = backend.llvm_type(&a.ty);
-            writeln!(out, "{}{} = call i64 @__print_int({} {})", indent, v, llvm_ty, a.name).ok();
+            let sym = frgn_symbol(backend, "frgn__print_int", "__print_int");
+            writeln!(out, "{}{} = call i64 @{}({} {})", indent, v, sym, llvm_ty, a.name).ok();
         }
     }
     BTypedRegister { name: v.to_string(), ty: Type::int() }
+}
+
+/// 2026-09-08 (anti-pattern audit): resolve the C linker symbol for a print
+/// runtime function through the frgn_map (declared by lib/std/ffi/io.bv as
+/// `frgn frgn__print_int ... : __print_int`). Previously the C symbol was
+/// hardcoded here — three copies of the same name across intrinsics.rs,
+/// loop_engine/analysis.rs, and emit_stmt.rs. The `--no-stdlib` fallback is
+/// the C symbol itself (keeps the intrinsic working without stdlib, per the
+/// intrinsics-vs-stdlib rule). `__print_str` is the backend-declared B0
+/// exception: its stdlib frgn was removed (dead + broken), so the lookup
+/// always falls back for String.
+fn frgn_symbol(backend: &LlvmBackend, briev_name: &str, fallback_c: &str) -> String {
+    backend.ctx.frgn_map.get(briev_name)
+        .map(|sig| sig.name.clone())
+        .unwrap_or_else(|| fallback_c.to_string())
 }

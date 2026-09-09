@@ -19,8 +19,7 @@ node tick [
     f3 = f3 * 0.999 + f0 * 0.001;
     count = count + 1;
     when count % 100000 == 0 {
-        __print_float(f0 + f1 + f2 + f3);
-        __print_char(10);
+        println!("{}", f0 + f1 + f2 + f3);
     };
     term;
 };

@@ -48,8 +48,7 @@ node tick [
     f12 = n12; f13 = n13; f14 = n14; f15 = n15;
     count = count + 1;
     when count % 5000000 == 0 {
-        __print_float(f0 + f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15);
-        __print_char(10);
+        println!("{}", f0 + f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15);
     };
     term;
 };

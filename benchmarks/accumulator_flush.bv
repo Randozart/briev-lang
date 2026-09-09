@@ -19,12 +19,7 @@ node tick [
     n = n + 1;
     count = count + 1;
     when count % 100000 == 0 {
-        __print_int(n);
-        __print_char(32);
-        __print_float(sum);
-        __print_char(32);
-        __print_float(sumsq);
-        __print_char(10);
+        println!("{} {} {}", n, sum, sumsq);
         sum = 0.0;
         sumsq = 0.0;
         n = 0;
