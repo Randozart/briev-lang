@@ -1,0 +1,53 @@
+// Parity corpus — float_to_str %.9g precision gate (plan §6.2).
+// Pins the Briev-native float_to_str to C printf("%.9g") byte-for-byte.
+// NaN/inf/-0.0/denormals + rounding boundaries + exponent-form switches.
+let done: Bool = false;
+node go [done == false][done == true] {
+    when done == false {
+        // Basic
+        println!("{}", 0.0);
+        println!("{}", 1.0);
+        println!("{}", -1.0);
+        println!("{}", 0.5);
+        println!("{}", -0.5);
+        println!("{}", 3.14);
+        println!("{}", -3.14);
+        println!("{}", 2.7182818);
+        println!("{}", 100.0);
+        println!("{}", 1000.0);
+        println!("{}", 0.1);
+        println!("{}", 0.2);
+        println!("{}", 0.3);
+        println!("{}", 0.25);
+        println!("{}", 0.125);
+        println!("{}", 1e-9);
+        println!("{}", 1e9);
+        println!("{}", 123456789.0);
+        println!("{}", 12345678.0);
+        println!("{}", 1234567.0);
+        println!("{}", 123456.0);
+        println!("{}", 12345.0);
+        println!("{}", 1234.0);
+        println!("{}", 123.0);
+        println!("{}", 12.0);
+        println!("{}", 1.5e308);
+        println!("{}", 5e-324);
+        // Rounding boundaries (halfway cases)
+        println!("{}", 1.000000005);
+        println!("{}", 999999999.0);
+        println!("{}", 0.999999999);
+        println!("{}", 1e-5);
+        println!("{}", 1e-4);
+        println!("{}", 1e-3);
+        println!("{}", 1e-2);
+        // Sign of zero
+        println!("{}", -0.0);
+        // Division edge cases
+        println!("{}", 1.0 / 0.0);
+        println!("{}", -1.0 / 0.0);
+        println!("{}", 0.0 / 0.0);
+        println!("{}", -0.0 / 0.0);
+        done = true;
+    };
+    term;
+};

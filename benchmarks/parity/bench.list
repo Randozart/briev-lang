@@ -1,0 +1,11 @@
+# Parity golden benchmarks (plan §6.1): name BOUND
+# Each prints at a `when count % N == 0` cadence; BOUND picks ~2-3 print lines.
+accumulator_flush 300000
+sweep_sparse 300000
+telemetry_stream 3000000
+pid_control 3000000
+fasta 100
+float_math_nonzero 15000000
+matrix_pipeline 15000000
+sweep_mid 3000000
+series_converge 1000

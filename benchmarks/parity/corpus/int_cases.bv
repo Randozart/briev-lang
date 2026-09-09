@@ -1,0 +1,27 @@
+// Parity corpus — int_to_str / uint_to_str %ld precision gate (plan §6.2).
+let done: Bool = false;
+node go [done == false][done == true] {
+    when done == false {
+        println!("{}", 0);
+        println!("{}", 1);
+        println!("{}", -1);
+        println!("{}", 42);
+        println!("{}", -42);
+        println!("{}", 100);
+        println!("{}", 1000);
+        println!("{}", 1000000);
+        println!("{}", 123456789);
+        println!("{}", -123456789);
+        println!("{}", 2147483647);
+        println!("{}", -2147483648);
+        println!("{}", 9223372036854775807);
+        let imin: Int = -9223372036854775807 - 1;
+        println!("{}", imin);
+        println!("{}", 10);
+        println!("{}", 100000000000);
+        println!("{}", 999999999999);
+        println!("{}", -999999999999);
+        done = true;
+    };
+    term;
+};

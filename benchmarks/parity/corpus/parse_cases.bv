@@ -1,0 +1,32 @@
+// Parity corpus — str_to_int / str_to_float parse-semantics gate (plan §6.2).
+// Return-value parity, not just output: the parse edge cases a pure-Briev
+// implementation must reproduce (whitespace, sign, plus, overflow, garbage).
+let done: Bool = false;
+node go [done == false][done == true] {
+    when done == false {
+        let s1: Int = "42" as Int;
+        println!("{}", s1);
+        let s2: Int = "+42" as Int;
+        println!("{}", s2);
+        let s3: Int = "-0" as Int;
+        println!("{}", s3);
+        let s4: Int = " 42 " as Int;
+        println!("{}", s4);
+        let s5: Int = "42abc" as Int;
+        println!("{}", s5);
+        let s6: Int = "abc42" as Int;
+        println!("{}", s6);
+        let s7: Int = "" as Int;
+        println!("{}", s7);
+        let s8: Int = "0" as Int;
+        println!("{}", s8);
+        let s9: Int = "007" as Int;
+        println!("{}", s9);
+        let s10: Int = "-2147483648" as Int;
+        println!("{}", s10);
+        let s11: Int = "2147483647" as Int;
+        println!("{}", s11);
+        done = true;
+    };
+    term;
+};
