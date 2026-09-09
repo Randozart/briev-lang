@@ -300,17 +300,26 @@ pub fn tensor_gemm_ptx_smem(
         out.push_str("    add.u64 %rd5, %rd5, 4; add.u64 %rd4, %rd4, 4;\n");
     }
 
-    // B fill: thread t fills B row (t%16), 8 f16 at cols (t/16)*8, global→bsmem.
-    // Global: rd3 + (kstep + row)*b_row + (t/16)*16.
+    // B fill: blocked 2x2 layout so the x2.trans col-shifted second 8x8
+    // (M1 = +16 bytes, side-by-side) yields the mma's rows-8-15 fragment.
+    //   bsmem[r<8][c]      = B[(r%8)+0][c]      (ng=0 rows 0-7)
+    //   bsmem[r<8][8+c]    = B[(r%8)+8][c]      (ng=0 rows 8-15)
+    //   bsmem[8+r][c]      = B[r][8+c]          (ng=1 rows 0-7)
+    //   bsmem[8+r][8+c]    = B[8+r][8+c]        (ng=1 rows 8-15)
+    // Thread t (row=t%16, half=t/16) reads B[(row%8)+8*half][half*... ; col
+    // offset +(row>=8 ? 8 : 0)] and writes bsmem[row*32 + half*16].
     out.push_str("    mov.u32 %r11, %r5;\n");
     out.push_str("    and.b32 %r12, %r11, 15;   // row = t%16\n");
     out.push_str("    shr.u32 %r13, %r11, 4;    // half = t/16\n");
     out.push_str("    mov.u32 %r14, %r10;\n");
     out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", b_row)); // kstep*b_row
-    out.push_str(&format!("    mul.lo.u32 %r15, %r12, {};\n", b_row));
+    out.push_str("    and.b32 %r15, %r12, 7;    // row%8\n");
+    out.push_str(&format!("    mul.lo.u32 %r15, %r15, {};\n", b_row));
     out.push_str("    add.u32 %r14, %r14, %r15;\n");
-    out.push_str("    mov.u32 %r15, %r13;\n");
-    out.push_str("    mul.lo.u32 %r15, %r15, 16;\n");
+    out.push_str(&format!("    mul.lo.u32 %r15, %r13, {};\n", 8 * b_row)); // half*8*b_row
+    out.push_str("    add.u32 %r14, %r14, %r15;\n");
+    out.push_str("    shr.u32 %r15, %r12, 3;    // row>=8 ? 1 : 0\n");
+    out.push_str("    mul.lo.u32 %r15, %r15, 16;\n"); // +8 cols * 2 bytes for ng=1 block
     out.push_str("    add.u32 %r14, %r14, %r15;\n");
     out.push_str("    mul.wide.u32 %rd4, %r14, 1;\n");
     out.push_str("    add.u64 %rd5, %rd3, %rd4;\n");
@@ -345,12 +354,23 @@ pub fn tensor_gemm_ptx_smem(
     out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
     out.push_str("    add.u64 %rd5, %rd5, 512;\n");
     out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a4, %a5, %a6, %a7}, [%rd5];\n");
+    // ldmatrix.x4 yields the four 8x8 tiles as {M0=rows0-7/cols0-7, M1=rows0-7/
+    // cols8-15, M2=rows8-15/cols0-7, M3=rows8-15/cols8-15}. The mma.m16n8k16
+    // A operand instead interleaves rows with k-halves: a1 must be the OTHER
+    // row-block's k0-7 (M2), a2 this row-block's k8-15 (M1). Device-verified:
+    // without the swap the seeded 64x64x64 A-side is ~5% off while all-ones
+    // (degenerate) hides it. (B ldmatrix.x2.trans has no such swap.)
+    out.push_str("    mov.b32 %t0, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %t0;\n");
+    out.push_str("    mov.b32 %t0, %a5; mov.b32 %a5, %a6; mov.b32 %a6, %t0;\n");
 
-    // B fragments: ldmatrix.x2.trans for ng=0 (bsmem) and ng=1 (bsmem+16).
-    // addr(l) = bsmem + (m*8 + (l%16)%8)*32 + ((l%16)/8)*16, m=l/16. (locked)
+    // B fragments: ldmatrix.x2.trans for ng=0 (bsmem block A) and ng=1
+    // (bsmem+256, block B). addr(l) = bsmem + ng*256 + (m*8 + (l%16)%8)*32
+    // + ((l%16)/8)*16, m=l/16. (locked 2026-09-09: x2.trans M1 is the
+    // col-shifted +16 8x8, so the bsmem fill stores the B tile as 2x2 8x8
+    // blocks — see the B-fill comment above.)
     for ng in 0..2 {
         out.push_str("    mov.u64 %rd4, bsmem;\n");
-        out.push_str(&format!("    add.u64 %rd4, %rd4, {};\n", ng * 16));
+        out.push_str(&format!("    add.u64 %rd4, %rd4, {};\n", ng * 256));
         out.push_str("    mov.u32 %r11, %r5;\n");
         out.push_str("    shr.u32 %r12, %r11, 4;\n");
         out.push_str("    and.b32 %r13, %r11, 15;\n");
@@ -496,29 +516,90 @@ mod tests {
 }
 
 #[cfg(test)]
-mod dump_smem {
+mod smem_tests {
     use super::*;
+
     #[test]
-    fn dump() {
-        let ptx = tensor_gemm_ptx_smem(64, 64, 64, 0, 8192, 16384, 4);
-        std::fs::write("/tmp/opencode/tgemm_smem64.ptx", &ptx).unwrap();
+    fn smem_geometry_and_mma() {
+        let ptx = tensor_gemm_ptx_smem(64, 32, 32, 0, 8192, 32768, 4);
+        assert!(ptx.contains(".entry main"), "entry");
+        assert!(ptx.contains(".shared .align 16 .b8 asmem[1024];"), "asmem decl");
+        assert!(ptx.contains(".shared .align 16 .b8 bsmem[512];"), "bsmem decl");
+        assert_eq!(ptx.matches("mma.sync.aligned.m16n8k16").count(), 4, "mma count");
+        assert_eq!(ptx.matches("ldmatrix.sync.aligned.m8n8.x4").count(), 2, "A ldmatrix x4 x2");
+        assert_eq!(ptx.matches("ldmatrix.sync.aligned.m8n8.x2.trans").count(), 2, "B ldmatrix x2.trans x2");
+        assert_eq!(ptx.matches("bar.sync 0").count(), 2, "barrier per kstep (fill + MMA)");
+        assert!(ptx.contains("KLOOP:"), "k loop");
+        assert!(ptx.contains("setp.ge.u32 %p1, %r10, 32;"), "K=32 bound");
     }
+
     #[test]
-    fn dump_k16() {
-        let ptx = tensor_gemm_ptx_smem(32, 16, 16, 0, 1024, 4096, 4);
-        std::fs::write("/tmp/opencode/tgemm_smem_k16.ptx", &ptx).unwrap();
-    }
-    #[test]
-    fn dump_k32() {
-        /* M=32, N=16, K=32: a_row=64, A=2048B, B=1024B, C=2048B */
+    fn smem_multi_kstep_fill_strides() {
+        // The kstep strides: A fill advances 2 bytes (one f16 column) and the
+        // B fill b_row bytes (one K row) per kstep — NOT k_elem-scaled strides
+        // that read OOB for K > 16.
         let ptx = tensor_gemm_ptx_smem(32, 16, 32, 0, 2048, 3072, 4);
-        std::fs::write("/tmp/opencode/tgemm_smem_k32.ptx", &ptx).unwrap();
+        assert!(ptx.contains("    mul.lo.u32 %r13, %r13, 2;\n"), "A fill kstep*2: {ptx}");
+        assert!(ptx.contains("    mul.lo.u32 %r14, %r14, 32;\n"), "B fill kstep*b_row(N=16): {ptx}");
+        // Each thread copies 8 b32 (32 B = 16 f16) for A and 4 b32 (16 B) for B.
+        assert_eq!(ptx.matches("ld.global.b32 %t0, [%rd5]; st.shared.b32 [%rd4], %t0;").count(), 12,
+            "A(8) + B(4) smem fill stores: {ptx}");
     }
+
     #[test]
-    fn dump_k64() {
-        /* M=64, N=64, K=64: a_row=128, b_row=128, y_row=256
-           A=8192, B=8192, C=16384 */
-        let ptx = tensor_gemm_ptx_smem(64, 64, 64, 0, 8192, 16384, 4);
-        std::fs::write("/tmp/opencode/tgemm_smem_k64.ptx", &ptx).unwrap();
+    fn smem_b_blocked_fill_layout() {
+        // The B tile is stored as 2x2 8x8 blocks so the x2.trans col-shifted
+        // second 8x8 yields the mma's rows-8-15 fragment (the 2026-09-09 fix):
+        //   bsmem[r<8][c] = B[r][c], bsmem[r<8][8+c] = B[8+r][c] (ng=0),
+        //   bsmem[8+r][c] = B[r][8+c], bsmem[8+r][8+c] = B[8+r][8+c] (ng=1).
+        // The fill uses row%8 (not row) for the B row and +16 bytes for
+        // row>=8 (the ng=1 column block); the ldmatrix bases are bsmem (ng=0)
+        // and bsmem+256 (ng=1).
+        let ptx = tensor_gemm_ptx_smem(64, 32, 16, 0, 2048, 8192, 2);
+        assert!(ptx.contains("    and.b32 %r15, %r12, 7;    // row%8\n"), "row%8: {ptx}");
+        assert!(ptx.contains("    shr.u32 %r15, %r12, 3;    // row>=8 ? 1 : 0\n"), "row/8: {ptx}");
+        assert!(ptx.contains("    add.u64 %rd4, %rd4, 0;\n") ||
+                ptx.contains("    add.u64 %rd4, %rd4, 256;\n"),
+            "B ldmatrix bases 0/256: {ptx}");
+        assert!(ptx.contains("add.u64 %rd4, %rd4, 256;\n"), "ng=1 base bsmem+256: {ptx}");
+        assert!(!ptx.contains("add.u64 %rd4, %rd4, 16;\n"), "old ng*16 base removed: {ptx}");
+    }
+
+    #[test]
+    fn smem_proj_bases_include_rd1() {
+        let ptx = tensor_gemm_ptx_smem(64, 32, 32, 0, 8192, 32768, 4);
+        assert!(ptx.contains("add.u64 %rd2, %rd1, %rd2;"), "a base += proj");
+        assert!(ptx.contains("add.u64 %rd3, %rd1, %rd3;"), "b base += proj");
+        assert!(ptx.contains("add.u64 %rd6, %rd1, %rd6;"), "y base += proj");
+    }
+
+    #[test]
+    fn smem_guards_extra_lanes() {
+        let ptx = tensor_gemm_ptx_smem(32, 16, 16, 0, 1024, 4096, 4);
+        assert!(ptx.contains("setp.ge.u32 %p1, %r5, 32;"), "lane guard");
+        assert!(ptx.contains("@%p1 ret;"), "early return");
+    }
+
+    #[test]
+    fn smem_f16_y_emits_cvt() {
+        let ptx = tensor_gemm_ptx_smem(32, 16, 16, 0, 1024, 4096, 2);
+        assert!(ptx.contains("cvt.rn.f16.f32 %t0, %c0;"), "f16 store cvt");
+        assert!(ptx.contains("st.global.u16 [%rd5], %t0;"), "f16 store");
+    }
+
+    #[test]
+    fn smem_f16_y_stride_is_n_elem_not_n4() {
+        let ptx = tensor_gemm_ptx_smem(32, 16, 16, 0, 1024, 4096, 2);
+        assert!(ptx.contains("mul.lo.u32 %r14, %r6, 32;"), "y_row=N*2=32: {ptx}");
+        assert!(ptx.contains("mul.lo.u32 %r9, %r9, 32;"), "n_cta col = 16*2: {ptx}");
+    }
+
+    #[test]
+    fn smem_cstore_uses_tile_accs() {
+        let ptx = tensor_gemm_ptx_smem(32, 32, 16, 0, 2048, 8192, 4);
+        for cb in [0, 4, 8, 12] {
+            assert!(ptx.contains(&format!("st.global.f32 [%rd5], %c{};", cb)),
+                "tile store c{}", cb);
+        }
     }
 }

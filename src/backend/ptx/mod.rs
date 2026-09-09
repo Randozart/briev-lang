@@ -9,8 +9,9 @@
 //! layout rule — so the kernel and the runner's field table can never
 //! drift (the SPIR-V backend's invariant, reused here).
 //!
-//! Not yet: tensor ops (mma.sync/ldmatrix/cp.async — S3), f16 operands,
-//! non-GEMM kernels. Each arrives as a first-class emitter arm with tests.
+//! Not yet: cp.async multi-stage (S3b+), multi-warp CTA, register blocking
+//! (S3b+ occupancy rungs), non-GEMM kernels. Each arrives as a first-class
+//! emitter arm with tests.
 
 use crate::ast::{Expr, TopLevel};
 use crate::backend::spirv::gemm::GemmPlan;
@@ -155,7 +156,7 @@ pub fn build_ptx_kernels(
             // `[i < M*N]` must go false after ONE dispatch); the
             // ptx_tensor dispatch geometry computes ny = count/512 blocks.
             (
-                tensor::tensor_gemm_ptx(plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem),
+                tensor::tensor_gemm_ptx_smem(plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem),
                 true,
                 e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
             )
