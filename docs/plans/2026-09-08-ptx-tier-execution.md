@@ -78,6 +78,41 @@ backend-contracts §2). Surface declared in `capabilities.rs`. `--backend ptx`.
 | S3 | single-mma / single-ldmatrix microtests with known fragments — **PASS** |
 | S3b | full tensor GEMM kernel into `--backend ptx` — **PASS (f32-y and f16-y exact vs double ref across 16/48/64/96/128/256 shapes; end-to-end runner dispatches once + fast-forwards)** |
 | S3b | full tensor GEMM kernel into `--backend ptx` — **PASS** |
+| S3b+ | smem-staged kernel (ldmatrix.x4 + ldmatrix.x2.trans) exact across 32×16×16/32×32×16/64×16×16/64³/128³/256³ — **PASS (2026-09-09; rel 0 vs double ref)** |
+
+### S3b+ fragment fixes (2026-09-09, device-verified)
+
+The smem-staged kernel shipped two layout bugs invisible to all-ones / periodic
+seeds, found by seeding A/B with non-periodic `(j%23)+1` f16 values:
+
+1. **A fragment (ldmatrix.x4)**: the x4 yields the four 8×8 tiles as
+   `{M0=rows0-7/c0-7, M1=rows0-7/c8-15, M2=rows8-15/c0-7, M3=rows8-15/c8-15}`.
+   The mma.m16n8k16 A operand interleaves rows with k-halves — `a1` must be
+   the OTHER row-block's k0-7 (M2), `a2` this row-block's k8-15 (M1). Fix:
+   swap a1↔a2 and a5↔a6 after each x4. (Seeded A-side was ~5% off.)
+2. **B fragment (ldmatrix.x2.trans)**: the x2.trans's second 8×8 (`b1`) is the
+   COL-shifted +16-byte tile (side-by-side), so `b1 = {B[2t][8+g]}` — but the
+   mma needs rows 8-15 `{B[2t+8][g]}`. Fix: store the B tile as 2×2 8×8 blocks
+   (ng=0 block in bsmem rows 0-7, ng=1 in bsmem rows 8-15) and use ldmatrix
+   bases bsmem / bsmem+256. The old `(j%5)*0.5` seeds coincidentally satisfied
+   `B[k][8+g]==B[k+8][g]`, masking this at 32×16×16; the 64³/128³ failures
+   traced to the same root cause.
+
+### S3b+ perf baseline (Rule 12 — recorded BEFORE the perf rungs)
+
+`gemm_h_ptx_timed` harness (resident path, `launch_resident_2d(idx, state, 32,
+count/512)`, 30 iters after 5 warmup, RTX 3060):
+
+| Kernel | 4096³ f16 |
+|--------|-----------|
+| PTX smem-staged tensor (32×16 tile, 1 warp, single-buffer, R=1) | **64.98 ms avg / 2.11 TFLOP/s** |
+| SPIR-V tensor tier (R=4, smem, fused fill) | 0.708 ms / 24.3 TFLOP/s |
+| **S5 gate** | 42.0 TFLOP/s |
+
+The 2.11 TFLOP/s is the arithmetic-intensity floor: R=1 gives ~10.4 FLOP/byte
+(≈3.7 TFLOP/s HBM ceiling), and the single-warp single-buffer loop has no
+overlap. The rungs below (register blocking R≥2, cp.async multi-stage,
+multi-warp CTA) target the gap to the SPIR-V 24.3 and the 42 gate.
 
 ### S3 fragment layout (device-verified, RTX 3060, exact rel 0)
 
