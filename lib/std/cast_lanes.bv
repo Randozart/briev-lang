@@ -1,0 +1,299 @@
+// cast_lanes.bv — the casting-graph lane defns as pure-Briev code.
+//
+// 2026-09-09 (Family A, briev-native runtime plan §2.2-A): the graph emits
+// `call ptr @int_to_str(i64)` etc. for `x as String` casts. The C lanes came
+// from briev_rt.c; these defns provide the SAME symbols so the backend's
+// declare-guard (mod.rs, the `defined` set) skips the C declares and the
+// lanes resolve to pure-Briev code. The prelude injects this file into every
+// compilation unit.
+//
+// ABI contract: each defn's LLVM signature must match what the ExtCall lane
+// emission produces (intrinsics.rs / emit_expr.rs ExtCall arm):
+//   int_to_str/uint_to_str/bool_to_str/float_to_str/char_to_str → ptr result
+//   str_to_int/str_to_uint → i64 result;  str_first_char → i64 (Char zext)
+// All are `out defn` — the only caller is the backend's cast emission, never
+// Briev code, so the frontend DCE must not drop them (string.ebv precedent).
+//
+// Deliberately lean: importing all of string.bv here would put its
+// `to_string` in every unit alongside string_builder.bv's (import conflict).
+
+import "std/float_fmt.bv";
+
+// byte_at — the i-th BYTE of a String as an Int (0 out of range).
+// A String IS a ptr to [len: i64][bytes]; byte i lives at addr + 8 + i.
+// 2026-09-09: moved here from string.bv (was `frgn : briev_str_char_at`
+// from briev_rt.c) — cast_lanes owns the raw byte accessor so string.bv and
+// the lane parsers share one definition.
+defn byte_at(s: String, i: Int) [s .^Length >= 0][term >= 0] -> Int {
+    let addr: Int = (s as Data) as Int;
+    when i < 0 || i >= s .^Length {
+        term 0;
+    };
+    term Load#(addr + 8 + i, 1);
+};
+
+// ── value → String lanes ─────────────────────────────────────────────────
+
+// int_to_str — decimal digits, recursion like string.ebv's proven digit loop.
+// 2026-09-09: negatives accumulate DIGITS NEGATIVELY (digits_neg) — the old
+// `Abs#(n)` formulation overflows on INT64_MIN (segfault in int_cases).
+out defn int_to_str(n: Int) [true][term .^Length >= 0] -> String {
+    when n < 0 {
+        term "-" + digits_neg(n);
+    };
+    when n < 10 {
+        term digit_char(n);
+    };
+    let lo: Int = n % 10;
+    let hi: Int = n / 10;
+    term int_to_str(hi) + digit_char(lo);
+};
+
+// digits_neg — the magnitude digits of n <= 0 without negating it (works for
+// INT64_MIN, whose magnitude is unrepresentable).
+defn digits_neg(n: Int) [n <= 0][term .^Length >= 1] -> String {
+    when n > -10 {
+        term digit_char(0 - n);
+    };
+    let lo: Int = 0 - (n % 10);
+    let hi: Int = n / 10;
+    term digits_neg(hi) + digit_char(lo);
+};
+
+// uint_to_str — same representation (the C lane aliased int_to_str).
+out defn uint_to_str(n: Int) [true][term .^Length >= 0] -> String {
+    term int_to_str(n);
+};
+
+// bool_to_str — C: briev_cstr_to_briev(b ? "true" : "false").
+out defn bool_to_str(b: Int) [true][term .^Length >= 0] -> String {
+    when b != 0 {
+        term "true";
+    };
+    term "false";
+};
+
+// float_to_str — the CAST lane uses C `%g` (6 significant digits), unlike
+// the print family's `%.9g`. float_format is parametric — same engine.
+out defn float_to_str(f: Float) [true][term .^Length >= 0] -> String {
+    term float_format(f, 6);
+};
+
+// char_to_str — build a [len: i64][byte][NUL] buffer, then hand it through
+// the Data→String encoding door (briev_bits_to_str copies it into a fresh
+// heap String — the copy is replaced by pure-Briev Alloc#+Copy# in Family C;
+// the UTF8 encoding here matches C char_to_str: 1-4 bytes by codepoint).
+out defn char_to_str(c: Int) [c >= 0][term .^Length >= 1] -> String {
+    let addr: Int = Alloc#(10) as Int;
+    let n: Int = utf8_encode(addr + 8, c);
+    Store#(addr, n, 8);
+    term (addr as Data) as String;
+};
+
+// utf8_encode — write codepoint c's UTF8 bytes at addr, return the byte
+// count (1-4). Mirror of C char_to_str's encoding table.
+defn utf8_encode(addr: Int, c: Int) [addr >= 0 && c >= 0][term >= 1 && term <= 4] -> Int {
+    when c < 0x80 {
+        Store#(addr, c, 1);
+        term 1;
+    };
+    when c < 0x800 {
+        Store#(addr, 0xC0 | (c >> 6), 1);
+        Store#(addr + 1, 0x80 | (c & 0x3F), 1);
+        term 2;
+    };
+    when c < 0x10000 {
+        Store#(addr, 0xE0 | (c >> 12), 1);
+        Store#(addr + 1, 0x80 | ((c >> 6) & 0x3F), 1);
+        Store#(addr + 2, 0x80 | (c & 0x3F), 1);
+        term 3;
+    };
+    Store#(addr, 0xF0 | (c >> 18), 1);
+    Store#(addr + 1, 0x80 | ((c >> 12) & 0x3F), 1);
+    Store#(addr + 2, 0x80 | ((c >> 6) & 0x3F), 1);
+    Store#(addr + 3, 0x80 | (c & 0x3F), 1);
+    term 4;
+};
+
+// ── String → value lanes ─────────────────────────────────────────────────
+
+// str_to_int — C strtol semantics (the parse_cases golden): skip ISSPACE,
+// optional sign, digits until non-digit, 0 when no digits, clamp at the
+// i64 bounds. Accumulates NEGATIVE under a minus sign so the exact INT64_MIN
+// text round-trips.
+out defn str_to_int(s: String) [true][term == 0 || term != 0] -> Int {
+    term parse_int_ws(s, 0, 0, 1);
+};
+
+out defn str_to_uint(s: String) [true][term == 0 || term != 0] -> Int {
+    term str_to_int(s);
+};
+
+// parse_int_ws — skip whitespace, then the sign.
+defn parse_int_ws(s: String, i: Int, acc: Int, sign: Int)
+    [i >= 0][term == 0 || term != 0]
+    -> Int
+{
+    let b: Int = byte_at(s, i);
+    when b == 32 || (b >= 9 && b <= 13) {
+        term parse_int_ws(s, i + 1, acc, sign);
+    };
+    when b == 43 {
+        term parse_int_digits(s, i + 1, acc, sign);
+    };
+    when b == 45 {
+        term parse_int_digits(s, i + 1, acc, 0 - sign);
+    };
+    term parse_int_digits(s, i, acc, sign);
+};
+
+// parse_int_digits — the digit loop with strtol's clamp.
+defn parse_int_digits(s: String, i: Int, acc: Int, sign: Int)
+    [i >= 0][term == 0 || term != 0]
+    -> Int
+{
+    let b: Int = byte_at(s, i);
+    when b < 48 || b > 57 {
+        term acc;
+    };
+    let d: Int = b - 48;
+    when sign == 1 {
+        // positive: clamp at INT64_MAX
+        when acc > (9223372036854775807 - d) / 10 {
+            term 9223372036854775807;
+        };
+        term parse_int_digits(s, i + 1, acc * 10 + d, sign);
+    };
+    // negative: accumulate negative, clamp at INT64_MIN
+    when acc < (0 - 9223372036854775807 - 1 + d) / 10 {
+        term 0 - 9223372036854775807 - 1;
+    };
+    term parse_int_digits(s, i + 1, acc * 10 - d, sign);
+};
+
+// str_to_bool — C: non-empty payload that is not exactly "false" → 1.
+out defn str_to_bool(s: String) [true][term == true || term == false] -> Bool {
+    let len: Int = s .^Length;
+    when len <= 0 {
+        term false;
+    };
+    when len == 5 {
+        term !bytes_eq_at(s, 0, "false", 5);
+    };
+    term true;
+};
+
+// bytes_eq_at — do the `want` bytes of s at offset i equal the bytes of
+// ref at offset 8 (its payload)? Byte-wise compare via byte_at.
+defn bytes_eq_at(s: String, i: Int, ref: String, want: Int)
+    [i >= 0 && want >= 0][term == true || term == false]
+    -> Bool
+{
+    when want == 0 {
+        term true;
+    };
+    when byte_at(s, i) != byte_at(ref, 0) {
+        term false;
+    };
+    // Shift the reference window by rebuilding — recursion on want.
+    term bytes_eq_shift(s, i + 1, ref, 1, want - 1);
+};
+
+// bytes_eq_shift — compare s[i] vs ref[j] for `n` bytes.
+defn bytes_eq_shift(s: String, i: Int, ref: String, j: Int, n: Int)
+    [i >= 0 && j >= 0 && n >= 0][term == true || term == false]
+    -> Bool
+{
+    when n == 0 {
+        term true;
+    };
+    when byte_at(s, i) != byte_at(ref, j) {
+        term false;
+    };
+    term bytes_eq_shift(s, i + 1, ref, j + 1, n - 1);
+};
+
+// ── Print / exit runtime (Family B) ──────────────────────────────────────
+// The print plugin and #StdErr lower to `call i64 @__print_*(...)`; these
+// defns provide the symbols with byte-identical behavior to the C originals
+// (briev_rt.c 572-640). Output goes through write(2) — SYS_write=1 on
+// x86_64 Linux — and __exit through SYS_exit_group=231.
+// TODO(arch): 64/94 are the aarch64 numbers; the source language has no arch
+// reflection yet (`.^` targets: Length/Ptr/Size/Bytes/Alignment/Type), so
+// the x86_64 numbers stand until a target-const mechanism exists.
+//
+// Buffering note: C stdout to a pipe is fully buffered, flushed at exit; to
+// a tty, line buffered. write(2) is unbuffered. The BYTES are identical in
+// both orderings — only interactive partial-line timing differs.
+
+// write_all — write the whole payload of String s to fd.
+defn write_all(fd: Int, s: String) [fd >= 0][term >= 0] -> Int {
+    let addr: Int = (s as Data) as Int;
+    let len: Int = Load#(addr, 8);
+    when len <= 0 {
+        term 0;
+    };
+    term SysCall#(1, fd, addr + 8, len, 0, 0, 0);
+};
+
+out defn __print_str(s: String) [true][term >= 0] -> Int {
+    term write_all(1, s);
+};
+
+out defn __print(s: String) [true][term >= 0] -> Int {
+    term write_all(1, s);
+};
+
+out defn __eprint_str(s: String) [true][term >= 0] -> Int {
+    term write_all(2, s);
+};
+
+out defn __print_int(n: Int) [true][term >= 0] -> Int {
+    term write_all(1, int_to_str(n));
+};
+
+out defn __print_bool(b: Int) [true][term >= 0] -> Int {
+    term write_all(1, bool_to_str(b));
+};
+
+out defn __print_float(f: Float) [true][term >= 0] -> Int {
+    // C: printf("%.9g", (double)f) — float_format(f, 9) is byte-parity
+    // (the float_cases corpus pins it).
+    term write_all(1, float_format(f, 9));
+};
+
+out defn __print_char(c: Int) [c >= 0][term >= 0] -> Int {
+    // C: c==10 → puts("") (writes '\n'), else putchar(c) — one raw byte
+    // either way. A 1-byte write covers both.
+    let buf: Int = Alloc#(1) as Int;
+    Store#(buf, c, 1);
+    term SysCall#(1, 1, buf, 1, 0, 0, 0);
+};
+
+out defn __exit(code: Int) [true][term >= 0] -> Int {
+    // SYS_exit_group = 231 (x86_64). No return — the process ends.
+    term SysCall#(231, code, 0, 0, 0, 0, 0);
+};
+
+// str_first_char — the first UTF8 codepoint (0 when empty). Mirror of C
+// str_first_char: 1-4 byte decode, malformed lead byte falls back to raw.
+out defn str_first_char(s: String) [true][term >= 0] -> Int {
+    let len: Int = s .^Length;
+    when len <= 0 {
+        term 0;
+    };
+    let p0: Int = byte_at(s, 0);
+    when p0 < 0x80 {
+        term p0;
+    };
+    when (p0 & 0xE0) == 0xC0 {
+        term ((p0 & 0x1F) << 6) | (byte_at(s, 1) & 0x3F);
+    };
+    when (p0 & 0xF0) == 0xE0 {
+        term ((p0 & 0x0F) << 12) | ((byte_at(s, 1) & 0x3F) << 6) | (byte_at(s, 2) & 0x3F);
+    };
+    when (p0 & 0xF8) == 0xF0 {
+        term ((p0 & 0x07) << 18) | ((byte_at(s, 1) & 0x3F) << 12) | ((byte_at(s, 2) & 0x3F) << 6) | (byte_at(s, 3) & 0x3F);
+    };
+    term p0;
+};

@@ -405,7 +405,7 @@ mod tests {
 [".bv"]
 backend = "llvm"
 defaults = ["--budget", "256"]
-plugins = ["prelude", "env", "print", "entry", "script"]
+plugins = ["prelude-native", "env", "print", "entry", "script"]
 assembler = "none"
 cross_verify_samples = 50
 

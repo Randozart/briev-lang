@@ -405,7 +405,7 @@ mod tests {
     fn test_filter_for_extension_prelude() {
         let mut mgr = PluginManager::new();
         let prelude = StageBlockPlugin::new(
-            "prelude".to_string(),
+            "prelude-native".to_string(),
             StageBlock {
                 stage: StageKind::Parsed,
                 priority: 0,
@@ -420,8 +420,9 @@ mod tests {
         mgr.filter_for_extension(".bv", &config);
 
         let names = mgr.enabled_names(None);
-        // .bv in config has plugins = ["prelude"]
-        assert!(names.contains(&"prelude".to_string()));
+        // .bv in config has plugins = ["prelude-native", ...] (2026-09-09,
+        // Family A/B: the pure-Briev runtime prelude).
+        assert!(names.contains(&"prelude-native".to_string()));
         // builtin:validation is NOT in .bv's plugin list, so should be excluded
         assert!(!names.contains(&"builtin:validation".to_string()));
     }

@@ -16,13 +16,12 @@ import "std/ffi/string.bv";
 import "std/collections.bv";
 import "std/string_builder.bv";
 import "std/char.bv";
+// 2026-09-09 (Family A): byte_at moved to cast_lanes.bv (pure-Briev Load#
+// over the [len][bytes] layout) so the lane parsers and this file share one
+// definition. The prelude already injects cast_lanes.bv everywhere.
+import "std/cast_lanes.bv";
 
-// 2026-08-13 (string.bv unblocked): the byte accessor — the i-th BYTE of a
-// String as an Int (0 if out of range). Character scans in this file are
-// byte-based (ASCII-correct), the same pattern the compiler passes use
-// (briev_str_char_at, see reader.bv). The UTF8 multi-byte char view is the
-// iterable-protocol Tier-1 cursor slice, not this file's concern.
-frgn byte_at(s: String, i: Int) -> Int : briev_str_char_at from "lib/runtime/briev_rt.c";
+// ===== NATIVE DEFINITIONS =====
 
 defn bytes(s: String) [s .^Length >= 0][true] -> List<Int> {
     let result: List<Int> = [];

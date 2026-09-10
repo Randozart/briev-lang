@@ -1,24 +1,15 @@
 // 2026-07-19: Terminal I/O FFI. Replaces Print#/PutChar# intrinsics.
 // !Print(x)/!PrintLn(x) dispatched by print plugin (Mid stage).
-// Provided by briev_rt.c via std/briev_rt.bv.
-
-// 2026-07-21: Return Int (not Void) to match C's int64_t return type.
-// LTO inlining requires the call site and definition signatures to match
-// (mismatched return types prevent LTO from inlining frgn functions).
-frgn frgn__print_int(n: Int) -> Int : __print_int from "lib/runtime/briev_rt.c";
-// 2026-08-01 (B0): frgn __print_str(msg: String) -> Void REMOVED. It was dead
-// (no importers; print! literal segments go through the PrintStr# intrinsic,
-// not this frgn) AND doubly broken: `as frgn__print_str` points at a symbol
-// briev_rt.c does not define, and its String-typed param would declare
-// `{ i64, i64 }` before the B0 ptr change. The PrintStr# intrinsic owns this
-// call site. Undo: re-add the frgn only if stdlib ever needs a named wrapper.
-frgn frgn__print_float(f: Float) -> Int : __print_float from "lib/runtime/briev_rt.c";
-frgn frgn__print_char(c: Int) -> Int : __print_char from "lib/runtime/briev_rt.c";
-// 2026-08-01 (audit): the generic Print# convenience intrinsic routes
-// #Bool → __print_bool (true/false, not 1/0) and #Float64 → __print_float64.
-// Declared here (the stdlib declares the print runtime family; __print_str is
-// the backend-declared B0 exception).
-frgn frgn__print_bool(b: Int) -> Int : __print_bool from "lib/runtime/briev_rt.c";
-frgn frgn__print_float64(f: Float64) -> Int : __print_float64 from "lib/runtime/briev_rt.c";
-// 2026-08-01 (Phase 4): the `#StdErr <- <String>` stream write.
-frgn frgn__eprint_str(msg: String) -> Int : __eprint_str from "lib/runtime/briev_rt.c";
+//
+// 2026-09-09 (Family A+B, briev-native runtime): the print family frgns are
+// REMOVED — the symbols (__print_int, __print_float, __print_char,
+// __print_bool, __eprint_str) are now pure-Briev defns in
+// lib/std/cast_lanes.bv (write(2) via SysCall#, float_format for %.9g), and
+// the backend's emit_declares declare-guard skips them. Keeping an frgn here
+// would (a) declare a symbol the defn defines and (b) keep pulling
+// briev_rt.o into every link for symbols the C file no longer contains.
+//
+// __print_float64 stays C-backed for now (the f32-only float_format engine
+// does not yet cover doubles); it is declared by emit_declares and resolved
+// from briev_rt.c when a program actually prints a Float64.
+// Undo: restore the frgn lines from git history if the defns regress.

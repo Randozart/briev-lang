@@ -116,20 +116,6 @@ char* briev_cstr_to_briev(const char* c_str) {
     return buf;
 }
 
-// 2026-08-01: the `Int → #String` casting-graph lane — format an integer into
-// a Briev string. The lane emission calls `ptr @int_to_str(i64)` (a String IS
-// a ptr to [len][bytes]); previously this symbol was undefined (a latent link
-// error whenever `(n as String)` was used). `__int_to_str__` is the alias the
-// direct-cast path emits.
-char* int_to_str(int64_t n) {
-    char tmp[32];
-    snprintf(tmp, sizeof(tmp), "%lld", (long long)n);
-    return briev_cstr_to_briev(tmp);
-}
-char* __int_to_str__(int64_t n) {
-    return int_to_str(n);
-}
-
 // 2026-08-04 (compiler-in-Briev): BYTE-wise substring of a Briev String.
 // Returns a fresh [len][bytes][\0] String with the bytes [a, b). The pass
 // scanner runs over the ASCII projection, so byte == char here; the UTF-8
@@ -184,75 +170,6 @@ int64_t briev_str_next_char(const char* s, int64_t* off) {
     return cp;
 }
 
-// 2026-08-04 (compiler-in-Briev): the i-th BYTE of a Briev String as an Int
-// (0 if out of range, 255 if the length header is invalid). Character scans in
-// the pass (newline/space/colon comparisons) use this INSTEAD of a per-char
-// briev_str_substr — a 1-byte allocation per scan step was corrupting the heap
-// under long recursion (the frgn String-return path, see BUGS.md). No
-// allocation.
-int64_t briev_str_char_at(const char* s, int64_t i) {
-    if (!s) return 0;
-    int64_t len = *(const int64_t*)s;
-    if (len < 0 || len > 1024 * 1024 * 1024) return 255;
-    if (i < 0 || i >= len) return 0;
-    return (unsigned char)s[8 + i];
-}
-
-// ── 2026-08-04: the remaining #String casting-graph lane symbols ────────
-// The casting graph (src/casting/graph.rs:195-257) declares ExtCall lanes
-// between #String and every other base protocol. Only `int_to_str` existed in
-// the runtime; the other NINE were undefined symbols — a latent LINK ERROR
-// whenever `(s as Int)` / `(f as String)` etc. was exercised (.bv and .ebv
-// alike). Each function here converts between the Briev String ABI (ptr to
-// [len: i64][bytes], heap-allocated, freed via briev_free_briev_str) and a C
-// value. The `.ebv` freestanding path provides the SAME symbols as Briev
-// defns (lib/std/*.ebv) — never both linked.
-//
-// A Briev String's payload is NOT null-terminated as an invariant (the length
-// header is authoritative), so these helpers copy the payload to a temporary
-// C buffer before strtoll/strtod.
-
-// String → Int: parse the payload as a base-10 integer. Empty/garbage → 0
-// (matches the C strtoll semantics the old `to_int` stub deferred to).
-int64_t str_to_int(const char* s) {
-    if (!s) return 0;
-    int64_t len = *(const int64_t*)s;
-    if (len < 0) return 0;
-    char tmp[128];
-    if (len >= (int64_t)sizeof(tmp)) return 0; // too long to be a sane int
-    memcpy(tmp, s + 8, (size_t)len);
-    tmp[len] = '\0';
-    return strtoll(tmp, 0, 10);
-}
-
-// Int → String (unsigned) — `#UInt → #String` lane.
-char* uint_to_str(uint64_t n) {
-    char tmp[32];
-    snprintf(tmp, sizeof(tmp), "%llu", (unsigned long long)n);
-    return briev_cstr_to_briev(tmp);
-}
-
-// String → UInt.
-uint64_t str_to_uint(const char* s) {
-    if (!s) return 0;
-    int64_t len = *(const int64_t*)s;
-    if (len < 0) return 0;
-    char tmp[128];
-    if (len >= (int64_t)sizeof(tmp)) return 0;
-    memcpy(tmp, s + 8, (size_t)len);
-    tmp[len] = '\0';
-    return (uint64_t)strtoull(tmp, 0, 10);
-}
-
-// Float → String — `#Float → #String` lane. The Briev Float protocol is the
-// 32-bit `float` LLVM type, so the ABI takes a float (the IR emits
-// `call ptr @float_to_str(float ...)`), matching the C signature.
-char* float_to_str(float d) {
-    char tmp[64];
-    snprintf(tmp, sizeof(tmp), "%g", (double)d);
-    return briev_cstr_to_briev(tmp);
-}
-
 // String → Float — returns the 32-bit float ABI.
 float str_to_float(const char* s) {
     if (!s) return 0.0f;
@@ -263,65 +180,6 @@ float str_to_float(const char* s) {
     memcpy(tmp, s + 8, (size_t)len);
     tmp[len] = '\0';
     return (float)strtod(tmp, 0);
-}
-
-// String → Bool — a non-empty payload that is not the string "false" is true.
-int64_t str_to_bool(const char* s) {
-    if (!s) return 0;
-    int64_t len = *(const int64_t*)s;
-    if (len <= 0) return 0;
-    if (len == 5 && memcmp(s + 8, "false", 5) == 0) return 0;
-    return 1;
-}
-
-// Bool → String.
-char* bool_to_str(int64_t b) {
-    return briev_cstr_to_briev(b ? "true" : "false");
-}
-
-// String → Char — the first codepoint's value (as i32). Empty → 0.
-int64_t str_first_char(const char* s) {
-    if (!s) return 0;
-    int64_t len = *(const int64_t*)s;
-    if (len <= 0) return 0;
-    // Read the first UTF8 codepoint from the payload (a Briev String's bytes
-    // are valid UTF8; continuation bytes are skipped the same way briev_char_len
-    // counts them).
-    const unsigned char* p = (const unsigned char*)(s + 8);
-    if (p[0] < 0x80) return (int64_t)p[0];
-    int64_t cp = 0;
-    int64_t extra = 0;
-    if ((p[0] & 0xE0) == 0xC0) { cp = p[0] & 0x1F; extra = 1; }
-    else if ((p[0] & 0xF0) == 0xE0) { cp = p[0] & 0x0F; extra = 2; }
-    else if ((p[0] & 0xF8) == 0xF0) { cp = p[0] & 0x07; extra = 3; }
-    else return (int64_t)p[0];
-    for (int64_t i = 1; i <= extra && i < len; i++) {
-        cp = (cp << 6) | (p[i] & 0x3F);
-    }
-    return cp;
-}
-
-// Char → String — a single-codepoint string (the inverse of str_first_char).
-char* char_to_str(int64_t c) {
-    char tmp[8];
-    int64_t n = 0;
-    if (c < 0x80) {
-        tmp[n++] = (char)c;
-    } else if (c < 0x800) {
-        tmp[n++] = (char)(0xC0 | (c >> 6));
-        tmp[n++] = (char)(0x80 | (c & 0x3F));
-    } else if (c < 0x10000) {
-        tmp[n++] = (char)(0xE0 | (c >> 12));
-        tmp[n++] = (char)(0x80 | ((c >> 6) & 0x3F));
-        tmp[n++] = (char)(0x80 | (c & 0x3F));
-    } else {
-        tmp[n++] = (char)(0xF0 | (c >> 18));
-        tmp[n++] = (char)(0x80 | ((c >> 12) & 0x3F));
-        tmp[n++] = (char)(0x80 | ((c >> 6) & 0x3F));
-        tmp[n++] = (char)(0x80 | (c & 0x3F));
-    }
-    tmp[n] = '\0';
-    return briev_cstr_to_briev(tmp);
 }
 
 /// Free a Briev string allocated by briev_cstr_to_briev or similar.
@@ -567,74 +425,12 @@ int64_t briev_sysconf(int64_t name) {
     return sysconf((int)name);
 }
 
-// ── Print / Exit runtime (used by LLVM codegen) ───────────────────────
-
-int64_t __print(const char* msg_bstr) {
-    char* c_msg = briev_str_to_c(msg_bstr);
-    if (c_msg) { fputs(c_msg, stdout); }
-    return 0;
-}
-
-int64_t __print_int(int64_t n) {
-    printf("%ld", (long)n);
-    return 0;
-}
-
-// 2026-08-01: Bool printer for the generic Print# convenience intrinsic — a
-// Bool's natural representation is true/false, not 1/0. 1/0 requires an
-// explicit `(b as Int)` cast, which routes to __print_int instead.
-__attribute__((always_inline)) int64_t __print_bool(int64_t b) {
-    fputs(b ? "true" : "false", stdout);
-    return 0;
-}
-
-// 2026-07-31: %.9g — round-trips any float32 uniquely (~7 sig decimal digits).
-// The prior %g (6 sig digits) truncated precision, making Briev's float output
-// differ from C references that print %.9f even for identical values.
-int64_t __print_float(float f) {
-    printf("%.9g", (double)f);
-    return 0;
-}
-
 // 2026-08-01 (audit): the Print# convenience intrinsic routes Float64 (double)
 // values here — %.9g round-trips any double uniquely (~17 sig digits for the
 // mantissa+exponent range, more than enough for a canonical print).
 __attribute__((always_inline)) int64_t __print_float64(double f) {
     printf("%.9g", f);
     return 0;
-}
-
-// 2026-07-21: always_inline + LTO enables inlining into main() hot loop.
-__attribute__((always_inline)) int64_t __print_char(int64_t c) {
-    if (c == 10) {
-        puts("");
-    } else {
-        putchar((int)c);
-    }
-    return 0;
-}
-
-// 2026-08-01: String printer for the PrintStr# intrinsic — the target of
-// format-string literal segments in print!/println!. Mirrors __print: takes
-// a ptr to a length-prefixed [len][bytes] buffer (String ABI = ptr), prints
-// it without a trailing newline. Defined here because the print plugin
-// expands literal segments to PrintStr# calls.
-int64_t __print_str(const char* msg_bstr) {
-    char* c_msg = briev_str_to_c(msg_bstr);
-    if (c_msg) { fputs(c_msg, stdout); }
-    return 0;
-}
-
-// 2026-08-01 (Phase 4): the `#StdErr <- <String>` stream write. Mirrors
-// __print_str but writes to stderr (no buffering assumptions).
-__attribute__((always_inline)) int64_t __eprint_str(const char* msg_bstr) {
-    char* c_msg = briev_str_to_c(msg_bstr);
-    if (c_msg) { fputs(c_msg, stderr); }
-    return 0;
-}
-
-void __exit(int64_t code) {
-    exit((int)code);
 }
 
 // ── Timer infrastructure (used by trigger system) ─────────────────────

@@ -777,7 +777,19 @@ fn emit_store(
     let ptr = backend.fun.gen_reg();
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
     let bytes = args.get(2).and_then(|a| if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }).unwrap_or(8);
-    writeln!(out, "{}store i{} {}, ptr {}", indent, bytes * 8, val, ptr).ok();
+    // 2026-09-09 (Family A): narrow stores must TRUNC the i64 value first —
+    // `store i8 <i64 reg>` is invalid IR. (VolatileStore# already
+    // width-adapts; plain Store# never hit a sub-word width until the
+    // pure-Briev utf8_encode byte stores.) Loads already zext narrow
+    // results (emit_load).
+    let stored = if bytes < 8 {
+        let t = backend.fun.gen_reg();
+        writeln!(out, "{}{} = trunc i64 {} to i{}", indent, t, val, bytes * 8).ok();
+        t
+    } else {
+        val.clone()
+    };
+    writeln!(out, "{}store i{} {}, ptr {}", indent, bytes * 8, stored, ptr).ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
 }
@@ -2034,34 +2046,34 @@ fn emit_intrinsic_print(
             // A Briev String value IS the ptr to a length-prefixed
             // [len][bytes] buffer; __print_str takes that pointer.
             let sym = frgn_symbol(backend, "frgn__print_str", "__print_str");
-            writeln!(out, "{}{} = call i64 @{}(ptr {})", indent, v, sym, a.name).ok();
+            writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, v, sym, defn_state_prefix(backend, &sym), a.name).ok();
         }
         "Char" => {
             if backend.fun.boxed_scalar_regs.contains(&a.name) {
                 // A boxed Char param is already i64 — pass directly.
                 let sym = frgn_symbol(backend, "frgn__print_char", "__print_char");
-                writeln!(out, "{}{} = call i64 @{}(i64 {})", indent, v, sym, a.name).ok();
+                writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, defn_state_prefix(backend, &sym), a.name).ok();
             } else {
                 // Native Char regs are i32 (literal/let/field/cast) —
                 // widen to the i64 ABI before the call.
                 let wide = backend.fun.gen_reg();
                 writeln!(out, "{}{} = zext i32 {} to i64", indent, wide, a.name).ok();
                 let sym = frgn_symbol(backend, "frgn__print_char", "__print_char");
-                writeln!(out, "{}{} = call i64 @{}(i64 {})", indent, v, sym, wide).ok();
+                writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, defn_state_prefix(backend, &sym), wide).ok();
             }
         }
         "Bool" => {
             if backend.fun.boxed_scalar_regs.contains(&a.name) {
                 // A boxed Bool param is already i64 0/1 — pass directly.
                 let sym = frgn_symbol(backend, "frgn__print_bool", "__print_bool");
-                writeln!(out, "{}{} = call i64 @{}(i64 {})", indent, v, sym, a.name).ok();
+                writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, defn_state_prefix(backend, &sym), a.name).ok();
             } else {
                 // Bool regs are i8 (Expr::Bool emits `add i8 0, 1/0`);
                 // widen to the i64 ABI before the call.
                 let wide = backend.fun.gen_reg();
                 writeln!(out, "{}{} = zext i8 {} to i64", indent, wide, a.name).ok();
                 let sym = frgn_symbol(backend, "frgn__print_bool", "__print_bool");
-                writeln!(out, "{}{} = call i64 @{}(i64 {})", indent, v, sym, wide).ok();
+                writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, defn_state_prefix(backend, &sym), wide).ok();
             }
         }
         "Float" => {
@@ -2076,12 +2088,12 @@ fn emit_intrinsic_print(
                 ("float", "frgn__print_float", "__print_float")
             };
             let sym = frgn_symbol(backend, briev_name, fallback_c);
-            writeln!(out, "{}{} = call i64 @{}({} {})", indent, v, sym, arg_llvm, unboxed).ok();
+            writeln!(out, "{}{} = call i64 @{}({}{} {})", indent, v, sym, defn_state_prefix(backend, &sym), arg_llvm, unboxed).ok();
         }
         _ => {
             let llvm_ty = backend.llvm_type(&a.ty);
             let sym = frgn_symbol(backend, "frgn__print_int", "__print_int");
-            writeln!(out, "{}{} = call i64 @{}({} {})", indent, v, sym, llvm_ty, a.name).ok();
+            writeln!(out, "{}{} = call i64 @{}({}{} {})", indent, v, sym, defn_state_prefix(backend, &sym), llvm_ty, a.name).ok();
         }
     }
     BTypedRegister { name: v.to_string(), ty: Type::int() }
@@ -2096,6 +2108,17 @@ fn emit_intrinsic_print(
 /// intrinsics-vs-stdlib rule). `__print_str` is the backend-declared B0
 /// exception: its stdlib frgn was removed (dead + broken), so the lookup
 /// always falls back for String.
+
+/// 2026-09-09 (Family A/B, briev-native runtime): when the callee symbol is
+/// a pure-Briev defn (present in defn_params), the call must pass the
+/// enclosing function's %state as the hidden first parameter — every Briev
+/// definition is emitted with the state pointer (emit_definition,
+/// needs_state) and Briev-level call sites pass it (emit_user_call). The C
+/// symbols take no state. Returns the prefix for the argument list.
+fn defn_state_prefix(backend: &LlvmBackend, sym: &str) -> &'static str {
+    if backend.ctx.defn_params.contains_key(sym) { "ptr %state, " } else { "" }
+}
+
 fn frgn_symbol(backend: &LlvmBackend, briev_name: &str, fallback_c: &str) -> String {
     backend.ctx.frgn_map.get(briev_name)
         .map(|sig| sig.name.clone())

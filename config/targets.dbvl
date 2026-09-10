@@ -13,7 +13,7 @@
 //     <vector_min_width>;` — read by config_tuning::load_target_settings.
 // The .toml remains until both parity tests prove identical output.
 
-.bv: llvm; --budget 256; prelude env print entry script; none; 50;
+.bv: llvm; --budget 256; prelude-native env print entry script; none; 50;
 .ebv: llvm; --optimize-size --budget 0; prelude;
 .cbv: circt; ; prelude-hw;
 .rbv: webstack; --target wasm; prelude;

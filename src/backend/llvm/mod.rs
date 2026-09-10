@@ -3364,17 +3364,26 @@ impl LlvmBackend {
         writeln!(out, "declare i64 @briev_unsetenv(i64) #1").ok();
         // 2026-08-06 (endprogram plan): process exit for `endprogram` — the
         // runtime wrapper (lib/runtime/briev_rt.c) runs atexit cleanup.
-        writeln!(out, "declare void @__exit(i64) #6").ok();
+        // 2026-09-09 (Family B): skipped when a pure-Briev defn provides the
+        // symbol (the declare-guard `defined` set) — a declare whose
+        // signature differs from the define is an LLVM redefinition error.
+        if !defined.contains("__exit") {
+            writeln!(out, "declare void @__exit(i64) #6").ok();
+        }
         writeln!(out, "declare i64 @briev_futex(i64, i64, i64, i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @__ioctl__(i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @__isatty__(i64) #1").ok();
-        writeln!(out, "declare i64 @__print(ptr) #1").ok();
+        if !defined.contains("__print") {
+            writeln!(out, "declare i64 @__print(ptr) #1").ok();
+        }
         // 2026-08-01 (B0): Print# intrinsic runtime symbol. The dead frgn
         // declaration in lib/std/ffi/io.bv was removed (it declared a wrong
         // symbol and a { i64, i64 } String type); the intrinsic owns this
         // call site, so the backend declares the ABI: String = ptr to a
         // length-prefixed [len][bytes] buffer.
-        writeln!(out, "declare i64 @__print_str(ptr) #1").ok();
+        if !defined.contains("__print_str") {
+            writeln!(out, "declare i64 @__print_str(ptr) #1").ok();
+        }
          // 2026-08-13 (dynamic String slice): `s[a:b]` emits a byte-wise
          // substring (the runtime's briev_str_substr; bounds clamp to [0,len]).
          // Skipped when a `frgn briev_str_substr` import already declares it

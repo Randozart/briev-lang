@@ -1,5 +1,9 @@
-// ── Standard Prelude — LLVM/Webstack/GPU Targets ─────────────────────────
-// 2026-07-21: Rewritten with direct AST navigation DSL.
+// ── Native Prelude — LLVM .bv target only ─────────────────────────────────
+// 2026-09-09 (Family A/B, briev-native runtime): the plain `prelude` plus
+// cast_lanes.bv + float_fmt.bv (the pure-Briev casting lanes and print
+// family). NOT used by .abv (SPIR-V rejects Load#/Store#/SysCall#) or
+// .rbv (wasm has no write(2)) — those keep `prelude` and their own I/O
+// paths. .cbv uses prelude-hw.
 // Inserts all stdlib imports before the first user import in the file.
 // Runs at $(Parsed) with highest priority so imports are available
 // before type checking.

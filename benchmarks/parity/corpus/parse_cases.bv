@@ -26,6 +26,27 @@ node go [done == false][done == true] {
         println!("{}", s10);
         let s11: Int = "2147483647" as Int;
         println!("{}", s11);
+        // Float parse lane (strtod semantics)
+        let f1: Float = "3.14" as Float;
+        println!("{}", f1);
+        let f2: Float = "-2.5" as Float;
+        println!("{}", f2);
+        let f3: Float = "0.1" as Float;
+        println!("{}", f3);
+        let f4: Float = "100" as Float;
+        println!("{}", f4);
+        let f5: Float = "  42.5  " as Float;
+        println!("{}", f5);
+        let f6: Float = "1e9" as Float;
+        println!("{}", f6);
+        let f7: Float = "1e-9" as Float;
+        println!("{}", f7);
+        let f8: Float = "abc" as Float;
+        println!("{}", f8);
+        let f9: Float = "" as Float;
+        println!("{}", f9);
+        let f10: Float = "42.5xyz" as Float;
+        println!("{}", f10);
         done = true;
     };
     term;

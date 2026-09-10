@@ -1,0 +1,40 @@
+// Parity corpus — casting-graph lane gate (plan §6.2, Family A).
+// Pins the C cast lanes byte-for-byte: int_to_str (%ld), uint_to_str,
+// bool_to_str, float_to_str (%g, 6 sig digits), char_to_str (UTF8),
+// str_first_char. Each value is cast to String and printed via __print_str.
+let done: Bool = false;
+node go [done == false][done == true] {
+    when done == false {
+        // Int lane
+        println!("{}", 42 as String);
+        println!("{}", (0 - 42) as String);
+        println!("{}", 0 as String);
+        println!("{}", 2147483647 as String);
+        println!("{}", (-2147483647 - 1) as String);
+        println!("{}", 9223372036854775807 as String);
+        // UInt lane
+        println!("{}", 4294967295 as String);
+        // Bool lane
+        println!("{}", true as String);
+        println!("{}", false as String);
+        // Float lane (%g, 6 sig digits)
+        println!("{}", 3.14 as String);
+        println!("{}", 0.5 as String);
+        println!("{}", 0.1 as String);
+        println!("{}", 100.0 as String);
+        println!("{}", 1000.0 as String);
+        println!("{}", 1000000.0 as String);
+        println!("{}", 0.001 as String);
+        println!("{}", 0.0001 as String);
+        println!("{}", 123456.0 as String);
+        println!("{}", 1234567.0 as String);
+        println!("{}", (0.0 - 2.5) as String);
+        println!("{}", 1.5e308 as String);
+        // Char lane
+        println!("{}", 'A' as String);
+        println!("{}", 'z' as String);
+        println!("{}", '0' as String);
+        done = true;
+    };
+    term;
+};

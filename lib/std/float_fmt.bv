@@ -276,8 +276,8 @@ defn round_all(all: Int, precision: Int, k: Int)
     term (firstP, k);
 };
 
-// pad_left - pad a digit string with leading zeros to length `len`.
-defn pad_left(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len][term .^Length == len] -> String {
+// pad_digits - pad a digit string with leading zeros to length `len`.
+defn pad_digits(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len][term .^Length == len] -> String {
     let missing: Int = len - s .^Length;
     when missing == 0 {
         term s;
@@ -400,7 +400,7 @@ defn float_format(f: Float, precision: Int)
     let e: Int = exponent_val(exp8);
     let (r, k): (Int, Int) = float_rounded(m, e, precision);
     let d: Int = int_digit_count(r);
-    let ds: String = pad_left(digits_of_int(r), d);
+    let ds: String = pad_digits(digits_of_int(r), d);
     // k >= precision (P sig digits: exponent form) or k < -4 → exponential.
     when k >= precision || k < -4 {
         term exp_style(ds, k, sign);

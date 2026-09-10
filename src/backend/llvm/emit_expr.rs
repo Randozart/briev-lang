@@ -6255,8 +6255,19 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     } else {
                         (cur_ll.clone(), cur.clone())
                     };
-                    writeln!(out, "{}{} = call {} @{}({} {})",
-                        indent, dst, dst_ll, fn_name, arg_ll, arg).ok();
+                    // 2026-09-09 (Family A, briev-native runtime): when the
+                    // lane symbol is a pure-Briev defn, the call must pass the
+                    // enclosing function's %state — every definition is
+                    // emitted with the state pointer (emit_definition,
+                    // needs_state) and Briev-level calls pass it.
+                    let fname: &str = fn_name;
+                    let st = if self.ctx.defn_params.contains_key(fname) {
+                        "ptr %state, "
+                    } else {
+                        ""
+                    };
+                    writeln!(out, "{}{} = call {} @{}({}{} {})",
+                        indent, dst, dst_ll, fn_name, st, arg_ll, arg).ok();
                 }
                 crate::casting::graph::LaneKind::ExtCallDyn(fn_name) => {
                     // 2026-08-03: proto-binding transform (owned function

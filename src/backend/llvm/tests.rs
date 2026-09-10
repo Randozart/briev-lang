@@ -6627,8 +6627,16 @@ node go [done == false][done == true] {
     let ir = backend.generate(&items, None);
 
     use std::process::Command;
+    // 2026-09-09 (Family B): briev_rt.c no longer defines the print family —
+    // it moved to pure-Briev defns (std/cast_lanes.bv, write(2) via
+    // SysCall#). These tests only need OBSERVABLE OUTPUT, so link a tiny
+    // printf stub instead of the (shrinking) runtime.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let rt = std::path::Path::new(&manifest).join("lib/runtime/briev_rt.c");
+    let rt = std::env::temp_dir().join(format!(
+        "briev_print_stub_{}.c",
+        std::process::id()
+    ));
+    std::fs::write(&rt, "#include <stdio.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\nint64_t __print_int(int64_t n) { printf(\"%ld\", (long)n); return 0; }\nint64_t __print_char(int64_t c) { putchar((int)c); return 0; }\nint64_t __briev_coll_resize(int64_t handle, int64_t new_cap) {\n    if (!handle || new_cap < 0) return 1;\n    int64_t* block = (int64_t*)handle;\n    int64_t old_data = block[0];\n    int64_t len = block[2];\n    if (new_cap == 0) { free((void*)old_data); block[0] = 0; block[1] = 0; return 0; }\n    int64_t* nd = (int64_t*)malloc((size_t)(new_cap * 8));\n    if (!nd) return 1;\n    int64_t copy_n = len < new_cap ? len : new_cap;\n    if (old_data && copy_n > 0) memcpy(nd, (void*)old_data, (size_t)(copy_n * 8));\n    if (old_data) free((void*)old_data);\n    block[0] = (int64_t)nd;\n    block[1] = new_cap;\n    return 0;\n}\n").expect("write stub");
     let out = std::env::temp_dir().join(format!(
         "briev_foreach_destructure_{}_{}",
         std::process::id(),
@@ -6717,8 +6725,16 @@ node go [done == false][done == true] {
     let ir = backend.generate(&items, None);
 
     use std::process::Command;
+    // 2026-09-09 (Family B): briev_rt.c no longer defines the print family —
+    // it moved to pure-Briev defns (std/cast_lanes.bv, write(2) via
+    // SysCall#). These tests only need OBSERVABLE OUTPUT, so link a tiny
+    // printf stub instead of the (shrinking) runtime.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let rt = std::path::Path::new(&manifest).join("lib/runtime/briev_rt.c");
+    let rt = std::env::temp_dir().join(format!(
+        "briev_print_stub_{}.c",
+        std::process::id()
+    ));
+    std::fs::write(&rt, "#include <stdio.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\nint64_t __print_int(int64_t n) { printf(\"%ld\", (long)n); return 0; }\nint64_t __print_char(int64_t c) { putchar((int)c); return 0; }\nint64_t __briev_coll_resize(int64_t handle, int64_t new_cap) {\n    if (!handle || new_cap < 0) return 1;\n    int64_t* block = (int64_t*)handle;\n    int64_t old_data = block[0];\n    int64_t len = block[2];\n    if (new_cap == 0) { free((void*)old_data); block[0] = 0; block[1] = 0; return 0; }\n    int64_t* nd = (int64_t*)malloc((size_t)(new_cap * 8));\n    if (!nd) return 1;\n    int64_t copy_n = len < new_cap ? len : new_cap;\n    if (old_data && copy_n > 0) memcpy(nd, (void*)old_data, (size_t)(copy_n * 8));\n    if (old_data) free((void*)old_data);\n    block[0] = (int64_t)nd;\n    block[1] = new_cap;\n    return 0;\n}\n").expect("write stub");
     let out = std::env::temp_dir().join(format!(
         "briev_arrow_consume_{}_{}",
         std::process::id(),

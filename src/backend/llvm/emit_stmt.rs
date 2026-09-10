@@ -1208,7 +1208,8 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             let sym = backend.ctx.frgn_map.get("frgn__eprint_str")
                                 .map(|sig| sig.name.clone())
                                 .unwrap_or_else(|| "__eprint_str".to_string());
-                            writeln!(out, "{}{} = call i64 @{}(ptr {})", indent, reg, sym, v.name).ok();
+                            let st = if backend.ctx.defn_params.contains_key(&sym) { "ptr %state, " } else { "" };
+                            writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, reg, sym, st, v.name).ok();
                         }
                         return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
                     }
@@ -1507,7 +1508,14 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             } else {
                 "0".to_string()
             };
-            writeln!(out, "{}call void @__exit(i64 {})", indent, code).ok();
+            // 2026-09-09 (Family B): a pure-Briev __exit defn takes the hidden
+            // %state param and returns i64 (defns cannot be void); the C
+            // wrapper was void. Adapt the call to whichever provider exists.
+            if backend.ctx.defn_params.contains_key("__exit") {
+                writeln!(out, "{}call i64 @__exit(ptr %state, i64 {})", indent, code).ok();
+            } else {
+                writeln!(out, "{}call void @__exit(i64 {})", indent, code).ok();
+            }
             // The process exit never returns — the terminator after it is
             // unreachable, but LLVM requires one.
             writeln!(out, "{}unreachable", indent).ok();

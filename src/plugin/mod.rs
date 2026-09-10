@@ -557,12 +557,14 @@ mod tests {
     #[test]
     fn test_filter_for_extension() {
         let mut mgr = PluginManager::new();
-        mgr.register(Box::new(TestPlugin::new("prelude", vec![StageKind::Parsed])));
+        mgr.register(Box::new(TestPlugin::new("prelude-native", vec![StageKind::Parsed])));
         mgr.register(Box::new(TestPlugin::new("some-other", vec![StageKind::Parsed])));
         let config = TargetConfig::load();
         mgr.filter_for_extension(".bv", &config);
         let names = mgr.enabled_names(None);
+        // 2026-09-09 (Family A/B): .bv now enables prelude-native (the plain
+        // prelude plus cast_lanes + float_fmt for the pure-Briev runtime).
         assert_eq!(names.len(), 1);
-        assert_eq!(names[0], "prelude");
+        assert_eq!(names[0], "prelude-native");
     }
 }
