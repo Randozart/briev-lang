@@ -67,10 +67,15 @@ arena allocation is a follow-up (see plan §2.3 follow-ups).
 | C — string ops | `briev_str_eq`, `briev_str_substr` (Copy#), `briev_str_next_char` (UTF8 walk), `briev_char_len` (lead-byte count) | Briev defns |
 | D — vector gathers | `briev_mask_select` ×5 variants, `briev_slice_range64/_f32`, `__briev_coll_resize` (arena semantics: grow = Alloc#+Copy#, no free) | Briev defns (dynamic-shape — not shufflevector-able) |
 | E — allocator | arena init + grow as inline brk syscalls; `float_format` engine (Ryu-class %.9g/%g) in `float_fmt.bv` | Backend inline + Briev defns |
+| I — misc | `__briev_now` (clock_gettime syscall — watchdog-hot), `__watchdog_fail` (write + exit_group), `__briev_getcwd` (SYS_getcwd, C-string ABI preserved), `__briev_chdir`, `__briev_free` (arena no-op) | Briev defns |
+| G — tty/timerfd | 13 symbols DELETED — all stubs, zero referencers (timerfd/signalfd are SysCall#-expressible if wanted later; ttyname is a user-facing #System frgn) | deleted |
 
-`briev_rt.c` has shrunk from 1407 lines to the still-unmigrated families:
-argv/env, TTY/timer/trigger, the pthread async pool + task/event machine,
-process/spawn, Tamer HCALL, and the GLUE C-ABI doors (`briev_str_to_c`,
+`briev_rt.c` has shrunk from 1407 to ~800 lines. Still unmigrated:
+argv/env (blocked on the environ-ownership + `_start` entry design), the
+pthread async pool + task/event machine (Family H — the big design
+piece), process/spawn + `ShellCmd` (popen → fork/pipe/execve), `__briev_setenv`
+(libc env-block mutation — environ ownership), `briev_symbol_available`
+(dlsym), Tamer HCALL, and the GLUE C-ABI doors (`briev_str_to_c`,
 `briev_cstr_to_briev`, `briev_bits_to_str` — the Data→String door).
 
 ## Known follow-ups
