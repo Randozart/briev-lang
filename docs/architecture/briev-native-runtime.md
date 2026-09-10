@@ -69,14 +69,23 @@ arena allocation is a follow-up (see plan §2.3 follow-ups).
 | E — allocator | arena init + grow as inline brk syscalls; `float_format` engine (Ryu-class %.9g/%g) in `float_fmt.bv` | Backend inline + Briev defns |
 | I — misc | `__briev_now` (clock_gettime syscall — watchdog-hot), `__watchdog_fail` (write + exit_group), `__briev_getcwd` (SYS_getcwd, C-string ABI preserved), `__briev_chdir`, `__briev_free` (arena no-op) | Briev defns |
 | G — tty/timerfd | 13 symbols DELETED — all stubs, zero referencers (timerfd/signalfd are SysCall#-expressible if wanted later; ttyname is a user-facing #System frgn) | deleted |
+| H — async | pthread pool + barriers + wait stubs DELETED (~130 lines); `emit_async_phase` emits direct sequential `@async_body_*` calls + reactor_tick (deterministic order); `__wait_for_trigger__` reborn as a sched_yield defn | Backend inline + Briev defns |
 
 `briev_rt.c` has shrunk from 1407 to ~800 lines. Still unmigrated:
 argv/env (blocked on the environ-ownership + `_start` entry design), the
-pthread async pool + task/event machine (Family H — the big design
-piece), process/spawn + `ShellCmd` (popen → fork/pipe/execve), `__briev_setenv`
-(libc env-block mutation — environ ownership), `briev_symbol_available`
-(dlsym), Tamer HCALL, and the GLUE C-ABI doors (`briev_str_to_c`,
-`briev_cstr_to_briev`, `briev_bits_to_str` — the Data→String door).
+task/event machine (~170 lines, frgn-called; flatten the task table to
+Int arrays + `CallPtr#` segment dispatch), process/spawn + `ShellCmd`
+(popen → fork/pipe/execve), `__briev_setenv` (libc env-block mutation —
+environ ownership), `briev_symbol_available` (dlsym), Tamer HCALL, and
+the GLUE C-ABI doors (`briev_str_to_c`, `briev_cstr_to_briev`,
+`briev_bits_to_str` — the Data→String door).
+
+**Confirmed pre-existing bug (queued):** async convergence never exits —
+`program_convergence` produces no counter_ge_bounds for async txns, so
+bounded async programs spin in the idle-wait branch forever (bisected to
+the branch base; independent of the pool-vs-cooperative substrate). Fix:
+register async (counter, bound) pairs in the convergence analysis; the
+idle-wait branch then becomes unreachable for bounded async programs.
 
 ## Known follow-ups
 
