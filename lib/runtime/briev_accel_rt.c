@@ -75,6 +75,11 @@ typedef struct {
     // descriptor construction compiles unchanged (n_images = 0).
     uint32_t n_images;
     const BrievImageDesc* images;
+    // 2026-09-09 (S3b+ perf rungs): CUDA block thread count for this
+    // kernel (0 = driver default 64). Tail of the struct — positional
+    // C initializers zero-fill it, so existing descriptor constructions
+    // compile unchanged.
+    uint32_t block_threads;
 } BrievKernelDesc;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -142,6 +147,9 @@ typedef struct BrievDeviceDriver {
     int (*set_images)(void* kernel, const BrievImageDesc* imgs, uint32_t n);
     int (*download_images)(void* kernel, const BrievImageDesc* imgs,
                            uint32_t n, void* state);
+    // 2026-09-09 (S3b+ perf rungs): optional per-kernel block-thread-size
+    // override (CUDA tier). NULL → the driver's fixed default (64).
+    int (*set_block_threads)(void* kernel, uint32_t n);
 } BrievDeviceDriver;
 
 extern BrievDeviceDriver briev_dev_cuda;
@@ -248,6 +256,10 @@ int briev_accel_init(const BrievKernelDesc* descs, uint32_t n) {
         } else if (verbose) {
             fprintf(stderr, "[briev_accel] kernel '%s' compiled on '%s'\n",
                     descs[i].txn_name, g_driver->name);
+        }
+        // 2026-09-09 (S3b+ perf rungs): per-kernel block-size override.
+        if (descs[i].block_threads > 0 && g_driver->set_block_threads != NULL) {
+            g_driver->set_block_threads(g_kernels[i], descs[i].block_threads);
         }
         // 2026-09-02: image-resident arrays need the driver's image path.
         // Absent = loud refusal (a silent skip would leave the image

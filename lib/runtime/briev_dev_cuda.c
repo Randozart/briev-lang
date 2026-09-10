@@ -110,6 +110,10 @@ typedef struct {
     void* mapped_host;
     size_t bytes;
     char name[128];
+    // 2026-09-09 (S3b+ perf rungs): block thread count for THIS kernel
+    // (default 64 — `cu_local_x`). The multi-warp tensor kernels launch
+    // mw*nw*32-thread blocks.
+    uint32_t block_threads;
 } BrievCudaKernel;
 
 static int cu_resolve(void) {
@@ -270,7 +274,16 @@ static int briev_dev_cuda_create_kernel(const uint8_t* blob, size_t size,
     k->dev = 0;
     k->mapped_host = NULL;
     k->bytes = 0;
+    k->block_threads = 64;
     *kernel_out = k;
+    return 1;
+}
+
+// 2026-09-09 (S3b+ perf rungs): per-kernel block size override (default 64).
+static int briev_dev_cuda_set_block_threads(void* handle, uint32_t n) {
+    BrievCudaKernel* k = (BrievCudaKernel*)handle;
+    if (k == NULL || n == 0 || n > 1024) return 0;
+    k->block_threads = n;
     return 1;
 }
 
@@ -282,7 +295,7 @@ static int briev_dev_cuda_create_kernel(const uint8_t* blob, size_t size,
 // One param: the projection pointer (kernel `.param .b64 param0`).
 static int cuda_launch_grid(BrievCudaKernel* k, size_t nx, size_t ny,
                             size_t shared_bytes) {
-    unsigned bx = cu_local_x;
+    unsigned bx = k->block_threads > 0 ? k->block_threads : cu_local_x;
     unsigned gx = (unsigned)((nx + bx - 1) / bx);
     unsigned gy = (unsigned)ny;
     if (gx == 0) gx = 1;
@@ -499,4 +512,6 @@ BrievDeviceDriver briev_dev_cuda = {
     // Images: not in the CUDA tier's S1 scope — NULL refuses image kernels.
     NULL,
     NULL,
+    // 2026-09-09 (S3b+ perf rungs): per-kernel block-size override.
+    briev_dev_cuda_set_block_threads,
 };

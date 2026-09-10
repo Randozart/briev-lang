@@ -82,26 +82,42 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
 }
 
 /// Select multi-warp CTA dimensions (mw, nw) for the mw kernel.
-/// CTA tile = (mw*32) × (nw*64), block_threads = mw*nw*32 (max 512).
-/// Register budget: 108 regs/thread × block_threads ≤ 65,536 per-SM
-/// (sm_86 GA106). Also: nw must divide 8, mw must divide 16 (for per_a/per_b
-/// integer division in the kernel). Prefers wider nw (B reuse) then scales
-/// mw (A reuse).
+/// CTA tile = (mw*32) × (nw*64), block_threads = mw*nw*32 (max 256).
+/// Register budget: the mw kernel compiles to 136 regs natural
+/// (2026-09-10 ptxas 13.3, 0 spills). 136 × 256 = 34,816 ≤ 65,536 per-SM
+/// (sm_86 GA106); the earlier 512-thread cap assumed 108 regs, but
+/// squeezing ptxas to 108 via -maxrregcount produced SASS that faults
+/// IMA at runtime on both ptxas 12.8 and 13.3 — capped-register cubins
+/// are unshippable, so the thread cap carries the budget instead.
+/// Also: nw must divide 8, mw must divide 16 (for per_a/per_b integer
+/// division in the kernel). Prefers wider nw (B reuse) then scales mw
+/// (A reuse).
 fn select_mw_nw(m: i64, n: i64) -> (usize, usize) {
-    let mut nw: usize = 1;
+    // Balanced growth (2026-09-10 on-device sweep, 4096^3): (1,8) 8.9,
+    // (2,4) 17.3, (4,2) 17.4 TFLOP/s — one-sided configs starve A or B
+    // reuse, so grow whichever axis lags, nw first (B reuse), while the
+    // divisibility guards and the 256-thread register budget hold.
     let mut mw: usize = 1;
-    // Scale nw: double while N accommodates, block budget fits, and nw|8.
-    while nw * 2 <= 8 && n % ((nw * 2 * 64) as i64) == 0
-        && (mw * nw * 2) as i64 * 32 <= 512
-    {
-        nw *= 2;
-    }
-    // Scale mw: double while M accommodates, block budget fits, and mw|16.
-    while mw * 2 <= 16
-        && m % ((mw * 2 * 32) as i64) == 0
-        && (mw * 2 * nw) as i64 * 32 <= 512
-    {
-        mw *= 2;
+    let mut nw: usize = 1;
+    loop {
+        let mut grew = false;
+        for (dm, dn) in [(1usize, 2usize), (2usize, 1usize)] {
+            let (tm, tn) = (mw * dm, nw * dn);
+            if tm <= 16
+                && tn <= 8
+                && m % ((tm * 32) as i64) == 0
+                && n % ((tn * 64) as i64) == 0
+                && tm * tn * 32 <= 256
+            {
+                mw = tm;
+                nw = tn;
+                grew = true;
+                break;
+            }
+        }
+        if !grew {
+            break;
+        }
     }
     (mw, nw)
 }

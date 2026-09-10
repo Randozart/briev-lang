@@ -172,3 +172,48 @@ tried mw=4×nw=8=1024 threads → 110,592 > 65,536 → CUDA_ERROR_LAUNCH_OUT_OF_
 ## Undo
 
 New module + new driver file only; SPIR-V path byte-identical under `--backend spirv` and under probe selection. Config changes reverted via git; losers get VERDICT rows in the ledger.
+## S4 re-verification + cp.async pipeline — PASS (2026-09-10, later)
+
+The S4 gate above was recorded from harness runs that today proved
+unreliable (hand harnesses hit the high-VA driver trap, see BUGS.md
+2026-09-10; one config also passed a 3.2e-3 seeded-data off-by-one under
+the 5e-3 gate). Re-validated everything on the corrected kernel with a
+retry-alloc (low-VA) harness:
+
+**Kernel corrections (tensor.rs `tensor_gemm_ptx_smem_mw`):**
+1. B slab made K-MAJOR (`k*128 + n*2`) with 16B-chunk XOR swizzle
+   `((n>>3)^(k&7))<<4`; fill and ldmatrix share the contract. A 4-byte
+   cp.async sources two adjacent columns of one B row — an n-major tile
+   was unsourcable, period.
+2. KLOOP fill prefetches stripe kstep+16 with a `FILL_DONE` skip on the
+   final iteration (an off-by-one reused stripe k, silently doubling
+   stripe 0 and dropping the last; and skipping unguarded read past K).
+3. Prologue B fill uses `k*b_row` (r2 is NOT kstep during the prologue —
+   it still holds a setup product; the old `(kstep+k)` form read
+   `B[(n_cta*512+k)*b_row + ...]` — massively out of bounds).
+4. `membar.cta` between `cp.async.wait_group 0` and `bar.sync` — on
+   driver 580.178/sm_86 the documented wait+bar pattern alone let
+   ldmatrix read stale smem natively (zeros out; masked by cuda-gdb and
+   compute-sanitizer). See BUGS.md 2026-09-10.
+
+**Register budget (mod.rs `select_mw_nw`):** cap 512 → 256 threads.
+Natural allocation is 136 regs; `-maxrregcount=108` cubins fault IMA on
+both ptxas 12.8 and 13.3, so capped cubins are unshippable — the thread
+cap carries the budget instead. Growth made balanced (nw-first
+alternation): on-device sweep 4096³ gave (1,8) 8.9, (2,4) 17.3,
+(4,2) 17.4 TFLOP/s.
+
+**Re-verified S4 (2×4, block 256, low-VA harness):**
+
+| Shape | mw×nw | gx | max_rel_err | TFLOP/s |
+|-------|-------|-----|-------------|---------|
+| 2048³ | 2×4 | 256 | 3.261e-04 | 15.01 |
+| 4096³ | 2×4 | 1024 | 2.442e-04 | 16.98 |
+| 8192³ | 2×4 | 4096 | 3.254e-04 | 17.84 |
+| 4096×4096×16 | 2×4 | 1024 | 0.000e+00 | 1.16 (launch-bound) |
+
+vs pre-cp.async baseline 9.55/10.44/~10.5 — **+60–70%**. S5 (42
+TFLOP/s) still open: next levers are bank-conflict audit on the swizzle,
+wider tiles via ≤128-reg kernel trims, and occupancy tuning.
+
+2106 lib tests green.
