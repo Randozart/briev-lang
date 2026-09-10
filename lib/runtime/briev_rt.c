@@ -331,27 +331,6 @@ __attribute__((always_inline)) int64_t __print_float64(double f) {
     return 0;
 }
 
-// ── Timer infrastructure (used by trigger system) ─────────────────────
-
-int32_t __trg_timerfd_open(int64_t hz) {
-    return 0;
-}
-
-int32_t __trg_timerfd_read(int32_t fd) {
-    (void)fd;
-    return 0;
-}
-
-int32_t __trg_signalfd_open(const char* name) {
-    (void)name;
-    return 0;
-}
-
-int32_t __trg_signalfd_read(int32_t fd) {
-    (void)fd;
-    return 0;
-}
-
 // ── Async runtime infrastructure ─────────────────────────────────────
 // Forward declaration for atexit cleanup handler
 void briev_thread_pool_shutdown(void);
@@ -509,47 +488,6 @@ void __rt_wait(void) {
 
 void __rt_poll(void) {
     pause();
-}
-
-// ── TTY / Terminal (used by stdlib) ──────────────────────────────────
-
-int64_t tty_raw_mode(int64_t enable) {
-    (void)enable;
-    return -1;
-}
-
-int64_t tty_size(void) {
-    return -1;
-}
-
-int64_t __tty_raw_mode__(int64_t enable) {
-    return tty_raw_mode(enable);
-}
-
-int64_t __tty_size__(void) {
-    return tty_size();
-}
-
-int64_t __tty_read_key__(void) {
-    return -1;
-}
-
-int64_t __readln__(void) {
-    return -1;
-}
-
-int64_t __sort_list__(int64_t list_bstr) {
-    (void)list_bstr;
-    return -1;
-}
-
-int64_t __reverse_list__(int64_t list_bstr) {
-    (void)list_bstr;
-    return -1;
-}
-
-int64_t briev_ttyname(int64_t fd) {
-    return (int64_t)(uintptr_t)ttyname((int)fd);
 }
 
 // 2026-07-25: ShellCmd# runtime implementation.

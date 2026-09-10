@@ -3555,11 +3555,8 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         writeln!(out, "declare i64 @briev_setrlimit(i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_pagesize() #1").ok();
         writeln!(out, "declare i64 @briev_cpu_count() #1").ok();
-        writeln!(out, "declare i64 @briev_ttyname(i64) #1").ok();
         writeln!(out, "declare i64 @briev_ring_push(i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_ring_pop(i64) #1").ok();
-        writeln!(out, "declare i64 @__tty_read_key__(i64) #1").ok();
-        writeln!(out, "declare i64 @__tty_size__() #1").ok();
         writeln!(out, "declare i64 @cpu_count() #1").ok();
         writeln!(out, "declare i64 @pagesize() #1").ok();
 
