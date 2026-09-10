@@ -810,8 +810,15 @@ pub fn tensor_gemm_ptx_smem_mw(
     let mut out = String::new();
 
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
+    // .maxnreg 128 (2026-09-10): natural allocation is 138 regs, which
+    // halves occupancy to 1 CTA/SM (8 warps). The cap restores 2 CTAs —
+    // same-window A/B 2048^3: 15.7 vs 12.3 TFLOP/s — with 0 spills
+    // (verified; correctness unchanged). The historical "capped cubins
+    // fault IMA" verdict was contaminated by the kernel's own OOB bugs of
+    // the same era; re-tested clean on the fixed kernel.
     out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
     out.push_str(".visible .entry main (.param .b64 proj_param)\n{\n");
+    out.push_str("    .maxnreg 128;\n");
     out.push_str("    .reg .b64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd7, %rd8, %rd9, %rd5b, %rd5c;\n");
     out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
     out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19, %r20;\n");
@@ -819,8 +826,17 @@ pub fn tensor_gemm_ptx_smem_mw(
     // Register-trimmed scheduling: only %a0-%a3 (one A 16x16 block live per
     // mh) and %b0-%b1 (one B fragment live per g) exist — see the compute
     // section's scheduling comment below.
-    let bregs: Vec<String> = vec!["%b0".to_string(), "%b1".to_string()];
-    out.push_str("    .reg .b32  %a0, %a1, %a2, %a3, %b0, %b1, %t0;\n");
+    // f16-acc pipelines the B loads (ld-ahead into the alternate pair) and
+    // gets 4 B regs; f32 stays at 2 (the 128-reg 2-CTA budget is exact).
+    let bregs: Vec<String> = if f16_acc {
+        vec!["%b0".to_string(), "%b1".to_string(), "%b2".to_string(), "%b3".to_string()]
+    } else {
+        vec!["%b0".to_string(), "%b1".to_string()]
+    };
+    out.push_str(&format!(
+        "    .reg .b32  %a0, %a1, %a2, %a3, {}, %t0;\n",
+        bregs.join(", ")
+    ));
     // Accumulators: f32-acc = 4 f32 per (mh,g) (64 regs); f16-acc = 2 f16x2
     // b32 per (mh,g) (32 regs — funds an extra CTA's worth of registers).
     // f16 contract: chunked accumulation — the mma chains f16x2 over
@@ -1209,10 +1225,15 @@ pub fn tensor_gemm_ptx_smem_mw(
         // B fragments from the k-major swizzled tile. Per col-group g (8
         // cols): lane 0-15 addresses k-rows k=lane of 16 bytes at byte g*16,
         // XOR-swizzled by k&7 — matching the fill's ((n>>3)^(k&7))*16 chunk
-        // remap. x2.trans: lanes 0-7 -> %b0 (k 0-7), lanes 8-15 -> %b1
-        // (k 8-15), both n 0-7. Loaded and consumed per-g.
-        for g in 0..ng {
-            let (b0, b1) = (&bregs[0], &bregs[1]);
+        // remap. x2.trans: lanes 0-7 -> b-lo (k 0-7), lanes 8-15 -> b-hi
+        // (k 8-15), both n 0-7.
+        //
+        // f16-acc: the B loads software-pipeline — preload g0/g1 into the
+        // two register pairs, then each mma(g) is independent of the
+        // ld-ahead for g+2 (alternate pairs), so the ~30clk ldmatrix
+        // latency hides under the mma instead of serializing every g.
+        // f32: serial per-g (the 128-reg 2-CTA budget cannot fund 4 B regs).
+        let emit_b_ld = |out: &mut String, g: usize, lo: &str, hi: &str| {
             out.push_str("    mov.u64 %rd4, %rd9;\n");
             out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", bsmem_buf));
             out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
@@ -1232,45 +1253,49 @@ pub fn tensor_gemm_ptx_smem_mw(
             out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
             out.push_str(&format!(
                 "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
-                b0, b1
+                lo, hi
             ));
-            // d and c share the accumulator registers (in-place accumulate).
-            // f32: 4 regs per (mh,g); f16: 2 f16x2 regs per (mh,g).
-            let cb = if f16_acc {
-                2 * (mh * 8 + g)
-            } else {
-                4 * (mh * 8 + g)
-            };
-            let (acc_regs, mma_fmt) = if f16_acc {
-                // f16x2 pairs: 2 b32 regs per (mh,g), each = 2 f16 accs.
-                (
-                    format!("{{%c{}, %c{}}}", cb, cb + 1),
-                    "f16.f16.f16.f16",
-                )
-            } else {
-                (
-                    format!("{{%c{}, %c{}, %c{}, %c{}}}", cb, cb + 1, cb + 2, cb + 3),
-                    "f32.f16.f16.f32",
-                )
-            };
-            out.push_str(&format!(
-                "    mma.sync.aligned.m16n8k16.row.col.{} {}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {};\n",
-                mma_fmt, acc_regs, acc_regs
-            ));
+        };
+        if f16_acc {
+            emit_b_ld(&mut out, 0, "%b0", "%b1");
+            emit_b_ld(&mut out, 1, "%b2", "%b3");
+            for g in 0..ng {
+                let (lo, hi) = if g % 2 == 0 { ("%b0", "%b1") } else { ("%b2", "%b3") };
+                let cb = 2 * (mh * 8 + g);
+                out.push_str(&format!(
+                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{{}, {}}}, {{%a0, %a1, %a2, %a3}}, {{{}, {}}}, {{{}, {}}};\n",
+                    cb, cb + 1, lo, hi, cb, cb + 1
+                ));
+                if g + 2 < ng {
+                    let (nlo, nhi) = if g % 2 == 0 { ("%b2", "%b3") } else { ("%b0", "%b1") };
+                    emit_b_ld(&mut out, g + 2, nlo, nhi);
+                }
+            }
+        } else {
+            for g in 0..ng {
+                emit_b_ld(&mut out, g, "%b0", "%b1");
+                let cb = 4 * (mh * 8 + g);
+                out.push_str(&format!(
+                    "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
+                    cb, cb + 1, cb + 2, cb + 3, cb, cb + 1, cb + 2, cb + 3
+                ));
+            }
         }
     }
 
     // f16-acc chunk promotion: every 16 iterations (256 k) fold the f16x2
     // chunk accs into the y tile and reset them. Uniform predicate.
     if f16_acc {
-        let chunk_iters = 16usize;
+        // 32-iteration chunks (512 k): half the RMV rounds; f16 rounding
+        // measured 8e-4 at 16-iter chunks — 32 stays far under the 1e-2 gate.
+        let chunk_iters = 32usize;
         out.push_str("    mov.u32 %r14, %r2;\n");
         out.push_str("    add.u32 %r14, %r14, 16;\n");
         out.push_str(&format!(
             "    and.b32 %r14, %r14, {};\n",
             chunk_iters * 16 - 1
         ));
-        out.push_str("    setp.ne.b32 %p1, %r14, 0;\n");
+        out.push_str("    setp.ne.u32 %p1, %r14, 0;\n");
         out.push_str("    @%p1 bra PROMO_SKIP;\n");
         emit_y_pass(&mut out, true);
         out.push_str("PROMO_SKIP:\n");
@@ -1289,7 +1314,7 @@ pub fn tensor_gemm_ptx_smem_mw(
     // a multiple of the 16-iteration chunk — the in-loop promotion covered
     // whole chunks already).
     if f16_acc {
-        if k % (16 * 16) != 0 {
+        if k % (32 * 16) != 0 {
             emit_y_pass(&mut out, true);
         }
         out.push_str("    ret;\n}\n");

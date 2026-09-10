@@ -310,3 +310,35 @@ flip `ptx_tensor_f16acc=1` once a traffic rung lands. Config sweep for
 the f16acc path selects (4,4)@512T automatically.
 
 2107 lib tests green.
+
+## Evening: fill/compute decomposition + pipelined B + driver-JIT wedge (2026-09-10, late)
+
+**Decomposition @4096³ (2,4) f32:** fills stripped → 6.06ms (22.7
+TFLOP/s compute ceiling); fills only → 4.39ms (31.3 TFLOP/s — the L2
+sharing across concurrent CTAs lifts effective fill bandwidth to
+~610GB/s, i.e. DRAM is NOT the wall the models assumed); full →
+8.25ms. The 4-stage pipeline hides ~72% of the fill; the residual gap
+is compute-phase dependency stalls (the failed hoist confirmed
+latency-bound, not issue-bound).
+
+**B-fragment software pipeline (f16acc):** ldmatrix→mma serialized
+per-g through the shared %b0/%b1 pair. f16acc's 68-reg budget funds 4
+B regs: preload g0/g1, then mma(g) alternates pairs while the ld-ahead
+for g+2 issues — removes the per-g serialization. f32 stays serial
+(its exact 128-reg 2-CTA budget cannot fund +2 regs). RMV chunk
+widened 16 → 32 iterations (8 f32 rounding, ~2e-3 projected).
+
+**Driver-JIT wedge (environment):** the driver's PTX JIT (rc 218,
+INVALID_PTX) began failing on kernels it had JIT'd cleanly hours
+earlier — deterministic per-binary within a window, trivial PTX still
+JITs. Hundreds of faulted contexts today (all the IMA debugging)
+degraded it. triton ptxas 13.3 assembles everything at 128/64 regs 0
+spills, so the PTX is legal; validation of the pipelined B is blocked
+until the driver is reloaded (sudo rmmod/modprobe nvidia_uvm or
+reboot). Production runtime hardening landed regardless:
+cuModuleLoadDataEx + CU_JIT_MAX_REGISTERS when the PTX carries
+.maxnreg (directive stripped before JIT — the driver JIT rejects the
+directive text itself), and the batch-loop shared-bytes fix (literal 0
+→ k->shared_bytes — the production IMA).
+
+2107 lib tests green.

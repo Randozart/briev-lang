@@ -61,6 +61,9 @@ typedef int (*cu_name)(char*, int, CUdevice);
 typedef int (*cu_attr)(int*, int, CUdevice);
 typedef int (*cu_ctx_create)(CUcontext*, unsigned, CUdevice);
 typedef int (*cu_module_load)(CUmodule*, const void*);
+typedef int (*cu_module_load_ex)(CUmodule*, const void*, unsigned int,
+                                 unsigned int*, void**);
+typedef int (*cu_func_get_attribute)(int*, int, CUfunction);
 typedef int (*cu_module_func)(CUfunction*, CUmodule, const char*);
 typedef int (*cu_mem_alloc)(CUdeviceptr*, size_t);
 typedef int (*cu_mem_free)(CUdeviceptr);
@@ -85,6 +88,8 @@ static cu_name p_cuDeviceGetName = NULL;
 static cu_attr p_cuDeviceGetAttribute = NULL;
 static cu_ctx_create p_cuCtxCreate = NULL;
 static cu_module_load p_cuModuleLoadData = NULL;
+static cu_module_load_ex p_cuModuleLoadDataEx = NULL;
+static cu_func_get_attribute p_cuFuncGetAttribute = NULL;
 static cu_module_func p_cuModuleGetFunction = NULL;
 static cu_mem_alloc p_cuMemAlloc = NULL;
 static cu_mem_free p_cuMemFree = NULL;
@@ -138,6 +143,8 @@ static int cu_resolve(void) {
     CU_SYM(cuDeviceGetAttribute);
     CU_SYM(cuCtxCreate);
     CU_SYM(cuModuleLoadData);
+    CU_SYM(cuModuleLoadDataEx);
+    CU_SYM(cuFuncGetAttribute);
     CU_SYM(cuModuleGetFunction);
     CU_SYM(cuMemAlloc);
     CU_SYM(cuMemFree);
@@ -257,7 +264,34 @@ static int briev_dev_cuda_create_kernel(const uint8_t* blob, size_t size,
     }
     memcpy(ptx, blob, size);
     ptx[size] = '\0';
-    int rc = p_cuModuleLoadData(&k->module, ptx);
+    // 2026-09-10 (.maxnreg): the staged mw kernel emits `.maxnreg 128` —
+    // at 138 natural regs only 1 CTA/SM fits; the JIT register cap
+    // restores 2 (same-window A/B 2048^3: 15.7 vs 12.3 TFLOP/s, 0 spills,
+    // correctness unchanged — re-tested clean on the fixed kernel; the
+    // historical IMA verdict was contaminated by that era's OOB bugs).
+    // cuModuleLoadData has no options parameter, so when the PTX carries
+    // the directive route through cuModuleLoadDataEx with
+    // CU_JIT_MAX_REGISTERS (=0).
+    unsigned int max_reg = 0;
+    const char* mreg = strstr(ptx, ".maxnreg ");
+    if (verbose) fprintf(stderr, "[briev_accel/cuda] .maxnreg scan: %s\n", mreg ? "found" : "absent");
+    if (mreg != NULL) {
+        max_reg = (unsigned int)strtoul(mreg + 9, NULL, 10);
+        // The driver-internal JIT rejects the directive itself — strip it
+        // and carry the value via CU_JIT_MAX_REGISTERS instead.
+        char* line_end = strchr(mreg, ';');
+        if (line_end != NULL) {
+            memset((char*)mreg, ' ', (size_t)(line_end - mreg) + 1);
+        }
+    }
+    int rc;
+    if (max_reg > 0 && p_cuModuleLoadDataEx != NULL) {
+        unsigned int jit_opt = 0; /* CU_JIT_MAX_REGISTERS */
+        void* jit_vals = &max_reg;
+        rc = p_cuModuleLoadDataEx(&k->module, ptx, 1, &jit_opt, &jit_vals);
+    } else {
+        rc = p_cuModuleLoadData(&k->module, ptx);
+    }
     free(ptx);
     if (rc != CUDA_SUCCESS) {
         if (verbose) {
@@ -273,6 +307,13 @@ static int briev_dev_cuda_create_kernel(const uint8_t* blob, size_t size,
         p_cuModuleUnload(k->module);
         free(k);
         return 0;
+    }
+    if (verbose && p_cuFuncGetAttribute) {
+        int regs = 0;
+        if (p_cuFuncGetAttribute(&regs, 4 /* CU_FUNC_ATTRIBUTE_NUM_REGS */,
+                                 k->func) == CUDA_SUCCESS) {
+            fprintf(stderr, "[briev_accel/cuda] JIT regs=%d\n", regs);
+        }
     }
     k->dev = 0;
     k->mapped_host = NULL;
@@ -454,7 +495,7 @@ static int briev_dev_cuda_launch_dev2d_batch(void* handle, size_t nx, size_t ny,
     int ok = briev_dev_cuda_launch_dev2d(handle, nx, ny, full_sync, dirty, n_dirty);
     for (uint32_t t = 1; ok && t < times; t++) {
         // Subsequent dispatches reuse the working set — no sync.
-        ok = cuda_launch_grid(k, nx, ny, 0);
+        ok = cuda_launch_grid(k, nx, ny, k->shared_bytes);
     }
     return ok;
 }

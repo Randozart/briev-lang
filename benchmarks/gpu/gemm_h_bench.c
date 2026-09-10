@@ -243,9 +243,15 @@ int main(int argc, char** argv) {
         { "i", 2, off_i, 8, 1, 0, off_i },
         { "y", 1, off_y, 2, M * N, 1, off_y },
     };
+    // 2026-09-10 (PTX CUDA tier): argv[11] = dynamic shared bytes for the
+    // staged mw kernel (0 = none); block_threads 256 = the (2,4) mw config.
+    // Tail-of-struct fields (n_images/images/block_threads/shared_bytes)
+    // zero-fill for the Vulkan path.
+    const char* mw_smem_env = getenv("MW_SMEM");
+    uint32_t mw_smem = mw_smem_env ? (uint32_t)atoi(mw_smem_env) : 0;
     BrievKernelDesc descs[2] = {
-        { "gemm", spv, (uint32_t)spv_len, 4, fields },
-        { "gemm", spv2, (uint32_t)spv2_len, 4, fields },
+        { "gemm", spv, (uint32_t)spv_len, 4, fields, 0, NULL, 256, mw_smem },
+        { "gemm", spv2, (uint32_t)spv2_len, 4, fields, 0, NULL, 256, mw_smem },
     };
     uint32_t n_kernels = ab_mode ? 2 : 1;
 
