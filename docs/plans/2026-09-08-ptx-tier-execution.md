@@ -145,6 +145,26 @@ Debug pitfalls recorded: (1) a naive hand-rolled f16 encoder corrupts 0.0/small 
 | S5 | ≥42.0 TFLOP/s at 4096³ (ledger row) |
 | S6 | `derive --stochastic` tile sweep → config cache |
 
+### S4 gate — PASS (2026-09-10)
+
+All shapes pass the 5e-3 f32-acc tier gate (externally verified via
+CUDA driver API harness `test_s4.c`):
+
+| Shape | mw×nw | block_threads | gx | max_rel_err | Gate |
+|-------|-------|---------------|-----|-------------|------|
+| 256×128×64 (small) | 8×2 | 512 | 1 | 0.000e+00 | OK |
+| 2048³ | 2×8 | 512 | 128 | 3.261e-04 | OK |
+| 4096³ | 2×8 | 512 | 512 | 2.442e-04 | OK |
+| 8192³ | 2×8 | 512 | 2048 | 3.254e-04 | OK |
+| 4096×4096×16 (skinny-K) | 2×8 | 512 | 512 | 0.000e+00 | OK |
+
+**Register budget fix:** `select_mw_nw` capped at 512 block_threads
+(108 regs × 512 = 55,296 ≤ 65,536 per-SM on sm_86 GA106). Previously
+tried mw=4×nw=8=1024 threads → 110,592 > 65,536 → CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES.
+
+**Dump tests** added: `dump_mw_2048`, `dump_mw_4096`, `dump_mw_8192`,
+`dump_mw_4096_k16` in `tensor.rs:r16_dump`. 2106 lib tests green.
+
 ## Docs to update (with S2, same commit)
 
 `docs/architecture/backend-contracts.md` (PTX charter row), `docs/HANDOFF-2026-08-31-gpu.md` (status block), `spec/SPEC.md` §9.8 (already written — verify), `AGENTS.md` reference index, `docs/plans/INDEX.md`.

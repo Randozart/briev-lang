@@ -1099,11 +1099,47 @@ mod r16_dump {
         let ptx = tensor_gemm_ptx_smem_r16(64, 64, 64, 0, 8192, 16392, 2);
         std::fs::write("/tmp/opencode/tgemm_r16_64.ptx", &ptx).unwrap();
     }
+
+    use super::*;
     #[test]
     fn dump_r16_128() {
         /* M=128,N=128,K=128: a@0, b@32768, y@65544 */
         let ptx = tensor_gemm_ptx_smem_r16(128, 128, 128, 0, 32768, 65544, 2);
         std::fs::write("/tmp/opencode/tgemm_r16_128.ptx", &ptx).unwrap();
+    }
+
+    /* ── S4 shape portfolio (2026-09-10) ────────────────────────────── */
+
+    #[test]
+    fn dump_mw_2048() {
+        /* M=N=K=2048, select_mw_nw=(2,8), block=512.
+           a@0, b=2048*2048*2=8388608, y=2*8388608+8=16777224 */
+        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 8);
+        std::fs::write("/tmp/opencode/tgemm_mw_2048.ptx", &ptx).unwrap();
+    }
+
+    #[test]
+    fn dump_mw_4096() {
+        /* M=N=K=4096, select_mw_nw=(2,8), block=512.
+           a@0, b=4096*4096*2=33554432, y=2*33554432+8=67108872 */
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 8);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096.ptx", &ptx).unwrap();
+    }
+
+    #[test]
+    fn dump_mw_8192() {
+        /* M=N=K=8192, select_mw_nw=(2,8), block=512.
+           a@0, b=8192*8192*2=134217728, y=2*134217728+8=268435464 */
+        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 2, 8);
+        std::fs::write("/tmp/opencode/tgemm_mw_8192.ptx", &ptx).unwrap();
+    }
+
+    #[test]
+    fn dump_mw_4096_k16() {
+        /* M=N=4096,K=16 (skinny-K), select_mw_nw=(2,8), block=512.
+           a@0, b=4096*16*2=131072, y=2*131072+8=262152 */
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 2, 8);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_k16.ptx", &ptx).unwrap();
     }
 }
 

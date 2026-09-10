@@ -82,19 +82,24 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
 }
 
 /// Select multi-warp CTA dimensions (mw, nw) for the mw kernel.
-/// CTA tile = (mw*32) × (nw*64), block_threads = mw*nw*32 (max 1024).
-/// Prefers wider nw (B reuse) then scales mw (A reuse).
+/// CTA tile = (mw*32) × (nw*64), block_threads = mw*nw*32 (max 512).
+/// Register budget: 108 regs/thread × block_threads ≤ 65,536 per-SM
+/// (sm_86 GA106). Also: nw must divide 8, mw must divide 16 (for per_a/per_b
+/// integer division in the kernel). Prefers wider nw (B reuse) then scales
+/// mw (A reuse).
 fn select_mw_nw(m: i64, n: i64) -> (usize, usize) {
     let mut nw: usize = 1;
     let mut mw: usize = 1;
-    // Scale nw: double while N accommodates and block budget fits.
-    while nw * 2 <= 8 && n % ((nw * 2 * 64) as i64) == 0 && (mw * nw * 2) as i64 * 32 <= 1024 {
+    // Scale nw: double while N accommodates, block budget fits, and nw|8.
+    while nw * 2 <= 8 && n % ((nw * 2 * 64) as i64) == 0
+        && (mw * nw * 2) as i64 * 32 <= 512
+    {
         nw *= 2;
     }
-    // Scale mw: double while M accommodates and block budget fits.
+    // Scale mw: double while M accommodates, block budget fits, and mw|16.
     while mw * 2 <= 16
         && m % ((mw * 2 * 32) as i64) == 0
-        && (mw * 2 * nw) as i64 * 32 <= 1024
+        && (mw * 2 * nw) as i64 * 32 <= 512
     {
         mw *= 2;
     }
