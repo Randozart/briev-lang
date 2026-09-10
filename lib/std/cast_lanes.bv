@@ -956,3 +956,29 @@ out defn __watchdog_fail() [true][term >= 0] -> Int {
     SysCall#(231, 1, 0, 0, 0, 0, 0);
     term 0;
 };
+
+// ── Working directory + scheduler free (Family I) ───────────────────────
+// __briev_getcwd — SYS_getcwd(63) into an Alloc#(4096) buffer. Returns the
+// C-STRING address: the GetCwd# call site strlen's it (the C ABI preserved
+// so the site's null-check + dance is untouched). Failure → 0 (null).
+out defn __briev_getcwd() [true][term >= 0] -> Int {
+    let buf: Int = Alloc#(4096) as Int;
+    let r: Int = SysCall#(63, buf, 4096, 0, 0, 0, 0);
+    when r < 0 {
+        term 0;
+    };
+    term buf;
+};
+
+// __briev_chdir — SYS_chdir(80).
+out defn __briev_chdir(p: Int) [p >= 0][term >= -1 && term <= 0] -> Int {
+    term SysCall#(80, p, 0, 0, 0, 0, 0);
+};
+
+// __briev_free — arena semantics: a no-op. Arena memory retires when the
+// arena resets; the C incremented a calibration counter and libc-free()d —
+// neither exists under the arena model. (__briev_free_count had zero
+// referencers and was deleted with the C.)
+out defn __briev_free(p: Int) [p >= 0][term >= 0] -> Int {
+    term 0;
+};

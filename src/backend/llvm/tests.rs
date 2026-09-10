@@ -7556,14 +7556,14 @@ node life [sum < N][sum == N] {
     let mut backend = LlvmBackend::new();
     let ir = backend.generate(&items, None);
     assert!(
-        ir.contains("call void @__briev_free"),
+        ir.contains("call i64 @__briev_free(ptr %state"),
         "the scheduler must free the heap buffer after the loop; got:\n{ir}"
     );
     // The free must be in a terminal block (after the loop) — find its
     // position and ensure it precedes a `ret`.
     let free_line = ir
         .lines()
-        .position(|l| l.contains("call void @__briev_free"))
+        .position(|l| l.contains("call i64 @__briev_free"))
         .expect("free call line");
     let tail: Vec<&str> = ir.lines().skip(free_line).take(6).collect();
     assert!(

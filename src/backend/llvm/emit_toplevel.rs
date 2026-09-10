@@ -675,7 +675,9 @@ impl LlvmBackend {
         // free after a loop must not make LLVM treat the whole function's
         // memory as clobbered (without it, hash_ops' loop ran 23x slower —
         // LLVM could not promote the state slots to registers).
-        writeln!(out, "declare void @__briev_free(ptr) nounwind argmemonly").ok();
+        if !self.ctx.defn_params.contains_key("__briev_free") {
+            writeln!(out, "declare void @__briev_free(ptr) nounwind argmemonly").ok();
+        }
         // 2026-08-01 (D2): `Now#` — monotonic clock for the watchdog
         // `within N ms` deadline compare.
         // 2026-09-10 (Family I): declare-guarded — the pure-Briev defn takes
@@ -687,8 +689,12 @@ impl LlvmBackend {
         writeln!(out, "declare i64 @__briev_spawn(ptr) nounwind").ok();
         writeln!(out, "declare ptr @__briev_spawn_output(ptr)").ok();
         writeln!(out, "declare i64 @__briev_setenv(ptr, ptr) nounwind").ok();
-        writeln!(out, "declare ptr @__briev_getcwd()").ok();
-        writeln!(out, "declare i64 @__briev_chdir(ptr) nounwind").ok();
+        if !self.ctx.defn_params.contains_key("__briev_getcwd") {
+            writeln!(out, "declare ptr @__briev_getcwd()").ok();
+        }
+        if !self.ctx.defn_params.contains_key("__briev_chdir") {
+            writeln!(out, "declare i64 @__briev_chdir(ptr) nounwind").ok();
+        }
         // getenv/strlen already declared at line ~638 (GetEnv# path).
         writeln!(out, "declare i64 @strlen(ptr)").ok();
         // 2026-06-26: realloc used by the arena allocator grow path when

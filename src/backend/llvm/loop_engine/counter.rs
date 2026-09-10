@@ -645,7 +645,8 @@ impl LlvmBackend {
             let (handle, _) = self.emit_state_load_i64_by_idx(out, "  ", fidx);
             let ptr = self.fun.gen_reg();
             writeln!(out, "  {} = inttoptr i64 {} to ptr", ptr, handle).ok();
-            writeln!(out, "  call void @__briev_free(ptr {})", ptr).ok();
+            // 2026-09-10 (Family I): pure-Briev defn — hidden %state + i64 return.
+            writeln!(out, "  call i64 @__briev_free(ptr %state, ptr {})", ptr).ok();
         }
     }
 

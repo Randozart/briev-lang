@@ -444,42 +444,6 @@ void __wait_for_trigger__(void) {
     pause();
 }
 
-// ── File I/O (used by stdlib) ─────────────────────────────────────────
-// 2026-08-01 (B0): path_bstr/data_bstr are ptrs to Briev [len][bytes] buffers
-// (String ABI = ptr).
-
-int64_t __read_file__(const char* path_bstr) {
-    // 2026-08-03 (P2): briev_str_to_c returns the IN-PLACE data pointer (the
-    // composite) for heap Strings — arena-owned, must NOT be freed.
-    char* c_path = briev_str_to_c(path_bstr);
-    if (!c_path) return -1;
-    FILE* f = fopen(c_path, "r");
-    if (!f) return -1;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char* buf = malloc((size_t)(size + 1));
-    if (!buf) { fclose(f); return -1; }
-    size_t n = fread(buf, 1, (size_t)size, f);
-    fclose(f);
-    buf[n] = '\0';
-    return (int64_t)(uintptr_t)buf;
-}
-
-int64_t __write_file__(const char* path_bstr, const char* data_bstr) {
-    // 2026-08-03 (P2): str_to_c results are borrowed arena pointers — the old
-    // free() calls freed invalid pointers (P2 made str_to_c zero-copy).
-    char* c_path = briev_str_to_c(path_bstr);
-    char* c_data = briev_str_to_c(data_bstr);
-    if (!c_path || !c_data) return -1;
-    FILE* f = fopen(c_path, "w");
-    if (!f) return -1;
-    size_t len = strlen(c_data);
-    size_t written = fwrite(c_data, 1, len, f);
-    fclose(f);
-    return (int64_t)written;
-}
-
 // ── Event loop ───────────────────────────────────────────────────────
 
 void __rt_wait(void) {
@@ -536,15 +500,6 @@ int64_t ShellCmd(int64_t cmd_bstr) {
 // frees route through __briev_free so a benchmark can assert frees == allocs
 // (no premature free, no leak). __briev_free_count() is the observable getter.
 static long __briev_free_total = 0;
-
-void __briev_free(void* p) {
-    if (p) __briev_free_total++;
-    free(p);
-}
-
-long __briev_free_count(void) {
-    return __briev_free_total;
-}
 
 // 2026-08-01 (D2): `Now#` — monotonic clock in nanoseconds, for the watchdog
 // `within N ms` deadline compare (the deadline is `now - start >= N ms`).
@@ -633,16 +588,6 @@ uint8_t* __briev_spawn_output(const uint8_t* cmd) {
 
 int64_t __briev_setenv(const uint8_t* k, const uint8_t* v) {
     return (int64_t)setenv((const char*)k, (const char*)v, 1);
-}
-
-uint8_t* __briev_getcwd(void) {
-    char buf[4096];
-    if (!getcwd(buf, sizeof(buf))) return NULL;
-    return (uint8_t*)strdup(buf);
-}
-
-int64_t __briev_chdir(const uint8_t* p) {
-    return (int64_t)chdir((const char*)p);
 }
 
 /* ════════════════════════════════════════════════════════════════════

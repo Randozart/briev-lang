@@ -115,7 +115,13 @@ pub fn emit_intrinsic_call(
         }
         "GetCwd#" => {
             let cstr = backend.fun.gen_reg();
-            writeln!(out, "{}{} = call ptr @__briev_getcwd()", indent, cstr).ok();
+            if backend.ctx.defn_params.contains_key("__briev_getcwd") {
+                let cwd_i = backend.fun.gen_reg();
+                writeln!(out, "{}{} = call i64 @__briev_getcwd(ptr %state)", indent, cwd_i).ok();
+                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, cstr, cwd_i).ok();
+            } else {
+                writeln!(out, "{}{} = call ptr @__briev_getcwd()", indent, cstr).ok();
+            }
             let is_null = backend.fun.gen_reg();
             writeln!(out, "{}{} = icmp eq ptr {}, null", indent, is_null, cstr).ok();
             let fb = backend.fun.gen_reg();
@@ -139,7 +145,12 @@ pub fn emit_intrinsic_call(
             let pth = backend.emit_expr(out, &args[0], indent);
             let pptr = backend.string_ptr(out, indent, &pth);
             let r = backend.fun.gen_reg();
-            writeln!(out, "{}{} = call i64 @__briev_chdir(ptr {})", indent, r, pptr).ok();
+            // 2026-09-10 (Family I): the Briev defn declares the path as
+            // Int — ptrtoint so the static arg types match (LTO hazard).
+            let pi = backend.fun.gen_reg();
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, pi, pptr).ok();
+            writeln!(out, "{}{} = call i64 @__briev_chdir({}i64 {})", indent, r,
+                if backend.ctx.defn_params.contains_key("__briev_chdir") { "ptr %state, " } else { "" }, pi).ok();
             return BTypedRegister { name: r, ty: Type::int() };
         }
         // 2026-08-03: call a function-pointer value (host callback).
