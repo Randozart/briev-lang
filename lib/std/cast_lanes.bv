@@ -37,27 +37,58 @@ defn byte_at(s: String, i: Int) [s .^Length >= 0][term >= 0] -> Int {
 // int_to_str — decimal digits, recursion like string.ebv's proven digit loop.
 // 2026-09-09: negatives accumulate DIGITS NEGATIVELY (digits_neg) — the old
 // `Abs#(n)` formulation overflows on INT64_MIN (segfault in int_cases).
+// 2026-09-10: digits built INTO an Alloc# buffer (two-pass: count, fill
+// backwards). The earlier concat-chain formulation (`int_to_str(hi) + digit_
+// char(lo)`) crashed: every `+` result is STATE-ARENA memory, but the
+// concat epilogue free()s operands tagged heap — an arena pointer handed to
+// libc free. The C int_to_str used malloc consistently; the buffer form is
+// the equivalent Briev shape (arena memory is never freed).
 out defn int_to_str(n: Int) [true][term .^Length >= 0] -> String {
     when n < 0 {
-        term "-" + digits_neg(n);
+        let cnt: Int = 1 + neg_digit_count(n, 0);
+        let buf: Int = Alloc#(8 + cnt + 1) as Int;
+        Store#(buf, cnt, 8);
+        Store#(buf + 8, 45, 1);
+        term (fill_neg(n, buf, 8 + cnt, buf) as Data) as String;
     };
-    when n < 10 {
-        term digit_char(n);
-    };
-    let lo: Int = n % 10;
-    let hi: Int = n / 10;
-    term int_to_str(hi) + digit_char(lo);
+    let cnt: Int = pos_digit_count(n, 0);
+    let buf: Int = Alloc#(8 + cnt + 1) as Int;
+    Store#(buf, cnt, 8);
+    term (fill_pos(n, buf, 8 + cnt, buf) as Data) as String;
 };
 
-// digits_neg — the magnitude digits of n <= 0 without negating it (works for
-// INT64_MIN, whose magnitude is unrepresentable).
-defn digits_neg(n: Int) [n <= 0][term .^Length >= 1] -> String {
-    when n > -10 {
-        term digit_char(0 - n);
+// pos_digit_count — decimal digit count (n >= 0).
+defn pos_digit_count(n: Int, acc: Int) [n >= 0 && acc >= 0][term >= 1] -> Int {
+    when n < 10 { term acc + 1; };
+    term pos_digit_count(n / 10, acc + 1);
+};
+
+// neg_digit_count — digit count of n <= 0's magnitude (INT64_MIN-safe).
+defn neg_digit_count(n: Int, acc: Int) [n <= 0 && acc >= 0][term >= 1] -> Int {
+    when n > -10 { term acc + 1; };
+    term neg_digit_count(n / 10, acc + 1);
+};
+
+// fill_pos — write n's digits into buf[stop-1 ..] backwards; returns buf.
+defn fill_pos(n: Int, buf: Int, stop: Int, buf_ret: Int)
+    [n >= 0 && stop >= 1][term >= 0] -> Int {
+    when n < 10 {
+        Store#(buf + stop - 1, 48 + n, 1);
+        term buf_ret;
     };
-    let lo: Int = 0 - (n % 10);
-    let hi: Int = n / 10;
-    term digits_neg(hi) + digit_char(lo);
+    Store#(buf + stop - 1, 48 + (n % 10), 1);
+    term fill_pos(n / 10, buf, stop - 1, buf_ret);
+};
+
+// fill_neg — same for n <= 0 (srem keeps the sign; 48 - digit encodes).
+defn fill_neg(n: Int, buf: Int, stop: Int, buf_ret: Int)
+    [n <= 0 && stop >= 1][term >= 0] -> Int {
+    when n > -10 {
+        Store#(buf + stop - 1, 48 - n, 1);
+        term buf_ret;
+    };
+    Store#(buf + stop - 1, 48 - (n % 10), 1);
+    term fill_neg(n / 10, buf, stop - 1, buf_ret);
 };
 
 // uint_to_str — same representation (the C lane aliased int_to_str).
