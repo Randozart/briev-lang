@@ -37,7 +37,8 @@ $(Parsed @ highest) {
             // (cast_lanes.bv is deliberately lean: pulling all of string.bv
             // into every unit collides on to_string with string_builder.bv.)
             Import$("std/cast_lanes.bv"),
-            Import$("std/float_fmt.bv")
+            Import$("std/float_fmt.bv"),
+            Import$("std/asm.bv")
         );
     };
     // 2026-07-21: No imports — insert before the first txn.
@@ -61,7 +62,8 @@ $(Parsed @ highest) {
                 Import$("std/io.bv"),
                 // 2026-09-09 (Family A): see the anchor branch note above.
                 Import$("std/cast_lanes.bv"),
-                Import$("std/float_fmt.bv")
+                Import$("std/float_fmt.bv"),
+                Import$("std/asm.bv")
             );
         };
     };
