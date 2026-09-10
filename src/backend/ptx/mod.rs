@@ -83,12 +83,14 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
 
 /// Select multi-warp CTA dimensions (mw, nw) for the mw kernel.
 /// CTA tile = (mw*32) × (nw*64), block_threads = mw*nw*32 (max 256).
-/// Register budget: the mw kernel compiles to 136 regs natural
-/// (2026-09-10 ptxas 13.3, 0 spills). 136 × 256 = 34,816 ≤ 65,536 per-SM
-/// (sm_86 GA106); the earlier 512-thread cap assumed 108 regs, but
-/// squeezing ptxas to 108 via -maxrregcount produced SASS that faults
-/// IMA at runtime on both ptxas 12.8 and 13.3 — capped-register cubins
-/// are unshippable, so the thread cap carries the budget instead.
+/// Register budget: the mw kernel compiles to 128 regs natural, 0 spills
+/// (2026-09-10 ptxas 13.3, after the per-mh/per-g compute scheduling trim).
+/// 128 × 256 = 32,768, so TWO 8-warp CTAs co-reside per SM — measured
+/// 2026-09-10 @4096³: (2,4)@256T 18.4 vs (4,4)@512T 16.2 TFLOP/s. A single
+/// 512-thread CTA (128 × 512 = the full register file, 1 CTA/SM) has half
+/// the cp.async streams and loses. History: the original 512 cap assumed
+/// 108 regs; -maxrregcount=108 cubins fault IMA at runtime (ptxas 12.8 AND
+/// 13.3) — never ship capped-register cubins, verify with ptxas -v.
 /// Also: nw must divide 8, mw must divide 16 (for per_a/per_b integer
 /// division in the kernel). Prefers wider nw (B reuse) then scales mw
 /// (A reuse).
@@ -96,7 +98,10 @@ fn select_mw_nw(m: i64, n: i64) -> (usize, usize) {
     // Balanced growth (2026-09-10 on-device sweep, 4096^3): (1,8) 8.9,
     // (2,4) 17.3, (4,2) 17.4 TFLOP/s — one-sided configs starve A or B
     // reuse, so grow whichever axis lags, nw first (B reuse), while the
-    // divisibility guards and the 256-thread register budget hold.
+    // divisibility guards and the 512-thread register budget hold.
+    // At 512 threads balanced growth reaches (4,4): CTA tile 128x256,
+    // 85 FLOP/B DRAM intensity (vs 51 at (2,4)) — the DRAM ceiling moves
+    // 18.4 -> 30.7 TFLOP/s, which is the point of the trim.
     let mut mw: usize = 1;
     let mut nw: usize = 1;
     loop {
@@ -190,7 +195,7 @@ pub fn build_ptx_kernels(
             && plan.n % 16 == 0
             && plan.k % 16 == 0;
 
-        let (ptx, ptx_tensor, count_expr, block_threads) = if tensor {
+        let (ptx, ptx_tensor, count_expr, block_threads, shared_bytes) = if tensor {
             // Select mw/nw for multi-warp CTA. The mw kernel needs
             // M%(mw*32)==0 and N%(nw*64)==0; fall back to single-warp
             // smem kernel when the shape doesn't tile cleanly.
@@ -205,6 +210,7 @@ pub fn build_ptx_kernels(
                     true,
                     e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
                     (mw * nw * 32) as u32,
+                    ((mw * 1024 + nw * 2048) * tensor::MW_STAGES) as u32,
                 )
             } else {
                 // Single-warp smem kernel (32×16 tile, 1 warp).
@@ -213,6 +219,7 @@ pub fn build_ptx_kernels(
                     true,
                     e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
                     64,
+                    0,
                 )
             }
         } else {
@@ -231,6 +238,7 @@ pub fn build_ptx_kernels(
                 false,
                 e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
                 64,
+                0,
             )
         };
 
@@ -247,6 +255,7 @@ pub fn build_ptx_kernels(
             tensor_tile_rows: 1,
             ptx_tensor,
             block_threads,
+            shared_bytes,
         });
     }
     Ok(out)

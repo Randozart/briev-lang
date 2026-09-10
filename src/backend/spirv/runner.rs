@@ -58,6 +58,10 @@ pub struct RunnerKernel {
     /// Cooperative row kernel (plan 2026-09-01-cooperative-row-kernels):
     /// dispatch nx = 32 lanes x ny = rows.
     pub cooperative: bool,
+    /// 2026-09-10 (cp.async stages): dynamic shared-memory bytes the CUDA
+    /// runtime must opt in to at launch (cuFuncSetAttribute + the launch's
+    /// sharedMemBytes). 0 = none (every non-staged kernel).
+    pub shared_bytes: u32,
     /// Tiled GEMM (plan 2026-09-01-m2-gemm M2.1): the blob is a shared-
     /// memory tiled kernel (LocalSize 16x16, 64x64 tile). Dispatch is 1D
     /// flattened: workgroups = (M/64)*(N/64), nx items = workgroups * 16
@@ -469,13 +473,14 @@ pub fn emit_runner(
         // host_offset patch: the runner emits the table with placeholder
         // offsets, then computes them from the state layout below.
         out.push_str(&format!(
-            "    {{ \"{}\", k{}, k{}_len, {}, fields, {}, images, {} }},\n",
+            "    {{ \"{}\", k{}, k{}_len, {}, fields, {}, images, {}, {} }},\n",
             c_ident(&k.name),
             i,
             i,
             fields.len(),
             k.image_plans.len(),
-            k.block_threads
+            k.block_threads,
+            k.shared_bytes
         ));
     }
     out.push_str(&format!(
@@ -674,6 +679,7 @@ pub fn build_kernels(
             },
             ptx_tensor: false,
             block_threads: 64,
+            shared_bytes: 0,
         });
     }
     Ok(out)

@@ -114,6 +114,9 @@ typedef struct {
     // (default 64 — `cu_local_x`). The multi-warp tensor kernels launch
     // mw*nw*32-thread blocks.
     uint32_t block_threads;
+    // 2026-09-10 (cp.async stages): dynamic shared-memory bytes for THIS
+    // kernel (0 = none). The staged mw kernel's stage arrays live here.
+    uint32_t shared_bytes;
 } BrievCudaKernel;
 
 static int cu_resolve(void) {
@@ -275,6 +278,7 @@ static int briev_dev_cuda_create_kernel(const uint8_t* blob, size_t size,
     k->mapped_host = NULL;
     k->bytes = 0;
     k->block_threads = 64;
+    k->shared_bytes = 0;
     *kernel_out = k;
     return 1;
 }
@@ -284,6 +288,14 @@ static int briev_dev_cuda_set_block_threads(void* handle, uint32_t n) {
     BrievCudaKernel* k = (BrievCudaKernel*)handle;
     if (k == NULL || n == 0 || n > 1024) return 0;
     k->block_threads = n;
+    return 1;
+}
+
+// 2026-09-10 (cp.async stages): per-kernel dynamic shared-memory size.
+static int briev_dev_cuda_set_shared_bytes(void* handle, uint32_t n) {
+    BrievCudaKernel* k = (BrievCudaKernel*)handle;
+    if (k == NULL || n > 99 * 1024u) return 0;
+    k->shared_bytes = n;
     return 1;
 }
 
@@ -363,7 +375,7 @@ static int briev_dev_cuda_launch(void* handle, const void* proj, size_t proj_byt
         if (verbose) fprintf(stderr, "[briev_accel/cuda] HtoD failed\n");
         return 0;
     }
-    int ok = cuda_launch_grid(k, global_n, 1, 0);
+    int ok = cuda_launch_grid(k, global_n, 1, k->shared_bytes);
     if (ok && proj_out) {
         ok = p_cuMemcpyDtoH(proj_out, k->dev, proj_bytes) == CUDA_SUCCESS;
     }
@@ -424,7 +436,7 @@ static int briev_dev_cuda_launch_dev2d(void* handle, size_t nx, size_t ny,
             }
         }
     }
-    return cuda_launch_grid(k, nx, ny, 0);
+    return cuda_launch_grid(k, nx, ny, k->shared_bytes);
 }
 
 /// Flat 1D dispatch: nx work items, one row (the common launch_dev form).
@@ -514,4 +526,6 @@ BrievDeviceDriver briev_dev_cuda = {
     NULL,
     // 2026-09-09 (S3b+ perf rungs): per-kernel block-size override.
     briev_dev_cuda_set_block_threads,
+    // 2026-09-10 (cp.async stages): per-kernel dynamic shared-memory size.
+    briev_dev_cuda_set_shared_bytes,
 };

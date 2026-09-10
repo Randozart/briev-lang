@@ -217,3 +217,40 @@ TFLOP/s) still open: next levers are bank-conflict audit on the swizzle,
 wider tiles via ≤128-reg kernel trims, and occupancy tuning.
 
 2106 lib tests green.
+
+## Perf rungs on the staged mw kernel — 17.8 → 18.3 TFLOP/s peak (2026-09-10, evening)
+
+Post-S4 re-verification, four rungs landed on the same day (all on-device
+A/B'd at 4096³ unless noted):
+
+1. **Compute scheduling trim (136 → 128 regs, 0 spills):** A fragments
+   load per-mh (4 live, not 8), each B fragment loads immediately before
+   its mma (2 live, not 16). Pure scheduling — identical math per
+   accumulator.
+2. **4-stage cp.async pipeline + dynamic shared:** one outstanding fill
+   could not hide DRAM latency; stages now live in ONE `.extern .shared`
+   array sized (mw·1024 + nw·2048)·4, plumbed end-to-end
+   (RunnerKernel.shared_bytes → BrievKernelDesc → set_shared_bytes →
+   cuFuncSetAttribute + launch sharedMemBytes). Prologue fills stages
+   0..S-2; the KLOOP fills stage (i+S-1)&S-1 with stripe
+   kstep+16·(S-1), guarded skip past K; `wait_group S-2`.
+3. **Coalesced fill mapping:** D = tid·4 + j·threads·4 (consecutive lanes
+   touch consecutive 4B) — the per-thread-stride mapping read 4B out of
+   separate 32B sectors. 8192³ 17.7 → 18.3; 2048³ 15.0 → 15.8.
+4. **Config sweep (256 vs 512 threads):** with 128 regs, (2,4)@256T keeps
+   TWO CTAs per SM (memory parallelism) and beats (4,4)@512T (one CTA):
+   18.4 vs 16.2 @4096³. select_mw_nw capped back to 256 threads with the
+   measurement recorded; balanced growth lands on (2,4).
+
+| Shape | (2,4) 4-stage coalesced | gate |
+|-------|-------------------------|------|
+| 2048³ | 15.81 TFLOP/s | 3.261e-04 OK |
+| 4096³ | 17.34 TFLOP/s | 2.442e-04 OK |
+| 8192³ | 18.27 TFLOP/s | 3.254e-04 OK |
+| 4096×4096×16 | 1.1 (launch-bound) | 0.000e+00 OK |
+
+vs synchronous-fill baseline 9.55/10.44/~10.5 — **+66–74%**. SPIR-V tier
+(~30) and ggml anchor (42) still ahead: next levers are the D2-style
+register-prefetch fill (fill loads issue at loop top, smem stores after
+the barrier) and an A-panel L2 sweep (launch order so consecutive CTAs
+share A). 2106 lib tests green.
