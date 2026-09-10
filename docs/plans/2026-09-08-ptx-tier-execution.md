@@ -114,6 +114,20 @@ The 2.11 TFLOP/s is the arithmetic-intensity floor: R=1 gives ~10.4 FLOP/byte
 overlap. The rungs below (register blocking R≥2, cp.async multi-stage,
 multi-warp CTA) target the gap to the SPIR-V 24.3 and the 42 gate.
 
+### S3b+ MW kernel correctness + dispatch wiring (2026-09-10)
+
+**B-fill row-byte doubling bug** (commit `1a85a575`): the mw emitter's
+B-fill computed `global = rd3 + (kstep*b_row + B_row*b_row + col)*2`,
+doubling the row terms that are already bytes (`b_row = N*2 = 256`).
+Fix: split row and column — only the column part `(slice*64 + b*8 +
+c_dest%8)` gets `*2`. Verified exact: mw(1,1) 64³, mw(4,2) 128³×64K.
+
+**Dispatch wiring**: `tensor_gemm_ptx_smem_mw` now called from
+`build_ptx_kernels` via `select_mw_nw` heuristic (scales nw then mw,
+caps at 1024 threads). Multi-warp dispatch formula corrected from
+`n/16` to `n/64` (CTA covers mw\*32 × nw\*64 = mw\*nw\*2048 elements,
+64 per thread). Grid: `gx = M*N/(64*block_threads)`, `gy = 1`.
+
 ### S3 fragment layout (device-verified, RTX 3060, exact rel 0)
 
 `mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32` — the locked lane mapping:
