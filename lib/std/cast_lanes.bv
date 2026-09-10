@@ -931,3 +931,28 @@ out defn __briev_coll_resize(handle: Int, new_cap: Int)
     Store#(handle + 8, new_cap, 8);
     term 0;
 };
+
+// ── Watchdog clock + fail (Family I misc) ───────────────────────────────
+// __briev_now — CLOCK_MONOTONIC ns via SYS_clock_gettime. The `within N ms`
+// deadline compare calls this PER ITERATION in watchdogged loops.
+// TODO(arch): 228 is the x86_64 SYS_clock_gettime (aarch64 uses 113); the
+// language has no arch reflection yet — same documented gap as the print
+// family's syscall numbers.
+out defn __briev_now() [true][term >= 0] -> Int {
+    let ts: Int = Alloc#(16) as Int;
+    Store#(ts, 0, 8);
+    Store#(ts + 8, 0, 8);
+    SysCall#(228, 1, ts, 0, 0, 0, 0);
+    let sec: Int = Load#(ts, 8);
+    let ns: Int = Load#(ts + 8, 8);
+    term sec * 1000000000 + ns;
+};
+
+// __watchdog_fail — a required watchdog fired: message to stderr, exit(1).
+// (The C printed via fprintf + libc exit; the write+exit_group pair is the
+// Briev-native equivalent.)
+out defn __watchdog_fail() [true][term >= 0] -> Int {
+    let _m: Int = write_all(2, "briev: required watchdog fired\n");
+    SysCall#(231, 1, 0, 0, 0, 0, 0);
+    term 0;
+};

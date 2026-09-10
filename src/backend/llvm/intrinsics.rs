@@ -39,7 +39,7 @@ pub fn emit_intrinsic_call(
         "Now#" => {
             // 2026-08-01 (D2): `Now#` — monotonic clock in ns for the
             // watchdog `within N ms` deadline compare.
-            writeln!(out, "{}{} = call i64 @__briev_now()", indent, v).ok();
+            writeln!(out, "{}{} = call i64 @__briev_now(%state)", indent, v).ok();
             let narrowed = narrow_int_result(backend, out, v, indent);
             return BTypedRegister { name: narrowed, ty: Type::int() };
         }

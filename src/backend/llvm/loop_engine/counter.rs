@@ -371,7 +371,7 @@ impl LlvmBackend {
         let cm_start = if let Some(wd) = watchdog {
             if wd.deadline_ns.is_some() {
                 let s = self.fun.gen_reg();
-                writeln!(out, "  {} = call i64 @__briev_now()", s).ok();
+                writeln!(out, "  {} = call i64 @__briev_now(%state)", s).ok();
                 Some(s)
             } else {
                 None
@@ -467,7 +467,7 @@ impl LlvmBackend {
             if let Some(secs) = wd.deadline_ns {
                 if let Some(start) = &cm_start {
                     let now = self.fun.gen_reg();
-                    writeln!(out, "  {} = call i64 @__briev_now()", now).ok();
+                    writeln!(out, "  {} = call i64 @__briev_now(%state)", now).ok();
                     let el = self.fun.gen_reg();
                     writeln!(out, "  {} = sub i64 {}, {}", el, now, start).ok();
                     let db = self.fun.gen_reg();
@@ -490,7 +490,9 @@ impl LlvmBackend {
                 };
                 self.emit_user_call(out, &call_reg, &on_fire.handler, &args, "  ");
             } else if wd.is_required {
-                writeln!(out, "  call void @__watchdog_fail()").ok();
+                // 2026-09-10 (Family I): pure-Briev defn takes the hidden %state and
+                // returns i64 (defns cannot be void).
+                writeln!(out, "  call i64 @__watchdog_fail(ptr %state)").ok();
             }
             writeln!(out, "  br label %{}", exit_label).ok();
         } else {
@@ -1048,7 +1050,7 @@ impl LlvmBackend {
         let wd_start = if let Some(wd) = watchdog {
             if wd.deadline_ns.is_some() {
                 let s = self.fun.gen_reg();
-                writeln!(out, "  {} = call i64 @__briev_now()", s).ok();
+                writeln!(out, "  {} = call i64 @__briev_now(%state)", s).ok();
                 Some(s)
             } else {
                 None
@@ -1144,7 +1146,7 @@ impl LlvmBackend {
             if let Some(secs) = wd.deadline_ns {
                 if let Some(start) = &wd_start {
                     let now = self.fun.gen_reg();
-                    writeln!(out, "  {} = call i64 @__briev_now()", now).ok();
+                    writeln!(out, "  {} = call i64 @__briev_now(%state)", now).ok();
                     let el = self.fun.gen_reg();
                     writeln!(out, "  {} = sub i64 {}, {}", el, now, start).ok();
                     let db = self.fun.gen_reg();

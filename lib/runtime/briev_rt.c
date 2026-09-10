@@ -594,19 +594,6 @@ int64_t ShellCmd(int64_t cmd_bstr) {
     return (int64_t)(uintptr_t)result;
 }
 
-// 2026-07-18: All __utf8_* functions now implemented as pure Briev in utf8view.bv
-// (uses Load# + convergent txn). Find byte substring in byte string.
-// Returns offset or -1.
-// (implemented in pure Briev in lib/std/types/utf8view.bv)
-
-// 2026-08-01 (C3): required-watchdog failure exit. A `![cond]` watchdog that
-// fires without an on-fire handler is a fatal program error — the loop engine
-// calls this on the fire path.
-void __watchdog_fail(void) {
-    fprintf(stderr, "briev: required watchdog fired\n");
-    exit(1);
-}
-
 // 2026-08-01 (D2): garbage-scheduling calibration. The scheduler's scheduled
 // frees route through __briev_free so a benchmark can assert frees == allocs
 // (no premature free, no leak). __briev_free_count() is the observable getter.
@@ -624,11 +611,6 @@ long __briev_free_count(void) {
 // 2026-08-01 (D2): `Now#` — monotonic clock in nanoseconds, for the watchdog
 // `within N ms` deadline compare (the deadline is `now - start >= N ms`).
 #include <time.h>
-int64_t __briev_now(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
-}
 
 /// Concatenate two nul-terminated C strings into a new heap buffer.
 /// 2026-08-03: the C_String sub-protocol's Concat cross-op binding — a C

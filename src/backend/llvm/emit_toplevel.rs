@@ -678,7 +678,11 @@ impl LlvmBackend {
         writeln!(out, "declare void @__briev_free(ptr) nounwind argmemonly").ok();
         // 2026-08-01 (D2): `Now#` — monotonic clock for the watchdog
         // `within N ms` deadline compare.
-        writeln!(out, "declare i64 @__briev_now() nounwind").ok();
+        // 2026-09-10 (Family I): declare-guarded — the pure-Briev defn takes
+        // the hidden %state, so an unconditional () declare would conflict.
+        if !self.ctx.defn_params.contains_key("__briev_now") {
+            writeln!(out, "declare i64 @__briev_now() nounwind").ok();
+        }
         // 2026-08-23 (process.bv revival): process/environment helpers.
         writeln!(out, "declare i64 @__briev_spawn(ptr) nounwind").ok();
         writeln!(out, "declare ptr @__briev_spawn_output(ptr)").ok();
