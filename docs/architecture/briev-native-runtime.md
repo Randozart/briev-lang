@@ -80,12 +80,14 @@ environ ownership), `briev_symbol_available` (dlsym), Tamer HCALL, and
 the GLUE C-ABI doors (`briev_str_to_c`, `briev_cstr_to_briev`,
 `briev_bits_to_str` — the Data→String door).
 
-**Confirmed pre-existing bug (queued):** async convergence never exits —
-`program_convergence` produces no counter_ge_bounds for async txns, so
-bounded async programs spin in the idle-wait branch forever (bisected to
-the branch base; independent of the pool-vs-cooperative substrate). Fix:
-register async (counter, bound) pairs in the convergence analysis; the
-idle-wait branch then becomes unreachable for bounded async programs.
+**FIXED (2026-09-10): async convergence never exits.** The diagnosis
+moved twice: `program_convergence` was fine — the loop SHAPE was wrong.
+`emit_main` ran the exit check once at function entry, then `.loop`'s
+latch branched back to `.loop` itself; the predicate was evaluated
+exactly once, before the first tick. Fix: the check block is labeled
+`.exit_check` and IS the loop header — every latch (wake.any /
+exit-condition / wait-for-trigger) routes back through it. Bounded async
+programs now print and exit (probe: 500/1000 ×2, exit 0).
 
 ## Known follow-ups
 
