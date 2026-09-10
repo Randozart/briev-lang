@@ -990,3 +990,99 @@ out defn __wait_for_trigger__() [true][term >= 0] -> Int {
     SysCall#(24, 0, 0, 0, 0, 0, 0);
     term 0;
 };
+
+// ── Captured-environ getenv (Family F) ──────────────────────────────────
+// The owned _start captures the environ pointer from the initial kernel
+// stack into @__briev_environ; the backend emits C-ABI adapters
+// (__getenv_int/__getenv_briev) that hand it to these impls. Entries are
+// NUL-terminated "KEY=VALUE" strings; the KEY side is a Briev String
+// ([len][bytes]) so the match needs no NUL termination.
+
+// cstr_len — NUL-terminated string length (replaces the libc strlen the
+// GetCwd# call site used — one of the last libc references).
+out defn cstr_len(p: Int) [p >= 0][term >= 0] -> Int {
+    when Load#(p, 1) == 0 {
+        term 0;
+    };
+    term 1 + cstr_len(p + 1);
+};
+
+// env_key_match — does the C string at s begin with key's bytes + '='?
+// i = bytes matched so far (recursion index over the KEY's klen bytes).
+defn env_key_match(key: Int, klen: Int, s: Int, i: Int)
+    [key >= 0 && klen >= 0 && s >= 0 && i >= 0][term == true || term == false] -> Bool {
+    when i >= klen {
+        when Load#(s + i, 1) == 61 {
+            term true;
+        };
+        term false;
+    };
+    when Load#(key + 8 + i, 1) != Load#(s + i, 1) {
+        term false;
+    };
+    term env_key_match(key, klen, s, i + 1);
+};
+
+// environ_find — the address of the VALUE string for key, or -1 (0 - 1).
+// Entries live at environ + 8*i; a NULL entry ends the array.
+defn environ_find(key: Int, klen: Int, environ: Int, i: Int)
+    [key >= 0 && klen >= 0 && environ >= 0 && i >= 0][term >= -1] -> Int {
+    let entry: Int = Load#(environ + 8 * i, 8);
+    when entry == 0 {
+        term 0 - 1;
+    };
+    when env_key_match(key, klen, entry, 0) {
+        term entry + klen + 1;
+    };
+    term environ_find(key, klen, environ, i + 1);
+};
+
+// briev_getenv_briev_impl — the VALUE as a fresh Briev String; no match →
+// an empty String (the C returned NULL and callers null-checked).
+out defn briev_getenv_briev_impl(key: Int, environ: Int)
+    [key >= 0 && environ >= 0][term .^Length >= 0] -> String {
+    let klen: Int = Load#(key, 8);
+    let vp: Int = environ_find(key, klen, environ, 0);
+    when vp < 0 {
+        let empty: Int = Alloc#(9) as Int;
+        Store#(empty, 0, 8);
+        Store#(empty + 8, 0, 1);
+        term (empty as Data) as String;
+    };
+    let vlen: Int = cstr_len(vp);
+    let buf: Int = Alloc#(8 + vlen + 1) as Int;
+    Store#(buf, vlen, 8);
+    Copy#(buf + 8, vp, vlen);
+    Store#(buf + 8 + vlen, 0, 1);
+    term (buf as Data) as String;
+};
+
+// env_int_digits — strtol-style digit run (sign folded by the caller).
+defn env_int_digits(p: Int, acc: Int, sign: Int)
+    [p >= 0][term == 0 || term != 0] -> Int {
+    let b: Int = Load#(p, 1);
+    when b < 48 || b > 57 {
+        term acc;
+    };
+    term env_int_digits(p + 1, acc * 10 + (b - 48) * sign, sign);
+};
+
+// briev_getenv_int_impl — the VALUE parsed as an Int (strtol-style: no
+// digits → 0); no match → 0. The get_env_int! const path folds at compile
+// time — this is the RUNTIME getenv the bindings ghost never provided.
+out defn briev_getenv_int_impl(key: Int, environ: Int)
+    [key >= 0 && environ >= 0][term == 0 || term != 0] -> Int {
+    let klen: Int = Load#(key, 8);
+    let vp: Int = environ_find(key, klen, environ, 0);
+    when vp < 0 {
+        term 0;
+    };
+    let b: Int = Load#(vp, 1);
+    when b == 45 {
+        term env_int_digits(vp + 1, 0, 0 - 1);
+    };
+    when b == 43 {
+        term env_int_digits(vp + 1, 0, 1);
+    };
+    term env_int_digits(vp, 0, 1);
+};

@@ -1,9 +1,0 @@
-// args! in node body: snapshot field + read.
-let cmd_seen: String = "";
-node build [entry!("build")][result == 0] {
-    let clean: Bool = args!("--clean");
-    let c: Int = (clean) as Int;
-    println!("building... clean={}", c);
-    cmd_seen = "build";
-    term;
-};

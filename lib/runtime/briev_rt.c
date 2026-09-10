@@ -188,9 +188,6 @@ char* briev_str_bnot(const char* a)                { return briev_str_bitop(a, 0
 extern int32_t __briev_argc;
 extern void* __briev_argv;
 
-int64_t __argv_count(void) {
-    return (int64_t)__briev_argc;
-}
 
 // 2026-08-09 (Phase 12, SPEC §19.3): `feature.^^Available` — a compile-time
 // descriptor reflect that folds to a runtime symbol-availability check. An
@@ -213,107 +210,15 @@ int64_t briev_symbol_available(const char* symbol) {
 #endif
 }
 
-// argv[i] as a Briev string (empty for out-of-range i).
-char* __argv_get(int64_t i) {
-    if (!__briev_argv || i < 0 || i >= __briev_argc) {
-        return briev_cstr_to_briev("");
-    }
-    char* s = ((char**)__briev_argv)[i];
-    return briev_cstr_to_briev(s);
-}
 
-// Whether any argv token equals `flag` (a Briev string). Returns 1/0.
-// Skips argv[0] (the program name) — flags/commands live in argv[1..].
-int64_t __argv_has(const char* flag_bstr) {
-    char* c_flag = briev_str_to_c(flag_bstr);
-    if (!c_flag) return 0;
-    int64_t found = 0;
-    if (__briev_argv) {
-        for (int64_t i = 1; i < __briev_argc; i++) {
-            if (strcmp(((char**)__briev_argv)[i], c_flag) == 0) {
-                found = 1;
-                break;
-            }
-        }
-    }
-    free(c_flag);
-    return found;
-}
 
-// The value following `flag` (e.g. `--out file` → "file"), or "" if absent.
-char* __argv_value(const char* flag_bstr) {
-    char* c_flag = briev_str_to_c(flag_bstr);
-    if (!c_flag) return briev_cstr_to_briev("");
-    char* result = NULL;
-    if (__briev_argv) {
-        for (int64_t i = 1; i + 1 < __briev_argc; i++) {
-            if (strcmp(((char**)__briev_argv)[i], c_flag) == 0) {
-                result = ((char**)__briev_argv)[i + 1];
-                break;
-            }
-        }
-    }
-    free(c_flag);
-    if (!result) return briev_cstr_to_briev("");
-    return briev_cstr_to_briev(result);
-}
 
-// The first non-flag token in argv[1..] — the subcommand. `<prog> --verbose
-// build` → "build"; "" if none. Honors $BRIEV_ENTRY_CMD (test/embedded path
-// without argv) as the sole environment fallback.
-char* __argv_command(void) {
-    const char* env_cmd = getenv("BRIEV_ENTRY_CMD");
-    if (env_cmd && env_cmd[0]) {
-        return briev_cstr_to_briev(env_cmd);
-    }
-    if (__briev_argv) {
-        for (int64_t i = 1; i < __briev_argc; i++) {
-            const char* tok = ((char**)__briev_argv)[i];
-            if (tok[0] != '-') {
-                return briev_cstr_to_briev(tok);
-            }
-        }
-    }
-    return briev_cstr_to_briev("");
-}
 
 
 // ── Core intrinsics (kept) ────────────────────────────────────────────
 
-// 2026-07-19: Returns the environ pointer (char **environ) as an Int.
-// Used by pure-Briev getenv to scan the environment block.
-int64_t __get_environ(void) {
-    extern char **environ;
-    return (int64_t)(uintptr_t)environ;
-}
 
-// 2026-07-19: Returns the value of an env var as a heap-allocated Briev string
-// (null-terminated UTF-8 data preceded by 8-byte length header).
-// Caller takes ownership of the returned pointer.
-// 2026-08-01 (B0): key_bstr is a ptr to a Briev [len][bytes] buffer; returns
-// a ptr to the same layout (String ABI = ptr, matching the compiler declares).
-char* __getenv_briev(const char* key_bstr) {
-    char* c_key = briev_str_to_c(key_bstr);
-    if (!c_key) return 0;
-    char* val = getenv(c_key);
-    if (!val) return 0;
-    int64_t len = (int64_t)strlen(val);
-    char* bstr = (char*)malloc((size_t)(len + 8 + 1));
-    if (!bstr) return 0;
-    *(int64_t*)bstr = len;
-    memcpy(bstr + 8, val, (size_t)len);
-    bstr[8 + len] = '\0';
-    return bstr;
-}
 
-// 2026-07-19: Returns the value of an env var parsed as Int.
-int64_t __getenv_int(const char* key_bstr) {
-    char* c_key = briev_str_to_c(key_bstr);
-    if (!c_key) return 0;
-    char* val = getenv(c_key);
-    if (!val) return 0;
-    return atol(val);
-}
 
 int64_t briev_syscall(int64_t num, int64_t a1, int64_t a2, int64_t a3, int64_t a4, int64_t a5, int64_t a6) {
     return syscall((long)num, (long)a1, (long)a2, (long)a3, (long)a4, (long)a5, (long)a6);

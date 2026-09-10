@@ -25,6 +25,10 @@ Malloc#    -> call ptr @malloc(i64 %0)
 Free#      -> call void @free(ptr %0)
 Memcpy#    -> call ptr @memcpy(ptr %0, ptr %1, i64 %2)
 Memset#    -> call ptr @memset(ptr %0, i64 %1, i64 %2)
-GetEnvInt# -> call i64 @getenv_as_i64(ptr %0)
+# 2026-09-10 (Family F): getenv_as_i64 was a GHOST (no C definition ever
+# existed — the runtime path could never link). The symbol is now served
+# by the backend-owned captured-environ adapter (libc-free programs) or
+# the C __getenv_int (kept-C programs).
+GetEnvInt# -> call i64 @__getenv_int(ptr %0)
 FloatToInt# -> fptosi double %0 to i64
 IntToFloat# -> sitofp i64 %0 to double

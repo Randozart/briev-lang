@@ -379,6 +379,17 @@ impl LlvmBackend {
         if capture {
             writeln!(out, "  store i32 %argc, ptr @__briev_argc").ok();
             writeln!(out, "  store ptr %argv, ptr @__briev_argv").ok();
+            // 2026-09-10 (Family F): captured environ — hosted capture. The
+            // kernel lays out envp right after argv's NULL terminator:
+            // envp = &argv[argc + 1]. (The freestanding _start captures the
+            // same pointer from the raw stack; both paths fill the same
+            // global, so the getenv adapters work on every target.)
+            writeln!(out, "  %argc64 = sext i32 %argc to i64").ok();
+            writeln!(out, "  %envp_slot = getelementptr ptr, ptr %argv, i64 1").ok();
+            writeln!(out, "  %envp_slot2 = getelementptr ptr, ptr %envp_slot, i64 %argc64").ok();
+            // environ = the ADDRESS of the envp[0] slot (the array base),
+            // NOT the first entry loaded from it.
+            writeln!(out, "  store ptr %envp_slot2, ptr @__briev_environ").ok();
         }
     }
 
@@ -1103,7 +1114,17 @@ impl LlvmBackend {
         writeln!(out, "{}{}:", indent, fl).ok();
         let clean = self.emit_mask_tag(out, indent, boxed, &format!("cc{}", tag_prefix));
         let free_ptr = self.emit_inttoptr_reg(out, indent, &format!("cf{}", tag_prefix), &clean);
-        writeln!(out, "{}call void @free(ptr {})", indent, free_ptr).ok();
+        // 2026-09-10 (Family F): when the arena-aware __briev_free defn
+        // exists (cast_lanes), route the temp free through it — a no-op that
+        // keeps libc out of the symbol table for freestanding programs (the
+        // concat epilogue was the last @free call site). The tag-bit flag
+        // remains the gate: arena pointers are never tagged temp, so this
+        // branch is dead at runtime either way.
+        if self.ctx.defn_params.contains_key("__briev_free") {
+            writeln!(out, "{}call i64 @__briev_free(ptr %state, ptr {})", indent, free_ptr).ok();
+        } else {
+            writeln!(out, "{}call void @free(ptr {})", indent, free_ptr).ok();
+        }
         writeln!(out, "{}br label %{}", indent, afl).ok();
         writeln!(out, "{}{}:", indent, afl).ok();
     }

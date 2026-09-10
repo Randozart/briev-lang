@@ -1,25 +1,12 @@
-// 2026-08-01 (Phase 3): CLI argv access. Backed by the argv globals the
-// compiler captures in emitted main (see emit_main_header) and the runtime
-// helpers in briev_rt.c.
+// 2026-08-01 (Phase 3): CLI argv access — RETIRED 2026-09-10 (Family F).
 //
-// Usage:
-//   entry_cmd()            // first non-flag argv[1..] token (the subcommand)
-//   arg_present("--flag")  // whether any argv[1..] token equals "--flag"
+// The __argv_* accessors lived in briev_rt.c and had ZERO shipped users;
+// their `-> String` frgns were also latently broken (they forwarded raw
+// char* — not the [len][bytes] Briev String ABI). Deleted with the C
+// runtime (see docs/architecture/briev-native-runtime.md).
 //
-// The entry!/args! plugin (Phase 3) expands `entry!("cmd")` to
-// `entry_cmd() == "cmd" && !__entry_cmd_done` and `args!("--flag")` to a
-// snapshot state field bound from `__argv_has("--flag")`.
-
-frgn __argv_count() -> Int from "lib/runtime/briev_rt.c";
-frgn __argv_get(i: Int) -> String from "lib/runtime/briev_rt.c";
-frgn __argv_has(flag: String) -> Bool from "lib/runtime/briev_rt.c";
-frgn __argv_value(flag: String) -> String from "lib/runtime/briev_rt.c";
-frgn __argv_command() -> String from "lib/runtime/briev_rt.c";
-
-defn entry_cmd() -> String {
-    term __argv_command();
-};
-
-defn arg_present(flag: String) -> Bool {
-    term __argv_has(flag);
-};
+// CLI argv access returns as an Args# intrinsic over the captured
+// argv/environ globals (@__briev_argv / @__briev_environ — both stored by
+// the backend-owned _start) when a CLI surface is actually needed. Until
+// then, `entry!`/`args!` expansions fail to resolve with a loud
+// undefined-symbol error — the honest signal that the surface is retired.

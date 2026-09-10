@@ -1798,15 +1798,37 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
     } else {
         cmd.args(["-O3", "-flto", "-march=native", "-ffast-math", ll_path]);
     }
-    for obj in extra_objects {
-        cmd.arg(obj.as_os_str());
+    // 2026-09-10 (Family F): a program whose IR carries the backend-owned
+    // `_start` (module asm) and references no runtime objects is FREESTANDING
+    // — link -nostdlib (no crt1, no libc) and skip the runtime objects. The
+    // owned _start captures argc/argv/environ itself and exits via syscall.
+    let freestanding = if shared {
+        false
+    } else {
+        let ll_text = std::fs::read_to_string(ll_path)
+            .map_err(|e| format!("cannot read '{}': {}", ll_path, e))?;
+        // The owned _start marker is the contract: the IR references no
+        // briev_rt.c/libc symbols (the backend gate proved it), so the
+        // runtime objects — including briev_rt.o, which the env.bv frgns
+        // pull unconditionally — are droppable.
+        ll_text.contains("define void @_start() naked") && protocol_libs.is_empty()
+    };
+    if freestanding {
+        cmd.args(["-nostdlib", "-no-pie"]);
+    } else {
+        for obj in extra_objects {
+            cmd.arg(obj.as_os_str());
+        }
     }
     // 2026-07-26: Link protocol-based libraries (from #System).
     // The clang driver adds these as -l<name> flags to the linker.
     for lib in protocol_libs {
         cmd.arg(format!("-l{}", lib));
     }
-    cmd.args(["-o", binary_path, "-lm", "-ldl"]);
+    cmd.arg("-o").arg(binary_path);
+    if !freestanding {
+        cmd.args(["-lm", "-ldl"]);
+    }
     let status = cmd.status()
         .map_err(|e| format!(
             "failed to invoke clang: {} (is clang installed? use --llvm to emit IR only)",

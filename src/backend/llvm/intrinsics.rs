@@ -93,7 +93,13 @@ pub fn emit_intrinsic_call(
             let safe_ptr = backend.fun.gen_reg();
             writeln!(out, "{}{} = select i1 {}, ptr {}, ptr {}", indent, safe_ptr, is_null, fb, cstr).ok();
             let len = backend.fun.gen_reg();
-            writeln!(out, "{}{} = call i64 @strlen(ptr {})", indent, len, safe_ptr).ok();
+            // 2026-09-10 (Family F): cstr_len is a pure-Briev defn (cast_lanes)
+            // — removes the last libc strlen reference from GetCwd#.
+            if backend.ctx.defn_params.contains_key("cstr_len") {
+                writeln!(out, "{}{} = call i64 @cstr_len(ptr %state, ptr {})", indent, len, safe_ptr).ok();
+            } else {
+                writeln!(out, "{}{} = call i64 @strlen(ptr {})", indent, len, safe_ptr).ok();
+            }
             let data_raw = backend.fun.gen_reg();
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, data_raw, safe_ptr).ok();
             let data = backend.fun.gen_reg();

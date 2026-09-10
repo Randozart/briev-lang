@@ -3277,8 +3277,29 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         frgn_sorted.sort_by_key(|(name, _)| (*name).clone());
         for (name, sig) in frgn_sorted {
             if trigger_linked_symbols.contains(name.as_str()) { continue; }
-            // Dedup: skip if we already emitted a declare for this foreign_name
+            // Dedup: skip if we already emitted a define for this foreign_name
             if !declared.insert(&sig.name) { continue; }
+            // 2026-09-10 (Family F): the captured-environ adapters take over
+            // the two env symbols — a C-ABI DEFINE (loading the environ the
+            // owned _start captured) replaces the declare. The impl bodies
+            // live in cast_lanes.bv; the strategy (KEY= walk, digit parse)
+            // is Briev, the global is compiler-owned.
+            if sig.name == "__getenv_int" || sig.name == "__getenv_briev" {
+                let impl_name = if sig.name == "__getenv_int" {
+                    "briev_getenv_int_impl"
+                } else {
+                    "briev_getenv_briev_impl"
+                };
+                if self.ctx.defn_params.contains_key(impl_name) {
+                    let ret = if sig.name == "__getenv_int" { "i64" } else { "ptr" };
+                    writeln!(out, "define {} @{}(ptr %key) local_unnamed_addr #8 {{", ret, sig.name).ok();
+                    writeln!(out, "  %env = load ptr, ptr @__briev_environ").ok();
+                    writeln!(out, "  %r = call {} @{}(ptr null, ptr %key, ptr %env)", ret, impl_name).ok();
+                    writeln!(out, "  ret {} %r", ret).ok();
+                    writeln!(out, "}}").ok();
+                    continue;
+                }
+            }
             let ret_ty: String = match sig.result_type {
                 crate::ast::ResultType::VoidType | crate::ast::ResultType::TrueAssertion => "void".into(),
                 crate::ast::ResultType::Projection(ref ts) => {
@@ -3541,6 +3562,10 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // by lib/std/cli.bv's frgns (Int→i64, String→ptr).
         writeln!(out, "@__briev_argc = global i32 0").ok();
         writeln!(out, "@__briev_argv = global ptr null").ok();
+        // 2026-09-10 (Family F): captured environ — written by main's argv
+        // capture (hosted) or the owned _start (freestanding); read by the
+        // getenv adapters. Unconditional like its siblings.
+        writeln!(out, "@__briev_environ = global ptr null").ok();
         // 2026-08-03: host cancellation flag — CancelRequested#() loads it,
         // __briev_set_cancel/__briev_clear_cancel (library shim) write it.
         writeln!(out, "@__briev_cancel_flag = global i32 0").ok();
@@ -4951,7 +4976,80 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // functions at the end of the module.
         self.emit_pending_closures(&mut out);
 
+        // ── Owned _start + captured environ (Family F, 2026-09-10) ──────
+        // When the program references NOTHING from briev_rt.c or libc, the
+        // backend owns the process entry: a module-asm `_start` reads
+        // argc/argv/environ off the initial kernel stack (the only place
+        // they exist), stores the environ pointer for the stdlib getenv
+        // family, calls @main, and exits via syscall. compile.rs sees the
+        // `module asm` marker and links -nostdlib. Kept-C programs keep the
+        // crt path (libc owns the entry there) and the C getenv pair.
+        if self.ctx.target_triple.contains("linux")
+            && out.lines().any(|l| {
+                l.contains("call ") && Self::kept_runtime_symbol(l)
+            })
+        {
+            // Not libc-free: emit the environ global + the getenv adapters
+            // reading it ONLY when a _start captured it — skipped here, the
+            // frgn path (ffi/env.bv -> C getenv) serves the program.
+            // (The global itself is emitted with the _start below.)
+        } else if self.ctx.target_triple.contains("linux") {
+            // (The environ global + the two getenv adapters emit from the
+            // frgn loop above — they take over ffi/env.bv's frgn names.)
+            let triple = self.ctx.target_triple.clone();
+            // A NAKED function (not module asm — module asm is dropped by
+            // the LTO link): the body is raw asm, no prologue/epilogue, so
+            // %rsp at the first instruction is the kernel's entry stack.
+            // Entry rsp is 16-aligned; `call main` pushes the return address
+            // giving main its ABI-expected alignment.
+            // @llvm.used pins main + the environ global against LTO
+            // internalization — the _start asm references them by name, and
+            // LTO renaming would dangle those references.
+            writeln!(out, "@llvm.used = appending global [2 x ptr] [ptr @main, ptr @__briev_environ]").ok();
+            if triple.starts_with("x86_64") {
+                writeln!(out, "define void @_start() naked noinline {{").ok();
+                writeln!(out, "entry:").ok();
+                writeln!(out, "  call void asm sideeffect \"movq (%rsp), %rax; leaq 8(%rsp), %rsi; leaq 16(%rsp,%rax,8), %rdx; movq %rdx, __briev_environ(%rip); xorl %ebp, %ebp; call main; movl %eax, %edi; movl $$231, %eax; syscall\", \"~{{rdi}},~{{rsi}},~{{rdx}},~{{rax}},~{{rcx}},~{{r11}},~{{memory}}\" ()").ok();
+                writeln!(out, "  unreachable").ok();
+                writeln!(out, "}}").ok();
+            } else if triple.starts_with("aarch64") {
+                writeln!(out, "define void @_start() naked noinline {{").ok();
+                writeln!(out, "entry:").ok();
+                writeln!(out, "  call void asm sideeffect \"ldr x0, [sp]; add x1, sp, 8; ldr x2, [sp]; add x3, sp, 16; add x2, x3, x2, lsl 3; adrp x4, __briev_environ; str x2, [x4, :lo12:__briev_environ]; bl main; mov x8, 94; svc 0\", \"~{{x0}},~{{x1}},~{{x2}},~{{x3}},~{{x4}},~{{memory}}\" ()").ok();
+                writeln!(out, "  unreachable").ok();
+                writeln!(out, "}}").ok();
+            }
+        }
+
         out
+    }
+
+    /// 2026-09-10 (Family F): does this call line target a symbol that is
+    /// still implemented in briev_rt.c or by libc? Used by the owned-_start
+    /// gate — a program touching any of these keeps the crt path.
+    fn kept_runtime_symbol(line: &str) -> bool {
+        const KEPT: &[&str] = &[
+            // briev_rt.c kept families
+            "briev_str_to_c", "briev_cstr_to_briev", "briev_free_briev_str",
+            "briev_bits_to_str", "briev_str_band", "briev_str_bor",
+            "briev_str_bxor", "briev_str_bnot", "briev_symbol_available",
+            "briev_syscall", "briev_sysconf", "ShellCmd", "__briev_setenv",
+            "__print_float64", "briev_cstring_concat",
+            "briev_host_print_int", "briev_host_fail", "briev_host_table_set",
+            "briev_host_arity_of", "briev_task_spawn", "briev_task_cancel",
+            "briev_await", "briev_event_alloc", "briev_event_read",
+            "briev_event_fire", "briev_event_ready", "briev_event_strict_trap",
+            // __getenv_int/__getenv_briev are NOT here: they are adapter-
+            // served (the backend emits C-ABI defines over the captured
+            // environ). Same for the __argv_* family (retired with cli.bv).
+            // libc
+            "malloc", "free", "realloc", "calloc", "getenv", "printf",
+            "briev_getenv_int_impl", "briev_getenv_briev_impl",
+            "fprintf", "strlen", "strdup", "sysconf", "dlsym", "popen",
+            "signal", "atexit", "clock_gettime", "setenv", "syscall",
+            "pclose", "fputs", "putchar", "exit",
+        ];
+        KEPT.iter().any(|s| line.contains(&format!("@{s}(")))
     }
 
     /// 2026-08-12 (Iterable protocol, slice 4): for each `b-each` iterable that
