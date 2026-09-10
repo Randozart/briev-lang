@@ -1869,6 +1869,26 @@ impl LlvmBackend {
         }
     }
 
+
+/// 2026-09-10 (Family E, allocator ownership): emit an INLINE `brk` syscall
+/// (SYS_brk = 12) — the libc-free arena primitive. Same inline-asm shape as
+/// the SysCall# emission (intrinsics.rs). Returns false when the target has
+/// no brk lowering (caller keeps the libc fallback).
+pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &str, indent: &str) -> bool {
+    let triple = self.ctx.target_triple.clone();
+    if triple.starts_with("x86_64") && triple.contains("linux") {
+        writeln!(out, "{}{} = call i64 asm sideeffect \"syscall\", \"={{rax}},{{rax}},{{rdi}},~{{rcx}},~{{r11}}\" (i64 12, i64 {})",
+            indent, v, arg_reg).ok();
+        true
+    } else if triple.starts_with("aarch64") && triple.contains("linux") {
+        writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x8}},{{x0}}\" (i64 12, i64 12, i64 {})",
+            indent, v, arg_reg).ok();
+        true
+    } else {
+        false
+    }
+}
+
     pub(crate) fn emit_arena_alloc(&mut self, out: &mut String, indent: &str, size_reg: &str) -> String {
         // 2026-07-19: Bump-pointer arena allocation via %State fields.
         // Uses next_reg_with_prefix (no closures — avoids borrow conflicts).
@@ -1944,20 +1964,46 @@ impl LlvmBackend {
         if self.ctx.is_embedded {
             grow_incoming = "null".to_string();
         } else {
-            let base = load_state_ptr!(abase_idx, "aaob");
+            // 2026-09-10 (Family E, allocator ownership): libc-free growth.
+            // The brk-backed arena EXTENDS IN PLACE — `brk(end + min_sz)`
+            // moves the break; the base never moves and the copied data
+            // stays put (zero-copy, unlike @realloc). The bump restarts at
+            // base — the same grow contract as the realloc path. Fallback:
+            // @realloc for targets without brk lowering.
+            let end_g = load_state_ptr!(aend_idx, "aaeg");
+            let end_i64g = self.fun.next_reg_with_prefix("aagi");
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, end_i64g, end_g).ok();
             let grow_sz = self.fun.next_reg_with_prefix("aags");
             writeln!(out, "{}{} = shl i64 {}, 1", indent, grow_sz, size_reg).ok();
             let min_sz = self.fun.next_reg_with_prefix("aams");
             writeln!(out, "{}{} = add i64 {}, {}", indent, min_sz, grow_sz, self.ctx.arena_initial_size).ok();
-            let new_base = self.fun.next_reg_with_prefix("aanb");
-            writeln!(out, "{}{} = call ptr @realloc(ptr {}, i64 {})", indent, new_base, base, min_sz).ok();
-            store_state_ptr!(aptr_idx, "aaps", &new_base);
-            store_state_ptr!(abase_idx, "aabs", &new_base);
-            let new_end = self.fun.next_reg_with_prefix("aane");
-            writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_end, new_base, min_sz).ok();
-            store_state_ptr!(aend_idx, "aaes", &new_end);
+            let want = self.fun.next_reg_with_prefix("aabw");
+            writeln!(out, "{}{} = add i64 {}, {}", indent, want, end_i64g, min_sz).ok();
+            let ok = self.fun.next_reg_with_prefix("aabo");
+            let have_brk = self.emit_brk_syscall(out, &ok, &want, indent);
+            if have_brk {
+                let new_end = self.fun.next_reg_with_prefix("aane");
+                writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_end, end_g, min_sz).ok();
+                store_state_ptr!(aend_idx, "aaes", &new_end);
+                let base = load_state_ptr!(abase_idx, "aaob");
+                store_state_ptr!(aptr_idx, "aaps", &base);
+                grow_incoming = base;
+            } else {
+                let base = load_state_ptr!(abase_idx, "aaob");
+                let grow_sz2 = self.fun.next_reg_with_prefix("aags2");
+                writeln!(out, "{}{} = shl i64 {}, 1", indent, grow_sz2, size_reg).ok();
+                let min_sz2 = self.fun.next_reg_with_prefix("aams2");
+                writeln!(out, "{}{} = add i64 {}, {}", indent, min_sz2, grow_sz2, self.ctx.arena_initial_size).ok();
+                let new_base = self.fun.next_reg_with_prefix("aanb");
+                writeln!(out, "{}{} = call ptr @realloc(ptr {}, i64 {})", indent, new_base, base, min_sz2).ok();
+                store_state_ptr!(aptr_idx, "aaps", &new_base);
+                store_state_ptr!(abase_idx, "aabs", &new_base);
+                let new_end = self.fun.next_reg_with_prefix("aane");
+                writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_end, new_base, min_sz2).ok();
+                store_state_ptr!(aend_idx, "aaes", &new_end);
+                grow_incoming = new_base;
+            }
             writeln!(out, "{}br label %aaok_{}", indent, ok_l_n).ok();
-            grow_incoming = new_base;
         }
 
         // OK path
@@ -2012,17 +2058,30 @@ impl LlvmBackend {
             self.emit_state_store_i64_by_idx(out, indent, aend_idx, &end_i64);
             return;
         }
-        let init = self.fun.next_reg_with_prefix("arinit");
-        writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, init, self.ctx.arena_initial_size).ok();
+        // 2026-09-10 (Family E, allocator ownership): the hosted arena is
+        // brk-backed — INLINE syscall, no libc. base = brk(0); brk(base +
+        // initial) extends the break; the region never moves (zero-copy
+        // growth later). The @malloc fallback remains for targets without
+        // brk lowering (non-linux).
         let init_i64 = self.fun.next_reg_with_prefix("arii");
-        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, init_i64, init).ok();
+        let b0 = self.fun.next_reg_with_prefix("arb0");
+        let have_brk = self.emit_brk_syscall(out, &b0, "0", indent);
+        if have_brk {
+            let want = self.fun.next_reg_with_prefix("arbw");
+            writeln!(out, "{}{} = add i64 {}, {}", indent, want, b0, self.ctx.arena_initial_size).ok();
+            let ok = self.fun.next_reg_with_prefix("arbo");
+            self.emit_brk_syscall(out, &ok, &want, indent);
+            writeln!(out, "{}{} = add i64 0, {}", indent, init_i64, b0).ok();
+        } else {
+            let init = self.fun.next_reg_with_prefix("arinit");
+            writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, init, self.ctx.arena_initial_size).ok();
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, init_i64, init).ok();
+        }
         // Store arena_ptr, arena_base, arena_end
         self.emit_state_store_i64_by_idx(out, indent, aptr_idx, &init_i64);
         self.emit_state_store_i64_by_idx(out, indent, abase_idx, &init_i64);
-        let init_end = self.fun.next_reg_with_prefix("arieu");
-        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, init_end, init, self.ctx.arena_initial_size).ok();
         let end_i64 = self.fun.next_reg_with_prefix("arie");
-        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, end_i64, init_end).ok();
+        writeln!(out, "{}{} = add i64 {}, {}", indent, end_i64, init_i64, self.ctx.arena_initial_size).ok();
         self.emit_state_store_i64_by_idx(out, indent, aend_idx, &end_i64);
     }
 
