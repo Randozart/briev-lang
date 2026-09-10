@@ -213,6 +213,164 @@ defn bytes_eq_shift(s: String, i: Int, ref: String, j: Int, n: Int)
     term bytes_eq_shift(s, i + 1, ref, j + 1, n - 1);
 };
 
+// str_to_float — pure-Briev strtod (Family A leftover). Semantics mirror
+// C str_to_float/strtod for the corpus surface: whitespace skip, optional
+// sign, digits with optional dot, optional e/E exponent, no digits → 0.0,
+// trailing garbage ignored. Accuracy: the mantissa accumulates in i64
+// (≤ 18 digits exact), then ONE correctly-rounded scaling — divide by an
+// exact power of ten (10^k is exact in f32 through 10^10) rather than
+// multiplying by a reciprocal, so the common cases are strtod-exact.
+// Known divergences (not corpus-gated, follow-ups): no hex floats, no
+// inf/nan literals, "-0" parses to +0.0, no 128-byte input cap.
+out defn str_to_float(s: String) [true][term >= 0.0 || term < 0.0] -> Float {
+    let len: Int = str_len_bytes(s);
+    let i0: Int = pf_ws(s, 0, len);
+    let (sg, i1): (Int, Int) = pf_sign(s, i0, len);
+    let (m, d0, seen, i2): (Int, Int, Int, Int) = pf_num(s, i1, len, 0, 0, 0, 0);
+    when seen == 0 {
+        term 0.0;
+    };
+    let (e, i3): (Int, Int) = pf_exp(s, i2, len, 0);
+    let r: Float = pf_make(m, d0 - e);
+    when sg < 0 {
+        term 0.0 - r;
+    };
+    term r;
+};
+
+// pf_ws — skip isspace (space, \t \n \v \f \r).
+defn pf_ws(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= 0] -> Int {
+    when i >= len {
+        term i;
+    };
+    let b: Int = byte_raw(s, i);
+    when b == 32 || (b >= 9 && b <= 13) {
+        term pf_ws(s, i + 1, len);
+    };
+    term i;
+};
+
+// pf_sign — optional +/-, returns (sign, next index).
+defn pf_sign(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= -1 && term <= 1] -> (Int, Int) {
+    when i < len {
+        let b: Int = byte_raw(s, i);
+        when b == 43 {
+            term (1, i + 1);
+        };
+        when b == 45 {
+            term (0 - 1, i + 1);
+        };
+    };
+    term (1, i);
+};
+
+// pf_num — mantissa accumulation. Returns (M, d, seen, next index) with
+// value = M x 10^-d: collected int digits grow M; frac digits grow d;
+// digits past the 18-digit cap adjust d by magnitude (skipped int digit
+// = value x10; skipped frac digit = value /10 — f32 keeps 9, we keep 18
+// for the rounding headroom). First '.' enters frac mode; any other
+// non-digit ends the number (strtod's trailing-garbage stop).
+defn pf_num(s: String, i: Int, len: Int, m: Int, d: Int, frac: Int, seen: Int)
+    [i >= 0 && len >= 0 && m >= 0][term >= -1100 && term <= 1100]
+    -> (Int, Int, Int, Int)
+{
+    when i >= len {
+        term (m, d, seen, i);
+    };
+    let b: Int = byte_raw(s, i);
+    when b >= 48 && b <= 57 {
+        let dg: Int = b - 48;
+        when frac == 0 {
+            when m < 1000000000000000000 {
+                term pf_num(s, i + 1, len, m * 10 + dg, d, 0, 1);
+            };
+            term pf_num(s, i + 1, len, m, d - 1, 0, 1);
+        };
+        when m < 1000000000000000000 {
+            term pf_num(s, i + 1, len, m * 10 + dg, d + 1, 1, 1);
+        };
+        term pf_num(s, i + 1, len, m, d + 1, 1, 1);
+    };
+    when b == 46 && frac == 0 {
+        term pf_num(s, i + 1, len, m, d, 1, seen);
+    };
+    term (m, d, seen, i);
+};
+
+// pf_exp — optional e/E exponent: (exponent, next index). e is clamped at
+// +/-1000 (f32 saturates near +/-45 anyway; the cap only guards i64 d).
+defn pf_exp(s: String, i: Int, len: Int, acc: Int)
+    [i >= 0 && len >= 0][term >= -1000 && term <= 1000]
+    -> (Int, Int)
+{
+    when i >= len {
+        term (acc, i);
+    };
+    let b: Int = byte_raw(s, i);
+    when b == 101 || b == 69 {
+        when i + 1 < len {
+            let b1: Int = byte_raw(s, i + 1);
+            when b1 == 43 {
+                term pf_exp_digits(s, i + 2, len, 0, 1);
+            };
+            when b1 == 45 {
+                term pf_exp_digits(s, i + 2, len, 0, 0 - 1);
+            };
+            term pf_exp_digits(s, i + 1, len, 0, 1);
+        };
+        term (acc, i);
+    };
+    term (acc, i);
+};
+
+// pf_exp_digits — the exponent's digit run, sign folded in.
+defn pf_exp_digits(s: String, i: Int, len: Int, acc: Int, sg: Int)
+    [i >= 0 && len >= 0][term >= -1000 && term <= 1000]
+    -> (Int, Int)
+{
+    when i >= len {
+        term (acc * sg, i);
+    };
+    let b: Int = byte_raw(s, i);
+    when b >= 48 && b <= 57 {
+        when acc < 1000 {
+            term pf_exp_digits(s, i + 1, len, acc * 10 + (b - 48), sg);
+        };
+        term pf_exp_digits(s, i + 1, len, acc, sg);
+    };
+    term (acc * sg, i);
+};
+
+// pf_make — M x 10^-d with ONE correctly-rounded scaling: d > 0 divides by
+// 10^d (exact in f32 through 10^10 — 5^10 < 2^24), d < 0 multiplies.
+defn pf_make(m: Int, d: Int) [m >= 0][term >= 0.0 || term < 0.0] -> Float {
+    let base: Float = m as Float;
+    when d == 0 {
+        term base;
+    };
+    when d > 0 {
+        term base / pow10f(d);
+    };
+    term base * pow10f(0 - d);
+};
+
+// pow10f — 10^k in f32. k in [0,10] via loop multiply (exact: each 10^j is
+// representable). Larger k recurses in exact 10^10 chunks — one rounding
+// per chunk, well inside f32 resolution.
+defn pow10f(k: Int) [k >= 0 && k <= 1100][term >= 0.0 || term < 0.0] -> Float {
+    when k > 10 {
+        term 10000000000.0 * pow10f(k - 10);
+    };
+    term pow10f_small(k, 1.0);
+};
+
+defn pow10f_small(k: Int, acc: Float) [k >= 0 && k <= 10][term >= 0.0 || term < 0.0] -> Float {
+    when k == 0 {
+        term acc;
+    };
+    term pow10f_small(k - 1, acc * 10.0);
+};
+
 // ── String ops (Family C) ────────────────────────────────────────────────
 // The backend emits these for String ==, s[a:b], foreach-char, .^Length and
 // the Data->String door. Byte-level primitives: the header is the BYTE

@@ -116,18 +116,6 @@ char* briev_cstr_to_briev(const char* c_str) {
     return buf;
 }
 
-// String → Float — returns the 32-bit float ABI.
-float str_to_float(const char* s) {
-    if (!s) return 0.0f;
-    int64_t len = *(const int64_t*)s;
-    if (len < 0) return 0.0f;
-    char tmp[128];
-    if (len >= (int64_t)sizeof(tmp)) return 0.0f;
-    memcpy(tmp, s + 8, (size_t)len);
-    tmp[len] = '\0';
-    return (float)strtod(tmp, 0);
-}
-
 /// Free a Briev string allocated by briev_cstr_to_briev or similar.
 void briev_free_briev_str(void* handle) {
     if (handle) free(handle);
