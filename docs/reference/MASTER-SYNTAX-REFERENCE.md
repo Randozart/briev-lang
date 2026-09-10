@@ -309,6 +309,7 @@ Generative op-member forms (dispatch to declared `op` members):
 | `Cast#` | `[legacy]` compiler-internal cast pipeline; `(Type)expr` lowers to `Expr::Cast`, not a call |
 | `GetEnv#` | `[legacy]` removed; use `get_env!` |
 | `GetEnvInt#` | `[legacy]` removed; use `get_env_int!` |
+| `TaskCall#` | async segment dispatch: threads the machine's state into a segment fn (Family H machine) |
 | `Len#` | `[legacy]` alias; use `Length#` |
 | `Now#` | `[internal]` monotonic clock, emitted by watchdog machinery; use `TimeNow#` |
 
