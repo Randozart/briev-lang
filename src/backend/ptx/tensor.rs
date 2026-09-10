@@ -441,6 +441,257 @@ pub fn tensor_gemm_ptx_smem(
     out
 }
 
+/// Register-blocked tensor GEMM PTX (S3b+ perf rungs): warp tile = **32×64**
+/// C (2 M-halves × 8 N-groups = 16 `mma.m16n8k16` per k-step, 64 f32
+/// accumulator registers). The 8 ng groups reuse each A fragment 8× and each
+/// B fragment 2×, raising arithmetic intensity from the 32×16 warp tile's
+/// ~10 FLOP/byte to ~21 — the first rung toward the S5 gate.
+///
+/// B smem holds the 16×64 tile as eight 2×2-blocked 8×16 fragments (the
+/// blocked fill from `tensor_gemm_ptx_smem`); each `ldmatrix.x2.trans`
+/// reads one 8×16 block (M0 = rows 0-7 / cols 0-7, M1 col-shifted = rows
+/// 8-15). A/B fills, C store, and the fragment recipes otherwise mirror the
+/// 32×16 kernel. Grid = (M/32) × (N/64) blocks decoded from ctaid.y.
+pub fn tensor_gemm_ptx_smem_r16(
+    m: i64,
+    n: i64,
+    k: i64,
+    a_off: u64,
+    b_off: u64,
+    y_off: u64,
+    y_elem: u32,
+) -> String {
+    debug_assert!(m % 32 == 0 && n % 64 == 0 && k % 16 == 0);
+    let a_row = k * 2;
+    let b_row = n * 2;
+    let y_row = n * (y_elem as i64);
+    let ng = 8;
+    let mut out = String::new();
+
+    out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
+    out.push_str(".visible .entry main (.param .b64 proj_param)\n{\n");
+    out.push_str("    .reg .b64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd5b, %rd5c;\n");
+    out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
+    out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19, %r20;\n");
+    let bregs: Vec<String> = (0..2 * ng).map(|i| format!("%b{}", i)).collect();
+    let mut bdecl = String::from("    .reg .b32  %a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7");
+    for b in &bregs {
+        bdecl.push_str(&format!(", {}", b));
+    }
+    bdecl.push_str(", %t0;\n");
+    out.push_str(&bdecl);
+    let cregs: Vec<String> = (0..4 * 2 * ng).map(|i| format!("%c{}", i)).collect();
+    let cdecl = format!("    .reg .f32  {};\n", cregs.join(", "));
+    out.push_str(&cdecl);
+    out.push_str("    .reg .pred %p1;\n");
+    out.push_str("    .shared .align 16 .b8 asmem[1024];\n");
+    out.push_str("    .shared .align 16 .b8 bsmem[2048];\n");
+    out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+
+    // Block decode from ctaid.y: n/64 blocks per M-row.
+    out.push_str("    mov.u32 %r1, %ctaid.y;\n");
+    out.push_str(&format!("    mov.u32 %r2, {};\n", n / 64));
+    out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
+    out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
+    out.push_str("    mov.u32 %r5, %tid.x;\n");
+    out.push_str("    setp.ge.u32 %p1, %r5, 32;\n");
+    out.push_str("    @%p1 ret;\n");
+    out.push_str("    shr.u32 %r6, %r5, 2;    // g\n");
+    out.push_str("    and.b32 %r7, %r5, 3;    // t\n");
+    out.push_str("    shl.b32 %r8, %r7, 1;    // 2t\n");
+
+    // rd2 = a_off + m_cta*32*a_row
+    out.push_str("    mov.u32 %r9, %r3;\n");
+    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 32 * a_row));
+    out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
+    out.push_str(&format!("    mov.u64 %rd2, {};\n", a_off));
+    out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+    out.push_str("    add.u64 %rd2, %rd2, %rd4;\n");
+    // rd3 = b_off + n_cta*64*2
+    out.push_str("    mov.u32 %r9, %r4;\n");
+    out.push_str("    mul.lo.u32 %r9, %r9, 128;\n");
+    out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
+    out.push_str(&format!("    mov.u64 %rd3, {};\n", b_off));
+    out.push_str("    add.u64 %rd3, %rd1, %rd3;\n");
+    out.push_str("    add.u64 %rd3, %rd3, %rd4;\n");
+    // rd6 = y_off + m_cta*32*y_row + n_cta*64*y_elem
+    out.push_str("    mov.u32 %r9, %r3;\n");
+    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 32 * y_row));
+    out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
+    out.push_str(&format!("    mov.u64 %rd6, {};\n", y_off));
+    out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
+    out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
+    out.push_str("    mov.u32 %r9, %r4;\n");
+    out.push_str(&format!("    mul.lo.u32 %r9, %r9, {};\n", 64 * (y_elem as i64)));
+    out.push_str("    mul.wide.u32 %rd4, %r9, 1;\n");
+    out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
+
+    // Zero the 64 C accumulators.
+    for i in 0..64 {
+        out.push_str(&format!("    mov.f32 %c{}, 0f00000000;\n", i));
+    }
+
+    // K loop.
+    out.push_str("    mov.u32 %r10, 0;  // kstep\nKLOOP:\n");
+    out.push_str(&format!("    setp.ge.u32 %p1, %r10, {};\n", k));
+    out.push_str("    @%p1 bra KEND;\n");
+
+    // A fill: thread t copies A row t (32 B) global→asmem (unchanged from
+    // the 32×16 kernel — the A tile is still 32×16).
+    out.push_str("    mov.u32 %r11, %r5;\n");
+    out.push_str(&format!("    mul.lo.u32 %r12, %r11, {};\n", a_row));
+    out.push_str("    mov.u32 %r13, %r10;\n");
+    out.push_str("    mul.lo.u32 %r13, %r13, 2;\n");
+    out.push_str("    add.u32 %r12, %r12, %r13;\n");
+    out.push_str("    mul.wide.u32 %rd4, %r12, 1;\n");
+    out.push_str("    add.u64 %rd5, %rd2, %rd4;\n");
+    out.push_str("    mov.u64 %rd4, asmem;\n");
+    out.push_str("    mul.wide.u32 %rd5b, %r11, 32;\n");
+    out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+    for _ in 0..8 {
+        out.push_str("    ld.global.b32 %t0, [%rd5]; st.shared.b32 [%rd4], %t0;\n");
+        out.push_str("    add.u64 %rd5, %rd5, 4; add.u64 %rd4, %rd4, 4;\n");
+    }
+
+    // B fill: thread t copies 64 B (4 × 16-B chunks) of the blocked 16×64
+    // tile. Chunk k: dest bsmem + t*64 + k*16; block b = t/4; row within
+    // block r = (t%4)*2 + (k>=2 ? 1 : 0); half = k%2. B source:
+    // row = r + 8*half, cols = b*8 .. b*8+7.
+    out.push_str("    mov.u32 %r11, %r5;\n");
+    out.push_str("    shr.u32 %r12, %r11, 2;    // t/4 = block b\n");
+    out.push_str("    and.b32 %r13, %r11, 3;    // t%4\n");
+    for k in 0..4 {
+        // dest byte D = t*64 + k*16
+        out.push_str("    mov.u32 %r14, %r5;\n");
+        out.push_str("    mul.lo.u32 %r14, %r14, 64;\n");
+        out.push_str(&format!("    add.u32 %r14, %r14, {};\n", k * 16));
+        // row r = (t%4)*2 + (k>=2 ? 1 : 0)
+        out.push_str("    mov.u32 %r15, %r13;\n");
+        out.push_str("    mul.lo.u32 %r15, %r15, 2;\n");
+        if k >= 2 {
+            out.push_str("    add.u32 %r15, %r15, 1;\n");
+        }
+        // B row = r + 8*half
+        out.push_str("    mov.u32 %r16, %r15;\n");
+        if k % 2 == 1 {
+            out.push_str("    add.u32 %r16, %r16, 8;\n");
+        }
+        // global byte = rd3 + kstep*b_row + B_row*b_row + b*16
+        out.push_str("    mov.u32 %r17, %r10;\n");
+        out.push_str(&format!("    mul.lo.u32 %r17, %r17, {};\n", b_row));
+        out.push_str(&format!("    mul.lo.u32 %r18, %r16, {};\n", b_row));
+        out.push_str("    add.u32 %r17, %r17, %r18;\n");
+        out.push_str(&format!("    mul.lo.u32 %r18, %r12, {};\n", 16));
+        out.push_str("    add.u32 %r17, %r17, %r18;\n");
+        out.push_str("    mul.wide.u32 %rd4, %r17, 1;\n");
+        out.push_str("    add.u64 %rd5, %rd3, %rd4;\n");
+        // dest = bsmem + D
+        out.push_str("    mov.u64 %rd4, bsmem;\n");
+        out.push_str("    mul.wide.u32 %rd5b, %r14, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        for _ in 0..4 {
+            out.push_str("    ld.global.b32 %t0, [%rd5]; st.shared.b32 [%rd4], %t0;\n");
+            out.push_str("    add.u64 %rd5, %rd5, 4; add.u64 %rd4, %rd4, 4;\n");
+        }
+    }
+
+    out.push_str("    bar.sync 0;\n");
+
+    // A fragments: 2 × ldmatrix.x4 (same recipe as the 32×16 kernel).
+    out.push_str("    mov.u64 %rd4, asmem;\n");
+    out.push_str("    mov.u32 %r11, %r5;\n");
+    out.push_str("    shr.u32 %r12, %r11, 3;\n");
+    out.push_str("    and.b32 %r13, %r11, 7;\n");
+    out.push_str("    and.b32 %r14, %r12, 1;\n");
+    out.push_str("    shr.u32 %r15, %r12, 1;\n");
+    out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
+    out.push_str("    add.u32 %r15, %r15, %r13;\n");
+    out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+    out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
+    out.push_str("    add.u32 %r16, %r15, %r14;\n");
+    out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
+    out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+    out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
+    out.push_str("    add.u64 %rd5, %rd5, 512;\n");
+    out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a4, %a5, %a6, %a7}, [%rd5];\n");
+    out.push_str("    mov.b32 %t0, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %t0;\n");
+    out.push_str("    mov.b32 %t0, %a5; mov.b32 %a5, %a6; mov.b32 %a6, %t0;\n");
+
+    // B fragments: 8 × ldmatrix.x2.trans, block g at bsmem + g*256.
+    for g in 0..ng {
+        let (b0, b1) = (&bregs[2 * g], &bregs[2 * g + 1]);
+        out.push_str("    mov.u64 %rd4, bsmem;\n");
+        out.push_str(&format!("    add.u64 %rd4, %rd4, {};\n", g * 256));
+        out.push_str("    mov.u32 %r11, %r5;\n");
+        out.push_str("    shr.u32 %r12, %r11, 4;\n");
+        out.push_str("    and.b32 %r13, %r11, 15;\n");
+        out.push_str("    and.b32 %r14, %r13, 7;\n");
+        out.push_str("    shr.u32 %r16, %r13, 3;\n");
+        out.push_str("    mul.lo.u32 %r15, %r12, 8;\n");
+        out.push_str("    add.u32 %r15, %r15, %r14;\n");
+        out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+        out.push_str("    mul.lo.u32 %r16, %r16, 16;\n");
+        out.push_str("    add.u32 %r17, %r15, %r16;\n");
+        out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
+        out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+        out.push_str(&format!(
+            "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
+            b0, b1
+        ));
+    }
+
+    // 16 mma: (mh, ng), C offset cb = 4*(mh*8+ng).
+    for mh in 0..2 {
+        for g in 0..ng {
+            let cb = 4 * (mh * 8 + g);
+            let (a0, a1, a2, a3) = if mh == 0 { ("%a0", "%a1", "%a2", "%a3") } else { ("%a4", "%a5", "%a6", "%a7") };
+            let (b0, b1) = (&bregs[2 * g], &bregs[2 * g + 1]);
+            out.push_str(&format!(
+                "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{{}, {}, {}, {}}}, {{{}, {}}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
+                cb, cb + 1, cb + 2, cb + 3, a0, a1, a2, a3, b0, b1, cb, cb + 1, cb + 2, cb + 3
+            ));
+        }
+    }
+
+    out.push_str("    bar.sync 0;\n");
+    out.push_str("    add.u32 %r10, %r10, 16;\n");
+    out.push_str("    bra.uni KLOOP;\nKEND:\n");
+
+    // Store C: 2 mh × 8 ng, 4 regs each. Tile-relative row = 16*mh+row_off+g,
+    // col = ng*8 + 2t + col_off.
+    for mh in 0..2 {
+        for g in 0..ng {
+            let cb = 4 * (mh * 8 + g);
+            for (coff, row_off, col_off) in [
+                (0i64, 0i64, 0i64),
+                (1, 0, 1),
+                (2, 8, 0),
+                (3, 8, 1),
+            ] {
+                let cname = format!("c{}", cb + coff as usize);
+                out.push_str(&format!("    mov.u32 %r13, {};\n", (16 * mh as i64 + row_off) * y_row));
+                out.push_str(&format!("    mul.lo.u32 %r14, %r6, {};\n", y_row));
+                out.push_str("    add.u32 %r13, %r13, %r14;\n");
+                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", (g as i64) * 8 * (y_elem as i64)));
+                out.push_str("    mov.u32 %r14, %r8;\n");
+                out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", y_elem));
+                out.push_str("    add.u32 %r13, %r13, %r14;\n");
+                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", col_off * (y_elem as i64)));
+                out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
+                out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
+                if y_elem == 4 {
+                    out.push_str(&format!("    st.global.f32 [%rd5], %{};\n", cname));
+                } else {
+                    out.push_str(&format!("    cvt.rn.f16.f32 %t0, %{};\n", cname));
+                    out.push_str("    st.global.u16 [%rd5], %t0;\n");
+                }
+            }
+        }
+    }
+    out.push_str("    ret;\n}\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +763,347 @@ mod tests {
         assert!(ptx.contains("st.global.u16 [%rd5], %t0;"), "f16 store");
         // n_cta*16*y_elem = n_cta*32 for f16 (NOT *64)
         assert!(ptx.contains("mul.lo.u32 %r9, %r9, 32;"), "n_cta col = 16*2: {ptx}");
+    }
+}
+
+/// Multi-warp register-blocked tensor GEMM PTX (S3b+ perf rungs). CTA tile
+/// = (mw*32) rows × (nw*64) cols across mw*nw warps; each warp runs the
+/// 32×64 warp-tile from `tensor_gemm_ptx_smem_r16` (2 M-halves × 8 N-groups
+/// = 16 mma, 64 f32 accumulators). Arithmetic intensity = mw*nw*32*64 /
+/// (mw*32 + nw*64) FLOP/byte — 85 for the 256×128 CTA (mw=8, nw=2) vs 21
+/// for the single-warp r16.
+///
+/// A/B smem tiles are shared across all warps (A = mw*32 × 16 f16, B = the
+/// 16 × nw*64 f16 tile in 64-col blocked slices) and filled cooperatively.
+/// Each warp loads its 32-row A slice and 64-col B slice via ldmatrix, then
+/// runs 16 mma. The block (tile) is decoded from ctaid.x; the block size is
+/// mw*nw*32 (the RunnerKernel.block_threads dispatch contract).
+pub fn tensor_gemm_ptx_smem_mw(
+    m: i64,
+    n: i64,
+    k: i64,
+    a_off: u64,
+    b_off: u64,
+    y_off: u64,
+    y_elem: u32,
+    mw: usize,
+    nw: usize,
+) -> String {
+    debug_assert!(m % (32 * mw as i64) == 0 && n % (64 * nw as i64) == 0 && k % 16 == 0);
+    let a_row = k * 2;
+    let b_row = n * 2;
+    let y_row = n * (y_elem as i64);
+    let ng = 8;
+    let threads = (mw * nw * 32) as i64;
+    // Per-thread fill amounts (b32).
+    let per_a = (mw as i64 * 256) / threads; // A tile b32 / threads
+    let per_b = (nw as i64 * 512) / threads; // B tile b32 / threads
+    let mut out = String::new();
+
+    out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
+    out.push_str(".visible .entry main (.param .b64 proj_param)\n{\n");
+    out.push_str("    .reg .b64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd7, %rd5b, %rd5c;\n");
+    out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
+    out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19, %r20;\n");
+    let bregs: Vec<String> = (0..2 * ng).map(|i| format!("%b{}", i)).collect();
+    let mut bdecl = String::from("    .reg .b32  %a0, %a1, %a2, %a3, %a4, %a5, %a6, %a7");
+    for b in &bregs {
+        bdecl.push_str(&format!(", {}", b));
+    }
+    bdecl.push_str(", %t0;\n");
+    out.push_str(&bdecl);
+    let cregs: Vec<String> = (0..4 * 2 * ng).map(|i| format!("%c{}", i)).collect();
+    out.push_str(&format!("    .reg .f32  {};\n", cregs.join(", ")));
+    out.push_str("    .reg .pred %p1;\n");
+    out.push_str(&format!("    .shared .align 16 .b8 asmem[{}];\n", mw * 1024));
+    out.push_str(&format!("    .shared .align 16 .b8 bsmem[{}];\n", nw * 2048));
+    out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+
+    // Block decode from ctaid.x: n/(nw*64) blocks per M-row.
+    out.push_str("    mov.u32 %r1, %ctaid.x;\n");
+    out.push_str(&format!("    mov.u32 %r2, {};\n", n / (64 * nw as i64)));
+    out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
+    out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
+    // Lane / warp decode.
+    out.push_str("    mov.u32 %r5, %tid.x;\n");
+    out.push_str(&format!("    setp.ge.u32 %p1, %r5, {};\n", threads));
+    out.push_str("    @%p1 ret;\n");
+    out.push_str("    shr.u32 %r9, %r5, 5;    // warp = tid/32\n");
+    out.push_str(&format!("    mov.u32 %r2, {};\n", nw));
+    out.push_str("    div.u32 %r10, %r9, %r2;  // mh_warp = warp/nw\n");
+    out.push_str("    rem.u32 %r11, %r9, %r2;  // ng_warp = warp%nw\n");
+    out.push_str("    and.b32 %r7, %r5, 31;\n"); // lane = tid%32
+    out.push_str("    shr.u32 %r6, %r7, 2;    // g\n");
+    out.push_str("    and.b32 %r8, %r7, 3;    // t\n");
+    out.push_str("    shl.b32 %r8, %r8, 1;    // 2t\n");
+
+    // rd2 = a_off + m_cta*(mw*32)*a_row
+    out.push_str("    mov.u32 %r2, %r3;\n");
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 32 * mw as i64 * a_row));
+    out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
+    out.push_str(&format!("    mov.u64 %rd2, {};\n", a_off));
+    out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+    out.push_str("    add.u64 %rd2, %rd2, %rd4;\n");
+    // rd3 = b_off + n_cta*(nw*64)*2
+    out.push_str("    mov.u32 %r2, %r4;\n");
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 128 * nw as i64));
+    out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
+    out.push_str(&format!("    mov.u64 %rd3, {};\n", b_off));
+    out.push_str("    add.u64 %rd3, %rd1, %rd3;\n");
+    out.push_str("    add.u64 %rd3, %rd3, %rd4;\n");
+    // rd6 = y_off + m_cta*(mw*32)*y_row + n_cta*(nw*64)*y_elem
+    out.push_str("    mov.u32 %r2, %r3;\n");
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 32 * mw as i64 * y_row));
+    out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
+    out.push_str(&format!("    mov.u64 %rd6, {};\n", y_off));
+    out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
+    out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
+    out.push_str("    mov.u32 %r2, %r4;\n");
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 64 * nw as i64 * (y_elem as i64)));
+    out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
+    out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
+
+    // Zero accumulators.
+    for i in 0..4 * 2 * ng {
+        out.push_str(&format!("    mov.f32 %c{}, 0f00000000;\n", i));
+    }
+
+    // K loop.
+    out.push_str("    mov.u32 %r2, 0;  // kstep\nKLOOP:\n");
+    out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", k));
+    out.push_str("    @%p1 bra KEND;\n");
+
+    // Cooperative A fill: thread fills per_a b32 of the mw*32×16 tile.
+    // Tile b32 idx = t*per_a + j; byte D = idx*4; row = D/32; chunk = (D%32)/4.
+    out.push_str("    mov.u32 %r12, %r5;\n");
+    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", per_a as u32 * 4));
+    for j in 0..per_a {
+        out.push_str("    mov.u32 %r13, %r12;\n");
+        out.push_str(&format!("    add.u32 %r13, %r13, {};\n", j * 4));
+        out.push_str("    mov.u32 %r14, %r13;\n");
+        out.push_str("    and.b32 %r15, %r13, 31;\n"); // col chunk byte within row
+        out.push_str("    shr.u32 %r14, %r14, 5;\n"); // row = D/32
+        out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", a_row));
+        out.push_str("    add.u32 %r14, %r14, %r15;\n");
+        out.push_str("    mov.u32 %r16, %r2;\n");
+        out.push_str("    mul.lo.u32 %r16, %r16, 2;\n");
+        out.push_str("    add.u32 %r14, %r14, %r16;\n"); // + kstep*2
+        out.push_str("    mul.wide.u32 %rd4, %r14, 1;\n");
+        out.push_str("    add.u64 %rd5, %rd2, %rd4;\n");
+        out.push_str("    mov.u64 %rd4, asmem;\n");
+        out.push_str("    mul.wide.u32 %rd5b, %r13, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        out.push_str("    ld.global.b32 %t0, [%rd5]; st.shared.b32 [%rd4], %t0;\n");
+    }
+
+    // Cooperative B fill: thread fills per_b b32 of the nw*64-col blocked tile.
+    // Tile b32 idx = t*per_b + j; byte D = idx*4.
+    //   slice = D/2048; w = D%2048; block b = w/256; w2 = w%256;
+    //   row r = w2/32; half = (w2%32)>=16; c2 = (w2%32)%16;
+    //   B_row = r + 8*half; B_col = slice*64 + b*8 + c2%8.
+    out.push_str("    mov.u32 %r12, %r5;\n");
+    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", per_b as u32 * 4));
+    for j in 0..per_b {
+        out.push_str("    mov.u32 %r13, %r12;\n");
+        out.push_str(&format!("    add.u32 %r13, %r13, {};\n", j * 4));
+        // slice = D/2048
+        out.push_str("    mov.u32 %r14, %r13;\n");
+        out.push_str("    shr.u32 %r14, %r14, 11;\n");
+        // w = D%2048 ; block b = w/256 ; w2 = w%256
+        out.push_str("    mov.u32 %r15, %r13;\n");
+        out.push_str("    and.b32 %r15, %r15, 2047;\n");
+        out.push_str("    shr.u32 %r16, %r15, 8;\n"); // b = w/256
+        out.push_str("    and.b32 %r17, %r15, 255;\n"); // w2
+        // r = w2/32
+        out.push_str("    shr.u32 %r18, %r17, 5;\n");
+        // c_dest = (w2%32)/2 (f16 col within the row); half = c_dest>=8
+        out.push_str("    mov.u32 %r19, %r17;\n");
+        out.push_str("    and.b32 %r19, %r19, 31;\n");
+        out.push_str("    shr.u32 %r19, %r19, 1;\n");
+        out.push_str("    setp.ge.u32 %p1, %r19, 8;\n");
+        out.push_str("    mov.u32 %r20, 0;\n");
+        out.push_str("    @%p1 mov.u32 %r20, 8;\n"); // +8 rows if half
+        out.push_str("    add.u32 %r18, %r18, %r20;\n"); // B_row
+        out.push_str("    and.b32 %r19, %r19, 7;\n"); // c_dest%8
+        // global byte = rd3 + kstep*b_row + B_row*b_row + (slice*64 + b*8 + c2%8)*2
+        // row terms are already bytes (b_row = N*2); only the column part needs *2.
+        out.push_str("    mov.u32 %r20, %r2;\n");
+        out.push_str(&format!("    mul.lo.u32 %r20, %r20, {};\n", b_row));
+        out.push_str(&format!("    mul.lo.u32 %r15, %r18, {};\n", b_row));
+        out.push_str("    add.u32 %r20, %r20, %r15;\n");
+        // Column part in f16-element count, then *2 to bytes.
+        out.push_str("    mul.lo.u32 %r15, %r14, 64;\n");
+        out.push_str("    mul.lo.u32 %r17, %r16, 8;\n");
+        out.push_str("    add.u32 %r15, %r15, %r17;\n");
+        out.push_str("    add.u32 %r15, %r15, %r19;\n");
+        out.push_str("    mul.lo.u32 %r15, %r15, 2;\n");
+        out.push_str("    add.u32 %r20, %r20, %r15;\n");
+        out.push_str("    mul.wide.u32 %rd4, %r20, 1;\n");
+        out.push_str("    add.u64 %rd5, %rd3, %rd4;\n");
+        // dest = bsmem + D
+        out.push_str("    mov.u64 %rd4, bsmem;\n");
+        out.push_str("    mul.wide.u32 %rd5b, %r13, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        out.push_str("    ld.global.b32 %t0, [%rd5]; st.shared.b32 [%rd4], %t0;\n");
+    }
+
+    out.push_str("    bar.sync 0;\n");
+
+    // A fragments: warp mh_warp slice at asmem + mh_warp*1024.
+    out.push_str("    mov.u64 %rd4, asmem;\n");
+    out.push_str("    mov.u32 %r12, %r10;\n");
+    out.push_str("    mul.lo.u32 %r12, %r12, 1024;\n");
+    out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
+    out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+    out.push_str("    mov.u32 %r13, %r7;\n");
+    out.push_str("    shr.u32 %r12, %r13, 3;\n");
+    out.push_str("    and.b32 %r13, %r13, 7;\n");
+    out.push_str("    and.b32 %r14, %r12, 1;\n");
+    out.push_str("    shr.u32 %r15, %r12, 1;\n");
+    out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
+    out.push_str("    add.u32 %r15, %r15, %r13;\n");
+    out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+    out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
+    out.push_str("    add.u32 %r16, %r15, %r14;\n");
+    out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
+    out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+    out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
+    out.push_str("    add.u64 %rd5, %rd5, 512;\n");
+    out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a4, %a5, %a6, %a7}, [%rd5];\n");
+    out.push_str("    mov.b32 %t0, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %t0;\n");
+    out.push_str("    mov.b32 %t0, %a5; mov.b32 %a5, %a6; mov.b32 %a6, %t0;\n");
+
+    // B fragments: warp ng_warp slice at bsmem + ng_warp*2048, block g at +g*256.
+    for g in 0..ng {
+        let (b0, b1) = (&bregs[2 * g], &bregs[2 * g + 1]);
+        out.push_str("    mov.u64 %rd4, bsmem;\n");
+        out.push_str("    mov.u32 %r12, %r11;\n");
+        out.push_str("    mul.lo.u32 %r12, %r12, 2048;\n");
+        out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        out.push_str(&format!("    add.u64 %rd4, %rd4, {};\n", g * 256));
+        out.push_str("    mov.u32 %r13, %r7;\n");
+        out.push_str("    shr.u32 %r12, %r13, 4;\n");
+        out.push_str("    and.b32 %r13, %r13, 15;\n");
+        out.push_str("    and.b32 %r14, %r13, 7;\n");
+        out.push_str("    shr.u32 %r16, %r13, 3;\n");
+        out.push_str("    mul.lo.u32 %r15, %r12, 8;\n");
+        out.push_str("    add.u32 %r15, %r15, %r14;\n");
+        out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+        out.push_str("    mul.lo.u32 %r16, %r16, 16;\n");
+        out.push_str("    add.u32 %r17, %r15, %r16;\n");
+        out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
+        out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+        out.push_str(&format!(
+            "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
+            b0, b1
+        ));
+    }
+
+    // 16 mma per warp.
+    for mh in 0..2 {
+        for g in 0..ng {
+            let cb = 4 * (mh * 8 + g);
+            let (a0, a1, a2, a3) = if mh == 0 { ("%a0", "%a1", "%a2", "%a3") } else { ("%a4", "%a5", "%a6", "%a7") };
+            let (b0, b1) = (&bregs[2 * g], &bregs[2 * g + 1]);
+            out.push_str(&format!(
+                "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{{}, {}, {}, {}}}, {{{}, {}}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
+                cb, cb + 1, cb + 2, cb + 3, a0, a1, a2, a3, b0, b1, cb, cb + 1, cb + 2, cb + 3
+            ));
+        }
+    }
+
+    out.push_str("    bar.sync 0;\n");
+    out.push_str("    add.u32 %r2, %r2, 16;\n");
+    out.push_str("    bra.uni KLOOP;\nKEND:\n");
+
+    // Store C: warp tile at rd6 + mh_warp*32*y_row + ng_warp*64*y_elem, then
+    // the 2 mh × 8 ng sub-tiles.
+    out.push_str("    mov.u32 %r12, %r10;\n");
+    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 32 * y_row));
+    out.push_str("    mov.u32 %r13, %r11;\n");
+    out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 64 * (y_elem as i64)));
+    out.push_str("    mov.u32 %r9, %r12;\n");
+    out.push_str("    add.u32 %r9, %r9, %r13;\n");
+    for mh in 0..2 {
+        for g in 0..ng {
+            let cb = 4 * (mh * 8 + g);
+            for (coff, row_off, col_off) in [
+                (0i64, 0i64, 0i64),
+                (1, 0, 1),
+                (2, 8, 0),
+                (3, 8, 1),
+            ] {
+                let cname = format!("c{}", cb + coff as usize);
+                out.push_str(&format!("    mov.u32 %r13, {};\n", (16 * mh as i64 + row_off) * y_row));
+                out.push_str(&format!("    mul.lo.u32 %r14, %r6, {};\n", y_row));
+                out.push_str("    add.u32 %r13, %r13, %r14;\n");
+                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", (g as i64) * 8 * (y_elem as i64)));
+                out.push_str("    mov.u32 %r14, %r8;\n");
+                out.push_str(&format!("    mul.lo.u32 %r14, %r14, {};\n", y_elem));
+                out.push_str("    add.u32 %r13, %r13, %r14;\n");
+                out.push_str(&format!("    add.u32 %r13, %r13, {};\n", col_off * (y_elem as i64)));
+                out.push_str("    add.u32 %r13, %r13, %r9;\n");
+                out.push_str("    mul.wide.u32 %rd4, %r13, 1;\n");
+                out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
+                if y_elem == 4 {
+                    out.push_str(&format!("    st.global.f32 [%rd5], %{};\n", cname));
+                } else {
+                    out.push_str(&format!("    cvt.rn.f16.f32 %t0, %{};\n", cname));
+                    out.push_str("    st.global.u16 [%rd5], %t0;\n");
+                }
+            }
+        }
+    }
+    out.push_str("    ret;\n}\n");
+    out
+}
+
+#[cfg(test)]
+mod r16_dump {
+    use super::*;
+    #[test]
+    fn dump_mw_1x1() {
+        /* M=64,N=64,K=64, CTA 32x64 (mw=1,nw=1). a@0,b@8192,y@16392 */
+        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1);
+        std::fs::write("/tmp/opencode/tgemm_mw_1x1.ptx", &ptx).unwrap();
+    }
+
+    use super::*;
+    #[test]
+    fn dump_mw_128x128() {
+        /* M=128,N=128,K=64, CTA 128x128 (mw=4,nw=2). a@0,b@16384,y@32776 */
+        let ptx = tensor_gemm_ptx_smem_mw(128, 128, 64, 0, 16384, 32776, 2, 4, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_128x128.ptx", &ptx).unwrap();
+    }
+    #[test]
+    fn dump_mw_256x128() {
+        /* M=256,N=128,K=64, CTA 256x128 (mw=8,nw=2). a@0,b=256*64*2=32768,
+           y@32768+128*64*2+8=49160 */
+        let ptx = tensor_gemm_ptx_smem_mw(256, 128, 64, 0, 32768, 49160, 2, 8, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_256x128.ptx", &ptx).unwrap();
+    }
+
+    use super::*;
+    #[test]
+    fn dump_r16_4096() {
+        /* gemm_h 4096^3: a@0, b=4096*4096*2=33554432, y=b+K*N*2+8 */
+        let ptx = tensor_gemm_ptx_smem_r16(4096, 4096, 4096, 0, 33554432, 67108872, 2);
+        std::fs::write("/tmp/opencode/tgemm_r16_4096.ptx", &ptx).unwrap();
+    }
+
+    use super::*;
+    #[test]
+    fn dump_r16_64() {
+        /* M=64,N=64,K=64: a@0, b@8192, y@16392, f16-y */
+        let ptx = tensor_gemm_ptx_smem_r16(64, 64, 64, 0, 8192, 16392, 2);
+        std::fs::write("/tmp/opencode/tgemm_r16_64.ptx", &ptx).unwrap();
+    }
+    #[test]
+    fn dump_r16_128() {
+        /* M=128,N=128,K=128: a@0, b@32768, y@65544 */
+        let ptx = tensor_gemm_ptx_smem_r16(128, 128, 128, 0, 32768, 65544, 2);
+        std::fs::write("/tmp/opencode/tgemm_r16_128.ptx", &ptx).unwrap();
     }
 }
 

@@ -81,6 +81,26 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
     out
 }
 
+/// Select multi-warp CTA dimensions (mw, nw) for the mw kernel.
+/// CTA tile = (mw*32) × (nw*64), block_threads = mw*nw*32 (max 1024).
+/// Prefers wider nw (B reuse) then scales mw (A reuse).
+fn select_mw_nw(m: i64, n: i64) -> (usize, usize) {
+    let mut nw: usize = 1;
+    let mut mw: usize = 1;
+    // Scale nw: double while N accommodates and block budget fits.
+    while nw * 2 <= 8 && n % ((nw * 2 * 64) as i64) == 0 && (mw * nw * 2) as i64 * 32 <= 1024 {
+        nw *= 2;
+    }
+    // Scale mw: double while M accommodates and block budget fits.
+    while mw * 2 <= 16
+        && m % ((mw * 2 * 32) as i64) == 0
+        && (mw * 2 * nw) as i64 * 32 <= 1024
+    {
+        mw *= 2;
+    }
+    (mw, nw)
+}
+
 /// Build the PTX kernel set for an `.abv` — one kernel per eligible accel
 /// entry. GEMM-shaped entries lower to the naive PTX kernel; anything else
 /// is a hard error (the S2a surface gate — GEMM family ONLY until S5).
@@ -149,17 +169,31 @@ pub fn build_ptx_kernels(
             && plan.n % 16 == 0
             && plan.k % 16 == 0;
 
-        let (ptx, ptx_tensor, count_expr) = if tensor {
-            // The warp-tile kernel decodes one block per (M/32)*(N/16)
-            // tile from ctaid.y. count_expr stays M*N — the runner's
-            // fast-forward uses it for the counter (the .abv gate
-            // `[i < M*N]` must go false after ONE dispatch); the
-            // ptx_tensor dispatch geometry computes ny = count/512 blocks.
-            (
-                tensor::tensor_gemm_ptx_smem(plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem),
-                true,
-                e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
-            )
+        let (ptx, ptx_tensor, count_expr, block_threads) = if tensor {
+            // Select mw/nw for multi-warp CTA. The mw kernel needs
+            // M%(mw*32)==0 and N%(nw*64)==0; fall back to single-warp
+            // smem kernel when the shape doesn't tile cleanly.
+            let (mw, nw) = select_mw_nw(plan.m, plan.n);
+            let mw_ok = plan.m % (mw as i64 * 32) == 0
+                && plan.n % (nw as i64 * 64) == 0;
+            if mw_ok && (mw > 1 || nw > 1) {
+                (
+                    tensor::tensor_gemm_ptx_smem_mw(
+                        plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
+                    ),
+                    true,
+                    e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+                    (mw * nw * 32) as u32,
+                )
+            } else {
+                // Single-warp smem kernel (32×16 tile, 1 warp).
+                (
+                    tensor::tensor_gemm_ptx_smem(plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem),
+                    true,
+                    e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+                    64,
+                )
+            }
         } else {
             if a_elem != 4 {
                 return Err(format!(
@@ -175,6 +209,7 @@ pub fn build_ptx_kernels(
                 naive_gemm_ptx(plan.m, plan.n, plan.k, a_elem, a_off, b_off, y_off),
                 false,
                 e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+                64,
             )
         };
 
@@ -190,6 +225,7 @@ pub fn build_ptx_kernels(
             tensor: false,
             tensor_tile_rows: 1,
             ptx_tensor,
+            block_threads,
         });
     }
     Ok(out)

@@ -77,6 +77,11 @@ pub struct RunnerKernel {
     /// The count expr is the WORK count (M*N, the counter fast-forward);
     /// the dispatch launches ny = count/(32*16) blocks.
     pub ptx_tensor: bool,
+    /// 2026-09-09 (S3b+ perf rungs): CUDA block thread count for this
+    /// kernel (default 64 — the driver's fixed block size). The S3b+
+    /// multi-warp tensor kernels launch mw*nw*32-thread blocks; the
+    /// dispatch geometry and the runtime's launch both key off this.
+    pub block_threads: u32,
 }
 
 /// The SSBO layout EXACTLY as the kernel sees it (name-sorted, real element
@@ -464,12 +469,13 @@ pub fn emit_runner(
         // host_offset patch: the runner emits the table with placeholder
         // offsets, then computes them from the state layout below.
         out.push_str(&format!(
-            "    {{ \"{}\", k{}, k{}_len, {}, fields, {}, images }},\n",
+            "    {{ \"{}\", k{}, k{}_len, {}, fields, {}, images, {} }},\n",
             c_ident(&k.name),
             i,
             i,
             fields.len(),
-            k.image_plans.len()
+            k.image_plans.len(),
+            k.block_threads
         ));
     }
     out.push_str(&format!(
@@ -667,6 +673,7 @@ pub fn build_kernels(
                 1
             },
             ptx_tensor: false,
+            block_threads: 64,
         });
     }
     Ok(out)
@@ -769,6 +776,17 @@ fn emit_kernel_node(
 /// of the work-item id differs.
 fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
     if k.ptx_tensor {
+        if k.block_threads > 64 {
+            // PTX tensor multi-warp (mw/nw kernel): block_threads-thread
+            // blocks. CTA tile = mw*32 rows × nw*64 cols = mw*nw*2048
+            // elements. Each thread covers 64 elements. count = M*N.
+            // nx = count/64 → gx = count/(64*block_threads) =
+            // count/(2048*mw*nw) = correct CTA count. The kernel decodes
+            // m_cta and n_cta from ctaid.x.
+            return format!(
+                "      if (n_{ci} > 0 && !briev_accel_launch_resident_2d({kidx}, state, n_{ci} / 64, 1)) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
+            );
+        }
         // PTX tensor warp-tile (S3b): one 32×16 C tile per 32-lane block,
         // decoded from ctaid.y. count = M*N work items (the counter
         // fast-forward), blocks = count/(32*16). nx=32 → the driver's
