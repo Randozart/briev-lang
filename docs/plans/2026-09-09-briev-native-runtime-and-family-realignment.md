@@ -497,3 +497,98 @@ shapes, not a redesign.
 - New: `docs/architecture/electronics-briev.md` (Electronics fundamentals,
   when implemented), `docs/architecture/briev-native-runtime.md` (runtime
   model).
+---
+
+# Amendments — 2026-09-10 (expressiveness closure)
+
+Appended during the Family C session. The work below was discussed as the
+capability question — "is Briev theoretically capable of writing an
+LLVM-class system?" — and resolved into four concrete workstreams. The
+governing principle:
+
+> **Expressiveness closure.** The compiler's chosen optimum must never be
+> more powerful than the language. If the compiler can do X, a user must be
+> able to build X in Briev. Rule 14 applied to features becomes, applied to
+> *techniques*: every optimization trick CS has or will invent must be
+> expressible in Briev itself — a new hypothetical optimal path must itself
+> be implementable, or the compiler's cleverness is a ceiling instead of a
+> floor.
+
+## A. Allocator ownership (Family E, upgraded)
+
+`config/alloc-strategies.dbvl` already provides custom allocation strategies
+as config (quoted strategy names, LLVM-IR templates, per-strategy `Free#`
+dispatch). The upgrade: **the strategy functions become pure-Briev defns**
+(`@pool_alloc` et al. live in a stdlib file; declare-guard resolves them —
+the print-family mechanism), and `Alloc#`/`Malloc#` take their final Rule 14
+form:
+
+- The compiler keeps ONLY the bootstrap: the static fallback heap that
+  `--no-std` requires.
+- The allocation STRATEGY is stdlib-owned: `lib/std/alloc.bv` implements the
+  hosted arena over `SysCall#(SYS_brk/mmap)` in pure Briev (~30 lines; the
+  primitives were proven by the cast_lanes work). `alloc-strategies.dbvl`
+  rows point at Briev defns instead of C symbols.
+- Collection growth (`__briev_coll_resize`, Family D) routes through the
+  same stdlib-owned allocator.
+
+This replaces plan §2.3's "Rust emits arena+brk" — Briev *is* the arena.
+
+## B. Asm# fundamental (two-mode)
+
+One intrinsic, two modes, replacing the retired top-level `asm`/`AsmFn`
+surface (no active shipped `.bv` declares an AsmFn — the emitter exists but
+is unused; run the deprecation playbook):
+
+1. **Abstract mode** — `Asm#("prefetch", addr)`: a Briev-level abstract
+   instruction, lowered per target through `config/asm-lowering.dbvl`
+   (arrow-row style like `bindings.dbvl`): unknown op or unsupported target
+   = capability error (what/why/fix, per capabilities.rs doctrine).
+2. **Raw mode** — `Asm#("raw", template, ...operands)`: dialect-specific
+   text with `$N` operand binding, reusing the `SysCall#` inline-asm emitter
+   (proven). `observable: true` (never DCE'd). Forbidden at source level in
+   `.s` strict programs; stdlib wrappers bear the proof burden.
+
+**Named-intrinsic duality**: common ops promote to real intrinsics
+(`Prefetch#`, `Rdtsc#`) with `bindings.dbvl` templates and typechecker
+signatures; the long tail stays `Asm#`. Both tables are config — adding an
+op is a data change, never a Rust change (closure preserved at the asm
+surface itself).
+
+**Verification**: abstract ops get operand contracts on their stdlib
+wrappers (`lib/std/asm.bv`); raw gets structural checks (operand count vs
+`$N` references) + the `.s` gate. Emission reuses the `SysCall#` machinery;
+capability declarations per backend in `capabilities.rs`.
+
+## C. `inline_frgn!` plugin
+
+Retires the top-level `frgn` ritual for one-off FFI. A plugin (Rust AST
+manipulator, print_plugin precedent) that at `$(Parsed)`:
+1. synthesizes the `frgn` declaration at module scope, and
+2. rewrites the call site.
+
+Reuses the ENTIRE existing path — frgn_map registration,
+`collect_extra_objects` linking, the declare-guard, the state-prefix call
+adaptation. An `InlineFrgn#` intrinsic was rejected: it would duplicate all
+of that inside the compiler (Rule 14 prefers the plugin).
+
+Shape (explicit signature — the one-time ritual tax paid inline):
+
+```
+inline_frgn!("__print_int", "lib/runtime/briev_rt.c", "fn(n: Int) -> Int", my_n);
+```
+
+## D. Capability frontier doc
+
+`docs/architecture/briev-capability-frontier.md` records the principle, the
+tier table (expressible today / one primitive away / analysis-only), the
+session evidence, and the self-hosting endgame (a QBE-scale native emission
+tier breaking the rustc→LLVM bootstrap chain; LLVM itself is explicitly NOT
+the goal — theoretical capability is).
+
+## Sequencing note
+
+Family D resumes first (str_to_float, then vector ops — both gate-gated).
+Allocator ownership (A) lands with Family E; Asm# (B) and `inline_frgn!` (C)
+are independent fundamentals that can land in either order after D. The
+capability doc ships immediately with these amendments.

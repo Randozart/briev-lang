@@ -206,6 +206,17 @@ variant. Hosted and freestanding builds differ only in allocator growth (the
 hosted arena may grow via `brk`/`mmap`; the freestanding arena is fixed) and
 available platform surface. The language surface is identical.
 
+The runtime model is governed by **expressiveness closure**: the compiler's
+chosen optimum must never be more powerful than the language. The
+compiler-internal allocator keeps only a bootstrap fallback (what `--no-std`
+requires); the allocation *strategy* is owned by the standard library
+(`alloc-strategies` config resolves strategy names, and the strategy
+functions are ordinary Briev definitions). Likewise, machine-level escape
+hatches are ordinary intrinsics: `Asm#` lowers either a named abstract
+instruction through per-target config tables or a raw asm template, so no
+hardware technique permanently requires a compiler change. Anything the
+compiler can do, Briev code can build.
+
 ### 3.5 Electronics Briev
 
 Electronics Briev (`.ebv`) applies the Briev philosophy — topology, contracts,
