@@ -240,11 +240,6 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
     // result to state — citing the stale block would make the header
     // phis name a block that is not their predecessor.
     self.fun.cur_block = None;
-    // 2026-07-14: Initialize thread pool for async programs
-    if self.has_async_txns && !self.is_lightweight_async {
-        writeln!(out, "  call void @__thread_pool_init__(i32 {}, ptr @thread_pool_fns)",
-            self.async_txn_names.len()).ok();
-    }
     self.emit_exit_check(out);
     writeln!(out, "  %state_save = alloca %State, align 8").ok();
     writeln!(out, "  br label %.loop").ok();
@@ -279,7 +274,7 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
         // handled by the previous branch and run a proper loop.
         writeln!(out, "  br label %.end").ok();
     } else {
-        writeln!(out, "  call void @__wait_for_trigger__()").ok();
+        writeln!(out, "  call i64 @__wait_for_trigger__(ptr %state)").ok();
         writeln!(out, "  br label %.loop").ok();
     }
     writeln!(out, ".end:").ok();

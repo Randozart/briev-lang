@@ -653,13 +653,10 @@ impl LlvmBackend {
         writeln!(out, "declare i64 @llvm.abs.i64(i64, i1) #1").ok();
         writeln!(out, "declare i64 @llvm.bitreverse.i64(i64) #1").ok();
         // Runtime support functions
-        writeln!(out, "declare void @__barrier_release__()").ok();
-        writeln!(out, "declare void @__barrier_wait__()").ok();
         writeln!(out, "declare void @__thread_pool_init__(i32, ptr)").ok();
         // 2026-07-01: Stores the current state snapshot pointer for worker threads.
         // Called by main before __barrier_release__ so async body functions receive
         // the correct state argument instead of a garbage pointer.
-        writeln!(out, "declare void @__set_async_state__(ptr)").ok();
         writeln!(out, "declare i64 @time(ptr) nounwind").ok();
         // 2026-07-28: atol and getenv used by GetEnvInt# intrinsic.
         writeln!(out, "declare i64 @atol(ptr) nounwind").ok();

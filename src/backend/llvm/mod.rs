@@ -3574,7 +3574,6 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
 
 
         // 2026-07-15: Async dispatch runtime functions
-        writeln!(out, "declare void @__wait_for_trigger__() #1").ok();
         // 2026-07-15: Removed conflicting POSIX declares (getuid, sched_yield,
         // nanosleep, exit, etc.) — replaced by Briev defn wrappers using SysCall#.
 

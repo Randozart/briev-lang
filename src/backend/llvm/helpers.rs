@@ -492,34 +492,14 @@ impl LlvmBackend {
     /// Emit LLVM thread pool metadata for async transactions.
     /// Generates a constant array of function pointers consumed by
     /// `briev_thread_pool_init` at startup.
-    pub(crate) fn emit_thread_pool_metadata(&self, out: &mut String) {
+    /// 2026-09-10 (Family H): the pthread pool is GONE — the async phase
+    /// emits direct sequential body calls (deterministic order), so the
+    /// @llvm.thread_pool / @thread_pool_fns globals are dead. Kept as a
+    /// no-op to preserve the call-site shape.
+    pub(crate) fn emit_thread_pool_metadata(&self, _out: &mut String) {
         if !self.has_async_txns || self.is_lightweight_async {
             return;
         }
-        let count = self.async_txn_names.len();
-        let fn_list: Vec<String> = self
-            .async_txn_names
-            .iter()
-            .map(|n| format!("i8* bitcast (void (ptr)* @async_body_{} to ptr)", n))
-            .collect();
-        writeln!(
-            out,
-            "@llvm.thread_pool = constant [{} x ptr] [{}]",
-            count,
-            fn_list.join(", ")
-        )
-        .ok();
-        writeln!(
-            out,
-            "@thread_pool_fns = private constant [{} x void (ptr)*] [{}]",
-            count,
-            self.async_txn_names
-                .iter()
-                .map(|n| format!("void (ptr)* @async_body_{}", n))
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
-        .ok();
     }
 
     /// Emit the async phase calls in main: set state for workers, release
@@ -532,15 +512,21 @@ impl LlvmBackend {
         if !self.has_async_txns || self.is_lightweight_async {
             return;
         }
-        writeln!(out, "  call void @__set_async_state__(ptr {})", state_var).ok();
-        writeln!(out, "  call void @__barrier_release__()").ok();
+        // 2026-09-10 (Family H): the pthread pool is replaced by DIRECT
+        // sequential body calls — deterministic order, single-threaded, no
+        // libc. The bodies ran to completion per tick under the pool too
+        // (no cross-tick worker state), so the tick contract is unchanged;
+        // only the racy stdout interleaving becomes deterministic. Multicore
+        // parallelism is the documented clone+futex follow-on.
+        for name in &self.async_txn_names {
+            writeln!(out, "  call void @async_body_{}(ptr noalias nocapture {})", name, state_var).ok();
+        }
         writeln!(
             out,
             "  call void @reactor_tick(ptr noalias nocapture {})",
             state_var
         )
         .ok();
-        writeln!(out, "  call void @__barrier_wait__()").ok();
     }
 
     /// Detect pairs of reactive transactions that can be fused.

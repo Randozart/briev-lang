@@ -982,3 +982,11 @@ out defn __briev_chdir(p: Int) [p >= 0][term >= -1 && term <= 0] -> Int {
 out defn __briev_free(p: Int) [p >= 0][term >= 0] -> Int {
     term 0;
 };
+
+// __wait_for_trigger__ — the idle-tick yield for unbounded async loops
+// (was pause()). sched_yield(24) hands the CPU back; a proper wake-trigger
+// wait (nanosleep/futex) is the wake-trigger follow-up.
+out defn __wait_for_trigger__() [true][term >= 0] -> Int {
+    SysCall#(24, 0, 0, 0, 0, 0, 0);
+    term 0;
+};
