@@ -3866,26 +3866,23 @@ fn test_async_body_functions_emitted() {
         "Async body function for inc_b should be emitted");
 }
 
+// 2026-09-10 (Family H): the pthread pool is replaced by direct
+// sequential async-body calls — these tests assert the COOPERATIVE
+// contract (bodies called from main, no pool machinery).
 #[test]
-fn test_thread_pool_metadata_emitted() {
+fn test_async_bodies_called_in_main() {
     let program = make_async_pair_program();
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(output.contains("@llvm.thread_pool"),
-        "Thread pool metadata should be emitted for async txns");
-    assert!(output.contains("@thread_pool_fns"),
-        "Thread pool function pointer array should be emitted");
-}
-
-#[test]
-fn test_async_barrier_calls_in_main() {
-    let program = make_async_pair_program();
-    let output = LlvmBackend::new().generate(&program, None);
-    assert!(output.contains("call void @__thread_pool_init__"),
-        "Main should call thread_pool_init");
-    assert!(output.contains("call void @__barrier_release__"),
-        "Main should call barrier_release");
-    assert!(output.contains("call void @__barrier_wait__"),
-        "Main should call barrier_wait");
+    assert!(output.contains("call void @async_body_inc_a(ptr noalias nocapture %state)"),
+        "Main should call the inc_a body directly");
+    assert!(output.contains("call void @async_body_inc_b(ptr noalias nocapture %state)"),
+        "Main should call the inc_b body directly");
+    assert!(!output.contains("@__thread_pool_init__"),
+        "The pthread pool is deleted — no init call");
+    assert!(!output.contains("@__barrier_release__"),
+        "The barriers are deleted");
+    assert!(!output.contains("@__barrier_wait__"),
+        "The barriers are deleted");
 }
 
 #[test]
