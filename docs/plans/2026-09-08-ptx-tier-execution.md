@@ -254,3 +254,31 @@ vs synchronous-fill baseline 9.55/10.44/~10.5 — **+66–74%**. SPIR-V tier
 register-prefetch fill (fill loads issue at loop top, smem stores after
 the barrier) and an A-panel L2 sweep (launch order so consecutive CTAs
 share A). 2106 lib tests green.
+
+## Evening session: two VERDICT-REJECTED experiments + DVFS caveat (2026-09-10)
+
+1. **N-major CTA rasterization — REJECTED.** Swapping the CTA decode so
+   consecutive CTAs share the B panel (2MB, L2-hypothesized) measured
+   16.6/16.2 vs m-major 17.3/18.3 @4096³/8192³. The concurrent 56 CTAs
+   span TWO B panels (4MB > 3MB L2) and A re-reads (16×) thrash — the
+   traffic model ignored that both panels cannot simultaneously fit.
+   Reverted.
+2. **Loop-invariant hoist of the compute address math — REJECTED.**
+   Halving the per-iteration instruction count (~200 → ~90) DROPPED
+   8192³ 18.3 → 16.4: the redundant uniform address math was filling
+   issue slots that now stall on ldmatrix/mma dependency chains. ptxas
+   was already scheduling correctly; instruction count was not the wall.
+   Reverted; the comment in `tensor_gemm_ptx_smem_mw` records it.
+
+3. **DVFS caveat:** sustained-load windows read 5-10% below fresh-boost
+   windows on the same binary (16.6 vs 18.3 @8192³, clocks 1612MHz
+   unlocked, root lost 09-02). Cross-window TFLOP/s comparisons are ±10%.
+   Same-window interleaved A/Bs remain valid (all verdicts above are
+   same-window).
+
+Compute-ceiling measurement: with all fills stripped the kernel runs
+6.06ms (22.7 TFLOP/s) vs 8.2-8.4ms full — the fill+DRAM side costs ~28%
+on top of the ldmatrix/mma/barrier path, i.e. the 4-stage pipeline hides
+most but not all of the fill. Remaining gap to SPIR-V (~30) and ggml
+(42): fill-side efficiency (D2-style register prefetch is the named
+next experiment) and, beyond that, the f32→f16 accumulation contract.

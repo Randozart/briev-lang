@@ -1100,9 +1100,12 @@ pub fn tensor_gemm_ptx_smem_mw(
     // === Compute on CURRENT buffer (overlaps with async fill above) ===
     // Register-trimmed scheduling (2026-09-10): A fragments load per-mh
     // (4 live, was 8) and each B fragment loads immediately before its mma
-    // (2 live, was 16). 136 -> ~118 regs natural, which is what lets
-    // select_mw_nw fund 512-thread CTAs. Slice base lives in %rd7 so the
-    // per-g B base (in %rd4) cannot clobber it.
+    // (2 live, was 16). 136 -> 128 regs natural, which is what lets
+    // select_mw_nw fund 512-thread CTAs.
+    // (An evening-2026-09-10 experiment hoisted the loop-invariant B base
+    // and lane terms — instruction count halved, perf DROPPED 11%: the
+    // redundant uniform math was soaking up issue slots that now stall on
+    // ldmatrix/mma dependencies. Reverted; measured before removed.)
     out.push_str("    mov.u64 %rd7, %rd8;\n");
     out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", asmem_buf));
     out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
