@@ -240,6 +240,14 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
     // result to state — citing the stale block would make the header
     // phis name a block that is not their predecessor.
     self.fun.cur_block = None;
+    // 2026-09-10 (async convergence fix): the exit check is the LOOP
+    // HEADER. The old shape ran the check ONCE at entry, then .loop's
+    // latch branched back to .loop — the convergence predicate was never
+    // re-evaluated, so bounded async programs spun forever after
+    // converging (prints landed, exit never did). Now: entry ->
+    // .exit_check -> tick -> .exit_check -> ...
+    writeln!(out, "  br label %.exit_check").ok();
+    writeln!(out, ".exit_check:").ok();
     self.emit_exit_check(out);
     writeln!(out, "  %state_save = alloca %State, align 8").ok();
     writeln!(out, "  br label %.loop").ok();
@@ -263,9 +271,9 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
     let is_one_shot = !has_wake_triggers && !self.has_async_txns;
     if has_wake_triggers {
         writeln!(out, "  %any_active = call i1 @llvm.wake.any()").ok();
-        writeln!(out, "  br i1 %any_active, label %.loop, label %.end").ok();
+        writeln!(out, "  br i1 %any_active, label %.exit_check, label %.end").ok();
     } else if has_exit_cond {
-        writeln!(out, "  br label %.loop").ok();
+        writeln!(out, "  br label %.exit_check").ok();
     } else if is_one_shot {
         // 2026-07-18: One-shot program — no exit condition analysis available,
         // no wake triggers. After reactor_tick, any immediately-fireable txn
@@ -275,7 +283,7 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
         writeln!(out, "  br label %.end").ok();
     } else {
         writeln!(out, "  call i64 @__wait_for_trigger__(ptr %state)").ok();
-        writeln!(out, "  br label %.loop").ok();
+        writeln!(out, "  br label %.exit_check").ok();
     }
     writeln!(out, ".end:").ok();
     writeln!(out, "  ret i32 0").ok();
