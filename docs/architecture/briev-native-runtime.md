@@ -94,3 +94,56 @@ piece), process/spawn + `ShellCmd` (popen → fork/pipe/execve), `__briev_setenv
    drafted); the language has no arch reflection yet.
 5. **Family H (async)** — the pthread pool → cooperative run-queue is the
    remaining large design piece before the delete step.
+
+## Family H design: async without pthreads (survey complete, design)
+
+Survey findings (2026-09-10):
+
+1. **The pool is live.** `async node` programs emit
+   `__thread_pool_init__(N, @thread_pool_fns)` — two workers for
+   async_counters. The `is_lightweight_async` path (per-txn const-bounded
+   preconditions) skips the pool, but general async does not.
+2. **The task/event machine is ALREADY cooperative** — segmented
+   continuations with a round-robin `briev_await` scheduler, single-threaded
+   by construction. Only the worker pool is parallel.
+3. **The pool's protocol is embarrassingly sequential per tick:**
+   `__set_async_state__(s)` → `__barrier_release__()` (workers run their
+   whole body once) → `reactor_tick(s)` → `__barrier_wait__()`. Workers run
+   their body TO COMPLETION each tick — there is no cross-tick worker
+   state.
+
+### The design: cooperative inline emission
+
+Replace the three phase calls with DIRECT sequential body calls emitted by
+the backend (`emit_async_phase`, loop_engine pool-init site):
+
+```
+call void @async_body_0(ptr %state)   ; was: __barrier_release__ (workers)
+call void @async_body_1(ptr %state)
+call void @reactor_tick(ptr %state)   ; unchanged
+; __barrier_wait__ deleted (no one to wait for)
+```
+
+- `@thread_pool_fns` and `__thread_pool_init__` disappear (the backend
+  knows the body names — it built the table).
+- Output parity: the pthread version's stdout interleaving is RACY
+  (worker prints race); the cooperative form is deterministic per tick.
+  async_counters-style parity gates must compare per-counter value
+  sequences, not raw line order (note for the harness).
+- Throughput: true multicore parallelism on `async` bodies is LOST —
+  documented (plan §6.4); the follow-on substrate is
+  `SysCall#(SYS_clone)` + futex with the same release/wait protocol.
+- `__wait_for_trigger__`/`__rt_wait`/`__rt_poll` (pause() stubs) become
+  no-ops/deleted with the family.
+- The task/event machine (`briev_task_spawn/await/event_*`) is
+  single-threaded already — it migrates to Briev defns over a flattened
+  Int-array task table with `CallPtr#` segment dispatch (mechanical once
+  attempted; the segment tables are fn-ptr arrays the backend already
+  emits).
+
+### Sequencing
+
+The cooperative rewrite unblocks the `briev_rt.c` delete step for the
+async half (pool + barriers + wait stubs ≈ 130 lines). The task/event
+machine migration (~170 lines) can follow independently — it is
+frgn-called from async `.bv` programs, not backend-emitted.
