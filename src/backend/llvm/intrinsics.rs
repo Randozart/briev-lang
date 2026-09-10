@@ -269,7 +269,8 @@ pub fn emit_intrinsic_call(
             // `Count#` on a #String operand = its CHAR count (the element
             // count of Iterable<Char>), not a declared `op Count`.
             let p = backend.string_ptr(out, indent, &arg_regs[0]);
-            writeln!(out, "{}{} = call i64 @briev_char_len(ptr {})", indent, v, p).ok();
+            writeln!(out, "{}{} = call i64 @briev_char_len({}ptr {})", indent, v,
+            if backend.ctx.defn_params.contains_key("briev_char_len") { "ptr %state, " } else { "" }, p).ok();
             return BTypedRegister { name: v.to_string(), ty: Type::int() };
         }
         if !args.is_empty() {
@@ -421,7 +422,8 @@ fn emit_char_count(
     }
     let reg = backend.emit_expr(out, &args[0], indent);
     let p = backend.string_ptr(out, indent, &reg);
-    writeln!(out, "{}{} = call i64 @briev_char_len(ptr {})", indent, v, p).ok();
+    writeln!(out, "{}{} = call i64 @briev_char_len({}ptr {})", indent, v,
+            if backend.ctx.defn_params.contains_key("briev_char_len") { "ptr %state, " } else { "" }, p).ok();
     let narrowed = narrow_int_result(backend, out, v, indent);
     BTypedRegister { name: narrowed, ty: Type::int() }
 }

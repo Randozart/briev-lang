@@ -1894,7 +1894,20 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 // item is the codepoint, truncated to Char's native i32.
                 IterKind::String { ptr, .. } => {
                     let cp = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = call i64 @briev_str_next_char(ptr {}, ptr {})", indent, cp, ptr, slot).ok();
+                    // 2026-09-09 (Family C): a pure-Briev defn declares the
+                    // slot as Int (i64) — ptrtoint the alloca so the static
+                    // arg types match the definition (a ptr/i64 call-vs-define
+                    // mismatch miscompiles under -O3 LTO). The C lane took
+                    // int64_t* — the BITS are the same address either way.
+                    let slot_i64 = backend.fun.gen_reg();
+                    if backend.ctx.defn_params.contains_key("briev_str_next_char") {
+                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, slot_i64, slot).ok();
+                        writeln!(out, "{}{} = call i64 @briev_str_next_char(ptr %state, ptr {}, i64 {})",
+                            indent, cp, ptr, slot_i64).ok();
+                    } else {
+                        writeln!(out, "{}{} = call i64 @briev_str_next_char(ptr {}, ptr {})",
+                            indent, cp, ptr, slot).ok();
+                    }
                     let ch = backend.fun.gen_reg();
                     writeln!(out, "{}{} = trunc i64 {} to i32", indent, ch, cp).ok();
                     ch

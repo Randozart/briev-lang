@@ -3390,14 +3390,17 @@ impl LlvmBackend {
          // (lib/compiler/reader.bv does) — a duplicate `declare` is an LLVM
          // redefinition error (surfaced in the main<->layout-keywords merge,
          // c_driver_needs_state).
-         if !self.ctx.frgn_map.contains_key("briev_str_substr") {
+         if !self.ctx.frgn_map.contains_key("briev_str_substr")
+             && !defined.contains("briev_str_substr") {
              writeln!(out, "declare ptr @briev_str_substr(ptr, i64, i64) #1").ok();
          }
         // 2026-08-01 (B1): content equality for String operands. The compiler
         // emits a call to briev_str_eq(ptr, ptr) instead of `icmp eq ptr`
         // (address comparison) when both operands are #String — see
         // emit_binary_op's Eq/Ne arms. Takes two ptrs to [len][bytes].
-        writeln!(out, "declare i64 @briev_str_eq(ptr, ptr) #1").ok();
+        if !defined.contains("briev_str_eq") {
+            writeln!(out, "declare i64 @briev_str_eq(ptr, ptr) #1").ok();
+        }
         // 2026-08-01 (B1): content bitwise ops for String operands — return a
         // new heap [len][bytes] buffer with the per-byte op applied (band/bor/
         // bxor/bnot). Same ABI as briev_str_eq: ptr to [len][bytes].
@@ -3427,12 +3430,16 @@ impl LlvmBackend {
         }
         // 2026-08-01 (B3): UTF8 character count for the #String `Size` prop
         // default (the O(1) byte-length header read is the `Bytes` prop).
-        writeln!(out, "declare i64 @briev_char_len(ptr) #1").ok();
+        if !defined.contains("briev_char_len") {
+            writeln!(out, "declare i64 @briev_char_len(ptr) #1").ok();
+        }
         // 2026-08-14 (String unification): decode the UTF8 codepoint at a byte
         // offset of a Briev String and advance the offset — the per-iteration
         // lane of `foreach c in str` (a #String operand iterates CHARs, SPEC
         // §17.2). Takes the [len][bytes] handle and the byte-offset slot.
-        writeln!(out, "declare i64 @briev_str_next_char(ptr, ptr) #1").ok();
+        if !defined.contains("briev_str_next_char") {
+            writeln!(out, "declare i64 @briev_str_next_char(ptr, ptr) #1").ok();
+        }
         // 2026-08-07 (Phase 7): boolean mask select over a Data buffer —
         // `data[mask]` returns a new [len][bytes] buffer (SPEC §16.5).
         writeln!(out, "declare ptr @briev_mask_select(ptr, ptr, i64) #1").ok();
@@ -4539,6 +4546,19 @@ impl LlvmBackend {
         // always converges (all txns converge).
         writeln!(out, "attributes #12 = {{").ok();
         writeln!(out, "    mustprogress nofree norecurse nosync nounwind willreturn memory(argmem: readwrite)").ok();
+        writeln!(out, "}}").ok();
+        // 2026-09-09 (Family C, briev-native runtime): #13 = full
+        // memory(readwrite) for definitions whose body derefs RAW ADDRESSES
+        // (Load#/Store#/Copy#/Fill#/Volatile*/SysCall# over inttoptr'd Int
+        // args — the cast_lanes byte primitives and the print family).
+        // memory(argmem) claims accesses go "through pointer arguments"; an
+        // inttoptr of an i64 arg is NOT based on a pointer, so LLVM was free
+        // to conclude these defns never touch the caller's allocas — and
+        // under -O3 LTO it hoisted the foreach slot load out of the loop and
+        // miscompiled every string iteration. High-numbered per the #9 LTO
+        // convention.
+        writeln!(out, "attributes #13 = {{").ok();
+        writeln!(out, "    mustprogress nofree nosync nounwind willreturn memory(readwrite)").ok();
         writeln!(out, "}}").ok();
         // Range metadata
         if !range_meta.is_empty() {

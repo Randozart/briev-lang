@@ -213,7 +213,189 @@ defn bytes_eq_shift(s: String, i: Int, ref: String, j: Int, n: Int)
     term bytes_eq_shift(s, i + 1, ref, j + 1, n - 1);
 };
 
-// ── Print / exit runtime (Family B) ──────────────────────────────────────
+// ── String ops (Family C) ────────────────────────────────────────────────
+// The backend emits these for String ==, s[a:b], foreach-char, .^Length and
+// the Data->String door. Byte-level primitives: the header is the BYTE
+// length (Load#(addr, 8)); .^Length is the CODEPOINT count and must not
+// bound byte indexing.
+
+// str_len_bytes — the O(1) header read (Bytes prop, not CharCount#).
+defn str_len_bytes(s: String) [true][term >= 0] -> Int {
+    term Load#((s as Data) as Int, 8);
+};
+
+// byte_raw — the i-th payload byte, unbounded (callers clamp).
+defn byte_raw(s: String, i: Int) [true][term >= 0] -> Int {
+    term Load#((s as Data) as Int + 8 + i, 1);
+};
+
+// bytes_equal_at — do n payload bytes of a and b match (from offset 0)?
+defn bytes_equal_at(a: String, b: String, n: Int) [n >= 0][term == true || term == false] -> Bool {
+    when n == 0 {
+        term true;
+    };
+    when byte_raw(a, n - 1) != byte_raw(b, n - 1) {
+        term false;
+    };
+    term bytes_equal_at(a, b, n - 1);
+};
+
+// briev_str_eq — content equality: same byte length + same bytes.
+out defn briev_str_eq(a: String, b: String) [true][term == 0 || term != 0] -> Int {
+    let la: Int = str_len_bytes(a);
+    when la != str_len_bytes(b) {
+        term 0;
+    };
+    when bytes_equal_at(a, b, la) {
+        term 1;
+    };
+    term 0;
+};
+
+// briev_str_substr — s[a:b] with C clamping: lo=max(a,0), hi=min(b,len),
+// hi=max(hi,lo). Builds [len][bytes][NUL] via Copy# (memcpy, O(1) stack).
+out defn briev_str_substr(s: String, a: Int, b: Int) [true][term .^Length >= 0] -> String {
+    let addr: Int = (s as Data) as Int;
+    let len: Int = Load#(addr, 8);
+    let lo: Int = when_raw(a, len);
+    let hi: Int = clamp_hi(b, len, lo);
+    let n: Int = hi - lo;
+    let buf: Int = Alloc#(n + 9) as Int;
+    Store#(buf, n, 8);
+    when n > 0 {
+        Copy#(buf + 8, addr + 8 + lo, n);
+    };
+    Store#(buf + 8 + n, 0, 1);
+    term (buf as Data) as String;
+};
+
+// when_raw — max(a, 0) clamped to len.
+defn when_raw(a: Int, len: Int) [len >= 0][term >= 0] -> Int {
+    when a < 0 {
+        term 0;
+    };
+    when a > len {
+        term len;
+    };
+    term a;
+};
+
+// clamp_hi — min(b, len), then max(hi, lo).
+defn clamp_hi(b: Int, len: Int, lo: Int) [len >= 0 && lo >= 0][term >= 0] -> Int {
+    let hi: Int = when_hi(b, len);
+    when hi < lo {
+        term lo;
+    };
+    term hi;
+};
+
+defn when_hi(b: Int, len: Int) [len >= 0][term >= 0] -> Int {
+    when b > len {
+        term len;
+    };
+    when b < 0 {
+        term 0;
+    };
+    term b;
+};
+
+// briev_str_next_char — decode the UTF8 codepoint at byte offset *off_ptr,
+// advance it. Invalid lead bytes fall back to a raw byte (C mirror).
+out defn briev_str_next_char(s: String, off_ptr: Int) [true][term >= 0] -> Int {
+    let addr: Int = (s as Data) as Int;
+    let len: Int = Load#(addr, 8);
+    let i: Int = Load#(off_ptr, 8);
+    when i < 0 || i >= len {
+        term 0;
+    };
+    let b0: Int = byte_raw(s, i);
+    when b0 < 0x80 {
+        Store#(off_ptr, i + 1, 8);
+        term b0;
+    };
+    when (b0 & 0xE0) == 0xC0 {
+        let cp: Int = decode_cont(s, i, len, 2, b0 & 0x1F);
+        Store#(off_ptr, i + decode_width(s, i, len, 2), 8);
+        term cp;
+    };
+    when (b0 & 0xF0) == 0xE0 {
+        let cp: Int = decode_cont(s, i, len, 3, b0 & 0x0F);
+        Store#(off_ptr, i + decode_width(s, i, len, 3), 8);
+        term cp;
+    };
+    when (b0 & 0xF8) == 0xF0 {
+        let cp: Int = decode_cont(s, i, len, 4, b0 & 0x07);
+        Store#(off_ptr, i + decode_width(s, i, len, 4), 8);
+        term cp;
+    };
+    Store#(off_ptr, i + 1, 8);
+    term b0;
+};
+
+// decode_cont — accumulate `width-1` continuation bytes (stopping at the
+// payload end or a non-continuation byte).
+defn decode_cont(s: String, i: Int, len: Int, width: Int, cp: Int)
+    [i >= 0 && len >= 0 && width >= 2 && width <= 4 && cp >= 0]
+    [term >= 0]
+    -> Int
+{
+    when width <= 1 {
+        term cp;
+    };
+    when i + 1 >= len {
+        term cp;
+    };
+    let b: Int = byte_raw(s, i + 1);
+    when (b & 0xC0) != 0x80 {
+        term cp;
+    };
+    term decode_cont(s, i + 1, len, width - 1, (cp << 6) | (b & 0x3F));
+};
+
+// decode_width — how many bytes the decoder actually consumed (mirrors the
+// C loop's j: continuation bytes honored, end/invalid stops early).
+defn decode_width(s: String, i: Int, len: Int, width: Int)
+    [i >= 0 && len >= 0 && width >= 1 && width <= 4]
+    [term >= 1 && term <= 4]
+    -> Int
+{
+    when width <= 1 {
+        term 1;
+    };
+    when i + 1 >= len {
+        term 1;
+    };
+    let b: Int = byte_raw(s, i + 1);
+    when (b & 0xC0) != 0x80 {
+        term 1;
+    };
+    term 1 + decode_width(s, i + 1, len, width - 1);
+};
+
+// briev_char_len — codepoint count: bytes whose top bits are not 0b10 are
+// lead bytes. Recursion is tail-shaped (LLVM -O3 converts it to a loop).
+out defn briev_char_len(s: String) [true][term >= 0] -> Int {
+    term count_lead(s, 0, str_len_bytes(s));
+};
+
+defn count_lead(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= 0] -> Int {
+    when i >= len {
+        term 0;
+    };
+    let b: Int = byte_raw(s, i);
+    when (b & 0xC0) == 0x80 {
+        term count_lead(s, i + 1, len);
+    };
+    term 1 + count_lead(s, i + 1, len);
+};
+
+// briev_bits_to_str — STAYS C-BACKED (briev_rt.c). The Data->String door
+// (`x as Data as String`) emits `call @briev_bits_to_str`, so a Briev defn
+// would recurse into itself through its own return door. It migrates when
+// the door inlines the copy (allocator step, Family E+).
+//
+// briev_str_to_c / briev_cstr_to_briev / briev_cstring_concat — GLUE C-ABI
+// doors, pulled only by lib/glue users; follow-up increment.
 // The print plugin and #StdErr lower to `call i64 @__print_*(...)`; these
 // defns provide the symbols with byte-identical behavior to the C originals
 // (briev_rt.c 572-640). Output goes through write(2) — SYS_write=1 on

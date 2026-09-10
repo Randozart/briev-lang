@@ -116,60 +116,6 @@ char* briev_cstr_to_briev(const char* c_str) {
     return buf;
 }
 
-// 2026-08-04 (compiler-in-Briev): BYTE-wise substring of a Briev String.
-// Returns a fresh [len][bytes][\0] String with the bytes [a, b). The pass
-// scanner runs over the ASCII projection, so byte == char here; the UTF-8
-// char boundary is the caller's contract. Bounds clamp to [0, len].
-// This is the runtime half of the dynamic String slice, which the LLVM
-// backend currently emits as the whole array (see BUGS.md).
-char* briev_str_substr(const char* s, int64_t a, int64_t b) {
-    if (!s) return 0;
-    int64_t len = *(const int64_t*)s;
-    if (len < 0 || len > 1024 * 1024 * 1024) return 0;
-    int64_t lo = a < 0 ? 0 : a;
-    int64_t hi = b > len ? len : b;
-    if (hi < lo) hi = lo;
-    int64_t out_len = hi - lo;
-    char* buf = (char*)malloc((size_t)(out_len + 9));
-    if (!buf) return 0;
-    *(int64_t*)buf = out_len;
-    if (out_len > 0) memcpy(buf + 8, s + 8 + lo, (size_t)out_len);
-    buf[8 + out_len] = '\0';
-    return buf;
-}
-
-// 2026-08-14 (String unification): decode the UTF8 codepoint at byte offset
-// `*off` of a Briev String ([len][bytes]), advance `*off` past it, and return
-// the codepoint as i64. This is the per-iteration lane for `foreach c in str`
-// (a `#String` operand iterates CHARs, not bytes — SPEC §17.2). The loop bound
-// is the stored byte length (`.^Length` header); each iteration advances by
-// the codepoint's 1-4 byte width, so the loop naturally stops at the last char.
-// Invalid sequences fall back to a raw byte (matching str_first_char).
-int64_t briev_str_next_char(const char* s, int64_t* off) {
-    if (!s || !off) return 0;
-    int64_t len = *(const int64_t*)s;
-    if (len < 0) return 0;
-    int64_t i = *off;
-    if (i < 0 || i >= len) return 0;
-    const unsigned char* p = (const unsigned char*)(s + 8);
-    unsigned char b0 = p[i];
-    if (b0 < 0x80) { *off = i + 1; return (int64_t)b0; }
-    int64_t cp = 0;
-    int64_t width = 0;
-    if ((b0 & 0xE0) == 0xC0)      { cp = b0 & 0x1F; width = 2; }
-    else if ((b0 & 0xF0) == 0xE0) { cp = b0 & 0x0F; width = 3; }
-    else if ((b0 & 0xF8) == 0xF0) { cp = b0 & 0x07; width = 4; }
-    else                          { *off = i + 1; return (int64_t)b0; }
-    int64_t j;
-    for (j = 1; j < width && i + j < len; j++) {
-        unsigned char b = p[i + j];
-        if ((b & 0xC0) != 0x80) break;
-        cp = (cp << 6) | (b & 0x3F);
-    }
-    *off = i + j;
-    return cp;
-}
-
 // String → Float — returns the 32-bit float ABI.
 float str_to_float(const char* s) {
     if (!s) return 0.0f;
@@ -205,42 +151,6 @@ char* briev_bits_to_str(const char* bits) {
     if (len > 0) memcpy(buf + 8, bits + 8, (size_t)len);
     buf[8 + len] = '\0';
     return buf;
-}
-
-// 2026-08-01 (B3): UTF8 character count of a Briev String value (String ABI =
-// ptr to [len: i64][bytes]). Bytes are valid UTF8, so the count is the number
-// of codepoints (skip continuation bytes 0b10xxxxxx). This is the `#String`
-// `Size` prop default (the O(1) byte-length header read is the `Bytes` prop).
-// Sub-protocols override the lane via their own prop bindings.
-int64_t briev_char_len(const char* str) {
-    if (!str) return 0;
-    int64_t len = *(const int64_t*)str;
-    if (len < 0) return 0;
-    const unsigned char* p = (const unsigned char*)(str + 8);
-    int64_t chars = 0;
-    for (int64_t i = 0; i < len; i++) {
-        // A UTF8 continuation byte is 0b10xxxxxx (0x80–0xBF). Count only
-        // lead bytes (including ASCII 0x00–0x7F).
-        if ((p[i] & 0xC0) != 0x80) chars++;
-    }
-    return chars;
-}
-
-// 2026-08-01 (B1): Content equality for Briev String values (String ABI = ptr
-// to a length-prefixed [len: i64][bytes] buffer). Compares lengths first, then
-// payload bytes. Returns 1 if equal, 0 otherwise. This is the runtime half of
-// B1's content Eq/Ne — the compiler emits a call to this instead of comparing
-// the two addresses. Both arguments must be valid [len][bytes] buffers (as all
-// Briev String values are under the bits model); handles are converted to
-// content by the caller when needed.
-int64_t briev_str_eq(const char* a, const char* b) {
-    if (a == b) return 1;
-    if (!a || !b) return 0;
-    int64_t la = *(const int64_t*)a;
-    int64_t lb = *(const int64_t*)b;
-    if (la != lb) return 0;
-    if (la <= 0) return 1;  // both empty
-    return memcmp(a + 8, b + 8, (size_t)la) == 0;
 }
 
 // 2026-08-01 (B1): Content bitwise ops for Briev String values (String ABI =

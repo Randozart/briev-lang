@@ -2795,7 +2795,19 @@ impl LlvmBackend {
         let section_attr = defn_section_name(d)
             .map(|s| format!(" section \"{}\"", s))
             .unwrap_or_default();
-        writeln!(out, ") local_unnamed_addr #8{} {{", section_attr).ok();
+        // 2026-09-09 (Family C, briev-native runtime): #8 (argmem) is a LIE
+        // for defns that deref raw Int addresses — Load#/Store# over
+        // inttoptr'd args are not "through pointer arguments", and LLVM's
+        // optimizer exploits the lie under -O3 LTO (hoisted the foreach slot
+        // load, miscompiled every string iteration). Defns with direct
+        // raw-memory intrinsics emit with #13 (full memory(readwrite));
+        // pure-Briev defns keep #8's alias-analysis benefits.
+        let attr_idx = if Self::definition_touches_raw_memory(&d.body) {
+            "#13"
+        } else {
+            "#8"
+        };
+        writeln!(out, ") local_unnamed_addr {}{} {{", attr_idx, section_attr).ok();
         writeln!(out, "  entry:").ok();
         self.fun.ssa_old_int_regs.clear();
         self.fun.ssa_old_float_regs.clear();
@@ -2950,7 +2962,65 @@ impl LlvmBackend {
     }
 
 }
+
     // 2026-06-13: Added ptr %state param — definitions can access global state.
+
+/// 2026-09-09 (Family C, briev-native runtime): does this defn body DIRECTLY
+/// call a raw-memory intrinsic? Load#/Store#/Alloc#/Free#/Copy#/Fill#/
+/// VolatileLoad#/VolatileStore#/SysCall# deref (or expose) inttoptr'd Int
+/// addresses — such defns must emit with #13 (full memory(readwrite)) since
+/// memory(argmem)'s "through pointer arguments" contract does not hold for
+/// int-address accesses. Helpers called with their own attrs are NOT scanned
+/// (the callee's attribute governs its own accesses).
+pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
+    const RAW: &[&str] = &[
+        "Load#", "Store#", "Alloc#", "Free#", "Copy#", "Fill#",
+        "VolatileLoad#", "VolatileStore#", "SysCall#",
+    ];
+    fn expr_has(e: &Expr, found: &mut bool) {
+        if *found { return; }
+        match e {
+            Expr::Call(name, args, _) => {
+                if RAW.iter().any(|r| *r == name.as_str()) {
+                    *found = true;
+                    return;
+                }
+                for a in args { expr_has(a, found); }
+            }
+            Expr::BinaryOp(_, l, r) => { expr_has(l, found); expr_has(r, found); }
+            Expr::UnaryOp(_, i) => expr_has(i, found),
+            Expr::Index(o, i) => { expr_has(o, found); expr_has(i, found); }
+            Expr::Field(o, _) => expr_has(o, found),
+            Expr::Cast(i, _) => expr_has(i, found),
+            Expr::Tuple(xs) | Expr::List(xs) => {
+                for x in xs { expr_has(x, found); }
+            }
+            _ => {}
+        }
+    }
+    fn stmt_has(s: &Statement, found: &mut bool) {
+        if *found { return; }
+        match s {
+            Statement::Assign(l, r) => { expr_has(l, found); expr_has(r, found); }
+            Statement::Expression(e) => expr_has(e, found),
+            Statement::Let { expr: Some(e), .. } => expr_has(e, found),
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => expr_has(e, found),
+            Statement::Guarded(_, b) | Statement::Block(b) | Statement::SyncBlock(b) => {
+                for x in b { stmt_has(x, found); }
+            }
+            Statement::Mutex(b) => {
+                for x in b { stmt_has(x, found); }
+            }
+            _ => {}
+        }
+    }
+    let mut found = false;
+    for s in stmts {
+        stmt_has(s, &mut found);
+        if found { break; }
+    }
+    found
+}
     // Was missing the state pointer, causing invalid LLVM IR (SSA value out of scope).
 
     // 2026-07-04: Return the known !range bounds for a Briev type based on

@@ -1732,8 +1732,11 @@ impl LlvmBackend {
                     };
                     let _ = stride;
                     let sub = self.fun.gen_reg();
-                    writeln!(out, "{}{} = call ptr @briev_str_substr(ptr {}, i64 {}, i64 {})",
-                        indent, sub, sp, lo.name, hi.name).ok();
+                    // 2026-09-09 (Family C): state prefix when the symbol is
+                    // a pure-Briev defn (all defns carry %state).
+                    let st_sub = if self.ctx.defn_params.contains_key("briev_str_substr") { "ptr %state, " } else { "" };
+                    writeln!(out, "{}{} = call ptr @briev_str_substr({}ptr {}, i64 {}, i64 {})",
+                        indent, sub, st_sub, sp, lo.name, hi.name).ok();
                     return TypedRegister { name: sub, ty: crate::ast::Type::Custom("String".to_string()) };
                 }
                 // 2026-08-22 (spec-conformance plan Phase 6b): VECTOR slices
@@ -5625,7 +5628,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     let eq = self.fun.gen_reg();
                     let lp = self.string_ptr(out, indent, l);
                     let rp = self.string_ptr(out, indent, r);
-                    writeln!(out, "{}{} = call i64 @briev_str_eq(ptr {}, ptr {})", indent, eq, lp, rp).ok();
+                    writeln!(out, "{}{} = call i64 @briev_str_eq({}ptr {}, ptr {})", indent, eq,
+                        if self.ctx.defn_params.contains_key("briev_str_eq") { "ptr %state, " } else { "" }, lp, rp).ok();
                     let icmp = self.fun.gen_reg();
                     writeln!(out, "{}{} = icmp ne i64 {}, 0", indent, icmp, eq).ok();
                     writeln!(out, "{}{} = zext i1 {} to i8", indent, v, icmp).ok();
@@ -5663,7 +5667,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     let eq = self.fun.gen_reg();
                     let lp = self.string_ptr(out, indent, l);
                     let rp = self.string_ptr(out, indent, r);
-                    writeln!(out, "{}{} = call i64 @briev_str_eq(ptr {}, ptr {})", indent, eq, lp, rp).ok();
+                    writeln!(out, "{}{} = call i64 @briev_str_eq({}ptr {}, ptr {})", indent, eq,
+                        if self.ctx.defn_params.contains_key("briev_str_eq") { "ptr %state, " } else { "" }, lp, rp).ok();
                     let icmp = self.fun.gen_reg();
                     writeln!(out, "{}{} = icmp eq i64 {}, 0", indent, icmp, eq).ok();
                     writeln!(out, "{}{} = zext i1 {} to i8", indent, v, icmp).ok();

@@ -1,0 +1,47 @@
+// Parity corpus — Family C string-op gate (plan §6.2).
+// Pins briev_str_eq (String ==), briev_str_substr (s[a:b]), briev_char_len
+// (.^Length), briev_str_next_char (foreach char), briev_bits_to_str (the
+// Data->String door) byte-for-byte against the C implementations.
+let done: Bool = false;
+node go [done == false][done == true] {
+    when done == false {
+        // String == (briev_str_eq)
+        let e1: Bool = "abc" == "abc";
+        println!("{}", e1);
+        let e2: Bool = "abc" == "abd";
+        println!("{}", e2);
+        let e3: Bool = "" == "";
+        println!("{}", e3);
+        let e4: Bool = "abc" == "abcd";
+        println!("{}", e4);
+        let e5: Bool = "héllo" == "héllo";
+        println!("{}", e5);
+        // Substring (briev_str_substr)
+        let s: String = "hello world";
+        println!("{}", s[0:5]);
+        println!("{}", s[6:11]);
+        println!("{}", s[0:11]);
+        println!("{}", s[5:5]);
+        // Length (briev_char_len — codepoints, not bytes)
+        println!("{}", "hello" .^Length);
+        println!("{}", "héllo" .^Length);
+        println!("{}", "" .^Length);
+        // foreach char (briev_str_next_char) — sum codepoints
+        let sum: Int = 0;
+        foreach c in "hello" {
+            sum = sum + c as Int;
+        };
+        println!("{}", sum);
+        let usum: Int = 0;
+        foreach c in "héllo" {
+            usum = usum + c as Int;
+        };
+        println!("{}", usum);
+        // Data->String door (briev_bits_to_str) — round-trip copy
+        let copy: String = (s as Data) as String;
+        println!("{}", copy == s);
+        println!("{}", copy);
+        done = true;
+    };
+    term;
+};
