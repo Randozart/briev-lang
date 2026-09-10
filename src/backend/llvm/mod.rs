@@ -3566,6 +3566,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // capture (hosted) or the owned _start (freestanding); read by the
         // getenv adapters. Unconditional like its siblings.
         writeln!(out, "@__briev_environ = global ptr null").ok();
+        // 2026-09-10 (task machine migration): the linked-list HEAD BLOCKS
+        // ([head, tail, current-task] for tasks; [head, tail] for events) —
+        // bootstrapped lazily by the machine defns in cast_lanes.
+        writeln!(out, "@__briev_sched = global ptr null").ok();
+        writeln!(out, "@__briev_events = global ptr null").ok();
         // 2026-08-03: host cancellation flag — CancelRequested#() loads it,
         // __briev_set_cancel/__briev_clear_cancel (library shim) write it.
         writeln!(out, "@__briev_cancel_flag = global i32 0").ok();

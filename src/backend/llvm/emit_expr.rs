@@ -153,7 +153,9 @@ impl LlvmBackend {
                 let h = self.emit_expr(out, inner, indent);
                 let hi = self.adapt_to_i64(out, indent, &h);
                 let r = self.fun.gen_reg();
-                writeln!(out, "{indent}{r} = call i64 @briev_await(i64 {hi})").ok();
+                let sched_i = self.fun.gen_reg();
+                writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
+                writeln!(out, "{indent}{r} = call i64 @briev_await_impl(ptr %state, i64 {sched_i}, i64 {hi})").ok();
                 TypedRegister { name: r, ty: Type::int() }
             }
             Expr::Decimal(n) => {
@@ -3121,9 +3123,11 @@ impl LlvmBackend {
                 if is_wire {
                     if let Some(id_reg) = self.fun.let_bindings.get(wname).cloned() {
                         let r = self.fun.gen_reg();
-                        writeln!(out, "{indent}{r} = call i32 @briev_event_ready(i64 {id_reg})").ok();
+                        let events_i = self.fun.gen_reg();
+                        writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
+                        writeln!(out, "{indent}{r} = call i64 @briev_event_ready_impl(ptr %state, i64 {events_i}, i64 {id_reg})").ok();
                         let b = self.fun.gen_reg();
-                        writeln!(out, "{indent}{b} = trunc i32 {r} to i8").ok();
+                        writeln!(out, "{indent}{b} = trunc i64 {r} to i8").ok();
                         return TypedRegister { name: b, ty: Type::Custom("Bool".to_string()) };
                     }
                 }
@@ -4309,11 +4313,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     _ => {
                         // Wrap: fresh slot fired with the value now.
                         let id = self.fun.gen_reg();
-                        writeln!(out, "{indent}{id} = call i64 @briev_event_alloc()").ok();
+                        let events_i = self.fun.gen_reg();
+                        writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
+                        writeln!(out, "{indent}{id} = call i64 @briev_event_alloc_impl(ptr %state, i64 {events_i})").ok();
                         let vr = self.emit_expr(out, a, indent);
                         let payload = self.adapt_to_i64(out, indent, &vr);
                         writeln!(out,
-                            "{indent}call void @briev_event_fire(i64 {id}, i64 {payload})")
+                            "{indent}call i64 @briev_event_fire_impl(ptr %state, i64 {events_i}, i64 {id}, i64 {payload})")
                         .ok();
                         id
                     }
@@ -4337,8 +4343,10 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             .unwrap_or(1) as i32;
         let nargs = args.len() as i32;
         let h = self.fun.gen_reg();
+        let sched_i = self.fun.gen_reg();
+        writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
         writeln!(out,
-            "{indent}{h} = call i64 @briev_task_spawn(ptr {table}, i32 {nseg}, i32 {nargs}, ptr {argv})")
+            "{indent}{h} = call i64 @briev_task_spawn_impl(ptr %state, i64 {sched_i}, ptr {table}, i64 {nseg}, i64 {nargs}, ptr {argv})")
         .ok();
         self.fun.task_handle_regs.insert(h.clone());
         TypedRegister { name: h, ty: Type::int() }
@@ -6507,7 +6515,13 @@ impl crate::backend::llvm::LlvmBackend {
         let slot = self.fun.gen_reg();
         writeln!(out, "{indent}{slot} = alloca i64, align 8").ok();
         let r = self.fun.gen_reg();
-        writeln!(out, "{indent}{r} = call i32 @briev_event_read(i64 {id_reg}, ptr {slot})").ok();
+        let slot_i = self.fun.gen_reg();
+            writeln!(out, "{indent}{slot_i} = ptrtoint ptr {slot} to i64").ok();
+            let events_i = self.fun.gen_reg();
+            let sched_i = self.fun.gen_reg();
+            writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
+            writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
+            writeln!(out, "{indent}{r} = call i64 @briev_event_read_impl(ptr %state, i64 {events_i}, i64 {sched_i}, i64 {id_reg}, i64 {slot_i})").ok();
 
         // Payload type from the wire's declared Event<P>.
         let wire_name = match recv {
@@ -6535,7 +6549,7 @@ impl crate::backend::llvm::LlvmBackend {
         let proj_lbl = format!("evr.proj{uid}");
 
         let is_ready = self.fun.gen_reg();
-        writeln!(out, "{indent}{is_ready} = icmp eq i32 {r}, 1").ok();
+        writeln!(out, "{indent}{is_ready} = icmp eq i64 {r}, 1").ok();
         if in_segment {
             // Three-way: ready → project; 0 → blocked-ret; anything else
             // (strict / out-of-range slot) → trap rather than block forever.
@@ -6547,26 +6561,23 @@ impl crate::backend::llvm::LlvmBackend {
             .ok();
             writeln!(out, "{strict_lbl}:").ok();
             let is_blocked = self.fun.gen_reg();
-            writeln!(out, "  {is_blocked} = icmp eq i32 {r}, 0").ok();
+            writeln!(out, "  {is_blocked} = icmp eq i64 {r}, 0").ok();
             writeln!(
                 out,
                 "  br i1 {is_blocked}, label %{blk_lbl}, label %evr.trap{uid}"
             )
             .ok();
             writeln!(out, "evr.trap{uid}:").ok();
-            writeln!(out, "  call void @briev_event_strict_trap()").ok();
+            writeln!(out, "  call i64 @__briev_event_strict_trap(ptr %state)").ok();
             writeln!(out, "  unreachable").ok();
             writeln!(out, "{blk_lbl}:").ok();
-            // BLOCKED aggregate: cursor untouched, waiter already registered.
-            let agg0 = self.fun.gen_reg();
-            writeln!(out, "  {agg0} = insertvalue {{i64,i32}} poison, i64 0, 0").ok();
-            let agg1 = self.fun.gen_reg();
-            writeln!(out, "  {agg1} = insertvalue {{i64,i32}} {agg0}, i32 2, 1").ok();
-            writeln!(out, "  ret {{i64,i32}} {agg1}").ok();
+            // BLOCKED: cursor untouched, waiter registered. The migrated
+            // segment ABI returns the status (2) as i64.
+            writeln!(out, "  ret i64 2").ok();
         } else {
             writeln!(out, "{indent}br i1 {is_ready}, label %{ready_lbl}, label %evr.trap{uid}").ok();
             writeln!(out, "evr.trap{uid}:").ok();
-            writeln!(out, "  call void @briev_event_strict_trap()").ok();
+            writeln!(out, "  call i64 @__briev_event_strict_trap(ptr %state)").ok();
             writeln!(out, "  unreachable").ok();
         }
         writeln!(out, "{ready_lbl}:").ok();

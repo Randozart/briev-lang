@@ -215,6 +215,17 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
             variadic: true,
         }),
 
+        // 2026-09-10 (task machine migration): segment dispatch — like
+        // CallPtr# but threads the machine defn's hidden %state into the
+        // segment fn (whose body may call state-taking runtime defns).
+        "TaskCall#" => Some(Signature {
+            name: "TaskCall#",
+            parameters: vec![],
+            return_kind: ReturnKind::Inferred,
+            observable: false,
+            variadic: true,
+        }),
+
         // ── Host cancellation ─────────────────────────────────────────
         // 2026-08-03: per-process cancel flag the host can raise via
         // __briev_set_cancel. A long-running Briev loop polls
@@ -483,7 +494,7 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     "GetGlobalId#", "GetGlobalSize#", "GetLocalId#", "WorkgroupSize#",
     "GetGroupId#", "GetNumGroups#", "Dims#", "SubgroupFAdd#", "Barrier#",
     "Spawn#", "SpawnWithOutput#", "SetEnv#", "GetCwd#", "ChDir#",
-    "AddressOf#", "CallPtr#",
+    "AddressOf#", "CallPtr#", "TaskCall#",
     "CancelRequested#", "ClearCancel#",
     "SysCall#", "SysConf#",
     "AtomicLoad#", "AtomicStore#", "AtomicCas#", "AtomicXchg#", "AtomicAdd#",

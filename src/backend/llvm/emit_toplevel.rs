@@ -653,6 +653,7 @@ impl LlvmBackend {
         writeln!(out, "declare i64 @llvm.abs.i64(i64, i1) #1").ok();
         writeln!(out, "declare i64 @llvm.bitreverse.i64(i64) #1").ok();
         // Runtime support functions
+        writeln!(out, "declare void @__thread_pool_init__(i32, ptr)").ok();
         // 2026-07-01: Stores the current state snapshot pointer for worker threads.
         // Called by main before __barrier_release__ so async body functions receive
         // the correct state argument instead of a garbage pointer.
@@ -2066,7 +2067,9 @@ impl LlvmBackend {
             // element 0 of the column.
             for pname in &ports_out {
                 let id = self.fun.gen_reg();
-                writeln!(out, "{indent}{id} = call i64 @briev_event_alloc()").ok();
+                let events_i = self.fun.gen_reg();
+                writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
+                writeln!(out, "{indent}{id} = call i64 @briev_event_alloc_impl(ptr %state, i64 {events_i})").ok();
                 let slot_idx = match self.ctx.field_index_map.get(&format!("{base}.{pname}")) {
                     Some(&i) => i,
                     None => continue,
@@ -5666,12 +5669,22 @@ impl crate::backend::llvm::LlvmBackend {
         writeln!(out,
             "declare i64 @briev_task_spawn(ptr, i32, i32, ptr)").ok();
         // 2026-08-26 (async Phase D): event-port runtime surface.
-        writeln!(out, "declare i64 @briev_event_alloc()").ok();
-        writeln!(out, "declare void @briev_event_fire(i64, i64)").ok();
-        writeln!(out,
-            "declare i32 @briev_event_read(i64, ptr)").ok();
-        writeln!(out, "declare i32 @briev_event_ready(i64)").ok();
-        writeln!(out, "declare void @briev_event_strict_trap()").ok();
+        let tm = |n: &str| self.ctx.defn_params.contains_key(n);
+        if !tm("briev_event_alloc_impl") {
+            writeln!(out, "declare i64 @briev_event_alloc()").ok();
+        }
+        if !tm("briev_event_fire_impl") {
+            writeln!(out, "declare void @briev_event_fire(i64, i64)").ok();
+        }
+        if !tm("briev_event_read_impl") {
+            writeln!(out, "declare i32 @briev_event_read(i64, ptr)").ok();
+        }
+        if !tm("briev_event_ready_impl") {
+            writeln!(out, "declare i32 @briev_event_ready(i64)").ok();
+        }
+        if !tm("__briev_event_strict_trap") {
+            writeln!(out, "declare void @briev_event_strict_trap()").ok();
+        }
         writeln!(out,
             "declare i64 @briev_await(i64)").ok();
         writeln!(out,
@@ -5727,8 +5740,13 @@ impl crate::backend::llvm::LlvmBackend {
         self.fun.returns_i64 = true;
         self.fun.terminated = false;
         self.fun.is_task_segment = true;
+        // 2026-09-10 (task machine migration): C-flat ABI - the machine is
+        // a Briev defn dispatching through TaskCall# (i64 status return);
+        // the segment stores its value into the caller's out cell. %state
+        // is threaded because segment bodies call state-taking defns.
         writeln!(out,
-            "define internal {{i64,i32}} @__task_{task_name}_seg{k}(ptr %argv) {{").ok();
+            "define internal i64 @__task_{task_name}_seg{k}({}, ptr %argv, ptr %out) {{",
+            self.ctx.state_ptr_param).ok();
         writeln!(out, "entry:").ok();
         for (i, (pname, pty)) in params.iter().enumerate() {
             let slot = self.fun.gen_reg();
@@ -5783,13 +5801,13 @@ impl crate::backend::llvm::LlvmBackend {
             }
         };
         let finished: i32 = if is_last || saw_term || self.fun.terminated { 1 } else { 0 };
-        let agg = self.fun.gen_reg();
-        writeln!(out,
-            "  {agg} = insertvalue {{i64,i32}} poison, i64 {value_reg}, 0").ok();
-        let agg2 = self.fun.gen_reg();
-        writeln!(out,
-            "  {agg2} = insertvalue {{i64,i32}} {agg}, i32 {finished}, 1").ok();
-        writeln!(out, "  ret {{i64,i32}} {agg2}").ok();
+        let outv = self.fun.gen_reg();
+        writeln!(out, "  {outv} = getelementptr i64, ptr %out, i64 0").ok();
+        writeln!(out, "  store i64 {value_reg}, ptr {outv}").ok();
+        let outs = self.fun.gen_reg();
+        writeln!(out, "  {outs} = getelementptr i64, ptr %out, i64 1").ok();
+        writeln!(out, "  store i64 {finished}, ptr {outs}").ok();
+        writeln!(out, "  ret i64 {finished}").ok();
         writeln!(out, "}}").ok();
     }
 }

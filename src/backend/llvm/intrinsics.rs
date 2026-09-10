@@ -161,6 +161,24 @@ pub fn emit_intrinsic_call(
         }
         // 2026-08-03: call a function-pointer value (host callback).
         "CallPtr#" => return emit_call_ptr(backend, out, v, args, indent),
+        // 2026-09-10 (task machine migration): segment dispatch - threads
+        // the machine defn's hidden %state into the C-flat segment fn,
+        // whose body may call state-taking runtime defns (Print# etc.).
+        // The machine passes i64 addresses; widen to the ptr ABI.
+        "TaskCall#" => {
+            let seg = emit_arg(backend, out, &args[0], indent);
+            let argv = emit_arg(backend, out, &args[1], indent);
+            let outc = emit_arg(backend, out, &args[2], indent);
+            let seg_p = backend.fun.gen_reg();
+            let argv_p = backend.fun.gen_reg();
+            let outc_p = backend.fun.gen_reg();
+            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, seg_p, seg).ok();
+            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, argv_p, argv).ok();
+            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, outc_p, outc).ok();
+            writeln!(out, "{}{} = call i64 {}(ptr %state, ptr {}, ptr {})",
+                indent, v, seg_p, argv_p, outc_p).ok();
+            return BTypedRegister { name: v.to_string(), ty: Type::int() };
+        }
         // 2026-08-03: host cancellation flag (process-global atomic).
         "CancelRequested#" => return emit_cancel_requested(backend, out, v, indent),
         "ClearCancel#" => {

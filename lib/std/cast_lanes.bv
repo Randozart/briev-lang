@@ -1086,3 +1086,256 @@ out defn briev_getenv_int_impl(key: Int, environ: Int)
     };
     term env_int_digits(vp, 0, 1);
 };
+
+// ── Task/event machine (Family H, 2026-09-10) ───────────────────────────
+// The compiled async scheduler over the captured heads: @__briev_sched
+// points at a [head, tail, current-task] block (task records, linked);
+// @__briev_events at a [head, tail] block (event records, linked). Both
+// bootstrapped lazily (first use Alloc#s the block). Task record (16
+// slots): [next, status, cursor, nseg, argc, result, segments, args(8)].
+// Statuses: 0 READY, 1 YIELDED, 2 DONE, 3 CANCELLED, 4 WAITING. Segment
+// ABI (backend): i64 @seg(ptr state, ptr argv, ptr out) - status returned,
+// value stored through the out cell - dispatchable via TaskCall#.
+// Deterministic round-robin preserved exactly: one segment per runnable
+// task per pass, list order = spawn order (tail append), spawn-id-order
+// walk, deadlock posture returns the handle.
+
+// sched_tail_block - bootstrap the [head, tail, current] block; returns it.
+out defn sched_tail_block(sched: Int) [sched >= 0][term >= 0] -> Int {
+    let blk: Int = Load#(sched, 8);
+    when blk != 0 {
+        term blk;
+    };
+    let nb: Int = Alloc#(24) as Int;
+    Store#(nb, 0, 8);
+    Store#(nb + 8, 0, 8);
+    Store#(nb + 16, 0 - 1, 8);
+    Store#(sched, nb, 8);
+    term nb;
+};
+
+// briev_task_spawn_impl - append a task record at the tail; the handle is
+// the record address (opaque to the backend).
+out defn briev_task_spawn_impl(sched: Int, table: Int, nseg: Int, nargs: Int, argv: Int)
+    [sched >= 0 && table >= 0 && nseg >= 1 && nargs >= 0][term >= 0] -> Int {
+    let blk: Int = sched_tail_block(sched);
+    let rec: Int = Alloc#(128) as Int;
+    Store#(rec + 8, 0, 8);
+    Store#(rec + 16, 0, 8);
+    Store#(rec + 24, nseg, 8);
+    Store#(rec + 32, nargs, 8);
+    Store#(rec + 40, 0, 8);
+    Store#(rec + 48, table, 8);
+    term spawn_copy_args(rec, argv, nargs, 0, blk);
+};
+
+// spawn_copy_args - copy the argv block into the record, then link at tail.
+defn spawn_copy_args(rec: Int, argv: Int, nargs: Int, i: Int, blk: Int)
+    [rec >= 0 && argv >= 0 && nargs >= 0 && i >= 0][term >= 0] -> Int {
+    when i < nargs {
+        Store#(rec + 56 + 8 * i, Load#(argv + 8 * i, 8), 8);
+        term spawn_copy_args(rec, argv, nargs, i + 1, blk);
+    };
+    let head: Int = Load#(blk, 8);
+    Store#(rec, head, 8);
+    Store#(blk, rec, 8);
+    when head == 0 {
+        Store#(blk + 8, rec, 8);
+    };
+    term rec;
+};
+
+// task_status - the record's status field.
+defn task_status(rec: Int) [rec >= 0][term >= 0 && term <= 4] -> Int {
+    term Load#(rec + 8, 8);
+};
+
+// task_done - DONE status check (the await termination test).
+defn task_done(target: Int) [target >= 0][term == true || term == false] -> Bool {
+    when target == 0 {
+        term false;
+    };
+    term task_status(target) == 2;
+};
+
+// task_result - the stored completion value.
+defn task_result(rec: Int) [rec >= 0][term >= 0] -> Int {
+    term Load#(rec + 40, 8);
+};
+
+// briev_await_impl - the deterministic round-robin: passes until the
+// target is DONE; an empty runnable pool returns the handle (deadlock).
+out defn briev_await_impl(sched: Int, target: Int)
+    [sched >= 0 && target >= 0][term >= 0] -> Int {
+    let blk: Int = sched_tail_block(sched);
+    term await_passes(blk, target);
+};
+
+// await_passes - one scheduler pass per recursion level.
+defn await_passes(blk: Int, target: Int)
+    [blk >= 0 && target >= 0][term >= 0] -> Int {
+    when task_done(target) {
+        term task_result(target);
+    };
+    let ran: Int = await_one_pass(blk, Load#(blk, 8), 0);
+    when ran == 0 {
+        // Deadlock posture: empty runnable pool, target unfinished - return
+        // the handle instead of hanging (cooperative, no preemption).
+        term target;
+    };
+    term await_passes(blk, target);
+};
+
+// await_one_pass - one segment per runnable task, list order. blk is the
+// scheduler block: [16] holds the CURRENT task record while its segment
+// runs (the event-read blocked path registers it as a waiter).
+defn await_one_pass(blk: Int, cur: Int, ran: Int)
+    [blk >= 0 && cur >= 0 && ran >= 0][term >= 0] -> Int {
+    when cur == 0 {
+        term ran;
+    };
+    let nxt: Int = Load#(cur, 8);
+    let st: Int = task_status(cur);
+    when st != 0 && st != 1 {
+        term await_one_pass(blk, nxt, ran);
+    };
+    let cursor: Int = Load#(cur + 16, 8);
+    let nseg: Int = Load#(cur + 24, 8);
+    when cursor >= nseg {
+        term await_one_pass(blk, nxt, ran);
+    };
+    let out_cell: Int = Alloc#(16) as Int;
+    let seg_table: Int = Load#(cur + 48, 8);
+    let seg_ptr: Int = Load#(seg_table + 8 * cursor, 8);
+    // CURRENT task = this record while its segment runs (the event-read
+    // blocked path reads [blk + 16] to register the waiter).
+    Store#(blk + 16, cur, 8);
+    let status: Int = TaskCall#(seg_ptr, cur + 56, out_cell);
+    Store#(blk + 16, 0 - 1, 8);
+    when status == 1 {
+        Store#(cur + 8, 2, 8);
+        Store#(cur + 40, Load#(out_cell, 8), 8);
+        term await_one_pass(blk, nxt, ran + 1);
+    };
+    when status == 2 {
+        // BLOCKED on an unready port: cursor does NOT advance - the read
+        // heads its segment, so the post-wake re-run starts AT the read.
+        Store#(cur + 8, 4, 8);
+        term await_one_pass(blk, nxt, ran + 1);
+    };
+    Store#(cur + 16, cursor + 1, 8);
+    Store#(cur + 8, 1, 8);
+    term await_one_pass(blk, nxt, ran + 1);
+};
+
+// briev_task_cancel_impl - mark CANCELLED unless already DONE/CANCELLED.
+out defn briev_task_cancel_impl(sched: Int, target: Int)
+    [sched >= 0 && target >= 0][term >= 0] -> Int {
+    let st: Int = task_status(target);
+    when st != 2 && st != 3 {
+        Store#(target + 8, 3, 8);
+    };
+    term 0;
+};
+
+// ── Event ports ─────────────────────────────────────────────────────────
+
+// events_tail_block - bootstrap the [head, tail] block; returns it.
+out defn events_tail_block(events: Int) [events >= 0][term >= 0] -> Int {
+    let blk: Int = Load#(events, 8);
+    when blk != 0 {
+        term blk;
+    };
+    let nb: Int = Alloc#(16) as Int;
+    Store#(nb, 0, 8);
+    Store#(nb + 8, 0, 8);
+    Store#(events, nb, 8);
+    term nb;
+};
+
+// briev_event_alloc_impl - append a fresh event record; handle = address.
+out defn briev_event_alloc_impl(events: Int)
+    [events >= 0][term >= 0] -> Int {
+    let blk: Int = events_tail_block(events);
+    let rec: Int = Alloc#(104) as Int;
+    Store#(rec + 8, 0, 8);
+    Store#(rec + 16, 0, 8);
+    Store#(rec + 24, 0, 8);
+    let head: Int = Load#(blk, 8);
+    Store#(rec, head, 8);
+    Store#(blk, rec, 8);
+    when head == 0 {
+        Store#(blk + 8, rec, 8);
+    };
+    term rec;
+};
+
+// briev_event_ready_impl - nonzero when the port holds a payload.
+out defn briev_event_ready_impl(events: Int, slot: Int)
+    [events >= 0 && slot >= 0][term == true || term == false] -> Bool {
+    when slot == 0 {
+        term false;
+    };
+    term Load#(slot + 8, 8) != 0;
+};
+
+// briev_event_read_impl - 1 ready (payload stored to *out), 0 blocked
+// (waiter registered), 2 strict-gate violation, -1 bad slot.
+out defn briev_event_read_impl(events: Int, sched: Int, slot: Int, out_cell: Int)
+    [events >= 0 && sched >= 0 && slot >= 0 && out_cell >= 0]
+    [term >= -1 && term <= 2] -> Int {
+    when slot == 0 {
+        term 0 - 1;
+    };
+    when Load#(slot + 8, 8) != 0 {
+        Store#(out_cell, Load#(slot + 16, 8), 8);
+        term 1;
+    };
+    // Unready INSIDE a task: register as waiter, mark WAITING.
+    let blk: Int = sched_tail_block(sched);
+    let tid: Int = Load#(blk + 16, 8);
+    when tid == 0 - 1 {
+        term 2;
+    };
+    let nw: Int = Load#(slot + 24, 8);
+    when nw < 8 {
+        Store#(slot + 32 + 8 * nw, tid, 8);
+        Store#(slot + 24, nw + 1, 8);
+    };
+    when task_status(tid) == 0 || task_status(tid) == 1 {
+        Store#(tid + 8, 4, 8);
+    };
+    term 0;
+};
+
+// fire_drain - wake waiter i: WAITING tasks become schedulable again.
+defn fire_drain(slot: Int, i: Int)
+    [slot >= 0 && i >= 0][term >= 0] -> Int {
+    when i >= Load#(slot + 24, 8) {
+        term 0;
+    };
+    let tid: Int = Load#(slot + 32 + 8 * i, 8);
+    when task_status(tid) == 4 {
+        Store#(tid + 8, 0, 8);
+    };
+    term fire_drain(slot, i + 1);
+};
+
+// briev_event_fire_impl - store the payload, wake the waiters.
+out defn briev_event_fire_impl(events: Int, slot: Int, payload: Int)
+    [events >= 0 && slot >= 0][term >= 0] -> Int {
+    when slot == 0 {
+        term 0;
+    };
+    Store#(slot + 8, 1, 8);
+    Store#(slot + 16, payload, 8);
+    term fire_drain(slot, 0);
+};
+
+// __briev_event_strict_trap - a read of an unready port outside a task:
+// message to stderr, exit(1).
+out defn __briev_event_strict_trap() [true][term >= 0] -> Int {
+    let _m: Int = write_all(2, "briev: read of an unready event port outside a task - gate the read with .^Ready\n");
+    SysCall#(231, 1, 0, 0, 0, 0, 0);
+    term 0;
+};

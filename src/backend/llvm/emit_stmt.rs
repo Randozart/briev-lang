@@ -1135,7 +1135,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             if backend.fun.task_handle_names.contains(name) {
                 if let Some(h) = backend.fun.let_bindings.get(name).cloned() {
                     writeln!(out,
-                        "{indent}call void @briev_task_cancel(i64 {h})").ok();
+                        "{indent}call i64 @briev_task_cancel_impl(ptr %state, i64 {h})").ok();
                     let _ = backend.fun.gen_reg();
                     return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
                 }
@@ -1174,9 +1174,9 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     if let Some(id_reg) = backend.fun.let_bindings.get(wname).cloned() {
                         let val = backend.emit_expr(out, value, indent);
                         let boxed = backend.adapt_to_i64(out, indent, &val);
-                        writeln!(out,
-                            "{indent}call void @briev_event_fire(i64 {id_reg}, i64 {boxed})")
-                        .ok();
+                        let events_i = backend.fun.gen_reg();
+                        writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
+                        writeln!(out, "{indent}call i64 @briev_event_fire_impl(ptr %state, i64 {events_i}, i64 {id_reg}, i64 {boxed})").ok();
                         return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
                     }
                 }
