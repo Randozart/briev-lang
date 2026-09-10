@@ -19,7 +19,7 @@
 
 import "std/float_fmt.bv";
 
-// byte_at — the i-th BYTE of a String as an Int (0 out of range).
+// byte_at — the i-th BYTE of a String as an Int (0 obuf of range).
 // A String IS a ptr to [len: i64][bytes]; byte i lives at addr + 8 + i.
 // 2026-09-09: moved here from string.bv (was `frgn : briev_str_char_at`
 // from briev_rt.c) — cast_lanes owns the raw byte accessor so string.bv and
@@ -636,4 +636,267 @@ out defn str_first_char(s: String) [true][term >= 0] -> Int {
         term ((p0 & 0x07) << 18) | ((byte_at(s, 1) & 0x3F) << 12) | ((byte_at(s, 2) & 0x3F) << 6) | (byte_at(s, 3) & 0x3F);
     };
     term p0;
+};
+// ── Collection / vector ops (Family D) ──────────────────────────────────
+// Dynamic-shape gathers over vector state fields and Data buffers
+// (SPEC §16.5 `array[mask]`, `data[lo:hi]`), called from the backend's
+// vector emission. Output length is DATA-dependent (mask popcount / clamped
+// range) — these are loops over the raw byte primitives, not shufflevector
+// (which needs static shapes). Alloc# supplies fresh buffers; the arena
+// model means coll_resize's grow does NOT free the old buffer (retired
+// until the arena resets — the C malloc/free pair has no arena equivalent).
+
+// coll_count_true_i64 — popcount of an i64-slot mask.
+defn coll_count_true_i64(mask: Int, n: Int) [mask >= 0 && n >= 0][term >= 0] -> Int {
+    when n == 0 {
+        term 0;
+    };
+    let v: Int = Load#(mask + 8 * (n - 1), 8);
+    when v != 0 {
+        term 1 + coll_count_true_i64(mask, n - 1);
+    };
+    term coll_count_true_i64(mask, n - 1);
+};
+
+// coll_min — min of two non-negative counts.
+defn coll_min(a: Int, b: Int) [a >= 0 && b >= 0][term >= 0] -> Int {
+    when a > b {
+        term b;
+    };
+    term a;
+};
+
+// briev_mask_select — byte gather over a Data [len][bytes] buffer: the
+// bytes at true mask positions, ascending, into a fresh [len][bytes].
+out defn briev_mask_select(data: Int, mask: Int, mask_len: Int)
+    [data >= 0 && mask >= 0 && mask_len >= 0][term >= 0]
+    -> Int
+{
+    let len: Int = Load#(data, 8);
+    let ml: Int = coll_min(mask_len, len);
+    let cnt: Int = coll_count_true_i64(mask, ml);
+    let obuf: Int = Alloc#(8 + cnt) as Int;
+    Store#(obuf, cnt, 8);
+    term gather_bytes(data, mask, obuf, ml, 0, 0);
+};
+
+// gather_bytes — two-index walk: i reads data/mask, w writes obuf.
+defn gather_bytes(data: Int, mask: Int, obuf: Int, ml: Int, i: Int, w: Int)
+    [ml >= 0 && i >= 0 && w >= 0][term >= 0]
+    -> Int
+{
+    when i >= ml {
+        term obuf;
+    };
+    when Load#(mask + 8 * i, 8) != 0 {
+        let b: Int = Load#(data + 8 + i, 1);
+        Store#(obuf + 8 + w, b, 1);
+        term gather_bytes(data, mask, obuf, ml, i + 1, w + 1);
+    };
+    term gather_bytes(data, mask, obuf, ml, i + 1, w);
+};
+
+// briev_mask_select64 — i64-slot gather from a state column into a fresh
+// LIST buffer ([len][elems]): slots 1.. hold the selected elements.
+out defn briev_mask_select64(data: Int, data_len: Int, mask: Int, mask_len: Int)
+    [data >= 0 && data_len >= 0 && mask >= 0 && mask_len >= 0][term >= 0]
+    -> Int
+{
+    let ml: Int = coll_min(mask_len, data_len);
+    let cnt: Int = coll_count_true_i64(mask, ml);
+    let obuf: Int = Alloc#(8 * (1 + cnt)) as Int;
+    Store#(obuf, cnt, 8);
+    term gather_i64(data, mask, obuf, ml, 0, 1);
+};
+
+// gather_i64 — i64 walk: data slot i, obuf slot w (w starts at 1).
+defn gather_i64(data: Int, mask: Int, obuf: Int, ml: Int, i: Int, w: Int)
+    [ml >= 0 && i >= 0 && w >= 1][term >= 0]
+    -> Int
+{
+    when i >= ml {
+        term obuf;
+    };
+    when Load#(mask + 8 * i, 8) != 0 {
+        let v: Int = Load#(data + 8 * i, 8);
+        Store#(obuf + 8 * w, v, 8);
+        term gather_i64(data, mask, obuf, ml, i + 1, w + 1);
+    };
+    term gather_i64(data, mask, obuf, ml, i + 1, w);
+};
+
+// gather_f32 — f32 walk: 4-byte elements widened to i64 bit-pattern slots
+// (the List<Float> slot convention).
+defn gather_f32(data: Int, mask: Int, obuf: Int, ml: Int, i: Int, w: Int)
+    [ml >= 0 && i >= 0 && w >= 1][term >= 0]
+    -> Int
+{
+    when i >= ml {
+        term obuf;
+    };
+    when Load#(mask + 8 * i, 8) != 0 {
+        let bits: Int = Load#(data + 4 * i, 4);
+        Store#(obuf + 8 * w, bits, 8);
+        term gather_f32(data, mask, obuf, ml, i + 1, w + 1);
+    };
+    term gather_f32(data, mask, obuf, ml, i + 1, w);
+};
+
+// gather_i64_i8 — i64 data, BYTE mask (Bool[N] state columns are [N x i8]).
+defn gather_i64_i8(data: Int, mask: Int, obuf: Int, ml: Int, i: Int, w: Int)
+    [ml >= 0 && i >= 0 && w >= 1][term >= 0]
+    -> Int
+{
+    when i >= ml {
+        term obuf;
+    };
+    when Load#(mask + i, 1) != 0 {
+        let v: Int = Load#(data + 8 * i, 8);
+        Store#(obuf + 8 * w, v, 8);
+        term gather_i64_i8(data, mask, obuf, ml, i + 1, w + 1);
+    };
+    term gather_i64_i8(data, mask, obuf, ml, i + 1, w);
+};
+
+// gather_f32_i8 — f32 data, byte mask.
+defn gather_f32_i8(data: Int, mask: Int, obuf: Int, ml: Int, i: Int, w: Int)
+    [ml >= 0 && i >= 0 && w >= 1][term >= 0]
+    -> Int
+{
+    when i >= ml {
+        term obuf;
+    };
+    when Load#(mask + i, 1) != 0 {
+        let bits: Int = Load#(data + 4 * i, 4);
+        Store#(obuf + 8 * w, bits, 8);
+        term gather_f32_i8(data, mask, obuf, ml, i + 1, w + 1);
+    };
+    term gather_f32_i8(data, mask, obuf, ml, i + 1, w);
+};
+
+// coll_count_true_i8 — popcount of a byte mask.
+defn coll_count_true_i8(mask: Int, n: Int) [mask >= 0 && n >= 0][term >= 0] -> Int {
+    when n == 0 {
+        term 0;
+    };
+    let v: Int = Load#(mask + (n - 1), 1);
+    when v != 0 {
+        term 1 + coll_count_true_i8(mask, n - 1);
+    };
+    term coll_count_true_i8(mask, n - 1);
+};
+
+out defn briev_mask_select64_i8mask(data: Int, data_len: Int, mask: Int, mask_len: Int)
+    [data >= 0 && data_len >= 0 && mask >= 0 && mask_len >= 0][term >= 0]
+    -> Int
+{
+    let ml: Int = coll_min(mask_len, data_len);
+    let cnt: Int = coll_count_true_i8(mask, ml);
+    let obuf: Int = Alloc#(8 * (1 + cnt)) as Int;
+    Store#(obuf, cnt, 8);
+    term gather_i64_i8(data, mask, obuf, ml, 0, 1);
+};
+
+out defn briev_mask_select_f32_i8mask(data: Int, data_len: Int, mask: Int, mask_len: Int)
+    [data >= 0 && data_len >= 0 && mask >= 0 && mask_len >= 0][term >= 0]
+    -> Int
+{
+    let ml: Int = coll_min(mask_len, data_len);
+    let cnt: Int = coll_count_true_i8(mask, ml);
+    let obuf: Int = Alloc#(8 * (1 + cnt)) as Int;
+    Store#(obuf, cnt, 8);
+    term gather_f32_i8(data, mask, obuf, ml, 0, 1);
+};
+
+out defn briev_mask_select_f32(data: Int, data_len: Int, mask: Int, mask_len: Int)
+    [data >= 0 && data_len >= 0 && mask >= 0 && mask_len >= 0][term >= 0]
+    -> Int
+{
+    let ml: Int = coll_min(mask_len, data_len);
+    let cnt: Int = coll_count_true_i64(mask, ml);
+    let obuf: Int = Alloc#(8 * (1 + cnt)) as Int;
+    Store#(obuf, cnt, 8);
+    term gather_f32(data, mask, obuf, ml, 0, 1);
+};
+
+// briev_slice_range64 — contiguous range slice of an i64 state column:
+// lo/hi clamped to [0,n], hi floored at lo; Copy# makes it O(1) stack.
+out defn briev_slice_range64(data: Int, n: Int, lo: Int, hi: Int)
+    [data >= 0 && n >= 0 && lo >= 0 && hi >= 0][term >= 0]
+    -> Int
+{
+    let l: Int = coll_min(lo, n);
+    let h0: Int = coll_min(hi, n);
+    let h: Int = coll_hi_fix(h0, l);
+    let len: Int = h - l;
+    let obuf: Int = Alloc#(8 * (1 + len)) as Int;
+    Store#(obuf, len, 8);
+    when len > 0 {
+        Copy#(obuf + 8, data + 8 * l, 8 * len);
+    };
+    term obuf;
+};
+
+// coll_hi_fix — max(h, lo) for the range clamp.
+defn coll_hi_fix(h: Int, lo: Int) [h >= 0 && lo >= 0][term >= 0] -> Int {
+    when h < lo {
+        term lo;
+    };
+    term h;
+};
+
+// briev_slice_range_f32 — f32 range slice: 4-byte elements widened into
+// i64 bit-pattern slots (List<Float> convention).
+out defn briev_slice_range_f32(data: Int, n: Int, lo: Int, hi: Int)
+    [data >= 0 && n >= 0 && lo >= 0 && hi >= 0][term >= 0]
+    -> Int
+{
+    let l: Int = coll_min(lo, n);
+    let h0: Int = coll_min(hi, n);
+    let h: Int = coll_hi_fix(h0, l);
+    let len: Int = h - l;
+    let obuf: Int = Alloc#(8 * (1 + len)) as Int;
+    Store#(obuf, len, 8);
+    term slice_f32_copy(data, obuf, l, len, 0);
+};
+
+// slice_f32_copy — widen f32 elements into obuf slots 1..
+defn slice_f32_copy(data: Int, obuf: Int, l: Int, len: Int, i: Int)
+    [l >= 0 && len >= 0 && i >= 0][term >= 0]
+    -> Int
+{
+    when i >= len {
+        term obuf;
+    };
+    let bits: Int = Load#(data + 4 * (l + i), 4);
+    Store#(obuf + 8 * (1 + i), bits, 8);
+    term slice_f32_copy(data, obuf, l, len, i + 1);
+};
+
+// __briev_coll_resize — grow a coll handle's [data, cap, len] block to
+// new_cap word-elements. Arena semantics: the old buffer is NOT freed
+// (retired until arena reset); new_cap == 0 just clears the fields.
+out defn __briev_coll_resize(handle: Int, new_cap: Int)
+    [handle >= 0 && new_cap >= 0][term == 0 || term != 0]
+    -> Int
+{
+    when new_cap < 0 {
+        term 1;
+    };
+    let old_data: Int = Load#(handle, 8);
+    let old_cap: Int = Load#(handle + 8, 8);
+    let len: Int = Load#(handle + 16, 8);
+    when new_cap == 0 {
+        Store#(handle, 0, 8);
+        Store#(handle + 8, 0, 8);
+        term 0;
+    };
+    let nd: Int = Alloc#(8 * new_cap) as Int;
+    let copy_n: Int = coll_min(old_cap, new_cap);
+    when copy_n > 0 {
+        Copy#(nd, old_data, 8 * copy_n);
+    };
+    Store#(handle, nd, 8);
+    Store#(handle + 8, new_cap, 8);
+    term 0;
 };

@@ -3305,7 +3305,9 @@ impl LlvmBackend {
         // These are called by inop declarations in lib/std/os/*.bv.
         // All take/return i64 (boxed value) matching Briev's ABI.
         // 2026-08-15 (coll plan §3.6): the coll capacity resize helper.
-        writeln!(out, "declare i64 @__briev_coll_resize(i64, i64) #1").ok();
+        if !defined.contains("__briev_coll_resize") {
+            writeln!(out, "declare i64 @__briev_coll_resize(i64, i64) #1").ok();
+        }
         writeln!(out, "declare i64 @briev_open(i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @briev_close(i64) #1").ok();
         writeln!(out, "declare i64 @briev_read(i64, i64, i64) #1").ok();
@@ -3442,22 +3444,36 @@ impl LlvmBackend {
         }
         // 2026-08-07 (Phase 7): boolean mask select over a Data buffer —
         // `data[mask]` returns a new [len][bytes] buffer (SPEC §16.5).
-        writeln!(out, "declare ptr @briev_mask_select(ptr, ptr, i64) #1").ok();
+        if !defined.contains("briev_mask_select") {
+            writeln!(out, "declare i64 @briev_mask_select(ptr, ptr, i64) #1").ok();
+        }
         // 2026-08-07 (Phase 7): typed mask select — an Int/Bool vector state
         // field (`[N x i64]`) masked into a new heap List buffer.
-        writeln!(out, "declare ptr @briev_mask_select64(ptr, i64, ptr, i64) #1").ok();
+        if !defined.contains("briev_mask_select64") {
+            writeln!(out, "declare i64 @briev_mask_select64(ptr, i64, ptr, i64) #1").ok();
+        }
         // 2026-08-22 (Phase 6a): i8-mask variants — a Bool[N] state column is
         // [N x i8]; reading it as i64 walked past the column (garbage/segfault).
-        writeln!(out, "declare ptr @briev_mask_select64_i8mask(ptr, i64, ptr, i64) #1").ok();
+        if !defined.contains("briev_mask_select64_i8mask") {
+            writeln!(out, "declare i64 @briev_mask_select64_i8mask(ptr, i64, ptr, i64) #1").ok();
+        }
         // 2026-08-07 (Phase 7): Float (f32) mask select — a `Float[N]` vector
         // state field masked into a new heap List<Float> (i64 bit-pattern
         // slots, matching how heap List<Float> stores floats).
-        writeln!(out, "declare ptr @briev_mask_select_f32(ptr, i64, ptr, i64) #1").ok();
-        writeln!(out, "declare ptr @briev_mask_select_f32_i8mask(ptr, i64, ptr, i64) #1").ok();
+        if !defined.contains("briev_mask_select_f32") {
+            writeln!(out, "declare i64 @briev_mask_select_f32(ptr, i64, ptr, i64) #1").ok();
+        }
+        if !defined.contains("briev_mask_select_f32_i8mask") {
+            writeln!(out, "declare i64 @briev_mask_select_f32_i8mask(ptr, i64, ptr, i64) #1").ok();
+        }
         // 2026-08-22 (Phase 6b): contiguous range slice over a state column —
         // `data[lo:hi]` (and the full-copy forms `data[:]` / `data[...]`).
-        writeln!(out, "declare ptr @briev_slice_range64(ptr, i64, i64, i64) #1").ok();
-        writeln!(out, "declare ptr @briev_slice_range_f32(ptr, i64, i64, i64) #1").ok();
+        if !defined.contains("briev_slice_range64") {
+            writeln!(out, "declare i64 @briev_slice_range64(ptr, i64, i64, i64) #1").ok();
+        }
+        if !defined.contains("briev_slice_range_f32") {
+            writeln!(out, "declare i64 @briev_slice_range_f32(ptr, i64, i64, i64) #1").ok();
+        }
         // 2026-08-01 (Phase 3): CLI argv capture. The emitted main stores
         // its argc/argv into these globals; the runtime argv helpers
         // (briev_rt.c) read them as externs. The compiler OWNS the globals

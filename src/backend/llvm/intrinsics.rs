@@ -957,7 +957,8 @@ fn emit_resize(
     let h = emit_arg(backend, out, &args[0], indent);
     let cap = emit_arg(backend, out, &args[1], indent);
     let call = backend.fun.gen_reg();
-    writeln!(out, "{}{} = call i64 @__briev_coll_resize(i64 {}, i64 {})", indent, call, h, cap).ok();
+    writeln!(out, "{}{} = call i64 @__briev_coll_resize({}i64 {}, i64 {})", indent, call,
+            if backend.ctx.defn_params.contains_key("__briev_coll_resize") { "ptr %state, " } else { "" }, h, cap).ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
@@ -985,7 +986,8 @@ fn emit_ensure_cap(
     writeln!(out, "{}{} = icmp ult i64 {}, {}", indent, cmp, cur_cap, n).ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, grow).ok();
     writeln!(out, "{}{} = select i1 {}, i64 {}, i64 {}", indent, after, cmp, n, cur_cap).ok();
-    writeln!(out, "{}{} = call i64 @__briev_coll_resize(i64 {}, i64 {})", indent, target, h, after).ok();
+    writeln!(out, "{}{} = call i64 @__briev_coll_resize({}i64 {}, i64 {})", indent, target,
+            if backend.ctx.defn_params.contains_key("__briev_coll_resize") { "ptr %state, " } else { "" }, h, after).ok();
     writeln!(out, "{}{} = add i64 {}, 0", indent, call, target).ok();
     let _ = (grow, call);
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
@@ -1006,7 +1008,8 @@ fn emit_trim_cap(
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, h).ok();
     writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 16", indent, len_gep, p).ok();
     writeln!(out, "{}{} = load i64, ptr {}", indent, len, len_gep).ok();
-    writeln!(out, "{}{} = call i64 @__briev_coll_resize(i64 {}, i64 {})", indent, call, h, len).ok();
+    writeln!(out, "{}{} = call i64 @__briev_coll_resize({}i64 {}, i64 {})", indent, call,
+            if backend.ctx.defn_params.contains_key("__briev_coll_resize") { "ptr %state, " } else { "" }, h, len).ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }

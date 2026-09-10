@@ -1803,11 +1803,13 @@ impl LlvmBackend {
                     } else {
                         "@briev_slice_range64"
                     };
+                    // 2026-09-10 (Family D): state prefix for pure-Briev gathers.
+                    let gp = if self.ctx.defn_params.contains_key(&helper[1..]) { "ptr %state, " } else { "" };
                     let buf = self.fun.gen_reg();
                     writeln!(
                         out,
-                        "{}{} = call ptr {}(ptr {}, i64 {}, i64 {}, i64 {})",
-                        indent, buf, helper, data_ptr, n, lo.name, hi.name
+                        "{}{} = call ptr {}({}ptr {}, i64 {}, i64 {}, i64 {})",
+                        indent, buf, helper, gp, data_ptr, n, lo.name, hi.name
                     )
                     .ok();
                     let elem_ty = match &vec_ty {
@@ -1970,8 +1972,10 @@ impl LlvmBackend {
             let r = self.fun.gen_reg();
             writeln!(
                 out,
-                "{}{} = call ptr @briev_mask_select(ptr {}, ptr {}, i64 {})",
-                indent, r, data_ptr, mask_ptr, mask_len
+                "{}{} = call ptr @briev_mask_select({}ptr {}, ptr {}, i64 {})",
+                indent, r,
+                if self.ctx.defn_params.contains_key("briev_mask_select") { "ptr %state, " } else { "" },
+                data_ptr, mask_ptr, mask_len
             )
             .ok();
             return TypedRegister {
@@ -2030,8 +2034,10 @@ impl LlvmBackend {
             let buf = self.fun.gen_reg();
             writeln!(
                 out,
-                "{}{} = call ptr @briev_mask_select64(ptr {}, i64 {}, ptr {}, i64 {})",
-                indent, buf, data_p, len, mask_ptr, mask_len
+                "{}{} = call ptr @briev_mask_select64({}ptr {}, i64 {}, ptr {}, i64 {})",
+                indent, buf,
+                if self.ctx.defn_params.contains_key("briev_mask_select64") { "ptr %state, " } else { "" },
+                data_p, len, mask_ptr, mask_len
             )
             .ok();
             // Box the selection as a tier List block: [data, cap, len].
@@ -2077,10 +2083,13 @@ impl LlvmBackend {
                     .unwrap_or(true));
         if is_f32 {
             let buf = self.fun.gen_reg();
+            let f32sym = if i8_mask { "briev_mask_select_f32_i8mask" } else { "briev_mask_select_f32" };
             writeln!(
                 out,
-                "{}{} = call ptr @briev_mask_select_f32{}(ptr {}, i64 {}, ptr {}, i64 {})",
-                indent, buf, if i8_mask { "_i8mask" } else { "" }, data_ptr, n, mask_ptr, mask_len
+                "{}{} = call ptr @briev_mask_select_f32{}({}ptr {}, i64 {}, ptr {}, i64 {})",
+                indent, buf, if i8_mask { "_i8mask" } else { "" },
+                if self.ctx.defn_params.contains_key(f32sym) { "ptr %state, " } else { "" },
+                data_ptr, n, mask_ptr, mask_len
             )
             .ok();
             // 2026-08-22 (Phase 6a): box `[len,f0,…]` as a tier block, same
@@ -2104,11 +2113,12 @@ impl LlvmBackend {
         } else {
             "@briev_mask_select64"
         };
+        let gp = if self.ctx.defn_params.contains_key(&helper[1..]) { "ptr %state, " } else { "" };
         let buf = self.fun.gen_reg();
         writeln!(
             out,
-            "{}{} = call ptr {}(ptr {}, i64 {}, ptr {}, i64 {})",
-            indent, buf, helper, data_ptr, n, mask_ptr, mask_len
+            "{}{} = call ptr {}({}ptr {}, i64 {}, ptr {}, i64 {})",
+            indent, buf, helper, gp, data_ptr, n, mask_ptr, mask_len
         )
         .ok();
         let elem_ty = match &op.obj_reg.ty {
