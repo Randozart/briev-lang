@@ -94,7 +94,7 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
 /// Also: nw must divide 8, mw must divide 16 (for per_a/per_b integer
 /// division in the kernel). Prefers wider nw (B reuse) then scales mw
 /// (A reuse).
-fn select_mw_nw(m: i64, n: i64) -> (usize, usize) {
+fn select_mw_nw(m: i64, n: i64, thread_cap: usize) -> (usize, usize) {
     // Balanced growth (2026-09-10 on-device sweep, 4096^3): (1,8) 8.9,
     // (2,4) 17.3, (4,2) 17.4 TFLOP/s — one-sided configs starve A or B
     // reuse, so grow whichever axis lags, nw first (B reuse), while the
@@ -112,7 +112,7 @@ fn select_mw_nw(m: i64, n: i64) -> (usize, usize) {
                 && tn <= 8
                 && m % ((tm * 32) as i64) == 0
                 && n % ((tn * 64) as i64) == 0
-                && tm * tn * 32 <= 256
+                && tm * tn * 32 <= thread_cap
             {
                 mw = tm;
                 nw = tn;
@@ -195,22 +195,34 @@ pub fn build_ptx_kernels(
             && plan.n % 16 == 0
             && plan.k % 16 == 0;
 
+        let f16_acc = crate::config_tuning::ir_lowering().ptx_tensor_f16acc;
+        // f16-acc halves the accumulator registers (64 f32 -> 32 f16x2),
+        // which is what makes the (4,4)@512T x 2-CTA point affordable; the
+        // shallower 2-stage pipeline keeps smem at 40KB/CTA so both fit.
+        // f32-acc keeps 4 stages (deep pipeline, 1-2 CTAs by config).
+        let stages = if f16_acc { 2usize } else { 4usize };
+        // On-device sweep (2026-09-10, 4096^3): the f16acc kernel's best
+        // config is (4,4)@512T (13.6 vs 12.2 for (2,4)@256T) — the packed
+        // accumulators fund the wider tile. The f32 kernel's best stays
+        // (2,4)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
+        let thread_cap = if f16_acc { 512 } else { 256 };
         let (ptx, ptx_tensor, count_expr, block_threads, shared_bytes) = if tensor {
             // Select mw/nw for multi-warp CTA. The mw kernel needs
             // M%(mw*32)==0 and N%(nw*64)==0; fall back to single-warp
             // smem kernel when the shape doesn't tile cleanly.
-            let (mw, nw) = select_mw_nw(plan.m, plan.n);
+            let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap);
             let mw_ok = plan.m % (mw as i64 * 32) == 0
                 && plan.n % (nw as i64 * 64) == 0;
             if mw_ok && (mw > 1 || nw > 1) {
                 (
                     tensor::tensor_gemm_ptx_smem_mw(
                         plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
+                        f16_acc, stages,
                     ),
                     true,
                     e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
                     (mw * nw * 32) as u32,
-                    ((mw * 1024 + nw * 2048) * tensor::MW_STAGES) as u32,
+                    ((mw * 1024 + nw * 2048) * stages) as u32,
                 )
             } else {
                 // Single-warp smem kernel (32×16 tile, 1 warp).

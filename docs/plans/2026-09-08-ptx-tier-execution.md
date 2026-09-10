@@ -282,3 +282,31 @@ on top of the ldmatrix/mma/barrier path, i.e. the 4-stage pipeline hides
 most but not all of the fill. Remaining gap to SPIR-V (~30) and ggml
 (42): fill-side efficiency (D2-style register prefetch is the named
 next experiment) and, beyond that, the f32→f16 accumulation contract.
+
+## f16-acc contract tier implemented — VERDICT: gated OFF (fill-bound) (2026-09-10, night)
+
+The f16-acc variant (`ptx_tensor_f16acc`, default 0) is implemented and
+correct: mma.sync.f16.f16.f16.f16 with f16x2 packed accumulators (64 f32
+acc regs → 32 b32), 16-iteration (256-k) chunks promoted into the
+CTA-private f16 y tile via read-modify-write (y zeroed by the kernel
+prologue; each thread RMVs exactly its own fragments — no atomics, no
+cross-thread hazard). Precision measured **8.14e-04** @4096³ — an order
+under the 1e-2 contract gate (chunk-internal f16 walk + per-chunk f16
+rounding both bounded).
+
+Measured @4096³: **13.6 TFLOP/s vs f32-acc 16.6 same-window — a
+regression.** Cause: the kernel is FILL-DRAM-bound (~2.7GB traffic,
+~90% of peak), so the 2× mma rate buys nothing while the y RMV adds
+~0.5GB (+19%) traffic. The packed accumulators DID cut registers
+128 → 64, funding (4,4)@512T×2-CTA (24KB smem × 2-stage) — but the
+2-CTA sweep verdict repeated: even maximal occupancy does not beat the
+fill wall.
+
+**What f16-acc is for:** the moment the fill becomes subordinated
+(smaller tiles + deeper reuse, or an L2-friendlier problem), the 2×
+mma rate is the only path to the 42-TF anchor (whose kernel is
+f16-acc double-pumped). The infrastructure is config-gated and ready —
+flip `ptx_tensor_f16acc=1` once a traffic rung lands. Config sweep for
+the f16acc path selects (4,4)@512T automatically.
+
+2107 lib tests green.

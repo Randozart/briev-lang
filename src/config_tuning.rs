@@ -143,6 +143,13 @@ pub struct IrLoweringSettings {
     /// per barrier pair. Falls back to 1 when (K/16) is odd (the tail
     /// pair would double-count a clamped panel).
     pub spirv_coopmat_panels_per_stage: u32,
+    /// 2026-09-10 (PTX tier, f16-acc contract): the mw tensor kernel's mma
+    /// accumulates in f16x2 pairs with an 8-kstep chunk promotion into the
+    /// f16 y tile via CTA-private read-modify-write (y zeroed by the kernel
+    /// prologue). Numerics: f16 rounding per chunk, f32 across chunks —
+    /// tier gate 1e-2 (the f32-acc default keeps the 5e-3 gate). 0 =
+    /// f32-acc (historical form).
+    pub ptx_tensor_f16acc: bool,
     /// 2026-09-07 (single-buffer rung): smem stages per buffer — 1 halves
     /// the smem footprint (2× the resident WGs/SM at 48KB) at the cost of
     /// a strictly serial fill→mma pipeline per workgroup. 2 = the
@@ -239,6 +246,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     spirv_coopmat_fill_prefetch: false,
     spirv_coopmat_stagger: false,
     spirv_coopmat_panels_per_stage: 2,
+    ptx_tensor_f16acc: false,
     spirv_coopmat_stages: 1,
 
     firmem_min_depth: 64,
@@ -428,6 +436,10 @@ fn load_ir_lowering() -> IrLoweringSettings {
             .field_int("spirv_coopmat_panels_per_stage", 0)
             .map(|v| v.max(1).min(4) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.spirv_coopmat_panels_per_stage),
+        ptx_tensor_f16acc: db
+            .field_int("ptx_tensor_f16acc", 0)
+            .map(|v| v != 0)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_f16acc),
         spirv_coopmat_stages: db
             .field_int("spirv_coopmat_stages", 0)
             .map(|v| v.max(1).min(2) as u32)

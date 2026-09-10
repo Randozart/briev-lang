@@ -781,8 +781,6 @@ mod tests {
 /// cp.async pipeline depth for the mw kernel (2026-09-10): one outstanding
 /// fill cannot hide the ~600ns DRAM latency behind ~90ns of mma work, so
 /// stages-1 fills stay in flight. Stage arrays live in ONE dynamic shared
-/// array sized (mw*1024 + nw*2048) * MW_STAGES.
-pub const MW_STAGES: usize = 4;
 
 pub fn tensor_gemm_ptx_smem_mw(
     m: i64,
@@ -794,6 +792,8 @@ pub fn tensor_gemm_ptx_smem_mw(
     y_elem: u32,
     mw: usize,
     nw: usize,
+    f16_acc: bool,
+    stages: usize,
 ) -> String {
     debug_assert!(m % (32 * mw as i64) == 0 && n % (64 * nw as i64) == 0 && k % 16 == 0);
     let a_row = k * 2;
@@ -821,8 +821,82 @@ pub fn tensor_gemm_ptx_smem_mw(
     // section's scheduling comment below.
     let bregs: Vec<String> = vec!["%b0".to_string(), "%b1".to_string()];
     out.push_str("    .reg .b32  %a0, %a1, %a2, %a3, %b0, %b1, %t0;\n");
-    let cregs: Vec<String> = (0..4 * 2 * ng).map(|i| format!("%c{}", i)).collect();
-    out.push_str(&format!("    .reg .f32  {};\n", cregs.join(", ")));
+    // Accumulators: f32-acc = 4 f32 per (mh,g) (64 regs); f16-acc = 2 f16x2
+    // b32 per (mh,g) (32 regs — funds an extra CTA's worth of registers).
+    // f16 contract: chunked accumulation — the mma chains f16x2 over
+    // 8 ksteps, then each pair is promoted into the CTA-private f16 y tile
+    // (read-modify-write) and reset. Tier gate 1e-2 (vs 5e-3 f32-acc).
+    let cregs: Vec<String> = (0..if f16_acc { 4 * ng } else { 4 * 2 * ng })
+        .map(|i| format!("%c{}", i))
+        .collect();
+    if f16_acc {
+        out.push_str(&format!("    .reg .b32  {};\n", cregs.join(", ")));
+        for c in &cregs {
+            out.push_str(&format!("    mov.b32 {}, 0;\n", c));
+        }
+    } else {
+        out.push_str(&format!("    .reg .f32  {};\n", cregs.join(", ")));
+        for c in &cregs {
+            out.push_str(&format!("    mov.f32 {}, 0f00000000;\n", c));
+        }
+    }
+
+    // f16-acc contract: the kernel OWNS its y tile — zero it here, then the
+    // KLOOP promotes each f16x2 chunk into it by read-modify-write (CTA-
+    // private tiles, no atomics). Each thread zeroes/promotes exactly the
+    // fragments it accumulates, so no cross-thread hazard is introduced.
+    // y RMV pass emitter: accumulate=true folds the f16x2 chunk accs into
+    // y (add.rn.f16x2, then resets the chunk accs); accumulate=false zeroes
+    // the tile. Addressing mirrors the f32 store tail exactly.
+    let mut emit_y_pass = |out: &mut String, accumulate: bool| {
+        out.push_str("    mov.u32 %r12, %r10;\n");
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 32 * y_row));
+        out.push_str("    mov.u32 %r13, %r11;\n");
+        out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 64 * (y_elem as i64)));
+        out.push_str("    mov.u32 %r9, %r12;\n");
+        out.push_str("    add.u32 %r9, %r9, %r13;\n");
+        if !accumulate {
+            out.push_str("    mov.b32 %t0, 0;\n");
+        }
+        for mh in 0..2 {
+            for g in 0..ng {
+                let cb = 2 * (mh * 8 + g);
+                out.push_str(&format!("    mov.u32 %r12, {};\n", (16 * mh as i64) * y_row));
+                out.push_str(&format!("    mul.lo.u32 %r13, %r6, {};\n", y_row));
+                out.push_str("    add.u32 %r12, %r12, %r13;\n");
+                out.push_str(&format!(
+                    "    add.u32 %r12, %r12, {};\n",
+                    (g as i64) * 8 * (y_elem as i64)
+                ));
+                out.push_str("    add.u32 %r12, %r12, %r9;\n");
+                out.push_str("    mov.u32 %r13, %r8;\n");
+                out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", y_elem));
+                out.push_str("    add.u32 %r12, %r12, %r13;\n");
+                out.push_str("    mul.wide.u32 %rd4, %r12, 1;\n");
+                out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
+                // 2 pair-regs per (mh,g): reg0 = (row0: cols 2t,2t+1),
+                // reg1 = (row8: same cols) — the f16x2 packing merges the
+                // column pair that f32 kept in two separate regs.
+                for (pair, addr_step) in [
+                    (0i64, None::<i64>),
+                    (1, Some(8 * y_row)), // row +8
+                ] {
+                    if let Some(d) = addr_step {
+                        out.push_str(&format!("    add.u64 %rd5, %rd5, {};\n", d));
+                    }
+                    let reg = &cregs[cb + pair as usize];
+                    if accumulate {
+                        out.push_str("    ld.global.b32 %t0, [%rd5];\n");
+                        out.push_str(&format!("    add.rn.f16x2 %t0, %t0, {};\n", reg));
+                        out.push_str("    st.global.b32 [%rd5], %t0;\n");
+                        out.push_str(&format!("    mov.b32 {}, 0;\n", reg));
+                    } else {
+                        out.push_str("    st.global.b32 [%rd5], %t0;\n");
+                    }
+                }
+            }
+        }
+    };
     out.push_str("    .reg .pred %p1;\n");
     // 4-stage cp.async pipeline (2026-09-10): the fill's ~600ns DRAM latency
     // cannot hide behind a single ~90ns compute phase, so STAGES-1 fills stay
@@ -830,7 +904,6 @@ pub fn tensor_gemm_ptx_smem_mw(
     // (2,4) need 80KB and (4,4) 80KB+, both past the 48KB static cap, so the
     // array is `.extern` and the runtime opts in via cuFuncSetAttribute +
     // launch sharedMemBytes (briev_dev_cuda already had that path).
-    let stages = MW_STAGES;
     // %r21/%r22: u32 stage-0 bases (asmem/bsmem) for the cp.async dsts;
     // %rd8/%rd9: the same as u64 for the ldmatrix srcs.
     out.push_str("    mov.u32 %r21, dsmem;\n");
@@ -878,15 +951,15 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
 
-    for i in 0..4 * 2 * ng {
-        out.push_str(&format!("    mov.f32 %c{}, 0f00000000;\n", i));
-    }
-
     // === Helper closure: emit fill code for one tile ===
     // Instead of a closure (which can't be called multiple times in a loop
     // easily), we inline the fill logic as a Rust macro-style codegen helper.
     // We emit A-fill then B-fill, targeting smem at smem_base (a u32 reg holding
     // the shared base address for this buffer).
+
+    if f16_acc {
+        emit_y_pass(&mut out, false); // zero the CTA-private y tile
+    }
 
     // --- PROLOGUE: fill stages 0..stages-2, one commit group each ---
     for s in 0..stages - 1 {
@@ -1008,11 +1081,11 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", k));
     out.push_str("    @%p1 bra KEND;\n");
 
-    // Compute stage = (kstep/16) & (stages-1); fill stage = stage+3 (mod 4).
+    // Compute stage = (kstep/16) & (stages-1); fill stage = stage+(stages-1).
     out.push_str("    shr.u32 %r9, %r2, 4;\n");
-    out.push_str("    and.b32 %r9, %r9, 3;     // compute stage\n");
-    out.push_str("    add.u32 %r17, %r9, 3;\n");
-    out.push_str("    and.b32 %r17, %r17, 3;  // fill stage\n");
+    out.push_str(&format!("    and.b32 %r9, %r9, {};\n", stages - 1));
+    out.push_str(&format!("    add.u32 %r17, %r9, {};\n", stages - 1));
+    out.push_str(&format!("    and.b32 %r17, %r17, {};\n", stages - 1));
 
     // Compute smem base for the FILL stage: asmem + stage * asmem_buf
     out.push_str("    mov.u32 %r12, %r21;\n");
@@ -1161,12 +1234,46 @@ pub fn tensor_gemm_ptx_smem_mw(
                 "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
                 b0, b1
             ));
-            let cb = 4 * (mh * 8 + g);
+            // d and c share the accumulator registers (in-place accumulate).
+            // f32: 4 regs per (mh,g); f16: 2 f16x2 regs per (mh,g).
+            let cb = if f16_acc {
+                2 * (mh * 8 + g)
+            } else {
+                4 * (mh * 8 + g)
+            };
+            let (acc_regs, mma_fmt) = if f16_acc {
+                // f16x2 pairs: 2 b32 regs per (mh,g), each = 2 f16 accs.
+                (
+                    format!("{{%c{}, %c{}}}", cb, cb + 1),
+                    "f16.f16.f16.f16",
+                )
+            } else {
+                (
+                    format!("{{%c{}, %c{}, %c{}, %c{}}}", cb, cb + 1, cb + 2, cb + 3),
+                    "f32.f16.f16.f32",
+                )
+            };
             out.push_str(&format!(
-                "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
-                cb, cb + 1, cb + 2, cb + 3, cb, cb + 1, cb + 2, cb + 3
+                "    mma.sync.aligned.m16n8k16.row.col.{} {}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {};\n",
+                mma_fmt, acc_regs, acc_regs
             ));
         }
+    }
+
+    // f16-acc chunk promotion: every 16 iterations (256 k) fold the f16x2
+    // chunk accs into the y tile and reset them. Uniform predicate.
+    if f16_acc {
+        let chunk_iters = 16usize;
+        out.push_str("    mov.u32 %r14, %r2;\n");
+        out.push_str("    add.u32 %r14, %r14, 16;\n");
+        out.push_str(&format!(
+            "    and.b32 %r14, %r14, {};\n",
+            chunk_iters * 16 - 1
+        ));
+        out.push_str("    setp.ne.b32 %p1, %r14, 0;\n");
+        out.push_str("    @%p1 bra PROMO_SKIP;\n");
+        emit_y_pass(&mut out, true);
+        out.push_str("PROMO_SKIP:\n");
     }
 
     // Wait until this iteration's stage is complete (stages-2 groups remain
@@ -1178,7 +1285,16 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    add.u32 %r2, %r2, 16;\n");
     out.push_str("    bra.uni KLOOP;\nKEND:\n");
 
-    // Store C.
+    // Store C (f32-acc) / remainder chunk promotion (f16-acc when K is not
+    // a multiple of the 16-iteration chunk — the in-loop promotion covered
+    // whole chunks already).
+    if f16_acc {
+        if k % (16 * 16) != 0 {
+            emit_y_pass(&mut out, true);
+        }
+        out.push_str("    ret;\n}\n");
+        return out;
+    }
     out.push_str("    mov.u32 %r12, %r10;\n");
     out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 32 * y_row));
     out.push_str("    mov.u32 %r13, %r11;\n");
@@ -1225,7 +1341,7 @@ mod r16_dump {
     #[test]
     fn dump_mw_1x1() {
         /* M=64,N=64,K=64, CTA 32x64 (mw=1,nw=1). a@0,b@8192,y@16392 */
-        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1);
+        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_1x1.ptx", &ptx).unwrap();
     }
 
@@ -1233,14 +1349,14 @@ mod r16_dump {
     #[test]
     fn dump_mw_128x128() {
         /* M=128,N=128,K=64, CTA 128x128 (mw=4,nw=2). a@0,b@16384,y@32776 */
-        let ptx = tensor_gemm_ptx_smem_mw(128, 128, 64, 0, 16384, 32776, 2, 4, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(128, 128, 64, 0, 16384, 32776, 2, 4, 2, false, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_128x128.ptx", &ptx).unwrap();
     }
     #[test]
     fn dump_mw_256x128() {
         /* M=256,N=128,K=64, CTA 256x128 (mw=8,nw=2). a@0,b=256*64*2=32768,
            y@32768+128*64*2+8=49160 */
-        let ptx = tensor_gemm_ptx_smem_mw(256, 128, 64, 0, 32768, 49160, 2, 8, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(256, 128, 64, 0, 32768, 49160, 2, 8, 2, false, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_256x128.ptx", &ptx).unwrap();
     }
 
@@ -1274,15 +1390,27 @@ mod r16_dump {
     fn dump_mw_2048() {
         /* M=N=K=2048, select_mw_nw=(4,4) block=512 (128-reg budget).
            a@0, b=2048*2048*2=8388608, y=2*8388608+8=16777224 */
-        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 4, false, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_2048.ptx", &ptx).unwrap();
+    }
+
+    #[test]
+    fn dump_mw_4096_f16acc() {
+        /* f16-acc contract variant (ptx_tensor_f16acc=1): f16x2 chunk accs,
+           8-kstep... 16-iteration promotion into the f16 y tile. Gate 1e-2. */
+        /* production pairing: f16acc funds (4,4)@512T; 2 stages keep smem
+           at 40KB so TWO CTAs co-reside (16 warps + 2 fill streams). */
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc.ptx", &ptx).unwrap();
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 4);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_c24.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_4096() {
         /* M=N=K=4096, select_mw_nw=(2,8), block=512.
            a@0, b=4096*4096*2=33554432, y=2*33554432+8=67108872 */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, false, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_4096.ptx", &ptx).unwrap();
     }
 
@@ -1290,7 +1418,7 @@ mod r16_dump {
     fn dump_mw_8192() {
         /* M=N=K=8192, select_mw_nw=(2,8), block=512.
            a@0, b=8192*8192*2=134217728, y=2*134217728+8=268435464 */
-        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 2, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 2, 4, false, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_8192.ptx", &ptx).unwrap();
     }
 
@@ -1298,7 +1426,7 @@ mod r16_dump {
     fn dump_mw_4096_k16() {
         /* M=N=4096,K=16 (skinny-K), select_mw_nw=(2,8), block=512.
            a@0, b=4096*16*2=131072, y=2*131072+8=262152 */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 2, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 2, 4, false, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_k16.ptx", &ptx).unwrap();
     }
 }
