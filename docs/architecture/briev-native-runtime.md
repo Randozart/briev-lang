@@ -147,3 +147,20 @@ The cooperative rewrite unblocks the `briev_rt.c` delete step for the
 async half (pool + barriers + wait stubs ≈ 130 lines). The task/event
 machine migration (~170 lines) can follow independently — it is
 frgn-called from async `.bv` programs, not backend-emitted.
+
+### CONFIRMED pre-existing bug: async convergence never exits
+
+Bisected to the branch base (2d3112a7, pre-A+B): a two-`async node`
+program with exit conditions (`[a < N][a == N]`) runs correctly but NEVER
+terminates — prints land, then the loop spins in the
+`__wait_for_trigger__` branch forever. Root cause located:
+`program_convergence` (analysis/loop_shape.rs) produces no
+`counter_ge_bounds` for async txns, so `ctx.exit_condition` stays `None`
+and the loop-emission falls into the idle-wait branch. The reactor ticks
+the bodies correctly (values converge — N is reached) but the exit
+predicate is never installed.
+
+Fix path (Family H implementation work): register async txn
+(counter, bound) pairs in the convergence analysis exactly as bounded
+txns do, then the `has_exit_cond` branch emits the real predicate and
+the idle-wait branch becomes unreachable for bounded async programs.
