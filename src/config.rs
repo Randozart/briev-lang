@@ -165,3 +165,77 @@ free = "free_dma_pinned"
         }
     }
 }
+
+/// 2026-09-10 (Family F, Asm#): abstract-asm lowering for one op.
+/// `lowerings` maps a target-family prefix (x86_64, aarch64, riscv64,
+/// wasm32) to the inline-asm template. `$1..$N` reference the op's
+/// operands; `$0` is the compiler-assigned result register.
+#[derive(Debug, Clone)]
+pub struct AsmOpEntry {
+    pub arity: usize,
+    pub lowerings: Vec<(String, String)>,
+}
+
+/// 2026-09-10 (Family F, Asm#): abstract asm lowering table, loaded from
+/// config/asm-lowering.dbvl (quoted mode). Row shape:
+/// `OpName: <arity>; "target:template"; "target:template"; ...`
+/// The backend picks the field whose target prefix matches the triple and
+/// emits the template as inline asm. Unknown op or unsupported target =
+/// loud compile error (the capability doctrine).
+#[derive(Debug, Clone)]
+pub struct AsmLowering {
+    ops: HashMap<String, AsmOpEntry>,
+}
+
+impl AsmLowering {
+    pub fn load() -> Self {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/asm-lowering.dbvl");
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return AsmLowering { ops: HashMap::new() },
+        };
+        let db = match crate::dbriev::config_db::ConfigDb::from_quoted_str(&content) {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("warning: config/asm-lowering.dbvl parse error: {} - using empty set", e);
+                return AsmLowering { ops: HashMap::new() };
+            }
+        };
+        let mut ops = HashMap::new();
+        for key in db.keys() {
+            let arity = db.field_string(&key, 0)
+                .and_then(|s| s.parse::<usize>().ok());
+            let Some(arity) = arity else { continue };
+            let mut lowerings = Vec::new();
+            let mut idx = 1;
+            while let Some(field) = db.field_string(&key, idx) {
+                // Field shape: "target:template" - split on the FIRST colon.
+                if let Some((target, template)) = field.split_once(':') {
+                    lowerings.push((target.trim().to_string(), template.to_string()));
+                }
+                idx += 1;
+            }
+            ops.insert(key, AsmOpEntry { arity, lowerings });
+        }
+        AsmLowering { ops }
+    }
+
+    /// The lowering template for `op` on `target`'s family prefix, or None.
+    pub fn lookup(&self, op: &str, target_family: &str) -> Option<&str> {
+        self.ops.get(op)?.lowerings.iter()
+            .find(|(t, _)| target_family.starts_with(t.as_str()))
+            .map(|(_, template)| template.as_str())
+    }
+
+    /// The operand arity for `op`, or None when unknown.
+    pub fn arity_of(&self, op: &str) -> Option<usize> {
+        self.ops.get(op).map(|e| e.arity)
+    }
+
+    /// The known op names (for the capability error's fix hint).
+    pub fn known_ops(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.ops.keys().map(|s| s.as_str()).collect();
+        names.sort();
+        names
+    }
+}

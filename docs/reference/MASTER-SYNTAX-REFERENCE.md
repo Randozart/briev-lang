@@ -310,6 +310,7 @@ Generative op-member forms (dispatch to declared `op` members):
 | `GetEnv#` | `[legacy]` removed; use `get_env!` |
 | `GetEnvInt#` | `[legacy]` removed; use `get_env_int!` |
 | `TaskCall#` | async segment dispatch: threads the machine's state into a segment fn (Family H machine) |
+| `Asm#` | two-mode asm: abstract ops lowered per target via config/asm-lowering.dbvl, or raw templates (Family F; raw forbidden in strict profiles) |
 | `Len#` | `[legacy]` alias; use `Length#` |
 | `Now#` | `[internal]` monotonic clock, emitted by watchdog machinery; use `TimeNow#` |
 

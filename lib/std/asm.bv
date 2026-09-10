@@ -1,0 +1,24 @@
+// asm.bv - the ergonomic surface over the Asm# two-mode intrinsic
+// (Family F, 2026-09-10). Each wrapper carries the contract the
+// typechecker cannot infer for raw asm: the abstract op's operand
+// semantics. The lowering templates live in config/asm-lowering.dbvl;
+// adding an op is a data change there plus a wrapper here - never a
+// compiler change.
+//
+// Raw mode (`Asm#("raw", template, ops...)`) is the escape hatch for
+// everything this file does not wrap: dialect-specific text with $1..$N
+// operand refs and a compiler-assigned $0 result register. It is
+// observable (never eliminated) and forbidden in strict profiles.
+
+// prefetch - hint that the cache line containing `addr` should be
+// loaded. A hint: the address may be invalid; no fault is possible.
+defn prefetch(addr: Int) [addr >= 0][term >= 0] -> Int {
+    term Asm#("Prefetch", addr);
+};
+
+// rdtsc - the x86_64 time-stamp counter (cycles since reset). x86_64
+// only: the lowering table has no other target; callers on aarch64 get
+// a loud capability error.
+defn rdtsc() [true][term >= 0] -> Int {
+    term Asm#("Rdtsc");
+};

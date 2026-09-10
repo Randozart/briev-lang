@@ -226,6 +226,19 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
             variadic: true,
         }),
 
+        // 2026-09-10 (Family F, Asm#): two-mode asm escape hatch - abstract
+        // ops lowered per target through config/asm-lowering.dbvl, or raw
+        // dialect-specific templates. The typechecker cannot prove asm
+        // semantics, so the result is inferred and the op is observable
+        // (never DCE'd). The strict profile forbids it at source level.
+        "Asm#" => Some(Signature {
+            name: "Asm#",
+            parameters: vec![],
+            return_kind: ReturnKind::Native("Int"),
+            observable: true,
+            variadic: true,
+        }),
+
         // ── Host cancellation ─────────────────────────────────────────
         // 2026-08-03: per-process cancel flag the host can raise via
         // __briev_set_cancel. A long-running Briev loop polls
@@ -494,7 +507,7 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     "GetGlobalId#", "GetGlobalSize#", "GetLocalId#", "WorkgroupSize#",
     "GetGroupId#", "GetNumGroups#", "Dims#", "SubgroupFAdd#", "Barrier#",
     "Spawn#", "SpawnWithOutput#", "SetEnv#", "GetCwd#", "ChDir#",
-    "AddressOf#", "CallPtr#", "TaskCall#",
+    "AddressOf#", "CallPtr#", "TaskCall#", "Asm#",
     "CancelRequested#", "ClearCancel#",
     "SysCall#", "SysConf#",
     "AtomicLoad#", "AtomicStore#", "AtomicCas#", "AtomicXchg#", "AtomicAdd#",

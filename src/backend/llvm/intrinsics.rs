@@ -11,6 +11,9 @@ use crate::config::AllocConfig;
 use std::fmt::Write;
 
 pub(crate) static ALLOC_CONFIG: LazyLock<AllocConfig> = LazyLock::new(|| AllocConfig::load());
+// 2026-09-10 (Family F, Asm#): abstract-asm lowering table.
+pub(crate) static ASM_LOWERING: LazyLock<crate::config::AsmLowering> =
+    LazyLock::new(|| crate::config::AsmLowering::load());
 
 /// Emit an intrinsic call by name. For generic operations (Add#, Eq#, etc.)
 /// looks up the IR template from config/llvm-ops.toml using (op, primitive, bytes)
@@ -161,6 +164,8 @@ pub fn emit_intrinsic_call(
         }
         // 2026-08-03: call a function-pointer value (host callback).
         "CallPtr#" => return emit_call_ptr(backend, out, v, args, indent),
+        // 2026-09-10 (Family F): Asm# - two-mode asm escape hatch.
+        "Asm#" => return emit_asm(backend, out, v, args, indent),
         // 2026-09-10 (task machine migration): segment dispatch - threads
         // the machine defn's hidden %state into the C-flat segment fn,
         // whose body may call state-taking runtime defns (Print# etc.).
@@ -1297,6 +1302,120 @@ fn resolve_syscall_number(op: &str) -> Option<i64> {
 /// abstract name), followed by up to 6 Int arguments.
 /// On x86_64/aarch64 Linux: emits inline assembly (syscall/svc #0).
 /// On other targets: falls back to @briev_syscall from briev_rt.c.
+/// 2026-09-10 (Family F, Asm#): the two-mode asm escape hatch.
+///
+/// Mode 1 (abstract): `Asm#("OpName", ops...)` - the op lowers per target
+/// through config/asm-lowering.dbvl. Unknown op or unsupported target =
+/// loud compile error with the fix (add a lowering row / gate the call).
+///
+/// Mode 2 (raw): `Asm#("raw", template, ops...)` - the template is
+/// dialect-specific text with `$1..$N` referencing the operands in order;
+/// `$0` is the compiler-assigned result register (the i64 return).
+/// Structural check: the template's highest operand ref must be covered by
+/// the supplied operand count.
+///
+/// Constraints: result in a compiler-assigned `=r`, every operand in an
+/// `r`, memory clobbered. The empty `()` operand tail is REQUIRED (LLVM
+/// asm-call syntax).
+fn emit_asm(
+    backend: &mut LlvmBackend, out: &mut String, v: &str,
+    args: &[Expr], indent: &str,
+) -> BTypedRegister {
+    let Some(first) = args.first() else {
+        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+    };
+    let Expr::Quoted(mode_bytes) = first else {
+        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+    };
+    let mode = String::from_utf8_lossy(mode_bytes).to_string();
+    let operand_args: &[Expr] = if mode == "raw" { &args[2..] } else { &args[1..] };
+    let mut regs = Vec::new();
+    for a in operand_args {
+        let reg = emit_arg(backend, out, a, indent);
+        regs.push(reg);
+    }
+    // Constraint string: output "=r", one "r" per operand, memory clobber.
+    let mut constraints = String::from("=r");
+    for _ in &regs {
+        constraints.push_str(",r");
+    }
+    constraints.push_str(",~{memory}");
+
+    let template: String = if mode == "raw" {
+        // Structural check: every $N in the template must have an operand.
+        let Some(Expr::Quoted(t)) = args.get(1) else {
+            return BTypedRegister { name: v.to_string(), ty: Type::int() };
+        };
+        let t_text = String::from_utf8_lossy(t).to_string();
+        let mut max_ref: i64 = -1;
+        let bytes = t_text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'$' {
+                // $$ is an ESCAPED literal dollar (the operand-ref escape is
+                // the OTHER direction: $N references operands). Skip it.
+                if i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+                    i += 2;
+                    continue;
+                }
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j > i + 1 {
+                    let n: i64 = t_text[i + 1..j].parse().unwrap_or(0);
+                    max_ref = max_ref.max(n);
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        let n_ops = operand_args.len() as i64;
+        if max_ref >= n_ops {
+            panic!(
+                "Asm# raw: the template references operand ${max_ref} but only \
+                 {n_ops} operand(s) were supplied - add operands or fix the template"
+            );
+        }
+        t_text
+    } else {
+        // Abstract: consult the lowering table for this op on this target.
+        let triple = backend.ctx.target_triple.clone();
+        let family = triple.split('-').next().unwrap_or(&triple).to_string();
+        let Some(template) = ASM_LOWERING.lookup(&mode, &family) else {
+            let known = ASM_LOWERING.known_ops().join(", ");
+            panic!(
+                "Asm#: abstract asm op '{mode}' has no '{family}' lowering - add a row to \
+                 config/asm-lowering.dbvl (known ops: {known})"
+            );
+        };
+        let arity = ASM_LOWERING.arity_of(&mode).unwrap_or(0);
+        if (arity as usize) != operand_args.len() {
+            panic!(
+                "Asm#: op '{mode}' takes {arity} operand(s), got {} - fix the call or \
+                 the arity column in config/asm-lowering.dbvl",
+                operand_args.len()
+            );
+        }
+        template.to_string()
+    };
+
+    // Emit the asm call. The result lands in $0 (a compiler-assigned reg);
+    // the operands are passed so LLVM allocates/constrains them ($1..$N);
+    // the i64 return discards it for no-result ops.
+    let mut operand_list = String::new();
+    for r in &regs {
+        operand_list.push_str(&format!("i64 {}, ", r));
+    }
+    let operand_list = operand_list.trim_end_matches(", ");
+    writeln!(out, "{}{} = call i64 asm sideeffect \"{}\", \"{}\" ({})",
+        indent, v, template, constraints, operand_list).ok();
+    // The asm result register IS the i64 value (the add-zero dummy would
+    // redefine it).
+    BTypedRegister { name: v.to_string(), ty: Type::int() }
+}
+
 fn emit_syscall(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,

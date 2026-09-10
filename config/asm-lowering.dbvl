@@ -1,0 +1,20 @@
+// ── Abstract asm lowering table (Family F, Asm#) ────────────────────────
+// 2026-09-10: the Asm# intrinsic lowers ABSTRACT asm ops per target through
+// this table (raw asm bypasses it entirely). Adding an op is a data change,
+// never a Rust change - the expressiveness-closure property applies to the
+// asm surface itself.
+//
+// Row shape (quoted mode, like alloc-strategies.dbvl):
+//   OpName: <arity>; "target:template"; "target:template"; ...
+//
+// - $1..$N in the template reference the Asm# operands in order ($0 is the
+//   result register the compiler assigns; unused results are discarded).
+// - The backend picks the field whose target prefix matches the triple's
+//   first component (x86_64 / aarch64 / riscv64 / wasm32). No match =
+//   capability error: "abstract asm op 'X' has no <target> lowering".
+// - Templates must not clobber registers outside $0: the constraints give
+//   the compiler freedom to allocate; a clobbering template belongs in raw
+//   mode where the author owns the fallout.
+
+Prefetch: "1"; "x86_64:prefetcht0 ($1)"; "aarch64:prfm pldl1keep [$1]";
+Rdtsc: "0"; "x86_64:rdtsc";

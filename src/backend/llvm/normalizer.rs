@@ -134,6 +134,10 @@ fn build_supported_ops() -> HashSet<String> {
                    "VolatileLoad#", "VolatileStore#",
                    "AtomicLoad#", "AtomicStore#", "AtomicCas#", "AtomicXchg#",
                    "AtomicAdd#", "Fence#",
+                   // 2026-09-10 (Family F, Asm#): the two-mode asm escape
+                   // hatch — abstract ops lower through the lowering table,
+                   // raw mode is dialect-specific text. Both emit inline asm.
+                   "Asm#",
                    // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md):
                    // RMW family completion + width-parameterized access
                    // + pointer arithmetic.
