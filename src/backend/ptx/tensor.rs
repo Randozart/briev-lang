@@ -794,19 +794,32 @@ pub fn tensor_gemm_ptx_smem_mw(
     nw: usize,
     f16_acc: bool,
     stages: usize,
+    warp_mh: usize,
 ) -> String {
-    debug_assert!(m % (32 * mw as i64) == 0 && n % (64 * nw as i64) == 0 && k % 16 == 0);
+    // Warp tiling (2026-09-11 double-pump plan): the warp covers
+    // warp_mh 16-row blocks x (16/warp_mh) 8-col groups — mma count per
+    // kstep is invariant (16), so accumulators stay at 32 b32 (f16acc)
+    // for every warp shape. warp_mh=2 = the historical 32x64 warp;
+    // warp_mh=4 = the 64x32 A-sharing variant (B loaded 4x per kstep
+    // instead of 16x — 21.3 vs 12.8 FLOP per shared-read byte).
+    let mhr = warp_mh;
+    let gr = 16 / warp_mh;
+    debug_assert!(mhr * gr == 16 && m % (16 * mhr as i64 * mw as i64) == 0 && n % (8 * gr as i64 * nw as i64) == 0 && k % 16 == 0);
     let a_row = k * 2;
     let b_row = n * 2;
     let y_row = n * (y_elem as i64);
-    let ng = 8;
     let threads = (mw * nw * 32) as i64;
-    let per_a = (mw as i64 * 256) / threads;
-    let per_b = (nw as i64 * 512) / threads;
-    let asmem_buf = mw * 1024;
-    // B slab per warp = 16 k-rows x 64 n-cols, k-major: 128-byte k-rows.
-    // ldmatrix lane max = 15*128 + 7*16 + 16 = 2048 = slab size exactly.
-    let bsmem_buf = nw * 2048;
+    // per-thread 4-byte copy counts: per_X * threads * 4 must equal the
+    // stage's X bytes exactly (the fill covers its stage, no more — an
+    // overcount smears into the next stage, an undercount leaves smem
+    // unfilled).
+    let per_a = (mw as i64 * mhr as i64 * 128) / threads;
+    let per_b = (nw as i64 * gr as i64 * 64) / threads;
+    let asmem_buf = mw * mhr * 512;
+    // B slab per warp = 16 k-rows x (8*gr) n-cols, k-major: (16*gr)-byte
+    // k-rows. ldmatrix lane max = 15*(16*gr) + (gr-1)*16 + 16 = 256*gr =
+    // slab size exactly.
+    let bsmem_buf = nw * gr * 256;
     let mut out = String::new();
 
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
@@ -842,7 +855,7 @@ pub fn tensor_gemm_ptx_smem_mw(
     // f16 contract: chunked accumulation — the mma chains f16x2 over
     // 8 ksteps, then each pair is promoted into the CTA-private f16 y tile
     // (read-modify-write) and reset. Tier gate 1e-2 (vs 5e-3 f32-acc).
-    let cregs: Vec<String> = (0..if f16_acc { 4 * ng } else { 4 * 2 * ng })
+    let cregs: Vec<String> = (0..if f16_acc { 2 * mhr * gr } else { 4 * mhr * gr })
         .map(|i| format!("%c{}", i))
         .collect();
     if f16_acc {
@@ -866,17 +879,17 @@ pub fn tensor_gemm_ptx_smem_mw(
     // the tile. Addressing mirrors the f32 store tail exactly.
     let mut emit_y_pass = |out: &mut String, accumulate: bool| {
         out.push_str("    mov.u32 %r12, %r10;\n");
-        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 32 * y_row));
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
         out.push_str("    mov.u32 %r13, %r11;\n");
-        out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 64 * (y_elem as i64)));
+        out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 8 * gr as i64 * (y_elem as i64)));
         out.push_str("    mov.u32 %r9, %r12;\n");
         out.push_str("    add.u32 %r9, %r9, %r13;\n");
         if !accumulate {
             out.push_str("    mov.b32 %t0, 0;\n");
         }
-        for mh in 0..2 {
-            for g in 0..ng {
-                let cb = 2 * (mh * 8 + g);
+        for mh in 0..mhr {
+            for g in 0..gr {
+                let cb = 2 * (mh * gr + g);
                 out.push_str(&format!("    mov.u32 %r12, {};\n", (16 * mh as i64) * y_row));
                 out.push_str(&format!("    mul.lo.u32 %r13, %r6, {};\n", y_row));
                 out.push_str("    add.u32 %r12, %r12, %r13;\n");
@@ -929,7 +942,7 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
 
     out.push_str("    mov.u32 %r1, %ctaid.x;\n");
-    out.push_str(&format!("    mov.u32 %r2, {};\n", n / (64 * nw as i64)));
+    out.push_str(&format!("    mov.u32 %r2, {};\n", n / (8 * gr as i64 * nw as i64)));
     out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
     out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
     out.push_str("    mov.u32 %r5, %tid.x;\n");
@@ -945,25 +958,25 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    shl.b32 %r8, %r8, 1;    // 2t\n");
 
     out.push_str("    mov.u32 %r2, %r3;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 32 * mw as i64 * a_row));
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * mhr as i64 * mw as i64 * a_row));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str(&format!("    mov.u64 %rd2, {};\n", a_off));
     out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
     out.push_str("    add.u64 %rd2, %rd2, %rd4;\n");
     out.push_str("    mov.u32 %r2, %r4;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 128 * nw as i64));
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * gr as i64 * nw as i64));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str(&format!("    mov.u64 %rd3, {};\n", b_off));
     out.push_str("    add.u64 %rd3, %rd1, %rd3;\n");
     out.push_str("    add.u64 %rd3, %rd3, %rd4;\n");
     out.push_str("    mov.u32 %r2, %r3;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 32 * mw as i64 * y_row));
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * mhr as i64 * mw as i64 * y_row));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str(&format!("    mov.u64 %rd6, {};\n", y_off));
     out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
     out.push_str("    mov.u32 %r2, %r4;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 64 * nw as i64 * (y_elem as i64)));
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 8 * gr as i64 * nw as i64 * (y_elem as i64)));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
 
@@ -1037,13 +1050,13 @@ pub fn tensor_gemm_ptx_smem_mw(
                 out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * 4));
             }
             out.push_str("    mov.u32 %r15, %r14;\n");
-            out.push_str("    shr.u32 %r15, %r15, 11;\n");
+            out.push_str(&format!("    shr.u32 %r15, %r15, {};\n", 8 + gr.trailing_zeros()));
             out.push_str("    mov.u32 %r16, %r14;\n");
-            out.push_str("    and.b32 %r16, %r16, 2047;\n");
-            out.push_str("    shr.u32 %r17, %r16, 7;\n");
-            out.push_str("    and.b32 %r19, %r16, 127;\n");
+            out.push_str(&format!("    and.b32 %r16, %r16, {};\n", gr * 256 - 1));
+            out.push_str(&format!("    shr.u32 %r17, %r16, {};\n", 4 + gr.trailing_zeros()));
+            out.push_str(&format!("    and.b32 %r19, %r16, {};\n", gr * 16 - 1));
             out.push_str("    shr.u32 %r19, %r19, 1;\n");
-            // global: (stripe+k)*b_row + (slab*64+n)*2  (the stripe constant
+            // global: (stripe+k)*b_row + (slab*(8*gr)+n)*2  (the stripe constant
             // folds the prologue's kstep; %r2 is NOT kstep here — it still
             // holds a setup product)
             out.push_str(&format!("    mul.lo.u32 %r18, %r17, {};\n", b_row));
@@ -1053,19 +1066,19 @@ pub fn tensor_gemm_ptx_smem_mw(
                     stripe * b_row
                 ));
             }
-            out.push_str("    mul.lo.u32 %r20, %r15, 64;\n");
+            out.push_str(&format!("    mul.lo.u32 %r20, %r15, {};\n", 8 * gr));
             out.push_str("    add.u32 %r20, %r20, %r19;\n");
             out.push_str("    shl.b32 %r20, %r20, 1;\n");
             out.push_str("    add.u32 %r18, %r18, %r20;\n");
             out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
             out.push_str("    add.u64 %rd5, %rd3, %rd5;\n");
-            // smem dst: slab*2048 + k*128 + ((n>>3)^(k&7))*16 + (n&7)*2
-            out.push_str("    shl.b32 %r19, %r15, 11;\n");
-            out.push_str("    shl.b32 %r20, %r17, 7;\n");
+            // smem dst: slab*(256*gr) + k*(16*gr) + ((n>>3)^(k&(gr-1)))*16 + (n&7)*2
+            out.push_str(&format!("    shl.b32 %r19, %r15, {};\n", 8 + gr.trailing_zeros()));
+            out.push_str(&format!("    shl.b32 %r20, %r17, {};\n", 4 + gr.trailing_zeros()));
             out.push_str("    add.u32 %r19, %r19, %r20;\n");
             out.push_str("    shr.u32 %r20, %r14, 4;\n");
-            out.push_str("    and.b32 %r20, %r20, 7;\n");
-            out.push_str("    and.b32 %r16, %r17, 7;\n");
+            out.push_str(&format!("    and.b32 %r20, %r20, {};\n", gr - 1));
+            out.push_str(&format!("    and.b32 %r16, %r17, {};\n", gr - 1));
             out.push_str("    xor.b32 %r20, %r20, %r16;\n");
             out.push_str("    shl.b32 %r20, %r20, 4;\n");
             out.push_str("    add.u32 %r19, %r19, %r20;\n");
@@ -1154,30 +1167,30 @@ pub fn tensor_gemm_ptx_smem_mw(
             out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * 4));
         }
         out.push_str("    mov.u32 %r15, %r14;\n");
-        out.push_str("    shr.u32 %r15, %r15, 11;\n");
+        out.push_str(&format!("    shr.u32 %r15, %r15, {};\n", 8 + gr.trailing_zeros()));
         out.push_str("    mov.u32 %r16, %r14;\n");
-        out.push_str("    and.b32 %r16, %r16, 2047;\n");
-        out.push_str("    shr.u32 %r17, %r16, 7;\n");
-        out.push_str("    and.b32 %r19, %r16, 127;\n");
+        out.push_str(&format!("    and.b32 %r16, %r16, {};\n", gr * 256 - 1));
+        out.push_str(&format!("    shr.u32 %r17, %r16, {};\n", 4 + gr.trailing_zeros()));
+        out.push_str(&format!("    and.b32 %r19, %r16, {};\n", gr * 16 - 1));
         out.push_str("    shr.u32 %r19, %r19, 1;\n");
-        // global: (kstep+16*(S-1)+k)*b_row + (slab*64+n)*2
+        // global: (kstep+16*(S-1)+k)*b_row + (slab*(8*gr)+n)*2
         out.push_str("    mov.u32 %r18, %r2;\n");
         out.push_str(&format!("    add.u32 %r18, %r18, {};\n", 16 * (stages as i64 - 1)));
         out.push_str("    add.u32 %r18, %r18, %r17;\n");
         out.push_str(&format!("    mul.lo.u32 %r18, %r18, {};\n", b_row));
-        out.push_str("    mul.lo.u32 %r20, %r15, 64;\n");
+        out.push_str(&format!("    mul.lo.u32 %r20, %r15, {};\n", 8 * gr));
         out.push_str("    add.u32 %r20, %r20, %r19;\n");
         out.push_str("    shl.b32 %r20, %r20, 1;\n");
         out.push_str("    add.u32 %r18, %r18, %r20;\n");
         out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
         out.push_str("    add.u64 %rd5, %rd3, %rd5;\n");
-        // smem dst: slab*2048 + k*128 + ((n>>3)^(k&7))*16 + (n&7)*2
-        out.push_str("    shl.b32 %r19, %r15, 11;\n");
-        out.push_str("    shl.b32 %r20, %r17, 7;\n");
+        // smem dst: slab*(256*gr) + k*(16*gr) + ((n>>3)^(k&(gr-1)))*16 + (n&7)*2
+        out.push_str(&format!("    shl.b32 %r19, %r15, {};\n", 8 + gr.trailing_zeros()));
+        out.push_str(&format!("    shl.b32 %r20, %r17, {};\n", 4 + gr.trailing_zeros()));
         out.push_str("    add.u32 %r19, %r19, %r20;\n");
         out.push_str("    shr.u32 %r20, %r14, 4;\n");
-        out.push_str("    and.b32 %r20, %r20, 7;\n");
-        out.push_str("    and.b32 %r16, %r17, 7;\n");
+        out.push_str(&format!("    and.b32 %r20, %r20, {};\n", gr - 1));
+        out.push_str(&format!("    and.b32 %r16, %r17, {};\n", gr - 1));
         out.push_str("    xor.b32 %r20, %r20, %r16;\n");
         out.push_str("    shl.b32 %r20, %r20, 4;\n");
         out.push_str("    add.u32 %r19, %r19, %r20;\n");
@@ -1204,10 +1217,10 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
     out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
     out.push_str("    mov.u32 %r12, %r10;\n");
-    out.push_str("    mul.lo.u32 %r12, %r12, 1024;\n");
+    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", mhr * 512));
     out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
     out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
-    for mh in 0..2 {
+    for mh in 0..mhr {
         // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
         // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
         out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
@@ -1243,13 +1256,13 @@ pub fn tensor_gemm_ptx_smem_mw(
             out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
             out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
             out.push_str("    mov.u32 %r12, %r11;\n");
-            out.push_str("    mul.lo.u32 %r12, %r12, 2048;\n");
+            out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", gr * 256));
             out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
             out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
             out.push_str("    mov.u32 %r13, %r7;\n");
             out.push_str("    and.b32 %r12, %r13, 15;\n");
-            out.push_str("    shl.b32 %r12, %r12, 7;\n");
-            out.push_str("    and.b32 %r14, %r13, 7;\n");
+            out.push_str(&format!("    shl.b32 %r12, %r12, {};\n", 4 + gr.trailing_zeros()));
+            out.push_str(&format!("    and.b32 %r14, %r13, {};\n", gr - 1));
             out.push_str(&format!("    xor.b32 %r14, %r14, {};\n", g));
             out.push_str("    shl.b32 %r14, %r14, 4;\n");
             out.push_str("    add.u32 %r17, %r12, %r14;\n");
@@ -1263,14 +1276,14 @@ pub fn tensor_gemm_ptx_smem_mw(
         if f16_acc {
             emit_b_ld(&mut out, 0, "%b0", "%b1");
             emit_b_ld(&mut out, 1, "%b2", "%b3");
-            for g in 0..ng {
+            for g in 0..gr {
                 let (lo, hi) = if g % 2 == 0 { ("%b0", "%b1") } else { ("%b2", "%b3") };
-                let cb = 2 * (mh * 8 + g);
+                let cb = 2 * (mh * gr + g);
                 out.push_str(&format!(
                     "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{{}, {}}}, {{%c{}, %c{}}};\n",
                     cb, cb + 1, lo, hi, cb, cb + 1
                 ));
-                if g + 2 < ng {
+                if g + 2 < gr {
                     // Refill the pair mma(g) JUST released — it is next
                     // needed at g+2. The other pair still holds g+1's
                     // fragment (loading there clobbered it before its mma:
@@ -1281,9 +1294,9 @@ pub fn tensor_gemm_ptx_smem_mw(
                 }
             }
         } else {
-            for g in 0..ng {
+            for g in 0..gr {
                 emit_b_ld(&mut out, g, "%b0", "%b1");
-                let cb = 4 * (mh * 8 + g);
+                let cb = 4 * (mh * gr + g);
                 out.push_str(&format!(
                     "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
                     cb, cb + 1, cb + 2, cb + 3, cb, cb + 1, cb + 2, cb + 3
@@ -1330,14 +1343,14 @@ pub fn tensor_gemm_ptx_smem_mw(
         return out;
     }
     out.push_str("    mov.u32 %r12, %r10;\n");
-    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 32 * y_row));
+    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
     out.push_str("    mov.u32 %r13, %r11;\n");
-    out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 64 * (y_elem as i64)));
+    out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 8 * gr as i64 * (y_elem as i64)));
     out.push_str("    mov.u32 %r9, %r12;\n");
     out.push_str("    add.u32 %r9, %r9, %r13;\n");
-    for mh in 0..2 {
-        for g in 0..ng {
-            let cb = 4 * (mh * 8 + g);
+    for mh in 0..mhr {
+        for g in 0..gr {
+            let cb = 4 * (mh * gr + g);
             for (coff, row_off, col_off) in [
                 (0i64, 0i64, 0i64),
                 (1, 0, 1),
@@ -1377,7 +1390,7 @@ mod r16_dump {
         // compile_cubin: offline ptxas produces a loadable ELF cubin from
         // the emitted PTX. Tolerant skip when no ptxas is installed — the
         // PTX-text fallback is the documented contract then.
-        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4, 2);
         match crate::backend::ptx::compile_cubin(&ptx, 128) {
             Some(bytes) => assert_eq!(&bytes[0..4], b"\x7fELF", "cubin magic"),
             None => eprintln!("ptxas unavailable — PTX-text fallback (ok)"),
@@ -1387,7 +1400,7 @@ mod r16_dump {
     #[test]
     fn dump_mw_1x1() {
         /* M=64,N=64,K=64, CTA 32x64 (mw=1,nw=1). a@0,b@8192,y@16392 */
-        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_1x1.ptx", &ptx).unwrap();
     }
 
@@ -1395,14 +1408,14 @@ mod r16_dump {
     #[test]
     fn dump_mw_128x128() {
         /* M=128,N=128,K=64, CTA 128x128 (mw=4,nw=2). a@0,b@16384,y@32776 */
-        let ptx = tensor_gemm_ptx_smem_mw(128, 128, 64, 0, 16384, 32776, 2, 4, 2, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(128, 128, 64, 0, 16384, 32776, 2, 4, 2, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_128x128.ptx", &ptx).unwrap();
     }
     #[test]
     fn dump_mw_256x128() {
         /* M=256,N=128,K=64, CTA 256x128 (mw=8,nw=2). a@0,b=256*64*2=32768,
            y@32768+128*64*2+8=49160 */
-        let ptx = tensor_gemm_ptx_smem_mw(256, 128, 64, 0, 32768, 49160, 2, 8, 2, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(256, 128, 64, 0, 32768, 49160, 2, 8, 2, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_256x128.ptx", &ptx).unwrap();
     }
 
@@ -1436,19 +1449,19 @@ mod r16_dump {
     fn dump_mw_2048() {
         /* M=N=K=2048, select_mw_nw=(4,4) block=512 (128-reg budget).
            a@0, b=2048*2048*2=8388608, y=2*8388608+8=16777224 */
-        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 4, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_2048.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_2048_f16acc() {
-        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 4, 4, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_2048_f16acc.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_8192_f16acc() {
-        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 4, 4, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_8192_f16acc.ptx", &ptx).unwrap();
     }
 
@@ -1458,11 +1471,11 @@ mod r16_dump {
             let b_off = 4096 * k * 2;
             let y_off = ((b_off + 4096 * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw(
-                4096, 4096, k, 0, b_off as u64, y_off as u64, 2, 4, 4, true, 2,
+                4096, 4096, k, 0, b_off as u64, y_off as u64, 2, 4, 4, true, 2, 2,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_mw_4096_k{k}_f16acc.ptx"), &ptx).unwrap();
         }
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 4, 4, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_k16_f16acc.ptx", &ptx).unwrap();
     }
 
@@ -1472,15 +1485,22 @@ mod r16_dump {
            8-kstep... 16-iteration promotion into the f16 y tile. Gate 1e-2. */
         /* production pairing: f16acc funds (4,4)@512T; 2 stages keep smem
            at 40KB so TWO CTAs co-reside (16 warps + 2 fill streams). */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_c24.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_s4.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 8, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 8, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_28.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2);
+        // Double-pump variant C (plan 2026-09-11-ptx-double-pump-warp-tile):
+        // 64x32 warp (warp_mh=4) — A fragments shared across 4 mh-blocks,
+        // B loaded 4x per kstep instead of 16x. (8,2) and (4,4) CTAs.
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2, 4);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_dp82.ptx", &ptx).unwrap();
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2, 4);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_dp44.ptx", &ptx).unwrap();
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_82.ptx", &ptx).unwrap();
     }
 
@@ -1488,7 +1508,7 @@ mod r16_dump {
     fn dump_mw_4096() {
         /* M=N=K=4096, select_mw_nw=(2,8), block=512.
            a@0, b=4096*4096*2=33554432, y=2*33554432+8=67108872 */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096.ptx", &ptx).unwrap();
     }
 
@@ -1496,7 +1516,7 @@ mod r16_dump {
     fn dump_mw_8192() {
         /* M=N=K=8192, select_mw_nw=(2,8), block=512.
            a@0, b=8192*8192*2=134217728, y=2*134217728+8=268435464 */
-        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 2, 4, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_8192.ptx", &ptx).unwrap();
     }
 
@@ -1504,7 +1524,7 @@ mod r16_dump {
     fn dump_mw_4096_k16() {
         /* M=N=4096,K=16 (skinny-K), select_mw_nw=(2,8), block=512.
            a@0, b=4096*16*2=131072, y=2*131072+8=262152 */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 2, 4, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_k16.ptx", &ptx).unwrap();
     }
 }

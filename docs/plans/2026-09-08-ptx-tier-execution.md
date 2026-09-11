@@ -602,3 +602,43 @@ incorrect at that shape (BUGS.md 2026-09-11 S=1 entry). @4096³:
 2× win at 2048³ — no redundant compute; the coopmat curve's 2048³
 peak stands. (One-off 78-94 ms spikes in the S=1 4096³ runs —
 driver hiccups, not kernel behavior.)
+
+## 2026-09-11 night: double-pump warp tile — REJECTED (-33%), hypothesis refuted
+
+Plan 2026-09-11-ptx-double-pump-warp-tile executed: the emitter is now
+parameterized by warp shape (`warp_mh`: 16-row blocks per warp; the
+col-groups derive as 16/warp_mh — mma count per kstep invariant at 16,
+accumulators stay 32 b32). Two variant-C configurations built, ptxas
+64 regs 0 spills, on-device correct (1.383e-03, same as baseline):
+
+| config | warp tile | FLOP/shared-byte | @4096³ sustained |
+|--------|-----------|------------------|------------------|
+| base (4,4) warp_mh=2 | 32x64 | 12.8 | **18.2 TF** |
+| dp44 (4,4) warp_mh=4 | 64x32 | 21.3 | 12.2 TF (−33%) |
+| dp82 (8,2) warp_mh=4 | 64x32 | 21.3 | 10.9 TF (−40%) |
+
+**The shared-BW-bound model is REFUTED.** +67% FLOP per ldmatrix byte
+bought −33% throughput: the B-slab per warp halved (32 cols), so the
+CTA n-extent shrank and the DRAM-side A/B panel reuse per FLOP dropped
+more than the LDSM savings gained. The 22.7 TF compute-only ceiling is
+NOT shared-memory-bound; the binding constraint is elsewhere (mma
+issue/dependency structure or fill-bandwidth at the CTA geometry).
+Rule 20: the refuted hypothesis blocks this fix direction — no further
+shared-traffic-led warp retiles without a new measurement-led model.
+
+Two bugs caught by the gate discipline on the way:
+1. Fill-count formulas dropped the /4 (bytes per cp.async) — 4× stage
+   overfill → IMA. per_X = stage_bytes/(threads·4), algebraically
+   identical to the old formulas at warp_mh=2.
+2. The CTA-stride constants (A/y row offset 32·mw, B col offset
+   128·nw) were stale — CTA row extent is 16·mhr·mw, col extent
+   16·gr·nw. Symptom: rel ≈ 2.0 (CTAs overlapping-write via the y RMV).
+
+Regression gate upgrade: the first "byte-identical" check compared
+against a self-contaminated copy (regenerated post-edit). The real gate
+now stands: the warp_mh=2 emission is byte-identical to a dump built
+from 648d6902 in a clean worktree.
+
+Keeper: the warp-shape parameterization itself (byte-identical at
+warp_mh=2, 2113 tests green) — future warp-tile experiments are now
+dump-and-test cheap instead of emitter surgery.

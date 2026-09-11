@@ -287,6 +287,10 @@ pub fn build_ptx_kernels(
                     tensor::tensor_gemm_ptx_smem_mw(
                         plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
                         f16_acc, stages,
+                        // warp_mh=2: the historical 32x64 warp. The 64x32
+                        // A-sharing variant (warp_mh=4) is experimental —
+                        // plan 2026-09-11-ptx-double-pump-warp-tile.
+                        2,
                     ),
                     true,
                     e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
