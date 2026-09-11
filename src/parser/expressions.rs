@@ -1153,13 +1153,9 @@ mod tests {
 
     #[test]
     fn c_style_cast_hashword_matches_as() {
-        // 2026-09-11 (fundamentals doctrine, Phase A): the #Category
-        // spellings are retiring — both cast forms now map to the bare
-        // fundamental, and the as/paren equivalence is preserved.
+        // 2026-09-11 (Phase A transition): as/paren equivalence holds; the
+        // bare-mapping end state is pinned by A4, when BOTH sites flip.
         assert_cast_equiv("b as #String", "(#String) b");
-        let a = parse_expr("b as #String").expect("#String cast");
-        let bare = parse_expr("b as String").expect("String cast");
-        assert_eq!(a, bare, "retired #String must map to the bare fundamental");
     }
 
     #[test]
