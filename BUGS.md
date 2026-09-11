@@ -5710,3 +5710,79 @@ runs when the guard is true). Clang's dominance check rejects the use.
 correct values (20/true/false/5/10/100/10/10/4/9). `hash_ops_idio` parity
 restored (24999995000000). 2076 tests green. float_math/mandelbrot/
 linked_list compile clean.
+
+## 2026-09-10 — PTX mw kernel: three device-level traps (cp.async era)
+
+**Symptoms:** the cp.async + double-buffer rewrite of
+`tensor_gemm_ptx_smem_mw` produced rc=700 (illegal memory access) or
+all-zero output on the RTX 3060 (sm_86, driver 580.178.04) while passing
+identically under cuda-gdb and compute-sanitizer. Hand harnesses faulted
+even for kernels later proven correct.
+
+**Root causes (three independent):**
+
+1. **B-fill/ldmatrix layout inversion (the original rewrite bug).** The
+   rewrite kept the pre-rewrite n-major blocked-B fill while reading with a
+   new ldmatrix scheme, and its 4-byte cp.async sources were not even
+   derivable from row-major global B (a 4B copy moves two adjacent columns
+   of one k-row; an n-major smem tile needs two adjacent k-rows — 4096
+   bytes apart). Fixed by making the smem slab K-MAJOR
+   (`k*128 + n*2`, 128-byte k-rows) with a 16B-chunk XOR swizzle
+   (`(n>>3)^(k&7)<<4`) shared by fill and ldmatrix, and reading
+   x2.trans with rows-as-k.
+
+2. **Async-proxy visibility (environment).** `cp.async.wait_group 0` +
+   `bar.sync` — the documented sm_80 pattern — did NOT make LDGSTS writes
+   visible to `ldmatrix` natively (reads saw stale/zero smem: y = all
+   zeros, rel_err exactly 1.0). Serialized tools (cuda-gdb,
+   compute-sanitizer) masked it. `fence.proxy.async.shared::cta` is the
+   ISA answer but requires sm_90. **`membar.cta` between wait_group and
+   bar.sync closes the gap on this stack** — verified on-device. If the
+   driver is ever upgraded, revisit whether membar.cta is still needed.
+
+3. **High-VA allocation fault (environment, harness-only so far).**
+   `cuMemAlloc` sometimes returns VAs in the 0x7fef_08200000-style region
+   (per-binary, deterministic, not host-ASLR); kernels that store then die
+   with Xid 31 `FAULT_PDE` on the compute channel while the copy engine
+   (HtoD upload) succeeds on the same buffer. Low VAs (0x8200000-style)
+   are immune. Driver-bug territory. Harnesses now retry `cuMemAlloc` up
+   to 64× until the pointer lands below 4 GiB. The production runtime's
+   allocations have so far landed low; if it ever flips, this is the trap.
+
+Also: `-maxrregcount=108` cubins (ptxas 12.8 AND 13.3) launch but fault
+IMA at runtime; natural allocation for the kernel is 136 regs. Never ship
+capped-register cubins for this kernel — size block_threads to the natural
+count instead (select_mw_nw caps at 256 threads).
+
+## 2026-09-11: SPIR-V coopmat fill silently corrupted for 3 days (u32_and id-as-mask)
+
+**Symptom:** the SPIR-V coopmat tensor tier failed on-device at 4096³
+(max_rel_err 3.156e-01, deterministic) while all 2111 lib tests stayed
+green and perf looked normal. Found by the cross-tier A/B against the
+new PTX tier.
+
+**Root cause:** dd5f5e26 (2026-09-08) introduced `u32_and(builder, val,
+mask: u32)` for power-of-two modulo strength reduction. rspirv's
+`type Word = u32` means a SPIR-V result id IS a u32 — the five fill
+call sites passed `p.b_stage_elems_mask` / `p.b_stage_pairs_mask`
+(**Word ids**) where a **literal mask value** was expected. Each emitted
+`Op::BitwiseAnd` masked `b_flat` with the gen_id number itself (some
+huge non-2^k-1 constant), corrupting the B-tile fill addressing for
+most flattened indices. Same instruction count → perf unchanged, so
+the commit's timing-only verification missed it; no test exercised the
+fill's shape-dependent addressing on device.
+
+**Fix:** `u32_and` now takes `mask: Word` (a u32_const result id); the
+one literal call site (stagger bucket, &7) builds its const first. The
+Word/u32 alias is exactly the class of silent type error Rust cannot
+catch — hence the helper's doc comment now warns explicitly.
+
+**Verification:** baseline A/B (5d1d7e45 blob: 4.436e-03 OK; broken
+blob: 3.156e-01 FAIL — same harness, same runtime) isolated the
+compiler; commit-window bisect pinned dd5f5e26; post-fix blob returns
+4.436e-03 (bit-identical to the 2026-09-04 ledger number).
+
+**Lesson:** strength-reduction commits that only re-measure TIMING are
+not verified. Any commit touching kernel index math needs the on-device
+correctness gate at a real shape (the cross-tier A/B harness now does
+this in one command).

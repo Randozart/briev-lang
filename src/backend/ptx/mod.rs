@@ -9,8 +9,9 @@
 //! layout rule — so the kernel and the runner's field table can never
 //! drift (the SPIR-V backend's invariant, reused here).
 //!
-//! Not yet: tensor ops (mma.sync/ldmatrix/cp.async — S3), f16 operands,
-//! non-GEMM kernels. Each arrives as a first-class emitter arm with tests.
+//! Not yet: cp.async multi-stage (S3b+), multi-warp CTA, register blocking
+//! (S3b+ occupancy rungs), non-GEMM kernels. Each arrives as a first-class
+//! emitter arm with tests.
 
 use crate::ast::{Expr, TopLevel};
 use crate::backend::spirv::gemm::GemmPlan;
@@ -80,9 +81,124 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
     out
 }
 
+/// Select multi-warp CTA dimensions (mw, nw) for the mw kernel.
+/// CTA tile = (mw*32) × (nw*64), block_threads = mw*nw*32 (max 256).
+/// Register budget: the mw kernel compiles to 128 regs natural, 0 spills
+/// (2026-09-10 ptxas 13.3, after the per-mh/per-g compute scheduling trim).
+/// 128 × 256 = 32,768, so TWO 8-warp CTAs co-reside per SM — measured
+/// 2026-09-10 @4096³: (2,4)@256T 18.4 vs (4,4)@512T 16.2 TFLOP/s. A single
+/// 512-thread CTA (128 × 512 = the full register file, 1 CTA/SM) has half
+/// the cp.async streams and loses. History: the original 512 cap assumed
+/// 108 regs; -maxrregcount=108 cubins fault IMA at runtime (ptxas 12.8 AND
+/// 13.3) — never ship capped-register cubins, verify with ptxas -v.
+/// Also: nw must divide 8, mw must divide 16 (for per_a/per_b integer
+/// division in the kernel). Prefers wider nw (B reuse) then scales mw
+/// (A reuse).
+fn select_mw_nw(m: i64, n: i64, thread_cap: usize) -> (usize, usize) {
+    // Balanced growth (2026-09-10 on-device sweep, 4096^3): (1,8) 8.9,
+    // (2,4) 17.3, (4,2) 17.4 TFLOP/s — one-sided configs starve A or B
+    // reuse, so grow whichever axis lags, nw first (B reuse), while the
+    // divisibility guards and the 512-thread register budget hold.
+    // At 512 threads balanced growth reaches (4,4): CTA tile 128x256,
+    // 85 FLOP/B DRAM intensity (vs 51 at (2,4)) — the DRAM ceiling moves
+    // 18.4 -> 30.7 TFLOP/s, which is the point of the trim.
+    let mut mw: usize = 1;
+    let mut nw: usize = 1;
+    loop {
+        let mut grew = false;
+        for (dm, dn) in [(1usize, 2usize), (2usize, 1usize)] {
+            let (tm, tn) = (mw * dm, nw * dn);
+            if tm <= 16
+                && tn <= 8
+                && m % ((tm * 32) as i64) == 0
+                && n % ((tn * 64) as i64) == 0
+                && tm * tn * 32 <= thread_cap
+            {
+                mw = tm;
+                nw = tn;
+                grew = true;
+                break;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    (mw, nw)
+}
+
 /// Build the PTX kernel set for an `.abv` — one kernel per eligible accel
 /// entry. GEMM-shaped entries lower to the naive PTX kernel; anything else
 /// is a hard error (the S2a surface gate — GEMM family ONLY until S5).
+
+/// 2026-09-11 (cubin shipping): compile PTX text to cubin bytes through
+/// offline ptxas — the driver JIT is bypassed entirely (it ignores
+/// CU_JIT_MAX_REGISTERS: 166 regs vs the requested 128 → 1 CTA/SM, −27%;
+/// rejects the `.maxnreg` directive text; and its internal compiler state
+/// wedges after fault storms). The PTX carries its own `.maxnreg`
+/// contract; ptxas honors it, so no extra flags. Returns None when ptxas
+/// is unavailable or fails — the caller ships PTX text and the runtime
+/// JITs (historical path).
+pub(crate) fn compile_cubin(ptx: &str, maxnreg: u32) -> Option<Vec<u8>> {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("briev-ptx-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let in_path = dir.join("kernel.ptx");
+    let out_path = dir.join("kernel.cubin");
+    std::fs::write(&in_path, ptx).ok()?;
+
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("TRITON_PTXAS") {
+        candidates.push(std::path::PathBuf::from(p));
+    }
+    candidates.push(std::path::PathBuf::from("ptxas"));
+    candidates.push(std::path::PathBuf::from("/opt/cuda/bin/ptxas"));
+    if let Ok(home) = std::env::var("HOME") {
+        // Any installed python's triton backend (the benchmark toolchain's
+        // ptxas — 12.8 validated alongside 13.3).
+        if let Ok(entries) = std::fs::read_dir(format!("{home}/.local/lib")) {
+            for e in entries.flatten() {
+                let c = e.path().join(
+                    "site-packages/triton/backends/nvidia/bin/ptxas",
+                );
+                if c.exists() {
+                    candidates.push(c);
+                }
+            }
+        }
+    }
+
+    let mut cubin = None;
+    for ptxas in &candidates {
+        let nreg = format!("{maxnreg}");
+        let out = Command::new(ptxas)
+            .args([
+                "-arch",
+                "sm_86",
+                "-maxrregcount",
+                &nreg,
+                &in_path.to_string_lossy(),
+                "-o",
+                &out_path.to_string_lossy(),
+            ])
+            .output();
+        let Ok(out) = out else { continue };
+        if !out.status.success() {
+            continue;
+        }
+        if let Ok(bytes) = std::fs::read(&out_path) {
+            // A cubin is an ELF image; anything else is not a blob the
+            // runtime can load.
+            if bytes.len() > 4 && bytes[0..4] == [0x7f, b'E', b'L', b'F'] {
+                cubin = Some(bytes);
+                break;
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    cubin
+}
+
 pub fn build_ptx_kernels(
     program: &[TopLevel],
     universe: &TypeUniverse,
@@ -148,17 +264,45 @@ pub fn build_ptx_kernels(
             && plan.n % 16 == 0
             && plan.k % 16 == 0;
 
-        let (ptx, ptx_tensor, count_expr) = if tensor {
-            // The warp-tile kernel decodes one block per (M/32)*(N/16)
-            // tile from ctaid.y. count_expr stays M*N — the runner's
-            // fast-forward uses it for the counter (the .abv gate
-            // `[i < M*N]` must go false after ONE dispatch); the
-            // ptx_tensor dispatch geometry computes ny = count/512 blocks.
-            (
-                tensor::tensor_gemm_ptx(plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem),
-                true,
-                e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
-            )
+        let f16_acc = crate::config_tuning::ir_lowering().ptx_tensor_f16acc;
+        // f16-acc halves the accumulator registers (64 f32 -> 32 f16x2),
+        // which is what makes the (4,4)@512T x 2-CTA point affordable; the
+        // shallower 2-stage pipeline keeps smem at 40KB/CTA so both fit.
+        // f32-acc keeps 4 stages (deep pipeline, 1-2 CTAs by config).
+        let stages = if f16_acc { 2usize } else { 4usize };
+        // On-device sweep (2026-09-10, 4096^3): the f16acc kernel's best
+        // config is (4,4)@512T (13.6 vs 12.2 for (2,4)@256T) — the packed
+        // accumulators fund the wider tile. The f32 kernel's best stays
+        // (2,4)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
+        let thread_cap = if f16_acc { 512 } else { 256 };
+        let (ptx, ptx_tensor, count_expr, block_threads, shared_bytes) = if tensor {
+            // Select mw/nw for multi-warp CTA. The mw kernel needs
+            // M%(mw*32)==0 and N%(nw*64)==0; fall back to single-warp
+            // smem kernel when the shape doesn't tile cleanly.
+            let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap);
+            let mw_ok = plan.m % (mw as i64 * 32) == 0
+                && plan.n % (nw as i64 * 64) == 0;
+            if mw_ok && (mw > 1 || nw > 1) {
+                (
+                    tensor::tensor_gemm_ptx_smem_mw(
+                        plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
+                        f16_acc, stages,
+                    ),
+                    true,
+                    e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+                    (mw * nw * 32) as u32,
+                    ((mw * 1024 + nw * 2048) * stages) as u32,
+                )
+            } else {
+                // Single-warp smem kernel (32×16 tile, 1 warp).
+                (
+                    tensor::tensor_gemm_ptx_smem(plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem),
+                    true,
+                    e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+                    64,
+                    0,
+                )
+            }
         } else {
             if a_elem != 4 {
                 return Err(format!(
@@ -174,12 +318,25 @@ pub fn build_ptx_kernels(
                 naive_gemm_ptx(plan.m, plan.n, plan.k, a_elem, a_off, b_off, y_off),
                 false,
                 e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+                64,
+                0,
             )
         };
 
+        // 2026-09-11 (cubin shipping): prefer offline-ptxas cubin bytes;
+        // the driver JIT ignores the register cap (166 vs 128 → 1 CTA/SM)
+        // and wedges after fault storms. Fallback = PTX text (JIT path).
+        let blob: Vec<u8> = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
+            match compile_cubin(&ptx, if f16_acc { 64 } else { 128 }) {
+                Some(bytes) => bytes,
+                None => ptx.into_bytes(),
+            }
+        } else {
+            ptx.into_bytes()
+        };
         out.push(RunnerKernel {
             name: name.clone(),
-            spirv: ptx.into_bytes(),
+            spirv: blob,
             image_plans: Vec::new(),
             index_var: e.shape.index_var.clone(),
             count_expr,
@@ -189,6 +346,8 @@ pub fn build_ptx_kernels(
             tensor: false,
             tensor_tile_rows: 1,
             ptx_tensor,
+            block_threads,
+            shared_bytes,
         });
     }
     Ok(out)

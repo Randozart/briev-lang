@@ -587,15 +587,18 @@ pub(crate) fn u32_shr(builder: &mut super::SpirvBuilder, val: Word, shift: u32) 
 }
 
 /// Emit BitwiseAnd for power-of-two modulo: val % 2^n → val & (2^n - 1).
-pub(crate) fn u32_and(builder: &mut super::SpirvBuilder, val: Word, mask: u32) -> Word {
-    let c = u32_const(builder, mask);
+/// The mask is a Word (a u32_const result id), NOT a literal value: rspirv's
+/// `type Word = u32` alias makes an id accepted where a value is expected,
+/// and the id number then silently becomes the AND mask (the 2026-09-11
+/// coopmat fill regression — every fill b_flat_within ANDed with a gen_id).
+pub(crate) fn u32_and(builder: &mut super::SpirvBuilder, val: Word, mask: Word) -> Word {
     let ty = builder.u32_type();
     let id = builder.gen_id();
     builder.emit(Instruction::new(
         spirv::Op::BitwiseAnd,
         Some(ty),
         Some(id),
-        vec![Operand::IdRef(val), Operand::IdRef(c)],
+        vec![Operand::IdRef(val), Operand::IdRef(mask)],
     ));
     id
 }
@@ -3116,7 +3119,8 @@ fn emit_coopmat_smem(
     let stagger = GemmPlan::coopmat_stagger() && groups % 8 == 0 && groups >= 16;
     let start_panel: Word = if stagger {
         let per = u32_const(builder, groups / 8);
-        let bucket = u32_and(builder, wgid_x, 7);
+        let seven = u32_const(builder, 7);
+        let bucket = u32_and(builder, wgid_x, seven);
         u32_binop(builder, spirv::Op::IMul, bucket, per)
     } else {
         u32_const(builder, 0)
