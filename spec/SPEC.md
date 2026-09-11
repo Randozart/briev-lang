@@ -222,19 +222,59 @@ compiler can do, Briev code can build.
 Electronics Briev (`.ebv`) applies the Briev philosophy — topology, contracts,
 nodal reasoning, compile-time proving — to printed circuit boards. Its core
 fundamentals follow physical electronic components (`Resistor`, `Capacitor`,
-`IC`, `Connector`) with physical metadata (`value`, `package`, `footprint`,
-`rating`), not software types.
+`Led`, `Connector`) with physical metadata (`value`, `package`, `footprint`,
+`rating`), not software types. The component library lives in
+`std/electronics.bv` and user source; the compiler knows no built-in
+component list.
 
 Electronics is a **closed system**: no OS, no dynamic allocation, no open-world
 FFI, no concurrency ambiguity. Strict semantics are therefore mandatory —
 every program either proves its contracts or fails; there is no unresolved
-case. Electrical contracts (`[max_current <= 2A]`, `[voltage <= 3.3V]`) are
-verified at compile time over the net topology.
+case. Electrical contracts (`[vbus.current <= 2.0]`, `[led.a.voltage <= 3.3]`)
+are verified at compile time over the net topology. Contract expressions are
+proven, never executed.
 
-Nets are **derived** as the transitive closure of explicit pin connections
-(`r1.pin(1) <-> led1.pin(2);`). Naming is opt-in for contract and metadata
-binding (`let vbus = r1.pin(1) <-> led1.pin(2);`). A single-pin net (a dangling
-pin) is a compile error, never a silent board defect.
+**Pins are first-class.** Component types declare them with the `pin` keyword:
+
+```briev
+type Resistor {
+    pin a;                      // auto-number: highest so far + 1
+    pin b;                      // → 2
+    !> Reference: "R";
+};
+
+type Connector {
+    pin p1 = 1;                 // explicit datasheet number
+    pin p2 = 2;
+    !> Reference: "J";
+};
+```
+
+Pin numbers must be ≥ 1 and unique per type; auto-numbered pins continue
+after the highest explicit number, so arbitrary datasheet mappings never
+collide. Pins are type-level topology, never instance-construction fields.
+Contracts reference them through field access: `r1.a.voltage`.
+
+**There is no connection operator.** A netlist is the transitive closure of
+pin-equality obligations stated in transaction preconditions; the compiler
+derives nets by union-find over the connection graph:
+
+```briev
+txn powered
+    [j1.p1.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.p2.voltage]
+    [d1.a.current > 0.0 && d1.a.current <= 0.02]
+{ }
+```
+
+Preconditions are topology — `x == y` between two pin accesses (`inst.pin`
+or `inst.pin.prop`) puts both pins on the same electrical node.
+Postconditions are physics — the behavior the derived topology must sustain;
+they never create nets. Conjoined obligations use `==`, whose precedence
+sits above `&&`; single `=` binds loosest and would swallow the conjunction.
+A declared pin on no net is a dangling pin — a compile error naming the pin,
+never a silent board defect. Compilation emits a KiCad 7 schematic
+(`.kicad_sch`); reference designators come from `!> Reference`, values and
+packages from the instance's literal fields.
 
 ## 4. Lexical conventions
 

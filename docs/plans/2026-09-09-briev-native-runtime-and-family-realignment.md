@@ -693,3 +693,35 @@ Family D resumes first (str_to_float, then vector ops — both gate-gated).
 Allocator ownership (A) lands with Family E; Asm# (B) and `inline_frgn!` (C)
 are independent fundamentals that can land in either order after D. The
 capability doc ships immediately with these amendments.
+
+---
+
+## Amendment 2 (2026-09-11, post-implementation): Part C as built
+
+Part C landed with two decisions superseding §4.3:
+
+1. **`<->` is DEAD — nets are contract-inferred.** Pin connections are
+   inferred from precondition pin-equality obligations; nets are the
+   transitive closure (union-find). "What triggers what" reuses the reactor
+   trigger analysis. Postconditions are physics, never wiring.
+2. **Pins are first-class, not metadata.** `pin <name> [= <n>];` in type
+   bodies (lexer token, canonical vocab, `PinDecl` on `TypeDefBody`).
+   Auto-numbering continues after the highest explicit number; numbers ≥ 1,
+   unique per type. Typechecker resolves pins as fields (to the prelude
+   `Pin` type) but never as literal-construction fields.
+
+Also superseded: §4.2's `config/targets.dbvl` row exists again with
+`.ebv: electronics; ; prelude-electronics;` (Part B had removed the row
+because `.ebv` was still Embedded; Electronics reclaims it). Grammar
+additions: `pin` keyword only — component declarations use existing
+struct-literal form (`let r1: Resistor = Resistor { value: "330" };`),
+empty literals `T { }` now parse.
+
+As built: `src/analysis/electronics.rs` (derivation),
+`src/backend/electronics/mod.rs` (KiCad 7 emission),
+`lib/std/electronics.bv` + `plugins/parsed/prelude-electronics.bv`
+(extension surface), `examples/electronics/led_blinker.ebv` (demo:
+connector → 330 Ω → LED, compiles to a `.kicad_sch` that opens in
+KiCad). Architecture: `docs/architecture/electronics-frontend.md`.
+Deferred: named nets, pin electrical roles, unit suffixes, footprint
+validation, PinDecl beast-serialization.

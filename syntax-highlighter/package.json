@@ -13,7 +13,6 @@
     "onLanguage:dbriev",
     "onLanguage:sbriev",
     "onLanguage:srbv",
-    "onLanguage:sebv",
     "onLanguage:abv",
     "onLanguage:sbv"
   ],
@@ -48,7 +47,7 @@
       },
       {
         "id": "ebv",
-        "aliases": ["Embedded Briev", "embedded-briev", "Briev Embed", "briev-embed"],
+        "aliases": ["Electronics Briev", "electronics-briev", "Briev Electronics", "briev-electronics"],
         "extensions": [".ebv"],
         "icon": {
           "light": "./images/e-briev-logo.svg",
@@ -83,16 +82,6 @@
         "icon": {
           "light": "./images/r-briev-logo.svg",
           "dark": "./images/r-briev-logo.svg"
-        },
-        "configuration": "./language-configuration.json"
-      },
-      {
-        "id": "sebv",
-        "aliases": ["Strict Embedded Briev", "strict-embedded-briev", "Strict Embed", "strict-embed"],
-        "extensions": [".sebv"],
-        "icon": {
-          "light": "./images/e-briev-logo.svg",
-          "dark": "./images/e-briev-logo.svg"
         },
         "configuration": "./language-configuration.json"
       },
@@ -157,11 +146,6 @@
         "language": "srbv",
         "scopeName": "source.rbv",
         "path": "./syntaxes/rbv.tmLanguage.json"
-      },
-      {
-        "language": "sebv",
-        "scopeName": "source.briev",
-        "path": "./syntaxes/briev.tmLanguage.json"
       },
       {
         "language": "abv",
