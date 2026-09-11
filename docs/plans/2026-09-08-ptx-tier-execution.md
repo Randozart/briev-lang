@@ -431,3 +431,21 @@ unchanged (3.3e-4). 2111 lib tests green.
 f16acc is the fastest correct configuration on every shape. Default
 flip = numeric-contract decision (1e-2 vs 5e-3 tier) — pending owner
 call; the config knob (`ptx_tensor_f16acc`) fully selects it either way.
+
+## 2026-09-11 later: three f16acc VERDICTs — (4,4)@2-stage@32-iter stands
+
+1. **4-stage f16acc: REJECTED (−2.5%)**. 17.8 vs 18.2 TFLOP/s, 3
+   interleaved reps. The (4,4)@512T mma phase (16 warps) already hides
+   the fill latency behind 2 stages; deeper pipelining only lengthens
+   the prologue. (f32 keeps 4 stages — its 256T mma phase is shorter.)
+2. **chunk_iters 32→64: REJECTED (no effect)**. 18.2/16.9/18.0 at
+   4096/2048/8192³ — identical to 32-iter within noise; the RMV pass
+   overlaps fills, it is not on the critical path. Reverted to 32.
+3. **Config re-probe post-pipeline-fix: (4,4) CONFIRMED**. (4,4)
+   17.9-18.0 > (8,2) 17.2 > (2,8) 13.7 TFLOP/s at 4096³, 64 regs, 0
+   spills. The pre-fix ranking was measured on broken kernels but the
+   instruction schedule was identical — ranking holds.
+
+Also: tharness_f16s2 gained MW_STAGES (smem must match the kernel's
+stage count — 2-stage allocation on a 4-stage kernel faults IMA on the
+stage-2/3 fills).

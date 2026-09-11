@@ -1476,6 +1476,12 @@ mod r16_dump {
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc.ptx", &ptx).unwrap();
         let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_c24.ptx", &ptx).unwrap();
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 4);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_s4.ptx", &ptx).unwrap();
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 8, true, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_28.ptx", &ptx).unwrap();
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_82.ptx", &ptx).unwrap();
     }
 
     #[test]
