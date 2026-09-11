@@ -285,6 +285,12 @@ impl<'a> TypecheckContext<'a> {
                         return Some(cat.to_string());
                     }
                 }
+                // 2026-09-11 (fundamentals doctrine, B1): a SELF-based
+                // universe entry is a parentless declared type — its own
+                // category root (`type Volt { }` resolves to Volt).
+                if rt.base == current {
+                    return Some(current.to_string());
+                }
             }
             if visited.iter().any(|v| v == current) {
                 return None;

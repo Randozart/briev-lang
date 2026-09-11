@@ -1056,6 +1056,14 @@ impl CastingGraph {
                 }
                 _ => {}
             }
+            // 2026-09-11 (fundamentals doctrine, B1): a SELF-base is a
+            // parentless declared type — it IS its own category root
+            // (`type Volt { }` registers base "Volt" and resolves to
+            // (Volt, "")). No table of electrical names exists; this is
+            // pure mechanism.
+            if cat == current.name {
+                return (cat, var);
+            }
             // The base names another universe type — follow its
             // (protocol, metadata). A declaration cycle (`A : B, B : A`)
             // must not spin: visited-set guard.
@@ -1473,6 +1481,49 @@ mod tests {
         let path = graph.find_path("String", "", "Bit", "");
         assert!(path.is_some(), "String → Bit must route through the Data root");
         assert_eq!(path.unwrap()[0].lane, LaneKind::PtrToInt);
+    }
+
+    // 2026-09-11 (fundamentals doctrine, B1): a PARENTLESS declared type is
+    // its own category root — pure mechanism, no name tables. `type Volt
+    // { }` registers base "Volt" (self) and resolves to (Volt, "").
+    #[test]
+    fn test_parentless_type_self_roots_as_category() {
+        use crate::ast::top::*;
+        let items = vec![TopLevel::TypeDef(Box::new(TypeDef {
+            name: "Volt".into(),
+            type_params: vec![],
+            parent: None,
+            protocol: None,
+            traits: vec![],
+            bit_range: None,
+            coll: false,
+            ports_in: vec![],
+            ports_out: vec![],
+            seq: false,
+            body: TypeDefBody {
+                slots: vec![],
+                pins: vec![],
+                metadata: {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("bits".to_string(), crate::ast::PropertyValue::Int(32));
+                    m
+                },
+                projections: vec![],
+                bindings: vec![],
+                operators: vec![],
+                op_bindings: vec![],
+                constraints: vec![],
+                members: vec![],
+                span: None,
+            },
+            span: None,
+        }))];
+        let mut universe = crate::type_universe::TypeUniverse::new();
+        crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
+        let graph = CastingGraph::new();
+        let (cat, var) = graph.type_to_protocol(&universe, &Type::Custom("Volt".into()));
+        assert_eq!(cat, "Volt", "parentless type must self-root as its own category");
+        assert_eq!(var, "");
     }
 
     #[test]

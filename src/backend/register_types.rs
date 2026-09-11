@@ -251,13 +251,19 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
             }
         }
         // 2026-08-03: the declared protocol hashword is the base when there is
-        // no parent type — `type CStr: String<C_String>` must register base
-        // "String<C_String>" (not "Bit") so type_to_protocol resolves it to
+        // no parent type — `type CStr: #String<C_String>` must register base
+        // "#String<C_String>" (not "Bit") so type_to_protocol resolves it to
         // (String, C_String) and the casting graph derives its ABI (ptr).
+        // 2026-09-11 (fundamentals doctrine, B1): a type with NO parent and
+        // NO protocol SELF-ROOTS — base = its own name. A parentless declared
+        // type IS its own category root (`type Volt { }` is the Volt
+        // category); the old `Bit` default silently classified every plain
+        // struct as a bit type. Consumers comparing bases use the walk, which
+        // now treats a self-base as the root.
         let base = td.parent.as_ref()
             .and_then(|e| match e.as_ref() { Expr::Identifier(n) => Some(n.clone()), _ => None })
             .or_else(|| td.protocol.clone())
-            .unwrap_or_else(|| "Bit".to_string());
+            .unwrap_or_else(|| td.name.clone());
         let mut fields: Vec<(String, Type)> = td.body.slots.iter()
             .map(|s| (s.name.clone(), s.ty.clone()))
             .collect();
