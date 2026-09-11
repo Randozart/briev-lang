@@ -3291,7 +3291,6 @@ mod tests {
         assert_eq!(ty, crate::ast::Type::string());
     }
 
-    #[test]
     // ── 2026-09-11 (fundamentals doctrine, Phase A): fundamental-with-variant
 
     #[test]

@@ -463,20 +463,30 @@ impl<'a> TypecheckContext<'a> {
     }
 
     /// Does a declared operator parameter cover the operand type?
-    /// A `#Float` hashword covers any #Float-protocol member; a concrete
-    /// `Float` covers exactly that type.
+    /// 2026-09-11 (fundamentals doctrine, Phase A3): the fundamental name is
+    /// BOTH the base type and the protocol — a bare `Float` param covers any
+    /// #Float-protocol member (exact `Float` still matches by the equality
+    /// arm above; a concrete-only op declares the concrete name, e.g.
+    /// `Float32`). A `#Float` hashword param is the legacy spelling of the
+    /// same coverage.
     fn param_covers(&self, param: &Type, operand: &Type) -> bool {
         if param == operand {
             return true;
         }
-        let Type::HashWord(hw) = param else {
-            return false;
+        let category = match param {
+            Type::HashWord(hw) => hw.strip_prefix('#').unwrap_or(hw),
+            Type::Custom(name)
+                if crate::type_universe::FUNDAMENTAL_TYPES.contains(&name.as_str()) =>
+            {
+                name.as_str()
+            }
+            _ => return false,
         };
-        if hw == "#Bit" {
+        if category == "Bit" {
             // Universal — every type is a member of #Bit via Cast.Bit.
             return operand.universe_key().is_some();
         }
-        self.operand_implements_protocol(operand, hw)
+        self.operand_implements_protocol(operand, category)
     }
 
     /// Does a type-body op's declared variant (`#Float` or `Float`) cover the
@@ -800,7 +810,10 @@ fn matches_parse_identity(params: &[Type], form: &str) -> bool {
     if params.len() != 1 {
         return false;
     }
+    // 2026-09-11 (Phase A3): bare fundamentals and legacy # spellings both
+    // name the category.
     let hashword_category = match &params[0] {
+        Type::Custom(n) if crate::type_universe::FUNDAMENTAL_TYPES.contains(&n.as_str()) => n.as_str(),
         Type::HashWord(s) => s.strip_prefix('#').unwrap_or(s),
         Type::HashWordVariant(s, _) => s.strip_prefix('#').unwrap_or(s),
         _ => return false,
@@ -6959,6 +6972,31 @@ node t [count < 5][count == 5] {
         assert!(check(src).is_ok(), "cross-type op overload must authorize Int * MyNum");
     }
 
+    /// 2026-09-11 (fundamentals doctrine, Phase A3): the BARE fundamental in
+    /// an op param is the protocol — `op Mul(Int)` covers a #Int-member
+    /// operand that is NOT literally `Int` (here: MyNum itself), which the
+    /// old HashWord-only shape-match rejected. This is the exact coverage
+    /// `op Mul(#Int)` always had.
+    #[test]
+    fn bare_fundamental_op_param_covers_protocol_members() {
+        let src = r#"
+type MyNum : Int {
+    op Mul(Int): func(#Lh, #Rh);
+};
+let a: MyNum = 0;
+let b: MyNum = 0;
+node t [a == b][a != b] {
+    let p: MyNum = a * b;
+    term;
+};
+"#;
+        assert!(
+            check(src).is_ok(),
+            "bare-fundamental op param must cover its protocol members: {:?}",
+            check(src).err()
+        );
+    }
+
     /// 2026-08-06 (Phase 5): a declared variant op (`op Add(Int): my_add`)
     /// ELABORATES into a call to its implementation — the BinaryOp becomes
     /// `Expr::Call("my_add", [l, r])` after check_program.
@@ -9144,3 +9182,4 @@ mod section_proof_tests {
         assert!(e.is_ok(), "unreachable allocators are fine: {:?}", e);
     }
 }
+

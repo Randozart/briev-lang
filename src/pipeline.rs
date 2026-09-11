@@ -1013,31 +1013,42 @@ pub fn parse(file_path: &str, tokens: &[(Token, std::ops::Range<usize>)], source
 }
 
 pub fn validate_constraints(items: &[crate::ast::TopLevel]) -> Result<(), String> {
+    // 2026-09-11 (Phase A3): bounds and op params match by category NAME —
+    // the bare fundamental (`Float`) and the legacy `#Float` spelling are
+    // the same category, so both link a constraint to its operator.
+    fn category_of(t: &crate::ast::Type) -> Option<String> {
+        match t {
+            crate::ast::Type::HashWord(c) => {
+                Some(c.strip_prefix('#').unwrap_or(c).to_string())
+            }
+            crate::ast::Type::HashWordVariant(c, _) => {
+                Some(c.strip_prefix('#').unwrap_or(c).to_string())
+            }
+            crate::ast::Type::Custom(n)
+                if crate::type_universe::FUNDAMENTAL_TYPES.contains(&n.as_str()) =>
+            {
+                Some(n.clone())
+            }
+            _ => None,
+        }
+    }
     for item in items {
         let crate::ast::TopLevel::TypeDef(td) = item else { continue; };
         for tp in &td.type_params {
             let crate::ast::top::TypeParam { name, bound: Some(bound) } = tp else { continue; };
-            let bound_category = match bound {
-                crate::ast::Type::HashWord(c) => c.as_str(),
-                crate::ast::Type::HashWordVariant(c, _) => c.as_str(),
-                _ => continue,
-            };
-            // Check at least one operator references this hashword in its params
+            let Some(bound_category) = category_of(bound) else { continue };
+            // Check at least one operator references this category in its params
             let has_op = td.body.operators.iter().any(|op| {
-                op.params.iter().any(|p| {
-                    matches!(p,
-                        crate::ast::Type::HashWord(c) if c == bound_category
-                    ) || matches!(p,
-                        crate::ast::Type::HashWordVariant(c, _) if c == bound_category
-                    )
-                })
+                op.params
+                    .iter()
+                    .any(|p| category_of(p).as_deref() == Some(bound_category.as_str()))
             });
             if !has_op {
                 return Err(format!(
                     "constraint '{}: {}' in type '{}' is unsatisfiable — \
                      no operator references {} in its parameters. \
                      Add an op declaration like 'op ...({}, ...)' to use this constraint.",
-                    name, bound, td.name, bound, bound
+                    name, bound, td.name, bound_category, bound_category
                 ));
             }
         }
