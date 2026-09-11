@@ -52,6 +52,10 @@ pub struct TypeInfo {
     pub reference_prefix: String,
     /// Declared pins (name, KiCad number), sorted by number.
     pub pins: Vec<(String, u64)>,
+    /// Max voltage any pin of this type tolerates — `!> Tolerance: 3.3`.
+    /// None = unrated: the pin places no constraint (skeleton semantics;
+    /// per-pin ratings are a follow-on).
+    pub tolerance: Option<f64>,
 }
 
 /// One derived electrical node.
@@ -71,6 +75,24 @@ pub struct ElectronicsNetlist {
     pub is_electronics: bool,
     /// Schematic facts per component type name.
     pub type_info: BTreeMap<String, TypeInfo>,
+    /// 2026-09-11 (electrical proving): net voltage classes + violations.
+    pub voltage: VoltageCheck,
+}
+
+/// 2026-09-11 (electrical proving): voltage classes over the derived netlist.
+///
+/// A transaction that states `[j1.p1.voltage == 5.0]` (pre OR post — the
+/// supply is at 5 V before and after firing) DRIVES its net at 5 V. Two
+/// different drive values on one net is a shorted supply. Every pin on a
+/// driven net whose type declares `!> Tolerance: <max>` must tolerate the
+/// class; a 5 V net into a 3.3 V-only pin is a compile error, never a fried
+/// board. Unrated pins place no constraint.
+#[derive(Debug, Default)]
+pub struct VoltageCheck {
+    /// Net name → driven voltage class (max of agreeing drives).
+    pub net_voltage: BTreeMap<String, f64>,
+    /// Hard diagnostics (what/why/fix style).
+    pub violations: Vec<String>,
 }
 
 /// Union-find over pin keys (`component\x1Fpin`).
@@ -147,10 +169,23 @@ fn collect_type_pins(items: &[TopLevel]) -> (BTreeMap<String, Vec<(String, u64)>
                     .unwrap_or_else(|| {
                         td.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "U".to_string())
                     });
+                // 2026-09-11 (electrical proving): `!> Tolerance: 3.3` — max
+                // voltage any pin of this type tolerates. Unrated types place
+                // no constraint.
+                let tolerance = td
+                    .body
+                    .metadata
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("tolerance"))
+                    .and_then(|(_, v)| match v {
+                        crate::ast::PropertyValue::Float(f) => Some(*f),
+                        crate::ast::PropertyValue::Int(d) => Some(*d as f64),
+                        _ => None,
+                    });
                 let mut pins: Vec<(String, u64)> =
                     td.body.pins.iter().map(|p| (p.name.clone(), p.number)).collect();
                 pins.sort_by_key(|&(_, n)| n);
-                info.insert(td.name.clone(), TypeInfo { reference_prefix: prefix, pins });
+                info.insert(td.name.clone(), TypeInfo { reference_prefix: prefix, pins, tolerance });
             }
         }
     }
@@ -236,6 +271,167 @@ fn collect_eq_pairs(expr: &Expr, out: &mut Vec<(Expr, Expr)>) {
     }
 }
 
+/// If `expr` is `[pin.voltage]` on a declared instance, resolve the pin.
+/// (`j1.p1.voltage` → the `j1.p1` PinRef; any other shape → None.)
+fn resolve_voltage_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInstance>, type_pins: &BTreeMap<String, Vec<(String, u64)>>) -> Option<PinRef> {
+    let Expr::Field(base, prop) = expr else { return None };
+    if prop != "voltage" {
+        return None;
+    }
+    resolve_pin(base, instances, type_pins)
+}
+
+/// A voltage DRIVE is `[x.voltage == <literal>]` — pin access on one side,
+/// float/int literal on the other, either order. Returns (pin, volts).
+fn voltage_drive(
+    l: &Expr,
+    r: &Expr,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> Option<(PinRef, f64)> {
+    if let Some(pin) = resolve_voltage_pin(l, instances, type_pins) {
+        let v = match r {
+            Expr::Float(f) => Some(*f),
+            Expr::Decimal(d) => Some(*d as f64),
+            _ => None,
+        };
+        if let Some(v) = v {
+            return Some((pin, v));
+        }
+    }
+    if let Some(pin) = resolve_voltage_pin(r, instances, type_pins) {
+        let v = match l {
+            Expr::Float(f) => Some(*f),
+            Expr::Decimal(d) => Some(*d as f64),
+            _ => None,
+        };
+        if let Some(v) = v {
+            return Some((pin, v));
+        }
+    }
+    None
+}
+
+/// Derive net voltage classes and prove tolerance compatibility.
+fn derive_voltage(
+    items: &[TopLevel],
+    nets: &[Net],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    type_info: &BTreeMap<String, TypeInfo>,
+) -> VoltageCheck {
+    let pin_to_net = pin_net_index(nets);
+    let drives = collect_drives(items, &pin_to_net, instances, type_pins);
+    let mut check = classify_drives(drives);
+    check_tolerance(nets, instances, type_info, &check.net_voltage, &mut check.violations);
+    check
+}
+
+/// Pin → net name index.
+fn pin_net_index(nets: &[Net]) -> BTreeMap<(String, String), String> {
+    let mut pin_to_net = BTreeMap::new();
+    for net in nets {
+        for p in &net.pins {
+            pin_to_net.insert((p.component.clone(), p.pin.clone()), net.name.clone());
+        }
+    }
+    pin_to_net
+}
+
+/// Collect voltage drives (net name, volts, obligation text) across all
+/// transaction contracts — `[x.voltage == <literal>]` in pre OR post.
+fn collect_drives(
+    items: &[TopLevel],
+    pin_to_net: &BTreeMap<(String, String), String>,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> Vec<(String, f64, String)> {
+    let mut drives = Vec::new();
+    for item in items {
+        let TopLevel::Transaction(t) = item else { continue };
+        for cond in [&t.contract.pre_condition, &t.contract.post_condition] {
+            let mut pairs = Vec::new();
+            collect_eq_pairs(cond, &mut pairs);
+            for (l, r) in pairs {
+                let Some((pin, v)) = voltage_drive(&l, &r, instances, type_pins) else {
+                    continue;
+                };
+                let Some(net_name) = pin_to_net.get(&(pin.component.clone(), pin.pin.clone())) else {
+                    continue;
+                };
+                drives.push((
+                    net_name.clone(),
+                    v,
+                    format!("'{}.{}.voltage == {}' in txn '{}'", pin.component, pin.pin, format_volts(v), t.name),
+                ));
+            }
+        }
+    }
+    drives
+}
+
+/// Group drives by net: the class is the max — disagreeing drives are a
+/// shorted supply, hard error.
+fn classify_drives(drives: Vec<(String, f64, String)>) -> VoltageCheck {
+    let mut check = VoltageCheck::default();
+    let mut by_net: BTreeMap<String, Vec<(f64, String)>> = BTreeMap::new();
+    for (net, v, src) in drives {
+        by_net.entry(net).or_default().push((v, src));
+    }
+    for (net_name, ds) in by_net {
+        let mut vals = ds.iter().map(|(v, _)| *v).collect::<Vec<_>>();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let min = *vals.first().unwrap();
+        let max = *vals.last().unwrap();
+        if (min - max).abs() > f64::EPSILON {
+            let sources = ds.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join(" and ");
+            check.violations.push(format!(
+                "net '{}' is driven at two different voltages ({} and {}) — that is a shorted supply. \
+                 why: {} both drive it. fix: drive the net at one voltage, or separate the levels \
+                 with a regulator or switch component.",
+                net_name, format_volts(min), format_volts(max), sources
+            ));
+        }
+        check.net_voltage.insert(net_name.clone(), max);
+    }
+    check
+}
+
+/// Every rated pin on a driven net must tolerate its class.
+fn check_tolerance(
+    nets: &[Net],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    net_voltage: &BTreeMap<String, f64>,
+    violations: &mut Vec<String>,
+) {
+    for net in nets {
+        let Some(class) = net_voltage.get(&net.name).copied() else { continue };
+        for p in &net.pins {
+            let Some(inst) = instances.get(&p.component) else { continue };
+            let Some(info) = type_info.get(&inst.type_name) else { continue };
+            if let Some(tol) = info.tolerance {
+                if class > tol + f64::EPSILON {
+                    violations.push(format!(
+                        "net '{}' is driven at {} but pin '{}.{}' (of {}) tolerates only {}. \
+                         why: the drive comes from a contract obligation on that net. \
+                         fix: lower the drive voltage, or use a component rated for {} on that net.",
+                        net.name, format_volts(class), p.component, p.pin, inst.type_name, format_volts(tol), format_volts(class)
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Voltage formatting for diagnostics: trim trailing zeros (5.0 → "5 V",
+/// 3.3 → "3.3 V").
+fn format_volts(v: f64) -> String {
+    let s = format!("{:.2}", v);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    format!("{} V", s)
+}
+
 /// Derive the netlist for an electronics program.
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let (type_pins, type_info) = collect_type_pins(items);
@@ -306,11 +502,16 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         }
     }
 
+    // Voltage classes need the nets and instances before they move into the
+    // result struct.
+    let voltage = derive_voltage(items, &nets, &instances, &type_pins, &type_info);
+
     ElectronicsNetlist {
         components: instance_list,
         nets,
         dangling,
         is_electronics: true,
+        voltage,
         type_info,
     }
 }
@@ -420,6 +621,100 @@ mod tests {
         let names2: Vec<_> = b.nets.iter().map(|n| n.name.clone()).collect();
         assert_eq!(names, names2);
         assert_eq!(names, vec!["N1", "N2", "N3"]);
+    }
+
+    // ── 2026-09-11 (electrical proving): voltage classes ─────────────
+
+    #[test]
+    fn contract_equality_drives_net_voltage() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; !> Reference: "P"; };
+            type Load { pin vin; !> Reference: "L"; !> Tolerance: 5.5; };
+            let p1: Power = Power { };
+            let l1: Load = Load { };
+            txn apply
+                [p1.vout.voltage == l1.vin.voltage && p1.vout.voltage == 5.0]
+                [l1.vin.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.voltage.net_voltage.len(), 1);
+        let (net, v) = nl.voltage.net_voltage.iter().next().unwrap();
+        assert_eq!(net, "N1");
+        assert!((v - 5.0).abs() < 1e-9, "drive class 5.0, got {}", v);
+        assert!(nl.voltage.violations.is_empty(), "5.0 V into a 5.5 V-rated pin: {:?}", nl.voltage.violations);
+    }
+
+    #[test]
+    fn overvoltage_into_rated_pin_is_a_violation() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; };
+            type Led { pin a; pin k; !> Tolerance: 3.3; };
+            let p1: Power = Power { };
+            let d1: Led = Led { };
+            txn apply
+                [p1.vout.voltage == d1.a.voltage && p1.vout.voltage == 5.0]
+                [d1.a.voltage >= 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.voltage.violations.iter().any(|v| v.contains("5 V") && v.contains("d1.a") && v.contains("3.3")),
+            "overvoltage diagnostic names net, pin, drive and rating: {:?}", nl.voltage.violations);
+    }
+
+    #[test]
+    fn disagreeing_drives_are_a_shorted_supply() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Rail { pin hi; pin lo; };
+            type Load { pin vin; };
+            let r1: Rail = Rail { };
+            let l1: Load = Load { };
+            txn apply
+                [r1.hi.voltage == l1.vin.voltage && r1.lo.voltage == l1.vin.voltage && r1.hi.voltage == 5.0 && r1.lo.voltage == 3.3]
+                [l1.vin.voltage >= 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.voltage.violations.iter().any(|v| v.contains("shorted supply") && v.contains("5 V") && v.contains("3.3")),
+            "conflict diagnostic names both levels: {:?}", nl.voltage.violations);
+    }
+
+    #[test]
+    fn unrated_pins_place_no_voltage_constraint() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; };
+            type Load { pin vin; };
+            let p1: Power = Power { };
+            let l1: Load = Load { };
+            txn apply
+                [p1.vout.voltage == l1.vin.voltage && p1.vout.voltage == 12.0]
+                [l1.vin.voltage >= 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.voltage.violations.is_empty(), "unrated Load: {:?}", nl.voltage.violations);
+        assert!(nl.voltage.net_voltage.values().any(|v| (*v - 12.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn agreeing_drives_do_not_conflict() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Rail { pin hi; pin lo; };
+            type Load { pin vin; };
+            let r1: Rail = Rail { };
+            let l1: Load = Load { };
+            txn apply
+                [r1.hi.voltage == l1.vin.voltage && r1.lo.voltage == l1.vin.voltage && r1.hi.voltage == 5.0 && r1.lo.voltage == 5.0]
+                [l1.vin.voltage >= 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.voltage.violations.is_empty(), "same drive twice is redundant, not a short: {:?}", nl.voltage.violations);
     }
 
     #[test]

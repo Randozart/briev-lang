@@ -158,6 +158,19 @@ fn emit_typedef(t: &TypeDef) -> SExpr {
         slots.push(list(&[atom("slot"), atom(&slot.name), emit_type(&slot.ty)]));
     }
     children.push(SExpr::List(slots));
+    // 2026-09-11 (Part C): first-class component pins round-trip — the
+    // analysis and KiCad backend read them from the AST.
+    if !t.body.pins.is_empty() {
+        let mut pins: Vec<SExpr> = vec![atom("pins")];
+        for p in &t.body.pins {
+            pins.push(list(&[
+                atom("pin"),
+                atom(&p.name),
+                atom(&p.number.to_string()),
+            ]));
+        }
+        children.push(SExpr::List(pins));
+    }
     for (k, v) in &t.body.metadata {
         children.push(list(&[atom("metadata"), atom(k), pv_to_sexpr(v)]));
     }
@@ -343,6 +356,65 @@ mod tests {
                 assert_eq!(a.name, b.name);
             }
             _ => panic!("expected StateDecl"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_typedef_pins() {
+        // 2026-09-11 (Part C): component pins survive the BEAST round-trip —
+        // the analysis and KiCad backend read them from the AST.
+        let items = vec![TopLevel::TypeDef(Box::new(TypeDef {
+            name: "Resistor".into(),
+            type_params: vec![],
+            parent: None,
+            protocol: None,
+            traits: vec![],
+            bit_range: None,
+            coll: false,
+            ports_in: vec![],
+            ports_out: vec![],
+            seq: false,
+            body: TypeDefBody {
+                slots: vec![TypeDefSlot { name: "r".into(), ty: Type::int(), bit_range: None }],
+                pins: vec![
+                    crate::ast::top::PinDecl { name: "a".into(), number: 1, span: None },
+                    crate::ast::top::PinDecl { name: "b".into(), number: 7, span: None },
+                ],
+                metadata: {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("reference".to_string(), crate::ast::PropertyValue::String("R".to_string()));
+                    m
+                },
+                projections: vec![],
+                bindings: vec![],
+                operators: vec![],
+                op_bindings: vec![],
+                constraints: vec![],
+                members: vec![],
+                span: None,
+            },
+            span: None,
+        }))];
+        let universe = TypeUniverse::new();
+        let ir = to_beast(&items, &universe);
+        let (restored, _) = from_beast(&ir).unwrap();
+        match (&items[0], &restored[0]) {
+            (TopLevel::TypeDef(a), TopLevel::TypeDef(b)) => {
+                assert_eq!(a.body.pins.len(), b.body.pins.len());
+                assert_eq!(b.body.pins[0].name, "a");
+                assert_eq!(b.body.pins[0].number, 1);
+                assert_eq!(b.body.pins[1].name, "b");
+                assert_eq!(b.body.pins[1].number, 7);
+                // 2026-09-11: slots + metadata round-trip restored — the old
+                // flat-parts parse loop never matched the nested emit shape.
+                assert_eq!(b.body.slots.len(), 1);
+                assert_eq!(b.body.slots[0].name, "r");
+                assert_eq!(
+                    b.body.metadata.get("reference"),
+                    Some(&crate::ast::PropertyValue::String("R".to_string()))
+                );
+            }
+            _ => panic!("expected TypeDef"),
         }
     }
 

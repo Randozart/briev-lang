@@ -463,6 +463,13 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 Ok(PropertyValue::Int(n))
             }
+            // 2026-09-11 (electrical proving): float metadata values —
+            // `!> Tolerance: 3.3` (Electronics Briev pin ratings).
+            Some(Token::Float(f)) => {
+                let f = *f;
+                self.pos += 1;
+                Ok(PropertyValue::Float(f))
+            }
             Some(Token::BoolTrue) => {
                 self.pos += 1;
                 Ok(PropertyValue::Bool(true))

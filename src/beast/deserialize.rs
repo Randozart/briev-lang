@@ -122,37 +122,57 @@ fn parse_universe(parts: &[SExpr]) -> Result<ResolvedType, String> {
 fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
     let name = tag(parts, 1)?.to_string();
     let mut slots = Vec::new();
+    let mut pins: Vec<crate::ast::top::PinDecl> = Vec::new();
     let mut metadata = HashMap::new();
-    let mut i = 2;
-    while i < parts.len() {
-        let key = tag(parts, i)?;
-        match key {
-            "base" => { i += 2; }
+    // 2026-09-11: emit_typedef writes each body section as ONE nested list
+    // — (slots (slot …)*), (pins (pin …)*), one (metadata k v) list per
+    // entry. The old flat-parts loop never matched that shape, so typedef
+    // BEAST round-trips silently lost slots AND metadata; both restored here
+    // along with pins.
+    for part in parts.iter().skip(2) {
+        let SExpr::List(entry) = part else { continue };
+        if entry.is_empty() {
+            continue;
+        }
+        let Ok(t) = sexpr_str(&entry[0]) else { continue };
+        match t {
             "slots" => {
-                let mut j = i + 1;
-                while j < parts.len() {
-                    if let SExpr::List(slot_parts) = &parts[j] {
-                        if slot_parts.len() >= 3 && sexpr_str(&slot_parts[0])? == "slot" {
-                            let sn = sexpr_str(&slot_parts[1])?.to_string();
-                            let st = parse_type(&slot_parts[2])?;
-                            slots.push(TypeDefSlot { name: sn, ty: st, bit_range: None });
+                for sub in entry.iter().skip(1) {
+                    if let SExpr::List(sp) = sub {
+                        if sp.len() >= 3 && sexpr_str(&sp[0]).unwrap_or_default() == "slot" {
+                            slots.push(TypeDefSlot {
+                                name: sexpr_str(&sp[1])?.to_string(),
+                                ty: parse_type(&sp[2])?,
+                                bit_range: None,
+                            });
                         }
-                    } else { break; }
-                    j += 1;
-                }
-                i = j;
-            }
-            "metadata" => {
-                if let SExpr::List(pair) = &parts[i + 1] {
-                    if pair.len() == 2 {
-                        let k = sexpr_str(&pair[0])?.to_string();
-                        let v = sexpr_to_pv(&pair[1])?;
-                        metadata.insert(k, v);
                     }
                 }
-                i += 2;
             }
-            _ => { i += 1; }
+            "pins" => {
+                for sub in entry.iter().skip(1) {
+                    if let SExpr::List(pp) = sub {
+                        if pp.len() == 3 && sexpr_str(&pp[0]).unwrap_or_default() == "pin" {
+                            let num: u64 = sexpr_str(&pp[2])?
+                                .parse()
+                                .map_err(|_| "bad pin number".to_string())?;
+                            pins.push(crate::ast::top::PinDecl {
+                                name: sexpr_str(&pp[1])?.to_string(),
+                                number: num,
+                                span: None,
+                            });
+                        }
+                    }
+                }
+            }
+            "metadata" => {
+                if entry.len() == 3 {
+                    let k = sexpr_str(&entry[1])?.to_string();
+                    let v = sexpr_to_pv(&entry[2])?;
+                    metadata.insert(k, v);
+                }
+            }
+            _ => {}
         }
     }
     Ok(Box::new(TypeDef {
@@ -161,7 +181,7 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
         bit_range: None, span: None, coll: false, seq: false,
         ports_in: Vec::new(),
         ports_out: Vec::new(),
-        body: TypeDefBody { slots, pins: Vec::new(), metadata, projections: vec![], bindings: vec![],
+        body: TypeDefBody { slots, pins, metadata, projections: vec![], bindings: vec![],
             operators: vec![], op_bindings: vec![],
             constraints: vec![], members: vec![], span: None },
     }))
