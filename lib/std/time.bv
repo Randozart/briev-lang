@@ -13,7 +13,6 @@
 // ===== NATIVE DEFINITIONS =====
 
 // Duration helpers - native arithmetic
-import "std/ffi/time.bv";
 
 defn duration_seconds(secs: Int) [term == secs] -> Int {
   term secs;

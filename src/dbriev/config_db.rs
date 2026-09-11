@@ -262,8 +262,6 @@ TIMER: 0xFE002000; 0x4;\n";
 "spatial"         = "std/spatial.bv"
 "xxhash"          = "std/xxhash.bv"
 "skiplist"        = "std/skiplist.bv"
-"shm"             = "std/shm.bv"
-"briev_rt"        = "std/briev_rt.bv"
 "types"           = "std/types.bv"
 "core"            = "std/core"
 "c"               = "std/c"

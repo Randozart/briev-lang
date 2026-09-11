@@ -12,7 +12,6 @@
 // Character operations
 // Escaping
 // Encoding
-import "std/ffi/string.bv";
 import "std/collections.bv";
 import "std/string_builder.bv";
 import "std/char.bv";

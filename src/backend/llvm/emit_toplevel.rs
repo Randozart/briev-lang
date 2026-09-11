@@ -657,7 +657,6 @@ impl LlvmBackend {
         // 2026-07-01: Stores the current state snapshot pointer for worker threads.
         // Called by main before __barrier_release__ so async body functions receive
         // the correct state argument instead of a garbage pointer.
-        writeln!(out, "declare i64 @time(ptr) nounwind").ok();
         // 2026-07-28: atol and getenv used by GetEnvInt# intrinsic.
         writeln!(out, "declare i64 @atol(ptr) nounwind").ok();
         writeln!(out, "declare ptr @getenv(ptr) nounwind").ok();

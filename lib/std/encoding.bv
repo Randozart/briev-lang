@@ -20,7 +20,6 @@
 // ===== NATIVE DEFINITIONS =====
 
 // Simple hex digit to int
-import "std/ffi/encoding.bv";
 
 defn hex_digit_to_int(c: String) [CharCount#(c) == 1][term >= 0 && term <= 15] -> Int {
   when c == "0" { term 0; };
