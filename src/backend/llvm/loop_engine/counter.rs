@@ -219,6 +219,10 @@ impl LlvmBackend {
         self.emit_inline_init_stores(out, "%state");
         self.emit_folded_loop(out, txn_name, counter_idx, total_idx, total_const_name,
             ".fmain", use_phi, body, 1, false, bound_literal, counter_var);
+        // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
+        // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
+        // programs have no __stdout_flush and get neither call nor declare.
+        self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
         writeln!(out).ok();
@@ -622,7 +626,11 @@ impl LlvmBackend {
             self.emit_scheduled_frees(out, &fields);
         }
         if is_main {
-            writeln!(out, "  ret i32 0").ok();
+            // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
+        // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
+        // programs have no __stdout_flush and get neither call nor declare.
+        self.emit_stdout_flush_tail(out);
+        writeln!(out, "  ret i32 0").ok();
             writeln!(out, "}}").ok();
         } else {
             writeln!(out, "  ret void").ok();
@@ -925,6 +933,10 @@ impl LlvmBackend {
                 self.emit_countable_body(out, group, &HashSet::new(), &mut empty3);
             }
         }
+        // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
+        // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
+        // programs have no __stdout_flush and get neither call nor declare.
+        self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
 
         // ── Outer Latch ───────────────────────────────────────────
@@ -1364,6 +1376,10 @@ impl LlvmBackend {
         // Routed through __briev_free so the benchmark can assert frees ==
         // allocs (no leak).
         self.emit_scheduled_frees(out, free_after);
+        // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
+        // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
+        // programs have no __stdout_flush and get neither call nor declare.
+        self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
         writeln!(out).ok();
@@ -1788,6 +1804,10 @@ impl LlvmBackend {
         // 2026-08-06 (Phase 9): garbage scheduling for the version-DAG fold
         // path — free after the loop closes, like the other fold emitters.
         self.emit_scheduled_frees(out, free_after);
+        // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
+        // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
+        // programs have no __stdout_flush and get neither call nor declare.
+        self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
         writeln!(out).ok();
@@ -2363,5 +2383,15 @@ fn collect_hoist_identifiers(
             }
         }
         _ => {}
+    }
+}
+
+impl LlvmBackend {
+    /// 2026-09-11 (buffered stdout): gated epilogue flush — see the
+    /// has_stdout_flush field on the backend.
+    fn emit_stdout_flush_tail(&mut self, out: &mut String) {
+        if self.has_stdout_flush {
+            writeln!(out, "  %__flush = call i64 @__stdout_flush(ptr %state)").ok();
+        }
     }
 }

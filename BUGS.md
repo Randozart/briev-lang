@@ -5786,3 +5786,35 @@ compiler; commit-window bisect pinned dd5f5e26; post-fix blob returns
 not verified. Any commit touching kernel index math needs the on-device
 correctness gate at a real shape (the cross-tier A/B harness now does
 this in one command).
+
+## 2026-09-11: fasta ~100× regression — unbuffered stdout after libc removal
+
+**Symptom:** `benchmarks/fasta` at BOUND=10M: baseline 0.061 s, current
+6.6 s (identical output bytes). Sys-time dominant (~3.9 s) — one
+`write(2)` syscall per output byte.
+
+**Root cause:** the delete-step's Family A made the print family
+pure-Briev (`write_all` → `SysCall#(1, …)`), losing libc stdio's
+pipe buffering for free. `node fasta` prints one char per iteration →
+10M syscalls. Nobody re-ran the runtime A/B after the runtime-linking
+changes (this sweep was the first).
+
+**Fix (not yet landed):** buffered stdout requires LIBRARY-LEVEL
+MUTABLE STATE, which Briev lacks — defn bodies cannot see top-level
+`let`s ("undefined variable"), and the `state` keyword is removed. The
+buffer (fixed 64 KiB block + fill pointer, O(1) `Store#` append, flush
+at capacity + main-tail) is expressible the moment defns can reference
+program globals through their `%state` param. Backend plumbing for the
+exit-flush already exists (`has_stdout_flush` gate + `@__stdout_flush`
+call at every runtime-main tail — a user-defined `__stdout_flush`
+flushes today). Needed: (1) typechecker defn-scope visibility of
+top-level lets, (2) needs_state propagation for global reads/writes,
+(3) emitter global access through the defn's `%state`. Then the
+buffered lane lands in cast_lanes.bv (the reverted attempt sketches it).
+
+**Interim truth:** fasta is NOT competitive until this lands. The C
+reference's putchar costs are stdio-buffered; ours are raw syscalls.
+
+**Lesson:** runtime-linking changes MUST get the compare_baseline A/B
+in the same stream — the sweep exists because "parity corpora green"
+says nothing about throughput.

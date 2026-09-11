@@ -13,6 +13,8 @@ cd "$(dirname "$0")/.."
 
 NAME="${1:-nbody_newton}"
 BASELINE_DIR="../briev-compiler-baseline"
+BOUND="${BOUND:-500000000}"
+RUNTIME_LIMIT="${RUNTIME_LIMIT:-120}"
 CURRENT_DIR="."
 RUNS=5
 
@@ -34,12 +36,12 @@ if [ ! -f "$BASELINE_DIR/benchmarks/$NAME" ]; then
     # 2026-08-01: binary renamed briev-compiler -> brievc long ago; the stale
     # name made baseline builds fail silently and the comparison compare only
     # the current binary (or error). Must match the harness's brievc binary.
-    BOUND=50000000 ./target/release/brievc build "benchmarks/${NAME}.bv" --out benchmarks 2>&1 | tail -1
+    BOUND="$BOUND" ./target/release/brievc build "benchmarks/${NAME}.bv" --out benchmarks 2>&1 | tail -1
     cd "$CURRENT_DIR"
 fi
 if [ ! -f "benchmarks/$NAME" ]; then
     echo "Building current binary..."
-    BOUND=50000000 ./target/release/brievc build "benchmarks/${NAME}.bv" --out benchmarks 2>&1 | tail -1
+    BOUND="$BOUND" ./target/release/brievc build "benchmarks/${NAME}.bv" --out benchmarks 2>&1 | tail -1
 fi
 
 time_binary() {
@@ -47,13 +49,15 @@ time_binary() {
     local name="$2"
     local total=0
     for i in $(seq 1 $RUNS); do
-        local t=$(BOUND=50000000 timeout 30 bash -c "cd '$dir' && TIMEFORMAT='%3R' time ./benchmarks/$name" 2>&1 | tail -1)
+        # Program stdout → /dev/null: merged-stream ordering otherwise lets
+        # program output shadow the `time` line (fasta prints its sequence).
+        local t=$(timeout "$RUNTIME_LIMIT" bash -c "cd '$dir' && export BOUND='$BOUND'; export TIMEFORMAT='%3R'; time ./benchmarks/$name > /dev/null" 2>&1 | tail -1)
         # Replace comma with dot for locale-independent parsing
         t="${t/,/.}"
-        total=$(echo "$total + $t" | bc 2>/dev/null || echo "0")
+        total=$(awk -v a="$total" -v b="$t" 'BEGIN { printf "%.4f", a + b }')
         echo "  Run $i: ${t}s"
     done
-    echo "$total / $RUNS" | bc -l 2>/dev/null || echo "0"
+    awk -v a="$total" -v r="$RUNS" 'BEGIN { printf "%.4f", a / r }' 
 }
 
 echo ""
@@ -68,10 +72,10 @@ echo ""
 echo "--- Result ---"
 echo "Baseline avg: ${baseline_avg}s"
 echo "Current avg:  ${current_avg}s"
-ratio=$(echo "scale=4; $current_avg / $baseline_avg" | bc 2>/dev/null || echo "1.0")
+ratio=$(awk -v c="$current_avg" -v b="$baseline_avg" 'BEGIN { if (b > 0) printf "%.4f", c / b; else printf "1.0" }')
 echo "Ratio: $ratio (current/baseline)"
 
-if [ "$(echo "$ratio > 1.10" | bc -l 2>/dev/null || echo "0")" = "1" ]; then
+if [ "$(awk -v r="$ratio" 'BEGIN { print (r > 1.10) ? 1 : 0 }')" = "1" ]; then
     echo "WARNING: Current is >10% slower than baseline!"
     exit 1
 else

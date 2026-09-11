@@ -635,6 +635,11 @@ impl LlvmBackend {
         writeln!(out).ok();
         writeln!(out, "declare void @llvm.assume(i1) #1").ok();
         writeln!(out, "declare void @llvm.trap() noreturn").ok();
+        // 2026-09-11 (buffered stdout): the epilogue flush call's declare —
+        // gated on the stdlib lane being present (bare programs: no call).
+        if self.has_stdout_flush {
+            writeln!(out, "declare i64 @__stdout_flush(ptr noundef noalias nocapture align 8)").ok();
+        }
         // Intrinsic declares used by name#() instrinsic calls in emit_expr.
         // Previously these came from std/llvm.bv via as intrinsic, but the
         // name#() mechanism emits them directly without frgn_map entries.

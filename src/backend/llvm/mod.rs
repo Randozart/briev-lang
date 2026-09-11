@@ -1213,6 +1213,11 @@ pub struct LlvmBackend {
 
     // ── Async / Thread Pool ────────────────────────────────
     pub(crate) has_async_txns: bool,
+    /// 2026-09-11 (buffered stdout): `__stdout_flush` is defined in this
+    /// program (the print family is linked) — runtime mains call it before
+    /// returning so the buffer tail reaches the fd. Bare/no-stdlib programs
+    /// never set it, and no call or declare is emitted.
+    pub(crate) has_stdout_flush: bool,
     pub(crate) async_txn_names: Vec<String>,
     pub(crate) async_thread_pool_size: u32,
     pub(crate) is_lightweight_async: bool,
@@ -1350,6 +1355,7 @@ impl LlvmBackend {
             fun: FunctionContext::new(),
             pgo_guard_idx: 0,
             has_async_txns: false,
+            has_stdout_flush: false,
             async_txn_names: Vec::new(),
             async_thread_pool_size: 0,
             is_lightweight_async: false,
@@ -2335,6 +2341,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
     }
 
     pub fn generate(&mut self, items: &[TopLevel], exit_condition: Option<Box<Expr>>) -> String {
+        // 2026-09-11 (buffered stdout): gate the epilogue flush on the
+        // stdlib lane actually being present — bare programs get no call.
+        self.has_stdout_flush = items.iter().any(|i| {
+            matches!(i, TopLevel::Definition(d) if d.name == "__stdout_flush")
+        });
         // 2026-07-31: Phase 3 (§8.1) — warn once when the target triple's prefix
         // is unknown to config/targets.dbvl, so the x86_64 tuning fallback is
         // never applied silently to a foreign target.
