@@ -467,3 +467,42 @@ gap between iterations. **+45% sustained over the f32 default tier**;
 the tier remains opt-in per the numerics decision (doctrine §3).
 cuModuleLoadData sniffs ELF vs PTX, so the cubin blob needs no runtime
 change. Sustained-state (110W) numbers throughout.
+
+## 2026-09-11 evening: cross-tier A/B caught a 3-day-old SPIR-V regression
+
+The planned cross-tier A/B (SPIR-V coopmat vs the new PTX tier, same
+harness, same sustained conditions) FAILED the SPIR-V tier on arrival:
+4096^3 max_rel_err 3.156e-01, deterministic. Isolation path: baseline
+worktree blob (5d1d7e45) PASSES 4.436e-03 through the same harness +
+runtime → compiler regression; commit-window bisect over the 7 commits
+touching src/backend/spirv/ pinned dd5f5e26 (2026-09-08).
+
+**Root cause** (BUGS.md 2026-09-11): dd5f5e26's `u32_and(builder, val,
+mask: u32)` — rspirv's `type Word = u32` alias let five fill call
+sites pass mask result IDs where literal mask VALUES were expected;
+the fill's b_flat_within was ANDed with gen_id numbers. Instruction
+count unchanged → timing-only verification read "GPU time unchanged";
+2111 tests green (none exercise the fill's shape-dependent addressing
+on device). **Fix 3615f270**: mask: Word; the literal &7 site builds
+its const. Post-fix: 4.436e-03, bit-identical to the 2026-09-04
+ledger number.
+
+**Cross-tier sustained ledger (4096^3, batched x20, 110W steady):**
+
+| tier | numerics | throughput | correctness |
+|------|----------|------------|-------------|
+| SPIR-V coopmat R=4 | f32-acc | 6.5-10.1 TF (high DVFS wobble) | 4.436e-03 OK |
+| PTX mw (2,4)@256T | f32-acc | **13.4 TF (tight)** | 2.4e-04 |
+| PTX mw (4,4)@512T f16acc | f16-acc (1e-2 tier) | **19.4-19.7 TF** | 1.2e-03 |
+
+Same numerics contract (f32-acc): the PTX tier beats the portable
+coopmat tier ~1.4x with far tighter variance. The doctrine's "portable
+tier is the main road" conclusion (Stage 0) predates the sustained-
+power discipline and the 3-day corruption; the coopmat tier needs its
+own sustained-state re-baseline before that comparison is honest.
+
+Harness notes: gemm_h_bench dispatch for the coopmat blob = the
+generated runner's `(M*N/(16*4*64))*32` = 131072 work items with
+MW_BT=64 (the runner descriptor's workgroup size); the PTX mw blob
+wants 262144 items / MW_BT=256 or 512. The wrong pair = garbage tiles
+(the documented v2 over-dispatch failure mode).
