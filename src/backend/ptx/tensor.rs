@@ -1609,7 +1609,7 @@ mod r16_dump {
     /// load. smem: 4KB dynamic (two 512B A slabs, eight 256B B slabs).
     #[test]
     fn dump_mma_mix_microbench() {
-        for &variant in &["b", "c", "d", "f"] {
+        for &variant in &["b", "c", "d", "f", "g"] {
             let chains = 16usize; // the shipped schedule's chain count
             let mut out = String::new();
             out.push_str(&format!("// E1{} ldmatrix+mma mix microbench\n", variant));
@@ -1680,8 +1680,17 @@ mod r16_dump {
                     out.push_str("    add.u32 %r10, %r10, 3;\n");
                 }
             }
-            if variant == "d" || variant == "f" {
+            let streaming = variant == "f" || variant == "g";
+            let wait_slack = if variant == "g" { 0 } else { 1 };
+            if variant == "d" || variant == "f" || variant == "g" {
                 // E1d: + the real kernel's fill/wait/barrier rhythm — 6
+                // cp.async.ca 4B per thread (12KB/CTA), commit, then after
+                // the mma phase wait_group 1 + membar.cta + bar.sync.
+                // E1f: the fill source STREAMS (iteration-scaled offset into
+                // the 100MB state) instead of hammering one L2-resident
+                // 24KB window — models the real kernel's DRAM traffic.
+                // E1g: E1f with wait_group 0 — the shipped kernel's FULL
+                // drain (stages=2 ⇒ stages-2=0); isolates the drain stall.
                 // cp.async.ca 4B per thread (12KB/CTA), commit, then after
                 // the mma phase wait_group 1 + membar.cta + bar.sync.
                 // E1f: the fill source STREAMS (iteration-scaled offset into
@@ -1690,7 +1699,7 @@ mod r16_dump {
                 // iteration-scaled offset: %r8 (iter counter) * 12288, kept
                 // inside the 96MB state via masking with the iteration
                 // stride folded in — streaming, not L2-resident.
-                if variant == "f" {
+                if streaming {
                     out.push_str("    mul.lo.u32 %r11, %r8, 6144;\n");
                     out.push_str("    and.b32 %r11, %r11, 25161728;\n");
                     out.push_str("    mul.wide.u32 %rd9, %r11, 1;\n");
@@ -1698,7 +1707,7 @@ mod r16_dump {
                 }
                 for j in 0..6 {
                     out.push_str("    mul.wide.u32 %rd8, %r3, 4;\n");
-                    if variant == "f" {
+                    if streaming {
                         out.push_str("    add.u64 %rd8, %rd10, %rd8;\n");
                     } else {
                         out.push_str("    add.u64 %rd8, %rd1, %rd8;\n");
@@ -1717,8 +1726,8 @@ mod r16_dump {
                     2 * i, 2 * i + 1, 2 * i, 2 * i + 1
                 ));
             }
-            if variant == "d" || variant == "f" {
-                out.push_str("    cp.async.wait_group 1;\n");
+            if variant == "d" || streaming {
+                out.push_str(&format!("    cp.async.wait_group {};\n", wait_slack));
                 out.push_str("    membar.cta;\n");
                 out.push_str("    bar.sync 0;\n");
             }

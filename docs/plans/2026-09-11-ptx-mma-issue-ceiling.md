@@ -136,3 +136,40 @@ probes): wait_group 0 in the real kernel vs 1 in E1f; 2-CTA/SM
 occupancy contention (E1f ran 1/SM); the every-32-iteration y-RMV
 promotion. The s4 paradox (deeper prefetch slower) remains open and now
 bears on the wait_group question directly.
+
+## Probe round 2 (2026-09-11 late night): occupancy heals fills; ldmatrix lookahead is the wall
+
+Corrected-accounting occupancy sweep (E1f streaming fills):
+
+| occupancy | E1b no-ALU | E1c +150 ALU | E1f +streaming fills |
+|-----------|-----------|--------------|----------------------|
+| 1 CTA/SM | 52.6 | 53.8 | 32.7 |
+| 2 CTA/SM | 54.7 | 54.0 | 41.0 |
+| 4 CTA/SM | 55.2 | 54.9 | **42.5** |
+
+- **wait_group 0 vs 1: no difference** (E1g = E1f within noise). The
+  full-drain theory is dead; the s4 paradox is NOT wait_group slack.
+- **Support ALU is free at every occupancy** — the issue-slot model is
+  dead for good.
+- **Occupancy heals the fill-latency stall**: 4 independent CTA fill
+  streams reach cuBLAS level even with DRAM-latency fills. The real
+  kernel runs 2/SM (64 regs × 512T).
+
+**The no-fill KLOOP re-measured TODAY: 29.9 TF** (ledger's 22.7 was
+pre-pipeline-fix). vs E1b's 53.5 with identical ldmatrix+mma counts and
+fixed addresses: the delta is the **ldmatrix lookahead depth**. The B
+schedule keeps 2 groups live with a ld-ahead of g+2 — one or two mma
+(~8–16 clk) hide a ~30 clk ldmatrix → each of the 10 lds per kstep
+stalls ~15–20 clk ⇒ ~89–130 clk/kstep measured. The cure (all 8 B + 2 A
+fragments live across the phase boundary, or k32 with cross-kstep
+prefetch) costs +18 registers — over the 2-CTA/SM budget at 512T.
+
+Next session, in order:
+1. Re-emit (2,4)@256T stages-2 f16acc and re-sweep the config — the
+   12.2/13.6 sweep numbers predate the pipeline-pair fix; at 64 regs
+   × 256T the (2,4) geometry runs **4 CTAs/SM** (the E1f@4/SM effect)
+   AND frees the registers for deeper fragment lookahead.
+2. If occupancy wins, the new geometry becomes the select default.
+3. Otherwise: ld-ahead restructuring against the register wall
+   (triple-lookahead at 512T, or 256T with full-phase preload).
+4. The y-RMV promo (~7% of memory instructions) is a cheap final rung.
