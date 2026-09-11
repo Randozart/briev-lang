@@ -20,7 +20,7 @@
 // and cached with LazyLock.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 
 /// Per-target codegen tuning (plan §8.1).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -270,9 +270,33 @@ static TARGET_SETTINGS: LazyLock<HashMap<String, TargetSettings>> =
 /// Global IR-lowering tuning (baked config/ir-lowering.toml).
 static IR_LOWERING: LazyLock<IrLoweringSettings> = LazyLock::new(load_ir_lowering);
 
+/// 2026-09-11: `--config-dir` runtime override (same pattern as the targets
+/// config). Set once, before the first `ir_lowering()` access — the compile
+/// pipeline reads tuning lazily, so installing it during CLI arg handling is
+/// always early enough.
+static IR_LOWERING_OVERRIDE: OnceLock<IrLoweringSettings> = OnceLock::new();
+
 /// Return the global IR-lowering settings.
 pub fn ir_lowering() -> &'static IrLoweringSettings {
-    &IR_LOWERING
+    match IR_LOWERING_OVERRIDE.get() {
+        Some(o) => o,
+        None => &IR_LOWERING,
+    }
+}
+
+/// Load `ir-lowering.dbvl` from `dir`, overriding the baked-in config.
+/// Missing directory or parse failure is a hard error — a silently ignored
+/// override would compile with the wrong tier (e.g. f32-acc instead of the
+/// opted-in f16acc tensor tier) and poison every measurement downstream.
+pub fn set_ir_lowering_from_dir(dir: &std::path::Path) -> Result<(), String> {
+    let path = crate::dbriev::config_db::resolve_config_file(dir, "ir-lowering")
+        .ok_or_else(|| format!("no ir-lowering config found in '{}'", dir.display()))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
+    let settings = parse_ir_lowering(&content);
+    IR_LOWERING_OVERRIDE
+        .set(settings)
+        .map_err(|_| "ir-lowering override installed twice".to_string())
 }
 
 /// Resolve tuning settings for a target triple by longest-prefix match.
@@ -343,10 +367,13 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
 /// to the flat .dbvl line-table form; still compile-time baked via include_str!.
 /// Absent keys fall back to the hardcoded defaults, matching pre-migration.
 fn load_ir_lowering() -> IrLoweringSettings {
-    let content = include_str!("../config/ir-lowering.dbvl");
+    parse_ir_lowering(include_str!("../config/ir-lowering.dbvl"))
+}
+
+fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
     let db = match crate::dbriev::config_db::ConfigDb::from_str(content) {
         Ok(db) => db,
-        Err(e) => panic!("config/ir-lowering.dbvl parse error: {}", e),
+        Err(e) => panic!("ir-lowering config parse error: {}", e),
     };
     IrLoweringSettings {
         arena_min_budget: db

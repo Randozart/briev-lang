@@ -106,7 +106,13 @@ fn select_mw_nw(m: i64, n: i64, thread_cap: usize) -> (usize, usize) {
     let mut nw: usize = 1;
     loop {
         let mut grew = false;
-        for (dm, dn) in [(1usize, 2usize), (2usize, 1usize)] {
+        // 2026-09-11: double both axes first, then mw, then nw. The old
+        // (1,2)-first walk ran nw to its cap and never reached the balanced
+        // (4,4) — shipping (2,8)@512T at 16.4 TFLOP/s where (4,4) measures
+        // 21.0 (4096^3 f16acc, three interleaved reps). This order lands
+        // both sweep winners: (4,2) at the 256-thread f32 cap and (4,4) at
+        // the 512-thread f16acc cap.
+        for (dm, dn) in [(2usize, 2usize), (2usize, 1usize), (1usize, 2usize)] {
             let (tm, tn) = (mw * dm, nw * dn);
             if tm <= 16
                 && tn <= 8
