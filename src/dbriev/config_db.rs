@@ -556,6 +556,7 @@ target.wasm32: 4294967295; 4.0; 4;
     fn probe_leading_dot_key_and_space_list_field() {
         let src = "\
 .bv: llvm; --budget 256; prelude env print entry script; none; 50;
+.ebv: electronics; ; prelude-electronics;
 .sbv: circt; ; prelude-hw;
 ";
         let db = ConfigDb::from_str(src).unwrap();

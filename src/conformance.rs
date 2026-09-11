@@ -39,6 +39,8 @@ pub enum SourceKind {
     Accelerator,
     /// Silicon Briev: `.sbv`.
     Silicon,
+    /// Electronics Briev: `.ebv`.
+    Electronics,
     /// Rendered Briev: `.rbv`.
     Rendered,
     /// Structured Data Briev: `.dbv`.
@@ -53,6 +55,7 @@ impl SourceKind {
             SourceKind::Briev => "briev",
             SourceKind::Accelerator => "accelerator",
             SourceKind::Silicon => "silicon",
+            SourceKind::Electronics => "electronics",
             SourceKind::Rendered => "rendered",
             SourceKind::DataStructured => "dbv",
             SourceKind::DataLine => "dbvl",
@@ -171,6 +174,7 @@ pub fn classify(path: &Path) -> Option<SourceKind> {
         "bv" => Some(SourceKind::Briev),
         "abv" => Some(SourceKind::Accelerator),
         "sbv" => Some(SourceKind::Silicon),
+        "ebv" => Some(SourceKind::Electronics),
         "rbv" => Some(SourceKind::Rendered),
         "dbv" => Some(SourceKind::DataStructured),
         "dbvl" => Some(SourceKind::DataLine),
@@ -299,7 +303,8 @@ mod tests {
             match kind {
                 SourceKind::Briev
                 | SourceKind::Accelerator
-                | SourceKind::Silicon => {
+                | SourceKind::Silicon
+                | SourceKind::Electronics => {
                     checked += 1;
                     // Parse + typecheck under the profile — the sweep gate is
                     // FRONTEND conformance (SPEC §23.4); full codegen runs via
@@ -345,6 +350,7 @@ mod tests {
         assert_eq!(classify(Path::new("main.bfs.bv")), Some(SourceKind::Briev));
         assert_eq!(classify(Path::new("kernel.abv")), Some(SourceKind::Accelerator));
         assert_eq!(classify(Path::new("chip.sbv")), Some(SourceKind::Silicon));
+        assert_eq!(classify(Path::new("board.ebv")), Some(SourceKind::Electronics));
         assert_eq!(classify(Path::new("ui.rbv")), Some(SourceKind::Rendered));
         assert_eq!(classify(Path::new("data.dbv")), Some(SourceKind::DataStructured));
         assert_eq!(classify(Path::new("lines.dbvl")), Some(SourceKind::DataLine));
@@ -355,7 +361,6 @@ mod tests {
         assert_eq!(classify(Path::new("main.cbv")), None);
         assert_eq!(classify(Path::new("main.srbv")), None);
         assert_eq!(classify(Path::new("main.sebv")), None);
-        assert_eq!(classify(Path::new("main.ebv")), None);
         assert_eq!(classify(Path::new("main.c.bv")), None);
         assert_eq!(classify(Path::new("schema.dbvs")), None);
         assert_eq!(classify(Path::new("notes.txt")), None);

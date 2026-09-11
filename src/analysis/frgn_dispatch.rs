@@ -223,6 +223,7 @@ pub fn resolve_single_frgn(
         match backend {
             BackendKind::Llvm => "LLVM",
             BackendKind::Circt => "CIRCT",
+            BackendKind::Electronics => "Electronics",
             BackendKind::Webstack => "Webstack",
             BackendKind::Gpu => "GPU",
             BackendKind::Spirv => "SPIR-V",
