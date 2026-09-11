@@ -5724,3 +5724,36 @@ Also: `-maxrregcount=108` cubins (ptxas 12.8 AND 13.3) launch but fault
 IMA at runtime; natural allocation for the kernel is 136 regs. Never ship
 capped-register cubins for this kernel — size block_threads to the natural
 count instead (select_mw_nw caps at 256 threads).
+
+## 2026-09-11: SPIR-V coopmat fill silently corrupted for 3 days (u32_and id-as-mask)
+
+**Symptom:** the SPIR-V coopmat tensor tier failed on-device at 4096³
+(max_rel_err 3.156e-01, deterministic) while all 2111 lib tests stayed
+green and perf looked normal. Found by the cross-tier A/B against the
+new PTX tier.
+
+**Root cause:** dd5f5e26 (2026-09-08) introduced `u32_and(builder, val,
+mask: u32)` for power-of-two modulo strength reduction. rspirv's
+`type Word = u32` means a SPIR-V result id IS a u32 — the five fill
+call sites passed `p.b_stage_elems_mask` / `p.b_stage_pairs_mask`
+(**Word ids**) where a **literal mask value** was expected. Each emitted
+`Op::BitwiseAnd` masked `b_flat` with the gen_id number itself (some
+huge non-2^k-1 constant), corrupting the B-tile fill addressing for
+most flattened indices. Same instruction count → perf unchanged, so
+the commit's timing-only verification missed it; no test exercised the
+fill's shape-dependent addressing on device.
+
+**Fix:** `u32_and` now takes `mask: Word` (a u32_const result id); the
+one literal call site (stagger bucket, &7) builds its const first. The
+Word/u32 alias is exactly the class of silent type error Rust cannot
+catch — hence the helper's doc comment now warns explicitly.
+
+**Verification:** baseline A/B (5d1d7e45 blob: 4.436e-03 OK; broken
+blob: 3.156e-01 FAIL — same harness, same runtime) isolated the
+compiler; commit-window bisect pinned dd5f5e26; post-fix blob returns
+4.436e-03 (bit-identical to the 2026-09-04 ledger number).
+
+**Lesson:** strength-reduction commits that only re-measure TIMING are
+not verified. Any commit touching kernel index math needs the on-device
+correctness gate at a real shape (the cross-tier A/B harness now does
+this in one command).
