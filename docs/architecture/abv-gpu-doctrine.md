@@ -82,12 +82,25 @@ lowering cannot express. The standing measurement remains the
 **coopmat ceiling microkernel**: re-run per driver era; the number
 gates whether the specialized tiers re-arm.
 
+Consequence (rev 2026-09-11, sustained re-baseline — ledger
+2026-09-08 plan, "coopmat sustained re-baseline"): the primary/escape
+framing is DEAD. At sustained 110W with shape-matched blobs, the two
+tiers **split the shape space**: the coopmat f16acc tier wins 2048³
+(27-29 TF vs ~17) and 8192³ (24-34 TF vs 18); the PTX f16acc tier
+wins 4096³ (19.5 vs 13.7). Both are Briev-owned codegen from one
+frontend plan, so per-shape tier routing is a frontend dispatch
+decision — the doctrine's own "specialize per program" clause. The
+tiers are **complementary projections**; selection is by measured
+shape bucket (recorded in the ledger, carried by the frontend
+GemmPlan), never by source annotation. The coopmat ceiling
+microkernel remains the per-driver-era standing measurement.
+
 ## 3. The backend tier architecture
 
 | Tier | Backend | Scope | Status |
 |------|---------|-------|--------|
-| Portable | SPIR-V (Vulkan compute; OpenCL driver present) | All coopmat/row/flat tiers, all vendors | default, fully committed |
-| Specialized | **PTX** (Briev-emitted, driver-JIT via `cuModuleLoadData`) | NVIDIA tensor-class workloads | **optional escape hatch** (Stage 0 measured the portable path at HW peak — the tier only re-arms on a driver-era regression) |
+| Portable | SPIR-V (Vulkan compute; OpenCL driver present) | All coopmat/row/flat tiers, all vendors | default, fully committed; **wins small/L2-resident and very large shapes** (2026-09-11 sustained re-baseline) |
+| Specialized | **PTX** (Briev-emitted, driver-JIT via `cuModuleLoadData`; cubin shipping via offline ptxas) | NVIDIA tensor-class workloads | **committed tier, complementary** — wins the mid-shape band (4096³-class); tier choice per shape is a frontend dispatch decision from the ledger buckets |
 | Specialized | AMD / Intel native (ROCm-shaped / Level Zero+SPIRV-direct) | future — same pattern, one vendor at a time | future |
 
 Rules that hold across all tiers:
