@@ -905,6 +905,8 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
             seq: false,
         body: crate::ast::top::TypeDefBody {
             pins: Vec::new(),
+            reference: None,
+            tolerance: None,
             slots: vec![
                 crate::ast::top::TypeDefSlot { name: "data".to_string(), ty: Type::Vector(
                     Box::new(Type::Custom("T".to_string())),
@@ -1024,6 +1026,8 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
             seq: false,
         body: TypeDefBody {
             pins: Vec::new(),
+            reference: None,
+            tolerance: None,
             slots: vec![TypeDefSlot { name: "count".to_string(), ty: Type::int(), bit_range: None }],
             metadata: HashMap::new(),
             projections: vec![],
@@ -1221,6 +1225,8 @@ fn spawn_pool_countdown_program_storage(
             seq: false,
         body: TypeDefBody {
             pins: Vec::new(),
+            reference: None,
+            tolerance: None,
             slots: vec![TypeDefSlot { name: "count".to_string(), ty: Type::int(), bit_range: None }],
             metadata: HashMap::new(),
             projections: vec![],
@@ -1455,6 +1461,8 @@ fn test_spawn_only_base_registers_pool() {
             seq: false,
         body: TypeDefBody {
             pins: Vec::new(),
+            reference: None,
+            tolerance: None,
             slots: vec![TypeDefSlot { name: "count".to_string(), ty: Type::int(), bit_range: None }],
             metadata: HashMap::new(),
             projections: vec![],
@@ -2568,6 +2576,8 @@ fn test_type_with_slots_populates_struct_types() {
             seq: false,
             body: TypeDefBody {
                 pins: Vec::new(),
+                reference: None,
+                tolerance: None,
                 slots: vec![
                     TypeDefSlot { name: "ptr".to_string(), ty: Type::Applied("Ptr".to_string(), vec![Type::Custom("UInt8".to_string())]), bit_range: None },
                     TypeDefSlot { name: "len".to_string(), ty: Type::Custom("Int".to_string()), bit_range: None },

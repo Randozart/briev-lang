@@ -4294,6 +4294,12 @@ pub fn check_program_with_target(
     for item in items.iter() {
         if let TopLevel::Cell(c) = item {
             all_cell_ports.insert(c.name.clone(), c.ports_out.clone());
+            // 2026-09-11 (fundamentals doctrine, B3): cell pins resolve as
+            // fields on instances (`mc.uart.tx.voltage`) — same rule as
+            // type/obj pins. Registered into the same type_pins table.
+            if !c.pins.is_empty() {
+                all_type_pins.insert(c.name.clone(), c.pins.clone());
+            }
         }
         if let TopLevel::TypeDef(td) = item {
             for slot in &td.body.slots {
@@ -4499,7 +4505,7 @@ pub fn check_program_with_target(
                     ports_in: vec![], ports_out: vec![],
                     bit_range: None, span: None, coll: true, seq: false,
                     body: crate::ast::top::TypeDefBody {
-                        slots: fake_slots, pins: vec![], metadata: Default::default(),
+                        slots: fake_slots, pins: vec![], reference: None, tolerance: None, metadata: Default::default(),
                         projections: vec![], bindings: vec![],
                         operators: vec![], op_bindings: vec![],
                         constraints: vec![], members: vec![], span: None,
@@ -6998,7 +7004,7 @@ node t [count < 5][count == 5] {
 type Volt { spec Bits: 32; };
 type Amp { spec Bits: 32; };
 struct Pin { voltage: Volt; current: Amp; };
-type Led { pin a; pin k; };
+type Led { pin a; pin k; reference "D"; };
 let d1: Led = Led { };
 txn t
     [d1.a.voltage == d1.k.voltage]

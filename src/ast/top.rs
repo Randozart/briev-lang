@@ -255,6 +255,14 @@ pub struct CellDef {
     /// obj headers; the ONLY externally visible names (sealing).
     pub ports_in: Vec<(String, crate::ast::types::Type)>,
     pub ports_out: Vec<(String, crate::ast::types::Type)>,
+    /// 2026-09-11 (fundamentals doctrine, B3): Electronics property clauses —
+    /// uniform on every declaration form (D1: forms are syntax). Pins are
+    /// electrical nodes; reference is the schematic designator prefix
+    /// (mandatory when pins exist); tolerance is the max voltage any pin
+    /// tolerates, or declared-unrated (`tolerance any`).
+    pub pins: Vec<PinDecl>,
+    pub reference: Option<String>,
+    pub tolerance: Option<Tolerance>,
     /// 2026-08-27 (cbv-HW plan Slice A): set on `extern Name(ports) -> outs
     /// from "path";` declarations — the cell's DEFINITION lives in the
     /// referenced HDL source; CIRCT emits an `hw.module.extern` blackbox,
@@ -263,6 +271,14 @@ pub struct CellDef {
     pub extern_source: Option<String>,
     /// 2026-07-24: Doc comment text.
     pub doc: Option<String>,
+}
+
+/// 2026-09-11 (B3): `tolerance 3.3;` (max volts) or `tolerance any;`
+/// (DECLARED unrated — a decision, never a silent omission).
+#[derive(Debug, Clone)]
+pub enum Tolerance {
+    Volts(f64),
+    Any,
 }
 
 // ── Statement ──────────────────────────────────────────────────────────
@@ -1094,6 +1110,12 @@ pub struct TypeDefBody {
     /// Type-level, never instance-literal fields. The netlist derivation
     /// (analysis::electronics) and the KiCad backend read these structurally.
     pub pins: Vec<PinDecl>,
+    /// 2026-09-11 (B3): Electronics property clauses — uniform on all four
+    /// declaration forms. `reference` is the schematic designator prefix;
+    /// mandatory (parse-enforced) whenever pins exist.
+    pub reference: Option<String>,
+    /// `tolerance 3.3;` (Volt) or `tolerance any;` (declared unrated).
+    pub tolerance: Option<Tolerance>,
     pub metadata: HashMap<String, PropertyValue>,
     pub projections: Vec<ProjectionDef>,
     pub bindings: Vec<TypeBinding>,

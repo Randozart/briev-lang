@@ -129,6 +129,8 @@ mod tests {
             seq: false,
             body: TypeDefBody {
                 pins: Vec::new(),
+                reference: None,
+                tolerance: None,
                 slots: slots.into_iter().map(|(n, ty)| TypeDefSlot {
                     name: n.to_string(), ty, bit_range: None,
                 }).collect(),

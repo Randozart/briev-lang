@@ -396,9 +396,9 @@ mod tests {
 
     const LED_CIRCUIT: &str = r#"
         struct Pin { voltage: Float; current: Float; };
-        type Resistor { pin a; pin b; !> Reference: "R"; };
-        type Led { pin a; pin k; !> Reference: "D"; };
-        type Connector { pin vcc; pin gnd; !> Reference: "J"; };
+        type Resistor { pin a; pin b; reference "R"; };
+        type Led { pin a; pin k; reference "D"; };
+        type Connector { pin vcc; pin gnd; reference "J"; };
 
         let j1: Connector = Connector { value: "JST-2" };
         let r1: Resistor = Resistor { value: "330" };
@@ -446,8 +446,10 @@ mod tests {
     fn dangling_netlist_refuses_emission() {
         let src = r#"
             struct Pin { voltage: Float; };
-            type A { pin x; pin y; };
-            type B { pin z; };
+            type A { pin x; pin y;     reference "A";
+};
+            type B { pin z;     reference "B";
+};
             let a: A = A { };
             let b: B = B { };
             txn t [a.x.voltage == a.y.voltage] [a.x.voltage >= 0.0] { }

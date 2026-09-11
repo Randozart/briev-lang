@@ -459,6 +459,8 @@ mod tests {
             seq: false,
             body: crate::ast::top::TypeDefBody {
                 pins: Vec::new(),
+                reference: None,
+                tolerance: None,
                 slots: vec![],
                 metadata: std::collections::HashMap::new(),
                 projections: vec![],

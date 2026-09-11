@@ -38,6 +38,8 @@ mod tests {
             seq: false,
             body: TypeDefBody {
                 pins: Vec::new(),
+                reference: None,
+                tolerance: None,
                 slots: vec![
                     TypeDefSlot { name: "x".to_string(), ty: Type::int(), bit_range: None },
                     TypeDefSlot { name: "y".to_string(), ty: Type::int(), bit_range: None },

@@ -7,8 +7,10 @@
 // compile-time; nothing here executes (the electronics backend emits a
 // schematic, contracts are proven, not run).
 //
-// The component CATALOG (Resistor, Capacitor, Led, Connector, …) follows
-// below — the compiler knows none of these names (Rule 14/15).
+// The component CATALOG below is the extension surface — the compiler
+// knows none of these names (Rule 14/15). Pins are first-class clauses;
+// `reference` is parse-mandatory with pins; `tolerance` rates the pins in
+// Volt (`tolerance any;` declares unrated).
 
 type Volt { spec Bits: 32; };
 type Amp { spec Bits: 32; };
@@ -27,28 +29,27 @@ struct Pin {
     current: Amp;
 };
 
-// ── Component catalog (Phase B3 gives these pin/reference clauses) ──────
-
 type Resistor {
     pin a;
     pin b;
-    !> Reference: "R";
+    reference "R";
 };
 
 type Capacitor {
     pin p;
     pin n;
-    !> Reference: "C";
+    reference "C";
 };
 
 type Led {
     pin a;
     pin k;
-    !> Reference: "D";
+    reference "D";
+    tolerance 3.6;
 };
 
 type Connector {
     pin p1 = 1;
     pin p2 = 2;
-    !> Reference: "J";
+    reference "J";
 };

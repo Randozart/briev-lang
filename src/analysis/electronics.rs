@@ -156,32 +156,23 @@ fn collect_type_pins(items: &[TopLevel]) -> (BTreeMap<String, Vec<(String, u64)>
                     td.name.clone(),
                     td.body.pins.iter().map(|p| (p.name.clone(), p.number)).collect(),
                 );
+                // 2026-09-11 (B3): reference/tolerance are STRUCTURAL clause
+                // fields — the !> metadata path is deleted. reference is
+                // parse-mandatory when pins exist, so it is always present.
                 let prefix = td
                     .body
-                    .metadata
-                    .iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case("reference"))
-                    .and_then(|(_, v)| match v {
-                        crate::ast::PropertyValue::String(s) => Some(s.clone()),
-                        crate::ast::PropertyValue::Identifier(s) => Some(s.clone()),
-                        _ => None,
-                    })
+                    .reference
+                    .clone()
                     .unwrap_or_else(|| {
                         td.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "U".to_string())
                     });
-                // 2026-09-11 (electrical proving): `!> Tolerance: 3.3` — max
-                // voltage any pin of this type tolerates. Unrated types place
-                // no constraint.
-                let tolerance = td
-                    .body
-                    .metadata
-                    .iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case("tolerance"))
-                    .and_then(|(_, v)| match v {
-                        crate::ast::PropertyValue::Float(f) => Some(*f),
-                        crate::ast::PropertyValue::Int(d) => Some(*d as f64),
-                        _ => None,
-                    });
+                // `tolerance 3.3;` rates the pins; `tolerance any;` declares
+                // unrated (a decision); no clause = unrated (B4 wires the
+                // driven-net violation for the no-clause case).
+                let tolerance = td.body.tolerance.as_ref().map(|t| match t {
+                    crate::ast::top::Tolerance::Volts(v) => *v,
+                    crate::ast::top::Tolerance::Any => f64::INFINITY,
+                });
                 let mut pins: Vec<(String, u64)> =
                     td.body.pins.iter().map(|p| (p.name.clone(), p.number)).collect();
                 pins.sort_by_key(|&(_, n)| n);
@@ -531,9 +522,9 @@ mod tests {
 
     const LED_CIRCUIT: &str = r#"
         struct Pin { voltage: Float; current: Float; };
-        type Resistor { pin a; pin b; !> Reference: "R"; };
-        type Led { pin a; pin k; !> Reference: "D"; };
-        type Connector { pin vcc; pin gnd; !> Reference: "J"; };
+        type Resistor { pin a; pin b; reference "R"; };
+        type Led { pin a; pin k; reference "D"; };
+        type Connector { pin vcc; pin gnd; reference "J"; };
 
         let j1: Connector = Connector { value: "JST-2" };
         let r1: Resistor = Resistor { value: "330" };
@@ -564,8 +555,10 @@ mod tests {
     fn transitive_closure_merges_chain_into_one_net() {
         let src = r#"
             struct Pin { voltage: Float; };
-            type A { pin x; pin y; };
-            type B { pin z; };
+            type A { pin x; pin y;     reference "A";
+};
+            type B { pin z;     reference "B";
+};
             let a: A = A { };
             let b: B = B { };
             txn t
@@ -582,7 +575,8 @@ mod tests {
     fn postcondition_does_not_create_nets() {
         let src = r#"
             struct Pin { voltage: Float; };
-            type A { pin x; pin y; };
+            type A { pin x; pin y;     reference "A";
+};
             let a: A = A { };
             txn t
                 [a.x.voltage >= 0.0]
@@ -598,8 +592,10 @@ mod tests {
     fn dangling_pin_is_reported() {
         let src = r#"
             struct Pin { voltage: Float; };
-            type A { pin x; pin y; };
-            type B { pin z; };
+            type A { pin x; pin y;     reference "A";
+};
+            type B { pin z;     reference "B";
+};
             let a: A = A { };
             let b: B = B { };
             txn t
@@ -629,8 +625,8 @@ mod tests {
     fn contract_equality_drives_net_voltage() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; !> Reference: "P"; };
-            type Load { pin vin; !> Reference: "L"; !> Tolerance: 5.5; };
+            type Power { pin vout; reference "P"; };
+            type Load { pin vin; reference "L"; tolerance 5.5; };
             let p1: Power = Power { };
             let l1: Load = Load { };
             txn apply
@@ -650,8 +646,10 @@ mod tests {
     fn overvoltage_into_rated_pin_is_a_violation() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; };
-            type Led { pin a; pin k; !> Tolerance: 3.3; };
+            type Power { pin vout;     reference "P";
+};
+            type Led { pin a; pin k; tolerance 3.3;     reference "L";
+};
             let p1: Power = Power { };
             let d1: Led = Led { };
             txn apply
@@ -668,8 +666,10 @@ mod tests {
     fn disagreeing_drives_are_a_shorted_supply() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Rail { pin hi; pin lo; };
-            type Load { pin vin; };
+            type Rail { pin hi; pin lo;     reference "R";
+};
+            type Load { pin vin;     reference "L";
+};
             let r1: Rail = Rail { };
             let l1: Load = Load { };
             txn apply
@@ -686,8 +686,10 @@ mod tests {
     fn unrated_pins_place_no_voltage_constraint() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; };
-            type Load { pin vin; };
+            type Power { pin vout;     reference "P";
+};
+            type Load { pin vin;     reference "L";
+};
             let p1: Power = Power { };
             let l1: Load = Load { };
             txn apply
@@ -704,8 +706,10 @@ mod tests {
     fn agreeing_drives_do_not_conflict() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Rail { pin hi; pin lo; };
-            type Load { pin vin; };
+            type Rail { pin hi; pin lo;     reference "R";
+};
+            type Load { pin vin;     reference "L";
+};
             let r1: Rail = Rail { };
             let l1: Load = Load { };
             txn apply

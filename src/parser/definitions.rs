@@ -1043,6 +1043,9 @@ impl<'a> Parser<'a> {
         let path_expr = self.expect_string()?;
         self.eat(&Token::Semicolon);
         Ok(CellDef {
+            pins: Vec::new(),
+            reference: None,
+            tolerance: None,
             name,
             type_params,
             parameters: ports_in.clone(),
@@ -1107,9 +1110,27 @@ impl<'a> Parser<'a> {
         let mut fields: Vec<(String, crate::ast::Type)> = Vec::new();
         let mut metadata = std::collections::HashMap::new();
         let mut members: Vec<crate::ast::TopLevel> = Vec::new();
+        // 2026-09-11 (B3): Electronics property clauses — cells are the
+        // ACTIVE-component form; same clauses, same enforcement.
+        let mut pins: Vec<crate::ast::top::PinDecl> = Vec::new();
+        let mut pin_high_water: u64 = 0;
+        let mut reference: Option<String> = None;
+        let mut tolerance: Option<crate::ast::top::Tolerance> = None;
         // 2026-08-26 (Phase B2): internal triggers keep their own field.
         let mut internal_triggers: Vec<Trigger> = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
+            if self.check(&Token::Pin) {
+                self.parse_pin_clause(&mut pins, &mut pin_high_water)?;
+                continue;
+            }
+            if self.at_reference_clause() {
+                reference = Some(self.parse_reference_clause()?);
+                continue;
+            }
+            if self.at_tolerance_clause() {
+                tolerance = Some(self.parse_tolerance_clause()?);
+                continue;
+            }
             if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
                 self.parse_metadata_clause(&mut metadata)?;
                 continue;
@@ -1153,10 +1174,15 @@ impl<'a> Parser<'a> {
         }
         self.expect(Token::RBrace)?;
         self.eat(&Token::Semicolon);
+        // 2026-09-11 (B3): mandatory reference when pins exist.
+        self.require_reference_for_pins("cell", &name, &pins, &reference)?;
         Ok(CellDef {
             // 2026-08-27 (Slice A): plain cells are defined in-file.
             extern_source: None,
             name,
+            pins,
+            reference,
+            tolerance,
             type_params,
             parameters: ports_in.clone(),
             output_type: None,
@@ -2098,6 +2124,128 @@ impl<'a> Parser<'a> {
         })
     }
 
+    // ── 2026-09-11 (fundamentals doctrine, B3): Electronics property
+    // clauses — SHARED by all four declaration body loops (D1: forms are
+    // syntax). `pin` / `reference` / `tolerance` carry identical grammar
+    // and identical enforcement everywhere.
+
+    /// `pin <name> [= <int>];` — first-class component pin. Auto-numbered
+    /// pins continue after the highest explicit number (high-water rule).
+    fn parse_pin_clause(
+        &mut self,
+        pins: &mut Vec<crate::ast::top::PinDecl>,
+        high_water: &mut u64,
+    ) -> Result<(), SyntaxError> {
+        self.pos += 1; // consume `pin`
+        let pin_name = self.expect_identifier()?;
+        let number = if self.eat(&Token::Eq) {
+            let n = self.expect_integer()?;
+            self.eat(&Token::Semicolon);
+            if n < 1 {
+                return self.error_at_current(&format!(
+                    "pin '{}' number must be 1 or greater (KiCad pin numbers start at 1), got {}",
+                    pin_name, n
+                ));
+            }
+            n as u64
+        } else {
+            self.eat(&Token::Semicolon);
+            *high_water + 1
+        };
+        if pins.iter().any(|p| p.name == pin_name) {
+            return self.error_at_current(&format!(
+                "duplicate pin '{}' in declaration body — pin names must be unique within a component",
+                pin_name
+            ));
+        }
+        *high_water = (*high_water).max(number);
+        pins.push(crate::ast::top::PinDecl {
+            name: pin_name,
+            number,
+            span: None,
+        });
+        Ok(())
+    }
+
+    /// Is the current position an Electronics clause (`reference`/`tolerance`
+    /// identifier followed by its clause payload, not a `:` slot)?
+    fn at_reference_clause(&self) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(s)) if s == "reference")
+            && matches!(self.peek_next(), Some(Token::String(_)))
+    }
+    fn at_tolerance_clause(&self) -> bool {
+        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "tolerance") {
+            return false;
+        }
+        matches!(self.peek_next(), Some(Token::Identifier(v)) if v == "any")
+            || matches!(
+                self.peek_next(),
+                Some(Token::Float(_)) | Some(Token::Integer(_))
+            )
+    }
+
+    /// `reference "R";` — schematic reference-designator prefix.
+    fn parse_reference_clause(&mut self) -> Result<String, SyntaxError> {
+        self.pos += 1; // consume `reference`
+        let s = match self.peek() {
+            Some(Token::String(s)) => s.clone(),
+            _ => {
+                return self
+                    .error_at_current("expected a quoted reference prefix (e.g. reference \"R\");")
+            }
+        };
+        self.pos += 1;
+        self.eat(&Token::Semicolon);
+        Ok(s)
+    }
+
+    /// `tolerance 3.3;` (max volts) | `tolerance any;` (declared unrated).
+    fn parse_tolerance_clause(&mut self) -> Result<crate::ast::top::Tolerance, SyntaxError> {
+        self.pos += 1; // consume `tolerance`
+        let tol = match self.peek() {
+            Some(Token::Identifier(v)) if v == "any" => {
+                self.pos += 1;
+                crate::ast::top::Tolerance::Any
+            }
+            Some(Token::Float(f)) => {
+                let f = *f;
+                self.pos += 1;
+                crate::ast::top::Tolerance::Volts(f)
+            }
+            Some(Token::Integer(n)) => {
+                let n = *n;
+                self.pos += 1;
+                crate::ast::top::Tolerance::Volts(n as f64)
+            }
+            _ => {
+                return self.error_at_current(
+                    "expected a voltage (`tolerance 3.3;`) or `any` (`tolerance any;`)",
+                )
+            }
+        };
+        self.eat(&Token::Semicolon);
+        Ok(tol)
+    }
+
+    /// Mandatory-property enforcement (content-triggered): pins without a
+    /// reference clause are an incomplete electronics declaration.
+    fn require_reference_for_pins(
+        &self,
+        form: &str,
+        name: &str,
+        pins: &[crate::ast::top::PinDecl],
+        reference: &Option<String>,
+    ) -> Result<(), SyntaxError> {
+        if !pins.is_empty() && reference.is_none() {
+            return self.error_at_current(&format!(
+                "{} '{}' declares {} pin(s) but no reference clause — every schematic symbol \
+                 needs a reference-designator prefix; add e.g. reference \"X\";",
+                form, name, pins.len()
+            ));
+        }
+        Ok(())
+    }
+
     /// 2026-07-24: Parse `type Name [ : [Parent] [Protocol] ] { body }`.
     fn parse_type_body(&mut self, name: String, type_params: Vec<crate::ast::top::TypeParam>) -> Result<Box<TypeDef>, SyntaxError> {
         let mut parent: Option<Box<Expr>> = None;
@@ -2181,6 +2329,8 @@ impl<'a> Parser<'a> {
         // always win; autos continue after them.
         let mut pins: Vec<crate::ast::top::PinDecl> = Vec::new();
         let mut pin_high_water: u64 = 0;
+        let mut reference: Option<String> = None;
+        let mut tolerance: Option<crate::ast::top::Tolerance> = None;
         let mut metadata = std::collections::HashMap::new();
         let mut operators: Vec<OperatorDef> = Vec::new();
         let mut atomic_slots: Vec<String> = Vec::new();
@@ -2188,38 +2338,18 @@ impl<'a> Parser<'a> {
         let mut members: Vec<crate::ast::TopLevel> = Vec::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
-                // 2026-09-11 (Part C): `pin <name> [= <int>];` — first-class
-                // component pin (Electronics Briev). Number is the KiCad pin
-                // mapping; name is the contract-facing handle (`r1.a.voltage`).
+                // 2026-09-11 (B3): shared Electronics clauses — uniform on
+                // every declaration form.
                 if self.check(&Token::Pin) {
-                    self.pos += 1;
-                    let pin_name = self.expect_identifier()?;
-                    let number = if self.eat(&Token::Eq) {
-                        let n = self.expect_integer()?;
-                        self.eat(&Token::Semicolon);
-                        if n < 1 {
-                            return self.error_at_current(&format!(
-                                "pin '{}' number must be 1 or greater (KiCad pin numbers start at 1), got {}",
-                                pin_name, n
-                            ));
-                        }
-                        n as u64
-                    } else {
-                        self.eat(&Token::Semicolon);
-                        pin_high_water + 1
-                    };
-                    if pins.iter().any(|p| p.name == pin_name) {
-                        return self.error_at_current(&format!(
-                            "duplicate pin '{}' in type body — pin names must be unique within a component",
-                            pin_name
-                        ));
-                    }
-                    pin_high_water = pin_high_water.max(number);
-                    pins.push(crate::ast::top::PinDecl {
-                        name: pin_name,
-                        number,
-                        span: None,
-                    });
+                    self.parse_pin_clause(&mut pins, &mut pin_high_water)?;
+                    continue;
+                }
+                if self.at_reference_clause() {
+                    reference = Some(self.parse_reference_clause()?);
+                    continue;
+                }
+                if self.at_tolerance_clause() {
+                    tolerance = Some(self.parse_tolerance_clause()?);
                     continue;
                 }
                 // !> key: value; or spec PascalCase: value; — metadata assignment
@@ -2243,6 +2373,9 @@ impl<'a> Parser<'a> {
             }
             self.expect(Token::RBrace)?;
         }
+        // 2026-09-11 (B3): mandatory reference when pins exist — parse-time,
+        // content-triggered, what/why/fix.
+        self.require_reference_for_pins("type", &name, &pins, &reference)?;
         if !atomic_slots.is_empty() {
             record_atomic_fields(&mut metadata, &atomic_slots);
         }
@@ -2260,6 +2393,8 @@ impl<'a> Parser<'a> {
             body: TypeDefBody {
                 slots,
                 pins,
+                reference: reference.clone(),
+                tolerance,
                 metadata,
                 projections: vec![],
                 bindings: vec![],
@@ -2707,7 +2842,7 @@ impl<'a> Parser<'a> {
             ports_in, ports_out,
             bit_range: None, span: None, coll, seq,
             body: TypeDefBody {
-                slots, pins: vec![], metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, span: None,
+                slots, pins: vec![], reference: None, tolerance: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, span: None,
             },
         }))
     }
@@ -2979,7 +3114,7 @@ impl<'a> Parser<'a> {
             ports_in: vec![], ports_out: vec![],
             bit_range: None, span: None, coll: false, seq: false,
             body: TypeDefBody {
-                slots, pins: vec![],
+                slots, pins: vec![], reference: None, tolerance: None,
                 metadata: std::collections::HashMap::new(),
                 projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], span: None,
             },
@@ -3687,7 +3822,7 @@ mod tests {
 
     #[test]
     fn test_pin_auto_numbering_starts_at_one() {
-        let pins = parse_pins("type R { pin a; pin b; };");
+        let pins = parse_pins("type R { pin a; pin b; reference \"R\"; };");
         assert_eq!(pins.len(), 2);
         assert_eq!((pins[0].name.as_str(), pins[0].number), ("a", 1));
         assert_eq!((pins[1].name.as_str(), pins[1].number), ("b", 2));
@@ -3695,7 +3830,7 @@ mod tests {
 
     #[test]
     fn test_pin_explicit_number() {
-        let pins = parse_pins("type J { pin vcc = 1; pin gnd = 2; };");
+        let pins = parse_pins("type J { pin vcc = 1; pin gnd = 2; reference \"J\"; };");
         assert_eq!((pins[0].name.as_str(), pins[0].number), ("vcc", 1));
         assert_eq!((pins[1].name.as_str(), pins[1].number), ("gnd", 2));
     }
@@ -3704,7 +3839,7 @@ mod tests {
     fn test_pin_auto_continues_after_explicit_high_water() {
         // Datasheet numbers are arbitrary: an explicit 7 forces autos to
         // continue after it, never re-collide below it.
-        let pins = parse_pins("type U { pin en = 7; pin a; pin b; };");
+        let pins = parse_pins("type U { pin en = 7; pin a; pin b; reference \"U\"; };");
         assert_eq!((pins[0].name.as_str(), pins[0].number), ("en", 7));
         assert_eq!((pins[1].name.as_str(), pins[1].number), ("a", 8));
         assert_eq!((pins[2].name.as_str(), pins[2].number), ("b", 9));
@@ -3712,13 +3847,13 @@ mod tests {
 
     #[test]
     fn test_pin_duplicates_rejected() {
-        let err = parse_top("type R { pin a; pin a; };").unwrap_err();
+        let err = parse_top("type R { pin a; pin a; reference \"R\"; };").unwrap_err();
         assert!(err.contains("pin 'a'"), "got: {err}");
     }
 
     #[test]
     fn test_pin_non_integer_number_rejected() {
-        let err = parse_top("type R { pin a = x; };").unwrap_err();
+        let err = parse_top("type R { pin a = x; reference \"R\"; };").unwrap_err();
         assert!(err.to_lowercase().contains("integer"), "got: {err}");
     }
 
@@ -3906,6 +4041,50 @@ mod tests {
             ty,
             crate::ast::Type::Applied("String".into(), vec![crate::ast::Type::Custom("UTF8".into())])
         );
+    }
+
+    // ── 2026-09-11 (B3): Electronics property clauses ────────────────
+
+    #[test]
+    fn test_reference_and_tolerance_clauses_on_type() {
+        let tl = parse_top("type Led { pin a; pin k; reference \"D\"; tolerance 3.6; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_eq!(td.body.reference.as_deref(), Some("D"));
+        assert_eq!(td.body.pins.len(), 2);
+        match &td.body.tolerance {
+            Some(crate::ast::top::Tolerance::Volts(v)) => assert!((v - 3.6).abs() < 1e-9),
+            other => panic!("expected Volts(3.6), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_tolerance_any_clause() {
+        let tl = parse_top("type J { pin p1; reference \"J\"; tolerance any; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert!(matches!(td.body.tolerance, Some(crate::ast::top::Tolerance::Any)));
+    }
+
+    #[test]
+    fn test_pins_without_reference_is_a_parse_error() {
+        let err = parse_top("type Led { pin a; pin k; };").unwrap_err().to_string();
+        assert!(
+            err.contains("no reference clause") && err.contains("Led") && err.contains("reference \"X\""),
+            "mandatory-reference diagnostic must name the type and the fix, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_cell_clauses_parse() {
+        let tl = parse_top("cell Uart { pin tx; pin rx; reference \"U\"; };").unwrap();
+        let crate::ast::TopLevel::Cell(c) = tl else { panic!("expected Cell") };
+        assert_eq!(c.pins.len(), 2);
+        assert_eq!(c.reference.as_deref(), Some("U"));
+    }
+
+    #[test]
+    fn test_cell_pins_without_reference_is_a_parse_error() {
+        let err = parse_top("cell Uart { pin tx; };").unwrap_err().to_string();
+        assert!(err.contains("no reference clause"), "got: {err}");
     }
 
     // ── Op declaration parsing ───────────────────────────────────────
