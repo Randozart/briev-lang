@@ -205,3 +205,40 @@ the every-512-k y-RMV promotion, the swizzled-smem write/read bank
 interleaving with cycling kstep addresses, and the 512×2-thread barrier.
 Next session: strip the promo from a dump variant (the only single-
 feature probe left that can carry ~20 TF), then the smem-port question.
+
+## THE WALL BROKEN (2026-09-11, night): full-K + store-only epilogue — 29.3 TF (4096³)
+
+The promo-strip probe (sed the predicated branch unconditional) measured
+45.4 TF — the every-512-k y-RMV promotion was costing ~half the kernel.
+Root causes, in order of discovery:
+
+1. **Full-K accumulation**: the 138 pipeline-draining RMV rounds are gone;
+   the f16x2 chains accumulate the whole K loop. Contract verified on
+   device: 5.2e-3 @K=4096, 8.2e-3 @K=8192 — the same K-budget curve the
+   coopmat tier documents (boundary ≈ K=12288, beyond that the f32-acc
+   tier serves).
+2. **Store-only final epilogue**: with full-K, the final pass owns every
+   y element — the RMV's cold-miss global READS (17 TF of end-of-kernel
+   DRAM interference: 45.4 stripped vs 28.0 with one RMV round) and the
+   y-zeroing pass are both gone. The final store is a straight-line tail
+   AFTER KEND — the in-loop predicated promo structure itself measured
+   28 vs 45 with an identical body made unconditional, so the loop tail
+   stays clean.
+
+Production blob path (stale-binary artifact chased down: ALWAYS rebuild
+the release binary before trusting a blob bench):
+
+| shape | before (session start) | now | rel |
+|-------|------------------------|-----|-----|
+| 2048³ | 17.6 | **25.5** | 1.30e-3 |
+| 4096³ | 21.0 | **29.3** | 4.44e-3 |
+| 8192³ | 20.1 | **30.2** | 8.22e-3 |
+
+Tier picture flipped: the PTX f16acc tier now beats coopmat at 4096³
+(29.3 vs ~9.5) AND 8192³ (30.2 vs 21.2), nearly ties at 2048³ (25.5 vs
+27.7). Anchor: 29.3/42 = 70%.
+
+Open: the stripped-probe 45.4 ran at 40 ptxas regs (3 CTAs/SM — the
+dead promo body shrank the allocation) vs our 64 (2 CTAs/SM). Whether
+a ≤42-reg schedule of the LIVE kernel exists (3 CTAs/SM) is the next
+rung; the Coopmat 2048³ lead (27.7 vs 25.5) may also fall to it.

@@ -886,17 +886,23 @@ pub fn tensor_gemm_ptx_smem_mw(
     // KLOOP promotes each f16x2 chunk into it by read-modify-write (CTA-
     // private tiles, no atomics). Each thread zeroes/promotes exactly the
     // fragments it accumulates, so no cross-thread hazard is introduced.
-    // y RMV pass emitter: accumulate=true folds the f16x2 chunk accs into
-    // y (add.rn.f16x2, then resets the chunk accs); accumulate=false zeroes
-    // the tile. Addressing mirrors the f32 store tail exactly.
-    let mut emit_y_pass = |out: &mut String, accumulate: bool| {
+    // y pass emitter. Three modes (2026-09-11): Accumulate folds the f16x2
+    // chunk accs into y by read-modify-write (ld+add+st, resets accs);
+    // Zero stores 0; StoreOnly writes the accs WITHOUT the global read —
+    // the full-K final pass owns every y element (the kernel zeroed it
+    // historically only because the RMV needed a operand; a pure store
+    // needs nothing) and the cold-miss RMV reads measured 17 TFLOP/s of
+    // end-of-kernel DRAM interference (45.4 stripped vs 28.0 with one
+    // RMV round, three reps).
+    let mut emit_y_pass = |out: &mut String, mode: u8| {
+        let (accumulate, store_only) = (mode == 1, mode == 2);
         out.push_str("    mov.u32 %r12, %r10;\n");
         out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
         out.push_str("    mov.u32 %r13, %r11;\n");
         out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 8 * gr as i64 * (y_elem as i64)));
         out.push_str("    mov.u32 %r9, %r12;\n");
         out.push_str("    add.u32 %r9, %r9, %r13;\n");
-        if !accumulate {
+        if mode == 0 {
             out.push_str("    mov.b32 %t0, 0;\n");
         }
         for mh in 0..mhr {
@@ -926,7 +932,9 @@ pub fn tensor_gemm_ptx_smem_mw(
                         out.push_str(&format!("    add.u64 %rd5, %rd5, {};\n", d));
                     }
                     let reg = &cregs[cb + pair as usize];
-                    if accumulate {
+                    if store_only {
+                        out.push_str(&format!("    st.global.b32 [%rd5], {};\n", reg));
+                    } else if accumulate {
                         out.push_str("    ld.global.b32 %t0, [%rd5];\n");
                         out.push_str(&format!("    add.rn.f16x2 %t0, %t0, {};\n", reg));
                         out.push_str("    st.global.b32 [%rd5], %t0;\n");
@@ -1117,7 +1125,9 @@ pub fn tensor_gemm_ptx_smem_mw(
     //   2. Compute on buffer (kstep/16)%2  (overlaps with fill)
     //   3. Wait for fill + barrier
     if f16_acc {
-        emit_y_pass(&mut out, false); // zero the CTA-private y tile
+        // (The historical y-zeroing pass is gone with the RMV promo: the
+        // final store-only pass overwrites every element the fragments
+        // cover — the full CTA tile — so nothing needs a prior zero.)
     }
 
     // === K LOOP pipeline body (reconstructed 2026-09-10 after fault bisection) ===
@@ -1353,23 +1363,22 @@ pub fn tensor_gemm_ptx_smem_mw(
         }
     }
 
-    // f16-acc chunk promotion: every 16 iterations (256 k) fold the f16x2
-    // chunk accs into the y tile and reset them. Uniform predicate.
-    if f16_acc {
-        // 32-iteration chunks (512 k): half the RMV rounds; f16 rounding
-        // measured 8e-4 at 16-iter chunks — 32 stays far under the 1e-2 gate.
-        let chunk_iters = 32usize;
-        out.push_str("    mov.u32 %r14, %r2;\n");
-        out.push_str("    add.u32 %r14, %r14, 16;\n");
-        out.push_str(&format!(
-            "    and.b32 %r14, %r14, {};\n",
-            chunk_iters * 16 - 1
-        ));
-        out.push_str("    setp.ne.u32 %p1, %r14, 0;\n");
-        out.push_str("    @%p1 bra PROMO_SKIP;\n");
-        emit_y_pass(&mut out, true);
-        out.push_str("PROMO_SKIP:\n");
-    }
+    // f16-acc promotion: FULL-K register accumulation (2026-09-11, the
+    // night's decisive probe) — the every-512-k y-RMV round cost 24 TFLOP/s
+    // at 4096^3 (21.4 with vs 45.8 stripped, three reps): 138 pipeline
+    // drains of 128 global-RMV instructions each. cuBLAS's structure is
+    // full-K f16 accumulation with ONE epilogue; the f16x2 chain's random-
+    // walk rounding at K=4096 measures ~5e-3 — inside the 1e-2 contract.
+    // The chunk predicate therefore fires only on the final iteration
+    // (chunk covers the whole K loop); the KEND remainder-promo handles
+    // K not divisible by 16. Tier boundary: like the coopmat f16acc tier,
+    // the f16 chain breaks the 1e-2 gate around K≈12288 (the documented
+    // K-budget) — larger K belongs on the f32-acc tier.
+    // (The final y store lives AFTER KEND — 2026-09-11: the in-loop
+    // predicated promo structure, even firing once, measured 28 vs 45 TF
+    // with the identical body made unconditional; the loop tail must stay
+    // clean for ptxas's scheduling. The store-only pass overwrites every
+    // element the fragments cover.)
 
     // Wait until this iteration's stage is complete (stages-2 groups remain
     // in flight) + async-write visibility (see the prologue note).
@@ -1380,13 +1389,11 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    add.u32 %r2, %r2, 16;\n");
     out.push_str("    bra.uni KLOOP;\nKEND:\n");
 
-    // Store C (f32-acc) / remainder chunk promotion (f16-acc when K is not
-    // a multiple of the 16-iteration chunk — the in-loop promotion covered
-    // whole chunks already).
+    // Store C (f32-acc) / the f16-acc final store-only y pass (2026-09-11:
+    // full-K register accumulation — one straight-line store pass after
+    // the K loop, no in-loop predicate, no RMV reads).
     if f16_acc {
-        if k % (32 * 16) != 0 {
-            emit_y_pass(&mut out, true);
-        }
+        emit_y_pass(&mut out, 2);
         out.push_str("    ret;\n}\n");
         return out;
     }
