@@ -28,7 +28,7 @@ And for those people for whom this is very important, even if the language itsel
 
 - A cute mascot called _Syn_
 
-| <img src="assets/syn_present.png" alt="Syn showing you the logos" width="250"/><br/> <p align="center">*Syn*, the Cybersphinx<p> <p align="center"><sup><sub>(For those people who like a mascot to come with their language)</sup></sub><p> | <img src="assets/briev-logo.svg" alt="Briev" width="200"/><br/><p align="center">**Briev**<p><img src="assets/e-briev-logo.svg" alt="Embedded Briev" width="200"/><br/><p align="center">**Embedded Briev**<p><img src="assets/a-briev-logo.svg" alt="Accelerated Briev" width="200"/><br/><p align="center">**Accelerated Briev**<p> | <img src="assets/r-briev-logo.svg" alt="Rendered Briev" width="200"/><br/><p align="center">**Rendered Briev**<p><img src="assets/d-briev-logo.svg" alt="Data Briev" width="200"/><br/><p align="center">**Data Briev**<p><img src="assets/s-briev-logo.svg" alt="Silicon Briev" width="200"/><p align="center">**Silicon Briev**<p> |
+| <img src="assets/syn_present.png" alt="Syn showing you the logos" width="250"/><br/> <p align="center">*Syn*, the Cybersphinx<p> <p align="center"><sup><sub>(For those people who like a mascot to come with their language)</sup></sub><p> | <img src="assets/briev-logo.svg" alt="Briev" width="200"/><br/><p align="center">**Briev**<p><img src="assets/e-briev-logo.svg" alt="Electronics Briev" width="200"/><br/><p align="center">**Electronics Briev**<p><img src="assets/a-briev-logo.svg" alt="Accelerated Briev" width="200"/><br/><p align="center">**Accelerated Briev**<p> | <img src="assets/r-briev-logo.svg" alt="Rendered Briev" width="200"/><br/><p align="center">**Rendered Briev**<p><img src="assets/d-briev-logo.svg" alt="Data Briev" width="200"/><br/><p align="center">**Data Briev**<p><img src="assets/s-briev-logo.svg" alt="Silicon Briev" width="200"/><p align="center">**Silicon Briev**<p> |
 |---|---|---|
 
 ## Quick Start
@@ -94,7 +94,7 @@ The file extension selects which backend compiles your program, and what syntax 
 | <img src="assets/briev-icon.svg" alt="Briev" width="25"/> **Briev** | `.bv` | Pure declarative logic | LLVM → native binary, optional SPIR-V offload |
 | <img src="assets/a-briev-icon.svg" alt="Briev Accel" width="25"/> **Accelerated Briev** | `.abv` | GPU compute kernel | SPIR-V (GPU intrinsics, no FFI, restricted types) |
 | <img src="assets/r-briev-icon.svg" alt="Rendered Briev" width="25"/> **Rendered Briev** | `.rbv` | Reactive web UI | TypeScript + WASM sidecars + view bindings |
-| <img src="assets/e-briev-icon.svg" alt="Embedded Briev" width="25"/> **Embedded Briev** | `.ebv` | Microcontroller bare-metal | LLVM → microcontroller binary (no OS, no GC) |
+| <img src="assets/e-briev-icon.svg" alt="Electronics Briev" width="25"/> **Electronics Briev** | `.ebv` | Microcontroller bare-metal | LLVM → microcontroller binary (no OS, no GC) |
 | <img src="assets/s-briev-icon.svg" alt="Silicon Briev" width="25"/> **Silicon Briev** | `.sbv` | Pure hardware logic graph | CIRCT → Verilog/VHDL (no FFI, no external deps) |
 | <img src="assets/d-briev-icon.svg" alt="Data Briev" width="25"/> **Data Briev** | `.dbv` / `.dbvs` / `.dbvl` | Configuration data, schemas, line-based databases | Parsed and validated by Briev itself, consumed by all targets |
 
