@@ -186,7 +186,7 @@ Bit — root protocol (compiler axiom)
   └── Data     → ptr        — opaque pointer
 ```
 
-Each protocol has a hardcoded direct lane to every other protocol. Protocol variants (`#String<UTF8>`, `#Float<IEEE754>`) are expressed through variant edges.
+Each protocol has a hardcoded direct lane to every other protocol. Protocol variants (`String<UTF8>`, `Float<IEEE754>`) are expressed through variant edges.
 
 ### 3.2 Key Functions
 
@@ -194,7 +194,7 @@ Each protocol has a hardcoded direct lane to every other protocol. Protocol vari
 |----------|----------|-------------|
 | `type_to_protocol(universe, ty)` | `graph.rs:492` | Returns `(category, variant)` from `Cast.#<Category>` properties |
 | `resolve_llvm_type(universe, ty, int_bits)` | `graph.rs:540` | Returns LLVM type string from `(protocol, bytes)` |
-| `is_protocol_member(ty, "#String")` | Via `type_to_protocol` | Checks protocol membership |
+| `is_protocol_member(ty, "String")` | Via `type_to_protocol` | Checks protocol membership |
 | `find_path(graph, src, dst)` | `graph.rs:??` | BFS for cast path between protocols |
 
 ### 3.3 How `type_to_protocol` Works
@@ -210,13 +210,13 @@ pub fn type_to_protocol(&self, universe: &TypeUniverse, ty: &Type) -> (String, S
     let key = ty.universe_key().and_then(|k| universe.get(k));
     let rt = key?;
     // Priority: Float → UInt → Int → String → Bool → Char → Data → Bit
-    if rt.properties.contains_key("Cast.#Float") { ("Float", "") }
-    else if rt.properties.contains_key("Cast.#UInt") { ("UInt", "") }
-    else if rt.properties.contains_key("Cast.#Int") { ("Int", "") }
-    else if rt.properties.contains_key("Cast.#String") { ("String", "") }
-    else if rt.properties.contains_key("Cast.#Bool") { ("Bool", "") }
-    else if rt.properties.contains_key("Cast.#Char") { ("Char", "") }
-    else if rt.properties.contains_key("Cast.#Data") { ("Data", "") }
+    if rt.properties.contains_key("Cast.Float") { ("Float", "") }
+    else if rt.properties.contains_key("Cast.UInt") { ("UInt", "") }
+    else if rt.properties.contains_key("Cast.Int") { ("Int", "") }
+    else if rt.properties.contains_key("Cast.String") { ("String", "") }
+    else if rt.properties.contains_key("Cast.Bool") { ("Bool", "") }
+    else if rt.properties.contains_key("Cast.Char") { ("Char", "") }
+    else if rt.properties.contains_key("Cast.Data") { ("Data", "") }
     else { ("Bit", "") }
 }
 ```
@@ -248,7 +248,7 @@ The `build_field_index` function in `mod.rs` assigns indices based on declaratio
 
 All state fields are stored as `i64` in `%State` (from `push_field_type`, `mod.rs:918`). The `adapt_to_i64` / `ensure_typed_value` functions handle conversion between `i64` and the field's natural type at load/store time.
 
-Exception: Float fields (`Cast.#Float` types) are sometimes stored as their native `float`/`double` type in `%State`. The `declare_state_type` function uses `protocol_llvm_type` which returns the native type.
+Exception: Float fields (`Cast.Float` types) are sometimes stored as their native `float`/`double` type in `%State`. The `declare_state_type` function uses `protocol_llvm_type` which returns the native type.
 
 ### 4.3 Accessing State Fields
 
@@ -421,7 +421,7 @@ To force vectorization, add metadata here. Note that LLVM's loop vectorizer cann
 Before merging any backend change, verify:
 
 - [ ] **No type name matching** — `git grep 'Type::Custom.*if.*=="' src/backend/llvm/` returns zero results (except for `Int`, `Float`, `Bool` bootstrap exceptions)
-- [ ] **No hardcoded String/Data/Char/UInt** — use `is_protocol_member(ty, "#String")` or `protocol_of(ty) == "String"`
+- [ ] **No hardcoded String/Data/Char/UInt** — use `is_protocol_member(ty, "String")` or `protocol_of(ty) == "String"`
 - [ ] **`llvm_type()` used correctly** — never hardcode `"i64"` or `"float"` as type strings
 - [ ] **Phi register use limited to the loop body** — phi registers from `.inner_124` are invalid in `.ox_124`; use state loads instead
 - [ ] **Registers via `gen_reg()`** — no hand-written `%tN` register names
@@ -659,15 +659,15 @@ Phase 1b; the EMISSION remains dormant for the reasons below.
 
 | Protocol | Default LLVM type | Width (bytes) |
 |----------|-------------------|:-------------:|
-| `#Bit` | `i64` | 8 |
-| `#Int` | `i64` | 8 |
-| `#UInt` | `i64` | 8 |
-| `#Float` | `double` (default 64-bit) | 8 |
+| `Bit` | `i64` | 8 |
+| `Int` | `i64` | 8 |
+| `UInt` | `i64` | 8 |
+| `Float` | `double` (default 64-bit) | 8 |
 | `#Float32` | `float` | 4 |
-| `#String` | `{ i64, i64 }` | 16 |
-| `#Bool` | `i8` | 1 |
-| `#Char` | `i32` | 4 |
-| `#Data` | `ptr` | 8 |
+| `String` | `{ i64, i64 }` | 16 |
+| `Bool` | `i8` | 1 |
+| `Char` | `i32` | 4 |
+| `Data` | `ptr` | 8 |
 
 These are resolved by `resolve_llvm_type()` in the casting graph. Never hardcode them.
 
@@ -675,7 +675,7 @@ These are resolved by `resolve_llvm_type()` in the casting graph. Never hardcode
 
 1. Define the type in stdlib `.bv` with protocol membership:
    ```briev
-   type MyType: String { spec Bytes: 16; op CastTo(#Int): my_parse(#L); };
+   type MyType: String { spec Bytes: 16; op CastTo(Int): my_parse(#L); };
    ```
 2. If a new protocol category is needed, add a lane in `graph.rs::new()`:
    ```rust

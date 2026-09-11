@@ -83,12 +83,12 @@ lua: {
   // native = the type as your language writes it
   // c_abi  = the type as your C shim sees it at the boundary
   protocols: {
-    "#Bool":   { native: "boolean";  c_abi: "long long" };
-    "#Char":   { native: "string";   c_abi: "long long" };
-    "#Data":   { native: "string";   c_abi: "long long" };
-    "#Float":  { native: "number";   c_abi: "double" };
-    "#Int":    { native: "integer";  c_abi: "long long" };
-    "#String": { native: "string";   c_abi: "long long" };
+    "Bool":   { native: "boolean";  c_abi: "long long" };
+    "Char":   { native: "string";   c_abi: "long long" };
+    "Data":   { native: "string";   c_abi: "long long" };
+    "Float":  { native: "number";   c_abi: "double" };
+    "Int":    { native: "integer";  c_abi: "long long" };
+    "String": { native: "string";   c_abi: "long long" };
   };
 
   // ── conversions: how a value crosses the boundary ─────────────────────
@@ -97,8 +97,8 @@ lua: {
   // from_abi: render the raw C return (result_abi) back to your value.
   // These are your language's type-bridging snippets.
   conversions: {
-    to_abi:   { "#Int": "{name}"; "#Float": "{name}"; "#String": "{name}" };
-    from_abi: { "#Int": "result_abi"; "#Float": "result_abi"; "#String": "result_abi" };
+    to_abi:   { "Int": "{name}"; "Float": "{name}"; "String": "{name}" };
+    from_abi: { "Int": "result_abi"; "Float": "result_abi"; "String": "result_abi" };
   };
 
   // ── state: how the Briev state handle appears in your generated code ──
@@ -179,14 +179,14 @@ static int lua_{{name}}(lua_State* L) {
 ```
 
 ```c
-// native.parse.#Int     (param <name>)
+// native.parse.Int     (param <name>)
     long long {{name}} = luaL_checkinteger(L, _i++);
-// native.build.#Int
+// native.build.Int
     lua_pushinteger(L, r);
     return 1;
-// native.c_type.#Int
+// native.c_type.Int
 long long
-// native.ret.#Int
+// native.ret.Int
 long long
 ```
 
@@ -326,8 +326,8 @@ fn has(cmd: &str) -> bool { Command::new(cmd).arg("--version").output().is_ok() 
 - [ ] `lib/glue/<lang>/glue.dbvl` has `types_module`, `extension`,
       `bridge_kind`, `calling_convention`, `module_init`, `protocols`, and
       `param_decl`.
-- [ ] Every protocol category your bridge uses (`#Int`, `#Float`, `#String`,
-      `#Bool`, `#Data`, `#Char`) has a `protocols` entry.
+- [ ] Every protocol category your bridge uses (`Int`, `Float`, `String`,
+      `Bool`, `Data`, `Char`) has a `protocols` entry.
 - [ ] Every category has the `native.parse/build/c_type/ret` snippets your
       shim needs (native modules), or you rely on a default.
 - [ ] `conversions.to_abi/from_abi` bridge the types that need it.

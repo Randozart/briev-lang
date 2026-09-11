@@ -6,7 +6,7 @@
 
 CTD and ALU metadata properties are replaced by hashword op signatures.
 Types no longer declare `ctd <~ "Float"` or `alu <~ "Float"`. Instead,
-they declare `op Add(#Float, #Float)` — the backend knows from the `#Float`
+they declare `op Add(Float, Float)` — the backend knows from the `Float`
 hashword what to emit.
 
 The old `ctd_to_llvm()` + `derive_llvm_type()` fallback chain is replaced

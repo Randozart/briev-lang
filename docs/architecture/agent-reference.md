@@ -17,8 +17,8 @@ lexed as distinct tokens and resolved at codegen time to concrete registers.
 The **fundamental types** (`Data`, `Bit<N>`, `Int`, `UInt`, `Float`,
 `String`, `Bool`, `Char`, `Blob`, `Ptr`, `Void`) are compiler-native
 primordials — they appear directly in op signatures (`op Add(Int)`) and
-carry no `#`. Parameterized protocol variants (`#String<UTF8>`,
-`#Float<IEEE754>`) keep their `#` and select representations; `#Link<name>`
+carry no `#`. Parameterized protocol variants (`String<UTF8>`,
+`Float<IEEE754>`) keep their `#` and select representations; `#Link<name>`
 emits `-l<name>`; `#System` is the sole bare protocol hashword. `Data` is
 the universal reflective floor (every value observable as raw storage — not
 a supertype, no universal inheritance edge); `Bit<N>` is the unified bit type
@@ -36,14 +36,14 @@ Well-known sub-protocols are hardcoded in the casting graph with known LLVM type
 
 | Variant | LLVM type |
 |---------|-----------|
-| `#Float<BFloat>` | `bfloat` |
-| `#Float<Half>` | `half` |
-| `#Float<IEEE754>` | `float` |
-| `#Float<Double>` | `double` |
-| `#Float<FP128>` | `fp128` |
-| `#Float<X86_FP80>` | `x86_fp80` |
-| `#String<UTF8>` | `ptr` (to `[len][bytes]`) |
-| `#String<ASCII>` | `ptr` (to `[len][bytes]`) |
+| `Float<BFloat>` | `bfloat` |
+| `Float<Half>` | `half` |
+| `Float<IEEE754>` | `float` |
+| `Float<Double>` | `double` |
+| `Float<FP128>` | `fp128` |
+| `Float<X86_FP80>` | `x86_fp80` |
+| `String<UTF8>` | `ptr` (to `[len][bytes]`) |
+| `String<ASCII>` | `ptr` (to `[len][bytes]`) |
 
 The file extension determines the default variant (`.bv` → UTF8, `.ebv` →
 ASCII); cross-variant calls need explicit disambiguation. If the compiler must
@@ -53,8 +53,8 @@ variant — never a metadata key that codegen must check.
 ### 1.1 Naming convention
 
 - **PascalCase**: fundamental types, protocol identifiers, intrinsics
-  (`String`, `Float`, `Bit<N>`, `#String<UTF8>`, `#Float<IEEE754>`, `Sqrt#`,
-  `Print#`, `Posit32`, `CastTo(#String<UTF8>)`).
+  (`String`, `Float`, `Bit<N>`, `String<UTF8>`, `Float<IEEE754>`, `Sqrt#`,
+  `Print#`, `Posit32`, `CastTo(String<UTF8>)`).
 - **snake_case**: user functions in `.bv` files and Rust stdlib calls
   (`ascii_to_utf8()`, `from_utf8_lossy()`, `array_map()`).
 - The dividing line: if the compiler MUST know the name to function (intrinsic
@@ -371,7 +371,7 @@ read-write overlap, the compiler DEMANDS `async` on both or `sync<group>` on
 both — an unclassified eligible pair is a hard error.
 
 **Delimiter semantic load:** `<>` = compile-time type specialization
-(`Stack<T>`, `#String<UTF8>`, `asm<chip>`, `sync<group>`); `()` = application &
+(`Stack<T>`, `String<UTF8>`, `asm<chip>`, `sync<group>`); `()` = application &
 binding (`f(a)`, `Person(...)`, `op Add: func(#Lh,#Rh)`, `op Add(Float)` —
 declarations take params); `[]` = containment/bound; `{}` = grouping.
 

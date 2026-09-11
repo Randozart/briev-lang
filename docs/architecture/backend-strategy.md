@@ -110,7 +110,7 @@ activates embedded mode:
 ### Restrictions Checker
 
 `check_embedded_restrictions()` (`src/backend/llvm/mod.rs:1519`) scans the typed AST:
-- **State/local declarations of heap types** (`#String`, `#Data`, `List`, `HashMap`, …): emits a **`TargetWarning`** that the value uses the finite static bump arena — NOT an error (2026-08-04 reframe).
+- **State/local declarations of heap types** (`String`, `Data`, `List`, `HashMap`, …): emits a **`TargetWarning`** that the value uses the finite static bump arena — NOT an error (2026-08-04 reframe).
 - **Threading intrinsics**: rejects `ThreadCreate`, `ThreadJoin`, `ThreadExit`, `MutexLock`, `MutexUnlock`, `CondvarWait`, `CondvarSignal`, `CondvarBroadcast` — bare metal has no threads.
 - **Unbounded recursion**: warns (no stack growth).
 

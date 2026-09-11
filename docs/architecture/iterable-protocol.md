@@ -153,7 +153,7 @@ the web element decode.
 `String` is a fundamental (`Data`-refining) type: the value is a
 `[len][bytes]` pointer, layout/encoding derived by the casting graph. `String`
 is `Iterable<Char>`. (2026-08-15: category `#` removed from fundamentals —
-`String` not `#String`; protocol variants `#String<UTF8>` keep theirs.)
+`String` not `String`; protocol variants `String<UTF8>` keep theirs.)
 
 **2026-08-14 (current mechanism):** a `String` operand iterates `Char`
 through a **protocol-keyed char-decode lane** — the loop bound is the stored

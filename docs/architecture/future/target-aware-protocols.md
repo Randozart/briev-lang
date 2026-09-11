@@ -5,9 +5,9 @@
 
 ## Summary
 
-Currently `#String` resolves to `#String<UTF8>` unconditionally regardless of
+Currently `String` resolves to `String<UTF8>` unconditionally regardless of
 target platform. This feature would make the default protocol variant
-target-dependent: `#String` → `#String<UTF16>` on Windows, `#String<UTF8>` on
+target-dependent: `String` → `String<UTF16>` on Windows, `String<UTF8>` on
 Linux, etc.
 
 ## Key Design Questions

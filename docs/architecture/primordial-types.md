@@ -10,15 +10,15 @@
 > hashword op signatures instead of metadata tags:
 >
 > ```briev
-> type Int: #Int {
->     op Add(#Int, #Int);      // not primitive <~ "Int" + llvm <~ "i64"
->     op Parse(#Int);           // identity literal construction
+> type Int: Int {
+>     op Add(Int, Int);      // not primitive <~ "Int" + llvm <~ "i64"
+>     op Parse(Int);           // identity literal construction
 >     op Parse(Decimal);        // numeric literal construction
 > };
 > ```
 >
 > **2026-07-24:** The `<:` syntax is replaced by `: [Parent] [Protocol]`.
-> `type Int: #Int` declares Int as implementing the #Int protocol. Width is
+> `type Int: Int` declares Int as implementing the Int protocol. Width is
 > inferred unless `bits <~ N` is explicit. The `.#` operator replaces `:>`
 > for property access: `x.#Size` not `x .#Size`.
 >
@@ -162,12 +162,12 @@ are lost, and the user's definition is authoritative.
 
 This means:
 
-- `type Int { data: Bits<32>; op Add(#Float, #Float) = int_add_float(#L,#R); }`
+- `type Int { data: Bits<32>; op Add(Float, Float) = int_add_float(#L,#R); }`
   → Int is now a 32-bit type that adds like a float. The name "Int" is
   irrelevant to codegen — only the layout and ops matter.
 - `type String { data: Bits<32>; }` → String is now a 32-bit scalar.
-  Operations that expected `#String` protocol ops (`Extract(#Char)`,
-  `InsertAt(#Char)`, `Concat(#String)`) will fail at the typechecker
+  Operations that expected `String` protocol ops (`Extract(Char)`,
+  `InsertAt(Char)`, `Concat(String)`) will fail at the typechecker
   because the user's definition doesn't declare them.
 
 The "deals with it" contract: once you declare a type with a given name, you
@@ -183,16 +183,16 @@ protocol category, providing zero-cost identity literal construction:
 
 | Primordial | Protocol | Implicit Parse op | Also accepts |
 |---|---|---|---|
-| `Int` | `#Int` | `op Parse(#Int)` | `op Parse(Decimal)` — numeric literals |
-| `Float` | `#Float` | `op Parse(#Float)` | `op Parse(Decimal)` — numeric literals |
-| `Bool` | `#Bool` | `op Parse(#Bool)` | `op Parse(Bare)` — `true`/`false` |
-| `Char` | `#Char` | `op Parse(#Char)` | `op Parse(Decimal)` — code point value |
-| `String` | `#String` | `op Parse(#String)` | `op Parse(Quoted)` — string literals |
-| `UInt` | `#Int` | `op Parse(#Int)` | `op Parse(Decimal)` |
+| `Int` | `Int` | `op Parse(Int)` | `op Parse(Decimal)` — numeric literals |
+| `Float` | `Float` | `op Parse(Float)` | `op Parse(Decimal)` — numeric literals |
+| `Bool` | `Bool` | `op Parse(Bool)` | `op Parse(Bare)` — `true`/`false` |
+| `Char` | `Char` | `op Parse(Char)` | `op Parse(Decimal)` — code point value |
+| `String` | `String` | `op Parse(String)` | `op Parse(Quoted)` — string literals |
+| `UInt` | `Int` | `op Parse(Int)` | `op Parse(Decimal)` |
 | *(all others)* | derived | derived from protocol | derived from structure |
 
 When a user overrides a primordial type via `type Int { ... }`, the Parse ops
-are also overridden. If the user's definition includes `op Parse(#Int)` or
+are also overridden. If the user's definition includes `op Parse(Int)` or
 `op Parse(Decimal)`, those replace the primordial defaults. If neither is
 declared, the type has NO implicit Parse ops — it cannot be constructed
 from literals without an explicit conversion function.

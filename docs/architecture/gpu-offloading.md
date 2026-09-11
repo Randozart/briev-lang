@@ -194,7 +194,7 @@ accel.rs (resident_gate_tests).
 
 ### The f16 tensor fault (open — vendor-level)
 
-Float16 joins the Float category (`type Float16 : Float, #Float`), f16
+Float16 joins the Float category (`type Float16 : Float, Float`), f16
 shapes are on the kernel surface, and the tensor emitter produces
 spirv-val-clean kernels — but the device path faults: writes stop at
 ~8.4MB into y (row 1027 of 4096; y-fill sentinel trace), workgroup ~2^12,

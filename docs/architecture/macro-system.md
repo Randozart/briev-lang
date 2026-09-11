@@ -584,7 +584,7 @@ NOT use the macro engine.
 
 Naming convention: `!`-suffix = compile-time expansion of a plugin
 intercept; `$`-suffix = compile-time macro-system intrinsic; `#`-suffix =
-backend intrinsic (`Sqrt#`); `#`-prefix = hashword (`#Int`). The removed
+backend intrinsic (`Sqrt#`); `#`-prefix = hashword (`Int`). The removed
 `[#]` entry marker is replaced by `entry!`/`args!` (Phase 2-3).
 
 See `docs/plans/2026-08-01-plugin-macro-rework.md` for the full design.

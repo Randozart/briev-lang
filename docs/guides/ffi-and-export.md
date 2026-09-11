@@ -10,7 +10,7 @@ Briev compiles to a native library that any language can call at **native
 speed** — C, C++, Rust, Python, Node, Go, Java, Lua, C# are prepackaged
 (§14). The FFI is **protocol-driven**: Briev has no type layouts, only
 adaptive protocols. A boundary representation is a sub-protocol
-(`#String<C_String>`), a `proto` declaration supplies the transforms, and the
+(`String<C_String>`), a `proto` declaration supplies the transforms, and the
 casting graph finds the minimal path between a Briev type and its boundary
 representation — emitting the **delta**, not a chain. The composite String
 crosses as a pointer into a state-owned NUL-invariant region — zero-copy from
@@ -260,7 +260,7 @@ $ python3 -c "import rank; print(rank.feature_hash(1000, 42))"
   parse/build snippets (in `lib/glue/python/glue.dbvl`, the python target's
   `native.*` templates) marshal natively — Python `int`/`float`/`str` in,
   native Python values out. String params use `PyUnicode_AsUTF8AndSize`
-  (limited API ≥ 3.10); `#String` handles are the CStr/Briev pointer.
+  (limited API ≥ 3.10); `String` handles are the CStr/Briev pointer.
 - The `CStr <-> String` meld (`lib/glue/c.bv`) makes boundary functions
   cast-free: `let s: String = name;` needs no `as`, and the marshalling inserts
   `cstr_to_briev`/`str_to_c` (zero-copy in the String → CStr direction — a

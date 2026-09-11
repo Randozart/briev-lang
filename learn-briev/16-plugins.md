@@ -311,8 +311,8 @@ $(Parsed) {
 ```briev
 $(Parsed) {
     // Compute protocol path between two types
-    let path = CastPath$("String", "#String");
-    // Returns ["String", "#String"] — identity path
+    let path = CastPath$("String", "String");
+    // Returns ["String", "String"] — identity path
 };
 ```
 

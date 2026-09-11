@@ -11,7 +11,7 @@ directives — and it does not pretend otherwise. What it forbids is *hiding*
 that treatment behind ordinary-looking syntax.
 
 - **Compiler-knowns are disclosed** with markers: `#` (intrinsic `Sqrt#`,
-  hashword `#Int`), `!` (compile-time expansion `my_macro!`), `.^`/`.^^`
+  hashword `Int`), `!` (compile-time expansion `my_macro!`), `.^`/`.^^`
   (reflection).
 - **User-facing directives are ordinary keywords** — `seq`, `vol`, `async`,
   `sync<group>` — requiring no special computer-science knowledge to read.
@@ -28,13 +28,13 @@ Every delimiter carries exactly one meaning:
 
 | Delimiter | Load | Examples |
 |-----------|------|----------|
-| `<>` | **compile-time type-level specialization** | `Stack<T>`, `#String<UTF8>`, `asm<x86_64>`, `sync<group>` |
+| `<>` | **compile-time type-level specialization** | `Stack<T>`, `String<UTF8>`, `asm<x86_64>`, `sync<group>` |
 | `()` | **application & binding** | `f(a)`, `defn f(x: Int)`, `Person(...)`, `op Add: func(#L,#R)`, `op Add(Float)` (declarations take params) |
 | `[]` | **containment / bound** | `Int[8]`, `[pre]` guards |
 | `{}` | **grouping / definition** | blocks, struct literals |
 
 `sync` is a compile-time identity (which group) — the same shape as `asm<chip>`
-(which target) and `#String<UTF8>` (which variant) — so it is `sync<group>`,
+(which target) and `String<UTF8>` (which variant) — so it is `sync<group>`,
 not `sync(group)`. `op Add(Float)` stays parenthesized: `op` is a nested
 declaration, declarations take params, and it avoids angle-bracket nesting.
 

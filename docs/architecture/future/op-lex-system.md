@@ -82,21 +82,21 @@ type Bool { op Lex(Keyword, "true"): parse_true(#L); };
 
 ### 2.3 Default protocols
 
-Each protocol carries a default `op Lex` so `type Int: #Int` works without
+Each protocol carries a default `op Lex` so `type Int: Int` works without
 declaring one:
 
 | Protocol | Default `op Lex` | Effect |
 |----------|-------------------|--------|
-| `#Int` | `op Lex(Literal, r"^[0-9]+$"): parse_int(#L);` | Matches plain integers |
-| `#Float` | `op Lex(Literal, r"^[0-9]+\.[0-9]+$"): parse_float(#L);` | Matches decimal-point floats |
-| `#String` | `op Lex(Quoted): parse_string(#L);` | Accepts any quoted string |
-| `#Bool` | `op Lex(Keyword, "true"): parse_true(#L);` + `op Lex(Keyword, "false"): parse_false(#L);` | Two keyword entries |
+| `Int` | `op Lex(Literal, r"^[0-9]+$"): parse_int(#L);` | Matches plain integers |
+| `Float` | `op Lex(Literal, r"^[0-9]+\.[0-9]+$"): parse_float(#L);` | Matches decimal-point floats |
+| `String` | `op Lex(Quoted): parse_string(#L);` | Accepts any quoted string |
+| `Bool` | `op Lex(Keyword, "true"): parse_true(#L);` + `op Lex(Keyword, "false"): parse_false(#L);` | Two keyword entries |
 
 Users can override or extend:
 ```briev
-type HexInt: #Int {
+type HexInt: Int {
     op Lex(Literal, r"^0x[0-9a-fA-F]+$"): parse_hex(#L);
-    // #Int's default r"^[0-9]+$" still inherited for plain decimals
+    // Int's default r"^[0-9]+$" still inherited for plain decimals
 };
 ```
 
@@ -167,7 +167,7 @@ messages are clearer (the declaration says exactly which word).
 Currently the lexer processes escape sequences (`\n` → `0x0A`, `\x41` → `A`,
 `\u{0041}` → `A`). This is type-specific knowledge about what escapes mean.
 
-If `#String`'s `op Lex(Quoted)` handles the `#L` raw text, it must also
+If `String`'s `op Lex(Quoted)` handles the `#L` raw text, it must also
 process escapes. This means the lexer can no longer resolve escapes (it
 doesn't know what type will claim the `Quoted` token) — it must preserve
 the raw text `"hello\nworld"` (with backslash-n, not the newline byte) and let
@@ -200,8 +200,8 @@ entirely, since suffixes are now part of the `Literal` raw text?
 
 ### 3.6 Inheritance semantics
 
-When a type declares `type Binary: #Int { op Lex(Literal, r"^0b[01]+$"): parse_binary(#L); }`,
-does `Binary` also inherit `#Int`'s default `r"^[0-9]+$"` regex? If yes, plain
+When a type declares `type Binary: Int { op Lex(Literal, r"^0b[01]+$"): parse_binary(#L); }`,
+does `Binary` also inherit `Int`'s default `r"^[0-9]+$"` regex? If yes, plain
 integers are also valid `Binary` values. If no, `Binary` can only parse binary
 syntax and plain decimals fail.
 
@@ -227,7 +227,7 @@ annotation. Most predictable but most verbose.
 wins. Hard to define "specificity" across independently developed types.
 
 (e) **Protocol hierarchy priority.** A type closer to the match in the
-protocol DAG wins. `type HexInt: #Int` overrides `#Int`'s default.
+protocol DAG wins. `type HexInt: Int` overrides `Int`'s default.
 
 ### 3.8 Optimizer fast path
 
@@ -270,4 +270,4 @@ Remove `Expr::TaggedLiteral` and `Expr::TaggedQuotedLiteral`.
 | Bool keywords | Hardcoded tokens | `op Lex(Keyword, ...)` |
 | Typed suffixes | Hardcoded tokens | Regex on Literal |
 | Hex/binary/octal | Hardcoded in lexer regex | User-defined via type |
-| Escape processing | In lexer | In `#String` type's parser fn (TBD: or lexer?) |
+| Escape processing | In lexer | In `String` type's parser fn (TBD: or lexer?) |

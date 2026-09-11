@@ -16,7 +16,7 @@ error.
 
 > The historical `:>` projection and `<:` derivation lens operators were
 > removed with the hashword-protocol architecture. The `#` glyph remains for
-> protocol hashwords (`op Add(#Float)`) and intrinsic names (`Sqrt#`) — it is
+> protocol hashwords (`op Add(Float)`) and intrinsic names (`Sqrt#`) — it is
 > not a reflection operator.
 
 ## 1. Compile-time reflection (`.^^`)

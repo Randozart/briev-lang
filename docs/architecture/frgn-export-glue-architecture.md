@@ -163,14 +163,14 @@ now calls `compute_protocol_path()`, which uses the BFS in
 Source = Briev String
 Target = Foreign *mut u8
 
-BFS finds: [String, #Bits, *mut u8]
-  ├─ String → #Bits: Cast(#Bits) — identity (same byte width)
-  └─ #Bits → *mut u8: Bitcast — LLVM bitcast instruction
+BFS finds: [String, Bits, *mut u8]
+  ├─ String → Bits: Cast(Bits) — identity (same byte width)
+  └─ Bits → *mut u8: Bitcast — LLVM bitcast instruction
 
 Cost: Bitcast = low (one instruction, inlined)
 ```
 
-The BFS always has `#Bits` as a fallback (every type can Cast to `#Bits`).
+The BFS always has `Bits` as a fallback (every type can Cast to `Bits`).
 If no protocol path is available, the compiler emits a `bitcast` instruction
 as the last resort.
 
@@ -185,7 +185,7 @@ pub struct ProtocolStep {
 
 pub enum TransformKind {
     Identity,                 // No transform needed
-    Bitcast,                  // Raw bitcast — Cast(#Bits)
+    Bitcast,                  // Raw bitcast — Cast(Bits)
     MeldShuffle,              // Field reordering
     ProtocolTransform(String), // CastTo/CastFrom via category
 }
@@ -525,5 +525,5 @@ uses the full backend.
 | **C-compatible string format** | `[length][data]` is the simplest format that works with both C and LLVM IR. No data_ptr prefix. |
 | `#[serde(flatten)]` for config | Dynamic language discovery — no `if let Some(python)` blocks. New languages from TOML only. |
 | **State parameter in wrappers** | The LLVM backend allocates state internally. The wrapper just passes a pointer. |
-| **Protocol path BFS** | `find_cast_path()` in `layout_optimizer.rs` — always falls back to `#Bits` (Cast). |
+| **Protocol path BFS** | `find_cast_path()` in `layout_optimizer.rs` — always falls back to `Bits` (Cast). |
 | **`emit_protocol_chain` with `&mut String`** | The function needs to WRITE IR (not just return `&str`). Extended signature with `gen_reg`. |

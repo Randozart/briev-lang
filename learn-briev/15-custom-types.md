@@ -90,8 +90,8 @@ its `#` (it is a non-category role):
 type ASCIIString {
     data: Bit<64>;
     len: Bit<64>;
-    op CastTo(#String<UTF8>) = ASCII_to_UTF8(#L);   // produce UTF-8
-    op CastFrom(#String<UTF8>) = UTF8_to_ASCII(#L);  // consume UTF-8
+    op CastTo(String<UTF8>) = ASCII_to_UTF8(#L);   // produce UTF-8
+    op CastFrom(String<UTF8>) = UTF8_to_ASCII(#L);  // consume UTF-8
 };
 ```
 
@@ -99,9 +99,9 @@ Bare fundamentals resolve to their default variant at parse time:
 
 | Fundamental | Default variant | Also writable as |
 |---|---|---|
-| `String` | `UTF8` (for all files) | `#String<UTF8>`, `#String<ASCII>` |
-| `Float` | `IEEE754` | `#Float<IEEE754>` |
-| `Char` | `unicode` | `#Char<unicode>`, `#Char<ASCII>` |
+| `String` | `UTF8` (for all files) | `String<UTF8>`, `String<ASCII>` |
+| `Float` | `IEEE754` | `Float<IEEE754>` |
+| `Char` | `unicode` | `Char<unicode>`, `Char<ASCII>` |
 
 Cross-variant calls require explicit protocol. A `.bv` file calling an `.ebv`
 function using `String` produces a compile error if the default variants

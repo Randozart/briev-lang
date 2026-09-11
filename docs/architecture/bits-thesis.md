@@ -7,10 +7,10 @@
 
 > **2026-09-02 (shape law):** this thesis predates the de-hashtagged
 > fundamentals. In every example below, read a type-declaration parent
-> `#Int`/`#String`/`#Float` as the plain name (`Int`/`String`/`Float`)
+> `Int`/`String`/`Float` as the plain name (`Int`/`String`/`Float`)
 > and `!> bits: N` as `spec Bits: N` (§8.2). The `#` survives only as
 > backend directives in op signatures and cast edges
-> (`op Add(#Float): …`, `axiom CastTo(#Float<IEEE754>)`), plus the
+> (`op Add(Float): …`, `axiom CastTo(Float<IEEE754>)`), plus the
 > casting graph's internal category keys. The shape law:
 > `type Int32: Int { spec Bits: 32; };` — AGENTS.md pillar.
 
@@ -21,23 +21,23 @@
 The metadata properties `primitive`, `ctd`, and `alu` are superseded by
 the **hashword protocol system**. Types no longer carry `primitive <~ "Int"`
 to tell the backend what they are. Instead, they declare ops using `#Category`
-hashwords — `op Add(#Int, #Int)` — which are backend directives.
+hashwords — `op Add(Int, Int)` — which are backend directives.
 
 Hashwords can be parameterized by **protocol variant** using angle brackets:
-`#String<UTF8>`, `#String<ASCII>`, `#String<hex>`, `#String<base64>`,
-`#Float<IEEE754>`. The file extension determines the default (`.bv` → UTF8,
+`String<UTF8>`, `String<ASCII>`, `String<hex>`, `String<base64>`,
+`Float<IEEE754>`. The file extension determines the default (`.bv` → UTF8,
 `.ebv` → ASCII). Cross-variant calls require explicit protocol.
 
 | Old mechanism | Replaced by |
 |---|---|---|
-| `primitive <~ "Int"` + `llvm <~ "i64"` | Structure + `op Add(#Int)` |
-| `ctd <~ "Float"` + `alu <~ "Float"` | Structure + `op Add(#Float)` |
-| `op Add ~> "int.add"` (string binding) | `op Add(#Int, #Int)` (hashword directive) |
+| `primitive <~ "Int"` + `llvm <~ "i64"` | Structure + `op Add(Int)` |
+| `ctd <~ "Float"` + `alu <~ "Float"` | Structure + `op Add(Float)` |
+| `op Add ~> "int.add"` (string binding) | `op Add(Int, Int)` (hashword directive) |
 | TOML config (`llvm-ops.toml`, `ctd-llvm-mappings.toml`) | Removed — hashword backend intrinsics |
 | `category` inference (2026-07-19 attempt) | Removed — types don't belong to categories |
 | `<~` property syntax | `!> key: value;` — e.g., `!> bits: 8;` |
 
-**The Bits thesis is unaffected.** `#Bit` is the protocol; `Bit` is the sole
+**The Bits thesis is unaffected.** `Bit` is the protocol; `Bit` is the sole
 primitive type (hardcoded anchor in the compiler, not a primordial — primordials
 are overrideable by stdlib, Bit is not). They are tightly coupled:
 the protocol guarantees the semantics, the type provides the concrete
@@ -56,8 +56,8 @@ architecture.
 > type (formerly `Data`) is renamed
 > `Blob` (a `[len][bytes]` buffer, a `Data` member like `String` but with no
 > encoding interpretation). Category hashwords lose their `#` in fundamental
-> positions (`#Int`→`Int`, `#Bit`→`Bit`, `#Data`→`Data`); protocol variants
-> (`#String<UTF8>`) keep theirs. The bit-thesis core survives: every type is
+> positions (`Int`→`Int`, `Bit`→`Bit`, `Data`→`Data`); protocol variants
+> (`String<UTF8>`) keep theirs. The bit-thesis core survives: every type is
 > composed of bits, and `Bit<N>` is the most direct representation. See
 > `docs/plans/2026-08-15-fundamentals-as-types.md`.
 
@@ -67,17 +67,17 @@ Type declarations now use `: Protocol` instead of `: Bits`:
 
 ```briev
 // Before:
-type Int : Bits { maxbits <~ 64; ... op Add(#Int, #Int); };
+type Int : Bits { maxbits <~ 64; ... op Add(Int, Int); };
 
 // After:
-type Int: #Int;                       // protocol-only (width inferred)
+type Int: Int;                       // protocol-only (width inferred)
 type i64: Int { !> bits: 64; };       // derives from Int, explicit width
-type UInt: Int;                        // derives from Int, inherits #Int protocol
+type UInt: Int;                        // derives from Int, inherits Int protocol
 ```
 
 Key changes:
 - **`Bits` is implicit** — no need to declare `: Bits`. Every type has bits.
-- **Protocols drive dispatch** — `#Int` tells backends how to add, subtract, etc.
+- **Protocols drive dispatch** — `Int` tells backends how to add, subtract, etc.
   The backend knows the default ops for every protocol. User only writes `op`
   overrides when deviating from the default.
 - **Width is inferred** unless `!> bits: N;` is explicit.
@@ -90,15 +90,15 @@ Key changes:
 
 ```briev
 // Protocol default — nothing to override:
-type Int: #Int;
-type String: #String;
+type Int: Int;
+type String: String;
 
 // Derives from parent, inherits protocol:
 type i64: Int { !> bits: 64; };
 
 // Override only what's different from the protocol default:
 type MyString: String {
-    op Add(#String): weird_interaction(#L, #R);
+    op Add(String): weird_interaction(#L, #R);
 };
 ```
 
@@ -106,7 +106,7 @@ type MyString: String {
 
 A type `String` does not have a fixed `{i64, i64}` layout. It has whatever
 shape the optimizer selects for the program's actual usage. The protocol
-contract (`#String`) tells the backend what operations are valid; the backend
+contract (`String`) tells the backend what operations are valid; the backend
 picks the representation — inline SSO, heap-allocated, rope tree — based on
 the program's operation profile. This is what makes the type system
 **width-agnostic and layout-agnostic**.
@@ -124,9 +124,9 @@ non-cast operators (`InsertAt`, `ExtractFrom`).
 > reflective floor (every value observable as raw storage — NOT a supertype;
 > no universal inheritance edge); `Bit<N>` is the unified bit type at any
 > declared width (`Bit` bare = flexible); the byte-buffer type is renamed
-> `Blob`. The category hashwords `#Int`/`#Float`/`#String`/`#Bit`/`#Data`
+> `Blob`. The category hashwords `Int`/`Float`/`String`/`Bit`/`Data`
 > lose their `#` in fundamental positions; protocol variants
-> (`#String<UTF8>`) keep theirs. See
+> (`String<UTF8>`) keep theirs. See
 > `docs/plans/2026-08-15-fundamentals-as-types.md`.
 
 ```
@@ -160,9 +160,9 @@ These lanes are **compiler guarantees** — they always exist, they always work
 the same way, and they cannot be broken, removed, or overloaded.
 
 Types can extend, override, and customize on top of the protocol guarantees.
-A type-level override of `CastTo(#Int)` changes what happens when *that
-specific type* reaches `#Int`, but the `#String → #Int` lane itself is
-unchanged — available for any other `#String` type that doesn't override it.
+A type-level override of `CastTo(Int)` changes what happens when *that
+specific type* reaches `Int`, but the `String → Int` lane itself is
+unchanged — available for any other `String` type that doesn't override it.
 
 ### Primitives vs Primordials: What's Overrideable
 
@@ -244,8 +244,8 @@ Step 3 never applies when the target IS `Bit`.
 5. If no path exists through the graph, fall through to LLVM coercion
    (inttoptr, sitofp, bitcast, etc.) for trivial cases.
 
-All `→ #Bit` lanes bypass steps 2–5: they always emit the hardcoded
-mechanical transformation. `CastFrom(#Bit)` overrides are checked only when
+All `→ Bit` lanes bypass steps 2–5: they always emit the hardcoded
+mechanical transformation. `CastFrom(Bit)` overrides are checked only when
 the target is a concrete type that declared one.
 
 ---
@@ -275,7 +275,7 @@ from these axioms and is defined in the standard library prelude.
 
 ### Axiom 1: `Data` Is the Universal Reflective Floor; `Bit<N>` Is the Bit Type
 
-> **2026-08-15.** Originally `#Bit` was the root protocol. Under
+> **2026-08-15.** Originally `Bit` was the root protocol. Under
 > Fundamentals-as-Types, `Data` is the universal reflective floor (every
 > value observable as its raw storage — NOT a supertype, no universal
 > inheritance edge); `Bit<N>` is the unified bit type at any declared width
@@ -360,14 +360,14 @@ compiler intrinsic (identified by a trailing `#`) or a standard Briev function
 (no trailing `#`):
 
 ```briev
-type Int: #Int {
-    op Add(#Int): add(#L, #R);       // compiler intrinsic — backend emits i64 add
+type Int: Int {
+    op Add(Int): add(#L, #R);       // compiler intrinsic — backend emits i64 add
 };
 
-type Complex: #Int {
+type Complex: Int {
     real: Float;
     imag: Float;
-    op Add(#Int): complex_add(#L, #R);  // user function — no intrinsic needed
+    op Add(Int): complex_add(#L, #R);  // user function — no intrinsic needed
 };
 ```
 
@@ -471,7 +471,7 @@ type Void {
 Because `maxbits <~ 0` (zero-width), the type resolver allocates zero bytes for
 any slot of type `Void`. The compiler's frontend has zero hardcoded knowledge
 of "Void" as a concept. Void has no protocol membership — it is pure zero-width
-`#Bit`.
+`Bit`.
 
 ### 3. `Box<T>` Is a Struct with `op Drop`
 
@@ -526,19 +526,19 @@ LLVM types are resolved from `(protocol, metadata)` by the normalizer:
 
 | Protocol | Metadata | LLVM type |
 |----------|----------|-----------|
-| `#Int` | (none) | `i64` (default 64-bit) |
-| `#Int` | `!> bits: 8` | `i8` |
-| `#Int` | `!> bits: 32` | `i32` |
-| `#Float` | (none) | `float` (default 32-bit) |
-| `#Float` | `!> bits: 64` | `double` |
-| `#String` | (none) | `{ i64, i64 }` |
-| `#Bool` | (none) | `i8` |
-| `#Char` | (none) | `i32` |
-| `#Bit` | (none) | `i64` (default) |
-| `#Data` | (none) | `ptr` |
+| `Int` | (none) | `i64` (default 64-bit) |
+| `Int` | `!> bits: 8` | `i8` |
+| `Int` | `!> bits: 32` | `i32` |
+| `Float` | (none) | `float` (default 32-bit) |
+| `Float` | `!> bits: 64` | `double` |
+| `String` | (none) | `{ i64, i64 }` |
+| `Bool` | (none) | `i8` |
+| `Char` | (none) | `i32` |
+| `Bit` | (none) | `i64` (default) |
+| `Data` | (none) | `ptr` |
 
 The old `primitive <~ "Int"` / `alu <~ "Int"` / `llvm <~ "i64"` metadata
-properties are **removed**. Hashword protocol membership (`#Int`, `#Float`,
+properties are **removed**. Hashword protocol membership (`Int`, `Float`,
 etc.) replaces all three. The frontend matches on protocol membership via
 `is_protocol_member()`, not on string values of metadata tags.
 
@@ -573,7 +573,7 @@ bypassing lexer interpretation. `@FF00FF`, `@42`, `@"..."` all produce
 `Expr::Quoted(bytes)`.
 
 No name-based magic. `String` accepts `"..."` because `String` declares
-`op Parse(#String)` — the identity parse form, meaning the quoted bytes
+`op Parse(String)` — the identity parse form, meaning the quoted bytes
 are already valid UTF-8. (Legacy: `DefaultQuoted.formatting <~ Quoted`
 still works but is deprecated in favour of `op Parse`.)
 
@@ -599,8 +599,8 @@ type HexColor {
 | Old mechanism | Replaced by |
 |---|---|
 | `formatting <~ Bare` + `parse <~ parse_hex` | `op Parse(Bare): parse_hex(#L)` |
-| `formatting <~ Decimal` + `parse <~ parse_fn` | `op Parse(Decimal): fn(#L)` (or `op Parse(#Int)` for identity) |
-| `formatting <~ Quoted` + `parse <~ identity` | `op Parse(#String)` or `op Parse(Quoted): fn(#L)` |
+| `formatting <~ Decimal` + `parse <~ parse_fn` | `op Parse(Decimal): fn(#L)` (or `op Parse(Int)` for identity) |
+| `formatting <~ Quoted` + `parse <~ identity` | `op Parse(String)` or `op Parse(Quoted): fn(#L)` |
 | `DefaultQuoted` codec class | Inline `op Parse` on each type definition |
 | `<~` property assignment syntax | `!> key: value;` throughout |
 
@@ -625,9 +625,9 @@ execution to verify that parsing is invertible:
    the result
 3. The compiler asserts that step 2 produces the original literal bytes
 
-For a type like `HexColor` with `op Cast(#String)`:
+For a type like `HexColor` with `op Cast(String)`:
 ```
-Parse("FF00FF") → 0xFF00FF  →  Cast(#String) → "FF00FF"  ✓  Round-trip OK
+Parse("FF00FF") → 0xFF00FF  →  Cast(String) → "FF00FF"  ✓  Round-trip OK
 ```
 
 If the round-trip fails (e.g., a hash function that loses information),
@@ -639,35 +639,35 @@ document this with an explicit annotation.
 Every type participates in a protocol. Nothing is special-cased:
 
 ```
-#Bit (root protocol, compiler axiom)
+Bit (root protocol, compiler axiom)
   │
-  ├── #Int       → i64 LLVM, Add = native i64 add
-  │     ├── type Int: #Int             (default 64-bit signed)
-  │     ├── type UInt: #Int            (same bits, unsigned interpretation)
-  │     ├── type Int8:  #Int { !> bits: 8; }
-  │     ├── type Int16: #Int { !> bits: 16; }
-  │     ├── type Int32: #Int { !> bits: 32; }
-  │     ├── type Int64: #Int { !> bits: 64; }
+  ├── Int       → i64 LLVM, Add = native i64 add
+  │     ├── type Int: Int             (default 64-bit signed)
+  │     ├── type UInt: Int            (same bits, unsigned interpretation)
+  │     ├── type Int8:  Int { !> bits: 8; }
+  │     ├── type Int16: Int { !> bits: 16; }
+  │     ├── type Int32: Int { !> bits: 32; }
+  │     ├── type Int64: Int { !> bits: 64; }
   │     └── type Data:  Int  { !> bits: 64; }  (pointer-width alias)
   │
-  ├── #Float     → double (default 64-bit), Add = native fadd
-  │     ├── type Float:  #Float
-  │     ├── type Float32: #Float { !> bits: 32; }
-  │     ├── type Double:  #Float { !> bits: 64; }
-  │     └── type Half:    #Float { !> bits: 16; }
+  ├── Float     → double (default 64-bit), Add = native fadd
+  │     ├── type Float:  Float
+  │     ├── type Float32: Float { !> bits: 32; }
+  │     ├── type Double:  Float { !> bits: 64; }
+  │     └── type Half:    Float { !> bits: 16; }
   │
-  ├── #String    → {i64, i64}, Add = concat
-  │     ├── type String: #String
-  │     ├── proto ASCII: #String { CastTo(#String): ascii_to_utf8(#L); };
-  │     └── type ASCIIStr: #String<ASCII>
+  ├── String    → {i64, i64}, Add = concat
+  │     ├── type String: String
+  │     ├── proto ASCII: String { CastTo(String): ascii_to_utf8(#L); };
+  │     └── type ASCIIStr: String<ASCII>
   │
-  ├── #Bool      → i8, Eq = icmp ne
-  │     └── type Bool: #Bool { !> bits: 8; }
+  ├── Bool      → i8, Eq = icmp ne
+  │     └── type Bool: Bool { !> bits: 8; }
   │
-  ├── #Char      → i32, Eq = icmp eq
-  │     └── type Char: #Char { !> bits: 32; }
+  ├── Char      → i32, Eq = icmp eq
+  │     └── type Char: Char { !> bits: 32; }
   │
-  └── #Data      → ptr, CastTo(#Int) = ptrtoint
+  └── Data      → ptr, CastTo(Int) = ptrtoint
         └── (implicit on every pointer type)
 ```
 
@@ -827,7 +827,7 @@ behavior because:
 
 ## FAQ
 
-### Q1: If everything is Bit (the Bits thesis), why does the compiler still have `#Int`, `#Float`, `#Bool` as separate protocols?
+### Q1: If everything is Bit (the Bits thesis), why does the compiler still have `Int`, `Float`, `Bool` as separate protocols?
 
 **They are not separate primitives — they are protocol contracts defined in
 the casting graph.** The compiler's casting graph has hardcoded lanes between
@@ -835,13 +835,13 @@ base protocols, but the type checker never matches on protocol names. It
 checks protocol membership via `is_protocol_member()`:
 
 ```briev
-type Int: #Int;     // Int participates in #Int protocol → backend knows to use i64 ALU
-type Float: #Float; // Float participates in #Float protocol → backend uses float ALU
-type Bool: #Bool;   // Bool participates in #Bool protocol → backend uses i1 compare
+type Int: Int;     // Int participates in Int protocol → backend knows to use i64 ALU
+type Float: Float; // Float participates in Float protocol → backend uses float ALU
+type Bool: Bool;   // Bool participates in Bool protocol → backend uses i1 compare
 ```
 
 The compiler frontend never matches on the name `"Int"`. It checks
-`is_protocol_member(ty, "#Int")` which queries the casting graph — a
+`is_protocol_member(ty, "Int")` which queries the casting graph — a
 reachability check, not a name match.
 
 The only place protocol names appear as hardcoded concepts is the
@@ -875,11 +875,11 @@ LLVM backend to resolve cast paths between types.
 ### Q3: Does the type checker force me to coerce types at every boundary?
 
 **No.** The type checker compares types structurally by width. Protocol
-membership (`#Int`, `#Float`, etc.) is **not part of the comparison key**.
+membership (`Int`, `Float`, etc.) is **not part of the comparison key**.
 An `Int` and a `Float` both have 64-bit width, so the type checker sees
 them as compatible at the structural level. Coercion only matters at the
-LLVM codegen level, where `is_protocol_member(ty, "#Int")` vs
-`is_protocol_member(ty, "#Float")` determines which ALU instruction to emit.
+LLVM codegen level, where `is_protocol_member(ty, "Int")` vs
+`is_protocol_member(ty, "Float")` determines which ALU instruction to emit.
 
 The exception is explicit `meld` (FFI) declarations, where C's type system
 requires specific layout guarantees. That's an opt-in mechanism, not the
@@ -893,8 +893,8 @@ patterns trigger specific hardware units:
 - `double` → float ALU (fadd, fmul, etc.)
 - `i1` → branch condition (je, jne, etc.)
 
-These are genuine physical realities of the hardware. `#Int` protocol
-membership routes a 64-bit value to the integer ALU. `#Float` routes
+These are genuine physical realities of the hardware. `Int` protocol
+membership routes a 64-bit value to the integer ALU. `Float` routes
 it to the float ALU. The same 64 bits go into different silicon, but
 they're still bits.
 
@@ -904,15 +904,15 @@ have multiple ALUs.**
 
 ### Q5: Does this mean `ReturnKind::Native("Int")` could map to `i32` on an embedded target?
 
-**Yes, exactly.** On x86_64, `#Int` → `i64`. On a 32-bit ARM target, the
+**Yes, exactly.** On x86_64, `Int` → `i64`. On a 32-bit ARM target, the
 same intrinsic could map to `i32`. The `.bv` source doesn't change — only
-the backend's interpretation of `#Int` changes. The `!> bits` metadata on
+the backend's interpretation of `Int` changes. The `!> bits` metadata on
 `Int` would be set per-target:
 
 ```briev
 // x86_64 backend: !> bits: 64 → i64
 // ARM32 backend:  !> bits: 32 → i32
-type Int: #Int { !> bits: TARGET_PTR_SIZE; };
+type Int: Int { !> bits: TARGET_PTR_SIZE; };
 ```
 
 All algebraic operations on `Int` automatically use the right width because
@@ -937,7 +937,7 @@ never by structural type comparison.
 as first-class compiler concepts.**
 
 The Bits thesis is the deepest correct description of computation: everything
-is `#Bit`. The protocol layer (`#Int`, `#Float`, etc.) is a thin routing
+is `Bit`. The protocol layer (`Int`, `Float`, etc.) is a thin routing
 surface that only the LLVM backend consumes. Reintroducing primitives as
 first-class AST types would:
 - Duplicate the width information already present in protocol metadata
@@ -945,7 +945,7 @@ first-class AST types would:
 - Break the axiom that every type participates in a protocol
 - Force users to learn about primitives when defining custom types
 
-The current architecture — `#Bit` at the core, protocol membership for
+The current architecture — `Bit` at the core, protocol membership for
 dispatch, `ReturnKind` as compiler-to-backend contract, casting graph for
 cross-protocol conversion — is the right balance.
 
@@ -986,7 +986,7 @@ declared independently." This is only used for polymorphic intrinsics like
 
 CIRCT reads the bit width from `!> bits` metadata, which is Axiom 1.
 `!> bits: 64` → hardware `uint64_t` or equivalent. Protocol membership
-(`#Int` vs `#Float`) is irrelevant for hardware synthesis — CIRCT only
+(`Int` vs `Float`) is irrelevant for hardware synthesis — CIRCT only
 needs bit widths and dataflow connections. This is by design: **hardware
 doesn't have separate integer and float ALUs at the RTL level, it has
 wires and gates.**

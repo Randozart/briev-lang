@@ -3,6 +3,44 @@
 Compiler-internal tokens prefixed with `#` that carry special meaning.
 They are lexed as distinct tokens, never as identifiers.
 
+## 2026-09-11 (FUNDAMENTALS DOCTRINE — category hashwords retired)
+
+The fundamentals stand alone: **the fundamental name is both the base
+type AND the protocol.** One name, two roles.
+
+- `Float` is a type, a parent (`type Float32: Float`), a protocol
+  category (`proto Posit32: Float`), and an op parameter
+  (`op Add(Float)`). All one spelling.
+- Protocol variants ride on the type: `Float<Posit>`, `String<UTF8>` —
+  parsed as `Applied(fundamental, [variant])` and peeled by the casting
+  graph to `(category, variant)`.
+- The category hashwords — `#Float`, `#Int`, `#UInt`, `#String`,
+  `#Bool`, `#Char`, `#Blob`, `#Bit`, `#Data`, `#Bits` — are RETIRED.
+  Any of them in a type, parent, protocol-category, op-parameter, or
+  cast-target position is a compile ERROR naming the fix
+  ("#Float is retired — write Float"). No deprecation alias. Their
+  `Type::HashWord` / `Type::HashWordVariant` AST variants are deleted.
+- Target/protocol hashwords are a DIFFERENT mechanism and remain:
+  `#System` (link), `#Web`/`#Web`-style bridge routing, `#Link<name>`
+  (linker flags). They never named types or categories.
+- Operand markers remain: `#Lh` / `#Rh` / `#T` / `#Self` in op bindings.
+- Field markers remain: `#Stack` / `#Heap` / `#Scalar` on declarations.
+
+Consumers removed in the same sweep: the parser hashword arms and
+default-variant tables, `type_to_protocol` HashWord peeling (replaced
+by the Applied-fundamental peel), op-coverage shape-matching
+(`param_covers` now treats a bare fundamental param as its category),
+`validate_constraints`, GLUE ABI keys (`.dbv` protocol/conversion keys
+and the `native_key` lookups are bare), `derive_type_protocols`
+(emits bare categories), and the interpreter/bit-lane `#Bit`/`#Bits`
+special cases (flexible `Bit`/`Bits` is the content-view cast target,
+routed through the casting graph's Data root; concrete `Bits<N>` is the
+width assertion).
+
+Historical sections below are preserved verbatim.
+
+---
+
 ## 2026-07-20: Hashword Categories (`#Int`, `#Float`, `#String`, etc.)
 
 > **2026-08-15 (Fundamentals as Types).** The fundamental types

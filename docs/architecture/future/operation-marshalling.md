@@ -19,7 +19,7 @@ operation implementations per target based on the resolved protocol variant.
 
 - How does the backend select per-variant operation implementations?
 - Can the backend emit different LLVM IR for the same `op Add` depending on
-  whether the target protocol is `#String<UTF8>` vs `#String<UTF16>`?
+  whether the target protocol is `String<UTF8>` vs `String<UTF16>`?
 - How does this interact with the GLUE bridge generator?
 - What's the distinction between "marshalling operations" (compile-time) and
   "operation dispatch" (runtime)?

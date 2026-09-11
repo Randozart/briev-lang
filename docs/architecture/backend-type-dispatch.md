@@ -7,7 +7,7 @@
 > - `ctd` and `alu` metadata: **removed** — hashwords in op signatures replace them
 > - `config/llvm-ops.toml`: **removed** — backend has intrinsic `#Category` knowledge
 > - `config/ctd-llvm-mappings.toml`: **removed** — `llvm_type` derived from structure
-> - `op Add ~> "int.add"` (string binding): **replaced** by `op Add(#Int, #Int)`
+> - `op Add ~> "int.add"` (string binding): **replaced** by `op Add(Int, Int)`
 >
 > The document is retained for historical reference during the transition.
 
@@ -74,7 +74,7 @@ Why this is the rule: a flexible type must be able to hold a pointer (String) or
 the native register width (Int) on whatever target it lands on. Hardcoding a
 width (e.g. String = 64) is a cross-target lie. `type_size` mirrors this: it
 returns the machine word (8) as the conservative default for flexible
-`Cast.#Int`/`Cast.#UInt`/`Cast.#String` when the universe entry has no baked-in
+`Cast.Int`/`Cast.UInt`/`Cast.String` when the universe entry has no baked-in
 bytes (`src/backend/llvm/types.rs`).
 
 ## Frontend/Backend Detachment
@@ -100,12 +100,12 @@ A metadata slot added to a type definition in source is automatically visible to
 No Rust changes needed. No recompilation. Example:
 
 ```briev
-type HalfFloat : Bits { !> maxbits: 16; op Add(#Float, #Float); }
+type HalfFloat : Bits { !> maxbits: 16; op Add(Float, Float); }
 ```
 
-The parser stores `op Add(#Float, #Float)` in `TypeDefBody.operators`.
-The universe registers the type with its protocol ops; `Cast.#Float` makes it
-a `#Float`-category member.
+The parser stores `op Add(Float, Float)` in `TypeDefBody.operators`.
+The universe registers the type with its protocol ops; `Cast.Float` makes it
+a `Float`-category member.
 The casting graph resolves `HalfFloat` → LLVM type `"half"` via
 `resolve_llvm_type(universe, ty, int_bits)` — the normalizer never computes
 LLVM types (the old `ctd`/`alu`/`llvm_type` metadata mechanism was removed).
@@ -121,7 +121,7 @@ Each backend reads what it needs and ignores the rest.
 > **2026-07-31:** the `ctd` / `alu` / `llvm_type` property mechanism described
 > in this section is superseded (removed in Phase 3). LLVM-type resolution and
 > arithmetic category now come from the **casting graph**
-> (`resolve_llvm_type(universe, ty, int_bits)` and `Cast.#Float` membership) —
+> (`resolve_llvm_type(universe, ty, int_bits)` and `Cast.Float` membership) —
 > never from `properties`. The tables below are retained as historical
 > reference for the pre-casting-graph design; the LLVM rows are updated.
 
@@ -130,8 +130,8 @@ Each backend reads what it needs and ignores the rest.
 | Metadata | What it reads | What it emits |
 |----------|--------------|---------------|
 | `resolve_llvm_type(universe, ty, int_bits)` | `(protocol, bytes)` via the casting graph | LLVM type string (`"i64"`, `"float"`, `"ptr"`, ...) |
-| `Cast.#Float` membership | Protocol category via `type_to_protocol` | `fadd`/`fsub`/`fmul` vs `add`/`sub`/`mul` |
-| `Cast.#String` / `Cast.#Data` membership | Protocol category via `type_to_protocol` | String/Data values are `ptr` to `[len][bytes]`; `is_string_operand` / adapt_to_i64 |
+| `Cast.Float` membership | Protocol category via `type_to_protocol` | `fadd`/`fsub`/`fmul` vs `add`/`sub`/`mul` |
+| `Cast.String` / `Cast.Data` membership | Protocol category via `type_to_protocol` | String/Data values are `ptr` to `[len][bytes]`; `is_string_operand` / adapt_to_i64 |
 | `is_vector_like(ty, universe)` | Has `!> op.SVO: N` metadata | SVO inline list handle (N+1 slot struct) |
 | `svo_capacity(ty, universe)` | Reads `N` from `op.SVO` metadata | Number of inline elements before heap promotion |
 | `properties["encoding"]` | Looked up in `config/encodings.dbvl` for `char_width` and stdlib ops | `Index#` emits GEP (fixed-width) or stdlib call (variable-width) |

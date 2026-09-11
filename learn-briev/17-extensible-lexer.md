@@ -16,12 +16,12 @@ Every primordial type comes with `op Parse(#Category)` — the identity parse:
 
 ```briev
 type Int {   // in lib/std/types/bootstrap.bv
-    op Parse(#Int);      // 42 → Int (identity, zero-cost)
+    op Parse(Int);      // 42 → Int (identity, zero-cost)
     op Parse(Decimal);   // also accepts numeric literals
 };
 
 type String {
-    op Parse(#String);     // "hello" → String (identity, zero-cost)
+    op Parse(String);     // "hello" → String (identity, zero-cost)
 };
 ```
 

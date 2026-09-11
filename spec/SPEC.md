@@ -307,7 +307,7 @@ The names `sed`, `pvt`, and `reg` remain reserved for future language contracts.
 
 | Form | Meaning |
 |---|---|
-| `#Category` | compiler-known semantic hashword |
+| `#Target` | target/protocol hashword (`#System`, `#Web`, `#Link<name>`) — routes a declaration to a bridge target; never a type category |
 | `Intrinsic#` | compiler intrinsic |
 | `$name` | compile-time-only declaration/binding |
 | `name!(...)` | explicit compile-time expansion |
@@ -316,6 +316,13 @@ The names `sed`, `pvt`, and `reg` remain reserved for future language contracts.
 | `value.^^Field` | compile-time descriptor reflection |
 
 `#` may occur only in recognized prefix hashwords or as the terminal intrinsic suffix. Embedded forms such as `foo#bar` are invalid.
+
+> **2026-09-11 (fundamentals doctrine):** the category hashwords
+> (`#Float`, `#Int`, `#String`, …) are RETIRED. The fundamental name is
+> both the base type and the protocol: write `Float` as a type, parent,
+> protocol category, and op parameter; write `Float<Posit>` for a
+> protocol variant. A `#Float`-style spelling in a type position is a
+> compile error naming the fix.
 
 Prefix `!value` is Boolean negation. Postfix callable `!` is compile-time expansion. Runtime keyword-bang forms do not exist.
 
@@ -511,7 +518,7 @@ needs your input (it warns and asks for a keyword). Rules:
   structurally — never a speed win, always disclosed.- One shape, `category<mechanism>`: the *category* keyword is
   program-independent (`borrow`, `storage`, `delivery`); the *mechanism* rides
   inside `<>` and is either a compiler-known intrinsic class or a config row
-  (`borrowed<source>`, `sync<group>`, `#Link<name>`, `#String<UTF8>`,
+  (`borrowed<source>`, `sync<group>`, `#Link<name>`, `String<UTF8>`,
   `asm<chip>`). Mechanisms resolve through shared config registries; categories
   are keywords — "config learns, compiler teaches." See §14.1 for the ownership
   category and `docs/plans/2026-08-09-init-kind-invariant.md` for the full axis
@@ -794,7 +801,7 @@ The relationship list after `:` may contain:
 > ancestor in the chain) is a fundamental (`Float`, `Int`, `String`, …),
 > the child DERIVES that category's membership — protocol op bindings,
 > cast paths, literal admission, and width semantics all follow from the
-> declaration; no `#Float` restatement and no per-width arithmetic
+> declaration; no protocol-category restatement and no per-width arithmetic
 > declarations are needed. `type Float16 : Float { spec MaxBits: 16; };`
 > is a complete float-typed declaration: its arithmetic lowers
 > shape-driven (`fadd half`) from `(Float, 16)`. A literal is admitted
@@ -846,7 +853,7 @@ Trait node templates never activate through inferred conformance. A type or obje
 A protocol is a compiler-visible semantic category and cast-coherence domain. Protocols do not prescribe one layout.
 
 ```briev
-proto #String<UTF8> {
+proto UTF8: String {
     !> encoding: UTF8;
 };
 ```
@@ -871,9 +878,9 @@ let number = text as String as Int;
 Missing proof evidence is an error unless the edge is declared as a trusted axiom. Axioms are declared, not assumed: the `axiom` contextual keyword prefixes the edge declaration, and the trust enters the verification ledger.
 
 ```briev
-proto Posit32: #Float {
-    axiom CastTo(#Float<IEEE754>)   = Posit32_to_IEEE754(#Lh);
-    axiom CastFrom(#Float<IEEE754>) = IEEE754_to_Posit32(#Lh);
+proto Posit32: Float {
+    axiom CastTo(Float<IEEE754>)   = Posit32_to_IEEE754(#Lh);
+    axiom CastFrom(Float<IEEE754>) = IEEE754_to_Posit32(#Lh);
 };
 ```
 

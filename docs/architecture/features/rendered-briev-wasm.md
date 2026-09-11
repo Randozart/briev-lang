@@ -209,10 +209,10 @@ bridge_kind = "wasm_runtime"
 calling_convention = "wasm_import"
 
 [web.protocols]
-"#Int" = { native = "number", wasm_abi = "i32" }
-"#Float" = { native = "number", wasm_abi = "f64" }
-"#Bool" = { native = "boolean", wasm_abi = "i32" }
-"#String" = { native = "string", wasm_abi = "i32" }
+"Int" = { native = "number", wasm_abi = "i32" }
+"Float" = { native = "number", wasm_abi = "f64" }
+"Bool" = { native = "boolean", wasm_abi = "i32" }
+"String" = { native = "string", wasm_abi = "i32" }
 "#Element" = { native = "Element", wasm_abi = "i32" }
 ```
 

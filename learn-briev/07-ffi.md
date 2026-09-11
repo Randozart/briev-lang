@@ -69,7 +69,7 @@ export defn join(a: CStr, b: CStr) -> CStr { term a + b; };
 export defn identity(x: CDouble) -> CDouble { term x; };
 ```
 
-Boundary types live in `lib/glue/c.bv`: `CStr` (`#String<C_String>`),
+Boundary types live in `lib/glue/c.bv`: `CStr` (`String<C_String>`),
 `CFloat`, `CDouble`, `CI64`, `CI32`, `CBool`, `CChar`, `CPtr`.
 
 A **stateful** export (one that reads or writes a state field) automatically

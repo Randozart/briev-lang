@@ -20,7 +20,7 @@ speed**. The FFI is:
   `briev bindings|export|extension <bridge> <lang>` resolves `lib/glue/<lang>/`
   by name and renders through a single generic pipeline.
 - **Protocol-driven.** A boundary type is a protocol variant (`CStr` is
-  `#String<C_String>`). The casting graph derives the ABI width, LLVM type, and
+  `String<C_String>`). The casting graph derives the ABI width, LLVM type, and
   marshalling delta from `(protocol, metadata)` — no type-name tables.
 - **Composite ABI.** A String/Data crosses the boundary as an **i64 handle** into
   a state-owned `(ptr, len)` region with a **NUL invariant**
@@ -107,8 +107,8 @@ export defn join(a: CStr, b: CStr) -> CStr { term a + b; };   // cstring_concat
 export defn identity(x: CDouble) -> CDouble { term x; };
 ```
 
-Boundary types (`lib/glue/c.bv`): `CStr` (`#String<C_String>`), `CFloat`,
-`CDouble` (`#Float<C_Double>`), `CI64`, `CI32`, `CBool`, `CChar`, `CPtr`.
+Boundary types (`lib/glue/c.bv`): `CStr` (`String<C_String>`), `CFloat`,
+`CDouble` (`Float<C_Double>`), `CI64`, `CI32`, `CBool`, `CChar`, `CPtr`.
 
 ### 3.2 Stateful exports
 
@@ -191,11 +191,11 @@ language needs.
 <lang>: { types_module: "glue/<lang>/types.bv";
           extension: "<ext>"; bridge_kind: "<...>"; calling_convention: "c_abi";
           module_init: <bool>;
-          protocols: { "#Int":   { native: "i64";    c_abi: "long long" };
-                       "#Float": { native: "f64";     c_abi: "double" };
-                       "#String":{ native: "string";  c_abi: "long long" }; };
-          conversions: { to_abi:   { "#String": "..."; };
-                         from_abi: { "#String": "..."; }; };
+          protocols: { "Int":   { native: "i64";    c_abi: "long long" };
+                       "Float": { native: "f64";     c_abi: "double" };
+                       "String":{ native: "string";  c_abi: "long long" }; };
+          conversions: { to_abi:   { "String": "..."; };
+                         from_abi: { "String": "..."; }; };
           state: { decl: "..."; arg: "state"; ffi_type: "" };
           param_decl: "{name}: {type}";
           native_include_cmd: "..."; native_suffix: ".so";

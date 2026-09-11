@@ -37,14 +37,14 @@ Four delimiters, four honest meanings — never swapped:
 
 | Delimiter | Load | Examples |
 |-----------|------|----------|
-| `<>` | **compile-time type-level specialization** — a named kind of the thing | `Stack<T>`, `#String<UTF8>`, `asm<x86_64>`, `sync<group>` |
+| `<>` | **compile-time type-level specialization** — a named kind of the thing | `Stack<T>`, `String<UTF8>`, `asm<x86_64>`, `sync<group>` |
 | `()` | **application & binding** — call it, construct it, bind an implementation to it | `f(a)`, `defn f(x: Int)`, `Person(...)`, `op Add: func(#L,#R)`, `op Add(Float)` |
 | `[]` | **containment / bound** — bounded by it | `Int[8]`, `[pre]` guards |
 | `{}` | **grouping / definition** — bundle it | blocks, struct literals |
 
 - If the thing in the delimiters is a **compile-time identity or type**, it is `<>` (which variant, which target, which group).
 - If it is a **value being applied or bound**, it is `()` (a call, a parameter, a construction).
-- `sync<group>` uses `<>` because the group is a compile-time identity — the same shape as `asm<chip>` (which target) and `#String<UTF8>` (which variant). `op Add(Float)` stays `()`: `op` is a nested declaration, declarations take params, and it avoids angle-bracket nesting.
+- `sync<group>` uses `<>` because the group is a compile-time identity — the same shape as `asm<chip>` (which target) and `String<UTF8>` (which variant). `op Add(Float)` stays `()`: `op` is a nested declaration, declarations take params, and it avoids angle-bracket nesting.
 - A delimiter used for the wrong load is a design error, not a stylistic choice.
 
 ---
@@ -454,7 +454,7 @@ only one side, use sugar that fills the omitted side as `[true]`:
 Briev distinguishes three declaration keywords:
 
 - **`type`** — Protocols, operator bindings, type system extensibility
-  (`type Int: #Int { op Add(#Int); };`)
+  (`type Int: Int { op Add(Int); };`)
 - **`struct`** — Pure data, fixed layout, C-compatible, no methods
   (`struct Point { x: Int; y: Int; };`)
 - **`obj`** — Full-featured types with methods, contracts, generics

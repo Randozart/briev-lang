@@ -231,8 +231,8 @@
     "hash-words": {
       "patterns": [
         {
-          "comment": "Positional markers (#L, #R, #T, #Self) and protocol category hashwords (#Int, #Float, #String, #Bool, #Char, #Bits, #Ptr, #Void, #Bit, #Link, #System, #r, #b). Optional <variant> suffix for parameterized protocols like #String<UTF8>.",
-          "match": "#(L|R|T|Self|Int|Float|String|Bool|Char|Bits|Ptr|Void|Bit|Link|System|r|b)(<[a-zA-Z0-9_]+>)?",
+          "comment": "2026-09-11 (fundamentals doctrine): category hashwords retired. Remaining hashwords: operand markers (#L, #R, #T, #Self) and target protocols (#Link, #System).",
+          "match": "#(L|R|T|Self|Link|System)(<[a-zA-Z0-9_]+>)?",
           "name": "support.constant.property-value.hashword.briev"
         }
       ]
