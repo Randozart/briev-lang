@@ -1,5 +1,6 @@
 pub mod address_space;
 pub mod casing;
+pub mod electronics;
 pub mod strict;
 pub mod task_linear;
 pub mod task_segments;

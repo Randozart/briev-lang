@@ -2,6 +2,7 @@ pub mod assembler;
 pub mod capabilities;
 pub mod register_types;
 pub mod circt;
+pub mod electronics;
 pub mod llvm;
 pub mod metadata;
 pub mod normalizer;
@@ -90,6 +91,11 @@ pub struct AnalysisResults {
     // policy, eligibility proof, kernel shape, and decision. Computed once in
     // the frontend, consumed by the LLVM backend as a deterministic switch.
     pub accel: HashMap<String, crate::analysis::accel::AccelEntry>,
+    // 2026-09-11 (Part C, Electronics Briev): contract-inferred netlist —
+    // components, union-find nets from precondition pin equalities, dangling
+    // diagnostics. Default (non-electronics) for every other backend; the
+    // KiCad backend CONSUMES this, never re-derives.
+    pub electronics: crate::analysis::electronics::ElectronicsNetlist,
     /// 2026-08-07 (object instance pools): the proven maximum live instances
     /// per obj base — the member column sizes. Predictably inexhaustible:
     /// no runtime exhaustion path exists (the analysis rejects unprovable
@@ -259,6 +265,7 @@ pub fn analyze_program(
         spawn_storage,
         task_segments,
         boundary_ownership,
+        electronics: crate::analysis::electronics::derive_netlist(items),
     }
 }
 

@@ -1043,6 +1043,11 @@ impl<'a> Parser<'a> {
         let after_brace = self.pos + 1;
         if after_brace >= self.tokens.len() { return false; }
         let next_tok = &self.tokens[after_brace].0;
+        // 2026-09-11 (Part C): `T { }` — an EMPTY struct literal (pins-only
+        // component constructions, zero-value placeholders). An identifier
+        // immediately followed by `{}` is a construction, never a block:
+        // blocks never attach directly to identifiers in Briev.
+        if matches!(next_tok, Token::RBrace) { return true; }
         let next_is_ident = matches!(next_tok, Token::Identifier(_));
         if !next_is_ident { return false; }
         // Check the token after the identifier — must be ':' or ',' for a
