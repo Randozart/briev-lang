@@ -73,3 +73,34 @@ validation against KiCad libraries, serializer support for `PinDecl`
 - Backend: balanced S-expr, per-type designators, property mapping, dangling
   refusal, deterministic emission (`backend::electronics`).
 - Demo: `examples/electronics/led_blinker.ebv` → `.kicad_sch` opens in KiCad.
+
+---
+
+## 2026-09-11 (fundamentals doctrine): the as-built world
+
+Phase B of `2026-09-11-fundamentals-doctrine-and-electronics.md` landed:
+
+- **Bases**: `Volt`/`Amp`/`Ohm`/`Farad`/`Henry`/`Hertz`/`Watt`/`Kelvin` are
+  parentless declared types in `lib/std/electronics.bv`, self-rooted through
+  the B1 mechanism (a parentless type registers base = own name; both
+  category walks treat a self-base as the root). No name tables, no Float
+  inheritance. Provenance-only: nothing executes.
+- **Clauses**: `pin` / `reference` / `tolerance` parse via shared helpers in
+  `parse_type_body`, `parse_obj_like`, and `parse_cell`. `reference` is
+  parse-mandatory when pins exist. The `!> Reference`/`!> Tolerance`
+  metadata path is DELETED — analysis reads `td.body.reference`/
+  `td.body.tolerance` and `CellDef.pins/reference/tolerance`.
+- **Proving**: drives from `[x.voltage == literal]`; shorted supplies;
+  tolerance enforcement (rated-below-class violates; no-clause on a driven
+  net violates; `any` never does); **Ohm's-law derivation** — I = V/R
+  through two-pin valued parts, downstream current class proven against
+  postcondition bounds. Derivations are recorded in
+  `VoltageCheck.proved`.
+- **Backend**: refuses electrically-violated boards like dangling ones.
+- **Struct bodies** intentionally lack the clauses until a struct-declared
+  component needs to exist (clauses that parse but land nowhere are dead
+  surface).
+
+Deferred: named nets, per-pin tolerances, Kirchhoff/parallel current
+summing, unit-suffix literals, LLVM/GPU representation (awaits
+simulation), PinDecl in cell bodies' beast serialization.

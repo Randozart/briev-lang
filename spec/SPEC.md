@@ -220,61 +220,63 @@ compiler can do, Briev code can build.
 ### 3.5 Electronics Briev
 
 Electronics Briev (`.ebv`) applies the Briev philosophy — topology, contracts,
-nodal reasoning, compile-time proving — to printed circuit boards. Its core
-fundamentals follow physical electronic components (`Resistor`, `Capacitor`,
-`Led`, `Connector`) with physical metadata (`value`, `package`, `footprint`,
-`rating`), not software types. The component library lives in
-`std/electronics.bv` and user source; the compiler knows no built-in
-component list.
+nodal reasoning, compile-time proving — to printed circuit boards. You type
+(roughly) the same Briev code as any family; the compiler turns those
+declarations into their final shape based on how the intentions map onto the
+electronics backend (§3.1 doctrine). Forms are syntax: an `obj`, a `struct`,
+and a `cell` all exist in `.ebv` as declaration shapes with no domain
+semantics — the electronics-ness lives in the fundamentals, the property
+clauses, and the backend mapping.
 
-Electronics is a **closed system**: no OS, no dynamic allocation, no open-world
-FFI, no concurrency ambiguity. Strict semantics are therefore mandatory —
-every program either proves its contracts or fails; there is no unresolved
-case. Electrical contracts (`[vbus.current <= 2.0]`, `[led.a.voltage <= 3.3]`)
-are verified at compile time over the net topology. Contract expressions are
-proven, never executed.
+**The bases are electrical.** There is no `Float` here and no numeric tower:
+the fundamentals are physical quantities — `Volt`, `Amp`, `Ohm`, `Farad`,
+`Henry`, `Hertz`, `Watt`, `Kelvin` — declared as PARENTLESS types in
+`std/electronics.bv` and injected by the prelude. Under the fundamentals
+doctrine (§4.3) a parentless declared type self-roots as its own category,
+so `Volt` stands exactly where `Float` stands in the software family: no
+IEEE semantics, no inheritance, no baggage. Quantities are provenance
+values — proven at compile time, never executed.
 
-**Pins are first-class.** Component types declare them with the `pin` keyword:
+**Properties, not annotations.** Pins, reference designators, and tolerances
+are first-class clauses with identical grammar on every declaration form:
 
 ```briev
-type Resistor {
-    pin a;                      // auto-number: highest so far + 1
-    pin b;                      // → 2
-    !> Reference: "R";
-};
-
-type Connector {
-    pin p1 = 1;                 // explicit datasheet number
-    pin p2 = 2;
-    !> Reference: "J";
+type Led {
+    pin a;
+    pin k;
+    reference "D";      // mandatory whenever pins exist (parse-enforced)
+    tolerance 3.6;      // max volts — a rated decision
 };
 ```
 
-Pin numbers must be ≥ 1 and unique per type; auto-numbered pins continue
-after the highest explicit number, so arbitrary datasheet mappings never
-collide. Pins are type-level topology, never instance-construction fields.
-Contracts reference them through field access: `r1.a.voltage`.
+`pin a;` auto-numbers (highest-so-far + 1); `pin p1 = 1;` states the
+datasheet number (≥ 1, unique per type). Pins are type-level topology,
+never instance-construction fields. `tolerance any;` DECLARED unrated — a
+pin with no clause at all is an undeclared decision and violates any net
+driving it.
 
-**There is no connection operator.** A netlist is the transitive closure of
-pin-equality obligations stated in transaction preconditions; the compiler
-derives nets by union-find over the connection graph:
+**Contracts are the wiring and the physics.** There is no connection
+operator. Preconditions state topology — a `==` between two pin accesses
+puts both pins on the same electrical node; the netlist is the transitive
+closure (union-find). A `==` against a literal drives the net at that
+level; disagreeing drives on one net are a shorted supply. Postconditions
+state physics — and the compiler PROVES them: through a two-pin part with a
+numeric value, I = V / R is derived at compile time and the derived current
+is checked against the stated bound.
 
 ```briev
 txn powered
-    [j1.p1.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.p2.voltage]
+    [j1.p1.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3]
     [d1.a.current > 0.0 && d1.a.current <= 0.02]
 { }
 ```
 
-Preconditions are topology — `x == y` between two pin accesses (`inst.pin`
-or `inst.pin.prop`) puts both pins on the same electrical node.
-Postconditions are physics — the behavior the derived topology must sustain;
-they never create nets. Conjoined obligations use `==`, whose precedence
-sits above `&&`; single `=` binds loosest and would swallow the conjunction.
-A declared pin on no net is a dangling pin — a compile error naming the pin,
-never a silent board defect. Compilation emits a KiCad 7 schematic
-(`.kicad_sch`); reference designators come from `!> Reference`, values and
-packages from the instance's literal fields.
+Here 3.3 V is proven within the LED's 3.6 V tolerance, and the 20 mA bound
+is proven from 3.3 V / 330 Ω = 10 mA — by derivation, not assertion.
+Precedence: conjoined obligations use `==` (single `=` binds loosest, §4).
+A dangling pin — declared but on no net — is a compile error naming the
+pin. Compilation emits a KiCad 7 schematic; the backend refuses any board
+that is incomplete or electrically violated.
 
 ## 4. Lexical conventions
 

@@ -725,3 +725,15 @@ connector → 330 Ω → LED, compiles to a `.kicad_sch` that opens in
 KiCad). Architecture: `docs/architecture/electronics-frontend.md`.
 Deferred: named nets, pin electrical roles, unit suffixes, footprint
 validation, PinDecl beast-serialization.
+
+---
+
+## Amendment 3 (2026-09-11): fundamentals doctrine supersedes Parts C–E syntax notes
+
+`2026-09-11-fundamentals-doctrine-and-electronics.md` is authoritative for
+the electronics surface: category hashwords retired (hard errors), bare
+fundamentals are base type + protocol, electrical SI bases are parentless
+prelude types, pin/reference/tolerance are structural clauses (metadata
+path deleted), nets are contract-inferred, and current bounds are proven
+via compile-time Ohm's law. The `<->` model (Amendment 2's note 1) remains
+superseded.
