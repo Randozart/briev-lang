@@ -449,3 +449,21 @@ call; the config knob (`ptx_tensor_f16acc`) fully selects it either way.
 Also: tharness_f16s2 gained MW_STAGES (smem must match the kernel's
 stage count — 2-stage allocation on a 4-stage kernel faults IMA on the
 stage-2/3 fills).
+
+## 2026-09-11 end: f16acc through the PRODUCTION runtime — 19.3 TFLOP/s
+
+The full production chain validated on-device for the f16-acc tier:
+config knob → select_mw_nw (4,4)@512T → compile_cubin → blob →
+briev_accel_rt batched submission (gemm_h_bench
+BRIEV_ACCEL_DEVICE=cuda, MW_BT=512 MW_SMEM=24576):
+
+| tier | per-call | throughput | max_rel_err |
+|------|----------|------------|-------------|
+| f16acc (4,4)@512T cubin | 7.135 ms | **19.26 TFLOP/s** | 1.2e-3 OK |
+| f32 (2,4)@256T cubin    | 10.344 ms | 13.29 TFLOP/s | 2.4e-4 OK |
+
+Batched submission beats the direct-launch harness (18.2) — no launch
+gap between iterations. **+45% sustained over the f32 default tier**;
+the tier remains opt-in per the numerics decision (doctrine §3).
+cuModuleLoadData sniffs ELF vs PTX, so the cubin blob needs no runtime
+change. Sustained-state (110W) numbers throughout.
