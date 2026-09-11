@@ -642,3 +642,45 @@ from 648d6902 in a clean worktree.
 Keeper: the warp-shape parameterization itself (byte-identical at
 warp_mh=2, 2113 tests green) — future warp-tile experiments are now
 dump-and-test cheap instead of emitter surgery.
+
+## 2026-09-11 evening: select_mw_nw fix — production path +27% (16.4 → 21.0 TF)
+
+Post-reboot resume. The /tmp wipe destroyed the ad-hoc harnesses; the
+rebuild (now checked in as benchmarks/gpu/ptx_gemm_bench.c) exposed what
+the wiped tools had been masking:
+
+**select_mw_nw shipped (2,8)@512T — its own comment claimed (4,4).**
+The growth loop tried (1,2) first every iteration and ran nw to the
+tn<=8 cap before mw ever grew. Fixed order: double both axes, then mw,
+then nw — lands both sweep winners ((4,2) at the f32 256T cap,
+(4,4) at the f16acc 512T cap). Commit 5d01a465.
+
+Sustained cross-tier table (RTX 3060, 4096³ anchor + shape sweep,
+batched, three-rep stability ±1%):
+
+| shape | coopmat f16acc (Vulkan) | PTX f16acc (4,4)@512T | PTX f32 (4,2)@256T |
+|-------|-------------------------|------------------------|---------------------|
+| 2048³ | **27.7** (2.12e-3) | 17.6 (1.55e-3) | — |
+| 4096³ | 7.7–9.5 today (4.4e-3; ledger era 13.7; vulkan dispatch variance min 4.8ms/avg 18.6 unbatched) | **21.0** (1.22e-3) | 19.4 (2.44e-4) |
+| 8192³ | 21.2 (8.26e-3) | 20.1 (1.44e-3) | — |
+
+Numerics note for the router: the PTX f16acc tier holds ~1.2–1.8e-3
+through K=8192 — an order of magnitude inside the coopmat tier's 8.3e-3
+at 8192³ (which approaches the 1e-2 gate as K grows: the measured
+K-budget). The PTX tier is the contract-safe big-K option; coopmat is
+the throughput option where its K stays bounded.
+
+Also fixed this block: gemm_h_bench MW_BT (block threads must match the
+kernel's baked count — 256 threads on a 512-thread kernel faults
+out-of-tile); --config-dir now overrides ir-lowering.dbvl (the f16acc
+opt-in no longer needs a config-file rebuild; hard error on a bad dir —
+a silently ignored override would compile the wrong numerics tier).
+Harness lesson repeated: the runner C carries the exact desc (threads,
+smem, dispatch formula w = (M*N/(16*R*64))*32) — read it before
+hand-wiring any bench invocation.
+
+Anchor state: PTX f16acc 21.0 TF = 50% of the 42 TF ggml anchor
+(ledger era: 19.5). The compute-only ceiling model needs revision after
+the double-pump rejection — shared-BW is refuted, warp shape is swept,
+the remaining suspects are the mma issue/dependency structure and the
+fill overlap at the CTA level.
