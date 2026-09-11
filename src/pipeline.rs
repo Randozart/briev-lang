@@ -756,6 +756,7 @@ pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> PluginManag
     pm.register(Box::new(crate::plugin::env_plugin::EnvPlugin));
     pm.register(Box::new(crate::plugin::print_plugin::PrintPlugin));
     pm.register(Box::new(crate::plugin::entry_plugin::EntryPlugin));
+    pm.register(Box::new(crate::plugin::inline_frgn_plugin::InlineFrgnPlugin));
     pm.register(Box::new(crate::plugin::script_plugin::ScriptPlugin));
 
     // Apply per-extension filtering from config/targets.dbvl

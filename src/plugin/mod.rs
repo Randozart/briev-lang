@@ -24,6 +24,7 @@
 
 pub mod entry_plugin;
 pub mod env_plugin;
+pub mod inline_frgn_plugin;
 pub mod intrinsics;
 pub mod loader;
 pub mod print_plugin;
