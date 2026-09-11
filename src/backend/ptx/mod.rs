@@ -130,6 +130,75 @@ fn select_mw_nw(m: i64, n: i64, thread_cap: usize) -> (usize, usize) {
 /// Build the PTX kernel set for an `.abv` — one kernel per eligible accel
 /// entry. GEMM-shaped entries lower to the naive PTX kernel; anything else
 /// is a hard error (the S2a surface gate — GEMM family ONLY until S5).
+
+/// 2026-09-11 (cubin shipping): compile PTX text to cubin bytes through
+/// offline ptxas — the driver JIT is bypassed entirely (it ignores
+/// CU_JIT_MAX_REGISTERS: 166 regs vs the requested 128 → 1 CTA/SM, −27%;
+/// rejects the `.maxnreg` directive text; and its internal compiler state
+/// wedges after fault storms). The PTX carries its own `.maxnreg`
+/// contract; ptxas honors it, so no extra flags. Returns None when ptxas
+/// is unavailable or fails — the caller ships PTX text and the runtime
+/// JITs (historical path).
+pub(crate) fn compile_cubin(ptx: &str, maxnreg: u32) -> Option<Vec<u8>> {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("briev-ptx-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let in_path = dir.join("kernel.ptx");
+    let out_path = dir.join("kernel.cubin");
+    std::fs::write(&in_path, ptx).ok()?;
+
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(p) = std::env::var("TRITON_PTXAS") {
+        candidates.push(std::path::PathBuf::from(p));
+    }
+    candidates.push(std::path::PathBuf::from("ptxas"));
+    candidates.push(std::path::PathBuf::from("/opt/cuda/bin/ptxas"));
+    if let Ok(home) = std::env::var("HOME") {
+        // Any installed python's triton backend (the benchmark toolchain's
+        // ptxas — 12.8 validated alongside 13.3).
+        if let Ok(entries) = std::fs::read_dir(format!("{home}/.local/lib")) {
+            for e in entries.flatten() {
+                let c = e.path().join(
+                    "site-packages/triton/backends/nvidia/bin/ptxas",
+                );
+                if c.exists() {
+                    candidates.push(c);
+                }
+            }
+        }
+    }
+
+    let mut cubin = None;
+    for ptxas in &candidates {
+        let nreg = format!("{maxnreg}");
+        let out = Command::new(ptxas)
+            .args([
+                "-arch",
+                "sm_86",
+                "-maxrregcount",
+                &nreg,
+                &in_path.to_string_lossy(),
+                "-o",
+                &out_path.to_string_lossy(),
+            ])
+            .output();
+        let Ok(out) = out else { continue };
+        if !out.status.success() {
+            continue;
+        }
+        if let Ok(bytes) = std::fs::read(&out_path) {
+            // A cubin is an ELF image; anything else is not a blob the
+            // runtime can load.
+            if bytes.len() > 4 && bytes[0..4] == [0x7f, b'E', b'L', b'F'] {
+                cubin = Some(bytes);
+                break;
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    cubin
+}
+
 pub fn build_ptx_kernels(
     program: &[TopLevel],
     universe: &TypeUniverse,
@@ -254,9 +323,20 @@ pub fn build_ptx_kernels(
             )
         };
 
+        // 2026-09-11 (cubin shipping): prefer offline-ptxas cubin bytes;
+        // the driver JIT ignores the register cap (166 vs 128 → 1 CTA/SM)
+        // and wedges after fault storms. Fallback = PTX text (JIT path).
+        let blob: Vec<u8> = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
+            match compile_cubin(&ptx, if f16_acc { 64 } else { 128 }) {
+                Some(bytes) => bytes,
+                None => ptx.into_bytes(),
+            }
+        } else {
+            ptx.into_bytes()
+        };
         out.push(RunnerKernel {
             name: name.clone(),
-            spirv: ptx.into_bytes(),
+            spirv: blob,
             image_plans: Vec::new(),
             index_var: e.shape.index_var.clone(),
             count_expr,

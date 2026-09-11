@@ -810,15 +810,15 @@ pub fn tensor_gemm_ptx_smem_mw(
     let mut out = String::new();
 
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
-    // .maxnreg 128 (2026-09-10): natural allocation is 138 regs, which
-    // halves occupancy to 1 CTA/SM (8 warps). The cap restores 2 CTAs —
-    // same-window A/B 2048^3: 15.7 vs 12.3 TFLOP/s — with 0 spills
-    // (verified; correctness unchanged). The historical "capped cubins
-    // fault IMA" verdict was contaminated by the kernel's own OOB bugs of
-    // the same era; re-tested clean on the fixed kernel.
+    // Register cap (2026-09-10): natural allocation is 138 regs → 1 CTA/SM
+    // (8 warps). The 128-reg cap restores 2 CTAs — same-window A/B
+    // 2048^3: 15.7 vs 12.3 TFLOP/s, 0 spills, correctness unchanged
+    // (re-tested on the fixed kernel; the historical "capped cubins fault
+    // IMA" verdict was contaminated by that era's OOB bugs). Applied by
+    // compile_cubin's -maxrregcount flag (the PTX .maxnreg directive is
+    // not supported by any local ptxas).
     out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
     out.push_str(".visible .entry main (.param .b64 proj_param)\n{\n");
-    out.push_str("    .maxnreg 128;\n");
     out.push_str("    .reg .b64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd7, %rd8, %rd9, %rd5b, %rd5c;\n");
     out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
     out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19, %r20;\n");
@@ -973,11 +973,11 @@ pub fn tensor_gemm_ptx_smem_mw(
     // We emit A-fill then B-fill, targeting smem at smem_base (a u32 reg holding
     // the shared base address for this buffer).
 
-    if f16_acc {
-        emit_y_pass(&mut out, false); // zero the CTA-private y tile
-    }
-
     // --- PROLOGUE: fill stages 0..stages-2, one commit group each ---
+    // (the f16-acc y-tile zero pass runs AFTER the setup below — it needs
+    // r6/r8/r10/r11; emitting it here read uninitialized registers and
+    // scattered zeros into A/B: the 4096x4096x16 2.3e-1 failure.)
+
     for s in 0..stages - 1 {
         let stripe = s as i64 * 16;
         let a_off_s = s * asmem_buf;
@@ -1091,6 +1091,10 @@ pub fn tensor_gemm_ptx_smem_mw(
     //   1. Start async fill of buffer (kstep/16+1)%2
     //   2. Compute on buffer (kstep/16)%2  (overlaps with fill)
     //   3. Wait for fill + barrier
+    if f16_acc {
+        emit_y_pass(&mut out, false); // zero the CTA-private y tile
+    }
+
     // === K LOOP pipeline body (reconstructed 2026-09-10 after fault bisection) ===
     out.push_str("    mov.u32 %r2, 0;  // kstep\n");
     out.push_str("KLOOP:\n");
@@ -1263,7 +1267,7 @@ pub fn tensor_gemm_ptx_smem_mw(
                 let (lo, hi) = if g % 2 == 0 { ("%b0", "%b1") } else { ("%b2", "%b3") };
                 let cb = 2 * (mh * 8 + g);
                 out.push_str(&format!(
-                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{{}, {}}}, {{%a0, %a1, %a2, %a3}}, {{{}, {}}}, {{{}, {}}};\n",
+                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{{}, {}}}, {{%c{}, %c{}}};\n",
                     cb, cb + 1, lo, hi, cb, cb + 1
                 ));
                 if g + 2 < ng {
@@ -1364,6 +1368,18 @@ pub fn tensor_gemm_ptx_smem_mw(
 mod r16_dump {
     use super::*;
     #[test]
+    fn cubin_emission_elf() {
+        // compile_cubin: offline ptxas produces a loadable ELF cubin from
+        // the emitted PTX. Tolerant skip when no ptxas is installed — the
+        // PTX-text fallback is the documented contract then.
+        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4);
+        match crate::backend::ptx::compile_cubin(&ptx, 128) {
+            Some(bytes) => assert_eq!(&bytes[0..4], b"\x7fELF", "cubin magic"),
+            None => eprintln!("ptxas unavailable — PTX-text fallback (ok)"),
+        }
+    }
+
+    #[test]
     fn dump_mw_1x1() {
         /* M=64,N=64,K=64, CTA 32x64 (mw=1,nw=1). a@0,b@8192,y@16392 */
         let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4);
@@ -1417,6 +1433,32 @@ mod r16_dump {
            a@0, b=2048*2048*2=8388608, y=2*8388608+8=16777224 */
         let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 4, false, 4);
         std::fs::write("/tmp/opencode/tgemm_mw_2048.ptx", &ptx).unwrap();
+    }
+
+    #[test]
+    fn dump_mw_2048_f16acc() {
+        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 4, 4, true, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_2048_f16acc.ptx", &ptx).unwrap();
+    }
+
+    #[test]
+    fn dump_mw_8192_f16acc() {
+        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 4, 4, true, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_8192_f16acc.ptx", &ptx).unwrap();
+    }
+
+    #[test]
+    fn dump_mw_4096_k16_f16acc() {
+        for k in [16i64, 32, 64, 128, 256, 512] {
+            let b_off = 4096 * k * 2;
+            let y_off = ((b_off + 4096 * k * 2 + 7) & !7) + 8;
+            let ptx = tensor_gemm_ptx_smem_mw(
+                4096, 4096, k, 0, b_off as u64, y_off as u64, 2, 4, 4, true, 2,
+            );
+            std::fs::write(&format!("/tmp/opencode/tgemm_mw_4096_k{k}_f16acc.ptx"), &ptx).unwrap();
+        }
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 4, 4, true, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_k16_f16acc.ptx", &ptx).unwrap();
     }
 
     #[test]

@@ -342,3 +342,61 @@ directive text itself), and the batch-loop shared-bytes fix (literal 0
 → k->shared_bytes — the production IMA).
 
 2107 lib tests green.
+
+## 2026-09-11: cubin shipping + canonical measurement contract (plan)
+
+**Canonical measurement (user-set power cap):** both GPUs are power
+limited to **110W**. Sustained-load clocks are therefore the honest
+steady state; early-window boost numbers (~+10-15%) are not comparable
+across sessions. Ledger rule going forward: warm the GPU to steady
+state (a ~2s burn) before timing; record the sustained number.
+
+**Why the driver JIT is the problem (measured):** production ships PTX
+text; the driver's internal ptxas (13.0-era) compiles it at load. Three
+failures: (1) CU_JIT_MAX_REGISTERS ignored — requested 128, got 166
+regs → 1 CTA/SM, −27% vs the offline-ptxas 128-reg cubin; (2) the JIT
+rejects the `.maxnreg` directive text itself (rc 218); (3) after today's
+fault storms the driver JIT returns rc 218 on kernels it compiled hours
+ago (deterministic per-binary; trivial PTX still compiles — wedged
+state, cleared only by driver reload).
+
+**The run: ship cubins.** `build_ptx_kernels` compiles the emitted PTX
+through offline ptxas (PATH, `$TRITON_PTXAS`, or the triton install
+path) and ships cubin bytes as the kernel blob; graceful fallback to
+PTX text when ptxas is unavailable. `cuModuleLoadData` loads cubins
+without invoking the driver JIT — no wedge exposure, no version skew,
+and the build-time register contract (`.maxnreg`, validated at compile)
+is exactly what runs. Config knob `ptx_emit_cubin` (default on).
+
+Validation: unit check (ELF magic when ptxas present) + end-to-end
+`gemm_h_bench <f32.cubin>` on-device at power-steady state; both
+correctness gates; f32 (2,4)@128 and f16acc (4,4)@64 sweep.
+
+## 2026-09-11 morning: cubin shipping live; f16acc fragment-layout census
+
+**Cubin shipping LANDED:** `build_ptx_kernels` compiles the emitted PTX
+through offline ptxas (flag-form `-maxrregcount`: the `.maxnreg` PTX
+directive is rejected by every local ptxas) and ships cubin bytes;
+PTX-text fallback when ptxas is absent (`ptx_emit_cubin`, default on).
+The production blob path measured end-to-end on-device:
+**f32 (2,4)@128 regs = 16.38 TFLOP/s, 2.4e-04, through
+`gemm_h_bench` on BRIEV_ACCEL_DEVICE=cuda — bypassing the wedged driver
+JIT entirely.**
+
+**f16acc (4,4)@64 regs × 2-stage × 2-CTA measured: 18.4–18.5 TFLOP/s**
+(pipelined B, 32-iter chunks) — the fastest configuration — but the S4
+portfolio census exposed an **f16x2 accumulator fragment-layout
+discrepancy**: at 4096×4096×16, m=0 n=8..15, got pairs = ref pairs of
+ADJACENT column-pairs permuted ({ref3,ref4} at n8-9, {ref0,ref1} at
+n10-11, …) — the register-half → (row, col) mapping I assumed
+({row g: cols 2t,2t+1}, {row g+8: same}) does not match the hardware
+layout for .f16-acc mma. K-sweep error ∝ 1/K (0.226 @K=16 → 1.4e-03
+@K=4096) = a constant absolute displacement per element, consistent
+with a fixed permutation. Identity-matrix probe + PTX ISA doc check
+needed (next session). **f16acc stays config-gated OFF; f32-acc ships.**
+
+Also: 110W power caps on both GPUs — sustained-state benchmarks are the
+canonical ledger numbers (boost windows read +10-15%); benches warm to
+steady state before timing.
+
+2108 lib tests green (k-sweep dump tests, cubin ELF unit test added).
