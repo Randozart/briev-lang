@@ -15,8 +15,8 @@ use crate::ast::Type;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReturnKind {
     /// Backend-native type — exact representation depends on target.
-    /// LLVM: #Int → i64 { primitive <~ Int, bytes <~ 8 }
-    ///       #Float → double { primitive <~ Float, bytes <~ 8 }
+    /// LLVM: Int → i64 { primitive <~ Int, bytes <~ 8 }
+    ///       Float → double { primitive <~ Float, bytes <~ 8 }
     Native(&'static str),
     /// Inferred from argument types (e.g. Add# returns same as input).
     Inferred,
@@ -120,7 +120,7 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
         // 2026-07-19: GetEnv#/GetEnvInt# moved to stdlib env.bv via ! plugin.
         // 2026-07-28: one generic `Print#` (2026-08-01 audit) — the backend
         // dispatches the emission by the argument's protocol category
-        // (#String → __print_str, #Float → __print_float, else __print_int).
+        // (String → __print_str, Float → __print_float, else __print_int).
         // Empty parameters = type-inferred (any arg); observable prevents DCE.
         // PrintChar# remains the INTERNAL newline/char primitive (there is no
         // distinct Char type — a char is an Int code point, so it cannot be

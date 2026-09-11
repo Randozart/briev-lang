@@ -309,7 +309,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             let val = args.get(i + 1).ok_or("--stdlib-path requires a path argument")?;
             stdlib_path = Some(val.clone());
             i += 2;
-        // 2026-07-25: Target #Int protocol width. WASM uses 32 to emit
+        // 2026-07-25: Target Int protocol width. WASM uses 32 to emit
         // i32 instead of i64, eliminating BigInt overhead in JavaScript.
         } else if arg == "--int-bits" {
             let val = args.get(i + 1).ok_or("--int-bits requires a number argument (8, 16, 32, or 64)")?;

@@ -7,7 +7,7 @@
 //
 // The insight: the compiler already holds the three signals needed to infer
 // ownership deterministically (no heuristics):
-//   - protocol variant (#String<C_String> vs #String<UTF8>) — via the universe
+//   - protocol variant (String<C_String> vs String<UTF8>) — via the universe
 //     Cast.* properties (the same lookup `frgn_dispatch::lookup_foreign_type`
 //     uses)
 //   - direction (export = Briev→host; frgn = host→Briev) — from the AST node
@@ -15,9 +15,9 @@
 //
 // Seeded ownership (pointer-representation types only; scalars are Value):
 //   lto                    → ZeroCost (IR merged, no boundary)
-//   #String<C_String> Ret  → ZeroCopy (Briev sends the NUL-terminated data ptr)
-//   #String<C_String> Param→ Borrowed (host owns; Briev copies to use)
-//   #String<UTF8>     any  → Owned (Briev owns the [len][data] handle)
+//   String<C_String> Ret  → ZeroCopy (Briev sends the NUL-terminated data ptr)
+//   String<C_String> Param→ Borrowed (host owns; Briev copies to use)
+//   String<UTF8>     any  → Owned (Briev owns the [len][data] handle)
 //   unresolved / custom    → Borrowed (conservative; Phase 9 keywords override)
 //
 // This is ADDITIVE — it never modifies an existing optimization path. It only
@@ -122,7 +122,7 @@ pub fn compute_boundary_ownership(
     let mut frgns: HashMap<String, Vec<(String, Type)>> = HashMap::new();
     let mut frgn_ret: HashMap<String, Option<Type>> = HashMap::new();
     let mut state_fields: HashSet<String> = HashSet::new();
-    // 2026-08-31: declared boundary protocols from `type CStr: #String<C_String>`.
+    // 2026-08-31: declared boundary protocols from `type CStr: String<C_String>`.
     // The universe registers these during the full compile (normalizer), but the
     // GLUE commands (bindings/extension/export/ownership) use parse_and_check,
     // which does not run the normalizer — so resolve the category/variant from
@@ -251,11 +251,11 @@ fn seed_from_protocol(
 
 /// Resolve a type to its (protocol category, variant).
 ///
-/// Mirrors `frgn_dispatch::lookup_foreign_type`: HashWord/HashWordVariant are
+/// Mirrors `frgn_dispatch::lookup_foreign_type` (2026-09-11, Phase A4: the
 /// used directly; Custom types are resolved through the universe's Cast.*
 /// properties (category) and `base` (variant). When the universe has not
 /// registered the type (GLUE commands use parse_and_check, no normalizer), the
-/// declared `type CStr: #String<C_String>` protocol string is parsed instead.
+/// declared `type CStr: String<C_String>` protocol string is parsed instead.
 /// Never matches type names.
 fn protocol_of(
     ty: &Type,
@@ -263,11 +263,17 @@ fn protocol_of(
     declared_protocols: &HashMap<String, String>,
 ) -> Option<(String, String)> {
     match ty {
-        Type::HashWord(cat) => Some((cat.trim_start_matches('#').to_string(), String::new())),
-        Type::HashWordVariant(cat, var) => {
-            Some((cat.trim_start_matches('#').to_string(), var.clone()))
-        }
+        // 2026-09-11 (Phase A4): HashWord spellings are deleted — the bare
+        // fundamental IS the protocol; the Custom/Applied walk resolves it.
         Type::Custom(name) | Type::Applied(name, _) => {
+            // Variant rides on the Applied args (`String<C_String>`).
+            let applied_variant = match ty {
+                Type::Applied(_, args) => args.first().and_then(|a| match a {
+                    Type::Custom(v) => Some(v.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            };
             // Universe first (full compile path registers Cast.* properties).
             if let Some(u) = universe {
                 if let Some(rt) = u.types.get(name) {
@@ -279,9 +285,17 @@ fn protocol_of(
                     }
                 }
             }
-            // Declared protocol string fallback (`#String<C_String>`).
+            // Declared protocol string fallback (`String<C_String>`).
             if let Some(p) = declared_protocols.get(name) {
                 return parse_declared_protocol(p);
+            }
+            // 2026-09-11 (Phase A4): a bare FUNDAMENTAL names its own
+            // category — the old HashWord spellings self-classified; the
+            // bare spelling needs this table so universe-less callers
+            // (unit tests, early analysis) still see `-> Int` as a scalar.
+            // The Applied variant (if any) rides along.
+            if crate::type_universe::FUNDAMENTAL_TYPES.contains(&name.as_str()) {
+                return Some((name.clone(), applied_variant.unwrap_or_default()));
             }
             None
         }
@@ -289,8 +303,8 @@ fn protocol_of(
     }
 }
 
-/// Parse a declared protocol string like `#String<C_String>` → (cat, variant).
-/// A bare `#String` → ("String", "") → the seed's default-variant handling.
+/// Parse a declared protocol string like `String<C_String>` → (cat, variant).
+/// A bare `String` → ("String", "") → the seed's default-variant handling.
 fn parse_declared_protocol(p: &str) -> Option<(String, String)> {
     let p = p.trim().trim_start_matches('#');
     if let Some(open) = p.find('<') {
@@ -558,10 +572,10 @@ mod tests {
 
     #[test]
     fn scalar_export_is_value() {
-        // `-> #Int` returning a literal → Value (declared scalar type).
+        // `-> Int` returning a literal → Value (declared scalar type).
         let d = defn_typed(
             "add",
-            Type::HashWord("Int".into()),
+            Type::Custom("Int".into()),
             vec![Statement::Term(Some(Expr::Decimal(5)))],
         );
         let items = vec![exported(d)];
@@ -573,10 +587,10 @@ mod tests {
 
     #[test]
     fn string_literal_return_is_owned() {
-        // `-> #String<UTF8>` returning a literal → Owned (declared type wins).
+        // `-> String<UTF8>` returning a literal → Owned (declared type wins).
         let d = defn_typed(
             "hello",
-            Type::HashWordVariant("String".into(), "UTF8".into()),
+            Type::Applied("String".into(), vec![Type::Custom("UTF8".into())]),
             vec![Statement::Term(Some(Expr::Quoted(b"hi".to_vec())))],
         );
         let items = vec![exported(d)];
@@ -586,39 +600,39 @@ mod tests {
 
     #[test]
     fn cstr_export_return_is_zero_copy() {
-        // `type CStr: #String<C_String>` — a CStr return seeded as ZeroCopy.
-        // Simulated here as a direct HashWordVariant so the test needs no
+        // `type CStr: String<C_String>` — a CStr return seeded as ZeroCopy.
+        // Simulated here as a direct Applied-variant so the test needs no
         // populated universe.
         let d = defn("echo", vec![Statement::Term(Some(
             Expr::Identifier("x".into()),
         ))]);
-        // The output_type is CStr (as #String<C_String>); the pass seeds params
+        // The output_type is CStr (as String<C_String>); the pass seeds params
         // from d.parameters — for a parameterless CStr return, no params.
         let mut items = vec![exported(d)];
         let _ = &mut items;
         // Directly exercise the seed function:
-        let ty = Type::HashWordVariant("String".into(), "C_String".into());
+        let ty = Type::Applied("String".into(), vec![Type::Custom("C_String".into())]);
         let o = seed_from_protocol(&ty, "c_abi", Direction::Return, None, &HashMap::new());
         assert_eq!(o, BoundaryOwnership::ZeroCopy);
     }
 
     #[test]
     fn cstr_param_is_borrowed() {
-        let ty = Type::HashWordVariant("String".into(), "C_String".into());
+        let ty = Type::Applied("String".into(), vec![Type::Custom("C_String".into())]);
         let o = seed_from_protocol(&ty, "c_abi", Direction::Param, None, &HashMap::new());
         assert_eq!(o, BoundaryOwnership::Borrowed);
     }
 
     #[test]
     fn utf8_string_is_owned() {
-        let ty = Type::HashWordVariant("String".into(), "UTF8".into());
+        let ty = Type::Applied("String".into(), vec![Type::Custom("UTF8".into())]);
         assert_eq!(seed_from_protocol(&ty, "c_abi", Direction::Return, None, &HashMap::new()), BoundaryOwnership::Owned);
         assert_eq!(seed_from_protocol(&ty, "c_abi", Direction::Param, None, &HashMap::new()), BoundaryOwnership::Owned);
     }
 
     #[test]
     fn lto_is_zero_cost() {
-        let ty = Type::HashWordVariant("String".into(), "C_String".into());
+        let ty = Type::Applied("String".into(), vec![Type::Custom("C_String".into())]);
         assert_eq!(seed_from_protocol(&ty, "lto", Direction::Return, None, &HashMap::new()), BoundaryOwnership::ZeroCost);
     }
 
@@ -631,9 +645,9 @@ mod tests {
 
     #[test]
     fn scalar_seed_is_value() {
-        let ty = Type::HashWord("Int".into());
+        let ty = Type::Custom("Int".into());
         assert_eq!(seed_from_protocol(&ty, "c_abi", Direction::Return, None, &HashMap::new()), BoundaryOwnership::Value);
-        let f = Type::HashWord("Float".into());
+        let f = Type::Custom("Float".into());
         assert_eq!(seed_from_protocol(&f, "c_abi", Direction::Param, None, &HashMap::new()), BoundaryOwnership::Value);
     }
 
@@ -649,10 +663,10 @@ mod tests {
         );
         // Set the return type to CStr variant.
         let mut fb = fb;
-        fb.success_output = vec![("r".into(), Type::HashWordVariant("String".into(), "C_String".into()))];
+        fb.success_output = vec![("r".into(), Type::Applied("String".into(), vec![Type::Custom("C_String".into())]))];
         let d = defn_typed(
             "f",
-            Type::HashWordVariant("String".into(), "C_String".into()),
+            Type::Applied("String".into(), vec![Type::Custom("C_String".into())]),
             vec![Statement::Term(Some(Expr::Call("cstr_fn".into(), vec![], None)))],
         );
         let items = vec![TopLevel::ForeignBinding(fb), exported(d)];
@@ -662,7 +676,7 @@ mod tests {
 
     #[test]
     fn state_field_return_is_owned() {
-        // top-level `let saved: String = "";` + export `-> #String<UTF8>`
+        // top-level `let saved: String = "";` + export `-> String<UTF8>`
         // returning it → Owned (both declared type and state-field read agree).
         let let_stmt = Statement::Let {
             name: "saved".into(),
@@ -673,7 +687,7 @@ mod tests {
         };
         let d = defn_typed(
             "read",
-            Type::HashWordVariant("String".into(), "UTF8".into()),
+            Type::Applied("String".into(), vec![Type::Custom("UTF8".into())]),
             vec![Statement::Term(Some(Expr::Identifier("saved".into())))],
         );
         let items = vec![TopLevel::Statement(Box::new(let_stmt)), exported(d)];
@@ -683,7 +697,7 @@ mod tests {
 
     #[test]
     fn cstr_typedef_declared_protocol_end_to_end() {
-        // Realistic program: `type CStr: #String<C_String>` + an export
+        // Realistic program: `type CStr: String<C_String>` + an export
         // `echo(name: CStr) -> CStr { term name; }`. The CStr type resolves via
         // the DECLARED protocol (no universe — GLUE commands run parse_and_check,
         // which does not run the normalizer). Param → borrowed (host owns the C

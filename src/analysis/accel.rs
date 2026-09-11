@@ -195,8 +195,8 @@ impl ProgramInfo {
     }
 }
 
-/// Flat scalar protocol categories: `#Int`, `#UInt`, `#Float`, `#Bool`,
-/// `#Char`. `#String`/`#Blob` and pointers are not flat and reject the kernel.
+/// Flat scalar protocol categories: `Int`, `UInt`, `Float`, `Bool`,
+/// `Char`. `String`/`Blob` and pointers are not flat and reject the kernel.
 /// Resolved through the TypeUniverse (`protocol_category`), never by matching
 /// type names (rules 14/18). `Bits(n)` is the sole physical primitive.
 fn is_flat_scalar(universe: &TypeUniverse, ty: &Type) -> bool {
@@ -627,7 +627,7 @@ fn prove_kernel(
     for buf in shape.read_buffers.iter().chain(shape.write_buffers.iter()) {
         if !info.array_is_flat(buf, universe) {
             reasons.push(format!(
-                "accel '{}' array '{}' is not a flat scalar type (needs #Int/#UInt/#Float/#Bool/#Char)",
+                "accel '{}' array '{}' is not a flat scalar type (needs Int/UInt/Float/Bool/Char)",
                 name, buf
             ));
         }

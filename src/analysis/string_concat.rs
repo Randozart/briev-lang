@@ -1,6 +1,6 @@
-// ── String Concat Resolution (`+` is concat for #String/#Blob) ─────────
+// ── String Concat Resolution (`+` is concat for String/Blob) ─────────
 // 2026-08-03: `+` reads naturally as string concatenation, so `"a" + "b"` and
-// `a + b` on #String/#Blob operands mean the same thing as the `++`/Concat
+// `a + b` on String/Blob operands mean the same thing as the `++`/Concat
 // operator. The typechecker resolves the Concat binding for `+` on strings
 // (operators.rs protocol_binding), and THIS pass rewrites the AST kind
 // Add → Concat so the backend dispatches the concat emitter. The backend
@@ -14,7 +14,7 @@ use crate::ast::{Expr, Statement, TopLevel, Type};
 use crate::type_universe::TypeUniverse;
 
 /// Rewrite `BinaryOp(Add, …)` → `BinaryOp(Concat, …)` when an operand is a
-/// #String/#Blob value. Runs after typechecking, before codegen.
+/// String/Blob value. Runs after typechecking, before codegen.
 pub fn rewrite_plus_concat(items: &mut [TopLevel], universe: &TypeUniverse) {
     for item in items {
         match item {
@@ -100,7 +100,7 @@ fn rewrite_expr(
     }
 }
 
-/// Conservative "is this expression a #String/#Blob value?" — literal, cast,
+/// Conservative "is this expression a String/Blob value?" — literal, cast,
 /// bound identifier, or the result of a string-producing binary op.
 fn expr_is_string(
     expr: &Expr,
@@ -122,7 +122,7 @@ fn expr_is_string(
     }
 }
 
-/// Is a type a #String/#Blob-category value? Mirrors the casting graph's
+/// Is a type a String/Blob-category value? Mirrors the casting graph's
 /// base-chain walk (no graph needed — checks the universe's Cast. properties
 /// and the declared base). The bootstrap String/Data entries carry
 /// Cast.String/Cast.Blob, so no type names are matched (rule 18).
@@ -134,16 +134,10 @@ pub fn is_string_category(ty: &Type, universe: &TypeUniverse) -> bool {
                     || rt.properties.contains_key("Cast.Blob")
                     // 2026-09-02 (de-hashtag sweep): category comparison on
                     // the trimmed base — legacy registrations may still
-                    // spell the base "#String"; the law is plain names.
+                    // spell the base "String"; the law is plain names.
                     || rt.base.trim_start_matches('#').starts_with("String")
                     || rt.base.trim_start_matches('#').starts_with("Blob")
             }).unwrap_or(false)
-        }
-        // HashWordVariant names carry the '#' by parser construction; the
-        // comparison is on the CATEGORY.
-        Type::HashWordVariant(name, _) => {
-            name.trim_start_matches('#') == "String"
-                || name.trim_start_matches('#') == "Blob"
         }
         _ => false,
     }

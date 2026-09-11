@@ -712,7 +712,7 @@ impl LlvmBackend {
         };
         // 2026-08-01 (B4): is_string_like (the 2-field structural heuristic)
         // retired — protocol membership only. A trigger whose type is a
-        // #String or #Blob member carries a pointer-typed payload.
+        // String or Blob member carries a pointer-typed payload.
         self.is_protocol_member(&trg.ty, "String")
             || self.is_protocol_member(&trg.ty, "Blob")
     }
@@ -1292,7 +1292,7 @@ impl LlvmBackend {
                 if cat == target {
                     return true;
                 }
-                // Variant membership: String<UTF8> is member of #String if
+                // Variant membership: String<UTF8> is member of String if
                 // UTF8 is the default variant for String.
                 if !var.is_empty() && target == cat {
                     return true;
@@ -1301,7 +1301,7 @@ impl LlvmBackend {
         }
         // Fallback: check Cast.* universe properties (primordial backward compat)
         // 2026-08-15 (fundamentals): property keys are `Cast.<Cat>` — strip the
-        // `#` so a `#Float` hashword matches the `Cast.Float` key.
+        // `#` so a `Float` hashword matches the `Cast.Float` key.
         let prop_key = format!("Cast.{}", protocol.trim_start_matches('#'));
         self.ctx.type_universe.as_ref()
             .and_then(|u| ty.universe_key().and_then(|k| u.get(k)))
@@ -1314,7 +1314,7 @@ impl LlvmBackend {
     }
 
     /// Float-category width of a type — `Some(bits)` when the type is a
-    /// #Float member, read from its bits/maxbits universe metadata
+    /// Float member, read from its bits/maxbits universe metadata
     /// (16 → half, 32 → float, 64 → double; other widths fall through to
     /// the float spelling — the double branch is split off first). `None`
     /// for non-float types. 2026-09-02 (plan fundamental-parent-membership):
@@ -1335,9 +1335,9 @@ impl LlvmBackend {
         .or(Some(rt.max_bits))
     }
 
-    /// 2026-08-01 (B1): Central #String operand check — a Briev String value
+    /// 2026-08-01 (B1): Central String operand check — a Briev String value
     /// is a `ptr` to a length-prefixed `[len: i64][bytes]` buffer (bits model).
-    /// This is the single decision point every #String op default uses (Eq/Ne
+    /// This is the single decision point every String op default uses (Eq/Ne
     /// content compare, band/bor/bxor/bnot content ops). Rule #16: the pattern
     /// appeared 7× inline; it lives here so changing the String representation
     /// (or adding a sub-protocol) touches one place. Undo: replace with a bare
@@ -1349,7 +1349,7 @@ impl LlvmBackend {
 
     /// 2026-08-07 (Phase 7): is `ty` a Blob operand (the [len][bytes]
     /// byte-buffer protocol)? Resolved via the casting graph — never by type
-    /// name (rules 14/18). 2026-08-15 (fundamentals): `#Blob` → `Blob`.
+    /// name (rules 14/18). 2026-08-15 (fundamentals): `Blob` → `Blob`.
     pub(super) fn is_blob_operand(&self, ty: &Type) -> bool {
         self.is_protocol_member(ty, "Blob")
     }
@@ -1366,7 +1366,7 @@ impl LlvmBackend {
     }
 
     /// 2026-08-04 (compiler-in-Briev): is the receiver of a String operation
-    /// semantically a #String, even if its emitted register was boxed to an
+    /// semantically a String, even if its emitted register was boxed to an
     /// i64 handle (String param, frgn result) and is now typed Int/Custom?
     /// The physical value is still the [len][bytes] pointer. Check the reg
     /// first, then the binding's DECLARED type (a `let line: String = X`
@@ -1387,7 +1387,7 @@ impl LlvmBackend {
     }
 
     /// 2026-08-04 (compiler-in-Briev): the pointer form of a string operand
-    /// for a content compare. A #String operand that survived unboxed (a
+    /// for a content compare. A String operand that survived unboxed (a
     /// literal's `@str.N` global) is already a `ptr`; a boxed one
     /// (adapt_to_i64 lost the String type → i64 handle) must be inttoptr'd
     /// back to the [len][bytes] pointer before `briev_str_eq`.
@@ -2208,7 +2208,7 @@ impl LlvmBackend {
         }
         // 2026-07-26: Protocol-driven dispatch. No name matching.
         let ty = &reg.ty;
-        // #Float protocol: convert float/double to i64
+        // Float protocol: convert float/double to i64
         if self.is_protocol_member(ty, "Float") {
             let maxbits = self.ctx.type_universe.as_ref()
                 .and_then(|u| ty.universe_key().and_then(|k| u.get(k)))
@@ -2225,13 +2225,13 @@ impl LlvmBackend {
                 return ze;
             }
         }
-        // #Bool protocol: zext i8 to i64
+        // Bool protocol: zext i8 to i64
         if self.is_protocol_member(ty, "Bool") {
             let tr = self.fun.gen_reg();
             writeln!(out, "{}{} = zext i8 {} to i64", indent, tr, reg.name).ok();
             return tr;
         }
-        // #Char protocol: a Char reg is native i32 (literal/let/field/cast);
+        // Char protocol: a Char reg is native i32 (literal/let/field/cast);
         // boxed Char params are i64 and typed Int in SSA, so they never reach
         // this arm (they hit the `llvm_type == i64` early return above).
         if self.is_protocol_member(ty, "Char") {
@@ -2239,7 +2239,7 @@ impl LlvmBackend {
             writeln!(out, "{}{} = zext i32 {} to i64", indent, tr, reg.name).ok();
             return tr;
         }
-        // #String / #Blob protocol: a String is a ptr to [len][bytes] (B0),
+        // String / Blob protocol: a String is a ptr to [len][bytes] (B0),
         // so adapting to i64 is a ptrtoint. The SSO handle-extraction branch
         // was retired in B4.
         let is_string = self.is_protocol_member(ty, "String");
@@ -2249,7 +2249,7 @@ impl LlvmBackend {
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, tr, reg.name).ok();
             return tr;
         }
-        // #Int / #UInt protocol: widen if narrower than i64
+        // Int / UInt protocol: widen if narrower than i64
         if self.is_protocol_member(ty, "Int") {
             let llvm_ty = self.llvm_type(ty);
             if llvm_ty != "i64" && llvm_ty.starts_with('i') {

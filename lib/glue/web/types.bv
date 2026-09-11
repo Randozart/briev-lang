@@ -8,7 +8,7 @@
 
 type Element: #Web {
     // Opaque handle — i32 in WASM, HTMLElement in JS.
-    // No CastTo/CastFrom to #Bits — Element cannot be constructed from
+    // No CastTo/CastFrom to Bits — Element cannot be constructed from
     // raw bytes; it's created via frgn from #Web (create_element, etc.)
     spec MaxBits: 32;
     spec Alignment: 4;

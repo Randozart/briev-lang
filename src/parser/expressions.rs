@@ -757,23 +757,10 @@ impl<'a> Parser<'a> {
             "Void" => crate::ast::Type::void(),
             "Char" => crate::ast::Type::char_(),
             "Blob" => crate::ast::Type::blob(),
-            other if other.starts_with('#') => {
-                // 2026-09-11 (Phase A transition): must mirror parse_type's
-                // hashword arm so `b as #String` ≡ `(#String) b` holds until
-                // the A4 deletion flips BOTH sites to bare in one commit.
-                let variant = match other {
-                    "#String" => "UTF8",
-                    "#Float" => "IEEE754",
-                    "#Char" => "unicode",
-                    _ => "",
-                };
-                if !variant.is_empty() {
-                    crate::ast::Type::HashWordVariant(other.to_string(), variant.to_string())
-                } else {
-                    crate::ast::Type::HashWord(other.to_string())
-                }
-            }
             other => {
+                // 2026-09-11 (fundamentals doctrine, Phase A4): the category
+                // hashwords are retired — the C-cast paren form maps any
+                // leftover `#Name` spelling to the bare fundamental.
                 let bare = other.strip_prefix('#').unwrap_or(other);
                 crate::ast::Type::Custom(bare.to_string())
             }
@@ -1155,13 +1142,13 @@ mod tests {
     fn c_style_cast_hashword_matches_as() {
         // 2026-09-11 (Phase A transition): as/paren equivalence holds; the
         // bare-mapping end state is pinned by A4, when BOTH sites flip.
-        assert_cast_equiv("b as #String", "(#String) b");
+        assert_cast_equiv("b as String", "(String) b");
     }
 
     #[test]
     fn c_style_cast_custom_type_prescan() {
         // Custom types: the pre-scan must collect `type MyNum` declarations.
-        let src = "type MyNum : #Int { };";
+        let src = "type MyNum : Int { };";
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let first = p.parse_top_level().expect("type decl");

@@ -381,7 +381,7 @@ fn export_template_vars(export: &ExportDecl, target: &GlueTarget, type_protocols
 
 /// `to_abi`: render each argument's boundary form from the config expression
 /// (`{name}` placeholder); identity when the target has no conversion. The
-/// lookup key is the type's protocol CATEGORY (`#String` for a CStr boundary
+/// lookup key is the type's protocol CATEGORY (`String` for a CStr boundary
 /// type), not the raw type name.
 fn to_abi_args(
     export: &ExportDecl,
@@ -412,7 +412,7 @@ fn from_abi_return(
 }
 
 /// The protocol category of a type string — `CStr` → "String" (via its
-/// declared `#String<C_String>` protocol), `Int` → "Int".
+/// declared `String<C_String>` protocol), `Int` → "Int".
 fn protocol_category_of(ty: &str, type_protocols: &HashMap<String, String>) -> String {
     type_protocols.get(ty)
         .map(|p| protocol_category(p).to_string())
@@ -489,7 +489,7 @@ pub fn run_bindings_cli(file_path: &str, language: &str, out_dir: &str) -> Resul
         eprintln!("DBG target.templates keys: {:?}", target.templates.keys().collect::<Vec<_>>());
         eprintln!("DBG exports: {:?}", info.exports.iter().map(|e| e.name.clone()).collect::<Vec<_>>());
     }
-    // 2026-08-03 (P3): type → declared protocol (`type CStr: #String<C_String>`)
+    // 2026-08-03 (P3): type → declared protocol (`type CStr: String<C_String>`)
     // so boundary types resolve to their category's ABI names in the header/
     // wrapper. The export runs before codegen's normalizer, so the universe
     // isn't populated — resolve from the type declarations.
@@ -739,7 +739,7 @@ fn render_native_shim(
 }
 
 /// The native-template key for a type string: its protocol category (via the
-/// declared protocol map), e.g. "CDouble" → "#Float", "Int" → "#Int".
+/// declared protocol map), e.g. "CDouble" → "Float", "Int" → "Int".
 fn native_key(ty: &str, type_protocols: &HashMap<String, String>) -> String {
     let cat = match type_protocols.get(ty) {
         Some(proto) => protocol_category(proto).to_string(),
@@ -963,7 +963,7 @@ fn resolve_protocol(
     }
     // 2026-08-03 (P3): a boundary type (`CStr`, `CDouble`) resolves to its
     // protocol CATEGORY so the config's category-keyed c_abi applies. The
-    // protocol string may carry a variant (`#String<C_String>`) — the ABI
+    // protocol string may carry a variant (`String<C_String>`) — the ABI
     // name comes from the category entry.
     let category = type_protocols.get(briev_type_name)
         .map(|p| protocol_category(p).to_string())
@@ -979,8 +979,8 @@ fn resolve_protocol(
     }
 }
 
-/// Type name → declared protocol (`type CStr: #String<C_String>` → CStr →
-/// "#String<C_String>"). 2026-08-03 (P3): lets the wrapper/header resolve a
+/// Type name → declared protocol (`type CStr: String<C_String>` → CStr →
+/// "String<C_String>"). 2026-08-03 (P3): lets the wrapper/header resolve a
 /// boundary type to its category's ABI names.
 /// The type → protocol map used to resolve boundary ABI names — now the
 /// SHARED AST-level derivation (2026-09-02, plan
@@ -991,8 +991,8 @@ fn build_type_protocols(items: &[TopLevel]) -> HashMap<String, String> {
     crate::casting::graph::derive_type_protocols(items)
 }
 
-/// The bare category of a declared protocol string — `#String<C_String>` →
-/// `"String"`, `#String` → `"String"`.
+/// The bare category of a declared protocol string — `String<C_String>` →
+/// `"String"`, `String` → `"String"`.
 fn protocol_category(proto: &str) -> &str {
     let b = proto.trim_start_matches('#');
     match b.find('<') {

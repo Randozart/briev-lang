@@ -60,14 +60,12 @@ pub enum Type {
     Constrained(Box<Type>, BitRange),
     /// Layout-constrained pointer
     LayoutPtr(LayoutConstraint),
-    /// 2026-07-20: Hashword category: #Int, #Float, #String, #Bits, #Bool, #Char.
-    /// A backend directive used in op signatures and type parameter constraints.
-    /// Not a concrete type — resolved at codegen by the backend's intrinsic knowledge.
-    HashWord(String),
-    /// 2026-07-20: Hashword category with protocol variant: #String<UTF8>,
-    /// #Float<IEEE754>. Variant is a string tag that differentiates encodings
-    /// or representations within the same category.
-    HashWordVariant(String, String),  // (category_name, variant_name)
+    // 2026-09-11 (fundamentals doctrine, Phase A4): `Type::HashWord` and
+    // `Type::HashWordVariant` are DELETED. The category hashwords (Float,
+    // Int, …) are retired — the fundamental name is both the base type and
+    // the protocol (`Float`, `Float<Posit>` = Applied(fundamental, [variant]),
+    // `Float32: Float` plain parent). Out-of-scope hashwords (#System, #Link,
+    // #Lh/#Rh/#T, field markers) never flowed through these variants.
 }
 
 // 2026-07-12: Named type factories. These create Custom() references that

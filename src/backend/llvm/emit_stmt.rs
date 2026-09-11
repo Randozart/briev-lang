@@ -181,7 +181,7 @@ enum IterKind {
     Counter { init: String, bound: String, inclusive: bool },
     /// A Data/String byte buffer ([len][bytes] ptr handle).
     Data { ptr: String, len: String },
-    /// 2026-08-14 (String unification): a `#String` operand iterates CHARs —
+    /// 2026-08-14 (String unification): a `String` operand iterates CHARs —
     /// a protocol-keyed char decode lane (`briev_str_next_char`), never a
     /// hardcoded byte walk. `ptr` is the [len][bytes] handle; `len` is the
     /// stored byte length (`.^Length` header) that bounds the loop; the loop
@@ -262,10 +262,10 @@ impl LlvmBackend {
         // `IterKind::List` arm is DELETED — every List/coll iterable routes
         // through try_emit_tier_iteration (op Count/op At) BEFORE reaching
         // here, so a List value that lands here is a compiler bug (the tier
-        // path not firing). A `#String` operand is the char-decode lane; a
+        // path not firing). A `String` operand is the char-decode lane; a
         // Blob iterates bytes; anything else directs to the iterable contract.
         if self.is_string_operand(&lreg.ty) {
-            // 2026-08-14 (String unification): a `#String` operand iterates
+            // 2026-08-14 (String unification): a `String` operand iterates
             // CHARs via the decode lane — NOT bytes. `lreg.name` is the
             // [len][bytes] handle (ptr); the loop bound is the stored byte
             // length in the header.
@@ -278,7 +278,7 @@ impl LlvmBackend {
             IterKind::Data { ptr: lreg.name.clone(), len }
         } else {
             panic!(
-                "foreach iterable must be a range, a #String/#Blob, or a vector field \
+                "foreach iterable must be a range, a String/Blob, or a vector field \
                  with the iterable contract (op Count + op At) — got {:?}",
                 lreg.ty
             );
@@ -1887,7 +1887,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     writeln!(out, "{}{} = zext i8 {} to i64", indent, elem, raw).ok();
                     elem
                 }
-                // 2026-08-14 (String unification): `#String` iterates CHARs.
+                // 2026-08-14 (String unification): `String` iterates CHARs.
                 // The loop counter slot holds the BYTE offset; the decode lane
                 // reads the codepoint at that offset and advances the slot in
                 // place (no separate increment — see the loop step below). The
@@ -1937,7 +1937,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 IterKind::OpCollection { element_ty, .. } => element_ty.clone(),
                 IterKind::Tier1Cursor { element_ty, .. } => element_ty.clone(),
                 IterKind::VectorField { element_ty, .. } => element_ty.clone(),
-                // 2026-08-14 (String unification): a `#String` foreach item is
+                // 2026-08-14 (String unification): a `String` foreach item is
                 // a Char (the decode lane's codepoint), matching the
                 // typechecker's `foreach_item_type` derivation.
                 IterKind::String { .. } => Type::char_(),
@@ -1974,7 +1974,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             backend.fun.let_binding_types.remove(item);
             backend.fun.let_original_types.remove(item);
             if !backend.fun.terminated {
-                // 2026-08-14 (String unification): the `#String` decode lane
+                // 2026-08-14 (String unification): the `String` decode lane
                 // advanced the byte-offset slot IN PLACE — re-storing `cur + 1`
                 // would clobber the advance (and re-loop forever). Skip the
                 // store and branch straight back.

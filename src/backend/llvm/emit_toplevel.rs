@@ -543,7 +543,7 @@ impl LlvmBackend {
         //
         // 2026-08-01 (B4): the legacy struct-type declarations (SmallString64,
         // StaticString, UTF8View) were retired with their types — nothing
-        // references them under the bits model (String is a bare #String ptr).
+        // references them under the bits model (String is a bare String ptr).
         let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
         if let Some(u) = &self.ctx.type_universe {
             let mut universe_fields: Vec<(String, Vec<String>, bool, bool)> = Vec::new();
@@ -845,7 +845,7 @@ impl LlvmBackend {
         // (fall through to the normal llvm_type path)
         // 2026-07-22: Strings use ptr (opaque pointer) — a Briev String value
         // is a ptr to a length-prefixed [len][bytes] buffer (B0 bits model).
-        // 2026-07-31: Phase 3 (§8.4-D7) — #String/#Blob membership instead
+        // 2026-07-31: Phase 3 (§8.4-D7) — String/Blob membership instead
         // of the type-name match.
         // 2026-08-01 (B4): the SSO `{ i64, i64 }` branches were retired — a
         // String is never a fat pointer under the bits model.
@@ -883,7 +883,7 @@ impl LlvmBackend {
     /// boxed via bitcast(float→i32→i64).
     ///
     /// 2026-07-31: Phase 3 (§8.4-D1) — protocol membership (is_protocol_member)
-    /// replaces the box_op hardcoded type-name fallback. Float64 (#Float with
+    /// replaces the box_op hardcoded type-name fallback. Float64 (Float with
     /// bytes 8) is deliberately EXCLUDED: the legacy box_op only boxed the
     /// 32-bit Float, and Float64 params pass through as native double.
     pub(super) fn is_boxed_type(&self, ty: &Type) -> bool {
@@ -3565,9 +3565,9 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                     collect_let_names(s, &mut txn_let_names);
                     if let Statement::Let { name, ty: Some(t), .. } = s {
                         // 2026-07-31: Phase 3 (§8.4) — float let-param LLVM type
-                        // derived from #Float protocol membership + byte width
+                        // derived from Float protocol membership + byte width
                         // (4 → float, 8 → double) instead of the type-name match.
-                        // The casting graph's Fixed("float") for the #Float
+                        // The casting graph's Fixed("float") for the Float
                         // category doesn't distinguish Float64, so width is read
                         // from the universe bytes. Other widths (e.g. BFloat)
                         // stay i64, matching the prior name-based behavior.

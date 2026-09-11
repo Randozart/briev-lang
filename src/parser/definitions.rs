@@ -2022,7 +2022,7 @@ impl<'a> Parser<'a> {
         self.pos += 1; // consume `type` token
         // 2026-07-16: All type names are Token::Identifier after Type token removal.
         let name = self.expect_identifier()?;
-        // 2026-07-20: Parse type parameters: type List<T: #String, V>
+        // 2026-07-20: Parse type parameters: type List<T: String, V>
         let type_params = self.parse_type_params()?;
         // 2026-08-05 (Phase 3): dotted extension groups (`type Foo.[a,b]`) are
         // removed with the free-form dot-extension mechanism.
@@ -2111,15 +2111,23 @@ impl<'a> Parser<'a> {
             loop {
                 match self.peek() {
                     Some(&Token::Identifier(ref s)) if s.starts_with('#') => {
-                        let mut proto = s.clone(); self.pos += 1;
-                        if self.eat(&Token::Lt) {
-                            let variant = self.expect_identifier()?;
-                            if !self.eat_type_close() {
-                                return self.error_at_current("expected '>' in protocol variant base");
-                            }
-                            proto = format!("{}<{}>", proto, variant);
+                        // 2026-09-11 (fundamentals doctrine, Phase A4): the
+                        // CATEGORY hashwords are retired — hard error with
+                        // the fix. Target protocols (#System, #Web, #Link)
+                        // pass through verbatim as the protocol string.
+                        const RETIRED: &[&str] = &[
+                            "Int", "UInt", "Float", "String", "Bool", "Char", "Blob", "Bit",
+                            "Data", "Bits",
+                        ];
+                        let bare = s.trim_start_matches('#');
+                        if RETIRED.contains(&bare) {
+                            return self.error_at_current(&format!(
+                                "#{} is retired — write {}",
+                                bare, bare
+                            ));
                         }
-                        protocol = Some(proto);
+                        protocol = Some(s.clone());
+                        self.pos += 1;
                     }
                     Some(&Token::Identifier(_)) => {
                         let pname = self.expect_identifier()?;
@@ -2145,7 +2153,16 @@ impl<'a> Parser<'a> {
                             self.parse_type_params()?;
                             traits.push(pname);
                         } else if parent.is_none() {
+                            // First slot is the refinement parent — fundamental
+                            // or not (`Float32: Float` derives; that is the
+                            // fundamentals doctrine).
                             parent = Some(Box::new(Expr::Identifier(pname)));
+                        } else if is_fundamental {
+                            // 2026-09-11 (Phase A4): a fundamental in a later
+                            // slot asserts protocol membership — the old
+                            // `#Int` spelling did exactly this; bare Int is
+                            // never a trait name.
+                            protocol = Some(pname);
                         } else {
                             traits.push(pname);
                         }
@@ -2258,7 +2275,7 @@ impl<'a> Parser<'a> {
 
     /// 2026-07-20: Parse an op binding within a type body.
     /// Two forms:
-    ///   op Add(#Int, #Int);                                     — declarative hashword dispatch
+    ///   op Add(Int, Int);                                     — declarative hashword dispatch
     ///   op Add(Posit32) = Posit32_add(#Lh, #Rh);                  — binding with explicit function
 
     /// 2026-07-26: Parse prop Name: expr;
@@ -2269,7 +2286,7 @@ impl<'a> Parser<'a> {
     /// Optional discriminator fields: pre:"0x", suf:"f", reg:"[0-9]+"
     /// Examples:
     ///   op InsertAt: push(#Lh, #Rh);
-    ///   op Add(#Int): int_add(#Lh, #Rh);
+    ///   op Add(Int): int_add(#Lh, #Rh);
     ///   op Parse(Decimal, pre:"0x"): parse_hex(#Lh);
     ///   op Parse(Decimal, suf:"h"): to_f16(#Lh);
     fn parse_op_definition(&mut self, op_bindings: &mut Vec<OperatorBinding>, members: Option<&mut Vec<crate::ast::TopLevel>>) -> Result<(), SyntaxError> {
@@ -2312,17 +2329,10 @@ impl<'a> Parser<'a> {
         }
         // Optional protocol variant: (#Proto) or (ConcreteType)
         let protocol_variant = if self.eat(&Token::LParen) {
-            // 2026-08-01 (B2): parse the variant as a TYPE so hashwords work
-            // (`op CastFrom(#Bit) = fn`). Previously expect_identifier rejected
-            // the `#` — type-level CastFrom(#Bit) overrides were unparseable.
-            // Store the bare category (strip `#`) — compile.rs matches
-            // protocol_variant == "#Bit"/"Bit".
-            let variant = match self.parse_type()? {
-                crate::ast::Type::HashWord(cat) | crate::ast::Type::HashWordVariant(cat, _) => {
-                    cat.strip_prefix('#').unwrap_or(&cat).to_string()
-                }
-                other => format!("{}", other),
-            };
+            // 2026-09-11 (Phase A4): the variant is a bare fundamental
+            // (`op CastFrom(Bit) = fn`) — HashWord spellings are retired and
+            // the stored category is bare.
+            let variant = format!("{}", self.parse_type()?);
             // Check for discriminator key-value pairs: pre:"0x", suf:"f", reg:"..."
             let mut pre: Option<String> = None;
             let mut suf: Option<String> = None;
@@ -2441,7 +2451,7 @@ impl<'a> Parser<'a> {
         reg: Option<String>,
         op_bindings: &mut Vec<OperatorBinding>,
     ) -> Result<(), SyntaxError> {
-        // 2026-08-01 (B2): `op CastFrom(#Bit) = fn` uses `=` (like the proto
+        // 2026-08-01 (B2): `op CastFrom(Bit) = fn` uses `=` (like the proto
         // CastFrom form); other discriminated ops use `:`. Accept either.
         if !self.eat(&Token::Eq) {
             self.expect(Token::Colon)?;
@@ -3066,12 +3076,10 @@ impl<'a> Parser<'a> {
 
         // Parse the category: `proto C_String: String { ... }` — 2026-09-11
         // (fundamentals doctrine, Phase A): the BARE fundamental is the
-        // protocol; the legacy `#String` spelling is still accepted until the
+        // protocol; the legacy `String` spelling is still accepted until the
         // A4 deletion.
         let category_type = self.parse_type()?;
         let category = match &category_type {
-            Type::HashWord(cat) => cat.strip_prefix('#').unwrap_or(cat).to_string(),
-            Type::HashWordVariant(cat, _) => cat.strip_prefix('#').unwrap_or(cat).to_string(),
             Type::Custom(name)
                 if crate::type_universe::FUNDAMENTAL_TYPES.contains(&name.as_str()) =>
             {
@@ -3113,16 +3121,8 @@ impl<'a> Parser<'a> {
                     self.expect(Token::LParen)?;
                     let target_type = self.parse_type()?;
                     // 2026-09-11 (Phase A): bare `String<UTF8>` (primary) and
-                    // legacy `#String<UTF8>` both name (category, variant).
+                    // legacy `String<UTF8>` both name (category, variant).
                     let (target_category, target_variant) = match &target_type {
-                        Type::HashWordVariant(cat, var) => (
-                            cat.strip_prefix('#').unwrap_or(cat).to_string(),
-                            var.clone(),
-                        ),
-                        Type::HashWord(cat) => (
-                            cat.strip_prefix('#').unwrap_or(cat).to_string(),
-                            String::new(),
-                        ),
                         Type::Applied(base, args)
                             if crate::type_universe::FUNDAMENTAL_TYPES.contains(&base.as_str())
                                 && args.len() == 1 =>
@@ -3137,6 +3137,12 @@ impl<'a> Parser<'a> {
                             if crate::type_universe::FUNDAMENTAL_TYPES.contains(&name.as_str()) =>
                         {
                             (name.clone(), String::new())
+                        }
+                        // Bits is a compiler construct (Rule 19 exception) —
+                        // the universal cast target (`op CastTo(Bits)`).
+                        Type::Bits(_) => ("Bits".to_string(), String::new()),
+                        Type::Custom(name) if name == "Bits" => {
+                            ("Bits".to_string(), String::new())
                         }
                         _ => return self.error_at_current(&format!(
                             "expected a protocol variant like 'String<UTF8>', got '{}'", target_type
@@ -3321,7 +3327,7 @@ mod tests {
     #[test]
     fn test_fundamental_variant_syntax() {
         // `Float<Posit>` — the fundamental IS the protocol; the variant rides
-        // on the type (replaces #Float<Posit>).
+        // on the type (replaces Float<Posit>).
         let ty = parse_type("Float<Posit>").unwrap();
         assert_eq!(
             ty,
@@ -3385,7 +3391,7 @@ mod tests {
     fn test_spec_in_type_body() {
         // 2026-08-13 (layout-keywords plan): `spec Bits: 4` maps to the
         // lowercase metadata key `bits` (same read path as `!> bits`).
-        let tl = parse_top("type W4: #Int { spec Bits: 4; };").unwrap();
+        let tl = parse_top("type W4: Int { spec Bits: 4; };").unwrap();
         let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
         match td.body.metadata.get("bits") {
             Some(crate::ast::PropertyValue::Int(4)) => {}
@@ -3396,7 +3402,7 @@ mod tests {
     #[test]
     fn test_spec_all_layout_keys_in_type_body() {
         let tl = parse_top(
-            "type Frame: #Bit {\n  \
+            "type Frame: Bit {\n  \
              spec Alignment: 2;\n  spec Bits: 12;\n  spec MaxBits: 16;\n  \
              spec Bytes: 4;\n  spec Endian: Big;\n};",
         )
@@ -3503,7 +3509,7 @@ mod tests {
     fn test_atomic_type_slot_parses() {
         // The `atomic` modifier also applies to obj/type body slots.
         // 2026-09-06: carrier entries carry the ordering (default `seq`).
-        let tl = parse_top("type Meter: #Int { atomic ticks: Int; };").unwrap();
+        let tl = parse_top("type Meter: Int { atomic ticks: Int; };").unwrap();
         let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
         match td.body.metadata.get("atomic_fields") {
             Some(crate::ast::PropertyValue::List(entries)) => {
@@ -3667,7 +3673,7 @@ mod tests {
     #[test]
     fn test_spec_unknown_name_rejected() {
         // 2026-08-13: unknown spec names are hard errors — never silent.
-        let err = parse_top("type W: #Int { spec Flurb: 3; };").unwrap_err();
+        let err = parse_top("type W: Int { spec Flurb: 3; };").unwrap_err();
         assert!(err.contains("unknown spec"), "got: {err}");
     }
 
@@ -3718,7 +3724,7 @@ mod tests {
 
     #[test]
     fn test_spec_endian_invalid_value_rejected() {
-        let err = parse_top("type W: #Int { spec Endian: Sideways; };").unwrap_err();
+        let err = parse_top("type W: Int { spec Endian: Sideways; };").unwrap_err();
         assert!(err.contains("invalid spec Endian value"), "got: {err}");
     }
 
@@ -3751,14 +3757,14 @@ mod tests {
 
     #[test]
     fn test_spec_non_integer_width_rejected() {
-        let err = parse_top("type W: #Int { spec Bits: many; };").unwrap_err();
+        let err = parse_top("type W: Int { spec Bits: many; };").unwrap_err();
         assert!(err.contains("expected integer") || err.contains("integer"), "got: {err}");
     }
 
     #[test]
     fn test_spec_does_not_break_exclaim_arrow() {
         // `!>` still parses alongside `spec` in the same body.
-        let tl = parse_top("type W: #Int { !> ctd: Add; spec Bits: 8; };").unwrap();
+        let tl = parse_top("type W: Int { !> ctd: Add; spec Bits: 8; };").unwrap();
         let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
         assert_eq!(td.body.metadata["ctd"], crate::ast::PropertyValue::Identifier("Add".into()));
         assert_eq!(td.body.metadata["bits"], crate::ast::PropertyValue::Int(8));
@@ -3872,43 +3878,34 @@ mod tests {
         assert_eq!(reg.as_str(), "xxhash.c");
     }
 
-    // ── Hashword type parsing ────────────────────────────────────────
+    // ── 2026-09-11 (Phase A4): category hashwords are RETIRED ────────
+    // The spellings are assembled at runtime (format!) so source-wide
+    // migrations can never rewrite these fixtures.
 
     #[test]
-    fn test_hashword_int_no_variant() {
-        let ty = parse_type("#Int").unwrap();
-        assert_eq!(ty, crate::ast::Type::HashWord("#Int".into()));
+    fn test_hashword_spellings_retire_with_fix_message() {
+        for bare in ["Int", "Bits", "String", "Float"] {
+            let spelling = format!("#{}", bare);
+            let err = parse_type(&spelling).unwrap_err().to_string();
+            assert!(
+                err.contains("is retired") && err.contains(&format!("write {}", bare)),
+                "{} must be rejected with the fix, got: {}",
+                spelling, err
+            );
+        }
     }
 
     #[test]
-    fn test_hashword_bits_no_variant() {
-        let ty = parse_type("#Bits").unwrap();
-        assert_eq!(ty, crate::ast::Type::HashWord("#Bits".into()));
-    }
-
-    #[test]
-    fn test_hashword_string_with_default_variant() {
-        // Bare #String resolves to UTF8 (universal default)
-        let ty = parse_type("#String").unwrap();
-        assert_eq!(ty, crate::ast::Type::HashWordVariant("#String".into(), "UTF8".into()));
-    }
-
-    #[test]
-    fn test_hashword_string_with_explicit_variant() {
-        let ty = parse_type("#String<UTF8>").unwrap();
-        assert_eq!(ty, crate::ast::Type::HashWordVariant("#String".into(), "UTF8".into()));
-    }
-
-    #[test]
-    fn test_hashword_string_with_explicit_ASCII_variant() {
-        let ty = parse_type("#String<ASCII>").unwrap();
-        assert_eq!(ty, crate::ast::Type::HashWordVariant("#String".into(), "ASCII".into()));
-    }
-
-    #[test]
-    fn test_hashword_float_with_explicit_variant() {
-        let ty = parse_type("#Float<IEEE754>").unwrap();
-        assert_eq!(ty, crate::ast::Type::HashWordVariant("#Float".into(), "IEEE754".into()));
+    fn test_hashword_variant_spelling_retires() {
+        let spelling = format!("#{}<{}>", "String", "UTF8");
+        let err = parse_type(&spelling).unwrap_err().to_string();
+        assert!(err.contains("is retired"), "got: {}", err);
+        // The bare replacement parses to the same resolved category.
+        let ty = parse_type("String<UTF8>").unwrap();
+        assert_eq!(
+            ty,
+            crate::ast::Type::Applied("String".into(), vec![crate::ast::Type::Custom("UTF8".into())])
+        );
     }
 
     // ── Op declaration parsing ───────────────────────────────────────
@@ -3986,9 +3983,9 @@ mod tests {
     #[test]
     fn test_op_declarative_protocol_variant() {
         // 2026-08-01 (B2): the variant parses as a TYPE, so the stored value
-        // is the BARE category ("Int") — hashwords (`op Add(#Int)`) and
-        // CastFrom(#Bit) overrides both go through parse_type now.
-        let ops = parse_op_from_type_def("type T { op Add(#Int): int_add(#Lh, #Rh); };");
+        // is the BARE category ("Int") — hashwords (`op Add(Int)`) and
+        // CastFrom(Bit) overrides both go through parse_type now.
+        let ops = parse_op_from_type_def("type T { op Add(Int): int_add(#Lh, #Rh); };");
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].name, "Add");
         assert_eq!(ops[0].protocol_variant.as_deref(), Some("Int"));
@@ -4018,7 +4015,7 @@ mod tests {
 
     #[test]
     fn test_protocol_def_edges_only() {
-        let pd = parse_protocol("proto ASCII: #String { CastTo(#String<UTF8>); };");
+        let pd = parse_protocol("proto ASCII: String { CastTo(String<UTF8>); };");
         assert_eq!(pd.name, "ASCII");
         assert_eq!(pd.category, "String");
         assert_eq!(pd.cast_edges.len(), 1);
@@ -4032,7 +4029,7 @@ mod tests {
     #[test]
     fn test_protocol_def_cross_op() {
         let pd = parse_protocol(
-            "proto ASCII: #String { CastTo(#String<UTF8>); op Add(#String<UTF8>) = add_UTF8_to_ASCII(#Lh, #Rh); };"
+            "proto ASCII: String { CastTo(String<UTF8>); op Add(String<UTF8>) = add_UTF8_to_ASCII(#Lh, #Rh); };"
         );
         assert_eq!(pd.name, "ASCII");
         assert_eq!(pd.cast_edges.len(), 1);
@@ -4044,7 +4041,7 @@ mod tests {
     #[test]
     fn test_protocol_def_with_contract() {
         let pd = parse_protocol(
-            "proto ASCII: #String [#Self < 128] { CastTo(#String<UTF8>); };"
+            "proto ASCII: String [#Self < 128] { CastTo(String<UTF8>); };"
         );
         assert_eq!(pd.name, "ASCII");
         assert!(pd.contract.is_some(), "contract should be parsed");
@@ -4053,7 +4050,7 @@ mod tests {
 
     #[test]
     fn test_protocol_def_empty_body() {
-        let pd = parse_protocol("proto ASCII: #String {};");
+        let pd = parse_protocol("proto ASCII: String {};");
         assert_eq!(pd.name, "ASCII");
         assert_eq!(pd.cast_edges.len(), 0);
         assert_eq!(pd.cross_ops.len(), 0);
@@ -4062,7 +4059,7 @@ mod tests {
     #[test]
     fn test_protocol_def_both_edges() {
         let pd = parse_protocol(
-            "proto ASCII: #String { CastTo(#String<UTF8>); CastFrom(#String<UTF8>); };"
+            "proto ASCII: String { CastTo(String<UTF8>); CastFrom(String<UTF8>); };"
         );
         assert_eq!(pd.cast_edges.len(), 2);
         assert_eq!(pd.cast_edges[0].direction, CastDirection::CastTo);
@@ -4072,7 +4069,7 @@ mod tests {
     #[test]
     fn test_protocol_def_multiple_edges() {
         let pd = parse_protocol(
-            "proto multi: #String { CastTo(#String<UTF8>); CastTo(#String<UTF16>); };"
+            "proto multi: String { CastTo(String<UTF8>); CastTo(String<UTF16>); };"
         );
         assert_eq!(pd.cast_edges.len(), 2);
         assert_eq!(pd.cast_edges[0].target_variant, "UTF8");

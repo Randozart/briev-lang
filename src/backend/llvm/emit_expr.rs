@@ -167,7 +167,7 @@ impl LlvmBackend {
                 // state fields and cast results. Boxed Char params are the
                 // sole i64 exception (zext at defn entry). The Print#
                 // dispatch and adapt_to_i64 widen i32 → i64 for the runtime
-                // ABI; the register's ty carries `#Char` so the generic
+                // ABI; the register's ty carries `Char` so the generic
                 // Print# routes it to __print_char (not __print_int).
                 writeln!(out, "{}{} = add i32 0, {}", indent, v, *c as i64).ok();
                 TypedRegister { name: v.to_string(), ty: Type::char_() }
@@ -672,7 +672,7 @@ impl LlvmBackend {
                         // mirroring the float unboxing branches above and the
                         // Ptr<T> state-adapter pattern.
                         // 2026-08-07 (Phase 7): Data shares the [len][bytes]
-                        // representation (#Blob protocol) — its state slots
+                        // representation (Blob protocol) — its state slots
                         // must inttoptr the same way.
                         let str_p = self.fun.gen_reg();
                         writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, str_p, loaded).ok();
@@ -710,7 +710,7 @@ impl LlvmBackend {
                     } else if self.is_string_operand(ty) {
                         // 2026-08-01 (B3): a String constant's @s global holds
                         // the [len][bytes] pointer; load it as a ptr and type it
-                        // with the DECLARED constant type (a #String member, not
+                        // with the DECLARED constant type (a String member, not
                         // a hardcoded Type::string()) so reflection/ops see the
                         // right protocol. Was load i64 typed Int, which broke
                         // `s.^Length` on an unwritten literal (const-folded to a
@@ -3208,7 +3208,7 @@ impl LlvmBackend {
                 )
             }
             ("Bytes", ReflectKind::CompileTime) => {
-                // 2026-08-01 (B3): `x.^^Bytes` on a #String → the `Bytes` prop
+                // 2026-08-01 (B3): `x.^^Bytes` on a String → the `Bytes` prop
                 // default = O(1) header read (byte length is the [0] length
                 // prefix of the [len][bytes] buffer). For non-strings, the
                 // compile-time type size.
@@ -3240,7 +3240,7 @@ impl LlvmBackend {
                     writeln!(out, "{}{} = add i64 0, {}", indent, r, count).ok();
                     TypedRegister { name: r, ty: Type::int() }
                 }
-                 // 2026-08-12 (Iterable protocol): `x.^Length` on a #String is
+                 // 2026-08-12 (Iterable protocol): `x.^Length` on a String is
                  // the STORED byte count — the [len] header of the
                  // [len][bytes] handle (O(1), no scan). The UTF8 CHARACTER
                  // count is the `CharCount#` intrinsic (a computed scan; SPEC
@@ -3250,7 +3250,7 @@ impl LlvmBackend {
                      writeln!(out, "{}{} = load i64, ptr {}", indent, r, recv_reg.name).ok();
                      TypedRegister { name: r, ty: Type::int() }
                  }
-                 // 2026-08-06 (Phase 7): `x.^Length` on a #Blob — the byte length
+                 // 2026-08-06 (Phase 7): `x.^Length` on a Blob — the byte length
                  // is the [len] header of the [len][bytes] handle (O(1), no
                  // codepoint scan). Data values are ptr handles like Strings.
                  ty if matches!(ty, Type::Custom(n) if n == "Blob") => {
@@ -3372,7 +3372,7 @@ impl LlvmBackend {
     /// 2026-08-14 (boundary plan): the ELEMENT type of a `x.^^Element` receiver,
     /// folded from the receiver's static type. Mirrors the typechecker's
     /// `resolve_element_type` (single-source proof form, rule #4 parity): a
-    /// `#String` operand → `Char` (frozen protocol fact), a Tier-2/1 type → the
+    /// `String` operand → `Char` (frozen protocol fact), a Tier-2/1 type → the
     /// read op's return substituted with the concrete generic args, a vector →
     /// the inner type. The typechecker already validated iterability before
     /// codegen, so a None here is an internal inconsistency, not a user error.
@@ -4021,8 +4021,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         }
     }
 
-    /// 2026-08-28 (Bug #5, frgn String ABI): marshal a #String-family
-    /// argument to a #String-family parameter of a DIFFERENT variant through
+    /// 2026-08-28 (Bug #5, frgn String ABI): marshal a String-family
+    /// argument to a String-family parameter of a DIFFERENT variant through
     /// the casting graph — a Briev String arg into a `CStr` param emits the
     /// `str_to_c` delta (block → NUL-terminated data pointer, zero-copy),
     /// the graph being the single source of truth for the transform. A frgn
@@ -4079,7 +4079,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // entry), so a ptr-typed frgn param needs `inttoptr i64`. On wasm32
         // `llvm_type(Int)` is i32, so coerce_to_param_type's ("i64","ptr") arm
         // never fires for boxed values — this explicit inttoptr is the fix.
-        // 2026-08-28 (Bug #5): a #String-family arg into a #String-family
+        // 2026-08-28 (Bug #5): a String-family arg into a String-family
         // param of a DIFFERENT variant marshals through the casting graph
         // first (String → CStr = str_to_c) — see emit_frgn_variant_cast.
         let final_args: Vec<TypedRegister> = arg_regs
@@ -5351,7 +5351,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             BinaryOpKind::Concat => return None,
             _ => return None,
         };
-        // 2026-08-01 (B1): #String operands NEVER go through the config
+        // 2026-08-01 (B1): String operands NEVER go through the config
         // template path. Their flexible primordial has bytes=0, so the
         // integer template derivation produces `i0` (invalid IR), and more
         // fundamentally Eq/Ne on Strings is a CONTENT comparison handled by
@@ -5509,7 +5509,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         }
         match kind {
             crate::ast::BinaryOpKind::Add => {
-                // 2026-08-03: `+` is string concat for #String/#Blob operands
+                // 2026-08-03: `+` is string concat for String/Blob operands
                 // (the `++`/Concat operation; + reads naturally and resolves
                 // to the same concat binding in the typechecker).
                 if self.is_string_operand(&l.ty) || self.is_string_operand(&r.ty) {
@@ -5636,7 +5636,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             crate::ast::BinaryOpKind::Eq => {
                 // 2026-08-01 (B1): String operands compare CONTENT, not
                 // addresses. 2026-08-04 (compiler-in-Briev): fire when EITHER
-                // operand is #String — the typechecker guarantees both are
+                // operand is String — the typechecker guarantees both are
                 // strings, but the other may have been boxed to i64
                 // (adapt_to_i64 loses the String type), so inttoptr it before
                 // the content compare. Matches the interpreter's content Eq.
@@ -5841,9 +5841,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 self.emit_inline_concat(out, indent, l, r)
             }
             crate::ast::BinaryOpKind::BitAnd | crate::ast::BinaryOpKind::BitOr | crate::ast::BinaryOpKind::BitXor => {
-                // 2026-08-01 (B1): #String bitwise defaults — operate on the
+                // 2026-08-01 (B1): String bitwise defaults — operate on the
                 // content bytes and return a NEW [len][bytes] buffer (same
-                // length). When both operands are #String, emit the matching
+                // length). When both operands are String, emit the matching
                 // runtime call; otherwise fall through to the numeric path
                 // below (the config templates handle Int/etc.).
                 if self.is_string_operand(&l.ty)
@@ -5916,7 +5916,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }
             }
             crate::ast::UnaryOpKind::BitNot => {
-                // 2026-08-01 (B1): #String unary bitwise default — complement
+                // 2026-08-01 (B1): String unary bitwise default — complement
                 // each content byte and return a NEW [len][bytes] buffer (same
                 // length). Numeric operands keep the i64 xor path below.
                 if self.is_string_operand(&operand.ty) {
@@ -6114,14 +6114,20 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // integer source to exactly N bits here, before the graph. A source
         // that is already i{N} (a packed field read) is an identity.
         if let Some(n) = crate::type_universe::bits_width(target) {
-            let src_ll = self.llvm_type(&src.ty);
-            let tgt = format!("i{}", n);
-            if src_ll != tgt && src_ll.starts_with('i') {
-                let reg = self.fun.gen_reg();
-                writeln!(out, "{}{} = trunc {} {} to {}", indent, reg, src_ll, src.name, tgt).ok();
-                return Some(TypedRegister { name: reg, ty: target.clone() });
+            // 2026-09-11 (Phase A4): Bits(0) — the flexible `Bit`/`Bits` — is
+            // the CONTENT-VIEW cast target (the old `#Bit` category): it routes
+            // through the casting graph below (String→Bit = ptrtoint via the
+            // Data root). Only a CONCRETE width is a width assertion.
+            if n > 0 {
+                let src_ll = self.llvm_type(&src.ty);
+                let tgt = format!("i{}", n);
+                if src_ll != tgt && src_ll.starts_with('i') {
+                    let reg = self.fun.gen_reg();
+                    writeln!(out, "{}{} = trunc {} {} to {}", indent, reg, src_ll, src.name, tgt).ok();
+                    return Some(TypedRegister { name: reg, ty: target.clone() });
+                }
+                return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
             }
-            return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
         }
         let graph = self.ctx.casting_graph.as_ref()?;
         let universe = self.ctx.type_universe.as_ref()?;
@@ -6263,9 +6269,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }
                 crate::casting::graph::LaneKind::ExtCall(fn_name) => {
                     // 2026-08-01: the ExtCall's return type must match the
-                    // lane's destination LLVM type — `Int → #String` emits
+                    // lane's destination LLVM type — `Int → String` emits
                     // `call ptr @int_to_str(...)` (a String IS a ptr), while
-                    // `#String → Int` emits `call i64 @str_to_int(...)`. The
+                    // `String → Int` emits `call i64 @str_to_int(...)`. The
                     // old hardcoded `i64` made int_to_str return an i64 that
                     // the String target then ptrtoint'd (a type mismatch).
                     // 2026-08-13: a native Char source (i32, from a boxed Char
@@ -6294,7 +6300,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }
                 crate::casting::graph::LaneKind::ExtCallDyn(fn_name) => {
                     // 2026-08-03: proto-binding transform (owned function
-                    // name), e.g. cstr_to_briev/str_to_c for #String<CString>.
+                    // name), e.g. cstr_to_briev/str_to_c for String<CString>.
                     // 2026-08-28 (Bug #5): the binding names the BRIEV-side
                     // function; a frgn import's LINK SYMBOL is the C name
                     // (`frgn str_to_c ... : briev_str_to_c`). Resolve through
@@ -6339,7 +6345,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         indent, dst, cur_ll, cur, dst_ll).ok();
                 }
                 crate::casting::graph::LaneKind::FloatWidth => {
-                    // 2026-08-03: the #Float protocol's width cast — fpext/
+                    // 2026-08-03: the Float protocol's width cast — fpext/
                     // fptrunc between float and double (same width → identity).
                     if cur_ll == target_ll {
                         return Some(TypedRegister { name: cur.clone(), ty: target.clone() });
@@ -6356,9 +6362,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     return None;
                 }
                 crate::casting::graph::LaneKind::CastFromBitCallback => {
-                    // 2026-08-01 (B2): the ENCODING DOOR — `#Bit → <type>`.
-                    // A registered CastFrom(#Bit) override for the target type
-                    // calls the override function; otherwise the #String default
+                    // 2026-08-01 (B2): the ENCODING DOOR — `Bit → <type>`.
+                    // A registered CastFrom(Bit) override for the target type
+                    // calls the override function; otherwise the String default
                     // is the UTF8 wrap: inttoptr the address, then
                     // briev_cstr_to_briev materializes the [len][bytes] header
                     // by construction (length derived from the bytes). The

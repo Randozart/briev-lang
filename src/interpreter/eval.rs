@@ -1100,7 +1100,7 @@ fn eval_reflect(
         // code (must match the codegen's type_category_code, rule #4).
         ("Type", true) => Ok(Value::int(reflect_type_code(&val))),
         // 2026-08-14 (boundary plan): `Element` (compile-time) = the ELEMENT
-        // type's category code of an iterable value — a `#String` operand's
+        // type's category code of an iterable value — a `String` operand's
         // chars (`Char`), a Product's field sequence, a Range's counter
         // (`Int`). Matches the codegen's `.^^Element` fold (rule #4 parity).
         ("Element", true) => Ok(Value::int(reflect_element_code(&val))),
@@ -1145,14 +1145,14 @@ fn reflect_type_code(v: &Value) -> i64 {
 }
 
 /// 2026-08-14 (boundary plan): the ELEMENT type's category code of an iterable
-/// value, for `x.^^Element`. A `#String` operand iterates `Char` (SPEC §17.2);
+/// value, for `x.^^Element`. A `String` operand iterates `Char` (SPEC §17.2);
 /// a Product's element is the category of its first field (the field sequence
 /// is the element sequence); a Range iterates `Int` counters. Must agree with
 /// the codegen's fold of the receiver's static element type (rule #4 parity) —
 /// the typechecker is the authority on validity; this is the value computation.
 fn reflect_element_code(v: &Value) -> i64 {
     match v {
-        Value::Bits(_) => 3, // Char — a `#String` operand iterates codepoints
+        Value::Bits(_) => 3, // Char — a `String` operand iterates codepoints
         Value::Product { fields, .. } => fields
             .first()
             .map(reflect_type_code)
@@ -1484,7 +1484,7 @@ fn eval_binary_op(
 
     match kind {
         BinaryOpKind::Add => {
-            // 2026-08-03: `+` is string concat for #String/#Blob operands (the
+            // 2026-08-03: `+` is string concat for String/Blob operands (the
             // Concat op). The backend routes +-on-strings to concat via the
             // string_concat rewrite; the interpreter must match (rule 4).
             if let (Some(a), Some(b)) = (lv.string_bytes(heap), rv.string_bytes(heap)) {
@@ -1590,7 +1590,7 @@ fn eval_binary_op(
             Ok(Value::Atom(Atom::Bool(lb || rb)))
         }
         BinaryOpKind::BitAnd | BinaryOpKind::BitOr | BinaryOpKind::BitXor => {
-            // 2026-08-01 (B1): #String bitwise defaults — operate on content
+            // 2026-08-01 (B1): String bitwise defaults — operate on content
             // bytes and return a NEW string of the same length (interpreter
             // half of B1; the backend mirrors it with briev_str_band/bor/bxor).
             // When both operands deref as strings, apply the byte-wise op.
@@ -1648,7 +1648,7 @@ fn eval_unary_op(
             Ok(bool_to_bits(!b))
         }
         UnaryOpKind::BitNot => {
-            // 2026-08-01 (B1): #String unary bitwise default — complement each
+            // 2026-08-01 (B1): String unary bitwise default — complement each
             // content byte, same length (interpreter half; the backend emits
             // briev_str_bnot).
             if let Some(bytes) = val.string_bytes(heap) {
@@ -2024,7 +2024,7 @@ pub fn eval_statement(
                     }
                 }
                 Value::Bits(bytes) => {
-                    // 2026-08-14 (String unification): a `#String` operand
+                    // 2026-08-14 (String unification): a `String` operand
                     // iterates CHARs — decode UTF8 codepoints, one per
                     // iteration, matching the codegen's `briev_str_next_char`
                     // lane (SPEC §17.2 String → Char). Data (raw bytes) has no
@@ -2093,7 +2093,7 @@ mod tests {
         .to_string()
     }
 
-    // 2026-08-01 (audit): #Char/#Bool are first-class values — literals
+    // 2026-08-01 (audit): Char/Bool are first-class values — literals
     // produce Value::Atom(Atom::Char)/Value::Atom(Atom::Bool), and casts convert across categories
     // (mirroring codegen, so Print# prints the same thing on both backends).
 
@@ -2171,7 +2171,7 @@ mod tests {
 
     #[test]
     fn test_plus_strings_concat() {
-        // 2026-08-03: `+` is string concat for #String operands.
+        // 2026-08-03: `+` is string concat for String operands.
         let expr = Expr::BinaryOp(
             BinaryOpKind::Add,
             Box::new(Expr::Quoted(b"foo".to_vec())),
@@ -2556,7 +2556,7 @@ defn go() -> Int {
 
     #[test]
     fn test_foreach_over_string_iterates_chars() {
-        // 2026-08-14 (String unification): `foreach c in str` on a `#String`
+        // 2026-08-14 (String unification): `foreach c in str` on a `String`
         // operand iterates UTF8 CODEPOINTS as Char values, not raw bytes
         // (SPEC §17.2 String → Char). Multibyte: "hé" is 0x68 0xC3 0xA9 0x65
         // (3 bytes, 2 chars).
@@ -3305,7 +3305,7 @@ defn go() -> Int {
     #[test]
     fn test_reflect_element_on_string_is_char_category() {
         // 2026-08-14 (String unification): `s.^^Element` on a String value is
-        // the Char category code (3) — a `#String` operand iterates chars.
+        // the Char category code (3) — a `String` operand iterates chars.
         let r = Expr::Reflect(
             Box::new(Expr::Quoted("hi".as_bytes().to_vec())),
             "Element".into(),

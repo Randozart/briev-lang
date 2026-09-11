@@ -262,7 +262,6 @@ impl Annotator {
             Type::Bits(width) => format!("Bit<{}>", width),
             Type::Width(n) => format!("Width({})", n),
             Type::Custom(name) => name.clone(),
-            Type::HashWord(name) | Type::HashWordVariant(name, _) => name.clone(),
             Type::TypeVar(name) => name.clone(),
             Type::Union(types) => types
                 .iter()

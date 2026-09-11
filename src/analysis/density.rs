@@ -162,7 +162,7 @@ fn float_fixpoint(bindings: &[(String, Option<Type>, &Expr)]) -> HashSet<String>
 ///
 /// TEMP: 2026-07-31 — name-based until Phase 3 (§8.4 D4) wires the casting
 /// graph into analysis. The primitive float set is closed in Briev's
-/// bootstrap; a user float type carries an `op Add(#Float)` binding and is
+/// bootstrap; a user float type carries an `op Add(Float)` binding and is
 /// caught by the literal/operation propagation instead.
 fn is_float_type(ty: &Type) -> bool {
     match ty {
@@ -171,9 +171,6 @@ fn is_float_type(ty: &Type) -> bool {
             "Float" | "Float32" | "Float64" | "Double" | "Half" | "BFloat" | "Bfloat16" | "FP16" | "FP32" | "FP64"
         ),
         Type::Constrained(inner, _) => is_float_type(inner),
-        // 2026-09-02 (de-hashtag sweep): category comparison on the trimmed
-        // hashword — HashWord values carry '#' by parser construction.
-        Type::HashWord(n) if n.trim_start_matches('#') == "Float" => true,
         _ => false,
     }
 }

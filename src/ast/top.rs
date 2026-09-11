@@ -1029,11 +1029,11 @@ pub struct TypeDef {
     /// 2026-07-24: Parent type (e.g., Int for i64). Optional.
     /// Replaces the old `base` field which was `Box<Expr>` from `<:` syntax.
     pub parent: Option<Box<Expr>>,
-    /// 2026-07-24: Protocol hashword (e.g., "#Int", "#String"). Optional.
+    /// 2026-07-24: Protocol hashword (e.g., "Int", "String"). Optional.
     /// If both parent and protocol are None, the type is abstract.
     pub protocol: Option<String>,
     /// 2026-08-05 (Phase 5): explicitly asserted traits in the relationship
-    /// list (`type Name: Parent, Comparable, #Int`). Conformance is structural.
+    /// list (`type Name: Parent, Comparable, Int`). Conformance is structural.
     pub traits: Vec<String>,
     pub bit_range: Option<BitRange>,
     pub body: TypeDefBody,
@@ -1135,7 +1135,7 @@ pub struct ProjectionDef {
 
 /// 2026-07-20: Operator definition from a type body.
 /// Two forms:
-///   op Add(#Int, #Int);              — declarative: params are hashword categories
+///   op Add(Int, Int);              — declarative: params are hashword categories
 ///   op InsertAt(#RingBuffer) = fn(#L,#R); — binding: explicit implementation
 ///
 /// The `impl_args` field stores the implementation function + marker references
@@ -1170,7 +1170,7 @@ pub struct OperatorDef {
 /// 2026-07-26: Operator binding: op Name(Proto?): expr;
 /// Replaces the old op Name(Types) -> Type = fn(#L, #R) form.
 /// protocol_variant is None for concrete bindings (InsertAt, Init, etc.)
-/// or Some("#Int") / Some("MyType") for overloaded operators.
+/// or Some("Int") / Some("MyType") for overloaded operators.
 /// pre/suf/reg are discriminator fields for op Parse:
 ///   op Parse(Decimal, pre:"0x", reg:"[0-9a-fA-F]+"): parse_hex(#L);
 #[derive(Debug, Clone)]
@@ -1206,7 +1206,7 @@ pub struct CastEdge {
     pub target_category: String,
     pub target_variant: String,
     /// 2026-07-23: Required binding — the transformation function.
-    /// e.g., CastTo(#String<UTF8>) = ASCII_to_UTF8(#L);
+    /// e.g., CastTo(String<UTF8>) = ASCII_to_UTF8(#L);
     pub binding: Option<CastBinding>,
     /// 2026-08-27: Authority marker (SPEC §8.7). When true, the equivalence
     /// proof is taken on trust; the binding must still exist but the body

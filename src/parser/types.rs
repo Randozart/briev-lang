@@ -42,27 +42,26 @@ impl<'a> Parser<'a> {
                     // Crosses an FFI boundary as an opaque function pointer.
                     "fn" => return self.parse_fn_type(),
                     _ if name.starts_with('#') => {
-                        // 2026-07-20: Hashword category: #Int, #Float, #String, etc.
-                        // Optional protocol variant: #String<UTF8>, #Float<IEEE754>
-                        if self.eat(&Token::Lt) {
-                            let variant = self.expect_identifier()?;
-                            if !self.eat_type_close() {
-                                return self.error_at_current("expected '>' or '>>' in hashword variant");
-                            }
-                            return Ok(Type::HashWordVariant(name, variant));
+                        // 2026-09-11 (fundamentals doctrine, Phase A4): the
+                        // CATEGORY hashwords are RETIRED — hard error, no
+                        // alias. The fundamental name is both the base type
+                        // and the protocol: write `Float`, `String<UTF8>`.
+                        // Target protocols (#System, #Web, #Link) are a
+                        // different mechanism — they pass through verbatim.
+                        const RETIRED: &[&str] = &[
+                            "Int", "UInt", "Float", "String", "Bool", "Char", "Blob", "Bit",
+                            "Data", "Bits",
+                        ];
+                        let bare = name.trim_start_matches('#');
+                        if RETIRED.contains(&bare) {
+                            return self.error_at_current(&format!(
+                                "#{} is retired — write {}{}",
+                                bare,
+                                bare,
+                                "; the fundamental name is both the base type and the protocol"
+                            ));
                         }
-                        // 2026-07-20: Bare hashwords resolve to their default variant.
-                        // UTF-8 is the universal default for all files.
-                        let variant = match name.as_str() {
-                            "#String" => "UTF8",
-                            "#Float" => "IEEE754",
-                            "#Char" => "unicode",
-                            _ => "",
-                        };
-                        if !variant.is_empty() {
-                            return Ok(Type::HashWordVariant(name, variant.to_string()));
-                        }
-                        return Ok(Type::HashWord(name));
+                        return Ok(Type::Custom(name));
                     }
                     _ => {
                         // Unknown name — delegate to parse_named_type_body
@@ -106,7 +105,7 @@ impl<'a> Parser<'a> {
         // 2026-09-11 (fundamentals doctrine, Phase A): `Float<Posit>` /
         // `String<C_String>` / `Char<ASCII>` — the fundamental IS the
         // protocol, so the variant rides on the type in angle brackets
-        // (replaces `#Float<Posit>`). Produces Applied(fundamental, [variant])
+        // (replaces `Float<Posit>`). Produces Applied(fundamental, [variant])
         // which the casting graph peels to (category, variant).
         if matches!(prim_name, "Float" | "String" | "Char") && self.check(&Token::Lt) {
             if let Some(Token::Identifier(variant)) = self.peek_next() {
@@ -359,7 +358,7 @@ impl<'a> Parser<'a> {
             let mut params = Vec::new();
             loop {
                 let name = self.expect_identifier()?;
-                // 2026-07-20: Optional bound: K: #String or K: String
+                // 2026-07-20: Optional bound: K: String or K: String
                 let bound = if self.eat(&Token::Colon) {
                     Some(self.parse_type()?)
                 } else {

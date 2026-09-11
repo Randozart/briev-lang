@@ -252,7 +252,7 @@ fn has_safe_cast_path(universe: &TypeUniverse, foreign_type: &str, original_type
     if find_cast_path(universe, foreign_type, original_type).is_some() {
         return true;
     }
-    find_cast_path(universe, foreign_type, "#Bits").is_some()
+    find_cast_path(universe, foreign_type, "Bits").is_some()
 }
 
 /// BFS shortest path through the protocol graph.
@@ -282,11 +282,14 @@ pub(crate) fn find_cast_path(
             return Some(path);
         }
 
-        if !visited.contains("#Bits") {
-            visited.insert("#Bits".to_string());
+        // 2026-09-11 (Phase A4): the synthetic universal-cast node is bare
+        // "Bits" — matching the retired-# world and the glue CastTo(Bits)
+        // registrations.
+        if !visited.contains("Bits") {
+            visited.insert("Bits".to_string());
             let mut new_path = path.clone();
-            new_path.push("#Bits".to_string());
-            queue.push_back(("#Bits".to_string(), new_path));
+            new_path.push("Bits".to_string());
+            queue.push_back(("Bits".to_string(), new_path));
         }
 
         if let Some(rt) = universe.get(&current) {
@@ -586,7 +589,7 @@ mod tests {
         }
         let path = find_cast_path(&universe, "A", "B");
 
-        let path = find_cast_path(&universe, "Int", "#Bits");
+        let path = find_cast_path(&universe, "Int", "Bits");
         assert!(path.is_some(), "expected Int → #Bits path");
     }
 

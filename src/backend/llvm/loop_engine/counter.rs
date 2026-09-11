@@ -397,7 +397,7 @@ impl LlvmBackend {
 
         // 2026-07-17: Per-field phi nodes — one per written field.
         // 2026-07-26: Phi type is read from field_types to match the native
-        // LLVM type stored by push_field_type (float/double for #Float types,
+        // LLVM type stored by push_field_type (float/double for Float types,
         // iN for exact ints, i64 for flexible Int and everything else).
         self.fun.phi_field_regs.clear();
         self.fun.backedge_field_regs.clear();

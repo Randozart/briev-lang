@@ -309,7 +309,7 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// function, arena fields in %State and emit_arena_init/fini are skipped.
     pub needs_arena: HashSet<String>,
 
-    // 2026-07-26: Native integer width for #Int protocol (default 64).
+    // 2026-07-26: Native integer width for Int protocol (default 64).
     // Controls i32 vs i64 emission for Int/UInt types.
     // WASM targets set to 32 to avoid BigInt in JavaScript.
     pub int_bits: u64,

@@ -750,7 +750,7 @@ node s [done == 0][done == 1] {
         "the tier iteration must GEP each element slot from the data pointer");
 }
 
-/// 2026-08-14 (String unification): `foreach c in s` on a `#String` operand
+/// 2026-08-14 (String unification): `foreach c in s` on a `String` operand
 /// iterates CHARs via the decode lane — the bound is the stored byte length
 /// (`.^Length` header) and each item is a decoded codepoint (Char), never a
 /// raw byte walk.
@@ -773,7 +773,7 @@ fn test_foreach_string_emits_char_decode_lane() {
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let output = backend.generate(&items, None);
     assert!(output.contains("briev_str_next_char"),
-        "a #String foreach must call the char decode lane; got:\n{output}");
+        "a String foreach must call the char decode lane; got:\n{output}");
     assert!(output.contains("trunc i64"),
         "the decoded codepoint must be truncated to Char's native i32; got:\n{output}");
 }
@@ -3488,7 +3488,7 @@ fn make_float_intrinsic_program(intrinsic: Expr) -> Vec<TopLevel> {
 
 #[test]
 fn test_emit_cast_int_to_string() {
-    // The direct-cast path resolves #String membership via the universe (the
+    // The direct-cast path resolves String membership via the universe (the
     // real pipeline always has one), so the bare-backend test must set it.
     let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
@@ -5575,7 +5575,7 @@ fn test_legacy_println_not_rewritten_by_plugin() {
     );
 }
 
-/// 2026-08-01 (B1): String == / != on #String operands emits a content
+/// 2026-08-01 (B1): String == / != on String operands emits a content
 /// comparison (briev_str_eq) instead of `icmp eq ptr` (address comparison).
 /// This is the backend half of B1; the interpreter already does content
 /// equality (rule #4). The entry!-shaped comparison `cmd == "build"` is the
@@ -5739,7 +5739,7 @@ fn test_bool_field_no_malformed_i8_range() {
     );
 }
 
-/// 2026-08-01 (B2): `#String → #Bit` is the CONTENT VIEW — a String value is a
+/// 2026-08-01 (B2): `String → Bit` is the CONTENT VIEW — a String value is a
 /// ptr to [len][bytes], so the cast yields the buffer ADDRESS (ptrtoint), not
 /// the old `extractvalue {i64,i64}, 0` fat-pointer extraction. This pins the
 /// content-view lane under the bits model.
@@ -5749,7 +5749,7 @@ fn test_string_to_bit_content_view() {
         let s: String = "hello";
         let tick: Int = 0;
         node report [tick < 1][tick == 1] {
-            let b: #Bit = s as #Bit;
+            let b: Bit = s as Bit;
             term;
         };
     "#;
@@ -5763,15 +5763,15 @@ fn test_string_to_bit_content_view() {
     let ir = backend.generate(&items, None);
     assert!(
         ir.contains("ptrtoint ptr"),
-        "#String → #Bit must emit ptrtoint (content view = buffer address); got:\n{ir}"
+        "String → Bit must emit ptrtoint (content view = buffer address); got:\n{ir}"
     );
     assert!(
         !ir.contains("extractvalue"),
-        "#String → #Bit must not extractvalue (String is a ptr under B0); got:\n{ir}"
+        "String → Bit must not extractvalue (String is a ptr under B0); got:\n{ir}"
     );
 }
 
-/// 2026-08-01 (B2): `#Bit → #String` is the ENCODING DOOR — wraps the bits
+/// 2026-08-01 (B2): `Bit → String` is the ENCODING DOOR — wraps the bits
 /// (a [len][bytes] buffer) back into a String by materializing the header via
 /// briev_bits_to_str. Not a bitcast.
 #[test]
@@ -5780,7 +5780,7 @@ fn test_bit_to_string_encoding_door() {
         let s: String = "hello";
         let tick: Int = 0;
         node report [tick < 1][tick == 1] {
-            let b: #Bit = s as #Bit;
+            let b: Bit = s as Bit;
             let r: String = b as String;
             term;
         };
@@ -5795,7 +5795,7 @@ fn test_bit_to_string_encoding_door() {
     let ir = backend.generate(&items, None);
     assert!(
         ir.contains("call ptr @briev_bits_to_str(ptr "),
-        "#Bit → #String must emit briev_bits_to_str (UTF8 wrap); got:\n{ir}"
+        "Bit → String must emit briev_bits_to_str (UTF8 wrap); got:\n{ir}"
     );
     assert!(
         !ir.contains("extractvalue"),
@@ -7246,7 +7246,7 @@ async node intr [i % 2 == 0][true] {
     );
 }
 
-/// `(n as String)` routes through the `Int → #String` casting-graph lane
+/// `(n as String)` routes through the `Int → String` casting-graph lane
 /// (`ExtCall int_to_str`), which must emit `call ptr @int_to_str(i64)` — the
 /// String IS a ptr to [len][bytes]. Regression: the ExtCall hardcoded `i64`
 /// (type mismatch) and `int_to_str` was undefined (a latent link error).
@@ -7445,7 +7445,7 @@ fn test_reflect_type_emits_category_constant() {
     );
 }
 
-/// 2026-08-14 (boundary plan): `s.^^Element` on a `#String` operand folds to
+/// 2026-08-14 (boundary plan): `s.^^Element` on a `String` operand folds to
 /// the Char category code (3) — a frozen descriptor, single constant.
 #[test]
 fn test_reflect_element_on_string_folds_char_code() {
@@ -7505,7 +7505,7 @@ fn test_declared_op_elaborates_to_function_call() {
     // call of my_add (the typechecker's elaboration rewrites the BinaryOp).
     let src = r#"
 defn my_add(a: Int, b: Int) -> Int { term (a * 3) + b; };
-type MyNum : #Int {
+type MyNum : Int {
     op Add(Int): my_add(#Lh, #Rh);
 };
 node start [true][false] {

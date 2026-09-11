@@ -25,8 +25,8 @@ pub fn rewrite_boundary_marshalling(items: &mut [TopLevel], universe: &TypeUnive
     // Build a casting graph from the program's proto declarations so the
     // marshalling decision (minimal path → binding fn) is protocol-driven.
     let mut graph = CastingGraph::new();
-    // Type → declared protocol (`type CStr: #String<C_String>` → CStr →
-    // "#String<C_String>"). The universe is not populated until codegen, so
+    // Type → declared protocol (`type CStr: String<C_String>` → CStr →
+    // "String<C_String>"). The universe is not populated until codegen, so
     // the pass resolves custom boundary types from their declarations.
     // 2026-09-02 (plan fundamental-parent-membership): the SHARED AST
     // derivation — bare-parent typedefs derive their category from the

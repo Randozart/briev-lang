@@ -65,7 +65,7 @@ fn walk_expr(expr: &mut Expr) {
             // were exempted then, but 2026-08-28 proved non-identifier
             // bases are equally unsafe (`mk()[1:3]` on a String-returning
             // fn narrowed to `mk()` — whole string again). The backend's
-            // Slice arm is type-aware (briev_str_substr for #String, the
+            // Slice arm is type-aware (briev_str_substr for String, the
             // base-array offset view for Vectors), so EVERY slice is left
             // to it. This pass is now a pure walk — kept only so nested
             // slices inside compound expressions are visited.

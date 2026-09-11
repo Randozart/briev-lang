@@ -167,11 +167,11 @@ pub struct GlueWebGenerator {
 /// derived from the Briev parameter type (type-driven — no name matching).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
-    /// #String — write via `_writeString(value)` (pointer into WASM memory).
+    /// String — write via `_writeString(value)` (pointer into WASM memory).
     String,
-    /// #Int / #Float — `Number(value)`.
+    /// Int / Float — `Number(value)`.
     Number,
-    /// #Bool — checkbox `.checked`.
+    /// Bool — checkbox `.checked`.
     Bool,
 }
 
@@ -1248,10 +1248,10 @@ export async function createApp(wasmBytes) {{
     /// Briev name, then marshals the return value back to WASM ABI.
     ///
     /// No function name matching — the TYPE determines marshalling:
-    ///   #String       → _readString(ptr) / _writeString(str)
-    ///   #Int          → raw i32 val
-    ///   #Float        → raw f64 val
-    ///   #Bool         → val !== 0
+    ///   String       → _readString(ptr) / _writeString(str)
+    ///   Int          → raw i32 val
+    ///   Float        → raw f64 val
+    ///   Bool         → val !== 0
     ///   #Element      → this._handles[handle]
     ///   #CanvasContext → this._handles[handle]
     ///

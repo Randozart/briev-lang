@@ -39,7 +39,7 @@ pub enum Expr {
     // ── Literals ────────────────────────────────────────────────
     Quoted(Vec<u8>), // "..." raw bytes
     Decimal(i64),    // 42, 16711680
-    /// 2026-08-01: a character literal `'a'` — a `#Char` protocol value (the
+    /// 2026-08-01: a character literal `'a'` — a `Char` protocol value (the
     /// code point). The `Cast.Char` universe property makes it type-distinct
     /// from Int, so `Print#` dispatches it to `__print_char`. The code point is
     /// stored as i64 (boxed, like Decimal).

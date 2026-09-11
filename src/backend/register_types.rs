@@ -237,10 +237,10 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
         // queryable from Briev via reflection (`.^^`). Phase 2 pack emission
         // reads `endian` here (absent ⇒ Target/native).
         // 2026-08-04 (compiler-in-Briev): when re-registering a primordial (e.g.
-        // `type Int: #Int { ... }` in bootstrap.bv), inherit the primordial's
+        // `type Int: Int { ... }` in bootstrap.bv), inherit the primordial's
         // protocol Cast.* properties. The flexible-protocol fallbacks in
-        // type_size (types.rs) key on Cast.Int/#String/#Float/#Bool — without
-        // them, `type Int: #Int` (empty metadata) registers bytes=0 and
+        // type_size (types.rs) key on Cast.Int/String/Float/Bool — without
+        // them, `type Int: Int` (empty metadata) registers bytes=0 and
         // `type_size(Int)` returns 0, collapsing any struct containing an Int
         // slot (ListBuffer.cap → 0 → List<T>.len collides with inner.cap).
         if let Some(prim) = &primordial {
@@ -251,8 +251,8 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
             }
         }
         // 2026-08-03: the declared protocol hashword is the base when there is
-        // no parent type — `type CStr: #String<C_String>` must register base
-        // "#String<C_String>" (not "Bit") so type_to_protocol resolves it to
+        // no parent type — `type CStr: String<C_String>` must register base
+        // "String<C_String>" (not "Bit") so type_to_protocol resolves it to
         // (String, C_String) and the casting graph derives its ABI (ptr).
         let base = td.parent.as_ref()
             .and_then(|e| match e.as_ref() { Expr::Identifier(n) => Some(n.clone()), _ => None })

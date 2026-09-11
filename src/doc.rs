@@ -227,8 +227,6 @@ fn format_type(t: &Type) -> String {
         Type::PtrConst(inner) => format!("Ptr&lt;const {}&gt;", format_type(inner)),
         Type::Function(args, ret) => format!("({}) -> {}", args.iter().map(format_type).collect::<Vec<_>>().join(", "), format_type(ret)),
         Type::Width(n) => format!("Width({})", n),
-        Type::HashWord(name) => format!("#{}", name),
-        Type::HashWordVariant(cat, var) => format!("#{}<{}>", cat, var),
         _ => format!("{:?}", t),
     }
 }

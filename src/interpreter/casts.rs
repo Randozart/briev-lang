@@ -10,7 +10,7 @@ use crate::interpreter::{Atom, f64_to_bits, i64_to_bits, Value};
 /// 2026-08-06 (Slice B): Whether a value is a member of a target type.
 /// Membership is decided by the value's semantic category, not by byte width:
 /// an Int atom is a member of the Int family, a Float atom of the Float
-/// family, raw Bits of `#Bit`/String/Data, a `Product` of tuple/collection
+/// family, raw Bits of `Bit`/String/Data, a `Product` of tuple/collection
 /// types, a `Ref` of pointer types. `Union` is a member when any variant is.
 /// Returns an Atom::Bool.
 pub fn eval_is_type(val: &Value, target: &Type) -> Result<Value, RuntimeError> {
@@ -25,11 +25,9 @@ pub fn eval_is_type(val: &Value, target: &Type) -> Result<Value, RuntimeError> {
             _ => false,
         },
         Type::Bits(_) => matches!(val, Value::Bits(_)),
-        // 2026-08-01 (B2): `#Bit` hashword target — the content view; a
-        // String IS its content bytes in the interpreter, so every Bits value
-        // is a member.
-        Type::HashWord(name) if name == "#Bit" => matches!(val, Value::Bits(_)),
-        Type::HashWordVariant(name, _) if name == "#Bit" => matches!(val, Value::Bits(_)),
+        // 2026-09-11 (fundamentals doctrine, Phase A4): the Bit spellings
+        // are retired; the Bits content view remains via Type::Bits.
+        Type::Bits(_) => matches!(val, Value::Bits(_)),
         Type::Tuple(_) | Type::Applied(_, _) | Type::Generic(_, _) => {
             matches!(val, Value::Product { .. })
         }
@@ -58,12 +56,10 @@ pub fn eval_cast(val: Value, target: &Type) -> Result<Value, RuntimeError> {
             let s = bits_to_string(&val);
             Ok(Value::Bits(s.into_bytes()))
         }
-        // 2026-08-01 (B2): `#Bit` hashword target — the content view. In the
-        // interpreter a String IS its content bytes, so casting to #Bit yields
-        // the bytes unchanged (the backend's ptrtoint content-view cast is the
-        // address of those same bytes — the interpreter stores them directly).
-        Type::HashWord(name) if name == "#Bit" => Ok(val),
-        Type::HashWordVariant(name, _) if name == "#Bit" => Ok(val),
+        // 2026-09-11 (Phase A4): the Bit cast target is retired; casting to
+        // Bits yields the bytes unchanged (the backend's ptrtoint content-view
+        // cast is the address of those same bytes).
+        Type::Bits(_) => Ok(val),
         Type::Custom(name) if name == "Char" => {
             let code = val.as_i64().unwrap_or(0) as u32;
             let ch = char::from_u32(code).unwrap_or('\0');

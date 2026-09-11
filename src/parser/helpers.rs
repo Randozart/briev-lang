@@ -42,7 +42,7 @@ impl<'a> Parser<'a> {
     }
 
     /// 2026-08-04 (Phase 1): collect type names from the token stream for the
-    /// C-style cast disambiguation. Primitives + hashwords (`#Int`, `#String`)
+    /// C-style cast disambiguation. Primitives + hashwords (`Int`, `String`)
     /// are always types; `type`/`struct`/`obj`/`enum`/`meld` declaration names
     /// are collected from their declaration sites. Cheap, single pass.
     fn prescan_known_types(&mut self) {
@@ -63,7 +63,7 @@ impl<'a> Parser<'a> {
                 i += 2;
                 continue;
             }
-            // Hashword categories are types: `#Int`, `#String`, `#String<UTF8>`.
+            // Hashword categories are types: `Int`, `String`, `String<UTF8>`.
             if let Token::Identifier(name) = &toks[i].0 {
                 if name.starts_with('#') {
                     self.known_types.insert(name.clone());

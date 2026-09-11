@@ -536,7 +536,7 @@ impl TypeConverter {
         ty: &BrievType,
         universe: Option<&TypeUniverse>,
     ) -> String {
-        // 2026-08-01: resolve the #String/#Blob protocol membership from the
+        // 2026-08-01: resolve the String/Blob protocol membership from the
         // universe (Cast. properties — never type names) and box a pointer
         // value via ptrtoint. Falls back to the constructor-based fallback
         // only when no universe is available (builder tests).
@@ -555,7 +555,7 @@ impl TypeConverter {
     }
 
     /// Fallback boxing when universe is not available (builder tests only).
-    /// The real path is `box_to_i64` (above), which resolves #String/#Blob by
+    /// The real path is `box_to_i64` (above), which resolves String/Blob by
     /// their Cast. universe properties. 2026-06-29: Will be removed once all
     /// tests go through the full pipeline. 2026-07-31: Phase 3 (§8.4-D2) —
     /// arms matched against the canonical bootstrap Type constructors

@@ -51,7 +51,7 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bit
 
     // 2026-07-29: Validate that no TypeDef overrides non-overridable ops.
     // Bitwise operations (BitAnd, BitOr, BitXor, BitNot, Shl, Shr) are axioms
-    // of the #Bit protocol — they must never be semantically overloaded.
+    // of the Bit protocol — they must never be semantically overloaded.
     // Parsing/lexing operations (Parse, Lex) are compile-time structural phases —
     // types inherit their parent protocol's parsing rules.
     let mut forbidden_names: HashSet<&str> = [
@@ -62,7 +62,7 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bit
             for op in &td.body.op_bindings {
                 if forbidden_names.contains(op.name.as_str()) {
                     return Err(format!(
-                        "{} '{}' cannot be overridden — it is an axiom of the #Bit protocol",
+                        "{} '{}' cannot be overridden — it is an axiom of the Bit protocol",
                         op.name, td.name,
                     ));
                 }

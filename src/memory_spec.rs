@@ -173,7 +173,6 @@ fn format_type(ty: &Type) -> String {
         Type::Custom(__t) if __t == "Blob" => "Blob".to_string(),
         Type::Custom(__t) if __t == "Char" => "Char".to_string(),
         Type::Custom(name) => name.clone(),
-        Type::HashWord(name) | Type::HashWordVariant(name, _) => name.clone(),
         Type::Union(types) => {
             let inner: Vec<_> = types.iter().map(format_type).collect();
             inner.join(" | ")
@@ -241,7 +240,6 @@ fn estimate_type_size(ty: &Type) -> usize {
         Type::Custom(__t) if __t == "Blob" => 16,
         Type::Custom(__t) if __t == "Char" => 4,
         Type::Custom(_) => 8,
-        Type::HashWord(_) | Type::HashWordVariant(_, _) => 0, // compile-time directive, no runtime size
         Type::Union(types) => types.iter().map(estimate_type_size).max().unwrap_or(8),
         Type::Tuple(types) => types.iter().map(estimate_type_size).sum(),
         Type::TypeVar(_) => 8,

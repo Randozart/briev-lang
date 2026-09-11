@@ -761,7 +761,7 @@ mod tests {
         "node update [ready][!ready] {\n  ready = false;\n  term;\n};\n",
         "async node tick [pending][!pending] {\n  pending = false;\n  term;\n};\n",
         "struct Point {\n  x: Float;\n  y: Float;\n};\n",
-        "type Meters: #Int {\n  value: Int;\n};\n",
+        "type Meters: Int {\n  value: Int;\n};\n",
         "trg input_ready @ device;\n",
         "$const Limit = 32;\n",
         "$let current = 0;\n",
@@ -774,9 +774,9 @@ mod tests {
         "!> accel: force;\n!> target: spirv;\n",
         "!> flags: [fast, contract];\n",
         // 2026-08-13 (layout-keywords plan): physical-layout metadata round-trips.
-        "type W8: #Int {\n  spec Bits: 8;\n};\n",
+        "type W8: Int {\n  spec Bits: 8;\n};\n",
         "struct Flags {\n  spec Bytes: 1;\n  spec Alignment: 1;\n  a: Bool;\n};\n",
-        "type Frame: #Bit {\n  spec Alignment: 2;\n  spec Bits: 12;\n  spec MaxBits: 16;\n  spec Bytes: 4;\n  spec Endian: Big;\n};\n",
+        "type Frame: Bit {\n  spec Alignment: 2;\n  spec Bits: 12;\n  spec MaxBits: 16;\n  spec Bytes: 4;\n  spec Endian: Big;\n};\n",
         // 2026-08-13 (layout-keywords plan): `pack struct` round-trips with the
         // prefix preserved, alongside its spec metadata.
         "pack struct Eth {\n  spec Endian: Big;\n  dst: Bit<48>;\n  src: Bit<48>;\n  etype: Bit<16>;\n};\n",
@@ -811,7 +811,7 @@ mod tests {
     /// and `!>` metadata prints both forms and round-trips.
     #[test]
     fn formatter_preserves_spec_and_exclaim_metadata() {
-        let src = "type W: #Int {\n  !> ctd: Add;\n  spec Bits: 8;\n  spec Endian: Little;\n};\n";
+        let src = "type W: Int {\n  !> ctd: Add;\n  spec Bits: 8;\n  spec Endian: Little;\n};\n";
         let items = parse(src).expect("parse");
         let out = format_program(&items);
         assert!(out.contains("spec Bits: 8;"), "output: {out}");

@@ -253,8 +253,6 @@ impl fmt::Display for Type {
             Type::Void => write!(f, "void"),
             Type::Number(n) => write!(f, "{}", n),
             Type::Custom(name) => write!(f, "{}", name),
-            Type::HashWord(name) => write!(f, "{}", name),
-            Type::HashWordVariant(name, var) => write!(f, "{}<{}>", name, var),
             Type::Generic(name, args) => {
                 write!(f, "{}<", name)?;
                 for (i, arg) in args.iter().enumerate() {
@@ -691,8 +689,6 @@ mod tests {
         assert_eq!(format!("{}", Type::Bits(8)), "Bit<8>");
         assert_eq!(format!("{}", Type::Void), "void");
         assert_eq!(format!("{}", Type::Custom("Int".into())), "Int");
-        assert_eq!(format!("{}", Type::HashWord("L".into())), "L");
-        assert_eq!(format!("{}", Type::HashWordVariant("String".into(), "UTF8".into())), "String<UTF8>");
         assert_eq!(
             format!("{}", Type::Generic("List".into(), vec![Type::Custom("Int".into())])),
             "List<Int>"

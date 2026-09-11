@@ -87,7 +87,7 @@ pub struct TypecheckContext<'a> {
     /// only for these — non-optional frgns are always available.
     optional_frgns: std::collections::HashSet<String>,
     /// 2026-07-31: Regular operator declarations from TypeDef bodies
-    /// (`op Add(#Float): func(#Lh,#Rh);` / `op Add(Float): ...;`), keyed by type
+    /// (`op Add(Float): func(#Lh,#Rh);` / `op Add(Float): ...;`), keyed by type
     /// name. Used to ALLOW mixed-type arithmetic ONLY when a cross-type /
     /// cross-protocol overload is explicitly declared — otherwise
     /// `Int * Float` is a type error (no implicit numeric coercion).
@@ -120,7 +120,7 @@ pub struct TypecheckContext<'a> {
     /// checked. Used to validate `term`/`term!` values.
     current_output_type: Option<Type>,
     /// 2026-07-31: Declared protocol hashwords, keyed by type name
-    /// (`type MyNum : #Int` → "MyNum" → "#Int"). Used to grant numeric-protocol
+    /// (`type MyNum : Int` → "MyNum" → "Int"). Used to grant numeric-protocol
     /// members literal construction.
     type_protocols: HashMap<String, String>,
     /// 2026-09-02 (plan fundamental-parent-membership): width metadata
@@ -132,7 +132,7 @@ pub struct TypecheckContext<'a> {
     type_max_bits: HashMap<String, u64>,
     regular_bindings: HashMap<String, Vec<crate::ast::top::OperatorBinding>>,
     /// 2026-08-03 (P1.4): cross-variant op overrides from `proto` declarations
-    /// (`proto C_String: #String { op Concat(#String) = cstring_concat(#Lh,#Rh) }`).
+    /// (`proto C_String: String { op Concat(String) = cstring_concat(#Lh,#Rh) }`).
     /// Variant name → op name (e.g. "Add"/"Concat") → binding fn name. An op on
     /// a sub-protocol value prefers its variant's own op (zero cast) — "adopt
     /// whatever operations are most convenient."
@@ -202,7 +202,7 @@ impl<'a> TypecheckContext<'a> {
     }
 
     /// 2026-07-31: Does a cross-type / cross-protocol operator overload exist
-    /// for `rune` between `lhs` and `rhs`? A type declaring `op Add(#Float)` or
+    /// for `rune` between `lhs` and `rhs`? A type declaring `op Add(Float)` or
     /// `op Add(Float)` on its body authorizes `T + Float` without an explicit
     /// cast. The builtin primordials (Int, Float, …) declare NO cross-type ops,
     /// so `Int * Float` stays a type error (the type-safety guarantee).
@@ -261,8 +261,8 @@ impl<'a> TypecheckContext<'a> {
     /// the bare name ("Float", "Int", …), never the hashword spelling.
     /// 2026-09-02 (plan fundamental-parent-membership): the walk consults
     /// the universe at EVERY hop, so a parent chain reaching a fundamental
-    /// derives its category — `type Float16 : Float` is a #Float member
-    /// with no `#Float` restatement (fundamentals are seeded in the fresh
+    /// derives its category — `type Float16 : Float` is a Float member
+    /// with no `Float` restatement (fundamentals are seeded in the fresh
     /// typecheck universe; user typedefs continue the walk via
     /// `type_parents`). Explicit `type_protocols` declarations keep
     /// precedence, and a declared `<Variant>` is stripped here — callers
@@ -298,7 +298,7 @@ impl<'a> TypecheckContext<'a> {
     }
 
     /// The RAW protocol string a type (or a parent) declares —
-    /// `#String<C_String>` stays spelled out. 2026-09-02: exists ONLY for
+    /// `String<C_String>` stays spelled out. 2026-09-02: exists ONLY for
     /// the variant cross-op lookup in `protocol_binding_for`; category
     /// resolution goes through `declared_category_of` (which derives from
     /// fundamental ancestors too). Undo: inline back into its sole caller.
@@ -417,7 +417,7 @@ impl<'a> TypecheckContext<'a> {
     }
 
     /// 2026-08-03 (P1.4): the variant of a declared protocol string —
-    /// `#String<C_String>` → `Some("C_String")`, `#String` → `None`.
+    /// `String<C_String>` → `Some("C_String")`, `String` → `None`.
     fn protocol_variant_of(proto: &str) -> Option<&str> {
         let b = proto.trim_start_matches('#');
         let lt = b.find('<')?;
@@ -426,7 +426,7 @@ impl<'a> TypecheckContext<'a> {
     }
 
     /// The bare category of a declared protocol string —
-    /// `#String<C_String>` → `"String"`, `#String` → `"String"`.
+    /// `String<C_String>` → `"String"`, `String` → `"String"`.
     fn protocol_category_of(proto: &str) -> &str {
         let b = proto.trim_start_matches('#');
         match b.find('<') {
@@ -436,7 +436,7 @@ impl<'a> TypecheckContext<'a> {
     }
 
     /// Protocol binding for a custom type via its declared protocol (own +
-    /// parents). `MyNum : #Int` inherits `#Int`'s Add → `AddI64#`. Returns
+    /// parents). `MyNum : Int` inherits `Int`'s Add → `AddI64#`. Returns
     /// None for primordials (handled by `get_operator_intrinsic`) and
     /// protocol-less types. 2026-08-03: keyed by the bare protocol CATEGORY —
     /// never by type name.
@@ -450,19 +450,19 @@ impl<'a> TypecheckContext<'a> {
         // 2026-09-02 (plan fundamental-parent-membership): the category
         // derives from the declaration OR the parent chain reaching a
         // fundamental — `type Float16 : Float` binds the Float category's
-        // ops with no `#Float` restatement. The raw declaration is still
+        // ops with no `Float` restatement. The raw declaration is still
         // consulted for the VARIANT cross-op path (`CStr :
-        // #String<C_String>` prefers its variant's own Concat).
+        // String<C_String>` prefers its variant's own Concat).
         let category = self.declared_category_of(name)?;
         let raw_proto = self.declared_protocol_raw(name);
-        // 2026-08-03: `+` is string concat for #String/#Blob operands — resolve
+        // 2026-08-03: `+` is string concat for String/Blob operands — resolve
         // the Concat binding (and the variant's Concat cross-op) for "+".
         let effective_op = if op_name == "Add" && (category == "String" || category == "Blob") {
             "Concat"
         } else {
             op_name
         };
-        // 2026-08-03 (P1.4): a sub-protocol value (e.g. CStr: #String<C_String>)
+        // 2026-08-03 (P1.4): a sub-protocol value (e.g. CStr: String<C_String>)
         // prefers its VARIANT's own cross-op override (zero cast) over the base
         // binding. This is "adopt whatever operations are most convenient."
         if let Some(variant) = raw_proto.and_then(Self::protocol_variant_of) {
@@ -472,24 +472,23 @@ impl<'a> TypecheckContext<'a> {
                 return Some(OpBinding::Function(fn_name.clone()));
             }
         }
-        // 2026-08-03: strip a `<variant>` suffix so a #String<C_String> type
-        // resolves the base #String protocol binding (Concat, Extract, ...).
+        // 2026-08-03: strip a `<variant>` suffix so a String<C_String> type
+        // resolves the base String protocol binding (Concat, Extract, ...).
         protocol_binding(&category, effective_op)
     }
 
     /// Does a declared operator parameter cover the operand type?
     /// 2026-09-11 (fundamentals doctrine, Phase A3): the fundamental name is
     /// BOTH the base type and the protocol — a bare `Float` param covers any
-    /// #Float-protocol member (exact `Float` still matches by the equality
+    /// Float-protocol member (exact `Float` still matches by the equality
     /// arm above; a concrete-only op declares the concrete name, e.g.
-    /// `Float32`). A `#Float` hashword param is the legacy spelling of the
+    /// `Float32`). A `Float` hashword param is the legacy spelling of the
     /// same coverage.
     fn param_covers(&self, param: &Type, operand: &Type) -> bool {
         if param == operand {
             return true;
         }
         let category = match param {
-            Type::HashWord(hw) => hw.strip_prefix('#').unwrap_or(hw),
             Type::Custom(name)
                 if crate::type_universe::FUNDAMENTAL_TYPES.contains(&name.as_str()) =>
             {
@@ -498,13 +497,13 @@ impl<'a> TypecheckContext<'a> {
             _ => return false,
         };
         if category == "Bit" {
-            // Universal — every type is a member of #Bit via Cast.Bit.
+            // Universal — every type is a member of Bit via Cast.Bit.
             return operand.universe_key().is_some();
         }
         self.operand_implements_protocol(operand, category)
     }
 
-    /// Does a type-body op's declared variant (`#Float` or `Float`) cover the
+    /// Does a type-body op's declared variant (`Float` or `Float`) cover the
     /// operand type?
     fn variant_covers(&self, variant: &str, operand: &Type) -> bool {
         if variant.starts_with('#') {
@@ -519,15 +518,15 @@ impl<'a> TypecheckContext<'a> {
         }
     }
 
-    /// Does `operand` implement protocol `hw` (e.g. `#Int`)? Checks the
+    /// Does `operand` implement protocol `hw` (e.g. `Int`)? Checks the
     /// universe's `Cast.` properties (primordials) AND the typechecker's own
-    /// `type_protocols`/`type_parents` records (custom types — `MyNum : #Int`
+    /// `type_protocols`/`type_parents` records (custom types — `MyNum : Int`
     /// is not in the typechecker's fresh universe). 2026-08-03: protocol
     /// membership, never type-name matching.
     fn operand_implements_protocol(&self, operand: &Type, hw: &str) -> bool {
         // Universe membership (registered primordials + registered types).
         // 2026-08-15 (fundamentals): property keys are `Cast.<Cat>` — strip a
-        // `#` from the hashword so `#Int` matches `Cast.Int`.
+        // `#` from the hashword so `Int` matches `Cast.Int`.
         let prop = format!("Cast.{}", hw.trim_start_matches('#'));
         if operand
             .universe_key()
@@ -539,8 +538,8 @@ impl<'a> TypecheckContext<'a> {
         // Typechecker record: the type (or a parent) declares the protocol,
         // or derives it from a fundamental ancestor. 2026-09-02 (plan
         // fundamental-parent-membership): `declared_category_of` consults
-        // the universe at every hop, so `Float16 : Float` implements #Float
-        // with no `#Float` restatement.
+        // the universe at every hop, so `Float16 : Float` implements Float
+        // with no `Float` restatement.
         let name = match operand {
             Type::Custom(n) => n.as_str(),
             Type::Applied(n, _) => n.as_str(),
@@ -691,7 +690,7 @@ impl<'a> TypecheckContext<'a> {
 }
 
 /// 2026-07-20: Find a Parse op on a type that could accept a literal form.
-    /// form: "Decimal", "Quoted", "Bare", or a hashword category like "#Int".
+    /// form: "Decimal", "Quoted", "Bare", or a hashword category like "Int".
     /// discriminator: optional prefix/suffix hint ("0x", "h", "bf", etc.)
     /// Returns the OperatorDef if a matching Parse op exists.
     /// Qualified ops (with pre:/suf:) win over unqualified ops.
@@ -730,7 +729,7 @@ impl<'a> TypecheckContext<'a> {
                 {
                     return Some(def);
                 }
-                // 4. Hashword identity (e.g., Parse(#Int) for Decimal)
+                // 4. Hashword identity (e.g., Parse(Int) for Decimal)
                 if let Some(def) = defs.iter().find(|d| matches_parse_identity(&d.params, form)) {
                     return Some(def);
                 }
@@ -799,7 +798,7 @@ impl<'a> TypecheckContext<'a> {
     }
 }
 
-/// Check if an op's params match a literal form (Decimal, Quoted, Bare, #Int, etc.)
+/// Check if an op's params match a literal form (Decimal, Quoted, Bare, Int, etc.)
 /// Empty params = wildcard (matches all forms). Single param = exact match.
 fn matches_form(params: &[Type], form: &str) -> bool {
     // 2026-07-27: Empty params means wildcard (matches any form).
@@ -812,15 +811,13 @@ fn matches_form(params: &[Type], form: &str) -> bool {
     }
     match &params[0] {
         Type::Custom(n) => n == form,
-        Type::HashWord(s) => s.strip_prefix('#') == Some(form) || s.as_str() == form,
-        Type::HashWordVariant(s, _) => s.strip_prefix('#') == Some(form) || s.as_str() == form,
         _ => false,
     }
 }
 
 /// Check if a hashword identity op matches a literal form.
-/// op Parse(#Int) matches Decimal literal (Int is the protocol for numbers).
-/// op Parse(#String) matches Quoted literal (String is the protocol for text).
+/// op Parse(Int) matches Decimal literal (Int is the protocol for numbers).
+/// op Parse(String) matches Quoted literal (String is the protocol for text).
 fn matches_parse_identity(params: &[Type], form: &str) -> bool {
     if params.len() != 1 {
         return false;
@@ -829,8 +826,6 @@ fn matches_parse_identity(params: &[Type], form: &str) -> bool {
     // name the category.
     let hashword_category = match &params[0] {
         Type::Custom(n) if crate::type_universe::FUNDAMENTAL_TYPES.contains(&n.as_str()) => n.as_str(),
-        Type::HashWord(s) => s.strip_prefix('#').unwrap_or(s),
-        Type::HashWordVariant(s, _) => s.strip_prefix('#').unwrap_or(s),
         _ => return false,
     };
     match (hashword_category, form) {
@@ -1369,7 +1364,7 @@ pub fn infer_expression(
             // of an iterable receiver as a frozen descriptor (SPEC §17.2:1430-1433).
             // Compile-time only, single-source proof form: the element type IS
             // the read op's return (`op At` Tier 2 / `op Current` Tier 1) or the
-            // frozen `#String` → `Char` protocol fact — never a second derivation
+            // frozen `String` → `Char` protocol fact — never a second derivation
             // that could drift. The expression type is Int (the folded category
             // code, exactly like `.^^Type`); the VALUE is folded at codegen.
             if target == "Element" && matches!(kind, ReflectKind::CompileTime) {
@@ -1379,7 +1374,7 @@ pub fn infer_expression(
                         operation: "reflection target 'Element'".into(),
                         type_name: format!(
                             "`^^Element` is valid only on an iterable receiver (a Tier-2/1 \
-                             collection or a #String operand); `{recv_ty}` has no element type"
+                             collection or a String operand); `{recv_ty}` has no element type"
                         ),
                     });
                 }
@@ -1657,7 +1652,7 @@ fn try_coerce_via_parse(
     }
     // 2026-07-31 (Phase 2): Numeric-protocol members construct from numeric
     // literals even without an explicit Parse op (`let v: MyNum = 0` where
-    // `type MyNum : #Int`). A type is numeric if it carries Cast.Int,
+    // `type MyNum : Int`). A type is numeric if it carries Cast.Int,
     // Cast.UInt, or Cast.Float.
     if matches!(form, "Decimal") {
         // 2026-09-02 (plan fundamental-parent-membership): a FLOAT literal
@@ -1729,8 +1724,8 @@ fn construction_accepts_numeric(
     }
     // 2026-08-17: numeric-ness via the canonical canonical protocol-membership
     // helper (`operand_implements_protocol`) — FUNDAMENTALS first (the `Cast.*`
-    // universe property, e.g. `#Int` → `Cast.Int`), then the `declared_protocol_of`
-    // fallback for a custom `type MyNum : #Int`. Never hand-match the hashword
+    // universe property, e.g. `Int` → `Cast.Int`), then the `declared_protocol_of`
+    // fallback for a custom `type MyNum : Int`. Never hand-match the hashword
     // string directly (hashwords were replaced by the casting graph / fundamentals).
     if ctx.operand_implements_protocol(target_ty, "Int")
         || ctx.operand_implements_protocol(target_ty, "UInt")
@@ -1816,7 +1811,7 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
         // receivers are scalars with no op members, and the generative path
         // would wrongly error. `Count#`/`InsertAt#` ride the signature path
         // (Native Int / Exact Void are already correct); `Count#` on a
-        // `#String` is handled inside infer_generative_op_call via the
+        // `String` is handled inside infer_generative_op_call via the
         // signature-free fallthrough below.
         let op_inferred = matches!(op_name,
             "At" | "Slice" | "ExtractFrom" | "CopyFrom"
@@ -2634,9 +2629,9 @@ fn infer_binary_op(
             // Check via operator resolution
             // 2026-08-03 (operator-resolution fix): resolution order is
             //   declared (own + parents) → protocol bindings.
-            // A type declaring `op Add(#Float)`/`op Add(Float)` authorizes
-            // mixed arithmetic; a custom `MyNum : #Int` with no declared op
-            // inherits #Int's protocol binding (Add → AddI64#). Only the
+            // A type declaring `op Add(Float)`/`op Add(Float)` authorizes
+            // mixed arithmetic; a custom `MyNum : Int` with no declared op
+            // inherits Int's protocol binding (Add → AddI64#). Only the
             // protocol bindings are hardcoded — keyed by category, never by
             // type name. Same-type custom ops now resolve here too.
             arithmetic_result_ty(ctx, kind, &lhs_ty, &rhs_ty, &lhs_str)?
@@ -2659,7 +2654,7 @@ fn infer_binary_op(
     } else if lhs_str != rhs_str && !literal_admitted {
         // 2026-07-31: No implicit numeric coercion — `Int * Float` is a TYPE
         // ERROR unless the LHS (or RHS) type declares a cross-type / cross-
-        // protocol operator overload (`op Mul(#Float)` / `op Mul(Float)`). The
+        // protocol operator overload (`op Mul(Float)` / `op Mul(Float)`). The
         // old behavior silently bitcast the Int to Float, producing garbage
         // (accumulator_flush `(count % 101) * 0.5` summed ~0). Add an explicit
         // `as Float` / `as Int` cast, or declare the overload. AGENTS.md:
@@ -4267,7 +4262,7 @@ pub fn check_program_with_target(
     // 2026-09-11 (Part C): first-class component pins by type name.
     let mut all_type_pins: HashMap<String, Vec<crate::ast::top::PinDecl>> = HashMap::new();
     // 2026-08-22 (Phase 5): explicit trait assertions per concrete type
-    // (`type Meter: #Int, Comparable<Meter>, Printable { … }` → traits list).
+    // (`type Meter: Int, Comparable<Meter>, Printable { … }` → traits list).
     let mut all_trait_assertions: HashMap<String, Vec<String>> = HashMap::new();
     let mut all_trait_defs: HashMap<String, crate::ast::top::TraitDef> = HashMap::new();
     // 2026-08-22 (Phase 7a): cells register their PORT surface only — the
@@ -5967,7 +5962,7 @@ fn is_operation_identity(name: &str) -> bool {
 /// receiver type must declare the op member (`op At`, `op Count`, …); the
 /// return type is the op member's output substituted with the concrete
 /// generic args. `Some(ty)` when the op is declared; `Ok(None)` when the
-/// receiver is a `#String` and the op is `Count` (its element count is the
+/// receiver is a `String` and the op is `Count` (its element count is the
 /// `CharCount#` scan, `Native("Int")`); `Err` when the op is undeclared.
 fn infer_generative_op_call(
     op_name: &str,
@@ -5979,7 +5974,7 @@ fn infer_generative_op_call(
         return Ok(None);
     };
     let recv_ty = infer_type_only(recv, ctx)?;
-    // A `#String` operand has no `op Count` — its element count is the char
+    // A `String` operand has no `op Count` — its element count is the char
     // scan (CharCount#), so `Count#` on it is Int.
     if op_name == "Count" && ctx.operand_implements_protocol(&recv_ty, "String") {
         return Ok(Some(Type::int()));
@@ -6065,7 +6060,7 @@ fn extract_op_order(consume: bool) -> (&'static str, &'static str) {
 
 /// 2026-08-14 (boundary plan, SPEC §17.2): the ELEMENT type of an iterable
 /// receiver, single-source proof form. `Some(ty)` only for genuine iterables:
-/// a `#String` operand → `Char` (frozen protocol fact), a Tier-2/1 type → the
+/// a `String` operand → `Char` (frozen protocol fact), a Tier-2/1 type → the
 /// read op's return substituted with the concrete generic args, a vector → the
 /// inner type. `None` for everything else — a non-iterable `.^^Element` is a
 /// compile error, never a silent Int. This is the SAME evidence `foreach_item_type`
@@ -6093,7 +6088,7 @@ fn resolve_element_type(ctx: &TypecheckContext, ty: &Type) -> Option<Type> {
 /// iterable — the type's `op At` op-as-member return, substituted with the
 /// concrete generic args (`List<String>` At → `T` → `String`). Falls back to
 /// the inner type for vectors and Int for scalars/ranges — structural, never
-/// a collection name. 2026-08-14 (String unification): a `#String` protocol
+/// a collection name. 2026-08-14 (String unification): a `String` protocol
 /// operand is `Iterable<Char>` — Char is the observed element type (SPEC
 /// §17.2), a frozen protocol fact, never a name match.
 fn foreach_item_type(ctx: &TypecheckContext, list_ty: &Type) -> Type {
@@ -6791,7 +6786,7 @@ txn t [items.^Size > 0][items.^Size == 0] {
 
     #[test]
     fn mask_index_on_blob_types_to_blob() {
-        // 2026-08-07 (Phase 7): `data[mask]` on a #Blob buffer types to Data
+        // 2026-08-07 (Phase 7): `data[mask]` on a Blob buffer types to Data
         // (the byte-buffer container kind), not the scalar element type.
         let src = r#"
 let data: Blob = #b"\x01\x02\x03";
@@ -6969,13 +6964,13 @@ node two [beginprogram][a == 2] {
         );
     }
 
-    /// A custom type declaring `op Mul(#Int)` authorizes `Int * MyType`
+    /// A custom type declaring `op Mul(Int)` authorizes `Int * MyType`
     /// without a cast (a cross-protocol overload).
     #[test]
     fn cross_type_overload_allows_mixed_arithmetic() {
         let src = r#"
-type MyNum : #Int {
-    op Mul(#Int): func(#Lh, #Rh);
+type MyNum : Int {
+    op Mul(Int): func(#Lh, #Rh);
 };
 let count: Int = 0;
 let v: MyNum = 0;
@@ -6988,10 +6983,10 @@ node t [count < 5][count == 5] {
     }
 
     /// 2026-09-11 (fundamentals doctrine, Phase A3): the BARE fundamental in
-    /// an op param is the protocol — `op Mul(Int)` covers a #Int-member
+    /// an op param is the protocol — `op Mul(Int)` covers a Int-member
     /// operand that is NOT literally `Int` (here: MyNum itself), which the
     /// old HashWord-only shape-match rejected. This is the exact coverage
-    /// `op Mul(#Int)` always had.
+    /// `op Mul(Int)` always had.
     #[test]
     fn bare_fundamental_op_param_covers_protocol_members() {
         let src = r#"
@@ -7019,7 +7014,7 @@ node t [a == b][a != b] {
     fn declared_variant_op_elaborates_to_call() {
         let src = r#"
 defn my_add(a: Int, b: Int) -> Int { term (a * 3) + b; };
-type MyNum : #Int {
+type MyNum : Int {
     op Add(Int): my_add(#Lh, #Rh);
 };
 node start [true][false] {
@@ -7064,7 +7059,7 @@ node start [true][false] {
     #[test]
     fn colon_form_doc_binding_is_not_elaborated() {
         let src = r#"
-type IntDoc : #Int {
+type IntDoc : Int {
     op Add: add(#Lh, #Rh);
 };
 node start [true][false] {
@@ -7107,7 +7102,7 @@ node start [true][false] {
     #[test]
     fn undefined_op_target_is_an_error() {
         let src = r#"
-type MyNum : #Int {
+type MyNum : Int {
     op Add(Int): nonexistent(#Lh, #Rh);
 };
 node start [true][false] {
@@ -7164,8 +7159,8 @@ node start [true][false] {
     /// Without the cross-type overload, `Int * MyNum` errors.
     #[test]
     fn missing_cross_type_overload_errors() {        let src = r#"
-type MyNum : #Int {
-    op Sub(#Int): func(#Lh, #Rh);
+type MyNum : Int {
+    op Sub(Int): func(#Lh, #Rh);
 };
 let count: Int = 0;
 let v: MyNum = 0;
@@ -7182,15 +7177,15 @@ node t [count < 5][count == 5] {
         );
     }
 
-    /// A custom `MyNum : #Int` with NO declared op still supports SAME-TYPE
-    /// arithmetic — it inherits #Int's protocol binding (Add → AddI64#).
+    /// A custom `MyNum : Int` with NO declared op still supports SAME-TYPE
+    /// arithmetic — it inherits Int's protocol binding (Add → AddI64#).
     /// 2026-08-03 (operator-resolution fix): the old name-keyed table only
     /// knew "Int", so `MyNum + MyNum` errored. Resolution is by protocol
     /// category now.
     #[test]
     fn same_type_custom_op_inherits_protocol_binding() {
         let src = r#"
-type MyNum : #Int { };
+type MyNum : Int { };
 let a: MyNum = 0;
 let b: MyNum = 0;
 node t [a < 5][a == 5] {
@@ -7198,15 +7193,15 @@ node t [a < 5][a == 5] {
     term;
 };
 "#;
-        assert!(check(src).is_ok(), "MyNum + MyNum must inherit #Int's Add binding");
+        assert!(check(src).is_ok(), "MyNum + MyNum must inherit Int's Add binding");
     }
 
-    /// A custom type with a declared `op Add(#Int)` wins for same-type use.
+    /// A custom type with a declared `op Add(Int)` wins for same-type use.
     #[test]
     fn same_type_custom_op_declared_binding_wins() {
         let src = r#"
-type MyNum : #Int {
-    op Add(#Int): func(#Lh, #Rh);
+type MyNum : Int {
+    op Add(Int): func(#Lh, #Rh);
 };
 let a: MyNum = 0;
 let b: MyNum = 0;
@@ -7215,7 +7210,7 @@ node t [a < 5][a == 5] {
     term;
 };
 "#;
-        assert!(check(src).is_ok(), "declared op Add(#Int) must authorize MyNum + MyNum");
+        assert!(check(src).is_ok(), "declared op Add(Int) must authorize MyNum + MyNum");
     }
 
     /// A custom type with NO protocol and NO declared op still errors on
@@ -7243,10 +7238,10 @@ node t [a < 5][a == 5] {
     #[test]
     fn subtype_inherits_parent_declared_op() {
         let src = r#"
-type Base : #Int {
-    op Add(#Int): func(#Lh, #Rh);
+type Base : Int {
+    op Add(Int): func(#Lh, #Rh);
 };
-type MyNum : Base, #Int { };
+type MyNum : Base, Int { };
 let a: MyNum = 0;
 let b: MyNum = 0;
 node t [a < 5][a == 5] {
@@ -7254,7 +7249,8 @@ node t [a < 5][a == 5] {
     term;
 };
 "#;
-        assert!(check(src).is_ok(), "subtype must inherit the parent's declared op");
+        let err = check(src);
+        assert!(err.is_ok(), "subtype must inherit the parent's declared op: {:?}", err);
     }
 
     #[test]
@@ -9016,7 +9012,7 @@ mod fundamental_parent_membership_tests {
 
     /// 2026-09-02 (plan fundamental-parent-membership): a bare fundamental
     /// parent confers its category — `MyInt : Int` binds the Int category's
-    /// protocol ops (`+` → AddI64#) with no `#Int` restatement. The
+    /// protocol ops (`+` → AddI64#) with no `Int` restatement. The
     /// typechecker derives the category by walking `type_parents` into the
     /// fresh universe's seeded primordials. Undo: revert
     /// `declared_category_of` to the protocols-only walk.
@@ -9026,7 +9022,7 @@ mod fundamental_parent_membership_tests {
 type MyInt : Int { };
 defn f(a: MyInt, b: MyInt) -> MyInt { term a + b; };
 "#)
-        .expect("derived #Int membership must authorize +");
+        .expect("derived Int membership must authorize +");
     }
 
     /// The walk continues through user typedefs until it reaches the
@@ -9038,7 +9034,7 @@ type MyInt : Int { };
 type MyDerived : MyInt { };
 defn f(a: MyDerived, b: MyDerived) -> MyDerived { term a + b; };
 "#)
-        .expect("chain MyDerived:MyInt:Int must derive #Int");
+        .expect("chain MyDerived:MyInt:Int must derive Int");
     }
 
     /// Explicit declarations keep precedence and still work — no regression
@@ -9046,10 +9042,10 @@ defn f(a: MyDerived, b: MyDerived) -> MyDerived { term a + b; };
     #[test]
     fn explicit_hashword_declaration_still_binds() {
         check(r#"
-type MyNum : #Int { };
+type MyNum : Int { };
 defn f(a: MyNum, b: MyNum) -> MyNum { term a + b; };
 "#)
-        .expect("explicit #Int declaration must keep binding");
+        .expect("explicit Int declaration must keep binding");
     }
 
     /// No membership creep: a Bits-parented type derives no numeric

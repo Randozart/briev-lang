@@ -9,8 +9,8 @@
 // and ONLY the protocol bindings are hardcoded — keyed by the bare protocol
 // category ("Int", "Float", "String", "Bool", "Char"), which is what the
 // table keys always were. Matching a custom type's NAME against those keys
-// (the old `type_name_str` lookup) made `MyNum : #Int` + `MyNum` fail even
-// though MyNum is a #Int member and should inherit #Int's Add → AddI64#.
+// (the old `type_name_str` lookup) made `MyNum : Int` + `MyNum` fail even
+// though MyNum is a Int member and should inherit Int's Add → AddI64#.
 // The protocol category is derived from the universe (Cast. properties /
 // base chain), mirroring casting::graph::type_to_protocol — no name matching
 // (rules 14/18). Custom types not registered in a given universe resolve
@@ -94,17 +94,17 @@ pub fn protocol_binding(category: &str, op_name: &str) -> Option<OpBinding> {
         ("Bool", "Or") => Some(OpBinding::Intrinsic("OrI1#".into())),
         ("Char", "Eq") => Some(OpBinding::Intrinsic("EqI32#".into())),
         ("String", "Concat") => Some(OpBinding::Intrinsic("StringConcat#".into())),
-        // 2026-08-03: `+` is string concat for #String operands — the `++`/
+        // 2026-08-03: `+` is string concat for String operands — the `++`/
         // Concat operation, resolved at the binding table so BOTH the builtin
         // String path (get_operator_intrinsic) and the typechecker's
         // variant-aware path get it from one source.
         ("String", "Add") => Some(OpBinding::Intrinsic("StringConcat#".into())),
         ("String", "Eq") => Some(OpBinding::Intrinsic("StringEq#".into())),
-        // 2026-08-01 (B1): #String bitwise defaults — & | ^ ~ operate on the
+        // 2026-08-01 (B1): String bitwise defaults — & | ^ ~ operate on the
         // content bytes and return a new String of the same length (see
         // briev_str_band/bor/bxor/bnot). Binding here lets the typechecker
         // accept `a & b` on Strings; the backend/interpreter dispatch to the
-        // content ops via #String protocol membership.
+        // content ops via String protocol membership.
         ("String", "BitAnd") => Some(OpBinding::Intrinsic("StringBitAnd#".into())),
         ("String", "BitOr") => Some(OpBinding::Intrinsic("StringBitOr#".into())),
         ("String", "BitXor") => Some(OpBinding::Intrinsic("StringBitXor#".into())),
@@ -122,9 +122,6 @@ pub fn protocol_binding(category: &str, op_name: &str) -> Option<OpBinding> {
 /// b-bind marshalling categories from it.
 pub fn protocol_category(universe: &TypeUniverse, ty: &Type) -> Option<String> {
     match ty {
-        // A hashword IS a protocol category reference — strip the `#`.
-        Type::HashWord(name) => return name.strip_prefix('#').map(str::to_string),
-        Type::HashWordVariant(name, _) => return name.strip_prefix('#').map(str::to_string),
         Type::Bits(_) | Type::Void => return Some("Bit".to_string()),
         _ => {}
     }
@@ -140,7 +137,7 @@ pub fn protocol_category(universe: &TypeUniverse, ty: &Type) -> Option<String> {
         }
     }
     // base-chain fallback (the normalizer no longer injects Cast. for
-    // subtypes) — `type Latin1String: #String` ⇒ base "String".
+    // subtypes) — `type Latin1String: String` ⇒ base "String".
     // 2026-08-15 (fundamentals): Data is the universal parent — a type whose
     // base is Data resolves to Data; Bit is the leaf bit type.
     let base = rt.base.trim_start_matches('#');
@@ -250,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_int8_resolves_via_protocol() {
-        // Int8 is a #Int protocol member — + must resolve through the
+        // Int8 is a Int protocol member — + must resolve through the
         // category, not the type name. 2026-08-03: the old name-keyed table
         // returned None here (the bug this fix removes).
         let binding = get_operator_intrinsic(&empty_universe(), "+", &Type::Custom("Int8".into()));
@@ -258,9 +255,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hashword_category_resolves() {
-        // A protocol hashword resolves directly to its category.
-        let binding = get_operator_intrinsic(&empty_universe(), "+", &Type::HashWord("#Int".into()));
+    fn test_fundamental_category_resolves() {
+        // 2026-09-11 (Phase A4): the bare fundamental IS the protocol —
+        // the + op on `Int` resolves through the universe category.
+        let binding = get_operator_intrinsic(&empty_universe(), "+", &Type::Custom("Int".into()));
         assert_eq!(binding, Some(OpBinding::Intrinsic("AddI64#".into())));
     }
 

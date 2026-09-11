@@ -289,9 +289,11 @@ fn lookup_foreign_type(
                 // Look for a CastTo property that points to a protocol category
                 for prop_key in rt.properties.keys() {
                     if let Some(cat) = prop_key.strip_prefix("Cast.") {
-                        let protocol_key = format!("#{}", cat);
-                        if protocols.contains_key(&protocol_key) {
-                            return crate::ast::Type::HashWord(cat.to_string());
+                        // 2026-09-11 (Phase A6/A4): protocol keys and the
+                        // returned category are BARE — the hashword spellings
+                        // are retired.
+                        if protocols.contains_key(cat) {
+                            return crate::ast::Type::Custom(cat.to_string());
                         }
                     }
                 }
@@ -301,9 +303,8 @@ fn lookup_foreign_type(
     // Fallback: derive from the type's name
     match briev_type {
         crate::ast::Type::Custom(name) => {
-            let protocol_key = format!("#{}", name);
-            if protocols.contains_key(&protocol_key) {
-                crate::ast::Type::HashWord(name.clone())
+            if protocols.contains_key(name) {
+                crate::ast::Type::Custom(name.clone())
             } else {
                 briev_type.clone()
             }
@@ -320,8 +321,6 @@ fn type_to_key(ty: &crate::ast::Type) -> String {
         crate::ast::Type::Void => "Void".to_string(),
         crate::ast::Type::Ptr(_) => "Ptr".to_string(),
         crate::ast::Type::Bits(w) => format!("Bits({})", w),
-        crate::ast::Type::HashWord(name) => format!("#{}", name),
-        crate::ast::Type::HashWordVariant(name, var) => format!("#{}<{}>", name, var),
         crate::ast::Type::Tuple(_) => "Tuple".to_string(),
         crate::ast::Type::TypeVar(name) => name.clone(),
         _ => format!("{:?}", ty),
@@ -337,7 +336,7 @@ fn path_to_protocol_steps(path: &[String]) -> Vec<ProtocolStep> {
     for pair in path.windows(2) {
         let kind = if pair[0] == pair[1] {
             TransformKind::Identity
-        } else if pair[0] == "#Bits" || pair[1] == "#Bits" {
+        } else if pair[0] == "Bits" || pair[1] == "Bits" {
             TransformKind::Bitcast
         } else {
             TransformKind::ProtocolTransform(pair[1].clone())

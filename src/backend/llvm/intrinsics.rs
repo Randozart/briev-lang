@@ -300,13 +300,13 @@ pub fn emit_intrinsic_call(
     // `OpName#` for ANY disclosed operation identity → dispatch to the op
     // member on arg[0]. This is how `At#(c, i)`, `Count#(c)`, `InsertAt#(c, x)`,
     // `Iter#(c)`, etc. work uniformly with the arithmetic `Op#` forms. The
-    // identity set mirrors `operation_identities` in src/vocab.rs; `#String`
+    // identity set mirrors `operation_identities` in src/vocab.rs; `String`
     // has no `op Count`, so `Count#` on it routes to the char scan
     // (`CharCount#`). A name in the set but not declared on the receiver
     // reaches emit_method_call, which reports the missing member.
     if is_operation_identity(op_name) {
         if op_name == "Count" && backend.is_string_operand(&arg_regs[0].ty) {
-            // `Count#` on a #String operand = its CHAR count (the element
+            // `Count#` on a String operand = its CHAR count (the element
             // count of Iterable<Char>), not a declared `op Count`.
             let p = backend.string_ptr(out, indent, &arg_regs[0]);
             writeln!(out, "{}{} = call i64 @briev_char_len({}ptr {})", indent, v,
@@ -2165,14 +2165,14 @@ fn emit_external_call(
 /// 2026-08-01 (audit): the generic `Print#` convenience intrinsic — dispatch
 /// the emission by the argument's protocol category, resolved via the casting
 /// graph's type_to_protocol (Cast. universe properties, never type names).
-/// `#String` → `__print_str(ptr)`, `#Char` → `__print_char`, `#Bool` →
+/// `String` → `__print_str(ptr)`, `Char` → `__print_char`, `Bool` →
 /// `__print_bool` (true/false — an explicit cast to Int is what yields 1/0),
-/// `#Float` → `__print_float`/`__print_float64`, else `__print_int`.
+/// `Float` → `__print_float`/`__print_float64`, else `__print_int`.
 ///
 /// A boxed Bool/Char param is registered as `Type::int()` in SSA (its reg is
 /// the boxed i64), so the category must come from the DECLARED type
 /// (`let_original_types`) for identifier args — that is what carries the
-/// `#Bool`/`#Char` protocol. Boxed scalar regs are already i64 and are passed
+/// `Bool`/`Char` protocol. Boxed scalar regs are already i64 and are passed
 /// directly; native regs (i8 Bool, i32 Char) are widened to the i64 ABI.
 fn emit_intrinsic_print(
     backend: &mut LlvmBackend,

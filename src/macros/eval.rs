@@ -2153,7 +2153,7 @@ fn resolve_dollar_refs_in_type(ty: &mut Type, scope: &Scope) -> Result<(), Strin
             resolve_dollar_refs_in_type(inner, scope)
         }
         Type::Void | Type::Bits(_) | Type::Width(_)
-        | Type::TypeVar(_) | Type::HashWord(_) | Type::HashWordVariant(_, _)
+        | Type::TypeVar(_)
         | Type::LayoutPtr(_) | Type::Function(_, _) => Ok(()),
     }
 }

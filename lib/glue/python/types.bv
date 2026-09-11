@@ -5,8 +5,8 @@
 type PyBytes {
     spec MaxBits: 64;
     spec Alignment: 8;
-    op CastTo(#Bits) = identity(#Lh);
-    op CastFrom(#Bits) = identity(#Lh);
+    op CastTo(Bits) = identity(#Lh);
+    op CastFrom(Bits) = identity(#Lh);
 };
 
 type PyString: String {

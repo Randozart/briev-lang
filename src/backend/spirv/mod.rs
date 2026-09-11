@@ -835,7 +835,7 @@ mod tests {
     }
 
     /// §2.4: a user typedef registers through the SHARED registration
-    /// (register_types) and resolves from its #Float base + bits metadata —
+    /// (register_types) and resolves from its Float base + bits metadata —
     /// no name matching anywhere in the emitter.
     #[test]
     fn test_user_typedef_resolves_from_protocol_and_metadata() {
@@ -1015,7 +1015,7 @@ mod tests {
             .err()
             .expect("String state must be rejected");
         assert!(err.contains("String"), "{err}");
-        assert!(err.contains("#Int"), "{err}");
+        assert!(err.contains("Int"), "{err}");
     }
 
     /// §2.4 width honesty: an integer width outside Vulkan's compute set

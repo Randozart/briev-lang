@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn conforming_names_are_silent() {
-        let items = parse("defn good(n: Int) -> Int { term n; };\ntype Meter: #Int { v: Int; };");
+        let items = parse("defn good(n: Int) -> Int { term n; };\ntype Meter: Int { v: Int; };");
         assert!(analyze(&items).is_empty());
     }
 

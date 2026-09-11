@@ -353,7 +353,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             ));
         }
     }
-    // 2026-08-03: `+` is string concat for #String/#Blob operands — rewrite
+    // 2026-08-03: `+` is string concat for String/Blob operands — rewrite
     // BinaryOp(Add) → Concat on the typed AST so the backend dispatches the
     // concat emitter (String operands are boxed to i64 before the binary op).
     briev_compiler::analysis::string_concat::rewrite_plus_concat(&mut items, &universe);
@@ -1091,18 +1091,18 @@ fn codegen(
             }
             let bindings_iter = td.body.op_bindings.iter().chain(coll_bindings.iter());
             // 2026-07-30: Convert op_bindings (new-style) to OperatorDef format.
-            // CastFrom(#Bit) goes to the casting graph (sole user-extensible cast edge).
-            // CastTo(#Bit) is banned (hardcoded representation guarantee).
+            // CastFrom(Bit) goes to the casting graph (sole user-extensible cast edge).
+            // CastTo(Bit) is banned (hardcoded representation guarantee).
             // Other CastTo/CastFrom remain in operator_defs as type-level lane overrides.
             for b in bindings_iter {
                 let pv = b.protocol_variant.as_deref().unwrap_or("");
-                let is_bit_target = pv == "#Bit" || pv == "Bit";
+                let is_bit_target = pv == "Bit";
 
                 if b.name == "CastTo" && is_bit_target {
                     return Err(format!(
-                        "CastTo(#Bit) is hardcoded on type '{}' — \
+                        "CastTo(Bit) is hardcoded on type '{}' — \
                          use x as Bit or Cast#(x, target) for bitcasts. \
-                         CastTo(#Bit) is a compiler-guaranteed mechanical operation \
+                         CastTo(Bit) is a compiler-guaranteed mechanical operation \
                          (bitcast/extractvalue/ptrtoint) and cannot be overridden.",
                         td.name
                     ));
@@ -2006,7 +2006,7 @@ fn compile_wasm(ll_path: &str, wasm_path: &str, exports: &[String]) -> Result<()
 
 /// Parse tokens into an AST.
 
-/// 2026-07-20: Validate type parameter bounds (K: #String, V: #Float).
+/// 2026-07-20: Validate type parameter bounds (K: String, V: Float).
 /// Checks that types declaring bounded type params have at least one
 /// operator referencing the bound hashword in their params.
 

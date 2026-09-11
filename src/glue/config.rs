@@ -11,7 +11,7 @@
 // Format (one entry per language, quoted mode):
 //   <lang>: { types_module: "…"; extension: "…"; bridge_kind: "…";
 //             calling_convention: "…"; module_init: true;
-//             protocols: { "#String": { native: "…"; c_abi: "…"; }; };
+//             protocols: { "String": { native: "…"; c_abi: "…"; }; };
 //             templates: { "file": "…\n…"; "fn_template": "…"; }; };
 
 use crate::dbriev::config_db::ConfigDb;
@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 ///
 /// 2026-07-22: Each target describes how to bridge with one foreign language.
 /// Protocol mapping replaces old type_map/c_type_map/conversions —
-/// the config only knows about protocol categories (#String, #Int, #Float),
+/// the config only knows about protocol categories (String, Int, Float),
 /// not about Briev-internal type names.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GlueTarget {
@@ -42,7 +42,7 @@ pub struct GlueTarget {
     /// When true, the LLVM backend emits module init at codegen time.
     pub module_init: bool,
     /// Protocol category → native/C ABI type mapping.
-    /// Keys like "#String", "#Int", "#Float" — protocol categories only,
+    /// Keys like "String", "Int", "Float" — protocol categories only,
     /// never Briev-internal type names.
     pub protocols: HashMap<String, ProtocolEntry>,
     /// Output path → template content. Special keys:
@@ -112,7 +112,7 @@ pub struct Conversions {
 
 /// A protocol category mapping for a single language.
 ///
-/// 2026-07-22: Each protocol category (#String, #Int, #Float) maps to
+/// 2026-07-22: Each protocol category (String, Int, Float) maps to
 /// the language's native type and its C ABI representation. The compiler
 /// uses this when the BFS finds a path through that protocol category.
 ///
@@ -499,7 +499,7 @@ mod tests {
     fn test_load_glue_config_custom_path() {
         let dir = std::env::temp_dir();
         let config_path = dir.join("test_glue_config.dbvl");
-        let content = r##"python: { types_module: "glue/python/types.bv"; extension: "py"; bridge_kind: "native_module"; calling_convention: "c_abi"; module_init: false; protocols: { "#String": { native: "str"; c_abi: "ctypes.c_void_p" }; "#Int": { native: "int"; c_abi: "ctypes.c_int64" } } };
+        let content = r##"python: { types_module: "glue/python/types.bv"; extension: "py"; bridge_kind: "native_module"; calling_convention: "c_abi"; module_init: false; protocols: { "String": { native: "str"; c_abi: "ctypes.c_void_p" }; "Int": { native: "int"; c_abi: "ctypes.c_int64" } } };
 python.templates.0: "fn_template" "def {{name}}({{params}}):\n    return {{name}};\n";
 rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "extern_c_crate"; calling_convention: "lto"; module_init: false };"##;
         std::fs::write(&config_path, content).unwrap();
@@ -514,9 +514,9 @@ rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "exter
         assert_eq!(py.extension, "py");
         assert_eq!(py.bridge_kind, "native_module");
         assert_eq!(py.calling_convention, "c_abi");
-        assert!(py.protocols.contains_key("#String"));
-        assert_eq!(py.protocols.get("#String").unwrap().native, "str");
-        assert_eq!(py.protocols.get("#String").unwrap().c_abi.as_deref(), Some("ctypes.c_void_p"));
+        assert!(py.protocols.contains_key("String"));
+        assert_eq!(py.protocols.get("String").unwrap().native, "str");
+        assert_eq!(py.protocols.get("String").unwrap().c_abi.as_deref(), Some("ctypes.c_void_p"));
         assert_eq!(py.templates.get("fn_template").unwrap(), "def {{name}}({{params}}):\n    return {{name}};\n");
 
         assert!(targets.contains_key("rust"));

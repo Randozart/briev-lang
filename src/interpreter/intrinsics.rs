@@ -62,7 +62,7 @@ pub fn execute_intrinsic(
         // slots); `Count#` is its field count, `At#` the field at an index,
         // `Slice#` a positional sub-product, and the mutation ops read/write
         // the field list. `Count#` on a String value is the char count (the
-        // `#String` case the codegen routes to `CharCount#`).
+        // `String` case the codegen routes to `CharCount#`).
         "Count#" => {
             let v = args.first().ok_or_else(|| crate::errors::RuntimeError::HeapError(
                 "Count# takes one argument".into(),

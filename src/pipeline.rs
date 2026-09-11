@@ -193,7 +193,7 @@ pub struct BuildOptions {
     /// Used by the runtime fallback check in emit_dynamic_alloc.
     /// Default 4096 (4KB) — safe for most stack frames.
     pub stack_threshold: u64,
-    /// 2026-07-25: Native integer width for #Int protocol (default 64).
+    /// 2026-07-25: Native integer width for Int protocol (default 64).
     /// WASM targets should set to 32 to avoid BigInt in JavaScript.
     pub int_bits: u64,
     /// 2026-07-26: Phase 6b — CSS content from <style> block in .rbv files.
@@ -1014,16 +1014,10 @@ pub fn parse(file_path: &str, tokens: &[(Token, std::ops::Range<usize>)], source
 
 pub fn validate_constraints(items: &[crate::ast::TopLevel]) -> Result<(), String> {
     // 2026-09-11 (Phase A3): bounds and op params match by category NAME —
-    // the bare fundamental (`Float`) and the legacy `#Float` spelling are
+    // the bare fundamental (`Float`) and the legacy `Float` spelling are
     // the same category, so both link a constraint to its operator.
     fn category_of(t: &crate::ast::Type) -> Option<String> {
         match t {
-            crate::ast::Type::HashWord(c) => {
-                Some(c.strip_prefix('#').unwrap_or(c).to_string())
-            }
-            crate::ast::Type::HashWordVariant(c, _) => {
-                Some(c.strip_prefix('#').unwrap_or(c).to_string())
-            }
             crate::ast::Type::Custom(n)
                 if crate::type_universe::FUNDAMENTAL_TYPES.contains(&n.as_str()) =>
             {

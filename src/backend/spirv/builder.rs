@@ -336,10 +336,7 @@ impl SpirvBuilder {
             // casting graph from (protocol, metadata). No type names here —
             // `Float64`, stdlib subtypes, and user typedefs all derive from
             // their Cast.* protocol properties + bits metadata alike.
-            Type::Custom(_)
-            | Type::Applied(_, _)
-            | Type::HashWord(_)
-            | Type::HashWordVariant(_, _) => {
+            Type::Custom(_) | Type::Applied(_, _) => {
                 let shape = self
                     .casting_graph
                     .resolve_spirv_shape(&self.universe, ty, self.int_bits)?;
@@ -352,7 +349,7 @@ impl SpirvBuilder {
                 }
             }
             other => Err(format!(
-                "SPIR-V: unsupported type {:?} — kernel state is scalar                  #Int/#UInt/#Float/#Bool-rooted storage",
+                "SPIR-V: unsupported type {:?} — kernel state is scalar                  Int/UInt/Float/Bool-rooted storage",
                 other
             )),
         }
@@ -433,10 +430,7 @@ impl SpirvBuilder {
     /// are integer/aggregate by construction.
     pub fn is_float_type(&mut self, ty: &Type) -> Result<bool, String> {
         match ty {
-            Type::Custom(_)
-            | Type::Applied(_, _)
-            | Type::HashWord(_)
-            | Type::HashWordVariant(_, _) => Ok(matches!(
+            Type::Custom(_) | Type::Applied(_, _) => Ok(matches!(
                 self.casting_graph
                     .resolve_spirv_shape(&self.universe, ty, self.int_bits)?,
                 SpirvShape::Float { .. }
@@ -450,10 +444,7 @@ impl SpirvBuilder {
     /// after `is_float_type`.
     pub fn float_bits_of(&mut self, ty: &Type) -> Result<u32, String> {
         match ty {
-            Type::Custom(_)
-            | Type::Applied(_, _)
-            | Type::HashWord(_)
-            | Type::HashWordVariant(_, _) => match self
+            Type::Custom(_) | Type::Applied(_, _) => match self
                 .casting_graph
                 .resolve_spirv_shape(&self.universe, ty, self.int_bits)?
             {
@@ -485,10 +476,7 @@ impl SpirvBuilder {
         match ty {
             Type::Bits(1) => Ok(SpirvShape::Bool),
             Type::Bits(n) => Ok(SpirvShape::Int { bits: *n as u32, signed: false }),
-            Type::Custom(_)
-            | Type::Applied(_, _)
-            | Type::HashWord(_)
-            | Type::HashWordVariant(_, _) => {
+            Type::Custom(_) | Type::Applied(_, _) => {
                 self.casting_graph
                     .resolve_spirv_shape(&self.universe, ty, self.int_bits)
             }
@@ -502,7 +490,7 @@ impl SpirvBuilder {
     fn float_shape_err<T>(&self, ty: &Type) -> Result<T, String> {
         Err(format!(
             "SPIR-V: type {:?} is not float-shaped — float constants need a \
-             #Float-rooted type",
+             Float-rooted type",
             ty
         ))
     }

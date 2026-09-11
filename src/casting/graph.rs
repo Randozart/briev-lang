@@ -22,7 +22,7 @@ pub enum LaneKind {
     /// Call an external/intrinsic conversion function: call @fn_name
     ExtCall(&'static str),
     /// Call a proto-binding transform function (owned name — user-declared
-    /// `proto C_String: #String { CastTo(...) = cstr_to_briev(#L); }`).
+    /// `proto C_String: String { CastTo(...) = cstr_to_briev(#L); }`).
     /// 2026-08-03: distinct from ExtCall so seeded base lanes keep their
     /// `&'static str` without changing all call sites.
     ExtCallDyn(String),
@@ -36,9 +36,9 @@ pub enum LaneKind {
     ZExt,
     /// Truncate: trunc i64 %v to i8 (or i64 to i32, etc.)
     Trunc,
-    /// Type-level CastFrom(#Bit) override — function name resolved at emission time
+    /// Type-level CastFrom(Bit) override — function name resolved at emission time
     CastFromBitCallback,
-    /// 2026-08-03: the #Float protocol's width cast — any Float variant casts
+    /// 2026-08-03: the Float protocol's width cast — any Float variant casts
     /// to any other Float variant by fpext/fptrunc (width is the only delta).
     FloatWidth,
     /// Composite: chain two consecutive lanes
@@ -71,7 +71,7 @@ pub enum LlvmTypeResolver {
     Fixed(&'static str),
     /// Width-parametric: !> bits → !> maxbits → !> minbits → int_bits
     WidthParametric,
-    /// 2026-08-03: the #Float protocol's width semantics — derive the LLVM
+    /// 2026-08-03: the Float protocol's width semantics — derive the LLVM
     /// type from the type's `bits` metadata (16 → half/bfloat via disamb,
     /// 32 → float, 64 → double, 80 → x86_fp80, 128 → fp128, default → float).
     /// The protocol owns the width; no type names are hardcoded.
@@ -120,9 +120,9 @@ pub enum SpirvShape {
 /// additional edges for sub-protocols. BFS resolves variant→variant
 /// and variant→base paths through the union of base lanes and variant edges.
 ///
-/// `CastTo(#Bit)` is banned at declaration time — the `→ #Bit` direction
+/// `CastTo(Bit)` is banned at declaration time — the `→ Bit` direction
 /// is always a hardcoded mechanical operation (bitcast/extractvalue/ptrtoint).
-/// `CastFrom(#Bit)` is the sole user-extensible edge direction.
+/// `CastFrom(Bit)` is the sole user-extensible edge direction.
 #[derive(Debug, Clone)]
 pub struct CastingGraph {
     /// Base protocol → base protocol direct lanes.
@@ -140,7 +140,7 @@ pub struct CastingGraph {
     /// Default variant per category (e.g., String→UTF8, Float→IEEE754, Char→unicode).
     defaults: HashMap<String, String>,
 
-    /// Type-level CastFrom(#Bit) overrides: type_name → function_name.
+    /// Type-level CastFrom(Bit) overrides: type_name → function_name.
     cast_from_bit_overrides: HashMap<String, String>,
 
     /// Protocol (category, variant) → LLVM type resolver.
@@ -160,7 +160,7 @@ pub struct CastingGraph {
     inverse_pairs: HashSet<(String, String, String)>,
 
     /// 2026-08-03 (P1.4): cross-variant op overrides from `proto` declarations
-    /// (`proto C_String: #String { op Concat(#String) = cstring_concat(#L,#R) }`).
+    /// (`proto C_String: String { op Concat(String) = cstring_concat(#L,#R) }`).
     /// (category, variant) → op name → binding fn. An op on a sub-protocol
     /// value prefers its variant's own op (zero cast) — "adopt whatever
     /// operations are most convenient."
@@ -382,15 +382,15 @@ impl CastingGraph {
         self.set_llvm_type("Float", "Double",   LlvmTypeResolver::Fixed("double"));
         self.set_llvm_type("Float", "FP128",    LlvmTypeResolver::Fixed("fp128"));
         self.set_llvm_type("Float", "X86_FP80", LlvmTypeResolver::Fixed("x86_fp80"));
-        // 2026-08-03: C-boundary Float widths (FFI). #Float<C_Float> is the
-        // C `float` (32-bit), #Float<C_Double> the C `double` (64-bit) — the
+        // 2026-08-03: C-boundary Float widths (FFI). Float<C_Float> is the
+        // C `float` (32-bit), Float<C_Double> the C `double` (64-bit) — the
         // boundary types in lib/glue/c.bv declare these variants so an export
         // can request the exact ABI width instead of the default float32.
         self.set_llvm_type("Float", "C_Float",  LlvmTypeResolver::Fixed("float"));
         self.set_llvm_type("Float", "C_Double", LlvmTypeResolver::Fixed("double"));
 
         // String protocol variants — all encode as ptr to [len][bytes] (B0).
-        // The default #String variant is UTF8 (seed_defaults); ASCII and any
+        // The default String variant is UTF8 (seed_defaults); ASCII and any
         // future sub-protocols keep the same pointer representation.
         self.set_llvm_type("String", "UTF8",  LlvmTypeResolver::Fixed("ptr"));
         self.set_llvm_type("String", "ASCII", LlvmTypeResolver::Fixed("ptr"));
@@ -476,7 +476,7 @@ impl CastingGraph {
             }
         }
 
-        // 2026-08-03 (P1.4): cross-variant op overrides — `op Concat(#String) =
+        // 2026-08-03 (P1.4): cross-variant op overrides — `op Concat(String) =
         // cstring_concat(#L, #R)` lets a sub-protocol value use its own
         // operation (zero cast) instead of casting to the base first.
         for op in &pd.cross_ops {
@@ -528,15 +528,15 @@ impl CastingGraph {
             .map(|s| s.as_str())
     }
 
-    // ── Type-Level CastFrom(#Bit) Override Registration ────────────────
-    /// Register a type-level CastFrom(#Bit) override.
+    // ── Type-Level CastFrom(Bit) Override Registration ────────────────
+    /// Register a type-level CastFrom(Bit) override.
     /// `type_name` → `function_name` for constructing the type from raw bits.
     pub fn register_cast_from_bit(&mut self, type_name: &str, function_name: &str) {
         self.cast_from_bit_overrides
             .insert(type_name.to_string(), function_name.to_string());
     }
 
-    /// Check if a type has a CastFrom(#Bit) override.
+    /// Check if a type has a CastFrom(Bit) override.
     pub fn get_cast_from_bit(&self, type_name: &str) -> Option<&str> {
         self.cast_from_bit_overrides.get(type_name).map(|s| s.as_str())
     }
@@ -591,9 +591,9 @@ impl CastingGraph {
         dst_var: &str,
     ) -> Option<Vec<CastStep>> {
         // 2026-08-28 (Bug #5): the BASE of a category IS its default variant
-        // — `String` (no variant) and `#String<UTF8>` are the same
+        // — `String` (no variant) and `String<UTF8>` are the same
         // representation. Normalize the empty variant to the category default
-        // so BFS can land on it (a variant edge targets `#String<UTF8>`, and
+        // so BFS can land on it (a variant edge targets `String<UTF8>`, and
         // without normalization `CStr as String` never reached the goal and
         // fell through to a raw bitcast — the C string was read as a [len]
         // block). Only normalize when a variant is actually involved — the
@@ -613,7 +613,7 @@ impl CastingGraph {
             return self.find_base_path(src_cat, dst_cat);
         }
 
-        // 2026-08-03: the #Float protocol — any Float variant casts to any
+        // 2026-08-03: the Float protocol — any Float variant casts to any
         // other Float variant by a width cast (fpext/fptrunc); the delta is
         // the width, never a representation chain. Handles Float → CDouble
         // (Float<C_Double>), which the variant BFS has no lane for.
@@ -986,26 +986,10 @@ impl CastingGraph {
             // (stored as i64 in %State) to NOT undergo ptrtoint conversion.
             // resolve_llvm_type() handles Ptr directly before calling this.
             // Type::Ptr(_) => ("Blob", ...) moved to resolve_llvm_type only.
-            Type::HashWord(name) => {
-                // 2026-08-01 (B2): strip the `#` prefix so the category key
-                // matches the graph's bare base-lane keys ("Bit", "String").
-                // Without this, find_path(HashWord("#Bit"), ...) looked up
-                // category "#Bit" which has no lanes — casts to/from #Bit
-                // silently fell through to LLVM coercion (e.g. `s as #Bit`
-                // emitted `bitcast i64 ptr` — invalid). is_protocol_member
-                // already strips the target's `#` before comparing, so the
-                // bare category is the consistent representation.
-                let bare = name.strip_prefix('#').unwrap_or(name);
-                return (bare.to_string(), String::new());
-            }
-            Type::HashWordVariant(name, variant) => {
-                let bare = name.strip_prefix('#').unwrap_or(name);
-                return (bare.to_string(), variant.clone());
-            }
             // 2026-09-11 (fundamentals doctrine, Phase A2): `Float<Posit>` —
             // the fundamental IS the protocol, so an Applied whose base is a
             // fundamental and whose single arg is a plain identifier IS the
-            // (category, variant) pair. Replaces #Float<Posit> at the AST
+            // (category, variant) pair. Replaces Float<Posit> at the AST
             // level. Multi-arg or non-identifier args are genuine generics —
             // fall through to the universe walk.
             Type::Applied(base, args)
@@ -1040,7 +1024,7 @@ impl CastingGraph {
         // category instead of collapsing to Data (the old code read one
         // level of rt.base, and its Cast.* order was an inline copy of
         // operators::protocol_category). Variants survive the walk: a base
-        // `#String<C_String>` carries C_String to the resolved lane. Never
+        // `String<C_String>` carries C_String to the resolved lane. Never
         // matches type names (rule 18). Undo: restore the single-level
         // base read and the inline Cast.* if-chain.
         let mut current = rt;
@@ -1053,12 +1037,12 @@ impl CastingGraph {
             }
             // 2026-08-01 (B2): no Cast. property (the normalizer no longer
             // injects them) — follow the type's declared `base` parent
-            // (`type Latin1String: #String` ⇒ base "String"). This makes
+            // (`type Latin1String: String` ⇒ base "String"). This makes
             // subtypes resolve to their protocol category so the casting
-            // graph's lanes (e.g. #Bit → #String encoding door with a
-            // CastFrom(#Bit) override) apply to them.
-            // 2026-08-03: variant bases (`type CStr: #String<C_String>` ⇒
-            // base "#String<C_String>") resolve to (category, variant).
+            // graph's lanes (e.g. Bit → String encoding door with a
+            // CastFrom(Bit) override) apply to them.
+            // 2026-08-03: variant bases (`type CStr: String<C_String>` ⇒
+            // base "String<C_String>") resolve to (category, variant).
             let Some((cat, var)) = Self::parse_protocol_base(&current.base) else {
                 return ("Data".to_string(), String::new());
             };
@@ -1087,7 +1071,7 @@ impl CastingGraph {
     }
 
     /// Parse a protocol base string (`#Cat`, `#Cat<Variant>`, or bare `Cat`)    /// into `(category, variant)`. Returns None for empty/unparseable strings.
-    /// 2026-08-03: `#String<C_String>` → `("String", "CString")`; `#String` →
+    /// 2026-08-03: `String<C_String>` → `("String", "CString")`; `String` →
     /// `("String", "")`.
     pub fn parse_protocol_base(base: &str) -> Option<(String, String)> {
         let b = base.trim_start_matches('#');
@@ -1140,7 +1124,7 @@ impl CastingGraph {
             .or_else(|| self.get_spirv_type(&category, ""));
         let Some(resolver) = resolver else {
             return Err(format!(
-                "type '{}' lowers to protocol '{}' — GPU kernels support scalar                  state rooted in #Int, #UInt, #Float, or #Bool only (no heap,                  strings, or opaque storage in kernel address space)",
+                "type '{}' lowers to protocol '{}' — GPU kernels support scalar                  state rooted in Int, UInt, Float, or Bool only (no heap,                  strings, or opaque storage in kernel address space)",
                 ty, category
             ));
         };
@@ -1180,7 +1164,7 @@ impl CastingGraph {
                 match bits {
                     16 | 32 | 64 => SpirvShape::Float { bits: bits as u32 },
                     other => return Err(format!(
-                        "float width {} is not a kernel float width                          (16/32/64) — declare the state field as                          #Float {{ !> bits: 32 }} or #Float {{ !> bits: 64 }}",
+                        "float width {} is not a kernel float width                          (16/32/64) — declare the state field as                          Float {{ !> bits: 32 }} or Float {{ !> bits: 64 }}",
                         other
                     )),
                 }
@@ -1213,9 +1197,9 @@ impl CastingGraph {
 
         let (category, variant) = self.type_to_protocol(universe, ty);
         // 2026-08-03: an unseeded `#Category<Variant>` falls back to the
-        // category's default variant, then the base category — a `#String`
+        // category's default variant, then the base category — a `String`
         // sub-protocol IS a String (ptr); only its encoding differs. Without
-        // this, `type CStr: #String<C_String>` resolved to `i64`.
+        // this, `type CStr: String<C_String>` resolved to `i64`.
         let resolver = self.get_llvm_type(&category, &variant)
             .or_else(|| self.get_llvm_type(&category, self.default_variant(&category)))
             .or_else(|| self.get_llvm_type(&category, ""));
@@ -1237,7 +1221,7 @@ impl CastingGraph {
                 return format!("i{}", bits);
             }
             Some(LlvmTypeResolver::FloatWidth) => {
-                // 2026-08-03: the #Float protocol owns the width semantics —
+                // 2026-08-03: the Float protocol owns the width semantics —
                 // derive the LLVM type from the type's `bits` metadata.
                 // 16-bit is half/bfloat (via disamb); 32→float, 64→double,
                 // 80→x86_fp80, 128→fp128, default→float. No type names.
@@ -1253,7 +1237,7 @@ impl CastingGraph {
                 });
                 let float_ty = match bits {
                     Some(16) => {
-                        // Half vs BFloat are both 2-byte #Float variants,
+                        // Half vs BFloat are both 2-byte Float variants,
                         // distinguished by the `disamb` metadata value.
                         let disamb = key.and_then(|rt| match rt.properties.get("disamb") {
                             Some(PropertyValue::String(s)) => Some(s.clone()),
@@ -1298,10 +1282,10 @@ impl Default for CastingGraph {
 }
 
 /// Derive the type → declared-protocol map from the AST, pre-universe.
-/// Explicit declarations win (`type CStr: #String<C_String>` →
-/// "#String<C_String>"); a bare-parent typedef DERIVES its category by
+/// Explicit declarations win (`type CStr: String<C_String>` →
+/// "String<C_String>"); a bare-parent typedef DERIVES its category by
 /// walking the parent chain — to another typedef's declaration or to a
-/// fundamental name (`type Float16 : Float` → "#Float"). 2026-09-02 (plan
+/// fundamental name (`type Float16 : Float` → "Float"). 2026-09-02 (plan
 /// fundamental-parent-membership): the glue/FFI and boundary-marshalling
 /// passes built this map from explicit declarations only, so a
 /// de-hashtagged fundamental join lost its category at the boundary.
@@ -1339,7 +1323,9 @@ pub fn derive_type_protocols(items: &[crate::ast::TopLevel]) -> std::collections
             }
             let Some(parent) = parent else { break };
             if crate::type_universe::FUNDAMENTAL_TYPES.contains(&parent) {
-                map.insert(name.to_string(), format!("#{}", parent));
+                // 2026-09-11 (Phase A4): bare — the fundamental name IS the
+                // category; hashword spellings are retired.
+                map.insert(name.to_string(), parent.to_string());
                 break;
             }
             if visited.contains(&parent) {
@@ -1395,15 +1381,15 @@ mod tests {
             }))
         };
         let items = vec![
-            td("CStr", Some("#String<C_String>"), None),
+            td("CStr", Some("String<C_String>"), None),
             td("Float16", None, Some("Float")),
             td("MyHalf", None, Some("Float16")),
             td("Weird", None, Some("Unrelated")),
         ];
         let map = derive_type_protocols(&items);
-        assert_eq!(map.get("CStr").map(String::as_str), Some("#String<C_String>"));
-        assert_eq!(map.get("Float16").map(String::as_str), Some("#Float"));
-        assert_eq!(map.get("MyHalf").map(String::as_str), Some("#Float"));
+        assert_eq!(map.get("CStr").map(String::as_str), Some("String<C_String>"));
+        assert_eq!(map.get("Float16").map(String::as_str), Some("Float"));
+        assert_eq!(map.get("MyHalf").map(String::as_str), Some("Float"));
         assert!(!map.contains_key("Weird"), "unknown parent terminates the walk");
     }
 
@@ -1471,21 +1457,21 @@ mod tests {
     }
 
     #[test]
-    fn test_hashword_category_strip() {
-        // 2026-08-01 (B2): a `#Bit` HashWord type must resolve to the bare
-        // "Bit" category so find_path finds the base lanes. Previously the
-        // category kept the `#` ("#Bit") and every cast to/from #Bit silently
-        // fell through to LLVM coercion.
+    fn test_bit_type_walks_to_storage_category() {
+        // 2026-09-11 (Phase A4): the retired HashWord("#Bit") special case is
+        // gone — the bare `Bit` type walks its Cast.* properties like any
+        // other type. Per the 2026-08-15 doctrine Data is the graph ROOT and
+        // Bit's storage membership is Cast.Data, so the walk lands on Data —
+        // whose lanes are the base bitcast/enc doors. find_path(String → Bit)
+        // still resolves: the first hop is String→Data PtrToInt.
         let graph = CastingGraph::new();
         let u = crate::type_universe::TypeUniverse::new();
-        let b_ty = crate::ast::Type::HashWord("#Bit".to_string());
+        let b_ty = crate::ast::Type::Custom("Bit".to_string());
         let (cat, var) = graph.type_to_protocol(&u, &b_ty);
-        assert_eq!(cat, "Bit");
+        assert_eq!(cat, "Data");
         assert_eq!(var, "");
-        // And the String → Bit path (via hashword target) resolves: the first
-        // hop is String→Data PtrToInt.
-        let path = graph.find_path("String", "", &cat, &var);
-        assert!(path.is_some());
+        let path = graph.find_path("String", "", "Bit", "");
+        assert!(path.is_some(), "String → Bit must route through the Data root");
         assert_eq!(path.unwrap()[0].lane, LaneKind::PtrToInt);
     }
 
@@ -1500,7 +1486,7 @@ mod tests {
     #[test]
     fn test_variant_edge() {
         let mut graph = CastingGraph::new();
-        // Simulate proto ASCII: #String { CastTo(#String): ascii_to_utf8(#L); }
+        // Simulate proto ASCII: String { CastTo(String): ascii_to_utf8(#L); }
         graph.register_protocol_def(&ProtocolDef {
             name: "ASCII".to_string(),
             category: "String".to_string(),
@@ -1584,8 +1570,8 @@ mod tests {
 
     #[test]
     fn test_proto_binding_becomes_ext_call_lane() {
-        // 2026-08-03: `proto C_String: #String { CastTo(#String<UTF8>) =
-        // cstr_to_briev(#L); CastFrom(#String<UTF8>) = str_to_c(#L); }` — the
+        // 2026-08-03: `proto C_String: String { CastTo(String<UTF8>) =
+        // cstr_to_briev(#L); CastFrom(String<UTF8>) = str_to_c(#L); }` — the
         // bindings must become real call lanes (ExtCallDyn), not the old
         // Bitcast placeholder.
         let mut graph = CastingGraph::new();
@@ -1632,7 +1618,7 @@ mod tests {
 
     #[test]
     fn test_inverse_pair_collapse() {
-        // 2026-08-03 (P1.5): A.CastTo(#String) is `<< 1`, B.CastFrom(#String)
+        // 2026-08-03 (P1.5): A.CastTo(String) is `<< 1`, B.CastFrom(String)
         // is `>> 1` — the composition is identity, so A → B through the base
         // is a ZERO delta (the sub-types are 1-to-1).
         let mut graph = CastingGraph::new();
@@ -1671,7 +1657,7 @@ mod tests {
 
     #[test]
     fn test_float_width_resolution() {
-        // 2026-08-03: the #Float protocol owns the width semantics — derived
+        // 2026-08-03: the Float protocol owns the width semantics — derived
         // from the type's `bits` metadata, no type names matched.
         let graph = CastingGraph::new();
         let universe = crate::type_universe::TypeUniverse::new();
@@ -1685,38 +1671,42 @@ mod tests {
 
     #[test]
     fn test_resolve_llvm_type_variant_fallback() {
-        // 2026-08-03: unseeded `#String<C_String>` must resolve like any other
-        // String (ptr), not fall through to i64; `#Float<C_Double>` → double.
+        // 2026-08-03, migrated 2026-09-11 (Phase A4): unseeded
+        // `String<C_String>` must resolve like any other String (ptr), not
+        // fall through to i64; `Float<C_Double>` → double.
         let graph = CastingGraph::new();
         let universe = crate::type_universe::TypeUniverse::new();
+        let applied = |base: &str, variant: &str| {
+            Type::Applied(base.to_string(), vec![Type::Custom(variant.to_string())])
+        };
         assert_eq!(
-            graph.resolve_llvm_type(&universe, &Type::HashWordVariant("#String".into(), "C_String".into()), 64),
+            graph.resolve_llvm_type(&universe, &applied("String", "C_String"), 64),
             "ptr"
         );
         assert_eq!(
-            graph.resolve_llvm_type(&universe, &Type::HashWordVariant("#Float".into(), "C_Double".into()), 64),
+            graph.resolve_llvm_type(&universe, &applied("Float", "C_Double"), 64),
             "double"
         );
         assert_eq!(
-            graph.resolve_llvm_type(&universe, &Type::HashWordVariant("#String".into(), "UTF8".into()), 64),
+            graph.resolve_llvm_type(&universe, &applied("String", "UTF8"), 64),
             "ptr"
         );
         assert_eq!(
-            graph.resolve_llvm_type(&universe, &Type::HashWordVariant("#Float".into(), "Double".into()), 64),
+            graph.resolve_llvm_type(&universe, &applied("Float", "Double"), 64),
             "double"
         );
     }
 
     #[test]
     fn test_parse_protocol_base_variants() {        // 2026-08-03: variant bases — the FFI boundary types declare
-        // `type CStr: #String<C_String>` ⇒ base "#String<C_String>".
-        assert_eq!(CastingGraph::parse_protocol_base("#String<C_String>"),
+        // `type CStr: String<C_String>` ⇒ base "String<C_String>".
+        assert_eq!(CastingGraph::parse_protocol_base("String<C_String>"),
             Some(("String".to_string(), "C_String".to_string())));
-        assert_eq!(CastingGraph::parse_protocol_base("#Float<C_Double>"),
+        assert_eq!(CastingGraph::parse_protocol_base("Float<C_Double>"),
             Some(("Float".to_string(), "C_Double".to_string())));
-        assert_eq!(CastingGraph::parse_protocol_base("#Int<C_I32>"),
+        assert_eq!(CastingGraph::parse_protocol_base("Int<C_I32>"),
             Some(("Int".to_string(), "C_I32".to_string())));
-        assert_eq!(CastingGraph::parse_protocol_base("#String"),
+        assert_eq!(CastingGraph::parse_protocol_base("String"),
             Some(("String".to_string(), String::new())));
         assert_eq!(CastingGraph::parse_protocol_base("String"),
             Some(("String".to_string(), String::new())));

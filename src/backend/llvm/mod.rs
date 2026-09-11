@@ -951,10 +951,10 @@ pub(super) fn trg_llvm_storage_ty(ty: &Type, universe: Option<&crate::type_unive
 /// universe is optional: when available, uses the dynamically-generated
 /// TBAA tree (sorted alphabetically, Int first).  When None, falls back
 /// to the original hardcoded indices for the 5 built-in types.
-/// Sort TBAA group names deterministically: alphabetical, with the #Int
+/// Sort TBAA group names deterministically: alphabetical, with the Int
 /// protocol member moved to the front (the fallback for unmatched types).
 ///
-/// 2026-07-31: Phase 3 (§8.4-D6) — the front-member is chosen by #Int protocol
+/// 2026-07-31: Phase 3 (§8.4-D6) — the front-member is chosen by Int protocol
 /// membership (the `Cast.Int` universe property) instead of the literal type
 /// 2026-08-13 (layout-keywords plan Phase 5): read the parser's structured
 /// `atomic_fields` metadata (a PropertyValue::List of "field_name:ordering"
@@ -1623,7 +1623,7 @@ impl LlvmBackend {
         self
     }
 
-    /// 2026-07-25: Set the native integer width for #Int protocol.
+    /// 2026-07-25: Set the native integer width for Int protocol.
     /// WASM should use 32 to emit i32 instead of i64 (avoid BigInt).
     pub fn with_int_bits(mut self, bits: u64) -> Self {
         self.ctx.int_bits = bits;
@@ -1674,7 +1674,7 @@ impl LlvmBackend {
         self
     }
 
-    /// 2026-07-30: Register CastFrom(#Bit) overrides on the casting graph.
+    /// 2026-07-30: Register CastFrom(Bit) overrides on the casting graph.
     /// Maps type_name → constructor_function_name for constructing a type
     /// from raw memory bits. This is the sole user-extensible cast edge.
     pub fn with_cast_from_bit_overrides(mut self, overrides: HashMap<String, String>) -> Self {
@@ -2149,7 +2149,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
 
     /// Scan the typed program for constructs that are forbidden in embedded mode.
     ///
-    /// 2026-08-04 (Phase 4, .ebv heap reframe): heap types (#String/#Blob/List/
+    /// 2026-08-04 (Phase 4, .ebv heap reframe): heap types (String/Blob/List/
     /// HashMap/…) are now LEGAL on the embedded target — the static bump arena
     /// (@embedded_heap) provides a heap without @malloc/briev_rt.c. The old
     /// hard rejection was a vestige of the pre-split .ebv/.sbv entanglement
@@ -2197,9 +2197,9 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
 
     fn type_is_heap_allocated(&self, ty: &Type) -> bool {
         // 2026-08-01 (B4): is_string_like (2-field structural) retired —
-        // protocol membership only. A #String value is a ptr to a
+        // protocol membership only. A String value is a ptr to a
         // heap-allocated [len][bytes] buffer (allocated at init/FFI time).
-        // #Blob values are also pointers. UTF8View/StaticString/SmallString64
+        // Blob values are also pointers. UTF8View/StaticString/SmallString64
         // (legacy stack types) are retired.
         if self.is_protocol_member(ty, "String") {
             return true;
@@ -3478,7 +3478,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
          }
         // 2026-08-01 (B1): content equality for String operands. The compiler
         // emits a call to briev_str_eq(ptr, ptr) instead of `icmp eq ptr`
-        // (address comparison) when both operands are #String — see
+        // (address comparison) when both operands are String — see
         // emit_binary_op's Eq/Ne arms. Takes two ptrs to [len][bytes].
         if !defined.contains("briev_str_eq") {
             writeln!(out, "declare i64 @briev_str_eq(ptr, ptr) #1").ok();
@@ -3490,11 +3490,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         writeln!(out, "declare ptr @briev_str_bor(ptr, ptr) #1").ok();
         writeln!(out, "declare ptr @briev_str_bxor(ptr, ptr) #1").ok();
         writeln!(out, "declare ptr @briev_str_bnot(ptr) #1").ok();
-        // 2026-08-01 (B2): the #Bit → #String ENCODING DOOR default. The bits
+        // 2026-08-01 (B2): the Bit → String ENCODING DOOR default. The bits
         // are a Briev [len][bytes] buffer (a String's content view); wrapping
         // re-materializes the header by construction (the bits carry their own
         // length — not a null-terminated C string). Sub-protocols override via
-        // CastFrom(#Bit).
+        // CastFrom(Bit).
         writeln!(out, "declare ptr @briev_bits_to_str(ptr) #1").ok();
         // 2026-08-28 (Bug #5, frgn String-return): a `frgn f(...) -> String`
         // boundary contract is "returns a NUL-terminated C string" — the
@@ -3510,14 +3510,14 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         if !self.ctx.frgn_map.contains_key("briev_str_to_c") {
             writeln!(out, "declare ptr @briev_str_to_c(ptr) nounwind").ok();
         }
-        // 2026-08-01 (B3): UTF8 character count for the #String `Size` prop
+        // 2026-08-01 (B3): UTF8 character count for the String `Size` prop
         // default (the O(1) byte-length header read is the `Bytes` prop).
         if !defined.contains("briev_char_len") {
             writeln!(out, "declare i64 @briev_char_len(ptr) #1").ok();
         }
         // 2026-08-14 (String unification): decode the UTF8 codepoint at a byte
         // offset of a Briev String and advance the offset — the per-iteration
-        // lane of `foreach c in str` (a #String operand iterates CHARs, SPEC
+        // lane of `foreach c in str` (a String operand iterates CHARs, SPEC
         // §17.2). Takes the [len][bytes] handle and the byte-offset slot.
         if !defined.contains("briev_str_next_char") {
             writeln!(out, "declare i64 @briev_str_next_char(ptr, ptr) #1").ok();
@@ -3620,7 +3620,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 }
                 // Warn on unsupported trigger types
                 // 2026-07-31: Phase 3 (§8.4) — supported-set via protocol
-                // membership (is_boxed_int_type + #Int/#UInt) instead of the
+                // membership (is_boxed_int_type + Int/UInt) instead of the
                 // hardcoded type-name list.
                 let supported = self.is_boxed_int_type(&trg.ty)
                     || self.is_protocol_member(&trg.ty, "Int")
@@ -4677,7 +4677,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         writeln!(out, "!0 = !{{!\"Briev\"}}").ok();
         if let Some(ref universe) = self.ctx.type_universe {
             let mut groups: Vec<String> = universe.types.keys().cloned().collect();
-            // 2026-07-31: Phase 3 (§8.4-D6) — shared sort (alphabetical, #Int
+            // 2026-07-31: Phase 3 (§8.4-D6) — shared sort (alphabetical, Int
             // protocol member first) keeps the declaration in agreement with
             // the tbaa_node / tbaa_node_for_type index lookups.
             sort_tbaa_groups(Some(universe), &mut groups);

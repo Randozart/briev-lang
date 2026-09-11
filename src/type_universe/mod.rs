@@ -243,7 +243,7 @@ impl TypeUniverse {
         }
         // 2026-07-18: String primordial — 2-field struct (data: Int, len: Int)
         // The casting graph resolves String's LLVM type as Fixed("{ i64, i64 }")
-        // from #String protocol membership. No llvm_type property needed.
+        // from String protocol membership. No llvm_type property needed.
         // 2026-07-31: Phase 3 (§8.4) — Cast.String seeded so the casting
         // graph resolves String → category "String" → Fixed("{ i64, i64 }").
         // Previously the property was absent, so a bare primordial universe
@@ -257,7 +257,7 @@ impl TypeUniverse {
         // The old `{ i64, i64 }` fat-pointer fields (data/len) were the last
         // source of a `%String = type { i64, i64 }` named decl in emitted IR,
         // violating B0 acceptance. The LLVM type still resolves via the casting
-        // graph (#String → ptr); this entry provides no width of its own, and
+        // graph (String → ptr); this entry provides no width of its own, and
         // `type_size` (types.rs) falls back to 8 (pointer word) for it.
         {
             let mut p = std::collections::HashMap::new();
