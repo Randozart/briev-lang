@@ -261,6 +261,12 @@ contracts.
 - **Regression guard**: inspect every match arm (silent regressions come from
   removed arms); verify optimized IR, not just tests; update architecture
   comments; never delete rationale comments — rewrite them.
+- **Kernel index math needs the on-device gate**: any commit touching
+  generated-kernel addressing, masks, swizzles, or decode runs the device
+  correctness check at a real shape (e.g. gemm_h_bench 4096³) before push —
+  timing-only verification missed a 3-day fill corruption (dd5f5e26, 2026-09-08;
+  BUGS.md). Emitted-SPIR-V bitwise ops are additionally pinned by
+  `coopmat_fill_bitwise_rhs_are_mask_consts`.
 - **System-level changes**: trace the full data flow; verify claims in source
   (file:line), not memory; check `git diff --stat` between eras; map ALL
   benchmarks not just the regressed one; identify every gate on the path and the
