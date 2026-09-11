@@ -103,3 +103,36 @@ skinny KLOOP — loop-carried pointer arithmetic (kstep stride adds
 instead of per-fragment address recomputation), k32 stages, phase-level
 Ps2r — so the issue budget goes to mma, not math. E1b/E1c (ldmatrix-mix
 and ALU-load sensitivity microbenches) quantify the decomposition next.
+
+## E1b/d/f ladder + rasterization VERDICT (2026-09-11 late night)
+
+The mix microbenches (dump_mma_mix_microbench, variants b/c/d/f) decompose
+the 52.8 → 21.0 gap:
+
+| rung | adds | TFLOP/s |
+|------|------|---------|
+| E1 | pure mma issue | 52.8 |
+| E1b | + ldmatrix(x4+8×x2) + 150 ALU ops, fixed addrs | **53.5 (free)** |
+| E1d | + cp.async fills + wait_group 1 + bar.sync, L2-resident data | 42.5 |
+| E1f | E1d with STREAMING (DRAM-latency) fill reads | 32.9 |
+| real kernel | | 21.0 |
+| cuBLAS anchor | | 42.0 |
+
+Readings: support ALU is FREE (schedulers absorb it; the 2026-09-10
+"hoisting dropped 11%" note stays unexplained but the issue-budget model
+is dead). The fill rhythm (wait+barrier) costs ~10 TF; DRAM-latency
+streaming costs ~10 more. E1d — fills+barrier with L2-resident data — is
+exactly cuBLAS.
+
+**E5-rasterization VERDICT: REJECTED (−7%).** Group-swizzled the CTA
+decode (8m×4n, divisor-safe): 19.6 vs 21.0 across three tight reps. The
+L2-reuse model does not bind for this kernel at this shape — DRAM
+bandwidth is far from saturated (~56GB/s of ~360), so packing panel
+sharers closer in time buys nothing and the theory is refuted. Reverted;
+the negative stands in the ledger per rule 20.
+
+Open for next session (the 32.9 → 21.0 delta, three suspects, all cheap
+probes): wait_group 0 in the real kernel vs 1 in E1f; 2-CTA/SM
+occupancy contention (E1f ran 1/SM); the every-32-iteration y-RMV
+promotion. The s4 paradox (deeper prefetch slower) remains open and now
+bears on the wait_group question directly.

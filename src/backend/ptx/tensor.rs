@@ -1599,6 +1599,149 @@ mod r16_dump {
             std::fs::write(&path, &out).unwrap();
         }
     }
+    /// E1b/E1c (plan 2026-09-11-ptx-mma-issue-ceiling): decompose the 2.3x
+    /// between the pure-issue ceiling (52.8 TF) and the shipped kernel
+    /// (21.0). E1b = ldmatrix(x4 A + 8x x2.trans B) + 16 mma per kstep from
+    /// FIXED hoisted addresses — the serial-order mainloop best case, no
+    /// address math. E1c = E1b + the real kernel's ~150 support-ALU ops per
+    /// kstep replayed on a live register chain. The gap E1→E1b isolates
+    /// exposed ldmatrix latency; E1b→E1c isolates the support-math issue
+    /// load. smem: 4KB dynamic (two 512B A slabs, eight 256B B slabs).
+    #[test]
+    fn dump_mma_mix_microbench() {
+        for &variant in &["b", "c", "d", "f"] {
+            let chains = 16usize; // the shipped schedule's chain count
+            let mut out = String::new();
+            out.push_str(&format!("// E1{} ldmatrix+mma mix microbench\n", variant));
+            out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+            out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
+            out.push_str(".visible .entry main (.param .b64 proj_param) {\n");
+            out.push_str("    .reg .b32 %r<16>;\n    .reg .b64 %rd<16>;\n    .reg .pred %p<2>;\n");
+            out.push_str("    .reg .b32 %c<33>;\n    .reg .b32 %a<5>;\n    .reg .b32 %b<17>;\n");
+            out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+            out.push_str("    cvta.to.global.u64 %rd1, %rd1;\n");
+            out.push_str("    mov.u32 %r1, %tid.x;\n    mov.u32 %r2, %ctaid.x;\n");
+            out.push_str("    and.b32 %r3, %r1, 31;\n    add.u32 %r2, %r2, 1;\n");
+            // dynamic smem base (shared-window u32, widened for u64 math)
+            out.push_str("    .reg .b32 %sas<1>;\n    .reg .b64 %rdS<1>;\n");
+            out.push_str("    .reg .b64 %rdA;\n    .reg .b64 %rdB0, %rdB1, %rdB2, %rdB3, %rdB4, %rdB5, %rdB6, %rdB7;\n");
+            out.push_str("    mov.u32 %sas0, dsmem;\n");
+            out.push_str("    cvt.u64.u32 %rdS0, %sas0;\n");
+            // A slab lane addressing (conflict-free, matches the kernel):
+            // row r = (l>>4)*8 + (l&7), addr = r*32 + ((l>>3)&1)*16
+            out.push_str("    shr.u32 %r4, %r3, 4;\n");          // l>>4
+            out.push_str("    mul.lo.u32 %r4, %r4, 8;\n");
+            out.push_str("    and.b32 %r5, %r3, 7;\n");
+            out.push_str("    add.u32 %r4, %r4, %r5;\n");        // r
+            out.push_str("    mul.lo.u32 %r4, %r4, 32;\n");
+            out.push_str("    shr.u32 %r5, %r3, 3;\n    and.b32 %r5, %r5, 1;\n");
+            out.push_str("    mul.lo.u32 %r5, %r5, 16;\n");
+            out.push_str("    add.u32 %r4, %r4, %r5;\n");
+            out.push_str("    mul.wide.u32 %rd4, %r4, 1;\n");
+            out.push_str("    add.u64 %rdA, %rdS0, %rd4;\n");
+            // B slab: 8 groups at +g*256, lane addr ((l>>3)&1)*128 + ((l&7)^((l>>3)&1))*16
+            out.push_str("    shr.u32 %r5, %r3, 3;\n    and.b32 %r5, %r5, 1;\n");
+            out.push_str("    mul.lo.u32 %r6, %r5, 128;\n");
+            out.push_str("    and.b32 %r7, %r3, 7;\n    xor.b32 %r7, %r7, %r5;\n");
+            out.push_str("    mul.lo.u32 %r7, %r7, 16;\n");
+            out.push_str("    add.u32 %r6, %r6, %r7;\n");
+            // pre-hoist all 8 B lane addresses + the A pair addresses
+            for g in 0..8 {
+                out.push_str(&format!("    mul.wide.u32 %rd6, %r6, 1;\n"));
+                out.push_str(&format!("    add.u64 %rdB{}, %rdS0, %rd6;\n", g));
+                out.push_str(&format!("    add.u64 %rdB{}, %rdB{}, {};\n", g, g, 512 + g * 256));
+            }
+            // zero the 16 acc chains
+            for i in 0..chains * 2 {
+                out.push_str(&format!("    mov.u32 %c{}, 0;\n", i));
+            }
+            // operand seeds for the mma (register-held)
+            out.push_str("    add.u32 %a0, %r3, %r2;\n");
+            out.push_str("    mov.u32 %b0, 7;\n    mov.u32 %b1, 13;\n");
+            let warps = 448u64;
+            let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
+            let iters = (iters / 8 * 8).max(64);
+            out.push_str(&format!("    mov.u32 %r8, {};\n", iters));
+            out.push_str("LOOP:\n");
+            // A fragment (x4) + fragment swap, then 8 B fragments (x2.trans)
+            out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+            out.push_str("    mov.b32 %r9, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %r9;\n");
+            for g in 0..8 {
+                out.push_str(&format!(
+                    "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{%b{}, %b{}}}, [%rdB{}];\n",
+                    2 * g, 2 * g + 1, g % 8
+                ));
+            }
+            if variant == "c" {
+                // ~150 dead ALU ops per kstep on a live chain (the shipped
+                // kernel's per-fragment address recomputation magnitude)
+                out.push_str("    add.u32 %r10, %r3, %r2;\n");
+                for _ in 0..150 {
+                    out.push_str("    add.u32 %r10, %r10, 3;\n");
+                }
+            }
+            if variant == "d" || variant == "f" {
+                // E1d: + the real kernel's fill/wait/barrier rhythm — 6
+                // cp.async.ca 4B per thread (12KB/CTA), commit, then after
+                // the mma phase wait_group 1 + membar.cta + bar.sync.
+                // E1f: the fill source STREAMS (iteration-scaled offset into
+                // the 100MB state) instead of hammering one L2-resident
+                // 24KB window — models the real kernel's DRAM traffic.
+                // iteration-scaled offset: %r8 (iter counter) * 12288, kept
+                // inside the 96MB state via masking with the iteration
+                // stride folded in — streaming, not L2-resident.
+                if variant == "f" {
+                    out.push_str("    mul.lo.u32 %r11, %r8, 6144;\n");
+                    out.push_str("    and.b32 %r11, %r11, 25161728;\n");
+                    out.push_str("    mul.wide.u32 %rd9, %r11, 1;\n");
+                    out.push_str("    add.u64 %rd10, %rd1, %rd9;\n");
+                }
+                for j in 0..6 {
+                    out.push_str("    mul.wide.u32 %rd8, %r3, 4;\n");
+                    if variant == "f" {
+                        out.push_str("    add.u64 %rd8, %rd10, %rd8;\n");
+                    } else {
+                        out.push_str("    add.u64 %rd8, %rd1, %rd8;\n");
+                    }
+                    out.push_str(&format!("    add.u64 %rd8, %rd8, {};\n", j * 2048));
+                    out.push_str(&format!(
+                        "    cp.async.ca.shared.global [%rdB{}], [%rd8], 4;\n",
+                        j
+                    ));
+                }
+                out.push_str("    cp.async.commit_group;\n");
+            }
+            for i in 0..chains {
+                out.push_str(&format!(
+                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {{%c{}, %c{}}};\n",
+                    2 * i, 2 * i + 1, 2 * i, 2 * i + 1
+                ));
+            }
+            if variant == "d" || variant == "f" {
+                out.push_str("    cp.async.wait_group 1;\n");
+                out.push_str("    membar.cta;\n");
+                out.push_str("    bar.sync 0;\n");
+            }
+            out.push_str("    add.u32 %r8, %r8, -1;\n");
+            out.push_str("    setp.ne.u32 %p1, %r8, 0;\n");
+            out.push_str("    @%p1 bra LOOP;\n");
+            // DCE guard: fold every chain + the ALU chain
+            out.push_str("    mul.wide.u32 %rd2, %r1, 4;\n");
+            out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+            out.push_str("    add.u32 %r7, %c0, %c1;\n");
+            for i in 1..chains {
+                out.push_str(&format!("    add.u32 %r7, %r7, %c{};\n", 2 * i));
+                out.push_str(&format!("    add.u32 %r7, %r7, %c{};\n", 2 * i + 1));
+            }
+            if variant == "c" {
+                out.push_str("    add.u32 %r7, %r7, %r10;\n");
+            }
+            out.push_str("    st.global.b32 [%rd2], %r7;\n");
+            out.push_str("    ret;\n}\n");
+            let path = format!("/tmp/opencode/mb_mix_{}.ptx", variant);
+            std::fs::write(&path, &out).unwrap();
+        }
+    }
 }
 
 #[cfg(test)]
