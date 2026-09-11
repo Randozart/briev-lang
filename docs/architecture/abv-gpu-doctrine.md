@@ -100,6 +100,17 @@ Rules that hold across all tiers:
   reference tier (the general path) on every benchmark shape. f16acc
   tiers carry their own ≤1e-2 numerics gate; the f32-acc and naive
   tiers remain the correctness reference (anti-overfit doctrine).
+- **Numerics tier default (decided 2026-09-11).** The DEFAULT
+  accumulation contract for tensor GEMM is **f32-accumulate** (≤5e-3
+  gate): it is the industry default (cuBLAS `COMPUTE_32F`, PyTorch,
+  llama.cpp/vLLM all accumulate fp32; fp16-acc ships only as an
+  explicitly-gated inference tier) and it preserves the benchmark
+  symmetry doctrine (same output as the C reference). The
+  **f16-acc tier (≤1e-2 gate) is opt-in** via `ptx_tensor_f16acc` —
+  a disclosed numeric-contract choice, not a strategy keyword: it is
+  the fastest correct configuration (+37% sustained at 4096³:
+  18.2-18.3 vs 13.3-13.4 TFLOP/s; ledger 2026-09-11) and selection
+  within a tier stays the compiler's job (select_mw_nw).
 - **Capability matrix.** A specialized tier declares its surface in
   `src/backend/capabilities.rs`; out-of-surface programs still compile
   on the portable tier — probe failure falls back, never fails the
