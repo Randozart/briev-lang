@@ -757,25 +757,25 @@ impl<'a> Parser<'a> {
             "Void" => crate::ast::Type::void(),
             "Char" => crate::ast::Type::char_(),
             "Blob" => crate::ast::Type::blob(),
-            other => {
-                // 2026-09-11 (fundamentals doctrine, Phase A): hashword
-                // spellings map to their bare fundamental — the category
-                // hashwords are retiring, so this site stops constructing
-                // HashWord types. (`#Float` → float(), etc.)
-                let bare = other.strip_prefix('#').unwrap_or(other);
-                match bare {
-                    "Int" => crate::ast::Type::int(),
-                    "UInt" => crate::ast::Type::Custom("UInt".into()),
-                    "Float" | "Float32" | "F32" => crate::ast::Type::float(),
-                    "Float64" | "F64" | "Double" => crate::ast::Type::float64(),
-                    "String" => crate::ast::Type::string(),
-                    "Bool" => crate::ast::Type::bool_(),
-                    "Void" => crate::ast::Type::void(),
-                    "Char" => crate::ast::Type::char_(),
-                    "Blob" => crate::ast::Type::blob(),
-                    "Bit" | "bits" => crate::ast::Type::Bits(0),
-                    other => crate::ast::Type::Custom(other.to_string()),
+            other if other.starts_with('#') => {
+                // 2026-09-11 (Phase A transition): must mirror parse_type's
+                // hashword arm so `b as #String` ≡ `(#String) b` holds until
+                // the A4 deletion flips BOTH sites to bare in one commit.
+                let variant = match other {
+                    "#String" => "UTF8",
+                    "#Float" => "IEEE754",
+                    "#Char" => "unicode",
+                    _ => "",
+                };
+                if !variant.is_empty() {
+                    crate::ast::Type::HashWordVariant(other.to_string(), variant.to_string())
+                } else {
+                    crate::ast::Type::HashWord(other.to_string())
                 }
+            }
+            other => {
+                let bare = other.strip_prefix('#').unwrap_or(other);
+                crate::ast::Type::Custom(bare.to_string())
             }
         }
     }
@@ -1153,8 +1153,13 @@ mod tests {
 
     #[test]
     fn c_style_cast_hashword_matches_as() {
-        // Hashword categories are types too.
+        // 2026-09-11 (fundamentals doctrine, Phase A): the #Category
+        // spellings are retiring — both cast forms now map to the bare
+        // fundamental, and the as/paren equivalence is preserved.
         assert_cast_equiv("b as #String", "(#String) b");
+        let a = parse_expr("b as #String").expect("#String cast");
+        let bare = parse_expr("b as String").expect("String cast");
+        assert_eq!(a, bare, "retired #String must map to the bare fundamental");
     }
 
     #[test]
