@@ -226,7 +226,15 @@ impl<'a> TypecheckContext<'a> {
             return false;
         };
         let mut current = current;
+        // 2026-09-11 (A6): cycle guard — a degenerate self-parent
+        // (`type Int: Int`, possible whenever source redeclares a
+        // fundamental) must terminate the walk, not hang the checker.
+        let mut visited: Vec<String> = Vec::new();
         loop {
+            if visited.iter().any(|v| v == current) {
+                return false;
+            }
+            visited.push(current.to_string());
             if let Some(ops) = self.regular_ops.get(current) {
                 if ops.iter().any(|op| {
                     op.op == op_name
@@ -318,7 +326,14 @@ impl<'a> TypecheckContext<'a> {
             Type::Applied(n, _) => n.as_str(),
             _ => return None,
         };
+        // 2026-09-11 (A6): same cycle guard as type_declares_op — a degenerate
+        // self-parent must terminate the walk.
+        let mut visited: Vec<String> = Vec::new();
         loop {
+            if visited.iter().any(|v| v == current) {
+                return None;
+            }
+            visited.push(current.to_string());
             if let Some(bindings) = self.regular_bindings.get(current) {
                 for b in bindings {
                     if b.name != op_name {

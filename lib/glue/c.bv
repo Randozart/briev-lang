@@ -1,7 +1,7 @@
 // c.bv — C-ABI boundary representations for GLUE export.
 // 2026-08-03 (plan 2026-08-03-protocol-driven-glue-boundary): Briev has no
 // type layouts — only adaptive protocols. An FFI boundary representation is a
-// sub-protocol (`#String<C_String>`, `#Float<C_Double>`, …) whose CastTo/
+// sub-protocol (`String<C_String>`, `Float<C_Double>`, …) whose CastTo/
 // CastFrom bindings are the delta transforms. The casting graph finds the
 // minimal path between a Briev type and its boundary representation, and
 // codegen emits the delta — not a chain.
@@ -24,21 +24,21 @@ frgn cstr_to_briev(p: Ptr<Void>) -> String : briev_cstr_to_briev from "lib/runti
 frgn str_to_c(handle: String) -> Int : briev_str_to_c from "lib/runtime/briev_rt.c";
 frgn cstring_concat(a: Int, b: Int) -> Int : briev_cstring_concat from "lib/runtime/briev_rt.c";
 
-// The C string sub-protocol of #String: nul-terminated bytes vs the base's
+// The C string sub-protocol of String: nul-terminated bytes vs the base's
 // [len][data] encoding. `Concat` is the variant's own operation — a CStr
 // concatenated with + uses it directly (zero cast), not the [len][data]
 // inline concat.
 // 2026-08-28 (axiom facility): the CastTo/CastFrom pair is implemented by
 // FFI functions (briev_rt.c) — the round-trip gate cannot evaluate foreign
 // bodies, so the pair is DECLARED trusted and enters the authority ledger.
-proto C_String: #String {
-    axiom CastTo(#String<UTF8>) = cstr_to_briev(#Lh);
-    axiom CastFrom(#String<UTF8>) = str_to_c(#Lh);
-    op Concat(#String) = cstring_concat(#Lh, #Rh);
+proto C_String: String {
+    axiom CastTo(String<UTF8>) = cstr_to_briev(#Lh);
+    axiom CastFrom(String<UTF8>) = str_to_c(#Lh);
+    op Concat(String) = cstring_concat(#Lh, #Rh);
 };
 
 // Boundary types — the export signature IS the boundary contract. The ABI
 // width and marshalling derive from each type's protocol + metadata.
 
-type CStr:    #String<C_String> { };
-type CDouble: #Float<C_Double> { };
+type CStr:    String<C_String> { };
+type CDouble: Float<C_Double> { };

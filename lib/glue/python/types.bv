@@ -1,5 +1,5 @@
 // 2026-07-22: Python type declarations for Briev's type universe.
-// Types are defined against protocol hashwords (#String<UTF8>, #Int, etc.)
+// Types are defined against protocol hashwords (String<UTF8>, Int, etc.)
 // so GLUE can find CastTo/CastFrom paths.
 
 type PyBytes {
@@ -9,20 +9,20 @@ type PyBytes {
     op CastFrom(#Bits) = identity(#Lh);
 };
 
-type PyString: #String {
+type PyString: String {
     spec MaxBits: 128;
     spec Alignment: 8;
-    op CastTo(#String<UTF8>) = ucs4_to_utf8(#Lh);
-    op CastFrom(#String<UTF8>) = utf8_to_ucs4(#Lh);
-    op CastTo(#String<ASCII>) = ucs4_to_ascii(#Lh);
-    op CastFrom(#String<ASCII>) = ascii_to_ucs4(#Lh);
+    op CastTo(String<UTF8>) = ucs4_to_utf8(#Lh);
+    op CastFrom(String<UTF8>) = utf8_to_ucs4(#Lh);
+    op CastTo(String<ASCII>) = ucs4_to_ascii(#Lh);
+    op CastFrom(String<ASCII>) = ascii_to_ucs4(#Lh);
 };
 
-type PyInt: #Int {
+type PyInt: Int {
     spec MaxBits: 64;
     spec Alignment: 8;
-    op CastTo(#Int) = pylong_to_i64(#Lh);
-    op CastFrom(#Int) = i64_to_pylong(#Lh);
+    op CastTo(Int) = pylong_to_i64(#Lh);
+    op CastFrom(Int) = i64_to_pylong(#Lh);
 };
 
 // 2026-08-09 (Phase 12): the `meld PyBytes -> CBuffer` zero-copy admission is

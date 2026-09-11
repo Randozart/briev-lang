@@ -1,7 +1,7 @@
 // go/types.bv — Go boundary representations for GLUE export.
 // 2026-08-04 (plan 2026-08-04-ship-common-language-environments): Go bridges
 // through cgo — the C ABI is the substrate, so the boundary types are the
-// same #String/#Int/#Float categories the C target uses. The Go wrapper
+// same String/Int/Float categories the C target uses. The Go wrapper
 // converts natively (string ↔ *C.char, int64, float64) in the generated .go.
 // No extra declarations needed — cgo reads the C header.
 

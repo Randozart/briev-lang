@@ -557,7 +557,8 @@ rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "exter
         assert_eq!(python.calling_convention, "c_abi");
         assert!(python.module_init);
         assert_eq!(
-            python.protocols.get("#String").unwrap().c_abi.as_deref(),
+            // 2026-09-11 (Phase A6): protocol keys are the BARE category.
+            python.protocols.get("String").unwrap().c_abi.as_deref(),
             Some("ctypes.c_void_p")
         );
         assert!(python.templates.contains_key("__init__.py"), "python __init__.py template");

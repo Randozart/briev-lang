@@ -8,7 +8,10 @@
 //   briev build --disable-plugin prelude --library bridge.bv --out .  # bridge.ll
 //   cargo build                                            # build.rs llc + link
 
-type Int: #Int {
+// 2026-09-11 (fundamentals doctrine): Int is a parentless fundamental —
+// the old `type Int: #Int` protocol spelling has no bare-parent form
+// (nothing derives from itself).
+type Int {
     spec MaxBits: 64;
     spec Alignment: 8;
 };

@@ -3064,13 +3064,21 @@ impl<'a> Parser<'a> {
         let name = self.expect_identifier()?;
         self.expect(Token::Colon)?;
 
-        // Parse the category hashword: #String, #Float, etc.
+        // Parse the category: `proto C_String: String { ... }` — 2026-09-11
+        // (fundamentals doctrine, Phase A): the BARE fundamental is the
+        // protocol; the legacy `#String` spelling is still accepted until the
+        // A4 deletion.
         let category_type = self.parse_type()?;
         let category = match &category_type {
             Type::HashWord(cat) => cat.strip_prefix('#').unwrap_or(cat).to_string(),
             Type::HashWordVariant(cat, _) => cat.strip_prefix('#').unwrap_or(cat).to_string(),
+            Type::Custom(name)
+                if crate::type_universe::FUNDAMENTAL_TYPES.contains(&name.as_str()) =>
+            {
+                name.clone()
+            }
             _ => return self.error_at_current(&format!(
-                "expected protocol category hashword like '#String', got '{}'", category_type
+                "expected a fundamental category like 'String', got '{}'", category_type
             )),
         };
 
@@ -3104,6 +3112,8 @@ impl<'a> Parser<'a> {
                     };
                     self.expect(Token::LParen)?;
                     let target_type = self.parse_type()?;
+                    // 2026-09-11 (Phase A): bare `String<UTF8>` (primary) and
+                    // legacy `#String<UTF8>` both name (category, variant).
                     let (target_category, target_variant) = match &target_type {
                         Type::HashWordVariant(cat, var) => (
                             cat.strip_prefix('#').unwrap_or(cat).to_string(),
@@ -3113,8 +3123,23 @@ impl<'a> Parser<'a> {
                             cat.strip_prefix('#').unwrap_or(cat).to_string(),
                             String::new(),
                         ),
+                        Type::Applied(base, args)
+                            if crate::type_universe::FUNDAMENTAL_TYPES.contains(&base.as_str())
+                                && args.len() == 1 =>
+                        {
+                            let variant = match &args[0] {
+                                Type::Custom(v) => v.clone(),
+                                _ => String::new(),
+                            };
+                            (base.clone(), variant)
+                        }
+                        Type::Custom(name)
+                            if crate::type_universe::FUNDAMENTAL_TYPES.contains(&name.as_str()) =>
+                        {
+                            (name.clone(), String::new())
+                        }
                         _ => return self.error_at_current(&format!(
-                            "expected protocol variant like '#String<UTF8>', got '{}'", target_type
+                            "expected a protocol variant like 'String<UTF8>', got '{}'", target_type
                         )),
                     };
                     self.expect(Token::RParen)?;

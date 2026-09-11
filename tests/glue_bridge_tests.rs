@@ -223,7 +223,7 @@ fn test_load_glue_config_shiped() {
     assert_eq!(python.extension, "so");
     assert_eq!(python.calling_convention, "c_abi");
     assert_eq!(
-        python.protocols.get("#Int").unwrap().c_abi.as_deref(),
+        python.protocols.get("Int").unwrap().c_abi.as_deref(),
         Some("ctypes.c_int64")
     );
 }

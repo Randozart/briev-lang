@@ -9,7 +9,7 @@
 // 16-bit half-precision float (hardware on some GPUs).
 // 2026-09-02 (plan fundamental-parent-membership): the bare fundamental
 // parent is the whole join — the parent chain reaches the `Float`
-// fundamental, so #Float membership, its protocol op bindings, cast paths,
+// fundamental, so Float membership, its protocol op bindings, cast paths,
 // and the width ladder all DERIVE (`spec MaxBits: 16` selects the f16
 // kernel shape). No hashword restatement, no width-suffixed arithmetic
 // intrinsics: `+`/`-`/`*` authorize through the Float category and lower

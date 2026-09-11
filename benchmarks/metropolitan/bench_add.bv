@@ -3,7 +3,7 @@
 //
 // 2026-07-25: --int-bits 32 for WASM target emits i32 instead of i64,
 // eliminating BigInt overhead in JavaScript. No contract needed for
-// the narrowing pass — --int-bits is the fallback for #Int protocol.
+// the narrowing pass — --int-bits is the fallback for Int protocol.
 
 export defn add(a: Int, b: Int) -> Int {
     term a + b;

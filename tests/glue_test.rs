@@ -60,7 +60,7 @@ fn test_find_language_by_extension_python() {
     assert_eq!(adapter.extension, "so");
     assert_eq!(adapter.calling_convention, "c_abi");
     assert_eq!(
-        adapter.protocols.get("#Int").unwrap().c_abi.as_deref(),
+        adapter.protocols.get("Int").unwrap().c_abi.as_deref(),
         Some("ctypes.c_int64")
     );
 }
@@ -175,7 +175,7 @@ fn test_load_glue_config_fields() {
     assert_eq!(python.bridge_kind, "native_module");
     assert_eq!(python.calling_convention, "c_abi");
     assert_eq!(
-        python.protocols.get("#Float").unwrap().c_abi.as_deref(),
+        python.protocols.get("Float").unwrap().c_abi.as_deref(),
         Some("ctypes.c_double")
     );
 }

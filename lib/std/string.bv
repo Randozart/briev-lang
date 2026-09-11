@@ -270,7 +270,7 @@ defn repeat(s: String, count: Int) [count >= 0][CharCount#(term) == CharCount#(s
 
 // Type conversions
 // 2026-08-04 (out-observability plan, Phase 3): `IntToStr#` was removed from
-// the intrinsic table in ffd55677 (the casting graph's `Int → #String`
+// the intrinsic table in ffd55677 (the casting graph's `Int → String`
 // ExtCall lane owns this conversion). Use the cast, which resolves through the
 // graph — `.bv` emits `call ptr @int_to_str`, `.ebv` will emit a Briev digit
 // loop. Undo: restore `term IntToStr#(n);` only if the intrinsic is ever
@@ -281,13 +281,13 @@ defn to_string(n: Int) [true][CharCount#(term) >= 0] -> String {
 
 defn to_float(s: String) [true][term >= 0.0 || term < 0.0] -> Float {
   // 2026-08-04 (Phase 3): was `term 0.0` — a stub. The casting graph owns
-  // `#String → #Float` (ExtCall("str_to_float")); use the cast form.
+  // `String → Float` (ExtCall("str_to_float")); use the cast form.
   term s as Float;
 };
 
 defn to_int(s: String) [true][term == 0 || term != 0] -> Int {
   // 2026-08-04 (Phase 3): was `term 0` — a stub. The casting graph owns
-  // `#String → #Int` (ExtCall("str_to_int")); use the cast form.
+  // `String → Int` (ExtCall("str_to_int")); use the cast form.
   term s as Int;
 };
 // ===== TIER 2: NATIVE CHARACTER CLASSIFICATION =====
@@ -559,5 +559,5 @@ defn is_empty_str(s: String) [true][term == (CharCount#(s) == 0)] -> Bool {
 };
 
 // 2026-07-30: CastTo/CastFrom on String is handled by the casting graph's
-// hardcoded protocol lanes (#String→#Bit = extractvalue, #String→#Int =
+// hardcoded protocol lanes (String→Bit = extractvalue, String→Int =
 // ExtCall("str_to_int"), etc.). The stub functions below are removed.

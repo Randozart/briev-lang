@@ -390,7 +390,7 @@ fn to_abi_args(
 ) -> Vec<String> {
     export.params.iter()
         .map(|(name, ty)| {
-            let key = format!("#{}", protocol_category_of(ty, type_protocols));
+            let key = protocol_category_of(ty, type_protocols);
             target.conversions.to_abi.get(&key)
                 .map(|expr| expr.replace("{name}", name))
                 .unwrap_or_else(|| name.clone())
@@ -405,7 +405,7 @@ fn from_abi_return(
     target: &GlueTarget,
     type_protocols: &HashMap<String, String>,
 ) -> String {
-    let key = format!("#{}", protocol_category_of(&export.return_type, type_protocols));
+    let key = protocol_category_of(&export.return_type, type_protocols);
     target.conversions.from_abi.get(&key)
         .cloned()
         .unwrap_or_else(|| "result_abi".to_string())
@@ -745,7 +745,7 @@ fn native_key(ty: &str, type_protocols: &HashMap<String, String>) -> String {
         Some(proto) => protocol_category(proto).to_string(),
         None => ty.to_string(),
     };
-    format!("#{}", cat)
+    cat
 }
 
 fn tpl_for(target: &GlueTarget, key: &str, default: &str) -> String {
@@ -968,7 +968,7 @@ fn resolve_protocol(
     let category = type_protocols.get(briev_type_name)
         .map(|p| protocol_category(p).to_string())
         .unwrap_or_else(|| briev_type_name.to_string());
-    let protocol_key = format!("#{}", category);
+    let protocol_key = category;
     if let Some(entry) = protocols.get(&protocol_key) {
         let abi = entry.c_abi.clone()
             .or_else(|| entry.wasm_abi.clone())

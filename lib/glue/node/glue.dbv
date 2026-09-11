@@ -11,22 +11,22 @@
 //   {{return_expr}} {{s_param}} {{s_init}} {{exports}} {{ffi_decls}}
 // Special template keys: "fn_template", "ffi_template"
 
-node: { types_module: "glue/node/types.bv"; extension: "mjs"; bridge_kind: "esm_module"; calling_convention: "c_abi"; module_init: false; protocols: { "#Bool": { native: "boolean"; c_abi: "bool" }; "#Char": { native: "string"; c_abi: "i32" }; "#Data": { native: "Uint8Array"; c_abi: "cstring" }; "#Float": { native: "number"; c_abi: "double" }; "#Int": { native: "bigint"; c_abi: "i64" }; "#String": { native: "string"; c_abi: "cstring" } } ; conversions: { to_abi: { "#Int": "{name}"; "#Float": "{name}"; "#String": "{name}"; "#Bool": "{name}"; "#Data": "{name}"; "#Char": "{name}" }; from_abi: { "#Int": "result_abi"; "#Float": "result_abi"; "#String": "result_abi"; "#Bool": "result_abi"; "#Data": "result_abi"; "#Char": "result_abi" } } ; state: { decl: ""; arg: "_state"; ffi_type: "'pointer'" }; param_decl: "{name}: {type}"; native_include_cmd: "node -p \"'-I' + require('path').join(require('path').dirname(process.execPath), '..', 'include', 'node')\""; native_suffix: ".node" };
+node: { types_module: "glue/node/types.bv"; extension: "mjs"; bridge_kind: "esm_module"; calling_convention: "c_abi"; module_init: false; protocols: { "Bool": { native: "boolean"; c_abi: "bool" }; "Char": { native: "string"; c_abi: "i32" }; "Data": { native: "Uint8Array"; c_abi: "cstring" }; "Float": { native: "number"; c_abi: "double" }; "Int": { native: "bigint"; c_abi: "i64" }; "String": { native: "string"; c_abi: "cstring" } } ; conversions: { to_abi: { "Int": "{name}"; "Float": "{name}"; "String": "{name}"; "Bool": "{name}"; "Data": "{name}"; "Char": "{name}" }; from_abi: { "Int": "result_abi"; "Float": "result_abi"; "String": "result_abi"; "Bool": "result_abi"; "Data": "result_abi"; "Char": "result_abi" } } ; state: { decl: ""; arg: "_state"; ffi_type: "'pointer'" }; param_decl: "{name}: {type}"; native_include_cmd: "node -p \"'-I' + require('path').join(require('path').dirname(process.execPath), '..', 'include', 'node')\""; native_suffix: ".node" };
 node.templates.0: "ffi_template" "{{name}}: [{{c_return}}, [{{s_ffi_type}}{{c_types}}]],";
 node.templates.1: "fn_template" "export function {{name}}({{params}}) {\n    return lib.{{name}}({{s_param}}{{args_abi}});\n}\n";
 node.templates.2: "index.mjs" "// GLUE bridge for {{bridge_name}} — auto-generated.\nimport { createRequire } from 'module';\nconst require = createRequire(import.meta.url);\nconst ffi = require('ffi-napi');\n\nconst lib = ffi.Library('./bridge.so', {\n    init_state: ['void', ['pointer']],\n    {{ffi_decls}}\n});\n\nlet _state = null;\n\nfunction init_state() {\n    const buf = Buffer.alloc(32);\n    _state = buf;\n    lib.init_state(buf);\n}\n\ninit_state();\n\n{{exports}}\n";
 node.templates.3: "native.module" "#include <node_api.h>\n\ntypedef struct BrievState BrievState;\nextern BrievState* __briev_init_state(void);\nextern void __glue_release(BrievState* state);\n\n{{export_protos}}\n\nstatic BrievState* g_state = NULL;\n\n{{methods}}\n\nNAPI_MODULE_INIT() {\n    g_state = __briev_init_state();\n    napi_property_descriptor desc[] = {\n{{method_defs}}\n    };\n    napi_define_properties(env, exports, {{nmethods}}, desc);\n    return exports;\n}\n";
 node.templates.4: "native.method" "static napi_value method_{{name}}(napi_env env, napi_callback_info info) {\n    size_t argc = {{nargs}};\n    napi_value argv[{{nargs_arr}}];\n    napi_get_cb_info(env, info, &argc, argv, NULL, NULL);\n    size_t _i = 0;\n    char _sbufs[{{nargs_arr}}][4096];\n{{parse_code}}\n    {{ret_c}} r = {{call}};\n{{build_code}}\n}\n";
 node.templates.5: "native.method_def" "        { \"{{name}}\", NULL, method_{{name}}, NULL, NULL, NULL, napi_default, NULL },\n";
-node.templates.6: "native.parse.#Int" "    int64_t {{name}};\n    if (napi_get_value_int64(env, argv[_i], &{{name}}) != napi_ok) return NULL;\n    _i++;";
-node.templates.7: "native.build.#Int" "    napi_value result;\n    napi_create_int64(env, r, &result);\n    return result;";
-node.templates.8: "native.c_type.#Int" "long long";
-node.templates.9: "native.ret.#Int" "long long";
-node.templates.10: "native.parse.#Float" "    double {{name}};\n    if (napi_get_value_double(env, argv[_i], &{{name}}) != napi_ok) return NULL;\n    _i++;";
-node.templates.11: "native.build.#Float" "    napi_value result;\n    napi_create_double(env, r, &result);\n    return result;";
-node.templates.12: "native.c_type.#Float" "double";
-node.templates.13: "native.ret.#Float" "double";
-node.templates.14: "native.parse.#String" "    size_t {{name}}_len = 0;\n    if (napi_get_value_string_utf8(env, argv[_i], NULL, 0, &{{name}}_len) != napi_ok) return NULL;\n    if ({{name}}_len >= 4096) { napi_throw_error(env, NULL, \"string too long\"); return NULL; }\n    size_t {{name}}_written = 0;\n    if (napi_get_value_string_utf8(env, argv[_i], _sbufs[_i], 4096, &{{name}}_written) != napi_ok) return NULL;\n    long long {{name}} = (long long)_sbufs[_i];\n    _i++;";
-node.templates.15: "native.build.#String" "    napi_value result;\n    napi_create_string_utf8(env, (const char*)r, NAPI_AUTO_LENGTH, &result);\n    return result;";
-node.templates.16: "native.c_type.#String" "long long";
-node.templates.17: "native.ret.#String" "long long";
+node.templates.6: "native.parse.Int" "    int64_t {{name}};\n    if (napi_get_value_int64(env, argv[_i], &{{name}}) != napi_ok) return NULL;\n    _i++;";
+node.templates.7: "native.build.Int" "    napi_value result;\n    napi_create_int64(env, r, &result);\n    return result;";
+node.templates.8: "native.c_type.Int" "long long";
+node.templates.9: "native.ret.Int" "long long";
+node.templates.10: "native.parse.Float" "    double {{name}};\n    if (napi_get_value_double(env, argv[_i], &{{name}}) != napi_ok) return NULL;\n    _i++;";
+node.templates.11: "native.build.Float" "    napi_value result;\n    napi_create_double(env, r, &result);\n    return result;";
+node.templates.12: "native.c_type.Float" "double";
+node.templates.13: "native.ret.Float" "double";
+node.templates.14: "native.parse.String" "    size_t {{name}}_len = 0;\n    if (napi_get_value_string_utf8(env, argv[_i], NULL, 0, &{{name}}_len) != napi_ok) return NULL;\n    if ({{name}}_len >= 4096) { napi_throw_error(env, NULL, \"string too long\"); return NULL; }\n    size_t {{name}}_written = 0;\n    if (napi_get_value_string_utf8(env, argv[_i], _sbufs[_i], 4096, &{{name}}_written) != napi_ok) return NULL;\n    long long {{name}} = (long long)_sbufs[_i];\n    _i++;";
+node.templates.15: "native.build.String" "    napi_value result;\n    napi_create_string_utf8(env, (const char*)r, NAPI_AUTO_LENGTH, &result);\n    return result;";
+node.templates.16: "native.c_type.String" "long long";
+node.templates.17: "native.ret.String" "long long";

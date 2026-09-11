@@ -1,7 +1,7 @@
 // java/types.bv — Java (JNI) boundary representations for GLUE export.
 // 2026-08-04 (plan 2026-08-04-ship-common-language-environments): Java bridges
 // through a generated JNI C shim. The boundary types are the same
-// #String/#Int/#Float categories; the shim converts natively (jstring ->
+// String/Int/Float categories; the shim converts natively (jstring ->
 // GetStringUTFChars -> CStr handle; the composite data -> NewStringUTF).
 
 import "glue/c.bv";

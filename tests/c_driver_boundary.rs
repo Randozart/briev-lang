@@ -1,8 +1,8 @@
 // ── Boundary-Type Round-Trip Test ──────────────────────────────────────
 // 2026-08-03 (plan 2026-08-03-protocol-driven-glue-boundary): the export
-// signature IS the boundary contract. `CStr` is a #String<C_String> sub-type
+// signature IS the boundary contract. `CStr` is a String<C_String> sub-type
 // (ptr ABI, marshalled via the casting graph's cstr_to_briev/str_to_c
-// bindings); `CDouble` is #Float<C_Double> (double ABI — the Float fix);
+// bindings); `CDouble` is Float<C_Double> (double ABI — the Float fix);
 // `CStr + CStr` uses the variant's own Concat cross-op (cstring_concat).
 // Toolchain-guarded.
 

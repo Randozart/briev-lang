@@ -23,8 +23,8 @@ export defn add(a: Int, b: Int) -> Int {
     term a + b;
 };
 
-// Float boundary export — CDouble is #Float<C_Double> (double ABI). The
-// default #Float is float32; the boundary type requests the C `double`
+// Float boundary export — CDouble is Float<C_Double> (double ABI). The
+// default Float is float32; the boundary type requests the C `double`
 // representation explicitly, fixing the old Float ABI corruption.
 import "glue/c.bv";
 
