@@ -506,3 +506,49 @@ generated runner's `(M*N/(16*4*64))*32` = 131072 work items with
 MW_BT=64 (the runner descriptor's workgroup size); the PTX mw blob
 wants 262144 items / MW_BT=256 or 512. The wrong pair = garbage tiles
 (the documented v2 over-dispatch failure mode).
+
+## 2026-09-11 night: coopmat sustained re-baseline — the tiers are COMPLEMENTARY
+
+Harness lessons first (both bit us tonight):
+1. **The blob is shape-specialized.** gemm_h.abv bakes M=N=K=4096 into
+   the module constants; running that blob at 2048³/8192³ args is
+   meaningless (out-of-range tiles, zero y, and at 8192³ a verify ref
+   that goes NaN — which max_rel_err silently reports as 0.000e+00
+   because `NaN > max` is false). Shape-matched .abv fixtures are
+   MANDATORY per shape. The 2048³ "1.0 FAIL" and 8192³ "0.0 OK / 47.6
+   TF" readings from mis-shaped blobs are void.
+2. **The harness's OK/FAIL verdict prints the f32 5e-3 gate regardless
+   of blob tier** — f16acc blobs passing at 8.3e-3 print FAIL. Read the
+   number, not the verdict, until the harness gates by tier.
+
+**Sustained re-baseline (110W steady, shape-matched blobs, shipped
+coopmat config R=4/smem/pairs/prefetch/f16acc; dispatch per the
+generated runner's formula):**
+
+| shape  | coopmat f16acc (sync GPU ts) | coopmat (batched wall) | PTX f16acc (batched wall) | PTX f32 (batched wall) |
+|--------|------------------------------|------------------------|---------------------------|------------------------|
+| 2048³  | 0.64 ms = 27.1 TF            | 0.60-0.63 ms = 27-29 TF ✓ tight | ~17 TF          | 16.5 TF |
+| 4096³  | 5.0 ms = 13.7 TF ✓ tight     | 13.7-21.7 ms = 6.3-10.1 TF ✗ wobble | 19.5 TF     | 13.4 TF |
+| 8192³  | ~45.5 ms = 24.2 TF           | 32-37 ms = 30-34 TF             | 18.0 TF         | 13.3 TF |
+
+Coopmat numerics: 2.1e-3 / 4.4e-3 / 8.3e-3 — all inside the 1e-2
+f16acc contract (the tier's K-panel accumulation is gentler than the
+PTX chunk path).
+
+**Findings:**
+- **R=2 REJECTED at sustained state**: stable ~24 ms @4096³ (5.7-5.9
+  TF) vs R=4's 5.0 ms sync. tile_rows stays 4.
+- **The two tiers split the shape space**: coopmat wins 2048³ (+60%)
+  and 8192³ (+70-90%); PTX f16acc wins 4096³ (+42% over coopmat sync).
+  The "portable vs escape hatch" framing is dead — a frontend
+  shape-routed tier selection (compile-time constants!) is the honest
+  architecture and a doctrine §2/§3 amendment.
+- **Vulkan batched submission is pathological at 4096³** (2-3× the sync
+  GPU time, high variance) while CUDA batching helps. Queue-depth ×
+  workgroup-count interaction — investigation parked.
+- The subgroups-vs-tile-rows knob confusion was a false alarm: tile_rows
+  (R, dispatch formula + kernel geometry) and subgroups (B2 n-slice
+  split) are orthogonal; config 4 + 2 is self-consistent.
+- **CUDA is driver-wedged again** (dispatch failed on every shape after
+  the vulkan sessions; the documented rmmod/modprobe clear needs the
+  owner). PTX numbers are the earlier-today sustained readings.
