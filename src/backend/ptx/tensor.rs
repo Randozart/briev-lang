@@ -1271,7 +1271,12 @@ pub fn tensor_gemm_ptx_smem_mw(
                     cb, cb + 1, lo, hi, cb, cb + 1
                 ));
                 if g + 2 < ng {
-                    let (nlo, nhi) = if g % 2 == 0 { ("%b2", "%b3") } else { ("%b0", "%b1") };
+                    // Refill the pair mma(g) JUST released — it is next
+                    // needed at g+2. The other pair still holds g+1's
+                    // fragment (loading there clobbered it before its mma:
+                    // every mma(g>=1) consumed group-(g+1)'s B — the
+                    // 4096x4096x16 f16acc 2.3e-1 failure).
+                    let (nlo, nhi) = if g % 2 == 0 { ("%b0", "%b1") } else { ("%b2", "%b3") };
                     emit_b_ld(&mut out, g + 2, nlo, nhi);
                 }
             }
