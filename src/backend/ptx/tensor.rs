@@ -836,18 +836,30 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
     out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19, %r20;\n");
     out.push_str("    .reg .u32  %r21, %r22;\n");
-    // Register-trimmed scheduling: only %a0-%a3 (one A 16x16 block live per
-    // mh) and %b0-%b1 (one B fragment live per g) exist — see the compute
-    // section's scheduling comment below.
-    // f16-acc pipelines the B loads (ld-ahead into the alternate pair) and
-    // gets 4 B regs; f32 stays at 2 (the 128-reg 2-CTA budget is exact).
-    let bregs: Vec<String> = if f16_acc {
-        vec!["%b0".to_string(), "%b1".to_string(), "%b2".to_string(), "%b3".to_string()]
+    // Register scheduling (2026-09-11 E4a, plan 2026-09-11-ptx-mma-issue-ceiling):
+    // f16-acc CLUSTER-PRELOADS — all 8 B fragments (%b0-%b15) and both A
+    // blocks (%a0-%a7) issue back-to-back at the top of the compute phase,
+    // so the ~30clk ldmatrix latencies overlap each other and the fill
+    // instead of stalling every mma (the old g+2 ld-ahead hid only ~15 of
+    // 30 clk per ld; the no-fill KLOOP ceiling measured 29.9 vs 53.5 for
+    // fixed-address lds). Costs +16 regs over the trimmed schedule → ~80
+    // regs ⇒ 1 CTA/SM at 512T — measured rational: E1b (no stalls) hit
+    // 52.6 TF at 1 CTA/SM, occupancy only pays when stalls exist.
+    // f32 keeps the trimmed 2-B-reg serial schedule byte-identical.
+    let (aregs, bregs): (Vec<String>, Vec<String>) = if f16_acc {
+        (
+            (0..8).map(|i| format!("%a{}", i)).collect(),
+            (0..16).map(|i| format!("%b{}", i)).collect(),
+        )
     } else {
-        vec!["%b0".to_string(), "%b1".to_string()]
+        (
+            vec!["%a0".to_string(), "%a1".to_string(), "%a2".to_string(), "%a3".to_string()],
+            vec!["%b0".to_string(), "%b1".to_string()],
+        )
     };
     out.push_str(&format!(
-        "    .reg .b32  %a0, %a1, %a2, %a3, {}, %t0;\n",
+        "    .reg .b32  {}, {}, %t0;\n",
+        aregs.join(", "),
         bregs.join(", ")
     ));
     // Accumulators: f32-acc = 4 f32 per (mh,g) (64 regs); f16-acc = 2 f16x2
@@ -1220,80 +1232,116 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", mhr * 512));
     out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
     out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
-    for mh in 0..mhr {
-        // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
-        // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
-        out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
+    // B-fragment address+ldmatrix emitter (shared by both schedules).
+    // Per col-group g (8 cols): lane 0-15 addresses k-rows k=lane of 16
+    // bytes at byte g*16, XOR-swizzled by k&7 — matching the fill's
+    // ((n>>3)^(k&7))*16 chunk remap. x2.trans: lanes 0-7 -> b-lo (k 0-7),
+    // lanes 8-15 -> b-hi (k 8-15), both n 0-7.
+    let emit_b_ld = |out: &mut String, g: usize, lo: &str, hi: &str| {
+        out.push_str("    mov.u64 %rd4, %rd9;\n");
+        out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", bsmem_buf));
+        out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        out.push_str("    mov.u32 %r12, %r11;\n");
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", gr * 256));
+        out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
         out.push_str("    mov.u32 %r13, %r7;\n");
-        out.push_str("    shr.u32 %r12, %r13, 3;\n");
-        out.push_str("    and.b32 %r13, %r13, 7;\n");
-        out.push_str("    and.b32 %r14, %r12, 1;\n");
-        out.push_str("    shr.u32 %r15, %r12, 1;\n");
-        out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
-        out.push_str("    add.u32 %r15, %r15, %r13;\n");
-        out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
-        out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
-        out.push_str("    add.u32 %r16, %r15, %r14;\n");
-        out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
+        out.push_str("    and.b32 %r12, %r13, 15;\n");
+        out.push_str(&format!("    shl.b32 %r12, %r12, {};\n", 4 + gr.trailing_zeros()));
+        out.push_str(&format!("    and.b32 %r14, %r13, {};\n", gr - 1));
+        out.push_str(&format!("    xor.b32 %r14, %r14, {};\n", g));
+        out.push_str("    shl.b32 %r14, %r14, 4;\n");
+        out.push_str("    add.u32 %r17, %r12, %r14;\n");
+        out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
         out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
-        out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
-        out.push_str("    mov.b32 %t0, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %t0;\n");
-
-        // B fragments from the k-major swizzled tile. Per col-group g (8
-        // cols): lane 0-15 addresses k-rows k=lane of 16 bytes at byte g*16,
-        // XOR-swizzled by k&7 — matching the fill's ((n>>3)^(k&7))*16 chunk
-        // remap. x2.trans: lanes 0-7 -> b-lo (k 0-7), lanes 8-15 -> b-hi
-        // (k 8-15), both n 0-7.
-        //
-        // f16-acc: the B loads software-pipeline — preload g0/g1 into the
-        // two register pairs, then each mma(g) is independent of the
-        // ld-ahead for g+2 (alternate pairs), so the ~30clk ldmatrix
-        // latency hides under the mma instead of serializing every g.
-        // f32: serial per-g (the 128-reg 2-CTA budget cannot fund 4 B regs).
-        let emit_b_ld = |out: &mut String, g: usize, lo: &str, hi: &str| {
-            out.push_str("    mov.u64 %rd4, %rd9;\n");
-            out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", bsmem_buf));
-            out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
-            out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
-            out.push_str("    mov.u32 %r12, %r11;\n");
-            out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", gr * 256));
-            out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
-            out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        out.push_str(&format!(
+            "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
+            lo, hi
+        ));
+    };
+    if f16_acc {
+        // E4a cluster schedule (2026-09-11): [A lds] [B lds] [mma phase] —
+        // the ten ldmatrix issue back-to-back so their ~30clk latencies
+        // overlap one another and the in-flight fill; the 16-mma phase then
+        // runs with zero ld stalls. Addresses: the per-mh A offset and the
+        // per-g B offset blocks are pure ALU (free per the E1c microbench);
+        // what mattered was never issuing an ld immediately before its
+        // consumer mma.
+        for mh in 0..mhr {
+            // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
+            // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
+            out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
             out.push_str("    mov.u32 %r13, %r7;\n");
-            out.push_str("    and.b32 %r12, %r13, 15;\n");
-            out.push_str(&format!("    shl.b32 %r12, %r12, {};\n", 4 + gr.trailing_zeros()));
-            out.push_str(&format!("    and.b32 %r14, %r13, {};\n", gr - 1));
-            out.push_str(&format!("    xor.b32 %r14, %r14, {};\n", g));
-            out.push_str("    shl.b32 %r14, %r14, 4;\n");
-            out.push_str("    add.u32 %r17, %r12, %r14;\n");
-            out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
+            out.push_str("    shr.u32 %r12, %r13, 3;\n");
+            out.push_str("    and.b32 %r13, %r13, 7;\n");
+            out.push_str("    and.b32 %r14, %r12, 1;\n");
+            out.push_str("    shr.u32 %r15, %r12, 1;\n");
+            out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
+            out.push_str("    add.u32 %r15, %r15, %r13;\n");
+            out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+            out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
+            out.push_str("    add.u32 %r16, %r15, %r14;\n");
+            out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
             out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
             out.push_str(&format!(
-                "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
-                lo, hi
+                "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {{%a{}, %a{}, %a{}, %a{}}}, [%rd5];\n",
+                4 * mh, 4 * mh + 1, 4 * mh + 2, 4 * mh + 3
             ));
-        };
-        if f16_acc {
-            emit_b_ld(&mut out, 0, "%b0", "%b1");
-            emit_b_ld(&mut out, 1, "%b2", "%b3");
+            // ldmatrix x4's operand order is transposed for row-major A —
+            // swap the middle pair (the S3a-locked fragment recipe).
+            out.push_str(&format!(
+                "    mov.b32 %t0, %a{}; mov.b32 %a{}, %a{}; mov.b32 %a{}, %t0;\n",
+                4 * mh + 1, 4 * mh + 1, 4 * mh + 2, 4 * mh + 2
+            ));
+        }
+        for g in 0..gr {
+            let (lo, hi) = (format!("%b{}", 2 * g), format!("%b{}", 2 * g + 1));
+            emit_b_ld(&mut out, g, &lo, &hi);
+        }
+        for mh in 0..mhr {
             for g in 0..gr {
-                let (lo, hi) = if g % 2 == 0 { ("%b0", "%b1") } else { ("%b2", "%b3") };
+                let (lo, hi) = (format!("%b{}", 2 * g), format!("%b{}", 2 * g + 1));
+                let (a0, a1, a2, a3) = (
+                    format!("%a{}", 4 * mh),
+                    format!("%a{}", 4 * mh + 1),
+                    format!("%a{}", 4 * mh + 2),
+                    format!("%a{}", 4 * mh + 3),
+                );
                 let cb = 2 * (mh * gr + g);
                 out.push_str(&format!(
-                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{{}, {}}}, {{%c{}, %c{}}};\n",
-                    cb, cb + 1, lo, hi, cb, cb + 1
+                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{{}, {}, {}, {}}}, {{{}, {}}}, {{%c{}, %c{}}};\n",
+                    cb, cb + 1, a0, a1, a2, a3, lo, hi, cb, cb + 1
                 ));
-                if g + 2 < gr {
-                    // Refill the pair mma(g) JUST released — it is next
-                    // needed at g+2. The other pair still holds g+1's
-                    // fragment (loading there clobbered it before its mma:
-                    // every mma(g>=1) consumed group-(g+1)'s B — the
-                    // 4096x4096x16 f16acc 2.3e-1 failure).
-                    let (nlo, nhi) = if g % 2 == 0 { ("%b0", "%b1") } else { ("%b2", "%b3") };
-                    emit_b_ld(&mut out, g + 2, nlo, nhi);
-                }
             }
-        } else {
+        }
+    } else {
+        for mh in 0..mhr {
+            // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
+            // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
+            out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
+            out.push_str("    mov.u32 %r13, %r7;\n");
+            out.push_str("    shr.u32 %r12, %r13, 3;\n");
+            out.push_str("    and.b32 %r13, %r13, 7;\n");
+            out.push_str("    and.b32 %r14, %r12, 1;\n");
+            out.push_str("    shr.u32 %r15, %r12, 1;\n");
+            out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
+            out.push_str("    add.u32 %r15, %r15, %r13;\n");
+            out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+            out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
+            out.push_str("    add.u32 %r16, %r15, %r14;\n");
+            out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
+            out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+            out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
+            out.push_str("    mov.b32 %t0, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %t0;\n");
+
+            // B fragments from the k-major swizzled tile. Per col-group g (8
+            // cols): lane 0-15 addresses k-rows k=lane of 16 bytes at byte g*16,
+            // XOR-swizzled by k&7 — matching the fill's ((n>>3)^(k&7))*16 chunk
+            // remap. x2.trans: lanes 0-7 -> b-lo (k 0-7), lanes 8-15 -> b-hi
+            // (k 8-15), both n 0-7.
+            // f32: serial per-g (the 128-reg 2-CTA budget cannot fund 4 B
+            // regs — the f32 path stays byte-identical through E4a).
             for g in 0..gr {
                 emit_b_ld(&mut out, g, "%b0", "%b1");
                 let cb = 4 * (mh * gr + g);

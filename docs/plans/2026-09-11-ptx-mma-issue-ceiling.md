@@ -188,3 +188,20 @@ full-phase fragment preload removes the stalls themselves. E4's shape:
 phase boundary, addresses computed as loop-carried increments. Target:
 the no-fill KLOOP ceiling 29.9 → 45+, shipped 21.0 → 30+. E4 is next
 session's opening rung.
+
+## E4a VERDICT (2026-09-11 night): cluster preload +1% — kept; the wall moves again
+
+E4a shipped: all 8 B + both A fragments load back-to-back before the mma
+phase (the g+2 alternate-pair pipeline and its historical bug site are
+gone — simpler schedule, same 64 regs after ptxas, correctness identical
+at 1.789e-03). Result: 21.43 vs 21.23 TF — a keeper, not a rung.
+
+The ld-stall model over-promised: ptxas was evidently hiding more of the
+g+2 lookahead than the model credited. The decisive unexplained number
+is now **E1f vs the real kernel at identical 2-CTA/SM occupancy: 41.0 vs
+21.0**. Everything the ladder tested (issue, chains, ALU, ld order,
+wait slack, occupancy) is excluded; what E1f lacks vs the real kernel:
+the every-512-k y-RMV promotion, the swizzled-smem write/read bank
+interleaving with cycling kstep addresses, and the 512×2-thread barrier.
+Next session: strip the promo from a dump variant (the only single-
+feature probe left that can carry ~20 TF), then the smem-port question.
