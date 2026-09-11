@@ -5757,3 +5757,20 @@ compiler; commit-window bisect pinned dd5f5e26; post-fix blob returns
 not verified. Any commit touching kernel index math needs the on-device
 correctness gate at a real shape (the cross-tier A/B harness now does
 this in one command).
+
+## 2026-09-11: coopmat S=1 (subgroups=1) kernel produces zero y at 2048³
+
+**Symptom:** with `spirv_coopmat_subgroups: 1`, the coopmat f16acc
+GEMM at 2048³ stores nothing (max_rel_err 1.000e+00, y all zero) while
+4096³ with the same S=1 blob is correct (4.436e-03). The shipped
+config (S=2) is unaffected at every tested shape.
+
+**Status:** latent — the S=1 module form (no SubgroupId decode, single
+32-lane workgroup per descriptor) breaks at this geometry. Not
+debugged; the shipped config is S=2 everywhere. If the S=1 form is
+ever productized (smaller smem per workgroup → occupancy play), bisect
+the fill/store decode against the S=2 module first.
+
+**Found while:** refuting the redundant-compute hypothesis for the
+2048³ coopmat 27 TF reading — S=1 measures 1.30 ms vs S=2's 0.635 ms
+(S=2 is strictly faster; the reading is real work, not overlap).

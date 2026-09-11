@@ -593,3 +593,12 @@ the hole.
 
 Fixture convention note: curve fixtures were examples/gpu/gemm_curve_N.abv
 (shape-specialized, deleted after emit — the blob bakes its shape).
+
+## 2026-09-11 late addendum: subgroups A/B — 27 TF is real work
+
+S=1 blob @2048³: 1.30 ms (2× SLOWER than S=2's 0.635 ms) and
+incorrect at that shape (BUGS.md 2026-09-11 S=1 entry). @4096³:
+5.8-6.6 ms vs S=2's 5.0. The subgroup n-slice split is a genuine
+2× win at 2048³ — no redundant compute; the coopmat curve's 2048³
+peak stands. (One-off 78-94 ms spikes in the S=1 4096³ runs —
+driver hiccups, not kernel behavior.)
