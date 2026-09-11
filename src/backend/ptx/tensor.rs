@@ -1502,6 +1502,10 @@ mod r16_dump {
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_dp44.ptx", &ptx).unwrap();
         let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_82.ptx", &ptx).unwrap();
+        // (2,4)@256T stages-2: the post-pipeline-fix occupancy candidate —
+        // 64 regs x 256T fits 4 CTAs/SM (plan 2026-09-11 probe round 2).
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 2, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_24s2.ptx", &ptx).unwrap();
     }
 
     #[test]

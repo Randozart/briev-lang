@@ -173,3 +173,18 @@ Next session, in order:
 3. Otherwise: ld-ahead restructuring against the register wall
    (triple-lookahead at 512T, or 256T with full-phase preload).
 4. The y-RMV promo (~7% of memory instructions) is a cheap final rung.
+
+## Probe round 3 addendum (same night): occupancy loses on the real kernel
+
+(2,4)@256T stages-2 f16acc (the 4-CTA/SM candidate), three tight reps:
+**15.58 TF vs 21.0 at (4,4)@512T.** The E1f occupancy effect does not
+transfer to the real kernel — the config sweep's (4,4) verdict stands
+post-fix. The occupancy lever is dead.
+
+The register-wall gamble is nonetheless rational: E1b measured 52.6 at
+1 CTA/SM — occupancy only pays when there are stalls to hide, and
+full-phase fragment preload removes the stalls themselves. E4's shape:
+1 CTA/SM × 512T × ~90 regs, all 8 B + 2 A fragments live across the
+phase boundary, addresses computed as loop-carried increments. Target:
+the no-fill KLOOP ceiling 29.9 → 45+, shipped 21.0 → 30+. E4 is next
+session's opening rung.
