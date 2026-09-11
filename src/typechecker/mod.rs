@@ -6988,6 +6988,27 @@ node t [count < 5][count == 5] {
         assert!(check(src).is_ok(), "cross-type op overload must authorize Int * MyNum");
     }
 
+    /// 2026-09-11 (fundamentals doctrine, Phase B2): electrical quantity
+    /// fundamentals are PARENTLESS declared types (B1 self-rooting) — and
+    /// numeral literals are admitted against them via their declared width,
+    /// same-type comparisons typecheck, all with no Float inheritance.
+    #[test]
+    fn electrical_quantities_are_standalone_bases() {
+        let src = r#"
+type Volt { spec Bits: 32; };
+type Amp { spec Bits: 32; };
+struct Pin { voltage: Volt; current: Amp; };
+type Led { pin a; pin k; };
+let d1: Led = Led { };
+txn t
+    [d1.a.voltage == d1.k.voltage]
+    [d1.a.voltage == 3.3 && d1.a.current <= 0.02]
+{ }
+"#;
+        let err = check(src);
+        assert!(err.is_ok(), "quantity fundamentals must stand alone: {:?}", err);
+    }
+
     /// 2026-09-11 (fundamentals doctrine, Phase A3): the BARE fundamental in
     /// an op param is the protocol — `op Mul(Int)` covers a Int-member
     /// operand that is NOT literally `Int` (here: MyNum itself), which the
@@ -9199,4 +9220,5 @@ mod section_proof_tests {
         assert!(e.is_ok(), "unreachable allocators are fine: {:?}", e);
     }
 }
+
 

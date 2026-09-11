@@ -1,19 +1,33 @@
 // ── Electronics Briev stdlib ─────────────────────────────────────────────
-// 2026-09-11 (Part C, Electronics skeleton): common component types.
-// Pins are first-class declarations; numbers are the KiCad mapping
-// (`pin a;` auto-numbers, `pin p1 = 1;` is explicit). `!> Reference`
-// sets the schematic reference-designator prefix. Component value and
-// package are given at the instance site: `let r1: Resistor = Resistor
-// { value: "330"; package: "0805" };`
+// 2026-09-11 (fundamentals doctrine, Phase B): the electrical bases.
 //
-// The compiler knows nothing about these types (no built-in component
-// list) — this file is the extension surface, exactly like the KiCad
-// symbol library it complements.
+// These quantities are PARENTLESS declared types — under the fundamentals
+// doctrine (B1 mechanism) each self-roots as its own category. No Float
+// inheritance, no IEEE baggage: a Volt is a Volt. Provenance values are
+// compile-time; nothing here executes (the electronics backend emits a
+// schematic, contracts are proven, not run).
+//
+// The component CATALOG (Resistor, Capacitor, Led, Connector, …) follows
+// below — the compiler knows none of these names (Rule 14/15).
 
+type Volt { spec Bits: 32; };
+type Amp { spec Bits: 32; };
+type Ohm { spec Bits: 32; };
+type Farad { spec Bits: 32; };
+type Henry { spec Bits: 32; };
+type Hertz { spec Bits: 32; };
+type Watt { spec Bits: 32; };
+type Kelvin { spec Bits: 32; };
+
+// A pin: two electrical quantities. Contracts reference them directly —
+// `r1.a.voltage == j1.p1.voltage` — and the netlist derives from those
+// obligations.
 struct Pin {
-    voltage: Float;
-    current: Float;
+    voltage: Volt;
+    current: Amp;
 };
+
+// ── Component catalog (Phase B3 gives these pin/reference clauses) ──────
 
 type Resistor {
     pin a;
