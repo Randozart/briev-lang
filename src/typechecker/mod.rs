@@ -100,6 +100,11 @@ pub struct TypecheckContext<'a> {
     /// typecheck `Expr::Field` (`p.name`) and to resolve the receiver type
     /// for `Expr::MethodCall`.
     type_slots: HashMap<String, Vec<crate::ast::top::TypeDefSlot>>,
+    /// 2026-09-11 (Part C, Electronics Briev): first-class component pins,
+    /// keyed by type name. Consulted by `resolve_field_type` so `r1.a`
+    /// resolves to the prelude `Pin` type — but NOT by struct-literal
+    /// checking: pins are type-level, never instance-construction fields.
+    type_pins: HashMap<String, Vec<crate::ast::top::PinDecl>>,
     /// 2026-07-31: obj member declarations (txn/defn), keyed by type name.
     /// Populated from obj bodies in check_program; used by MethodCall
     /// resolution (self-parameterized member dispatch).
@@ -179,6 +184,7 @@ impl<'a> TypecheckContext<'a> {
             regular_ops: HashMap::new(),
             regular_bindings: HashMap::new(),
             type_slots: HashMap::new(),
+            type_pins: HashMap::new(),
             type_members: HashMap::new(),
             type_params: HashMap::new(),
             fn_param_types: HashMap::new(),
@@ -4230,6 +4236,8 @@ pub fn check_program_with_target(
     // 2026-07-31: Pre-collect struct/obj field slots and obj member
     // declarations for Expr::Field / Expr::MethodCall resolution.
     let mut all_type_slots: HashMap<String, Vec<crate::ast::top::TypeDefSlot>> = HashMap::new();
+    // 2026-09-11 (Part C): first-class component pins by type name.
+    let mut all_type_pins: HashMap<String, Vec<crate::ast::top::PinDecl>> = HashMap::new();
     // 2026-08-22 (Phase 5): explicit trait assertions per concrete type
     // (`type Meter: #Int, Comparable<Meter>, Printable { … }` → traits list).
     let mut all_trait_assertions: HashMap<String, Vec<String>> = HashMap::new();
@@ -4349,6 +4357,11 @@ pub fn check_program_with_target(
                     });
                 }
                 all_type_slots.insert(td.name.clone(), slots);
+                // 2026-09-11 (Part C): register component pins — field
+                // resolution only (`r1.a` → Pin); never literal construction.
+                if !td.body.pins.is_empty() {
+                    all_type_pins.insert(td.name.clone(), td.body.pins.clone());
+                }
                 if !td.traits.is_empty() {
                     all_trait_assertions.insert(td.name.clone(), td.traits.clone());
                 }
@@ -4457,7 +4470,7 @@ pub fn check_program_with_target(
                     ports_in: vec![], ports_out: vec![],
                     bit_range: None, span: None, coll: true, seq: false,
                     body: crate::ast::top::TypeDefBody {
-                        slots: fake_slots, metadata: Default::default(),
+                        slots: fake_slots, pins: vec![], metadata: Default::default(),
                         projections: vec![], bindings: vec![],
                         operators: vec![], op_bindings: vec![],
                         constraints: vec![], members: vec![], span: None,
@@ -4505,6 +4518,7 @@ pub fn check_program_with_target(
         all_regular_ops: &all_regular_ops,
         all_regular_bindings: &all_regular_bindings,
         all_type_slots: &all_type_slots,
+        all_type_pins: &all_type_pins,
         all_type_members: &all_type_members,
         all_type_params: &all_type_params,
         all_type_protocols: &all_type_protocols,
@@ -4538,6 +4552,7 @@ pub fn check_program_with_target(
         mctx.regular_ops = all_regular_ops.clone();
         mctx.regular_bindings = all_regular_bindings.clone();
         mctx.type_slots = all_type_slots.clone();
+        mctx.type_pins = all_type_pins.clone();
         mctx.type_members = all_type_members.clone();
         mctx.type_params = all_type_params.clone();
         mctx.fn_param_types = fn_param_types.clone();
@@ -5033,6 +5048,8 @@ struct CheckEnv<'a> {
     all_regular_ops: &'a HashMap<String, Vec<crate::ast::top::OperatorDef>>,
     all_regular_bindings: &'a HashMap<String, Vec<crate::ast::top::OperatorBinding>>,
     all_type_slots: &'a HashMap<String, Vec<crate::ast::top::TypeDefSlot>>,
+    /// 2026-09-11 (Part C): component pins by type name (field-resolution only).
+    all_type_pins: &'a HashMap<String, Vec<crate::ast::top::PinDecl>>,
     all_type_members: &'a HashMap<String, Vec<TopLevel>>,
     all_type_params: &'a HashMap<String, Vec<String>>,
     all_type_protocols: &'a HashMap<String, String>,
@@ -5075,6 +5092,7 @@ fn make_typecheck_context<'a>(env: &CheckEnv<'a>, universe: &'a TypeUniverse) ->
     ctx.regular_bindings = env.all_regular_bindings.clone();
     // 2026-07-31: Inject struct/obj slots and members for field/method access.
     ctx.type_slots = env.all_type_slots.clone();
+    ctx.type_pins = env.all_type_pins.clone();
     ctx.type_members = env.all_type_members.clone();
     ctx.type_params = env.all_type_params.clone();
     ctx.fn_param_types = env.fn_param_types.clone();
@@ -5558,6 +5576,16 @@ fn resolve_field_type(receiver: &Type, field: &str, ctx: &TypecheckContext) -> O
         Type::Applied(n, _) => n.as_str(),
         _ => return None,
     };
+    // 2026-09-11 (Part C, Electronics Briev): first-class component pins.
+    // `r1.a` resolves to the prelude `Pin` type so `.voltage`/`.current`
+    // chains typecheck. Consulted ONLY for field access — struct-literal
+    // checking uses `type_slots` alone, so pins are never construction
+    // fields (they are type-level topology, not per-instance values).
+    if let Some(pins) = ctx.type_pins.get(type_name) {
+        if pins.iter().any(|p| p.name == field) {
+            return Some(Type::Custom("Pin".to_string()));
+        }
+    }
     let slots = ctx.type_slots.get(type_name)?;
     let slot_ty = slots.iter().find(|s| s.name == field).map(|s| s.ty.clone())?;
     // 2026-08-07 (object instance pools): an Applied generic obj's member

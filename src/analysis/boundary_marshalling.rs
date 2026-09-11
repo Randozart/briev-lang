@@ -458,6 +458,7 @@ mod tests {
             ports_out: Vec::new(),
             seq: false,
             body: crate::ast::top::TypeDefBody {
+                pins: Vec::new(),
                 slots: vec![],
                 metadata: std::collections::HashMap::new(),
                 projections: vec![],

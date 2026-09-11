@@ -37,6 +37,7 @@ mod tests {
             ports_out: Vec::new(),
             seq: false,
             body: TypeDefBody {
+                pins: Vec::new(),
                 slots: vec![
                     TypeDefSlot { name: "x".to_string(), ty: Type::int(), bit_range: None },
                     TypeDefSlot { name: "y".to_string(), ty: Type::int(), bit_range: None },

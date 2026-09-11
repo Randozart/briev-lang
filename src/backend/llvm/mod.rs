@@ -2894,7 +2894,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                                 ports_in: Vec::new(),
                                 ports_out: Vec::new(),
                                 body: crate::ast::top::TypeDefBody {
-                                    slots: td_slots.clone(), metadata: Default::default(),
+                                    slots: td_slots.clone(), pins: Vec::new(), metadata: Default::default(),
                                     projections: vec![], bindings: vec![],
                                     operators: vec![], op_bindings: vec![],
                                     constraints: vec![], members: vec![], span: None,

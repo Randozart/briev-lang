@@ -2194,7 +2194,7 @@ impl LlvmBackend {
                                     name: n.clone(), ty: ty.clone(), bit_range: None,
                                 })
                                 .collect(),
-                            metadata: Default::default(), projections: vec![],
+                            metadata: Default::default(), pins: Vec::new(), projections: vec![],
                             bindings: vec![], operators: vec![],
                             op_bindings: vec![], constraints: vec![],
                             members: vec![], span: None,

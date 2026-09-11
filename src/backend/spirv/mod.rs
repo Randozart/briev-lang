@@ -855,6 +855,7 @@ mod tests {
                 let mut md = std::collections::HashMap::new();
                 md.insert("bits".into(), crate::ast::PropertyValue::Int(64));
                 crate::ast::top::TypeDefBody {
+                    pins: Vec::new(),
                     slots: vec![],
                     metadata: md,
                     projections: vec![],
@@ -1037,6 +1038,7 @@ mod tests {
                 let mut md = std::collections::HashMap::new();
                 md.insert("bits".into(), crate::ast::PropertyValue::Int(24));
                 crate::ast::top::TypeDefBody {
+                    pins: Vec::new(),
                     slots: vec![],
                     metadata: md,
                     projections: vec![],

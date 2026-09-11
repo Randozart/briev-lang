@@ -1089,6 +1089,11 @@ pub struct ImplDef {
 #[derive(Debug, Clone)]
 pub struct TypeDefBody {
     pub slots: Vec<TypeDefSlot>,
+    /// 2026-09-11 (Part C, Electronics Briev): first-class component pins —
+    /// `pin a = 1;` (explicit number) or `pin a;` (auto: highest-so-far + 1).
+    /// Type-level, never instance-literal fields. The netlist derivation
+    /// (analysis::electronics) and the KiCad backend read these structurally.
+    pub pins: Vec<PinDecl>,
     pub metadata: HashMap<String, PropertyValue>,
     pub projections: Vec<ProjectionDef>,
     pub bindings: Vec<TypeBinding>,
@@ -1099,6 +1104,18 @@ pub struct TypeDefBody {
     /// 2026-07-31: obj member declarations (txn/defn) — self-parameterized
     /// methods on the obj. Populated by parse_obj_like.
     pub members: Vec<TopLevel>,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-11 (Part C, Electronics Briev): one `pin` declaration inside a
+/// component type body. `number` is the KiCad pin number — explicit from
+/// `pin a = 7;` or auto-assigned by the parser (highest number so far + 1,
+/// starting at 1) for `pin a;`. Name is the contract-facing handle
+/// (`r1.a.voltage`); number is the physical mapping.
+#[derive(Debug, Clone)]
+pub struct PinDecl {
+    pub name: String,
+    pub number: u64,
     pub span: Option<Span>,
 }
 

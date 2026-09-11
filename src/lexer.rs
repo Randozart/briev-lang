@@ -50,6 +50,11 @@ pub enum Token {
     #[token("spec")]
     Spec,
 
+    /// 2026-09-11 (Part C, Electronics Briev): first-class component pin —
+    /// `pin a = 1;` or `pin a;` (auto-number) inside a component type body.
+    #[token("pin")]
+    Pin,
+
     #[token("export")]
     Export,
 
@@ -590,6 +595,7 @@ impl std::fmt::Display for Token {
         match self {
             Token::Export => write!(f, "export"),
             Token::Spec => write!(f, "spec"),
+            Token::Pin => write!(f, "pin"),
             Token::Defn => write!(f, "defn"),
             Token::Let => write!(f, "let"),
             Token::Const => write!(f, "const"),
@@ -747,7 +753,7 @@ mod tests {
         // vocab (removing Removed/Reserved tokens that are not canonical).
         let keyword_tokens: &[&str] = &[
             "export", "defn", "let", "const", "txn", "node", "async", "seq",
-            "vol", "out", "spec", "pack", "trap", "halt", "atomic", "union", "coll", "await", "spawn", "term", "term!", "rollback", "import",
+            "vol", "out", "spec", "pin", "pack", "trap", "halt", "atomic", "union", "coll", "await", "spawn", "term", "term!", "rollback", "import",
             "mem", "relaxed", "acquire", "release", "bartered",
             "from", "as", "frgn", "meld", "reg", "op", "prop",
             "type", "trait", "impl", "cell", "obj", "struct", "render", "enum", "trg",

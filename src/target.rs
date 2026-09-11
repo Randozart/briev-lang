@@ -10,6 +10,7 @@ use std::collections::HashMap;
 pub enum BackendKind {
     Llvm,
     Circt,
+    Electronics,
     Webstack,
     Gpu,
     Spirv,
@@ -373,12 +374,13 @@ impl TargetConfig {
         match name {
             "llvm" => Ok(BackendKind::Llvm),
             "circt" => Ok(BackendKind::Circt),
+            "electronics" => Ok(BackendKind::Electronics),
             "webstack" => Ok(BackendKind::Webstack),
             "gpu" => Ok(BackendKind::Gpu),
             "spirv" => Ok(BackendKind::Spirv),
             "vm" => Ok(BackendKind::Vm),
             "ptx" => Ok(BackendKind::Ptx),
-            _ => Err(format!("unknown backend '{}'. Supported: llvm, circt, webstack, vm, spirv, ptx", name)),
+            _ => Err(format!("unknown backend '{}'. Supported: llvm, circt, electronics, webstack, vm, spirv, ptx", name)),
         }
     }
 }
@@ -408,6 +410,11 @@ defaults = ["--budget", "256"]
 plugins = ["prelude-native", "env", "print", "inline-frgn", "entry", "script"]
 assembler = "none"
 cross_verify_samples = 50
+
+[".ebv"]
+backend = "electronics"
+defaults = []
+plugins = ["prelude-electronics"]
 
 [".sbv"]
 backend = "circt"
@@ -487,7 +494,7 @@ vector_min_width = 4
     #[test]
     fn test_target_config_has_extensions() {
         let config = TargetConfig::load();
-        for ext in &[".bv", ".sbv", ".rbv", ".abv"] {
+        for ext in &[".bv", ".sbv", ".ebv", ".rbv", ".abv"] {
             assert!(config.lookup(ext).is_some(), "missing entry for {}", ext);
         }
     }
@@ -496,6 +503,7 @@ vector_min_width = 4
     fn test_resolve_backend() {
         assert_eq!(TargetConfig::resolve("llvm").unwrap(), BackendKind::Llvm);
         assert_eq!(TargetConfig::resolve("circt").unwrap(), BackendKind::Circt);
+        assert_eq!(TargetConfig::resolve("electronics").unwrap(), BackendKind::Electronics);
         assert_eq!(TargetConfig::resolve("webstack").unwrap(), BackendKind::Webstack);
         assert_eq!(TargetConfig::resolve("spirv").unwrap(), BackendKind::Spirv);
         assert!(TargetConfig::resolve("unknown").is_err());

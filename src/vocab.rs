@@ -156,6 +156,9 @@ impl LanguageVocab {
                 // metadata statement (`spec Bits: 64;`). Declared layout, the
                 // disclosed sibling of the `!>` annotation form.
                 kw("spec", VocabStatus::Canonical, KeywordContext::Modifier),
+                // 2026-09-11 (Part C): first-class component pin declaration
+                // (Electronics Briev) — `pin a = 1;` / `pin a;` in type bodies.
+                kw("pin", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("enum", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("impl", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("obj", VocabStatus::Canonical, KeywordContext::Declaration),

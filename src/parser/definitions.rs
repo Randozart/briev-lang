@@ -2145,6 +2145,12 @@ impl<'a> Parser<'a> {
             }
         }
         let mut slots = Vec::new();
+        // 2026-09-11 (Part C): first-class component pins. Auto-numbering
+        // rule: an auto pin takes (highest number so far) + 1, starting at 1 —
+        // so `pin a = 7; pin b;` numbers b as 8. Explicit datasheet numbers
+        // always win; autos continue after them.
+        let mut pins: Vec<crate::ast::top::PinDecl> = Vec::new();
+        let mut pin_high_water: u64 = 0;
         let mut metadata = std::collections::HashMap::new();
         let mut operators: Vec<OperatorDef> = Vec::new();
         let mut atomic_slots: Vec<String> = Vec::new();
@@ -2152,6 +2158,40 @@ impl<'a> Parser<'a> {
         let mut members: Vec<crate::ast::TopLevel> = Vec::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
+                // 2026-09-11 (Part C): `pin <name> [= <int>];` — first-class
+                // component pin (Electronics Briev). Number is the KiCad pin
+                // mapping; name is the contract-facing handle (`r1.a.voltage`).
+                if self.check(&Token::Pin) {
+                    self.pos += 1;
+                    let pin_name = self.expect_identifier()?;
+                    let number = if self.eat(&Token::Eq) {
+                        let n = self.expect_integer()?;
+                        self.eat(&Token::Semicolon);
+                        if n < 1 {
+                            return self.error_at_current(&format!(
+                                "pin '{}' number must be 1 or greater (KiCad pin numbers start at 1), got {}",
+                                pin_name, n
+                            ));
+                        }
+                        n as u64
+                    } else {
+                        self.eat(&Token::Semicolon);
+                        pin_high_water + 1
+                    };
+                    if pins.iter().any(|p| p.name == pin_name) {
+                        return self.error_at_current(&format!(
+                            "duplicate pin '{}' in type body — pin names must be unique within a component",
+                            pin_name
+                        ));
+                    }
+                    pin_high_water = pin_high_water.max(number);
+                    pins.push(crate::ast::top::PinDecl {
+                        name: pin_name,
+                        number,
+                        span: None,
+                    });
+                    continue;
+                }
                 // !> key: value; or spec PascalCase: value; — metadata assignment
                 if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
                     self.parse_metadata_clause(&mut metadata)?;
@@ -2189,6 +2229,7 @@ impl<'a> Parser<'a> {
             seq: false,
             body: TypeDefBody {
                 slots,
+                pins,
                 metadata,
                 projections: vec![],
                 bindings: vec![],
@@ -2643,7 +2684,7 @@ impl<'a> Parser<'a> {
             ports_in, ports_out,
             bit_range: None, span: None, coll, seq,
             body: TypeDefBody {
-                slots, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, span: None,
+                slots, pins: vec![], metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, span: None,
             },
         }))
     }
@@ -2915,7 +2956,8 @@ impl<'a> Parser<'a> {
             ports_in: vec![], ports_out: vec![],
             bit_range: None, span: None, coll: false, seq: false,
             body: TypeDefBody {
-                slots, metadata: std::collections::HashMap::new(),
+                slots, pins: vec![],
+                metadata: std::collections::HashMap::new(),
                 projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], span: None,
             },
         }))
@@ -3548,6 +3590,51 @@ mod tests {
         // 2026-08-13: unknown spec names are hard errors — never silent.
         let err = parse_top("type W: #Int { spec Flurb: 3; };").unwrap_err();
         assert!(err.contains("unknown spec"), "got: {err}");
+    }
+
+    // ── 2026-09-11 (Part C, Electronics Briev): pin clause parsing ────
+
+    fn parse_pins(src: &str) -> Vec<crate::ast::top::PinDecl> {
+        let tl = parse_top(src).unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        td.body.pins
+    }
+
+    #[test]
+    fn test_pin_auto_numbering_starts_at_one() {
+        let pins = parse_pins("type R { pin a; pin b; };");
+        assert_eq!(pins.len(), 2);
+        assert_eq!((pins[0].name.as_str(), pins[0].number), ("a", 1));
+        assert_eq!((pins[1].name.as_str(), pins[1].number), ("b", 2));
+    }
+
+    #[test]
+    fn test_pin_explicit_number() {
+        let pins = parse_pins("type J { pin vcc = 1; pin gnd = 2; };");
+        assert_eq!((pins[0].name.as_str(), pins[0].number), ("vcc", 1));
+        assert_eq!((pins[1].name.as_str(), pins[1].number), ("gnd", 2));
+    }
+
+    #[test]
+    fn test_pin_auto_continues_after_explicit_high_water() {
+        // Datasheet numbers are arbitrary: an explicit 7 forces autos to
+        // continue after it, never re-collide below it.
+        let pins = parse_pins("type U { pin en = 7; pin a; pin b; };");
+        assert_eq!((pins[0].name.as_str(), pins[0].number), ("en", 7));
+        assert_eq!((pins[1].name.as_str(), pins[1].number), ("a", 8));
+        assert_eq!((pins[2].name.as_str(), pins[2].number), ("b", 9));
+    }
+
+    #[test]
+    fn test_pin_duplicates_rejected() {
+        let err = parse_top("type R { pin a; pin a; };").unwrap_err();
+        assert!(err.contains("pin 'a'"), "got: {err}");
+    }
+
+    #[test]
+    fn test_pin_non_integer_number_rejected() {
+        let err = parse_top("type R { pin a = x; };").unwrap_err();
+        assert!(err.to_lowercase().contains("integer"), "got: {err}");
     }
 
     #[test]

@@ -408,6 +408,7 @@ mod tests {
             ports_out: Vec::new(),
             seq: false,
             body: TypeDefBody {
+                pins: Vec::new(),
                 slots: vec![],
                 metadata,
                 projections: vec![],

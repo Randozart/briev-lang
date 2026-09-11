@@ -1363,6 +1363,7 @@ mod tests {
                 ports_out: vec![],
                 seq: false,
                 body: crate::ast::top::TypeDefBody {
+                    pins: Vec::new(),
                     slots: vec![],
                     metadata: Default::default(),
                     projections: vec![],
