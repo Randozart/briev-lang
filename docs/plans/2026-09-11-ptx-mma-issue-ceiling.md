@@ -78,3 +78,28 @@ ratio cross-checks the GA10x 2× dense rate claim on this driver.
 - Ledger (2026-09-08 execution doc): E1 VERDICT + rung results as they land.
 - No architecture doc changes until a rung lands (E3 would touch
   abv-gpu-doctrine's tier notes only if it changes the default config).
+
+## E1 VERDICT (2026-09-11 night): schedule overhead is the wall, not chains
+
+Pure-issue microbench (dump_mma_microbench, 512T × 28 CTAs, sustained):
+
+| chains | regs | TFLOP/s |
+|--------|------|---------|
+| 4 | 20 | 52.4 |
+| 8 | 28 | 52.6 |
+| 16 | 42 | 52.8 |
+| 32 | 74 | 53.4 |
+| 64 | 138 | launch-impossible at 512T (138×512 > 64K regfile) |
+
+**16 chains saturate the tensor cores at ~53 TF — the full dense peak.**
+The plan's decision point resolves to the second branch: the 22.7 TF
+"compute-only ceiling" was our KLOOP's own ceiling (ldmatrix + per-ld
+address math + branch competing for issue), not the hardware's. The
+52.8 → 22.7 → 21.0 decomposition puts the entire 2.3× inside the mma
+phase's support stream.
+
+Consequence for E3/E4: do NOT design for 32 chains. Design for a
+skinny KLOOP — loop-carried pointer arithmetic (kstep stride adds
+instead of per-fragment address recomputation), k32 stages, phase-level
+Ps2r — so the issue budget goes to mma, not math. E1b/E1c (ldmatrix-mix
+and ALU-load sensitivity microbenches) quantify the decomposition next.

@@ -1527,6 +1527,78 @@ mod r16_dump {
         let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_k16.ptx", &ptx).unwrap();
     }
+
+    /// E1 microbench (plan 2026-09-11-ptx-mma-issue-ceiling): pure mma
+    /// issue rate. N independent f16x2 accumulator chains per warp, register
+    /// operands, no smem/fills — isolates the tensor-core issue+dependency
+    /// ceiling from everything else. chains 4..64: does the ISA need 32
+    /// chains (CUTLASS 64x64 warp tiles) to reach the dense f16-acc peak,
+    /// or is our 16-chain schedule already at it?
+    #[test]
+    fn dump_mma_microbench() {
+        for &chains in &[4usize, 8, 16, 32, 64] {
+            let mut out = String::new();
+            out.push_str("// E1 pure-mma issue microbench\n");
+            out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+            out.push_str(".visible .entry main (.param .b64 proj_param) {\n");
+            out.push_str("    .reg .b32 %r<8>;\n    .reg .b64 %rd<8>;\n    .reg .pred %p<2>;\n");
+            out.push_str(&format!("    .reg .b32 %c<{}>;\n", chains * 2 + 1));
+            out.push_str("    .reg .b32 %a<5>;\n    .reg .b32 %b<3>;\n");
+            // tid/lane-derived operands: non-zero, chain-independent.
+            out.push_str("    mov.u32 %r1, %tid.x;\n");
+            out.push_str("    mov.u32 %r2, %ctaid.x;\n");
+            out.push_str("    add.u32 %r2, %r2, 1;\n");
+            out.push_str("    and.b32 %r3, %r1, 31;\n");
+            out.push_str("    add.u32 %a0, %r3, %r2;\n");     // a0: lane+cta+1
+            out.push_str("    add.u32 %a1, %a0, 17;\n");
+            out.push_str("    add.u32 %a2, %a0, 34;\n");
+            out.push_str("    add.u32 %a3, %a0, 51;\n");
+            out.push_str("    add.u32 %b0, %a0, 7;\n");
+            out.push_str("    add.u32 %b1, %a0, 13;\n");
+            // zero all accumulator chains
+            for i in 0..chains * 2 {
+                out.push_str(&format!("    mov.u32 %c{}, 0;\n", i));
+            }
+            // loop: R iterations of the chain block. R chosen so total
+            // FLOP ≈ 130 GFLOP: R = 130e9 / (chains*4096*warps), warps=448.
+            let warps = 448u64;
+            let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
+            let iters = (iters / 8 * 8).max(64); // multiple of 8, sane floor
+            out.push_str("    mov.u32 %r4, %ntid.x;\n");
+            out.push_str("    mul.lo.u32 %r4, %r4, %r2;\n");
+            out.push_str("    add.u32 %r5, %r1, %r4;\n"); // global thread id (diag sweep fodder)
+            out.push_str(&format!("    mov.u32 %r6, {};\n", iters));
+            out.push_str("LOOP:\n");
+            for i in 0..chains {
+                out.push_str(&format!(
+                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {{%c{}, %c{}}};\n",
+                    2 * i, 2 * i + 1, 2 * i, 2 * i + 1
+                ));
+            }
+            out.push_str("    add.u32 %r6, %r6, -1;\n");
+            out.push_str("    setp.ne.u32 %p1, %r6, 0;\n");
+            out.push_str("    @%p1 bra LOOP;\n");
+            // DCE guard: fold the first chain into a single global store.
+            // This also caps the f16 rounding drift — the microbench
+            // measures throughput, not numerics.
+            out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+            out.push_str("    cvta.to.global.u64 %rd1, %rd1;\n");
+            out.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
+            out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+            // fold EVERY chain into the store — an mma whose accumulator
+            // is never read is side-effect-free and ptxas deletes it
+            // (14-reg "ceiling" artifacts otherwise).
+            out.push_str("    add.u32 %r7, %c0, %c1;\n");
+            for i in 1..chains {
+                out.push_str(&format!("    add.u32 %r7, %r7, %c{};\n", 2 * i));
+                out.push_str(&format!("    add.u32 %r7, %r7, %c{};\n", 2 * i + 1));
+            }
+            out.push_str("    st.global.b32 [%rd2], %r7;\n");
+            out.push_str("    ret;\n}\n");
+            let path = format!("/tmp/opencode/mb_chains_{}.ptx", chains);
+            std::fs::write(&path, &out).unwrap();
+        }
+    }
 }
 
 #[cfg(test)]
