@@ -122,12 +122,23 @@ struct Placement<'a> {
 pub struct ElectronicsBackend;
 
 impl ElectronicsBackend {
-    /// Emit the `.kicad_sch` text. Fails on dangling pins — an incomplete
-    /// board never leaves the compiler.
+    /// Emit the `.kicad_sch` text. Fails on dangling pins AND on electrical
+    /// violations — an incomplete or electrically-unsound board never leaves
+    /// the compiler.
     pub fn generate(netlist: &ElectronicsNetlist) -> Result<String, Vec<String>> {
         if !netlist.dangling.is_empty() {
             let mut errs = vec!["cannot emit schematic: the netlist is incomplete".to_string()];
             errs.extend(netlist.dangling.iter().map(|d| format!("  {}", d)));
+            return Err(errs);
+        }
+        // 2026-09-11 (B4): voltage/current proving — shorted supplies,
+        // over-voltage into rated pins, undeclared unrated pins, and
+        // postcondition current bounds violated by derived physics.
+        if !netlist.voltage.violations.is_empty() {
+            let mut errs = vec![
+                "cannot emit schematic: the electrical contracts are violated".to_string(),
+            ];
+            errs.extend(netlist.voltage.violations.iter().map(|v| format!("  {}", v)));
             return Err(errs);
         }
 
@@ -458,6 +469,27 @@ mod tests {
         let err = ElectronicsBackend::generate(&nl).unwrap_err();
         assert!(err[0].contains("incomplete"), "{}", err[0]);
         assert!(err.iter().any(|e| e.contains("b.z")));
+    }
+
+    #[test]
+    fn overvoltage_board_refuses_emission() {
+        // 2026-09-11 (B4): electrical violations fail the compile exactly
+        // like dangling pins — an unsound board never leaves the compiler.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; reference "P"; tolerance any; };
+            type Led { pin a; pin k; reference "D"; tolerance 3.3; };
+            let p1: Power = Power { };
+            let d1: Led = Led { };
+            txn apply
+                [p1.vout.voltage == d1.a.voltage && d1.k.voltage == p1.vout.voltage && p1.vout.voltage == 5.0]
+                [d1.a.voltage >= 0.0]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        let err = ElectronicsBackend::generate(&nl).unwrap_err();
+        assert!(err[0].contains("electrical contracts are violated"), "{}", err[0]);
+        assert!(err.iter().any(|e| e.contains("tolerates only 3.3")), "{:?}", err);
     }
 
     #[test]
