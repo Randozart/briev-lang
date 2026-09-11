@@ -103,6 +103,21 @@ impl<'a> Parser<'a> {
                 return Ok(Type::Constrained(Box::new(base_ty), BitRange::Single(w)));
             }
         }
+        // 2026-09-11 (fundamentals doctrine, Phase A): `Float<Posit>` /
+        // `String<C_String>` / `Char<ASCII>` — the fundamental IS the
+        // protocol, so the variant rides on the type in angle brackets
+        // (replaces `#Float<Posit>`). Produces Applied(fundamental, [variant])
+        // which the casting graph peels to (category, variant).
+        if matches!(prim_name, "Float" | "String" | "Char") && self.check(&Token::Lt) {
+            if let Some(Token::Identifier(variant)) = self.peek_next() {
+                let variant = variant.clone();
+                self.pos += 2; // consume '<' and the variant identifier
+                if !self.eat_type_close() {
+                    return self.error_at_current("expected '>' after the protocol variant");
+                }
+                return Ok(Type::Applied(prim_name.to_string(), vec![Type::Custom(variant)]));
+            }
+        }
         // 2026-08-05 (Phase 3): free-form dot-extension type suffixes
         // (`String.c`, `Int.c.sso`) are removed; host/target qualifiers live
         // in configured GLUE bindings and protocol variants (SPEC §8.7).

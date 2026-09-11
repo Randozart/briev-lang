@@ -757,23 +757,26 @@ impl<'a> Parser<'a> {
             "Void" => crate::ast::Type::void(),
             "Char" => crate::ast::Type::char_(),
             "Blob" => crate::ast::Type::blob(),
-            "Bit" | "bits" => crate::ast::Type::Bits(0),
-            other if other.starts_with('#') => {
-                // Bare hashwords resolve to their default variant (mirrors
-                // parse_type: #String → UTF8, #Float → IEEE754, #Char → unicode).
-                let variant = match other {
-                    "#String" => "UTF8",
-                    "#Float" => "IEEE754",
-                    "#Char" => "unicode",
-                    _ => "",
-                };
-                if !variant.is_empty() {
-                    crate::ast::Type::HashWordVariant(other.to_string(), variant.to_string())
-                } else {
-                    crate::ast::Type::HashWord(other.to_string())
+            other => {
+                // 2026-09-11 (fundamentals doctrine, Phase A): hashword
+                // spellings map to their bare fundamental — the category
+                // hashwords are retiring, so this site stops constructing
+                // HashWord types. (`#Float` → float(), etc.)
+                let bare = other.strip_prefix('#').unwrap_or(other);
+                match bare {
+                    "Int" => crate::ast::Type::int(),
+                    "UInt" => crate::ast::Type::Custom("UInt".into()),
+                    "Float" | "Float32" | "F32" => crate::ast::Type::float(),
+                    "Float64" | "F64" | "Double" => crate::ast::Type::float64(),
+                    "String" => crate::ast::Type::string(),
+                    "Bool" => crate::ast::Type::bool_(),
+                    "Void" => crate::ast::Type::void(),
+                    "Char" => crate::ast::Type::char_(),
+                    "Blob" => crate::ast::Type::blob(),
+                    "Bit" | "bits" => crate::ast::Type::Bits(0),
+                    other => crate::ast::Type::Custom(other.to_string()),
                 }
             }
-            other => crate::ast::Type::Custom(other.to_string()),
         }
     }
 

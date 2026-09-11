@@ -2124,11 +2124,24 @@ impl<'a> Parser<'a> {
                     Some(&Token::Identifier(_)) => {
                         let pname = self.expect_identifier()?;
                         // 2026-08-05 (Phase 5): an entry with generic arguments
-                        // (`Comparable<Point>`) is always a trait. A bare name
-                        // is the single refinement parent only if none is set;
-                        // otherwise it is an explicitly asserted trait.
+                        // (`Comparable<Point>`) is a trait — UNLESS the base is
+                        // a fundamental taking a protocol variant
+                        // (`String<C_String>`, fundamentals-doctrine Phase A):
+                        // fundamentals take no generic args, so the bracket is
+                        // the variant and the entry is the protocol parent.
+                        // A bare name is the single refinement parent only if
+                        // none is set; otherwise it is an asserted trait.
                         let has_args = self.check(&Token::Lt);
-                        if has_args {
+                        let is_fundamental =
+                            crate::type_universe::FUNDAMENTAL_TYPES.contains(&pname.as_str());
+                        if has_args && is_fundamental {
+                            self.pos += 1; // consume '<'
+                            let variant = self.expect_identifier()?;
+                            if !self.eat_type_close() {
+                                return self.error_at_current("expected '>' in protocol variant base");
+                            }
+                            protocol = Some(format!("{}<{}>", pname, variant));
+                        } else if has_args {
                             self.parse_type_params()?;
                             traits.push(pname);
                         } else if parent.is_none() {
@@ -3279,6 +3292,48 @@ mod tests {
     }
 
     #[test]
+    // ── 2026-09-11 (fundamentals doctrine, Phase A): fundamental-with-variant
+
+    #[test]
+    fn test_fundamental_variant_syntax() {
+        // `Float<Posit>` — the fundamental IS the protocol; the variant rides
+        // on the type (replaces #Float<Posit>).
+        let ty = parse_type("Float<Posit>").unwrap();
+        assert_eq!(
+            ty,
+            crate::ast::Type::Applied("Float".into(), vec![crate::ast::Type::Custom("Posit".into())])
+        );
+        let ty = parse_type("String<C_String>").unwrap();
+        assert_eq!(
+            ty,
+            crate::ast::Type::Applied("String".into(), vec![crate::ast::Type::Custom("C_String".into())])
+        );
+        let ty = parse_type("Char<ASCII>").unwrap();
+        assert_eq!(
+            ty,
+            crate::ast::Type::Applied("Char".into(), vec![crate::ast::Type::Custom("ASCII".into())])
+        );
+    }
+
+    #[test]
+    fn test_fundamental_variant_parent_clause() {
+        // A fundamental-with-variant in the parent clause is the protocol
+        // parent — NOT a trait (fundamentals take no generic args).
+        let tl = parse_top("type CStr: String<C_String> { };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_eq!(td.protocol.as_deref(), Some("String<C_String>"));
+        assert!(td.traits.is_empty(), "variant parent must not leak into traits: {:?}", td.traits);
+    }
+
+    #[test]
+    fn test_generic_trait_parent_still_routes_to_traits() {
+        // Non-fundamental with args stays a trait assertion.
+        let tl = parse_top("type Stack<T>: Comparable<T> { };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert!(td.protocol.is_none());
+        assert_eq!(td.traits, vec!["Comparable".to_string()]);
+    }
+
     fn test_parse_dotted_type_no_extension() {
         // "String" should still parse as Type::string()
         let ty = parse_type("String").unwrap();
