@@ -33,10 +33,8 @@ use std::path::{Path, PathBuf};
 /// precede the base extension as separate segments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceKind {
-    /// General Briev: `.bv` (and `.s.bv`, `.f.bv`).
+    /// General Briev: `.bv` (and `.s.bv`, `.f.bv`, `.b.bv`, …).
     Briev,
-    /// Embedded Briev: `.ebv`.
-    Embedded,
     /// Accelerator Briev: `.abv`.
     Accelerator,
     /// Circuit Briev: `.cbv`.
@@ -53,7 +51,6 @@ impl SourceKind {
     pub fn label(self) -> &'static str {
         match self {
             SourceKind::Briev => "briev",
-            SourceKind::Embedded => "embedded",
             SourceKind::Accelerator => "accelerator",
             SourceKind::Circuit => "circuit",
             SourceKind::Rendered => "rendered",
@@ -66,13 +63,16 @@ impl SourceKind {
 /// 2026-08-06 (Phase 15): whether an active source carries the `.f` formatted
 /// profile (SPEC §3.2). The `.f` dialect uses indentation instead of braces;
 /// the compile pipeline routes these sources through `layout::layout_process`
-/// before parsing. Governs any base extension (`.f.bv`, `.f.ebv`, `.f.rbv`, …).
+/// before parsing. Flags live in a single dot-segment (`.bfs.bv`, not
+/// `.b.f.s.bv`); this function checks for the `f` character within that
+/// segment.
 pub fn is_formatted(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .map_or(false, |name| {
             let segments: Vec<&str> = name.split('.').collect();
-            segments.len() >= 2 && segments[1..segments.len() - 1].contains(&"f")
+            segments.len() >= 2
+                && segments[1..segments.len() - 1].iter().any(|s| s.contains('f'))
         })
 }
 
@@ -86,7 +86,23 @@ pub fn is_strict(path: &Path) -> bool {
         .and_then(|n| n.to_str())
         .map_or(false, |name| {
             let segments: Vec<&str> = name.split('.').collect();
-            segments.len() >= 2 && segments[1..segments.len() - 1].contains(&"s")
+            segments.len() >= 2
+                && segments[1..segments.len() - 1].iter().any(|s| s.contains('s'))
+        })
+}
+
+/// 2026-09-11 (Part B, bare suffix): whether an active source carries the `.b`
+/// bare profile (SPEC §3.2). Bare activates bare-metal proof obligations:
+/// recursion depth, thread lifecycle, and heap budget are subject to
+/// compile-time proof. Governs `with_embedded_mode(true)` on the backend and
+/// `skip_briev_rt` in `collect_extra_objects`. Mirrors `is_formatted`/`is_strict`.
+pub fn is_bare(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map_or(false, |name| {
+            let segments: Vec<&str> = name.split('.').collect();
+            segments.len() >= 2
+                && segments[1..segments.len() - 1].iter().any(|s| s.contains('b'))
         })
 }
 
@@ -97,7 +113,8 @@ mod profile_tests {
     fn detects_formatted_profile() {
         assert!(is_formatted(Path::new("main.f.bv")));
         assert!(is_formatted(Path::new("kernel.f.ebv")));
-        assert!(is_formatted(Path::new("ui.s.f.rbv")));
+        assert!(is_formatted(Path::new("ui.sf.rbv")));
+        assert!(is_formatted(Path::new("main.bfs.bv")));
         assert!(!is_formatted(Path::new("main.bv")));
         assert!(!is_formatted(Path::new("main.s.bv")));
         assert!(!is_formatted(Path::new("noext")));
@@ -107,37 +124,51 @@ mod profile_tests {
     fn detects_strict_profile() {
         assert!(is_strict(Path::new("ui.s.rbv")));
         assert!(is_strict(Path::new("main.s.bv")));
-        assert!(is_strict(Path::new("ui.s.f.rbv")));
+        assert!(is_strict(Path::new("ui.sf.rbv")));
+        assert!(is_strict(Path::new("main.bfs.bv")));
         assert!(!is_strict(Path::new("main.bv")));
         assert!(!is_strict(Path::new("main.f.rbv")));
         assert!(!is_strict(Path::new("noext")));
     }
+
+    #[test]
+    fn detects_bare_profile() {
+        assert!(is_bare(Path::new("main.b.bv")));
+        assert!(is_bare(Path::new("main.bfs.bv")));
+        assert!(is_bare(Path::new("ui.bsf.rbv")));
+        assert!(!is_bare(Path::new("main.bv")));
+        assert!(!is_bare(Path::new("main.f.bv")));
+        assert!(!is_bare(Path::new("noext")));
+    }
 }
 
 /// 2026-08-05: classify an active source path by its canonical base extension.
-/// Dotted profile segments (`.s`, `.f`) are stripped before classification;
-/// unknown or removed profile segments are rejected. Contract: the base
-/// extension must be one of the normative variants; removed variants (`.sbv`,
-/// `.srbv`, `.sebv`, `.dbvs`, `.c.bv`) return `None`.
+/// Dotted profile segments (`.s`, `.f`, `.b`) are stripped before classification;
+/// unknown or removed profile segments are rejected. Flags live in a single
+/// dot-segment (`.bfs.bv`); each character in the segment must be one of the
+/// canonical flags (`b`, `f`, `s`). Contract: the base extension must be one of
+/// the normative variants; removed variants (`.sbv`, `.srbv`, `.sebv`, `.dbvs`,
+/// `.c.bv`) return `None`.
 pub fn classify(path: &Path) -> Option<SourceKind> {
     let name = path.file_name()?.to_str()?;
     let mut segments: Vec<&str> = name.split('.').collect();
     if segments.len() < 2 {
         return None;
     }
-    // `file.s.bv` → segments ["file", "s", "bv"]. The last segment is the
-    // base extension; the middle segments must be a subset of the canonical
-    // dotted profiles (`.s`, `.f`). Any other middle segment (for example the
-    // removed `.c` cell-file modifier) is rejected.
+    // `file.bfs.bv` → segments ["file", "bfs", "bv"]. The last segment is the
+    // base extension; the middle segments are flag groups where each character
+    // must be a canonical flag (`b`, `f`, `s`). Any unknown flag character
+    // (for example the removed `c` cell-file modifier) is rejected.
     let base = segments.pop()?;
     for profile in &segments[1..] {
-        if *profile != "s" && *profile != "f" {
-            return None;
+        for ch in profile.chars() {
+            if ch != 'b' && ch != 'f' && ch != 's' {
+                return None;
+            }
         }
     }
     match base {
         "bv" => Some(SourceKind::Briev),
-        "ebv" => Some(SourceKind::Embedded),
         "abv" => Some(SourceKind::Accelerator),
         "cbv" => Some(SourceKind::Circuit),
         "rbv" => Some(SourceKind::Rendered),
@@ -267,7 +298,6 @@ mod tests {
             };
             match kind {
                 SourceKind::Briev
-                | SourceKind::Embedded
                 | SourceKind::Accelerator
                 | SourceKind::Circuit => {
                     checked += 1;
@@ -311,7 +341,8 @@ mod tests {
         assert_eq!(classify(Path::new("main.bv")), Some(SourceKind::Briev));
         assert_eq!(classify(Path::new("main.s.bv")), Some(SourceKind::Briev));
         assert_eq!(classify(Path::new("main.f.bv")), Some(SourceKind::Briev));
-        assert_eq!(classify(Path::new("main.ebv")), Some(SourceKind::Embedded));
+        assert_eq!(classify(Path::new("main.b.bv")), Some(SourceKind::Briev));
+        assert_eq!(classify(Path::new("main.bfs.bv")), Some(SourceKind::Briev));
         assert_eq!(classify(Path::new("kernel.abv")), Some(SourceKind::Accelerator));
         assert_eq!(classify(Path::new("chip.cbv")), Some(SourceKind::Circuit));
         assert_eq!(classify(Path::new("ui.rbv")), Some(SourceKind::Rendered));
@@ -324,6 +355,7 @@ mod tests {
         assert_eq!(classify(Path::new("main.sbv")), None);
         assert_eq!(classify(Path::new("main.srbv")), None);
         assert_eq!(classify(Path::new("main.sebv")), None);
+        assert_eq!(classify(Path::new("main.ebv")), None);
         assert_eq!(classify(Path::new("main.c.bv")), None);
         assert_eq!(classify(Path::new("schema.dbvs")), None);
         assert_eq!(classify(Path::new("notes.txt")), None);

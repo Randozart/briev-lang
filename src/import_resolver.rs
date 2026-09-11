@@ -55,12 +55,6 @@ pub struct ImportResolver {
     /// Loaded from config/module-registry.toml or hardcoded fallback.
     /// 2026-07-15: Phase 7i — import <name> resolution.
     registry: HashMap<String, String>,
-    /// 2026-08-04 (out-observability plan, Phase 4): when true (an `.ebv`
-    /// embedded target), the resolver prefers the `.ebv` stdlib variant over
-    /// the `.bv` one instead of erroring "Ambiguous import". The `.ebv`
-    /// stdlib provides the casting-lane symbols (int_to_str, str_to_int, …)
-    /// as Briev defns; the `.bv` stdlib + briev_rt.c provide them as C.
-    prefer_ebv: bool,
     /// 2026-08-09 (Phase 11, Slice 2): the deterministic resolution record —
     /// (import specifier → canonical resolved path), in source order. SPEC
     /// §7.1 requires resolution to be deterministic AND to record the resolved
@@ -315,17 +309,8 @@ impl ImportResolver {
             board_name: None,
             in_progress: HashSet::new(),
             registry: load_module_registry(),
-            prefer_ebv: false,
             resolved_paths: Vec::new(),
         }
-    }
-
-    /// 2026-08-04 (Phase 4): prefer the `.ebv` stdlib variant (embedded
-    /// freestanding target). When both `.bv` and `.ebv` exist, the `.ebv` is
-    /// chosen instead of erroring "Ambiguous import".
-    pub fn with_prefer_ebv(mut self, prefer: bool) -> Self {
-        self.prefer_ebv = prefer;
-        self
     }
 
     /// Set the board name for `import "target"` resolution.
@@ -803,15 +788,11 @@ impl ImportResolver {
             return Ok(dbriev_items);
         }
 
-        // Default: Briev module (.bv or .ebv)
-        let module_path = {
-            if import.path().ends_with(".bv") {
-                import.path()[..import.path().len() - 3].replace('.', "/")
-            } else if import.path().ends_with(".ebv") {
-                import.path()[..import.path().len() - 4].replace('.', "/")
-            } else {
-                import.path().replace('.', "/")
-            }
+        // Default: Briev module (.bv)
+        let module_path = if import.path().ends_with(".bv") {
+            import.path()[..import.path().len() - 3].replace('.', "/")
+        } else {
+            import.path().replace('.', "/")
         };
         // TypeScript-style import resolution:
         //   "./foo" or "../foo" → relative to importing file
@@ -826,37 +807,16 @@ impl ImportResolver {
             self.root_path.clone()
         };
 
-        // Try both .bv and .ebv extensions. With prefer_ebv (an embedded
-        // target), the .ebv variant wins when both exist; otherwise both
-        // existing is ambiguous.
+        // Search for .bv files in the search paths.
         let mut found_path = None;
-        let mut found_both = false;
         for search_dir in &self.search_paths {
             let bv_candidate = source_dir
                 .join(search_dir)
                 .join(format!("{}.bv", module_path));
-            let ebv_candidate = source_dir
-                .join(search_dir)
-                .join(format!("{}.ebv", module_path));
 
-            let bv = bv_candidate.exists();
-            let ebv = ebv_candidate.exists();
-            if bv && ebv {
-                // 2026-08-04 (compiler-in-briev): prefer_ebv=false (the
-                // default) prefers the `.bv` variant — the natural behavior
-                // before `.ebv` existed. Only an embedded target prefers
-                // `.ebv`. This was regressed to an "Ambiguous import" error,
-                // breaking `import "std/string"` from any normal .bv file
-                // once string.ebv was added.
-                if self.prefer_ebv {
-                    found_path = Some(ebv_candidate);
-                } else {
-                    found_path = Some(bv_candidate);
-                }
-            } else if bv {
+            if bv_candidate.exists() {
                 found_path = Some(bv_candidate);
-            } else if ebv {
-                found_path = Some(ebv_candidate);
+                break;
             }
         }
 
@@ -864,24 +824,13 @@ impl ImportResolver {
         // anywhere) — std/*, glue/*, and any other lib/ module. The walk-up
         // stops at the first ancestor Cargo.toml (the compiler repo, or a
         // user project's root).
-        if !found_both && found_path.is_none() {
+        if found_path.is_none() {
             let mut current = source_dir.clone();
             while let Some(parent) = current.parent() {
                 if parent.join("Cargo.toml").exists() {
                     let std_path = parent.join("lib").join(format!("{}.bv", module_path));
-                    let std_ebv = parent.join("lib").join(format!("{}.ebv", module_path));
-                    let bv = std_path.exists();
-                    let ebv = std_ebv.exists();
-                    if bv && ebv {
-                        if self.prefer_ebv {
-                            found_path = Some(std_ebv);
-                        } else {
-                            found_path = Some(std_path);
-                        }
-                    } else if bv {
+                    if std_path.exists() {
                         found_path = Some(std_path);
-                    } else if ebv {
-                        found_path = Some(std_ebv);
                     }
                     break;
                 }
@@ -889,29 +838,11 @@ impl ImportResolver {
             }
         }
 
-        if !found_both && found_path.is_none() {
+        if found_path.is_none() {
             let direct_bv = source_dir.join(format!("{}.bv", module_path));
-            let direct_ebv = source_dir.join(format!("{}.ebv", module_path));
-            let bv = direct_bv.exists();
-            let ebv = direct_ebv.exists();
-            if bv && ebv {
-                if self.prefer_ebv {
-                    found_path = Some(direct_ebv);
-                } else {
-                    found_path = Some(direct_bv);
-                }
-            } else if bv {
+            if direct_bv.exists() {
                 found_path = Some(direct_bv);
-            } else if ebv {
-                found_path = Some(direct_ebv);
             }
-        }
-
-        if found_both {
-            return Err(format!(
-                "Ambiguous import '{}'. Both .bv and .ebv files exist. Please specify the extension.",
-                import.path()
-            ));
         }
 
         let resolved_path = found_path.ok_or_else(|| {

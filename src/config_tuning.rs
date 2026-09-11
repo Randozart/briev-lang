@@ -31,11 +31,6 @@ pub struct TargetSettings {
     pub dense_compute_density: f64,
     /// Minimum isomorphic-group width for vector-phi promotion.
     pub vector_min_width: usize,
-    /// 2026-08-09 (Phase 11, Slice 2): the preferred stdlib sibling variant
-    /// for EXTENSIONLESS imports (SPEC §3.3 — "extensionless imports select
-    /// the variant configured for the active target"). true → prefer `.ebv`
-    /// (embedded freestanding target); false → prefer `.bv` (default).
-    pub prefer_ebv: bool,
 }
 
 /// Global (target-independent) IR lowering tuning (plan §8.2).
@@ -213,7 +208,6 @@ pub const DEFAULT_TARGET_SETTINGS: TargetSettings = TargetSettings {
     float_registers: 16,
     dense_compute_density: 4.0,
     vector_min_width: 4,
-    prefer_ebv: false,
 };
 
 const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
@@ -303,17 +297,12 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
             .field_int(&key, 2)
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_TARGET_SETTINGS.vector_min_width);
-        let prefer_ebv = db
-            .field_int(&key, 3)
-            .map(|v| v != 0)
-            .unwrap_or(DEFAULT_TARGET_SETTINGS.prefer_ebv);
         out.insert(
             prefix.to_string(),
             TargetSettings {
                 float_registers,
                 dense_compute_density,
                 vector_min_width,
-                prefer_ebv,
             },
         );
     }
@@ -592,27 +581,7 @@ vector_min_width = 4
         assert_eq!(s.float_registers, 16);
         assert_eq!(s.dense_compute_density, 4.0);
         assert_eq!(s.vector_min_width, 4);
-        assert!(!s.prefer_ebv, "x86_64 is not an embedded target");
         assert!(known_target_triple("x86_64-unknown-linux-gnu"));
-    }
-
-    #[test]
-    fn test_target_settings_embedded_prefers_ebv() {
-        // 2026-08-09 (Phase 11, Slice 2): embedded/freestanding targets
-        // (aarch64/arm/wasm/spirv) prefer the `.ebv` stdlib sibling variant
-        // for extensionless imports (SPEC §3.3).
-        for triple in [
-            "aarch64-unknown-none",
-            "arm64-unknown-linux-gnu",
-            "wasm32-unknown-wasi",
-            "spirv64-unknown",
-        ] {
-            let s = target_settings_for(triple);
-            assert!(
-                s.prefer_ebv,
-                "embedded target '{triple}' must prefer the .ebv stdlib variant"
-            );
-        }
     }
 
     #[test]

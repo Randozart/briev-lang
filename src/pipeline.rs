@@ -826,7 +826,6 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
     if let Some(ref stdlib_path) = opts.stdlib_path {
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
-    resolver = resolver.with_prefer_ebv(get_extension(file_path) == ".ebv");
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
     extract_inline_stage_blocks(&mut items, &mut pm);
     {
@@ -918,7 +917,6 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     if let Some(ref stdlib_path) = opts.stdlib_path {
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
-    resolver = resolver.with_prefer_ebv(get_extension(file_path) == ".ebv");
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
     extract_inline_stage_blocks(&mut items, &mut pm);
     {

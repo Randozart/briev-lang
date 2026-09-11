@@ -409,11 +409,6 @@ plugins = ["prelude-native", "env", "print", "inline-frgn", "entry", "script"]
 assembler = "none"
 cross_verify_samples = 50
 
-[".ebv"]
-backend = "llvm"
-defaults = ["--optimize-size", "--budget", "0"]
-plugins = ["prelude"]
-
 [".cbv"]
 backend = "circt"
 defaults = []
@@ -492,7 +487,7 @@ vector_min_width = 4
     #[test]
     fn test_target_config_has_extensions() {
         let config = TargetConfig::load();
-        for ext in &[".bv", ".ebv", ".cbv", ".rbv", ".abv"] {
+        for ext in &[".bv", ".cbv", ".rbv", ".abv"] {
             assert!(config.lookup(ext).is_some(), "missing entry for {}", ext);
         }
     }
@@ -509,7 +504,6 @@ vector_min_width = 4
     #[test]
     fn test_get_extension() {
         assert_eq!(get_extension("foo.bv"), ".bv");
-        assert_eq!(get_extension("foo.ebv"), ".ebv");
         assert_eq!(get_extension("foo.cbv"), ".cbv");
         assert_eq!(get_extension("foo"), ".bv");
     }

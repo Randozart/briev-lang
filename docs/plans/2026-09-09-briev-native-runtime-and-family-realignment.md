@@ -586,6 +586,107 @@ session evidence, and the self-hosting endgame (a QBE-scale native emission
 tier breaking the rustc→LLVM bootstrap chain; LLVM itself is explicitly NOT
 the goal — theoretical capability is).
 
+## E. Part B — Explicit Bare Suffix (`.b.bv`) + proof-based constraints
+
+### E.1 Suffix convention
+
+Replace the opaque `.ebv` extension with a `.b` dotted-profile prefix,
+consistent with `.f` (formatted) and `.s` (strict). The `.b` segment goes
+BEFORE the base extension, stackable with `.f`/`.s`:
+
+| Before | After | Meaning |
+|---|---|---|
+| `main.ebv` | `main.b.bv` | bare (freestanding) |
+| — | `main.bf.bv` | bare + formatted |
+| — | `main.bs.bv` | bare + strict |
+| `main.bv` | `main.bv` | hosted (default, unchanged) |
+
+Clean break — no backward-compat shim for `.ebv`.
+
+### E.2 Bare-metal behavioral model
+
+The `.b` suffix activates "bare-metal proof obligations." The compiler
+applies stricter analysis when it is set. The three physical constraints
+and how the compiler handles them:
+
+| Constraint | Error (provably wrong) | Warn (likely wrong) | Strategy keyword |
+|---|---|---|---|
+| Recursion depth | No base case, or depth provably exceeds stack | Base case exists but depth unbounded | `fn foo(...) -> T : recursion<64>` — programmer asserts bound |
+| Thread lifecycle | Join path provably unreachable | Join exists but may not execute | `fire_and_forget ThreadCreate#(...)` — explicit intent |
+| Heap budget | — | — | `config/targets.dbvl` per triple (not user code) |
+
+Strategy keywords sit in the function signature (like `async`, `seq`) or
+as statement modifiers (like `trap`, `halt`). They are NOT contracts —
+they declare how the compiler handles what it cannot prove.
+
+### E.3 Implementation steps
+
+1. **`is_bare()` in conformance.rs** — add `is_bare(path) -> bool`
+   mirroring `is_formatted()`/`is_strict()`. Remove
+   `SourceKind::Embedded` variant and `"ebv"` classification arm.
+
+2. **compile.rs** — replace all `get_extension(file_path) == ".ebv"`
+   with `is_bare(Path::new(file_path))`. Remove `prefer_ebv` resolver
+   call.
+
+3. **import_resolver.rs** — delete `prefer_ebv` field, builder method,
+   and three-tier resolution logic. Resolution always picks `.bv`.
+
+4. **Target/config cleanup** — delete `.ebv` entry from
+   `config/targets.dbvl`. Delete `prefer_ebv` from `TargetSettings` in
+   `config_tuning.rs`. Delete `.ebv` entry from `target.rs` map.
+
+5. **Delete `lib/std/string.ebv`** — 89 lines, mostly stubs. Family A
+   moved core lanes into `string.bv`. No code imports it directly.
+
+6. **Fix message prefix** — change `"TargetError:"` to
+   `"TargetWarning:"` on threading/recursion messages in
+   `check_embedded_restrictions`. These are warnings, not errors.
+
+7. **Add proof engine** (incremental):
+   - Recursion: detect base cases in the call graph; warn only when
+     depth is unbounded. Acyclic calls with known base cases pass clean.
+   - Threading: detect join reachability; warn only when lifecycle is
+     unprovable. `ThreadCreate#` followed by `ThreadJoin#` on the same
+     handle passes clean.
+
+8. **Add strategy keywords**:
+   - `: recursion<N>` on function signatures — suppresses recursion
+     warning; compiler verifies `N` fits the target stack size.
+   - `fire_and_forget` before `ThreadCreate#` — suppresses threading
+     warning; programmer declares intent.
+
+9. **Update tests** — rename `.ebv` test files to `.b.bv`. Update
+   embedded tests to use `is_bare()`.
+
+10. **Docs** — update `spec/SPEC.md` §3 extension table,
+    `docs/architecture/briev-native-runtime.md` embedded references.
+
+### E.4 What does NOT change
+
+- `is_embedded` flag and all behavioral forks (arena model, heap routing,
+  briev_rt.c skip, threading/recursion warning infrastructure)
+- Halt gate (triple-based, not affected)
+- `EmbeddedConfig` struct (dead scaffolding, cleaned up separately)
+- All Families A–I work
+
+### E.5 Files touched
+
+| File | Change |
+|---|---|
+| `src/conformance.rs` | Add `is_bare()`, remove `SourceKind::Embedded` |
+| `src/compile.rs` | Replace `.ebv` checks with `is_bare()`, remove `prefer_ebv` |
+| `src/import_resolver.rs` | Remove `prefer_ebv` field + resolution logic |
+| `src/config_tuning.rs` | Remove `prefer_ebv` field + loader + test |
+| `src/target.rs` | Remove `.ebv` entry |
+| `config/targets.dbvl` | Remove `.ebv` line |
+| `src/dbriev/config_db.rs` | Update `.ebv` test reference |
+| `lib/std/string.ebv` | Delete |
+| `src/backend/llvm/mod.rs` | Fix `"TargetError:"` → `"TargetWarning:"` prefix |
+| `src/backend/llvm/tests.rs` | Update embedded test filenames |
+| `spec/SPEC.md` | Update §3 extension table |
+| `docs/architecture/briev-native-runtime.md` | Update embedded references |
+
 ## Sequencing note
 
 Family D resumes first (str_to_float, then vector ops — both gate-gated).

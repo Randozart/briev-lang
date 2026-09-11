@@ -243,21 +243,14 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // emits int_to_str and the other cast-lane symbols directly as LLVM
     // define functions using the static bump arena (see mod.rs generate fn,
     // after the embedded_heap global). The compiler provides the runtime.
-    // No auto-import of string.ebv; the backend handles it.
+    // 2026-09-11 (Part B): bare targets (.b.bv) use the same .bv stdlib —
+    // no separate .ebv stdlib variant remains.
 
     // ── Resolved stage (after import resolution) ──────────────────────
     let mut resolver = briev_compiler::import_resolver::ImportResolver::new();
     if let Some(ref stdlib_path) = opts.stdlib_path {
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
-    // 2026-08-04 (Phase 4): an .ebv embedded target prefers the .ebv stdlib
-    // variant (the casting-lane symbols as Briev defns, not C).
-    // 2026-08-09 (Phase 11, Slice 2): the target profile declares the
-    // preferred sibling variant (`prefer_ebv` in config/targets.dbvl, SPEC
-    // §3.3); the resolver consults it via target_settings_for once a triple
-    // is threaded to resolver construction. Today the extension is the
-    // resolver-time proxy for the embedded target (no triple in BuildOptions).
-    resolver = resolver.with_prefer_ebv(get_extension(file_path) == ".ebv");
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
 
     // 2026-07-24: Extract stage blocks from imported files. The first
@@ -553,7 +546,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 
     // 2026-07-16: P4 — Collect extra objects from ForeignBinding FromSpec paths
     // for linking into the final binary.
-    let extra_objects = collect_extra_objects(&items, &resolver, get_extension(file_path) == ".ebv")?;
+    let extra_objects = collect_extra_objects(&items, &resolver, briev_compiler::conformance::is_bare(std::path::Path::new(file_path)))?;
 
     // ── Frgn dispatch resolution ──────────────────────────────────────
     // 2026-07-22: Resolve each frgn declaration's dispatch strategy before
@@ -1256,10 +1249,10 @@ fn codegen(
                 .with_analysis(analysis);
             // Apply target config if available
             let ext = get_extension(&opts.file_path);
-            // 2026-08-04 (Phase 4): an .ebv embedded target activates the
+            // 2026-08-04 (Phase 4): a bare target (.b.bv) activates the
             // restricted embedded mode (check_embedded_restrictions, term! ->
             // wfi) — the freestanding bare-metal path.
-            if ext == ".ebv" {
+            if briev_compiler::conformance::is_bare(std::path::Path::new(&opts.file_path)) {
                 b = b.with_embedded_mode(true);
             }
             // 2026-09-06 (ISR plan): the profile's ISR mechanism — the
@@ -1332,10 +1325,10 @@ fn codegen(
             b.ctx.collection_iterables = collection_iterables.clone();
             // Apply target config if available
             let ext = get_extension(&opts.file_path);
-            // 2026-08-04 (Phase 4): an .ebv embedded target activates the
+            // 2026-08-04 (Phase 4): a bare target (.b.bv) activates the
             // restricted embedded mode (check_embedded_restrictions, term! ->
             // wfi) — the freestanding bare-metal path.
-            if ext == ".ebv" {
+            if briev_compiler::conformance::is_bare(std::path::Path::new(&opts.file_path)) {
                 b = b.with_embedded_mode(true);
             }
             // 2026-09-06 (ISR plan): the profile's ISR mechanism — the
@@ -1424,10 +1417,10 @@ fn codegen(
                 .with_analysis(analysis);
             // Apply target config (same logic as Llvm)
             let ext = get_extension(&opts.file_path);
-            // 2026-08-04 (Phase 4): an .ebv embedded target activates the
+            // 2026-08-04 (Phase 4): a bare target (.b.bv) activates the
             // restricted embedded mode (check_embedded_restrictions, term! ->
             // wfi) — the freestanding bare-metal path.
-            if ext == ".ebv" {
+            if briev_compiler::conformance::is_bare(std::path::Path::new(&opts.file_path)) {
                 b = b.with_embedded_mode(true);
             }
             // 2026-09-06 (ISR plan): the profile's ISR mechanism — the

@@ -2190,7 +2190,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         }
         if self.ctx.has_cycles {
             self.warnings.push(
-                "TargetError: unbounded recursion detected — call graph has cycles, which are not supported on target 'Embedded'".to_string()
+                "TargetWarning: unbounded recursion detected — call graph has cycles, which are not supported on target 'Embedded'".to_string()
             );
         }
     }
@@ -2269,7 +2269,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             Expr::Call(name, args, _) => {
                 if threading_intrinsics.contains(&name.as_str()) {
                     self.warnings.push(format!(
-                        "TargetError: threading intrinsic not supported on target 'Embedded' — '{}' in '{}'",
+                        "TargetWarning: threading intrinsic not supported on target 'Embedded' — '{}' in '{}'",
                         name, ctx_name
                     ));
                 }
