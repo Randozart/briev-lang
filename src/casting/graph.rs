@@ -1002,6 +1002,23 @@ impl CastingGraph {
                 let bare = name.strip_prefix('#').unwrap_or(name);
                 return (bare.to_string(), variant.clone());
             }
+            // 2026-09-11 (fundamentals doctrine, Phase A2): `Float<Posit>` —
+            // the fundamental IS the protocol, so an Applied whose base is a
+            // fundamental and whose single arg is a plain identifier IS the
+            // (category, variant) pair. Replaces #Float<Posit> at the AST
+            // level. Multi-arg or non-identifier args are genuine generics —
+            // fall through to the universe walk.
+            Type::Applied(base, args)
+                if crate::type_universe::FUNDAMENTAL_TYPES.contains(&base.as_str())
+                    && args.len() == 1
+                    && matches!(&args[0], Type::Custom(_)) =>
+            {
+                let variant = match &args[0] {
+                    Type::Custom(v) => v.clone(),
+                    _ => unreachable!("guarded by the match guard"),
+                };
+                return (base.clone(), variant);
+            }
             Type::Custom(..) | Type::Applied(..) => {} // fall through to universe lookup
             // 2026-08-15 (fundamentals): unknown types fall back to Data (the
             // universal parent), not Bit (which is now the leaf bit type).
@@ -1509,6 +1526,41 @@ mod tests {
         graph.register_cast_from_bit("MyString", "construct_from_bits");
         assert_eq!(graph.get_cast_from_bit("MyString"), Some("construct_from_bits"));
         assert_eq!(graph.get_cast_from_bit("Other"), None);
+    }
+
+    // 2026-09-11 (fundamentals doctrine, Phase A2): `Float<Posit>` — the
+    // fundamental-with-variant Applied form resolves to (category, variant),
+    // NOT the category default (IEEE754). Guards against the silent
+    // variant-drop into the wrong cast lane.
+    #[test]
+    fn test_applied_fundamental_variant_peel() {
+        let graph = CastingGraph::new();
+        let universe = crate::type_universe::TypeUniverse::new();
+        let posit = Type::Applied(
+            "Float".to_string(),
+            vec![Type::Custom("Posit".to_string())],
+        );
+        assert_eq!(
+            graph.type_to_protocol(&universe, &posit),
+            ("Float".to_string(), "Posit".to_string()),
+            "variant must survive the peel — defaulting to IEEE754 would cast in the wrong lane"
+        );
+        let utf8 = Type::Applied(
+            "String".to_string(),
+            vec![Type::Custom("C_String".to_string())],
+        );
+        assert_eq!(
+            graph.type_to_protocol(&universe, &utf8),
+            ("String".to_string(), "C_String".to_string())
+        );
+        // Multi-arg Applied is a genuine generic — NOT a variant pair.
+        let generic = Type::Applied(
+            "Float".to_string(),
+            vec![Type::Custom("A".to_string()), Type::Custom("B".to_string())],
+        );
+        let (cat, var) = graph.type_to_protocol(&universe, &generic);
+        assert_eq!(cat, "Float");
+        assert_eq!(var, "", "two args cannot be a variant pair");
     }
 
     #[test]
