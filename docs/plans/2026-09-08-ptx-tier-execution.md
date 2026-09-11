@@ -552,3 +552,44 @@ PTX chunk path).
 - **CUDA is driver-wedged again** (dispatch failed on every shape after
   the vulkan sessions; the documented rmmod/modprobe clear needs the
   owner). PTX numbers are the earlier-today sustained readings.
+
+## 2026-09-11 late: the coopmat shape curve is BIMODAL — router blocked
+
+Shape-matched coopmat f16acc sweep (sync GPU timestamps unless noted;
+all verified against the blob's own shape):
+
+| n³ | GPU time | TFLOP/s | rel err |
+|------|----------|---------|---------|
+| 1024³ | 0.118 ms | 18.2 | 7.3e-3 ✓1e-2 |
+| 2048³ | 0.635 ms | 27.1 | 2.1e-3 ✓ |
+| **3072³** | **14.7-18.2 ms** | **3.2-4.0 — COLLAPSE** | 5.6e-3 ✓ |
+| 4096³ | 5.0 ms | 13.7 | 4.4e-3 ✓ |
+| 6144³ | ~38 ms | 12.2 | 4.6e-3 ✓ |
+| 8192³ | ~45.5 ms | 24.2 (30-34 batched) | 8.3e-3 ✓ |
+| 12288³ | ~180 ms | 20.9 | **2.97e-2 ✗ contract violation** |
+
+**Finding 1 — the 3072³ band collapses ~8×** (3.2-4.0 TF vs 12-27 TF
+neighbors; sync timestamps prove it is execution, not submit
+overhead). The 6144³ point is also soft (12.2). A tier router keyed on
+"small/large wins" would route INTO the hole. Mechanism unknown — the
+tile grid is a clean multiple at every point (48×48 at 3072), the
+strength-reduced decode is guarded, smem footprint is shape-independent.
+Needs device profiling; parked.
+
+**Finding 2 — the f16acc coopmat numerics wall at long K**: rel error
+grows with K (4.4e-3 @K=4096 → 8.3e-3 @8192 → 2.97e-2 @12288 — the
+K-panel f16 accumulation). The 1e-2 contract holds through K≈8192 and
+breaks by 12288. The tier router must carry a K-budget: the coopmat
+f16acc tier is contracted for K ≲ 8192 (empirically; the analytic
+bound is the K-panel accumulation model, not yet derived). Note the
+error is NOT monotone in K below that (7.3e-3 @1024 vs 2.1e-3 @2048 —
+panel-boundary alignment matters).
+
+**Router verdict**: blocked until the collapse band is explained.
+Current facts suffice for a POLICY NOTE though: no coopmat f16acc
+dispatch for K > 8192; the 3072³-6144³ band goes to PTX f16acc (19.5
+TF @4096³, ~18 estimated at neighbors) untilcoopmat explains or fixes
+the hole.
+
+Fixture convention note: curve fixtures were examples/gpu/gemm_curve_N.abv
+(shape-specialized, deleted after emit — the blob bakes its shape).
