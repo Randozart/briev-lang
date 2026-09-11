@@ -8,7 +8,7 @@ Briev is a programming language with the following features:
 - Partially declarative, partially imperative, functional invariant based programming
 - Invariant based runtime optimization (with execution speed at parity, or even better than C in several cases)
 - Backend independence through state-management based syntax and backend handling of intrinsics
-- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.cbv`)
+- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.sbv`)
 - A lightweight systems language that handles complexity at compile time
 - Syntax that is equally applicable to the other backends, not just systems programming
 - Inferred command flow through reactive top level `node` declarations
@@ -30,7 +30,7 @@ And for those people for whom this is very important, even if the language itsel
 
 - A cute mascot called _Syn_
 
-| <img src="assets/syn_present.png" alt="Syn showing you the logos" width="250"/><br/> <p align="center">*Syn*, the Cybersphinx<p> <p align="center"><sup><sub>(For those people who like a mascot to come with their language)</sup></sub><p> | <img src="assets/briev-logo.svg" alt="Briev" width="200"/><br/><p align="center">**Briev**<p><img src="assets/e-briev-logo.svg" alt="Embedded Briev" width="200"/><br/><p align="center">**Embedded Briev**<p><img src="assets/a-briev-logo.svg" alt="Accelerated Briev" width="200"/><br/><p align="center">**Accelerated Briev**<p> | <img src="assets/r-briev-logo.svg" alt="Rendered Briev" width="200"/><br/><p align="center">**Rendered Briev**<p><img src="assets/d-briev-logo.svg" alt="Data Briev" width="200"/><br/><p align="center">**Data Briev**<p><img src="assets/c-briev-logo.svg" alt="Circuit Briev" width="200"/><p align="center">**Circuit Briev**<p> |
+| <img src="assets/syn_present.png" alt="Syn showing you the logos" width="250"/><br/> <p align="center">*Syn*, the Cybersphinx<p> <p align="center"><sup><sub>(For those people who like a mascot to come with their language)</sup></sub><p> | <img src="assets/briev-logo.svg" alt="Briev" width="200"/><br/><p align="center">**Briev**<p><img src="assets/e-briev-logo.svg" alt="Embedded Briev" width="200"/><br/><p align="center">**Embedded Briev**<p><img src="assets/a-briev-logo.svg" alt="Accelerated Briev" width="200"/><br/><p align="center">**Accelerated Briev**<p> | <img src="assets/r-briev-logo.svg" alt="Rendered Briev" width="200"/><br/><p align="center">**Rendered Briev**<p><img src="assets/d-briev-logo.svg" alt="Data Briev" width="200"/><br/><p align="center">**Data Briev**<p><img src="assets/s-briev-logo.svg" alt="Silicon Briev" width="200"/><p align="center">**Silicon Briev**<p> |
 |---|---|---|
 
 ## Briev Doesn't Break
@@ -43,7 +43,7 @@ Briev is a contract-enforced language designed for building verifiable state mac
 | `.rbv` | **Rendered Briev** | TypeScript + frontend code + WASM sidecars |
 | `.ebv` | **Embedded Briev** | LLVM microcontroller binary |
 | `.abv` | **Accelerated Briev** | SPIR-V GPU kernel |
-| `.cbv` | **Circuit Briev** | CIRCT hardware description (Verilog/VHDL) |
+| `.sbv` | **Silicon Briev** | CIRCT hardware description (Verilog/VHDL) |
 | `.dbv` / `.dbvl` | **Data Briev** | Configuration data parsed by Briev itself |
 
 The main sources of inspiration are Rust (by Graydon Hoare and the Rust community) and Dialog (by Linus Åkesson). Specifically the fact that both have a very strict compiler, that catches bad code before it ever compiles, simply through smart conventions. Especially the declarative nature is inspired by Dialog, as a direct successor of Prolog, since Dialog showed that setting up a series of predicates could be sufficient to have a compiler figure out a complex runtime capable of simulating a world. And the reactor loop? That was inspired by, well... React. As such, everything in Briev is designed to, in some way, aid in predictable runtime cascades. You set up the first billiard ball, and based on the variables present describing the overall "state", the rest of the balls predictably scatter.
@@ -150,7 +150,7 @@ The file extension selects which backend compiles your program. Each variant tar
 | <img src="assets/a-briev-icon.svg" alt="Accelerated Briev" width="25"/> **Accelerated Briev** | `.abv` | GPU compute kernel | SPIR-V |
 | <img src="assets/r-briev-icon.svg" alt="Rendered Briev" width="25"/> **Rendered Briev** | `.rbv` | Reactive web UI | TypeScript + WASM |
 | <img src="assets/e-briev-icon.svg" alt="Embedded Briev" width="25"/> **Embedded Briev** | `.ebv` | Microcontroller bare-metal | LLVM → MCU binary |
-| <img src="assets/c-briev-icon.svg" alt="Circuit Briev" width="25"/> **Circuit Briev** | `.cbv` | Hardware logic graph | CIRCT → Verilog/VHDL |
+| <img src="assets/s-briev-icon.svg" alt="Silicon Briev" width="25"/> **Silicon Briev** | `.sbv` | Hardware logic graph | CIRCT → Verilog/VHDL |
 | <img src="assets/d-briev-icon.svg" alt="Data Briev" width="25"/> **Data Briev** | `.dbv` / `.dbvl` | Configuration data | Parsed by Briev itself |
 
 Dotted profiles add strictness: `.s.bv` enables strict mode (representation fallbacks become errors).

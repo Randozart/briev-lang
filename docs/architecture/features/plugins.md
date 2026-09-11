@@ -242,7 +242,7 @@ automatically at startup:
 plugins/
   parsed/
     prelude.bv        # Injects stdlib imports
-    prelude-hw.bv     # Injects hardware stdlib for .cbv
+    prelude-hw.bv     # Injects hardware stdlib for .sbv
   typed/
     auto-main.bv      # Adds [#] entry marker to main
     entry-check.bv     # Verifies entry mechanism exists
@@ -256,7 +256,7 @@ Extension-specific plugin selection is configured in `config/targets.toml`:
 [".bv"]
 plugins = ["prelude"]
 
-[".cbv"]
+[".sbv"]
 plugins = ["prelude-hw"]
 ```
 

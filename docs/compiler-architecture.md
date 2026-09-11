@@ -7,7 +7,7 @@
 
 ```mermaid
 graph TD
-    S["Source<br>(.bv/.sbv/.rbv/.ebv/.abv/.cbv/.dbv)"] --> Lex[Lexer: src/lexer.rs]
+    S["Source<br>(.bv/.sbv/.rbv/.ebv/.abv/.dbv)"] --> Lex[Lexer: src/lexer.rs]
     Lex -->|Token stream| Par[Parser: src/parser/]
     Par -->|AST| Imp[Import Resolver: import_resolver.rs]
     Imp -->|Resolved AST| UB[TypeUniverse: type_universe.rs]
@@ -33,7 +33,7 @@ graph TD
         LLVM -->|.abv -> SPIR-V| GPU[GPU kernel]
 
         Web -->|.rbv -> TS + WASM| WebApp[Web frontend]
-        CIRCT -->|.cbv -> MLIR| HDL["Verilog / VHDL"]
+        CIRCT -->|.sbv -> MLIR| HDL["Verilog / VHDL"]
     end
 
     Backends --> LSP[LSP Server]

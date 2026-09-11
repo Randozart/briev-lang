@@ -10,7 +10,7 @@ Briev is programming language with the following features:
 - Partially declarative, partially imperative, functional invariant based programming
 - Invariant based runtime optimization (with execution speed at parity, or even better than C in several cases)
 - Backend independence through state-management based syntax and backend handling of intrinsics
-- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.cbv`)
+- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.sbv`)
 - A lightweight systems language that handles complexity at compile time
 - Syntax that is equally applicable to the other backends, not just systems programming
 - Inferred command flow through reactive top level `node` declarations
@@ -28,7 +28,7 @@ And for those people for whom this is very important, even if the language itsel
 
 - A cute mascot called _Syn_
 
-| <img src="assets/syn_present.png" alt="Syn showing you the logos" width="250"/><br/> <p align="center">*Syn*, the Cybersphinx<p> <p align="center"><sup><sub>(For those people who like a mascot to come with their language)</sup></sub><p> | <img src="assets/briev-logo.svg" alt="Briev" width="200"/><br/><p align="center">**Briev**<p><img src="assets/e-briev-logo.svg" alt="Embedded Briev" width="200"/><br/><p align="center">**Embedded Briev**<p><img src="assets/a-briev-logo.svg" alt="Accelerated Briev" width="200"/><br/><p align="center">**Accelerated Briev**<p> | <img src="assets/r-briev-logo.svg" alt="Rendered Briev" width="200"/><br/><p align="center">**Rendered Briev**<p><img src="assets/d-briev-logo.svg" alt="Data Briev" width="200"/><br/><p align="center">**Data Briev**<p><img src="assets/c-briev-logo.svg" alt="Circuit Briev" width="200"/><p align="center">**Circuit Briev**<p> |
+| <img src="assets/syn_present.png" alt="Syn showing you the logos" width="250"/><br/> <p align="center">*Syn*, the Cybersphinx<p> <p align="center"><sup><sub>(For those people who like a mascot to come with their language)</sup></sub><p> | <img src="assets/briev-logo.svg" alt="Briev" width="200"/><br/><p align="center">**Briev**<p><img src="assets/e-briev-logo.svg" alt="Embedded Briev" width="200"/><br/><p align="center">**Embedded Briev**<p><img src="assets/a-briev-logo.svg" alt="Accelerated Briev" width="200"/><br/><p align="center">**Accelerated Briev**<p> | <img src="assets/r-briev-logo.svg" alt="Rendered Briev" width="200"/><br/><p align="center">**Rendered Briev**<p><img src="assets/d-briev-logo.svg" alt="Data Briev" width="200"/><br/><p align="center">**Data Briev**<p><img src="assets/s-briev-logo.svg" alt="Silicon Briev" width="200"/><p align="center">**Silicon Briev**<p> |
 |---|---|---|
 
 ## Quick Start
@@ -79,7 +79,7 @@ node tick [counter < bound][counter == bound] {
 ./target/release/brievc build counter.abv
 
 # CIRCT hardware description
-./target/release/brievc build counter.cbv
+./target/release/brievc build counter.sbv
 
 # Emit LLVM IR instead of a binary
 ./target/release/brievc build --llvm counter.bv
@@ -95,7 +95,7 @@ The file extension selects which backend compiles your program, and what syntax 
 | <img src="assets/a-briev-icon.svg" alt="Briev Accel" width="25"/> **Accelerated Briev** | `.abv` | GPU compute kernel | SPIR-V (GPU intrinsics, no FFI, restricted types) |
 | <img src="assets/r-briev-icon.svg" alt="Rendered Briev" width="25"/> **Rendered Briev** | `.rbv` | Reactive web UI | TypeScript + WASM sidecars + view bindings |
 | <img src="assets/e-briev-icon.svg" alt="Embedded Briev" width="25"/> **Embedded Briev** | `.ebv` | Microcontroller bare-metal | LLVM → microcontroller binary (no OS, no GC) |
-| <img src="assets/c-briev-icon.svg" alt="Circuit Briev" width="25"/> **Circuit Briev** | `.cbv` | Pure hardware logic graph | CIRCT → Verilog/VHDL (no FFI, no external deps) |
+| <img src="assets/s-briev-icon.svg" alt="Silicon Briev" width="25"/> **Silicon Briev** | `.sbv` | Pure hardware logic graph | CIRCT → Verilog/VHDL (no FFI, no external deps) |
 | <img src="assets/d-briev-icon.svg" alt="Data Briev" width="25"/> **Data Briev** | `.dbv` / `.dbvs` / `.dbvl` | Configuration data, schemas, line-based databases | Parsed and validated by Briev itself, consumed by all targets |
 
 ### Why Variants Exist
@@ -107,7 +107,7 @@ Each variant has a different *contract baseline* and *feature set* appropriate t
 | `.bv` (Briev) | `[[post]`, `[pre]]` | All available | C, Rust, Python, Java, JavaScript | General-purpose |
 | `.rbv` (Render) | sugar allowed | All available | JavaScript (inlined); C/Rust via WASM | Web frontends |
 | `.ebv` (Embed) | sugar allowed | All available | C, Rust (Python/Java warned) | Bare-metal MCU |
-| `.cbv` (Circuit) | sugar banned | Hardware subset only | Banned | Hardware synthesis |
+| `.sbv` (Silicon) | sugar banned | Hardware subset only | Banned | Hardware synthesis |
 | `.dbv` (Data) | No contracts | None | None | Configuration |
 
 The rationale: **contracts are optimization information**. The more complete your contracts, the more the compiler can prove, and the faster your program runs. Sugar syntax (`[[post]`, `[pre]]`) is a convenience for prototyping, but strict variants force you to commit to full specifications. This is what makes Briev different from total languages (Coq, Agda — must prove everything upfront) and mainstream languages (C, Rust — prove nothing by default).

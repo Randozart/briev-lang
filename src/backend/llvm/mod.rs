@@ -2152,8 +2152,8 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
     /// 2026-08-04 (Phase 4, .ebv heap reframe): heap types (#String/#Blob/List/
     /// HashMap/…) are now LEGAL on the embedded target — the static bump arena
     /// (@embedded_heap) provides a heap without @malloc/briev_rt.c. The old
-    /// hard rejection was a vestige of the pre-split .ebv/.cbv entanglement
-    /// (the .cbv CIRCT target synthesizes hardware and truly has no heap; .ebv
+    /// hard rejection was a vestige of the pre-split .ebv/.sbv entanglement
+    /// (the .sbv CIRCT target synthesizes hardware and truly has no heap; .ebv
     /// is LLVM embedded and does). We still WARN when the program uses heap
     /// types so a bare-metal developer knows the static arena is finite, but
     /// it is not a TargetError. Threading intrinsics remain forbidden (bare

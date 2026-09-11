@@ -19,7 +19,7 @@ update this document in the same commit and say why.
 | **LLVM** | `.bv` `.ebv` | Reference implementation. Native binaries, embedded mode (`halt#`→`wfi`), wasm32 for webstack. Full language surface. |
 | **VM** *(emit mode)* | none — `--backend vm` | Finish compilation on ANY machine with a tamer: one `.bounty` archive ships everywhere; macros adapt at install time. Output is `.lair` bytecode consumed by the self-hosted tamer (`lib/tamer/`) driven by `tamer/install_sim.c`. |
 | **SPIR-V** | `.abv` | Standalone GPU kernels: valid Vulkan/OpenCL compute binaries validated by spirv-val. Kernel selection/bodies come from the frontend accel analysis. NOT related to `!> accel` offload (that is `BackendKind::Gpu` through LLVM). |
-| **CIRCT** | `.cbv` | Synthesizable register-level hardware: MLIR (HW+Comb+Seq) that real CIRCT accepts, Verilog-exportable, simulable, synthesizable. |
+| **CIRCT** | `.sbv` | Synthesizable register-level hardware: MLIR (HW+Comb+Seq) that real CIRCT accepts, Verilog-exportable, simulable, synthesizable. |
 | **Webstack** | `.rbv` | Rendered Briev → wasm32 via `LlvmBackend` + `GlueWebGenerator` JS shim (`src/glue/web_generator.rs`). v2 only — the TS emitter is deleted. |
 
 Routing truth lives in `config/targets.dbvl`; dispatch in `src/compile.rs`

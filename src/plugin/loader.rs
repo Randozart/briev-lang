@@ -428,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_for_extension_cbv() {
+    fn test_filter_for_extension_sbv() {
         let mut mgr = PluginManager::new();
         let prelude_hw = StageBlockPlugin::new(
             "prelude-hw".to_string(),
@@ -443,7 +443,7 @@ mod tests {
         mgr.register(Box::new(ValidationPlugin::new()));
 
         let config = TargetConfig::load();
-        mgr.filter_for_extension(".cbv", &config);
+        mgr.filter_for_extension(".sbv", &config);
 
         let names = mgr.enabled_names(None);
         assert!(names.contains(&"prelude-hw".to_string()));

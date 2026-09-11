@@ -160,7 +160,7 @@ faster than Python's own function call (the `METH_FASTCALL` shim).
 
 ---
 
-## 4b. `extern` — importing foreign HARDWARE (`.cbv`)
+## 4b. `extern` — importing foreign HARDWARE (`.sbv`)
 
 Software FFI imports *functions*; the circuit target imports *modules*.
 An `extern` declaration names an HDL file and states the port contract
@@ -178,12 +178,12 @@ What happens per target:
 
 | Target | Behavior |
 |--------|----------|
-| `circt` (`.cbv`) | emits an `hw.module.extern` blackbox with implicit `clock`/`reset` + your ports; the referenced file is copied beside the output so verilator/Vivado link it automatically |
+| `circt` (`.sbv`) | emits an `hw.module.extern` blackbox with implicit `clock`/`reset` + your ports; the referenced file is copied beside the output so verilator/Vivado link it automatically |
 | native/LLVM | hard error — software binaries have no RTL linkage; model the device in Briev or build for the circuit target |
 
 Rules worth knowing:
 
-- The file path resolves relative to the `.cbv` source; a missing file is a
+- The file path resolves relative to the `.sbv` source; a missing file is a
   compile error naming the path.
 - Call sites cannot distinguish an imported module from a defined `cell` —
   identical port matching, identical instantiation.

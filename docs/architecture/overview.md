@@ -181,7 +181,7 @@ The backend OWNS:    CompilerContext, TypedRegister, output string
 Backend selection is driven by config/targets.dbvl:
   [.bv]   backend = "llvm"
   [.ebv]  backend = "llvm"
-  [.cbv]  backend = "circt"
+  [.sbv]  backend = "circt"
   [.wbv]  backend = "webstack"
 
 CLI: --backend overrides the config file.

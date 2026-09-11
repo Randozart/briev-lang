@@ -1,0 +1,21 @@
+
+!> accel: try_all;
+
+const N: Int = 4096;
+
+type R32: Float {
+    spec Bits: 32;
+    spec Format: R32Float;
+};
+
+let i: Int = 0;
+let x: Float[4096];
+let img: R32[4096];
+
+async node fill [i < N][i == N] {
+    let pix: Int = i % 64;
+    let row: Int = i / 64;
+    img[i] = x[i];
+    i = i + 1;
+    term;
+};

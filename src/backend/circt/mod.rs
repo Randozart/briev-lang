@@ -1,5 +1,5 @@
 // CIRCT Backend — emits MLIR text in HW + Comb + Seq dialects.
-// Invoked via: briev build file.cbv → program.mlir → circt-opt → circt-translate → verilog
+// Invoked via: briev build file.sbv → program.mlir → circt-opt → circt-translate → verilog
 
 pub mod mem_policy;
 pub mod normalizer;
@@ -209,7 +209,7 @@ impl CirctBackend {
         let already = errs.iter().any(|e| e.contains(what));
         if !already {
             errs.push(format!(
-                "error: CIRCT (.cbv hardware target) does not support {}\n  why: \
+                "error: CIRCT (.sbv hardware target) does not support {}\n  why: \
                  hardware synthesis lowers to finite register-level combinational \
                  logic; this construct has no honest gate-level form.\n  fix: \
                  rewrite without {}, or build for the native LLVM target.",

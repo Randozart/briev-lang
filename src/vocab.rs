@@ -277,7 +277,7 @@ impl LanguageVocab {
                 "#Category", "Intrinsic#", "$name", "name!(...)", "$(Stage)",
                 ".^Field", ".^^Field", "!value", "?",
             ]),
-            extensions: ss(&["bv", "ebv", "abv", "cbv", "rbv", "dbv", "dbvl"]),
+            extensions: ss(&["bv", "ebv", "abv", "sbv", "rbv", "dbv", "dbvl"]),
             profiles: ss(&["s", "f"]),
             hashwords: ss(&[
                 "Int", "Float", "Bool", "String", "Char", "Bits", "Ptr", "Void",

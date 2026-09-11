@@ -66,7 +66,7 @@ impl HardwareValidator {
             diagnostics.extend(Self::check_memory_overlaps(items, hw_config, spec));
         }
 
-        // .cbv / .ebv-specific checks (circuit/embedded tier)
+        // .sbv / .ebv-specific checks (circuit/embedded tier)
         if is_embedded {
             diagnostics.extend(Self::check_hebv_restrictions(items));
         }
@@ -82,14 +82,14 @@ impl HardwareValidator {
                     diagnostics.push(Diagnostic::new(
                         "B5001",
                         Severity::Error,
-                        ".cbv does not allow 'import \"link/...\"' — no external dependencies",
+                        ".sbv does not allow 'import \"link/...\"' — no external dependencies",
                     ));
                 }
                 TopLevel::ForeignBinding { .. } => {
                     diagnostics.push(Diagnostic::new(
                         "B5002",
                         Severity::Error,
-                        ".cbv does not allow 'frgn' declarations — pure logic graph only",
+                        ".sbv does not allow 'frgn' declarations — pure logic graph only",
                     ));
                 }
                 TopLevel::Import(imp) => {
@@ -97,7 +97,7 @@ impl HardwareValidator {
                         diagnostics.push(Diagnostic::new(
                             "B5003",
                             Severity::Error,
-                            ".cbv cannot import from 'link/' — no external dependencies",
+                            ".sbv cannot import from 'link/' — no external dependencies",
                         ));
                     }
                 }
@@ -107,14 +107,14 @@ impl HardwareValidator {
                         diagnostics.push(Diagnostic::new(
                             "B5004",
                             Severity::Error,
-                            &format!(".cbv transaction '{}' has [true] precondition — must be total", txn.name),
+                            &format!(".sbv transaction '{}' has [true] precondition — must be total", txn.name),
                         ));
                     }
                     if matches!(txn.contract.post_condition, Expr::Bool(true)) {
                         diagnostics.push(Diagnostic::new(
                             "B5005",
                             Severity::Error,
-                            &format!(".cbv transaction '{}' has [true] postcondition — must be total", txn.name),
+                            &format!(".sbv transaction '{}' has [true] postcondition — must be total", txn.name),
                         ));
                     }
                     // Check for dynamic heap usage
@@ -141,21 +141,21 @@ impl HardwareValidator {
                 diagnostics.push(Diagnostic::new(
                     "B5006",
                     Severity::Error,
-                    &format!(".cbv type '{}' uses Int/UInt (unsized) — use UInt[N] or SInt[N] for synthesizable logic", context),
+                    &format!(".sbv type '{}' uses Int/UInt (unsized) — use UInt[N] or SInt[N] for synthesizable logic", context),
                 ));
             }
             Type::Custom(__t) if __t == "Float" => {
                 diagnostics.push(Diagnostic::new(
                     "B5007",
                     Severity::Error,
-                    &format!(".cbv type '{}' uses Float — not synthesizable", context),
+                    &format!(".sbv type '{}' uses Float — not synthesizable", context),
                 ));
             }
             Type::Custom(__t) if __t == "String" => {
                 diagnostics.push(Diagnostic::new(
                     "B5008",
                     Severity::Error,
-                    &format!(".cbv type '{}' uses String — not synthesizable", context),
+                    &format!(".sbv type '{}' uses String — not synthesizable", context),
                 ));
             }
             Type::Custom(__t) if __t == "Bool" || __t == "Char" => {} // OK for hardware

@@ -5335,7 +5335,7 @@ fn test_out_let_computation_survives() {
 /// 2026-08-04 (Phase 4, .ebv heap reframe): an embedded target with String
 /// state must NOT error — the static bump arena (@embedded_heap) provides a
 /// heap without @malloc/briev_rt.c. The old hard rejection was a vestige of
-/// the pre-split .ebv/.cbv entanglement; the heap rejection belongs to .cbv
+    /// the pre-split .ebv/.sbv entanglement; the heap rejection belongs to .sbv
 /// (CIRCT synthesizes hardware), not .ebv (LLVM embedded).
 #[test]
 fn test_embedded_string_state_uses_static_heap() {

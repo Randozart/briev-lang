@@ -2,7 +2,7 @@
 // 2026-07-21: Rewritten with direct AST navigation DSL.
 // 2026-07-23: Added Count$ check — Before$ on empty selection causes error.
 // Inserts hardware stdlib import before the first user import.
-// Used by .cbv files; provides Cell, Wire, Register, Bit.
+// Used by .sbv files; provides Cell, Wire, Register, Bit.
 
 $(Parsed @ highest) {
     let anchor = Tag$("import").First$();

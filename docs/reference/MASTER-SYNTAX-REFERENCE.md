@@ -110,8 +110,8 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 
 | Keyword | Meaning |
 |---|---|
-| `input` | Cell parameter port (`.cbv`) |
-| `output` | Cell output port (`.cbv`) |
+| `input` | Cell parameter port (`.sbv`) |
+| `output` | Cell output port (`.sbv`) |
 
 ### Compile-time metaprogramming
 
@@ -478,7 +478,7 @@ Rust plugin macros (`src/plugin/`):
 | `frgn sym(params) -> Ret from "src";` | Foreign binding (`from` required) |
 | `frgn local: external from ...` | `:` binds a different link symbol |
 | `variadic args: ForeignArgs` | Explicit variadic FFI parameter |
-| `extern Name(ports) -> outs from "path";` | Foreign HDL module (`.cbv`) |
+| `extern Name(ports) -> outs from "path";` | Foreign HDL module (`.sbv`) |
 
 ---
 

@@ -993,7 +993,7 @@ The file extension selects the backend:
 | `.ebv` | Embedded Briev | LLVM | Microcontroller binary |
 | `.abv` | Accelerated Briev | LLVM | SPIR-V GPU kernel |
 | `.rbv` | Rendered Briev | Webstack | WASM + JS shim + view bindings |
-| `.cbv` | Circuit Briev | CIRCT | Verilog/VHDL (via MLIR) |
+| `.sbv` | Silicon Briev | CIRCT | Verilog/VHDL (via MLIR) |
 | `.dbv` / `.dbvs` / `.dbvl` | Data Briev | (parsed by Briev) | Configuration data |
 
 ### LLVM Native (`.bv`)
@@ -1008,9 +1008,9 @@ briev-compiler check input.bv                # type-check only
 briev-compiler build input.rbv --backend webstack   # WASM + JS shim
 ```
 
-### Hardware (`.cbv`)
+### Hardware (`.sbv`)
 ```bash
-briev-compiler build input.cbv               # CIRCT MLIR → Verilog/VHDL
+briev-compiler build input.sbv               # CIRCT MLIR → Verilog/VHDL
 ```
 
 ### GPU (`.abv`)

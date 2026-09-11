@@ -15,7 +15,7 @@
     "onLanguage:srbv",
     "onLanguage:sebv",
     "onLanguage:abv",
-    "onLanguage:cbv"
+    "onLanguage:sbv"
   ],
   "engines": {
     "vscode": "^1.60.0"
@@ -107,12 +107,12 @@
         "configuration": "./language-configuration.json"
       },
       {
-        "id": "cbv",
-        "aliases": ["Circuit Briev", "circuit-briev", "Briev Circuit", "briev-circuit"],
-        "extensions": [".cbv"],
+        "id": "sbv",
+        "aliases": ["Silicon Briev", "silicon-briev", "Briev Silicon", "briev-silicon"],
+        "extensions": [".sbv"],
         "icon": {
-          "light": "./images/c-briev-logo.svg",
-          "dark": "./images/c-briev-logo.svg"
+          "light": "./images/s-briev-logo.svg",
+          "dark": "./images/s-briev-logo.svg"
         },
         "configuration": "./language-configuration.json"
       },
@@ -169,7 +169,7 @@
         "path": "./syntaxes/briev.tmLanguage.json"
       },
       {
-        "language": "cbv",
+        "language": "sbv",
         "scopeName": "source.briev",
         "path": "./syntaxes/briev.tmLanguage.json"
       },

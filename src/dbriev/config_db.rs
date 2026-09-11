@@ -556,7 +556,7 @@ target.wasm32: 4294967295; 4.0; 4;
     fn probe_leading_dot_key_and_space_list_field() {
         let src = "\
 .bv: llvm; --budget 256; prelude env print entry script; none; 50;
-.cbv: circt; ; prelude-hw;
+.sbv: circt; ; prelude-hw;
 ";
         let db = ConfigDb::from_str(src).unwrap();
         assert_eq!(db.field_string(".bv", 0), Some("llvm"));
@@ -565,7 +565,7 @@ target.wasm32: 4294967295; 4.0; 4;
         assert_eq!(db.field_string(".bv", 2), Some("prelude env print entry script"));
         assert_eq!(db.field_int(".bv", 4), Some(50));
         // Optional trailing fields simply absent.
-        assert_eq!(db.field_string(".cbv", 3), None);
+        assert_eq!(db.field_string(".sbv", 3), None);
     }
 
     #[test]

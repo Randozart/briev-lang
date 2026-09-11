@@ -37,8 +37,8 @@ pub enum SourceKind {
     Briev,
     /// Accelerator Briev: `.abv`.
     Accelerator,
-    /// Circuit Briev: `.cbv`.
-    Circuit,
+    /// Silicon Briev: `.sbv`.
+    Silicon,
     /// Rendered Briev: `.rbv`.
     Rendered,
     /// Structured Data Briev: `.dbv`.
@@ -52,7 +52,7 @@ impl SourceKind {
         match self {
             SourceKind::Briev => "briev",
             SourceKind::Accelerator => "accelerator",
-            SourceKind::Circuit => "circuit",
+            SourceKind::Silicon => "silicon",
             SourceKind::Rendered => "rendered",
             SourceKind::DataStructured => "dbv",
             SourceKind::DataLine => "dbvl",
@@ -147,8 +147,8 @@ mod profile_tests {
 /// unknown or removed profile segments are rejected. Flags live in a single
 /// dot-segment (`.bfs.bv`); each character in the segment must be one of the
 /// canonical flags (`b`, `f`, `s`). Contract: the base extension must be one of
-/// the normative variants; removed variants (`.sbv`, `.srbv`, `.sebv`, `.dbvs`,
-/// `.c.bv`) return `None`.
+/// the normative variants; removed variants (`.srbv`, `.sebv`, `.dbvs`,
+/// `.cbv`, `.c.bv`) return `None`.
 pub fn classify(path: &Path) -> Option<SourceKind> {
     let name = path.file_name()?.to_str()?;
     let mut segments: Vec<&str> = name.split('.').collect();
@@ -170,7 +170,7 @@ pub fn classify(path: &Path) -> Option<SourceKind> {
     match base {
         "bv" => Some(SourceKind::Briev),
         "abv" => Some(SourceKind::Accelerator),
-        "cbv" => Some(SourceKind::Circuit),
+        "sbv" => Some(SourceKind::Silicon),
         "rbv" => Some(SourceKind::Rendered),
         "dbv" => Some(SourceKind::DataStructured),
         "dbvl" => Some(SourceKind::DataLine),
@@ -299,7 +299,7 @@ mod tests {
             match kind {
                 SourceKind::Briev
                 | SourceKind::Accelerator
-                | SourceKind::Circuit => {
+                | SourceKind::Silicon => {
                     checked += 1;
                     // Parse + typecheck under the profile — the sweep gate is
                     // FRONTEND conformance (SPEC §23.4); full codegen runs via
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(classify(Path::new("main.b.bv")), Some(SourceKind::Briev));
         assert_eq!(classify(Path::new("main.bfs.bv")), Some(SourceKind::Briev));
         assert_eq!(classify(Path::new("kernel.abv")), Some(SourceKind::Accelerator));
-        assert_eq!(classify(Path::new("chip.cbv")), Some(SourceKind::Circuit));
+        assert_eq!(classify(Path::new("chip.sbv")), Some(SourceKind::Silicon));
         assert_eq!(classify(Path::new("ui.rbv")), Some(SourceKind::Rendered));
         assert_eq!(classify(Path::new("data.dbv")), Some(SourceKind::DataStructured));
         assert_eq!(classify(Path::new("lines.dbvl")), Some(SourceKind::DataLine));
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn classify_rejects_removed_variants() {
-        assert_eq!(classify(Path::new("main.sbv")), None);
+        assert_eq!(classify(Path::new("main.cbv")), None);
         assert_eq!(classify(Path::new("main.srbv")), None);
         assert_eq!(classify(Path::new("main.sebv")), None);
         assert_eq!(classify(Path::new("main.ebv")), None);
