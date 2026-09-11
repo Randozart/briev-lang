@@ -17,12 +17,14 @@ type Connector {
     pin p1 = 1;
     pin p2 = 2;
     reference "J";
+    tolerance any;
 };
 
 type Resistor {
     pin a;
     pin b;
     reference "R";
+    tolerance any;
 };
 
 type Led {
