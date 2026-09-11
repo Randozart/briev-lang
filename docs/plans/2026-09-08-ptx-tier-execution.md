@@ -400,3 +400,34 @@ canonical ledger numbers (boost windows read +10-15%); benches warm to
 steady state before timing.
 
 2108 lib tests green (k-sweep dump tests, cubin ELF unit test added).
+
+## 2026-09-11: f16acc fragment-layout mystery SOLVED — B-pipeline pair bug
+
+The "f16x2 accumulator fragment-layout discrepancy" was NOT a fragment
+layout issue. The identity probe (prime-coded seeds: y[m][n] decodes
+uniquely to its own coordinates) showed the promotion ADDRESSES were
+correct — the accs held the wrong products. Root cause: the pipelined-B
+ld-ahead refilled the OTHER register pair, the one mma(g+1) was about
+to consume — clobbering g+1's preloaded fragment after every even g, so
+every mma(g>=1) computed with group-(g+1)'s B. The 1/K-shaped sweep
+error disguised it as chunk rounding (groups g and g+2 collide in the
+16-prime probe cycle; at 0.25 seeds the collision read as a column
+permutation). Fix (7fa5a42a): refill pair(g&1) — the pair mma(g) just
+released. f32 path serial, never affected.
+
+**Post-fix S4 portfolio (all green):** K-sweep 4096x4096xK f16acc:
+K=16..256 EXACT (0.0); K=512..4096: 2.6e-3..1.4e-3 (chunk rounding,
+under the 1e-2 gate). 2048/4096/8192: 3.8e-3/1.4e-3/1.6e-3. f32 path
+unchanged (3.3e-4). 2111 lib tests green.
+
+**Sustained perf (110W steady state, interleaved A/B):**
+
+| shape  | f32 (2,4)@256T | f16acc (4,4)@512T | delta |
+|--------|----------------|-------------------|-------|
+| 2048^3 | 16.4-16.6      | 16.9-17.8         | +5%   |
+| 4096^3 | 13.3-13.4      | 18.2-18.3         | +37%  |
+| 8192^3 | 13.3           | 18.0-18.1         | +36%  |
+
+f16acc is the fastest correct configuration on every shape. Default
+flip = numeric-contract decision (1e-2 vs 5e-3 tier) — pending owner
+call; the config knob (`ptx_tensor_f16acc`) fully selects it either way.
