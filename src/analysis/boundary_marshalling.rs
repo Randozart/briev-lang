@@ -449,7 +449,7 @@ mod tests {
         TopLevel::TypeDef(Box::new(crate::ast::top::TypeDef {
             name: "CStr".to_string(),
             type_params: vec![],
-            protocol: Some("#String<C_String>".to_string()),
+            protocol: Some("String<C_String>".to_string()),
             parent: None,
             traits: vec![],
             bit_range: None,

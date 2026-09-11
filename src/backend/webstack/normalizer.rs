@@ -157,8 +157,8 @@ mod tests {
     fn test_js_type_from_protocol_category() {
         let mut u = TypeUniverse::new();
         let items = vec![
-            make_type_def("MSFT", Some("#String"), vec![]),
-            make_type_def("Point", Some("#Bit"), vec![("x", Type::int())]),
+            make_type_def("MSFT", Some("String"), vec![]),
+            make_type_def("Point", Some("Bit"), vec![("x", Type::int())]),
         ];
         normalize(&mut items.clone(), &mut u, 32).unwrap();
         assert_eq!(js_type_of(&u, "MSFT"), "string");
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn test_custom_type_registered() {
         let mut u = TypeUniverse::new();
-        let items = vec![make_type_def("Widget", Some("#Bit"), vec![("id", Type::int())])];
+        let items = vec![make_type_def("Widget", Some("Bit"), vec![("id", Type::int())])];
         normalize(&mut items.clone(), &mut u, 32).unwrap();
         assert!(u.get("Widget").is_some(), "user typedef must be registered");
     }

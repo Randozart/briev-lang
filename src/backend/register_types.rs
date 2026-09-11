@@ -356,7 +356,7 @@ mod tests {
             name: name.to_string(),
             type_params: vec![],
             parent: None,
-            protocol: Some("#Bit".to_string()),
+            protocol: Some("Bit".to_string()),
             traits: vec![],
             bit_range: None,
             coll: false,
@@ -398,8 +398,9 @@ mod tests {
         register_typedefs(&items, &mut u, 64).unwrap();
         let rt = u.get("Point").expect("registered");
         assert_eq!(rt.bytes, 16);
-        // The declared protocol hashword becomes the base.
-        assert_eq!(rt.base, "#Bit");
+        // 2026-09-11 (Phase A5): the declared protocol becomes the base in its
+        // BARE spelling — category hashword spellings are retiring.
+        assert_eq!(rt.base, "Bit");
     }
 
     fn make_type_def_meta(name: &str, meta: Vec<(&str, i64)>) -> TopLevel {

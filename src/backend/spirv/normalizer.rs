@@ -77,7 +77,7 @@ mod tests {
             name: name.to_string(),
             type_params: vec![],
             parent: None,
-            protocol: Some("#Bit".to_string()),
+            protocol: Some("Bit".to_string()),
             traits: vec![],
             bit_range: None,
             coll: false,

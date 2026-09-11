@@ -692,7 +692,7 @@ mod tests {
             name: "CStr".to_string(),
             type_params: vec![],
             parent: None,
-            protocol: Some("#String<C_String>".to_string()),
+            protocol: Some("String<C_String>".to_string()),
             traits: vec![],
             bit_range: None,
             coll: false,

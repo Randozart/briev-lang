@@ -1677,7 +1677,7 @@ fn float_literal_admissible(
     let Some(f) = float_literal_expr(expr) else {
         return true;
     };
-    if !ctx.operand_implements_protocol(target_ty, "#Float") {
+    if !ctx.operand_implements_protocol(target_ty, "Float") {
         return true;
     }
     float_literal_fits(target_ty, f, ctx.universe, &ctx.type_max_bits)
@@ -1717,9 +1717,9 @@ fn construction_accepts_numeric(
     // universe property, e.g. `#Int` → `Cast.Int`), then the `declared_protocol_of`
     // fallback for a custom `type MyNum : #Int`. Never hand-match the hashword
     // string directly (hashwords were replaced by the casting graph / fundamentals).
-    if ctx.operand_implements_protocol(target_ty, "#Int")
-        || ctx.operand_implements_protocol(target_ty, "#UInt")
-        || ctx.operand_implements_protocol(target_ty, "#Float")
+    if ctx.operand_implements_protocol(target_ty, "Int")
+        || ctx.operand_implements_protocol(target_ty, "UInt")
+        || ctx.operand_implements_protocol(target_ty, "Float")
     {
         return true;
     }
@@ -3142,7 +3142,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                         // plan) — the old universe-only type_to_protocol
                         // lookup returned "Data" for typedefs absent from
                         // the fresh universe, so the gate could not fire.
-                        ctx.operand_implements_protocol(t, "#Float")
+                        ctx.operand_implements_protocol(t, "Float")
                             && float_literal_fits(t, e, ctx.universe, &ctx.type_max_bits)
                     }
                     _ => false,
@@ -5966,7 +5966,7 @@ fn infer_generative_op_call(
     let recv_ty = infer_type_only(recv, ctx)?;
     // A `#String` operand has no `op Count` — its element count is the char
     // scan (CharCount#), so `Count#` on it is Int.
-    if op_name == "Count" && ctx.operand_implements_protocol(&recv_ty, "#String") {
+    if op_name == "Count" && ctx.operand_implements_protocol(&recv_ty, "String") {
         return Ok(Some(Type::int()));
     }
     let base = match &recv_ty {
@@ -6056,7 +6056,7 @@ fn extract_op_order(consume: bool) -> (&'static str, &'static str) {
 /// compile error, never a silent Int. This is the SAME evidence `foreach_item_type`
 /// reads for the foreach binding, so `.^^Element` and `foreach` cannot drift.
 fn resolve_element_type(ctx: &TypecheckContext, ty: &Type) -> Option<Type> {
-    if ctx.operand_implements_protocol(ty, "#String") {
+    if ctx.operand_implements_protocol(ty, "String") {
         return Some(Type::Custom("Char".to_string()));
     }
     let (base, args) = match ty {
@@ -6088,7 +6088,7 @@ fn foreach_item_type(ctx: &TypecheckContext, list_ty: &Type) -> Type {
         Type::Vector(inner, _) => return (**inner).clone(),
         _ => return Type::int(),
     };
-    if ctx.operand_implements_protocol(list_ty, "#String") {
+    if ctx.operand_implements_protocol(list_ty, "String") {
         return Type::Custom("Char".to_string());
     }
     let members = ctx.type_members.get(&base).cloned().unwrap_or_default();
