@@ -197,12 +197,62 @@ mechanism that would close it:
 | Drivers: virtio, PLIC-level interrupt routing | board `.bv` drivers; PLIC MMIO is ordinary volatile access |
 | Process model (fork/exec-class semantics) | kernel-stdlib design work; the reactor/contract model vs Unix process semantics needs its own plan |
 
-## 6. Provenance
+## 6. Addendum A — 2026-09-11: metaprogramming audit finding (same session, post-commit)
+
+Dated addendum per plan discipline — §1–§5 above are unchanged; gates and
+scope are unaffected. Recorded because the audit surfaced capabilities
+that alter *how* phases get built, not *what* they prove.
+
+### 6.1 Additional §1 existence-table rows (verified, implemented)
+
+| Piece | State | Reusable for rv64? |
+|---|---|---|
+| Staged metaprogramming | 11-stage plugin pipeline (`PreLex…Linked`), user `$(Stage)` inline blocks, live-AST navigation DSL (`Tag$`/`Named$`/`ForEach$`/`Insert$`/`Delete$`/`Set$`), hygienic quotation (`spec/SPEC.md` §18.4), capability lockfile (`src/macros/lockfile.rs`), sandboxed macro VFS | **directly** — program-level kernel code can be generated/checked at `$(Parsed)`/`$(Generated)` instead of new emission arms |
+| DWARF probe generation from reflection | `$defn gen_probe_fields` / `probe_struct_layout` (`lib/std/dwarf.bv:17`, `:58`) | **directly** — seeds the kernel debugging story (trap/scheduler debugging in QEMU, Phases 3–4) |
+
+Related correction to session-level assessment (chat, not this plan):
+the initial C/C++ capability verdict claimed Briev "loses on template
+metaprogramming depth". Verified evidence contradicts the mechanism
+half: staging, AST access, hygiene, and capability security are
+structurally impossible for C++ templates. The surviving C++ advantage
+is accumulated practice (generic-library gravity, overload/concepts
+maturity) — ecosystem, not mechanism. `docs/architecture/os-capability-frontier.md`
+(the Phase 5 deliverable) must carry this split explicitly; see its
+skeleton, committed alongside this addendum.
+
+### 6.2 Doctrine note for Phases 2–4
+
+Where kernel-side work is program-level (trap tables, syscall dispatch,
+task structs), staged metaprogramming (`$` declarations, `$(Stage)`
+blocks, AST DSL) is a third extension route alongside "config + stdlib
+`.bv`" — and the established doctrine applies unchanged: prefer it over
+new emission arms when the knowledge is program-level, with special
+treatment disclosed via the `$`/`!` markers (Golden Rule 3). New Rust
+match arms remain reserved for genuine compiler mechanism (entry
+emission, linker invocation), never board or kernel knowledge.
+
+### 6.3 Phase 5 scope additions
+
+The frontier doc must additionally record:
+
+1. **Debugging/probes frontier row** — reflection-driven probe
+   generation exists (`dwarf.bv`); kernel gap = GDB stub / QEMU
+   `-s -S` integration, likely closable via the same reflection + staged
+   system rather than new backend code.
+2. **Verdict framing, locked**: "capability deficit vs C/C++ =
+   ecosystem maturity + systems-plumbing last mile, not language
+   mechanism" — with this plan as the evidence vehicle for the
+   last-mile half.
+
+## 7. Provenance
 
 - Authored: 2026-09-11, agent session (opencode), at user request.
+- Addendum A: 2026-09-11, same session, post-commit (§6).
 - Evidence basis: live audit of `main` @ `214337d2` and
   `feat/briev-native-runtime` @ `729bfc8d` — `git log`, ISR registry,
-  `linux_kernel.toml`, `src/compile.rs` link paths, stm32 board files.
+  `linux_kernel.toml`, `src/compile.rs` link paths, stm32 board files,
+  `src/plugin/mod.rs`, `src/parser/definitions.rs`, `src/macros/lockfile.rs`,
+  `lib/std/dwarf.bv`, `spec/SPEC.md` §18.
 - Companion context: `docs/plans/2026-09-09-briev-native-runtime-and-family-realignment.md`
   (the hosted native-runtime work this plan builds on),
   `docs/plans/2026-09-06-isr-handlers-and-sections.md` (ISR + section
