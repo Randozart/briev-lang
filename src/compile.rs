@@ -390,6 +390,9 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         BackendKind::Circt => {
             briev_compiler::backend::circt::normalizer::normalize(&mut items, &mut universe, int_bits)?;
         }
+        BackendKind::Electronics => {
+            // Electronics backend has no normalization pass — AST is consumed directly.
+        }
         BackendKind::Webstack => {
             // Webstack is always wasm32 (32-bit pointers)
             briev_compiler::backend::webstack::normalizer::normalize(&mut items, &mut universe, 32)?;
@@ -1181,13 +1184,16 @@ fn codegen(
     // skips this gate.
     if matches!(
         opts.backend,
-        BackendKind::Llvm | BackendKind::Circt | BackendKind::Spirv | BackendKind::Vm | BackendKind::Ptx
+        BackendKind::Llvm | BackendKind::Circt | BackendKind::Electronics | BackendKind::Spirv | BackendKind::Vm | BackendKind::Ptx
     ) {
         let caps = match opts.backend {
             // 2026-08-22 (Phase 7c): LLVM joins the gate — its surface is
             // full EXCEPT the staged port/cell execution.
             BackendKind::Llvm => briev_compiler::backend::llvm::CAPABILITIES,
             BackendKind::Circt => briev_compiler::backend::circt::CirctBackend::CAPABILITIES,
+            // 2026-09-11 (Part C): Electronics — the strictest surface in the
+            // family: closed component universe, static netlist, no runtime.
+            BackendKind::Electronics => briev_compiler::backend::electronics::CAPABILITIES,
             BackendKind::Spirv | BackendKind::Ptx => briev_compiler::backend::spirv::CAPABILITIES,
             _ => briev_compiler::backend::vm::CAPABILITIES,
         };
@@ -1399,6 +1405,16 @@ fn codegen(
                 eprintln!("{}", note);
             }
             ".mlir"
+        }
+        BackendKind::Electronics => {
+            // 2026-09-11 (Part C, Electronics skeleton): the frontend-derived
+            // netlist (analysis.electronics) is emitted as a KiCad 7
+            // schematic. Dangling pins fail the compile — no partial boards.
+            match briev_compiler::backend::electronics::ElectronicsBackend::generate(&analysis.electronics) {
+                Ok(sch) => output = sch,
+                Err(errs) => return Err(errs.join("\n")),
+            }
+            ".kicad_sch"
         }
         BackendKind::Gpu => {
             let mut b = LlvmBackend::new()

@@ -1,0 +1,16 @@
+// ── Electronics Prelude — KiCad / PCB Targets ────────────────────────────
+// 2026-09-11 (Part C, Electronics skeleton): inserts the electronics
+// component library before the first user import. Used by .ebv files;
+// provides Pin, Resistor, Capacitor, Led, Connector.
+
+$(Parsed @ highest) {
+    let anchor = Tag$("import").First$();
+    when anchor.Count$() > 0 {
+        anchor.Before$()
+            .Insert$(Import$("std/electronics.bv"));
+    };
+    // No imports? Insert before the first non-import item, or skip.
+    when anchor.Count$() == 0 {
+        // Nothing to anchor on — the source declares its own types.
+    };
+};

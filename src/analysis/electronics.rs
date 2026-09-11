@@ -44,6 +44,16 @@ pub struct PinRef {
     pub number: u64,
 }
 
+/// Per-component-type schematic facts extracted from the type declaration.
+#[derive(Debug, Clone)]
+pub struct TypeInfo {
+    /// KiCad reference-designator prefix (`R`, `D`, `J`) — `!> Reference` on
+    /// the type, defaulting to the type's first letter uppercased.
+    pub reference_prefix: String,
+    /// Declared pins (name, KiCad number), sorted by number.
+    pub pins: Vec<(String, u64)>,
+}
+
 /// One derived electrical node.
 #[derive(Debug, Clone)]
 pub struct Net {
@@ -59,6 +69,8 @@ pub struct ElectronicsNetlist {
     pub dangling: Vec<String>,
     /// True when the program contains any pin-carrying component type.
     pub is_electronics: bool,
+    /// Schematic facts per component type name.
+    pub type_info: BTreeMap<String, TypeInfo>,
 }
 
 /// Union-find over pin keys (`component\x1Fpin`).
@@ -110,9 +122,11 @@ fn pin_key(component: &str, pin: &str) -> String {
     format!("{}\u{1F}{}", component, pin)
 }
 
-/// Extract declared pins per component type from TypeDef bodies.
-fn collect_type_pins(items: &[TopLevel]) -> BTreeMap<String, Vec<(String, u64)>> {
+/// Extract declared pins per component type from TypeDef bodies, plus the
+/// schematic facts (`!> Reference` prefix) each type carries.
+fn collect_type_pins(items: &[TopLevel]) -> (BTreeMap<String, Vec<(String, u64)>>, BTreeMap<String, TypeInfo>) {
     let mut out = BTreeMap::new();
+    let mut info = BTreeMap::new();
     for item in items {
         if let TopLevel::TypeDef(td) = item {
             if !td.body.pins.is_empty() {
@@ -120,10 +134,27 @@ fn collect_type_pins(items: &[TopLevel]) -> BTreeMap<String, Vec<(String, u64)>>
                     td.name.clone(),
                     td.body.pins.iter().map(|p| (p.name.clone(), p.number)).collect(),
                 );
+                let prefix = td
+                    .body
+                    .metadata
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("reference"))
+                    .and_then(|(_, v)| match v {
+                        crate::ast::PropertyValue::String(s) => Some(s.clone()),
+                        crate::ast::PropertyValue::Identifier(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| {
+                        td.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "U".to_string())
+                    });
+                let mut pins: Vec<(String, u64)> =
+                    td.body.pins.iter().map(|p| (p.name.clone(), p.number)).collect();
+                pins.sort_by_key(|&(_, n)| n);
+                info.insert(td.name.clone(), TypeInfo { reference_prefix: prefix, pins });
             }
         }
     }
-    out
+    (out, info)
 }
 
 /// Collect component instances: top-level `let name: T = T { fields };` where
@@ -207,7 +238,7 @@ fn collect_eq_pairs(expr: &Expr, out: &mut Vec<(Expr, Expr)>) {
 
 /// Derive the netlist for an electronics program.
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
-    let type_pins = collect_type_pins(items);
+    let (type_pins, type_info) = collect_type_pins(items);
     if type_pins.is_empty() {
         return ElectronicsNetlist::default();
     }
@@ -280,6 +311,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         nets,
         dangling,
         is_electronics: true,
+        type_info,
     }
 }
 

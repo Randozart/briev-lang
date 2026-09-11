@@ -1,0 +1,40 @@
+// ── Electronics Briev stdlib ─────────────────────────────────────────────
+// 2026-09-11 (Part C, Electronics skeleton): common component types.
+// Pins are first-class declarations; numbers are the KiCad mapping
+// (`pin a;` auto-numbers, `pin p1 = 1;` is explicit). `!> Reference`
+// sets the schematic reference-designator prefix. Component value and
+// package are given at the instance site: `let r1: Resistor = Resistor
+// { value: "330"; package: "0805" };`
+//
+// The compiler knows nothing about these types (no built-in component
+// list) — this file is the extension surface, exactly like the KiCad
+// symbol library it complements.
+
+struct Pin {
+    voltage: Float;
+    current: Float;
+};
+
+type Resistor {
+    pin a;
+    pin b;
+    !> Reference: "R";
+};
+
+type Capacitor {
+    pin p;
+    pin n;
+    !> Reference: "C";
+};
+
+type Led {
+    pin a;
+    pin k;
+    !> Reference: "D";
+};
+
+type Connector {
+    pin p1 = 1;
+    pin p2 = 2;
+    !> Reference: "J";
+};
