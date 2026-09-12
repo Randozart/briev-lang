@@ -114,6 +114,16 @@ Also landed the same day: **library-level mutable state** — top-level
 stdout lane in cast_lanes.bv and closed the fasta ~100x regression
 (BUGS.md 2026-09-11; fasta now 0.73x vs baseline).
 
-Deferred: named nets, per-pin tolerances, unit-suffix literals,
-LLVM/GPU representation (awaits simulation), PinDecl in cell bodies'
-beast serialization, power ratings (needs a `rating` clause surface).
+**2026-09-12 (readability layer):** named nets — `net <name>:` prefixes a
+precondition conjunct and names the equivalence class (`Expr::Named`,
+parsed in `parse_and`/`parse_and_lhs`; names recorded per union-find root;
+keywords are valid names since net names are contextual). Unit suffixes —
+`3.3V`, `20mA`, `330R` (`Expr::UnitLiteral { value, unit }`, parsed after
+adjacent numeric literals when `is_unit_suffix` matches; `mA` → /1000;
+interpretation in `extract_voltage`/`extract_current`/`extract_resistance`;
+instance values store the raw suffixed string for `parse_ohms`).
+
+Deferred: per-pin tolerances, LLVM/GPU representation (awaits
+simulation), PinDecl in cell bodies' beast serialization, power ratings
+(needs a `rating` clause surface), named-net conflicts (two names on one
+net currently take the first — should be an error), pin roles.

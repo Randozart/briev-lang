@@ -259,15 +259,23 @@ driving it.
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive
 closure (union-find). A `==` against a literal drives the net at that
-level; disagreeing drives on one net are a shorted supply. Postconditions
-state physics — and the compiler PROVES them: through a two-pin part with a
-numeric value, I = V / R is derived at compile time and the derived current
-is checked against the stated bound.
+level; disagreeing drives on one net are a shorted supply. A conjunct may
+be prefixed `net <name>:` to NAME the equivalence class — inference is
+unchanged; the name replaces the auto-generated `N1, N2…` in diagnostics
+and KiCad output (net names are contextual: keywords like `out` are valid
+names). Postconditions state physics — and the compiler PROVES them:
+through a two-pin part with a numeric value, I = V / R is derived at
+compile time and the derived current is checked against the stated bound.
+
+Physics literals carry unit suffixes: `3.3V` (volts), `20mA` (→ 0.02 A),
+`330R` (ohms), plus `A`, `Ω`, `F`, `H`, `Hz`, `W`, `K`. A suffixed literal
+is the value; the suffix selects the conversion (`mA` divides by 1000).
+Bare numerics stay valid everywhere a suffixed form is.
 
 ```briev
 txn powered
-    [j1.p1.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3]
-    [d1.a.current > 0.0 && d1.a.current <= 0.02]
+    [net vcc: j1.p1.voltage == r1.a.voltage && net out: r1.b.voltage == d1.a.voltage && net gnd: d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3V]
+    [d1.a.current > 0.0 && d1.a.current <= 20mA]
 { }
 ```
 
