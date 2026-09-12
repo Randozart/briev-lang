@@ -82,25 +82,25 @@ lowering cannot express. The standing measurement remains the
 **coopmat ceiling microkernel**: re-run per driver era; the number
 gates whether the specialized tiers re-arm.
 
-Consequence (rev 2026-09-11, sustained re-baseline — ledger
-2026-09-08 plan, "coopmat sustained re-baseline"): the primary/escape
-framing is DEAD. At sustained 110W with shape-matched blobs, the two
-tiers **split the shape space**: the coopmat f16acc tier wins 2048³
-(27-29 TF vs ~17) and 8192³ (24-34 TF vs 18); the PTX f16acc tier
-wins 4096³ (19.5 vs 13.7). Both are Briev-owned codegen from one
-frontend plan, so per-shape tier routing is a frontend dispatch
-decision — the doctrine's own "specialize per program" clause. The
-tiers are **complementary projections**; selection is by measured
-shape bucket (recorded in the ledger, carried by the frontend
-GemmPlan), never by source annotation. The coopmat ceiling
-microkernel remains the per-driver-era standing measurement.
+Consequence (rev 2026-09-11 night, sustained re-baseline — ledger
+2026-09-08 plan, "THE WALL BROKEN"): the primary/escape framing is
+DEAD. At sustained 110W with shape-matched blobs, the two tiers
+**split the shape space**: the PTX f16acc tier wins 4096³ (29.3 vs
+~9.5) and 8192³ (30.2 vs 21.2); the coopmat f16acc tier leads at
+2048³ (27.7 vs 25.5, margin shrunk). Both are Briev-owned codegen
+from one frontend plan, so per-shape tier routing is a frontend
+dispatch decision — the doctrine's own "specialize per program"
+clause. The tiers are **complementary projections**; selection is by
+measured shape bucket (recorded in the ledger, carried by the frontend
+GemmPlan), never by source annotation. The coopmat ceiling microkernel
+remains the per-driver-era standing measurement.
 
 ## 3. The backend tier architecture
 
 | Tier | Backend | Scope | Status |
 |------|---------|-------|--------|
-| Portable | SPIR-V (Vulkan compute; OpenCL driver present) | All coopmat/row/flat tiers, all vendors | default, fully committed; **wins small/L2-resident and very large shapes** (2026-09-11 sustained re-baseline) |
-| Specialized | **PTX** (Briev-emitted, driver-JIT via `cuModuleLoadData`; cubin shipping via offline ptxas) | NVIDIA tensor-class workloads | **committed tier, complementary** — wins the mid-shape band (4096³-class); tier choice per shape is a frontend dispatch decision from the ledger buckets |
+| Portable | SPIR-V (Vulkan compute; OpenCL driver present) | All coopmat/row/flat tiers, all vendors | default, fully committed; **wins small/L2-resident shapes** (2048³-class, 27.7 TF; 2026-09-11 sustained re-baseline) |
+| Specialized | **PTX** (Briev-emitted, driver-JIT via `cuModuleLoadData`; cubin shipping via offline ptxas) | NVIDIA tensor-class workloads | **committed tier, complementary** — wins the mid and large shape bands (4096³: 29.3 TF, 8192³: 30.2 TF — 70% of cuBLAS anchor); tier choice per shape is a frontend dispatch decision from the ledger buckets |
 | Specialized | AMD / Intel native (ROCm-shaped / Level Zero+SPIRV-direct) | future — same pattern, one vendor at a time | future |
 
 Rules that hold across all tiers:
@@ -121,9 +121,9 @@ Rules that hold across all tiers:
   symmetry doctrine (same output as the C reference). The
   **f16-acc tier (≤1e-2 gate) is opt-in** via `ptx_tensor_f16acc` —
   a disclosed numeric-contract choice, not a strategy keyword: it is
-  the fastest correct configuration (+37% sustained at 4096³:
-  18.2-18.3 vs 13.3-13.4 TFLOP/s; ledger 2026-09-11) and selection
-  within a tier stays the compiler's job (select_mw_nw).
+  the fastest correct configuration (+39% sustained at 4096³:
+  29.3 vs 19.4 TFLOP/s f32; ledger 2026-09-11 full-K fix) and
+  selection within a tier stays the compiler's job (select_mw_nw).
 - **Capability matrix.** A specialized tier declares its surface in
   `src/backend/capabilities.rs`; out-of-surface programs still compile
   on the portable tier — probe failure falls back, never fails the

@@ -655,32 +655,81 @@ tn<=8 cap before mw ever grew. Fixed order: double both axes, then mw,
 then nw — lands both sweep winners ((4,2) at the f32 256T cap,
 (4,4) at the f16acc 512T cap). Commit 5d01a465.
 
-Sustained cross-tier table (RTX 3060, 4096³ anchor + shape sweep,
-batched, three-rep stability ±1%):
+Sustained cross-tier table — BEFORE select_mw_nw fix (RTX 3060,
+4096³ anchor + shape sweep, batched, three-rep stability ±1%):
 
 | shape | coopmat f16acc (Vulkan) | PTX f16acc (4,4)@512T | PTX f32 (4,2)@256T |
 |-------|-------------------------|------------------------|---------------------|
 | 2048³ | **27.7** (2.12e-3) | 17.6 (1.55e-3) | — |
-| 4096³ | 7.7–9.5 today (4.4e-3; ledger era 13.7; vulkan dispatch variance min 4.8ms/avg 18.6 unbatched) | **21.0** (1.22e-3) | 19.4 (2.44e-4) |
+| 4096³ | 7.7–9.5 today (4.4e-3; ledger era 13.7; vulkan dispatch variance min 4.8ms/avg 18.6 unbatched) | 21.0 (1.22e-3) | 19.4 (2.44e-4) |
 | 8192³ | 21.2 (8.26e-3) | 20.1 (1.44e-3) | — |
 
-Numerics note for the router: the PTX f16acc tier holds ~1.2–1.8e-3
-through K=8192 — an order of magnitude inside the coopmat tier's 8.3e-3
-at 8192³ (which approaches the 1e-2 gate as K grows: the measured
-K-budget). The PTX tier is the contract-safe big-K option; coopmat is
-the throughput option where its K stays bounded.
-
-Also fixed this block: gemm_h_bench MW_BT (block threads must match the
+Harness lesson: gemm_h_bench MW_BT (block threads must match the
 kernel's baked count — 256 threads on a 512-thread kernel faults
 out-of-tile); --config-dir now overrides ir-lowering.dbvl (the f16acc
 opt-in no longer needs a config-file rebuild; hard error on a bad dir —
 a silently ignored override would compile the wrong numerics tier).
-Harness lesson repeated: the runner C carries the exact desc (threads,
-smem, dispatch formula w = (M*N/(16*R*64))*32) — read it before
-hand-wiring any bench invocation.
+The runner C carries the exact desc (threads, smem, dispatch formula
+w = (M*N/(16*R*64))*32) — read it before hand-wiring any bench
+invocation.
 
-Anchor state: PTX f16acc 21.0 TF = 50% of the 42 TF ggml anchor
-(ledger era: 19.5). The compute-only ceiling model needs revision after
-the double-pump rejection — shared-BW is refuted, warp shape is swept,
-the remaining suspects are the mma issue/dependency structure and the
-fill overlap at the CTA level.
+Anchor state (2026-09-11 select fix): PTX f16acc 21.0 TF = 50% of
+the 42 TF ggml anchor (ledger era: 19.5). The compute-only ceiling
+model needs revision after the double-pump rejection — shared-BW is
+refuted, warp shape is swept, the remaining suspects are the mma
+issue/dependency structure and the fill overlap at the CTA level.
+
+## 2026-09-11 night: THE WALL BROKEN — full-K + store-only epilogue — 29.3 TF
+
+The promo-strip probe (sed the predicated branch unconditional in a dump
+cubin) measured 45.4 TF — the every-512-k y-RMV promotion was costing
+~half the kernel. Three fixes, all structural:
+
+1. **Full-K accumulation**: the 138 pipeline-draining RMV rounds are
+   gone; the f16x2 chains accumulate the whole K loop. Contract verified
+   on device: 5.2e-3 @K=4096, 8.2e-3 @K=8192 — the same K-budget curve
+   the coopmat tier documents (boundary ≈ K=12288; beyond that the f32-acc
+   tier serves).
+2. **Store-only final epilogue**: with full-K, the final pass owns every
+   y element. The RMV's cold-miss global READS (17 TF of end-of-kernel
+   DRAM interference: 45.4 stripped vs 28.0 with one RMV round) and the
+   y-zeroing pass are both gone.
+3. **Store after KEND**: the in-loop predicated promo structure itself
+   measured 28 vs 45 with an identical body made unconditional (ptxas
+   register allocation artifact: 64 regs / 2 CTAs/SM vs 40 / 3 CTAs/SM
+   when the dead body shrank the allocation). The loop tail stays clean
+   for ptxas.
+
+**Stale-binary trap**: the production blob bench measured the old kernel
+(1.789e-3/20.9) because `cargo build --release` ran under a cached
+profile. ALWAYS rebuild the release binary + regenerate blob + verify
+SASS (cuobjdump -sass LDG count) before trusting a blob bench. Verified
+via the checked-in ptx_gemm_bench (driver API, CUDA 13 cuCtxCreate_v4).
+
+Production blob path, batched, three-rep:
+
+| shape | before | now | rel_err |
+|-------|--------|-----|---------|
+| 2048³ | 17.6 | **25.5** | 1.30e-3 |
+| 4096³ | 21.0 | **29.3** | 4.44e-3 |
+| 8192³ | 20.1 | **30.2** | 8.22e-3 |
+
+**Tier picture flipped.** PTX f16acc now beats coopmat at 4096³ (29.3
+vs ~9.5) AND 8192³ (30.2 vs 21.2), nearly ties at 2048³ (25.5 vs 27.7).
+Anchor: 29.3/42 = 70%.
+
+Sustained cross-tier table — AFTER full-K store-only (RTX 3060, batched):
+
+| shape | coopmat f16acc | PTX f16acc | winner |
+|-------|---------------|------------|--------|
+| 2048³ | **27.7** | 25.5 | coopmat (margin shrunk from 10 to 2.2) |
+| 4096³ | 7.7–9.5 | **29.3** | PTX (3× lead) |
+| 8192³ | 21.2 | **30.2** | PTX (1.4× lead) |
+
+Numerics note: the PTX f16acc tier's K-budget (5.2e-3 at K=4096,
+8.2e-3 at K=8192) matches the coopmat tier's curve exactly — both
+approach the 1e-2 gate near K=12288. The PTX tier's lower per-K error
+(4.4e-3 vs coopmat's 8.3e-3 at K=8192) reflects the store-only
+epilogue (no RMV re-reads to compound rounding). The tier router's
+K-budget gate holds; the shape-space split is now: coopmat leads at
+2048³-class, PTX leads at 4096³+.
