@@ -1810,6 +1810,170 @@ mod r16_dump {
             std::fs::write(&path, &out).unwrap();
         }
     }
+
+    /// Fill-gap diagnosis (plan 2026-09-11-ptx-mma-issue-ceiling, §Fill-gap):
+    /// isolate the 29.3 → ~41 TF gap between the shipped kernel and E1f.
+    ///
+    /// Variants:
+    ///   e = E1f baseline (clean fill + ldmatrix + mma) — should reproduce ~41 TF
+    ///   s = swizzled fill + ldmatrix + mma — isolates the XOR swizzle
+    ///   f = clean fill only (no ldmatrix/mma in loop) — fill throughput
+    ///   m = mma only from pre-filled smem — mma-from-smem throughput
+    ///   d = double fill (2× B fill + ldmatrix + mma) — tests fill throughput wall
+    #[test]
+    fn dump_mma_fill_microbench() {
+        let chains = 16usize;
+        let warps = 448u64;
+        let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
+        let iters = (iters / 8 * 8).max(64);
+
+        for &variant in &["e", "s", "f", "m", "d"] {
+            let mut out = String::new();
+            let label = match variant {
+                "e" => "E1f baseline (clean fill + ldmatrix + mma)",
+                "s" => "swizzled fill + ldmatrix + mma",
+                "f" => "clean fill only (no mma in loop)",
+                "m" => "mma only from pre-filled smem",
+                "d" => "double fill (2x B fill + ldmatrix + mma)",
+                _ => unreachable!(),
+            };
+            out.push_str(&format!("// Fill-gap diagnosis: {}\n", label));
+            out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+            out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
+            out.push_str(".visible .entry main (.param .b64 proj_param) {\n");
+            // All register declarations at the top
+            out.push_str("    .reg .b32 %r<16>;\n");
+            out.push_str("    .reg .b64 %rd<16>;\n");
+            out.push_str("    .reg .pred %p<2>;\n");
+            out.push_str("    .reg .b32 %c<33>;\n");
+            out.push_str("    .reg .b32 %a<5>;\n");
+            out.push_str("    .reg .b32 %b<17>;\n");
+            out.push_str("    .reg .b32 %sas<1>;\n");
+            out.push_str("    .reg .b64 %rdS<1>;\n");
+            out.push_str("    .reg .b64 %rdA;\n");
+            // Load state pointer
+            out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+            out.push_str("    cvta.to.global.u64 %rd1, %rd1;\n");
+            out.push_str("    mov.u32 %r1, %tid.x;\n");
+            out.push_str("    mov.u32 %r2, %ctaid.x;\n");
+            out.push_str("    and.b32 %r3, %r1, 31;\n");
+            out.push_str("    add.u32 %r2, %r2, 1;\n");
+            // smem base
+            out.push_str("    mov.u32 %sas0, dsmem;\n");
+            out.push_str("    cvt.u64.u32 %rdS0, %sas0;\n");
+            // A lane addressing: row = (lane>>4)*8 + (lane&7), col-block = (lane>>3)&1
+            out.push_str("    shr.u32 %r4, %r3, 4;\n");
+            out.push_str("    mul.lo.u32 %r4, %r4, 8;\n");
+            out.push_str("    and.b32 %r5, %r3, 7;\n");
+            out.push_str("    add.u32 %r4, %r4, %r5;\n");
+            out.push_str("    mul.lo.u32 %r4, %r4, 32;\n");
+            out.push_str("    shr.u32 %r5, %r3, 3;\n");
+            out.push_str("    and.b32 %r5, %r5, 1;\n");
+            out.push_str("    mul.lo.u32 %r5, %r5, 16;\n");
+            out.push_str("    add.u32 %r4, %r4, %r5;\n");
+            out.push_str("    mul.wide.u32 %rd4, %r4, 1;\n");
+            out.push_str("    add.u64 %rdA, %rdS0, %rd4;\n");
+            // B lane offsets: r8 = clean, r9 = swizzled
+            // ng = (lane>>3)&1
+            out.push_str("    shr.u32 %r5, %r3, 3;\n");
+            out.push_str("    and.b32 %r5, %r5, 1;\n");
+            out.push_str("    mul.lo.u32 %r6, %r5, 128;\n"); // r6 = ng*128
+            out.push_str("    and.b32 %r7, %r3, 7;\n");
+            out.push_str("    mul.lo.u32 %r7, %r7, 16;\n");
+            out.push_str("    add.u32 %r8, %r6, %r7;\n"); // r8 = clean offset
+            out.push_str("    and.b32 %r7, %r3, 7;\n");
+            out.push_str("    xor.b32 %r7, %r7, %r5;\n");
+            out.push_str("    mul.lo.u32 %r7, %r7, 16;\n");
+            out.push_str("    add.u32 %r9, %r6, %r7;\n"); // r9 = swizzled offset
+            // zero accs
+            for i in 0..chains * 2 {
+                out.push_str(&format!("    mov.u32 %c{}, 0;\n", i));
+            }
+            // operand seeds
+            out.push_str("    add.u32 %a0, %r3, %r2;\n");
+            out.push_str("    mov.u32 %b0, 7;\n");
+            out.push_str("    mov.u32 %b1, 13;\n");
+            // prefill smem (variant m: fill once before loop)
+            if variant == "m" {
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str("    add.u32 %r12, %r12, %r8;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r10, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r10;\n");
+                }
+                out.push_str("    bar.sync 0;\n");
+            }
+            out.push_str(&format!("    mov.u32 %r10, {};\n", iters));
+            out.push_str("LOOP:\n");
+            // ---- FILL PHASE (variants e, s, f, d) ----
+            if variant != "m" {
+                let b_off = if variant == "s" { "%r9" } else { "%r8" };
+                // First fill pass (all variants except m)
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str(&format!("    add.u32 %r12, %r12, {};\n", b_off));
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                }
+                // Second fill pass (variant d only — doubles fill throughput load)
+                if variant == "d" {
+                    for g in 0..8 {
+                        out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                        out.push_str(&format!("    add.u32 %r12, %r12, {};\n", b_off));
+                        out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                        out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                        out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                        out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                    }
+                }
+            }
+            // ---- LDMATRIX + MMA PHASE (variants e, s, m) ----
+            if variant != "f" {
+                out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+                out.push_str("    mov.b32 %r11, %a1;\n");
+                out.push_str("    mov.b32 %a1, %a2;\n");
+                out.push_str("    mov.b32 %a2, %r11;\n");
+                let b_off = if variant == "s" { "%r9" } else { "%r8" };
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str(&format!("    add.u32 %r12, %r12, {};\n", b_off));
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str(&format!(
+                        "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{%b{}, %b{}}}, [%rd5];\n",
+                        2 * g, 2 * g + 1
+                    ));
+                }
+                for i in 0..chains {
+                    let bg = i / 8;
+                    out.push_str(&format!(
+                        "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b{}, %b{}}}, {{%c{}, %c{}}};\n",
+                        2 * i, 2 * i + 1, 2 * bg, 2 * bg + 1, 2 * i, 2 * i + 1
+                    ));
+                }
+            }
+            out.push_str("    bar.sync 0;\n");
+            out.push_str("    add.u32 %r10, %r10, -1;\n");
+            out.push_str("    setp.ne.u32 %p1, %r10, 0;\n");
+            out.push_str("    @%p1 bra LOOP;\n");
+            // DCE guard
+            out.push_str("    mul.wide.u32 %rd2, %r1, 4;\n");
+            out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+            out.push_str("    add.u32 %r11, %c0, %c1;\n");
+            for i in 1..chains {
+                out.push_str(&format!("    add.u32 %r11, %r11, %c{};\n", 2 * i));
+                out.push_str(&format!("    add.u32 %r11, %r11, %c{};\n", 2 * i + 1));
+            }
+            out.push_str("    st.global.b32 [%rd2], %r11;\n");
+            out.push_str("    ret;\n}\n");
+            let path = format!("/tmp/opencode/mb_fill_{}.ptx", variant);
+            std::fs::write(&path, &out).unwrap();
+        }
+    }
 }
 
 #[cfg(test)]

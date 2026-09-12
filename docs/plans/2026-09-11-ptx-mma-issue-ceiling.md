@@ -242,3 +242,166 @@ Open: the stripped-probe 45.4 ran at 40 ptxas regs (3 CTAs/SM — the
 dead promo body shrank the allocation) vs our 64 (2 CTAs/SM). Whether
 a ≤42-reg schedule of the LIVE kernel exists (3 CTAs/SM) is the next
 rung; the Coopmat 2048³ lead (27.7 vs 25.5) may also fall to it.
+
+## Fill-gap diagnosis (2026-09-12): the 29.3 → ~41 TF mystery
+
+### Background
+
+E1f (streaming fills + wait_group + bar.sync, 512T × 28 CTAs) measured
+41.0 TF at 2 CTA/SM — the same occupancy as the shipped kernel (29.3 TF).
+The ~12 TF gap (29%) must come from a difference between E1f and the real
+kernel.
+
+**Critical discovery**: E1f's fills do NOT write to shared memory. The
+cp.async targets are register operands (`%rdB0`–`%rdB5` = .b32 registers),
+not smem addresses. E1f streams DRAM → registers → mma (the mma reads
+from the same registers). The real kernel streams DRAM → smem → ldmatrix
+→ registers → mma. E1f's41 TF therefore measures the mma + DRAM-fill
+ceiling WITHOUT the smem write/read path.
+
+### Hypotheses (ordered by suspicion)
+
+**H1: Smem write contention (fill vs mma overlap).** The real kernel's
+cp.async writes to smem during the fill phase; the ldmatrix reads from
+the same smem during the mma phase. When both happen on the same pipeline
+stage (the intended overlap), they contend for smem ports. The fill writes
+use a swizzled address (`((n>>3)^(k&(gr-1)))*16`); the mma reads use a
+different pattern. If the contention stalls one side, the pipeline stalls.
+
+**H2: Smem bank conflicts during mma reads.** The ldmatrix reads from
+smem using a pattern determined by the lane's position. If the swizzled
+fill writes leave the smem banks in a state that causes bank conflicts
+during the ldmatrix reads, each ldmatrix stalls for the conflict
+resolution cycles.
+
+**H3: Fill address computation overhead.** The real kernel's fill has
+~200 ALU instructions per kstep for address computation (the swizzle,
+the cooperative copy logic, the stage cycling). E1f's fill has ~20 ALU
+ instructions (the streaming offset). If the ALU overhead competes with
+cp.async issue bandwidth, the fill rate drops.
+
+**H4: Barrier overhead.** The real kernel's bar.sync 0 at 512 threads
+may cost more than E1f's barrier (same thread count, so this is unlikely
+— but worth measuring).
+
+### Experiment design
+
+New microbenchmark: `dump_mma_fill_microbench` (follows the pattern of
+dump_mma_microbench / dump_mma_mix_microbench). Four variants:
+
+**Variant a (baseline)**: E1f-style fill — cp.async to registers (no smem),
+wait_group 1, membar.cta, bar.sync, then 16 mma from the register-held
+operands. This should reproduce the41 TF baseline and confirm the setup.
+
+**Variant b (smem-fill, no swizzle)**: cp.async to smem (the real kernel's
+fill targets), sequential address computation (no XOR swizzle), then
+ldmatrix from the same smem, then 16 mma. Isolates the smem write/read
+path without swizzle overhead.
+
+**Variant c (smem-fill, swizzled)**: Same as (b) but with the real kernel's
+XOR swizzle on the fill addresses. Isolates the swizzle's contribution.
+
+**Variant d (fill+mma overlap)**: The fill for stage N+1 happens while
+mma for stage N runs (the pipeline's intended behavior). Same smem,
+same swizzle, but the overlap is explicit. If (d) < (c), the overlap
+contention is measurable.
+
+All variants: 512T × 28 CTAs (matching E1's protocol), k-loop of 256
+iterations, streaming DRAM source (like E1f), correct smem layout
+matching the real kernel's geometry.
+
+### Measurement
+
+Each variant dumped to /tmp/opencode/mb_fill_{a,b,c,d}.ptx, assembled
+to cubin via ptxas, timed via ptx_gemm_bench (3 reps, interleaved).
+
+Expected results (predictions):
+
+| variant | predicted TF | rationale |
+|---------|-------------|-----------|
+| a (no smem) | ~41 | reproduces E1f |
+| b (smem, no swizzle) | ~33-37 | smem write/read adds ~4-8 TF overhead |
+| c (smem, swizzled) | ~29-33 | swizzle adds ~2-4 TF overhead |
+| d (overlap) | ~29-31 | overlap contention adds ~0-2 TF |
+
+If H1 is correct: d < c (overlap costs more than serialized).
+If H2 is correct: c < b (swizzle causes bank conflicts on reads).
+If H3 is correct: c ≈ b (swizzle is free; the gap is elsewhere).
+If H4 is correct: all variants with bar.sync ≈ all without.
+
+### Documentation protocol
+
+Results recorded in this file as they land. Each variant's VERDICT:
+REJECTED (hypothesis disproved) or CONFIRMED (hypothesis supported)
+with the measured delta and confidence level. The final VERDICT
+identifies the primary contributor and proposes a fix.
+
+## Fill-gap results (2026-09-12): serialized fill+mma = 41 TF, swizzle free
+
+Microbenchmarks (512T × 28 CTAs, 48-57 regs, smem=2048B):
+
+| variant | TF | regs | what |
+|---------|-----|------|------|
+| e (baseline) | 40.5 | 48 | clean fill + ldmatrix + mma (serialized) |
+| s (swizzled) | 42.6 | 48 | swizzled B fill + ldmatrix + mma |
+| d (double fill) | 34.2 | 48 | 2× B fill + ldmatrix + mma |
+| m (mma only) | 49.6 | 57 | mma from pre-filled smem |
+| f (fill only) | 177.6 | 12 | fill throughput (no mma) |
+| **real kernel** | **29.3** | **64** | full pipeline (2-stage overlap) |
+
+### VERDICT: H2 REJECTED — the XOR swizzle is not the wall
+
+Variant s (42.6 TF) is *faster* than variant e (40.5 TF). The swizzle
+computes different addresses for ldmatrix but ptxas absorbs the ALU
+cost. The swizzle does NOT cause bank conflicts during reads — it may
+even reduce them (the swizzle was designed for this).
+
+### VERDICT: fill throughput is a significant contributor (~55% of gap)
+
+The double-fill variant (34.2 TF) costs 6.3 TF vs the baseline (40.5).
+This accounts for ~56% of the 11.2 TF gap between the microbenchmark
+(40.5) and the real kernel (29.3). The fill work in the real kernel is
+more than double the microbenchmark's fill (A fill + B fill with
+cooperative copies + stage selection logic), so the fill overhead is
+likely 6-8 TF.
+
+### Remaining gap: ~5 TF from pipeline overlap + A fill + store tail
+
+The double-fill (34.2) is still 4.9 TF above the real kernel (29.3).
+This remaining gap comes from:
+- The A fill (10+ cp.async per kstep, not in the microbenchmark)
+- The 2-stage pipeline overlap (fill stage N+1 while mma stage N —
+  the microbenchmarks serialize fill and mma)
+- The store-only tail (32 f16 stores after KEND)
+- The stage selection logic (computing fill/compute stage per kstep)
+
+### Hypothesis status
+
+| hypothesis | status | evidence |
+|-----------|--------|----------|
+| H1: smem write contention (fill vs mma overlap) | UNRESOLVED — needs overlapped microbenchmark | the pipeline overlap contributes ~5 TF but cannot be isolated without a double-buffered variant |
+| H2: smem bank conflicts during mma reads | **REJECTED** | swizzled fill (42.6) ≥ clean fill (40.5) — swizzle is free |
+| H3: fill address computation overhead | **REJECTED** | the ALU is free per E1b (53.5 TF with 150 ALU ops); the fill's ~20 ALU ops per group are absorbed by the scheduler |
+| H4: barrier overhead | **REJECTED** | all variants use bar.sync; the barrier is hardware-accelerated |
+
+### Next step: measure the pipeline overlap directly
+
+Add variant "p" (pipeline overlap): double-buffer the smem (two B
+slab sets), fill buffer (iter+1)%2 while mma from buffer iter%2. This
+replicates the real kernel's pipeline structure. If variant p ≈ 29 TF,
+the pipeline overlap is the wall. If p ≈ 34 TF, the A fill is the
+remaining contributor.
+
+The A fill is the other major unknown: it adds ~10 cp.async per kstep
+(not in the microbenchmarks). Measuring with A fill included would
+close the gap further.
+
+### Actionable insight
+
+The fill-to-mma overlap is the primary structural overhead. The real
+kernel's 2-stage pipeline trades throughput for latency hiding — the
+fill runs "for free" in theory, but in practice the smem port contention
+between the fill writes and the ldmatrix reads costs ~5-6 TF. The fix
+would be to restructure the pipeline so the fill and mma don't contend
+for the same smem ports (e.g., separate A and B smem regions, or
+increase pipeline depth to 3 stages to spread the contention).
