@@ -429,3 +429,37 @@ the thread-to-data mapping so each thread copies 8 or 16 bytes.
 The 3-stage pipeline (t: 38.0 TF) is slower than 2-stage (p: 39.1)
 because the extra smem (6144 vs 4096) reduces occupancy. The 2-stage
 pipeline is already optimal for this tile size.
+
+### Widened A fill: measured 2026-09-12
+
+cp.async research: 4/8/16B widths; `.cg` (L1 bypass) is 16B-only; 4/8B
+use `.ca` (L1 ACCESS). CUTLASS fills A with 16B cp.async, 4 threads per
+row (tid>>2 = row, tid&3 = 8-f16 chunk), 4 passes per stage.
+
+Microbench (sync ld+st fills, interleaved ×3): a (8×4B) 31.6 TF,
+8 (4×8B) 37.0 TF, c (2×16B) 35.4 TF — 8B beats 16B (each 16B lane
+transaction splits across 16 A rows; 8B across 8).
+
+On-kernel A/B (4096³ f16acc, per_a=2 → 1×8B vs 2×4B cp.async.ca,
+interleaved ×4, same window): old 28.97 TF, new 29.41 TF — **+0.44 TF,
+new wins 4/4 rounds**, correctness byte-identical (5.208e-3, same worst
+element). All shapes pass: 2048³ 1.5e-3 / 25.4 TF, 4096×4096×16 exact /
+2.1 TF, 8192³ 9.1e-3 / 30.6 TF. 64 regs, no spills — 2 CTAs/SM kept.
+
+**Lesson (generalizes the LTO lesson): a synchronous-fill microbench
+overstates widening wins — the real fill is already async cp.async, so
+the microbench's gain comes mostly from unblocking the register
+roundtrip, which cp.async never paid. On-device A/B is the only verdict.**
+
+Shipped as a rung ladder in `tensor_gemm_ptx_smem_mw` (a_fill_rung):
+per_a%4==0 → 16B `.cg` (L1 bypass), else per_a%2==0 → 8B `.ca`, else
+4B. Prologue + K-loop fills merged into one `emit_a_fill` emitter.
+
+### Next levers (unmeasured)
+
+1. **B fill widening**: per_b=4 → 16B×1 fires natively; the XOR swizzle
+   is exactly 16B-granular (swizzle unit == copy unit), so 16B `.cg`
+   copies map cleanly. B cost ~4.8 TF.
+2. **warp_mh=4 config**: per_a=4 → the 16B `.cg` rung fires for A too;
+   also quarters B loads (4×/kstep vs 16×). Unknown why production
+   selects warp_mh=2 — worth an A/B.
