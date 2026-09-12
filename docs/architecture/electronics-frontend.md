@@ -127,6 +127,12 @@ DIFFERENT names on one node are a hard error refusing emission
 (`net_conflicts`, checked like dangling pins); the same name twice is
 redundant, not a conflict.
 
+**2026-09-12 (power ratings):** `rating 0.25;` / `rating any;` on
+type/obj/cell bodies. After the current fixpoint, `derive_power` computes
+P = ΔV²/R for every valued two-pin part with both endpoints classed:
+exceeding the declared rating is a violation; proven dissipation with no
+clause is an undeclared decision; within-rating records a proof fact.
+One-sided parts (no proven ΔV) and zero-drop straps force nothing.
+
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
-simulation), PinDecl in cell bodies' beast serialization, power ratings
-(needs a `rating` clause surface), pin roles.
+simulation), PinDecl in cell bodies' beast serialization, pin roles.

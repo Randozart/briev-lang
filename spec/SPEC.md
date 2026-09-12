@@ -281,6 +281,13 @@ txn powered
 
 Here 3.3 V is proven within the LED's 3.6 V tolerance, and the 20 mA bound
 is proven from 3.3 V / 330 Ω = 10 mA — by derivation, not assertion.
+
+**Power ratings.** `rating 0.25;` declares the watts a part may dissipate
+(`rating any;` declares it unrated on purpose). Every valued two-pin part
+with both endpoints voltage-classed has a PROVEN dissipation P = V × I:
+above the rating is a violation; a proven-dissipating part with no rating
+clause is an undeclared decision; within the rating records a proof fact.
+A part with an unclassed endpoint has no proven drop — nothing is forced.
 Precedence: conjoined obligations use `==` (single `=` binds loosest, §4).
 A dangling pin — declared but on no net — is a compile error naming the
 pin. Compilation emits a KiCad 7 schematic; the backend refuses any board
