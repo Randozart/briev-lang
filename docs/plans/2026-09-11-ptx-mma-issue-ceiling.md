@@ -347,8 +347,11 @@ identifies the primary contributor and proposes a fix.
 | d (double fill) | 34.2 | 48 | 2048 | 2× B fill + ldmatrix + mma |
 | m (mma only) | 49.6 | 57 | 2048 | mma from pre-filled smem |
 | f (fill only) | 177.6 | 12 | 2048 | fill throughput (no mma) |
-| **p (pipeline)** | **39.1** | **53** | **4096** | double-buffered: fill buf(i+1) while mma buf(i) |
+| p (2-stage) | 39.1 | 53 | 4096 | double-buffered: fill buf(i+1) while mma buf(i) |
 | **a (A+B fill)** | **30.9** | **48** | **2048** | A fill + B fill + ldmatrix + mma (full pattern) |
+| **w (A fill only)** | **33.8** | **48** | **2048** | A fill overhead = 6.7 TF |
+| **i (interleaved)** | **30.4** | **48** | **2048** | interleaved A+B fills (no improvement) |
+| **t (3-stage)** | **38.0** | **55** | **6144** | 3-stage pipeline (SLOWER than 2-stage) |
 | **real kernel** | **29.3** | **64** | **3072** | full pipeline (2-stage overlap) |
 
 ### VERDICT: H1 REJECTED — pipeline overlap is not the wall
@@ -381,6 +384,8 @@ Gap decomposition:
 | H3: fill address computation overhead | **REJECTED** | ALU absorbed per E1b (53.5 TF with 150 ALU ops) |
 | H4: barrier overhead | **REJECTED** | all variants use bar.sync |
 | H5: A fill overhead | **CONFIRMED** | a (30.9) ≈ real (29.3) — A fill is ~90% of the gap |
+| H6: interleaving A+B helps | **REJECTED** | i (30.4) ≈ a (30.9) — no improvement |
+| H7: 3-stage pipeline helps | **REJECTED** | t (38.0) < p (39.1) — more smem hurts occupancy |
 
 ### Why the A fill costs so much
 
@@ -396,14 +401,170 @@ microbenchmark uses synchronous ld+st. The cp.async should be faster,
 but the smem port saturation is the same — the fill work itself is the
 dominant factor, not the copy mechanism.
 
-### Actionable fix: reduce A fill cost
+### Fill overhead decomposition
 
-The A fill is the wall. Possible approaches:
-1. **Reduce A fill work**: pack more data per store (ld.global.b64 instead
-   of ld.global.b32 where possible) — halves the store count
-2. **Overlap A fill with B fill**: fill A and B in the same pass, sharing
-   the smem port pipeline — reduces stall cycles
-3. **Software pipelining**: overlap A fill with mma (not just B fill) —
-   requires 3+ stage pipeline to hide the A fill latency
-4. **Accept the cost**: the A fill is inherent to the algorithm; focus
-   on other bottlenecks (the remaining 1.6 TF from store tail + misc)
+- A fill alone: 6.7 TF (e → w: 40.5 → 33.8)
+- B fill alone: ~3 TF (a minus w: 30.9 vs 33.8, but this is approximate)
+- Total fill: ~10 TF (e → a: 40.5 → 30.9)
+- Pipeline overlap: 1.4 TF (e → p: 40.5 → 39.1)
+- Store tail + misc: 1.6 TF (a → real: 30.9 → 29.3)
+
+### Actionable fix: widen A fill to 8 or 16-byte cp.async
+
+The A fill uses 4-byte synchronous stores. Widening to 8 or 16-byte
+cp.async would:
+1. Halve or quarter the number of store instructions
+2. Bypass the register file (cp.async writes directly to smem)
+3. For 16-byte: bypass L1 cache (L1 BYPASS mode)
+
+The constraint: smem destination must be 8 or 16-byte aligned. The
+current A fill writes to `rdA + g*64` which is 64-byte aligned — more
+than sufficient.
+
+Implementation: replace `ld.global.b32 + st.shared.b32` with
+`cp.async.ca.shared.global [dst], [src], 8` or `16`. This requires
+computing the shared memory address via `cvta.to.shared` and adjusting
+the thread-to-data mapping so each thread copies 8 or 16 bytes.
+
+The 3-stage pipeline (t: 38.0 TF) is slower than 2-stage (p: 39.1)
+because the extra smem (6144 vs 4096) reduces occupancy. The 2-stage
+pipeline is already optimal for this tile size.
+
+### Widened A fill: measured 2026-09-12
+
+cp.async research: 4/8/16B widths; `.cg` (L1 bypass) is 16B-only; 4/8B
+use `.ca` (L1 ACCESS). CUTLASS fills A with 16B cp.async, 4 threads per
+row (tid>>2 = row, tid&3 = 8-f16 chunk), 4 passes per stage.
+
+Microbench (sync ld+st fills, interleaved ×3): a (8×4B) 31.6 TF,
+8 (4×8B) 37.0 TF, c (2×16B) 35.4 TF — 8B beats 16B (each 16B lane
+transaction splits across 16 A rows; 8B across 8).
+
+On-kernel A/B (4096³ f16acc, per_a=2 → 1×8B vs 2×4B cp.async.ca,
+interleaved ×4, same window): old 28.97 TF, new 29.41 TF — **+0.44 TF,
+new wins 4/4 rounds**, correctness byte-identical (5.208e-3, same worst
+element). All shapes pass: 2048³ 1.5e-3 / 25.4 TF, 4096×4096×16 exact /
+2.1 TF, 8192³ 9.1e-3 / 30.6 TF. 64 regs, no spills — 2 CTAs/SM kept.
+
+**Lesson (generalizes the LTO lesson): a synchronous-fill microbench
+overstates widening wins — the real fill is already async cp.async, so
+the microbench's gain comes mostly from unblocking the register
+roundtrip, which cp.async never paid. On-device A/B is the only verdict.**
+
+Shipped as a rung ladder in `tensor_gemm_ptx_smem_mw` (a_fill_rung):
+per_a%4==0 → 16B `.cg` (L1 bypass), else per_a%2==0 → 8B `.ca`, else
+4B. Prologue + K-loop fills merged into one `emit_a_fill` emitter.
+
+### Next levers (unmeasured)
+
+1. **B fill widening**: per_b=4 → 16B×1 fires natively; the XOR swizzle
+   is exactly 16B-granular (swizzle unit == copy unit), so 16B `.cg`
+   copies map cleanly. B cost ~4.8 TF.
+2. **warp_mh=4 config**: per_a=4 → the 16B `.cg` rung fires for A too;
+   also quarters B loads (4×/kstep vs 16×). Unknown why production
+   selects warp_mh=2 — worth an A/B.
+
+### B fill widened: measured 2026-09-12 (later)
+
+The insight that made this safe: the B smem swizzle permutes exactly
+16B chunks — a 16B global chunk (8 consecutive n of one k-row) IS one
+swizzle unit and lands whole at `((n>>3)^(k&(gr-1)))*16`, so the
+within-chunk offset add simply drops at the 16B rung. Emitted per
+thread: 1×16B `.cg` (was 4×4B `.ca`); prologue + K-loop B fills merged
+into one `emit_b_fill` emitter (rung ladder mirrors A's).
+
+On-kernel A/B (4096³ f16acc, B-16B vs A-rung-only, interleaved ×4,
+same window): 29.61 vs 26.34 TF — **+3.3 TF, B-16B wins 4/4 rounds**,
+correctness byte-identical (5.208e-3, same worst element). All shapes
+pass and improve: 2048³ 25.4→26.7 TF, 8192³ 30.6→30.8 TF, K=16 exact.
+(Absolute numbers drift ~3 TF between DVFS windows — only the
+interleaved same-window A/B is comparable.) 64 regs, no spills kept.
+
+Session net at 4096³ f16acc: 28.97 → 29.61 TF in-window, ~70% of the
+cuBLAS anchor.
+
+### warp_mh=4: SHIPPED 2026-09-12 (the earlier rejection was invalid)
+
+**Correction of record**: the "warp_mh=4 REJECTED" entry below (and
+commit f1ea6e8b) measured mh2-vs-mh2 — the A/B patched the dispatch
+constant in mod.rs, but the bench used dump-test cubins whose
+warp_mh=2 literal never changed. The true mh4 dumps could not even
+assemble: the f16acc register declaration hardcoded %a<8>/ %b<16>
+instead of scaling with the warp shape (4*mhr / 2*gr), so every
+warp_mh=4 dump failed ptxas on unknown %a8-a15. Both bugs fixed; a
+selector test now pins the generalized aspect guards.
+
+True A/B (dp44 = (4,4)@512T warp_mh=4, interleaved ×4 same window):
+**32.80 vs 29.87 TF — mh4 wins 4/4 (+2.9 TF)**, byte-identical
+correctness. per_a=4 fires the 16B `.cg` A rung and B loads drop 16×→
+4× per kstep (per_b=2 → 8B B rung — the rung trade is net-positive,
+the opposite of the invalid measurement's claim).
+
+Dispatch flip (f16acc → warp_mh=4, f32 keeps mh2): select_mw_nw and
+mw_ok generalized to the warp aspect (M%(16·mhr·mw), N%(8·gr·nw)),
+shared_bytes formula now (mw·mhr·512 + nw·gr·256)·stages. All shapes
+verified on-device at mh4: 2048³ 27.9 TF, 4096³ 32.3 TF, 8192³
+**34.1 TF (81% of the 42 TF anchor)**, K=16 exact. 63 regs, 2 CTAs/SM.
+
+**Process lesson (BUGS.md)**: an A/B that edits dispatch constants
+while benching dump-test cubins measures nothing — dump literals and
+dispatch constants diverge silently. Bench the artifact the dispatch
+actually emits, or make the dump read the same constant.
+
+### E1/E2/E3 session record (2026-09-12)
+
+- **E1 re-decomposition** (one window): microbench e 41.8, a 30.3, 8
+  35.7, c 34.1; production kernel 28.5. The sync-fill microbenches
+  read one broadcast address (zero DRAM) — they model smem/instruction
+  cost only; production sits ~7 TF below its sync analog, which is the
+  unmodeled DRAM-side cost. Sync-model residual e−8 = 6.1 TF.
+- **E2 stage sweep** (zero code): production (4,4)@512T s2 28.10 avg
+  vs s4 28.28 (noise, 2/3), 82 26.9, 28 22.9, 24s2 24.1, c24 18.3.
+  2-stage (4,4) confirmed optimal even post-widening.
+- **E3 warp-split** (microbench variant sp): split A-warps/B-warps at
+  16B each measures 32.2 vs 8's 35.2 TF — REJECTED. Halving the active
+  warps per fill stream costs more memory-level parallelism than the
+  width gain returns; the mixed-stream widening (variant 8, every
+  thread touching both fills) is the right shape. Never reached the
+  kernel.
+
+### Window-1 session record (2026-09-12, post-mh4)
+
+- **L3 re-anchor** (one window): microbench e 41.0 (r1/r2; r3 thermal
+  dip), a 29.8, 8 35.0; f16 mh4 kernel 29.72 avg. Kernel/e ratio 72%
+  (mh2 era: 68%). Kernel-vs-sync-analog gap ~5.3 TF → L2 gate passed
+  on measurement.
+- **L1 f32 warp_mh A/B: mh4 REJECTED** — f32 mh2 20.29 avg vs mh4
+  17.54 (mh2 wins 3/3, +2.75 TF) despite mh4's occupancy doubling
+  (96 regs → 2 CTAs/SM vs 128 regs → 1). The f32 serial schedule keeps
+  its tuned 32x64 warp. `ptx_warp_mh(f16_acc)` helper extracted —
+  dispatch and dump artifacts now read ONE constant (BUGS.md rule);
+  f32 correctness exact at both shapes (0.0 rel err: seed values are
+  all multiples of 0.125, so every f32/f64 partial sum is exact).
+- **Driver fix**: `ptx_gemm_bench.c` hardcoded an f16 y tile
+  (state_bytes = y_off + M·N·2) and read y as f16 — the f32 kernels
+  faulted at check time with ILM. `BRIEV_Y_ELEM` (2|4) now sizes the
+  state buffer and the sampled reference.
+- **L2 sector-pairing hypothesis: REFUTED by analysis (pre-build)**.
+  At D = tid·16, lane pairs (2i, 2i+1) already cover cols 0-15/16-31
+  of the SAME 32B sector — every A-fill warp transaction fully uses
+  all 16 sectors it touches (512B contiguous). The 8B B rung is 256B
+  contiguous — also sector-perfect. The ~5 TF residual is NOT mapping
+  waste; candidates are cross-stripe L2-line utilization (32B used of
+  each 128B L2 line per stripe), A/B stream interference, or
+  fill/ldmatrix bank contention. Discriminating them needs a DRAM-real
+  microbench (computed per-thread global addresses — the sync
+  broadcast-address harness structurally cannot see this layer).
+
+### Next levers (revised)
+
+1. **DRAM-real microbench** (`dr` variant family): fills read computed
+   `a[m][k]`/`b[k][n]` addresses at per-CTA tile bases; variants sweep
+   A/B interleaving, stripe rasterization order, and L2-friendly CTA
+   schedules. This is the instrument the residual analysis lacks.
+2. **f32 tier**:mh4 rejected, but the f32 kernel at 20.3 TF vs the
+   f16acc tier's 29.7 is a 1.45× gap — the f32 accumulator register
+   budget (64 f32) caps the tile; a 2-stage f32 variant (smem 16384 →
+   2 CTAs at 128 regs) is unexplored.
+3. **2048³ boundary**: PTX 27.9 vs coopmat 27.7 — confirm which tier
+   the dispatcher picks and document the crossover.

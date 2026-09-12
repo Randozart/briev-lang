@@ -5903,3 +5903,31 @@ load-bearing value is what the backend cannot do: compile-time liveness
 refusals, the causality report, and future proof work (FSM
 reachability/deadlock). Fusion gets built only when a measured program
 class shows the backend failing — not before.
+
+## 2026-09-12: invalid A/B — dispatch constant edited, dump-test cubin benched
+
+**Symptom:** the warp_mh=4 "rejection" (commit f1ea6e8b) concluded
+mh2 ≥ mh4 from an interleaved A/B that actually measured mh2 vs mh2.
+The session patched the dispatch constant in `mod.rs`, then ran
+`cargo test dump_mw_4096_f16acc` + ptxas + bench — but the dump test
+hardcodes its own `warp_mh=2` literal, so the regenerated cubin was
+identical to production. The bogus "rejection" shipped with a confident
+comment.
+
+**Root cause (two layers):**
+1. Process: the A/B benched an artifact (dump-test cubin) that was not
+   the artifact the dispatch edit controlled.
+2. Latent bug that masked the truth: the f16acc register declaration
+   hardcoded `%a<8>`/`%b<16>` instead of scaling with the warp shape
+   (4*mhr / 2*gr), so every true warp_mh=4 dump failed ptxas
+   (unknown %a8-a15) — anyone inspecting the real mh4 PTX would have
+   hit assembly errors, not a clean kernel.
+
+**Fix:** declarations scale with mhr/gr; select_mw_nw + mw_ok +
+shared_bytes generalized to the warp aspect; warp_mh=4 shipped for
+f16acc (+2.9 TF at 4096³, 4/4 rounds). Selector test pins the aspect
+contract.
+
+**Rule:** bench the artifact the dispatch actually emits. If the dump
+test's literals can drift from dispatch constants, make the dump read
+the dispatch constant — never edit one and measure the other.
