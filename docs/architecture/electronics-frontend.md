@@ -101,6 +101,19 @@ Phase B of `2026-09-11-fundamentals-doctrine-and-electronics.md` landed:
   component needs to exist (clauses that parse but land nowhere are dead
   surface).
 
-Deferred: named nets, per-pin tolerances, Kirchhoff/parallel current
-summing, unit-suffix literals, LLVM/GPU representation (awaits
-simulation), PinDecl in cell bodies' beast serialization.
+**2026-09-11 (static physics completion):** the derivation is a fixpoint
+over the part graph — series current (I = |ΔV| / R across the class
+difference, so a stated 0 V ground participates), voltage dividers
+(general two-resistor form on unclassed two-attachment nets with
+different classed far sides), and Kirchhoff current summing (a net's
+class is the SUM of contributing branches, replacing worst-case max).
+Everything records as proof facts.
+
+Also landed the same day: **library-level mutable state** — top-level
+`let`s now import (item_name names them), which unblocked the buffered
+stdout lane in cast_lanes.bv and closed the fasta ~100x regression
+(BUGS.md 2026-09-11; fasta now 0.73x vs baseline).
+
+Deferred: named nets, per-pin tolerances, unit-suffix literals,
+LLVM/GPU representation (awaits simulation), PinDecl in cell bodies'
+beast serialization, power ratings (needs a `rating` clause surface).
