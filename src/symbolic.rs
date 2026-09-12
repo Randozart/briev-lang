@@ -284,6 +284,7 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         Expr::Slice { .. } => { SymbolicValue::Unknown },
         Expr::Range { .. } => { SymbolicValue::Unknown },
         Expr::Spawn { .. } => { SymbolicValue::Unknown },
+        Expr::Named { inner, .. } => eval_symbolic(inner, state),
 
     }
 }
@@ -395,6 +396,7 @@ pub fn satisfies_postcondition(post: &Expr, state: &SymbolicState) -> bool {
 
         Expr::IsType(_, _) => false,
 
+        Expr::Named { inner, .. } => satisfies_postcondition(inner, state),
         _ => false,
     }
 }

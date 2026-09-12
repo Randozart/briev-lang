@@ -450,6 +450,10 @@ pub fn eval_nav_chain(
         Expr::Quoted(bytes) => String::from_utf8(bytes.clone())
             .map(NavValue::Str)
             .map_err(|_| "invalid UTF-8 string literal".into()),
+        // Named is transparent — unwrap and recurse.
+        Expr::Named { inner, .. } => {
+            eval_nav_chain(inner, program, universe, stage, scope, sandbox, pm)
+        }
         // 2026-07-23: Binary operators — arithmetic and comparison.
         Expr::BinaryOp(kind, lhs, rhs) => {
             let lv = eval_nav_chain(lhs, program, universe, stage, scope, sandbox, pm)?;
@@ -1743,6 +1747,7 @@ fn expect_prop_arg(args: &[Expr], idx: usize, intrinsic: &str) -> Result<Propert
 fn extract_str_lit(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Quoted(bytes) => String::from_utf8(bytes.clone()).ok(),
+        Expr::Named { inner, .. } => extract_str_lit(inner),
         _ => None,
     }
 }
@@ -2043,6 +2048,7 @@ fn resolve_dollar_refs_in_expr(expr: &mut Expr, scope: &Scope) -> Result<(), Str
             Ok(())
         }
         Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
+        Expr::Named { inner, .. } => resolve_dollar_refs_in_expr(inner, scope),
 
     }
 }

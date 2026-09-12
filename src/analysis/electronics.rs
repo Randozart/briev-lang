@@ -254,15 +254,48 @@ fn resolve_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInstance>, ty
 
 /// Collect Eq operand pairs from an expression tree (walks And/Or chains and
 /// parenthesized/grouped nodes; everything else is a leaf for this purpose).
-fn collect_eq_pairs(expr: &Expr, out: &mut Vec<(Expr, Expr)>) {
+/// Third element is an optional net name from `net <name>:` annotation.
+fn collect_eq_triples(expr: &Expr, out: &mut Vec<(Expr, Expr, Option<String>)>) {
+    match expr {
+        Expr::Named { name, inner } => {
+            // Attach the name to the next Eq we find inside.
+            collect_eq_triples_with_name(name, inner, out);
+        }
+        Expr::BinaryOp(op @ (BinaryOpKind::Eq | BinaryOpKind::And | BinaryOpKind::Or), l, r) => {
+            if *op == BinaryOpKind::Eq {
+                out.push(((**l).clone(), (**r).clone(), None));
+            } else {
+                collect_eq_triples(l, out);
+                collect_eq_triples(r, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Like `collect_eq_triples` but propagates a net name downward into the
+/// first Eq encountered.
+fn collect_eq_triples_with_name(
+    name: &str,
+    expr: &Expr,
+    out: &mut Vec<(Expr, Expr, Option<String>)>,
+) {
     match expr {
         Expr::BinaryOp(op @ (BinaryOpKind::Eq | BinaryOpKind::And | BinaryOpKind::Or), l, r) => {
             if *op == BinaryOpKind::Eq {
-                out.push(((**l).clone(), (**r).clone()));
+                out.push(((**l).clone(), (**r).clone(), Some(name.to_string())));
             } else {
-                collect_eq_pairs(l, out);
-                collect_eq_pairs(r, out);
+                // Name applies to the first Eq in left-to-right order.
+                let before = out.len();
+                collect_eq_triples_with_name(name, l, out);
+                if out.len() == before {
+                    collect_eq_triples_with_name(name, r, out);
+                }
             }
+        }
+        Expr::Named { name: inner_name, inner } => {
+            // Nested net name — inner wins (closer to the Eq).
+            collect_eq_triples_with_name(inner_name, inner, out);
         }
         _ => {}
     }
@@ -351,9 +384,9 @@ fn collect_drives(
     for item in items {
         let TopLevel::Transaction(t) = item else { continue };
         for cond in [&t.contract.pre_condition, &t.contract.post_condition] {
-            let mut pairs = Vec::new();
-            collect_eq_pairs(cond, &mut pairs);
-            for (l, r) in pairs {
+            let mut triples = Vec::new();
+            collect_eq_triples(cond, &mut triples);
+            for (l, r, _name) in triples {
                 let Some((pin, v)) = voltage_drive(&l, &r, instances, type_pins) else {
                     continue;
                 };
@@ -754,12 +787,14 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         .collect();
 
     let mut ds = DisjointSet::new();
+    // Net names from `net <name>:` annotations — maps union-find root → name.
+    let mut net_names: BTreeMap<String, String> = BTreeMap::new();
     for item in items {
         let TopLevel::Transaction(t) = item else { continue };
         // PREconditions are topology. Postconditions are physics — skipped.
-        let mut pairs = Vec::new();
-        collect_eq_pairs(&t.contract.pre_condition, &mut pairs);
-        for (l, r) in pairs {
+        let mut triples = Vec::new();
+        collect_eq_triples(&t.contract.pre_condition, &mut triples);
+        for (l, r, name) in triples {
             let (Some(lp), Some(rp)) = (
                 resolve_pin(&l, &instances, &type_pins),
                 resolve_pin(&r, &instances, &type_pins),
@@ -771,6 +806,11 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
             ds.make(lk.clone());
             ds.make(rk.clone());
             ds.union(&lk, &rk);
+            // Record the net name on the resulting root.
+            if let Some(name) = name {
+                let root = ds.find(&lk);
+                net_names.entry(root).or_insert(name);
+            }
         }
     }
 
@@ -797,10 +837,11 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let mut nets = Vec::new();
     let mut dangling = Vec::new();
     let mut net_index = 0;
-    for (_, members) in groups {
+    for (root, members) in groups {
         if members.len() >= 2 {
             net_index += 1;
-            nets.push(Net { name: format!("N{}", net_index), pins: members });
+            let name = net_names.remove(&root).unwrap_or_else(|| format!("N{}", net_index));
+            nets.push(Net { name, pins: members });
         } else {
             let p = &members[0];
             dangling.push(format!(
@@ -1166,5 +1207,44 @@ mod tests {
         let nl = analyze("let x: Int = 5;");
         assert!(!nl.is_electronics);
         assert!(nl.nets.is_empty());
+    }
+
+    #[test]
+    fn named_net_appears_in_netlist() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; };
+            let j1: Connector = Connector { };
+            let r1: Resistor = Resistor { };
+            txn powered
+                [net vcc: j1.p1.voltage == r1.a.voltage && net gnd: j1.p2.voltage == r1.b.voltage && j1.p1.voltage == 3.3]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        let vcc = nl.nets.iter().find(|n| n.name == "vcc");
+        let gnd = nl.nets.iter().find(|n| n.name == "gnd");
+        assert!(vcc.is_some(), "expected net 'vcc', got: {:?}", nl.nets.iter().map(|n| &n.name).collect::<Vec<_>>());
+        assert!(gnd.is_some(), "expected net 'gnd', got: {:?}", nl.nets.iter().map(|n| &n.name).collect::<Vec<_>>());
+        assert_eq!(vcc.unwrap().pins.len(), 2, "vcc should connect j1.p1 and r1.a");
+        assert_eq!(gnd.unwrap().pins.len(), 2, "gnd should connect j1.p2 and r1.b");
+    }
+
+    #[test]
+    fn unnamed_nets_still_get_generated_names() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; };
+            let j1: Connector = Connector { };
+            let r1: Resistor = Resistor { };
+            txn powered
+                [j1.p1.voltage == r1.a.voltage && j1.p2.voltage == r1.b.voltage && j1.p1.voltage == 3.3]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.nets.iter().any(|n| n.name.starts_with('N')), "unnamed nets should get N<N> names");
     }
 }

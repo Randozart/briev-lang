@@ -159,6 +159,12 @@ pub enum Expr {
     /// Bool(true) if the function linked, Bool(false) otherwise.
     /// Used for guarding frgn?/frgn!/frgn?! calls.
     Exists(String),
+
+    // ── Electronics ─────────────────────────────────────────────
+    /// `net <name>: <expr>` — named net annotation on a precondition
+    /// equality. The name is metadata attached to the equivalence class;
+    /// inference is unchanged. Only meaningful in contract preconditions.
+    Named { name: String, inner: Box<Expr> },
 }
 
 /// 2026-07-31: Reflection kind — distinguishes value-derived (runtime)

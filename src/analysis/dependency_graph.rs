@@ -297,6 +297,9 @@ fn collect_expr_ids_inner(expr: &Expr, ids: &mut Vec<String>) {
             collect_expr_ids_inner(start, ids);
             collect_expr_ids_inner(end, ids);
         }
+        Expr::Named { inner, .. } => {
+            collect_expr_ids_inner(inner, ids);
+        }
 
     }
 }

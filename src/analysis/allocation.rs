@@ -319,6 +319,7 @@ impl<'a> DagBuilder<'a> {
 Expr::Slice { .. } => {},
             Expr::Range { .. } => {},
             Expr::Spawn { args, .. } => {},
+            Expr::Named { inner, .. } => { self.walk_expr(inner); },
         }
     }
 }

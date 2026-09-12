@@ -1870,6 +1870,7 @@ impl LlvmBackend {
                     ty: Type::Custom(type_name.clone()),
                 }
             }
+            Expr::Named { inner, .. } => self.emit_expr(out, inner, indent),
         }
     }
 

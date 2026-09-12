@@ -164,6 +164,9 @@ impl<'a> DataflowAnalyzer<'a> {
                 self.extract_ids_recursive(start, ids);
                 self.extract_ids_recursive(end, ids);
             }
+            Expr::Named { inner, .. } => {
+                self.extract_ids_recursive(inner, ids);
+            }
 
         }
     }

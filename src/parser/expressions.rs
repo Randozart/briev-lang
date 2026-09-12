@@ -44,13 +44,43 @@ impl<'a> Parser<'a> {
     }
 
     /// Logical AND: a && b
+    ///
+    /// Also handles `net <name>:` prefix for named net annotations in
+    /// electronics contracts. The prefix wraps the following equality in
+    /// `Expr::Named`.
     fn parse_and(&mut self) -> Result<Expr, SyntaxError> {
-        let mut expr = self.parse_equality()?;
+        let mut expr = self.parse_and_lhs()?;
         while self.eat(&Token::AndAnd) {
-            let rhs = self.parse_equality()?;
+            let rhs = self.parse_and_lhs()?;
             expr = Expr::BinaryOp(BinaryOpKind::And, Box::new(expr), Box::new(rhs));
         }
         Ok(expr)
+    }
+
+    /// Parse the left-hand side of an AND: possibly `net <name>:` prefixed
+    /// equality, or a bare equality.
+    fn parse_and_lhs(&mut self) -> Result<Expr, SyntaxError> {
+        if self.at_net_prefix() {
+            self.pos += 1; // consume 'net'
+            let name = match self.peek() {
+                Some(Token::Identifier(s)) => s.clone(),
+                _ => unreachable!(),
+            };
+            self.pos += 1; // consume name
+            self.pos += 1; // consume ':'
+            let inner = self.parse_equality()?;
+            Ok(Expr::Named { name, inner: Box::new(inner) })
+        } else {
+            self.parse_equality()
+        }
+    }
+
+    /// True when the current token sequence is `net <ident>:` — a named net
+    /// annotation prefix.
+    fn at_net_prefix(&self) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(s)) if s == "net")
+            && matches!(self.peek_next(), Some(Token::Identifier(_)))
+            && self.tokens.get(self.pos + 2).map_or(false, |(t, _)| matches!(t, Token::Colon))
     }
 
     /// Equality: a == b, a != b

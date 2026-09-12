@@ -272,17 +272,17 @@ pub fn eval_expr(
         ),
         // 2026-08-07 (Phase 7): an iterable range value — consumed by
         // `foreach` (SPEC §11.4).
-        Expr::Spawn { type_name, args, .. } => {
-            // 2026-08-07 (instance pools): the interpreter reference evaluates
-            // the spawn args; the handle is a synthetic atom (the codegen
-            // allocates the real pool row).
-            // 2026-08-09 (Phase 10): `spawn defn(args)` is a TASK spawn — the
-            // deterministic reference scheduler runs the task inline, so the
-            // handle IS the callable's result (SPEC §12.2). Distinguish a task
-            // (a registered function) from an obj base.
-            if functions.contains_key(type_name) {
-                return eval_task_spawn(type_name, args, heap, bindings, functions);
-            }
+            Expr::Spawn { type_name, args, storage } => {
+                // 2026-08-07 (instance pools): the interpreter reference evaluates
+                // the spawn args; the handle is a synthetic atom (the codegen
+                // allocates the real pool row).
+                // 2026-08-09 (Phase 10): `spawn defn(args)` is a TASK spawn — the
+                // deterministic reference scheduler runs the task inline, so the
+                // handle IS the callable's result (SPEC §12.2). Distinguish a task
+                // (a registered function) from an obj base.
+                if functions.contains_key(type_name) {
+                    return eval_task_spawn(type_name, args, heap, bindings, functions);
+                }
             // 2026-08-22 (Phase 7b, SPEC §9.5): a PORTED obj spawn builds a
             // real instance — input ports bind positionally to the evaluated
             // arguments (an EventQ argument SHARES the producer's slot; plain
@@ -341,20 +341,21 @@ pub fn eval_expr(
             Ok(Value::Atom(Atom::Int(0)))
         }
         Expr::Range { start, end, inclusive } => {
-            let s = eval_expr(start, heap, bindings, functions)?
-                .as_i64()
-                .ok_or_else(|| RuntimeError::TypeError {
-                    expected: "an integer range bound".into(),
-                    found: "non-integer range bound".into(),
-                })?;
-            let e = eval_expr(end, heap, bindings, functions)?
-                .as_i64()
-                .ok_or_else(|| RuntimeError::TypeError {
-                    expected: "an integer range bound".into(),
-                    found: "non-integer range bound".into(),
-                })?;
-            Ok(Value::Range { start: s, end: e, inclusive: *inclusive })
-        }
+                let s = eval_expr(start, heap, bindings, functions)?
+                    .as_i64()
+                    .ok_or_else(|| RuntimeError::TypeError {
+                        expected: "an integer range bound".into(),
+                        found: "non-integer range bound".into(),
+                    })?;
+                let e = eval_expr(end, heap, bindings, functions)?
+                    .as_i64()
+                    .ok_or_else(|| RuntimeError::TypeError {
+                        expected: "an integer range bound".into(),
+                        found: "non-integer range bound".into(),
+                    })?;
+                Ok(Value::Range { start: s, end: e, inclusive: *inclusive })
+            }
+            Expr::Named { inner, .. } => eval_expr(inner, heap, bindings, functions),
 
     }
 }

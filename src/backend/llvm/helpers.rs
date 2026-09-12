@@ -172,6 +172,10 @@ impl LlvmBackend {
                 let new_end = Box::new(Self::rewrite_cell_identifiers(end, cell_name));
                 Expr::Range { start: new_start, end: new_end, inclusive: *inclusive }
             }
+            Expr::Named { name, inner } => Expr::Named {
+                name: name.clone(),
+                inner: Box::new(Self::rewrite_cell_identifiers(inner, cell_name)),
+            },
 
         }
     }

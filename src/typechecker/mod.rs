@@ -1479,6 +1479,7 @@ pub fn infer_expression(
                     Ok((Type::Custom(type_name.clone()), Provenance::Unknown))
                 }
             }
+            Expr::Named { inner, .. } => infer_expression(inner, ctx),
 
     }
 }
@@ -1636,6 +1637,9 @@ fn try_coerce_via_parse(
                 Expr::Float(_) | Expr::Decimal(_) | Expr::TaggedLiteral(_, _) => ("Decimal", None),
                 _ => return false,
             }
+        }
+        Expr::Named { inner, .. } => {
+            return try_coerce_via_parse(inner, target_ty, arg_ty, ctx);
         }
         // 2026-08-17: a COMPUTED numeric seed — `let m: HashMap<Int,Int> =
         // 2 * N` — is a legitimate `op Init` construction value (the seed is
@@ -2460,6 +2464,7 @@ fn elaborate_expr(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<
                 elaborate_expr(a, ctx, errors);
             }
         }
+        Expr::Named { inner, .. } => elaborate_expr(inner, ctx, errors),
         _ => {}
     }
 }

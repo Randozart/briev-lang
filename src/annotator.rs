@@ -222,6 +222,9 @@ impl Annotator {
                     self.collect_calls_from_expr(a, calls);
                 }
             }
+            Expr::Named { inner, .. } => {
+                self.collect_calls_from_expr(inner, calls);
+            }
         }
     }
 
@@ -679,6 +682,9 @@ impl Annotator {
                 if *inclusive { "=" } else { "" },
                 self.format_expr(end)
             ),
+            Expr::Named { name, inner } => {
+                format!("net {}: {}", name, self.format_expr(inner))
+            }
 
         }
     }
