@@ -5799,8 +5799,8 @@ pipe buffering for free. `node fasta` prints one char per iteration →
 10M syscalls. Nobody re-ran the runtime A/B after the runtime-linking
 changes (this sweep was the first).
 
-**Fix (not yet landed):** buffered stdout requires LIBRARY-LEVEL
-MUTABLE STATE, which Briev lacks — defn bodies cannot see top-level
+**Fix (LANDED 2026-09-11, commits 158ae9ec + 01c92189):** buffered
+stdout required LIBRARY-LEVEL MUTABLE STATE, which Briev lacked — defn bodies cannot see top-level
 `let`s ("undefined variable"), and the `state` keyword is removed. The
 buffer (fixed 64 KiB block + fill pointer, O(1) `Store#` append, flush
 at capacity + main-tail) is expressible the moment defns can reference
@@ -5812,8 +5812,10 @@ top-level lets, (2) needs_state propagation for global reads/writes,
 (3) emitter global access through the defn's `%state`. Then the
 buffered lane lands in cast_lanes.bv (the reverted attempt sketches it).
 
-**Interim truth:** fasta is NOT competitive until this lands. The C
-reference's putchar costs are stdio-buffered; ours are raw syscalls.
+**Outcome:** fasta 0.73x vs baseline at BOUND=100M (27% FASTER than
+the C baseline era), output byte-identical, sys time zero. Library
+globals landed first (top-level lets import); the buffered lane then
+landed wholly in stdlib.
 
 **Lesson:** runtime-linking changes MUST get the compare_baseline A/B
 in the same stream — the sweep exists because "parity corpora green"
