@@ -463,3 +463,22 @@ per_a%4==0 → 16B `.cg` (L1 bypass), else per_a%2==0 → 8B `.ca`, else
 2. **warp_mh=4 config**: per_a=4 → the 16B `.cg` rung fires for A too;
    also quarters B loads (4×/kstep vs 16×). Unknown why production
    selects warp_mh=2 — worth an A/B.
+
+### B fill widened: measured 2026-09-12 (later)
+
+The insight that made this safe: the B smem swizzle permutes exactly
+16B chunks — a 16B global chunk (8 consecutive n of one k-row) IS one
+swizzle unit and lands whole at `((n>>3)^(k&(gr-1)))*16`, so the
+within-chunk offset add simply drops at the 16B rung. Emitted per
+thread: 1×16B `.cg` (was 4×4B `.ca`); prologue + K-loop B fills merged
+into one `emit_b_fill` emitter (rung ladder mirrors A's).
+
+On-kernel A/B (4096³ f16acc, B-16B vs A-rung-only, interleaved ×4,
+same window): 29.61 vs 26.34 TF — **+3.3 TF, B-16B wins 4/4 rounds**,
+correctness byte-identical (5.208e-3, same worst element). All shapes
+pass and improve: 2048³ 25.4→26.7 TF, 8192³ 30.6→30.8 TF, K=16 exact.
+(Absolute numbers drift ~3 TF between DVFS windows — only the
+interleaved same-window A/B is comparable.) 64 regs, no spills kept.
+
+Session net at 4096³ f16acc: 28.97 → 29.61 TF in-window, ~70% of the
+cuBLAS anchor.

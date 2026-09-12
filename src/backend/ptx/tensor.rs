@@ -840,6 +840,78 @@ pub fn tensor_gemm_ptx_smem_mw(
     } else {
         None
     };
+    // Widened B fill (2026-09-12): same rung ladder as the A fill — but B
+    // needs no microbench preamble because the swizzle is exactly 16B
+    // granular: a 16B global chunk (8 consecutive n of one k-row) IS one
+    // swizzle unit, landing whole at ((n>>3)^(k&(gr-1)))*16. per_b=4 in
+    // the production tile → one 16B cp.async.cg per thread (was 4×4B .ca).
+    // Alignment: global (k)*b_row + (slab*64+n)*2 is 16B-aligned under the
+    // kernel's N%8==0 precondition (b_row%16==0, n%8==0 at the 16B rung);
+    // the smem chunk base is 16B-aligned by construction. Coverage is an
+    // exact bijection of the stage bytes at every rung. Undo: delete
+    // b_fill_rung and restore the single 4B loop in both B fill sites.
+    let b_fill_rung = if per_b % 4 == 0 {
+        Some((per_b / 4, 16, "cg", 0u32))
+    } else if per_b % 2 == 0 {
+        Some((per_b / 2, 8, "ca", 8u32))
+    } else {
+        None
+    };
+    // Shared B-fill emitter (2026-09-12 DRY merge of the prologue and
+    // K-loop copies): the caller sets %r12 to the fill stage's smem base
+    // (consuming %r17 = stage index BEFORE this emitter clobbers it) and
+    // passes `r18_prelude` — the per-site lines computing r18 =
+    // k_global*b_row (const stripe add in the prologue, dynamic kstep
+    // block in the K loop). The last tuple element is the within-chunk
+    // byte mask (0 at the 16B rung = swizzle-unit copies, no offset add).
+    let mut emit_b_fill = |out: &mut String, r18_prelude: &str| {
+        let (copies, width, modifier, chunk_mask) = match b_fill_rung {
+            Some((c, w, m, mask)) => (c, w, m, mask),
+            None => (per_b, 4, "ca", 14),
+        };
+        let glz = gr.trailing_zeros();
+        out.push_str(&format!("    mul.lo.u32 %r13, %r5, {};\n", width));
+        for j in 0..copies {
+            out.push_str("    mov.u32 %r14, %r13;\n");
+            if j > 0 {
+                out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * width));
+            }
+            out.push_str("    mov.u32 %r15, %r14;\n");
+            out.push_str(&format!("    shr.u32 %r15, %r15, {};\n", 8 + glz));
+            out.push_str("    mov.u32 %r16, %r14;\n");
+            out.push_str(&format!("    and.b32 %r16, %r16, {};\n", gr * 256 - 1));
+            out.push_str(&format!("    shr.u32 %r17, %r16, {};\n", 4 + glz));
+            out.push_str(&format!("    and.b32 %r19, %r16, {};\n", gr * 16 - 1));
+            out.push_str("    shr.u32 %r19, %r19, 1;\n");
+            out.push_str(r18_prelude);
+            out.push_str(&format!("    mul.lo.u32 %r20, %r15, {};\n", 8 * gr));
+            out.push_str("    add.u32 %r20, %r20, %r19;\n");
+            out.push_str("    shl.b32 %r20, %r20, 1;\n");
+            out.push_str("    add.u32 %r18, %r18, %r20;\n");
+            out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
+            out.push_str("    add.u64 %rd5, %rd3, %rd5;\n");
+            // smem dst: slab*(256*gr) + k*(16*gr) + ((n>>3)^(k&(gr-1)))*16 [+ (n&mask)*2]
+            out.push_str(&format!("    shl.b32 %r19, %r15, {};\n", 8 + glz));
+            out.push_str(&format!("    shl.b32 %r20, %r17, {};\n", 4 + glz));
+            out.push_str("    add.u32 %r19, %r19, %r20;\n");
+            out.push_str("    shr.u32 %r20, %r14, 4;\n");
+            out.push_str(&format!("    and.b32 %r20, %r20, {};\n", gr - 1));
+            out.push_str(&format!("    and.b32 %r16, %r17, {};\n", gr - 1));
+            out.push_str("    xor.b32 %r20, %r20, %r16;\n");
+            out.push_str("    shl.b32 %r20, %r20, 4;\n");
+            out.push_str("    add.u32 %r19, %r19, %r20;\n");
+            if chunk_mask > 0 {
+                out.push_str(&format!("    and.b32 %r20, %r14, {};\n", chunk_mask));
+                out.push_str("    add.u32 %r19, %r19, %r20;\n");
+            }
+            out.push_str("    mov.u32 %r16, %r12;\n");
+            out.push_str("    add.u32 %r16, %r16, %r19;\n");
+            out.push_str(&format!(
+                "    cp.async.{}.shared.global [%r16], [%rd5], {};\n",
+                modifier, width
+            ));
+        }
+    };
     // Shared A-fill emitter (2026-09-12 DRY merge of the prologue and
     // K-loop copies): the caller sets %r12 to the fill stage's smem base
     // and passes the per-site source-offset adjustment (`src_off`) — the
@@ -1115,9 +1187,9 @@ pub fn tensor_gemm_ptx_smem_mw(
         emit_a_fill(&mut out, &src_off);
         // B fill into stage s. Layout contract (must mirror the B ldmatrix
         // reader below): the slab is K-MAJOR — smem byte D = slab*2048 +
-        // k*128 + n*2 (pre-swizzle), 128-byte k-rows of 64 n-cols. A 4-byte
-        // cp.async moves global B[stripe+k][n..n+1] (adjacent columns,
-        // 4-aligned since D%4==0 keeps n even) to the same-shaped smem pair.
+        // k*128 + n*2 (pre-swizzle), 128-byte k-rows of 64 n-cols. A fill
+        // copy moves global B[stripe+k][n..] to the same-shaped smem pair;
+        // the widened rung copies whole 16B swizzle units — see b_fill_rung.
         // 16B chunks of each k-row are XOR-swizzled with k&7 so ldmatrix's
         // 16 rows touch 8 bank groups, not 1. The pre-rewrite n-major fill
         // could not be sourced by 4-byte cp.async at all — that inversion
@@ -1126,51 +1198,17 @@ pub fn tensor_gemm_ptx_smem_mw(
         if b_off_s > 0 {
             out.push_str(&format!("    add.u32 %r12, %r12, {};\n", b_off_s));
         }
-        out.push_str("    mul.lo.u32 %r13, %r5, 4;\n");
-        for j in 0..per_b {
-            out.push_str("    mov.u32 %r14, %r13;\n");
-            if j > 0 {
-                out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * 4));
-            }
-            out.push_str("    mov.u32 %r15, %r14;\n");
-            out.push_str(&format!("    shr.u32 %r15, %r15, {};\n", 8 + gr.trailing_zeros()));
-            out.push_str("    mov.u32 %r16, %r14;\n");
-            out.push_str(&format!("    and.b32 %r16, %r16, {};\n", gr * 256 - 1));
-            out.push_str(&format!("    shr.u32 %r17, %r16, {};\n", 4 + gr.trailing_zeros()));
-            out.push_str(&format!("    and.b32 %r19, %r16, {};\n", gr * 16 - 1));
-            out.push_str("    shr.u32 %r19, %r19, 1;\n");
-            // global: (stripe+k)*b_row + (slab*(8*gr)+n)*2  (the stripe constant
-            // folds the prologue's kstep; %r2 is NOT kstep here — it still
-            // holds a setup product)
-            out.push_str(&format!("    mul.lo.u32 %r18, %r17, {};\n", b_row));
+        // global: (stripe+k)*b_row  (the stripe constant folds the
+        // prologue's kstep; %r2 is NOT kstep here — it still holds a setup
+        // product)
+        let r18_prelude = {
+            let mut s = format!("    mul.lo.u32 %r18, %r17, {};\n", b_row);
             if stripe > 0 {
-                out.push_str(&format!(
-                    "    add.u32 %r18, %r18, {};\n",
-                    stripe * b_row
-                ));
+                s.push_str(&format!("    add.u32 %r18, %r18, {};\n", stripe * b_row));
             }
-            out.push_str(&format!("    mul.lo.u32 %r20, %r15, {};\n", 8 * gr));
-            out.push_str("    add.u32 %r20, %r20, %r19;\n");
-            out.push_str("    shl.b32 %r20, %r20, 1;\n");
-            out.push_str("    add.u32 %r18, %r18, %r20;\n");
-            out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
-            out.push_str("    add.u64 %rd5, %rd3, %rd5;\n");
-            // smem dst: slab*(256*gr) + k*(16*gr) + ((n>>3)^(k&(gr-1)))*16 + (n&7)*2
-            out.push_str(&format!("    shl.b32 %r19, %r15, {};\n", 8 + gr.trailing_zeros()));
-            out.push_str(&format!("    shl.b32 %r20, %r17, {};\n", 4 + gr.trailing_zeros()));
-            out.push_str("    add.u32 %r19, %r19, %r20;\n");
-            out.push_str("    shr.u32 %r20, %r14, 4;\n");
-            out.push_str(&format!("    and.b32 %r20, %r20, {};\n", gr - 1));
-            out.push_str(&format!("    and.b32 %r16, %r17, {};\n", gr - 1));
-            out.push_str("    xor.b32 %r20, %r20, %r16;\n");
-            out.push_str("    shl.b32 %r20, %r20, 4;\n");
-            out.push_str("    add.u32 %r19, %r19, %r20;\n");
-            out.push_str("    and.b32 %r20, %r14, 14;\n");
-            out.push_str("    add.u32 %r19, %r19, %r20;\n");
-            out.push_str("    mov.u32 %r16, %r12;\n");
-            out.push_str("    add.u32 %r16, %r16, %r19;\n");
-            out.push_str("    cp.async.ca.shared.global [%r16], [%rd5], 4;\n");
-        }
+            s
+        };
+        emit_b_fill(&mut out, &r18_prelude);
         out.push_str("    cp.async.commit_group;\n");
     }
     out.push_str(&format!("    cp.async.wait_group {};\n", stages - 2));
@@ -1232,49 +1270,20 @@ pub fn tensor_gemm_ptx_smem_mw(
 
     // Cooperative B fill into the fill stage. Same k-major swizzled contract
     // as the prologue fill (see there); row advance is (kstep+16*(S-1)+k)*b_row.
+    // Widened rung per b_fill_rung above; %r12 consumes %r17 (stage) before
+    // the emitter clobbers it.
     out.push_str("    mov.u32 %r12, %r22;\n");
     out.push_str(&format!("    mul.lo.u32 %r18, %r17, {};\n", bsmem_buf));
     out.push_str("    add.u32 %r12, %r12, %r18;\n");
-    out.push_str("    mul.lo.u32 %r13, %r5, 4;\n");
-    for j in 0..per_b {
-        out.push_str("    mov.u32 %r14, %r13;\n");
-        if j > 0 {
-            out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * 4));
-        }
-        out.push_str("    mov.u32 %r15, %r14;\n");
-        out.push_str(&format!("    shr.u32 %r15, %r15, {};\n", 8 + gr.trailing_zeros()));
-        out.push_str("    mov.u32 %r16, %r14;\n");
-        out.push_str(&format!("    and.b32 %r16, %r16, {};\n", gr * 256 - 1));
-        out.push_str(&format!("    shr.u32 %r17, %r16, {};\n", 4 + gr.trailing_zeros()));
-        out.push_str(&format!("    and.b32 %r19, %r16, {};\n", gr * 16 - 1));
-        out.push_str("    shr.u32 %r19, %r19, 1;\n");
-        // global: (kstep+16*(S-1)+k)*b_row + (slab*(8*gr)+n)*2
-        out.push_str("    mov.u32 %r18, %r2;\n");
-        out.push_str(&format!("    add.u32 %r18, %r18, {};\n", 16 * (stages as i64 - 1)));
-        out.push_str("    add.u32 %r18, %r18, %r17;\n");
-        out.push_str(&format!("    mul.lo.u32 %r18, %r18, {};\n", b_row));
-        out.push_str(&format!("    mul.lo.u32 %r20, %r15, {};\n", 8 * gr));
-        out.push_str("    add.u32 %r20, %r20, %r19;\n");
-        out.push_str("    shl.b32 %r20, %r20, 1;\n");
-        out.push_str("    add.u32 %r18, %r18, %r20;\n");
-        out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
-        out.push_str("    add.u64 %rd5, %rd3, %rd5;\n");
-        // smem dst: slab*(256*gr) + k*(16*gr) + ((n>>3)^(k&(gr-1)))*16 + (n&7)*2
-        out.push_str(&format!("    shl.b32 %r19, %r15, {};\n", 8 + gr.trailing_zeros()));
-        out.push_str(&format!("    shl.b32 %r20, %r17, {};\n", 4 + gr.trailing_zeros()));
-        out.push_str("    add.u32 %r19, %r19, %r20;\n");
-        out.push_str("    shr.u32 %r20, %r14, 4;\n");
-        out.push_str(&format!("    and.b32 %r20, %r20, {};\n", gr - 1));
-        out.push_str(&format!("    and.b32 %r16, %r17, {};\n", gr - 1));
-        out.push_str("    xor.b32 %r20, %r20, %r16;\n");
-        out.push_str("    shl.b32 %r20, %r20, 4;\n");
-        out.push_str("    add.u32 %r19, %r19, %r20;\n");
-        out.push_str("    and.b32 %r20, %r14, 14;\n");
-        out.push_str("    add.u32 %r19, %r19, %r20;\n");
-        out.push_str("    mov.u32 %r16, %r12;\n");
-        out.push_str("    add.u32 %r16, %r16, %r19;\n");
-        out.push_str("    cp.async.ca.shared.global [%r16], [%rd5], 4;\n");
-    }
+    // global: (kstep+16*(S-1)+k)*b_row
+    let koff_r18_prelude = {
+        let mut s = String::from("    mov.u32 %r18, %r2;\n");
+        s.push_str(&format!("    add.u32 %r18, %r18, {};\n", 16 * (stages as i64 - 1)));
+        s.push_str("    add.u32 %r18, %r18, %r17;\n");
+        s.push_str(&format!("    mul.lo.u32 %r18, %r18, {};\n", b_row));
+        s
+    };
+    emit_b_fill(&mut out, &koff_r18_prelude);
     out.push_str("FILL_DONE:\n");
     out.push_str("    cp.async.commit_group;\n");
 
