@@ -11,6 +11,7 @@ read for context, treat as historical record.
 |------|--------|-------------|
 | `2026-09-02-graphics-ray-and-images.md` | Milestone A DONE; **B OPEN** | Storage image through the compute stack + live X11 window (swapchain blit). Milestone B sketch at §Milestone B; A outcomes at §Milestone A outcomes |
 | `2026-09-06-cpp-expressiveness.md` | **Active** | Design doc for C++-level expressiveness. ISR/vector-table (Phase 9) split out to `2026-09-06-isr-handlers-and-sections.md` |
+| `2026-09-12-dynamics-causal-dag.md` | **ACTIVE** | The causal DAG — compile-time wiring (proven/weak edges), cycle classification, liveness refusal, `--explain-causality` report; LLVM experiment gates any future fusion. Findings: BUGS.md 2026-09-12 |
 | `2026-09-04-beyond-coopmat.md` | Stage 0 DONE, Stage 1 EXHAUSTED (2026-09-08 note), Stage 1.5 ACTIVE | Portable tier confirmed at structural limit; PTX tier (Stage 2) DEMOTED to optional. Read before any new GPU perf work — the campfire note at line ~127 is the current truth |
 
 ## RECENTLY CLOSED (reference when touching related code)
