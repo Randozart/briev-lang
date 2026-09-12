@@ -170,6 +170,9 @@ pub struct BuildOptions {
     pub enable_plugins: Vec<String>,
     /// Action on unresolved dynamic trigger target (--error-unresolved-trg).
     pub trg_unresolved_action: TrgUnresolvedAction,
+    /// 2026-09-12 (causal DAG): print the "what fires into what" report
+    /// (--explain-causality). Silent by default.
+    pub explain_causality: bool,
     /// 2026-07-16: P4 — Pre-compiled .o / .so / .a objects linked into the binary.
     pub extra_objects: Vec<PathBuf>,
     /// 2026-07-18: Build a shared library (.so) instead of an executable.
@@ -673,6 +676,7 @@ pub fn check_source(file_path: &str, source: &str) -> Result<(), String> {
         disable_plugins: vec![],
         enable_plugins: vec![],
         trg_unresolved_action: TrgUnresolvedAction::Warn,
+            explain_causality: false,
         extra_objects: vec![],
         shared: false,
         library_mode: false,

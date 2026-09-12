@@ -1153,6 +1153,13 @@ node update [pending][!pending] {
 
 The keyword is `node`; `rct` is not source syntax.
 
+A node's precondition declares **eligibility**; its postcondition declares
+**completion**. The compiler derives the causal wiring between nodes from
+the contracts (who enables whom) and refuses any reactive cycle whose
+nodes declare no completion — a cycle that cannot be shown to quiesce
+carries no liveness obligation and does not compile. `--explain-causality`
+prints the derived wiring ("what fires into what") for inspection.
+
 ### 9.5 Objects
 
 An object owns identity, lifecycle, logical state, ports, and reactive behavior in its parent reactor.

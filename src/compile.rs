@@ -367,6 +367,23 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // Any pair of reactive txns that can fire together must be classified
     // (async on both, or sync<group> on both). Runs after typechecking so the
     // AST is stable; frontend-computed per the frontend-driven-dispatch pillar.
+    // ── Causal DAG (2026-09-12, plan 2026-09-12-dynamics-causal-dag.md) ──
+    // Liveness refusal: cyclic reactive components with no declared
+    // completion. The graph itself rides on the context for the report
+    // and future consumers.
+    let causal = briev_compiler::analysis::causality::run(&items);
+    if opts.explain_causality {
+        for line in briev_compiler::analysis::causality::explain(&causal) {
+            eprintln!("causality: {line}");
+        }
+    }
+    if !causal.refusals.is_empty() {
+        return Err(format!(
+            "reactive liveness:\n  {}",
+            causal.refusals.join("\n  ")
+        ));
+    }
+
     let gate_errors = briev_compiler::analysis::concurrency_gate::run_concurrency_gate(&items);
     if !gate_errors.is_empty() {
         return Err(format!(

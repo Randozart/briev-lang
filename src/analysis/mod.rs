@@ -6,6 +6,7 @@ pub mod task_linear;
 pub mod task_segments;
 pub mod call_graph;
 pub mod concurrency_gate;
+pub mod causality;
 pub mod cross_reference;
 pub mod dataflow;
 pub mod dependency_graph;

@@ -231,6 +231,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut disable_plugins = Vec::new();
     let mut enable_plugins = Vec::new();
     let mut trg_unresolved_action = compile::TrgUnresolvedAction::Warn;
+        let mut explain_causality = false;
     let mut allow_read = false;
     let mut allow_write = false;
     let mut allow_run = false;
@@ -386,6 +387,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         } else if arg == "--error-unresolved-trg" {
             trg_unresolved_action = compile::TrgUnresolvedAction::Error;
             i += 1;
+        } else if arg == "--explain-causality" {
+            explain_causality = true;
+            i += 1;
         } else if arg.starts_with('-') {
             return Err(format!("unknown flag: {}", arg));
         } else if file_path.is_some() {
@@ -483,6 +487,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         disable_plugins: vec![],
         enable_plugins: vec![],
         trg_unresolved_action: briev_compiler::backend::llvm::TrgUnresolvedAction::Warn,
+        explain_causality: explain_causality,
         extra_objects: vec![],
         shared: false,
         library_mode: false,
