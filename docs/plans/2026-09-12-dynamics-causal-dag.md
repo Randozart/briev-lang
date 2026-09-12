@@ -139,3 +139,27 @@ faith, never as a heuristic.
 
 Fusion/fold codegen, sync\<g\> completion barrier, interpreter reactor
 revival, plain-txn dead-code diagnostic, event-driven wake (epoll).
+
+## Followups (documented 2026-09-12, post-slice)
+
+Built on this slice, in rough priority order:
+
+1. **Deep verifier** — Z3 fixpoint over the SCC firing game; replaces the
+   v1 contract-trust rule (a junk substantive post on one member of a
+   multi-node cycle currently masks an oscillation).
+2. **FSM proofs** — reachability / deadlock / unreachable-modes over the
+   causal graph; the liveness machinery reused. Zero new syntax.
+3. **Fact enrichment** — enum-literal comparisons (`mode == Mode::Idle`)
+   as field facts; today they force WEAK edges. The hysteresis chain
+   becomes fully PROVEN once landed.
+4. **Instance-field edges** — obj/cell state; v1 covers top-level `let` only.
+5. **Dispatch consumption** — PROVEN chains feed backend shape selection
+   (drop the empty confirm pass). Measured first: LLVM already folds the
+   whole program for foldable shapes; only worth it on a demonstrated
+   backend failure.
+6. **plain-txn dead-code diagnostic** — body-carrying, never-called,
+   non-reactive txn.
+
+Deferred (BUGS.md 2026-09-12): event-driven wake (epoll), sync<g>
+completion barrier, interpreter reactor revival, fusion codegen
+(measured unnecessary for foldable shapes — the backend delivers).
