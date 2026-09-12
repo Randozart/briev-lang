@@ -1657,6 +1657,252 @@ async node fill [i < N][i == N] {
         }
     }
 
+    // ── Bitwise-RHS static guard (BUGS.md 2026-09-11, u32_and regression) ─
+    //
+    // rspirv's `type Word = u32` alias means a result id can silently flow
+    // into a literal-value position: dd5f5e26 masked every coopmat fill
+    // index with gen_id numbers for THREE DAYS because the fill emitters
+    // passed Word ids into u32_and's `mask: u32` parameter, and nothing
+    // inspected the emitted instructions. This guard closes that hole
+    // structurally: in every emitted module, the RHS of a bitwise/shift op
+    // must resolve to an OpConstant, AND-masks must be 2^k-1 shaped, and
+    // shift amounts must be < 64. A Word-id-in-literal-position bug emits
+    // a constant whose value is a gen_id — never mask-shaped — so the bug
+    // class now fails at test time instead of on device.
+
+    /// The module's OpConstant pool: result id → value (bit patterns for
+    /// float constants; only integer shapes are consulted by the audit).
+    /// The disassembly's OpConstant pool: symbolic id (`%uint_1023`,
+    /// `%41`) → value. Covers both the named-literal rendering spirv-dis
+    /// synthesizes and ordinary ids.
+    fn collect_constants(asm: &str) -> std::collections::HashMap<String, u64> {
+        let mut pool = std::collections::HashMap::new();
+        for line in asm.lines() {
+            // `%id = OpConstant %type <value>`
+            let mut parts = line.split_whitespace();
+            let id = match parts.next() {
+                Some(t) if t.starts_with('%') => t.to_string(),
+                _ => continue,
+            };
+            if parts.next() != Some("=") || parts.next() != Some("OpConstant") {
+                continue;
+            }
+            let _ty = parts.next();
+            let value = match parts.next().and_then(|v| v.parse::<u64>().ok()) {
+                Some(v) => v,
+                None => continue,
+            };
+            pool.insert(id, value);
+        }
+        pool
+    }
+
+    /// A mask-shaped constant: one contiguous run of one-bits (2^k-1, the
+    /// modulo form `2^k-1`, and field-extraction runs like 0b1110 all
+    /// qualify; 0 is the trivial mask). The u32_and regression emitted
+    /// gen_id-valued "masks" — arbitrary integers with SPARSE bits — so
+    /// the run predicate is what catches the bug class: `v` is a run iff
+    /// `v + low_bit(v)` is a power of two, i.e. `(v + (v & -v)) & v == 0`.
+    fn is_mask_shape(v: u64) -> bool {
+        let low = v & v.wrapping_neg();
+        v & v.wrapping_add(low) == 0
+    }
+
+    fn assert_bitwise_rhs_are_mask_consts(asm: &str, tag: &str) {
+        let pool = collect_constants(asm);
+        let mut visited = 0usize;
+        for line in asm.lines() {
+            let mut parts = line.split_whitespace();
+            let head = parts.next().unwrap_or("");
+            let opcode = if head.starts_with('%') {
+                // `%id = OpXxx ...` — skip the result id and the '='.
+                let eq = parts.next().unwrap_or("");
+                debug_assert_eq!(eq, "=");
+                parts.next().unwrap_or("")
+            } else {
+                head
+            };
+            let is_bitwise = matches!(
+                opcode,
+                "OpBitwiseAnd"
+                    | "OpBitwiseOr"
+                    | "OpBitwiseXor"
+                    | "OpShiftRightLogical"
+                    | "OpShiftLeftLogical"
+            );
+            if !is_bitwise {
+                continue;
+            }
+            visited += 1;
+            let fail = |why: String| -> String {
+                format!(
+                    "{tag}: {opcode} violates the bitwise-RHS contract: {why}\n\
+                     the RHS of every bitwise/shift op must be an OpConstant \
+                     (AND-masks 2^k-1, shifts < 64) — a Word id flowing into a \
+                     literal-value position emits a gen_id-valued constant here\n\
+                     line: {line}"
+                )
+            };
+            let rhs = match line.split_whitespace().last() {
+                Some(t) if t.starts_with('%') => t.trim_end_matches(','),
+                _ => panic!("{}", fail("no %id RHS".to_string())),
+            };
+            let value = match pool.get(rhs) {
+                Some(v) => *v,
+                None => panic!(
+                    "{}",
+                    fail(format!("RHS {rhs} is not an OpConstant (computed value?)"))
+                ),
+            };
+            if opcode == "OpBitwiseAnd" {
+                assert!(
+                    is_mask_shape(value),
+                    "{}",
+                    fail(format!("{rhs} = {value:#x} is not a contiguous-bit-run mask"))
+                );
+            } else {
+                assert!(
+                    value < 64,
+                    "{}",
+                    fail(format!("{rhs} = {value} is not a valid shift amount"))
+                );
+            }
+        }
+        // The 4096^3 coopmat module must contain the strength-reduced ops
+        // this guard protects — a zero count means the fixture drifted off
+        // the tensor tier and the guard silently stopped covering the fill.
+        assert!(visited > 0, "{tag}: no bitwise/shift ops found — the fixture no longer emits the coopmat fill path");
+    }
+
+    /// End-to-end: the real pipeline (parse + normalize + analyze +
+    /// build_kernels with the shipped config, coopmat knob ON) emits the
+    /// f16 coopmat GEMM, spirv-val accepts it, and every bitwise/shift RHS
+    /// is a proper mask/shift constant.
+    #[test]
+    fn coopmat_fill_bitwise_rhs_are_mask_consts() {
+        let src = r#"
+!> accel: try_all;
+
+import "std/types/float.bv";
+
+const M: Int = 4096;
+const N: Int = 4096;
+const K: Int = 4096;
+
+let i: Int = 0;
+let a: Float16[16777216];
+let b: Float16[16777216];
+let y: Float16[16777216];
+
+async node gemm [i < M * N][i == M * N] {
+    let acc: Float16 = 0.0;
+    let m: Int = i / N;
+    let n: Int = i % N;
+    foreach k in 0..K {
+        acc = acc + a[m * K + k] * b[k * N + n];
+    }
+    y[i] = acc;
+    i = i + 1;
+    term;
+};
+"#;
+        let path = format!("examples/gpu/briev_bitwise_guard_test_{}.abv", std::process::id());
+        std::fs::write(&path, src).expect("write fixture");
+        let opts = crate::pipeline::BuildOptions {
+            run: false,
+            config_dir: None,
+            file_path: path.clone(),
+            emit_ir_only: false,
+            out_dir: None,
+            optimize_budget: 256,
+            emit_beast_stages: vec![],
+            backend: crate::target::BackendKind::Vm,
+            no_stdlib: false,
+            stdlib_path: None,
+            disable_plugins: vec![],
+            enable_plugins: vec![],
+            trg_unresolved_action: crate::pipeline::TrgUnresolvedAction::Warn,
+            extra_objects: vec![],
+            shared: false,
+            library_mode: false,
+            int_bits: 64,
+            glue_config: None,
+            stack_threshold: 65536,
+            allow_read: false,
+            allow_write: false,
+            allow_run: false,
+            allow_sys_query: false,
+            allow_net: false,
+            macro_budget: 0,
+            dump_vfs: false,
+            update_lockfile: false,
+            dump_traces: false,
+            diff_mode: false,
+            sysquery_overrides: std::collections::HashMap::new(),
+            target: None,
+            sysquery_pairs: vec![],
+            sysquery_files: vec![],
+            style_css: None,
+            view_html: None,
+            view_bindings: vec![],
+            ssr: false,
+            dev: false,
+            accel_cpu_fallback: None,
+            isr_mechanism: None,
+        };
+        let (mut items, mut universe) =
+            crate::pipeline::compile_to_typed(&path, src, &opts).expect("pipeline");
+        crate::backend::spirv::normalizer::normalize(&mut items, &mut universe, 64)
+            .expect("normalize");
+        let analysis = crate::backend::analyze_program(&items, false, 1, Some(&universe));
+        let kernels = crate::backend::spirv::runner::build_kernels(
+            &items,
+            &universe,
+            64,
+            &analysis.accel,
+            &Default::default(),
+        )
+        .expect("coopmat kernel build");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(kernels.len(), 1, "the fixture must emit exactly one kernel");
+        let binary = &kernels[0].spirv;
+        // The guard targets the tensor tier: prove the module IS the
+        // coopmat path before auditing it.
+        let asm = validate_and_disassemble(binary, "bitwise_guard");
+        assert!(
+            asm.contains("OpCooperativeMatrixMulAddKHR"),
+            "fixture must reach the coopmat tensor tier:\n{}",
+            asm
+        );
+        assert_bitwise_rhs_are_mask_consts(&asm, "coopmat_gemm");
+    }
+
+    /// The shape predicate itself, including the boundary values a wrong
+    /// implementation would misclassify.
+    #[test]
+    fn mask_shape_predicate_boundaries() {
+        assert!(is_mask_shape(0));
+        assert!(is_mask_shape(1));
+        assert!(is_mask_shape(7));
+        assert!(is_mask_shape(255));
+        assert!(is_mask_shape(1023));
+        assert!(is_mask_shape(u32::MAX as u64));
+        assert!(is_mask_shape(u64::MAX));
+        // Field-extraction runs (the fill's & 14 = 0b1110 et al).
+        assert!(is_mask_shape(0b1110));
+        assert!(is_mask_shape(0b0011_1000));
+        // Single bits and non-low-aligned runs are still runs.
+        assert!(is_mask_shape(2));
+        assert!(is_mask_shape(6));
+        assert!(is_mask_shape(1024));
+        // Two separate runs are not.
+        assert!(!is_mask_shape(0b1010));
+        assert!(!is_mask_shape(0b1010));
+        // The regression's actual failure shape: gen_id-valued "masks" are
+        // arbitrary integers with sparse bits, never one run.
+        assert!(!is_mask_shape(0x1_0000_2A50));
+    }
+
 }
 pub mod runner;
 

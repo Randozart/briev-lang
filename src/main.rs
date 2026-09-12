@@ -606,6 +606,13 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
 fn run_build(args: &[String]) -> Result<(), String> {
     let opts = parse_build_args(args)?;
 
+    // --config-dir must reach the IR-lowering tuning too (baked config is the
+    // fallback): install the override BEFORE any compile step touches
+    // `ir_lowering()` — the LazyLock initializes on first access.
+    if let Some(dir) = &opts.config_dir {
+        briev_compiler::config_tuning::set_ir_lowering_from_dir(std::path::Path::new(dir))?;
+    }
+
     // 2026-07-28: Phase E.2 — doppelganger resolution: .opt.bv > .derive.bv > .bv
     // Read source from the doppelganger if it exists, but pass opts.file_path
     // to compile functions so error messages and output paths use the original name.

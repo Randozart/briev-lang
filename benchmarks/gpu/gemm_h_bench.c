@@ -249,9 +249,15 @@ int main(int argc, char** argv) {
     // zero-fill for the Vulkan path.
     const char* mw_smem_env = getenv("MW_SMEM");
     uint32_t mw_smem = mw_smem_env ? (uint32_t)atoi(mw_smem_env) : 0;
+    // 2026-09-11: MW_BT must match the kernel's baked thread count — the
+    // (2,8)/(4,4) f16acc mw kernels index smem and tiles with 512-thread
+    // constants; launching 256 threads of a 512-thread kernel faults on
+    // out-of-tile global reads (same contract class as MW_SMEM).
+    const char* mw_bt_env = getenv("MW_BT");
+    uint32_t mw_bt = mw_bt_env ? (uint32_t)atoi(mw_bt_env) : 256;
     BrievKernelDesc descs[2] = {
-        { "gemm", spv, (uint32_t)spv_len, 4, fields, 0, NULL, 256, mw_smem },
-        { "gemm", spv2, (uint32_t)spv2_len, 4, fields, 0, NULL, 256, mw_smem },
+        { "gemm", spv, (uint32_t)spv_len, 4, fields, 0, NULL, mw_bt, mw_smem },
+        { "gemm", spv2, (uint32_t)spv2_len, 4, fields, 0, NULL, mw_bt, mw_smem },
     };
     uint32_t n_kernels = ab_mode ? 2 : 1;
 

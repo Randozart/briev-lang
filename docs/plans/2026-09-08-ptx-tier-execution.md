@@ -506,3 +506,230 @@ generated runner's `(M*N/(16*4*64))*32` = 131072 work items with
 MW_BT=64 (the runner descriptor's workgroup size); the PTX mw blob
 wants 262144 items / MW_BT=256 or 512. The wrong pair = garbage tiles
 (the documented v2 over-dispatch failure mode).
+
+## 2026-09-11 night: coopmat sustained re-baseline — the tiers are COMPLEMENTARY
+
+Harness lessons first (both bit us tonight):
+1. **The blob is shape-specialized.** gemm_h.abv bakes M=N=K=4096 into
+   the module constants; running that blob at 2048³/8192³ args is
+   meaningless (out-of-range tiles, zero y, and at 8192³ a verify ref
+   that goes NaN — which max_rel_err silently reports as 0.000e+00
+   because `NaN > max` is false). Shape-matched .abv fixtures are
+   MANDATORY per shape. The 2048³ "1.0 FAIL" and 8192³ "0.0 OK / 47.6
+   TF" readings from mis-shaped blobs are void.
+2. **The harness's OK/FAIL verdict prints the f32 5e-3 gate regardless
+   of blob tier** — f16acc blobs passing at 8.3e-3 print FAIL. Read the
+   number, not the verdict, until the harness gates by tier.
+
+**Sustained re-baseline (110W steady, shape-matched blobs, shipped
+coopmat config R=4/smem/pairs/prefetch/f16acc; dispatch per the
+generated runner's formula):**
+
+| shape  | coopmat f16acc (sync GPU ts) | coopmat (batched wall) | PTX f16acc (batched wall) | PTX f32 (batched wall) |
+|--------|------------------------------|------------------------|---------------------------|------------------------|
+| 2048³  | 0.64 ms = 27.1 TF            | 0.60-0.63 ms = 27-29 TF ✓ tight | ~17 TF          | 16.5 TF |
+| 4096³  | 5.0 ms = 13.7 TF ✓ tight     | 13.7-21.7 ms = 6.3-10.1 TF ✗ wobble | 19.5 TF     | 13.4 TF |
+| 8192³  | ~45.5 ms = 24.2 TF           | 32-37 ms = 30-34 TF             | 18.0 TF         | 13.3 TF |
+
+Coopmat numerics: 2.1e-3 / 4.4e-3 / 8.3e-3 — all inside the 1e-2
+f16acc contract (the tier's K-panel accumulation is gentler than the
+PTX chunk path).
+
+**Findings:**
+- **R=2 REJECTED at sustained state**: stable ~24 ms @4096³ (5.7-5.9
+  TF) vs R=4's 5.0 ms sync. tile_rows stays 4.
+- **The two tiers split the shape space**: coopmat wins 2048³ (+60%)
+  and 8192³ (+70-90%); PTX f16acc wins 4096³ (+42% over coopmat sync).
+  The "portable vs escape hatch" framing is dead — a frontend
+  shape-routed tier selection (compile-time constants!) is the honest
+  architecture and a doctrine §2/§3 amendment.
+- **Vulkan batched submission is pathological at 4096³** (2-3× the sync
+  GPU time, high variance) while CUDA batching helps. Queue-depth ×
+  workgroup-count interaction — investigation parked.
+- The subgroups-vs-tile-rows knob confusion was a false alarm: tile_rows
+  (R, dispatch formula + kernel geometry) and subgroups (B2 n-slice
+  split) are orthogonal; config 4 + 2 is self-consistent.
+- **CUDA is driver-wedged again** (dispatch failed on every shape after
+  the vulkan sessions; the documented rmmod/modprobe clear needs the
+  owner). PTX numbers are the earlier-today sustained readings.
+
+## 2026-09-11 late: the coopmat shape curve is BIMODAL — router blocked
+
+Shape-matched coopmat f16acc sweep (sync GPU timestamps unless noted;
+all verified against the blob's own shape):
+
+| n³ | GPU time | TFLOP/s | rel err |
+|------|----------|---------|---------|
+| 1024³ | 0.118 ms | 18.2 | 7.3e-3 ✓1e-2 |
+| 2048³ | 0.635 ms | 27.1 | 2.1e-3 ✓ |
+| **3072³** | **14.7-18.2 ms** | **3.2-4.0 — COLLAPSE** | 5.6e-3 ✓ |
+| 4096³ | 5.0 ms | 13.7 | 4.4e-3 ✓ |
+| 6144³ | ~38 ms | 12.2 | 4.6e-3 ✓ |
+| 8192³ | ~45.5 ms | 24.2 (30-34 batched) | 8.3e-3 ✓ |
+| 12288³ | ~180 ms | 20.9 | **2.97e-2 ✗ contract violation** |
+
+**Finding 1 — the 3072³ band collapses ~8×** (3.2-4.0 TF vs 12-27 TF
+neighbors; sync timestamps prove it is execution, not submit
+overhead). The 6144³ point is also soft (12.2). A tier router keyed on
+"small/large wins" would route INTO the hole. Mechanism unknown — the
+tile grid is a clean multiple at every point (48×48 at 3072), the
+strength-reduced decode is guarded, smem footprint is shape-independent.
+Needs device profiling; parked.
+
+**Finding 2 — the f16acc coopmat numerics wall at long K**: rel error
+grows with K (4.4e-3 @K=4096 → 8.3e-3 @8192 → 2.97e-2 @12288 — the
+K-panel f16 accumulation). The 1e-2 contract holds through K≈8192 and
+breaks by 12288. The tier router must carry a K-budget: the coopmat
+f16acc tier is contracted for K ≲ 8192 (empirically; the analytic
+bound is the K-panel accumulation model, not yet derived). Note the
+error is NOT monotone in K below that (7.3e-3 @1024 vs 2.1e-3 @2048 —
+panel-boundary alignment matters).
+
+**Router verdict**: blocked until the collapse band is explained.
+Current facts suffice for a POLICY NOTE though: no coopmat f16acc
+dispatch for K > 8192; the 3072³-6144³ band goes to PTX f16acc (19.5
+TF @4096³, ~18 estimated at neighbors) untilcoopmat explains or fixes
+the hole.
+
+Fixture convention note: curve fixtures were examples/gpu/gemm_curve_N.abv
+(shape-specialized, deleted after emit — the blob bakes its shape).
+
+## 2026-09-11 late addendum: subgroups A/B — 27 TF is real work
+
+S=1 blob @2048³: 1.30 ms (2× SLOWER than S=2's 0.635 ms) and
+incorrect at that shape (BUGS.md 2026-09-11 S=1 entry). @4096³:
+5.8-6.6 ms vs S=2's 5.0. The subgroup n-slice split is a genuine
+2× win at 2048³ — no redundant compute; the coopmat curve's 2048³
+peak stands. (One-off 78-94 ms spikes in the S=1 4096³ runs —
+driver hiccups, not kernel behavior.)
+
+## 2026-09-11 night: double-pump warp tile — REJECTED (-33%), hypothesis refuted
+
+Plan 2026-09-11-ptx-double-pump-warp-tile executed: the emitter is now
+parameterized by warp shape (`warp_mh`: 16-row blocks per warp; the
+col-groups derive as 16/warp_mh — mma count per kstep invariant at 16,
+accumulators stay 32 b32). Two variant-C configurations built, ptxas
+64 regs 0 spills, on-device correct (1.383e-03, same as baseline):
+
+| config | warp tile | FLOP/shared-byte | @4096³ sustained |
+|--------|-----------|------------------|------------------|
+| base (4,4) warp_mh=2 | 32x64 | 12.8 | **18.2 TF** |
+| dp44 (4,4) warp_mh=4 | 64x32 | 21.3 | 12.2 TF (−33%) |
+| dp82 (8,2) warp_mh=4 | 64x32 | 21.3 | 10.9 TF (−40%) |
+
+**The shared-BW-bound model is REFUTED.** +67% FLOP per ldmatrix byte
+bought −33% throughput: the B-slab per warp halved (32 cols), so the
+CTA n-extent shrank and the DRAM-side A/B panel reuse per FLOP dropped
+more than the LDSM savings gained. The 22.7 TF compute-only ceiling is
+NOT shared-memory-bound; the binding constraint is elsewhere (mma
+issue/dependency structure or fill-bandwidth at the CTA geometry).
+Rule 20: the refuted hypothesis blocks this fix direction — no further
+shared-traffic-led warp retiles without a new measurement-led model.
+
+Two bugs caught by the gate discipline on the way:
+1. Fill-count formulas dropped the /4 (bytes per cp.async) — 4× stage
+   overfill → IMA. per_X = stage_bytes/(threads·4), algebraically
+   identical to the old formulas at warp_mh=2.
+2. The CTA-stride constants (A/y row offset 32·mw, B col offset
+   128·nw) were stale — CTA row extent is 16·mhr·mw, col extent
+   16·gr·nw. Symptom: rel ≈ 2.0 (CTAs overlapping-write via the y RMV).
+
+Regression gate upgrade: the first "byte-identical" check compared
+against a self-contaminated copy (regenerated post-edit). The real gate
+now stands: the warp_mh=2 emission is byte-identical to a dump built
+from 648d6902 in a clean worktree.
+
+Keeper: the warp-shape parameterization itself (byte-identical at
+warp_mh=2, 2113 tests green) — future warp-tile experiments are now
+dump-and-test cheap instead of emitter surgery.
+
+## 2026-09-11 evening: select_mw_nw fix — production path +27% (16.4 → 21.0 TF)
+
+Post-reboot resume. The /tmp wipe destroyed the ad-hoc harnesses; the
+rebuild (now checked in as benchmarks/gpu/ptx_gemm_bench.c) exposed what
+the wiped tools had been masking:
+
+**select_mw_nw shipped (2,8)@512T — its own comment claimed (4,4).**
+The growth loop tried (1,2) first every iteration and ran nw to the
+tn<=8 cap before mw ever grew. Fixed order: double both axes, then mw,
+then nw — lands both sweep winners ((4,2) at the f32 256T cap,
+(4,4) at the f16acc 512T cap). Commit 5d01a465.
+
+Sustained cross-tier table — BEFORE select_mw_nw fix (RTX 3060,
+4096³ anchor + shape sweep, batched, three-rep stability ±1%):
+
+| shape | coopmat f16acc (Vulkan) | PTX f16acc (4,4)@512T | PTX f32 (4,2)@256T |
+|-------|-------------------------|------------------------|---------------------|
+| 2048³ | **27.7** (2.12e-3) | 17.6 (1.55e-3) | — |
+| 4096³ | 7.7–9.5 today (4.4e-3; ledger era 13.7; vulkan dispatch variance min 4.8ms/avg 18.6 unbatched) | 21.0 (1.22e-3) | 19.4 (2.44e-4) |
+| 8192³ | 21.2 (8.26e-3) | 20.1 (1.44e-3) | — |
+
+Harness lesson: gemm_h_bench MW_BT (block threads must match the
+kernel's baked count — 256 threads on a 512-thread kernel faults
+out-of-tile); --config-dir now overrides ir-lowering.dbvl (the f16acc
+opt-in no longer needs a config-file rebuild; hard error on a bad dir —
+a silently ignored override would compile the wrong numerics tier).
+The runner C carries the exact desc (threads, smem, dispatch formula
+w = (M*N/(16*R*64))*32) — read it before hand-wiring any bench
+invocation.
+
+Anchor state (2026-09-11 select fix): PTX f16acc 21.0 TF = 50% of
+the 42 TF ggml anchor (ledger era: 19.5). The compute-only ceiling
+model needs revision after the double-pump rejection — shared-BW is
+refuted, warp shape is swept, the remaining suspects are the mma
+issue/dependency structure and the fill overlap at the CTA level.
+
+## 2026-09-11 night: THE WALL BROKEN — full-K + store-only epilogue — 29.3 TF
+
+The promo-strip probe (sed the predicated branch unconditional in a dump
+cubin) measured 45.4 TF — the every-512-k y-RMV promotion was costing
+~half the kernel. Three fixes, all structural:
+
+1. **Full-K accumulation**: the 138 pipeline-draining RMV rounds are
+   gone; the f16x2 chains accumulate the whole K loop. Contract verified
+   on device: 5.2e-3 @K=4096, 8.2e-3 @K=8192 — the same K-budget curve
+   the coopmat tier documents (boundary ≈ K=12288; beyond that the f32-acc
+   tier serves).
+2. **Store-only final epilogue**: with full-K, the final pass owns every
+   y element. The RMV's cold-miss global READS (17 TF of end-of-kernel
+   DRAM interference: 45.4 stripped vs 28.0 with one RMV round) and the
+   y-zeroing pass are both gone.
+3. **Store after KEND**: the in-loop predicated promo structure itself
+   measured 28 vs 45 with an identical body made unconditional (ptxas
+   register allocation artifact: 64 regs / 2 CTAs/SM vs 40 / 3 CTAs/SM
+   when the dead body shrank the allocation). The loop tail stays clean
+   for ptxas.
+
+**Stale-binary trap**: the production blob bench measured the old kernel
+(1.789e-3/20.9) because `cargo build --release` ran under a cached
+profile. ALWAYS rebuild the release binary + regenerate blob + verify
+SASS (cuobjdump -sass LDG count) before trusting a blob bench. Verified
+via the checked-in ptx_gemm_bench (driver API, CUDA 13 cuCtxCreate_v4).
+
+Production blob path, batched, three-rep:
+
+| shape | before | now | rel_err |
+|-------|--------|-----|---------|
+| 2048³ | 17.6 | **25.5** | 1.30e-3 |
+| 4096³ | 21.0 | **29.3** | 4.44e-3 |
+| 8192³ | 20.1 | **30.2** | 8.22e-3 |
+
+**Tier picture flipped.** PTX f16acc now beats coopmat at 4096³ (29.3
+vs ~9.5) AND 8192³ (30.2 vs 21.2), nearly ties at 2048³ (25.5 vs 27.7).
+Anchor: 29.3/42 = 70%.
+
+Sustained cross-tier table — AFTER full-K store-only (RTX 3060, batched):
+
+| shape | coopmat f16acc | PTX f16acc | winner |
+|-------|---------------|------------|--------|
+| 2048³ | **27.7** | 25.5 | coopmat (margin shrunk from 10 to 2.2) |
+| 4096³ | 7.7–9.5 | **29.3** | PTX (3× lead) |
+| 8192³ | 21.2 | **30.2** | PTX (1.4× lead) |
+
+Numerics note: the PTX f16acc tier's K-budget (5.2e-3 at K=4096,
+8.2e-3 at K=8192) matches the coopmat tier's curve exactly — both
+approach the 1e-2 gate near K=12288. The PTX tier's lower per-K error
+(4.4e-3 vs coopmat's 8.3e-3 at K=8192) reflects the store-only
+epilogue (no RMV re-reads to compound rounding). The tier router's
+K-budget gate holds; the shape-space split is now: coopmat leads at
+2048³-class, PTX leads at 4096³+.

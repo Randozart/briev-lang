@@ -794,19 +794,32 @@ pub fn tensor_gemm_ptx_smem_mw(
     nw: usize,
     f16_acc: bool,
     stages: usize,
+    warp_mh: usize,
 ) -> String {
-    debug_assert!(m % (32 * mw as i64) == 0 && n % (64 * nw as i64) == 0 && k % 16 == 0);
+    // Warp tiling (2026-09-11 double-pump plan): the warp covers
+    // warp_mh 16-row blocks x (16/warp_mh) 8-col groups — mma count per
+    // kstep is invariant (16), so accumulators stay at 32 b32 (f16acc)
+    // for every warp shape. warp_mh=2 = the historical 32x64 warp;
+    // warp_mh=4 = the 64x32 A-sharing variant (B loaded 4x per kstep
+    // instead of 16x — 21.3 vs 12.8 FLOP per shared-read byte).
+    let mhr = warp_mh;
+    let gr = 16 / warp_mh;
+    debug_assert!(mhr * gr == 16 && m % (16 * mhr as i64 * mw as i64) == 0 && n % (8 * gr as i64 * nw as i64) == 0 && k % 16 == 0);
     let a_row = k * 2;
     let b_row = n * 2;
     let y_row = n * (y_elem as i64);
-    let ng = 8;
     let threads = (mw * nw * 32) as i64;
-    let per_a = (mw as i64 * 256) / threads;
-    let per_b = (nw as i64 * 512) / threads;
-    let asmem_buf = mw * 1024;
-    // B slab per warp = 16 k-rows x 64 n-cols, k-major: 128-byte k-rows.
-    // ldmatrix lane max = 15*128 + 7*16 + 16 = 2048 = slab size exactly.
-    let bsmem_buf = nw * 2048;
+    // per-thread 4-byte copy counts: per_X * threads * 4 must equal the
+    // stage's X bytes exactly (the fill covers its stage, no more — an
+    // overcount smears into the next stage, an undercount leaves smem
+    // unfilled).
+    let per_a = (mw as i64 * mhr as i64 * 128) / threads;
+    let per_b = (nw as i64 * gr as i64 * 64) / threads;
+    let asmem_buf = mw * mhr * 512;
+    // B slab per warp = 16 k-rows x (8*gr) n-cols, k-major: (16*gr)-byte
+    // k-rows. ldmatrix lane max = 15*(16*gr) + (gr-1)*16 + 16 = 256*gr =
+    // slab size exactly.
+    let bsmem_buf = nw * gr * 256;
     let mut out = String::new();
 
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
@@ -823,18 +836,30 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
     out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19, %r20;\n");
     out.push_str("    .reg .u32  %r21, %r22;\n");
-    // Register-trimmed scheduling: only %a0-%a3 (one A 16x16 block live per
-    // mh) and %b0-%b1 (one B fragment live per g) exist — see the compute
-    // section's scheduling comment below.
-    // f16-acc pipelines the B loads (ld-ahead into the alternate pair) and
-    // gets 4 B regs; f32 stays at 2 (the 128-reg 2-CTA budget is exact).
-    let bregs: Vec<String> = if f16_acc {
-        vec!["%b0".to_string(), "%b1".to_string(), "%b2".to_string(), "%b3".to_string()]
+    // Register scheduling (2026-09-11 E4a, plan 2026-09-11-ptx-mma-issue-ceiling):
+    // f16-acc CLUSTER-PRELOADS — all 8 B fragments (%b0-%b15) and both A
+    // blocks (%a0-%a7) issue back-to-back at the top of the compute phase,
+    // so the ~30clk ldmatrix latencies overlap each other and the fill
+    // instead of stalling every mma (the old g+2 ld-ahead hid only ~15 of
+    // 30 clk per ld; the no-fill KLOOP ceiling measured 29.9 vs 53.5 for
+    // fixed-address lds). Costs +16 regs over the trimmed schedule → ~80
+    // regs ⇒ 1 CTA/SM at 512T — measured rational: E1b (no stalls) hit
+    // 52.6 TF at 1 CTA/SM, occupancy only pays when stalls exist.
+    // f32 keeps the trimmed 2-B-reg serial schedule byte-identical.
+    let (aregs, bregs): (Vec<String>, Vec<String>) = if f16_acc {
+        (
+            (0..8).map(|i| format!("%a{}", i)).collect(),
+            (0..16).map(|i| format!("%b{}", i)).collect(),
+        )
     } else {
-        vec!["%b0".to_string(), "%b1".to_string()]
+        (
+            vec!["%a0".to_string(), "%a1".to_string(), "%a2".to_string(), "%a3".to_string()],
+            vec!["%b0".to_string(), "%b1".to_string()],
+        )
     };
     out.push_str(&format!(
-        "    .reg .b32  %a0, %a1, %a2, %a3, {}, %t0;\n",
+        "    .reg .b32  {}, {}, %t0;\n",
+        aregs.join(", "),
         bregs.join(", ")
     ));
     // Accumulators: f32-acc = 4 f32 per (mh,g) (64 regs); f16-acc = 2 f16x2
@@ -842,7 +867,7 @@ pub fn tensor_gemm_ptx_smem_mw(
     // f16 contract: chunked accumulation — the mma chains f16x2 over
     // 8 ksteps, then each pair is promoted into the CTA-private f16 y tile
     // (read-modify-write) and reset. Tier gate 1e-2 (vs 5e-3 f32-acc).
-    let cregs: Vec<String> = (0..if f16_acc { 4 * ng } else { 4 * 2 * ng })
+    let cregs: Vec<String> = (0..if f16_acc { 2 * mhr * gr } else { 4 * mhr * gr })
         .map(|i| format!("%c{}", i))
         .collect();
     if f16_acc {
@@ -861,22 +886,28 @@ pub fn tensor_gemm_ptx_smem_mw(
     // KLOOP promotes each f16x2 chunk into it by read-modify-write (CTA-
     // private tiles, no atomics). Each thread zeroes/promotes exactly the
     // fragments it accumulates, so no cross-thread hazard is introduced.
-    // y RMV pass emitter: accumulate=true folds the f16x2 chunk accs into
-    // y (add.rn.f16x2, then resets the chunk accs); accumulate=false zeroes
-    // the tile. Addressing mirrors the f32 store tail exactly.
-    let mut emit_y_pass = |out: &mut String, accumulate: bool| {
+    // y pass emitter. Three modes (2026-09-11): Accumulate folds the f16x2
+    // chunk accs into y by read-modify-write (ld+add+st, resets accs);
+    // Zero stores 0; StoreOnly writes the accs WITHOUT the global read —
+    // the full-K final pass owns every y element (the kernel zeroed it
+    // historically only because the RMV needed a operand; a pure store
+    // needs nothing) and the cold-miss RMV reads measured 17 TFLOP/s of
+    // end-of-kernel DRAM interference (45.4 stripped vs 28.0 with one
+    // RMV round, three reps).
+    let mut emit_y_pass = |out: &mut String, mode: u8| {
+        let (accumulate, store_only) = (mode == 1, mode == 2);
         out.push_str("    mov.u32 %r12, %r10;\n");
-        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 32 * y_row));
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
         out.push_str("    mov.u32 %r13, %r11;\n");
-        out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 64 * (y_elem as i64)));
+        out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 8 * gr as i64 * (y_elem as i64)));
         out.push_str("    mov.u32 %r9, %r12;\n");
         out.push_str("    add.u32 %r9, %r9, %r13;\n");
-        if !accumulate {
+        if mode == 0 {
             out.push_str("    mov.b32 %t0, 0;\n");
         }
-        for mh in 0..2 {
-            for g in 0..ng {
-                let cb = 2 * (mh * 8 + g);
+        for mh in 0..mhr {
+            for g in 0..gr {
+                let cb = 2 * (mh * gr + g);
                 out.push_str(&format!("    mov.u32 %r12, {};\n", (16 * mh as i64) * y_row));
                 out.push_str(&format!("    mul.lo.u32 %r13, %r6, {};\n", y_row));
                 out.push_str("    add.u32 %r12, %r12, %r13;\n");
@@ -901,7 +932,9 @@ pub fn tensor_gemm_ptx_smem_mw(
                         out.push_str(&format!("    add.u64 %rd5, %rd5, {};\n", d));
                     }
                     let reg = &cregs[cb + pair as usize];
-                    if accumulate {
+                    if store_only {
+                        out.push_str(&format!("    st.global.b32 [%rd5], {};\n", reg));
+                    } else if accumulate {
                         out.push_str("    ld.global.b32 %t0, [%rd5];\n");
                         out.push_str(&format!("    add.rn.f16x2 %t0, %t0, {};\n", reg));
                         out.push_str("    st.global.b32 [%rd5], %t0;\n");
@@ -929,7 +962,7 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
 
     out.push_str("    mov.u32 %r1, %ctaid.x;\n");
-    out.push_str(&format!("    mov.u32 %r2, {};\n", n / (64 * nw as i64)));
+    out.push_str(&format!("    mov.u32 %r2, {};\n", n / (8 * gr as i64 * nw as i64)));
     out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
     out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
     out.push_str("    mov.u32 %r5, %tid.x;\n");
@@ -945,25 +978,25 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    shl.b32 %r8, %r8, 1;    // 2t\n");
 
     out.push_str("    mov.u32 %r2, %r3;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 32 * mw as i64 * a_row));
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * mhr as i64 * mw as i64 * a_row));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str(&format!("    mov.u64 %rd2, {};\n", a_off));
     out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
     out.push_str("    add.u64 %rd2, %rd2, %rd4;\n");
     out.push_str("    mov.u32 %r2, %r4;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 128 * nw as i64));
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * gr as i64 * nw as i64));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str(&format!("    mov.u64 %rd3, {};\n", b_off));
     out.push_str("    add.u64 %rd3, %rd1, %rd3;\n");
     out.push_str("    add.u64 %rd3, %rd3, %rd4;\n");
     out.push_str("    mov.u32 %r2, %r3;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 32 * mw as i64 * y_row));
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * mhr as i64 * mw as i64 * y_row));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str(&format!("    mov.u64 %rd6, {};\n", y_off));
     out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
     out.push_str("    mov.u32 %r2, %r4;\n");
-    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 64 * nw as i64 * (y_elem as i64)));
+    out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 8 * gr as i64 * nw as i64 * (y_elem as i64)));
     out.push_str("    mul.wide.u32 %rd4, %r2, 1;\n");
     out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
 
@@ -1037,13 +1070,13 @@ pub fn tensor_gemm_ptx_smem_mw(
                 out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * 4));
             }
             out.push_str("    mov.u32 %r15, %r14;\n");
-            out.push_str("    shr.u32 %r15, %r15, 11;\n");
+            out.push_str(&format!("    shr.u32 %r15, %r15, {};\n", 8 + gr.trailing_zeros()));
             out.push_str("    mov.u32 %r16, %r14;\n");
-            out.push_str("    and.b32 %r16, %r16, 2047;\n");
-            out.push_str("    shr.u32 %r17, %r16, 7;\n");
-            out.push_str("    and.b32 %r19, %r16, 127;\n");
+            out.push_str(&format!("    and.b32 %r16, %r16, {};\n", gr * 256 - 1));
+            out.push_str(&format!("    shr.u32 %r17, %r16, {};\n", 4 + gr.trailing_zeros()));
+            out.push_str(&format!("    and.b32 %r19, %r16, {};\n", gr * 16 - 1));
             out.push_str("    shr.u32 %r19, %r19, 1;\n");
-            // global: (stripe+k)*b_row + (slab*64+n)*2  (the stripe constant
+            // global: (stripe+k)*b_row + (slab*(8*gr)+n)*2  (the stripe constant
             // folds the prologue's kstep; %r2 is NOT kstep here — it still
             // holds a setup product)
             out.push_str(&format!("    mul.lo.u32 %r18, %r17, {};\n", b_row));
@@ -1053,19 +1086,19 @@ pub fn tensor_gemm_ptx_smem_mw(
                     stripe * b_row
                 ));
             }
-            out.push_str("    mul.lo.u32 %r20, %r15, 64;\n");
+            out.push_str(&format!("    mul.lo.u32 %r20, %r15, {};\n", 8 * gr));
             out.push_str("    add.u32 %r20, %r20, %r19;\n");
             out.push_str("    shl.b32 %r20, %r20, 1;\n");
             out.push_str("    add.u32 %r18, %r18, %r20;\n");
             out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
             out.push_str("    add.u64 %rd5, %rd3, %rd5;\n");
-            // smem dst: slab*2048 + k*128 + ((n>>3)^(k&7))*16 + (n&7)*2
-            out.push_str("    shl.b32 %r19, %r15, 11;\n");
-            out.push_str("    shl.b32 %r20, %r17, 7;\n");
+            // smem dst: slab*(256*gr) + k*(16*gr) + ((n>>3)^(k&(gr-1)))*16 + (n&7)*2
+            out.push_str(&format!("    shl.b32 %r19, %r15, {};\n", 8 + gr.trailing_zeros()));
+            out.push_str(&format!("    shl.b32 %r20, %r17, {};\n", 4 + gr.trailing_zeros()));
             out.push_str("    add.u32 %r19, %r19, %r20;\n");
             out.push_str("    shr.u32 %r20, %r14, 4;\n");
-            out.push_str("    and.b32 %r20, %r20, 7;\n");
-            out.push_str("    and.b32 %r16, %r17, 7;\n");
+            out.push_str(&format!("    and.b32 %r20, %r20, {};\n", gr - 1));
+            out.push_str(&format!("    and.b32 %r16, %r17, {};\n", gr - 1));
             out.push_str("    xor.b32 %r20, %r20, %r16;\n");
             out.push_str("    shl.b32 %r20, %r20, 4;\n");
             out.push_str("    add.u32 %r19, %r19, %r20;\n");
@@ -1092,7 +1125,9 @@ pub fn tensor_gemm_ptx_smem_mw(
     //   2. Compute on buffer (kstep/16)%2  (overlaps with fill)
     //   3. Wait for fill + barrier
     if f16_acc {
-        emit_y_pass(&mut out, false); // zero the CTA-private y tile
+        // (The historical y-zeroing pass is gone with the RMV promo: the
+        // final store-only pass overwrites every element the fragments
+        // cover — the full CTA tile — so nothing needs a prior zero.)
     }
 
     // === K LOOP pipeline body (reconstructed 2026-09-10 after fault bisection) ===
@@ -1154,30 +1189,30 @@ pub fn tensor_gemm_ptx_smem_mw(
             out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * 4));
         }
         out.push_str("    mov.u32 %r15, %r14;\n");
-        out.push_str("    shr.u32 %r15, %r15, 11;\n");
+        out.push_str(&format!("    shr.u32 %r15, %r15, {};\n", 8 + gr.trailing_zeros()));
         out.push_str("    mov.u32 %r16, %r14;\n");
-        out.push_str("    and.b32 %r16, %r16, 2047;\n");
-        out.push_str("    shr.u32 %r17, %r16, 7;\n");
-        out.push_str("    and.b32 %r19, %r16, 127;\n");
+        out.push_str(&format!("    and.b32 %r16, %r16, {};\n", gr * 256 - 1));
+        out.push_str(&format!("    shr.u32 %r17, %r16, {};\n", 4 + gr.trailing_zeros()));
+        out.push_str(&format!("    and.b32 %r19, %r16, {};\n", gr * 16 - 1));
         out.push_str("    shr.u32 %r19, %r19, 1;\n");
-        // global: (kstep+16*(S-1)+k)*b_row + (slab*64+n)*2
+        // global: (kstep+16*(S-1)+k)*b_row + (slab*(8*gr)+n)*2
         out.push_str("    mov.u32 %r18, %r2;\n");
         out.push_str(&format!("    add.u32 %r18, %r18, {};\n", 16 * (stages as i64 - 1)));
         out.push_str("    add.u32 %r18, %r18, %r17;\n");
         out.push_str(&format!("    mul.lo.u32 %r18, %r18, {};\n", b_row));
-        out.push_str("    mul.lo.u32 %r20, %r15, 64;\n");
+        out.push_str(&format!("    mul.lo.u32 %r20, %r15, {};\n", 8 * gr));
         out.push_str("    add.u32 %r20, %r20, %r19;\n");
         out.push_str("    shl.b32 %r20, %r20, 1;\n");
         out.push_str("    add.u32 %r18, %r18, %r20;\n");
         out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
         out.push_str("    add.u64 %rd5, %rd3, %rd5;\n");
-        // smem dst: slab*2048 + k*128 + ((n>>3)^(k&7))*16 + (n&7)*2
-        out.push_str("    shl.b32 %r19, %r15, 11;\n");
-        out.push_str("    shl.b32 %r20, %r17, 7;\n");
+        // smem dst: slab*(256*gr) + k*(16*gr) + ((n>>3)^(k&(gr-1)))*16 + (n&7)*2
+        out.push_str(&format!("    shl.b32 %r19, %r15, {};\n", 8 + gr.trailing_zeros()));
+        out.push_str(&format!("    shl.b32 %r20, %r17, {};\n", 4 + gr.trailing_zeros()));
         out.push_str("    add.u32 %r19, %r19, %r20;\n");
         out.push_str("    shr.u32 %r20, %r14, 4;\n");
-        out.push_str("    and.b32 %r20, %r20, 7;\n");
-        out.push_str("    and.b32 %r16, %r17, 7;\n");
+        out.push_str(&format!("    and.b32 %r20, %r20, {};\n", gr - 1));
+        out.push_str(&format!("    and.b32 %r16, %r17, {};\n", gr - 1));
         out.push_str("    xor.b32 %r20, %r20, %r16;\n");
         out.push_str("    shl.b32 %r20, %r20, 4;\n");
         out.push_str("    add.u32 %r19, %r19, %r20;\n");
@@ -1204,86 +1239,122 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
     out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
     out.push_str("    mov.u32 %r12, %r10;\n");
-    out.push_str("    mul.lo.u32 %r12, %r12, 1024;\n");
+    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", mhr * 512));
     out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
     out.push_str("    add.u64 %rd7, %rd7, %rd5b;\n");
-    for mh in 0..2 {
-        // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
-        // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
-        out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
+    // B-fragment address+ldmatrix emitter (shared by both schedules).
+    // Per col-group g (8 cols): lane 0-15 addresses k-rows k=lane of 16
+    // bytes at byte g*16, XOR-swizzled by k&7 — matching the fill's
+    // ((n>>3)^(k&7))*16 chunk remap. x2.trans: lanes 0-7 -> b-lo (k 0-7),
+    // lanes 8-15 -> b-hi (k 8-15), both n 0-7.
+    let emit_b_ld = |out: &mut String, g: usize, lo: &str, hi: &str| {
+        out.push_str("    mov.u64 %rd4, %rd9;\n");
+        out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", bsmem_buf));
+        out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        out.push_str("    mov.u32 %r12, %r11;\n");
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", gr * 256));
+        out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
         out.push_str("    mov.u32 %r13, %r7;\n");
-        out.push_str("    shr.u32 %r12, %r13, 3;\n");
-        out.push_str("    and.b32 %r13, %r13, 7;\n");
-        out.push_str("    and.b32 %r14, %r12, 1;\n");
-        out.push_str("    shr.u32 %r15, %r12, 1;\n");
-        out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
-        out.push_str("    add.u32 %r15, %r15, %r13;\n");
-        out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
-        out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
-        out.push_str("    add.u32 %r16, %r15, %r14;\n");
-        out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
+        out.push_str("    and.b32 %r12, %r13, 15;\n");
+        out.push_str(&format!("    shl.b32 %r12, %r12, {};\n", 4 + gr.trailing_zeros()));
+        out.push_str(&format!("    and.b32 %r14, %r13, {};\n", gr - 1));
+        out.push_str(&format!("    xor.b32 %r14, %r14, {};\n", g));
+        out.push_str("    shl.b32 %r14, %r14, 4;\n");
+        out.push_str("    add.u32 %r17, %r12, %r14;\n");
+        out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
         out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
-        out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
-        out.push_str("    mov.b32 %t0, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %t0;\n");
-
-        // B fragments from the k-major swizzled tile. Per col-group g (8
-        // cols): lane 0-15 addresses k-rows k=lane of 16 bytes at byte g*16,
-        // XOR-swizzled by k&7 — matching the fill's ((n>>3)^(k&7))*16 chunk
-        // remap. x2.trans: lanes 0-7 -> b-lo (k 0-7), lanes 8-15 -> b-hi
-        // (k 8-15), both n 0-7.
-        //
-        // f16-acc: the B loads software-pipeline — preload g0/g1 into the
-        // two register pairs, then each mma(g) is independent of the
-        // ld-ahead for g+2 (alternate pairs), so the ~30clk ldmatrix
-        // latency hides under the mma instead of serializing every g.
-        // f32: serial per-g (the 128-reg 2-CTA budget cannot fund 4 B regs).
-        let emit_b_ld = |out: &mut String, g: usize, lo: &str, hi: &str| {
-            out.push_str("    mov.u64 %rd4, %rd9;\n");
-            out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", bsmem_buf));
-            out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
-            out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
-            out.push_str("    mov.u32 %r12, %r11;\n");
-            out.push_str("    mul.lo.u32 %r12, %r12, 2048;\n");
-            out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
-            out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        out.push_str(&format!(
+            "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
+            lo, hi
+        ));
+    };
+    if f16_acc {
+        // E4a cluster schedule (2026-09-11): [A lds] [B lds] [mma phase] —
+        // the ten ldmatrix issue back-to-back so their ~30clk latencies
+        // overlap one another and the in-flight fill; the 16-mma phase then
+        // runs with zero ld stalls. Addresses: the per-mh A offset and the
+        // per-g B offset blocks are pure ALU (free per the E1c microbench);
+        // what mattered was never issuing an ld immediately before its
+        // consumer mma.
+        for mh in 0..mhr {
+            // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
+            // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
+            out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
             out.push_str("    mov.u32 %r13, %r7;\n");
-            out.push_str("    and.b32 %r12, %r13, 15;\n");
-            out.push_str("    shl.b32 %r12, %r12, 7;\n");
-            out.push_str("    and.b32 %r14, %r13, 7;\n");
-            out.push_str(&format!("    xor.b32 %r14, %r14, {};\n", g));
-            out.push_str("    shl.b32 %r14, %r14, 4;\n");
-            out.push_str("    add.u32 %r17, %r12, %r14;\n");
-            out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
+            out.push_str("    shr.u32 %r12, %r13, 3;\n");
+            out.push_str("    and.b32 %r13, %r13, 7;\n");
+            out.push_str("    and.b32 %r14, %r12, 1;\n");
+            out.push_str("    shr.u32 %r15, %r12, 1;\n");
+            out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
+            out.push_str("    add.u32 %r15, %r15, %r13;\n");
+            out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+            out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
+            out.push_str("    add.u32 %r16, %r15, %r14;\n");
+            out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
             out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
             out.push_str(&format!(
-                "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
-                lo, hi
+                "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {{%a{}, %a{}, %a{}, %a{}}}, [%rd5];\n",
+                4 * mh, 4 * mh + 1, 4 * mh + 2, 4 * mh + 3
             ));
-        };
-        if f16_acc {
-            emit_b_ld(&mut out, 0, "%b0", "%b1");
-            emit_b_ld(&mut out, 1, "%b2", "%b3");
-            for g in 0..ng {
-                let (lo, hi) = if g % 2 == 0 { ("%b0", "%b1") } else { ("%b2", "%b3") };
-                let cb = 2 * (mh * 8 + g);
+            // ldmatrix x4's operand order is transposed for row-major A —
+            // swap the middle pair (the S3a-locked fragment recipe).
+            out.push_str(&format!(
+                "    mov.b32 %t0, %a{}; mov.b32 %a{}, %a{}; mov.b32 %a{}, %t0;\n",
+                4 * mh + 1, 4 * mh + 1, 4 * mh + 2, 4 * mh + 2
+            ));
+        }
+        for g in 0..gr {
+            let (lo, hi) = (format!("%b{}", 2 * g), format!("%b{}", 2 * g + 1));
+            emit_b_ld(&mut out, g, &lo, &hi);
+        }
+        for mh in 0..mhr {
+            for g in 0..gr {
+                let (lo, hi) = (format!("%b{}", 2 * g), format!("%b{}", 2 * g + 1));
+                let (a0, a1, a2, a3) = (
+                    format!("%a{}", 4 * mh),
+                    format!("%a{}", 4 * mh + 1),
+                    format!("%a{}", 4 * mh + 2),
+                    format!("%a{}", 4 * mh + 3),
+                );
+                let cb = 2 * (mh * gr + g);
                 out.push_str(&format!(
-                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{{}, {}}}, {{%c{}, %c{}}};\n",
-                    cb, cb + 1, lo, hi, cb, cb + 1
+                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{{}, {}, {}, {}}}, {{{}, {}}}, {{%c{}, %c{}}};\n",
+                    cb, cb + 1, a0, a1, a2, a3, lo, hi, cb, cb + 1
                 ));
-                if g + 2 < ng {
-                    // Refill the pair mma(g) JUST released — it is next
-                    // needed at g+2. The other pair still holds g+1's
-                    // fragment (loading there clobbered it before its mma:
-                    // every mma(g>=1) consumed group-(g+1)'s B — the
-                    // 4096x4096x16 f16acc 2.3e-1 failure).
-                    let (nlo, nhi) = if g % 2 == 0 { ("%b0", "%b1") } else { ("%b2", "%b3") };
-                    emit_b_ld(&mut out, g + 2, nlo, nhi);
-                }
             }
-        } else {
-            for g in 0..ng {
+        }
+    } else {
+        for mh in 0..mhr {
+            // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
+            // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
+            out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
+            out.push_str("    mov.u32 %r13, %r7;\n");
+            out.push_str("    shr.u32 %r12, %r13, 3;\n");
+            out.push_str("    and.b32 %r13, %r13, 7;\n");
+            out.push_str("    and.b32 %r14, %r12, 1;\n");
+            out.push_str("    shr.u32 %r15, %r12, 1;\n");
+            out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
+            out.push_str("    add.u32 %r15, %r15, %r13;\n");
+            out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
+            out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
+            out.push_str("    add.u32 %r16, %r15, %r14;\n");
+            out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
+            out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+            out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
+            out.push_str("    mov.b32 %t0, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %t0;\n");
+
+            // B fragments from the k-major swizzled tile. Per col-group g (8
+            // cols): lane 0-15 addresses k-rows k=lane of 16 bytes at byte g*16,
+            // XOR-swizzled by k&7 — matching the fill's ((n>>3)^(k&7))*16 chunk
+            // remap. x2.trans: lanes 0-7 -> b-lo (k 0-7), lanes 8-15 -> b-hi
+            // (k 8-15), both n 0-7.
+            // f32: serial per-g (the 128-reg 2-CTA budget cannot fund 4 B
+            // regs — the f32 path stays byte-identical through E4a).
+            for g in 0..gr {
                 emit_b_ld(&mut out, g, "%b0", "%b1");
-                let cb = 4 * (mh * 8 + g);
+                let cb = 4 * (mh * gr + g);
                 out.push_str(&format!(
                     "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c{}, %c{}, %c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {{%c{}, %c{}, %c{}, %c{}}};\n",
                     cb, cb + 1, cb + 2, cb + 3, cb, cb + 1, cb + 2, cb + 3
@@ -1292,23 +1363,22 @@ pub fn tensor_gemm_ptx_smem_mw(
         }
     }
 
-    // f16-acc chunk promotion: every 16 iterations (256 k) fold the f16x2
-    // chunk accs into the y tile and reset them. Uniform predicate.
-    if f16_acc {
-        // 32-iteration chunks (512 k): half the RMV rounds; f16 rounding
-        // measured 8e-4 at 16-iter chunks — 32 stays far under the 1e-2 gate.
-        let chunk_iters = 32usize;
-        out.push_str("    mov.u32 %r14, %r2;\n");
-        out.push_str("    add.u32 %r14, %r14, 16;\n");
-        out.push_str(&format!(
-            "    and.b32 %r14, %r14, {};\n",
-            chunk_iters * 16 - 1
-        ));
-        out.push_str("    setp.ne.u32 %p1, %r14, 0;\n");
-        out.push_str("    @%p1 bra PROMO_SKIP;\n");
-        emit_y_pass(&mut out, true);
-        out.push_str("PROMO_SKIP:\n");
-    }
+    // f16-acc promotion: FULL-K register accumulation (2026-09-11, the
+    // night's decisive probe) — the every-512-k y-RMV round cost 24 TFLOP/s
+    // at 4096^3 (21.4 with vs 45.8 stripped, three reps): 138 pipeline
+    // drains of 128 global-RMV instructions each. cuBLAS's structure is
+    // full-K f16 accumulation with ONE epilogue; the f16x2 chain's random-
+    // walk rounding at K=4096 measures ~5e-3 — inside the 1e-2 contract.
+    // The chunk predicate therefore fires only on the final iteration
+    // (chunk covers the whole K loop); the KEND remainder-promo handles
+    // K not divisible by 16. Tier boundary: like the coopmat f16acc tier,
+    // the f16 chain breaks the 1e-2 gate around K≈12288 (the documented
+    // K-budget) — larger K belongs on the f32-acc tier.
+    // (The final y store lives AFTER KEND — 2026-09-11: the in-loop
+    // predicated promo structure, even firing once, measured 28 vs 45 TF
+    // with the identical body made unconditional; the loop tail must stay
+    // clean for ptxas's scheduling. The store-only pass overwrites every
+    // element the fragments cover.)
 
     // Wait until this iteration's stage is complete (stages-2 groups remain
     // in flight) + async-write visibility (see the prologue note).
@@ -1319,25 +1389,23 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    add.u32 %r2, %r2, 16;\n");
     out.push_str("    bra.uni KLOOP;\nKEND:\n");
 
-    // Store C (f32-acc) / remainder chunk promotion (f16-acc when K is not
-    // a multiple of the 16-iteration chunk — the in-loop promotion covered
-    // whole chunks already).
+    // Store C (f32-acc) / the f16-acc final store-only y pass (2026-09-11:
+    // full-K register accumulation — one straight-line store pass after
+    // the K loop, no in-loop predicate, no RMV reads).
     if f16_acc {
-        if k % (32 * 16) != 0 {
-            emit_y_pass(&mut out, true);
-        }
+        emit_y_pass(&mut out, 2);
         out.push_str("    ret;\n}\n");
         return out;
     }
     out.push_str("    mov.u32 %r12, %r10;\n");
-    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 32 * y_row));
+    out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
     out.push_str("    mov.u32 %r13, %r11;\n");
-    out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 64 * (y_elem as i64)));
+    out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 8 * gr as i64 * (y_elem as i64)));
     out.push_str("    mov.u32 %r9, %r12;\n");
     out.push_str("    add.u32 %r9, %r9, %r13;\n");
-    for mh in 0..2 {
-        for g in 0..ng {
-            let cb = 4 * (mh * 8 + g);
+    for mh in 0..mhr {
+        for g in 0..gr {
+            let cb = 4 * (mh * gr + g);
             for (coff, row_off, col_off) in [
                 (0i64, 0i64, 0i64),
                 (1, 0, 1),
@@ -1377,7 +1445,7 @@ mod r16_dump {
         // compile_cubin: offline ptxas produces a loadable ELF cubin from
         // the emitted PTX. Tolerant skip when no ptxas is installed — the
         // PTX-text fallback is the documented contract then.
-        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4, 2);
         match crate::backend::ptx::compile_cubin(&ptx, 128) {
             Some(bytes) => assert_eq!(&bytes[0..4], b"\x7fELF", "cubin magic"),
             None => eprintln!("ptxas unavailable — PTX-text fallback (ok)"),
@@ -1387,7 +1455,7 @@ mod r16_dump {
     #[test]
     fn dump_mw_1x1() {
         /* M=64,N=64,K=64, CTA 32x64 (mw=1,nw=1). a@0,b@8192,y@16392 */
-        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(64, 64, 64, 0, 8192, 16392, 2, 1, 1, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_1x1.ptx", &ptx).unwrap();
     }
 
@@ -1395,14 +1463,14 @@ mod r16_dump {
     #[test]
     fn dump_mw_128x128() {
         /* M=128,N=128,K=64, CTA 128x128 (mw=4,nw=2). a@0,b@16384,y@32776 */
-        let ptx = tensor_gemm_ptx_smem_mw(128, 128, 64, 0, 16384, 32776, 2, 4, 2, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(128, 128, 64, 0, 16384, 32776, 2, 4, 2, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_128x128.ptx", &ptx).unwrap();
     }
     #[test]
     fn dump_mw_256x128() {
         /* M=256,N=128,K=64, CTA 256x128 (mw=8,nw=2). a@0,b=256*64*2=32768,
            y@32768+128*64*2+8=49160 */
-        let ptx = tensor_gemm_ptx_smem_mw(256, 128, 64, 0, 32768, 49160, 2, 8, 2, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(256, 128, 64, 0, 32768, 49160, 2, 8, 2, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_256x128.ptx", &ptx).unwrap();
     }
 
@@ -1436,19 +1504,19 @@ mod r16_dump {
     fn dump_mw_2048() {
         /* M=N=K=2048, select_mw_nw=(4,4) block=512 (128-reg budget).
            a@0, b=2048*2048*2=8388608, y=2*8388608+8=16777224 */
-        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 4, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_2048.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_2048_f16acc() {
-        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 4, 4, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(2048, 2048, 2048, 0, 8388608, 16777224, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_2048_f16acc.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_8192_f16acc() {
-        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 4, 4, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_8192_f16acc.ptx", &ptx).unwrap();
     }
 
@@ -1458,11 +1526,11 @@ mod r16_dump {
             let b_off = 4096 * k * 2;
             let y_off = ((b_off + 4096 * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw(
-                4096, 4096, k, 0, b_off as u64, y_off as u64, 2, 4, 4, true, 2,
+                4096, 4096, k, 0, b_off as u64, y_off as u64, 2, 4, 4, true, 2, 2,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_mw_4096_k{k}_f16acc.ptx"), &ptx).unwrap();
         }
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 4, 4, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_k16_f16acc.ptx", &ptx).unwrap();
     }
 
@@ -1472,23 +1540,34 @@ mod r16_dump {
            8-kstep... 16-iteration promotion into the f16 y tile. Gate 1e-2. */
         /* production pairing: f16acc funds (4,4)@512T; 2 stages keep smem
            at 40KB so TWO CTAs co-reside (16 warps + 2 fill streams). */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_c24.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_s4.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 8, true, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 8, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_28.ptx", &ptx).unwrap();
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2);
+        // Double-pump variant C (plan 2026-09-11-ptx-double-pump-warp-tile):
+        // 64x32 warp (warp_mh=4) — A fragments shared across 4 mh-blocks,
+        // B loaded 4x per kstep instead of 16x. (8,2) and (4,4) CTAs.
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2, 4);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_dp82.ptx", &ptx).unwrap();
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 4, 4, true, 2, 4);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_dp44.ptx", &ptx).unwrap();
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 8, 2, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_82.ptx", &ptx).unwrap();
+        // (2,4)@256T stages-2: the post-pipeline-fix occupancy candidate —
+        // 64 regs x 256T fits 4 CTAs/SM (plan 2026-09-11 probe round 2).
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 2, 2);
+        std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_24s2.ptx", &ptx).unwrap();
     }
 
     #[test]
     fn dump_mw_4096() {
         /* M=N=K=4096, select_mw_nw=(2,8), block=512.
            a@0, b=4096*4096*2=33554432, y=2*33554432+8=67108872 */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096.ptx", &ptx).unwrap();
     }
 
@@ -1496,7 +1575,7 @@ mod r16_dump {
     fn dump_mw_8192() {
         /* M=N=K=8192, select_mw_nw=(2,8), block=512.
            a@0, b=8192*8192*2=134217728, y=2*134217728+8=268435464 */
-        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 2, 4, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_8192.ptx", &ptx).unwrap();
     }
 
@@ -1504,8 +1583,463 @@ mod r16_dump {
     fn dump_mw_4096_k16() {
         /* M=N=4096,K=16 (skinny-K), select_mw_nw=(2,8), block=512.
            a@0, b=4096*16*2=131072, y=2*131072+8=262152 */
-        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 2, 4, false, 4);
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 2, 4, false, 4, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_k16.ptx", &ptx).unwrap();
+    }
+
+    /// E1 microbench (plan 2026-09-11-ptx-mma-issue-ceiling): pure mma
+    /// issue rate. N independent f16x2 accumulator chains per warp, register
+    /// operands, no smem/fills — isolates the tensor-core issue+dependency
+    /// ceiling from everything else. chains 4..64: does the ISA need 32
+    /// chains (CUTLASS 64x64 warp tiles) to reach the dense f16-acc peak,
+    /// or is our 16-chain schedule already at it?
+    #[test]
+    fn dump_mma_microbench() {
+        for &chains in &[4usize, 8, 16, 32, 64] {
+            let mut out = String::new();
+            out.push_str("// E1 pure-mma issue microbench\n");
+            out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+            out.push_str(".visible .entry main (.param .b64 proj_param) {\n");
+            out.push_str("    .reg .b32 %r<8>;\n    .reg .b64 %rd<8>;\n    .reg .pred %p<2>;\n");
+            out.push_str(&format!("    .reg .b32 %c<{}>;\n", chains * 2 + 1));
+            out.push_str("    .reg .b32 %a<5>;\n    .reg .b32 %b<3>;\n");
+            // tid/lane-derived operands: non-zero, chain-independent.
+            out.push_str("    mov.u32 %r1, %tid.x;\n");
+            out.push_str("    mov.u32 %r2, %ctaid.x;\n");
+            out.push_str("    add.u32 %r2, %r2, 1;\n");
+            out.push_str("    and.b32 %r3, %r1, 31;\n");
+            out.push_str("    add.u32 %a0, %r3, %r2;\n");     // a0: lane+cta+1
+            out.push_str("    add.u32 %a1, %a0, 17;\n");
+            out.push_str("    add.u32 %a2, %a0, 34;\n");
+            out.push_str("    add.u32 %a3, %a0, 51;\n");
+            out.push_str("    add.u32 %b0, %a0, 7;\n");
+            out.push_str("    add.u32 %b1, %a0, 13;\n");
+            // zero all accumulator chains
+            for i in 0..chains * 2 {
+                out.push_str(&format!("    mov.u32 %c{}, 0;\n", i));
+            }
+            // loop: R iterations of the chain block. R chosen so total
+            // FLOP ≈ 130 GFLOP: R = 130e9 / (chains*4096*warps), warps=448.
+            let warps = 448u64;
+            let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
+            let iters = (iters / 8 * 8).max(64); // multiple of 8, sane floor
+            out.push_str("    mov.u32 %r4, %ntid.x;\n");
+            out.push_str("    mul.lo.u32 %r4, %r4, %r2;\n");
+            out.push_str("    add.u32 %r5, %r1, %r4;\n"); // global thread id (diag sweep fodder)
+            out.push_str(&format!("    mov.u32 %r6, {};\n", iters));
+            out.push_str("LOOP:\n");
+            for i in 0..chains {
+                out.push_str(&format!(
+                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {{%c{}, %c{}}};\n",
+                    2 * i, 2 * i + 1, 2 * i, 2 * i + 1
+                ));
+            }
+            out.push_str("    add.u32 %r6, %r6, -1;\n");
+            out.push_str("    setp.ne.u32 %p1, %r6, 0;\n");
+            out.push_str("    @%p1 bra LOOP;\n");
+            // DCE guard: fold the first chain into a single global store.
+            // This also caps the f16 rounding drift — the microbench
+            // measures throughput, not numerics.
+            out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+            out.push_str("    cvta.to.global.u64 %rd1, %rd1;\n");
+            out.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
+            out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+            // fold EVERY chain into the store — an mma whose accumulator
+            // is never read is side-effect-free and ptxas deletes it
+            // (14-reg "ceiling" artifacts otherwise).
+            out.push_str("    add.u32 %r7, %c0, %c1;\n");
+            for i in 1..chains {
+                out.push_str(&format!("    add.u32 %r7, %r7, %c{};\n", 2 * i));
+                out.push_str(&format!("    add.u32 %r7, %r7, %c{};\n", 2 * i + 1));
+            }
+            out.push_str("    st.global.b32 [%rd2], %r7;\n");
+            out.push_str("    ret;\n}\n");
+            let path = format!("/tmp/opencode/mb_chains_{}.ptx", chains);
+            std::fs::write(&path, &out).unwrap();
+        }
+    }
+    /// E1b/E1c (plan 2026-09-11-ptx-mma-issue-ceiling): decompose the 2.3x
+    /// between the pure-issue ceiling (52.8 TF) and the shipped kernel
+    /// (21.0). E1b = ldmatrix(x4 A + 8x x2.trans B) + 16 mma per kstep from
+    /// FIXED hoisted addresses — the serial-order mainloop best case, no
+    /// address math. E1c = E1b + the real kernel's ~150 support-ALU ops per
+    /// kstep replayed on a live register chain. The gap E1→E1b isolates
+    /// exposed ldmatrix latency; E1b→E1c isolates the support-math issue
+    /// load. smem: 4KB dynamic (two 512B A slabs, eight 256B B slabs).
+    #[test]
+    fn dump_mma_mix_microbench() {
+        for &variant in &["b", "c", "d", "f", "g"] {
+            let chains = 16usize; // the shipped schedule's chain count
+            let mut out = String::new();
+            out.push_str(&format!("// E1{} ldmatrix+mma mix microbench\n", variant));
+            out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+            out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
+            out.push_str(".visible .entry main (.param .b64 proj_param) {\n");
+            out.push_str("    .reg .b32 %r<16>;\n    .reg .b64 %rd<16>;\n    .reg .pred %p<2>;\n");
+            out.push_str("    .reg .b32 %c<33>;\n    .reg .b32 %a<5>;\n    .reg .b32 %b<17>;\n");
+            out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+            out.push_str("    cvta.to.global.u64 %rd1, %rd1;\n");
+            out.push_str("    mov.u32 %r1, %tid.x;\n    mov.u32 %r2, %ctaid.x;\n");
+            out.push_str("    and.b32 %r3, %r1, 31;\n    add.u32 %r2, %r2, 1;\n");
+            // dynamic smem base (shared-window u32, widened for u64 math)
+            out.push_str("    .reg .b32 %sas<1>;\n    .reg .b64 %rdS<1>;\n");
+            out.push_str("    .reg .b64 %rdA;\n    .reg .b64 %rdB0, %rdB1, %rdB2, %rdB3, %rdB4, %rdB5, %rdB6, %rdB7;\n");
+            out.push_str("    mov.u32 %sas0, dsmem;\n");
+            out.push_str("    cvt.u64.u32 %rdS0, %sas0;\n");
+            // A slab lane addressing (conflict-free, matches the kernel):
+            // row r = (l>>4)*8 + (l&7), addr = r*32 + ((l>>3)&1)*16
+            out.push_str("    shr.u32 %r4, %r3, 4;\n");          // l>>4
+            out.push_str("    mul.lo.u32 %r4, %r4, 8;\n");
+            out.push_str("    and.b32 %r5, %r3, 7;\n");
+            out.push_str("    add.u32 %r4, %r4, %r5;\n");        // r
+            out.push_str("    mul.lo.u32 %r4, %r4, 32;\n");
+            out.push_str("    shr.u32 %r5, %r3, 3;\n    and.b32 %r5, %r5, 1;\n");
+            out.push_str("    mul.lo.u32 %r5, %r5, 16;\n");
+            out.push_str("    add.u32 %r4, %r4, %r5;\n");
+            out.push_str("    mul.wide.u32 %rd4, %r4, 1;\n");
+            out.push_str("    add.u64 %rdA, %rdS0, %rd4;\n");
+            // B slab: 8 groups at +g*256, lane addr ((l>>3)&1)*128 + ((l&7)^((l>>3)&1))*16
+            out.push_str("    shr.u32 %r5, %r3, 3;\n    and.b32 %r5, %r5, 1;\n");
+            out.push_str("    mul.lo.u32 %r6, %r5, 128;\n");
+            out.push_str("    and.b32 %r7, %r3, 7;\n    xor.b32 %r7, %r7, %r5;\n");
+            out.push_str("    mul.lo.u32 %r7, %r7, 16;\n");
+            out.push_str("    add.u32 %r6, %r6, %r7;\n");
+            // pre-hoist all 8 B lane addresses + the A pair addresses
+            for g in 0..8 {
+                out.push_str(&format!("    mul.wide.u32 %rd6, %r6, 1;\n"));
+                out.push_str(&format!("    add.u64 %rdB{}, %rdS0, %rd6;\n", g));
+                out.push_str(&format!("    add.u64 %rdB{}, %rdB{}, {};\n", g, g, 512 + g * 256));
+            }
+            // zero the 16 acc chains
+            for i in 0..chains * 2 {
+                out.push_str(&format!("    mov.u32 %c{}, 0;\n", i));
+            }
+            // operand seeds for the mma (register-held)
+            out.push_str("    add.u32 %a0, %r3, %r2;\n");
+            out.push_str("    mov.u32 %b0, 7;\n    mov.u32 %b1, 13;\n");
+            let warps = 448u64;
+            let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
+            let iters = (iters / 8 * 8).max(64);
+            out.push_str(&format!("    mov.u32 %r8, {};\n", iters));
+            out.push_str("LOOP:\n");
+            // A fragment (x4) + fragment swap, then 8 B fragments (x2.trans)
+            out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+            out.push_str("    mov.b32 %r9, %a1; mov.b32 %a1, %a2; mov.b32 %a2, %r9;\n");
+            for g in 0..8 {
+                out.push_str(&format!(
+                    "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{%b{}, %b{}}}, [%rdB{}];\n",
+                    2 * g, 2 * g + 1, g % 8
+                ));
+            }
+            if variant == "c" {
+                // ~150 dead ALU ops per kstep on a live chain (the shipped
+                // kernel's per-fragment address recomputation magnitude)
+                out.push_str("    add.u32 %r10, %r3, %r2;\n");
+                for _ in 0..150 {
+                    out.push_str("    add.u32 %r10, %r10, 3;\n");
+                }
+            }
+            let streaming = variant == "f" || variant == "g";
+            let wait_slack = if variant == "g" { 0 } else { 1 };
+            if variant == "d" || variant == "f" || variant == "g" {
+                // E1d: + the real kernel's fill/wait/barrier rhythm — 6
+                // cp.async.ca 4B per thread (12KB/CTA), commit, then after
+                // the mma phase wait_group 1 + membar.cta + bar.sync.
+                // E1f: the fill source STREAMS (iteration-scaled offset into
+                // the 100MB state) instead of hammering one L2-resident
+                // 24KB window — models the real kernel's DRAM traffic.
+                // E1g: E1f with wait_group 0 — the shipped kernel's FULL
+                // drain (stages=2 ⇒ stages-2=0); isolates the drain stall.
+                // cp.async.ca 4B per thread (12KB/CTA), commit, then after
+                // the mma phase wait_group 1 + membar.cta + bar.sync.
+                // E1f: the fill source STREAMS (iteration-scaled offset into
+                // the 100MB state) instead of hammering one L2-resident
+                // 24KB window — models the real kernel's DRAM traffic.
+                // iteration-scaled offset: %r8 (iter counter) * 12288, kept
+                // inside the 96MB state via masking with the iteration
+                // stride folded in — streaming, not L2-resident.
+                if streaming {
+                    out.push_str("    mul.lo.u32 %r11, %r8, 6144;\n");
+                    out.push_str("    and.b32 %r11, %r11, 25161728;\n");
+                    out.push_str("    mul.wide.u32 %rd9, %r11, 1;\n");
+                    out.push_str("    add.u64 %rd10, %rd1, %rd9;\n");
+                }
+                for j in 0..6 {
+                    out.push_str("    mul.wide.u32 %rd8, %r3, 4;\n");
+                    if streaming {
+                        out.push_str("    add.u64 %rd8, %rd10, %rd8;\n");
+                    } else {
+                        out.push_str("    add.u64 %rd8, %rd1, %rd8;\n");
+                    }
+                    out.push_str(&format!("    add.u64 %rd8, %rd8, {};\n", j * 2048));
+                    out.push_str(&format!(
+                        "    cp.async.ca.shared.global [%rdB{}], [%rd8], 4;\n",
+                        j
+                    ));
+                }
+                out.push_str("    cp.async.commit_group;\n");
+            }
+            for i in 0..chains {
+                out.push_str(&format!(
+                    "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b0, %b1}}, {{%c{}, %c{}}};\n",
+                    2 * i, 2 * i + 1, 2 * i, 2 * i + 1
+                ));
+            }
+            if variant == "d" || streaming {
+                out.push_str(&format!("    cp.async.wait_group {};\n", wait_slack));
+                out.push_str("    membar.cta;\n");
+                out.push_str("    bar.sync 0;\n");
+            }
+            out.push_str("    add.u32 %r8, %r8, -1;\n");
+            out.push_str("    setp.ne.u32 %p1, %r8, 0;\n");
+            out.push_str("    @%p1 bra LOOP;\n");
+            // DCE guard: fold every chain + the ALU chain
+            out.push_str("    mul.wide.u32 %rd2, %r1, 4;\n");
+            out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+            out.push_str("    add.u32 %r7, %c0, %c1;\n");
+            for i in 1..chains {
+                out.push_str(&format!("    add.u32 %r7, %r7, %c{};\n", 2 * i));
+                out.push_str(&format!("    add.u32 %r7, %r7, %c{};\n", 2 * i + 1));
+            }
+            if variant == "c" {
+                out.push_str("    add.u32 %r7, %r7, %r10;\n");
+            }
+            out.push_str("    st.global.b32 [%rd2], %r7;\n");
+            out.push_str("    ret;\n}\n");
+            let path = format!("/tmp/opencode/mb_mix_{}.ptx", variant);
+            std::fs::write(&path, &out).unwrap();
+        }
+    }
+
+    /// Fill-gap diagnosis (plan 2026-09-11-ptx-mma-issue-ceiling, §Fill-gap):
+    /// isolate the 29.3 → ~41 TF gap between the shipped kernel and E1f.
+    ///
+    /// Variants:
+    ///   e = E1f baseline (clean fill + ldmatrix + mma) — should reproduce ~41 TF
+    ///   s = swizzled fill + ldmatrix + mma — isolates the XOR swizzle
+    ///   f = clean fill only (no ldmatrix/mma in loop) — fill throughput
+    ///   m = mma only from pre-filled smem — mma-from-smem throughput
+    ///   d = double fill (2× B fill + ldmatrix + mma) — tests fill throughput wall
+    ///   p = pipeline overlap (double-buffered: fill buf(i+1) while mma buf(i))
+    ///   a = A fill + B fill + ldmatrix + mma — full kernel fill pattern
+    #[test]
+    fn dump_mma_fill_microbench() {
+        let chains = 16usize;
+        let warps = 448u64;
+        let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
+        let iters = (iters / 8 * 8).max(64);
+
+        for &variant in &["e", "s", "f", "m", "d", "p", "a"] {
+            let mut out = String::new();
+            let label = match variant {
+                "e" => "E1f baseline (clean fill + ldmatrix + mma)",
+                "s" => "swizzled fill + ldmatrix + mma",
+                "f" => "clean fill only (no mma in loop)",
+                "m" => "mma only from pre-filled smem",
+                "d" => "double fill (2x B fill + ldmatrix + mma)",
+                "p" => "pipeline overlap (fill buf(i+1) while mma buf(i))",
+                "a" => "A fill + B fill + ldmatrix + mma (full kernel pattern)",
+                _ => unreachable!(),
+            };
+            out.push_str(&format!("// Fill-gap diagnosis: {}\n", label));
+            out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+            if variant == "p" {
+                out.push_str("    .extern .shared .align 16 .b8 dsmem[4096];\n");
+            } else {
+                out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
+            }
+            out.push_str(".visible .entry main (.param .b64 proj_param) {\n");
+            // All register declarations at the top
+            out.push_str("    .reg .b32 %r<16>;\n");
+            out.push_str("    .reg .b64 %rd<16>;\n");
+            out.push_str("    .reg .pred %p<2>;\n");
+            out.push_str("    .reg .b32 %c<33>;\n");
+            out.push_str("    .reg .b32 %a<5>;\n");
+            out.push_str("    .reg .b32 %b<17>;\n");
+            out.push_str("    .reg .b32 %sas<1>;\n");
+            out.push_str("    .reg .b64 %rdS<1>;\n");
+            out.push_str("    .reg .b64 %rdA;\n");
+            // Load state pointer
+            out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+            out.push_str("    cvta.to.global.u64 %rd1, %rd1;\n");
+            out.push_str("    mov.u32 %r1, %tid.x;\n");
+            out.push_str("    mov.u32 %r2, %ctaid.x;\n");
+            out.push_str("    and.b32 %r3, %r1, 31;\n");
+            out.push_str("    add.u32 %r2, %r2, 1;\n");
+            // smem base
+            out.push_str("    mov.u32 %sas0, dsmem;\n");
+            out.push_str("    cvt.u64.u32 %rdS0, %sas0;\n");
+            // A lane addressing: row = (lane>>4)*8 + (lane&7), col-block = (lane>>3)&1
+            out.push_str("    shr.u32 %r4, %r3, 4;\n");
+            out.push_str("    mul.lo.u32 %r4, %r4, 8;\n");
+            out.push_str("    and.b32 %r5, %r3, 7;\n");
+            out.push_str("    add.u32 %r4, %r4, %r5;\n");
+            out.push_str("    mul.lo.u32 %r4, %r4, 32;\n");
+            out.push_str("    shr.u32 %r5, %r3, 3;\n");
+            out.push_str("    and.b32 %r5, %r5, 1;\n");
+            out.push_str("    mul.lo.u32 %r5, %r5, 16;\n");
+            out.push_str("    add.u32 %r4, %r4, %r5;\n");
+            out.push_str("    mul.wide.u32 %rd4, %r4, 1;\n");
+            out.push_str("    add.u64 %rdA, %rdS0, %rd4;\n");
+            // B lane offsets: r8 = clean, r9 = swizzled
+            // ng = (lane>>3)&1
+            out.push_str("    shr.u32 %r5, %r3, 3;\n");
+            out.push_str("    and.b32 %r5, %r5, 1;\n");
+            out.push_str("    mul.lo.u32 %r6, %r5, 128;\n"); // r6 = ng*128
+            out.push_str("    and.b32 %r7, %r3, 7;\n");
+            out.push_str("    mul.lo.u32 %r7, %r7, 16;\n");
+            out.push_str("    add.u32 %r8, %r6, %r7;\n"); // r8 = clean offset
+            out.push_str("    and.b32 %r7, %r3, 7;\n");
+            out.push_str("    xor.b32 %r7, %r7, %r5;\n");
+            out.push_str("    mul.lo.u32 %r7, %r7, 16;\n");
+            out.push_str("    add.u32 %r9, %r6, %r7;\n"); // r9 = swizzled offset
+            // zero accs
+            for i in 0..chains * 2 {
+                out.push_str(&format!("    mov.u32 %c{}, 0;\n", i));
+            }
+            // operand seeds
+            out.push_str("    add.u32 %a0, %r3, %r2;\n");
+            out.push_str("    mov.u32 %b0, 7;\n");
+            out.push_str("    mov.u32 %b1, 13;\n");
+            // prefill smem (variant m: fill once before loop; variant p: fill buffer0)
+            if variant == "m" || variant == "p" {
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str("    add.u32 %r12, %r12, %r8;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r10, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r10;\n");
+                }
+                out.push_str("    bar.sync 0;\n");
+            }
+            out.push_str(&format!("    mov.u32 %r10, {};\n", iters));
+            out.push_str("LOOP:\n");
+            // ---- FILL PHASE ----
+            if variant == "p" {
+                // Pipeline overlap: fill buffer (iter+1)%2 while mma reads from buffer iter%2
+                // iter counts DOWN from iters to 0; parity = r10 & 1
+                // Mma reads from buffer parity; fill writes to buffer parity^1
+                out.push_str("    and.b32 %r12, %r10, 1;\n");
+                out.push_str("    xor.b32 %r12, %r12, 1;\n"); // r12 = parity^1
+                out.push_str("    shl.b32 %r12, %r12, 11;\n"); // r12 = (parity^1) * 2048
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r13, {};\n", g * 256));
+                    out.push_str("    add.u32 %r13, %r13, %r8;\n");
+                    out.push_str("    add.u32 %r13, %r13, %r12;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r13, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                }
+            } else if variant == "a" {
+                // A fill: 8 stores to A smem region (offset from rdA, 4B each)
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 64));
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdA, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                }
+                // B fill: 8 groups
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str("    add.u32 %r12, %r12, %r8;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                }
+            } else if variant != "m" {
+                // Variants e, s, f, d: existing B fill logic
+                let b_off = if variant == "s" { "%r9" } else { "%r8" };
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str(&format!("    add.u32 %r12, %r12, {};\n", b_off));
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                }
+                if variant == "d" {
+                    for g in 0..8 {
+                        out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                        out.push_str(&format!("    add.u32 %r12, %r12, {};\n", b_off));
+                        out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                        out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                        out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                        out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                    }
+                }
+            }
+            // ---- LDMATRIX + MMA PHASE ----
+            if variant == "p" {
+                // Pipeline: mma reads from buffer (parity) * 2048
+                out.push_str("    and.b32 %r12, %r10, 1;\n");
+                out.push_str("    shl.b32 %r12, %r12, 11;\n"); // r12 = parity * 2048
+                out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+                out.push_str("    mov.b32 %r11, %a1;\n");
+                out.push_str("    mov.b32 %a1, %a2;\n");
+                out.push_str("    mov.b32 %a2, %r11;\n");
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r13, {};\n", g * 256));
+                    out.push_str("    add.u32 %r13, %r13, %r8;\n");
+                    out.push_str("    add.u32 %r13, %r13, %r12;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r13, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str(&format!(
+                        "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{%b{}, %b{}}}, [%rd5];\n",
+                        2 * g, 2 * g + 1
+                    ));
+                }
+                for i in 0..chains {
+                    let bg = i / 8;
+                    out.push_str(&format!(
+                        "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b{}, %b{}}}, {{%c{}, %c{}}};\n",
+                        2 * i, 2 * i + 1, 2 * bg, 2 * bg + 1, 2 * i, 2 * i + 1
+                    ));
+                }
+            } else if variant != "f" {
+                out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+                out.push_str("    mov.b32 %r11, %a1;\n");
+                out.push_str("    mov.b32 %a1, %a2;\n");
+                out.push_str("    mov.b32 %a2, %r11;\n");
+                let b_off = if variant == "s" { "%r9" } else { "%r8" };
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str(&format!("    add.u32 %r12, %r12, {};\n", b_off));
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str(&format!(
+                        "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{%b{}, %b{}}}, [%rd5];\n",
+                        2 * g, 2 * g + 1
+                    ));
+                }
+                for i in 0..chains {
+                    let bg = i / 8;
+                    out.push_str(&format!(
+                        "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b{}, %b{}}}, {{%c{}, %c{}}};\n",
+                        2 * i, 2 * i + 1, 2 * bg, 2 * bg + 1, 2 * i, 2 * i + 1
+                    ));
+                }
+            }
+            out.push_str("    bar.sync 0;\n");
+            out.push_str("    add.u32 %r10, %r10, -1;\n");
+            out.push_str("    setp.ne.u32 %p1, %r10, 0;\n");
+            out.push_str("    @%p1 bra LOOP;\n");
+            // DCE guard
+            out.push_str("    mul.wide.u32 %rd2, %r1, 4;\n");
+            out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+            out.push_str("    add.u32 %r11, %c0, %c1;\n");
+            for i in 1..chains {
+                out.push_str(&format!("    add.u32 %r11, %r11, %c{};\n", 2 * i));
+                out.push_str(&format!("    add.u32 %r11, %r11, %c{};\n", 2 * i + 1));
+            }
+            out.push_str("    st.global.b32 [%rd2], %r11;\n");
+            out.push_str("    ret;\n}\n");
+            let path = format!("/tmp/opencode/mb_fill_{}.ptx", variant);
+            std::fs::write(&path, &out).unwrap();
+        }
     }
 }
 

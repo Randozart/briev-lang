@@ -231,10 +231,13 @@ pub fn discover_active_sources() -> Vec<(PathBuf, SourceKind)> {
         //    are written mid-run and removed by their owning test — a
         //    concurrent sweep can observe a partial file. The owning test
         //    validates the fixture through the full pipeline.
+        //    2026-09-11: `briev_*_test_<pid>.abv` is the convention — the
+        //    bitwise-RHS guard test (backend::spirv) generates fixtures
+        //    under examples/gpu/ with the same lifecycle.
         let is_generated_fixture = p
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.starts_with("briev_img_pipeline_test_"))
+            .map(|n| n.starts_with("briev_") && n.contains("_test_"))
             .unwrap_or(false);
         !is_glue_dbv && !is_tamer_wip && !is_generated_fixture
     });

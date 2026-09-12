@@ -106,7 +106,13 @@ fn select_mw_nw(m: i64, n: i64, thread_cap: usize) -> (usize, usize) {
     let mut nw: usize = 1;
     loop {
         let mut grew = false;
-        for (dm, dn) in [(1usize, 2usize), (2usize, 1usize)] {
+        // 2026-09-11: double both axes first, then mw, then nw. The old
+        // (1,2)-first walk ran nw to its cap and never reached the balanced
+        // (4,4) — shipping (2,8)@512T at 16.4 TFLOP/s where (4,4) measures
+        // 21.0 (4096^3 f16acc, three interleaved reps). This order lands
+        // both sweep winners: (4,2) at the 256-thread f32 cap and (4,4) at
+        // the 512-thread f16acc cap.
+        for (dm, dn) in [(2usize, 2usize), (2usize, 1usize), (1usize, 2usize)] {
             let (tm, tn) = (mw * dm, nw * dn);
             if tm <= 16
                 && tn <= 8
@@ -287,6 +293,10 @@ pub fn build_ptx_kernels(
                     tensor::tensor_gemm_ptx_smem_mw(
                         plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
                         f16_acc, stages,
+                        // warp_mh=2: the historical 32x64 warp. The 64x32
+                        // A-sharing variant (warp_mh=4) is experimental —
+                        // plan 2026-09-11-ptx-double-pump-warp-tile.
+                        2,
                     ),
                     true,
                     e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),

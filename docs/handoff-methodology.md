@@ -132,6 +132,23 @@ or dropped. Examples from this session:
    (silent bitcast). Enforce it (the new type error).
 6. **A "universal" optimization is a hypothesis until a counterexample.** The
    sweep benchmarks exist to find the counterexample.
+7. **Timing-only verification is not verification.** dd5f5e26 corrupted the
+   coopmat fill for three days while reading "GPU time unchanged" — the
+   instruction count didn't change, so timing couldn't see it. Any commit
+   that touches kernel index math (addressing, masks, swizzles, decode)
+   needs the on-device correctness gate at a real shape before push.
+8. **Tests green ≠ device correct for shape-dependent addressing.** No unit
+   test exercised the fill's `b_flat_within` modulo at the real 4096³
+   geometry; the conformance sweep parses code, it doesn't run it. The
+   standing catch is the cross-tier A/B harness (gemm_h_bench per tier,
+   one command each) plus the emitted-SPIR-V bitwise-RHS guard test
+   (backend::spirv::tests::coopmat_fill_bitwise_rhs_are_mask_consts).
+9. **Aliases erode type safety exactly where ids and values meet.**
+   rspirv's `type Word = u32` let five call sites pass result ids into a
+   literal-mask parameter — compiles clean, corrupts silently. When a
+   helper takes a primitive in a literal position, audit its call sites
+   and prefer taking the const's Word instead; the guard test now pins
+   the emitted output.
 
 ## 4. The discipline in one paragraph
 

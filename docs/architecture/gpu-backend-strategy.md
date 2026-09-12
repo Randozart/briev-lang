@@ -34,22 +34,25 @@ CUDA's C++ frontend does not** (invariants, reactive topology, contract
 bounds), and from **emitting at the right hardware layer** (not the SPIR-V
 driver path on NVIDIA).
 
-The current ledger ground-truth (from `2026-08-31-vitriol-gemm-comparison.md`):
+The current ledger ground-truth (from `2026-08-31-vitriol-gemm-comparison.md`
++ 2026-09-11 sustained re-baseline):
 
 | cell | number |
 |------|--------|
 | ggml-cuda F16 4096³ (RTX 3060, locked) | **3.271 ms = 42.0 TFLOP/s** — 83% of the 50.6 TF FP32-acc dense peak; double-pumped mma |
 | True F16-acc dense peak, GA106 | ~102 TF (28 SM × 4 TC × 512 FLOP/clk × 1.78 GHz) |
-| Briev SPIR-V tensor tier @4096³ (R=4, smem, fused fill) | 0.708 ms / **24.3 TFLOP/s** — 95% of the 25.6 TF FP16-acc coopmat peak |
+| **Briev PTX f16acc @4096³** (full-K store-only) | **29.3 TF** (4.44e-3) — 70% of the cuBLAS anchor; beats coopmat |
+| Briev PTX f16acc @8192³ | **30.2 TF** (8.22e-3) — beats coopmat 21.2 |
+| Briev PTX f16acc @2048³ | 25.5 TF (1.30e-3) — coopmat leads at 27.7 |
 | Briev SPIR-V coopmat mma ceiling (Stage 0) | ≥107 TFLOP/s mma rate — L2-load-bound, pipeline-bound NOT vendor-capped |
 | Portable tier structural limit (Stage 1) | 4.55 ms / 30.2 TFLOP/s — DRAM-fill + pipeline bound |
 
 The lesson: the portable SPIR-V path **reaches hardware tensor peak**; the
 production GEMM is *pipeline-bound* (fills/barriers/load-ratio eat ~3× the
-mma rate). The race to 42.0 TFLOP/s is a **pipeline** problem, not a
-"which vendor ISA" problem. This is why the PTX tier (Stage 2) re-armed:
-it exists to express `cp.async`/`ldmatrix`-class scheduling the SPIR-V
-lowering cannot (condition #2 in `beyond-coopmat.md`).
+mma rate). The PTX tier (Stage 2) exists to express `cp.async`/`ldmatrix`-class
+scheduling the SPIR-V lowering cannot — and it now reaches **70% of the
+cuBLAS anchor** at 4096³, with the remaining gap traceable to the register
+allocation / occupancy wall (64 regs = 2 CTAs/SM vs cuBLAS's 3+).
 
 ---
 
@@ -331,8 +334,11 @@ where the pipeline machinery (cp.async/ldmatrix/mma) is being built. AMD
 - **S4** — correctness gate: whole shape portfolio (2048³/4096³/8192³/
   skinny-K/small) vs. the naive reference tier, gates 5e-3 (f32-acc) / 1e-2
   (f16-acc).
-- **S5** — performance gate: match 42.0 TFLOP/s @4096³ then beat it.
-  Occupancy tuning, smem bank-conflict layout, `.v4.f32` fills.
+- **S5** — performance gate: close the 29.3→42.0 TFLOP/s gap @4096³
+  (currently at 70% of cuBLAS anchor). The remaining gap is the
+  register-allocation / occupancy wall (64 regs = 2 CTAs/SM vs
+  cuBLAS's 3+). Occupancy tuning, smem bank-conflict layout,
+  `.v4.f32` fills.
 - **S6** — auto-tune loop: `derive --stochastic` sweeps
   (tile × stages × warps) per device profile, winners cached in
   `config/targets.*`.
@@ -364,9 +370,11 @@ INDEX.
    match it? This is the gating question for §5.1.
 2. **NVPTX general-emitter threshold** — at what kernel-surface size does
    LLVM NVPTX become cheaper than a hand-written general SIMT PTX emitter?
-3. **F16-acc numerics contract** — the 42.0 anchor needs the f16-acc tier
-   (gate ≤1e-2, a separate numerics contract per the ledger). Confirm the
-   correctness gate boundary before S5.
+3. **F16-acc numerics contract** — RESOLVED (2026-09-11): the K-budget
+   boundary is ≈K=12288, verified on device for both PTX and coopmat
+   tiers (5.2e-3 @K=4096, 8.2e-3 @K=8192, approaching 1e-2 gate).
+   The tier router must enforce K≤12288 for f16acc; larger K belongs
+   on the f32-acc tier.
 4. **smem swizzle generality** — does a single affine-analysis swizzle cover
    all tile shapes, or is a per-shape swizzle table (from `derive --stochastic`)
    the durable answer?
