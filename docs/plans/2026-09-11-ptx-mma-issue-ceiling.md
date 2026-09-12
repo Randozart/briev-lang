@@ -347,8 +347,11 @@ identifies the primary contributor and proposes a fix.
 | d (double fill) | 34.2 | 48 | 2048 | 2× B fill + ldmatrix + mma |
 | m (mma only) | 49.6 | 57 | 2048 | mma from pre-filled smem |
 | f (fill only) | 177.6 | 12 | 2048 | fill throughput (no mma) |
-| **p (pipeline)** | **39.1** | **53** | **4096** | double-buffered: fill buf(i+1) while mma buf(i) |
+| p (2-stage) | 39.1 | 53 | 4096 | double-buffered: fill buf(i+1) while mma buf(i) |
 | **a (A+B fill)** | **30.9** | **48** | **2048** | A fill + B fill + ldmatrix + mma (full pattern) |
+| **w (A fill only)** | **33.8** | **48** | **2048** | A fill overhead = 6.7 TF |
+| **i (interleaved)** | **30.4** | **48** | **2048** | interleaved A+B fills (no improvement) |
+| **t (3-stage)** | **38.0** | **55** | **6144** | 3-stage pipeline (SLOWER than 2-stage) |
 | **real kernel** | **29.3** | **64** | **3072** | full pipeline (2-stage overlap) |
 
 ### VERDICT: H1 REJECTED — pipeline overlap is not the wall
@@ -381,6 +384,8 @@ Gap decomposition:
 | H3: fill address computation overhead | **REJECTED** | ALU absorbed per E1b (53.5 TF with 150 ALU ops) |
 | H4: barrier overhead | **REJECTED** | all variants use bar.sync |
 | H5: A fill overhead | **CONFIRMED** | a (30.9) ≈ real (29.3) — A fill is ~90% of the gap |
+| H6: interleaving A+B helps | **REJECTED** | i (30.4) ≈ a (30.9) — no improvement |
+| H7: 3-stage pipeline helps | **REJECTED** | t (38.0) < p (39.1) — more smem hurts occupancy |
 
 ### Why the A fill costs so much
 
@@ -396,14 +401,31 @@ microbenchmark uses synchronous ld+st. The cp.async should be faster,
 but the smem port saturation is the same — the fill work itself is the
 dominant factor, not the copy mechanism.
 
-### Actionable fix: reduce A fill cost
+### Fill overhead decomposition
 
-The A fill is the wall. Possible approaches:
-1. **Reduce A fill work**: pack more data per store (ld.global.b64 instead
-   of ld.global.b32 where possible) — halves the store count
-2. **Overlap A fill with B fill**: fill A and B in the same pass, sharing
-   the smem port pipeline — reduces stall cycles
-3. **Software pipelining**: overlap A fill with mma (not just B fill) —
-   requires 3+ stage pipeline to hide the A fill latency
-4. **Accept the cost**: the A fill is inherent to the algorithm; focus
-   on other bottlenecks (the remaining 1.6 TF from store tail + misc)
+- A fill alone: 6.7 TF (e → w: 40.5 → 33.8)
+- B fill alone: ~3 TF (a minus w: 30.9 vs 33.8, but this is approximate)
+- Total fill: ~10 TF (e → a: 40.5 → 30.9)
+- Pipeline overlap: 1.4 TF (e → p: 40.5 → 39.1)
+- Store tail + misc: 1.6 TF (a → real: 30.9 → 29.3)
+
+### Actionable fix: widen A fill to 8 or 16-byte cp.async
+
+The A fill uses 4-byte synchronous stores. Widening to 8 or 16-byte
+cp.async would:
+1. Halve or quarter the number of store instructions
+2. Bypass the register file (cp.async writes directly to smem)
+3. For 16-byte: bypass L1 cache (L1 BYPASS mode)
+
+The constraint: smem destination must be 8 or 16-byte aligned. The
+current A fill writes to `rdA + g*64` which is 64-byte aligned — more
+than sufficient.
+
+Implementation: replace `ld.global.b32 + st.shared.b32` with
+`cp.async.ca.shared.global [dst], [src], 8` or `16`. This requires
+computing the shared memory address via `cvta.to.shared` and adjusting
+the thread-to-data mapping so each thread copies 8 or 16 bytes.
+
+The 3-stage pipeline (t: 38.0 TF) is slower than 2-stage (p: 39.1)
+because the extra smem (6144 vs 4096) reduces occupancy. The 2-stage
+pipeline is already optimal for this tile size.
