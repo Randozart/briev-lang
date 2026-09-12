@@ -1,0 +1,14 @@
+let g_counter: Int = 0;
+
+defn bump() [true][term >= 0] -> Int {
+    g_counter = g_counter + 1;
+    term g_counter;
+};
+
+let runs: Int = 0;
+
+node tick [runs < 3][runs == 3] {
+    let b: Int = bump();
+    runs = runs + 1;
+    term;
+};

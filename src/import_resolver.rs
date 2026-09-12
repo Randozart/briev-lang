@@ -79,6 +79,15 @@ fn item_name(item: &TopLevel) -> Option<&str> {
         TopLevel::Trigger(trg) => Some(trg.name.as_str()),
         TopLevel::TriggerBinding { name, .. } => Some(name.as_str()),
         TopLevel::Cell(c) => Some(c.name.as_str()),
+        // 2026-09-11 (library globals): a top-level `let` is a named state
+        // item — it imports (and lands in the program's state struct) like
+        // any other named declaration. Previously dropped, which made
+        // library-level mutable state impossible (the fasta buffered-stdout
+        // gap, BUGS.md 2026-09-11).
+        TopLevel::Statement(s) => match s.as_ref() {
+            crate::ast::Statement::Let { name, .. } => Some(name.as_str()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1008,6 +1017,10 @@ impl ImportResolver {
         match item {
             TopLevel::Definition(d) => Some(d.name.as_str()),
             TopLevel::Signature(s) => Some(s.name.as_str()),
+            TopLevel::Statement(s) => match s.as_ref() {
+                crate::ast::Statement::Let { name, .. } => Some(name.as_str()),
+                _ => None,
+            },
             TopLevel::ForeignBinding(fb) => Some(fb.effective_briev_name()),
             TopLevel::Transaction(t) => Some(t.name.as_str()),
             TopLevel::Constant(c) => Some(c.name.as_str()),
