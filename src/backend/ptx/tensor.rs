@@ -1820,6 +1820,8 @@ mod r16_dump {
     ///   f = clean fill only (no ldmatrix/mma in loop) — fill throughput
     ///   m = mma only from pre-filled smem — mma-from-smem throughput
     ///   d = double fill (2× B fill + ldmatrix + mma) — tests fill throughput wall
+    ///   p = pipeline overlap (double-buffered: fill buf(i+1) while mma buf(i))
+    ///   a = A fill + B fill + ldmatrix + mma — full kernel fill pattern
     #[test]
     fn dump_mma_fill_microbench() {
         let chains = 16usize;
@@ -1827,7 +1829,7 @@ mod r16_dump {
         let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
         let iters = (iters / 8 * 8).max(64);
 
-        for &variant in &["e", "s", "f", "m", "d"] {
+        for &variant in &["e", "s", "f", "m", "d", "p", "a"] {
             let mut out = String::new();
             let label = match variant {
                 "e" => "E1f baseline (clean fill + ldmatrix + mma)",
@@ -1835,11 +1837,17 @@ mod r16_dump {
                 "f" => "clean fill only (no mma in loop)",
                 "m" => "mma only from pre-filled smem",
                 "d" => "double fill (2x B fill + ldmatrix + mma)",
+                "p" => "pipeline overlap (fill buf(i+1) while mma buf(i))",
+                "a" => "A fill + B fill + ldmatrix + mma (full kernel pattern)",
                 _ => unreachable!(),
             };
             out.push_str(&format!("// Fill-gap diagnosis: {}\n", label));
             out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
-            out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
+            if variant == "p" {
+                out.push_str("    .extern .shared .align 16 .b8 dsmem[4096];\n");
+            } else {
+                out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
+            }
             out.push_str(".visible .entry main (.param .b64 proj_param) {\n");
             // All register declarations at the top
             out.push_str("    .reg .b32 %r<16>;\n");
@@ -1893,8 +1901,8 @@ mod r16_dump {
             out.push_str("    add.u32 %a0, %r3, %r2;\n");
             out.push_str("    mov.u32 %b0, 7;\n");
             out.push_str("    mov.u32 %b1, 13;\n");
-            // prefill smem (variant m: fill once before loop)
-            if variant == "m" {
+            // prefill smem (variant m: fill once before loop; variant p: fill buffer0)
+            if variant == "m" || variant == "p" {
                 for g in 0..8 {
                     out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
                     out.push_str("    add.u32 %r12, %r12, %r8;\n");
@@ -1907,10 +1915,44 @@ mod r16_dump {
             }
             out.push_str(&format!("    mov.u32 %r10, {};\n", iters));
             out.push_str("LOOP:\n");
-            // ---- FILL PHASE (variants e, s, f, d) ----
-            if variant != "m" {
+            // ---- FILL PHASE ----
+            if variant == "p" {
+                // Pipeline overlap: fill buffer (iter+1)%2 while mma reads from buffer iter%2
+                // iter counts DOWN from iters to 0; parity = r10 & 1
+                // Mma reads from buffer parity; fill writes to buffer parity^1
+                out.push_str("    and.b32 %r12, %r10, 1;\n");
+                out.push_str("    xor.b32 %r12, %r12, 1;\n"); // r12 = parity^1
+                out.push_str("    shl.b32 %r12, %r12, 11;\n"); // r12 = (parity^1) * 2048
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r13, {};\n", g * 256));
+                    out.push_str("    add.u32 %r13, %r13, %r8;\n");
+                    out.push_str("    add.u32 %r13, %r13, %r12;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r13, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                }
+            } else if variant == "a" {
+                // A fill: 8 stores to A smem region (offset from rdA, 4B each)
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 64));
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdA, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                }
+                // B fill: 8 groups
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str("    add.u32 %r12, %r12, %r8;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ld.global.b32 %r11, [%rd1];\n");
+                    out.push_str("    st.shared.b32 [%rd5], %r11;\n");
+                }
+            } else if variant != "m" {
+                // Variants e, s, f, d: existing B fill logic
                 let b_off = if variant == "s" { "%r9" } else { "%r8" };
-                // First fill pass (all variants except m)
                 for g in 0..8 {
                     out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
                     out.push_str(&format!("    add.u32 %r12, %r12, {};\n", b_off));
@@ -1919,7 +1961,6 @@ mod r16_dump {
                     out.push_str("    ld.global.b32 %r11, [%rd1];\n");
                     out.push_str("    st.shared.b32 [%rd5], %r11;\n");
                 }
-                // Second fill pass (variant d only — doubles fill throughput load)
                 if variant == "d" {
                     for g in 0..8 {
                         out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
@@ -1931,8 +1972,34 @@ mod r16_dump {
                     }
                 }
             }
-            // ---- LDMATRIX + MMA PHASE (variants e, s, m) ----
-            if variant != "f" {
+            // ---- LDMATRIX + MMA PHASE ----
+            if variant == "p" {
+                // Pipeline: mma reads from buffer (parity) * 2048
+                out.push_str("    and.b32 %r12, %r10, 1;\n");
+                out.push_str("    shl.b32 %r12, %r12, 11;\n"); // r12 = parity * 2048
+                out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
+                out.push_str("    mov.b32 %r11, %a1;\n");
+                out.push_str("    mov.b32 %a1, %a2;\n");
+                out.push_str("    mov.b32 %a2, %r11;\n");
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r13, {};\n", g * 256));
+                    out.push_str("    add.u32 %r13, %r13, %r8;\n");
+                    out.push_str("    add.u32 %r13, %r13, %r12;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r13, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str(&format!(
+                        "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{%b{}, %b{}}}, [%rd5];\n",
+                        2 * g, 2 * g + 1
+                    ));
+                }
+                for i in 0..chains {
+                    let bg = i / 8;
+                    out.push_str(&format!(
+                        "    mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16 {{%c{}, %c{}}}, {{%a0, %a1, %a2, %a3}}, {{%b{}, %b{}}}, {{%c{}, %c{}}};\n",
+                        2 * i, 2 * i + 1, 2 * bg, 2 * bg + 1, 2 * i, 2 * i + 1
+                    ));
+                }
+            } else if variant != "f" {
                 out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rdA];\n");
                 out.push_str("    mov.b32 %r11, %a1;\n");
                 out.push_str("    mov.b32 %a1, %a2;\n");

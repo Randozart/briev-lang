@@ -336,72 +336,74 @@ REJECTED (hypothesis disproved) or CONFIRMED (hypothesis supported)
 with the measured delta and confidence level. The final VERDICT
 identifies the primary contributor and proposes a fix.
 
-## Fill-gap results (2026-09-12): serialized fill+mma = 41 TF, swizzle free
+## Fill-gap results (2026-09-12): A fill is the wall, pipeline overlap is free
 
-Microbenchmarks (512T × 28 CTAs, 48-57 regs, smem=2048B):
+### Full variant table (512T × 28 CTAs)
 
-| variant | TF | regs | what |
-|---------|-----|------|------|
-| e (baseline) | 40.5 | 48 | clean fill + ldmatrix + mma (serialized) |
-| s (swizzled) | 42.6 | 48 | swizzled B fill + ldmatrix + mma |
-| d (double fill) | 34.2 | 48 | 2× B fill + ldmatrix + mma |
-| m (mma only) | 49.6 | 57 | mma from pre-filled smem |
-| f (fill only) | 177.6 | 12 | fill throughput (no mma) |
-| **real kernel** | **29.3** | **64** | full pipeline (2-stage overlap) |
+| variant | TF | regs | smem | what |
+|---------|-----|------|------|------|
+| e (baseline) | 40.5 | 48 | 2048 | clean fill + ldmatrix + mma (serialized) |
+| s (swizzled) | 42.6 | 48 | 2048 | swizzled B fill + ldmatrix + mma |
+| d (double fill) | 34.2 | 48 | 2048 | 2× B fill + ldmatrix + mma |
+| m (mma only) | 49.6 | 57 | 2048 | mma from pre-filled smem |
+| f (fill only) | 177.6 | 12 | 2048 | fill throughput (no mma) |
+| **p (pipeline)** | **39.1** | **53** | **4096** | double-buffered: fill buf(i+1) while mma buf(i) |
+| **a (A+B fill)** | **30.9** | **48** | **2048** | A fill + B fill + ldmatrix + mma (full pattern) |
+| **real kernel** | **29.3** | **64** | **3072** | full pipeline (2-stage overlap) |
 
-### VERDICT: H2 REJECTED — the XOR swizzle is not the wall
+### VERDICT: H1 REJECTED — pipeline overlap is not the wall
 
-Variant s (42.6 TF) is *faster* than variant e (40.5 TF). The swizzle
-computes different addresses for ldmatrix but ptxas absorbs the ALU
-cost. The swizzle does NOT cause bank conflicts during reads — it may
-even reduce them (the swizzle was designed for this).
+Variant p (39.1 TF) is only 1.4 TF below the serialized baseline e
+(40.5). The double-buffered pipeline adds negligible overhead — the
+smem port contention between fill writes and ldmatrix reads is absorbed
+by the hardware scheduler. The pipeline overlap was a red herring.
 
-### VERDICT: fill throughput is a significant contributor (~55% of gap)
+### VERDICT: the A fill IS the wall (~90% of the gap)
 
-The double-fill variant (34.2 TF) costs 6.3 TF vs the baseline (40.5).
-This accounts for ~56% of the 11.2 TF gap between the microbenchmark
-(40.5) and the real kernel (29.3). The fill work in the real kernel is
-more than double the microbenchmark's fill (A fill + B fill with
-cooperative copies + stage selection logic), so the fill overhead is
-likely 6-8 TF.
+Variant a (30.9 TF) accounts for nearly the entire gap from e (40.5)
+to the real kernel (29.3). The A fill adds 8 stores per kstep to the
+A smem region, costing ~10 TF. This matches the real kernel's
+structure: the A fill (8 cp.async per kstep) is the dominant overhead.
 
-### Remaining gap: ~5 TF from pipeline overlap + A fill + store tail
-
-The double-fill (34.2) is still 4.9 TF above the real kernel (29.3).
-This remaining gap comes from:
-- The A fill (10+ cp.async per kstep, not in the microbenchmark)
-- The 2-stage pipeline overlap (fill stage N+1 while mma stage N —
-  the microbenchmarks serialize fill and mma)
-- The store-only tail (32 f16 stores after KEND)
-- The stage selection logic (computing fill/compute stage per kstep)
+Gap decomposition:
+- B fill + swizzle: free (e → s: +2.1 TF, swizzle helps)
+- Double B fill: −6.3 TF (e → d)
+- A fill: −9.6 TF (e → a: 40.5 → 30.9)
+- Pipeline overlap: −1.4 TF (e → p: 40.5 → 39.1)
+- Store tail + misc: −1.6 TF (a → real: 30.9 → 29.3)
 
 ### Hypothesis status
 
 | hypothesis | status | evidence |
 |-----------|--------|----------|
-| H1: smem write contention (fill vs mma overlap) | UNRESOLVED — needs overlapped microbenchmark | the pipeline overlap contributes ~5 TF but cannot be isolated without a double-buffered variant |
-| H2: smem bank conflicts during mma reads | **REJECTED** | swizzled fill (42.6) ≥ clean fill (40.5) — swizzle is free |
-| H3: fill address computation overhead | **REJECTED** | the ALU is free per E1b (53.5 TF with 150 ALU ops); the fill's ~20 ALU ops per group are absorbed by the scheduler |
-| H4: barrier overhead | **REJECTED** | all variants use bar.sync; the barrier is hardware-accelerated |
+| H1: smem write contention (fill vs mma overlap) | **REJECTED** | p (39.1) ≈ e (40.5) — pipeline overlap costs only 1.4 TF |
+| H2: smem bank conflicts during mma reads | **REJECTED** | s (42.6) ≥ e (40.5) — swizzle is free |
+| H3: fill address computation overhead | **REJECTED** | ALU absorbed per E1b (53.5 TF with 150 ALU ops) |
+| H4: barrier overhead | **REJECTED** | all variants use bar.sync |
+| H5: A fill overhead | **CONFIRMED** | a (30.9) ≈ real (29.3) — A fill is ~90% of the gap |
 
-### Next step: measure the pipeline overlap directly
+### Why the A fill costs so much
 
-Add variant "p" (pipeline overlap): double-buffer the smem (two B
-slab sets), fill buffer (iter+1)%2 while mma from buffer iter%2. This
-replicates the real kernel's pipeline structure. If variant p ≈ 29 TF,
-the pipeline overlap is the wall. If p ≈ 34 TF, the A fill is the
-remaining contributor.
+The A fill writes 8 × 4B = 32B per thread per kstep to smem. Each
+store goes through the smem port pipeline, which has limited throughput.
+The B fill also uses the same smem ports. Combined, the fill work
+(A + B) saturates the smem write bandwidth, leaving fewer cycles for
+ldmatrix reads. The mma instruction itself is fast (49.6 TF from
+pre-filled smem), but the fill-to-read ratio is the bottleneck.
 
-The A fill is the other major unknown: it adds ~10 cp.async per kstep
-(not in the microbenchmarks). Measuring with A fill included would
-close the gap further.
+The real kernel's A fill uses cp.async (asynchronous), while the
+microbenchmark uses synchronous ld+st. The cp.async should be faster,
+but the smem port saturation is the same — the fill work itself is the
+dominant factor, not the copy mechanism.
 
-### Actionable insight
+### Actionable fix: reduce A fill cost
 
-The fill-to-mma overlap is the primary structural overhead. The real
-kernel's 2-stage pipeline trades throughput for latency hiding — the
-fill runs "for free" in theory, but in practice the smem port contention
-between the fill writes and the ldmatrix reads costs ~5-6 TF. The fix
-would be to restructure the pipeline so the fill and mma don't contend
-for the same smem ports (e.g., separate A and B smem regions, or
-increase pipeline depth to 3 stages to spread the contention).
+The A fill is the wall. Possible approaches:
+1. **Reduce A fill work**: pack more data per store (ld.global.b64 instead
+   of ld.global.b32 where possible) — halves the store count
+2. **Overlap A fill with B fill**: fill A and B in the same pass, sharing
+   the smem port pipeline — reduces stall cycles
+3. **Software pipelining**: overlap A fill with mma (not just B fill) —
+   requires 3+ stage pipeline to hide the A fill latency
+4. **Accept the cost**: the A fill is inherent to the algorithm; focus
+   on other bottlenecks (the remaining 1.6 TF from store tail + misc)
