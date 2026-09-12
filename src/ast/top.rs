@@ -263,6 +263,12 @@ pub struct CellDef {
     pub pins: Vec<PinDecl>,
     pub reference: Option<String>,
     pub tolerance: Option<Tolerance>,
+    /// 2026-09-12 (power ratings): `rating 0.25;` (max watts the part
+    /// dissipates) or `rating any;` (declared-unrated). Proven against the
+    /// derived P = V × I per part — same forced-explicitness doctrine as
+    /// tolerance: a part proven to dissipate with no rating clause is an
+    /// undeclared decision.
+    pub rating: Option<Rating>,
     /// 2026-08-27 (cbv-HW plan Slice A): set on `extern Name(ports) -> outs
     /// from "path";` declarations — the cell's DEFINITION lives in the
     /// referenced HDL source; CIRCT emits an `hw.module.extern` blackbox,
@@ -278,6 +284,14 @@ pub struct CellDef {
 #[derive(Debug, Clone)]
 pub enum Tolerance {
     Volts(f64),
+    Any,
+}
+
+/// 2026-09-12 (power ratings): `rating 0.25;` (max watts) or `rating any;`
+/// (DECLARED unrated).
+#[derive(Debug, Clone)]
+pub enum Rating {
+    Watts(f64),
     Any,
 }
 
@@ -1116,6 +1130,9 @@ pub struct TypeDefBody {
     pub reference: Option<String>,
     /// `tolerance 3.3;` (Volt) or `tolerance any;` (declared unrated).
     pub tolerance: Option<Tolerance>,
+    /// 2026-09-12 (power ratings): `rating 0.25;` (max watts) or
+    /// `rating any;` (declared unrated) — proven against derived P = V × I.
+    pub rating: Option<Rating>,
     pub metadata: HashMap<String, PropertyValue>,
     pub projections: Vec<ProjectionDef>,
     pub bindings: Vec<TypeBinding>,

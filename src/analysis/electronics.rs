@@ -56,6 +56,10 @@ pub struct TypeInfo {
     /// None = unrated: the pin places no constraint (skeleton semantics;
     /// per-pin ratings are a follow-on).
     pub tolerance: Option<f64>,
+    /// 2026-09-12 (power ratings): max watts this part dissipates —
+    /// `rating 0.25;` → Some(watts), `rating any;` → Some(INFINITY),
+    /// no clause → None (the proven-dissipation violation decides).
+    pub rating: Option<f64>,
 }
 
 /// One derived electrical node.
@@ -182,10 +186,14 @@ fn collect_type_pins(items: &[TopLevel]) -> (BTreeMap<String, Vec<(String, u64)>
                     crate::ast::top::Tolerance::Volts(v) => *v,
                     crate::ast::top::Tolerance::Any => f64::INFINITY,
                 });
+                let rating = td.body.rating.as_ref().map(|r| match r {
+                    crate::ast::top::Rating::Watts(w) => *w,
+                    crate::ast::top::Rating::Any => f64::INFINITY,
+                });
                 let mut pins: Vec<(String, u64)> =
                     td.body.pins.iter().map(|p| (p.name.clone(), p.number)).collect();
                 pins.sort_by_key(|&(_, n)| n);
-                info.insert(td.name.clone(), TypeInfo { reference_prefix: prefix, pins, tolerance });
+                info.insert(td.name.clone(), TypeInfo { reference_prefix: prefix, pins, tolerance, rating });
             }
         }
     }
@@ -388,6 +396,7 @@ fn derive_voltage(
     // B4 flagship: I = V / R through series parts, dividers, and KCL sums;
     // then the postcondition current bounds are proven against the result.
     derive_current(&pin_to_net, instances, type_info, check.net_voltage.clone(), &mut check);
+    derive_power(&pin_to_net, instances, type_info, &mut check);
     check_current_bounds(items, instances, type_pins, &pin_to_net, &mut check);
     check
 }
@@ -758,6 +767,56 @@ fn derive_current(
     check.net_voltage = g.voltage;
 }
 
+/// 2026-09-12 (power ratings): P = V × I per part from the FINAL voltage
+/// classes. A part with both endpoints classed and ΔV > 0 has PROVEN
+/// dissipation — the rating clause must declare the decision (same doctrine
+/// as tolerance): exceeding the rating is a violation, no clause is an
+/// undeclared decision, within the rating records a proof fact. A part with
+/// an unclassed endpoint has no proven ΔV — nothing is forced (the LED in
+/// the demo is non-ohmic, so its series resistor stays one-sided there).
+fn derive_power(
+    pin_to_net: &BTreeMap<(String, String), String>,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    check: &mut VoltageCheck,
+) {
+    let parts = collect_series_parts(instances, type_info, pin_to_net);
+    for p in parts {
+        let (Some(va), Some(vb)) = (
+            check.net_voltage.get(&p.net_a).copied(),
+            check.net_voltage.get(&p.net_b).copied(),
+        ) else {
+            continue;
+        };
+        let dv = (va - vb).abs();
+        if dv <= f64::EPSILON {
+            continue;
+        }
+        let watts = dv * dv / p.ohms;
+        let Some(inst) = instances.get(&p.name) else { continue };
+        let Some(info) = type_info.get(&inst.type_name) else { continue };
+        match info.rating {
+            None => check.violations.push(format!(
+                "part '{}' ({}, {}) dissipates a derived {} but its type declares no power rating — \
+                 an unstated rating on a proven-dissipating part is an undeclared decision. \
+                 fix: add `rating <watts>;` rated above the derived dissipation, or `rating any;` \
+                 to declare the part unrated on purpose.",
+                p.name, inst.type_name, p.raw, format_watts(watts)
+            )),
+            Some(rated) if watts > rated + f64::EPSILON => check.violations.push(format!(
+                "part '{}' ({}, {}) dissipates a derived {} but is rated {} — the derived physics \
+                 exceeds the declared rating. fix: raise the rating to a real part class, spread the \
+                 drop across more parts, or lower the drive.",
+                p.name, inst.type_name, p.raw, format_watts(watts), format_watts(rated)
+            )),
+            Some(rated) => check.proved.push(format!(
+                "P({}) = {} <= {} rating — within the declared rating",
+                p.name, format_watts(watts), format_watts(rated)
+            )),
+        }
+    }
+}
+
 /// Prove (or violate) the postcondition current bounds against the derived
 /// current classes.
 fn check_current_bounds(
@@ -797,6 +856,16 @@ fn format_amps(a: f64) -> String {
 
 /// Voltage formatting for diagnostics: trim trailing zeros (5.0 → "5 V",
 /// 3.3 → "3.3 V").
+fn format_watts(w: f64) -> String {
+    if w >= 1.0 {
+        format!("{:.2} W", w)
+    } else if w >= 1e-3 {
+        format!("{:.1} mW", w * 1e3)
+    } else {
+        format!("{:.1} uW", w * 1e6)
+    }
+}
+
 fn format_volts(v: f64) -> String {
     let s = format!("{:.2}", v);
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -1197,8 +1266,8 @@ mod tests {
         // 2.0 V-rated pin there violates and a 3.3 V-rated one passes.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; pin gnd; reference "P"; tolerance any; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
             type Sensor { pin s; reference "S"; tolerance 2.0; };
             let p1: Power = Power { };
             let r1: Resistor = Resistor { value: "1k" };
@@ -1210,6 +1279,7 @@ mod tests {
             { }
         "#;
         let nl = analyze(src);
+        assert!(nl.voltage.violations.is_empty(), "rated divider board is clean: {:?}", nl.voltage.violations);
         let mid = nl.voltage.net_voltage.values().find(|v| (**v - 2.5).abs() < 1e-6);
         assert!(mid.is_some(), "mid node derives to 2.5 V: {:?}", nl.voltage.net_voltage);
         assert!(
@@ -1225,8 +1295,8 @@ mod tests {
         // while a 12 mA bound holds.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; pin gnd; reference "P"; tolerance any; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
             let p1: Power = Power { };
             let r1: Resistor = Resistor { value: "660" };
             let r2: Resistor = Resistor { value: "660" };
@@ -1387,6 +1457,61 @@ mod tests {
         let nl = analyze(src);
         assert!(nl.net_conflicts.is_empty(), "same name twice is redundant, not a conflict: {:?}", nl.net_conflicts);
         assert!(nl.nets.iter().any(|n| n.name == "vcc"));
+    }
+
+    #[test]
+    fn derived_power_above_rating_violates() {
+        // 12 V across a single 330-ohm part: 0.44 W — above the 0.25 W
+        // 0805-class rating. The compiler refuses by derivation.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
+            let p1: Power = Power { };
+            let r1: Resistor = Resistor { value: "330" };
+            txn apply
+                [p1.vout.voltage == r1.a.voltage && r1.b.voltage == p1.gnd.voltage && p1.vout.voltage == 12.0 && p1.gnd.voltage == 0.0]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.voltage.violations.iter().any(|v| v.contains("rated 250.0 mW")), "0.44 W > 0.25 W must violate: {:?}", nl.voltage.violations);
+    }
+
+    #[test]
+    fn proven_dissipation_without_rating_is_undeclared() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            let p1: Power = Power { };
+            let r1: Resistor = Resistor { value: "330" };
+            txn apply
+                [p1.vout.voltage == r1.a.voltage && r1.b.voltage == p1.gnd.voltage && p1.vout.voltage == 5.0 && p1.gnd.voltage == 0.0]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.voltage.violations.iter().any(|v| v.contains("declares no power rating")), "proven dissipation forces the decision: {:?}", nl.voltage.violations);
+    }
+
+    #[test]
+    fn zero_drop_needs_no_rating() {
+        // Both pins on one driven net: a strap — ΔV = 0, no proven
+        // dissipation, no rating decision forced.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            let p1: Power = Power { };
+            let r1: Resistor = Resistor { value: "330" };
+            txn apply
+                [p1.vout.voltage == r1.a.voltage && r1.b.voltage == r1.a.voltage && p1.vout.voltage == 5.0]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.voltage.violations.is_empty(), "strap dissipates nothing provable: {:?}", nl.voltage.violations);
     }
 
     #[test]

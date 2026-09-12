@@ -40,6 +40,7 @@ mod tests {
                 pins: Vec::new(),
                 reference: None,
                 tolerance: None,
+                rating: None,
                 slots: vec![
                     TypeDefSlot { name: "x".to_string(), ty: Type::int(), bit_range: None },
                     TypeDefSlot { name: "y".to_string(), ty: Type::int(), bit_range: None },

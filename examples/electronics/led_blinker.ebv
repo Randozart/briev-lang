@@ -9,7 +9,9 @@
 //
 // Named nets (`net vcc:`) are opt-in readability annotations on the
 // inferred equivalence classes. Unit suffixes (3.3V, 20mA, 330R) are
-// convenience syntax for physics literals.
+// convenience syntax for physics literals. The rating clause declares
+// the power decision per type (0.25 W 0805-class resistor; the LED's
+// dissipation is non-ohmic, so `any` declares it unrated on purpose).
 //
 // Compile:  brievc build led_blinker.ebv   → led_blinker.kicad_sch
 //
@@ -22,6 +24,7 @@ type Connector {
     pin p2 = 2;
     reference "J";
     tolerance any;
+    rating any;
 };
 
 type Resistor {
@@ -29,6 +32,7 @@ type Resistor {
     pin b;
     reference "R";
     tolerance any;
+    rating 0.25;
 };
 
 type Led {
@@ -36,6 +40,7 @@ type Led {
     pin k;
     reference "D";
     tolerance 3.6;
+    rating any;
 };
 
 let j1: Connector = Connector { value: "JST-PH-2"; package: "JST-PH" };

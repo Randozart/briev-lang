@@ -1046,6 +1046,7 @@ impl<'a> Parser<'a> {
             pins: Vec::new(),
             reference: None,
             tolerance: None,
+            rating: None,
             name,
             type_params,
             parameters: ports_in.clone(),
@@ -1116,6 +1117,7 @@ impl<'a> Parser<'a> {
         let mut pin_high_water: u64 = 0;
         let mut reference: Option<String> = None;
         let mut tolerance: Option<crate::ast::top::Tolerance> = None;
+        let mut rating: Option<crate::ast::top::Rating> = None;
         // 2026-08-26 (Phase B2): internal triggers keep their own field.
         let mut internal_triggers: Vec<Trigger> = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
@@ -1129,6 +1131,10 @@ impl<'a> Parser<'a> {
             }
             if self.at_tolerance_clause() {
                 tolerance = Some(self.parse_tolerance_clause()?);
+                continue;
+            }
+            if self.at_rating_clause() {
+                rating = Some(self.parse_rating_clause()?);
                 continue;
             }
             if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
@@ -1183,6 +1189,7 @@ impl<'a> Parser<'a> {
             pins,
             reference,
             tolerance,
+            rating,
             type_params,
             parameters: ports_in.clone(),
             output_type: None,
@@ -2167,6 +2174,34 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    fn at_rating_clause(&self) -> bool {
+        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "rating") {
+            return false;
+        }
+        matches!(self.peek_next(), Some(Token::Identifier(v)) if v == "any")
+            || matches!(
+                self.peek_next(),
+                Some(Token::Float(_)) | Some(Token::Integer(_))
+            )
+    }
+
+    /// `rating 0.25;` (max watts) | `rating any;` (declared unrated).
+    fn parse_rating_clause(&mut self) -> Result<crate::ast::top::Rating, SyntaxError> {
+        self.pos += 1; // consume `rating`
+        let r = match self.peek() {
+            Some(Token::Identifier(v)) if v == "any" => crate::ast::top::Rating::Any,
+            Some(Token::Float(f)) => crate::ast::top::Rating::Watts(*f),
+            Some(Token::Integer(n)) => crate::ast::top::Rating::Watts(*n as f64),
+            _ => {
+                return self
+                    .error_at_current("expected a power in watts (`rating 0.25;`) or `any` (`rating any;`)")
+            }
+        };
+        self.pos += 1;
+        self.eat(&Token::Semicolon);
+        Ok(r)
+    }
+
     /// Is the current position an Electronics clause (`reference`/`tolerance`
     /// identifier followed by its clause payload, not a `:` slot)?
     fn at_reference_clause(&self) -> bool {
@@ -2331,6 +2366,7 @@ impl<'a> Parser<'a> {
         let mut pin_high_water: u64 = 0;
         let mut reference: Option<String> = None;
         let mut tolerance: Option<crate::ast::top::Tolerance> = None;
+        let mut rating: Option<crate::ast::top::Rating> = None;
         let mut metadata = std::collections::HashMap::new();
         let mut operators: Vec<OperatorDef> = Vec::new();
         let mut atomic_slots: Vec<String> = Vec::new();
@@ -2350,6 +2386,10 @@ impl<'a> Parser<'a> {
                 }
                 if self.at_tolerance_clause() {
                     tolerance = Some(self.parse_tolerance_clause()?);
+                    continue;
+                }
+                if self.at_rating_clause() {
+                    rating = Some(self.parse_rating_clause()?);
                     continue;
                 }
                 // !> key: value; or spec PascalCase: value; — metadata assignment
@@ -2395,6 +2435,7 @@ impl<'a> Parser<'a> {
                 pins,
                 reference: reference.clone(),
                 tolerance,
+            rating,
                 metadata,
                 projections: vec![],
                 bindings: vec![],
@@ -2842,7 +2883,7 @@ impl<'a> Parser<'a> {
             ports_in, ports_out,
             bit_range: None, span: None, coll, seq,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, tolerance: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, span: None,
+                slots, pins: vec![], reference: None, tolerance: None, rating: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, span: None,
             },
         }))
     }
@@ -3114,7 +3155,7 @@ impl<'a> Parser<'a> {
             ports_in: vec![], ports_out: vec![],
             bit_range: None, span: None, coll: false, seq: false,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, tolerance: None,
+                slots, pins: vec![], reference: None, tolerance: None, rating: None,
                 metadata: std::collections::HashMap::new(),
                 projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], span: None,
             },

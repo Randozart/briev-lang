@@ -377,6 +377,7 @@ mod tests {
             body: TypeDefBody {
                 reference: None,
                 tolerance: None,
+            rating: None,
                 slots: vec![TypeDefSlot { name: "r".into(), ty: Type::int(), bit_range: None }],
                 pins: vec![
                     crate::ast::top::PinDecl { name: "a".into(), number: 1, span: None },

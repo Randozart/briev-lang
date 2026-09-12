@@ -33,6 +33,8 @@ fn build_pass(briefc: &Path, bv: &str, out_root: &Path) -> Option<PathBuf> {
 fn main() {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let out_root = Path::new(&manifest).join("target").join("compiler-in-briv");
+    std::fs::create_dir_all(&out_root).ok(); // fresh worktree bootstrap
+
     println!("cargo:rerun-if-changed=lib/compiler/needs_state.bv");
     println!("cargo:rerun-if-changed=lib/compiler/soa_reorder.bv");
     println!("cargo:rerun-if-changed=lib/compiler/reader.bv");

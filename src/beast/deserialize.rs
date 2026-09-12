@@ -181,7 +181,8 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
         bit_range: None, span: None, coll: false, seq: false,
         ports_in: Vec::new(),
         ports_out: Vec::new(),
-        body: TypeDefBody { slots, pins, reference: None, tolerance: None, metadata, projections: vec![], bindings: vec![],
+        body: TypeDefBody { slots, pins, reference: None, tolerance: None,
+            rating: None, metadata, projections: vec![], bindings: vec![],
             operators: vec![], op_bindings: vec![],
             constraints: vec![], members: vec![], span: None },
     }))

@@ -717,6 +717,7 @@ mod tests {
                 pins: Vec::new(),
                 reference: None,
                 tolerance: None,
+                rating: None,
                 slots: vec![],
                 metadata: std::collections::HashMap::new(),
                 projections: vec![],
