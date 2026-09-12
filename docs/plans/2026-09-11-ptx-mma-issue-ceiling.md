@@ -482,3 +482,12 @@ interleaved same-window A/B is comparable.) 64 regs, no spills kept.
 
 Session net at 4096³ f16acc: 28.97 → 29.61 TF in-window, ~70% of the
 cuBLAS anchor.
+
+### warp_mh=4: REJECTED 2026-09-12
+
+The 64×32 A-sharing warp (mhr=4, gr=4) makes per_a=4 (A fires the 16B
+`.cg` rung) and quarters B loads (16×→4× per kstep) — but per_b drops
+to 2, so B falls to the 8B rung: the two configs just swap rung
+widths. Interleaved ×4 same-window at 4096³ f16acc: mh2 31.31 vs mh4
+31.16 TF — mh2 wins 3/4 rounds, inside noise. Reverted; dispatch keeps
+warp_mh=2 with the measurement recorded in the comment.

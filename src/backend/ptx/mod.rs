@@ -294,8 +294,12 @@ pub fn build_ptx_kernels(
                         plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
                         f16_acc, stages,
                         // warp_mh=2: the historical 32x64 warp. The 64x32
-                        // A-sharing variant (warp_mh=4) is experimental —
-                        // plan 2026-09-11-ptx-double-pump-warp-tile.
+                        // A-sharing variant (warp_mh=4) measured 31.16 vs
+                        // 31.31 TF at 4096^3 f16acc (interleaved x4,
+                        // 2026-09-12): the B-load quartering nets out
+                        // because per_b=2 drops B to the 8B rung — the two
+                        // configs swap rung widths. Plan
+                        // 2026-09-11-ptx-double-pump-warp-tile.
                         2,
                     ),
                     true,
