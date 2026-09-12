@@ -167,6 +167,7 @@ impl<'a> DataflowAnalyzer<'a> {
             Expr::Named { inner, .. } => {
                 self.extract_ids_recursive(inner, ids);
             }
+            Expr::UnitLiteral { .. } => {}
 
         }
     }

@@ -356,6 +356,7 @@ pub fn eval_expr(
                 Ok(Value::Range { start: s, end: e, inclusive: *inclusive })
             }
             Expr::Named { inner, .. } => eval_expr(inner, heap, bindings, functions),
+            Expr::UnitLiteral { value, .. } => Ok(f64_to_bits(*value)),
 
     }
 }

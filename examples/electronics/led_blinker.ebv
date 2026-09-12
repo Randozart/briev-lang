@@ -8,8 +8,8 @@
 // the LED current — the tolerance clause (3.6 V) proves the level safe.
 //
 // Named nets (`net vcc:`) are opt-in readability annotations on the
-// inferred equivalence classes. They replace auto-generated N1, N2...
-// with human-readable names in diagnostics and KiCad output.
+// inferred equivalence classes. Unit suffixes (3.3V, 20mA, 330R) are
+// convenience syntax for physics literals.
 //
 // Compile:  brievc build led_blinker.ebv   → led_blinker.kicad_sch
 //
@@ -39,11 +39,11 @@ type Led {
 };
 
 let j1: Connector = Connector { value: "JST-PH-2"; package: "JST-PH" };
-let r1: Resistor  = Resistor  { value: "330"; package: "0805" };
+let r1: Resistor  = Resistor  { value: "330R"; package: "0805" };
 let d1: Led       = Led       { value: "red"; package: "0805" };
 
 txn powered
-    [net vcc: j1.p1.voltage == r1.a.voltage && net out: r1.b.voltage == d1.a.voltage && net gnd: d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3]
-    [d1.a.current > 0.0 && d1.a.current <= 0.02]
+    [net vcc: j1.p1.voltage == r1.a.voltage && net mid: r1.b.voltage == d1.a.voltage && net gnd: d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3V]
+    [d1.a.current > 0.0 && d1.a.current <= 20mA]
 {
 }

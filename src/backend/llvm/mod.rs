@@ -76,6 +76,7 @@ fn collect_called_names_expr(e: &Expr, out: &mut std::collections::HashSet<Strin
             }
         }
         Expr::Named { inner, .. } => collect_called_names_expr(inner, out),
+        Expr::UnitLiteral { .. } => {}
         _ => {}
     }
 }
@@ -289,6 +290,9 @@ fn try_eval_cfloat(
             }
         }
         Expr::Named { inner, .. } => try_eval_cfloat(inner, constants, is_float),
+        Expr::UnitLiteral { value, .. } => {
+            Some(*value)
+        }
         _ => None,
     }
 }
@@ -489,6 +493,7 @@ fn collect_bytes_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>
             }
         }
         Expr::Named { inner, .. } => { collect_bytes_expr(inner, seen, out); }
+        Expr::UnitLiteral { .. } => {}
         _ => {}
     }
 }
@@ -599,6 +604,7 @@ fn collect_masks_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>
             }
         }
         Expr::Named { inner, .. } => { collect_masks_expr(inner, seen, out); }
+        Expr::UnitLiteral { .. } => {}
         _ => {}
     }
 }
@@ -816,6 +822,7 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
                 collect_strings_expr(end, seen, out);
             }
             Expr::Named { inner, .. } => { collect_strings_expr(inner, seen, out); }
+            Expr::UnitLiteral { .. } => {}
 
     }
 }
@@ -2344,6 +2351,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             Expr::Named { inner, .. } => {
                 self.check_expr_embedded(inner, ctx_name, threading_intrinsics);
             }
+            Expr::UnitLiteral { .. } => {}
             _ => {}
         }
     }

@@ -1480,6 +1480,7 @@ pub fn infer_expression(
                 }
             }
             Expr::Named { inner, .. } => infer_expression(inner, ctx),
+            Expr::UnitLiteral { .. } => Ok((Type::float(), Provenance::Unknown)),
 
     }
 }
@@ -1640,6 +1641,9 @@ fn try_coerce_via_parse(
         }
         Expr::Named { inner, .. } => {
             return try_coerce_via_parse(inner, target_ty, arg_ty, ctx);
+        }
+        Expr::UnitLiteral { value, .. } => {
+            return try_coerce_via_parse(&Expr::Float(*value), target_ty, arg_ty, ctx);
         }
         // 2026-08-17: a COMPUTED numeric seed — `let m: HashMap<Int,Int> =
         // 2 * N` — is a legitimate `op Init` construction value (the seed is
@@ -2465,6 +2469,7 @@ fn elaborate_expr(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<
             }
         }
         Expr::Named { inner, .. } => elaborate_expr(inner, ctx, errors),
+        Expr::UnitLiteral { .. } => {}
         _ => {}
     }
 }

@@ -225,6 +225,7 @@ impl Annotator {
             Expr::Named { inner, .. } => {
                 self.collect_calls_from_expr(inner, calls);
             }
+            Expr::UnitLiteral { .. } => {}
         }
     }
 
@@ -685,7 +686,9 @@ impl Annotator {
             Expr::Named { name, inner } => {
                 format!("net {}: {}", name, self.format_expr(inner))
             }
-
+            Expr::UnitLiteral { value, unit } => {
+                format!("{}{}", value, unit)
+            }
         }
     }
 }

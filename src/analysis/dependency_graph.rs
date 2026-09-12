@@ -300,6 +300,7 @@ fn collect_expr_ids_inner(expr: &Expr, ids: &mut Vec<String>) {
         Expr::Named { inner, .. } => {
             collect_expr_ids_inner(inner, ids);
         }
+        Expr::UnitLiteral { .. } => {}
 
     }
 }

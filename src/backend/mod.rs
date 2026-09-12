@@ -596,6 +596,7 @@ pub fn collect_expr_identifiers(expr: &Expr, ids: &mut std::collections::HashSet
         Expr::Named { inner, .. } => {
             collect_expr_identifiers(inner, ids);
         }
+        Expr::UnitLiteral { .. } => {}
         Expr::Slice { array, start, end, stride } => {
             collect_expr_identifiers(array, ids);
             if let Some(e) = start.as_deref() { collect_expr_identifiers(e, ids); }

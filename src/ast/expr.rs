@@ -165,6 +165,11 @@ pub enum Expr {
     /// equality. The name is metadata attached to the equivalence class;
     /// inference is unchanged. Only meaningful in contract preconditions.
     Named { name: String, inner: Box<Expr> },
+    /// `<number><unit>` — a numeric literal with a physics unit suffix.
+    /// `3.3V` (volts), `10mA` (milliamps), `330R` (ohms), etc.
+    /// Parsed from adjacent numeric + identifier tokens; the analysis
+    /// pass interprets the unit.
+    UnitLiteral { value: f64, unit: String },
 }
 
 /// 2026-07-31: Reflection kind — distinguishes value-derived (runtime)

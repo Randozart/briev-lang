@@ -176,6 +176,7 @@ impl LlvmBackend {
                 name: name.clone(),
                 inner: Box::new(Self::rewrite_cell_identifiers(inner, cell_name)),
             },
+            Expr::UnitLiteral { value, unit } => Expr::UnitLiteral { value: *value, unit: unit.clone() },
 
         }
     }

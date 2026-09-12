@@ -128,6 +128,7 @@ Expr::Slice { .. } => false,
         Expr::PluginIntercept { .. } => false,
         Expr::DerivationBlock(_) => false,
         Expr::Named { inner, .. } => is_invariant_expression(inner, write_set, invariant_names, state_fields),
+        Expr::UnitLiteral { .. } => true,
     }
 }
 

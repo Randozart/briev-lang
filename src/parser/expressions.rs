@@ -9,6 +9,15 @@ use crate::ast::{BinaryOpKind, Expr, ReflectKind, SpawnStorage, UnaryOpKind};
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
+/// True when the suffix identifier is a physics unit that should produce
+/// `Expr::UnitLiteral` instead of `Expr::TaggedLiteral`.
+fn is_unit_suffix(s: &str) -> bool {
+    matches!(
+        s,
+        "V" | "A" | "mA" | "R" | "Ω" | "F" | "H" | "Hz" | "W" | "K"
+    )
+}
+
 impl<'a> Parser<'a> {
     /// Entry point: parse an expression at any precedence level.
     pub fn parse_expression(&mut self) -> Result<Expr, SyntaxError> {
@@ -62,10 +71,8 @@ impl<'a> Parser<'a> {
     fn parse_and_lhs(&mut self) -> Result<Expr, SyntaxError> {
         if self.at_net_prefix() {
             self.pos += 1; // consume 'net'
-            let name = match self.peek() {
-                Some(Token::Identifier(s)) => s.clone(),
-                _ => unreachable!(),
-            };
+            // The name can be an identifier or a keyword token.
+            let name = format!("{}", self.tokens[self.pos].0);
             self.pos += 1; // consume name
             self.pos += 1; // consume ':'
             let inner = self.parse_equality()?;
@@ -75,12 +82,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// True when the current token sequence is `net <ident>:` — a named net
-    /// annotation prefix.
+    /// True when the current token sequence is `net <name>:` — a named net
+    /// annotation prefix. The name can be any identifier or keyword (net
+    /// names are contextual, not reserved).
     fn at_net_prefix(&self) -> bool {
-        matches!(self.peek(), Some(Token::Identifier(s)) if s == "net")
-            && matches!(self.peek_next(), Some(Token::Identifier(_)))
-            && self.tokens.get(self.pos + 2).map_or(false, |(t, _)| matches!(t, Token::Colon))
+        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "net") {
+            return false;
+        }
+        // The name after `net` must be present and not be `:` (which would
+        // mean `net:` with no name). Keywords are valid net names.
+        let name_ok = self.peek_next().is_some_and(|t| !matches!(t,
+            Token::Colon | Token::EqEq | Token::Ne | Token::Lt | Token::Gt
+            | Token::Le | Token::Ge | Token::AndAnd | Token::OrOr
+            | Token::Plus | Token::Minus | Token::Star | Token::Slash
+            | Token::Percent | Token::LBrace | Token::RBrace
+            | Token::LParen | Token::RParen | Token::LBracket | Token::RBracket
+            | Token::Comma | Token::Semicolon | Token::Dot | Token::ColonEq
+            | Token::Integer(_) | Token::Float(_) | Token::BoolTrue | Token::BoolFalse
+        ));
+        name_ok && self.tokens.get(self.pos + 2).map_or(false, |(t, _)| matches!(t, Token::Colon))
     }
 
     /// Equality: a == b, a != b
@@ -565,15 +585,23 @@ impl<'a> Parser<'a> {
             Some((Token::Integer(n), span)) => {
                 // 2026-07-27: Check for adjacent suffix identifier (e.g., 42km, 0xFFh)
                 if let Some(suf) = self.peek_suffix(span.end) {
-                    Ok(Expr::TaggedLiteral(n, suf))
+                    if is_unit_suffix(&suf) {
+                        Ok(Expr::UnitLiteral { value: n as f64, unit: suf })
+                    } else {
+                        Ok(Expr::TaggedLiteral(n, suf))
+                    }
                 } else {
                     Ok(Expr::Decimal(n))
                 }
             }
             Some((Token::Float(f), span)) => {
-                // 2026-07-27: Check for adjacent suffix identifier (e.g., 3.14f, 16.2bf)
+                // 2026-07-27: Check for adjacent suffix identifier (e.g., 3.14f, 3.3V)
                 if let Some(suf) = self.peek_suffix(span.end) {
-                    Ok(Expr::TaggedLiteral(f as i64, suf))
+                    if is_unit_suffix(&suf) {
+                        Ok(Expr::UnitLiteral { value: f, unit: suf })
+                    } else {
+                        Ok(Expr::TaggedLiteral(f as i64, suf))
+                    }
                 } else {
                     Ok(Expr::Float(f))
                 }

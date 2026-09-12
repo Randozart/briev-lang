@@ -454,6 +454,8 @@ pub fn eval_nav_chain(
         Expr::Named { inner, .. } => {
             eval_nav_chain(inner, program, universe, stage, scope, sandbox, pm)
         }
+        // UnitLiteral: treat as Float value.
+        Expr::UnitLiteral { value, .. } => Ok(NavValue::Int(*value as i64)),
         // 2026-07-23: Binary operators — arithmetic and comparison.
         Expr::BinaryOp(kind, lhs, rhs) => {
             let lv = eval_nav_chain(lhs, program, universe, stage, scope, sandbox, pm)?;
@@ -1748,6 +1750,7 @@ fn extract_str_lit(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Quoted(bytes) => String::from_utf8(bytes.clone()).ok(),
         Expr::Named { inner, .. } => extract_str_lit(inner),
+        Expr::UnitLiteral { .. } => None,
         _ => None,
     }
 }
@@ -1948,8 +1951,9 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
 
 /// Recursively resolve $ident references in an Expr tree.
 /// $$ident → $ident (literal, escape). $ident → scope lookup.
-fn resolve_dollar_refs_in_expr(expr: &mut Expr, scope: &Scope) -> Result<(), String> {
+    fn resolve_dollar_refs_in_expr(expr: &mut Expr, scope: &Scope) -> Result<(), String> {
     match expr {
+        Expr::UnitLiteral { .. } => Ok(()),
         Expr::Identifier(name) => {
             // $$escape → produce literal $ident (no interpolation). The leading
             // $ is preserved but won't be re-matched by $ident because we return.

@@ -1871,6 +1871,11 @@ impl LlvmBackend {
                 }
             }
             Expr::Named { inner, .. } => self.emit_expr(out, inner, indent),
+            Expr::UnitLiteral { value, .. } => {
+                let reg = self.fun.gen_reg();
+                writeln!(out, "{indent}{reg} = call double @__briev_f64_to_bits(double {value})").ok();
+                TypedRegister { name: reg, ty: Type::float() }
+            }
         }
     }
 

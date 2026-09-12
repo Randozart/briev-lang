@@ -164,6 +164,7 @@ impl fmt::Display for Expr {
             Expr::FormattingAnnotation(fmt_) => write!(f, "formatting <~ {}", fmt_.name()),
             Expr::StructLiteral { type_name, .. } => write!(f, "{} {{ ... }}", type_name),
             Expr::Named { name, inner } => write!(f, "net {}: {}", name, inner),
+            Expr::UnitLiteral { value, unit } => write!(f, "{}{}", value, unit),
         }
     }
 }

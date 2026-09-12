@@ -218,6 +218,7 @@ fn collect_instances(
                 Expr::Quoted(bytes) => Some((fname.clone(), String::from_utf8_lossy(bytes).into_owned())),
                 Expr::Decimal(d) => Some((fname.clone(), d.to_string())),
                 Expr::Float(f) => Some((fname.clone(), f.to_string())),
+                Expr::UnitLiteral { value, unit } => Some((fname.clone(), format!("{}{}", value, unit))),
                 _ => None,
             })
             .collect();
@@ -313,6 +314,43 @@ fn resolve_voltage_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInsta
 
 /// A voltage DRIVE is `[x.voltage == <literal>]` — pin access on one side,
 /// float/int literal on the other, either order. Returns (pin, volts).
+/// Extract a numeric value from an expression — Float, Decimal, or
+/// UnitLiteral. For UnitLiteral, the value is returned directly (the
+/// caller decides how to interpret the unit).
+fn extract_numeric(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::Float(f) => Some(*f),
+        Expr::Decimal(d) => Some(*d as f64),
+        Expr::UnitLiteral { value, .. } => Some(*value),
+        _ => None,
+    }
+}
+
+/// Extract a voltage value from an expression — V or bare numeric.
+fn extract_voltage(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::UnitLiteral { value, unit } if unit == "V" => Some(*value),
+        _ => extract_numeric(expr),
+    }
+}
+
+/// Extract a current value from an expression — A, mA, or bare numeric.
+fn extract_current(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::UnitLiteral { value, unit } if unit == "A" => Some(*value),
+        Expr::UnitLiteral { value, unit } if unit == "mA" => Some(value / 1000.0),
+        _ => extract_numeric(expr),
+    }
+}
+
+/// Extract a resistance value from an expression — R, Ω, or bare numeric.
+fn extract_resistance(expr: &Expr) -> Option<f64> {
+    match expr {
+        Expr::UnitLiteral { value, unit } if unit == "R" || unit == "Ω" => Some(*value),
+        _ => extract_numeric(expr),
+    }
+}
+
 fn voltage_drive(
     l: &Expr,
     r: &Expr,
@@ -320,22 +358,12 @@ fn voltage_drive(
     type_pins: &BTreeMap<String, Vec<(String, u64)>>,
 ) -> Option<(PinRef, f64)> {
     if let Some(pin) = resolve_voltage_pin(l, instances, type_pins) {
-        let v = match r {
-            Expr::Float(f) => Some(*f),
-            Expr::Decimal(d) => Some(*d as f64),
-            _ => None,
-        };
-        if let Some(v) = v {
+        if let Some(v) = extract_voltage(r) {
             return Some((pin, v));
         }
     }
     if let Some(pin) = resolve_voltage_pin(r, instances, type_pins) {
-        let v = match l {
-            Expr::Float(f) => Some(*f),
-            Expr::Decimal(d) => Some(*d as f64),
-            _ => None,
-        };
-        if let Some(v) = v {
+        if let Some(v) = extract_voltage(l) {
             return Some((pin, v));
         }
     }
@@ -503,12 +531,10 @@ fn collect_current_bounds(items: &[TopLevel], instances: &BTreeMap<String, &Comp
         let mut pairs = Vec::new();
         collect_compare_pairs(&t.contract.post_condition, &mut pairs);
         for (l, op, r) in pairs {
-            // Literal on either side: `[x <= 0.02]` or `[0.02 >= x]`.
+            // Literal on either side: `[x <= 0.02]`, `[x <= 10mA]`, or `[0.02 >= x]`.
             let (pin_expr, lit) = match (&l, &r) {
-                (p, Expr::Float(f)) => (p, *f),
-                (p, Expr::Decimal(d)) => (p, *d as f64),
-                (Expr::Float(f), p) => (p, *f),
-                (Expr::Decimal(d), p) => (p, *d as f64),
+                (p, r) if extract_current(r).is_some() => (p, extract_current(r).unwrap()),
+                (l, p) if extract_current(l).is_some() => (p, extract_current(l).unwrap()),
                 _ => continue,
             };
             let is_upper = matches!(op, BinaryOpKind::Le | BinaryOpKind::Lt);
@@ -1214,7 +1240,7 @@ mod tests {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
             type Resistor { pin a; pin b; reference "R"; tolerance any; };
-            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; tolerance any; };
             let j1: Connector = Connector { };
             let r1: Resistor = Resistor { };
             txn powered
@@ -1232,6 +1258,23 @@ mod tests {
     }
 
     #[test]
+    fn keyword_net_names_are_valid() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; tolerance any; };
+            let j1: Connector = Connector { };
+            let r1: Resistor = Resistor { };
+            txn powered
+                [net out: j1.p1.voltage == r1.a.voltage && net gnd: j1.p2.voltage == r1.b.voltage && j1.p1.voltage == 3.3]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.nets.iter().any(|n| n.name == "out"), "keyword 'out' should be a valid net name");
+    }
+
+    #[test]
     fn unnamed_nets_still_get_generated_names() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
@@ -1246,5 +1289,39 @@ mod tests {
         "#;
         let nl = analyze(src);
         assert!(nl.nets.iter().any(|n| n.name.starts_with('N')), "unnamed nets should get N<N> names");
+    }
+
+    #[test]
+    fn unit_suffix_voltage_drive() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; tolerance any; };
+            let j1: Connector = Connector { };
+            let r1: Resistor = Resistor { };
+            txn powered
+                [j1.p1.voltage == r1.a.voltage && j1.p2.voltage == r1.b.voltage && j1.p1.voltage == 3.3V]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.voltage.net_voltage.get("N1"), Some(&3.3), "3.3V drive should produce 3.3V on the net");
+    }
+
+    #[test]
+    fn unit_suffix_current_bound() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; tolerance any; };
+            let j1: Connector = Connector { };
+            let r1: Resistor = Resistor { value: "330R"; };
+            txn powered
+                [j1.p1.voltage == r1.a.voltage && j1.p2.voltage == r1.b.voltage && j1.p1.voltage == 3.3]
+                [r1.b.current > 0.0 && r1.b.current <= 20mA]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.voltage.violations.is_empty(), "20mA should be 0.02A, within bounds: {:?}", nl.voltage.violations);
     }
 }

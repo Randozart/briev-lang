@@ -130,7 +130,7 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         // Literal values
         Expr::Char(c) => SymbolicValue::Literal(*c as i64, "int".to_string()),
         Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => SymbolicValue::Literal(*n, "int".to_string()),
-        Expr::Float(_) => SymbolicValue::Unknown,
+        Expr::Float(_) | Expr::UnitLiteral { .. } => SymbolicValue::Unknown,
         Expr::Bool(b) => SymbolicValue::bool_literal(*b),
         Expr::BeginProgram => SymbolicValue::bool_literal(true),
         Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _) => SymbolicValue::Unknown,
@@ -397,6 +397,7 @@ pub fn satisfies_postcondition(post: &Expr, state: &SymbolicState) -> bool {
         Expr::IsType(_, _) => false,
 
         Expr::Named { inner, .. } => satisfies_postcondition(inner, state),
+        Expr::UnitLiteral { .. } => false,
         _ => false,
     }
 }
