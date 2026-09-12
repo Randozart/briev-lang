@@ -92,7 +92,22 @@ hoisting.
 
 ### L-C: 2048³ tier boundary
 
-(checked 2026-09-13) — see ledger note below.
+(checked 2026-09-13) There is no automatic ptx-vs-coopmat dispatcher to
+verify: the backend is an explicit `BackendKind` (compile.rs — Ptx/Spv/
+Llvm chosen per invocation; the accel analysis decides WHICH bodies
+become kernels, the backend flag decides the ISA). The 2048³
+"boundary" therefore lives at the operator/harness level: coopmat 27.7
+vs PTX 27.9 TF is a statistical tie, PTX dominates from 4096³ up
+(32.3 vs ~9.5) and at 8192³ (34.1 vs 21.2). No code change — the
+ledger note is the deliverable.
+
+## Session close (2026-09-13)
+
+- L-B: f32 stages wash — s4 stays.
+- L-A: instrument built; verdict **mma-schedule-bound** — the fill
+  side is solved; the next lever is the compute section.
+- L-C: no auto-dispatch exists; boundary is documentation.
+- Commits: 5205f078 (plan), 55b84e25 (microbench + verdicts).
 
 ## Gates (all steps)
 
