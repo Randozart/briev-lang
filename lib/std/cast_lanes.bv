@@ -597,12 +597,55 @@ defn count_lead(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= 0] -> 
 // a tty, line buffered. write(2) is unbuffered. The BYTES are identical in
 // both orderings — only interactive partial-line timing differs.
 
-// write_all — write the whole payload of String s to fd.
+// ── Buffered stdout (2026-09-11, fasta A/B; BUGS.md) ────────────────
+// write(2) is unbuffered; the retired libc path buffered for free. A
+// per-byte print in a loop (fasta) cost one SYSCALL per byte — 10M
+// iterations, ~100x the C reference. The buffer is a fixed 64 KiB
+// block + fill pointer (LIBRARY STATE — lets import since 158ae9ec);
+// append is O(1) via Store#, flush at capacity, at __exit, and at the
+// main tail (the backend calls __stdout_flush when this lane is
+// linked). stderr stays unbuffered. Pipe semantics match the C
+// baseline (fully buffered); tty line-buffering is deferred.
+
+let __stdout_buf: Int = 0;
+let __stdout_fill: Int = 0;
+const __STDOUT_CAP: Int = 65536;
+
+out defn __stdout_flush() [true][term >= 0] -> Int {
+    when __stdout_fill > 0 {
+        let n: Int = SysCall#(1, 1, __stdout_buf, __stdout_fill, 0, 0, 0);
+        __stdout_fill = 0;
+        term n;
+    };
+    term 0;
+};
+
+out defn __stdout_byte(b: Int) [b >= 0][term >= 0] -> Int {
+    when __stdout_buf == 0 {
+        __stdout_buf = Alloc#(__STDOUT_CAP) as Int;
+    };
+    Store#(__stdout_buf + __stdout_fill, b, 1);
+    __stdout_fill = __stdout_fill + 1;
+    when __stdout_fill == __STDOUT_CAP {
+        term __stdout_flush();
+    };
+    term 0;
+};
+
+// write_all — write the whole payload of String s to fd. fd 1 goes
+// through the stdout buffer (byte-appended, flushed at capacity); fd 2
+// (stderr) stays direct and unbuffered.
 defn write_all(fd: Int, s: String) [fd >= 0][term >= 0] -> Int {
     let addr: Int = (s as Data) as Int;
     let len: Int = Load#(addr, 8);
     when len <= 0 {
         term 0;
+    };
+    when fd == 1 {
+        foreach i in 0..len {
+            let r: Int = __stdout_byte(Load#(addr + 8 + i, 1));
+        };
+        term len;
     };
     term SysCall#(1, fd, addr + 8, len, 0, 0, 0);
 };
@@ -635,14 +678,14 @@ out defn __print_float(f: Float) [true][term >= 0] -> Int {
 
 out defn __print_char(c: Int) [c >= 0][term >= 0] -> Int {
     // C: c==10 → puts("") (writes '\n'), else putchar(c) — one raw byte
-    // either way. A 1-byte write covers both.
-    let buf: Int = Alloc#(1) as Int;
-    Store#(buf, c, 1);
-    term SysCall#(1, 1, buf, 1, 0, 0, 0);
+    // either way. Buffered: O(1) append, flushed at capacity/main tail.
+    term __stdout_byte(c);
 };
 
 out defn __exit(code: Int) [true][term >= 0] -> Int {
-    // SYS_exit_group = 231 (x86_64). No return — the process ends.
+    // Flush the stdout buffer before SYS_exit_group (231, x86_64) —
+    // nothing runs after the process ends.
+    let f: Int = __stdout_flush();
     term SysCall#(231, code, 0, 0, 0, 0, 0);
 };
 
