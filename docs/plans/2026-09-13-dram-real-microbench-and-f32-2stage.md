@@ -45,11 +45,54 @@ Verdict branches:
 2. Fill/ldmatrix contention dominant → target smem access schedule.
 3. Intrinsic latency wall → document the PTX-tier ceiling; pivot.
 
-## L-C: 2048³ tier boundary (doc-level)
+## Results (2026-09-13)
 
-Locate the ptx/coopmat selection path, verify what 2048³ picks
-(PTX 27.9 vs coopmat 27.7 — tied within noise), document the
-crossover in the ledger.
+### L-B: f32 stages — wash, s4 stays
+
+f32 s4 22.12 vs s2 21.99 TF avg (s4 wins 3/3 by 0.12 — noise). The
+occupancy-doubling play does NOT pay for f32 (unlike f16acc). Dispatch
+keeps `stages = 4` for f32; s2 dump kept as an artifact
+(`tgemm_f32_s2.cubin`). Correctness exact (0.0 rel err).
+
+### L-A: DRAM-real microbench — VERDICT: mma-schedule-bound
+
+`dump_mma_dram_microbench` (variants n/a/b/f) at production geometry,
+real fill D-mappings, real per-CTA tile addresses, light ldmatrix+xor
+consumer, same-window ×3:
+
+| variant | ms | TF-equiv | reading |
+|---------|-----|----------|---------|
+| b (B stream only) | 1.07 | 128.9 | B fill nearly free (L2 row sharing) |
+| a (A stream only) | 1.43 | 95.7 | A fill fast |
+| n (fills only) | 1.92 | 71.0 | full DRAM fill ceiling |
+| f (fills + light consume) | 2.36 | 58.2 | +0.44 ms consumer cost |
+| production mh4 | 4.27 | 32.1 | +1.91 ms beyond f |
+
+**The fills are not the wall.** All fill traffic completes in 1.92 ms
+of the kernel's 4.27 ms; the fill+consume microbench runs at 58
+TF-equiv. The real kernel's extra ~1.9 ms (≈14 TF-equivalent) lives in
+the mma section: per-mh A-fragment ldmatrix address computation, the
+16 mma chains' dependency schedule, and the store-only epilogue. The
+earlier "5.3 TF DRAM residual" attribution (E1/window-1) is dead —
+the sync microbenches were mismeasuring because their consumer is
+trivial, not because their fills are broadcast.
+
+Caveats (documented in the generator): the B smem layout is a plain
+k-major bijection (no XOR swizzle) and the consumer drops mma pressure,
+so absolute numbers sit above production by design; only the
+decomposition is the measurement. Stripe coverage is 255/256 (0.4%).
+
+**Next lever (revised): the mma section schedule** — per-fragment
+address precomputation structure, fragment-load-to-mma dependency
+chaining, and the promo/epilogue pass. The 2026-09-10 hoisting
+experiment (11% LOSS from hoisting invariant B addressing) is the
+puzzle to re-examine under this new attribution: if the section is
+issue-bound, the fix is fewer/fused address ops per fragment, not
+hoisting.
+
+### L-C: 2048³ tier boundary
+
+(checked 2026-09-13) — see ledger note below.
 
 ## Gates (all steps)
 

@@ -1600,6 +1600,14 @@ mod r16_dump {
             );
             std::fs::write(format!("/tmp/opencode/tgemm_f32_mh{mh}.ptx"), &ptx).unwrap();
         }
+        // Stage-depth candidate (2026-09-13, plan 2026-09-13): f32 at
+        // stages=2 halves smem to 16384 → 2 CTAs/SM at 128 regs (s4 runs
+        // 1 CTA). Same dispatch-true tile as the mh2 arm above.
+        let (mw, nw) = crate::backend::ptx::select_mw_nw(4096, 4096, 256, 2);
+        let ptx = tensor_gemm_ptx_smem_mw(
+            4096, 4096, 4096, 0, 33554432, 67108872, 4, mw, nw, false, 2, 2,
+        );
+        std::fs::write("/tmp/opencode/tgemm_f32_s2.ptx", &ptx).unwrap();
     }
 
     /// warp_mh=4 portfolio (2026-09-12): the shapes the f16acc dispatch
@@ -2260,7 +2268,225 @@ mod r16_dump {
             std::fs::write(&path, &out).unwrap();
         }
     }
-}
+
+    /// DRAM-real fill microbench (2026-09-13, plan 2026-09-13): the sync
+    /// fill microbenches above read one broadcast address — zero DRAM
+    /// traffic — so they model smem/instruction cost only (the E1 lesson).
+    /// These variants use the REAL per-CTA tile addressing and the REAL
+    /// fill byte patterns at production geometry (warp_mh=4 (4,4)@512T,
+    /// 256x128 CTA tiles, 512 CTAs, 256 k-stripes of 16): A = one 16-byte
+    /// cp.async.cg per thread (D = tid*16; global row = D>>5 of the CTA's
+    /// 256 rows, col = D&31, src = a_base + row*8192 + col + stripe*32),
+    /// B = one 8-byte cp.async.ca (D = tid*8; global k = stripe*16 + D>>8,
+    /// col = D&255, src = b_base + k*8192 + col — bijective over the CTA's
+    /// 256-byte B col span). Consumer is a LIGHT ldmatrix+xor — documented
+    /// caveat: the real kernel's mma pressure is absent, so absolute TF
+    /// sits above production; the decomposition across variants is the
+    /// measurement.
+    ///
+    /// Variants:
+    ///   n = fills only (no consumer) — pure DRAM fill ceiling
+    ///   a = A stream only
+    ///   b = B stream only
+    ///   f = full (A + B fills + consumer) — calibrate against production
+    #[test]
+    fn dump_mma_dram_microbench() {
+        for &variant in &["n", "a", "b", "f"] {
+            let fill_a = variant != "b";
+            let fill_b = variant != "a";
+            let consume = variant == "f";
+            let mut out = String::new();
+            out.push_str(&format!("// DRAM-real fill microbench: {variant}\n"));
+            out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+            out.push_str("    .extern .shared .align 16 .b8 dsmem[];\n");
+            out.push_str(".visible .entry main (.param .b64 proj_param) {\n");
+            out.push_str("    .reg .b32 %r<24>;\n");
+            out.push_str("    .reg .b64 %rd<8>;\n");
+            out.push_str("    .reg .pred %p<2>;\n");
+            out.push_str("    .reg .b32 %c<3>;\n");
+            out.push_str("    .reg .b32 %a<5>;\n");
+            out.push_str("    .reg .b32 %b<3>;\n");
+            out.push_str("    .reg .b32 %sas<1>;\n");
+            out.push_str("    .reg .b64 %rdS<1>;\n");
+            out.push_str("    .reg .b64 %rdA;\n");
+            out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+            out.push_str("    cvta.to.global.u64 %rd1, %rd1;\n");
+            out.push_str("    mov.u32 %r1, %tid.x;\n");
+            out.push_str("    mov.u32 %r2, %ctaid.x;\n");
+            // cta_m = ctaid >> 5 (16 m-tiles of 256 rows), cta_n = ctaid & 31
+            out.push_str("    shr.u32 %r3, %r2, 5;\n");
+            out.push_str("    and.b32 %r4, %r2, 31;\n");
+            // a_base = state + cta_m*256*a_row (a_row = 8192)
+            out.push_str("    mul.lo.u32 %r5, %r3, 2097152;\n");
+            out.push_str("    mul.wide.u32 %rd2, %r5, 1;\n");
+            out.push_str("    add.u64 %rd2, %rd1, %rd2;\n");
+            // b_base = state + 33554432 + cta_n*256
+            out.push_str("    mul.lo.u32 %r5, %r4, 256;\n");
+            out.push_str("    mul.wide.u32 %rd3, %r5, 1;\n");
+            out.push_str("    mov.u64 %rd4, 33554432;\n");
+            out.push_str("    add.u64 %rd4, %rd1, %rd4;\n");
+            out.push_str("    add.u64 %rd3, %rd4, %rd3;\n");
+            // smem base + A ldmatrix lane offsets (real kernel's formula)
+            out.push_str("    mov.u32 %r21, dsmem;\n");
+            out.push_str("    mov.u32 %sas0, dsmem;\n");
+            out.push_str("    cvt.u64.u32 %rdS0, %sas0;\n");
+            out.push_str("    and.b32 %r6, %r1, 31;\n");
+            out.push_str("    shr.u32 %r7, %r6, 4;\n");
+            out.push_str("    mul.lo.u32 %r7, %r7, 8;\n");
+            out.push_str("    and.b32 %r8, %r6, 7;\n");
+            out.push_str("    add.u32 %r7, %r7, %r8;\n");
+            out.push_str("    mul.lo.u32 %r7, %r7, 32;\n");
+            out.push_str("    shr.u32 %r8, %r6, 3;\n");
+            out.push_str("    and.b32 %r8, %r8, 1;\n");
+            out.push_str("    mul.lo.u32 %r8, %r8, 16;\n");
+            out.push_str("    add.u32 %r7, %r7, %r8;\n");
+            out.push_str("    mul.wide.u32 %rd5, %r7, 1;\n");
+            out.push_str("    add.u64 %rdA, %rdS0, %rd5;\n");
+            // B consume lane offsets: (lane&31)>>3 * 1024 + (lane&7)*16
+            out.push_str("    and.b32 %r8, %r1, 31;\n");
+            out.push_str("    shr.u32 %r9, %r8, 3;\n");
+            out.push_str("    mul.lo.u32 %r9, %r9, 1024;\n");
+            out.push_str("    and.b32 %r8, %r8, 7;\n");
+            out.push_str("    mul.lo.u32 %r8, %r8, 16;\n");
+            out.push_str("    add.u32 %r8, %r8, %r9;\n");
+            out.push_str("    mov.u32 %c0, 0;\n");
+            out.push_str("    mov.u32 %c1, 0;\n");
+            // Prologue: fill stage 0 (the streams this variant owns), one
+            // commit group — mirrors the real kernel's prologue.
+            {
+                let s_off_a = "0";
+                let s_off_b = "16384";
+                if fill_a {
+                    out.push_str(&format!("    mov.u32 %r12, {s_off_a};\n"));
+                    out.push_str("    mul.lo.u32 %r13, %r1, 16;\n");
+                    out.push_str("    add.u32 %r16, %r12, %r13;\n");
+                    out.push_str("    shr.u32 %r14, %r13, 5;\n");
+                    out.push_str("    and.b32 %r15, %r13, 31;\n");
+                    out.push_str("    shl.b32 %r17, %r14, 13;\n");
+                    out.push_str("    mov.u32 %r18, %r15;\n");
+                    out.push_str("    add.u32 %r18, %r18, %r17;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rd2, %rd5;\n");
+                    out.push_str("    mov.u32 %r19, %r21;\n");
+                    out.push_str("    add.u32 %r19, %r19, %r16;\n");
+                    out.push_str("    cp.async.cg.shared.global [%r19], [%rd5], 16;\n");
+                }
+                if fill_b {
+                    out.push_str(&format!("    mov.u32 %r12, {s_off_b};\n"));
+                    out.push_str("    mul.lo.u32 %r13, %r1, 8;\n");
+                    out.push_str("    add.u32 %r16, %r12, %r13;\n");
+                    out.push_str("    shr.u32 %r14, %r13, 8;\n");
+                    out.push_str("    and.b32 %r15, %r13, 255;\n");
+                    out.push_str("    shl.b32 %r18, %r14, 13;\n");
+                    out.push_str("    add.u32 %r18, %r18, %r15;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rd3, %rd5;\n");
+                    out.push_str("    mov.u32 %r19, %r21;\n");
+                    out.push_str("    add.u32 %r19, %r19, %r16;\n");
+                    out.push_str("    cp.async.ca.shared.global [%r19], [%rd5], 8;\n");
+                }
+                out.push_str("    cp.async.commit_group;\n");
+            }
+            // K-loop over stripes 1..256: fill stage s^1 (async) while
+            // consuming stage s — the real kernel's overlap structure.
+            // wait_group 1 completes the PREVIOUS iteration's fill (the
+            // stage being consumed); bar makes all threads' fills visible.
+            out.push_str("    mov.u32 %r10, 1;\n");
+            out.push_str("KLOOP:\n");
+            out.push_str("    setp.ge.u32 %p1, %r10, 256;\n");
+            out.push_str("    @%p1 bra KEND;\n");
+            out.push_str("    and.b32 %r11, %r10, 1;\n");
+            out.push_str("    xor.b32 %r20, %r11, 1;\n");
+            if fill_a {
+                // fill stage s^1: dst = dsmem + (s^1)*8192 + tid*16; src =
+                // a_base + row*8192 + col + stripe*32
+                out.push_str("    shl.b32 %r12, %r20, 13;\n");
+                out.push_str("    mul.lo.u32 %r13, %r1, 16;\n");
+                out.push_str("    add.u32 %r16, %r12, %r13;\n");
+                out.push_str("    shr.u32 %r14, %r13, 5;\n");
+                out.push_str("    and.b32 %r15, %r13, 31;\n");
+                out.push_str("    shl.b32 %r17, %r14, 13;\n");
+                out.push_str("    shl.b32 %r18, %r10, 5;\n");
+                out.push_str("    add.u32 %r18, %r18, %r15;\n");
+                out.push_str("    add.u32 %r18, %r18, %r17;\n");
+                out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
+                out.push_str("    add.u64 %rd5, %rd2, %rd5;\n");
+                out.push_str("    mov.u32 %r19, %r21;\n");
+                out.push_str("    add.u32 %r19, %r19, %r16;\n");
+                out.push_str("    cp.async.cg.shared.global [%r19], [%rd5], 16;\n");
+            }
+            if fill_b {
+                // fill stage s^1: dst = dsmem + 16384 + (s^1)*4096 + tid*8;
+                // src = b_base + (stripe*16 + D>>8)*8192 + D&255
+                out.push_str("    shl.b32 %r12, %r20, 12;\n");
+                out.push_str("    add.u32 %r12, %r12, 16384;\n");
+                out.push_str("    mul.lo.u32 %r13, %r1, 8;\n");
+                out.push_str("    add.u32 %r16, %r12, %r13;\n");
+                out.push_str("    shr.u32 %r14, %r13, 8;\n");
+                out.push_str("    and.b32 %r15, %r13, 255;\n");
+                out.push_str("    shl.b32 %r17, %r10, 4;\n");
+                out.push_str("    add.u32 %r17, %r17, %r14;\n");
+                out.push_str("    shl.b32 %r18, %r17, 13;\n");
+                out.push_str("    add.u32 %r18, %r18, %r15;\n");
+                out.push_str("    mul.wide.u32 %rd5, %r18, 1;\n");
+                out.push_str("    add.u64 %rd5, %rd3, %rd5;\n");
+                out.push_str("    mov.u32 %r19, %r21;\n");
+                out.push_str("    add.u32 %r19, %r19, %r16;\n");
+                out.push_str("    cp.async.ca.shared.global [%r19], [%rd5], 8;\n");
+            }
+            out.push_str("    cp.async.commit_group;\n");
+            if consume {
+                // Complete the previous iteration's fill (stage r20), make
+                // it visible, then read it.
+                out.push_str("    cp.async.wait_group 1;\n");
+                out.push_str("    membar.cta;\n");
+                out.push_str("    bar.sync 0;\n");
+                // A ldmatrix x4 + xor at rdA + (s^1)*8192
+                out.push_str("    shl.b32 %r12, %r20, 13;\n");
+                out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                out.push_str("    add.u64 %rd5, %rdA, %rd5;\n");
+                out.push_str("    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%a0, %a1, %a2, %a3}, [%rd5];\n");
+                out.push_str("    xor.b32 %c0, %a0, %a1;\n");
+                out.push_str("    xor.b32 %c0, %c0, %a2;\n");
+                out.push_str("    xor.b32 %c0, %c0, %a3;\n");
+                // B ldmatrix x2.trans x8 groups + xor at bsmem + (s^1)*4096
+                out.push_str("    shl.b32 %r12, %r20, 12;\n");
+                out.push_str("    add.u32 %r12, %r12, 16384;\n");
+                for g in 0..8 {
+                    out.push_str(&format!("    mov.u32 %r13, {};\n", g * 512));
+                    out.push_str("    add.u32 %r13, %r13, %r8;\n");
+                    out.push_str("    add.u32 %r13, %r13, %r12;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r13, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%b0, %b1}, [%rd5];\n");
+                    out.push_str("    xor.b32 %c1, %c1, %b0;\n");
+                    out.push_str("    xor.b32 %c1, %c1, %b1;\n");
+                }
+            } else {
+                // No consumer: bound the async queue per iteration.
+                out.push_str("    cp.async.wait_group 0;\n");
+                out.push_str("    membar.cta;\n");
+                out.push_str("    bar.sync 0;\n");
+            }
+            out.push_str("    bar.sync 0;\n");
+            out.push_str("    add.u32 %r10, %r10, 1;\n");
+            out.push_str("    bra KLOOP;\n");
+            out.push_str("KEND:\n");
+            // DCE guard: y[ctaid*512 + tid] = acc (y @ 67108872, 512T grid)
+            out.push_str("    mul.lo.u32 %r13, %r2, 512;\n");
+            out.push_str("    add.u32 %r13, %r13, %r1;\n");
+            out.push_str("    mul.wide.u32 %rd5, %r13, 4;\n");
+            out.push_str("    add.u64 %rd5, %rd1, %rd5;\n");
+            out.push_str("    mov.u64 %rd6, 67108872;\n");
+            out.push_str("    add.u64 %rd5, %rd5, %rd6;\n");
+            out.push_str("    add.u32 %c0, %c0, %c1;\n");
+            out.push_str("    st.global.b32 [%rd5], %c0;\n");
+            out.push_str("    ret;\n}\n");
+            let path = format!("/tmp/opencode/mb_dram_{variant}.ptx");
+            std::fs::write(&path, &out).unwrap();
+        }
+    }
+    }
 
 #[cfg(test)]
 mod smem_tests {
