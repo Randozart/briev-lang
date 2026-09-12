@@ -5880,3 +5880,26 @@ proceeds immediately as proof of the model — see
 `docs/plans/2026-09-12-dynamics-causal-dag.md`. Backends stay trusted
 until measured otherwise: if LLVM already collapses tick round-trips
 under the real pipeline, Briev's job stays contracts + loop shape.
+
+**MEASURED (same day, LLVM experiment — the LTO lesson honored):**
+canonical 3-node proven chain (`arm -> commit -> shutdown` over a state
+variable), harness-exact link (`clang -O3 -flto -march=native -ffast-math
+-fdata-sections -ffunction-sections -Wl,--gc-sections`):
+
+1. The UNOPTIMIZED emission already cascades proven chains WITHIN one
+   pass — after a body commits, the downstream node's pre is re-checked
+   in the same pass (`.ssb_arm` falls through to commit's pre-check).
+   The "chains round-trip ticks" claim above was too pessimistic: the
+   only loop residue is one empty quiescence-confirm pass.
+2. The fully-optimized binary's `main` is `xor %eax,%eax; ret` — the
+   entire reactive program (loop, both passes, all state) folded to a
+   bare return by the standard pipeline. Correct per observability-as-
+   liveness: the program's only externally visible behavior IS exit 0.
+
+**Consequence:** Briev-owned fusion codegen is not just deferred — for
+foldable shapes it is MEASURED unnecessary. The backend delivers the
+designed realization from contracts + loop shape alone. The DAG's
+load-bearing value is what the backend cannot do: compile-time liveness
+refusals, the causality report, and future proof work (FSM
+reachability/deadlock). Fusion gets built only when a measured program
+class shows the backend failing — not before.
