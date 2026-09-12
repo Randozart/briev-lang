@@ -54,9 +54,21 @@ reactive liveness:
 - Edges over instance fields of objs/cells are out of scope v1
   (top-level `let` state only).
 
-## Backend trust (the LTO lesson)
+## Backend trust — MEASURED (2026-09-12)
 
-No fusion codegen was built on faith. Whether LLVM's `-O3 -flto` pipeline
-already collapses chain round-trips in the emitted tick loop is a MEASURED
-question (see BUGS.md 2026-09-12 follow-up). A Briev-owned fusion pass is
-built only on a proven backend inability.
+No fusion codegen was built on faith; the experiment ran before any
+codegen talk. Canonical 3-node proven chain, harness-exact link
+(`clang -O3 -flto -march=native …`):
+
+1. The unoptimized emission ALREADY cascades proven chains within one
+   pass — a committed body falls through to the downstream node's
+   pre-check in the same pass; the loop's only residue is one empty
+   quiescence-confirm pass.
+2. The fully-optimized binary's `main` is `xor %eax,%eax; ret` — the
+   standard pipeline folds the entire reactive program. Correct:
+   observability-as-liveness says the only visible behavior is the exit.
+
+Consequence: Briev-owned fusion is measured unnecessary for foldable
+shapes. The DAG's load-bearing value is the compile-time knowledge the
+backend cannot have — liveness refusals, the wiring report, future FSM
+proofs. Fusion waits for a measured backend failure.
