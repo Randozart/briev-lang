@@ -5837,3 +5837,46 @@ the fill/store decode against the S=2 module first.
 **Found while:** refuting the redundant-compute hypothesis for the
 2048³ coopmat 27 TF reading — S=1 measures 1.30 ms vs S=2's 0.635 ms
 (S=2 is strictly faster; the reading is real work, not overlap).
+
+## 2026-09-12: reactive realization gap investigated — deferred; causal DAG proceeding
+
+**Investigation (2026-09-12):** the reactive dispatch ships the naive
+realization — `emit_ssa_main` (`src/backend/llvm/loop_engine/ssa.rs`)
+re-evaluates every node precondition every tick. The designed machinery —
+compile-time dependency graph, dirty-flag `step()` in topological order,
+event-driven wake without polling — is specified in
+`docs/plans/2026-06-15-trg-reactive-dirty-flag.md` and
+`docs/plans/2026-06-11-async-reactor-triggers.md`, partially built
+(`reactor.rs` `dependency_map`/`mark_dirty` exists, never populated),
+never wired into the backend.
+
+**No correctness break:** programs compute correct end states; outputs
+verified across the suite. The design was confirmed as original intent
+(the program signals intent; the compiler owns realization — pre =
+eligibility, post = the declaration of completion).
+
+**The gap = realization fidelity:**
+1. Efficiency — chains round-trip ticks the wiring already proves
+   unnecessary (A fires into B next tick instead of straight-line; the
+   Rule-2 exposure). Backend fusion may already be delivered by LLVM's
+   `-O3 -flto` pipeline once loop shape is right — to be measured, never
+   assumed (the LTO lesson).
+2. One missing compile-time refusal — a non-quiescing cycle
+   (`[x == 0] { x = 1 - x; }`) hangs at runtime today
+   (`is_one_shot` logic, ssa.rs:331) where the design refuses at compile
+   time for lack of a checkable liveness obligation in the post.
+3. Missing knowledge — no causal graph, so no "what fires into what"
+   report, no FSM reachability/deadlock proofs.
+
+**Plain-txn semantics resolved in passing** (see 2026-08-26 entry): a
+txn is a contract carrier (as the electronics path already treats it); a
+body-carrying never-called non-reactive txn is dead code — diagnostic
+candidate only, not a semantics fork.
+
+**Decision:** the full restoration (fusion codegen, sync<g> completion
+barrier, interpreter reactor revival) is DEFERRED until a benchmark or
+program class demands it (fasta precedent). The causal DAG itself
+proceeds immediately as proof of the model — see
+`docs/plans/2026-09-12-dynamics-causal-dag.md`. Backends stay trusted
+until measured otherwise: if LLVM already collapses tick round-trips
+under the real pipeline, Briev's job stays contracts + loop shape.
