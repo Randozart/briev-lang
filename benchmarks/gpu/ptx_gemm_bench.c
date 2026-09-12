@@ -109,8 +109,13 @@ int main(int argc, char** argv) {
     CUfunction fn;
     CU_CHECK(cuModuleGetFunction(&fn, mod, "main"), "cuModuleGetFunction");
 
-    // state: a @ a_off, b @ b_off, i @ (y_off - 8), y @ y_off
-    uint64_t state_bytes = y_off + M * N * 2 + 64;
+    // state: a @ a_off, b @ b_off, i @ (y_off - 8), y @ y_off.
+    // BRIEV_Y_ELEM: y element size — 2 (f16, default) or 4 (f32 tier). The
+    // f32 kernels store an M*N*4 y tile; a 2-byte state buffer faults them
+    // at check time (found 2026-09-12 driving the f32 warp_mh A/B).
+    const char* yelem_env = getenv("BRIEV_Y_ELEM");
+    uint64_t y_elem_sz = yelem_env ? strtoull(yelem_env, NULL, 10) : 2;
+    uint64_t state_bytes = y_off + M * N * y_elem_sz + 64;
     unsigned char* state;
     CU_CHECK(cuMemAllocHost((void**)&state, state_bytes), "cuMemAllocHost");
     memset(state, 0, state_bytes);
@@ -155,9 +160,19 @@ int main(int argc, char** argv) {
             double acc = 0.0;
             for (uint64_t k = 0; k < K; k++)
                 acc += (double)f16_to_f32(a[m * K + k]) * (double)f16_to_f32(b[k * N + n]);
-            uint16_t got;
-            memcpy(&got, state + y_off + mn * 2, 2);
-            double ref_v = acc, g = (double)f16_to_f32(got);
+            double g;
+            if (y_elem_sz == 4) {
+                uint32_t got32;
+                memcpy(&got32, state + y_off + mn * 4, 4);
+                float gf;
+                memcpy(&gf, &got32, 4);
+                g = (double)gf;
+            } else {
+                uint16_t got;
+                memcpy(&got, state + y_off + mn * 2, 2);
+                g = (double)f16_to_f32(got);
+            }
+            double ref_v = acc;
             double rel = ref_v != 0.0 ? (g - ref_v) / ref_v : g;
             if (rel < 0) rel = -rel;
             if (rel > worst) { worst = rel; worst_mn = mn; }

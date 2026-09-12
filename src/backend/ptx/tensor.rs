@@ -1587,6 +1587,21 @@ mod r16_dump {
         std::fs::write("/tmp/opencode/tgemm_mw_8192_f16acc.ptx", &ptx).unwrap();
     }
 
+    /// f32-tier warp_mh A/B artifacts (2026-09-12): the dispatch-true
+    /// configs — select_mw_nw + ptx_warp_mh exactly as the dispatcher
+    /// computes them, so what is benched is what the dispatch emits
+    /// (BUGS.md 2026-09-12 rule).
+    #[test]
+    fn dump_f32_warp_mh_ab() {
+        for mh in [2usize, 4usize] {
+            let (mw, nw) = crate::backend::ptx::select_mw_nw(4096, 4096, 256, mh);
+            let ptx = tensor_gemm_ptx_smem_mw(
+                4096, 4096, 4096, 0, 33554432, 67108872, 4, mw, nw, false, 4, mh,
+            );
+            std::fs::write(format!("/tmp/opencode/tgemm_f32_mh{mh}.ptx"), &ptx).unwrap();
+        }
+    }
+
     /// warp_mh=4 portfolio (2026-09-12): the shapes the f16acc dispatch
     /// now emits (select_mw_nw lands (4,4) for 2048³/4096³/8192³ at mhr=4),
     /// for on-device correctness at the production warp shape.

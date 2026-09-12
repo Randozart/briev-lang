@@ -527,3 +527,44 @@ actually emits, or make the dump read the same constant.
   width gain returns; the mixed-stream widening (variant 8, every
   thread touching both fills) is the right shape. Never reached the
   kernel.
+
+### Window-1 session record (2026-09-12, post-mh4)
+
+- **L3 re-anchor** (one window): microbench e 41.0 (r1/r2; r3 thermal
+  dip), a 29.8, 8 35.0; f16 mh4 kernel 29.72 avg. Kernel/e ratio 72%
+  (mh2 era: 68%). Kernel-vs-sync-analog gap ~5.3 TF → L2 gate passed
+  on measurement.
+- **L1 f32 warp_mh A/B: mh4 REJECTED** — f32 mh2 20.29 avg vs mh4
+  17.54 (mh2 wins 3/3, +2.75 TF) despite mh4's occupancy doubling
+  (96 regs → 2 CTAs/SM vs 128 regs → 1). The f32 serial schedule keeps
+  its tuned 32x64 warp. `ptx_warp_mh(f16_acc)` helper extracted —
+  dispatch and dump artifacts now read ONE constant (BUGS.md rule);
+  f32 correctness exact at both shapes (0.0 rel err: seed values are
+  all multiples of 0.125, so every f32/f64 partial sum is exact).
+- **Driver fix**: `ptx_gemm_bench.c` hardcoded an f16 y tile
+  (state_bytes = y_off + M·N·2) and read y as f16 — the f32 kernels
+  faulted at check time with ILM. `BRIEV_Y_ELEM` (2|4) now sizes the
+  state buffer and the sampled reference.
+- **L2 sector-pairing hypothesis: REFUTED by analysis (pre-build)**.
+  At D = tid·16, lane pairs (2i, 2i+1) already cover cols 0-15/16-31
+  of the SAME 32B sector — every A-fill warp transaction fully uses
+  all 16 sectors it touches (512B contiguous). The 8B B rung is 256B
+  contiguous — also sector-perfect. The ~5 TF residual is NOT mapping
+  waste; candidates are cross-stripe L2-line utilization (32B used of
+  each 128B L2 line per stripe), A/B stream interference, or
+  fill/ldmatrix bank contention. Discriminating them needs a DRAM-real
+  microbench (computed per-thread global addresses — the sync
+  broadcast-address harness structurally cannot see this layer).
+
+### Next levers (revised)
+
+1. **DRAM-real microbench** (`dr` variant family): fills read computed
+   `a[m][k]`/`b[k][n]` addresses at per-CTA tile bases; variants sweep
+   A/B interleaving, stripe rasterization order, and L2-friendly CTA
+   schedules. This is the instrument the residual analysis lacks.
+2. **f32 tier**:mh4 rejected, but the f32 kernel at 20.3 TF vs the
+   f16acc tier's 29.7 is a 1.45× gap — the f32 accumulator register
+   budget (64 f32) caps the tile; a 2-stage f32 variant (smem 16384 →
+   2 CTAs at 128 regs) is unexplored.
+3. **2048³ boundary**: PTX 27.9 vs coopmat 27.7 — confirm which tier
+   the dispatcher picks and document the crossover.

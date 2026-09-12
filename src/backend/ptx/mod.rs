@@ -94,6 +94,21 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
 /// Also: nw must divide 8, mw must divide 16 (for per_a/per_b integer
 /// division in the kernel). Prefers wider nw (B reuse) then scales mw
 /// (A reuse).
+/// The PTX tensor tier's warp shape (mhr = 16-row blocks per warp).
+/// Single source of truth: the dispatch and every dump-test artifact read
+/// this — an A/B that edits one and benches the other measures nothing
+/// (BUGS.md 2026-09-12). f16acc uses the 64x32 A-sharing warp (mhr=4):
+/// per_a=4 fires the 16B .cg A rung, B loads drop 16x -> 4x per kstep
+/// (+2.9 TF at 4096^3, 4/4 rounds). f32 keeps the 32x64 warp its serial
+/// schedule was tuned at (mh4 A/B pending).
+pub(crate) fn ptx_warp_mh(f16_acc: bool) -> usize {
+    if f16_acc {
+        4
+    } else {
+        2
+    }
+}
+
 fn select_mw_nw(m: i64, n: i64, thread_cap: usize, mhr: usize) -> (usize, usize) {
     // mhr scales the warp's 16-row block count (warp_mh): the CTA tile is
     // (16*mhr*mw) rows x (8*gr*nw) cols with gr = 16/mhr, so the aspect of
@@ -280,15 +295,7 @@ pub fn build_ptx_kernels(
         // (2,4)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
         let thread_cap = if f16_acc { 512 } else { 256 };
         let (ptx, ptx_tensor, count_expr, block_threads, shared_bytes) = if tensor {
-            // warp_mh: f16acc uses the 64x32 A-sharing warp (mhr=4, gr=4) —
-            // per_a=4 fires the 16B .cg A rung and B loads drop 16x -> 4x
-            // per kstep; on-device 4096^3 (interleaved x4, 2026-09-12):
-            // 32.80 vs 29.87 TF, wins 4/4, byte-identical correctness. (An
-            // earlier A/B that "rejected" mh4 was invalid: the dump-test
-            // cubins were regenerated with the hardcoded warp_mh=2 literal,
-            // so both sides measured mh2.) f32 keeps the historical 32x64
-            // warp its serial schedule was tuned at.
-            let warp_mh = if f16_acc { 4usize } else { 2usize };
+            let warp_mh = ptx_warp_mh(f16_acc);
             let gr = 16 / warp_mh;
             // Select mw/nw for multi-warp CTA. The mw kernel needs
             // M%(16*mhr*mw)==0 and N%(8*gr*nw)==0; fall back to single-warp
