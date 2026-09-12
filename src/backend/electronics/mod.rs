@@ -131,6 +131,14 @@ impl ElectronicsBackend {
             errs.extend(netlist.dangling.iter().map(|d| format!("  {}", d)));
             return Err(errs);
         }
+        // 2026-09-12 (named nets): one node cannot carry two names.
+        if !netlist.net_conflicts.is_empty() {
+            let mut errs = vec![
+                "cannot emit schematic: a net carries conflicting names".to_string(),
+            ];
+            errs.extend(netlist.net_conflicts.iter().map(|c| format!("  {}", c)));
+            return Err(errs);
+        }
         // 2026-09-11 (B4): voltage/current proving — shorted supplies,
         // over-voltage into rated pins, undeclared unrated pins, and
         // postcondition current bounds violated by derived physics.

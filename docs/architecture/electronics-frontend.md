@@ -122,8 +122,11 @@ keywords are valid names since net names are contextual). Unit suffixes —
 adjacent numeric literals when `is_unit_suffix` matches; `mA` → /1000;
 interpretation in `extract_voltage`/`extract_current`/`extract_resistance`;
 instance values store the raw suffixed string for `parse_ohms`).
+Names resolve against FINAL union-find roots (stale-root safe); two
+DIFFERENT names on one node are a hard error refusing emission
+(`net_conflicts`, checked like dangling pins); the same name twice is
+redundant, not a conflict.
 
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
 simulation), PinDecl in cell bodies' beast serialization, power ratings
-(needs a `rating` clause surface), named-net conflicts (two names on one
-net currently take the first — should be an error), pin roles.
+(needs a `rating` clause surface), pin roles.

@@ -71,6 +71,9 @@ pub struct ElectronicsNetlist {
     pub components: Vec<ComponentInstance>,
     pub nets: Vec<Net>,
     pub dangling: Vec<String>,
+    /// 2026-09-12 (named nets): conflicting names on one equivalence class —
+    /// one electrical node cannot carry two names.
+    pub net_conflicts: Vec<String>,
     /// True when the program contains any pin-carrying component type.
     pub is_electronics: bool,
     /// Schematic facts per component type name.
@@ -801,6 +804,66 @@ fn format_volts(v: f64) -> String {
 }
 
 /// Derive the netlist for an electronics program.
+/// Union pins connected by precondition equalities; returns the named-net
+/// annotations as (pin_key, name) pairs, resolved later against final roots.
+fn collect_pin_unions(
+    items: &[TopLevel],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    ds: &mut DisjointSet,
+) -> Vec<(String, String)> {
+    let mut named: Vec<(String, String)> = Vec::new();
+    for item in items {
+        let TopLevel::Transaction(t) = item else { continue };
+        // PREconditions are topology. Postconditions are physics — skipped.
+        let mut triples = Vec::new();
+        collect_eq_triples(&t.contract.pre_condition, &mut triples);
+        for (l, r, name) in triples {
+            let (Some(lp), Some(rp)) = (
+                resolve_pin(&l, instances, type_pins),
+                resolve_pin(&r, instances, type_pins),
+            ) else {
+                continue;
+            };
+            let lk = pin_key(&lp.component, &lp.pin);
+            let rk = pin_key(&rp.component, &rp.pin);
+            ds.make(lk.clone());
+            ds.make(rk.clone());
+            ds.union(&lk, &rk);
+            if let Some(name) = name {
+                named.push((lk, name));
+            }
+        }
+    }
+    named
+}
+
+/// Resolve named-net annotations onto FINAL union-find roots (a name keyed
+/// during unioning would go stale when later merges change roots). Two
+/// DIFFERENT names on one net are a conflict; the same name twice is
+/// redundant, not a conflict. Returns root → name plus the raw conflicts
+/// (root, first name, conflicting name) for the caller to format.
+fn resolve_net_names(
+    ds: &mut DisjointSet,
+    named: Vec<(String, String)>,
+) -> (BTreeMap<String, String>, Vec<(String, String, String)>) {
+    let mut net_names: BTreeMap<String, String> = BTreeMap::new();
+    let mut raw_conflicts: Vec<(String, String, String)> = Vec::new();
+    for (pin_key, name) in named {
+        let root = ds.find(&pin_key);
+        match net_names.get(&root) {
+            Some(existing) if *existing != name => {
+                raw_conflicts.push((root, existing.clone(), name));
+            }
+            Some(_) => {}
+            None => {
+                net_names.insert(root, name);
+            }
+        }
+    }
+    (net_names, raw_conflicts)
+}
+
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let (type_pins, type_info) = collect_type_pins(items);
     if type_pins.is_empty() {
@@ -813,32 +876,8 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         .collect();
 
     let mut ds = DisjointSet::new();
-    // Net names from `net <name>:` annotations — maps union-find root → name.
-    let mut net_names: BTreeMap<String, String> = BTreeMap::new();
-    for item in items {
-        let TopLevel::Transaction(t) = item else { continue };
-        // PREconditions are topology. Postconditions are physics — skipped.
-        let mut triples = Vec::new();
-        collect_eq_triples(&t.contract.pre_condition, &mut triples);
-        for (l, r, name) in triples {
-            let (Some(lp), Some(rp)) = (
-                resolve_pin(&l, &instances, &type_pins),
-                resolve_pin(&r, &instances, &type_pins),
-            ) else {
-                continue;
-            };
-            let lk = pin_key(&lp.component, &lp.pin);
-            let rk = pin_key(&rp.component, &rp.pin);
-            ds.make(lk.clone());
-            ds.make(rk.clone());
-            ds.union(&lk, &rk);
-            // Record the net name on the resulting root.
-            if let Some(name) = name {
-                let root = ds.find(&lk);
-                net_names.entry(root).or_insert(name);
-            }
-        }
-    }
+    let named = collect_pin_unions(items, &instances, &type_pins, &mut ds);
+    let (mut net_names, raw_conflicts) = resolve_net_names(&mut ds, named);
 
     // Group members by root; sort everything for determinism (HashMap rule).
     let mut groups: BTreeMap<String, Vec<PinRef>> = BTreeMap::new();
@@ -863,11 +902,11 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let mut nets = Vec::new();
     let mut dangling = Vec::new();
     let mut net_index = 0;
-    for (root, members) in groups {
+    for (root, members) in &groups {
         if members.len() >= 2 {
             net_index += 1;
-            let name = net_names.remove(&root).unwrap_or_else(|| format!("N{}", net_index));
-            nets.push(Net { name, pins: members });
+            let name = net_names.remove(root).unwrap_or_else(|| format!("N{}", net_index));
+            nets.push(Net { name, pins: members.clone() });
         } else {
             let p = &members[0];
             dangling.push(format!(
@@ -878,6 +917,26 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         }
     }
 
+    let net_conflicts = raw_conflicts
+        .into_iter()
+        .map(|(root, a, b)| {
+            let pins = groups
+                .get(&root)
+                .map(|ms| {
+                    ms.iter()
+                        .map(|p| format!("{}.{}", p.component, p.pin))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            format!(
+                "the net [{pins}] is named both '{a}' and '{b}' — one electrical node \
+                 cannot carry two names. fix: use one name for the net, or split it \
+                 into separate nets."
+            )
+        })
+        .collect();
+
     // Voltage classes need the nets and instances before they move into the
     // result struct.
     let voltage = derive_voltage(items, &nets, &instances, &type_pins, &type_info);
@@ -886,6 +945,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         components: instance_list,
         nets,
         dangling,
+        net_conflicts,
         is_electronics: true,
         voltage,
         type_info,
@@ -1289,6 +1349,44 @@ mod tests {
         "#;
         let nl = analyze(src);
         assert!(nl.nets.iter().any(|n| n.name.starts_with('N')), "unnamed nets should get N<N> names");
+    }
+
+    #[test]
+    fn conflicting_net_names_are_a_violation() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; tolerance any; };
+            let j1: Connector = Connector { };
+            let r1: Resistor = Resistor { };
+            txn powered
+                [net vcc: j1.p1.voltage == r1.a.voltage && net gnd: j1.p2.voltage == r1.b.voltage && net vcc: r1.b.voltage == j1.p2.voltage && j1.p1.voltage == 3.3]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.net_conflicts.len(), 1, "vcc+gnd on one node is a conflict: {:?}", nl.net_conflicts);
+        assert!(nl.net_conflicts[0].contains("'vcc'"), "conflict names both: {}", nl.net_conflicts[0]);
+        assert!(nl.net_conflicts[0].contains("'gnd'"), "conflict names both: {}", nl.net_conflicts[0]);
+        assert!(nl.net_conflicts[0].contains("j1.p2"), "conflict names the pins: {}", nl.net_conflicts[0]);
+    }
+
+    #[test]
+    fn repeated_same_net_name_is_fine() {
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; tolerance any; };
+            let j1: Connector = Connector { };
+            let r1: Resistor = Resistor { };
+            txn powered
+                [net vcc: j1.p1.voltage == r1.a.voltage && net vcc: j1.p2.voltage == r1.b.voltage && j1.p1.voltage == 3.3]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.net_conflicts.is_empty(), "same name twice is redundant, not a conflict: {:?}", nl.net_conflicts);
+        assert!(nl.nets.iter().any(|n| n.name == "vcc"));
     }
 
     #[test]
