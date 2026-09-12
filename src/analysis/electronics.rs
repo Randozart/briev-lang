@@ -321,8 +321,10 @@ fn derive_voltage(
     let drives = collect_drives(items, &pin_to_net, instances, type_pins);
     let mut check = classify_drives(drives);
     check_tolerance(nets, instances, type_info, &check.net_voltage, &mut check.violations);
-    // B4 flagship: I = V / R through series parts; prove the current bounds.
-    derive_current(items, nets, instances, type_pins, type_info, check.net_voltage.clone(), &mut check);
+    // B4 flagship: I = V / R through series parts, dividers, and KCL sums;
+    // then the postcondition current bounds are proven against the result.
+    derive_current(&pin_to_net, instances, type_info, check.net_voltage.clone(), &mut check);
+    check_current_bounds(items, instances, type_pins, &pin_to_net, &mut check);
     check
 }
 
@@ -438,16 +440,17 @@ fn check_tolerance(
 /// non-numeric values ("red") — no derivation, no error.
 fn parse_ohms(raw: &str) -> Option<f64> {
     let s = raw.trim();
-    let (num, mult) = if let Some(stripped) = s.strip_suffix(['k', 'K']) {
-        (stripped, 1e3)
-    } else if let Some(stripped) = s.strip_suffix('M') {
-        (stripped, 1e6)
-    } else if let Some(stripped) = s.strip_suffix(['R', 'r']) {
-        (stripped, 1.0)
-    } else {
-        (s, 1.0)
+    // Suffixes: k/K (kilohm), M (megohm), R/r (unit marker). Plain parse
+    // otherwise. Non-numeric values ("red") → None: no derivation, no error.
+    let (num, mult) = match s.chars().last()? {
+        'k' | 'K' => (&s[..s.len() - 1], 1e3),
+        'M' => (&s[..s.len() - 1], 1e6),
+        'R' | 'r' => (&s[..s.len() - 1], 1.0),
+        _ => (s, 1.0),
     };
-    num.trim().parse::<f64>().ok().map(|v| v * mult)
+    let v = num.trim().parse::<f64>().ok()?;
+    let out = v * mult;
+    if out > 0.0 { Some(out) } else { None }
 }
 
 /// Collect current-bound obligations from POSTconditions:
@@ -504,30 +507,29 @@ fn collect_compare_pairs(expr: &Expr, out: &mut Vec<(Expr, BinaryOpKind, Expr)>)
 /// I = V / R. The undriven net inherits the current class; postcondition
 /// current bounds on that net are PROVEN (or violated) against it.
 #[allow(clippy::too_many_arguments)]
-fn derive_current(
-    items: &[TopLevel],
-    nets: &[Net],
-    instances: &BTreeMap<String, &ComponentInstance>,
-    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
-    type_info: &BTreeMap<String, TypeInfo>,
-    net_voltage: BTreeMap<String, f64>,
-    check: &mut VoltageCheck,
-) {
-    // Pin → net name.
-    let mut pin_to_net: BTreeMap<(String, String), String> = BTreeMap::new();
-    for net in nets {
-        for p in &net.pins {
-            pin_to_net.insert((p.component.clone(), p.pin.clone()), net.name.clone());
-        }
-    }
+/// One two-pin valued part in the derivation graph.
+struct SeriesPart {
+    name: String,
+    raw: String,
+    ohms: f64,
+    net_a: String,
+    net_b: String,
+}
 
-    // Series parts: two pins, numeric value.
+/// Collect the series parts: two-pin instances with numeric values.
+fn collect_series_parts(
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    pin_to_net: &BTreeMap<(String, String), String>,
+) -> Vec<SeriesPart> {
+    let mut parts = Vec::new();
     for inst in instances.values() {
         let Some(info) = type_info.get(&inst.type_name) else { continue };
         if info.pins.len() != 2 {
             continue;
         }
-        let Some(raw) = inst.properties.iter().find(|(k, _)| k == "value").map(|(_, v)| v.clone()) else {
+        let Some(raw) = inst.properties.iter().find(|(k, _)| k == "value").map(|(_, v)| v.clone())
+        else {
             continue;
         };
         let Some(ohms) = parse_ohms(&raw) else { continue };
@@ -542,29 +544,167 @@ fn derive_current(
         if n0 == n1 {
             continue;
         }
-        let v0 = net_voltage.get(n0).copied();
-        let v1 = net_voltage.get(n1).copied();
-        // Exactly one side driven; the other side receives the current.
-        let (driven_net, driven_v, downstream_net) = match (v0, v1) {
-            (Some(v), None) => (n0, v, n1),
-            (None, Some(v)) => (n1, v, n0),
-            _ => continue,
-        };
-        let current = driven_v / ohms;
-        // Max-merge with any existing class (parallel paths — skeleton takes
-        // the worst case; Kirchhoff summing is a recorded follow-on).
-        let entry = check.net_current.entry(downstream_net.clone()).or_insert(0.0);
-        if current > *entry {
-            *entry = current;
-        }
-        check.proved.push(format!(
-            "I({}) = V({}) / R({} = {}) = {} — Ohm's law through the series part",
-            downstream_net, driven_net, inst.name, raw, format_amps(current)
+        parts.push(SeriesPart {
+            name: inst.name.clone(),
+            raw,
+            ohms,
+            net_a: n0.clone(),
+            net_b: n1.clone(),
+        });
+    }
+    parts
+}
+
+/// The part graph the derivation runs over.
+struct PartGraph {
+    parts: Vec<SeriesPart>,
+    attached: BTreeMap<String, Vec<usize>>,
+    voltage: BTreeMap<String, f64>,
+    divided: std::collections::HashSet<String>,
+}
+
+/// Is `net` a divider mid node? Unclassed, not driven, exactly two attached
+/// parts, both far sides classed, and the far sides are DIFFERENT nets (a
+/// parallel pair shares one far net — that is not a divider).
+fn is_divider_mid(net: &str, g: &PartGraph, drives: &BTreeMap<String, f64>) -> bool {
+    if g.voltage.contains_key(net) || drives.contains_key(net) || g.divided.contains(net) {
+        return false;
+    }
+    let Some(idxs) = g.attached.get(net) else { return false };
+    if idxs.len() != 2 {
+        return false;
+    }
+    let (ia, ib) = (idxs[0], idxs[1]);
+    let (pa, pb) = (&g.parts[ia], &g.parts[ib]);
+    let fa = if pa.net_a == net { &pa.net_b } else { &pa.net_a };
+    let fb = if pb.net_a == net { &pb.net_b } else { &pb.net_a };
+    fa != fb && g.voltage.contains_key(fa) && g.voltage.contains_key(fb)
+}
+
+/// (a) Divider pass: class every eligible mid net. Returns true when
+/// something was classed.
+fn divider_pass(
+    g: &mut PartGraph,
+    drives: &BTreeMap<String, f64>,
+    proved: &mut Vec<String>,
+) -> bool {
+    let mid_nets: Vec<String> = g
+        .attached
+        .keys()
+        .filter(|net| is_divider_mid(net, g, drives))
+        .cloned()
+        .collect();
+    let mut any = false;
+    for mid in mid_nets {
+        let idxs = &g.attached[&mid];
+        let (ia, ib) = (idxs[0], idxs[1]);
+        let (pa, pb) = (&g.parts[ia], &g.parts[ib]);
+        let far_a = if pa.net_a == mid { &pa.net_b } else { &pa.net_a };
+        let far_b = if pb.net_a == mid { &pb.net_b } else { &pb.net_a };
+        let va = g.voltage[far_a];
+        let vb = g.voltage[far_b];
+        // General two-resistor divider — orientation-free, handles a 0 V
+        // ground reference on either side.
+        let v_mid = (va / pa.ohms + vb / pb.ohms) / (1.0 / pa.ohms + 1.0 / pb.ohms);
+        g.voltage.insert(mid.clone(), v_mid);
+        g.divided.insert(mid.clone());
+        any = true;
+        proved.push(format!(
+            "V({}) = {} — voltage divider ({} = {} and {} = {})",
+            mid, format_volts(v_mid), far_a, format_volts(va), far_b, format_volts(vb)
         ));
     }
+    any
+}
 
-    // Prove (or violate) the postcondition current bounds against the
-    // derived classes.
+/// (b)+(c) Contribution + KCL pass: per-part Ohm currents rebuilt from
+/// scratch against the current voltage classes, then SUMMED per net
+/// (parallel branches add — Kirchhoff's current law). Records a proof
+/// fact per part and a sum fact per multi-branch net.
+fn contribution_pass(g: &mut PartGraph, check: &mut VoltageCheck) -> bool {
+    let mut contributions: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for p in &g.parts {
+        let va = g.voltage.get(&p.net_a).copied();
+        let vb = g.voltage.get(&p.net_b).copied();
+        let (target, source_net, across, current) = match (va, vb) {
+            (Some(a), Some(b)) if (a - b).abs() <= f64::EPSILON => continue,
+            (Some(a), Some(b)) if a > b => (&p.net_b, &p.net_a, a - b, (a - b) / p.ohms),
+            (Some(a), Some(b)) => (&p.net_a, &p.net_b, b - a, (b - a) / p.ohms),
+            (Some(a), None) => (&p.net_b, &p.net_a, a, a / p.ohms),
+            (None, Some(b)) => (&p.net_a, &p.net_b, b, b / p.ohms),
+            (None, None) => continue,
+        };
+        contributions.entry(target.clone()).or_default().push(current);
+        check.proved.push(format!(
+            "I({} -> {}) = {} / {} ({} = {}) = {} — Ohm's law through the series part",
+            source_net, target, format_volts(across), format_volts(p.ohms), p.name, p.raw,
+            format_amps(current)
+        ));
+    }
+    let mut net_current: BTreeMap<String, f64> = BTreeMap::new();
+    for (net, contribs) in contributions {
+        let total: f64 = contribs.iter().sum();
+        net_current.insert(net.clone(), total);
+        if contribs.len() > 1 {
+            check.proved.push(format!(
+                "I({}) = {} — Kirchhoff: {} parallel branches sum",
+                net,
+                format_amps(total),
+                contribs.len()
+            ));
+        }
+    }
+    let changed = check.net_current != net_current;
+    check.net_current = net_current;
+    changed
+}
+
+/// B4 flagship — Ohm's-law derivation over the part graph, to a fixpoint:
+/// series current, voltage dividers, and Kirchhoff parallel summing. See
+/// the pass functions for the individual rules.
+fn derive_current(
+    pin_to_net: &BTreeMap<(String, String), String>,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    net_voltage: BTreeMap<String, f64>,
+    check: &mut VoltageCheck,
+) {
+    let parts = collect_series_parts(instances, type_info, pin_to_net);
+    let mut attached: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (idx, p) in parts.iter().enumerate() {
+        attached.entry(p.net_a.clone()).or_default().push(idx);
+        attached.entry(p.net_b.clone()).or_default().push(idx);
+    }
+
+    let mut g = PartGraph {
+        parts,
+        attached,
+        voltage: net_voltage,
+        divided: Default::default(),
+    };
+    let drives = g.voltage.clone();
+
+    let max_passes = g.parts.len() + 2;
+    for _ in 0..max_passes {
+        let divider_changed = divider_pass(&mut g, &drives, &mut check.proved);
+        let current_changed = contribution_pass(&mut g, check);
+        if !divider_changed && !current_changed {
+            break;
+        }
+    }
+    // Voltage classes from drives AND dividers both feed tolerance checks.
+    check.net_voltage = g.voltage;
+}
+
+/// Prove (or violate) the postcondition current bounds against the derived
+/// current classes.
+fn check_current_bounds(
+    items: &[TopLevel],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    pin_to_net: &BTreeMap<(String, String), String>,
+    check: &mut VoltageCheck,
+) {
     for (pin, bound, is_upper) in collect_current_bounds(items, instances, type_pins) {
         let Some(net_name) = pin_to_net.get(&(pin.component.clone(), pin.pin.clone())) else {
             continue;
@@ -922,6 +1062,62 @@ mod tests {
             "the derivation is a recorded PROOF fact: {:?}", nl.voltage.proved
         );
         assert!(nl.voltage.violations.is_empty(), "10 mA within the 20 mA bound: {:?}", nl.voltage.violations);
+    }
+
+    #[test]
+    fn voltage_divider_classes_the_mid_net() {
+        // 5 V across 1k + 1k: the mid node sits at 2.5 V — derived, so a
+        // 2.0 V-rated pin there violates and a 3.3 V-rated one passes.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; pin gnd; reference "P"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Sensor { pin s; reference "S"; tolerance 2.0; };
+            let p1: Power = Power { };
+            let r1: Resistor = Resistor { value: "1k" };
+            let r2: Resistor = Resistor { value: "1k" };
+            let s1: Sensor = Sensor { };
+            txn apply
+                [p1.vout.voltage == r1.a.voltage && r1.b.voltage == r2.a.voltage && r2.b.voltage == p1.gnd.voltage && r1.b.voltage == s1.s.voltage]
+                [p1.vout.voltage == 5.0 && p1.gnd.voltage == 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        let mid = nl.voltage.net_voltage.values().find(|v| (**v - 2.5).abs() < 1e-6);
+        assert!(mid.is_some(), "mid node derives to 2.5 V: {:?}", nl.voltage.net_voltage);
+        assert!(
+            nl.voltage.proved.iter().any(|p| p.contains("voltage divider")),
+            "the divider is a recorded PROOF fact: {:?}", nl.voltage.proved
+        );
+    }
+
+    #[test]
+    fn parallel_branches_sum_kirchhoff() {
+        // Two 660-ohm parts in parallel from 3.3 V: each draws 5 mA, the
+        // shared net carries the SUM — 10 mA — and a 8 mA bound violates
+        // while a 12 mA bound holds.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; pin gnd; reference "P"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            let p1: Power = Power { };
+            let r1: Resistor = Resistor { value: "660" };
+            let r2: Resistor = Resistor { value: "660" };
+            txn apply
+                [p1.vout.voltage == r1.a.voltage && r1.b.voltage == p1.gnd.voltage && r1.a.voltage == r2.a.voltage && r2.b.voltage == p1.gnd.voltage && p1.vout.voltage == 3.3 && p1.gnd.voltage == 0.0]
+                [p1.vout.current <= 0.008]
+            { }
+        "#;
+        let nl = analyze(src);
+        // Both branches land on the gnd net: 5 mA + 5 mA = 10 mA total.
+        assert!(
+            nl.voltage.net_current.values().any(|i| (*i - 0.01).abs() < 1e-6),
+            "parallel currents sum: {:?}", nl.voltage.net_current
+        );
+        assert!(
+            nl.voltage.proved.iter().any(|p| p.contains("Kirchhoff")),
+            "the sum is a recorded PROOF fact: {:?}", nl.voltage.proved
+        );
     }
 
     #[test]
