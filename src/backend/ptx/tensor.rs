@@ -996,9 +996,14 @@ pub fn tensor_gemm_ptx_smem_mw(
     // 52.6 TF at 1 CTA/SM, occupancy only pays when stalls exist.
     // f32 keeps the trimmed 2-B-reg serial schedule byte-identical.
     let (aregs, bregs): (Vec<String>, Vec<String>) = if f16_acc {
+        // The packed schedule addresses %a{4*mh}..%a{4*mh+3} per mh-block
+        // and %b{2*g}..%b{2*g+1} per col-group, so the declarations must
+        // scale with the warp shape (mhr=2 → a0-a7/b0-b15 as always; the
+        // warp_mh=4 dumps previously declared %a<8> and failed ptxas with
+        // unknown %a8-a15 — found 2026-09-12 in the E2 sweep).
         (
-            (0..8).map(|i| format!("%a{}", i)).collect(),
-            (0..16).map(|i| format!("%b{}", i)).collect(),
+            (0..4 * mhr as usize).map(|i| format!("%a{}", i)).collect(),
+            (0..2 * gr as usize).map(|i| format!("%b{}", i)).collect(),
         )
     } else {
         (
@@ -1582,6 +1587,23 @@ mod r16_dump {
         std::fs::write("/tmp/opencode/tgemm_mw_8192_f16acc.ptx", &ptx).unwrap();
     }
 
+    /// warp_mh=4 portfolio (2026-09-12): the shapes the f16acc dispatch
+    /// now emits (select_mw_nw lands (4,4) for 2048³/4096³/8192³ at mhr=4),
+    /// for on-device correctness at the production warp shape.
+    #[test]
+    fn dump_mh4_f16acc_portfolio() {
+        for (m, k, tag) in [(2048i64, 2048i64, "2048"), (4096, 4096, "4096"), (8192, 8192, "8192")] {
+            let b_off = m * k * 2;
+            let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
+            let ptx = tensor_gemm_ptx_smem_mw(
+                m, m, k, 0, b_off as u64, y_off as u64, 2, 4, 4, true, 2, 4,
+            );
+            std::fs::write(&format!("/tmp/opencode/tgemm_mh4_{tag}.ptx"), &ptx).unwrap();
+        }
+        let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 16, 0, 131072, 262152, 2, 4, 4, true, 2, 4);
+        std::fs::write("/tmp/opencode/tgemm_mh4_k16.ptx", &ptx).unwrap();
+    }
+
     #[test]
     fn dump_mw_4096_k16_f16acc() {
         for k in [16i64, 32, 64, 128, 256, 512] {
@@ -1896,7 +1918,7 @@ mod r16_dump {
         let iters = (130_000_000_000f64 / (chains as f64 * 4096.0 * warps as f64)).round() as u64;
         let iters = (iters / 8 * 8).max(64);
 
-        for &variant in &["e", "s", "f", "m", "d", "p", "a", "w", "i", "t", "c", "8"] {
+        for &variant in &["e", "s", "f", "m", "d", "p", "a", "w", "i", "t", "c", "8", "sp"] {
             let mut out = String::new();
             let label = match variant {
                 "e" => "E1f baseline (clean fill + ldmatrix + mma)",
@@ -1911,6 +1933,7 @@ mod r16_dump {
                 "t" => "3-stage pipeline (triple-buffered)",
                 "c" => "widened A fill (16-byte ld+st)",
                 "8" => "widened A fill (8-byte ld+st)",
+                "sp" => "warp-split fills (A warps 0-7, B warps 8-15, both 16B)",
                 _ => unreachable!(),
             };
             out.push_str(&format!("// Fill-gap diagnosis: {}\n", label));
@@ -1926,7 +1949,7 @@ mod r16_dump {
             // All register declarations at the top
             out.push_str("    .reg .b32 %r<16>;\n");
             out.push_str("    .reg .b64 %rd<16>;\n");
-            out.push_str("    .reg .pred %p<2>;\n");
+            out.push_str("    .reg .pred %p<3>;\n");
             out.push_str("    .reg .b32 %c<33>;\n");
             out.push_str("    .reg .b32 %a<5>;\n");
             out.push_str("    .reg .b32 %b<17>;\n");
@@ -2034,6 +2057,31 @@ mod r16_dump {
                     out.push_str("    ld.global.b32 %r11, [%rd1];\n");
                     out.push_str("    st.shared.b32 [%rd5], %r11;\n");
                 }
+            } else if variant == "sp" {
+                // Warp-split fills: warps 0-7 (tid < 256) fill A with four
+                // 16-byte v4 ops (64B per A-warp thread); warps 8-15 fill B
+                // the same way. Same total bytes/thread as variant a, but no
+                // thread touches both fills and every op is 16-byte.
+                out.push_str("    setp.ge.u32 %p2, %r1, 256;\n");
+                out.push_str("    @%p2 bra BFILL_SP;\n");
+                for g in 0..4 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdA, %rd5;\n");
+                    out.push_str("    ld.global.v4.b32 {%r11, %r13, %r14, %r15}, [%rd1];\n");
+                    out.push_str("    st.shared.v4.b32 [%rd5], {%r11, %r13, %r14, %r15};\n");
+                }
+                out.push_str("    bra FILLDONE_SP;\n");
+                out.push_str("BFILL_SP:\n");
+                for g in 0..4 {
+                    out.push_str(&format!("    mov.u32 %r12, {};\n", g * 256));
+                    out.push_str("    add.u32 %r12, %r12, %r8;\n");
+                    out.push_str("    mul.wide.u32 %rd5, %r12, 1;\n");
+                    out.push_str("    add.u64 %rd5, %rdS0, %rd5;\n");
+                    out.push_str("    ld.global.v4.b32 {%r11, %r13, %r14, %r15}, [%rd1];\n");
+                    out.push_str("    st.shared.v4.b32 [%rd5], {%r11, %r13, %r14, %r15};\n");
+                }
+                out.push_str("FILLDONE_SP:\n");
             } else if variant == "a" || variant == "w" || variant == "i" || variant == "c" || variant == "8" {
                 // A fill
                 if variant == "c" || variant == "8" {

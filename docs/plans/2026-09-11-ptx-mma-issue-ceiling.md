@@ -483,11 +483,47 @@ interleaved same-window A/B is comparable.) 64 regs, no spills kept.
 Session net at 4096³ f16acc: 28.97 → 29.61 TF in-window, ~70% of the
 cuBLAS anchor.
 
-### warp_mh=4: REJECTED 2026-09-12
+### warp_mh=4: SHIPPED 2026-09-12 (the earlier rejection was invalid)
 
-The 64×32 A-sharing warp (mhr=4, gr=4) makes per_a=4 (A fires the 16B
-`.cg` rung) and quarters B loads (16×→4× per kstep) — but per_b drops
-to 2, so B falls to the 8B rung: the two configs just swap rung
-widths. Interleaved ×4 same-window at 4096³ f16acc: mh2 31.31 vs mh4
-31.16 TF — mh2 wins 3/4 rounds, inside noise. Reverted; dispatch keeps
-warp_mh=2 with the measurement recorded in the comment.
+**Correction of record**: the "warp_mh=4 REJECTED" entry below (and
+commit f1ea6e8b) measured mh2-vs-mh2 — the A/B patched the dispatch
+constant in mod.rs, but the bench used dump-test cubins whose
+warp_mh=2 literal never changed. The true mh4 dumps could not even
+assemble: the f16acc register declaration hardcoded %a<8>/ %b<16>
+instead of scaling with the warp shape (4*mhr / 2*gr), so every
+warp_mh=4 dump failed ptxas on unknown %a8-a15. Both bugs fixed; a
+selector test now pins the generalized aspect guards.
+
+True A/B (dp44 = (4,4)@512T warp_mh=4, interleaved ×4 same window):
+**32.80 vs 29.87 TF — mh4 wins 4/4 (+2.9 TF)**, byte-identical
+correctness. per_a=4 fires the 16B `.cg` A rung and B loads drop 16×→
+4× per kstep (per_b=2 → 8B B rung — the rung trade is net-positive,
+the opposite of the invalid measurement's claim).
+
+Dispatch flip (f16acc → warp_mh=4, f32 keeps mh2): select_mw_nw and
+mw_ok generalized to the warp aspect (M%(16·mhr·mw), N%(8·gr·nw)),
+shared_bytes formula now (mw·mhr·512 + nw·gr·256)·stages. All shapes
+verified on-device at mh4: 2048³ 27.9 TF, 4096³ 32.3 TF, 8192³
+**34.1 TF (81% of the 42 TF anchor)**, K=16 exact. 63 regs, 2 CTAs/SM.
+
+**Process lesson (BUGS.md)**: an A/B that edits dispatch constants
+while benching dump-test cubins measures nothing — dump literals and
+dispatch constants diverge silently. Bench the artifact the dispatch
+actually emits, or make the dump read the same constant.
+
+### E1/E2/E3 session record (2026-09-12)
+
+- **E1 re-decomposition** (one window): microbench e 41.8, a 30.3, 8
+  35.7, c 34.1; production kernel 28.5. The sync-fill microbenches
+  read one broadcast address (zero DRAM) — they model smem/instruction
+  cost only; production sits ~7 TF below its sync analog, which is the
+  unmodeled DRAM-side cost. Sync-model residual e−8 = 6.1 TF.
+- **E2 stage sweep** (zero code): production (4,4)@512T s2 28.10 avg
+  vs s4 28.28 (noise, 2/3), 82 26.9, 28 22.9, 24s2 24.1, c24 18.3.
+  2-stage (4,4) confirmed optimal even post-widening.
+- **E3 warp-split** (microbench variant sp): split A-warps/B-warps at
+  16B each measures 32.2 vs 8's 35.2 TF — REJECTED. Halving the active
+  warps per fill stream costs more memory-level parallelism than the
+  width gain returns; the mixed-stream widening (variant 8, every
+  thread touching both fills) is the right shape. Never reached the
+  kernel.

@@ -94,14 +94,12 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
 /// Also: nw must divide 8, mw must divide 16 (for per_a/per_b integer
 /// division in the kernel). Prefers wider nw (B reuse) then scales mw
 /// (A reuse).
-fn select_mw_nw(m: i64, n: i64, thread_cap: usize) -> (usize, usize) {
-    // Balanced growth (2026-09-10 on-device sweep, 4096^3): (1,8) 8.9,
-    // (2,4) 17.3, (4,2) 17.4 TFLOP/s — one-sided configs starve A or B
-    // reuse, so grow whichever axis lags, nw first (B reuse), while the
-    // divisibility guards and the 512-thread register budget hold.
-    // At 512 threads balanced growth reaches (4,4): CTA tile 128x256,
-    // 85 FLOP/B DRAM intensity (vs 51 at (2,4)) — the DRAM ceiling moves
-    // 18.4 -> 30.7 TFLOP/s, which is the point of the trim.
+fn select_mw_nw(m: i64, n: i64, thread_cap: usize, mhr: usize) -> (usize, usize) {
+    // mhr scales the warp's 16-row block count (warp_mh): the CTA tile is
+    // (16*mhr*mw) rows x (8*gr*nw) cols with gr = 16/mhr, so the aspect of
+    // the divisibility guards follows the warp shape. mhr=2 keeps the
+    // historical 32-row/64-col guards byte-for-byte.
+    let gr = 16 / mhr;
     let mut mw: usize = 1;
     let mut nw: usize = 1;
     loop {
@@ -116,8 +114,8 @@ fn select_mw_nw(m: i64, n: i64, thread_cap: usize) -> (usize, usize) {
             let (tm, tn) = (mw * dm, nw * dn);
             if tm <= 16
                 && tn <= 8
-                && m % ((tm * 32) as i64) == 0
-                && n % ((tn * 64) as i64) == 0
+                && m % ((tm * 16 * mhr) as i64) == 0
+                && n % ((tn * 8 * gr) as i64) == 0
                 && tm * tn * 32 <= thread_cap
             {
                 mw = tm;
@@ -282,30 +280,33 @@ pub fn build_ptx_kernels(
         // (2,4)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
         let thread_cap = if f16_acc { 512 } else { 256 };
         let (ptx, ptx_tensor, count_expr, block_threads, shared_bytes) = if tensor {
+            // warp_mh: f16acc uses the 64x32 A-sharing warp (mhr=4, gr=4) —
+            // per_a=4 fires the 16B .cg A rung and B loads drop 16x -> 4x
+            // per kstep; on-device 4096^3 (interleaved x4, 2026-09-12):
+            // 32.80 vs 29.87 TF, wins 4/4, byte-identical correctness. (An
+            // earlier A/B that "rejected" mh4 was invalid: the dump-test
+            // cubins were regenerated with the hardcoded warp_mh=2 literal,
+            // so both sides measured mh2.) f32 keeps the historical 32x64
+            // warp its serial schedule was tuned at.
+            let warp_mh = if f16_acc { 4usize } else { 2usize };
+            let gr = 16 / warp_mh;
             // Select mw/nw for multi-warp CTA. The mw kernel needs
-            // M%(mw*32)==0 and N%(nw*64)==0; fall back to single-warp
+            // M%(16*mhr*mw)==0 and N%(8*gr*nw)==0; fall back to single-warp
             // smem kernel when the shape doesn't tile cleanly.
-            let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap);
-            let mw_ok = plan.m % (mw as i64 * 32) == 0
-                && plan.n % (nw as i64 * 64) == 0;
+            let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
+            let mw_ok = plan.m % ((16 * warp_mh * mw) as i64) == 0
+                && plan.n % ((8 * gr * nw) as i64) == 0;
             if mw_ok && (mw > 1 || nw > 1) {
                 (
                     tensor::tensor_gemm_ptx_smem_mw(
                         plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
                         f16_acc, stages,
-                        // warp_mh=2: the historical 32x64 warp. The 64x32
-                        // A-sharing variant (warp_mh=4) measured 31.16 vs
-                        // 31.31 TF at 4096^3 f16acc (interleaved x4,
-                        // 2026-09-12): the B-load quartering nets out
-                        // because per_b=2 drops B to the 8B rung — the two
-                        // configs swap rung widths. Plan
-                        // 2026-09-11-ptx-double-pump-warp-tile.
-                        2,
+                        warp_mh,
                     ),
                     true,
                     e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
                     (mw * nw * 32) as u32,
-                    ((mw * 1024 + nw * 2048) * stages) as u32,
+                    ((mw * warp_mh * 512 + nw * gr * 256) * stages) as u32,
                 )
             } else {
                 // Single-warp smem kernel (32×16 tile, 1 warp).
@@ -370,6 +371,21 @@ pub fn build_ptx_kernels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_mw_nw_respects_warp_aspect() {
+        // The divisibility guards follow the warp shape: mhr=4 grows on
+        // M%(64*mw)/N%(32*nw), mhr=2 on M%(32*mw)/N%(64*nw).
+        assert_eq!(select_mw_nw(4096, 4096, 512, 4), (4, 4), "f16acc 4096^3");
+        assert_eq!(select_mw_nw(4096, 4096, 512, 2), (4, 4), "mhr=2 4096^3");
+        assert_eq!(select_mw_nw(4096, 4096, 256, 2), (4, 2), "f32 256-cap");
+        // 96 rows cannot tile a 64-row warp block (mhr=4): every growth
+        // candidate fails the M%(16*mhr*mw) guard, so the selector returns
+        // (1,1) and the dispatch falls back to the single-warp kernel.
+        // mhr=2 tiles 96 rows (96%32==0), so nw grows to its cap.
+        assert_eq!(select_mw_nw(96, 4096, 512, 4), (1, 1));
+        assert_eq!(select_mw_nw(96, 4096, 512, 2), (1, 8));
+    }
 
     #[test]
     fn naive_gemm_ptx_has_flat_grid_and_guards() {
