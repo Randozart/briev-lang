@@ -110,3 +110,36 @@ E7: the loop wrapper is additive — grid=nctaid at full grid collapses to
 the historical single-tile path; driver/runner clamp is launch-side only.
 E8a: `bar.arrive` blocks are gated behind a config knob defaulting to the
 ship schedule; off-path byte-identical (E2E-diffed).
+
+## E7 VERDICT (2026-09-13): REJECTED — the loop costs more than the tail
+
+**Implementation attempts, all measured (interleaved A/B, clamped grid
+= SMs × 4):**
+1. Dedicated walker regs (%r30/%r31): natural 64 → 72 — the +2 regs
+   re-colored the whole body. 3 CTAs/SM, the fatal tax.
+2. Walk %r1 itself, %nctaid re-read into tail-dead %r18: STILL 72
+   natural — the loop CFG alone (back-edge merge) shifts ptxas +8 regs,
+   independent of what crosses the edge.
+3. Smem-carried tile id (per-thread 4B slots, +1KB smem, tid decode
+   hoisted, NOTHING register-live across the back edge): still 72.
+
+**The measured variants:**
+- 64-capped (4 CTAs + 28B hot-path spills): 32.54–33.20 vs ship
+  35.14–35.85 at 4096³ — exactly the no-tail-benefit × spill-tax number
+  (35.5 × 0.91 = 32.3). The tail recovery did not materialize.
+- 72-natural (3 CTAs, no spills): wash at 2048³ (the 24% tail ≈ the 25%
+  slot loss), projected −18% at 4096³ — not benched, arithmetic closed.
+- 2-tile minimal probe surfaced a REAL latent bug: the historical kernel
+  initialized its mma accumulators from HW-zeroed fresh-context
+  registers — undefined per PTX. **Kept fix: explicit per-tile
+  `mov %c, 0` block** (32 movs, measured free: 35.43–35.85 vs ship
+  35.47–36.72, identical signatures). The straight-line kernel is
+  restored; E2E diffs identical modulo the acc-zero block.
+
+**Lesson.** The wave-tail arithmetic was sound (24%/9%/1%), but ptxas
+charges ~8 registers for ANY loop CFG on this kernel, and both ways to
+pay it (spills or a CTA slot) cost more than the tail. Persistence on
+this part needs a kernel whose body pressure is ≤56 regs — not this one.
+
+E7b (no-fill KLOOP at ship geometry) runs next per plan — it decides
+whether E8a warp-spec has a prize to chase.

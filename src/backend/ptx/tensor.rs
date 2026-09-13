@@ -1173,6 +1173,12 @@ fn tensor_gemm_ptx_smem_mw_opt(
         out.push_str("    .reg .u32  %r27, %r28;\n");
         out.push_str("    .reg .pred %p2;\n");
     }
+    // E7 (plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec): the
+    // grid-stride tile loop walks %r1 (the ctaid register itself — dead
+    // after the div/rem decode) and re-reads %nctaid.x into tail-dead
+    // %r18, so persistence costs ZERO registers (a dedicated pair pushed
+    // natural allocation 64→72 → 3 CTAs/SM, the measured-fatal occupancy
+    // tax). At full grid every CTA runs one tile and the loop exits.
     // Register scheduling (2026-09-11 E4a, plan 2026-09-11-ptx-mma-issue-ceiling):
     // f16-acc CLUSTER-PRELOADS — all 8 B fragments (%b0-%b15) and both A
     // blocks (%a0-%a7) issue back-to-back at the top of the compute phase,
@@ -1216,16 +1222,26 @@ fn tensor_gemm_ptx_smem_mw_opt(
     let cregs: Vec<String> = (0..if f16_acc { 2 * mhr * gr } else { 4 * mhr * gr })
         .map(|i| format!("%c{}", i))
         .collect();
+    // E7: accumulator zeroing is PER-TILE (inside the persistent loop) —
+    // the mma chains accumulate into %c, so a second tile in the same CTA
+    // would otherwise start from tile 1's results (2-tile probe measured
+    // 9.98e-1 before the move; single-tile grids were masked by HW-zeroed
+    // fresh-context registers).
+    let acc_zero = if f16_acc {
+        cregs
+            .iter()
+            .map(|c| format!("    mov.b32 {}, 0;\n", c))
+            .collect::<String>()
+    } else {
+        cregs
+            .iter()
+            .map(|c| format!("    mov.f32 {}, 0f00000000;\n", c))
+            .collect::<String>()
+    };
     if f16_acc {
         out.push_str(&format!("    .reg .b32  {};\n", cregs.join(", ")));
-        for c in &cregs {
-            out.push_str(&format!("    mov.b32 {}, 0;\n", c));
-        }
     } else {
         out.push_str(&format!("    .reg .f32  {};\n", cregs.join(", ")));
-        for c in &cregs {
-            out.push_str(&format!("    mov.f32 {}, 0f00000000;\n", c));
-        }
     }
 
     // f16-acc contract: the kernel OWNS its y tile — zero it here, then the
@@ -1314,10 +1330,11 @@ fn tensor_gemm_ptx_smem_mw_opt(
     out.push_str("    cvt.u64.u32 %rd9, %r22;\n");
     out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
 
-    out.push_str("    mov.u32 %r1, %ctaid.x;\n");
-    out.push_str(&format!("    mov.u32 %r2, {};\n", n / (8 * gr as i64 * nw as i64)));
-    out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
-    out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
+    // E7 persistent loop. Tile id walks in a PER-THREAD SMEM SLOT (+4B ×
+    // 256T = 1KB, added to shared_bytes) so NO register is live across the
+    // back edge — a register-carried walker shifted ptxas to 72 natural
+    // (3 CTAs/SM, the fatal tax). tid/lane decode hoisted above the loop
+    // (per-thread constants).
     out.push_str("    mov.u32 %r5, %tid.x;\n");
     out.push_str(&format!("    setp.ge.u32 %p1, %r5, {};\n", threads));
     out.push_str("    @%p1 ret;\n");
@@ -1354,6 +1371,22 @@ fn tensor_gemm_ptx_smem_mw_opt(
         // b_l3 = lane & 3 — B XOR factor
         out.push_str("    and.b32 %r26, %r7, 3;\n");
     }
+
+    // E7 carry-slot setup: slot = dsmem + carry_off + tid·4; store the
+    // initial tile id so the loop head's load is always valid.
+    // (E7 REJECTED 2026-09-13: the loop CFG alone shifts ptxas to 72
+    // natural regs — 3 CTAs/SM, the fatal tax — and the 64-capped variant
+    // spills 28B in the hot path; measured 32.5-33.2 vs 35.1-35.9 at
+    // 4096^3 and wash at 2048^3, the tail arithmetic never materializing
+    // over the implementation tax. The straight-line kernel is restored;
+    // the PER-TILE accumulator reset below STAYS — the historical kernel
+    // relied on HW-zeroed fresh-context registers (undefined per PTX) for
+    // mma accumulator init, which no multi-tile future can inherit.)
+    out.push_str("    mov.u32 %r1, %ctaid.x;\n");
+    out.push_str(&acc_zero);
+    out.push_str(&format!("    mov.u32 %r2, {};\n", n / (8 * gr as i64 * nw as i64)));
+    out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
+    out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
 
     out.push_str("    mov.u32 %r2, %r3;\n");
     out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * mhr as i64 * mw as i64 * a_row));
