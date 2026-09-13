@@ -109,6 +109,32 @@ resumes whoever the frame names. U-mode entry is the same path — `mepc` +
 `mstatus.MPP = U` set in the typed body; the scaffold's `mret` drops
 privilege as a CSR side effect.
 
+## Machine-entry node bodies — straight-line, never convergence
+
+A `node @ vector` body runs **once per event** — the event is the
+iteration. Machine-serviced bodies emit straight-line + return: **no
+convergence loop, no post-check at the tail** — the postcondition is a
+documented obligation (checked by the derivation examples and the test
+gate), never a runtime re-run loop. A handler that "loops until post"
+would spin at interrupt priority with the event's own cause still
+latched (found in the Phase 4 kernel: the trap_service body with
+brackets looped forever — `csrw mepc` alternating task entries, no
+`mret`). The same rule now governs `defn`: **a defn with contract
+brackets must not compile as a convergence loop** (logged BUGS.md
+2026-09-14 — the kernel's `defn schedule() [pre][post]` re-ran its
+switch forever; the demo drops the brackets until the emitter is
+fixed).
+
+## The scheduler pattern
+
+Phase 4's kernel uses **restart scheduling**: each switch writes the
+next task's stack (frame slot 8) and entry (live `mepc`) and mrets —
+the task re-runs from its top, sound for stateless slice bodies.
+**Resume scheduling** (keeping the task's interrupted pc and full
+register set in its context area, copied back on switch) rides the same
+frame rewrite — the ctx_save/ctx_restore helpers in the demo are the
+seed. Both are kernel policy; the scaffold is identical.
+
 ## The register shim
 
 Kernel logic never sees asm. The shim library (e.g.

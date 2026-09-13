@@ -6090,3 +6090,28 @@ fill path (skipped fills don't commit). All sweep shapes + recorded
 portfolio green post-fix; no perf regression beyond window noise. See
 docs/plans/2026-09-13-kle32-small-m-anomaly.md. E8a's stage-1 failure is
 independent and still open.
+
+## 2026-09-14 — defn with contract brackets compiles as a convergence loop
+
+**Where:** the LLVM backend's callable-emission path — a `defn` carrying
+contract brackets `[pre][post]` receives the txn-style convergence
+emission (post-check + backward loop-back) instead of a linear body +
+fallthrough.
+
+**What:** `defn schedule() [current >= 0][current >= 0 && current < 2]`
+in the Phase 4 kernel looped forever at interrupt priority: the body
+re-ran (set_mepc/enter_user re-executing) because the emitted
+post-check branched on a register the loop itself mutated. A defn is
+LINEAR by declaration — contracts on a defn are documentation/proof
+obligations, never convergence targets (convergence belongs to txns and
+reactor-dispatched nodes by declaration).
+
+**Workaround:** the kernel demo drops the brackets (the obligations move
+to the derivation examples / test gate).
+
+**Fix (open):** the defn emitter must ignore contract brackets for
+control flow — emit the body linearly + fallthrough regardless. The
+brackets keep their typechecking role (documented obligations). OR:
+reject contract brackets on defns entirely until derivation obligations
+make them checkable. Decision needed; the workaround ships in
+examples/kernel_rv64.b.bv.
