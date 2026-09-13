@@ -1,9 +1,10 @@
 # Briev rv64 Capability Kernel — Plan (2026-09-11)
 
-**Status**: RECORDED, NOT STARTED. This plan exists as a true test of native
-Briev capability. It was scoped in a single session against a verified
-audit of the tree at `214337d2` (main) + `feat/briev-native-runtime`
-(`729bfc8d`). No implementation work has been done under this plan.
+**Status**: PHASE 4 GATE PASSED (2026-09-14) — preemptive two-task
+kernel, `tests/bare/qemu-rv64-kernel.sh` golden BABABA. Phases 0–4
+complete (see Addenda B–D and 2026-09-14-bootstrap-kernel.md Addendum B);
+Phase 5 (frontier doc) landed. Implementation on
+`feat/rv64-capability-kernel`, merged to main 2026-09-14.
 
 ## 0. Goal
 
