@@ -5561,6 +5561,48 @@ impl LlvmBackend {
 
         // The interrupt wrapper — mechanism calling convention inline.
         let _ = mech_name;
+        // 2026-09-14 (machine-entry plan): `full_context` mechanisms get the
+        // PREEMPTIVE-SERVICE scaffold instead of the partial-save attribute:
+        // save x1–x31 + sp into @__briev_trap_frame (via tp exchanged with
+        // mscratch — tp is free: no TLS in generated code), swap to the
+        // kernel stack (frame slot 31), run the typed body, restore, `mret`.
+        // mscratch must hold the frame base before the first trap — the
+        // program's bootstrap/shim initializes it (documented protocol).
+        if mech.full_context && mech.convention == crate::target::IsrConv::RiscvInterrupt {
+            if !self.trap_frame_emitted {
+                writeln!(out, "@__briev_trap_frame = global [32 x i64] zeroinitializer").ok();
+                self.trap_frame_emitted = true;
+            }
+            let mut saves = String::new();
+            let mut loads = String::new();
+            for reg in 1..=31u32 {
+                let off = (reg - 1) * 8;
+                saves.push_str(&format!("sd x{}, {}(tp); ", reg, off));
+                loads.push_str(&format!("ld x{}, {}(tp); ", reg, off));
+            }
+            let scaffold = format!(
+                "csrrw tp, mscratch, tp; {}ld sp, 248(tp); \
+                 la a0, __briev_state; call {}; \
+                 {}csrrw tp, mscratch, tp; mret",
+                saves, body_name, loads
+            );
+            writeln!(
+                out,
+                "define void @{}() naked noinline align 4 {{",
+                isr.name
+            )
+            .ok();
+            writeln!(out, "entry:").ok();
+            writeln!(
+                out,
+                "  call void asm sideeffect \"{}\", \"~{{memory}}\"()",
+                scaffold
+            )
+            .ok();
+            writeln!(out, "  unreachable").ok();
+            writeln!(out, "}}").ok();
+            return Ok(());
+        }
         let define_line = match mech.convention {
             crate::target::IsrConv::X86Intr =>
                 format!("define x86_intrcc void @{}() nounwind {{", isr.name),

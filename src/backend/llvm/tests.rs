@@ -8887,11 +8887,11 @@ fn test_section_placement_ir() {
 // ── Phase 3 (rv64 capability kernel, 2026-09-13): trap capability ──────
 
 #[test]
-fn test_riscv_isr_wrapper_machine_attr_and_align() {
-    // mtvec requires a 4-byte-aligned base; RVC allows 2-byte function
-    // alignment, which lands the wrapper at mtvec-reserved mode bits —
-    // traps vector to mid-instruction garbage. The wrapper therefore
-    // carries align 4 with the machine interrupt convention.
+fn test_riscv_isr_full_context_scaffold() {
+    // full_context mechanisms (riscv_machine) get the preemptive-service
+    // scaffold: naked + align 4 (mtvec base), save-all via the mscratch↔tp
+    // exchange, kernel-stack swap, typed body call, restore, mret — plus the
+    // compiler-owned trap frame global.
     let src = "isr<riscv_machine> handler @ 7: tick() [true][n >= 0] { n = n; };\n\
                let n: Int = 0;\n";
     let program = parse_isr_program(src);
@@ -8899,10 +8899,16 @@ fn test_riscv_isr_wrapper_machine_attr_and_align() {
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let ir = backend.generate(&program, None);
     assert!(ir.contains(
-        "define void @tick() nounwind \"interrupt\"=\"machine\" align 4 {"),
-        "riscv wrapper: machine convention + align 4:\n{ir}");
-    assert!(ir.contains("define void @__isr_body_tick(ptr"),
-        "body takes the shared state:\n{ir}");
+        "define void @tick() naked noinline align 4 {"),
+        "riscv wrapper: naked scaffold + align 4 (mtvec base):\n{ir}");
+    assert!(ir.contains("csrrw tp, mscratch, tp"), "frame base via mscratch↔tp:\n{ir}");
+    assert!(ir.contains("sd x1, 0(tp);"), "saves x1 first");
+    assert!(ir.contains("ld x31, 240(tp);"), "restores x31 last");
+    assert!(ir.contains("ld sp, 248(tp);"), "kernel stack from frame slot 31");
+    assert!(ir.contains("call __isr_body_tick"), "calls the typed body:\n{ir}");
+    assert!(ir.contains("mret"), "returns via mret:\n{ir}");
+    assert!(ir.contains("@__briev_trap_frame = global [32 x i64] zeroinitializer"),
+        "compiler-owned trap frame:\n{ir}");
     // riscv mechanism: no link-time table (runtime-built mtvec).
     assert!(!ir.contains("@tick_vec"), "no link-time table for riscv");
 }

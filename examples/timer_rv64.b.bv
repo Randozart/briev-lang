@@ -39,11 +39,19 @@ isr<riscv_machine> handler @ 7: timer_tick() [ticks >= 0][ticks >= 0] {
     };
 };
 
+// Machine trap protocol: mscratch must hold the trap-frame base before the
+// first trap (the scaffold exchanges tp↔mscratch and saves the register
+// file into the frame); frame slot 31 holds the kernel stack.
+defn machine_trap_init() {
+    Asm#("raw", "la $0, __briev_trap_frame; csrw mscratch, $0; sd sp, 248($0)", 0);
+};
+
 // Boot and the reporter form one serialized group: the reporter reacts to
 // ticks only after boot has armed the hardware. (Rule: no implicit
 // concurrency — eligible pairs must be classified.)
 sync<timer> node boot [beginprogram][true] {
     // mtvec (direct) = the trap wrapper; MTIE on; global MIE on; arm tick 1.
+    machine_trap_init();
     Asm#("raw", "la $0, timer_tick; csrw mtvec, $0", 0);
     Asm#("raw", "csrs mie, $1", 128);
     Asm#("raw", "csrs mstatus, $1", 8);

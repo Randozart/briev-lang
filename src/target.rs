@@ -199,6 +199,12 @@ pub struct IsrMechanism {
     pub table_section: String,
     /// The wrapper's calling convention (config row field 8).
     pub convention: IsrConv,
+    /// 2026-09-14 (machine-entry plan): `full_context` — the machine-entry
+    /// convention saves the FULL register file (x1–x31 + sp →
+    /// `@__briev_trap_frame`, swap to a kernel stack, restore, return) — the
+    /// preemptive-service sequence for kernels that switch contexts in the
+    /// handler. Field 9 of the registry row.
+    pub full_context: bool,
 }
 
 /// The calling convention the emitted ISR wrapper carries (config row
@@ -265,6 +271,8 @@ impl IsrMechanismConfig {
                 Some("x86_intr") => IsrConv::X86Intr,
                 _ => IsrConv::ArmIrq,
             };
+            // 2026-09-14 (machine-entry plan): field 9 — full_context.
+            let full_context = db.field_int(&key, 9).map(|v| v != 0).unwrap_or(false);
             mechanisms.insert(
                 key.clone(),
                 IsrMechanism {
@@ -277,6 +285,7 @@ impl IsrMechanismConfig {
                     default_handler,
                     table_section,
                     convention,
+                    full_context,
                 },
             );
         }

@@ -35,8 +35,14 @@
 //   convention      — the calling convention the emitted ISR wrapper carries:
 //                     arm_irq = LLVM "interrupt"="IRQ" attr; riscv_machine =
 //                     "interrupt"="machine"; x86_intr = x86_intrcc.
+//   full_context    — 1 = the machine-entry convention saves the FULL register
+//                     file (x1–x31 + sp → @__briev_trap_frame, kernel stack,
+//                     restore, mret) — the preemptive-service sequence, for
+//                     kernels that switch contexts in the handler. 0 = the
+//                     plain convention (the machine's own partial save).
+//                     2026-09-14 (machine-entry plan; SPEC §13.2).
 
-arm_cortex_m:   4; sp; 1; bx lr; lazy; 512; Default_Handler; .isr_vector; arm_irq;
-arm_cortex_m0:  4; sp; 1; bx lr; none; 256; Default_Handler; .isr_vector; arm_irq;
-riscv_machine:  4; none; 0; mret; none; 512; default_isr_handler; ; riscv_machine;
-x86_idt:        8; none; 0; iretq; none; 512; default_isr_handler; ; x86_intr;
+arm_cortex_m:   4; sp; 1; bx lr; lazy; 512; Default_Handler; .isr_vector; arm_irq; 0;
+arm_cortex_m0:  4; sp; 1; bx lr; none; 256; Default_Handler; .isr_vector; arm_irq; 0;
+riscv_machine:  4; none; 0; mret; none; 512; default_isr_handler; ; riscv_machine; 1;
+x86_idt:        8; none; 0; iretq; none; 512; default_isr_handler; ; x86_intr; 0;
