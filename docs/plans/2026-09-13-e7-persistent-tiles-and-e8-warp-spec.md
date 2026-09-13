@@ -143,3 +143,16 @@ this part needs a kernel whose body pressure is ≤56 regs — not this one.
 
 E7b (no-fill KLOOP at ship geometry) runs next per plan — it decides
 whether E8a warp-spec has a prize to chase.
+
+## E7b VERDICT (2026-09-13): no-fill KLOOP = 46.2 TF — E8a has a prize
+
+Ship PTX with the cp.async machinery stripped (fill address ALU and the
+membar+bar cadence kept; only the copies and wait_group removed), 64
+regs / 4 CTAs/SM, full grid: **46.20 TF @4096³** vs the ship's 35.5.
+
+Ladder at the E4c geometry: pure compute 46.2 → +fills 35.5 → the fill
+machinery costs **10.7 TF (23%)**. Reconciled with the E1f@4CTA mix
+microbench (42.5): a perfect fill schedule at this occupancy loses only
+~3.7 TF to fills, so the real kernel's fill-scheduling gap is ~7 TF.
+**E8a warp-spec's prize is 3.5–7 TF (to ~39–42) — above the +5% win
+bar. GO for the E8a prototype** (bar.arrive toy first, per plan).
