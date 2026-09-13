@@ -155,22 +155,26 @@ The compiler generates one of two codegen paths (see `a006-dispatch.md`):
 Both paths implement the same reactor semantics. The Direct SSA path is an
 optimization for simple programs — it avoids the `@reactor_tick` indirection.
 
-## Embedded: Equilibrium as Idle
+## Embedded: Equilibrium as Idle — frontier-driven (2026-09-14)
 
-On bare-metal targets (riscv64, thumb), the reactor loop IS the idle loop.
-When no node can fire:
+On bare-metal targets (riscv64, thumb), the reactor loop IS the idle loop —
+but what "idle" means is a **static per-program decision**, computed from the
+program's eligibility frontier (what can make a node eligible and how):
 
-1. The reactor evaluates all preconditions → all false
-2. The program is at equilibrium
-3. On embedded: `wfi` (wait-for-interrupt) halts the CPU until hardware
-   wakes it
-4. Hardware interrupt fires → sets a volatile flag → node precondition
-   becomes true → reactor fires that node
+| Program frontier | Equilibrium | Re-check on wake |
+|---|---|---|
+| state-sequenced only | direct fallthrough — provably-next nodes chain without re-checks | none |
+| vectored only (`@ vector` nodes) | `wfi` park | the trap's dependent preconditions only |
+| external frontier (`@ address` wires) | continuous evaluation (spin) — or park with a timer quantum under a declared `within` bound | the external set |
 
-No explicit interrupt handler is needed (though `isr<name>` can declare one).
-The hardware writes to a memory-mapped register; the node's precondition reads
-it via `VolatileLoad#`. The reactor's continuous evaluation IS the interrupt
-dispatch.
+The wake-dependency analysis (per wake source: typed writer sets ×
+precondition reader sets, conservative) computes the re-evaluation sets;
+omitted checks are proven unable to change. Machine entries are declared via
+`bootstrap node` (authored) or the canned `_start` (fallback), and machine
+events via `node @ vector` (mechanism-inferred scaffold) — see
+`machine-entry.md`. No explicit interrupt handler is needed: the hardware
+writes state (or the machine vectors), and the reactor's evaluation of the
+affected frontier IS the dispatch.
 
 ## Related Documents
 

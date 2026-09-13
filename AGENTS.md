@@ -337,6 +337,7 @@ contracts.
 | **endprogram/beginprogram (active plan)** | `docs/plans/2026-08-06-endprogram-beginprogram.md` |
 | **Execution model (reactor/pseudo-loop)** | `docs/architecture/briev-execution-model.md` — the reactor IS the scheduler; no `main()`, `beginprogram` is sugar, equilibrium = idle; read before any embedded or reactive work |
 | **Defn liveness emission** | `docs/architecture/defn-liveness.md` — imports grant capability, liveness gates emission; dead defns are never emitted (no LTO dependence); intrinsic→helper table in `src/analysis/defn_liveness.rs` |
+| **Machine entry (bootstrap, @ wiring, wake sets)** | `docs/architecture/machine-entry.md` — bootstrap node = authored reset; `node @ vector` = machine-vectored, `node @ address` = reactor-pass; frontier-driven equilibrium (wake sets); register shim pattern; pinned symbol ABI. Plan: `docs/plans/2026-09-14-bootstrap-kernel.md` (+ Addendum A) |
 | **Spec / tutorial** | `spec/SPEC.md`, `learn-briev/` |
 
 ## For OpenCode

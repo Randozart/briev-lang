@@ -1879,6 +1879,29 @@ node timer_tick @ timer_irq [ticks >= 0] { ticks = ticks + 1; };  // board name
   (briev.toml `[target.<name>]`) names the mechanism row
   (`config/isr-targets.dbvl`). The compiler never invents a layout — with no
   profile default the error names the profile key to set.
+- **Wiring classes** — the board-file namespace of the `@` reference decides
+  how the node is dispatched:
+  - *interrupts namespace* (`interrupts.dbvl` names, literal slot numbers):
+    machine-vectored — the machine preempts and enters the node through the
+    mechanism's entry convention; the node is never reactor-dispatched and
+    takes no `within` bound (its latency is the hardware's).
+  - *addresses namespace* (`addresses.dbvl` names, address literals,
+    `@ *ptr`): reactor-pass — the node stays in reactor dispatch, gated by
+    the wiring (an inline trigger; the wiring is the eligibility, so `[pre]`
+    may be omitted). Dynamic pointers are always this class.
+- **Latency contracts**: a memory-mapped value changing does not notify the
+  CPU, so reactor-pass nodes fire within one dispatch pass. A declared bound
+  moves the equilibrium tradeoff into the open: `node n @ alert within 1 ms`
+  (watchdog deadline syntax) makes the compiler meet the bound — spin, or
+  park with a timer quantum no larger than it. The no-bound default is
+  deterministic: re-evaluate every pass.
+- **Frontier-driven equilibrium**: the frontend computes, per wake source,
+  which preconditions that source can affect (typed writer sets × reader
+  sets, conservative). Programs whose only frontiers are vectored park in
+  `wfi` with no periodic evaluation and re-check only the trap's dependent
+  set on wake; state-sequenced next steps are chained without re-checks
+  (proven fallthrough); only an external frontier re-reads hardware, every
+  pass by default. Omitted checks are proven unable to change.
 - **Entry convention**: the mechanism row supplies the scaffold around the
   body. The default convention is the machine's own partial save; the
   `full_context` convention saves the full register file + sp to the

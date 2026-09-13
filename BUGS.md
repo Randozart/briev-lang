@@ -5931,3 +5931,23 @@ contract.
 **Rule:** bench the artifact the dispatch actually emits. If the dump
 test's literals can drift from dispatch constants, make the dump read
 the dispatch constant — never edit one and measure the other.
+
+## 2026-09-14 — Equilibrium `wfi` park sleeps through address-wired eligibility
+
+**Where:** Phase 3 rv64 equilibrium (loop_engine/ssa.rs, `.end` park).
+
+**What:** the dispatch loop's exit parks unconditionally in `wfi` (with a
+`~{memory}` clobber). Correct for pure-vectored programs (timer demo — the
+trap wakes the core), but a program whose eligibility includes an
+address-wired node (`node n @ some_addr`, reactor-pass class) sleeps
+through it: the MMIO value changes, no interrupt asserts, nothing wakes the
+CPU. Latent — no shipped program wires addresses yet; surfaced in the
+machine-entry design review.
+
+**Fix (Phase C/D of 2026-09-14-bootstrap-kernel.md):** frontier-driven
+equilibrium — the frontend computes per-wake-source re-evaluation sets
+(`AnalysisResults.wake_sets`, conservative writer×reader closure; external
+wires permanently in the external frontier), and the emitter picks the park
+policy from it: `wfi` only when the frontier is vectored-only; spin
+(continuous evaluation) when an external frontier exists, or a
+`within`-bounded quantum park when declared. Logged before the fix ships.
