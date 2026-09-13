@@ -1672,6 +1672,18 @@ explicit `beginprogram` node (§11.5.1) or, absent one, whichever reactive
 node fires first: the reactor evaluates node preconditions and the first
 satisfiable one fires. A program converges (and exits) when no node can fire.
 
+Beneath the reactor sits the **machine entry** (`bootstrap node`, §13.2): an
+authored pre-reactor sequence — set up the machine, seed the initial state —
+whose handoff postcondition is proven from its typed stores. On native
+targets the compiler emits the canned equivalent (set stack, zero `.bss`,
+start the reactor) when no bootstrap is declared. The layering:
+
+- `bootstrap node` — machine entry, pre-reactor (authored or canned);
+- `beginprogram` node — first reactor dispatch (§11.5.1): sugar for a
+  bootstrapping state variable, genuinely useful on native targets where the
+  environment provides the initial state;
+- ordinary nodes — reactor dispatch thereafter.
+
 #### 11.5.1 Entry loops (`beginprogram`)
 
 `beginprogram` is a keyword usable as a conjunct in a node's precondition:
@@ -1703,7 +1715,11 @@ A `beginprogram` node is an **entry loop**:
   compiler proves the entry conditions are mutually exclusive. Unprovable
   overlap is a compile error.
 
-`beginprogram` is scoped to `node` declarations.
+`beginprogram` is scoped to `node` declarations. It remains first-class
+sugar: on native programs it is the idiomatic "runs first" marker. In
+programs with an authored bootstrap (§13.2) the handoff state usually makes
+the marker redundant — the bootstrap seeds state such that the next logical
+node's precondition already holds — and it may be omitted.
 
 ### 11.6 Critical sections and barriers
 
@@ -1847,34 +1863,42 @@ through the existing pointer/deref paths.
 
 Event fairness assumptions belong to explicit event-port contracts. There is no global `#assume_event` pragma.
 
-### 13.2 ISR handlers (2026-09-06)
+### 13.2 Machine-serviced event nodes (2026-09-14; the `isr` keyword, retired)
 
-An interrupt service routine declares which hardware vector the program services:
+A node wired to a hardware vector is fired by the machine, not the reactor.
+The `@` is Briev's hardware-association delimiter (§13.1 addresses; here the
+interrupts namespace), resolving to a literal slot index or a board
+`interrupts.dbvl` name:
 
 ```briev
-isr<arm_cortex_m> handler @ 0x1C: tim2_irq() [true][acked == true] { ack_timer(); };
-isr handler @ TIM2: tim2_irq() [true][acked == true] { ack_timer(); };  // board file
+node tim2_irq @ 0x1C [acked == false][acked == true] { ack_timer(); };
+node timer_tick @ timer_irq [ticks >= 0] { ticks = ticks + 1; };  // board name
 ```
 
-- The MECHANISM (`isr<name>`) owns the vector table layout and calling
-  convention; it resolves explicit → the target profile's `isr_mechanism`
-  (briev.toml `[target.<name>]`) → compile error. The compiler never invents
-  a vector table layout — the error names both fixes.
-- The vector is a literal slot index or a name resolved through the active
-  board's `interrupts.dbvl` (loaded by `import "target"`; the addresses.dbvl
-  pattern). One vector, one handler — a duplicate slot is a compile error.
-- The compiler emits the calling convention and derives the vector table
-  from the declared handler set: gaps bind the mechanism's default handler
+- **Mechanism inference**: the active target profile's `isr_mechanism`
+  (briev.toml `[target.<name>]`) names the mechanism row
+  (`config/isr-targets.dbvl`). The compiler never invents a layout — with no
+  profile default the error names the profile key to set.
+- **Entry convention**: the mechanism row supplies the scaffold around the
+  body. The default convention is the machine's own partial save; the
+  `full_context` convention saves the full register file + sp to the
+  compiler-owned `@__briev_trap_frame` (pinned, documented ABI —
+  `docs/architecture/machine-entry.md`), runs the body on a kernel stack,
+  restores, and returns with the mechanism's return instruction.
+- **Table mechanisms** (link-time tables): the compiler derives the table
+  from the declared handler set — gaps bind the mechanism's default handler
   (a spin loop), the table lands in the mechanism's linker section, and the
-  SP slot (ARM convention) is reserved. The Thumb bit is a linker semantic —
-  symbol relocations apply it.
-- The body's obligations are proven at compile time: no allocation, no
+  SP slot (ARM convention) is reserved. The Thumb bit is a linker semantic.
+- **Body obligations** are proven at compile time: no allocation, no
   spawn/threading/dynamic-linking, no floating point unless the mechanism's
   `fpu_context` row stacks FP context, bounded frame. The body shares the
-  program state — an ISR program's state is a global, and the reactor and
-  every handler operate on the same instance.
-- Contracts are mandatory on ISR declarations — the body's obligations are
-  the proof surface (same discipline as asm declarations, SPEC §20).
+  program state — an interrupt-servicing program's state is a global, and
+  the reactor and every handler operate on the same instance.
+- **Contracts are mandatory** — ordinary state obligations, solver-checked;
+  delegation obligations live on the called transactions.
+- Machine-fired nodes are excluded from reactor dispatch and the concurrency
+  classification (§12.1), and are always live. One vector, one handler — a
+  duplicate slot is a compile error.
 
 ## 14. Ownership, lifetimes, and effects
 
