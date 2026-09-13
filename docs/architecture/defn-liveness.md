@@ -19,12 +19,14 @@ pillar, applied to functions instead of values).
 | Root | Why it is always emitted |
 |---|---|
 | Reactive `node`/`txn` (incl. obj/cell members) | the reactor fires these by name |
-| Synthesized `__init` | wraps top-level statements |
+| Synthesized init / top-level statements | emitted directly into the init path |
 | `#export` items | ABI surface |
 | ISR handlers | vector tables reference the symbols |
 | `asm<…>` functions | top-level observable asm |
-| op members / impl members | dispatch names are mangled at emission — conservative keep |
+| Type/obj behavioral members — **usage-triggered**: rooted when live code CONSTRUCTS the type (`HashMap { … }`, `spawn Enemy(…)`, ctor call) | prelude collection implementations must not leak into programs that construct nothing |
 | spawn targets (`spawn Enemy(...)` etc.) | fn-pointer tables |
+| cast/proto binding functions (named in `proto`/type metadata) | the casting graph calls them at emission |
+| every callee of top-level statements | their bodies join the closure from birth |
 | any defn, when live code uses `.^^` reflection | reflection reaches members by name |
 
 Everything else is live iff reachable through the call graph (explicit
@@ -50,8 +52,12 @@ The rv64 bare-metal gap (plan `2026-09-13-defn-liveness-emission.md` §1):
 the prelude imports 14 stdlib modules; the backend used to emit all ~250
 defines and rely on LTO for DCE. `-nostdlib` links failed without LTO
 (undefined `malloc`/`memcpy` from *unused* stdlib code) and LTO broke
-riscv64 relocations instead. With liveness emission a 3-function program
-emits 3 functions, freestanding, no LTO required.
+riscv64 relocations instead. With liveness emission the idiomatic
+foreach-on-String hello emits **13 defines** (from 252) — `entry` →
+`uart_write` → `briev_str_next_char` → `byte_raw`/`decode_*` — and boots
+freestanding in QEMU, no LTO. Plan §3a records the implementation
+findings: usage-triggered member rooting, the net's first real catch
+(getenv adapters), and the embedded-main argc-capture gate.
 
 ## Interplay with `--no-std`
 

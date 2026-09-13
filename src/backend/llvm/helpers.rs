@@ -374,6 +374,14 @@ impl LlvmBackend {
         // from main's phi). Reset so init_pred resolves to "entry" unless a
         // block-emitting init runs IN THIS function.
         self.fun.cur_block = None;
+        // 2026-09-13 (defn-liveness emission, embedded main): on bare-metal
+        // targets the argv capture is dead — nothing reads __briev_argc/
+        // __briev_argv, and without LTO the surviving stores emit HI20
+        // relocations against the 0x80000000-resident globals, which fail
+        // the signed-range check at link time. Embedded main takes the
+        // uniform signature (QEMU/_start pass junk in a0/a1) but captures
+        // nothing.
+        let capture = capture && !self.ctx.is_embedded;
         writeln!(
             out,
             "define i32 @main(i32 %argc, ptr %argv) local_unnamed_addr {} {{",

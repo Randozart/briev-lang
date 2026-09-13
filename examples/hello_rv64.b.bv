@@ -1,20 +1,24 @@
 // Minimal QEMU virt rv64 UART hello — writes directly to NS16550A.
 // UART0 base: 0x10000000, THR: +0x00
 //
-// For bare-metal, we hardcode the VolatileStore# calls rather than using
-// foreach on String (which pulls in briev_str_next_char → int_to_str →
-// malloc, memcpy, float ops — too much for freestanding).
+// Idiomatic Briev: foreach on String iterates Char, Char as Int gives the
+// byte value, VolatileStore# writes to UART. Defn-liveness emission keeps
+// only the reachable chain (entry -> uart_write -> briev_str_next_char ->
+// byte_raw/decode_*) — links -nostdlib with no LTO.
 //
-// Execution: _start → reactor → entry node ([beginprogram]) → 6x
-// VolatileStore# to UART0 THR → halt → wfi spin.
+// Boot: brievc build examples/hello_rv64.b.bv \
+//         --triple riscv64-unknown-none \
+//         --linker-script lib/targets/qemu-virt-rv64.ld
+//       qemu-system-riscv64 -machine virt -bios none -nographic \
+//         -kernel examples/hello_rv64.b
+
+defn uart_write(addr: Ptr<Int>, s: String) {
+    foreach c in s {
+        VolatileStore#(addr, c as Int);
+    };
+};
 
 node entry [beginprogram][true] {
-    let uart: Ptr<Int> = 0x10000000 as Ptr<Int>;
-    VolatileStore#(uart, 98);   // 'b'
-    VolatileStore#(uart, 114);  // 'r'
-    VolatileStore#(uart, 105);  // 'i'
-    VolatileStore#(uart, 101);  // 'e'
-    VolatileStore#(uart, 118);  // 'v'
-    VolatileStore#(uart, 10);   // '\n'
+    uart_write(0x10000000 as Ptr<Int>, "briev\n");
     halt;
 };

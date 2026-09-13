@@ -148,6 +148,42 @@ layers.
 6. Compile-time smoke on a benchmark (emission set shrinks; link time
    should not regress).
 
+## 3a. Implementation findings (2026-09-13, recorded during execution)
+
+Five findings surfaced during Phases 2-5 — each validates the design or
+closes a sub-gap:
+
+1. **Blanket op-member rooting leaks malloc.** Rooting every
+   `TypeDefOperator` pulled the prelude collection types' members
+   (`push`, `get`, `contains`, …) whose implementation bodies call
+   `__briev_coll_resize` → `malloc`. Fix: **usage-triggered member
+   rooting** — type/obj members root only when live code CONSTRUCTS the
+   type (`Expr::StructLiteral`, `Expr::Spawn`, constructor-style
+   `Expr::Call`). Result for hello: roots = exactly `["entry"]`.
+2. **The IR-scan net caught a real miss on its first run.** The
+   backend-emitted `__getenv_int`/`__getenv_briev` adapters called
+   `briev_getenv_*_impl` unconditionally. Fix: the adapter emission gates
+   on the impl defn's liveness. The net worked exactly as designed —
+   loud, actionable, immediately fixable.
+3. **Embedded main must not capture argv.** `main`'s argc/argv/environ
+   capture stores are dead on bare metal; without LTO they survive and
+   emit HI20 relocations against the 0x80000000-resident globals (see 4).
+   Fix: `emit_main_header` skips capture when `is_embedded`.
+4. **QEMU virt enters at the start of RAM, not the ELF entry.** The
+   board's reset code jumps to 0x80000000 regardless of `e_entry` — the
+   earlier boot was layout luck. Fix: `_start` emits
+   `section ".text.start"`, which the linker script places first. Also:
+   QEMU virt RAM (0x80000000) overflows the default `medlow` code model's
+   signed-32-bit `%hi/%lo` addressing — the link passes
+   `-mcmodel=medany` (the Linux-kernel/OpenSBI choice for the same
+   reason).
+5. **Fixture hygiene.** ~22 emission-shape fixtures used genuinely dead
+   shapes (`is_reactive: false` no-param txns, uncalled `defn run()`).
+   Behavioral fix: make the subject reachable (add a caller node / flip
+   to reactive). Fifteen layout/ABI-shape tests that must not depend on
+   reachability opt in via `with_force_emit_all(true)` — the planned
+   `--keep-all-defns` diagnostic, now shipped as a CLI flag too.
+
 ## 4. Risks / undo
 
 - Incomplete helper table → caught by the IR-scan net (loud panic).
