@@ -1,3 +1,4 @@
+// target: riscv64-unknown-none
 // Phase 3 (rv64 capability kernel): CLINT machine-timer ticks.
 //
 // The program is a pseudo-loop: boot arms the timer, the reactor reaches

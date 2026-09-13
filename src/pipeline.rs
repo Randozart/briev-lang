@@ -672,6 +672,19 @@ pub fn load_target_config(opts: &BuildOptions) -> crate::target::TargetConfig {
 }
 
 pub fn check_source(file_path: &str, source: &str) -> Result<(), String> {
+    check_source_for(file_path, source, None)
+}
+
+/// 2026-09-14 (machine-entry plan): check with an explicit target triple —
+/// mechanism-less `node @ vector` declarations are target-relative (the
+/// active profile names the mechanism), so target-gated sources need the
+/// triple in scope. The conformance sweep passes a `// target: <triple>`
+/// header hint here.
+pub fn check_source_for(
+    file_path: &str,
+    source: &str,
+    triple_override: Option<&str>,
+) -> Result<(), String> {
     let default_opts = BuildOptions {
         run: false,
         config_dir: None,
@@ -715,7 +728,7 @@ pub fn check_source(file_path: &str, source: &str) -> Result<(), String> {
         dev: false,
         accel_cpu_fallback: None,
         isr_mechanism: None,
-        triple_override: None,
+        triple_override: triple_override.map(|t| t.to_string()),
         linker_script_override: None,
     };
     let (_items, _universe) = parse_and_check(file_path, source, &default_opts)?;
@@ -864,7 +877,7 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
     pm.run_ast(StageKind::Resolved, &mut items, &mut TypeUniverse::new())?;
     resolve_comptime_refs(&pm, &mut items)?;
     let mut universe = TypeUniverse::new();
-    check_types(&mut items, &universe, opts.isr_mechanism.as_deref())?;
+    check_types(&mut items, &universe, effective_isr_mechanism(opts).as_deref())?;
     pm.run_ast(StageKind::Typed, &mut items, &mut universe)?;
     Ok((items, universe))
 }
@@ -958,7 +971,7 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     resolve_comptime_refs(&pm, &mut items)?;
 
     let universe = TypeUniverse::new();
-    check_types(&mut items, &universe, opts.isr_mechanism.as_deref())?;
+    check_types(&mut items, &universe, effective_isr_mechanism(opts).as_deref())?;
     // 2026-08-01 (C4): watchdog contract checks also run on the `check` path
     // (parse_and_check) — `brievc check` must catch trigger/handler violations
     // and missing on-fire handlers the same way `brievc build` does.
@@ -1077,6 +1090,25 @@ pub fn validate_constraints(items: &[crate::ast::TopLevel]) -> Result<(), String
         }
     }
     Ok(())
+}
+
+
+/// 2026-09-14 (machine-entry plan): the effective ISR mechanism — the CLI
+/// override, else the target profile's row (keyed by the resolved triple,
+/// longest prefix). The inference source for mechanism-less
+/// `node @ vector` declarations.
+fn effective_isr_mechanism(opts: &BuildOptions) -> Option<String> {
+    if opts.isr_mechanism.is_some() {
+        return opts.isr_mechanism.clone();
+    }
+    let profile_triple = match &opts.triple_override {
+        Some(t) => Some(t.clone()),
+        None => load_target_config(opts)
+            .lookup(&get_extension(&opts.file_path))
+            .and_then(|e| e.target_triple.clone()),
+    };
+    profile_triple
+        .and_then(|t| crate::config_tuning::target_settings_for(&t).isr_mechanism)
 }
 
 pub fn check_types(items: &mut [crate::ast::TopLevel], universe: &TypeUniverse, isr_mechanism: Option<&str>) -> Result<(), String> {

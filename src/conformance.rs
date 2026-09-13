@@ -270,7 +270,14 @@ fn frontend_check(path: &str, src: &str) -> Result<(), String> {
     if path.ends_with(".dbv") || path.ends_with(".dbvl") {
         return crate::pipeline::check_data_source(path, src).map(|_| ());
     }
-    crate::pipeline::check_source(path, src)
+    // 2026-09-14 (machine-entry plan): mechanism-less `node @ vector`
+    // declarations are target-relative (the profile names the mechanism).
+    // A leading `// target: <triple>` header scopes the source.
+    let triple = src.lines().find_map(|l| {
+        let t = l.trim_start();
+        t.strip_prefix("// target: ").map(|v| v.trim().to_string())
+    });
+    crate::pipeline::check_source_for(path, src, triple.as_deref())
 }
 
 #[cfg(test)]
