@@ -432,6 +432,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         disable_plugins,
         enable_plugins,
         trg_unresolved_action,
+        explain_causality,
         extra_objects: vec![],
         shared,
         library_mode,
@@ -487,7 +488,10 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         disable_plugins: vec![],
         enable_plugins: vec![],
         trg_unresolved_action: briev_compiler::backend::llvm::TrgUnresolvedAction::Warn,
-        explain_causality: explain_causality,
+        // Bounty builds carry no CLI surface for causality reports — the
+        // restricted option set here is hardcoded by design (see the
+        // no_stdlib rationale above).
+        explain_causality: false,
         extra_objects: vec![],
         shared: false,
         library_mode: false,

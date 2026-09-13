@@ -568,3 +568,42 @@ actually emits, or make the dump read the same constant.
    2 CTAs at 128 regs) is unexplored.
 3. **2048³ boundary**: PTX 27.9 vs coopmat 27.7 — confirm which tier
    the dispatcher picks and document the crossover.
+
+### E4c: (2,4)@256T f16acc pairing — SHIPPED 2026-09-13
+
+**Hypothesis.** The DRAM-real microbench (2026-09-13) proved the kernel
+mma-schedule-bound, not fill-bound. The (4,4)@512T CTA runs 16 warps
+against the 2 mma pipes with a 24KB stage pair; an 8-warp CTA with 4
+co-resident CTAs/SM (16KB smem, 64 regs × 256T = 16384 regs — exactly
+4 CTAs by the register file) interleaves 4 independent fill/ldmatrix/mma
+pipelines per SM and halves the bar.sync domain.
+
+**Experiment (interleaved A/B, same window, MW_SMEM set per variant).**
+
+| shape  | (4,4)@512T baseline | (2,4)@256T E4c | (4,2)@256T walker-default |
+|--------|--------------------:|---------------:|--------------------------:|
+| 2048³  | 27.91–28.10         | **31.39–31.55** | 27.75–29.01              |
+| 4096³  | 34.38–34.59         | **35.08–35.59** | 30.74–31.18              |
+| 8192³  | 34.20–34.22         | **36.27–36.39** | —                        |
+
+(4,2) refutes the naive "drop the cap to 256" fix — the nw-heavy aspect
+is the win, not the thread count: warps stacked along N replicate
+A-fragment reads across the warp row.
+
+**Correctness** (BRIEV_GEMM_F16ACC=1 gate): 2048³ 1.546e-3, 4096³
+5.208e-3, 8192³ 9.115e-3 (identical to the (4,4) full-K signatures),
+k16 0.0 exact. E2E: `brievc build examples/gpu/gemm_2048x2048x2048.abv
+--backend ptx --config-dir <f16>` emits threads=256 smem=16384; the
+default (f32) path is byte-identical before/after ((4,2)@256T/32768).
+
+**Dispatch change.** `thread_cap` 512→256 for all tiers (f32 was already
+256) + `walk_order(mhr)`: mhr≥4 grows nw-first ([(2,2),(1,2),(2,1)]),
+mhr=2 keeps mw-first so the f32 (4,2) landing is preserved. Odd/skinny
+shapes stop on divisibility guards before the order matters — (96,4096)
+still falls back to (1,1).
+
+**Process traps hit this window (BUGS.md):** MW_SMEM unset → smem=0
+launch → IMA storm that looked like a kernel bug; ptxas
+`-maxrregcount=128` on the natural-64 kernel PESSIMIZES to 80 regs
+(occupancy 2→1 CTA/SM, −28% TF) — assemble f16acc with the production
+cap 64 only.

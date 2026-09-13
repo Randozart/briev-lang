@@ -1707,6 +1707,20 @@ mod r16_dump {
         // 64 regs x 256T fits 4 CTAs/SM (plan 2026-09-11 probe round 2).
         let ptx = tensor_gemm_ptx_smem_mw(4096, 4096, 4096, 0, 33554432, 67108872, 2, 2, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_4096_f16acc_24s2.ptx", &ptx).unwrap();
+        // E4c (2026-09-13): the new f16acc pairing — (2,4)@256T warp_mh=4
+        // (128x128 tile, 16KB smem, 4 CTAs/SM). select_mw_nw lands here for
+        // every large square shape; these dumps + ptx_gemm_bench gate it.
+        for (m, k, tag) in [
+            (2048i64, 2048i64, "2048"),
+            (4096, 4096, "4096"),
+            (8192, 8192, "8192"),
+            (4096, 16, "k16"),
+        ] {
+            let b_off = m * k * 2;
+            let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
+            let ptx = tensor_gemm_ptx_smem_mw(m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4);
+            std::fs::write(&format!("/tmp/opencode/tgemm_mw2_mh4_{tag}.ptx"), &ptx).unwrap();
+        }
     }
 
     #[test]

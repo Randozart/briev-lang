@@ -5931,3 +5931,32 @@ contract.
 **Rule:** bench the artifact the dispatch actually emits. If the dump
 test's literals can drift from dispatch constants, make the dump read
 the dispatch constant — never edit one and measure the other.
+
+## 2026-09-13: E4c window — three traps that cost measurement time
+
+**1. `MW_SMEM` unset = smem-0 launch = IMA storm.** `ptx_gemm_bench.c`
+defaults the dynamic-smem size to 0; the dump kernels allocate ALL working
+memory as `extern .shared`, so every launch without `MW_SMEM=<bytes>`
+faults at warmup. The fault appears for ANY kernel (even known-good ones
+re-assembled fresh), which reads as "the new kernel is broken". Rule:
+always export `MW_SMEM` matching the dumped tile — production f16acc
+(2,4)@256T needs 16384; the old (4,4)@512T needed 24576.
+
+**2. `ptxas -maxrregcount=128` PESSIMIZES the natural-64 kernel.**
+Assembling the f16acc kernel with the 128 cap (the f32-tier value)
+produces 80 registers vs 64 natural — the cap flips ptxas onto a worse
+allocation/schedule, dropping occupancy 2→1 CTAs/SM and costing ~28%
+TFLOP/s (34.5 → 25.7 in the same window). Register caps are not
+monotone safes. Rule: assemble f16acc artifacts with `-maxrregcount=64`
+(the value compile_cubin passes for f16acc, mod.rs), never the 128
+used by the r16 test helper.
+
+**3. c8b0da04 committed a broken bin target.** The `explain_causality`
+field line landed in `run_bounty`'s BuildOptions initializer (where the
+binding doesn't exist, E0425) instead of `parse_build_args`' (E0063,
+missing field) — `cargo build --release` of `brievc` failed at HEAD for
+everyone. `cargo test --lib` stayed green, so lib-only workflows never
+noticed. Fixed 2026-09-13: flag wired in parse_build_args, bounty path
+hardcodes `false`. Rule: a BuildOptions field must be added to every
+initializer in the same commit — grep the struct name, not the field's
+last-known home.
