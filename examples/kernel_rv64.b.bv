@@ -83,7 +83,7 @@ txn schedule() [current >= 0][current >= 0 && current < 2] {
     // here instead of restarting at the entry.)
     frame_store(8, stack_top(current));
     set_mepc(task_entry(current));
-    enter_user_mode();
+    // enter_user_mode();   // DEBUG: stay in M-mode
 };
 
 // ── the syscall boundary — kernel side ────────────────────────────────
@@ -113,6 +113,7 @@ node trap_service @ 7 [current >= 0][current >= 0] {
 // ── machine entry (reset vector) ──────────────────────────────────────
 bootstrap node reset [armed == true && ticks == 0] {
     uart_putc(66);   // DEBUG 'B' — bootstrap body entered
+    pmp_grant_all(); // U-mode fetch/load/store: no matching PMP entry fails!
     // mscratch ← trap-frame base; frame slot 31 ← kernel stack (sp, set by
     // the entry scaffold). The scaffold's protocol, initialized.
     Asm#("raw", "la $0, __briev_trap_frame; csrw mscratch, $0; sd sp, 248($0)", 0);
