@@ -158,6 +158,13 @@ pub struct IrLoweringSettings {
     /// deeper-pipeline (stages≥3 / k32) variants where the dependency
     /// distance argument changes. 0 = the E4a cluster schedule (ship path).
     pub ptx_tensor_b_lookahead: bool,
+    /// 2026-09-13 (E5b): B smem-region bank de-phase — the B stage region
+    /// starts `pad` bytes past the A stages' end (32B shifts the phase by 8
+    /// of the 32 smem banks while keeping 16B ldmatrix alignment), so A and
+    /// B ldmatrix from co-resident warps stop contending for the same bank
+    /// groups. Costs pad·stages bytes of smem. 0 = the historical aligned
+    /// layout.
+    pub ptx_tensor_bsmem_pad: u32,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -263,6 +270,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     spirv_coopmat_panels_per_stage: 2,
     ptx_tensor_f16acc: false,
     ptx_tensor_b_lookahead: false,
+    ptx_tensor_bsmem_pad: 0,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -483,6 +491,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_tensor_b_lookahead", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_b_lookahead),
+        ptx_tensor_bsmem_pad: db
+            .field_int("ptx_tensor_bsmem_pad", 0)
+            .map(|v| v.max(0).min(992) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_bsmem_pad),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)

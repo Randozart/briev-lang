@@ -646,3 +646,21 @@ Correctness identical signatures (1.5e-3 / 5.2e-3; k16 exact).
 The lookahead may return for stages≥3 / k32-deep pipelines where the
 dependency distance argument genuinely changes; the knob stays as the
 instrument. Default off; ship path byte-identical.
+
+### E5b: B-region bank de-phase — REJECTED 2026-09-13 (post-E4c)
+
+**Hypothesis.** A at +0 and B at +8192 are both ≡0 mod 128 (same bank
+phase); a 32B pad (+8 banks, 16B ldmatrix alignment kept) lets A and B
+ldmatrix from co-resident warps co-issue instead of serializing on shared
+bank groups.
+
+**Result (interleaved A/B ×4, pad=32, smem 16448, 64 regs / 4 CTAs/SM):**
+E4c 35.43/35.85/35.82/35.49 vs E5b 33.62/34.79/34.94/35.12 — loses 4/4
+by 1-2 TF at 4096³. Correctness identical (5.208e-3).
+
+**Verdict.** The same-bank-serialization model is dead: same-warp
+ldmatrix issue serializes on the LSU regardless of banks, and cross-warp
+phase collision is already staggered by warp scheduling. The aligned
+layout is neutral-or-better. `ptx_tensor_bsmem_pad` knob kept default-0
+(one-line additive in the generator; instrument for future smem-layout
+work). No further pad sweep — the mechanism is refuted, not under-tuned.

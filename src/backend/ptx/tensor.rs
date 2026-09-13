@@ -908,9 +908,13 @@ pub fn tensor_gemm_ptx_smem_mw(
 ) -> String {
     // E5a (2026-09-13): the cross-kstep B lookahead is a config knob — the
     // dump tests call tensor_gemm_ptx_smem_mw_opt directly to A/B it.
-    let b_lookahead = f16_acc && crate::config_tuning::ir_lowering().ptx_tensor_b_lookahead;
+    let lowering = crate::config_tuning::ir_lowering();
+    let b_lookahead = f16_acc && lowering.ptx_tensor_b_lookahead;
+    // E5b: the B-region bank de-phase pad (bytes past the A stages' end).
+    let bsmem_pad = lowering.ptx_tensor_bsmem_pad as usize;
     tensor_gemm_ptx_smem_mw_opt(
         m, n, k, a_off, b_off, y_off, y_elem, mw, nw, f16_acc, stages, warp_mh, b_lookahead,
+        bsmem_pad,
     )
 }
 
@@ -928,6 +932,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
     stages: usize,
     warp_mh: usize,
     b_lookahead: bool,
+    bsmem_pad: usize,
 ) -> String {
     // Warp tiling (2026-09-11 double-pump plan): the warp covers
     // warp_mh 16-row blocks x (16/warp_mh) 8-col groups — mma count per
@@ -1257,7 +1262,14 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // %r21/%r22: u32 stage-0 bases (asmem/bsmem) for the cp.async dsts;
     // %rd8/%rd9: the same as u64 for the ldmatrix srcs.
     out.push_str("    mov.u32 %r21, dsmem;\n");
-    out.push_str(&format!("    add.u32 %r22, %r21, {};\n", asmem_buf * stages));
+    // E5b: the pad shifts the whole B region (all stages) past the A
+    // stages' end by `bsmem_pad` bytes — 32B = +8 banks of phase vs A
+    // while staying 16B-aligned for ldmatrix. One source: every B address
+    // (fill dst %r22, ld src %rd9) derives from this add.
+    out.push_str(&format!(
+        "    add.u32 %r22, %r21, {};\n",
+        asmem_buf * stages + bsmem_pad
+    ));
     out.push_str("    cvt.u64.u32 %rd8, %r21;\n");
     out.push_str("    cvt.u64.u32 %rd9, %r22;\n");
     out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
@@ -1856,7 +1868,8 @@ mod r16_dump {
 
     /// E5a (2026-09-13): cross-kstep B-fragment lookahead — mma consumes a
     /// register B set prefetched across the previous iteration's barrier.
-    /// Same (2,4)@256T pairing as E4c; +2*gr B regs (72 → 3 CTAs/SM).
+    /// Same (2,4)@256T pairing as E4c; +2*gr B regs (79 natural → 3 CTAs/SM).
+    /// REJECTED on-device — kept as the reference instrument.
     #[test]
     fn dump_e5a_b_lookahead() {
         for (m, k, tag) in [
@@ -1868,9 +1881,28 @@ mod r16_dump {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw_opt(
-                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, true,
+                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, true, 0,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5a_{tag}.ptx"), &ptx).unwrap();
+        }
+    }
+
+    /// E5b (2026-09-13): B-region bank de-phase — pad=32 shifts the B smem
+    /// region +8 banks vs A (16B ldmatrix alignment kept); smem grows by
+    /// pad·stages (16384+64 → MW_SMEM=16448 on the driver).
+    #[test]
+    fn dump_e5b_bsmem_pad() {
+        for (m, k, tag) in [
+            (2048i64, 2048i64, "2048"),
+            (4096, 4096, "4096"),
+            (8192, 8192, "8192"),
+        ] {
+            let b_off = m * k * 2;
+            let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
+            let ptx = tensor_gemm_ptx_smem_mw_opt(
+                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, false, 32,
+            );
+            std::fs::write(&format!("/tmp/opencode/tgemm_e5b_{tag}.ptx"), &ptx).unwrap();
         }
     }
 
