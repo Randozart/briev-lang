@@ -173,6 +173,16 @@ pub struct IrLoweringSettings {
     /// gate: k % (16·kps) == 0 (no partial-stage fills). 1 = the
     /// historical per-kstep cadence.
     pub ptx_tensor_ksteps_per_stage: u32,
+    /// 2026-09-13 (E8a, plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec):
+    /// warp specialization — the CTA grows to 10 warps (8 consumers keep the
+    /// exact ship compute + y pass; 2 producer warps run the cp.async fill
+    /// pipeline), CTAs synchronize through named barriers F=1/C=2 instead of
+    /// the full-CTA per-kstep bar. The E7b ladder puts the prize at 3.5-7 TF
+    /// (no-fill 46.2 vs ship 35.5, perfect-fill bound 42.5). Occupancy: 64
+    /// regs × 320T = 3 CTAs/SM — the E-series tax the prototype must beat.
+    /// f16acc-only; requires stages=2, kps=1, no lookahead. 0 = the
+    /// cooperative-fill ship schedule.
+    pub ptx_tensor_warp_spec: bool,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -280,6 +290,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_b_lookahead: false,
     ptx_tensor_bsmem_pad: 0,
     ptx_tensor_ksteps_per_stage: 1,
+    ptx_tensor_warp_spec: false,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -508,6 +519,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_tensor_ksteps_per_stage", 1)
             .map(|v| v.clamp(1, 2) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_ksteps_per_stage),
+        ptx_tensor_warp_spec: db
+            .field_int("ptx_tensor_warp_spec", 0)
+            .map(|v| v != 0)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_warp_spec),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)

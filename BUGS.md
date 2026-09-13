@@ -5960,3 +5960,25 @@ noticed. Fixed 2026-09-13: flag wired in parse_build_args, bounty path
 hardcodes `false`. Rule: a BuildOptions field must be added to every
 initializer in the same commit — grep the struct name, not the field's
 last-known home.
+
+## 2026-09-13: SHIP PTX kernel — K≤32 with small M returns all-zero y
+
+Discovered while debugging E8a (whose stage-1 failure may share the root
+cause). The ship f16acc kernel (E4c, (2,4)@256T) FAILS the correctness
+gate at shapes never gate-tested: 128×128×16, 1024²×16, 2048²×32 all
+measure rel 1.0 (whole y regions zero), while 4096×4096×16 passes exact
+and 2048³/4096³/8192³ pass. Repro (dump via dump_mw_4096_f16acc's
+k16_128 entry + ptx_gemm_bench):
+
+    MW_SMEM=16384 BRIEV_GEMM_F16ACC=1 ptx_gemm_bench ship_k16_128.cubin \
+        128 128 16 0 4096 36872 256 1 check
+
+The k16-4096 and k16-128 kernels are structurally identical
+(constant-normalized diff is empty) — so the trigger is the small
+constants/grid, not the code path. Candidate areas: the prologue
+fill/predicate interaction at tiny K, the KLOOP fill-skip guard
+(`r2 >= k-16` is true from kstep 0 at K=16), or a driver/check artifact
+at small M·N. E8a's stage-1 (odd-kstep) corruption is plausibly the same
+root cause — stage-1 stripes are the first "beyond-prologue" fills.
+Priority: HIGH — it gates E8a and any small-K GEMM (decode-shaped
+attention head matrices are K=64-128 territory).

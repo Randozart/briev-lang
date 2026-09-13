@@ -225,3 +225,33 @@ KLOOP splits on `setp.eq %p_ws, %r9, 8` into the two loops; fill
 emitters parameterized (lanes=64 for 2 producer warps = full stage:
 8KB/64 lanes = 4×16B per lane); y-pass predicate warp<8. Assemble 64
 cap → signatures → A/B ×4 at 2048/4096/8192.
+
+## E8a prototype status (2026-09-13, end of session): INCORRECT — parked
+
+Implemented: `ptx_tensor_warp_spec` knob (default off, ship cubin
+byte-identical), 320T CTAs (8 consumers + 2 fill-only producers), named
+barriers F=1/C=2 counts 320, consumer-side membar fence, per-tile lane
+rebase. The protocol as traced is race-free; the emitted PTX was
+instruction-audited.
+
+**Measured:** correctness FAILs at every bench shape (rel 0.59-0.73 —
+the stage-1 (odd-kstep) data contribution is wrong; worst-index moves
+between runs). Perf meaningless until correct (28.7-34.4 TF broken).
+
+**Debug findings so far:**
+1. The role-split branch, %p2 placement, %r5 rebase, prologue PS-skip,
+   and consumer fence were each fixed/verified — none is the cause.
+2. Pure-consumer hand-patch (producers exited at split, counts 256)
+   still failed at 128×128×16 — which led to finding 3.
+3. **PRE-EXISTING SHIP ANOMALY (BUGS.md): K≤32 with small M fails in
+   the SHIP kernel itself** — 128×128×16, 1024²×16, 2048²×32 all
+   measure rel 1.0 (y all-zero for whole regions), while the recorded
+   k16 gate (4096×4096×16) passes exact. The K≤16/32 prologue/fill-skip
+   path at small grids was never gate-tested before this session. THE
+   E8A STAGE-1 FAILURE MAY BE THIS SAME ROOT CAUSE (stage-1 stripes in
+   a 2-stage pipeline are "small-K-like": stripe ≥ k-16 exists only
+   beyond the first kstep).
+
+**Next session (fresh eyes):** chase the ship K≤32-small-M anomaly
+FIRST (it gates everything — repro one-liner in BUGS.md), then re-test
+E8a correctness. The ws code stays default-off; ship path untouched.

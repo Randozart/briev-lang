@@ -924,6 +924,7 @@ pub fn tensor_gemm_ptx_smem_mw(
         m, n, k, a_off, b_off, y_off, y_elem, mw, nw, f16_acc, stages, warp_mh, b_lookahead,
         bsmem_pad,
         kps,
+        lowering.ptx_tensor_warp_spec,
     )
 }
 
@@ -943,6 +944,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
     b_lookahead: bool,
     bsmem_pad: usize,
     ksteps_per_stage: usize,
+    warp_spec: bool,
 ) -> String {
     // Warp tiling (2026-09-11 double-pump plan): the warp covers
     // warp_mh 16-row blocks x (16/warp_mh) 8-col groups — mma count per
@@ -958,6 +960,8 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // while s4 was exact. The E6 s3 probe died here, not on perf.)
     debug_assert!(stages.is_power_of_two());
     debug_assert!(!b_lookahead || f16_acc);
+    // E8a: the warp-specialized protocol is derived for exactly this shape.
+    debug_assert!(!warp_spec || (f16_acc && stages == 2 && ksteps_per_stage == 1 && !b_lookahead));
     debug_assert!(mhr * gr == 16 && m % (16 * mhr as i64 * mw as i64) == 0 && n % (8 * gr as i64 * nw as i64) == 0 && k % 16 == 0);
     let a_row = k * 2;
     let b_row = n * 2;
@@ -996,7 +1000,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // bijection of the stage bytes at every rung. Non-divisible per_a keeps
     // the 4-byte loop. Undo: delete a_fill_rung and restore the single 4B
     // loop in the prologue + K-loop fills.
-    let a_fill_rung = if per_a % 4 == 0 {
+    let _a_fill_rung_unused = if per_a % 4 == 0 {
         Some((per_a / 4, 16, "cg"))
     } else if per_a % 2 == 0 {
         Some((per_a / 2, 8, "ca"))
@@ -1027,17 +1031,22 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // k_global*b_row (const stripe add in the prologue, dynamic kstep
     // block in the K loop). The last tuple element is the within-chunk
     // byte mask (0 at the 16B rung = swizzle-unit copies, no offset add).
-    let mut emit_b_fill = |out: &mut String, r18_prelude: &str, dst_off: usize | {
-        let (copies, width, modifier, chunk_mask) = match b_fill_rung {
-            Some((c, w, m, mask)) => (c, w, m, mask),
-            None => (per_b, 4, "ca", 14),
+    let mut emit_b_fill = |out: &mut String, r18_prelude: &str, dst_off: usize, lanes: usize| {
+        // E8a: per-lane scaling mirrors the A fill (see there).
+        let per_b_l = per_b as usize * threads as usize / lanes;
+        let (copies, width, modifier, chunk_mask) = if per_b_l % 4 == 0 {
+            (per_b_l / 4, 16, "cg", 0u32)
+        } else if per_b_l % 2 == 0 {
+            (per_b_l / 2, 8, "ca", 8u32)
+        } else {
+            (per_b_l, 4, "ca", 14u32)
         };
         let glz = gr.trailing_zeros();
         out.push_str(&format!("    mul.lo.u32 %r13, %r5, {};\n", width));
         for j in 0..copies {
             out.push_str("    mov.u32 %r14, %r13;\n");
             if j > 0 {
-                out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * width));
+                out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * lanes * width));
             }
             out.push_str("    mov.u32 %r15, %r14;\n");
             out.push_str(&format!("    shr.u32 %r15, %r15, {};\n", 8 + glz));
@@ -1084,14 +1093,25 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // and passes the per-site source-offset adjustment (`src_off`) — the
     // constant stripe add in the prologue, the dynamic kstep block in the
     // K loop.
-    let mut emit_a_fill = |out: &mut String, src_off: &str, dst_off: usize| {
-        match a_fill_rung {
+    let mut emit_a_fill = |out: &mut String, src_off: &str, dst_off: usize, lanes: usize| {
+        // E8a: per-lane work scales with the issuing lane count — the
+        // producer path (64 lanes) covers the same stage bytes as the
+        // cooperative fill (256 lanes) with 4x the copies per lane.
+        let per_a_l = per_a as usize * threads as usize / lanes;
+        let a_rung = if per_a_l % 4 == 0 {
+            Some((per_a_l / 4, 16, "cg"))
+        } else if per_a_l % 2 == 0 {
+            Some((per_a_l / 2, 8, "ca"))
+        } else {
+            None
+        };
+        match a_rung {
             Some((copies, width, modifier)) => {
                 out.push_str(&format!("    mul.lo.u32 %r13, %r5, {};\n", width));
                 for j in 0..copies {
                     out.push_str("    mov.u32 %r14, %r13;\n");
                     if j > 0 {
-                        out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * width));
+                        out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * lanes * width));
                     }
                     out.push_str("    mov.u32 %r15, %r14;\n");
                     out.push_str("    and.b32 %r16, %r14, 31;\n");
@@ -1118,10 +1138,10 @@ fn tensor_gemm_ptx_smem_mw_opt(
             }
             None => {
                 out.push_str("    mul.lo.u32 %r13, %r5, 4;\n");
-                for j in 0..per_a {
+                for j in 0..per_a_l {
                     out.push_str("    mov.u32 %r14, %r13;\n");
                     if j > 0 {
-                        out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * threads * 4));
+                        out.push_str(&format!("    add.u32 %r14, %r14, {};\n", j * lanes * 4));
                     }
                     out.push_str("    mov.u32 %r15, %r14;\n");
                     out.push_str("    and.b32 %r16, %r14, 31;\n");
@@ -1169,8 +1189,12 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // E5a lookahead control regs (%r27 = mma parity, %r28 = prefetch
     // scratch) + the extra predicate; declared only on the lookahead path
     // so the default PTX stays byte-identical.
-    if b_lookahead {
-        out.push_str("    .reg .u32  %r27, %r28;\n");
+    if b_lookahead || warp_spec {
+        // %p2 = the E8a producer-role predicate on the warp-spec path;
+        // %r27/%r28 are the E5a lookahead regs (mutually exclusive paths).
+        if b_lookahead {
+            out.push_str("    .reg .u32  %r27, %r28;\n");
+        }
         out.push_str("    .reg .pred %p2;\n");
     }
     // E7 (plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec): the
@@ -1336,7 +1360,10 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // (3 CTAs/SM, the fatal tax). tid/lane decode hoisted above the loop
     // (per-thread constants).
     out.push_str("    mov.u32 %r5, %tid.x;\n");
-    out.push_str(&format!("    setp.ge.u32 %p1, %r5, {};\n", threads));
+    out.push_str(&format!(
+        "    setp.ge.u32 %p1, %r5, {};\n",
+        threads + if warp_spec { 64 } else { 0 }
+    ));
     out.push_str("    @%p1 ret;\n");
     out.push_str("    shr.u32 %r9, %r5, 5;    // warp = tid/32\n");
     out.push_str(&format!("    mov.u32 %r2, {};\n", nw));
@@ -1435,6 +1462,13 @@ fn tensor_gemm_ptx_smem_mw_opt(
             out.push_str("    cp.async.commit_group;\n");
             continue;
         }
+        // E8a: the prologue fill's D-mapping spans the 256 consumer lanes
+        // only — producer warps (tid ≥ 256) skip the copies but still hit
+        // the commit (wait_group counts) and the barrier.
+        if warp_spec {
+            out.push_str("    setp.ge.u32 %p1, %r5, 256;\n");
+            out.push_str(&format!("    @%p1 bra PS{};\n", s));
+        }
         out.push_str("    mov.u32 %r12, %r21;\n");
         if a_off_s > 0 {
             out.push_str(&format!("    add.u32 %r12, %r12, {};\n", a_off_s));
@@ -1452,7 +1486,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
             } else {
                 String::new()
             };
-            emit_a_fill(&mut out, &src_off, strip * asmem_buf);
+            emit_a_fill(&mut out, &src_off, strip * asmem_buf, threads as usize);
         }
         // B fill into stage s. Layout contract (must mirror the B ldmatrix
         // reader below): the slab is K-MAJOR — smem byte D = slab*2048 +
@@ -1482,7 +1516,10 @@ fn tensor_gemm_ptx_smem_mw_opt(
                 }
                 s
             };
-            emit_b_fill(&mut out, &r18_prelude, strip * bsmem_buf);
+            emit_b_fill(&mut out, &r18_prelude, strip * bsmem_buf, threads as usize);
+        }
+        if warp_spec {
+            out.push_str(&format!("PS{}:\n", s));
         }
         out.push_str("    cp.async.commit_group;\n");
     }
@@ -1515,100 +1552,31 @@ fn tensor_gemm_ptx_smem_mw_opt(
     }
 
     // === K LOOP pipeline body (reconstructed 2026-09-10 after fault bisection) ===
-    out.push_str("    mov.u32 %r2, 0;  // kstep\n");
-    out.push_str("KLOOP:\n");
-    out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", k));
-    out.push_str("    @%p1 bra KEND;\n");
+    let emit_b_ld = |out: &mut String, g: usize, lo: &str, hi: &str| {
+        out.push_str("    mov.u64 %rd4, %rd9;\n");
+        out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", bsmem_buf));
+        out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        out.push_str("    mov.u32 %r12, %r11;\n");
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", gr * 256));
+        out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
+        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
+        out.push_str("    mov.u32 %r13, %r7;\n");
+        out.push_str("    and.b32 %r12, %r13, 15;\n");
+        out.push_str(&format!("    shl.b32 %r12, %r12, {};\n", 4 + gr.trailing_zeros()));
+        out.push_str(&format!("    and.b32 %r14, %r13, {};\n", gr - 1));
+        out.push_str(&format!("    xor.b32 %r14, %r14, {};\n", g));
+        out.push_str("    shl.b32 %r14, %r14, 4;\n");
+        out.push_str("    add.u32 %r17, %r12, %r14;\n");
+        out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
+        out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
+        out.push_str(&format!(
+            "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
+            lo, hi
+        ));
+    };
 
-    // Compute stage = ((kstep/16)/kps) & (stages-1); fill stage = stage+(stages-1).
-    // kps>1 divides the strip index first (the fill+bar cadence is per-stage).
-    out.push_str("    shr.u32 %r9, %r2, 4;\n");
-    if kps > 1 {
-        out.push_str(&format!("    shr.u32 %r9, %r9, {};\n", kps.trailing_zeros()));
-    }
-    out.push_str(&format!("    and.b32 %r9, %r9, {};\n", stages - 1));
-    out.push_str(&format!("    add.u32 %r17, %r9, {};\n", stages - 1));
-    out.push_str(&format!("    and.b32 %r17, %r17, {};\n", stages - 1));
-
-    // Compute smem base for the FILL stage: asmem + stage * stage_bytes
-    out.push_str("    mov.u32 %r12, %r21;\n");
-    out.push_str(&format!(
-        "    mul.lo.u32 %r18, %r17, {};\n",
-        asmem_buf * kps
-    ));
-    out.push_str("    add.u32 %r12, %r12, %r18;\n");
-
-    // The fill prefetches stripe kstep+16*kps*(stages-1) (consumed stages
-    // later — an off-by-one here would reuse stripe kstep and silently skip
-    // the last stripes; the seeded-data error 3.2e-3 slipped under the 5e-3
-    // gate once). On the final iterations the prefetch would read past K, so
-    // it is skipped. kps>1 adds the cadence guard: fills fire only on the
-    // first strip of each stage (kstep % 16·kps == 0).
-    out.push_str(&format!(
-        "    setp.ge.u32 %p1, %r2, {};\n",
-        (k - (16 * kps as i64) * (stages as i64 - 1)).max(0)
-    ));
-    out.push_str("    @%p1 bra FILL_DONE;\n");
-    if kps > 1 {
-        out.push_str(&format!("    and.b32 %r18, %r2, {};\n", 16 * kps - 1));
-        out.push_str("    setp.ne.u32 %p1, %r18, 0;\n");
-        out.push_str("    @%p1 bra FILL_DONE;\n");
-    }
-
-    // Cooperative A fill into the fill stage (coalesced D mapping; widened
-    // rung per a_fill_rung above — identical address decomposition, fewer
-    // copies). Source offset advances by the prefetch distance
-    // kstep + 16*kps*(stages-1); the strip loop walks the kps 16-k blocks.
-    for strip in 0..kps {
-        let koff_src_off = {
-            let mut s = String::from("    mov.u32 %r16, %r2;\n");
-            s.push_str(&format!(
-                "    add.u32 %r16, %r16, {};\n",
-                (16 * kps as i64) * (stages as i64 - 1) + (strip * 16) as i64
-            ));
-            s.push_str("    mul.lo.u32 %r16, %r16, 2;\n");
-            s.push_str("    add.u32 %r15, %r15, %r16;\n");
-            s
-        };
-        emit_a_fill(&mut out, &koff_src_off, strip * asmem_buf);
-    }
-
-    // Cooperative B fill into the fill stage. Same k-major swizzled contract
-    // as the prologue fill (see there); row advance is (kstep+dist+k)*b_row.
-    // Widened rung per b_fill_rung above; %r12 consumes %r17 (stage) before
-    // the emitter clobbers it.
-    out.push_str("    mov.u32 %r12, %r22;\n");
-    out.push_str(&format!(
-        "    mul.lo.u32 %r18, %r17, {};\n",
-        bsmem_buf * kps
-    ));
-    out.push_str("    add.u32 %r12, %r12, %r18;\n");
-    // global: (kstep+16*kps*(S-1)+k)*b_row
-    for strip in 0..kps {
-        let koff_r18_prelude = {
-            let mut s = String::from("    mov.u32 %r18, %r2;\n");
-            s.push_str(&format!(
-                "    add.u32 %r18, %r18, {};\n",
-                (16 * kps as i64) * (stages as i64 - 1) + (strip * 16) as i64
-            ));
-            s.push_str("    add.u32 %r18, %r18, %r17;\n");
-            s.push_str(&format!("    mul.lo.u32 %r18, %r18, {};\n", b_row));
-            s
-        };
-        emit_b_fill(&mut out, &koff_r18_prelude, strip * bsmem_buf);
-    }
-    out.push_str("FILL_DONE:\n");
-    out.push_str("    cp.async.commit_group;\n");
-
-    // === Compute on CURRENT buffer (overlaps with async fill above) ===
-    // Register-trimmed scheduling (2026-09-10): A fragments load per-mh
-    // (4 live, was 8) and each B fragment loads immediately before its mma
-    // (2 live, was 16). 136 -> 128 regs natural, which is what lets
-    // select_mw_nw fund 512-thread CTAs.
-    // (An evening-2026-09-10 experiment hoisted the loop-invariant B base
-    // and lane terms — instruction count halved, perf DROPPED 11%: the
-    // redundant uniform math was soaking up issue slots that now stall on
-    // ldmatrix/mma dependencies. Reverted; measured before removed.)
+    let mut emit_f16_compute = move |mut out: &mut String| {
     out.push_str("    mov.u64 %rd7, %rd8;\n");
     out.push_str(&format!(
         "    mul.lo.u32 %r18, %r9, {};\n",
@@ -1636,29 +1604,6 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // bytes at byte g*16, XOR-swizzled by k&7 — matching the fill's
     // ((n>>3)^(k&7))*16 chunk remap. x2.trans: lanes 0-7 -> b-lo (k 0-7),
     // lanes 8-15 -> b-hi (k 8-15), both n 0-7.
-    let emit_b_ld = |out: &mut String, g: usize, lo: &str, hi: &str| {
-        out.push_str("    mov.u64 %rd4, %rd9;\n");
-        out.push_str(&format!("    mul.lo.u32 %r18, %r9, {};\n", bsmem_buf));
-        out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
-        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
-        out.push_str("    mov.u32 %r12, %r11;\n");
-        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", gr * 256));
-        out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
-        out.push_str("    add.u64 %rd4, %rd4, %rd5b;\n");
-        out.push_str("    mov.u32 %r13, %r7;\n");
-        out.push_str("    and.b32 %r12, %r13, 15;\n");
-        out.push_str(&format!("    shl.b32 %r12, %r12, {};\n", 4 + gr.trailing_zeros()));
-        out.push_str(&format!("    and.b32 %r14, %r13, {};\n", gr - 1));
-        out.push_str(&format!("    xor.b32 %r14, %r14, {};\n", g));
-        out.push_str("    shl.b32 %r14, %r14, 4;\n");
-        out.push_str("    add.u32 %r17, %r12, %r14;\n");
-        out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
-        out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
-        out.push_str(&format!(
-            "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
-            lo, hi
-        ));
-    };
     if f16_acc {
         // E4b precomputed-lane schedule (2026-09-13): lane→row/k-block
         // decomposition done once at kernel entry (%r23=a_rf, %r24=a_cf,
@@ -1786,6 +1731,181 @@ fn tensor_gemm_ptx_smem_mw_opt(
             }
         }
     }
+    };
+    if warp_spec {
+        // E8a warp-specialized K loop (f16acc, stages=2, kps=1 - asserted).
+        // Consumer = warps 0-7 (exact ship compute); producer = warps 8-9
+        // (fill-only, 64 lanes). F = named barrier 1 (fill-done), C = 2
+        // (compute-done); counts 320 = 10 warps.
+        // %p2 must be set HERE, while %r9 still holds the tid-decoded
+        // warp id (0-9); the consumer path immediately overwrites %r9
+        // with the stage index.
+        out.push_str("    setp.eq.u32 %p2, %r9, 8;\n");
+        out.push_str("    @%p2 bra WSPROC;\n");
+        out.push_str("    mov.u32 %r9, 0;\n");
+        out.push_str("    mov.u32 %r2, 0;\n");
+        emit_f16_compute(&mut out);
+        out.push_str("    bar.arrive 2, 320;\n");
+        out.push_str("    add.u32 %r2, %r2, 16;\n");
+        out.push_str("WCLOOP:\n");
+        out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", k));
+        out.push_str("    @%p1 bra WCDONE;\n");
+        out.push_str("    bar.sync 1, 320;\n");
+        // Consumer-side fence: the ship pattern has EVERY thread membar
+        // before reading cp.async data; the bar alone does not order the
+        // producer's async writes vs this warp's ldmatrix reads (the
+        // documented stale-smem trap, 2026-09-10).
+        out.push_str("    membar.cta;\n");
+        out.push_str("    shr.u32 %r9, %r2, 4;\n");
+        out.push_str("    and.b32 %r9, %r9, 1;\n");
+        emit_f16_compute(&mut out);
+        out.push_str("    bar.arrive 2, 320;\n");
+        out.push_str("    add.u32 %r2, %r2, 16;\n");
+        out.push_str("    bra.uni WCLOOP;\n");
+        out.push_str("WCDONE:\n");
+        out.push_str("    bra.uni KEND;\n");
+        out.push_str("WSPROC:\n");
+        // E8a lane remap: producer tids are 256-319; the fill D-mapping
+        // indexes D = tid*width from 0, so rebase %r5 to the 64-lane
+        // producer-local id (nothing downstream uses global tid here —
+        // the y-pass guard uses %p2 (set at the split), not %r5
+        // BEFORE this point... it does not: KEND is unreached by
+        // producers, whose %r5 stays rebased harmlessly).
+        out.push_str("    sub.u32 %r5, %r5, 256;\n");
+        out.push_str("    mov.u32 %r2, 0;\n");
+        out.push_str("WPLOOP:\n");
+        out.push_str("    add.u32 %r18, %r2, 16;\n");
+        out.push_str(&format!("    setp.ge.u32 %p1, %r18, {};\n", k));
+        out.push_str("    @%p1 bra WPDONE;\n");
+        out.push_str("    bar.sync 2, 320;\n");
+        out.push_str("    shr.u32 %r18, %r18, 4;\n");
+        out.push_str("    and.b32 %r18, %r18, 1;\n");
+        // A fill into stage %r18, stripe %r2+16 - 64 producer lanes.
+        out.push_str("    mov.u32 %r12, %r21;\n");
+        out.push_str(&format!(
+            "    mul.lo.u32 %r17, %r18, {};\n",
+            asmem_buf
+        ));
+        out.push_str("    add.u32 %r12, %r12, %r17;\n");
+        let koff_src_off = "    mov.u32 %r16, %r2;\n    add.u32 %r16, %r16, 16;\n    mul.lo.u32 %r16, %r16, 2;\n    add.u32 %r15, %r15, %r16;\n";
+        emit_a_fill(&mut out, koff_src_off, 0, 64);
+        // B fill into the same stage; %r17 is re-derived as the emitter's
+        // k-row before the prelude consumes it (same contract as KLOOP).
+        out.push_str("    mov.u32 %r12, %r22;\n");
+        out.push_str(&format!(
+            "    mul.lo.u32 %r17, %r18, {};\n",
+            bsmem_buf
+        ));
+        out.push_str("    add.u32 %r12, %r12, %r17;\n");
+        let koff_r18_prelude = format!(
+            "    mov.u32 %r18, %r2;\n    add.u32 %r18, %r18, 16;\n    add.u32 %r18, %r18, %r17;\n    mul.lo.u32 %r18, %r18, {};\n",
+            b_row
+        );
+        emit_b_fill(&mut out, &koff_r18_prelude, 0, 64);
+        out.push_str("    cp.async.commit_group;\n");
+        out.push_str("    cp.async.wait_group 0;\n");
+        out.push_str("    membar.cta;\n");
+        out.push_str("    bar.arrive 1, 320;\n");
+        out.push_str("    add.u32 %r2, %r2, 16;\n");
+        out.push_str("    bra.uni WPLOOP;\n");
+        out.push_str("WPDONE:\n");
+        out.push_str("    bra.uni KEND;\n");
+    } else {
+    out.push_str("    mov.u32 %r2, 0;  // kstep\n");
+    out.push_str("KLOOP:\n");
+    out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", k));
+    out.push_str("    @%p1 bra KEND;\n");
+
+    // Compute stage = ((kstep/16)/kps) & (stages-1); fill stage = stage+(stages-1).
+    // kps>1 divides the strip index first (the fill+bar cadence is per-stage).
+    out.push_str("    shr.u32 %r9, %r2, 4;\n");
+    if kps > 1 {
+        out.push_str(&format!("    shr.u32 %r9, %r9, {};\n", kps.trailing_zeros()));
+    }
+    out.push_str(&format!("    and.b32 %r9, %r9, {};\n", stages - 1));
+    out.push_str(&format!("    add.u32 %r17, %r9, {};\n", stages - 1));
+    out.push_str(&format!("    and.b32 %r17, %r17, {};\n", stages - 1));
+
+    // Compute smem base for the FILL stage: asmem + stage * stage_bytes
+    out.push_str("    mov.u32 %r12, %r21;\n");
+    out.push_str(&format!(
+        "    mul.lo.u32 %r18, %r17, {};\n",
+        asmem_buf * kps
+    ));
+    out.push_str("    add.u32 %r12, %r12, %r18;\n");
+
+    // The fill prefetches stripe kstep+16*kps*(stages-1) (consumed stages
+    // later — an off-by-one here would reuse stripe kstep and silently skip
+    // the last stripes; the seeded-data error 3.2e-3 slipped under the 5e-3
+    // gate once). On the final iterations the prefetch would read past K, so
+    // it is skipped. kps>1 adds the cadence guard: fills fire only on the
+    // first strip of each stage (kstep % 16·kps == 0).
+    out.push_str(&format!(
+        "    setp.ge.u32 %p1, %r2, {};\n",
+        (k - (16 * kps as i64) * (stages as i64 - 1)).max(0)
+    ));
+    out.push_str("    @%p1 bra FILL_DONE;\n");
+    if kps > 1 {
+        out.push_str(&format!("    and.b32 %r18, %r2, {};\n", 16 * kps - 1));
+        out.push_str("    setp.ne.u32 %p1, %r18, 0;\n");
+        out.push_str("    @%p1 bra FILL_DONE;\n");
+    }
+
+    // Cooperative A fill into the fill stage (coalesced D mapping; widened
+    // rung per a_fill_rung above — identical address decomposition, fewer
+    // copies). Source offset advances by the prefetch distance
+    // kstep + 16*kps*(stages-1); the strip loop walks the kps 16-k blocks.
+    for strip in 0..kps {
+        let koff_src_off = {
+            let mut s = String::from("    mov.u32 %r16, %r2;\n");
+            s.push_str(&format!(
+                "    add.u32 %r16, %r16, {};\n",
+                (16 * kps as i64) * (stages as i64 - 1) + (strip * 16) as i64
+            ));
+            s.push_str("    mul.lo.u32 %r16, %r16, 2;\n");
+            s.push_str("    add.u32 %r15, %r15, %r16;\n");
+            s
+        };
+        emit_a_fill(&mut out, &koff_src_off, strip * asmem_buf, threads as usize);
+    }
+
+    // Cooperative B fill into the fill stage. Same k-major swizzled contract
+    // as the prologue fill (see there); row advance is (kstep+dist+k)*b_row.
+    // Widened rung per b_fill_rung above; %r12 consumes %r17 (stage) before
+    // the emitter clobbers it.
+    out.push_str("    mov.u32 %r12, %r22;\n");
+    out.push_str(&format!(
+        "    mul.lo.u32 %r18, %r17, {};\n",
+        bsmem_buf * kps
+    ));
+    out.push_str("    add.u32 %r12, %r12, %r18;\n");
+    // global: (kstep+16*kps*(S-1)+k)*b_row
+    for strip in 0..kps {
+        let koff_r18_prelude = {
+            let mut s = String::from("    mov.u32 %r18, %r2;\n");
+            s.push_str(&format!(
+                "    add.u32 %r18, %r18, {};\n",
+                (16 * kps as i64) * (stages as i64 - 1) + (strip * 16) as i64
+            ));
+            s.push_str("    add.u32 %r18, %r18, %r17;\n");
+            s.push_str(&format!("    mul.lo.u32 %r18, %r18, {};\n", b_row));
+            s
+        };
+        emit_b_fill(&mut out, &koff_r18_prelude, strip * bsmem_buf, threads as usize);
+    }
+    out.push_str("FILL_DONE:\n");
+    out.push_str("    cp.async.commit_group;\n");
+
+    // === Compute on CURRENT buffer (overlaps with async fill above) ===
+    // Register-trimmed scheduling (2026-09-10): A fragments load per-mh
+    // (4 live, was 8) and each B fragment loads immediately before its mma
+    // (2 live, was 16). 136 -> 128 regs natural, which is what lets
+    // select_mw_nw fund 512-thread CTAs.
+    // (An evening-2026-09-10 experiment hoisted the loop-invariant B base
+    // and lane terms — instruction count halved, perf DROPPED 11%: the
+    // redundant uniform math was soaking up issue slots that now stall on
+    // ldmatrix/mma dependencies. Reverted; measured before removed.)
+        emit_f16_compute(&mut out);
 
     // f16-acc promotion: FULL-K register accumulation (2026-09-11, the
     // night's decisive probe) — the every-512-k y-RMV round cost 24 TFLOP/s
@@ -1832,13 +1952,23 @@ fn tensor_gemm_ptx_smem_mw_opt(
     }
 
     out.push_str("    add.u32 %r2, %r2, 16;\n");
-    out.push_str("    bra.uni KLOOP;\nKEND:\n");
+    out.push_str("    bra.uni KLOOP;\n");
+    }
+    out.push_str("KEND:\n");
+    if warp_spec {
+        // %p2 = producer role: producers hold the acc-zero zeros and own
+        // no y region - skip the store pass.
+        out.push_str("    @%p2 bra YSKIP;\n");
+    }
 
     // Store C (f32-acc) / the f16-acc final store-only y pass (2026-09-11:
     // full-K register accumulation — one straight-line store pass after
     // the K loop, no in-loop predicate, no RMV reads).
     if f16_acc {
         emit_y_pass(&mut out, 2);
+        if warp_spec {
+            out.push_str("YSKIP:\n");
+        }
         out.push_str("    ret;\n}\n");
         return out;
     }
@@ -2030,11 +2160,12 @@ mod r16_dump {
             (4096, 4096, "4096"),
             (8192, 8192, "8192"),
             (4096, 16, "k16"),
+            (2048i64, 32i64, "k32ws"),
         ] {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw_opt(
-                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, true, 0, 1,
+                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, true, 0, 1, false,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5a_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2054,7 +2185,7 @@ mod r16_dump {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw_opt(
-                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, false, 32, 1,
+                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, false, 32, 1, false,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5b_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2084,6 +2215,30 @@ mod r16_dump {
     /// allows; stages=3, the literal CUTLASS point, is structurally out).
     /// Only k%32==0 shapes (the eligibility gate).
     #[test]
+    /// E8a (plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec): warp
+    /// specialization — 8 consumer warps (ship compute) + 2 producer warps
+    /// (fill-only), 320T CTAs, named barriers F=1/C=2. Launch: threads=320,
+    /// grid = n_tiles.
+    #[test]
+    fn dump_e8a_warp_spec() {
+        for (m, k, tag) in [
+            (128i64, 128i64, "128"),
+            (128i64, 16i64, "k16"),
+            (2048i64, 2048i64, "2048"),
+            (4096, 4096, "4096"),
+            (8192, 8192, "8192"),
+            (2048i64, 32i64, "k32ws"),
+        ] {
+            let b_off = m * k * 2;
+            let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
+            let ptx = tensor_gemm_ptx_smem_mw_opt(
+                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4,
+                false, 0, 1, true,
+            );
+            std::fs::write(&format!("/tmp/opencode/tgemm_e8a_{tag}.ptx"), &ptx).unwrap();
+        }
+    }
+
     fn dump_e6_ksteps_per_stage() {
         for (stages, stagetag) in [(2usize, "kps2s2"), (4, "kps2s4")] {
             for (m, k, mtag) in [
@@ -2095,7 +2250,7 @@ mod r16_dump {
                 let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
                 let ptx = tensor_gemm_ptx_smem_mw_opt(
                     m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, stages, 4,
-                    false, 0, 2,
+                    false, 0, 2, false,
                 );
                 std::fs::write(
                     &format!("/tmp/opencode/tgemm_e6_{stagetag}_{mtag}.ptx"),
@@ -2120,6 +2275,7 @@ mod r16_dump {
             (4096, 4096, "4096"),
             (8192, 8192, "8192"),
             (4096, 16, "k16"),
+            (2048i64, 32i64, "k32ws"),
         ] {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
@@ -2159,10 +2315,16 @@ mod r16_dump {
         // (128x128 tile, 16KB smem, 4 CTAs/SM). select_mw_nw lands here for
         // every large square shape; these dumps + ptx_gemm_bench gate it.
         for (m, k, tag) in [
+            (128i64, 128i64, "128"),
+            (128i64, 16i64, "k16_128"),
+            (256i64, 16i64, "k16_256"),
+            (512i64, 16i64, "k16_512"),
+            (1024i64, 16i64, "k16_1024"),
             (2048i64, 2048i64, "2048"),
             (4096, 4096, "4096"),
             (8192, 8192, "8192"),
             (4096, 16, "k16"),
+            (2048i64, 32i64, "k32ws"),
         ] {
             let b_off = m * k * 2;
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
@@ -3077,3 +3239,4 @@ mod smem_tests {
         }
     }
 }
+// E8a minimal-repro helper appended by session; see dump_e8a_warp_spec.
