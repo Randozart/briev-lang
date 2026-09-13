@@ -257,5 +257,84 @@ The frontier doc must additionally record:
   (the hosted native-runtime work this plan builds on),
   `docs/plans/2026-09-06-isr-handlers-and-sections.md` (ISR + section
   mechanics reused here).
-- Execution status: not started. Any session resuming this plan must
-  begin at Phase 0 and re-verify §1 before trusting it.
+- Execution status: Phase 0 audit complete, Phase 1 compiler code complete,
+  Phase 2 boot demonstrated. Any session resuming this plan must begin at
+  Phase 3 (timer scheduler).
+
+---
+
+## Addendum C: Phase 2 Boot Demonstrated (2026-09-13)
+
+Phase 2 gate **PASSED**: QEMU prints `briev` from a pure-Briev program.
+
+### Execution model correction
+
+The original hello program used `defn boot()` and `loop`/`break` — invalid
+Briev syntax. Briev has no `loop` keyword. The correct model:
+
+- **The reactor IS the pseudo-loop** — evaluates node preconditions
+  continuously. No `main()`, no `while(1)`.
+- `beginprogram` is sugar for `let started: Bool = true;` — a node with
+  `[beginprogram][true]` fires once at program start.
+- Equilibrium = no node can fire = idle (wfi on embedded).
+- No traditional kernel overhead — reactor IS the scheduler.
+
+Documented in `docs/architecture/briev-execution-model.md`.
+
+### Corrected hello program
+
+```briev
+node entry [beginprogram][true] {
+    let uart: Ptr<Int> = 0x10000000 as Ptr<Int>;
+    VolatileStore#(uart, 98);   // 'b'
+    VolatileStore#(uart, 114);  // 'r'
+    VolatileStore#(uart, 105);  // 'i'
+    VolatileStore#(uart, 101);  // 'e'
+    VolatileStore#(uart, 118);  // 'v'
+    VolatileStore#(uart, 10);   // '\n'
+    halt;
+};
+```
+
+### Compiler fixes required
+
+1. **Asm# riscv64 lowerings** (`config/asm-lowering.dbvl`):
+   - `Prefetch`: added `riscv64:lw zero, 0($1)` (no-op hint load)
+   - `Rdtsc`: added `riscv64:csrrs $0, time, zero` (reads time CSR)
+
+2. **Cross-compilation** (`src/compile.rs`):
+   - Skip `-march=native` for non-native triples
+   - Use `-fuse-ld=lld` for non-linux targets (GNU ld lacks riscv64 emulation)
+   - Link `lib/runtime/compiler_rt_rv64.c` for riscv64 bare-metal
+     (provides `__udivdi3`, `__umoddi3`, `__divdi3`, `__moddi3`)
+
+### Build command
+
+```bash
+./target/release/brievc build examples/hello_rv64.b.bv \
+    --triple riscv64-unknown-none \
+    --linker-script lib/targets/qemu-virt-rv64.ld
+```
+
+### Boot command
+
+```bash
+qemu-system-riscv64 -machine virt -bios none -nographic \
+    -kernel examples/hello_rv64.b
+```
+
+### Result
+
+```
+briev
+```
+
+5936 bytes. 2172 tests pass. Full pipeline: Briev source → LLVM IR →
+riscv64 ELF → QEMU virt → UART output.
+
+### Next: Phase 3 — Timer Scheduler
+
+The UART write macro (`uart_write!`) is deferred — requires a Rust plugin
+for compile-time string iteration (no `StrByte$` or `While$` in the macro
+DSL). See `docs/architecture/briev-execution-model.md` for the macro system
+analysis.
