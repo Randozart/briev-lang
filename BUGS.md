@@ -5951,3 +5951,55 @@ wires permanently in the external frontier), and the emitter picks the park
 policy from it: `wfi` only when the frontier is vectored-only; spin
 (continuous evaluation) when an external frontier exists, or a
 `within`-bounded quantum park when declared. Logged before the fix ships.
+
+## 2026-09-14 — Statement match with void txn arms emits broken expression-match IR
+
+**Where:** LLVM backend match lowering (statement `match` whose arm values
+are void txn calls mixed with an empty-block arm).
+
+**What:** `match trap_cause() { 7 => schedule(), 8 => syscall_dispatch(),
+_ => {} };` in a machine-entry node lowered through the EXPRESSION-match
+path (boxed arm results): the `_ => {}` arm's box fill referenced `%t23`
+defined in a sibling arm's block → `use of undefined value '%t23'` at
+clang. Found building kernel_rv64.b.bv.
+
+**Workaround:** `when` guards (or cache the scrutinee in a `let` and use
+`when` per case).
+
+**Fix:** route void-arm statement matches through the statement-match
+emission (`.smt_*` blocks) — never the boxed expression path. Open; demo
+uses the workaround.
+
+## 2026-09-14 — kernel_rv64 freezes entering the first U-mode task
+
+**Where:** `examples/kernel_rv64.b.bv` — the Phase 4 micro-kernel demo
+(bootstrap → trap_service @ 7 → schedule → two U-mode tasks via ecall).
+
+**State:** the machine reaches the first timer trap, runs the handler
+(K prints), schedule() re-arms mtimecmp and sets the task switch (mepc ←
+task entry ✓ verified in the QEMU CPU dump; mstatus = MPP=U, MPIE=1 ✓),
+then freezes: no task execution, no second timer interrupt (the -d int log
+has exactly one line), MIE=0, priv=M, pc spinning in a single-instruction
+translated block (`csrrw zero, mepc, a4` — the set_mepc site).
+
+**Evidence:** qemu -d int/-d cpu/-d in_asm logs under /tmp/opencode
+(qi2/kc3/kt5 in-session); IR verified correct (frame_store's body:
+call trap_frame_base → add offset → inttoptr → volatile store ✓).
+Suspects, unranked: QEMU mret-into-U subtlety (mstatus.FS/VS state?),
+PMP grant ordering (pmp_grant_all runs in the bootstrap — effectiveness
+unverified), the scaffold's x1–x31 restore overlapping the enter_user_mode
+csrc (mstatus write-after-write), or an mret-to-U exception loop with
+mtvec silently re-servicing.
+
+**Repro:** `brievc build examples/kernel_rv64.b.bv --triple
+riscv64-unknown-none --linker-script lib/targets/qemu-virt-rv64.ld` then
+`qemu-system-riscv64 -machine virt -bios none -nographic -kernel
+examples/kernel_rv64.b` → prints `BK` then freezes (B = bootstrap entered,
+K = first trap handler entered).
+
+**Not the cause (ruled out):** mtvec alignment (align 4 ✓); undeclared
+t0/t1 inline-asm clobbers (constraint registers only ✓); the void/i64
+call-prototype mismatch (fixed this session — defines are void, calls are
+`call void`); mtimecmp non-re-arm (fixed — schedule re-arms; verified in
+IR); the expression-bodied `ret 0` bug (fixed this session — shims return
+their computed values; verified in IR).
