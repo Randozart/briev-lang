@@ -984,7 +984,7 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    .reg .b64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd7, %rd8, %rd9, %rd5b, %rd5c;\n");
     out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10;\n");
     out.push_str("    .reg .u32  %r11, %r12, %r13, %r14, %r15, %r16, %r17, %r18, %r19, %r20;\n");
-    out.push_str("    .reg .u32  %r21, %r22;\n");
+    out.push_str("    .reg .u32  %r21, %r22, %r23, %r24, %r25, %r26;\n");
     // Register scheduling (2026-09-11 E4a, plan 2026-09-11-ptx-mma-issue-ceiling):
     // f16-acc CLUSTER-PRELOADS — all 8 B fragments (%b0-%b15) and both A
     // blocks (%a0-%a7) issue back-to-back at the top of the compute phase,
@@ -1130,6 +1130,31 @@ pub fn tensor_gemm_ptx_smem_mw(
     out.push_str("    shr.u32 %r6, %r7, 2;    // g\n");
     out.push_str("    and.b32 %r8, %r7, 3;    // t\n");
     out.push_str("    shl.b32 %r8, %r8, 1;    // 2t\n");
+
+    // Precompute lane-invariant address terms (2026-09-13 E4b):
+    // The lane→row/k-block decomposition is identical across all mh (A)
+    // and all g (B) iterations. Computing once saves ~80 ALU per kstep
+    // per warp while preserving the mh/g-dependent offsets as
+    // bubble-filler for ldmatrix latency.
+    if f16_acc {
+        // a_rf = (lane>>4)*8 + (lane&7) — row factor for A addressing
+        out.push_str("    shr.u32 %r12, %r7, 4;\n");
+        out.push_str("    shl.b32 %r23, %r12, 3;\n");
+        out.push_str("    and.b32 %r12, %r7, 7;\n");
+        out.push_str("    add.u32 %r23, %r23, %r12;\n");
+        // a_cf = ((lane>>3)&1) * 16 — k-block factor for A addressing
+        out.push_str("    shr.u32 %r12, %r7, 3;\n");
+        out.push_str("    and.b32 %r12, %r12, 1;\n");
+        out.push_str("    shl.b32 %r24, %r12, 4;\n");
+        // b_l15 = (lane&15) << (4 + gr.trailing_zeros()) — B column factor
+        out.push_str("    and.b32 %r25, %r7, 15;\n");
+        out.push_str(&format!(
+            "    shl.b32 %r25, %r25, {};\n",
+            4 + gr.trailing_zeros()
+        ));
+        // b_l3 = lane & 3 — B XOR factor
+        out.push_str("    and.b32 %r26, %r7, 3;\n");
+    }
 
     out.push_str("    mov.u32 %r2, %r3;\n");
     out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * mhr as i64 * mw as i64 * a_row));
@@ -1338,43 +1363,57 @@ pub fn tensor_gemm_ptx_smem_mw(
         ));
     };
     if f16_acc {
-        // E4a cluster schedule (2026-09-11): [A lds] [B lds] [mma phase] —
-        // the ten ldmatrix issue back-to-back so their ~30clk latencies
-        // overlap one another and the in-flight fill; the 16-mma phase then
-        // runs with zero ld stalls. Addresses: the per-mh A offset and the
-        // per-g B offset blocks are pure ALU (free per the E1c microbench);
-        // what mattered was never issuing an ld immediately before its
-        // consumer mma.
+        // E4b precomputed-lane schedule (2026-09-13): lane→row/k-block
+        // decomposition done once at kernel entry (%r23=a_rf, %r24=a_cf,
+        // %r25=b_l15, %r26=b_l3). Per-mh A load: 5 ALU + ldmatrix + swap
+        // = 8 instr (was 13+1+2=16). Per-g B load: 6 ALU + ldmatrix = 7
+        // instr (was 17). B base (stage+n_warp) computed once per kstep
+        // before the g loop. Total savings ~80 ALU per kstep per warp.
         for mh in 0..mhr {
-            // A: warp mh_warp slice, rows 16*mh..16*mh+15 at +mh*512 bytes.
-            // Lane addressing: rows (lane>>3>>1)*8 + lane&7, k-block (lane>>3)&1.
             out.push_str(&format!("    add.u64 %rd4, %rd7, {};\n", mh * 512));
-            out.push_str("    mov.u32 %r13, %r7;\n");
-            out.push_str("    shr.u32 %r12, %r13, 3;\n");
-            out.push_str("    and.b32 %r13, %r13, 7;\n");
-            out.push_str("    and.b32 %r14, %r12, 1;\n");
-            out.push_str("    shr.u32 %r15, %r12, 1;\n");
-            out.push_str("    mul.lo.u32 %r15, %r15, 8;\n");
-            out.push_str("    add.u32 %r15, %r15, %r13;\n");
-            out.push_str("    mul.lo.u32 %r15, %r15, 32;\n");
-            out.push_str("    mul.lo.u32 %r14, %r14, 16;\n");
-            out.push_str("    add.u32 %r16, %r15, %r14;\n");
+            out.push_str("    shl.b32 %r16, %r23, 5;\n");
+            out.push_str("    add.u32 %r16, %r16, %r24;\n");
             out.push_str("    mul.wide.u32 %rd5, %r16, 1;\n");
             out.push_str("    add.u64 %rd5, %rd4, %rd5;\n");
             out.push_str(&format!(
                 "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {{%a{}, %a{}, %a{}, %a{}}}, [%rd5];\n",
                 4 * mh, 4 * mh + 1, 4 * mh + 2, 4 * mh + 3
             ));
-            // ldmatrix x4's operand order is transposed for row-major A —
-            // swap the middle pair (the S3a-locked fragment recipe).
             out.push_str(&format!(
                 "    mov.b32 %t0, %a{}; mov.b32 %a{}, %a{}; mov.b32 %a{}, %t0;\n",
                 4 * mh + 1, 4 * mh + 1, 4 * mh + 2, 4 * mh + 2
             ));
         }
+        // B base (stage + n_warp offset) — invariant across g, computed once.
+        out.push_str("    mov.u64 %rd5c, %rd9;\n");
+        out.push_str(&format!(
+            "    mul.lo.u32 %r18, %r9, {};\n",
+            bsmem_buf
+        ));
+        out.push_str("    mul.wide.u32 %rd5b, %r18, 1;\n");
+        out.push_str("    add.u64 %rd5c, %rd5c, %rd5b;\n");
+        out.push_str("    mov.u32 %r12, %r11;\n");
+        out.push_str(&format!(
+            "    mul.lo.u32 %r12, %r12, {};\n",
+            gr * 256
+        ));
+        out.push_str("    mul.wide.u32 %rd5b, %r12, 1;\n");
+        out.push_str("    add.u64 %rd5c, %rd5c, %rd5b;\n");
+        // Per-g B loads with precomputed lane terms.
         for g in 0..gr {
             let (lo, hi) = (format!("%b{}", 2 * g), format!("%b{}", 2 * g + 1));
-            emit_b_ld(&mut out, g, &lo, &hi);
+            out.push_str(&format!(
+                "    xor.b32 %r14, %r26, {};\n",
+                g
+            ));
+            out.push_str("    shl.b32 %r14, %r14, 4;\n");
+            out.push_str("    add.u32 %r17, %r25, %r14;\n");
+            out.push_str("    mul.wide.u32 %rd5, %r17, 1;\n");
+            out.push_str("    add.u64 %rd5, %rd5c, %rd5;\n");
+            out.push_str(&format!(
+                "    ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {{{}, {}}}, [%rd5];\n",
+                lo, hi
+            ));
         }
         for mh in 0..mhr {
             for g in 0..gr {
