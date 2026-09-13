@@ -186,3 +186,83 @@ registry field + arm), D (revert parser arm; isr syntax restored), E
   record), `docs/architecture/briev-execution-model.md` (reactor model),
   `2026-09-11-rv64-capability-kernel.md` (Phases 0–3, Addendum D),
   `2026-09-13-defn-liveness-emission.md` (emission gating this builds on).
+
+---
+
+## Addendum A: The refined paradigm (2026-09-14, same session — pre-execution)
+
+Four refinements, closed in design review before Phase A landed. Each traces
+to a user challenge; each shrinks or corrects the base plan.
+
+### A.1 Universal `@` wiring — the inline trigger
+
+`@` on a node header is ONE pattern with TWO dispatch classes, resolved by
+the board-file namespace of what follows:
+
+| Wiring | Class | Dispatch | Wake source |
+|---|---|---|---|
+| `@ timer_irq` / `@ 7` (interrupts namespace) | machine-vectored | machine preempts; convention scaffold; never reactor-dispatched | the interrupt line |
+| `@ thermal_alert` / `@ 0x0200BFF8` / `@ *ptr` (addresses namespace / pointer) | reactor-pass | stays in reactor dispatch, gated by the wiring (existing trigger machinery) | the reactor's pass |
+
+Dynamic `@ *ptr` is always reactor-pass (mtvec needs a static handler).
+Ambiguous names → compile error naming both namespaces. Wired nodes may omit
+`[pre]` — the wiring IS the eligibility. `trg` coexists (named reusable
+binding); inline-`@` is the point-of-use form.
+
+### A.2 Latency contracts — "polling" reframed
+
+Address wires cannot fire-on-write without an interrupt line; the honest
+mechanisms are the reactor's pass (fires within one pass) and, at
+equilibrium, declared-bound quantum parks. `within <bound>` (the existing
+watchdog deadline syntax) on a wired node declares the latency contract; the
+compiler picks spin or park-with-quantum to meet it. Vectored nodes take no
+`within` — their latency is the hardware's.
+
+### A.3 Wake-dependency analysis + frontier-driven equilibrium
+
+New frontend analysis (`AnalysisResults.wake_sets`): per wake source, the set
+of preconditions that reference fields that source can affect — from typed
+writer sets (the `build_write_masks` precedent) × precondition reader sets.
+**Conservative by construction**: a field written anywhere live is
+may-written for any wake reaching that writer; MMIO-pinned/external fields
+are permanently in the external frontier. A missed writer = silent deadlock,
+so over-approximation is mandatory; under-approximation fails loudly at
+compile time (emitter asserts the park policy against the computed frontier).
+
+Frontier-driven equilibrium (replaces the Phase 3 unconditional `wfi` park):
+
+| Program frontier | Equilibrium behavior | Re-check on wake |
+|---|---|---|
+| state-sequenced only | direct fallthrough — fold machinery chains provably-next nodes, no re-check | none needed |
+| vectored only | `wfi` park | dependent set of the trap's writes only |
+| external (address wires) | spin (default — fires within one pass) or quantum park when `within` declared | external frontier's set + state-sequenced fallthrough |
+
+**BUG (logged BUGS.md 2026-09-14)**: the Phase 3 equilibrium parks in `wfi`
+unconditionally — a program with an address-wired node would sleep through
+eligibility (the value changes, no interrupt asserts, nothing wakes the
+CPU). Phase C/D replaces it with the frontier-driven park above.
+
+### A.4 Corrections of record
+
+- **Handoff postcondition = state AFTER the body** (at reactor handoff). The
+  base plan's sketch `bootstrap node reset [armed == false]` with body
+  `armed = true` was wrong under its own semantics; the correct form
+  documents the post-body state (`[armed == true]`). The convergence
+  checker's existing reachability proof applies unchanged.
+- **`beginprogram` remains first-class sugar** — genuinely useful on native
+  targets where the environment provides initial state (user correction);
+  authored-bootstrap programs typically omit it.
+- **Phase D reshaped** to the unified wiring (A.1): the parser accepts
+  `@ wiring` on any node header; classification by namespace; the vectored
+  class routes to the mechanism scaffold, the polled class to the existing
+  trigger tables.
+
+### A.5 Phase A status
+
+Keyword landed (lexer/vocab/parser/gate/typechecker/emitter threading).
+Constraint: authored machine entries currently require the direct-SSA
+dispatch — other dispatch paths reject loudly with the fix (guard helper
+`reject_bootstrap_off_ssa`). Handoff postconditions ride the existing
+reactive convergence proof (no new checker machinery); bootstrap nodes take
+`ContractKind::Optional` (no handoff obligation declared = allowed; written
+`[true]` still rejected as tautological).
