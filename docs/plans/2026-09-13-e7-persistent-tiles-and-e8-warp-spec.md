@@ -156,3 +156,29 @@ microbench (42.5): a perfect fill schedule at this occupancy loses only
 ~3.7 TF to fills, so the real kernel's fill-scheduling gap is ~7 TF.
 **E8a warp-spec's prize is 3.5–7 TF (to ~39–42) — above the +5% win
 bar. GO for the E8a prototype** (bar.arrive toy first, per plan).
+
+## E8a step 1 (2026-09-13): bar.arrive toy PASSES on-device
+
+`benchmarks/gpu/toy_bararrive.{ptx,c}` (instrument + 30-line driver):
+warp 0 stores 42 then `bar.arrive 1, 64`; warp 1 `bar.sync 1, 64`, loads,
+stores 43. Result y[0]=42 y[1]=43 — mixed arrive/sync count release works
+on sm_86 + driver 580.178.04, and the producer's global store is visible
+to the consumer across the barrier.
+
+**Design consequence recorded:** `cp.async.wait_group` is per-thread —
+the producer warp must wait its OWN groups before arriving; the barrier
+propagates readiness to consumers. Pipeline shape (2 named barriers, F =
+fill-done, C = compute-done):
+
+```
+prologue: cooperative fill s0 (all 256T) → wait → membar → bar 0
+W0:  fill s1 → commit → wait 0 → membar → arrive F(256) → sync C(256)
+     fill s0' → ... alternate
+C1-7: compute s0 → sync F → compute s1 → arrive C → compute s0' → sync F → ...
+```
+
+Consumers' first compute (s0, ready from the prologue) is NOT blocked by
+F — the first F-sync happens after s0's compute and releases instantly.
+Register budget: producer/consumer paths are exclusive branches; both
+must color within the 64-reg cap (ptxas permitting) — the prototype
+measures this.

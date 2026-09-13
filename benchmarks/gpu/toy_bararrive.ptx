@@ -1,0 +1,23 @@
+.version 8.0
+.target sm_86
+.address_size 64
+.visible .entry main (.param .b64 proj_param)
+{
+    .reg .b64 %rd1, %rd2;
+    .reg .u32 %r1, %r2, %r3, %r5;
+    .reg .pred %p1;
+    ld.param.u64 %rd1, [proj_param];
+    mov.u32 %r5, %tid.x;
+    shr.u32 %r2, %r5, 5;
+    setp.eq.u32 %p1, %r2, 0;
+    add.u64 %rd2, %rd1, 4;
+    @%p1 st.global.u32 [%rd1], 42;
+    // Producer warp: arrive (non-blocking), count covers both warps.
+    @%p1 bar.arrive 1, 64;
+    // Consumer warp: blocking sync counts as its arrival.
+    @!%p1 bar.sync 1, 64;
+    @!%p1 ld.global.u32 %r3, [%rd1];
+    @!%p1 add.u32 %r3, %r3, 1;
+    @!%p1 st.global.u32 [%rd2], %r3;
+    ret;
+}
