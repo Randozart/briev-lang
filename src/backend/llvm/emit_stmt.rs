@@ -1125,7 +1125,14 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 }
                 TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
             } else {
-                backend.emit_expr(out, expr, indent)
+                let reg = backend.emit_expr(out, expr, indent);
+                // 2026-09-14 (machine-entry plan): expression-bodied defns
+                // (`defn f() -> Int { expr; }` — no `term`) return the body's
+                // value; the defn tail reads this register for its fallthrough
+                // `ret`. Without the capture the tail emitted `ret 0` — every
+                // shim in kernel_rv64 returned zero (addresses, mepc, cause).
+                backend.fun.last_expr_reg = Some(reg.name.clone());
+                reg
             }
         }
         Statement::FreeHint(name) => {

@@ -2765,7 +2765,11 @@ impl LlvmBackend {
         // 2026-07-18: Use the correct LLVM type for the return type instead of
         // always using "i64". Bool returns need "i8" to match term's ret i8.
         let ll_ret_ty = if !has_ret {
-            "float".to_string()
+            // 2026-09-14 (machine-entry plan): VOID — the old "float" default
+            // paired with the call sites' `call i64` prototype; the mismatch
+            // made LLVM's inliner produce poison operands for the inlined
+            // body (x0-based stores landed in kernel_rv64's context init).
+            "void".to_string()
         } else {
             d.output_type.as_ref()
                 .and_then(|ot| match ot {
@@ -2907,6 +2911,10 @@ impl LlvmBackend {
         // the function falls through to "ret i64 0" — every defn silently
         // returns zero regardless of its actual computation.
         self.fun.in_callable_txn = true;
+        // 2026-09-14 (machine-entry plan): an expression-bodied defn (no
+        // `term`) returns its body's value on fallthrough — the tail reads
+        // this register. Reset per-defn so stale values never leak.
+        self.fun.last_expr_reg = None;
         // 2026-08-04 (compiler-in-Briev): pre-declare entry-block allocas for
         // top-level lets that are reassigned inside a guard/loop — the 
         // reassignment must NOT demote to an alloca at the assignment site
@@ -2950,6 +2958,17 @@ impl LlvmBackend {
                 // `ret void 0`, rejected by clang).
                 if ll_ret_ty == "void" {
                     writeln!(out, "  ret void").ok();
+                } else if ll_ret_ty == "i64" {
+                    // 2026-09-14 (machine-entry plan): an expression-bodied
+                    // defn returns its body's value — the shim
+                    // `defn f() -> Int { Asm#(…); }` computed %t0 then
+                    // returned literal 0 (every kernel shim returned zero:
+                    // frame addresses, mepc, cause — the machine freeze).
+                    if let Some(reg) = &self.fun.last_expr_reg {
+                        writeln!(out, "  ret i64 {}", reg).ok();
+                    } else {
+                        writeln!(out, "  ret i64 0").ok();
+                    }
                 } else {
                     let zero_val = match ll_ret_ty.as_str() {
                         "ptr" => "null",
@@ -3180,7 +3199,12 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
 
     pub(super) fn emit_transaction(&mut self, out: &mut String, txn: &crate::ast::Transaction, name: &str, range_meta: &mut Vec<String>) {
         let has_output = txn.output_type.is_some() || !txn.outputs.is_empty();
-        if !txn.is_reactive && (!txn.parameters.is_empty() || has_output) {
+        // 2026-09-14 (machine-entry plan): non-reactive txns are CALLABLES —
+        // bare-name emission for ALL of them, not just param/output ones.
+        // Zero-param/void callables previously fell through to the reactive
+        // wrapper (@txn_<name>), while call sites emitted @<name> — the call
+        // referenced an undefined symbol.
+        if !txn.is_reactive {
             self.emit_callable_txn(out, txn, name);
             return;
         }
@@ -4438,6 +4462,7 @@ fn probe_ok_checks(
                 })
                 .unwrap_or_else(|| "i64".to_string())
         } else {
+            // 2026-09-14 (machine-entry plan): void callable txns define void.
             "void".to_string()
         };
 
@@ -4620,7 +4645,26 @@ fn probe_ok_checks(
             writeln!(out, "  br label %post").ok();
         }
         writeln!(out, "post:").ok();
-        writeln!(out, "  br label %loop").ok();
+        // 2026-09-14 (machine-entry plan): THE CONVERGENCE EXIT — the
+        // postcondition evaluated after the body: satisfied → done (the
+        // callable returns), else → loop (the body re-runs). The old
+        // emission was `br label %loop` UNCONDITIONALLY — the done block
+        // was reachable only via the pre-condition failing, so every
+        // called convergence txn looped forever after its body (found by
+        // the kernel demo's scheduler — the first end-to-end exercise of
+        // this path).
+        if !matches!(txn.contract.post_condition, Expr::Bool(true)) {
+            let cond = self.emit_expr(out, &txn.contract.post_condition, "  ");
+            let i1 = format!("%pc{}", self.fun.txn_counter); self.fun.txn_counter += 1;
+            if cond.ty == Type::bool_() {
+                writeln!(out, "  {} = trunc i8 {} to i1", i1, cond).ok();
+            } else {
+                writeln!(out, "  {} = icmp ne i64 {}, 0", i1, cond).ok();
+            }
+            writeln!(out, "  br i1 {}, label %done, label %loop", i1).ok();
+        } else {
+            writeln!(out, "  br label %done").ok();
+        }
 
         writeln!(out, "done:").ok();
         if has_return {

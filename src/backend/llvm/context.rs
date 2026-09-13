@@ -854,6 +854,10 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub fn_ret_ty: String,
     pub main_body: bool,
     pub in_callable_txn: bool,
+    /// 2026-09-14 (machine-entry plan): the last Expression statement's value
+    /// register — an expression-bodied defn (no `term`) returns it on
+    /// fallthrough instead of the literal zero.
+    pub last_expr_reg: Option<String>,
     pub callable_txn_result: Option<String>,
     pub callable_txn_post_label: Option<String>,
     /// 2026-07-26: Target label for [expr]; convergence gates.
@@ -1123,6 +1127,7 @@ impl FunctionContext {
             fn_ret_ty: "void".to_string(),
             main_body: false,
             in_callable_txn: false,
+            last_expr_reg: None,
             callable_txn_result: None,
             callable_txn_post_label: None,
             convergence_target: None,

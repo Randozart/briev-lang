@@ -1297,7 +1297,11 @@ pub struct LlvmBackend {
     /// authored program entry. Its body is inlined at main's head (after the
     /// init stores, before the dispatch loop) and it never joins the
     /// reactor's dispatch list. Set during the item scan.
-    bootstrap_txn: Option<String>,}
+    bootstrap_txn: Option<String>,
+    /// 2026-09-14 (machine-entry plan): `@__briev_trap_frame` emitted once
+    /// per module when a `full_context` handler exists.
+    trap_frame_emitted: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct ChimeraInfo {
@@ -1395,6 +1399,7 @@ impl LlvmBackend {
             resolved_frgns: None,
             precomputed_analysis: None,
             bootstrap_txn: None,
+            trap_frame_emitted: false,
         }
     }
 
@@ -2800,12 +2805,13 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     }
                     txns.push((t.name.clone(), t));
                     self.program_txns.push(t.name.clone());
-                    // Register callable txn param types for Expr::Call marshaling
-                    let has_output = t.output_type.is_some() || !t.outputs.is_empty();
-                    if !t.is_reactive && (!t.parameters.is_empty() || has_output) {
+                    // Register callable txn param types for Expr::Call marshaling.
+                    // 2026-09-14: register ALL callable (non-reactive) txns —
+                    // the call path needs %state marshaling and the void/i64
+                    // prototype for zero-param/void callables too.
+                    if !t.is_reactive {
                         let tys: Vec<Type> = t.parameters.iter().map(|(_, ty)| ty.clone()).collect();
                         self.ctx.defn_params.insert(t.name.clone(), tys);
-                        // 2026-07-18: Populate from output_type as well.
                         let ret_tys = if !t.outputs.is_empty() {
                             t.outputs.clone()
                         } else if let Some(ref ot) = t.output_type {
@@ -4592,6 +4598,19 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     self.emit_wake_metadata(&mut out);
                 }
                 self.emit_thread_pool_metadata(&mut out);
+            } else if self.bootstrap_txn.is_some() {
+                // 2026-09-14 (machine-entry plan): a bootstrap with no
+                // reactor nodes is the pure-kernel shape — every transition
+                // is machine-serviced. The SSA main still applies: authored
+                // body at the head, dispatch loop parks in wfi (vectored-
+                // only frontier — the trap wakes the core).
+                let boot = self.bootstrap_txn_of(items);
+                self.fun.txn_counter = 0;
+                self.fun.within_counter = 0;
+                self.warnings.push(
+                    "info: pure-kernel program — reactor parks in wfi; all transitions are machine-serviced".into(),
+                );
+                self.emit_ssa_main(&mut out, &txns, false, boot);
             } else {
         writeln!(out, "define void @reactor_tick({}) local_unnamed_addr #2 {{", self.ctx.state_ptr_param).ok();
         self.ctx.has_reactor_tick = true;

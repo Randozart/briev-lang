@@ -4744,6 +4744,33 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             .get(name)
             .and_then(|types| types.first().cloned())
             .unwrap_or(Type::int());
+        // 2026-09-14 (machine-entry plan): VOID callees — defns/txns whose
+        // registered return list is EMPTY define `void`; the call must be
+        // `call void` and the result a fresh dummy (never the callee's
+        // return register — a void/i64 prototype mismatch poisons the
+        // inlined body's operands).
+        let callee_is_void = self
+            .ctx
+            .defn_return_types
+            .get(name)
+            .map(|types| types.is_empty())
+            .unwrap_or(false);
+        if callee_is_void {
+            let dummy = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}call void @{}({})",
+                indent,
+                name,
+                call_args.join(", ")
+            )
+            .ok();
+            writeln!(out, "{}{} = add i64 0, 0", indent, dummy).ok();
+            return TypedRegister {
+                name: dummy,
+                ty: Type::int(),
+            };
+        }
         let ret_llvm = self.llvm_ret_abi_type(&ret_type);
         // 2026-08-05 (Phase 6): there is no `main` in Briev — no call-site
         // renaming to `briev_main`; the symbol is the declaration name.

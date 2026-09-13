@@ -170,8 +170,11 @@ impl<'a> Builder<'a> {
                 }
             }
             TopLevel::IsrHandler(isr) => {
-                // Vector tables reference handler symbols.
+                // Vector tables reference handler symbols. The typed body is
+                // emitted (and called) by the mechanism's scaffold — root the
+                // wrapper AND walk the body so its callees join the closure.
                 self.roots.insert(isr.name.clone());
+                self.txns.entry(isr.name.clone()).or_insert(&isr.body);
             }
             TopLevel::AsmFn(asm) => {
                 // Top-level observable asm.
@@ -357,6 +360,32 @@ impl<'a> Builder<'a> {
                 self.on_construction(name, queue);
                 for h in intrinsic_helpers(name) {
                     self.mark(h, queue);
+                }
+                // 2026-09-14 (machine-entry plan): `Asm#("raw", template)`
+                    // templates may reference program symbols (`la $0,
+                    // task_a` — machine wiring names handlers). Extract the
+                    // template's identifier words and mark any that are
+                    // known callables — conservative over-approximation
+                    // (substring hits only ever ADD liveness).
+                if name == "Asm#" {
+                    if let Some(crate::ast::Expr::Quoted(t)) = args.get(1) {
+                        let text = String::from_utf8_lossy(t).to_string();
+                        let mut word = String::new();
+                        let mut words: Vec<String> = Vec::new();
+                        for ch in text.chars() {
+                            if ch.is_alphanumeric() || ch == '_' {
+                                word.push(ch);
+                            } else if !word.is_empty() {
+                                words.push(std::mem::take(&mut word));
+                            }
+                        }
+                        if !word.is_empty() {
+                            words.push(word);
+                        }
+                        for w in words {
+                            self.mark(&w, queue);
+                        }
+                    }
                 }
                 for a in args {
                     self.walk_expr(a, queue);

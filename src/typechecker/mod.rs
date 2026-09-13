@@ -4837,11 +4837,33 @@ pub fn check_program_with_target(
     // corrected in Addendum A: the base plan's [armed == false] sketch
     // described the pre-body state; the contract speaks of the post-body
     // state, so `[armed == true]` with a body that stores it is the proof.)
+    // 2026-09-14 (machine-entry plan): declared initial values — the
+    // initializer's literals are the pre-bootstrap state a handoff contract
+    // may rely on for fields the body never touches.
+    let mut initials: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for item in items.iter() {
+        if let TopLevel::Statement(stmt) = item {
+            if let Statement::Let { name, names, expr: Some(e), .. } = stmt.as_ref() {
+                let val = match e {
+                    Expr::Decimal(n) => Some(*n),
+                    Expr::Bool(true) => Some(1),
+                    Expr::Bool(false) => Some(0),
+                    _ => None,
+                };
+                if let Some(v) = val {
+                    initials.insert(name.clone(), v);
+                    for n in names {
+                        initials.insert(n.clone(), v);
+                    }
+                }
+            }
+        }
+    }
     for item in items.iter() {
         if let TopLevel::Transaction(t) = item {
             if t.modifiers.iter().any(|m| m.name == "bootstrap") {
                 if let Err(msg) =
-                    check_goal_reachable(&t.body, &t.contract.post_condition)
+                    check_goal_reachable(&t.body, &t.contract.post_condition, &initials)
                 {
                     errors.push(TypeError::InvalidOperation {
                         operation: format!(
@@ -4968,7 +4990,7 @@ fn conjoin(a: Expr, b: Expr) -> Expr {
 /// program start.
 fn check_beginprogram_program(nodes: &[(&Transaction, Expr)], errors: &mut Vec<TypeError>) {
     for (txn, _entry) in nodes {
-        if let Err(msg) = check_goal_reachable(&txn.body, &txn.contract.post_condition) {
+        if let Err(msg) = check_goal_reachable(&txn.body, &txn.contract.post_condition, &std::collections::HashMap::new()) {
             errors.push(TypeError::InvalidOperation {
                 operation: format!(
                     "beginprogram node '{}': {}",
@@ -4997,13 +5019,81 @@ fn check_beginprogram_program(nodes: &[(&Transaction, Expr)], errors: &mut Vec<T
 /// comparison over a counter (`[i == N]`, `[i >= N]`, `[i <= N]`, ...) whose
 /// body advances the counter toward the goal terminates; anything else is
 /// unprovable ⇒ compile error.
-fn check_goal_reachable(body: &[Statement], goal: &Expr) -> Result<(), String> {
+fn check_goal_reachable(
+    body: &[Statement],
+    goal: &Expr,
+    initials: &std::collections::HashMap<String, i64>,
+) -> Result<(), String> {
     match goal {
         Expr::Bool(true) => Ok(()),
         Expr::Bool(false) => Err("goal '[false]' is never reachable — the entry loop cannot halt".into()),
+        // 2026-09-14 (machine-entry plan): a conjunction is reachable iff
+        // both conjuncts are — the handoff contract of a bootstrap is often
+        // `armed == true && ticks == 0` (each conjunct proven on its own).
+        Expr::BinaryOp(BinaryOpKind::And, l, r) => {
+            check_goal_reachable(body, l, initials)?;
+            check_goal_reachable(body, r, initials)
+        }
+        // `[v == init]` where the body never touches `v`: the initializer's
+        // value holds at handoff (bootstrap handoff — the machine entry runs
+        // after the state initializer and does not write every field).
+        Expr::BinaryOp(BinaryOpKind::Eq, l, r)
+            if matches!(l.as_ref(), Expr::Identifier(_))
+                && matches!(r.as_ref(), Expr::Decimal(_)) =>
+        {
+            if let (Expr::Identifier(v), Expr::Decimal(n)) = (l.as_ref(), r.as_ref()) {
+                let untouched = !body_stores_flag(body, v, true)
+                    && !body_stores_flag(body, v, false)
+                    && !body_advances_counter(body, v, true)
+                    && !body_advances_counter(body, v, false)
+                    && !body_assigns_var(body, v);
+                if untouched && initials.get(v) == Some(n) {
+                    return Ok(());
+                }
+            }
+            counter_goal_reachable(body, &BinaryOpKind::Eq, l, r)
+        }
+        // `[flag == true]` / `[flag == false]` — a Bool flag the body stores.
+        Expr::BinaryOp(BinaryOpKind::Eq, l, r)
+            if matches!(l.as_ref(), Expr::Identifier(_))
+                && matches!(r.as_ref(), Expr::Bool(_)) =>
+        {
+            let want = matches!(r.as_ref(), Expr::Bool(true));
+            if let Expr::Identifier(v) = l.as_ref() {
+                if body_stores_flag(body, v, want) {
+                    return Ok(());
+                }
+            }
+            Err(unreachable_goal(goal))
+        }
         Expr::BinaryOp(op, left, right) => counter_goal_reachable(body, op, left, right),
         _ => Err(unreachable_goal(goal)),
     }
+}
+
+/// Whether the body assigns the named variable at all (any right side) —
+/// the initializer's value only holds for untouched variables.
+fn body_assigns_var(body: &[Statement], var: &str) -> bool {
+    body.iter().any(|stmt| match stmt {
+        Statement::Assign(lhs, _) => {
+            matches!(lhs, Expr::Identifier(n) if n == var)
+        }
+        _ => false,
+    })
+}
+
+/// Whether the body stores a truthy literal into the named flag:
+/// `armed = true` proves `[armed == true]`; `armed = 1` proves it too
+/// (nonzero Ints are truthy) — one-shot entry bodies.
+fn body_stores_flag(body: &[Statement], var: &str, want: bool) -> bool {
+    body.iter().any(|stmt| match stmt {
+        Statement::Assign(lhs, rhs) => match (lhs, rhs) {
+            (Expr::Identifier(n), Expr::Bool(b)) => n == var && *b == want,
+            (Expr::Identifier(n), Expr::Decimal(d)) => n == var && (*d != 0) == want,
+            _ => false,
+        },
+        _ => false,
+    })
 }
 
 /// A comparison goal over a counter is reachable when the body advances the
