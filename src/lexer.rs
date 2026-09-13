@@ -285,6 +285,11 @@ pub enum Token {
     #[token("sync")]
     Sync,
 
+    // 2026-09-14 (machine-entry plan): `bootstrap node` — the authored
+    // program entry (pre-reactor machine beginning; SPEC §11.5, §13.2).
+    #[token("bootstrap")]
+    Bootstrap,
+
     #[token("true")]
     BoolTrue,
 
@@ -655,6 +660,7 @@ impl std::fmt::Display for Token {
             Token::Pvt => write!(f, "pvt"),
             Token::Sed => write!(f, "sed"),
             Token::Sync => write!(f, "sync"),
+            Token::Bootstrap => write!(f, "bootstrap"),
             Token::BoolTrue => write!(f, "true"),
             Token::BoolFalse => write!(f, "false"),
             Token::Cyc => write!(f, "cyc"),
@@ -754,6 +760,7 @@ mod tests {
         let keyword_tokens: &[&str] = &[
             "export", "defn", "let", "const", "txn", "node", "async", "seq",
             "vol", "out", "spec", "pin", "pack", "trap", "halt", "atomic", "union", "coll", "await", "spawn", "term", "term!", "rollback", "import",
+            "bootstrap",
             "mem", "relaxed", "acquire", "release", "bartered",
             "from", "as", "frgn", "meld", "reg", "op", "prop",
             "type", "trait", "impl", "cell", "obj", "struct", "render", "enum", "trg",

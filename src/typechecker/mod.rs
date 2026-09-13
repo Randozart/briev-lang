@@ -3622,7 +3622,18 @@ fn collect_contract_checks<'a>(
 ) {
     match item {
         TopLevel::Definition(d) => out.push((ContractKind::Optional, &d.name, &d.contract)),
-        TopLevel::Transaction(t) => out.push((ContractKind::Required, &t.name, &t.contract)),
+        TopLevel::Transaction(t) => {
+            // 2026-09-14 (machine-entry plan): a bootstrap node's single
+            // bracket group is the HANDOFF postcondition — optional (a
+            // bootstrap may declare no obligation), but when written it must
+            // not be the trivial [true].
+            let kind = if t.modifiers.iter().any(|m| m.name == "bootstrap") {
+                ContractKind::Optional
+            } else {
+                ContractKind::Required
+            };
+            out.push((kind, &t.name, &t.contract))
+        }
         TopLevel::AsmFn(a) => out.push((ContractKind::Required, &a.name, &a.contract)),
         // 2026-09-06 (ISR plan): ISR bodies run at interrupt priority — the
         // obligations are the proof surface, same discipline as asm.
@@ -4819,6 +4830,30 @@ pub fn check_program_with_target(
         })
         .collect();
     check_beginprogram_program(&beginprogram_nodes, &mut errors);
+
+    // 2026-09-14 (machine-entry plan): a bootstrap node's handoff
+    // postcondition is the state AFTER its body at reactor handoff — the
+    // same provably-reachable proof entry loops use. (Handoff semantics
+    // corrected in Addendum A: the base plan's [armed == false] sketch
+    // described the pre-body state; the contract speaks of the post-body
+    // state, so `[armed == true]` with a body that stores it is the proof.)
+    for item in items.iter() {
+        if let TopLevel::Transaction(t) = item {
+            if t.modifiers.iter().any(|m| m.name == "bootstrap") {
+                if let Err(msg) =
+                    check_goal_reachable(&t.body, &t.contract.post_condition)
+                {
+                    errors.push(TypeError::InvalidOperation {
+                        operation: format!(
+                            "bootstrap node '{}': {}",
+                            t.name, msg
+                        ),
+                        type_name: "bootstrap".into(),
+                    });
+                }
+            }
+        }
+    }
 
     // 2026-09-06 (ISR plan): resolve every ISR's vector binding and reject
     // duplicates. Named vectors resolve through the ACTIVE BOARD's
@@ -9239,3 +9274,59 @@ mod section_proof_tests {
 }
 
 
+
+    #[test]
+    fn bootstrap_without_contract_is_allowed() {
+        // 2026-09-14 (machine-entry plan): a bootstrap node's single bracket
+        // group is an OPTIONAL handoff postcondition — absence declares no
+        // obligation.
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = "let armed: Bool = false;\n\
+                   bootstrap node reset { armed = true; };\n";
+        let e = check(src);
+        assert!(e.is_ok(), "bracket-less bootstrap must be allowed, got: {:?}", e);
+    }
+
+    #[test]
+    fn bootstrap_written_true_handoff_is_rejected() {
+        // A written `[true]` handoff asserts nothing — tautology rules apply
+        // even though the bracket-less form is fine.
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = "let armed: Bool = false;\n\
+                   bootstrap node reset [true] { armed = true; };\n";
+        let e = check(src);
+        assert!(
+            matches!(e, Err(ref errs) if errs.iter().any(|er| matches!(er, TypeError::TautologicalContract))),
+            "expected TautologicalContract, got: {:?}",
+            e
+        );
+    }
+
+    #[test]
+    fn bootstrap_handoff_must_be_provable_from_body() {
+        // The handoff postcondition is the state AFTER the body — the
+        // convergence proof must hold (body never touches `armed`).
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = "let armed: Bool = false;\n\
+                   bootstrap node reset [armed == true] { };\n";
+        let e = check(src);
+        assert!(e.is_err(), "unprovable handoff must error, got: {:?}", e);
+    }

@@ -625,8 +625,7 @@ fn const_bool_mask_bytes(expr: &Expr) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn collect_strings(items: &[TopLevel]) -> Vec<String> {    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
+fn collect_strings(items: &[TopLevel]) -> Vec<String> {    let mut seen = std::collections::HashSet::new();    let mut out = Vec::new();
     // 2026-07-17: Always start with the empty string at index 0.
     // emit_field_init_value references @str.0 as the uninitialized String
     // sentinel (Site B at line 866). Without this, @str.0 is never emitted
@@ -1294,7 +1293,11 @@ pub struct LlvmBackend {
     // To undo: delete with_analysis + this field, restore the inline
     // analyze_program call at the top of generate().
     precomputed_analysis: Option<crate::backend::AnalysisResults>,
-}
+    /// 2026-09-14 (machine-entry plan): the `bootstrap node`'s name — the
+    /// authored program entry. Its body is inlined at main's head (after the
+    /// init stores, before the dispatch loop) and it never joins the
+    /// reactor's dispatch list. Set during the item scan.
+    bootstrap_txn: Option<String>,}
 
 #[derive(Debug, Clone)]
 pub struct ChimeraInfo {
@@ -1391,6 +1394,7 @@ impl LlvmBackend {
             analysis_alloc_strategies: None,
             resolved_frgns: None,
             precomputed_analysis: None,
+            bootstrap_txn: None,
         }
     }
 
@@ -2378,6 +2382,32 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         }
     }
 
+    /// 2026-09-14 (machine-entry plan): the declared `bootstrap node`, if any
+    /// — resolved from the item scan by name.
+    fn bootstrap_txn_of<'a>(
+        &self, items: &'a [TopLevel],
+    ) -> Option<&'a crate::ast::Transaction> {
+        let name = self.bootstrap_txn.as_ref()?;
+        items.iter().find_map(|i| match i {
+            TopLevel::Transaction(t) if t.name == *name => Some(t),
+            _ => None,
+        })
+    }
+
+    /// 2026-09-14 (machine-entry plan): fail loudly when a bootstrap program
+    /// takes a dispatch path that cannot place its body at main's head. The
+    /// direct-SSA path is the supported one; the rest reject with the fix.
+    fn reject_bootstrap_off_ssa(&self, path: &str) {
+        if let Some(name) = &self.bootstrap_txn {
+            panic!(
+                "bootstrap node '{name}': the program dispatched via {path}, but \
+                 authored machine entries currently require the direct-SSA \
+                 dispatch — restructure the program (avoid enumerable-trigger \
+                 or folded dispatch) or drop the bootstrap"
+            );
+        }
+    }
+
     pub fn generate(&mut self, items: &[TopLevel], exit_condition: Option<Box<Expr>>) -> String {
         // 2026-09-11 (buffered stdout): gate the epilogue flush on the
         // stdlib lane actually being present — bare programs get no call.
@@ -2759,6 +2789,15 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     self.ctx.inits.insert(i.name.clone(), i.clone());
                 }
                 TopLevel::Transaction(t) => {
+                    // 2026-09-14 (machine-entry plan): a `bootstrap node` is
+                    // the authored program entry — its body runs once at
+                    // main's head (after init stores, before the dispatch
+                    // loop), never as a reactor-dispatched transition.
+                    if t.modifiers.iter().any(|m| m.name == "bootstrap") {
+                        self.bootstrap_txn = Some(t.name.clone());
+                        self.program_txns.push(t.name.clone());
+                        continue;
+                    }
                     txns.push((t.name.clone(), t));
                     self.program_txns.push(t.name.clone());
                     // Register callable txn param types for Expr::Call marshaling
@@ -4220,6 +4259,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         if !folded {
             let precomputed = if let Some(ref final_values) = precomputed_final_values {
                 // EmitPureCounterFold: fully precomputed — no runtime loop emitted
+                self.reject_bootstrap_off_ssa("precomputed (fully folded) main");
                 self.warnings.push("info: program fully precomputed — no runtime loop emitted. If this is unexpected, increase --optimize-budget or add frgn calls for observability.".into());
                 self.emit_precomputed_main(&mut out, final_values);
                 true
@@ -4348,6 +4388,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     let mf_bound_literal = mf_bound_literal.or_else(|| {
                         multi_fold_params.values().find_map(|p| p.bound_literal)
                     });
+                    self.reject_bootstrap_off_ssa("folded multi-txn dispatch");
                     self.emit_folded_multi_main(&mut out, &txns, &[], &HashMap::new(), &multi_fold_params,
                         &HashMap::new(), mf_counter, mf_bound_field, mf_bound_const, mf_bound_literal, None, None, None, false);
                     self.emit_thread_pool_metadata(&mut out);
@@ -4363,12 +4404,14 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     // so entering here vs EmitSequentialSsa produces identical IR for non-foldable
                     // programs. This change allows mixed bounded/unbounded reactive txns
                     // to share the SSA pipeline instead of falling through to EmitSequentialSsa.
-                    self.emit_ssa_main(&mut out, &txns, false);
+                    let boot = self.bootstrap_txn_of(items);
+                    self.emit_ssa_main(&mut out, &txns, false, boot);
                 } else if let Some(ref enum_sizes) = enumerable {
                 // Enumerable triggers — emit switch-dispatch main
                 // This path handles triggers with small compile-time-known value sets.
                 // We emit a single @main that samples triggers once, then switch
                 // dispatches to per-value folded loops.
+                self.reject_bootstrap_off_ssa("enumerable-trigger switch dispatch");
 
                 // Build per-txn folding params for all enum-candidate txns.
                 // Each trigger-gated bounded-counter txn gets its own folded
@@ -4468,9 +4511,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 // trg owns its runtime — the compiler emits the declare implicitly.
                 // EmitAdaptive: enum dispatch
                 self.warnings.push(format!("info: program dispatched via enum trigger dispatch ({} trigger keys)", enum_keys.len()));
+                self.reject_bootstrap_off_ssa("enum trigger dispatch");
                 if has_wake_triggers {
                     writeln!(out, "declare void @__rt_wait() local_unnamed_addr").ok();
                 }
+                self.reject_bootstrap_off_ssa("folded enum-txn dispatch");
                 self.emit_folded_multi_main(
                     &mut out,
                     &txns,
@@ -4512,12 +4557,14 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 self.warnings.push(
                     "info: program dispatched via direct SSA loop".into()
                 );
+                let boot = self.bootstrap_txn_of(items);
                 self.fun.txn_counter = 0;
                 self.fun.within_counter = 0;
-                self.emit_ssa_main(&mut out, &txns, has_wake_triggers);
+                self.emit_ssa_main(&mut out, &txns, has_wake_triggers, boot);
             } else if !txns.is_empty() {
                 // reactor loop fallback — only reached for async dispatch or MMIO
                 // (all other programs go through EmitSequentialSsa direct SSA loop above)
+                self.reject_bootstrap_off_ssa("reactor loop");
                 self.warnings.push(format!("info: program dispatched via reactor loop ({})", match dispatch_mode {
                     DispatchMode::Parallel => "parallel thread pool",
                     DispatchMode::Sequential => "sequential tick loop",

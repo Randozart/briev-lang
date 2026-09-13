@@ -8938,3 +8938,32 @@ fn test_sync_wrapped_beginprogram_node_emits_flag() {
     assert!(ir.contains("@briev_begin_boot = private global i1 1"),
         "sync-wrapped entry node emits its flag:\n{ir}");
 }
+
+// ── 2026-09-14 (machine-entry plan): `bootstrap node` ──────────────────
+
+#[test]
+fn test_bootstrap_body_inlines_at_main_head_and_stays_out_of_dispatch() {
+    // The authored entry runs ONCE after the state initializer, before the
+    // first dispatch pass — never as a reactor-dispatched transition.
+    let src = "let armed: Bool = false;\n\
+               let done: Bool = false;\n\
+               bootstrap node reset [armed == true] { armed = true; };\n\
+               node reporter [armed][done == true] { done = true; term; };\n";
+    let program = parse_isr_program(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let ir = backend.generate(&program, None);
+    let loop_pos = ir.find(".ss_main_loop:").expect("dispatch loop present");
+    // Bool fields lower to i8; the body's `armed = true` materializes the
+    // constant then stores it through the field gep. The FIRST occurrence
+    // is the bootstrap's (main head) — the reporter's sits after the loop.
+    let body_pos = ir.find("add i8 0, 1")
+        .unwrap_or_else(|| panic!("bootstrap body store present:\n{ir}"));
+    assert!(body_pos < loop_pos,
+        "the bootstrap body must run BEFORE the dispatch loop:\n{ir}");
+    // Not reactor-dispatched: no per-tick precheck block for the bootstrap.
+    assert!(!ir.contains(".ssb_reset"),
+        "bootstrap must stay out of the dispatch list:\n{ir}");
+    // Ordinary nodes still dispatch.
+    assert!(ir.contains(".ssb_reporter"), "reporter dispatches:\n{ir}");
+}

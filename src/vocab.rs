@@ -200,6 +200,9 @@ impl LanguageVocab {
                 // Concurrency/reactive classification
                 kw("async", VocabStatus::Canonical, KeywordContext::Modifier),
                 kw("sync", VocabStatus::Canonical, KeywordContext::Modifier),
+                // 2026-09-14 (machine-entry plan): `bootstrap node` — the
+                // authored program entry (pre-reactor; SPEC §11.5, §13.2).
+                kw("bootstrap", VocabStatus::Canonical, KeywordContext::Modifier),
                 // Modifiers
                 kw("vol", VocabStatus::Canonical, KeywordContext::Modifier),
                 // 2026-08-25 (seq-firmem plan): `mem let` / `reg let` —

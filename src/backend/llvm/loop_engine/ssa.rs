@@ -310,6 +310,7 @@ impl LlvmBackend {
         out: &mut String,
         txns: &[(String, &crate::ast::Transaction)],
         has_wake_triggers: bool,
+        bootstrap: Option<&crate::ast::Transaction>,
     ) {
         // 2026-07-17: Early-return for modulo-gated dispatch (sparse_dispatch).
         // Checks if all reactive txns have counter % K == N preconditions and
@@ -324,6 +325,17 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-09-14 (machine-entry plan): the authored bootstrap node runs
+        // ONCE here — after the state initializer, before the first dispatch
+        // pass. Its typed stores ARE the handoff state its postcondition
+        // speaks of; the ISA scaffold (sp/.bss) is the naked entry emitted
+        // separately.
+        if let Some(bt) = bootstrap {
+            for stmt in &bt.body {
+                if self.fun.terminated { break; }
+                self.emit_statement(out, stmt, "  ");
+            }
+        }
         self.emit_ssa_mt_prealloc(out, txns);
         // 2026-07-18: Convergence check — if no wake triggers and no async,
         // the program is one-shot. Exit when all txns have converged

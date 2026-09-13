@@ -91,6 +91,11 @@ impl<'a> Parser<'a> {
             // node classified into a group barrier. Members that fire hold off
             // finishing until all fired members have (rule #21 classification).
             Some(Token::Sync) => self.parse_sync_group(),
+            // 2026-09-14 (machine-entry plan): `bootstrap node name [...] {...}`
+            // — the authored program entry (pre-reactor; SPEC §11.5, §13.2).
+            // Recorded as a modifier annotation; single-bracket (handoff
+            // postcondition) form is checked by the typechecker.
+            Some(Token::Bootstrap) => self.parse_bootstrap_node(),
             // 2026-08-01 (Phase E): `seq node name` / `seq txn name` — the seq
             // modifier requests sequential dispatch (no emit_parallel_reactor)
             // and/or non-vectorized array access. Recorded as a modifier
@@ -947,6 +952,76 @@ impl<'a> Parser<'a> {
             span: None,
             doc: self.take_doc(),
         })
+    }
+
+    /// Parse: `bootstrap node name [<handoff-postcondition>] { body };`
+    /// 2026-09-14 (machine-entry plan): the authored program entry — the
+    /// machine's beginning, pre-reactor. The single bracket group is the
+    /// HANDOFF postcondition (state at reactor handoff, proven from the
+    /// body's typed stores); a `[pre][post]` form is rejected here (nothing
+    /// fires a bootstrap but the machine). Recorded as a `bootstrap`
+    /// modifier annotation; the backend consumes it.
+    fn parse_bootstrap_node(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume 'bootstrap'
+        self.expect(Token::Node)?;
+        let name = self.expect_identifier()?;
+        // Nodes take no parameters; tolerate (and skip) empty parens.
+        if self.eat(&Token::LParen) {
+            self.expect(Token::RParen)?;
+        }
+        // The single handoff-postcondition bracket — or none. `explicit`
+        // tracks whether it was written: a bracket-less bootstrap declares
+        // no obligation (allowed), while a written `[true]` asserts nothing
+        // and is rejected by the typechecker's tautology rule.
+        let (post, explicit) = if self.check(&Token::LBracket) {
+            self.pos += 1;
+            let e = self.parse_expression()?;
+            self.expect(Token::RBracket)?;
+            if self.check(&Token::LBracket) {
+                return self.error_at_current(
+                    "a bootstrap node takes a single handoff postcondition — \
+                     nothing fires it but the machine, so there is no \
+                     precondition; move the obligation into `[]` or drop it",
+                );
+            }
+            (e, true)
+        } else {
+            (Expr::Bool(true), false)
+        };
+        let body = if self.check(&Token::LBrace) {
+            self.parse_block()?
+        } else {
+            Vec::new()
+        };
+        let derivation = self.parse_derivation_block()?;
+        let mut txn = Transaction {
+            name,
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: Vec::new(),
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: post,
+                watchdog: None,
+                span: None,
+                explicit,
+                post_authority: false,
+            },
+            body,
+            metadata: std::collections::HashMap::new(),
+            derivation,
+            modifiers: vec![],
+            span: None,
+            doc: self.take_doc(),
+        };
+        txn.modifiers.push(Annotation {
+            name: "bootstrap".to_string(),
+            value: None,
+        });
+        Ok(TopLevel::Transaction(txn))
     }
 
     /// Parse: `sync<group> node name [pre][post] { body }`.
@@ -5498,4 +5573,54 @@ mod section_prefix_tests {
         assert!(parse_top("section(.init) defn f() -> Int { term 1; };").is_err());
         assert!(parse_top("section defn f() -> Int { term 1; };").is_err());
     }
+}
+
+// ── 2026-09-14 (machine-entry plan): `bootstrap node` ──────────────────
+
+#[test]
+fn bootstrap_node_parses_with_handoff_postcondition() {
+    let src = "bootstrap node reset [armed == true] { armed = true; };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let crate::ast::TopLevel::Transaction(t) = &items[0] else {
+        panic!("expected a transaction, got {:?}", items[0]);
+    };
+    assert_eq!(t.name, "reset");
+    assert!(t.modifiers.iter().any(|m| m.name == "bootstrap"),
+        "the bootstrap modifier must be recorded: {:?}", t.modifiers);
+    assert!(t.is_reactive);
+    assert!(matches!(t.contract.pre_condition, crate::ast::Expr::Bool(true)));
+    // The single bracket is the HANDOFF postcondition, not a precondition.
+    assert!(matches!(t.contract.post_condition, crate::ast::Expr::BinaryOp(_, _, _)),
+        "postcondition carries the bracket expression");
+    assert!(t.contract.explicit, "a written bracket is an explicit contract");
+}
+
+#[test]
+fn bootstrap_node_without_brackets_has_no_obligation() {
+    let src = "bootstrap node reset { armed = true; };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let crate::ast::TopLevel::Transaction(t) = &items[0] else {
+        panic!("expected a transaction, got {:?}", items[0]);
+    };
+    assert!(!t.contract.explicit, "no brackets = no declared obligation");
+    assert!(matches!(t.contract.post_condition, crate::ast::Expr::Bool(true)));
+}
+
+#[test]
+fn bootstrap_node_rejects_pre_post_double_form() {
+    // Nothing fires a bootstrap but the machine — there is no precondition.
+    let src = "let armed: Bool = false;\n\
+               bootstrap node reset [armed == false][armed == true] { armed = true; };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = Parser::new(tokens, src);
+    let err = p.parse_program().unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("single handoff postcondition"),
+        "expected the single-bracket error, got: {msg}"
+    );
 }

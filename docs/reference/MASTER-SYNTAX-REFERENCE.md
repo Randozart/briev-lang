@@ -61,6 +61,7 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | `mutex` | Serial section |
 | `barrier` | Group barrier block |
 | `sync` | Group synchronization modifier (`sync<group>`) — bare `sync { }` block deprecated (§13, use `mutex { }`) |
+| `bootstrap` | Authored program machine entry: `bootstrap node name [<handoff-post>] { … }` — pre-reactor; compiler owns the sp/.bss scaffold (§13.2) |
 
 ### Storage / layout / concurrency qualifiers
 

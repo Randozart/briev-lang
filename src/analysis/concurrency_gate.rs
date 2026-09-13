@@ -58,7 +58,10 @@ fn collect_reactive(items: &[TopLevel]) -> Vec<ReactiveTxn<'_>> {
     for item in items {
         match item {
             TopLevel::Transaction(t) => {
-                if t.is_reactive {
+                // 2026-09-14 (machine-entry plan): bootstrap nodes run once at
+                // the machine's beginning — they are not reactor-dispatched,
+                // so the pairwise eligibility gate does not apply.
+                if t.is_reactive && !has_bootstrap_modifier(t) {
                     out.push(ReactiveTxn {
                         name: &t.name,
                         pre: &t.contract.pre_condition,
@@ -70,7 +73,7 @@ fn collect_reactive(items: &[TopLevel]) -> Vec<ReactiveTxn<'_>> {
             }
             TopLevel::SyncGroup { domains, item: inner } => {
                 if let TopLevel::Transaction(t) = inner.as_ref() {
-                    if t.is_reactive {
+                    if t.is_reactive && !has_bootstrap_modifier(t) {
                         out.push(ReactiveTxn {
                             name: &t.name,
                             pre: &t.contract.pre_condition,
@@ -85,6 +88,12 @@ fn collect_reactive(items: &[TopLevel]) -> Vec<ReactiveTxn<'_>> {
         }
     }
     out
+}
+
+/// 2026-09-14 (machine-entry plan): the `bootstrap` modifier marks the
+/// authored program entry (pre-reactor machine beginning).
+fn has_bootstrap_modifier(t: &crate::ast::Transaction) -> bool {
+    t.modifiers.iter().any(|m| m.name == "bootstrap")
 }
 
 /// Check one unordered pair. Returns Some(error) if the pair is eligible to
