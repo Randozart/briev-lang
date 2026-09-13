@@ -6003,3 +6003,29 @@ call-prototype mismatch (fixed this session — defines are void, calls are
 `call void`); mtimecmp non-re-arm (fixed — schedule re-arms; verified in
 IR); the expression-bodied `ret 0` bug (fixed this session — shims return
 their computed values; verified in IR).
+
+## 2026-09-14 — RESOLVED: the kernel freeze chain (four bugs, one demo)
+
+The kernel_rv64 freeze decomposed into four independent defects, each
+masked by the next. Resolution order:
+
+1. **Expression-bodied defns returned literal 0** (`ret i64 0` after
+   computing the body value) — every shim returned zero: frame addresses,
+   mepc, cause. Fixed: the defn tail returns the captured last-expression
+   register (emit_stmt captures it; emit_definition's fallthrough returns
+   it for i64).
+2. **mtimecmp never re-armed** — MTIP asserted forever: every mret
+   re-trapped before the tasks ran (the "S/R flood"). Fixed: schedule
+   re-arms (mtimecmp = mtime + interval).
+3. **PMP never granted** — QEMU virt implements PMP CSRs; with no matching
+   entry, U-mode fetch/load/store FAILS. The tasks faulted at their first
+   instruction, silently (the fault loop matches no dispatch arm). Fixed:
+   pmp_grant_all in the bootstrap (pmpaddr0 = max, pmpcfg0 = R|W|X TOR).
+4. **enter_user_mode left commented** (a debug leftover) — the tasks ran
+   in M-mode; their ecall = mcause 11 (M-mode ecall), which the dispatch's
+   `when cause == 8` never matched → the silent K-flood. Fixed: restored.
+
+**Rule:** debug markers removed == the fix verified end-to-end; every
+marker removal must be followed by a full clean run, not a build-only
+check (the removals themselves changed behavior — the dbg shim was
+dropping its own call).
