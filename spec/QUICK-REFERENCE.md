@@ -200,3 +200,21 @@ defn get_pair() -> (Int, String) [true] {
 * [Examples](examples/)
 
 *Quick reference - last updated v0.10.0 (2026-04-20)*
+## Machine entry (rv64/embedded, 2026-09-14)
+
+```briev
+bootstrap node reset [armed == true] { … }        // authored machine entry
+node trap_service @ timer_irq [current >= 0][…] { … }   // machine-serviced event
+```
+
+- `bootstrap node` — the program's machine beginning; compiler owns the
+  sp/.bss scaffold; the single bracket is the handoff postcondition
+  (proven from the body's typed stores); canned `_start` = fallback.
+- `node @ vector` — machine-serviced: the vector names a board
+  `interrupts.dbvl` entry or a literal slot; the mechanism comes from the
+  active target profile (`isr_mechanism`); the body runs once per event —
+  straight-line, never a convergence loop.
+- Scheduler/kernel logic: plain `defn`s (linear per trap — defn contract
+  brackets are documentation, never a convergence loop).
+- Everything machine-specific lives in config + board files: the program
+  names no mechanism, no register, no C.

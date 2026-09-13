@@ -336,7 +336,7 @@
     "keywords": {
       "patterns": [
         {
-          "match": "\\b(let|const|init|type|trait|proto|struct|seq|union|enum|impl|obj|cell|extern|coll|defn|txn|node|asm|render|frgn|optional|export|import|from|as|op|term|endprogram|beginprogram|defer|rollback|mutex|barrier|match|when|foreach|spawn|await|free|keep|trg|within|async|sync|vol|out|spec|pack|atomic|trap|borrow|consume|owned|shared|borrowed|box|spill|quote|mem|reg)\\b",
+          "match": "\\b(let|const|init|type|trait|proto|struct|seq|union|enum|impl|obj|cell|extern|coll|defn|txn|node|asm|render|frgn|optional|export|import|from|as|op|term|endprogram|beginprogram|defer|rollback|mutex|barrier|match|when|foreach|spawn|await|free|keep|trg|within|async|sync|vol|out|spec|pack|atomic|trap|borrow|consume|owned|shared|borrowed|box|spill|quote|mem|reg|bootstrap)\\b",
           "name": "keyword.control.briev"
         },
         {
