@@ -182,3 +182,46 @@ F — the first F-sync happens after s0's compute and releases instantly.
 Register budget: producer/consumer paths are exclusive branches; both
 must color within the 64-reg cap (ptxas permitting) — the prototype
 measures this.
+
+## E8a design analysis (2026-09-13, pre-implementation)
+
+**Barrier protocol derived and race-checked** (stages=2, F=barrier 1,
+C=barrier 2, counts 256/320):
+
+```
+Consumer kstep 0 (peeled): compute stage 0 (prologue-filled) → arrive C
+Consumer kstep s ≥ 16:     sync F → compute stage (s/16)&1 → arrive C
+Producer kstep s:          sync C (consumers done s−1 → stage (s+1)&1 free)
+                           → fill stripe (s+16) → commit → wait 0 → membar
+                           → arrive F (gates consumer kstep s+16)
+Both loops exit at the same kstep bound; KEND y-pass by consumers only.
+```
+
+Deadlock- and race-free by construction: the producer's C-gate always
+pairs the consumer's previous arrive; every consumer compute's stage was
+membar-visible one full F earlier.
+
+**The coverage hole (kills the original E8a):** "warp 0 fills only"
+breaks the (2,4) mma grid — warp 0 owns the (mh 0, g 0–3) quarter of
+the CTA tile; skipping its mma stores zeros into its y region. The
+named-barrier protocol cannot fix arithmetic coverage.
+
+**The only coverage-preserving shape: 8 consumers + 2 producer warps =
+320T CTAs.** Consumers keep the exact ship compute (tile coverage, y
+pass guarded to warp < 8); producers are fill-only. Occupancy: 64 regs
+× 320T = 20480/CTA → **3 CTAs/SM** — the E-series tax, with the prize
+now uncertain between two bounds:
+- mma-width-bound: 46.2 × (24/32 warps) ≈ 34.7 — a LOSS vs 35.5;
+- fill-heal-bound (E1f@2CTA measured 41.0 at HALF this width): ~41 —
+  a +16% win.
+Genuinely undecidable on paper — the microbench evidence (fills heal at
+low occupancy) is the reason to build it. Producer path must color
+within the consumer's 64-reg budget (exclusive branches, shared
+scratch).
+
+**Implementation sketch** (next session): `ptx_tensor_warp_spec` knob;
+prologue fills by the 8 consumer warps (256T, unchanged D-mapping);
+KLOOP splits on `setp.eq %p_ws, %r9, 8` into the two loops; fill
+emitters parameterized (lanes=64 for 2 producer warps = full stage:
+8KB/64 lanes = 4×16B per lane); y-pass predicate warp<8. Assemble 64
+cap → signatures → A/B ×4 at 2048/4096/8192.
