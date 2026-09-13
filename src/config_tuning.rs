@@ -606,6 +606,14 @@ vector_min_width = 4
 float_registers = 32
 dense_compute_density = 4.0
 vector_min_width = 4
+
+[target.riscv64]
+float_registers = 32
+dense_compute_density = 4.0
+vector_min_width = 0
+# 2026-09-14 (machine-entry plan): riscv64 joins the golden with the
+# machine-entry era's isr_mechanism field (no TOML heritage — the parity
+# check covers the three legacy tuning fields only).
 "#;
 
     #[test]
