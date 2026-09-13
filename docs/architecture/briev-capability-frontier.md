@@ -99,3 +99,40 @@ included.
    escape) that guarantees no hardware trick ever needs a Rust change.
 3. **Stable addresses** (future) — address-of form with a contract class
    for intrusive structures.
+
+## PROVEN: bare-metal systems programming (rv64 arc, 2026-09-11 → 14)
+
+The tier table's rows became **gates on real hardware emulation** — each
+one a QEMU run, not an argument. Branch `feat/rv64-capability-kernel`,
+gates in `tests/bare/`:
+
+| Gate | Output | Proves |
+|---|---|---|
+| `qemu-rv64-kernel.sh` | `BABABABABABA…` | **A preemptive two-task micro-kernel**: authored machine entry, full-context trap scaffold, mcause dispatch, restart scheduler over a trap frame, ecall syscall boundary, two U-mode tasks — 8,520 bytes, pure Briev, no C, no runtime |
+| `qemu-rv64-timer.sh` | `123456789012…` | Machine-timer interrupts serviced from a typed handler; the reactor parked at `wfi` woken by hardware |
+| (bootstrap) | `briev` | The authored machine entry — PMP, mscratch/kernel-stack, task contexts, mtvec, MTIE+MIE — in language-level syntax (`bootstrap node`), compiler-owned ISA scaffold only |
+
+Language grown by the arc — each piece *disclosed special treatment*, none
+a special case: `bootstrap node` (the authored machine entry; the canned
+`_start` becomes the fallback), `node @ vector` (machine-serviced events;
+the `isr` keyword dissolved; the mechanism inferred from the target
+profile), the `full_context` convention (the preemptive save-all scaffold
+as registry data), defn-liveness emission (imports grant capability,
+liveness gates emission — 13 defines, not 252).
+
+**The residual gap vs C is ecosystem, not mechanism**: what a C kernel has
+that this kernel lacks is *drivers, an RTOS ecosystem, thirty years of
+soaked example code* — artifacts of maturity, expressible in Briev by the
+same constructs the gates demonstrate. The four real bugs the kernel
+exposed (expression-bodied `ret 0`, the callable-txn convergence exit,
+the `--no-std` no-op, the Asm# operand check) were each **fixed as
+language-layer defects** — exactly the capability-frontier thesis: building
+the hard thing finds the gaps; the gaps close as language, not as
+workaround. Full record: `2026-09-11-rv64-capability-kernel.md`,
+`2026-09-14-bootstrap-kernel.md`, `machine-entry.md`.
+
+**The remaining rung to self-hosting** is unchanged (the native emission
+tier) — but the systems-programming tier between "hosted user code" and
+"self-hosted compiler" is now *occupied*: Briev runs on the bare metal,
+preempts itself, and services its own traps, in language-level syntax with
+contracts at the boundary.
