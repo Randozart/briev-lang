@@ -266,3 +266,104 @@ dispatch — other dispatch paths reject loudly with the fix (guard helper
 reactive convergence proof (no new checker machinery); bootstrap nodes take
 `ContractKind::Optional` (no handoff obligation declared = allowed; written
 `[true]` still rejected as tautological).
+
+---
+
+## Addendum B: Phase E gate PASSED — and the := design, corrected (2026-09-14)
+
+### B.1 The gate
+
+`tests/bare/qemu-rv64-kernel.sh`: **BABABABABABA…** — two user-mode tasks
+print through the ecall syscall boundary, timer-preempted, round-robin.
+8,520 bytes, pure Briev, no C, no runtime. 2193 tests green.
+
+The kernel in one file: `bootstrap node reset` (PMP grant-all, mscratch/
+kernel-stack init, task contexts, mtvec, MTIE+MIE, first tick), `node
+trap_service @ 7` (the full_context scaffold + mcause dispatch), `defn
+schedule` (restart scheduler over the trap frame), `defn syscall_dispatch`
+(write via the frame's a0/a7), two U-mode tasks.
+
+### B.2 The freeze chain — four real bugs, each masking the next
+
+The demo froze after `BK` (bootstrap + first trap). Resolution order:
+
+1. **Expression-bodied defns returned literal 0** — the defn tail emitted
+   `ret i64 0` after *computing* the body value: every shim returned zero
+   (frame addresses, mepc, cause). Fixed: the tail returns the captured
+   last-expression register (`last_expr_reg`, i64-returning defns).
+2. **mtimecmp never re-armed** — MTIP asserted forever; every mret
+   re-trapped before the tasks ran (the S/R flood). Fixed: schedule
+   re-arms.
+3. **PMP never granted** — QEMU virt implements PMP CSRs; with no matching
+   entry, U-mode fetch/load/store FAILS. The tasks faulted at their first
+   instruction — silently (the fault loop matches no dispatch arm).
+   Fixed: `pmp_grant_all()` in the bootstrap.
+4. **`enter_user_mode()` left commented** (a debug leftover) — the tasks
+   ran in M-mode; their ecall = mcause 11 (M-mode ecall), which the
+   dispatch's `when cause == 8` never matched → the silent K-flood.
+
+Plus two language-level finds en route:
+
+- **The callable-txn convergence exit was unconditional** — `post: br
+  label %loop` with no postcondition check: every *called* txn looped
+  forever after its body (the done block was reachable only via the
+  pre-condition failing). Fixed: the postcondition gates done/loop.
+  Found by this kernel — the first end-to-end exercise of the called-txn
+  path. **Every called convergence txn in existing code was affected.**
+- **A defn WITH contract brackets compiled as a convergence loop** —
+  `defn schedule() [pre][post]` got the txn-style post-loop emission;
+  the scheduler re-ran itself forever. Demo-level fix: the scheduler is
+  linear per trap → a plain defn without brackets. **Latent emitter bug
+  logged (BUGS.md): defn + contract brackets must not compile as a
+  convergence loop — defns are linear; their contracts are documentation
+  unless a derivation obligation is declared.**
+
+Lesson encoded: **debug-marker removal == fix verification.** Every
+marker removal must be followed by a full clean serial capture, not a
+build-only check — the removals themselves changed behavior (the unused
+dbg shim dropped its own call).
+
+### B.3 The := design — corrected framing (supersedes A.1's variation-set sketch)
+
+The user's correction: `:=` (SPEC §18.5 derivation) is a **compile-time
+assert that doubles as a syntactically cheap unit test** — "X gives the
+same results as Y" (reference equivalence) and "given Z, X's results ⊆
+{A, B, C}" (encompassment). Not a value-model annotation.
+
+The three-tier epistemics:
+
+| Tier | Source | Compile-time power |
+|---|---|---|
+| Proven | contracts + bounds the solver checks | hard errors, hard elimination |
+| Asserted (`:=` examples) | author assertions, cheap to write | totality *warnings*, dead-arm *candidates*, **each example generates a runnable test** |
+| Unknown | undeclared opaque values | runtime-opaque, never folded, never 0 |
+
+- Comptime-evaluable bodies: the asserted examples are checked at compile
+  time (evaluated against the body — mismatches are compile errors).
+- Machine-opaque bodies (asm): the examples compile into the test gate
+  (the QEMU/hosted harness) — verified where the body actually lives.
+- Asserted sets drive analysis and generated tests; only *proven* sets
+  drive hard elimination (contract-first: the compiler didn't prove it,
+  so it doesn't delete by it).
+
+**Retroactive validation**: the `ret i64 0` bug (B.2.1) would have been
+caught immediately by a one-line derivation example on any shim —
+`defn trap_frame_base() -> Int := { bootstrap-sp ⇒ nonzero } { … }` —
+the cheap unit test is exactly what was missing. This is the origin
+story and the motivation for the follow-up feature.
+
+### B.4 Scoping decision
+
+- **In Phase E (landed)**: the underdeclared-opaque fix — an asm result
+  is runtime-unknown; unknown values never fold (the invented-0 dies).
+  Plus the ret-fix, re-arm, PMP, enter_user_mode.
+- **Follow-up series (designed, deferred)**: `:=` derivation on
+  asm-expression defns (parser/typechecker/evaluator touches — bounded,
+  rides §18.5); link-time symbol values (deletes the symbol-in-template
+  wart); frontier-driven equilibrium (wake_sets); resume scheduling;
+  canned-`_start` extraction; the defn-contract emitter bug.
+
+### B.5 Execution status
+
+Phases A–E complete, gates green. Phase F (docs sweep) + Phase 5 (the
+frontier document) close the arc.
