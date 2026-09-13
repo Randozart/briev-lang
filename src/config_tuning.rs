@@ -145,6 +145,19 @@ pub struct IrLoweringSettings {
     /// tier gate 1e-2 (the f32-acc default keeps the 5e-3 gate). 0 =
     /// f32-acc (historical form).
     pub ptx_tensor_f16acc: bool,
+    /// 2026-09-13 (E5a, plan 2026-09-11-ptx-mma-issue-ceiling): f16-acc
+    /// cross-kstep B-fragment lookahead — mma consumes a register B set
+    /// prefetched after the previous iteration's barrier.
+    /// **REJECTED on-device (2026-09-13):** −2.7% at 4096³ (34.5 vs 35.5),
+    /// −3% at 2048³, −5% at 8192³, interleaved A/B ×3-4. The tail prefetch
+    /// is NOT earlier in the dependency chain than the E4a in-kstep cluster
+    /// (mma of kstep s+1 still waits ~fill-issue + A-lds past the B lds),
+    /// and the +8 regs (79 natural) drop 4→3 CTAs/SM — the occupancy-
+    /// heals-fills effect dominates, worst where fills matter most (8192³).
+    /// Kept default-off as the reference implementation + instrument for
+    /// deeper-pipeline (stages≥3 / k32) variants where the dependency
+    /// distance argument changes. 0 = the E4a cluster schedule (ship path).
+    pub ptx_tensor_b_lookahead: bool,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -249,6 +262,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     spirv_coopmat_stagger: false,
     spirv_coopmat_panels_per_stage: 2,
     ptx_tensor_f16acc: false,
+    ptx_tensor_b_lookahead: false,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -465,6 +479,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_tensor_f16acc", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_f16acc),
+        ptx_tensor_b_lookahead: db
+            .field_int("ptx_tensor_b_lookahead", 0)
+            .map(|v| v != 0)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_b_lookahead),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)

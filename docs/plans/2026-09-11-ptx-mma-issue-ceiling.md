@@ -607,3 +607,42 @@ launch → IMA storm that looked like a kernel bug; ptxas
 `-maxrregcount=128` on the natural-64 kernel PESSIMIZES to 80 regs
 (occupancy 2→1 CTA/SM, −28% TF) — assemble f16acc with the production
 cap 64 only.
+
+### E5a: cross-kstep B lookahead — REJECTED 2026-09-13 (post-E4c)
+
+**Hypothesis.** With E4c's 256T geometry the ledger's stated cure ("all 8
+B + 2 A fragments live across the phase boundary, +18 regs") fits the
+register file: a second B set (79 regs natural) keeps 3 CTAs/SM. The mma
+would consume register-resident B, hiding all ldmatrix latency behind the
+previous kstep's tensor stream.
+
+**Implementation.** `ptx_tensor_b_lookahead` knob (default off, byte-
+identical off-path, E2E-diffed); parity-branched mma blocks, prologue
+preload, guarded tail prefetch — emitters in `emit_e5a_*`. Emission
+verified stable across the helper extraction (79 regs, 34.46 TF pre/post).
+
+**Result (interleaved A/B ×3-4, MW_SMEM=16384):**
+
+| shape  | E4c cluster | E5a lookahead |
+|--------|------------:|--------------:|
+| 2048³  | 31.1–31.4   | 30.2–30.3     |
+| 4096³  | 35.3–35.6   | 34.4–34.7     |
+| 8192³  | 36.3        | 34.5          |
+
+Correctness identical signatures (1.5e-3 / 5.2e-3; k16 exact).
+
+**Why it loses.** Three compounding costs, one doubtful gain:
+1. The tail prefetch is NOT earlier in the dependency chain — the mma of
+   kstep s+1 still waits ~fill-issue + A-lds past the B lds, the same
+   distance the E4a cluster's first mma waits past its own lds. ptxas
+   already interleaves the cluster's lds with the fill issue.
+2. 79 regs → 3 CTAs/SM: the occupancy-heals-fills effect (probe round 2)
+   is worth ~1.5 TF per CTA slot — gone, worst where fills dominate
+   (8192³, −5%).
+3. Post-barrier smem burst: the tail B lds from all 8 warps issue
+   simultaneously after the bar, instead of being staggered by mma
+   completion times inside the compute cluster.
+
+The lookahead may return for stages≥3 / k32-deep pipelines where the
+dependency distance argument genuinely changes; the knob stays as the
+instrument. Default off; ship path byte-identical.
