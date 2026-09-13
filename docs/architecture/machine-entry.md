@@ -6,7 +6,9 @@ lives. Companion to `briev-execution-model.md` (the reactor) and the plan
 `2026-09-14-bootstrap-kernel.md` (+ Addendum A).
 
 One sentence: **entries are declared, machines wire them, compilers own ABI,
-users own policy.**
+users own policy.** The DSL guardrails doctrine — the test for whether
+machine-entry constructs stay general, and the temptations rejected en
+route — lives in `briev-capability-frontier.md` ("The DSL guardrails").
 
 ## The entry classes
 
