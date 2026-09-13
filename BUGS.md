@@ -5982,3 +5982,14 @@ at small M·N. E8a's stage-1 (odd-kstep) corruption is plausibly the same
 root cause — stage-1 stripes are the first "beyond-prologue" fills.
 Priority: HIGH — it gates E8a and any small-K GEMM (decode-shaped
 attention head matrices are K=64-128 territory).
+
+**RESOLVED 2026-09-13 (same day):** most "failures" were driver-arg
+mismatches (manual y_off used M·N·2 where the dump bakes M·K·2 — equal
+only when K=N). ONE real kernel bug found and fixed: the mid-loop
+`cp.async.commit_group` fired even when the fill was skipped (K=16 makes
+the fill-skip guard always-true), and the empty-group + tail
+`wait_group 0` path returned all-zero y. Fix: commit moved inside the
+fill path (skipped fills don't commit). All sweep shapes + recorded
+portfolio green post-fix; no perf regression beyond window noise. See
+docs/plans/2026-09-13-kle32-small-m-anomaly.md. E8a's stage-1 failure is
+independent and still open.

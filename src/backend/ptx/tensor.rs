@@ -1893,8 +1893,17 @@ fn tensor_gemm_ptx_smem_mw_opt(
         };
         emit_b_fill(&mut out, &koff_r18_prelude, strip * bsmem_buf, threads as usize);
     }
-    out.push_str("FILL_DONE:\n");
+    // The commit lives INSIDE the fill path (before FILL_DONE): skipped
+    // fills must not commit. An EMPTY mid-loop commit_group + the tail
+    // `wait_group 0` broke the prologue-data visibility chain — at K=16
+    // (fill-skip guard `r2 >= 0` always true) the kernel returned all-zero
+    // y; with the commit inside, kstep-0 commits nothing and the prologue
+    // drain suffices (measured exact 2026-09-13, hand-patch + generator).
+    // At K > 16·(stages-1) the guard only fires on the final ksteps, whose
+    // empty commits were harmless — the emission for those ksteps is
+    // instruction-identical, only the label moved after the commit.
     out.push_str("    cp.async.commit_group;\n");
+    out.push_str("FILL_DONE:\n");
 
     // === Compute on CURRENT buffer (overlaps with async fill above) ===
     // Register-trimmed scheduling (2026-09-10): A fragments load per-mh
@@ -2317,6 +2326,11 @@ mod r16_dump {
         for (m, k, tag) in [
             (128i64, 128i64, "128"),
             (128i64, 16i64, "k16_128"),
+            (128i64, 32i64, "k32"),
+            (128i64, 48i64, "k48"),
+            (128i64, 64i64, "k64"),
+            (128i64, 96i64, "k96"),
+            (128i64, 128i64, "k128b"),
             (256i64, 16i64, "k16_256"),
             (512i64, 16i64, "k16_512"),
             (1024i64, 16i64, "k16_1024"),

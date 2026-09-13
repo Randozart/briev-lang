@@ -67,3 +67,38 @@ re-test (its stage-1 failure plausibly shares this root cause).
 Any fix must keep the recorded portfolio green (2178 tests + the on-device
 gates) and stay additive (no weakening of the fill-skip guard semantics
 for K > 16·(stages-1)).
+
+## RESOLVED (2026-09-13): two overlapping causes, one real fix
+
+**Cause 1 (most of the "anomaly"): my own driver args.** The dump bakes
+`y_off = b_off + M·K·2 + 8`; my manual sweep args computed
+`b_off + M·N·2 + 8`. They coincide only when K=N — so every k<128 sweep
+point and 2048²×32 compared the reference against the WRONG y offset.
+With dump-consistent offsets: K=32/48/64/96/128 at M=128 and k16-1024
+all PASS exact. (k16-1024's first failure also had grid=16 instead of
+64 — 3/4 of the tile never written.)
+
+**Cause 2 (real kernel bug, FIXED): the empty mid-loop commit.** At
+K=16 the fill-skip guard (`r2 ≥ k-16` = `r2 ≥ 0`) fires from kstep 0 —
+the in-loop fill never runs and `FILL_DONE:`'s `cp.async.commit_group`
+commits an EMPTY group every kstep. With the empty-commit path the
+kernel returned all-zero y (the compute's ldmatrix read the stage as
+never-filled) — even though the prologue had drained + barred before
+the loop. Hand-patch bisection: never-skip → exact; skip-without-commit
+→ exact; skip-with-empty-commit → zeros. **Fix: the commit moved INSIDE
+the fill path (before FILL_DONE)** — skipped fills don't commit; the
+prologue drain suffices. For K > 16·(stages-1) the tail ksteps' empty
+commits disappear too — instruction stream for filling ksteps is
+unchanged, only the label moved after the commit.
+
+**Gates after the fix:** 128-K16/32/48/64/96/128 all exact; k16-1024
+exact; recorded portfolio 2048³ 1.546e-3 / 4096³ 5.208e-3 / 8192³
+9.115e-3 / 4096-k16 0.0 — all unchanged. Same-window 4096³ A/B pre/post
+fix: overlapping ranges (34.7-35.1 vs 33.2-35.2), no regression beyond
+window noise. 2178 lib tests green; E2E assembles clean.
+
+**E8a still FAILs (rel 0.64) after the fix** — its stage-1 defect is
+independent (the producer loop never commits empty groups). Remaining
+suspects for next session: producer-side async-visibility semantics
+(membar vs fence.proxy-class ordering for cp.async across the named
+barrier), or the 64-lane rebased-fill D-mapping at stage parity.
