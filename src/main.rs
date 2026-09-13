@@ -83,7 +83,8 @@ fn print_usage(program: &str) {
     eprintln!("  {} build <file.bv> --out <dir>      Set output directory", name);
     eprintln!("  {} build <file.bv> --backend <name> Select backend: llvm, circt, webstack, gpu", name);
     eprintln!("  {} build <file.bv> --emit-beast [ast|mid|post|all]  Emit BEAST snapshots (default: all)", name);
-    eprintln!("  {} build <file.bv> --no-std          Disable prelude (equivalent to --disable-plugin prelude)", name);
+    eprintln!("  {} build <file.bv> --no-std          Disable prelude (all prelude-family plugins)", name);
+    eprintln!("  {} build <file.bv> --keep-all-defns  Emit every defn (diagnostic: liveness A/B)", name);
     eprintln!("  {} build <file.bv> --stdlib-path <p>   Set stdlib search path", name);
     eprintln!("  {} build <file.bv> --disable-plugin <name>  Disable a system plugin by name", name);
     eprintln!("  {} build <file.bv> --enable-plugin <name>   Enable only specific plugins", name);
@@ -223,6 +224,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut optimize_budget = 256u64;
     let mut shared = false;
     let mut library_mode = false;
+    let mut keep_all_defns = false;
     let mut emit_beast = Vec::new();
     let mut backend_override: Option<String> = None;
     let mut no_stdlib = false;
@@ -265,6 +267,10 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             i += 1;
         } else if arg == "--library" {
             library_mode = true;
+            i += 1;
+        } else if arg == "--keep-all-defns" {
+            // 2026-09-13 (defn-liveness emission): diagnostic override.
+            keep_all_defns = true;
             i += 1;
         } else if arg == "--out" {
             let val = args.get(i + 1).ok_or("--out requires a directory argument")?;
@@ -446,6 +452,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         extra_objects: vec![],
         shared,
         library_mode,
+        keep_all_defns,
         glue_config: None,
         stack_threshold: 4096,
         int_bits,
@@ -504,6 +511,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         extra_objects: vec![],
         shared: false,
         library_mode: false,
+        keep_all_defns: false,
         glue_config: None,
         stack_threshold: 4096,
         int_bits: 64,

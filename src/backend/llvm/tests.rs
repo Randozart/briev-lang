@@ -2220,7 +2220,7 @@ fn test_no_range_lower_bound_defaults_to_i64_min() {
         }),
         TopLevel::Transaction(Transaction {
             name: "t".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -2263,7 +2263,7 @@ fn test_binop_no_nuw_nsw() {
         }),
         TopLevel::Transaction(Transaction {
             name: "t".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -2402,7 +2402,7 @@ fn test_float_binary_add() {
         }),
         TopLevel::Transaction(Transaction {
             name: "t".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -2663,7 +2663,7 @@ fn make_point_program(body: Vec<Statement>) -> Vec<TopLevel> {
         }),
         TopLevel::Transaction(Transaction {
             name: "main".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -2691,7 +2691,7 @@ fn test_string_state_init_not_null() {
         }),
         TopLevel::Transaction(Transaction {
             name: "t".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -2730,7 +2730,7 @@ fn test_const_trg_write_emits_error() {
         }),
         TopLevel::Transaction(Transaction {
             name: "t".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -2764,7 +2764,7 @@ fn test_local_float_binding() {
         }),
         TopLevel::Transaction(Transaction {
             name: "t".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -3370,7 +3370,7 @@ fn test_imported_alias_is_mmio() {
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             output_type: None,
             outputs: vec![],
@@ -3411,7 +3411,7 @@ fn test_unimported_alias_not_mmio() {
         }),
         TopLevel::Transaction(Transaction {
             name: "t".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -3447,7 +3447,7 @@ fn make_intrinsic_program(intrinsic: Expr) -> Vec<TopLevel> {
     vec![
         TopLevel::Transaction(Transaction {
             name: "main".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -3476,7 +3476,7 @@ fn make_float_intrinsic_program(intrinsic: Expr) -> Vec<TopLevel> {
     vec![
         TopLevel::Transaction(Transaction {
             name: "main".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -3509,7 +3509,7 @@ fn test_emit_cast_int_to_string() {
     let program = vec![
         TopLevel::Transaction(Transaction {
             name: "main".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -3548,7 +3548,7 @@ fn test_emit_cast_string_to_int() {
     let program = vec![
         TopLevel::Transaction(Transaction {
             name: "main".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -3592,7 +3592,7 @@ fn test_tuple_emits_2slot_header() {
             name: "t".to_string(), ty: Type::int(), span: None,
         }),
         TopLevel::Transaction(Transaction {
-            name: "mktup".to_string(), is_reactive: false, is_async: false,
+            name: "mktup".to_string(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![],
             output_type: None, outputs: vec![],
             contract: default_contract(),
@@ -3921,7 +3921,7 @@ fn test_no_thread_pool_without_async_txns() {
 
 #[test]
 fn test_struct_param_uses_ptr_in_signature() {
-    let mut backend = LlvmBackend::new();
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::Obj(StructDefinition {
             name: "Point".to_string(),
@@ -3962,7 +3962,7 @@ fn test_struct_param_uses_ptr_in_signature() {
 
 #[test]
 fn test_struct_param_ptrtoint_at_entry() {
-    let mut backend = LlvmBackend::new();
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::Obj(StructDefinition {
             name: "Point".to_string(),
@@ -4008,7 +4008,7 @@ fn test_struct_param_ptrtoint_at_entry() {
 
 #[test]
 fn test_call_with_ptr_arg_emits_inttoptr() {
-    let mut backend = LlvmBackend::new();
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::Definition(Definition {
             name: "callee".to_string(),
@@ -4142,7 +4142,7 @@ fn make_fn_ptr_program() -> Vec<TopLevel> {
         }),
         TopLevel::Transaction(Transaction {
             name: "apply".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -4176,7 +4176,7 @@ fn test_emit_address_of() {
     let program = vec![
         TopLevel::Transaction(Transaction {
             name: "main".to_string(),
-            is_reactive: false,
+            is_reactive: true,
             is_async: false,
             type_params: vec![],
             parameters: vec![],
@@ -4277,7 +4277,7 @@ fn test_frgn_ptr_return() {
 #[test]
 fn test_struct_literal_field_offsets() {
     let tu = crate::type_universe::TypeUniverse::new();
-    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(tu);
     let program = vec![
         TopLevel::StaticStruct(StructDef {
             type_params: vec![],
@@ -4337,7 +4337,7 @@ fn test_struct_literal_field_offsets() {
 
 #[test]
 fn test_addr_of_struct_literal() {
-    let mut backend = LlvmBackend::new();
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::StaticStruct(StructDef {
             type_params: vec![],
@@ -4429,7 +4429,7 @@ fn test_addr_of_struct_literal() {
 
 #[test]
 fn test_frgn_ptr_param_inttoptr() {
-    let mut backend = LlvmBackend::new();
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::StaticStruct(StructDef {
             type_params: vec![],
@@ -4613,7 +4613,7 @@ fn test_struct_array_list_literal() {
     // When a list literal contains only struct literals of the same
     // known struct type, the backend should emit a contiguous stack array
     // (alloca) instead of a heap-allocated list (malloc).
-    let mut backend = LlvmBackend::new();
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::StaticStruct(StructDef {
             type_params: vec![],
@@ -4688,7 +4688,7 @@ fn test_struct_array_addr_of_and_frgn_call() {
     // Struct array + &var + frgn call with Ptr param.
     // The address-of should produce the alloca pointer, and the frgn call
     // should emit inttoptr to convert i64 handle to ptr for the Ptr param.
-    let mut backend = LlvmBackend::new();
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::StaticStruct(StructDef {
             type_params: vec![],
@@ -5271,6 +5271,8 @@ fn test_print_plugin_emits_direct_ffi_calls() {
             println!(v);
             term v;
         };
+    
+        node __test_go [true][true] { show(0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5428,6 +5430,8 @@ fn test_println_format_string_emits_direct_ffi_calls() {
             println!("sum={} and {1}", x + 1, f);
             term 0;
         };
+    
+        node __test_go [true][true] { show(); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5475,6 +5479,8 @@ fn test_print_dispatch_by_protocol_category() {
             println!((b as Int));
             term 0;
         };
+    
+        node __test_go [true][true] { show(0, 0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5603,6 +5609,8 @@ fn test_string_content_eq_emits_briev_str_eq() {
         defn run() -> Bool {
             term a == b;
         };
+    
+        node __test_go [true][true] { run(); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5632,6 +5640,8 @@ fn test_int_eq_still_emits_icmp() {
         defn run() -> Bool {
             term x == 6;
         };
+    
+        node __test_go [true][true] { run(); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5665,6 +5675,8 @@ fn test_string_bitwise_emits_content_ops() {
             let r4: String = ~a;
             term r4;
         };
+    
+        node __test_go [true][true] { run(); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5882,6 +5894,8 @@ fn test_consumptive_ops_emit_normal_arithmetic() {
             a ~= b;
             term a ~+ 1;
         };
+    
+        node __test_go [true][true] { f(0, 0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5911,6 +5925,8 @@ fn test_arrow_statements_emit_without_broken_globals() {
             ~<- b;
             term a;
         };
+    
+        node __test_go [true][true] { f(0, 0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5941,6 +5957,8 @@ fn test_stream_writes_emit_print_family() {
             #StdErr <- "err";
             term count;
         };
+    
+        node __test_go [true][true] { f(0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -6124,7 +6142,9 @@ node go [done == 0][done == 1] {
     done = 1;
     term;
 };
-"#;
+
+        node __test_go [true][true] { triple(0); };
+    "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
     let mut pm = crate::plugin::PluginManager::new();
@@ -7271,6 +7291,8 @@ fn test_cast_int_to_string_lane_emits_ptr_call() {
         defn f(n: Int) -> String {
             term (n as String);
         };
+    
+        node __test_go [true][true] { f(0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -8193,7 +8215,7 @@ fn test_packed_whole_byte_emits_native_aggregate() {
     // 2026-08-13 (pack): whole-byte packed structs (every field % 8 == 0)
     // declare LLVM's native packed type `<{ ... }>` and keep byte-offset GEP +
     // aligned loads/stores — the rule-19-validated native path.
-    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::StaticStruct(packed_struct_def(
             "Eth",
@@ -8230,7 +8252,7 @@ fn test_packed_whole_byte_emits_native_aggregate() {
 fn test_packed_sub_byte_le_emits_byte_array_and_slices() {
     // 2026-08-13 (pack): sub-byte packed structs hide behind a byte array
     // `{ [N x i8] }`; fields read via load-shift-trunc (LE: shift = bit pos).
-    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::StaticStruct(packed_struct_def(
             "Nib",
@@ -8270,7 +8292,7 @@ fn test_packed_sub_byte_le_emits_byte_array_and_slices() {
 fn test_packed_be_sub_byte_byte_reverses() {
     // 2026-08-13 (pack): Big-endian packed fields read the COVERED bytes
     // little-endian, mirror the byte order, then shift (cov*8 - bits).
-    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::StaticStruct(packed_struct_def(
             "BigP",
@@ -8315,7 +8337,7 @@ fn test_trap_statement_emits_llvm_trap() {
     // 2026-08-13 (layout-keywords plan Phase 4): `trap;` compiles to
     // `call void @llvm.trap()` + `unreachable` (SPEC §8.8), declared once in
     // the module header and terminating the block.
-    let mut backend = LlvmBackend::new();
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![packed_main_def(vec![
         Statement::Trap,
         Statement::Term(Some(Expr::Decimal(0))),
@@ -8335,7 +8357,7 @@ fn test_atomic_field_load_store_rmw() {
     // ops; `obj.f = obj.f + c` lowers to atomicrmw add; plain fields stay on
     // the default non-atomic path (no `atomic` in their ops).
     let tu = crate::type_universe::TypeUniverse::new();
-    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(tu);
     let mut meta = HashMap::new();
     meta.insert(
         "atomic_fields".to_string(),
@@ -8409,7 +8431,7 @@ fn test_union_emits_byte_array_and_offset_zero() {
     // 2026-08-13 (Phase 6): a union materializes as a byte array of its
     // largest aligned field storage; every field overlays at offset 0.
     let tu = crate::type_universe::TypeUniverse::new();
-    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(tu);
     let program = vec![
         TopLevel::StaticStruct(StructDef {
             type_params: vec![],
@@ -8627,7 +8649,7 @@ fn stmt_match_program() -> Vec<TopLevel> {
 
 #[test]
 fn test_statement_match_emits_arm_blocks_in_callable_txn() {
-    let mut backend = LlvmBackend::new();
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let output = backend.generate(&stmt_match_program(), None);
     assert!(
         output.contains(".smt_body_"),
@@ -8671,7 +8693,9 @@ defn get(o: Option) -> Int {
 defn make() -> Option {
   term Some(7);
 }
-"#;
+
+        node __test_go [true][true] { get(make()); };
+    "#;
     let tokens = crate::lexer::tokenize(src).unwrap();
     let mut p = crate::parser::Parser::new(tokens, src);
     let items = p.parse_program().unwrap();
@@ -8707,7 +8731,7 @@ fn test_mmio_pin_reads_volatile_and_skips_dispatch() {
     let mut p = crate::parser::Parser::new(tokens, src);
     let items = p.parse_program().unwrap();
     let tu = crate::type_universe::TypeUniverse::new();
-    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(tu);
     let ir = backend.generate(&items, None);
     assert!(ir.contains("inttoptr i64 4096 to ptr"),
         "pin address must materialize:\n{ir}");
@@ -8739,7 +8763,7 @@ txn add16 [y < 100][y <= 100] {
     let items = p.parse_program().unwrap();
     let mut universe = crate::type_universe::TypeUniverse::new();
     crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
-    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(universe);
     let ir = backend.generate(&items, None);
     assert!(
         ir.contains("fadd fast half"),

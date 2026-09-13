@@ -1722,6 +1722,15 @@ impl LlvmBackend {
         self
     }
 
+    /// 2026-09-13 (defn-liveness emission): diagnostic override — emit every
+    /// defn regardless of reachability. CLI: `--keep-all-defns` (IR diffing,
+    /// liveness A/B); emission-shape tests opt in the same way. Not a
+    /// behavior escape hatch: the default gates emission on the live set.
+    pub fn with_force_emit_all(mut self, v: bool) -> Self {
+        self.ctx.force_emit_all = v;
+        self
+    }
+
     /// 2026-07-18: Build a shared library (.so). When true, no main loop
     /// is emitted; only exported wrappers and reactive convergence entry.
     pub fn with_shared_lib(mut self, v: bool) -> Self {
@@ -2415,6 +2424,15 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         self.ctx.observable_names = analysis.observable_names.clone();
         self.ctx.coll_safe_txns = analysis.coll_safe_txns.clone();
         self.ctx.coll_pregrow = analysis.coll_pregrow.clone();
+        // 2026-09-13 (defn-liveness emission): frontend-computed live set.
+        // The emission gates skip defns/txns outside it; the IR-scan net at
+        // the end of generate() turns any under-approximation into a loud
+        // compile error instead of a silent linker failure. Library mode
+        // overrides: the shim exports plain txns/defns as ABI symbols, so
+        // every callable is live there.
+        self.ctx.live_defns = analysis.defn_liveness.live.clone();
+        self.ctx.emit_all_defns =
+            analysis.defn_liveness.keep_all || self.ctx.library_mode || self.ctx.force_emit_all;
         // 2026-08-31 (plan abv-gpu-by-default): pre-register the accel kernel
         // index BEFORE host emission. The dispatch wrapper is decided at
         // txn-emission time via accel_kernel_idx — with kernel collection at
@@ -3331,7 +3349,13 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 } else {
                     "briev_getenv_briev_impl"
                 };
-                if self.ctx.defn_params.contains_key(impl_name) {
+                // 2026-09-13 (defn-liveness): the adapter is runtime support
+                // for GetEnv#/GetEnvInt# — emit it only when the pure-Briev
+                // impl is live. Otherwise fall through to the plain declare
+                // (unused declares are dropped by LLVM; no C symbol needed).
+                if self.ctx.defn_params.contains_key(impl_name)
+                    && (self.ctx.emit_all_defns || self.ctx.live_defns.contains(impl_name))
+                {
                     let ret = if sig.name == "__getenv_int" { "i64" } else { "ptr" };
                     writeln!(out, "define {} @{}(ptr %key) local_unnamed_addr #8 {{", ret, sig.name).ok();
                     writeln!(out, "  %env = load ptr, ptr @__briev_environ").ok();
@@ -3824,6 +3848,14 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         for item in items {
             match item {
                 TopLevel::Definition(d) => {
+                    // 2026-09-13 (defn-liveness emission): skip defns the
+                    // frontend proved unreachable. defn_params registration
+                    // (above) already saw ALL defns, so calling-convention
+                    // and declare-skip logic are unaffected. The IR-scan net
+                    // at the end of generate() catches any missed root.
+                    if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(&d.name) {
+                        continue;
+                    }
                     self.emit_definition(&mut out, d, true);
                     writeln!(out).ok();
                 }
@@ -3887,6 +3919,13 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             }
         }
         for (name, txn) in &txns {
+            // 2026-09-13 (defn-liveness emission): reactive txns are roots
+            // (always live); this skips only unreachable callable txns —
+            // the same "'X' is never dispatched" population the dead-txn
+            // warning already reports.
+            if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(name) {
+                continue;
+            }
             if self.ctx.internal_fold_txns.contains(name) {
                 if let Some(info) = self.internal_fold_info(name, &analysis) {
                     self.emit_internal_fold_txn(&mut out, name, txn, &analysis, info);
@@ -5081,7 +5120,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 //   zero .bss
                 //   call main(hartid, dtb)
                 //   halt (spin wfi)
-                writeln!(out, "define void @_start() naked noinline {{").ok();
+                // section ".text.start": QEMU virt -bios none jumps to the
+                // START OF RAM (0x80000000), NOT the ELF e_entry — the
+                // linker script's `*(.text.start)` line must land this
+                // function first in the image.
+                writeln!(out, "define void @_start() naked noinline section \".text.start\" {{").ok();
                 writeln!(out, "entry:").ok();
                 writeln!(out, "  call void asm sideeffect \"la sp, _stack_top; la t0, _bss_start; la t1, _bss_end; bgeu t0, t1, 2f; 1: sd zero, 0(t0); addi t0, t0, 8; bltu t0, t1, 1b; 2: jal zero, main; 1: wfi; j 1b\", \"~{{t0}},~{{t1}},~{{memory}}\" ()").ok();
                 writeln!(out, "  unreachable").ok();
@@ -5089,11 +5132,39 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             } else if triple.starts_with("thumb") || triple.starts_with("arm") {
                 // ARM Cortex-M: the vector table already sets SP and calls
                 // Reset_Handler. We just need to call main and halt.
-                writeln!(out, "define void @_start() naked noinline {{").ok();
+                writeln!(out, "define void @_start() naked noinline section \".text.start\" {{").ok();
                 writeln!(out, "entry:").ok();
                 writeln!(out, "  call void asm sideeffect \"bl main; 1: wfi; b 1b\", \"~{{memory}}\" ()").ok();
                 writeln!(out, "  unreachable").ok();
                 writeln!(out, "}}").ok();
+            }
+        }
+
+        // ── Defn-liveness safety net (2026-09-13) ─────────────────────
+        // The emission gates skipped every defn the liveness pass did not
+        // root. If emitted code still CALLS a skipped defn, the pass
+        // under-approximated (incomplete intrinsic→helper row, an unwalked
+        // Expr kind, a backend-emitted call) — fail loudly NOW with the fix,
+        // never ship a dangling reference to the linker. Declares are
+        // skipped for defn_params names, so any remaining `@name(` is a
+        // real call. Sorted for deterministic diagnostics (HashMap order
+        // must not pick the reported name).
+        if !self.ctx.emit_all_defns {
+            let mut missed: Vec<&String> = self.ctx.defn_params.keys()
+                // "main" is the backend-generated entry itself (`define @main`)
+                // — always present in the IR, never a gate casualty.
+                .filter(|n| *n != "main")
+                .filter(|n| !self.ctx.live_defns.contains(*n) && out.contains(&format!("@{}(", n)))
+                .collect();
+            missed.sort();
+            if !missed.is_empty() {
+                panic!(
+                    "defn liveness: emitted code calls unreached defn(s) {:?} — \
+                     add the intrinsic→helper row in src/analysis/defn_liveness.rs \
+                     (intrinsic_helpers) or root the caller; see \
+                     docs/architecture/defn-liveness.md",
+                    missed
+                );
             }
         }
 

@@ -160,6 +160,18 @@ pub struct CompilerContext {
     pub frgn_map: HashMap<String, ForeignSignature>,
     pub defn_params: HashMap<String, Vec<Type>>,
     pub defn_return_types: HashMap<String, Vec<Type>>,
+    /// 2026-09-13 (defn-liveness emission): the frontend-computed set of
+    /// call-reachable defn/txn names. The Definitions/callable-txn emission
+    /// gates SKIP anything outside it (`emit_all_defns` overrides —
+    /// `--keep-all-defns` diagnostics). defn_params registration above stays
+    /// ALL-defns: calling-convention checks and declare-skip logic must keep
+    /// seeing the full imported surface. See docs/architecture/defn-liveness.md.
+    pub live_defns: std::collections::HashSet<String>,
+    pub emit_all_defns: bool,
+    /// 2026-09-13: explicit override (`--keep-all-defns` diagnostic flag /
+    /// emission-shape test opt-in). Unlike the library-mode implication, this
+    /// survives generate()'s analysis-driven recompute.
+    pub force_emit_all: bool,
 
     // Constants & Strings
     pub string_constants: Vec<String>,
@@ -466,6 +478,9 @@ impl CompilerContext {
             frgn_map: HashMap::new(),
             defn_params: HashMap::new(),
             defn_return_types: HashMap::new(),
+            live_defns: std::collections::HashSet::new(),
+            emit_all_defns: false,
+            force_emit_all: false,
             string_constants: Vec::new(),
             byte_constants: Vec::new(),
             mask_constants: Vec::new(),

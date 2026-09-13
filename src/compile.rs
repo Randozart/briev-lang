@@ -1259,6 +1259,7 @@ fn codegen(
                 .with_needs_arena(needs_arena.clone())
                 .with_shared_lib(opts.shared)
                 .with_library_mode(opts.library_mode)
+                .with_force_emit_all(opts.keep_all_defns)
                 .with_stack_threshold(opts.stack_threshold)
                 .with_accel_cpu_fallback(opts.accel_cpu_fallback)
                 .with_optimize_budget(opts.optimize_budget)
@@ -1452,6 +1453,7 @@ fn codegen(
                 .with_alloc_strategies(alloc_strategies)
                 .with_shared_lib(opts.shared)
                 .with_library_mode(opts.library_mode)
+                .with_force_emit_all(opts.keep_all_defns)
                 .with_stack_threshold(opts.stack_threshold)
                 .with_accel_cpu_fallback(opts.accel_cpu_fallback)
                 .with_optimize_budget(opts.optimize_budget)
@@ -1879,9 +1881,15 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
     if freestanding {
         cmd.args(["-nostdlib", "-no-pie", "-ffreestanding"]);
         // 2026-09-13: for non-linux targets, use lld (GNU ld may not support
-        // the target arch — e.g. riscv64 emulation is missing from binutils ld).
+        // the target arch — e.g. riscv64 emulation is missing from binutils ld)
+        // and the medany code model — QEMU virt RAM sits at 0x80000000, which
+        // overflows medlow's signed-32-bit %hi/%lo addressing (the Linux
+        // kernel / OpenSBI need medany for the same reason).
         if !triple.contains("linux") {
             cmd.arg("-fuse-ld=lld");
+            if triple.starts_with("riscv64") {
+                cmd.arg("-mcmodel=medany");
+            }
         }
         // 2026-09-13 (rv64 capability kernel): linker script passthrough.
         // Read the linker script path from the IR (the backend emits a module
@@ -2274,6 +2282,7 @@ node go [done == false][done == true] {
             extra_objects: vec![],
             shared: false,
             library_mode: false,
+            keep_all_defns: false,
             int_bits: 32,
             glue_config: None,
             stack_threshold: 4096,

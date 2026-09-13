@@ -187,6 +187,10 @@ pub struct BuildOptions {
     /// with __briev_init_state/__glue_release), packages .o + runtime into
     /// `ar rcs lib<name>.a`, and a PIC .so for c_abi hosts.
     pub library_mode: bool,
+    /// 2026-09-13 (defn-liveness emission): diagnostic override — emit every
+    /// defn regardless of reachability (IR diffing, liveness A/B). See
+    /// docs/architecture/defn-liveness.md.
+    pub keep_all_defns: bool,
     /// 2026-07-18: SVO (Small Vector Optimization) — inline storage for
     /// small List<T> elements (≤ N where N is from svo <~ N metadata).
     /// 2026-07-22: Override path for the GLUE config (config/glue.dbv). None = use compiler-shipped default.
@@ -686,6 +690,7 @@ pub fn check_source(file_path: &str, source: &str) -> Result<(), String> {
         extra_objects: vec![],
         shared: false,
         library_mode: false,
+        keep_all_defns: false,
         int_bits: 64,
         glue_config: None,
         stack_threshold: 4096,
@@ -780,12 +785,24 @@ pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> PluginManag
     if !opts.enable_plugins.is_empty() {
         pm = pm.with_enabled_only(opts.enable_plugins.clone());
     }
-    if !opts.disable_plugins.is_empty() {
-        pm = pm.with_disabled(opts.disable_plugins.clone());
-    }
-    // --no-std is equivalent to --disable-plugin prelude
+    // --no-std disables the whole prelude FAMILY. The per-extension plugin
+    // lists name different preludes (.bv → prelude-native, .ebv →
+    // prelude-electronics, .sbv → prelude-hw; config/targets.dbvl), so
+    // disabling only "prelude" silently did nothing on .bv files (the
+    // normalizer still saw every stdlib type). Exact-name --disable-plugin
+    // is untouched: it remains a per-plugin switch. with_disabled REPLACES,
+    // so the two sources merge into one list here.
+    let mut disabled_plugins = opts.disable_plugins.clone();
     if opts.no_stdlib {
-        pm = pm.with_disabled(vec!["prelude".to_string()]);
+        disabled_plugins.extend([
+            "prelude".to_string(),
+            "prelude-native".to_string(),
+            "prelude-hw".to_string(),
+            "prelude-electronics".to_string(),
+        ]);
+    }
+    if !disabled_plugins.is_empty() {
+        pm = pm.with_disabled(disabled_plugins);
     }
 
     // Apply sandbox from CLI flags

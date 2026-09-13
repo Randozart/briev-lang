@@ -123,6 +123,11 @@ pub struct AnalysisResults {
     /// docs/plans/2026-08-31-boundary-ownership-inference.md.
     pub boundary_ownership:
         crate::analysis::boundary_ownership::BoundaryOwnershipResult,
+    /// 2026-09-13 (defn-liveness emission): the call-reachable defn/txn set.
+    /// The backend emits ONLY these (plus keep_all when live code uses `.^^`
+    /// reflection). Imports grant capability; liveness gates emission cost.
+    /// See docs/architecture/defn-liveness.md.
+    pub defn_liveness: crate::analysis::defn_liveness::DefnLiveness,
 }
 
 /// Intent: Run shared program analysis for backend code generation.
@@ -266,6 +271,7 @@ pub fn analyze_program(
         task_segments,
         boundary_ownership,
         electronics: crate::analysis::electronics::derive_netlist(items),
+        defn_liveness: crate::analysis::defn_liveness::DefnLiveness::build(items),
     }
 }
 
