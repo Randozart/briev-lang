@@ -6153,7 +6153,9 @@ node go [done == 0][done == 1] {
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
     assert!(
-        ir.contains("call i64 @triple("),
+        // 2026-09-14: void defns now define/call as `void` (the ret-0 fix);
+        // the behavioral assertion is the dispatch to the bound override.
+        ir.contains("call void @triple("),
         "the grow guard must dispatch to the bound override; got:\n{ir}"
     );
 }
