@@ -5564,8 +5564,12 @@ impl LlvmBackend {
         let define_line = match mech.convention {
             crate::target::IsrConv::X86Intr =>
                 format!("define x86_intrcc void @{}() nounwind {{", isr.name),
+            // 2026-09-13 (Phase 3, rv64): align 4 — mtvec's base field
+            // requires 4-byte alignment; RVC allows 2-byte function
+            // alignment, which lands the wrapper at mtvec-reserved bits
+            // (mode field) — traps then vector to mid-instruction garbage.
             crate::target::IsrConv::RiscvInterrupt =>
-                format!("define void @{}() nounwind \"interrupt\"=\"machine\" {{", isr.name),
+                format!("define void @{}() nounwind \"interrupt\"=\"machine\" align 4 {{", isr.name),
             crate::target::IsrConv::ArmIrq =>
                 format!("define void @{}() nounwind \"interrupt\"=\"IRQ\" {{", isr.name),
         };

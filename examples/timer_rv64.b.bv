@@ -1,0 +1,59 @@
+// Phase 3 (rv64 capability kernel): CLINT machine-timer ticks.
+//
+// The program is a pseudo-loop: boot arms the timer, the reactor reaches
+// equilibrium (the SSA main parks in `wfi`), and every mtimecmp trap wakes
+// it — the ISR increments `ticks` and re-arms, the reporter node fires on
+// the new tick and prints one decimal digit. QEMU virt CLINT runs at 10 MHz
+// → 0.1 s per tick.
+//
+// Board facts (QEMU virt, M-mode):
+//   0x10000000  UART0 THR (NS16550A)
+//   0x02004000  CLINT mtimecmp (hart 0)
+//   0x0200BFF8  CLINT mtime
+//   mcause 7 (bit 63 set) = machine timer interrupt
+//   mie.MTIE = bit 7 (128); mstatus.MIE = bit 3 (8)
+//
+// `Asm#("raw", …)` is the disclosed escape hatch: CSR access is ISA
+// mechanism, and `$0` carries the compiler-emitted ISR wrapper symbol —
+// the riscv mechanism has no link-time vector table (the row in
+// config/isr-targets.dbvl leaves table_section empty on purpose); mtvec
+// is runtime-built. Every register the templates touch goes through
+// constraint registers ($0/$1): an inline-asm template that clobbers
+// t0/t1 behind the compiler's back corrupts whatever LLVM hoisted into
+// them — the digit store landed INSIDE the handler and self-destructed
+// the trap path.
+
+let ticks: Int = 0;
+let printed: Int = 0;
+
+// Machine timer trap. Direct mode: ALL traps land at mtvec — read mcause
+// and service only the timer (code 7, interrupt bit set → negative i64).
+// Contract: every trap path leaves a valid count (non-timer traps exit
+// without ticking; the timer path advances by one).
+isr<riscv_machine> handler @ 7: timer_tick() [ticks >= 0][ticks >= 0] {
+    let cause: Int = Asm#("raw", "csrrs $0, mcause, zero", 0);
+    when cause < 0 && (cause & 15) == 7 {
+        ticks = ticks + 1;
+        let mtime: Int = VolatileLoad#(0x0200BFF8 as Ptr<Int>);
+        VolatileStore#(0x02004000 as Ptr<Int>, mtime + 1000000);
+    };
+};
+
+// Boot and the reporter form one serialized group: the reporter reacts to
+// ticks only after boot has armed the hardware. (Rule: no implicit
+// concurrency — eligible pairs must be classified.)
+sync<timer> node boot [beginprogram][true] {
+    // mtvec (direct) = the trap wrapper; MTIE on; global MIE on; arm tick 1.
+    Asm#("raw", "la $0, timer_tick; csrw mtvec, $0", 0);
+    Asm#("raw", "csrs mie, $1", 128);
+    Asm#("raw", "csrs mstatus, $1", 8);
+    let mtime: Int = VolatileLoad#(0x0200BFF8 as Ptr<Int>);
+    VolatileStore#(0x02004000 as Ptr<Int>, mtime + 1000000);
+    term;
+};
+
+sync<timer> node reporter [ticks > printed][printed == ticks] {
+    VolatileStore#(0x10000000 as Ptr<Int>, 48 + (ticks % 10));
+    printed = ticks;
+    term;
+};

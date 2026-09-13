@@ -3297,8 +3297,19 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // 2026-08-06 (beginprogram plan): per-node entry flags — true until the
         // node's goal is met; the precondition reads the flag, the body clears
         // it on goal (one-shot entry loop).
+        // 2026-09-13: `sync<group> node …` wraps the transaction (Bug-2 fix
+        // unwraps it for dispatch below) — the flag loop must unwrap too, or
+        // the wrapper's entry nodes reference an undefined flag global.
         for item in items {
-            if let TopLevel::Transaction(t) = item {
+            let txn = match item {
+                TopLevel::Transaction(t) => Some(t),
+                TopLevel::SyncGroup { item: inner, .. } => match inner.as_ref() {
+                    TopLevel::Transaction(t) => Some(t),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(t) = txn {
                 if LlvmBackend::expr_has_beginprogram(&t.contract.pre_condition) {
                     writeln!(out, "@briev_begin_{} = private global i1 1", t.name).ok();
                 }

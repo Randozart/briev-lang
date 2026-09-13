@@ -452,7 +452,26 @@ impl LlvmBackend {
             writeln!(out, "  br label %.ss_main_loop").ok();
         }
         writeln!(out, ".end:").ok();
-        writeln!(out, "  ret i32 0").ok();
+        // 2026-09-13 (Phase 3, rv64 capability kernel): embedded EQUILIBRIUM.
+        // On bare metal, "no node can fire" is not program exit — the reactor
+        // parks (wfi) and re-evaluates when a trap wakes the core. The
+        // `~{memory}` clobber is load-bearing: interrupt wrappers are called
+        // by hardware, invisibly to LLVM's interprocedural analysis, so
+        // without it the precondition loads hoist out of the loop and the
+        // ISR-written fields read stale forever (silent deadlock). With it,
+        // every pass after the wfi re-reads state memory. Same family
+        // dispatch as `halt`: wfi only assembles on ARM/RISC-V — other
+        // embedded triples take the trap abort (x86 has no wfi). To undo:
+        // restore the unconditional `ret i32 0`.
+        let triple = self.ctx.target_triple.clone();
+        let wait_family = ["arm", "thumb", "aarch64", "cortex", "riscv"]
+            .iter().any(|fam| triple.contains(fam));
+        if self.ctx.is_embedded && wait_family {
+            writeln!(out, "  call void asm sideeffect \"wfi\", \"~{{memory}}\"()").ok();
+            writeln!(out, "  br label %.ss_main_loop").ok();
+        } else {
+            writeln!(out, "  ret i32 0").ok();
+        }
         } // end loop_buf scope
         self.fun.defer_struct_allocas = prev_defer;
         self.flush_pending_struct_allocas(out);

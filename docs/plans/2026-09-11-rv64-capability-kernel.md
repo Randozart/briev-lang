@@ -338,3 +338,58 @@ The UART write macro (`uart_write!`) is deferred — requires a Rust plugin
 for compile-time string iteration (no `StrByte$` or `While$` in the macro
 DSL). See `docs/architecture/briev-execution-model.md` for the macro system
 analysis.
+
+---
+
+## Addendum D: Phase 3 Trap Capability (2026-09-13)
+
+Phase 3 gate **PASSED**: the kernel prints an incrementing tick count
+(`123456789012…`) driven purely by CLINT machine-timer traps.
+`tests/bare/qemu-rv64-timer.sh` is the timeout-guarded golden gate.
+
+### What the demo proves
+
+`examples/timer_rv64.b.bv`: boot (one-shot `beginprogram` node) programs
+`mtvec` to the compiler-emitted trap wrapper, enables MTIE+MIE, and arms
+`mtimecmp` via MMIO. The reactor reaches **equilibrium** — the embedded
+SSA main parks in `wfi` and re-evaluates on every wake. Each trap runs the
+`isr<riscv_machine>` handler (mcause-filtered, ticks+1, re-arm); the
+`reporter` node's precondition becomes true and prints the digit. The
+pseudo-loop, hardware-attached.
+
+### Compiler changes (all additive)
+
+1. **Embedded equilibrium** (loop_engine/ssa.rs): at the dispatch loop's
+   exit, embedded ARM/RISC-V builds emit `wfi` (with `~{memory}`) and
+   re-enter the dispatch instead of `ret`. The clobber is load-bearing:
+   interrupt wrappers are hardware-called, invisible to interprocedural
+   analysis — without it the precondition loads hoist and ISR-written
+   fields read stale forever (silent deadlock).
+2. **riscv ISR wrapper `align 4`** (emit_toplevel.rs): mtvec's base field
+   requires 4-byte alignment; RVC allows 2-byte function alignment, which
+   put the wrapper at mtvec-reserved mode bits — traps vectored to
+   mid-instruction garbage.
+3. **`sync<group> node` beginprogram flags** (mod.rs): the entry-flag
+   emission unwraps SyncGroup-wrapped transactions (clang: undefined
+   `@briev_begin_<name>` otherwise).
+4. **`Asm#` raw operand check off-by-one** (intrinsics.rs): `$1` with one
+   operand is exactly valid ($0 is the result; $1..$N the operands).
+
+### Language lessons (encoded in the demo's comments)
+
+- **Inline-asm register discipline**: a raw template that touches t0/t1
+  behind the compiler's back corrupts whatever LLVM hoisted into them —
+  the reporter's digit store landed INSIDE the handler and self-destructed
+  the trap path (`31 00 00 00` over the first instructions). Every
+  register must flow through constraint registers ($0/$1).
+- **Direct trap mode dispatches ALL vectors into the one handler** —
+  mcause filtering is the kernel's job (handler-side `when`), and an
+  unfiltered exception storm is invisible (re-enters the same handler).
+- **ISR contracts must state a real obligation** — `[true][true]` is
+  rejected (contract-first); `[ticks >= 0][ticks >= 0]` (counter validity)
+  is the honest minimum here.
+
+### Execution status
+
+Phases 0–3 complete. Phase 4 (U-mode tasks + ecall boundary + preemptive
+switch) is next; Phase 5 (frontier document) closes the plan.

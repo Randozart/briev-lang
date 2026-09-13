@@ -8883,3 +8883,58 @@ fn test_section_placement_ir() {
     // A section-less defn must NOT carry a section attribute.
     assert!(!ir.contains("section \".rodata\" }"), "no stray attrs");
 }
+
+// ── Phase 3 (rv64 capability kernel, 2026-09-13): trap capability ──────
+
+#[test]
+fn test_riscv_isr_wrapper_machine_attr_and_align() {
+    // mtvec requires a 4-byte-aligned base; RVC allows 2-byte function
+    // alignment, which lands the wrapper at mtvec-reserved mode bits —
+    // traps vector to mid-instruction garbage. The wrapper therefore
+    // carries align 4 with the machine interrupt convention.
+    let src = "isr<riscv_machine> handler @ 7: tick() [true][n >= 0] { n = n; };\n\
+               let n: Int = 0;\n";
+    let program = parse_isr_program(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let ir = backend.generate(&program, None);
+    assert!(ir.contains(
+        "define void @tick() nounwind \"interrupt\"=\"machine\" align 4 {"),
+        "riscv wrapper: machine convention + align 4:\n{ir}");
+    assert!(ir.contains("define void @__isr_body_tick(ptr"),
+        "body takes the shared state:\n{ir}");
+    // riscv mechanism: no link-time table (runtime-built mtvec).
+    assert!(!ir.contains("@tick_vec"), "no link-time table for riscv");
+}
+
+#[test]
+fn test_embedded_equilibrium_parks_in_wfi() {
+    // On ARM/RISC-V embedded targets the reactor parks in wfi when no node
+    // can fire (equilibrium), with the ~{memory} clobber that keeps
+    // ISR-written fields fresh; hosted programs still exit.
+    let src = "node tick [false][n == 0] { term; };\n\
+               let n: Int = 0;\n";
+    let program = parse_isr_program(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new())
+        .with_embedded_mode(true)
+        .with_target_triple("riscv64-unknown-none");
+    let ir = backend.generate(&program, None);
+    assert!(ir.contains("call void asm sideeffect \"wfi\", \"~{memory}\"()"),
+        "equilibrium wfi with memory clobber:\n{ir}");
+    assert!(ir.contains("br label %.ss_main_loop"), "park re-enters the dispatch loop:\n{ir}");
+}
+
+#[test]
+fn test_sync_wrapped_beginprogram_node_emits_flag() {
+    // `sync<group> node …` wraps the transaction; its beginprogram entry
+    // flag must still be emitted or the wrapper references an undefined
+    // global (clang: use of undefined value '@briev_begin_<name>').
+    let src = "sync<timer> node boot [beginprogram][true] { term; };\n";
+    let program = parse_isr_program(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let ir = backend.generate(&program, None);
+    assert!(ir.contains("@briev_begin_boot = private global i1 1"),
+        "sync-wrapped entry node emits its flag:\n{ir}");
+}

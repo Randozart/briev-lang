@@ -1407,7 +1407,10 @@ fn emit_asm(
             }
         }
         let n_ops = operand_args.len() as i64;
-        if max_ref >= n_ops {
+        // 2026-09-13 (off-by-one): valid refs are $0 (the result) plus
+        // $1..$N (the operands) — a template referencing $N with N operands
+        // supplied is exactly valid. The old `>=` rejected it.
+        if max_ref > n_ops {
             panic!(
                 "Asm# raw: the template references operand ${max_ref} but only \
                  {n_ops} operand(s) were supplied - add operands or fix the template"
