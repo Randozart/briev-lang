@@ -315,3 +315,8 @@ benchmarks/gpu/nbody_force
 benchmarks/gpu/pairs
 benchmarks/gpu/run_abv/
 examples/gpu/run_abv/
+
+# built ELF outputs (regenerate: brievc build examples/<name>.b.bv ...)
+examples/*.b
+examples/*.b.ll
+examples/*.b.o
