@@ -109,6 +109,22 @@ pub(crate) fn ptx_warp_mh(f16_acc: bool) -> usize {
     }
 }
 
+/// E4c (2026-09-13) growth-order policy: at mhr>=4 the A-sharing warp
+/// (64x32, B loaded 4x per kstep) measures nw-heavy CTAs decisively above
+/// mw-heavy at equal thread count — (2,4)@256T beats (4,2)@256T 35.3 vs
+/// 31.0 TFLOP/s (4096^3 f16acc, interleaved A/B x3) and beats the old
+/// (4,4)@512T 34.5 by +2.3% (also +12.5% at 2048^3, +6% at 8192^3,
+/// same-window). Warps stacked along N replicate A-fragment reads; mhr=2
+/// keeps the mw-first order so the f32 (4,2)@256T landing is
+/// byte-identical. Undo: return [(2,2),(2,1),(1,2)] unconditionally.
+fn walk_order(mhr: usize) -> [(usize, usize); 3] {
+    if mhr >= 4 {
+        [(2, 2), (1, 2), (2, 1)]
+    } else {
+        [(2, 2), (2, 1), (1, 2)]
+    }
+}
+
 fn select_mw_nw(m: i64, n: i64, thread_cap: usize, mhr: usize) -> (usize, usize) {
     // mhr scales the warp's 16-row block count (warp_mh): the CTA tile is
     // (16*mhr*mw) rows x (8*gr*nw) cols with gr = 16/mhr, so the aspect of
@@ -119,13 +135,12 @@ fn select_mw_nw(m: i64, n: i64, thread_cap: usize, mhr: usize) -> (usize, usize)
     let mut nw: usize = 1;
     loop {
         let mut grew = false;
-        // 2026-09-11: double both axes first, then mw, then nw. The old
-        // (1,2)-first walk ran nw to its cap and never reached the balanced
-        // (4,4) — shipping (2,8)@512T at 16.4 TFLOP/s where (4,4) measures
-        // 21.0 (4096^3 f16acc, three interleaved reps). This order lands
-        // both sweep winners: (4,2) at the 256-thread f32 cap and (4,4) at
-        // the 512-thread f16acc cap.
-        for (dm, dn) in [(2usize, 2usize), (2usize, 1usize), (1usize, 2usize)] {
+        // 2026-09-11: double both axes first, then the aspect-preferred
+        // axis (see walk_order). The old (1,2)-first walk ran nw to its
+        // cap and never reached the balanced (4,4) — shipping (2,8)@512T
+        // at 16.4 TFLOP/s where (4,4) measures 21.0 (4096^3 f16acc,
+        // three interleaved reps).
+        for (dm, dn) in walk_order(mhr) {
             let (tm, tn) = (mw * dm, nw * dn);
             if tm <= 16
                 && tn <= 8
@@ -285,15 +300,16 @@ pub fn build_ptx_kernels(
 
         let f16_acc = crate::config_tuning::ir_lowering().ptx_tensor_f16acc;
         // f16-acc halves the accumulator registers (64 f32 -> 32 f16x2),
-        // which is what makes the (4,4)@512T x 2-CTA point affordable; the
-        // shallower 2-stage pipeline keeps smem at 40KB/CTA so both fit.
+        // funding 64-reg/256T kernels: 4 CTAs/SM at 16KB smem (E4c, 2026-09-13).
         // f32-acc keeps 4 stages (deep pipeline, 1-2 CTAs by config).
         let stages = if f16_acc { 2usize } else { 4usize };
-        // On-device sweep (2026-09-10, 4096^3): the f16acc kernel's best
-        // config is (4,4)@512T (13.6 vs 12.2 for (2,4)@256T) — the packed
-        // accumulators fund the wider tile. The f32 kernel's best stays
-        // (2,4)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
-        let thread_cap = if f16_acc { 512 } else { 256 };
+        // On-device sweep (2026-09-10, 4096^3): the f32 kernel's best is
+        // (4,2)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
+        // 2026-09-13 (E4c): the f16acc cap drops to 256 — the 8-warp CTA
+        // with 4 co-resident CTAs/SM (16KB smem, 64 regs) beats the
+        // (4,4)@512T x2 point on every large square shape (nw-first walker
+        // lands (2,4)@256T; see select_mw_nw for the A/B numbers).
+        let thread_cap = 256;
         let (ptx, ptx_tensor, count_expr, block_threads, shared_bytes) = if tensor {
             let warp_mh = ptx_warp_mh(f16_acc);
             let gr = 16 / warp_mh;
@@ -386,6 +402,11 @@ mod tests {
         assert_eq!(select_mw_nw(4096, 4096, 512, 4), (4, 4), "f16acc 4096^3");
         assert_eq!(select_mw_nw(4096, 4096, 512, 2), (4, 4), "mhr=2 4096^3");
         assert_eq!(select_mw_nw(4096, 4096, 256, 2), (4, 2), "f32 256-cap");
+        // E4c (2026-09-13): mhr>=4 walks nw-first — (2,4)@256T beats both
+        // (4,4)@512T (+2.3% at 4096^3) and (4,2)@256T (+14%) on-device.
+        assert_eq!(select_mw_nw(4096, 4096, 256, 4), (2, 4), "f16acc E4c 4096^3");
+        assert_eq!(select_mw_nw(2048, 2048, 256, 4), (2, 4), "f16acc E4c 2048^3");
+        assert_eq!(select_mw_nw(8192, 8192, 256, 4), (2, 4), "f16acc E4c 8192^3");
         // 96 rows cannot tile a 64-row warp block (mhr=4): every growth
         // candidate fails the M%(16*mhr*mw) guard, so the selector returns
         // (1,1) and the dispatch falls back to the single-warp kernel.

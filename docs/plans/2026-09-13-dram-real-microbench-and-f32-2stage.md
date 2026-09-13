@@ -107,10 +107,18 @@ ledger note is the deliverable.
 - L-A: instrument built; verdict **mma-schedule-bound** — the fill
   side is solved; the next lever is the compute section.
 - L-C: no auto-dispatch exists; boundary is documentation.
-- Commits: 5205f078 (plan), 55b84e25 (microbench + verdicts).
+- **E4b shipped** (`7c50a8b5`): precomputed lane terms + hoisted B
+  base. Per-mh A: 16→8 instr, per-g B: 17→7 instr, B base: 4×/kstep
+  → 1×/kstep. ~80 ALU saved per kstep per warp.
+  - 2048³: 27.9 → 29.3 TF (+5.0%)
+  - 4096³: 32.1 → 34.4 TF (+7.2%)
+  - 8192³: 34.1 → 34.2 TF (~0%, DRAM-bound)
+  - 64 regs (+1), zero spill, all correctness pass.
+- Commits: 5205f078 (plan), 55b84e25 (microbench + verdicts),
+  baa16056 (L-C doc), 7c50a8b5 (E4b precomputed lane).
 
 ## Gates (all steps)
 
 Byte-identical correctness vs the shipped kernel's per-shape errors
 (5.208e-3 @4096³ f16acc, exact K=16), no reg/occupancy regressions,
-2119 lib tests green, Praetor no new diagnostics in changed ranges.
+2172 lib tests green, Praetor no new diagnostics in changed ranges.

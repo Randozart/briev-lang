@@ -6029,3 +6029,64 @@ masked by the next. Resolution order:
 marker removal must be followed by a full clean run, not a build-only
 check (the removals themselves changed behavior — the dbg shim was
 dropping its own call).
+## 2026-09-13: E4c window — three traps that cost measurement time
+
+**1. `MW_SMEM` unset = smem-0 launch = IMA storm.** `ptx_gemm_bench.c`
+defaults the dynamic-smem size to 0; the dump kernels allocate ALL working
+memory as `extern .shared`, so every launch without `MW_SMEM=<bytes>`
+faults at warmup. The fault appears for ANY kernel (even known-good ones
+re-assembled fresh), which reads as "the new kernel is broken". Rule:
+always export `MW_SMEM` matching the dumped tile — production f16acc
+(2,4)@256T needs 16384; the old (4,4)@512T needed 24576.
+
+**2. `ptxas -maxrregcount=128` PESSIMIZES the natural-64 kernel.**
+Assembling the f16acc kernel with the 128 cap (the f32-tier value)
+produces 80 registers vs 64 natural — the cap flips ptxas onto a worse
+allocation/schedule, dropping occupancy 2→1 CTAs/SM and costing ~28%
+TFLOP/s (34.5 → 25.7 in the same window). Register caps are not
+monotone safes. Rule: assemble f16acc artifacts with `-maxrregcount=64`
+(the value compile_cubin passes for f16acc, mod.rs), never the 128
+used by the r16 test helper.
+
+**3. c8b0da04 committed a broken bin target.** The `explain_causality`
+field line landed in `run_bounty`'s BuildOptions initializer (where the
+binding doesn't exist, E0425) instead of `parse_build_args`' (E0063,
+missing field) — `cargo build --release` of `brievc` failed at HEAD for
+everyone. `cargo test --lib` stayed green, so lib-only workflows never
+noticed. Fixed 2026-09-13: flag wired in parse_build_args, bounty path
+hardcodes `false`. Rule: a BuildOptions field must be added to every
+initializer in the same commit — grep the struct name, not the field's
+last-known home.
+
+## 2026-09-13: SHIP PTX kernel — K≤32 with small M returns all-zero y
+
+Discovered while debugging E8a (whose stage-1 failure may share the root
+cause). The ship f16acc kernel (E4c, (2,4)@256T) FAILS the correctness
+gate at shapes never gate-tested: 128×128×16, 1024²×16, 2048²×32 all
+measure rel 1.0 (whole y regions zero), while 4096×4096×16 passes exact
+and 2048³/4096³/8192³ pass. Repro (dump via dump_mw_4096_f16acc's
+k16_128 entry + ptx_gemm_bench):
+
+    MW_SMEM=16384 BRIEV_GEMM_F16ACC=1 ptx_gemm_bench ship_k16_128.cubin \
+        128 128 16 0 4096 36872 256 1 check
+
+The k16-4096 and k16-128 kernels are structurally identical
+(constant-normalized diff is empty) — so the trigger is the small
+constants/grid, not the code path. Candidate areas: the prologue
+fill/predicate interaction at tiny K, the KLOOP fill-skip guard
+(`r2 >= k-16` is true from kstep 0 at K=16), or a driver/check artifact
+at small M·N. E8a's stage-1 (odd-kstep) corruption is plausibly the same
+root cause — stage-1 stripes are the first "beyond-prologue" fills.
+Priority: HIGH — it gates E8a and any small-K GEMM (decode-shaped
+attention head matrices are K=64-128 territory).
+
+**RESOLVED 2026-09-13 (same day):** most "failures" were driver-arg
+mismatches (manual y_off used M·N·2 where the dump bakes M·K·2 — equal
+only when K=N). ONE real kernel bug found and fixed: the mid-loop
+`cp.async.commit_group` fired even when the fill was skipped (K=16 makes
+the fill-skip guard always-true), and the empty-group + tail
+`wait_group 0` path returned all-zero y. Fix: commit moved inside the
+fill path (skipped fills don't commit). All sweep shapes + recorded
+portfolio green post-fix; no perf regression beyond window noise. See
+docs/plans/2026-09-13-kle32-small-m-anomaly.md. E8a's stage-1 failure is
+independent and still open.

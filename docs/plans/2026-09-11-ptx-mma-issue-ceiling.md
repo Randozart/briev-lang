@@ -568,3 +568,120 @@ actually emits, or make the dump read the same constant.
    2 CTAs at 128 regs) is unexplored.
 3. **2048³ boundary**: PTX 27.9 vs coopmat 27.7 — confirm which tier
    the dispatcher picks and document the crossover.
+
+### E4c: (2,4)@256T f16acc pairing — SHIPPED 2026-09-13
+
+**Hypothesis.** The DRAM-real microbench (2026-09-13) proved the kernel
+mma-schedule-bound, not fill-bound. The (4,4)@512T CTA runs 16 warps
+against the 2 mma pipes with a 24KB stage pair; an 8-warp CTA with 4
+co-resident CTAs/SM (16KB smem, 64 regs × 256T = 16384 regs — exactly
+4 CTAs by the register file) interleaves 4 independent fill/ldmatrix/mma
+pipelines per SM and halves the bar.sync domain.
+
+**Experiment (interleaved A/B, same window, MW_SMEM set per variant).**
+
+| shape  | (4,4)@512T baseline | (2,4)@256T E4c | (4,2)@256T walker-default |
+|--------|--------------------:|---------------:|--------------------------:|
+| 2048³  | 27.91–28.10         | **31.39–31.55** | 27.75–29.01              |
+| 4096³  | 34.38–34.59         | **35.08–35.59** | 30.74–31.18              |
+| 8192³  | 34.20–34.22         | **36.27–36.39** | —                        |
+
+(4,2) refutes the naive "drop the cap to 256" fix — the nw-heavy aspect
+is the win, not the thread count: warps stacked along N replicate
+A-fragment reads across the warp row.
+
+**Correctness** (BRIEV_GEMM_F16ACC=1 gate): 2048³ 1.546e-3, 4096³
+5.208e-3, 8192³ 9.115e-3 (identical to the (4,4) full-K signatures),
+k16 0.0 exact. E2E: `brievc build examples/gpu/gemm_2048x2048x2048.abv
+--backend ptx --config-dir <f16>` emits threads=256 smem=16384; the
+default (f32) path is byte-identical before/after ((4,2)@256T/32768).
+
+**Dispatch change.** `thread_cap` 512→256 for all tiers (f32 was already
+256) + `walk_order(mhr)`: mhr≥4 grows nw-first ([(2,2),(1,2),(2,1)]),
+mhr=2 keeps mw-first so the f32 (4,2) landing is preserved. Odd/skinny
+shapes stop on divisibility guards before the order matters — (96,4096)
+still falls back to (1,1).
+
+**Process traps hit this window (BUGS.md):** MW_SMEM unset → smem=0
+launch → IMA storm that looked like a kernel bug; ptxas
+`-maxrregcount=128` on the natural-64 kernel PESSIMIZES to 80 regs
+(occupancy 2→1 CTA/SM, −28% TF) — assemble f16acc with the production
+cap 64 only.
+
+### E5a: cross-kstep B lookahead — REJECTED 2026-09-13 (post-E4c)
+
+**Hypothesis.** With E4c's 256T geometry the ledger's stated cure ("all 8
+B + 2 A fragments live across the phase boundary, +18 regs") fits the
+register file: a second B set (79 regs natural) keeps 3 CTAs/SM. The mma
+would consume register-resident B, hiding all ldmatrix latency behind the
+previous kstep's tensor stream.
+
+**Implementation.** `ptx_tensor_b_lookahead` knob (default off, byte-
+identical off-path, E2E-diffed); parity-branched mma blocks, prologue
+preload, guarded tail prefetch — emitters in `emit_e5a_*`. Emission
+verified stable across the helper extraction (79 regs, 34.46 TF pre/post).
+
+**Result (interleaved A/B ×3-4, MW_SMEM=16384):**
+
+| shape  | E4c cluster | E5a lookahead |
+|--------|------------:|--------------:|
+| 2048³  | 31.1–31.4   | 30.2–30.3     |
+| 4096³  | 35.3–35.6   | 34.4–34.7     |
+| 8192³  | 36.3        | 34.5          |
+
+Correctness identical signatures (1.5e-3 / 5.2e-3; k16 exact).
+
+**Why it loses.** Three compounding costs, one doubtful gain:
+1. The tail prefetch is NOT earlier in the dependency chain — the mma of
+   kstep s+1 still waits ~fill-issue + A-lds past the B lds, the same
+   distance the E4a cluster's first mma waits past its own lds. ptxas
+   already interleaves the cluster's lds with the fill issue.
+2. 79 regs → 3 CTAs/SM: the occupancy-heals-fills effect (probe round 2)
+   is worth ~1.5 TF per CTA slot — gone, worst where fills dominate
+   (8192³, −5%).
+3. Post-barrier smem burst: the tail B lds from all 8 warps issue
+   simultaneously after the bar, instead of being staggered by mma
+   completion times inside the compute cluster.
+
+The lookahead may return for stages≥3 / k32-deep pipelines where the
+dependency distance argument genuinely changes; the knob stays as the
+instrument. Default off; ship path byte-identical.
+
+### E5b: B-region bank de-phase — REJECTED 2026-09-13 (post-E4c)
+
+**Hypothesis.** A at +0 and B at +8192 are both ≡0 mod 128 (same bank
+phase); a 32B pad (+8 banks, 16B ldmatrix alignment kept) lets A and B
+ldmatrix from co-resident warps co-issue instead of serializing on shared
+bank groups.
+
+**Result (interleaved A/B ×4, pad=32, smem 16448, 64 regs / 4 CTAs/SM):**
+E4c 35.43/35.85/35.82/35.49 vs E5b 33.62/34.79/34.94/35.12 — loses 4/4
+by 1-2 TF at 4096³. Correctness identical (5.208e-3).
+
+**Verdict.** The same-bank-serialization model is dead: same-warp
+ldmatrix issue serializes on the LSU regardless of banks, and cross-warp
+phase collision is already staggered by warp scheduling. The aligned
+layout is neutral-or-better. `ptx_tensor_bsmem_pad` knob kept default-0
+(one-line additive in the generator; instrument for future smem-layout
+work). No further pad sweep — the mechanism is refuted, not under-tuned.
+
+### E5d: (2,8)@512T probe — REJECTED 2026-09-13 (closes the E-series)
+
+**Hypothesis.** nw-width beyond the E4c point (128×256 tile, 16 warps,
+24KB stages) buys deeper B reuse per warp row.
+
+**Result (interleaved A/B ×3):** E4c 35.49–35.62 vs E5d 33.43–33.78 —
+loses 3/3. Same pattern as (4,4)@512T and (4,2)@256T: 16-warp bar.sync
+domains and fewer CTAs/SM lose to the 8-warp/4-CTA point on this part.
+
+**E-series close (2026-09-13).** The config space within the current
+kernel structure is now swept: (4,4)@512T, (4,2)@256T, (2,4)@256T,
+(2,8)@512T; stages 2 vs 4; cross-kstep lookahead; smem bank de-phase.
+**(2,4)@256T warp_mh=4 stages=2 is the measured optimum at 35.5 TF
+(4096³, 84.5% of the 42-TF cuBLAS anchor; 8192³ 36.3 = 86%).** The
+residual ~7 TF to the E1f@4-CTA analog (42.5) is structural: reaching it
+needs k32 ksteps or wider tiles, both of which buy fill-traffic savings
+with register/smem costs that every E5 experiment showed are hostile at
+this occupancy sweet spot. Next lever in this direction is a k32 kstep
+(halves fill bytes per FLOP) benched at 8192³ first — where fills weigh
+heaviest — before any 4096³ integration.
