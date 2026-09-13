@@ -85,3 +85,42 @@ Every probe rides config knobs defaulting to the ship config; the E2E
 ship path must diff byte-identical. Knobs: `ptx_tensor_stages`,
 `ptx_tensor_ksteps_per_stage` (added only if their probe wins; dump-test
 artifacts otherwise).
+
+## E6 VERDICT (2026-09-13): the doctrine loses — occupancy dominates
+
+| Probe | Config | 2048³ | 4096³ | 8192³ | Verdict |
+|---|---|---:|---:|---:|---|
+| P1 | stages=3 | — | — | — | **structurally invalid** (see below) |
+| P2 | stages=4 (32KB, 3 CTA) | −4% | −2% | −1% | REJECTED |
+| P3 | kps=2·s2 (32KB, 3 CTA) | −4% | −3% | −3% | REJECTED |
+| P4 | kps=2·s4 (64KB, 1 CTA) | — | −18% | — | REJECTED |
+
+All interleaved A/B ×2-4 same-window; correctness identical signatures
+(1.546e-3 / 5.208e-3 / 9.115e-3) after the strip-loop fix.
+
+**P1/P4 stage-count discovery:** stage indexing wraps with
+`& (stages-1)` — non-power-of-2 stages silently alias and corrupt
+(a stages=3 dump measured 2.4e-2, 5× over the gate, before the
+`debug_assert!(stages.is_power_of_two())` went in). The literal
+CUTLASS-default point (3 stages) is structurally unreachable; true-
+modulo stage math would buy it if ever needed.
+
+**P3 fill-strip discovery:** both fill emitters bake the 16-k strip
+into their D-decomposition (A: `D>>5` = M-row; B: `D&1023` k-mask) —
+a kps=2 stage fill overruns M and wraps the B swizzle. Fix: the fills
+loop per-strip (`for strip in 0..kps`) with `dst_off`/strip-adjusted
+source offsets; kps=1 emits byte-identical code.
+
+**The lesson.** Every deeper-pipeline axis (stages, K-depth, register
+lookahead) pays a CTA slot on this 28-SM/100KB part, and the lost fill
+streams cost more than the saved latency/rhythm. The E4c point —
+(2,4)@256T warp_mh=4, stages=2, K16, 16KB, 4 CTAs/SM — has now survived
+challenges from five directions (tiles ×4, stages ×2, k-depth ×2,
+register lookahead, bank layout). The external doctrine's deeper
+pipelines are tuned for parts with ≥164KB smem (A100) where fat 1-2-CTA
+kernels win; GA106's budget inverts the tradeoff. **35.5 TF @4096³
+(84.5% of anchor) and 36.3 @8192³ (86%) stand as the measured optimum
+for this kernel architecture on this part.**
+
+Ship path byte-identical (E2E-diffed post-refactor); knobs
+`ptx_tensor_ksteps_per_stage` (1) kept default-off as instruments.

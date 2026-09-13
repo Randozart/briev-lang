@@ -165,6 +165,14 @@ pub struct IrLoweringSettings {
     /// groups. Costs pad·stages bytes of smem. 0 = the historical aligned
     /// layout.
     pub ptx_tensor_bsmem_pad: u32,
+    /// 2026-09-13 (E6 P3, plan 2026-09-13-e6-ampere-doctrine-stages-and-
+    /// kdepth): ksteps per smem stage — the fill+wait+bar cadence fires
+    /// every kps-th 16-k kstep instead of every kstep, halving the E1d
+    /// fill-rhythm cost per FLOP at unchanged register pressure. Stage
+    /// buffers are kps× larger (32KB at kps=2 → 3 CTAs/SM). Eligibility
+    /// gate: k % (16·kps) == 0 (no partial-stage fills). 1 = the
+    /// historical per-kstep cadence.
+    pub ptx_tensor_ksteps_per_stage: u32,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -271,6 +279,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_f16acc: false,
     ptx_tensor_b_lookahead: false,
     ptx_tensor_bsmem_pad: 0,
+    ptx_tensor_ksteps_per_stage: 1,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -495,6 +504,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_tensor_bsmem_pad", 0)
             .map(|v| v.max(0).min(992) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_bsmem_pad),
+        ptx_tensor_ksteps_per_stage: db
+            .field_int("ptx_tensor_ksteps_per_stage", 1)
+            .map(|v| v.clamp(1, 2) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_ksteps_per_stage),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)
