@@ -1890,6 +1890,7 @@ mod r16_dump {
     /// E5b (2026-09-13): B-region bank de-phase — pad=32 shifts the B smem
     /// region +8 banks vs A (16B ldmatrix alignment kept); smem grows by
     /// pad·stages (16384+64 → MW_SMEM=16448 on the driver).
+    /// REJECTED on-device — kept as the reference instrument.
     #[test]
     fn dump_e5b_bsmem_pad() {
         for (m, k, tag) in [
@@ -1903,6 +1904,22 @@ mod r16_dump {
                 m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, false, 32,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5b_{tag}.ptx"), &ptx).unwrap();
+        }
+    }
+
+    /// E5d (2026-09-13): (2,8)@512T warp_mh=4 — 16-warp 128x256 tile. Tests
+    /// whether nw-width beyond the E4c (2,4)@256T point helps (deeper B
+    /// reuse per warp row) or the 16-warp bar.sync domain + 24KB stages
+    /// cost more. smem (4096+8192)*2 = 24576.
+    #[test]
+    fn dump_e5d_mw2nw8() {
+        for (m, k, tag) in [(2048i64, 2048i64, "2048"), (4096, 4096, "4096")] {
+            let b_off = m * k * 2;
+            let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
+            let ptx = tensor_gemm_ptx_smem_mw(
+                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 8, true, 2, 4,
+            );
+            std::fs::write(&format!("/tmp/opencode/tgemm_e5d_{tag}.ptx"), &ptx).unwrap();
         }
     }
 

@@ -664,3 +664,24 @@ phase collision is already staggered by warp scheduling. The aligned
 layout is neutral-or-better. `ptx_tensor_bsmem_pad` knob kept default-0
 (one-line additive in the generator; instrument for future smem-layout
 work). No further pad sweep — the mechanism is refuted, not under-tuned.
+
+### E5d: (2,8)@512T probe — REJECTED 2026-09-13 (closes the E-series)
+
+**Hypothesis.** nw-width beyond the E4c point (128×256 tile, 16 warps,
+24KB stages) buys deeper B reuse per warp row.
+
+**Result (interleaved A/B ×3):** E4c 35.49–35.62 vs E5d 33.43–33.78 —
+loses 3/3. Same pattern as (4,4)@512T and (4,2)@256T: 16-warp bar.sync
+domains and fewer CTAs/SM lose to the 8-warp/4-CTA point on this part.
+
+**E-series close (2026-09-13).** The config space within the current
+kernel structure is now swept: (4,4)@512T, (4,2)@256T, (2,4)@256T,
+(2,8)@512T; stages 2 vs 4; cross-kstep lookahead; smem bank de-phase.
+**(2,4)@256T warp_mh=4 stages=2 is the measured optimum at 35.5 TF
+(4096³, 84.5% of the 42-TF cuBLAS anchor; 8192³ 36.3 = 86%).** The
+residual ~7 TF to the E1f@4-CTA analog (42.5) is structural: reaching it
+needs k32 ksteps or wider tiles, both of which buy fill-traffic savings
+with register/smem costs that every E5 experiment showed are hostile at
+this occupancy sweet spot. Next lever in this direction is a k32 kstep
+(halves fill bytes per FLOP) benched at 8192³ first — where fills weigh
+heaviest — before any 4096³ integration.
