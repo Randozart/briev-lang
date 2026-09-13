@@ -77,3 +77,28 @@ structurally cannot.
 
 All fences behind the existing `ptx_tensor_warp_spec` knob (default
 off); ship cubin byte-identical throughout.
+
+## E8a fence-fix attempt (2026-09-13, session close)
+
+1. **`fence.proxy.async.shared::cta` is ptxas-rejected on sm_86**
+   ("Modifier '.async' requires .target sm_90 or higher") — the CUTLASS
+   gating was accurate; the fence route is dead on this part.
+2. **Generic-proxy producer variant implemented** (st.shared producers:
+   `ld.global.nc.v4` + `st.shared.v4`, payload regs %r29-%r32, async
+   commit/wait dropped — generic-to-generic ordering through bar.sync is
+   the documented-clean path). STILL incorrect: rel 0.6-1.0 across
+   K=512..2048, deterministic worst elements, ZERO zero-elements in y
+   (all written, systematically wrong values).
+3. **Observed K-correlation**: K≤1024 → all-zero y; K=1536 → ~half;
+   K=2048 → ~3/4 of ref. More ksteps = more correct. Grid sizes
+   differed per shape (16-256 CTAs), confounding K with grid.
+4. Ad-hoc harness prints (partial refs, DtoH-overwritten state) added
+   noise — a dedicated single-CTA instrumented ws test is the required
+   next step, not more driver archaeology.
+
+**State**: ws code default-off; ship cubin byte-identical; 2199 lib
+tests green. The stage-1 defect survives four fill mechanisms and both
+proxies — the remaining suspects are the barrier PHASE semantics across
+reuse (named-barrier state after release), the peel/loop barrier
+sequence, or an emitter slip neither audit caught. Fresh session, fresh
+eyes, single-CTA instrument.

@@ -1031,7 +1031,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // k_global*b_row (const stripe add in the prologue, dynamic kstep
     // block in the K loop). The last tuple element is the within-chunk
     // byte mask (0 at the 16B rung = swizzle-unit copies, no offset add).
-    let mut emit_b_fill = |out: &mut String, r18_prelude: &str, dst_off: usize, lanes: usize| {
+    let mut emit_b_fill = |out: &mut String, r18_prelude: &str, dst_off: usize, lanes: usize, sync_stores: bool| {
         // E8a: per-lane scaling mirrors the A fill (see there).
         let per_b_l = per_b as usize * threads as usize / lanes;
         let (copies, width, modifier, chunk_mask) = if per_b_l % 4 == 0 {
@@ -1082,10 +1082,14 @@ fn tensor_gemm_ptx_smem_mw_opt(
                 out.push_str("    mov.u32 %r16, %r12;\n");
             }
             out.push_str("    add.u32 %r16, %r16, %r19;\n");
-            out.push_str(&format!(
-                "    cp.async.{}.shared.global [%r16], [%rd5], {};\n",
-                modifier, width
-            ));
+            if sync_stores {
+                out.push_str("    ld.global.nc.v4.u32 {%r29, %r30, %r31, %r32}, [%rd5];\n    st.shared.v4.u32 [%r16], {%r29, %r30, %r31, %r32};\n");
+            } else {
+                out.push_str(&format!(
+                    "    cp.async.{}.shared.global [%r16], [%rd5], {};\n",
+                    modifier, width
+                ));
+            }
         }
     };
     // Shared A-fill emitter (2026-09-12 DRY merge of the prologue and
@@ -1093,7 +1097,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // and passes the per-site source-offset adjustment (`src_off`) — the
     // constant stripe add in the prologue, the dynamic kstep block in the
     // K loop.
-    let mut emit_a_fill = |out: &mut String, src_off: &str, dst_off: usize, lanes: usize| {
+    let mut emit_a_fill = |out: &mut String, src_off: &str, dst_off: usize, lanes: usize, sync_stores: bool| {
         // E8a: per-lane work scales with the issuing lane count — the
         // producer path (64 lanes) covers the same stage bytes as the
         // cooperative fill (256 lanes) with 4x the copies per lane.
@@ -1130,10 +1134,14 @@ fn tensor_gemm_ptx_smem_mw_opt(
                         out.push_str("    mov.u32 %r16, %r12;\n");
                     }
                     out.push_str("    add.u32 %r16, %r16, %r14;\n");
-                    out.push_str(&format!(
-                        "    cp.async.{}.shared.global [%r16], [%rd5], {};\n",
-                        modifier, width
-                    ));
+                    if sync_stores {
+                        out.push_str("    ld.global.nc.v4.u32 {%r29, %r30, %r31, %r32}, [%rd5];\n    st.shared.v4.u32 [%r16], {%r29, %r30, %r31, %r32};\n");
+                    } else {
+                        out.push_str(&format!(
+                            "    cp.async.{}.shared.global [%r16], [%rd5], {};\n",
+                            modifier, width
+                        ));
+                    }
                 }
             }
             None => {
@@ -1160,7 +1168,11 @@ fn tensor_gemm_ptx_smem_mw_opt(
                         out.push_str("    mov.u32 %r16, %r12;\n");
                     }
                     out.push_str("    add.u32 %r16, %r16, %r14;\n");
-                    out.push_str("    cp.async.ca.shared.global [%r16], [%rd5], 4;\n");
+                    if sync_stores {
+                        out.push_str("    ld.global.u32 %r29, [%rd5];\n    st.shared.u32 [%r16], %r29;\n");
+                    } else {
+                        out.push_str("    cp.async.ca.shared.global [%r16], [%rd5], 4;\n");
+                    }
                 }
             }
         }
@@ -1196,6 +1208,14 @@ fn tensor_gemm_ptx_smem_mw_opt(
             out.push_str("    .reg .u32  %r27, %r28;\n");
         }
         out.push_str("    .reg .pred %p2;\n");
+        if warp_spec {
+            // E8a synchronous-store payload (ld.global.nc.v4 -> st.shared.v4):
+            // ptxas rejects fence.proxy.async on sm_86, so cross-warp
+            // cp.async visibility has no documented ordering - the producer
+            // fills through the GENERIC proxy instead, where bar.sync's
+            // ordering guarantee applies to both sides.
+            out.push_str("    .reg .u32  %r29, %r30, %r31, %r32;\n");
+        }
     }
     // E7 (plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec): the
     // grid-stride tile loop walks %r1 (the ctaid register itself — dead
@@ -1486,7 +1506,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
             } else {
                 String::new()
             };
-            emit_a_fill(&mut out, &src_off, strip * asmem_buf, threads as usize);
+            emit_a_fill(&mut out, &src_off, strip * asmem_buf, threads as usize, false);
         }
         // B fill into stage s. Layout contract (must mirror the B ldmatrix
         // reader below): the slab is K-MAJOR — smem byte D = slab*2048 +
@@ -1516,7 +1536,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
                 }
                 s
             };
-            emit_b_fill(&mut out, &r18_prelude, strip * bsmem_buf, threads as usize);
+            emit_b_fill(&mut out, &r18_prelude, strip * bsmem_buf, threads as usize, false);
         }
         if warp_spec {
             out.push_str(&format!("PS{}:\n", s));
@@ -1788,7 +1808,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
         ));
         out.push_str("    add.u32 %r12, %r12, %r17;\n");
         let koff_src_off = "    mov.u32 %r16, %r2;\n    add.u32 %r16, %r16, 16;\n    mul.lo.u32 %r16, %r16, 2;\n    add.u32 %r15, %r15, %r16;\n";
-        emit_a_fill(&mut out, koff_src_off, 0, 64);
+        emit_a_fill(&mut out, koff_src_off, 0, 64, true);
         // B fill into the same stage; %r17 is re-derived as the emitter's
         // k-row before the prelude consumes it (same contract as KLOOP).
         out.push_str("    mov.u32 %r12, %r22;\n");
@@ -1801,9 +1821,10 @@ fn tensor_gemm_ptx_smem_mw_opt(
             "    mov.u32 %r18, %r2;\n    add.u32 %r18, %r18, 16;\n    add.u32 %r18, %r18, %r17;\n    mul.lo.u32 %r18, %r18, {};\n",
             b_row
         );
-        emit_b_fill(&mut out, &koff_r18_prelude, 0, 64);
-        out.push_str("    cp.async.commit_group;\n");
-        out.push_str("    cp.async.wait_group 0;\n");
+        emit_b_fill(&mut out, &koff_r18_prelude, 0, 64, true);
+        // Generic-proxy stores: the producer's own membar publishes them;
+        // the consumer's bar.sync acquires. No async groups exist on this
+        // path - the commit/wait pair would be empty and is omitted.
         out.push_str("    membar.cta;\n");
         out.push_str("    bar.arrive 1, 320;\n");
         out.push_str("    add.u32 %r2, %r2, 16;\n");
@@ -1866,7 +1887,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
             s.push_str("    add.u32 %r15, %r15, %r16;\n");
             s
         };
-        emit_a_fill(&mut out, &koff_src_off, strip * asmem_buf, threads as usize);
+        emit_a_fill(&mut out, &koff_src_off, strip * asmem_buf, threads as usize, false);
     }
 
     // Cooperative B fill into the fill stage. Same k-major swizzled contract
@@ -1891,7 +1912,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
             s.push_str(&format!("    mul.lo.u32 %r18, %r18, {};\n", b_row));
             s
         };
-        emit_b_fill(&mut out, &koff_r18_prelude, strip * bsmem_buf, threads as usize);
+        emit_b_fill(&mut out, &koff_r18_prelude, strip * bsmem_buf, threads as usize, false);
     }
     // The commit lives INSIDE the fill path (before FILL_DONE): skipped
     // fills must not commit. An EMPTY mid-loop commit_group + the tail
@@ -2233,6 +2254,9 @@ mod r16_dump {
         for (m, k, tag) in [
             (128i64, 128i64, "128"),
             (128i64, 16i64, "k16"),
+            (512i64, 512i64, "k512"),
+            (1024i64, 1024i64, "k1024"),
+            (1536i64, 1536i64, "k1536"),
             (2048i64, 2048i64, "2048"),
             (4096, 4096, "4096"),
             (8192, 8192, "8192"),
