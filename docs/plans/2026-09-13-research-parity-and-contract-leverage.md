@@ -102,3 +102,25 @@ proxies — the remaining suspects are the barrier PHASE semantics across
 reuse (named-barrier state after release), the peel/loop barrier
 sequence, or an emitter slip neither audit caught. Fresh session, fresh
 eyes, single-CTA instrument.
+
+## E8a single-CTA isolation (2026-09-13, session close)
+
+**Isolated (with corrected y_off args):** 128-wide single-CTA ladder —
+K=16 (consumer-only) **PASSES exact**; K=32 (one producer fill) FAIL
+0.608; K=64/96/128 FAIL ~0.59-0.61. **The consumer path is exact; the
+producer's fill data is wrong.** The earlier "K≤32 small-M" scare was
+driver args; the producer-fill defect is real and E8a-specific.
+
+Eliminated across two sessions: async-proxy ordering (generic-proxy
+st.shared variant fails identically), producer fill addressing (audited
+4× — D-mapping, stage base, stripe offset, slab↔ng mapping all exact),
+barrier pairing/counts, the peel order, the %r5 rebase, the y-pass
+guard. Hand-patched PTX probes proved too error-prone (the cooperative
+variant introduced its own IMA) — the next instrument must be built in
+the generator: a `ws_debug` mode that stores each kstep's acc chunk to a
+separate y region (per-kstep dump), turning "which kstep/warp/slab is
+wrong" into a single read.
+
+**Parity path unchanged:** E1f bound 42.5 = parity, gated on this one
+defect. The contract-leverage campaign (gpu_schedule) is independent of
+it and carries the FlashAttention-class upside.
