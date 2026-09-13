@@ -45,3 +45,8 @@ target.arm64: 32; 4.0; 4; 1;
 target.wasm32: 4294967295; 4.0; 4; 1;
 target.wasm64: 4294967295; 4.0; 4; 1;
 target.spirv64: 32; 4.0; 4; 1;
+// 2026-09-14 (machine-entry plan): riscv64 bare metal (QEMU virt et al) —
+// M-mode machine-timer/soft interrupts; field 4 names the ISR mechanism row
+// (config/isr-targets.dbvl) that mechanism-less `node @ vector` declarations
+// resolve through.
+target.riscv64: 32; 4.0; 0; riscv_machine;

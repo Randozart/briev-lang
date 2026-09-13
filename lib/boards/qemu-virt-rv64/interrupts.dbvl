@@ -1,0 +1,12 @@
+// QEMU virt board interrupt vectors (machine mode, hart 0).
+// Baked into the binary via include_str! — read by
+// address_resolver::resolve_isr_vector for `node <name> @ <vector>`
+// wiring (machine-entry plan 2026-09-14; SPEC §13.2).
+//
+// Row shape: <name>: <slot>;
+//
+// Sources: QEMU virt CLINT (Sifive clint0 @ 0x02000000) —
+//   MSIP (software) = mcause code 3, MTIP (machine timer) = code 7.
+
+timer_irq: 7;
+software_irq: 3;

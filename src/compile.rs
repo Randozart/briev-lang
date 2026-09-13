@@ -275,7 +275,20 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // and trg instance expressions before type checking.
     resolve_comptime_refs(&pm, &mut items)?;
     let mut universe = TypeUniverse::new();
-    check_types(&mut items, &universe, opts.isr_mechanism.as_deref())?;
+    // 2026-09-14 (machine-entry plan): effective mechanism — CLI override,
+    // else the target profile's row (keyed by triple, longest prefix).
+    let check_isr_mechanism = opts.isr_mechanism.clone()
+        .or_else(|| briev_compiler::config_tuning::target_settings_for(
+            opts.triple_override.as_deref().unwrap_or("")).isr_mechanism)
+        .or_else(|| briev_compiler::config_tuning::target_settings_for(
+            &get_extension(&opts.file_path))
+            .isr_mechanism.take())
+        .or_else(|| {
+            load_target_config(opts).lookup(&get_extension(&opts.file_path))
+                .and_then(|e| e.target_triple.clone())
+                .and_then(|t| briev_compiler::config_tuning::target_settings_for(&t).isr_mechanism)
+        });
+    check_types(&mut items, &universe, check_isr_mechanism.as_deref())?;
     // 2026-08-04: term termination diagnostics — unreachable code after a
     // terminating `term <value>`/`term! <value>` and the bare-term-guard
     // hint. Runs here (typed AST, pre-normalizer) so the backend never sees
@@ -1187,6 +1200,11 @@ fn codegen(
             .lookup(&get_extension(&opts.file_path))
             .and_then(|e| e.target_triple.clone()))
         .unwrap_or_else(|| default_triple.to_string());
+    // 2026-09-14 (machine-entry plan): the effective ISR mechanism — CLI
+    // override, else the target profile's row (the inference source for
+    // mechanism-less `node @ vector` declarations).
+    let effective_isr_mechanism = opts.isr_mechanism.clone()
+        .or_else(|| briev_compiler::config_tuning::target_settings_for(&tuning_triple).isr_mechanism);
     let analysis = briev_compiler::backend::analyze_program(
         items,
         false,
@@ -1282,7 +1300,7 @@ fn codegen(
             }
             // 2026-09-06 (ISR plan): the profile's ISR mechanism — the
             // configured default for mechanism-less `isr` declarations.
-            if let Some(ref mech) = opts.isr_mechanism {
+            if let Some(ref mech) = effective_isr_mechanism {
                 b = b.with_isr_mechanism(Some(mech.clone()));
             }
             let target_config = load_target_config(opts);
@@ -1370,7 +1388,7 @@ fn codegen(
             }
             // 2026-09-06 (ISR plan): the profile's ISR mechanism — the
             // configured default for mechanism-less `isr` declarations.
-            if let Some(ref mech) = opts.isr_mechanism {
+            if let Some(ref mech) = effective_isr_mechanism {
                 b = b.with_isr_mechanism(Some(mech.clone()));
             }
             let target_config = load_target_config(opts);
@@ -1473,7 +1491,7 @@ fn codegen(
             }
             // 2026-09-06 (ISR plan): the profile's ISR mechanism — the
             // configured default for mechanism-less `isr` declarations.
-            if let Some(ref mech) = opts.isr_mechanism {
+            if let Some(ref mech) = effective_isr_mechanism {
                 b = b.with_isr_mechanism(Some(mech.clone()));
             }
             let target_config = load_target_config(opts);

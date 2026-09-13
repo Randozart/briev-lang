@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, OnceLock};
 
 /// Per-target codegen tuning (plan §8.1).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TargetSettings {
     /// Register-pressure budget for vector-phi promotion.
     pub float_registers: usize,
@@ -31,6 +31,10 @@ pub struct TargetSettings {
     pub dense_compute_density: f64,
     /// Minimum isomorphic-group width for vector-phi promotion.
     pub vector_min_width: usize,
+    /// 2026-09-14 (machine-entry plan): the target's ISR mechanism row —
+    /// the inference source for mechanism-less `node @ vector` declarations.
+    /// None = the target declares no machine-entry convention (hosted).
+    pub isr_mechanism: Option<String>,
 }
 
 /// Global (target-independent) IR lowering tuning (plan §8.2).
@@ -223,6 +227,7 @@ pub const DEFAULT_TARGET_SETTINGS: TargetSettings = TargetSettings {
     float_registers: 16,
     dense_compute_density: 4.0,
     vector_min_width: 4,
+    isr_mechanism: None,
 };
 
 const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
@@ -305,7 +310,7 @@ pub fn target_settings_for(triple: &str) -> TargetSettings {
             best = Some((prefix.len(), settings));
         }
     }
-    best.map(|(_, s)| *s).unwrap_or(DEFAULT_TARGET_SETTINGS)
+    best.map(|(_, s)| s.clone()).unwrap_or_else(|| DEFAULT_TARGET_SETTINGS.clone())
 }
 
 /// Is the triple's prefix known to config/targets.dbvl?
@@ -338,12 +343,16 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
             .field_int(&key, 2)
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_TARGET_SETTINGS.vector_min_width);
+        // 2026-09-14 (machine-entry plan): field 3 — the target's ISR
+        // mechanism row (inference source for `node @ vector`).
+        let isr_mechanism = db.field_string(&key, 3).map(|v| v.to_string());
         out.insert(
             prefix.to_string(),
             TargetSettings {
                 float_registers,
                 dense_compute_density,
                 vector_min_width,
+                isr_mechanism,
             },
         );
     }
