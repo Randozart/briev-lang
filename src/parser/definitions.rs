@@ -86,7 +86,7 @@ impl<'a> Parser<'a> {
             Some(Token::Txn) => self
                 .parse_transaction(false, false)
                 .map(TopLevel::Transaction),
-            Some(Token::Node) => self.parse_node().map(TopLevel::Transaction),
+            Some(Token::Node) => self.parse_node_item(),
             // 2026-08-01 (Phase 3c): `sync<group> node name ...` — a reactive
             // node classified into a group barrier. Members that fire hold off
             // finishing until all fired members have (rule #21 classification).
@@ -333,7 +333,7 @@ impl<'a> Parser<'a> {
                 if self.tokens.get(self.pos + 1).map(|(t, _)| t) == Some(&Token::LParen) {
                     self.parse_stage_block().map(TopLevel::StageBlock)
                 } else {
-                    let name = self.expect_identifier()?;
+        let name = self.expect_identifier()?;
                     self.error_unknown_item(&name, "top-level item")
                 }
             }
@@ -915,17 +915,81 @@ impl<'a> Parser<'a> {
     /// A node is a reactive state machine — no parameters, no return value.
     /// It fires automatically when its precondition is true.
     fn parse_node(&mut self) -> Result<Transaction, SyntaxError> {
+        // 2026-09-14 (machine-entry plan): sync/accel wrappers demand an
+        // ordinary reactor-dispatched node — a wired event node is
+        // machine-fired and takes no classification.
+        match self.parse_node_item()? {
+            TopLevel::Transaction(t) => Ok(t),
+            TopLevel::IsrHandler(_) => self.error_at_current(
+                "a machine-serviced event node (`node @ vector`) cannot be \
+                 sync-wrapped or async",
+            ),
+            _ => self.error_at_current("expected a node"),
+        }
+    }
+
+    /// Parse a `node` declaration in either form — reactor-dispatched
+    /// (`node name [pre][post] { … }`) or machine-serviced
+    /// (`node name @ <vector> [pre][post] { … }`, the `isr` keyword
+    /// dissolved). 2026-09-14 (machine-entry plan).
+    fn parse_node_item(&mut self) -> Result<TopLevel, SyntaxError> {
         self.pos += 1; // consume 'node'
         // 2026-07-21: Optional 'async' modifier after node keyword.
         // node async signals that the compiler should dispatch this
         // transaction in parallel when write sets are disjoint.
         let is_async = self.eat(&Token::Async);
         let name = self.expect_identifier()?;
+        let name_span = self
+            .tokens
+            .get(self.pos - 1)
+            .map(|(_, s1)| s1.clone())
+            .unwrap_or(0..0);
         // 2026-08-22 (Phase 7a, SPEC §9.5): `node apply_damage()` — an EMPTY
         // parameter list is legal in source (nodes take no parameters); the
         // parens are tolerated and skipped.
         if self.eat(&Token::LParen) {
             self.expect(Token::RParen)?;
+        }
+        // 2026-09-14 (machine-entry plan): `node name @ <vector> [pre][post]`
+        // — a machine-serviced event node (the `isr` keyword dissolved).
+        // The wiring is a literal slot number or a board `interrupts.dbvl`
+        // name; the mechanism comes from the active target profile.
+        if self.check(&Token::At) {
+            self.pos += 1;
+            let vector = match self.peek() {
+                Some(Token::Integer(n)) => {
+                    let n = *n;
+                    self.pos += 1;
+                    Expr::Decimal(n)
+                }
+                Some(Token::Identifier(v)) => {
+                    let v = v.clone();
+                    self.pos += 1;
+                    Expr::Identifier(v)
+                }
+                _ => {
+                    return self.error_at_current(
+                        "expected a vector slot number or a board interrupts.dbvl \
+                         name after '@'",
+                    );
+                }
+            };
+            let contract = self.parse_contract()?;
+            let body = if self.check(&Token::LBrace) {
+                self.parse_block()?
+            } else {
+                Vec::new()
+            };
+            self.eat(&Token::Semicolon);
+            return Ok(TopLevel::IsrHandler(crate::ast::IsrHandler {
+                mechanism: None,
+                vector,
+                name,
+                params: vec![],
+                contract,
+                body,
+                span: Span::new(name_span.start, name_span.end, 0, 0),
+            }));
         }
         // node has no parameters and no return value (purely reactive)
         let contract = self.parse_contract()?;
@@ -936,7 +1000,7 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
         let derivation = self.parse_derivation_block()?;
-        Ok(Transaction {
+        Ok(TopLevel::Transaction(Transaction {
             name,
             is_reactive: true,
             is_async,
@@ -951,7 +1015,7 @@ impl<'a> Parser<'a> {
             modifiers: vec![],
             span: None,
             doc: self.take_doc(),
-        })
+        }))
     }
 
     /// Parse: `bootstrap node name [<handoff-postcondition>] { body };`

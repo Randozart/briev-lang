@@ -30,7 +30,7 @@ let printed: Int = 0;
 // and service only the timer (code 7, interrupt bit set → negative i64).
 // Contract: every trap path leaves a valid count (non-timer traps exit
 // without ticking; the timer path advances by one).
-isr<riscv_machine> handler @ 7: timer_tick() [ticks >= 0][ticks >= 0] {
+node timer_tick @ 7 [ticks >= 0][ticks >= 0] {
     let cause: Int = Asm#("raw", "csrrs $0, mcause, zero", 0);
     when cause < 0 && (cause & 15) == 7 {
         ticks = ticks + 1;

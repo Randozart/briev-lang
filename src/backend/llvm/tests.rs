@@ -8973,3 +8973,22 @@ fn test_bootstrap_body_inlines_at_main_head_and_stays_out_of_dispatch() {
     // Ordinary nodes still dispatch.
     assert!(ir.contains(".ssb_reporter"), "reporter dispatches:\n{ir}");
 }
+
+#[test]
+fn test_node_at_vector_dissolves_isr_keyword() {
+    // `node tick @ 7 [..] { … }` — machine-serviced event node syntax. The
+    // parser desugars to the same IsrHandler representation; the mechanism
+    // comes from the target profile (inference), so the emitted scaffold is
+    // identical to the explicit-isr form.
+    let src = "node tick @ 7 [true][n >= 0] { n = n; };\n\
+               let n: Int = 0;\n";
+    let program = parse_isr_program(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new())
+        .with_isr_mechanism(Some("riscv_machine".to_string()));
+    let ir = backend.generate(&program, None);
+    assert!(ir.contains("define void @tick() naked noinline align 4 {"),
+        "wired node emits the service scaffold:\n{ir}");
+    assert!(ir.contains("call __isr_body_tick"), "typed body called:\n{ir}");
+    assert!(ir.contains("mret"), "returns via mret:\n{ir}");
+}
