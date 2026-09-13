@@ -1853,7 +1853,15 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
     if shared {
         cmd.args(["-O3", "-flto", "-shared", "-fPIC", ll_path]);
     } else {
-        cmd.args(["-O3", "-flto", "-march=native", "-ffast-math", ll_path]);
+        cmd.arg("-O3");
+        // 2026-09-13: skip -march=native for cross-compilation targets
+        // (e.g. riscv64-unknown-none) where it's invalid.
+        let is_native = triple.starts_with("x86_64") || triple.contains("linux");
+        if is_native {
+            cmd.arg("-march=native");
+            cmd.arg("-flto");
+        }
+        cmd.args(["-ffast-math", ll_path]);
     }
     // 2026-09-10 (Family F): a program whose IR carries the backend-owned
     // `_start` (module asm) and references no runtime objects is FREESTANDING
@@ -1870,6 +1878,11 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
     };
     if freestanding {
         cmd.args(["-nostdlib", "-no-pie", "-ffreestanding"]);
+        // 2026-09-13: for non-linux targets, use lld (GNU ld may not support
+        // the target arch — e.g. riscv64 emulation is missing from binutils ld).
+        if !triple.contains("linux") {
+            cmd.arg("-fuse-ld=lld");
+        }
         // 2026-09-13 (rv64 capability kernel): linker script passthrough.
         // Read the linker script path from the IR (the backend emits a module
         // asm comment `; linker: <path>` when configured). If present, pass
@@ -1882,6 +1895,18 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
             })
         {
             cmd.arg(format!("-T{}", ld_path));
+        }
+        // 2026-09-13: for riscv64 bare-metal, link compiler-rt helpers
+        // (unsigned division/modulo intrinsics that LLVM emits).
+        if triple.starts_with("riscv64") {
+            // Resolve relative to the workspace root (Cargo.toml dir).
+            let workspace_root = std::env::var("CARGO_MANIFEST_DIR")
+                .unwrap_or_else(|_| ".".to_string());
+            let crt_path = std::path::PathBuf::from(&workspace_root)
+                .join("lib/runtime/compiler_rt_rv64.c");
+            if crt_path.exists() {
+                cmd.arg(crt_path);
+            }
         }
     } else {
         for obj in extra_objects {

@@ -16,5 +16,5 @@
 //   the compiler freedom to allocate; a clobbering template belongs in raw
 //   mode where the author owns the fallout.
 
-Prefetch: "1"; "x86_64:prefetcht0 ($1)"; "aarch64:prfm pldl1keep [$1]";
-Rdtsc: "0"; "x86_64:rdtsc";
+Prefetch: "1"; "x86_64:prefetcht0 ($1)"; "aarch64:prfm pldl1keep [$1]"; "riscv64:lw zero, 0($1)";
+Rdtsc: "0"; "x86_64:rdtsc"; "riscv64:csrrs $0, time, zero";

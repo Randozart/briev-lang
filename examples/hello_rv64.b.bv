@@ -1,0 +1,20 @@
+// Minimal QEMU virt rv64 UART hello — writes directly to NS16550A.
+// UART0 base: 0x10000000, THR: +0x00
+//
+// For bare-metal, we hardcode the VolatileStore# calls rather than using
+// foreach on String (which pulls in briev_str_next_char → int_to_str →
+// malloc, memcpy, float ops — too much for freestanding).
+//
+// Execution: _start → reactor → entry node ([beginprogram]) → 6x
+// VolatileStore# to UART0 THR → halt → wfi spin.
+
+node entry [beginprogram][true] {
+    let uart: Ptr<Int> = 0x10000000 as Ptr<Int>;
+    VolatileStore#(uart, 98);   // 'b'
+    VolatileStore#(uart, 114);  // 'r'
+    VolatileStore#(uart, 105);  // 'i'
+    VolatileStore#(uart, 101);  // 'e'
+    VolatileStore#(uart, 118);  // 'v'
+    VolatileStore#(uart, 10);   // '\n'
+    halt;
+};
