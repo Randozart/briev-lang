@@ -1672,6 +1672,14 @@ impl LlvmBackend {
         self
     }
 
+    /// 2026-09-13 (rv64 capability kernel): optional linker script path.
+    /// When set, the backend emits `; linker: <path>` in the IR so the linker
+    /// driver can pass `-T<path>` to the linker.
+    pub fn with_linker_script(mut self, path: Option<String>) -> Self {
+        self.ctx.linker_script = path;
+        self
+    }
+
     /// 2026-09-06 (plan 2026-09-06-isr-handlers-and-sections.md): the active
     /// target profile's ISR mechanism — the configured default the backend
     /// consumes for mechanism-less `isr` declarations (the typechecker
@@ -1754,6 +1762,11 @@ impl LlvmBackend {
         self.ctx.data_layout = match triple {
             "wasm32-unknown-wasi" | "wasm32-unknown-unknown" => {
                 Some("e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20".to_string())
+            }
+            t if t.starts_with("riscv64") => {
+                // 2026-09-13 (rv64 capability kernel): RV64GC data layout.
+                // 64-bit pointers, 128-bit integers, 128-bit aligned stack.
+                Some("e-m:e-p:64:64-i64:64-i128:128-n32:64-S128".to_string())
             }
             _ => {
                 // Default x86_64 data layout
@@ -5049,6 +5062,36 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 writeln!(out, "define void @_start() naked noinline {{").ok();
                 writeln!(out, "entry:").ok();
                 writeln!(out, "  call void asm sideeffect \"ldr x0, [sp]; add x1, sp, 8; ldr x2, [sp]; add x3, sp, 16; add x2, x3, x2, lsl 3; adrp x4, __briev_environ; str x2, [x4, :lo12:__briev_environ]; bl main; mov x8, 94; svc 0\", \"~{{x0}},~{{x1}},~{{x2}},~{{x3}},~{{x4}},~{{memory}}\" ()").ok();
+                writeln!(out, "  unreachable").ok();
+                writeln!(out, "}}").ok();
+            }
+        } else if self.ctx.is_embedded {
+            // 2026-09-13 (rv64 capability kernel): bare-metal freestanding
+            // entry for non-linux targets (riscv64-unknown-none, thumbv7em-...).
+            // The linker script must provide: _stack_top, _bss_start, _bss_end,
+            // and optionally _heap_start/_heap_end.
+            // QEMU -kernel sets a0=hartid, a1=dtb_addr on riscv64;
+            // on Cortex-M the vector table sets SP and calls Reset_Handler
+            // which we model as entry(hartid=0, dtb=0).
+            let triple = self.ctx.target_triple.clone();
+            writeln!(out, "@llvm.used = appending global [1 x ptr] [ptr @main]").ok();
+            if triple.starts_with("riscv64") {
+                // riscv64 bare-metal _start:
+                //   sp = _stack_top
+                //   zero .bss
+                //   call main(hartid, dtb)
+                //   halt (spin wfi)
+                writeln!(out, "define void @_start() naked noinline {{").ok();
+                writeln!(out, "entry:").ok();
+                writeln!(out, "  call void asm sideeffect \"la sp, _stack_top; la t0, _bss_start; la t1, _bss_end; bgeu t0, t1, 2f; 1: sd zero, 0(t0); addi t0, t0, 8; bltu t0, t1, 1b; 2: jal zero, main; 1: wfi; j 1b\", \"~{{t0}},~{{t1}},~{{memory}}\" ()").ok();
+                writeln!(out, "  unreachable").ok();
+                writeln!(out, "}}").ok();
+            } else if triple.starts_with("thumb") || triple.starts_with("arm") {
+                // ARM Cortex-M: the vector table already sets SP and calls
+                // Reset_Handler. We just need to call main and halt.
+                writeln!(out, "define void @_start() naked noinline {{").ok();
+                writeln!(out, "entry:").ok();
+                writeln!(out, "  call void asm sideeffect \"bl main; 1: wfi; b 1b\", \"~{{memory}}\" ()").ok();
                 writeln!(out, "  unreachable").ok();
                 writeln!(out, "}}").ok();
             }

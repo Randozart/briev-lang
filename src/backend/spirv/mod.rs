@@ -1514,6 +1514,8 @@ async node fill [i < N][i == N] {
             dev: false,
             accel_cpu_fallback: None,
             isr_mechanism: None,
+            triple_override: None,
+            linker_script_override: None,
         };
         let (mut items, mut universe) =
             crate::pipeline::compile_to_typed(&path, src, &opts).expect("pipeline");
@@ -1853,6 +1855,8 @@ async node gemm [i < M * N][i == M * N] {
             dev: false,
             accel_cpu_fallback: None,
             isr_mechanism: None,
+            triple_override: None,
+            linker_script_override: None,
         };
         let (mut items, mut universe) =
             crate::pipeline::compile_to_typed(&path, src, &opts).expect("pipeline");

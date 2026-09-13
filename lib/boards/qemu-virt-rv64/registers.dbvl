@@ -1,0 +1,19 @@
+// QEMU virt board — register-level detail (NS16550A UART).
+//
+// NS16550A register map (8-bit aligned):
+//   0x00  RBR/THR (receive/transmit holding register)
+//   0x01  IER (interrupt enable register)
+//   0x02  IIR/FCR (interrupt identification / FIFO control)
+//   0x03  LCR (line control register)
+//   0x04  MCR (modem control register)
+//   0x05  LSR (line status register)
+//   0x06  MSR (modem status register)
+//   0x07  SCR (scratch register)
+
+>schema Register from "map.dbv"
+UART0_RBR: 0x00; 8; ro;
+UART0_THR: 0x00; 8; wo;
+UART0_IER: 0x01; 8; rw;
+UART0_LCR: 0x03; 8; rw;
+UART0_LSR: 0x05; 8; ro;
+UART0_MCR: 0x04; 8; rw;

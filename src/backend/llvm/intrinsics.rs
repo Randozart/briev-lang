@@ -1265,37 +1265,72 @@ fn emit_len(
 
 // ─── SysCall# — raw OS syscall ───────────────────────────────────────
 
-/// Resolve a PascalCase abstract op name to a syscall number (x86_64).
+/// Resolve a PascalCase abstract op name to a syscall number.
 /// 2026-07-15: Single mapping table for all OS operations.
-fn resolve_syscall_number(op: &str) -> Option<i64> {
-    Some(match op {
-        "Read" => 0, "Write" => 1, "Open" => 2, "Close" => 3,
-        "Stat" => 4, "FStat" => 5, "LSeek" => 8, "Mmap" => 9,
-        "Munmap" => 11, "Brk" => 12, "RtSigAction" => 13,
-        "RtSigProcmask" => 14, "IoCtl" => 16, "Pipe" => 22,
-        "SchedYield" => 24, "NanoSleep" => 35,
-        "GetPid" => 39, "GetPPid" => 40, "Socket" => 41,
-        "Connect" => 42, "Accept" => 43, "Send" => 44,
-        "Recv" => 45, "SendTo" => 44, "RecvFrom" => 45,
-        "Bind" => 49, "Listen" => 50, "Exit" => 60,
-        "Fcntl" => 72, "FTruncate" => 77, "GetCwd" => 79,
-        "ChDir" => 80, "MkDir" => 83, "RmDir" => 84,
-        "Unlink" => 87, "Dup" => 32, "Dup2" => 33,
-        "FSync" => 74, "MkDt" => 85, "ReadLink" => 89,
-        "ChMod" => 90, "ChOwn" => 92, "Clone" => 56,
-        "GetEgid" => 108, "GetEuid" => 107, "GetGid" => 104,
-        "GetPgid" => 109, "GetSid" => 124,
-        "GetSockOpt" => 55, "GetUid" => 102, "Mlock" => 149,
-        "Mprotect" => 10, "SetSockOpt" => 54,
-        "ShmGet" => 29, "Shutdown" => 48, "UMask" => 95,
-        "ShmAt" => 30, "ShmDt" => 31, "SemGet" => 64,
-        "SemOp" => 65, "SemCtl" => 66, "ClockGetTime" => 228,
-        "ClockSetTime" => 229, "Futex" => 202,
-        "GetRandom" => 318, "Openat" => 257,
-        "Membarrier" => 324, "CopyFileRange" => 326,
-        "PRead" => 17, "PWrite" => 18,
-        _ => return None,
-    })
+/// 2026-09-13 (rv64 capability kernel): target-aware — riscv64 numbers
+/// differ from x86_64 for the same abstract op.
+fn resolve_syscall_number(op: &str, triple: &str) -> Option<i64> {
+    if triple.starts_with("riscv64") {
+        // riscv64 Linux syscall numbers (asm-generic /unistd.h)
+        Some(match op {
+            "Read" => 63, "Write" => 64, "Open" => 56, "Close" => 57,
+            "Stat" => 179, "FStat" => 80, "LSeek" => 62, "Mmap" => 222,
+            "Munmap" => 215, "Brk" => 214, "RtSigAction" => 134,
+            "RtSigProcmask" => 135, "IoCtl" => 29, "Pipe" => 59,
+            "SchedYield" => 124, "NanoSleep" => 101,
+            "GetPid" => 172, "GetPPid" => 173, "Socket" => 198,
+            "Connect" => 203, "Accept" => 202, "Send" => 211,
+            "Recv" => 207, "SendTo" => 206, "RecvFrom" => 209,
+            "Bind" => 200, "Listen" => 201, "Exit" => 93,
+            "Fcntl" => 25, "FTruncate" => 46, "GetCwd" => 17,
+            "ChDir" => 49, "MkDir" => 34, "RmDir" => 35,
+            "Unlink" => 36, "Dup" => 22, "Dup2" => 23,
+            "FSync" => 72, "MkDt" => 33, "ReadLink" => 78,
+            "ChMod" => 55, "ChOwn" => 53, "Clone" => 220,
+            "GetEgid" => 177, "GetEuid" => 175, "GetGid" => 176,
+            "GetPgid" => 180, "GetSid" => 182,
+            "GetSockOpt" => 204, "GetUid" => 174, "Mlock" => 221,
+            "Mprotect" => 226, "SetSockOpt" => 208,
+            "ShmGet" => 194, "Shutdown" => 210, "UMask" => 166,
+            "ShmAt" => 195, "ShmDt" => 196, "SemGet" => 193,
+            "SemOp" => 192, "SemCtl" => 191, "ClockGetTime" => 113,
+            "ClockSetTime" => 114, "Futex" => 98,
+            "GetRandom" => 278, "Openat" => 56,
+            "Membarrier" => 283, "CopyFileRange" => 285,
+            "PRead" => 67, "PWrite" => 68,
+            _ => return None,
+        })
+    } else {
+        // x86_64 Linux syscall numbers (asm/unistd_64.h)
+        Some(match op {
+            "Read" => 0, "Write" => 1, "Open" => 2, "Close" => 3,
+            "Stat" => 4, "FStat" => 5, "LSeek" => 8, "Mmap" => 9,
+            "Munmap" => 11, "Brk" => 12, "RtSigAction" => 13,
+            "RtSigProcmask" => 14, "IoCtl" => 16, "Pipe" => 22,
+            "SchedYield" => 24, "NanoSleep" => 35,
+            "GetPid" => 39, "GetPPid" => 40, "Socket" => 41,
+            "Connect" => 42, "Accept" => 43, "Send" => 44,
+            "Recv" => 45, "SendTo" => 44, "RecvFrom" => 45,
+            "Bind" => 49, "Listen" => 50, "Exit" => 60,
+            "Fcntl" => 72, "FTruncate" => 77, "GetCwd" => 79,
+            "ChDir" => 80, "MkDir" => 83, "RmDir" => 84,
+            "Unlink" => 87, "Dup" => 32, "Dup2" => 33,
+            "FSync" => 74, "MkDt" => 85, "ReadLink" => 89,
+            "ChMod" => 90, "ChOwn" => 92, "Clone" => 56,
+            "GetEgid" => 108, "GetEuid" => 107, "GetGid" => 104,
+            "GetPgid" => 109, "GetSid" => 124,
+            "GetSockOpt" => 55, "GetUid" => 102, "Mlock" => 149,
+            "Mprotect" => 10, "SetSockOpt" => 54,
+            "ShmGet" => 29, "Shutdown" => 48, "UMask" => 95,
+            "ShmAt" => 30, "ShmDt" => 31, "SemGet" => 64,
+            "SemOp" => 65, "SemCtl" => 66, "ClockGetTime" => 228,
+            "ClockSetTime" => 229, "Futex" => 202,
+            "GetRandom" => 318, "Openat" => 257,
+            "Membarrier" => 324, "CopyFileRange" => 326,
+            "PRead" => 17, "PWrite" => 18,
+            _ => return None,
+        })
+    }
 }
 
 /// 2026-07-26: Emit SysCall# — first arg is op (Int raw number or PascalCase
@@ -1429,7 +1464,7 @@ fn emit_syscall(
     let num_reg = match &args[0] {
         Expr::Decimal(n) => format!("{}", n),
         Expr::Identifier(op) => {
-            let n = resolve_syscall_number(op)
+            let n = resolve_syscall_number(op, &backend.ctx.target_triple)
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| {
                     eprintln!("SysCall#: unknown abstract op '{}', using 0", op);
@@ -1463,6 +1498,15 @@ fn emit_syscall(
         // aarch64 Linux: inline svc #0
         // Args in x0-x5, output in x0. No clobbers beyond the ABI (kernel preserves).
         writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x0}},{{x1}},{{x2}},{{x3}},{{x4}},{{x5}}\" ({}",
+            indent, v, all_args.join(", ")).ok();
+        writeln!(out, "{}  )", indent).ok();
+    } else if triple.starts_with("riscv64") {
+        // 2026-09-13 (rv64 capability kernel): riscv64 Linux syscall ABI.
+        // a7 = syscall number, a0-a5 = args, ecall instruction, result in a0.
+        // On bare metal (non-linux), ecall traps to M-mode — same instruction,
+        // different handler. The constraint string uses a0-a5 + a7 as inputs,
+        // a0 as output. Clobbers: memory (kernel may touch any address).
+        writeln!(out, "{}{} = call i64 asm sideeffect \"ecall\", \"={{a0}},{{a7}},{{a0}},{{a1}},{{a2}},{{a3}},{{a4}},{{a5}},~{{memory}}\" ({}",
             indent, v, all_args.join(", ")).ok();
         writeln!(out, "{}  )", indent).ok();
     } else {

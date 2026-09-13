@@ -520,6 +520,11 @@ impl LlvmBackend {
             writeln!(out, "target datalayout = \"{}\"", dl).ok();
         }
         writeln!(out, "target triple = \"{}\"", self.ctx.target_triple).ok();
+        // 2026-09-13 (rv64 capability kernel): linker script path comment.
+        // compile.rs reads `; linker: <path>` and passes -T<path> to the linker.
+        if let Some(ref ld) = self.ctx.linker_script {
+            writeln!(out, "; linker: {}", ld).ok();
+        }
     }
 
     /// Emit LLVM struct type declarations for user-defined struct types.

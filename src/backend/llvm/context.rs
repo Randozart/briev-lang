@@ -324,6 +324,10 @@ pub atomic_fields: std::collections::HashMap<String, String>,
 
     // Embedded mode
     pub is_embedded: bool,
+    /// 2026-09-13 (rv64 capability kernel): optional linker script path.
+    /// When set, the backend emits `; linker: <path>` in the IR so compile.rs
+    /// can pass `-T<path>` to the linker driver.
+    pub linker_script: Option<String>,
     /// 2026-09-06 (ISR plan): the active target profile's ISR mechanism —
     /// the configured default for mechanism-less `isr` declarations.
     pub isr_mechanism: Option<String>,
@@ -520,6 +524,7 @@ impl CompilerContext {
                     .to_string(),
             ),
             is_embedded: false,
+            linker_script: None,
             isr_mechanism: None,
             state_is_global: false,
             type_universe: None,

@@ -247,6 +247,8 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut sysquery_files: Vec<String> = Vec::new();
     let mut int_bits = 64u64;
     let mut accel_cpu_fallback: Option<u64> = None;
+    let mut triple_override: Option<String> = None;
+    let mut linker_script_override: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -364,6 +366,14 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             let val = args.get(i + 1).ok_or("--target requires a target name argument")?;
             target_name = Some(val.clone());
             i += 2;
+        } else if arg == "--triple" {
+            let val = args.get(i + 1).ok_or("--triple requires a triple argument (e.g., riscv64-unknown-none)")?;
+            triple_override = Some(val.clone());
+            i += 2;
+        } else if arg == "--linker-script" {
+            let val = args.get(i + 1).ok_or("--linker-script requires a path argument")?;
+            linker_script_override = Some(val.clone());
+            i += 2;
         } else if arg == "--sysquery" {
             let val = args.get(i + 1).ok_or("--sysquery requires a key=value argument")?;
             let parts: Vec<&str> = val.splitn(2, '=').collect();
@@ -432,6 +442,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         disable_plugins,
         enable_plugins,
         trg_unresolved_action,
+        explain_causality,
         extra_objects: vec![],
         shared,
         library_mode,
@@ -459,6 +470,8 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         dev: false,
         accel_cpu_fallback,
         isr_mechanism: None,
+        triple_override,
+        linker_script_override,
     })
 }
 
@@ -487,7 +500,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         disable_plugins: vec![],
         enable_plugins: vec![],
         trg_unresolved_action: briev_compiler::backend::llvm::TrgUnresolvedAction::Warn,
-        explain_causality: explain_causality,
+        explain_causality: false,
         extra_objects: vec![],
         shared: false,
         library_mode: false,
@@ -515,6 +528,8 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         dev: false,
         accel_cpu_fallback: None,
         isr_mechanism: None,
+        triple_override: None,
+        linker_script_override: None,
     };
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;

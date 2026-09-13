@@ -49,6 +49,9 @@ pub struct TargetEntry {
     /// in the := verification chain. Default 50.
     #[serde(default = "default_cross_verify_samples")]
     pub cross_verify_samples: u32,
+    /// 2026-09-13 (rv64 capability kernel): optional linker script path
+    /// for freestanding targets. Passed as -T<path> to the linker driver.
+    pub linker_script: Option<String>,
 }
 
 fn default_assembler() -> String { "none".to_string() }
@@ -323,6 +326,7 @@ impl TargetConfig {
                     .unwrap_or_else(default_cross_verify_samples),
                 target_triple: db.field_string(&key, 5).map(|s| s.to_string()),
                 data_layout: db.field_string(&key, 6).map(|s| s.to_string()),
+                linker_script: db.field_string(&key, 7).map(|s| s.to_string()),
             };
             entries.insert(key, entry);
         }
@@ -351,6 +355,7 @@ impl TargetConfig {
                         .unwrap_or_else(default_cross_verify_samples),
                     target_triple: db.field_string(&key, 5).map(|s| s.to_string()),
                     data_layout: db.field_string(&key, 6).map(|s| s.to_string()),
+                    linker_script: db.field_string(&key, 7).map(|s| s.to_string()),
                 };
                 entries.insert(key, entry);
             }

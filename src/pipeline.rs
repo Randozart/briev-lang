@@ -257,6 +257,12 @@ pub struct BuildOptions {
     /// the configured default behind mechanism-less `isr` declarations.
     /// Populated from briev.toml [target.<name>] isr_mechanism.
     pub isr_mechanism: Option<String>,
+    /// 2026-09-13 (rv64 capability kernel): explicit LLVM target triple override.
+    /// Set via --triple CLI flag. Takes precedence over dbvl target_triple.
+    pub triple_override: Option<String>,
+    /// 2026-09-13 (rv64 capability kernel): explicit linker script path override.
+    /// Set via --linker-script CLI flag. Takes precedence over dbvl linker_script.
+    pub linker_script_override: Option<String>,
 }
 
 pub struct PreprocessedSource {
@@ -704,6 +710,8 @@ pub fn check_source(file_path: &str, source: &str) -> Result<(), String> {
         dev: false,
         accel_cpu_fallback: None,
         isr_mechanism: None,
+        triple_override: None,
+        linker_script_override: None,
     };
     let (_items, _universe) = parse_and_check(file_path, source, &default_opts)?;
     println!("OK");

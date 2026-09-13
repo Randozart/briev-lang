@@ -1,0 +1,14 @@
+// QEMU virt board — peripheral base-address table.
+//
+// Memory map (rv64, -bios none):
+//   0x02000000  CLINT (timer + software interrupts)
+//   0x0c000000  PLIC (interrupt controller)
+//   0x10000000  UART0 (NS16550A)
+//   0x10001000  Virtio MMIO (0x10001000 + 0x200 × N)
+//   0x00101000  Real-Time Clock (Goldfish)
+//   0x80000000  RAM (128 MB default)
+
+>schema Device from "map.dbv"
+CLINT: 0x02000000; 0xC000;
+PLIC: 0x0C000000; 0x4000000;
+UART0: 0x10000000; 0x100;

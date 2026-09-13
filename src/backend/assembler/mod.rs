@@ -174,6 +174,7 @@ mod tests {
             data_layout: None,
             assembler: "unknown_value".into(),
             cross_verify_samples: 50,
+            linker_script: None,
         };
         let asm = get_assembler(&entry);
         assert_eq!(asm.name(), "none", "unknown assembler should fall back to stub");
@@ -189,6 +190,7 @@ mod tests {
             data_layout: None,
             assembler: "none".into(),
             cross_verify_samples: 50,
+            linker_script: None,
         };
         let asm = get_assembler(&entry);
         assert_eq!(asm.name(), "none");
@@ -204,6 +206,7 @@ mod tests {
             data_layout: None,
             assembler: "platform".into(),
             cross_verify_samples: 50,
+            linker_script: None,
         };
         let asm = get_assembler(&entry);
         assert_eq!(asm.name(), "platform");

@@ -1182,9 +1182,10 @@ fn codegen(
         BackendKind::Webstack => "wasm32-unknown-wasi",
         _ => "x86_64-unknown-linux-gnu",
     };
-    let tuning_triple = load_target_config(opts)
-        .lookup(&get_extension(&opts.file_path))
-        .and_then(|e| e.target_triple.clone())
+    let tuning_triple = opts.triple_override.clone()
+        .or_else(|| load_target_config(opts)
+            .lookup(&get_extension(&opts.file_path))
+            .and_then(|e| e.target_triple.clone()))
         .unwrap_or_else(|| default_triple.to_string());
     let analysis = briev_compiler::backend::analyze_program(
         items,
@@ -1291,6 +1292,18 @@ fn codegen(
                 if let Some(ref dl) = entry.data_layout {
                     b = b.with_data_layout(dl);
                 }
+                // 2026-09-13 (rv64 capability kernel): linker script from target profile.
+                if entry.linker_script.is_some() {
+                    b = b.with_linker_script(entry.linker_script.clone());
+                }
+            }
+            // 2026-09-13 (rv64 capability kernel): CLI overrides for triple
+            // and linker script take precedence over dbvl settings.
+            if let Some(ref triple) = opts.triple_override {
+                b = b.with_target_triple(triple);
+            }
+            if opts.linker_script_override.is_some() {
+                b = b.with_linker_script(opts.linker_script_override.clone());
             }
             // Register proto declarations on the casting graph
             if let Some(ref mut graph) = b.ctx.casting_graph {
@@ -1814,7 +1827,25 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
 /// 2026-07-26: Added `protocol_libs` parameter — library names from
 /// `from #System` frgns are passed as `-l<lib>` flags to clang.
 fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathBuf], protocol_libs: &[String], shared: bool) -> Result<(), String> {
+    let ll_text = std::fs::read_to_string(ll_path)
+        .map_err(|e| format!("cannot read '{}': {}", ll_path, e))?;
+    // Extract target triple from the IR (first line: target triple = "..."`)
+    let triple = ll_text.lines()
+        .find(|l| l.starts_with("target triple"))
+        .and_then(|l| {
+            let start = l.find('"')?.checked_add(1)?;
+            let end = l.rfind('"')?;
+            Some(l[start..end].to_string())
+        })
+        .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
     let mut cmd = Command::new("clang");
+    // 2026-09-13 (rv64 capability kernel): cross-compilation support.
+    // For non-native triples, pass --target=<triple> so clang selects the
+    // correct assembler/linker and sysroot. For freestanding triples (non-linux),
+    // pass -ffreestanding (implies -nobuiltininc, freestanding libc semantics).
+    if !triple.contains("linux") || triple.contains("unknown") {
+        cmd.arg(format!("--target={}", triple));
+    }
     // 2026-07-26: briev_rt.c is no longer hardcoded here — frgn declarations in
     // stdlib (e.g., `frgn __print_int from "lib/runtime/briev_rt.c"`) are compiled
     // by collect_extra_objects and passed via extra_objects. This removes the
@@ -1831,8 +1862,6 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
     let freestanding = if shared {
         false
     } else {
-        let ll_text = std::fs::read_to_string(ll_path)
-            .map_err(|e| format!("cannot read '{}': {}", ll_path, e))?;
         // The owned _start marker is the contract: the IR references no
         // briev_rt.c/libc symbols (the backend gate proved it), so the
         // runtime objects — including briev_rt.o, which the env.bv frgns
@@ -1840,7 +1869,20 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
         ll_text.contains("define void @_start() naked") && protocol_libs.is_empty()
     };
     if freestanding {
-        cmd.args(["-nostdlib", "-no-pie"]);
+        cmd.args(["-nostdlib", "-no-pie", "-ffreestanding"]);
+        // 2026-09-13 (rv64 capability kernel): linker script passthrough.
+        // Read the linker script path from the IR (the backend emits a module
+        // asm comment `; linker: <path>` when configured). If present, pass
+        // -T <path> to the linker.
+        if let Some(ld_path) = ll_text.lines()
+            .find(|l| l.contains("; linker: "))
+            .and_then(|l| {
+                let start = l.find("; linker: ")?.checked_add(10)?;
+                Some(l[start..].trim().to_string())
+            })
+        {
+            cmd.arg(format!("-T{}", ld_path));
+        }
     } else {
         for obj in extra_objects {
             cmd.arg(obj.as_os_str());
@@ -2203,6 +2245,7 @@ node go [done == false][done == true] {
             disable_plugins: vec![],
             enable_plugins: vec![],
             trg_unresolved_action: TrgUnresolvedAction::Warn,
+            explain_causality: false,
             extra_objects: vec![],
             shared: false,
             library_mode: false,
@@ -2230,6 +2273,8 @@ node go [done == false][done == true] {
             dev: false,
             accel_cpu_fallback: None,
             isr_mechanism: None,
+            triple_override: None,
+            linker_script_override: None,
         }
     }
 
