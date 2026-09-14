@@ -8524,6 +8524,58 @@ fn test_volatile_intrinsics_emit_typed_accesses() {
     assert!(ir.contains("inttoptr"), "boxed-address re-materialization expected:\n{ir}");
 }
 
+/// 2026-09-14 (rv64-finish plan Phase 5): VolatileStore# width-adapts the
+/// value to the POINTEE type (MMIO is Ptr<Bit<32>> on 32-bit targets — an
+/// Int/i64 store would clobber the neighbouring register). The narrowing
+/// cast must be a TRUNC (i64 -> i32), not a zext — the old path compared
+/// Briev metadata via resolve_arg_bytes, which under-reports the abstract
+/// Int on narrow targets and emitted invalid `zext i64 to i32`.
+#[test]
+fn test_volatile_store_narrows_to_32_bit_pointee() {
+    let src = "let out_v: Int = 0;\n\
+        defn poke32(p: Ptr<Bit<32>>, v: Int) {\n\
+            VolatileStore#(p, v);\n\
+        };\n\
+        node n [out_v == 0][true] {\n\
+            poke32(0x40004000 as Ptr<Bit<32>>, 0x41);\n\
+            out_v = 1;\n\
+        };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = crate::parser::Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let tu = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let ir = backend.generate(&items, None);
+    assert!(ir.contains("store volatile i32"), "32-bit volatile store expected:\n{ir}");
+    assert!(!ir.contains("zext i64"), "invalid widening must not appear:\n{ir}");
+    assert!(ir.contains("trunc i64"), "i64 -> i32 narrowing must trunc:\n{ir}");
+}
+
+/// 2026-09-14 (rv64-finish plan Phase 5): Asm#("raw", …) emits the output
+/// with the earlyclobber marker. Without `&`, LLVM may alias an input
+/// register with the output when the template writes $0 before reading an
+/// input (`str $0, [$1]`) — the ARM SysTick vector-patch template
+/// self-destructed into `str r2, [r2]`.
+#[test]
+fn test_asm_raw_earlyclobber_constraint() {
+    let src = "let done: Int = 0;\n\
+        defn patch(slot: Int) {\n\
+            Asm#(\"raw\", \"mov $0, #1; str $0, [$1]\", slot);\n\
+        };\n\
+        node n [done == 0][true] {\n\
+            patch(0x3C);\n\
+            done = 1;\n\
+        };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = crate::parser::Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let tu = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let ir = backend.generate(&items, None);
+    assert!(ir.contains("\"=&r,r,~{memory}\""),
+        "earlyclobber output constraint expected:\n{ir}");
+}
+
 #[test]
 fn test_range_metadata_bounds_are_typed() {
     // A bounded i64 precondition (`[count < 10]`) emits `!range` on the

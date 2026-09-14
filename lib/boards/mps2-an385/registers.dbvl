@@ -1,0 +1,20 @@
+// MPS2-AN385 board — register-level detail (CMSDK APB UART).
+//
+// 2026-09-14 (rv64-finish plan Phase 5): UART0 on the AN385 FPGA image is
+// a CMSDK APB UART, NOT a PL011. Writes to DATA are dropped until CTRL
+// bit 0 (TXEN) is set — the hello-world demo depends on this.
+//
+// CMSDK APB UART register map (offset from 0x40004000):
+//   0x00  DATA (read = RX, write = TX)
+//   0x04  STATE (bit 0 = TXBF transmit buffer full, bit 1 = RXBF)
+//   0x08  CTRL (bit 0 = TXEN, bit 1 = RXEN)
+//   0x0C  INTSTATUS
+//   0x10  BAUDDIV
+//   0x14  INTEN
+
+>schema Register from "map.dbv"
+UART0_DATA: 0x00; 32; rw;
+UART0_STATE: 0x04; 32; ro;
+UART0_CTRL: 0x08; 32; rw;
+UART0_BAUDDIV: 0x10; 32; rw;
+UART0_INTEN: 0x14; 32; rw;

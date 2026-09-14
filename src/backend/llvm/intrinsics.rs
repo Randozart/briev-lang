@@ -871,24 +871,28 @@ fn emit_volatile_store(
     let mut val_reg = backend.emit_expr(out, &args[1], indent);
     let inner_ty = match &ptr_arg.ty { Type::Ptr(i) => *i.clone(), _ => Type::int() };
     let llvm_ty = backend.llvm_type(&inner_ty);
-    let bits_of = |t: &Type| -> u64 {
-        resolve_arg_bytes(backend, &BTypedRegister { name: String::new(), ty: t.clone() })
-            .unwrap_or(8) * 8
+    // Width compare on the EMITTED LLVM types, not the Briev metadata:
+    // the cast must be valid between the IR registers this function just
+    // materialized, and resolve_arg_bytes under-reports the abstract Int
+    // on narrow targets (Int is i64 in IR even on thumbv7m).
+    // 2026-09-14 (rv64-finish plan Phase 5): found by the ARM SysTick
+    // demo — Ptr<Bit<32>> MMIO store emitted `zext i64 -> i32`, invalid IR.
+    let llvm_bits = |t: &str| -> u64 {
+        t.strip_prefix("i").and_then(|n| n.parse().ok()).unwrap_or(64)
     };
-    if val_reg.ty != inner_ty {
-        let target_bits = bits_of(&inner_ty);
-        let val_bits = bits_of(&val_reg.ty);
-        if val_bits > target_bits {
-            let trunc = backend.fun.gen_reg();
-            writeln!(out, "{}{} = trunc {} {} to {}", indent, trunc,
-                backend.llvm_type(&val_reg.ty), val_reg.name, llvm_ty).ok();
-            val_reg.name = trunc;
-        } else if val_bits < target_bits {
-            let ext = backend.fun.gen_reg();
-            writeln!(out, "{}{} = zext {} {} to {}", indent, ext,
-                backend.llvm_type(&val_reg.ty), val_reg.name, llvm_ty).ok();
-            val_reg.name = ext;
-        }
+    let val_llvm_ty = backend.llvm_type(&val_reg.ty);
+    let target_bits = llvm_bits(&llvm_ty);
+    let val_bits = llvm_bits(&val_llvm_ty);
+    if val_bits > target_bits {
+        let trunc = backend.fun.gen_reg();
+        writeln!(out, "{}{} = trunc {} {} to {}", indent, trunc,
+            val_llvm_ty, val_reg.name, llvm_ty).ok();
+        val_reg.name = trunc;
+    } else if val_bits < target_bits {
+        let ext = backend.fun.gen_reg();
+        writeln!(out, "{}{} = zext {} {} to {}", indent, ext,
+            val_llvm_ty, val_reg.name, llvm_ty).ok();
+        val_reg.name = ext;
     }
     writeln!(out, "{}store volatile {} {}, ptr {}, align {}", indent,
         llvm_ty, val_reg.name, addr_ptr, backend.align_of(&llvm_ty)).ok();
@@ -1369,8 +1373,15 @@ fn emit_asm(
         let reg = emit_arg(backend, out, a, indent);
         regs.push(reg);
     }
-    // Constraint string: output "=r", one "r" per operand, memory clobber.
-    let mut constraints = String::from("=r");
+    // Constraint string: earlyclobber output "=&r", one "r" per operand,
+    // memory clobber. The & is load-bearing: without it LLVM may alias an
+    // input register with $0 when the template writes $0 BEFORE reading the
+    // input (e.g. `ldr $0, =sym; str $0, [$1]`) — the input silently
+    // becomes the half-written output register. 2026-09-14 (rv64-finish
+    // plan Phase 5): found by the ARM SysTick vector-patch template; the
+    // rv64 kernel templates never read an input after writing $0, so the
+    // missing & was latent there.
+    let mut constraints = String::from("=&r");
     for _ in &regs {
         constraints.push_str(",r");
     }

@@ -1,0 +1,62 @@
+// target: thumbv7m-none-eabi
+// Phase 5 (rv64-finish plan): SysTick-driven tick count on QEMU MPS2-AN385.
+//
+// Mirror of timer_rv64.b.bv on a second ISA: boot arms SysTick, the reactor
+// parks (wfi), every SysTick exception wakes it — the ISR increments `ticks`,
+// the reporter prints one decimal digit per tick. Same bootstrap / @ vector /
+// mechanism-inference pattern, zero Briev-level changes.
+//
+// Board facts (MPS2-AN385, Cortex-M3):
+//   0x40004000  UART0 DATA (CMSDK APB UART — TXEN bit 0 of CTRL 0x40004008)
+//   0xE000E010  SysTick CTRL (bit0 ENABLE, bit1 TICKINT, bit2 CLKSOURCE)
+//   0xE000E014  SysTick LOAD
+//   0xE000E018  SysTick VAL
+//   vector slot 15 = SysTick → boot-table entry at 0x3C (ZBT SRAM, writable)
+//
+// MMIO is `Ptr<Bit<32>>`: the APB bus is 32-bit, so an `Int` (64-bit
+// abstract register) store would clobber the neighbouring register
+// (SysTick CTRL + LOAD sit back-to-back). The volatile intrinsics
+// width-adapt the value to the pointee.
+//
+// The startup.S boot table at 0x0 carries Reset + spin defaults; boot patches
+// slot 15 with the ISR wrapper symbol before arming SysTick. QEMU MPS2 runs
+// the Cortex-M3 at 25 MHz → LOAD 2500000-1 = 0.1 s per tick.
+
+let ticks: Int = 0;
+let printed: Int = 0;
+
+// SysTick exception (vector 15). The arm_cortex_m mechanism wraps it with
+// the LLVM "interrupt"="IRQ" convention; the hardware stacks the caller
+// frame, the handler only needs its own locals.
+node systick @ 15 [ticks >= 0][ticks >= 0] {
+    ticks = ticks + 1;
+};
+
+// Boot and the reporter form one serialized group: the reporter reacts to
+// ticks only after boot has armed the hardware. (Rule: no implicit
+// concurrency — eligible pairs must be classified.)
+sync<timer> node boot [beginprogram][true] {
+    // UART TX on (CMSDK APB UART drops writes while TXEN is clear).
+    VolatileStore#(0x40004008 as Ptr<Bit<32>>, 1);
+
+    // Patch boot-table slot 15 (0x3C) with the SysTick wrapper address,
+    // Thumb bit set. ZBT SRAM1 is writable RAM in QEMU.
+    // $0 = output (earlyclobber), $1 = the slot address input.
+    Asm#("raw", "ldr $0, =systick; orr $0, 1; str $0, [$1]", 0x3C);
+
+    // SysTick: LOAD = 25e6-1 (0.1 s at 25 MHz), clear VAL, then
+    // CTRL = ENABLE|TICKINT|CLKSRC — CTRL last so enabling sees LOAD.
+    VolatileStore#(0xE000E014 as Ptr<Bit<32>>, 2500000 - 1);
+    VolatileStore#(0xE000E018 as Ptr<Bit<32>>, 0);
+    VolatileStore#(0xE000E010 as Ptr<Bit<32>>, 7);
+
+    // Global interrupt enable (PRIMASK clear).
+    Asm#("raw", "cpsie i", 0);
+    term;
+};
+
+sync<timer> node reporter [ticks > printed][printed == ticks] {
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 48 + (ticks % 10));
+    printed = ticks;
+    term;
+};

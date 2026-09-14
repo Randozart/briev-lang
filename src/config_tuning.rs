@@ -672,6 +672,13 @@ vector_min_width = 0
 # 2026-09-14 (machine-entry plan): riscv64 joins the golden with the
 # machine-entry era's isr_mechanism field (no TOML heritage — the parity
 # check covers the three legacy tuning fields only).
+
+[target.thumbv7m]
+float_registers = 32
+dense_compute_density = 4.0
+vector_min_width = 0
+# 2026-09-14 (rv64-finish plan Phase 5): ARM Cortex-M joins the golden the
+# same way — isr_mechanism arm_cortex_m, no TOML heritage.
 "#;
 
     #[test]

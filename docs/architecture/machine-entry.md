@@ -135,7 +135,50 @@ the task re-runs from its top, sound for stateless slice bodies.
 **Resume scheduling** (keeping the task's interrupted pc and full
 register set in its context area, copied back on switch) rides the same
 frame rewrite — the ctx_save/ctx_restore helpers in the demo are the
-seed. Both are kernel policy; the scaffold is identical.
+seed. Both are kernel policy; the scaffold is identical. (2026-09-14,
+plan `2026-09-14-rv64-finish.md`: resume scheduling is DEFERRED until the
+language has a loop construct — the parked task bodies make restart and
+resume observably identical.)
+
+## Second-architecture proof (2026-09-14)
+
+The same mechanism-inference chain boots a COMPLETELY different ISA with
+zero Briev-level changes. QEMU MPS2-AN385 (Cortex-M3) runs hello world and
+a SysTick timer via the identical `bootstrap node` / `node @ vector`
+pattern (plan `2026-09-14-rv64-finish.md` Phase 5). The target row
+(`config/targets.dbvl`: `target.thumbv7m` → `arm_cortex_m` mechanism) is
+all that differs. Board data carries what the compiler must not know:
+
+- `lib/boards/mps2-an385/startup.S` — hardware boot table (SP + Reset) and
+  the canonical bare-metal init: copy `.data` from its load address and
+  zero `.bss`. Briev globals like `briev_begin_boot` live in `.data`;
+  without the copy, RAM-starting-at-zero reads the flag as false and the
+  reactor never boots. `Default_Handler` is defined WEAK here (the
+  compiler emits its strong spin-loop only for programs that declare ISR
+  handlers).
+- `lib/targets/qemu-mps2-an385.ld` — code in ZBT SSRAM1 at 0x0 (Cortex-M
+  boots by reading the vector table there), data/stack in RAM.
+- `lib/runtime/compiler_rt_arm.{c,S}` — AEABI division shims (see below).
+
+ISA differences the pattern absorbs:
+
+- **Vector model**: RISC-V has one `mtvec` handler reading `mcause`; Cortex-M
+  has a hardware vector table. The `@ N` node resolves through the target's
+  mechanism row, which supplies the table layout (entry stride, SP slot,
+  Thumb bit) — the compiler emits the table, boot patches the SysTick slot.
+- **Bare-metal entry**: RISC-V `_start` sets `sp`, zeroes `.bss`, calls
+  `main`; Cortex-M vector table sets SP and calls Reset_Handler, which
+  does the `.data` copy / `.bss` zero then branches to the same `_start`.
+- **MMIO width**: `Int` is the abstract 64-bit register; on a 32-bit bus
+  the register is `Ptr<Bit<32>>` (a SysTick CTRL i64 store clobbers the
+  adjacent LOAD register). The volatile intrinsics width-adapt to the
+  pointee.
+- **Compiler-rt ABI**: LLVM emits `__aeabi_ldivmod` for 64-bit division on
+  Cortex-M3 (no hardware divider). The AEABI return convention (quotient
+  + remainder in r0–r3) is not expressible in C (AAPCS uses sret for a
+  >4-byte composite), so the entries are assembly. The core-call
+  convention (n in r2:r3, d as a full 8-byte stack slot, r1 free) was
+  derived from the compiled C core under qemu-arm, not assumed.
 
 ## The register shim
 
