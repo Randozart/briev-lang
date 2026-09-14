@@ -1589,7 +1589,7 @@ fn codegen(
                 return Ok((output, ".spv"));
             }
             let runner =
-                briev_compiler::backend::spirv::runner::emit_runner(items, universe, opts.int_bits, &kernels)?;
+                briev_compiler::backend::spirv::runner::emit_runner(items, universe, opts.int_bits, &kernels, Some(&analysis.gpu_schedule))?;
             let runner_path = out_path.replace(".spv", "_runner.c");
             std::fs::write(&runner_path, &runner)
                 .map_err(|e| format!("cannot write '{}': {}", runner_path, e))?;
@@ -1644,7 +1644,7 @@ fn codegen(
                 }
             }
             let runner =
-                briev_compiler::backend::spirv::runner::emit_runner(items, universe, opts.int_bits, &kernels)?;
+                briev_compiler::backend::spirv::runner::emit_runner(items, universe, opts.int_bits, &kernels, Some(&analysis.gpu_schedule))?;
             let runner_path = out_path.replace(".ptx", "_runner.c");
             std::fs::write(&runner_path, &runner)
                 .map_err(|e| format!("cannot write '{}': {}", runner_path, e))?;

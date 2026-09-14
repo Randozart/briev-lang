@@ -11,6 +11,7 @@ pub mod causality;
 pub mod cross_reference;
 pub mod dataflow;
 pub mod dependency_graph;
+pub mod gpu_schedule;
 pub mod dfa;
 pub mod entry_point;
 pub mod equality_saturation;

@@ -91,6 +91,12 @@ pub struct AnalysisResults {
     // policy, eligibility proof, kernel shape, and decision. Computed once in
     // the frontend, consumed by the LLVM backend as a deterministic switch.
     pub accel: HashMap<String, crate::analysis::accel::AccelEntry>,
+    // 2026-09-14 (gpu_schedule Phase 1, plan 2026-09-14-gpu-schedule-pass):
+    // the node read/write-set DAG — producer-before-consumer topological
+    // order + independence proofs for the GPU runner's dispatch. Computed
+    // once in the frontend, consumed by the runner emitter (frontend-driven
+    // dispatch; the backend never re-derives).
+    pub gpu_schedule: crate::analysis::gpu_schedule::GpuSchedule,
     // 2026-09-11 (Part C, Electronics Briev): contract-inferred netlist —
     // components, union-find nets from precondition pin equalities, dangling
     // diagnostics. Default (non-electronics) for every other backend; the
@@ -222,6 +228,10 @@ pub fn analyze_program(
         .collect();
     let module_metadata = collect_module_metadata(items);
     let accel = crate::analysis::accel::analyze(items, &module_metadata, type_universe);
+    // 2026-09-14 (gpu_schedule Phase 1): the node read/write-set DAG —
+    // producer-before-consumer topo order + independence proofs, consumed
+    // by the GPU runner's dispatch (frontend-driven; see the plan doc).
+    let gpu_schedule = crate::analysis::gpu_schedule::build_schedule(items, &accel);
     // 2026-09-02 (plan 2026-09-02-image-and-dehashtag, revised): image
     // storage strategy — the frontend's storage decision for texel-formatted
     // write buffers. Opt-in until measured (the coopmat precedent; promote
@@ -264,6 +274,7 @@ pub fn analyze_program(
         coll_pregrow,
         module_metadata,
         accel,
+        gpu_schedule,
         image_storage,
         spawn_pools,
         dependent_pools,

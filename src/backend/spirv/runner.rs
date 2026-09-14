@@ -20,7 +20,7 @@
 
 use crate::analysis::accel::AccelDecision;
 use crate::analysis::accel::AccelEntry;
-use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Type, UnaryOpKind};
+use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Transaction, Type, UnaryOpKind};
 use crate::backend::spirv::lower::collect_state_fields;
 use crate::backend::spirv::SpirvBuilder;
 use crate::type_universe::TypeUniverse;
@@ -380,6 +380,7 @@ pub fn emit_runner(
     universe: &TypeUniverse,
     int_bits: u64,
     kernels: &[RunnerKernel],
+    schedule: Option<&crate::analysis::gpu_schedule::GpuSchedule>,
 ) -> Result<String, String> {
     let layout = ssbo_layout(
         program,
@@ -550,10 +551,36 @@ pub fn emit_runner(
     );
     out.push_str("    int fired = 0;\n");
     let mut done_label_used = false;
-    for item in program {
-        let TopLevel::Transaction(t) = item else {
+    // 2026-09-14 (gpu_schedule Phase 1): iterate the node DAG's
+    // producer-before-consumer topological order when the frontend computed
+    // one (fallback: declaration order). The author's `phase` scalars become
+    // redundant — the DAG orders the launches and the shared device state
+    // carries the array flow.
+    let txn_by_name: std::collections::HashMap<&str, &Transaction> = program
+        .iter()
+        .filter_map(|item| {
+            if let TopLevel::Transaction(t) = item {
+                Some((t.name.as_str(), t))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let order: Vec<&str> = match schedule {
+        Some(s) if !s.order.is_empty() => s.order.iter().map(|n| n.as_str()).collect(),
+        _ => program
+            .iter()
+            .filter_map(|item| match item {
+                TopLevel::Transaction(t) => Some(t.name.as_str()),
+                _ => None,
+            })
+            .collect(),
+    };
+    for name in order {
+        let Some(t) = txn_by_name.get(name) else {
             continue;
         };
+        let t: &Transaction = t;
         let name = &t.name;
         let mut pre = String::new();
         emit_scalar_read(&t.contract.pre_condition, &fields, &consts, &mut pre)?;
