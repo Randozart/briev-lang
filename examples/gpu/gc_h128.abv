@@ -1,0 +1,19 @@
+import "std/types/float.bv";
+const M: Int = 128;
+const N: Int = 128;
+const K: Int = 128;
+let i: Int = 0;
+let a: Float16[16384];
+let b: Float16[16384];
+let y: Float16[16384];
+async node gemm [i < M * N][i == M * N] {
+    let acc: Float16 = 0.0;
+    let m: Int = i / N;
+    let n: Int = i % N;
+    foreach k in 0..K {
+        acc = acc + a[m * K + k] * b[k * N + n];
+    }
+    y[i] = acc;
+    i = i + 1;
+    term;
+};
