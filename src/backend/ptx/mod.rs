@@ -34,7 +34,8 @@ const ENTRY: &str = "main";
 /// are the DEVICE projection offsets (from `ssbo_layout`); `elem_bytes` is
 /// the array element size (4 = f32 — the only S2a operand).
 fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
-                  a_off: u64, b_off: u64, y_off: u64) -> String {
+                  a_off: u64, b_off: u64, y_off: u64,
+                  epilogue_scale: Option<f64>) -> String {
     let items = m * n;
     let mut out = String::new();
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
@@ -77,7 +78,12 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
     out.push_str("    add.u32 %r6, %r6, 1;\n");
     out.push_str("    bra.uni LOOP;\n");
     out.push_str("EXIT:\n");
-    // y[i] = acc
+    // y[i] = acc  (2026-09-14 gpu_schedule Phase 4a: an epilogue-fused
+    // consumer scale multiplies the accumulator before the store — the
+    // consumer kernel is dropped and writes directly to its output field).
+    if let Some(s) = epilogue_scale {
+        out.push_str(&format!("    mul.f32 %f1, %f1, {:e};\n", s));
+    }
     out.push_str(&format!("    mul.wide.u32 %rd5, %r3, {};\n", elem_bytes));
     out.push_str("    add.u64 %rd6, %rd4, %rd5;\n");
     out.push_str("    st.global.f32 [%rd6], %f1;\n");
@@ -291,6 +297,7 @@ pub fn build_ptx_kernels(
     universe: &TypeUniverse,
     int_bits: u64,
     entries: &std::collections::HashMap<String, crate::analysis::accel::AccelEntry>,
+    schedule: &crate::analysis::gpu_schedule::GpuSchedule,
 ) -> Result<Vec<RunnerKernel>, String> {
     let mut names: Vec<&String> = entries
         .iter()
@@ -351,6 +358,14 @@ pub fn build_ptx_kernels(
         let a_off = find_off(&plan.a_field)?;
         let b_off = find_off(&plan.b_field)?;
         let y_off = find_off(&plan.y_field)?;
+        // 2026-09-14 (gpu_schedule Phase 4a): epilogue fusion — if this GEMM
+        // is the producer of a pure-scale consumer, write the consumer's
+        // output field with the scale applied, and drop the consumer node.
+        let fusion = schedule.fusions.iter().find(|f| f.producer == *name);
+        let (y_off, epilogue_scale) = match fusion {
+            Some(f) => (find_off(&f.out_field)?, Some(f.scale)),
+            None => (y_off, None),
+        };
 
         // f16 a/b → the tensor tier (S3b mma kernel); f32 → the naive tier.
         // The tensor tier needs M%32, N%16, K%16 (warp-tile geometry).
@@ -438,7 +453,7 @@ pub fn build_ptx_kernels(
                 ));
             }
             (
-                naive_gemm_ptx(plan.m, plan.n, plan.k, a_elem, a_off, b_off, y_off),
+                naive_gemm_ptx(plan.m, plan.n, plan.k, a_elem, a_off, b_off, y_off, epilogue_scale),
                 false,
                 e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
                 64,
@@ -502,7 +517,7 @@ mod tests {
 
     #[test]
     fn naive_gemm_ptx_has_flat_grid_and_guards() {
-        let ptx = naive_gemm_ptx(64, 64, 16, 4, 0, 65536, 131072);
+        let ptx = naive_gemm_ptx(64, 64, 16, 4, 0, 65536, 131072, None);
         assert!(ptx.contains(".entry main"), "entry: {ptx}");
         assert!(ptx.contains("setp.ge.u32 %p1, %r3, 4096;"), "items guard: {ptx}");
         assert!(ptx.contains("div.u32 %r4, %r3, 64;"), "m = i/N: {ptx}");
@@ -516,7 +531,7 @@ mod tests {
 
     #[test]
     fn naive_gemm_ptx_small_shape() {
-        let ptx = naive_gemm_ptx(8, 16, 4, 4, 0, 1024, 2048);
+        let ptx = naive_gemm_ptx(8, 16, 4, 4, 0, 1024, 2048, None);
         assert!(ptx.contains("setp.ge.u32 %p1, %r3, 128;"), "8*16 items: {ptx}");
         assert!(ptx.contains("div.u32 %r4, %r3, 16;"), "N: {ptx}");
         assert!(ptx.contains("setp.ge.u32 %p2, %r6, 4;"), "K: {ptx}");

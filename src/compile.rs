@@ -1624,6 +1624,7 @@ fn codegen(
                 universe,
                 opts.int_bits,
                 &analysis.accel,
+                &analysis.gpu_schedule,
             )?;
             let out = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?;
             let out_path = out.replace(".ll", ".ptx");

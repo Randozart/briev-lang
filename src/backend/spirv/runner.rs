@@ -581,6 +581,17 @@ pub fn emit_runner(
             continue;
         };
         let t: &Transaction = t;
+        // 2026-09-14 (gpu_schedule Phase 4a): an epilogue-fused consumer's
+        // work is done by its producer's kernel — skip its dispatch entirely.
+        if let Some(s) = schedule {
+            if s.fusions.iter().any(|f| f.consumer == *name) {
+                out.push_str(&format!(
+                    "    // node '{}' fused into its producer's epilogue (skipped)\n",
+                    name
+                ));
+                continue;
+            }
+        }
         let name = &t.name;
         let mut pre = String::new();
         emit_scalar_read(&t.contract.pre_condition, &fields, &consts, &mut pre)?;

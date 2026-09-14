@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use crate::analysis::accel::AccelEntry;
 use crate::ast::Expr;
 use crate::ast::top::{Statement, TopLevel, Transaction};
+use crate::ast::BinaryOpKind;
 
 /// The scheduling DAG computed from the program's node read/write sets.
 #[derive(Debug, Clone, Default)]
@@ -31,6 +32,24 @@ pub struct GpuSchedule {
     /// Per-node read/write sets, for diagnostics and the record.
     pub reads: Vec<(String, Vec<String>)>,
     pub writes: Vec<(String, Vec<String>)>,
+    /// Epilogue-fusible pairs (Phase 4a): a GEMM producer whose output is
+    /// consumed by a pure elementwise SCALE (`out[c] = producer_y[c] * k`)
+    /// that is dead afterwards — the scale folds into the GEMM's y-store.
+    pub fusions: Vec<Fusion>,
+}
+
+/// A producer→consumer epilogue fusion: the consumer's elementwise scale
+/// is applied by the producer's kernel, and the consumer node is dropped.
+#[derive(Debug, Clone)]
+pub struct Fusion {
+    pub producer: String,
+    pub consumer: String,
+    /// The scale multiplier (the consumer's `out = in * k` constant).
+    pub scale: f64,
+    /// The consumer's output field (the fused kernel writes here).
+    pub out_field: String,
+    /// The producer's output field being scaled (dead after fusion).
+    pub in_field: String,
 }
 
 /// Why an edge exists.
@@ -308,7 +327,125 @@ pub fn build_schedule(
         names.clone()
     };
     let _ = BTreeMap::<String, usize>::new();
+
+    // Phase 4a: epilogue-fusible pairs. A RAW edge producer→consumer where
+    // the consumer is a pure elementwise scale of the producer's output
+    // (`out[c] = in[c] * k`) and `in` is the RAW field. The scale folds into
+    // the producer's y-store; the consumer node is dropped.
+    let consts = module_consts(program);
+    for (a, b, kind) in &sched.edges {
+        if *kind != EdgeKind::Raw {
+            continue;
+        }
+        let Some(consumer) = accel.get(b) else {
+            continue;
+        };
+        let Some((out_field, in_field, scale)) =
+            detect_scale(&consumer.shape.kernel_stmts, &consts)
+        else {
+            continue;
+        };
+        // The producer must WRITE `in_field` (the RAW dependency), and the
+        // consumer must be its only reader (dead-after-fusion). We check the
+        // producer side here; the "only reader" proof is the consumer being
+        // the single node with `in_field` in its reads.
+        let producer_writes_in = sched
+            .writes
+            .iter()
+            .find(|(n, _)| n == a)
+            .map(|(_, ws)| ws.iter().any(|w| w == &in_field))
+            .unwrap_or(false);
+        if !producer_writes_in {
+            continue;
+        }
+        let readers: usize = sched
+            .reads
+            .iter()
+            .filter(|(_, rs)| rs.iter().any(|r| r == &in_field))
+            .count();
+        if readers != 1 {
+            continue;
+        }
+        sched.fusions.push(Fusion {
+            producer: a.clone(),
+            consumer: b.clone(),
+            scale,
+            out_field,
+            in_field,
+        });
+    }
     sched
+}
+
+/// Detect a pure elementwise scale: `out[idx] = in[idx] * k` (or `k * in[idx]`).
+/// Returns `(out_field, in_field, k)`. `k` may be a literal or a module const.
+fn detect_scale(
+    stmts: &[Statement],
+    consts: &HashMap<String, f64>,
+) -> Option<(String, String, f64)> {
+    // Exactly one assignment.
+    let assign = stmts.iter().find_map(|s| {
+        if let Statement::Assign(lhs, rhs) = s {
+            Some((lhs, rhs))
+        } else {
+            None
+        }
+    })?;
+    let (lhs, rhs) = assign;
+    let out_field = match lhs {
+        Expr::Index(b, _) => match &**b {
+            Expr::Identifier(s) => s.clone(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let Expr::BinaryOp(BinaryOpKind::Mul, l, r) = rhs else {
+        return None;
+    };
+    let as_f = |e: &Expr| -> Option<f64> {
+        match e {
+            Expr::Float(k) => Some(*k),
+            Expr::Decimal(k) => Some(*k as f64),
+            Expr::Identifier(s) => consts.get(s).copied(),
+            _ => None,
+        }
+    };
+    let as_index = |e: &Expr| -> Option<String> {
+        match e {
+            Expr::Index(b, _) => match &**b {
+                Expr::Identifier(s) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let (in_field, k) = match (as_index(l), as_f(r)) {
+        (Some(f), Some(k)) => (f, k),
+        _ => match (as_f(l), as_index(r)) {
+            (Some(k), Some(f)) => (f, k),
+            _ => return None,
+        },
+    };
+    Some((out_field, in_field, k))
+}
+
+/// Module-level const float/int literals (for folding scale multipliers).
+fn module_consts(program: &[TopLevel]) -> HashMap<String, f64> {
+    let mut m = HashMap::new();
+    for item in program {
+        if let TopLevel::Constant(c) = item {
+            match &c.expr {
+                Expr::Float(f) => {
+                    m.insert(c.name.clone(), *f);
+                }
+                Expr::Decimal(n) => {
+                    m.insert(c.name.clone(), *n as f64);
+                }
+                _ => {}
+            }
+        }
+    }
+    m
 }
 #[cfg(test)]
 mod tests {
@@ -374,5 +511,99 @@ mod tests {
         assert!(gemm1_pos.is_some() && gemm2_pos.is_some());
         assert!(gemm1_pos.unwrap() < gemm2_pos.unwrap(), "producer must fire first: {:?}", sched.order);
         assert!(!sched.independent.is_empty() == false || sched.independent.is_empty());
+    }
+
+    #[test]
+    fn detects_epilogue_scale_fusion() {
+        // gemm1 (writes c) -> scale (c[i]*2.0 -> d[i]). The scale's body is
+        // the pure `d[i] = c[i] * 2.0`; c is read only by scale. The fusion
+        // must fold the scale into gemm1's epilogue.
+        let mut accel = HashMap::new();
+        let gemm_shape = crate::analysis::accel::KernelShape {
+            index_var: "i".into(),
+            count_expr: None,
+            kernel_stmts: vec![],
+            host_stmts: vec![],
+            read_buffers: vec!["a".into(), "b".into()],
+            write_buffers: vec!["c".into()],
+            scalar_ins: vec![],
+            eligible: true,
+            reasons: vec![],
+            work_cols: None,
+            reduction: None,
+        };
+        accel.insert(
+            "gemm1".into(),
+            AccelEntry {
+                mode: crate::analysis::accel::AccelMode::TryAll,
+                forced: false,
+                shape: gemm_shape,
+                decision: crate::analysis::accel::AccelDecision::Gpu,
+            },
+        );
+        // scale: kernel_stmts = [d[i] = c[i] * 2.0]
+        let scale_stmt = Statement::Assign(
+            Expr::Index(Box::new(Expr::Identifier("d".into())), Box::new(Expr::Identifier("i".into()))),
+            Expr::BinaryOp(
+                BinaryOpKind::Mul,
+                Box::new(Expr::Index(Box::new(Expr::Identifier("c".into())), Box::new(Expr::Identifier("i".into())))),
+                Box::new(Expr::Decimal(2)),
+            ),
+        );
+        accel.insert(
+            "scale".into(),
+            AccelEntry {
+                mode: crate::analysis::accel::AccelMode::TryAll,
+                forced: false,
+                shape: crate::analysis::accel::KernelShape {
+                    index_var: "i".into(),
+                    count_expr: None,
+                    kernel_stmts: vec![scale_stmt],
+                    host_stmts: vec![],
+                    read_buffers: vec!["c".into()],
+                    write_buffers: vec!["d".into()],
+                    scalar_ins: vec![],
+                    eligible: true,
+                    reasons: vec![],
+                    work_cols: None,
+                    reduction: None,
+                },
+                decision: crate::analysis::accel::AccelDecision::Gpu,
+            },
+        );
+        let txn = |name: &str, pre: &str| -> TopLevel {
+            TopLevel::Transaction(Transaction {
+                name: name.into(),
+                is_reactive: false,
+                is_async: true,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: crate::ast::top::Contract {
+                    pre_condition: Expr::Identifier(pre.into()),
+                    post_condition: Expr::Bool(true),
+                    watchdog: None,
+                    span: None,
+                    explicit: true,
+                    post_authority: false,
+                },
+                body: vec![],
+                metadata: Default::default(),
+                derivation: None,
+                modifiers: vec![],
+                doc: None,
+                span: None,
+            })
+        };
+        let program = vec![txn("gemm1", "i"), txn("scale", "j")];
+        let sched = build_schedule(&program, &accel);
+        assert_eq!(sched.fusions.len(), 1, "one fusion expected");
+        let f = &sched.fusions[0];
+        assert_eq!(f.producer, "gemm1");
+        assert_eq!(f.consumer, "scale");
+        assert_eq!(f.out_field, "d");
+        assert_eq!(f.in_field, "c");
+        assert!((f.scale - 2.0).abs() < 1e-9);
     }
 }
