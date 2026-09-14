@@ -102,3 +102,25 @@ what E8a (L1) addresses.
 L1/L2 behind `ptx_tensor_warp_spec` (default off). L3 behind a
 `split_k` dispatch policy knob (default off until gated). L4 adds
 gates only. L5 additive analysis pass — no existing behavior changes.
+
+## L2/L1 progress (2026-09-14): the kstep-chunk map — partial coverage CONFIRMED
+
+Built a two-cubin diff driver (drv3): y(K=32) − y(K=16) = the kstep-16
+chunk, element-wise. **The map's periodicity is CORRECT** (row period 7
+= the A seed cycle via a_row; column period 5 = the B seed cycle) —
+**the magnitude is ~1/8 of true** (observed ±1.6-2.5 vs expected
+10-12.6). Interpretation: the producer's 256 st.shared copies COLLAPSE
+to ~32 distinct smem positions — stage 1 is ~7/8 unwritten garbage with
+the correct structural fingerprint showing through.
+
+The static audit keeps asserting full coverage (64 lanes × 4 copies ×
+16B, strides 1024B — exact tiling by construction) while runtime says
+1/8 — factor 8 ≈ the copies-per-position ratio. The discrepancy is
+exactly what a POSITION-ENCODED fill resolves: ws_debug mode writes
+value = (smem_offset/16) into each copy; one y read maps every landing
+position. Next session: build ws_debug in the generator (per-kstep
+slabs + position encoding + driver BRIEV_Y_SLABS), read the map, fix,
+parity A/B.
+
+L2's hand-patched double-fill self-IMA'd — hand-PTX is formally
+retired; all instruments go through the generator from here.
