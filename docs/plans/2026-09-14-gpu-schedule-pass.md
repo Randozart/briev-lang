@@ -113,6 +113,34 @@ node DAG (no phase scalars). Runs on-device BIT-EXACT (MSE=0, maxrel=0):
 all three kernels fire in DAG order and the shared state carries the array
 flow through s and s2. This is the recurring gate for Phases 2-4.
 
+**Phase 2 SHIPPED** — async launch / sync elimination
+(`lib/runtime/briev_accel_rt.c`, `briev_dev_cuda.c`): kernels on ONE CUDA
+stream execute in submission order, so the per-launch `cuStreamSynchronize`
+is pure overhead — the DAG's edges are satisfied by stream order. With
+`BRIEV_ACCEL_ASYNC=1`, resident launches submit without the host wait; the
+sync happens at the download (the full-copy launch keeps its sync).
+Measured (microbench, 20000 launches): **sync 5.93 µs vs async 2.33 µs per
+launch** (~3.6 µs saved). Attention-decode bit-exact in both modes.
+
+**Phase 4a SHIPPED** — epilogue fusion (`src/analysis/gpu_schedule.rs`
+`Fusion`, `naive_gemm_ptx` epilogue multiplier, runner skip): a GEMM
+producer whose output is consumed by a pure elementwise scale
+(`out[c] = in[c] * k`) that is dead afterwards folds the scale into the
+producer's y-store; the consumer kernel is dropped. Verified: the
+attention-decode now runs in **TWO kernels** (qk fused with scale, then pv)
+and is bit-exact (maxrel=0). Unit test `detects_epilogue_scale_fusion`.
+
+## Next
+
+- **Phase 4b — multi-GEMM fusion (FlashAttention-class)**: QKᵀ → softmax →
+  ×V as one fused kernel (the headline "beats cuBLAS composition" claim).
+  Needs the f16 tensor GEMM epilogue (Phase 4a is f32-naive only) + a
+  softmax row-reduction (the cooperative-reduce path).
+- **The performance comparison**: the attention-decode currently uses f32
+  naive GEMMs; the vs-cuBLAS-composition measurement needs the f16 tensor
+  path + the f16 epilogue.
+- **Phase 3 — buffer reuse**: extend `global_lifetime` to arrays (liveness).
+
 ## The contract surface the pass consumes
 
 All decisions are frontend-computed and land in `AnalysisResults`
