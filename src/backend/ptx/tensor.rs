@@ -1806,7 +1806,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
         // %p2 must be set HERE, while %r9 still holds the tid-decoded
         // warp id (0-9); the consumer path immediately overwrites %r9
         // with the stage index.
-        out.push_str("    setp.eq.u32 %p2, %r9, 8;\n");
+        out.push_str("    setp.ge.u32 %p2, %r9, 8;\n");
         out.push_str("    @%p2 bra WSPROC;\n");
         out.push_str("    mov.u32 %r9, 0;\n");
         out.push_str("    mov.u32 %r2, 0;\n");
