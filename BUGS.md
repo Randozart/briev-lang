@@ -6185,3 +6185,40 @@ hardware-facing bug, not a QEMU quirk.
 canonical bare-metal init before `b _start`: copy `.data` from
 `_data_init` (LMA) to `_data_start.._data_end`, zero `.bss`
 (`_bss_start.._bss_end`). Board data, not compiler code.
+
+## 2026-09-14 — resume scheduler: ctx_save/ctx_restore misrouted the pc through the kernel-stack slot
+
+**Where:** the resume-scheduling attempt in `examples/kernel_rv64.b.bv`
+(failed during the machine-entry era; stale IR preserved in
+`examples/kernel_rv64.b.ll`).
+
+**What:** two coupled mistakes made resume scheduling produce empty QEMU
+output. The `full_context` scaffold keeps the KERNEL STACK at live-frame
+slot 248 (`ld sp, 248(tp)` on trap entry; the scheduler's own comment
+warns "frame slot 248 is the KERNEL stack slot and must never be
+touched").
+
+1. `ctx_save(id)` copied live-frame slot 248 — the kernel STACK value —
+   into `ctx(id)[248]` as the "saved pc", instead of reading the `mepc`
+   CSR (`csrrs $0, mepc, zero`).
+2. `ctx_restore(id)` copied `ctx(id)[248]` (that stack value) back into
+   live-frame slot 248 — corrupting the kernel stack — and never wrote
+   `mepc`, so the scaffold's `mret` resumed at whatever `mepc` still
+   held.
+
+The first switch also had no "has the task ever run" guard: the first
+timer trap preempts the REACTOR (main parked in `wfi`), not a task, so
+`ctx_save(0)` captured the reactor context over task 0's initialized
+entry. The asm-based attempt additionally hit the Asm# earlyclobber bug
+(see `2026-09-14 — Asm# output lacks earlyclobber`).
+
+**Fix (SHIPPED 2026-09-14, plan `2026-09-14-rv64-finish.md` Addendum 3):**
+- `ctx_save(id)`: copy live-frame slots 0..240 (x1–x31) → `ctx(id)`;
+  save `mepc()` (the CSR) → `ctx(id)[248]`.
+- `ctx_restore(id)`: `set_mepc(ctx(id)[248])`; copy `ctx(id)` slots
+  0..240 → live frame; live-frame slot 248 is NEVER touched.
+- `current = 2` sentinel: `when current < 2 { ctx_save(current) }` skips
+  the reactor preemption on the first switch.
+- Task bodies become finite multi-action sequences (`print X; asm delay;
+  print Y; park`) so mid-body preemption is observable.
+- Gate: finite `BA21` (resume) vs continuous `BABABABA…` (restart).

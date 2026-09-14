@@ -146,7 +146,7 @@ gates in `tests/bare/`:
 
 | Gate | Output | Proves |
 |---|---|---|
-| `qemu-rv64-kernel.sh` | `BABABABABABA…` | **A preemptive two-task micro-kernel**: authored machine entry, full-context trap scaffold, mcause dispatch, restart scheduler over a trap frame, ecall syscall boundary, two U-mode tasks — 8,520 bytes, pure Briev, no C, no runtime |
+| `qemu-rv64-kernel.sh` | `BA21` (finite) | **A preemptive two-task micro-kernel with RESUME scheduling**: authored machine entry, full-context trap scaffold, mcause dispatch, per-task context save/restore over a trap frame (pc via `mepc`, slot 24 = scaffold base), ecall syscall boundary, two U-mode tasks — pure Briev, no C, no runtime. The finite output proves resume: tasks park and stay parked; restart would re-run from the top every slice (continuous) |
 | `qemu-rv64-timer.sh` | `123456789012…` | Machine-timer interrupts serviced from a typed handler; the reactor parked at `wfi` woken by hardware |
 | (bootstrap) | `briev` | The authored machine entry — PMP, mscratch/kernel-stack, task contexts, mtvec, MTIE+MIE — in language-level syntax (`bootstrap node`), compiler-owned ISA scaffold only |
 

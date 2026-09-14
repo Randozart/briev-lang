@@ -150,16 +150,38 @@ fixed).
 
 ## The scheduler pattern
 
-Phase 4's kernel uses **restart scheduling**: each switch writes the
-next task's stack (frame slot 8) and entry (live `mepc`) and mrets —
-the task re-runs from its top, sound for stateless slice bodies.
-**Resume scheduling** (keeping the task's interrupted pc and full
-register set in its context area, copied back on switch) rides the same
-frame rewrite — the ctx_save/ctx_restore helpers in the demo are the
-seed. Both are kernel policy; the scaffold is identical. (2026-09-14,
-plan `2026-09-14-rv64-finish.md`: resume scheduling is DEFERRED until the
-language has a loop construct — the parked task bodies make restart and
-resume observably identical.)
+The kernel shipped **restart scheduling** first: each switch writes the
+next task's stack (frame slot 8) and entry (live `mepc`) and mrets — the
+task re-runs from its top, sound for stateless slice bodies.
+**Resume scheduling** (2026-09-14, plan `2026-09-14-rv64-finish.md`
+Phase 3a, SHIPPED) keeps the task's interrupted pc + full register set in
+its context area (`ctx_save` on preempt, `ctx_restore` on switch) and
+rides the same frame rewrite. Both are kernel policy; the scaffold is
+identical. No language loop is needed: a task is a finite multi-action
+body whose wall-clock delay (`Asm#` spin on `mtime`) lets the timer
+preempt mid-body, so resume continuation is observable (finite `BA21`
+vs restart's continuous output).
+
+Two hazards encoded in the shipped `ctx_save`/`ctx_restore`:
+
+- **Live-frame slot 248 is the KERNEL STACK** (the scaffold's
+  `ld sp, 248(tp)`). The task pc travels through the `mepc` CSR, never
+  through the frame: `ctx_save` reads `mepc` into `ctx[248]`;
+  `ctx_restore` writes `ctx[248]` into `mepc` and never touches live
+  slot 248. Writing 248 corrupts the kernel stack and the next trap
+  faults (BUGS.md 2026-09-14).
+- **Live-frame slot 24 must hold the frame base.** The scaffold's
+  restore loop is `ld x1, 0(tp); …; ld x4, 24(tp); ld x5, 32(tp); …` —
+  loading x4 (= tp, the base register) mid-sequence REBASES the rest of
+  the restore. The scaffold's save writes the frame base into slot 24 for
+  this exact reason; `ctx_restore` must preserve it
+  (`sd <fb>, 24(<fb>)`), or a zero-init task x4 makes the next load fault
+  at 0x20.
+
+The first switch is special: the first timer trap preempts the REACTOR
+(main parked in `wfi`), not a task. `current` starts at a sentinel (2) and
+`schedule()` guards `when current < 2 { ctx_save(current) }` — nothing is
+saved until a task has actually run.
 
 ## Second-architecture proof (2026-09-14)
 

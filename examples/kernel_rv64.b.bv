@@ -2,11 +2,13 @@
 // Phase 4 (rv64 capability kernel): the micro-kernel capability demo.
 //
 // Two user-mode tasks print through the ecall syscall boundary; the CLINT
-// machine-timer preempts them and the scheduler round-robins by RESTART
-// (each slice re-enters the task body from its top — sound for stateless
-// slice bodies; resume scheduling rides the same frame rewrite by keeping
-// the saved pc instead). Gate: QEMU prints ABABAB… — one char per tick
-// (0.1 s @ 10 MHz CLINT), interleaved through the syscall boundary.
+// machine-timer preempts them and the scheduler round-robins by RESUME —
+// each task's interrupted pc + full register set is saved to its context
+// area and restored on the next switch, so a task preempted mid-body
+// continues exactly where it left off. Each task prints TWO characters
+// with a wall-clock delay between them; the timer (0.1 s/tick) preempts
+// mid-delay, so the two prints land on separate slices. Gate: QEMU prints
+// the finite interleave BA21 (vs restart's continuous BABABA…).
 //
 // Shape of the machine:
 //   bootstrap node reset    — authored machine entry (sp/.bss scaffold is
@@ -24,9 +26,18 @@
 //   256..768    task contexts ×2 (same layout; slot 31 = saved pc)
 //   768         kernel tick cell (published, task-readable)
 //   2560..      task stacks ×2 (512 bytes each)
+//
+// ⚠ LIVE-FRAME slot 248 is the KERNEL STACK slot (the scaffold's
+// `ld sp, 248(tp)`). ctx_save/ctx_restore copy slots 0..240 ONLY and carry
+// the pc through the mepc CSR — writing 248 corrupts the kernel stack
+// (BUGS.md 2026-09-14).
+// ⚠ LIVE-FRAME slot 24 (x4 = tp) MUST hold the frame base: the scaffold's
+// restore reloads x4 mid-sequence and rebases the rest of the restore.
+// ctx_restore re-stores the frame base there after the copy.
 
 let armed: Int    = 0;
-let current: Int  = 0;
+let current: Int  = 2;   // 2 = "no task has run yet" sentinel (first trap
+                         // preempts the REACTOR, not a task — nothing to save)
 let ticks: Int    = 0;
 
 // ── register-access shim (the riscv::register pattern) ────────────────
@@ -45,25 +56,62 @@ defn frame_load(off: Int) -> Int   { VolatileLoad#((trap_frame_base() + off) as 
 defn task_pc_a() -> Int            { Asm#("raw", "la $0, task_a", 0); }
 defn task_pc_b() -> Int            { Asm#("raw", "la $0, task_b", 0); }
 
-// Task bodies — one print per slice, then park (j self) until preempted.
-// The scheduler restarts them at their top each switch.
+// Wall-clock spin: `n` mtime ticks (~0.1 µs? No — mtime runs at 10 MHz, so
+// n ticks = n/10e6 seconds). Deterministic across hosts (instruction-count
+// delays are not: TCG speed vs the fixed-rate mtime counter varies).
+defn delay_ticks(n: Int) {
+    let target: Int = VolatileLoad#(0x0200BFF8 as Ptr<Int>) + n;
+    Asm#("raw", "1: ld $0, 0($2); blt $0, $1, 1b;", target, 0x0200BFF8);
+};
+
+// Task bodies — two prints with a ~0.25 s delay between them. The timer
+// preempts mid-delay; RESUME continues the countdown, so '1'/'2' land on a
+// later slice. Restart would re-run from the top every slice and never
+// reach the second print's interleave.
 defn task_a() {
     Asm#("raw", "li a0, 65; li a7, 64; ecall", 0);   // write 'A'
+    delay_ticks(2500000);                             // ~0.25 s
+    Asm#("raw", "li a0, 49; li a7, 64; ecall", 0);   // write '1'
     Asm#("raw", "1: j 1b", 0);                       // park until preempted
 };
 defn task_b() {
     Asm#("raw", "li a0, 66; li a7, 64; ecall", 0);   // write 'B'
+    delay_ticks(2500000);                             // ~0.25 s
+    Asm#("raw", "li a0, 50; li a7, 64; ecall", 0);   // write '2'
     Asm#("raw", "1: j 1b", 0);                       // park until preempted
 };
 
 // ── context helpers (8-byte slots; slot 31 = saved pc) ────────────────
 defn ctx_base(id: Int) -> Int  { trap_frame_base() + 256 + id * 256; }
 defn stack_top(id: Int) -> Int { trap_frame_base() + 2560 + id * 512 + 512 - 16; }
-defn task_entry(id: Int) -> Int {
-    term match id {
-        0 => task_pc_a(),
-        _ => task_pc_b()
-    };
+
+// Save the PREEMPTED task's full context (x1–x31 from the live frame, pc
+// from the mepc CSR) into its context area. Live-frame slot 248 (kernel
+// stack) is NEVER read here.
+defn ctx_save(id: Int) {
+    let fb: Int = trap_frame_base();
+    let cb: Int = ctx_base(id);
+    Asm#("raw",
+        "ld $0, 0($1); sd $0, 0($2); ld $0, 8($1); sd $0, 8($2); ld $0, 16($1); sd $0, 16($2); ld $0, 24($1); sd $0, 24($2); ld $0, 32($1); sd $0, 32($2); ld $0, 40($1); sd $0, 40($2); ld $0, 48($1); sd $0, 48($2); ld $0, 56($1); sd $0, 56($2); ld $0, 64($1); sd $0, 64($2); ld $0, 72($1); sd $0, 72($2); ld $0, 80($1); sd $0, 80($2); ld $0, 88($1); sd $0, 88($2); ld $0, 96($1); sd $0, 96($2); ld $0, 104($1); sd $0, 104($2); ld $0, 112($1); sd $0, 112($2); ld $0, 120($1); sd $0, 120($2); ld $0, 128($1); sd $0, 128($2); ld $0, 136($1); sd $0, 136($2); ld $0, 144($1); sd $0, 144($2); ld $0, 152($1); sd $0, 152($2); ld $0, 160($1); sd $0, 160($2); ld $0, 168($1); sd $0, 168($2); ld $0, 176($1); sd $0, 176($2); ld $0, 184($1); sd $0, 184($2); ld $0, 192($1); sd $0, 192($2); ld $0, 200($1); sd $0, 200($2); ld $0, 208($1); sd $0, 208($2); ld $0, 216($1); sd $0, 216($2); ld $0, 224($1); sd $0, 224($2); ld $0, 232($1); sd $0, 232($2); ld $0, 240($1); sd $0, 240($2); csrrs $0, mepc, zero; sd $0, 248($2)",
+        fb, cb);
+};
+
+// Restore the NEXT task's full context: x1–x31 into the live frame (the
+// scaffold's restore loads them), pc into the mepc CSR (the scaffold's
+// mret consumes it). Live-frame slot 248 is NEVER written.
+//
+// ⚠ Slot 24 (x4 = tp) MUST hold the frame base: the scaffold's restore loop
+// is `ld x1, 0(tp); …; ld x4, 24(tp); ld x5, 32(tp); …` — loading x4 (=tp)
+// mid-sequence REBASES the rest of the restore. The scaffold's save writes
+// the frame base into slot 24 for exactly this reason; ctx_restore must
+// preserve the invariant (`sd $1, 24($1)` after the copy), or tp becomes
+// the task's zero-init x4 and the next load faults at 0x20.
+defn ctx_restore(id: Int) {
+    let fb: Int = trap_frame_base();
+    let cb: Int = ctx_base(id);
+    Asm#("raw",
+        "ld $0, 0($2); sd $0, 0($1); ld $0, 8($2); sd $0, 8($1); ld $0, 16($2); sd $0, 16($1); ld $0, 24($2); sd $0, 24($1); ld $0, 32($2); sd $0, 32($1); ld $0, 40($2); sd $0, 40($1); ld $0, 48($2); sd $0, 48($1); ld $0, 56($2); sd $0, 56($1); ld $0, 64($2); sd $0, 64($1); ld $0, 72($2); sd $0, 72($1); ld $0, 80($2); sd $0, 80($1); ld $0, 88($2); sd $0, 88($1); ld $0, 96($2); sd $0, 96($1); ld $0, 104($2); sd $0, 104($1); ld $0, 112($2); sd $0, 112($1); ld $0, 120($2); sd $0, 120($1); ld $0, 128($2); sd $0, 128($1); ld $0, 136($2); sd $0, 136($1); ld $0, 144($2); sd $0, 144($1); ld $0, 152($2); sd $0, 152($1); ld $0, 160($2); sd $0, 160($1); ld $0, 168($2); sd $0, 168($1); ld $0, 176($2); sd $0, 176($1); ld $0, 184($2); sd $0, 184($1); ld $0, 192($2); sd $0, 192($1); ld $0, 200($2); sd $0, 200($1); ld $0, 208($2); sd $0, 208($1); ld $0, 216($2); sd $0, 216($1); ld $0, 224($2); sd $0, 224($1); ld $0, 232($2); sd $0, 232($1); ld $0, 240($2); sd $0, 240($1); ld $0, 248($2); csrw mepc, $0; sd $1, 24($1)",
+        fb, cb);
 };
 
 // ── the scheduler — a typed transaction over kernel state ─────────────
@@ -72,17 +120,18 @@ defn schedule() {
     // asserted: every mret re-traps instantly and the tasks never run.
     VolatileStore#(0x02004000 as Ptr<Int>,
         VolatileLoad#(0x0200BFF8 as Ptr<Int>) + 1000000);
+    // Save the preempted task — but NOT on the first switch (current = 2:
+    // the first trap preempted the reactor in wfi, which is not a task).
+    when current < 2 {
+        ctx_save(current);
+    };
     current = (current + 1) % 2;
     ticks = ticks + 1;
-    // The switch: the next task's stack into the frame's sp slot (slot 8 =
-    // x2), its entry into the LIVE mepc (the scaffold's mret consumes the
-    // CSR — frame slot 248 is the KERNEL stack slot and must never be
-    // touched by the scheduler), and mstatus.MPP = U so the mret drops
-    // privilege. (A resume scheduler would copy the saved context back
-    // here instead of restarting at the entry.)
-    frame_store(8, stack_top(current));
-    set_mepc(task_entry(current));
-    enter_user_mode();   // mstatus.MPP = U — the scaffold's mret drops privilege
+    // The switch: the next task's full context into the live frame (the
+    // scaffold's restore loads x1–x31) and its saved pc into mepc (the
+    // scaffold's mret consumes it). mstatus.MPP = U drops privilege.
+    ctx_restore(current);
+    enter_user_mode();
 };
 
 // ── the syscall boundary — kernel side ────────────────────────────────
@@ -96,8 +145,6 @@ defn syscall_dispatch() {
 
 // ── machine-serviced: every trap lands here (direct mode) ─────────────
 node trap_service @ 7 [current >= 0][current >= 0] {
-    // (a statement match with void txn arms trips an expression-match
-    // lowering bug — BUGS.md 2026-09-14; when-guards until it is fixed)
     let cause: Int = trap_cause();
     when cause == 7 {
         schedule();
@@ -113,7 +160,7 @@ bootstrap node reset [armed == true && ticks == 0] {
     // mscratch ← trap-frame base; frame slot 31 ← kernel stack (sp, set by
     // the entry scaffold). The scaffold's protocol, initialized.
     Asm#("raw", "la $0, __briev_trap_frame; csrw mscratch, $0; sd sp, 248($0)", 0);
-    // task contexts: sp (slot 8) and entry pc (slot 31)
+    // task contexts: sp (slot 8) and entry pc (slot 31); other regs = 0
     frame_store(256 + 8 + 0,    stack_top(0));
     frame_store(256 + 248 + 0,  task_pc_a());
     frame_store(256 + 8 + 256,  stack_top(1));
