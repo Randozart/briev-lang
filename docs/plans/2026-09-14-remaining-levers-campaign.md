@@ -124,3 +124,56 @@ parity A/B.
 
 L2's hand-patched double-fill self-IMA'd — hand-PTX is formally
 retired; all instruments go through the generator from here.
+
+## L1 progress (2026-09-14, second pass): the seeding bug + a clean stage-1 verdict
+
+**CRITICAL: the kstep-chunk "1/8 magnitude" finding was measured on a
+HALF-SEEDED B matrix.** Every debug-driver invocation in this campaign
+passed `b_off = M*K` (elements), but drv2/drv3/drv5 treat it as BYTES.
+The kernel's B region is `[8192, 16384)` (K=32) / `[4096, 8192)` (K=16);
+the drivers seeded B at `[4096, 12288)` / `[2048, 6144)` — so
+kernel-B rows 16..31 (the **stage-1 source**) were literally ZEROS.
+The stage-1 producer read zeros, wrote zeros into stage-1 smem, and the
+consumer's mma added zero. The "periodic-but-1/8" chunk map was the
+structural fingerprint of that empty-B artifact, not of a fill collapse.
+
+Correct invocations: `b_off = M*K*2` bytes
+(K=16: `0 4096 8200`, K=32: `0 8192 16392`).
+
+**Clean verdict with correct seeding (refcheck, MSE vs CPU f32 reference):**
+- E8a warp-spec **K=16: PERFECT** — MSE = 0.000000, all 16384 elements exact.
+  Stage-0 (K prologue fill + prologue compute) is correct.
+- E8a warp-spec **K=32: BROKEN** — MSE = 91.4, maxerr 15.5, every element
+  off. Stage-1 (producer fill + WCLOOP) is genuinely broken; the
+  "stage-1-broken" conclusion survives the seeding fix.
+
+**Producer fills stage-1 smem, but the consumer's ldmatrix reads mostly
+zeros.** With correct seeding, direct smem dumps at WCLOOP time show:
+- B stage-1 `[0..16)` = `1.5, 2.0, 0, 0.5, 1.0, 1.5, 2.0, 0` = exactly
+  `B[16][0..7]` (the producer's B-fill lands correct data).
+- A stage-1 `[0..8)` = `0.5, 0.75, 1.0, 1.25` = exactly `A[0][16..19]`.
+
+But the consumer's `ldmatrix.x2.trans` on the SAME stage-1 base returns a
+B tile that is almost all zeros (one `1.5` at position 1). So the
+producer's B-fill smem destination layout (XOR-swizzled, verified
+formula-identical to the working K-prologue B-fill) does NOT line up with
+the consumer's ldmatrix read addressing on the stage-1 path — the fills
+and reads disagree on where stage-1 B lives. A stage-0 works because the
+K-prologue fill uses 256 threads with `tid*16` dests; the producer uses
+64 rebased lanes × 4 unrolled copies (`r5*16 + i*1024`) into the same
+swizzle — the mismatch is in that translation, or in a missing fragment
+swap on the consumer side. Next: diff the producer B-fill dest derivation
+against the consumer B ldmatrix address derivation for a concrete (lane,
+iter) pair, then fix the producer's dest (or the consumer's read).
+
+**ws_debug instrument fixes made this pass** (env-gated, default off):
+- WCLOOP slab base is recomputed fresh from `%r2` each iteration
+  (`rd6 = state + y_off + (r2>>4)*slab_stride`) instead of carrying
+  `%rd6` across `emit_f16_compute` — ptxas was spilling/reordering it.
+- Prologue ws_debug store moved before `bar.arrive 2`.
+- Residual instrument artifact: with `BRIEV_WS_DEBUG`, the WCLOOP store
+  block also writes a stale quadrant to slab+2 (rows 0..63, cols 32..63 =
+  warp-1's tile shape, 2048 elements). Provably a ptxas register/
+  scheduling side-effect of the instrument (independent of `rd6`, SASS
+  shows all STG offsets ≤ +0x800, loop executes once) — does NOT affect
+  the real kernel (the y-store path is separate). Not worth chasing.

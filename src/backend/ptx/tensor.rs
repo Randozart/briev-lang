@@ -925,6 +925,7 @@ pub fn tensor_gemm_ptx_smem_mw(
         bsmem_pad,
         kps,
         lowering.ptx_tensor_warp_spec,
+        std::env::var("BRIEV_WS_DEBUG").is_ok(),
     )
 }
 
@@ -945,6 +946,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
     bsmem_pad: usize,
     ksteps_per_stage: usize,
     warp_spec: bool,
+    ws_debug: bool,
 ) -> String {
     // Warp tiling (2026-09-11 double-pump plan): the warp covers
     // warp_mh 16-row blocks x (16/warp_mh) 8-col groups — mma count per
@@ -1292,6 +1294,50 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // KLOOP promotes each f16x2 chunk into it by read-modify-write (CTA-
     // private tiles, no atomics). Each thread zeroes/promotes exactly the
     // fragments it accumulates, so no cross-thread hazard is introduced.
+
+    // ws_debug store: identical to emit_y_pass(store_only) but assumes %rd6
+    // (the y base u64) is already loaded by the caller. Each call emits the
+    // f16acc store-only code targeting state + %rd6 + thread-position offset.
+    // The caller recomputes %rd6 fresh for each slab before each call (2026-09-14:
+    // carrying %rd6 across emit_f16_compute let ptxas spill/reorder it).
+    let mut emit_ws_debug_store = |out: &mut String| {
+        // rd6 is already state + slab_base (caller sets it with proj_param added)
+        out.push_str("    mov.u32 %r12, %r10;\n");
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
+        out.push_str("    mov.u32 %r13, %r11;\n");
+        out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", 8 * gr as i64 * (y_elem as i64)));
+        out.push_str("    mov.u32 %r9, %r12;\n");
+        out.push_str("    add.u32 %r9, %r9, %r13;\n");
+        for mh in 0..mhr {
+            for g in 0..gr {
+                let cb = 2 * (mh * gr + g);
+                out.push_str(&format!("    mov.u32 %r12, {};\n", (16 * mh as i64) * y_row));
+                out.push_str(&format!("    mul.lo.u32 %r13, %r6, {};\n", y_row));
+                out.push_str("    add.u32 %r12, %r12, %r13;\n");
+                out.push_str(&format!(
+                    "    add.u32 %r12, %r12, {};\n",
+                    (g as i64) * 8 * (y_elem as i64)
+                ));
+                out.push_str("    add.u32 %r12, %r12, %r9;\n");
+                out.push_str("    mov.u32 %r13, %r8;\n");
+                out.push_str(&format!("    mul.lo.u32 %r13, %r13, {};\n", y_elem));
+                out.push_str("    add.u32 %r12, %r12, %r13;\n");
+                out.push_str("    mul.wide.u32 %rd4, %r12, 1;\n");
+                out.push_str("    add.u64 %rd5, %rd6, %rd4;\n");
+                for (pair, addr_step) in [
+                    (0i64, None::<i64>),
+                    (1, Some(8 * y_row)),
+                ] {
+                    if let Some(d) = addr_step {
+                        out.push_str(&format!("    add.u64 %rd5, %rd5, {};\n", d));
+                    }
+                    let reg = &cregs[cb + pair as usize];
+                    out.push_str(&format!("    st.global.b32 [%rd5], {};\n", reg));
+                }
+            }
+        }
+    };
+
     // y pass emitter. Three modes (2026-09-11): Accumulate folds the f16x2
     // chunk accs into y by read-modify-write (ld+add+st, resets accs);
     // Zero stores 0; StoreOnly writes the accs WITHOUT the global read —
@@ -1765,6 +1811,18 @@ fn tensor_gemm_ptx_smem_mw_opt(
         out.push_str("    mov.u32 %r9, 0;\n");
         out.push_str("    mov.u32 %r2, 0;\n");
         emit_f16_compute(&mut out);
+        if ws_debug {
+            // ws_debug: store prologue accumulator to slab 0 (BEFORE bar.arrive
+            // so the producer doesn't wake until the store completes)
+            // rd1 = proj_param (state base); y_off is baked; combine for the store.
+            out.push_str(&format!("    mov.u64 %rd6, {};\n", y_off));
+            out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
+            emit_ws_debug_store(&mut out);
+            // Initialize %rd6 for WCLOOP slab 1 (advanced each iteration)
+            let slab_stride = m * n * 2;
+            out.push_str(&format!("    mov.u64 %rd6, {};\n", y_off + slab_stride as u64));
+            out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
+        }
         out.push_str("    bar.arrive 2, 320;\n");
         out.push_str("    add.u32 %r2, %r2, 16;\n");
         out.push_str("WCLOOP:\n");
@@ -1779,6 +1837,18 @@ fn tensor_gemm_ptx_smem_mw_opt(
         out.push_str("    shr.u32 %r9, %r2, 4;\n");
         out.push_str("    and.b32 %r9, %r9, 1;\n");
         emit_f16_compute(&mut out);
+        if ws_debug {
+            // ws_debug: store WCLOOP accumulator to successive slabs.
+            // Recompute slab base from %rd1 each time: %rd6 may be clobbered
+            // by ptxas spill/restore across emit_f16_compute (64 regs + spill).
+            // slab_index = r2 >> 4 (1 for first iter, 2 for second, etc.)
+            let slab_stride = m * n * 2;
+            out.push_str("    shr.u32 %r12, %r2, 4;\n");
+            out.push_str(&format!("    mul.wide.u32 %rd6, %r12, {};\n", slab_stride));
+            out.push_str(&format!("    add.u64 %rd6, %rd6, {};\n", y_off));
+            out.push_str("    add.u64 %rd6, %rd1, %rd6;\n");
+            emit_ws_debug_store(&mut out);
+        }
         out.push_str("    bar.arrive 2, 320;\n");
         out.push_str("    add.u32 %r2, %r2, 16;\n");
         out.push_str("    bra.uni WCLOOP;\n");
@@ -1994,6 +2064,14 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // Store C (f32-acc) / the f16-acc final store-only y pass (2026-09-11:
     // full-K register accumulation — one straight-line store pass after
     // the K loop, no in-loop predicate, no RMV reads).
+    // ws_debug: skip — the in-loop slab stores already wrote every kstep.
+    if ws_debug {
+        if warp_spec {
+            out.push_str("YSKIP:\n");
+        }
+        out.push_str("    ret;\n}\n");
+        return out;
+    }
     if f16_acc {
         emit_y_pass(&mut out, 2);
         if warp_spec {
@@ -2196,6 +2274,7 @@ mod r16_dump {
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw_opt(
                 m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, true, 0, 1, false,
+                false,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5a_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2216,6 +2295,7 @@ mod r16_dump {
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw_opt(
                 m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, false, 32, 1, false,
+                false,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5b_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2270,8 +2350,26 @@ mod r16_dump {
             let ptx = tensor_gemm_ptx_smem_mw_opt(
                 m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4,
                 false, 0, 1, true,
+                false,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e8a_{tag}.ptx"), &ptx).unwrap();
+        }
+    }
+
+    /// ws_debug dump: per-kstep y-slab accumulator stores for position-mapping
+    /// the producer fill. Each kstep stores acc to a separate slab so the
+    /// driver can diff adjacent slabs and see exactly what each kstep produced.
+    #[test]
+    fn dump_ws_debug() {
+        for (m, k, tag) in [(128i64, 16i64, "k16"), (128i64, 32i64, "k32")] {
+            let b_off = m * k * 2;
+            let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
+            let ptx = tensor_gemm_ptx_smem_mw_opt(
+                m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4,
+                false, 0, 1, true,
+                true,  // ws_debug = true
+            );
+            std::fs::write(&format!("/tmp/opencode/tgemm_ws_debug_{tag}.ptx"), &ptx).unwrap();
         }
     }
 
@@ -2287,6 +2385,7 @@ mod r16_dump {
                 let ptx = tensor_gemm_ptx_smem_mw_opt(
                     m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, stages, 4,
                     false, 0, 2, false,
+                    false,
                 );
                 std::fs::write(
                     &format!("/tmp/opencode/tgemm_e6_{stagetag}_{mtag}.ptx"),
