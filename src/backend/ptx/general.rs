@@ -111,6 +111,7 @@ impl<'a> Gen<'a> {
         decl.push_str("    .reg .b64  %rd1;\n");
         decl.push_str("    .reg .u32  %r1, %r2;\n");
         decl.push_str("    .reg .pred %p1;\n");
+        decl.push_str("    .reg .b32  %t0;\n");
 
         // gid = ctaid.x * BLOCK + tid.x
         body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
@@ -180,7 +181,13 @@ impl<'a> Gen<'a> {
             decl.push_str(&format!("    .reg .f32 {};\n", val));
             self.emit_expr(rhs, &val, decl, body)?;
             let addr = self.array_addr(buf_name, off, elem, idx, decl, body)?;
-            body.push_str(&format!("    st.global.f32 [{}], {};\n", addr, val));
+            if elem == 2 {
+                // f16 store: convert the f32 value and store 16 bits.
+                body.push_str(&format!("    cvt.rn.f16.f32 %t0, {};\n", val));
+                body.push_str(&format!("    st.global.u16 [{}], %t0;\n", addr));
+            } else {
+                body.push_str(&format!("    st.global.f32 [{}], {};\n", addr, val));
+            }
             return Ok(());
         }
         if let Expr::Identifier(name) = lhs {
@@ -287,7 +294,13 @@ impl<'a> Gen<'a> {
                 })?;
                 let elem = self.elem_bytes(&buf_name)?;
                 let addr = self.array_addr(buf_name, off, elem, idx, decl, body)?;
-                body.push_str(&format!("    ld.global.f32 {}, [{}];\n", out, addr));
+                if elem == 2 {
+                    // f16 load: 16-bit load + convert to f32 for the math.
+                    body.push_str(&format!("    ld.global.u16 %t0, [{}];\n", addr));
+                    body.push_str(&format!("    cvt.f32.f16 {}, %t0;\n", out));
+                } else {
+                    body.push_str(&format!("    ld.global.f32 {}, [{}];\n", out, addr));
+                }
             }
             Expr::BinaryOp(kind, l, r) => {
                 let lreg = self.fresh_f();

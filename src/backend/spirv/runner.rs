@@ -584,12 +584,21 @@ pub fn emit_runner(
         // 2026-09-14 (gpu_schedule Phase 4a): an epilogue-fused consumer's
         // work is done by its producer's kernel — skip its dispatch entirely.
         if let Some(s) = schedule {
-            if s.fusions.iter().any(|f| f.consumer == *name) {
-                out.push_str(&format!(
-                    "    // node '{}' fused into its producer's epilogue (skipped)\n",
-                    name
-                ));
-                continue;
+            if let Some(f) = s.fusions.iter().find(|f| f.consumer == *name) {
+                // 2026-09-14: only f32 (naive) epilogue fusions drop the
+                // consumer node; the f16 tensor epilogue is not ready yet.
+                let f32 = fields
+                    .iter()
+                    .find(|fl| fl.name == f.in_field)
+                    .map(|fl| fl.elem_bytes == 4)
+                    .unwrap_or(false);
+                if f32 {
+                    out.push_str(&format!(
+                        "    // node '{}' fused into its producer's epilogue (skipped)\n",
+                        name
+                    ));
+                    continue;
+                }
             }
         }
         let name = &t.name;

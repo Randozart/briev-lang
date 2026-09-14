@@ -316,6 +316,24 @@ pub fn build_ptx_kernels(
     let mut out = Vec::new();
     for name in names {
         let e = &entries[name];
+        // 2026-09-14 (gpu_schedule Phase 4a): a fused consumer's work is done
+        // by its producer's epilogue — no kernel is emitted for it. The f16
+        // tensor epilogue is NOT ready (the HMUL2 on the packed acc is
+        // miscompiled — see the plan doc), so only f32 NAIVE producers fuse;
+        // the f16 scale stays a separate general kernel.
+        let fused = schedule.fusions.iter().find(|f| f.consumer == *name);
+        if let Some(f) = fused {
+            let producer = &entries[&f.producer];
+            let a_elem = layout
+                .fields
+                .iter()
+                .find(|fl| fl.name == f.in_field)
+                .map(|fl| fl.elem_bytes)
+                .unwrap_or(4);
+            if a_elem == 4 {
+                continue;
+            }
+        }
         let plan = GemmPlan::match_stmts(&e.shape, program);
         // 2026-09-14 (gpu_schedule S5-lite): a non-GEMM eligible node is an
         // elementwise kernel (the row-ops between GEMMs in an attention
@@ -361,10 +379,19 @@ pub fn build_ptx_kernels(
         // 2026-09-14 (gpu_schedule Phase 4a): epilogue fusion — if this GEMM
         // is the producer of a pure-scale consumer, write the consumer's
         // output field with the scale applied, and drop the consumer node.
+        // The f16 tensor epilogue is NOT ready (the packed-f16 mul is
+        // miscompiled), so only f32 NAIVE producers fuse; the f16 scale stays
+        // a separate general kernel.
         let fusion = schedule.fusions.iter().find(|f| f.producer == *name);
+        let a_elem = layout
+            .fields
+            .iter()
+            .find(|fl| fl.name == plan.a_field)
+            .map(|fl| fl.elem_bytes)
+            .unwrap_or(4);
         let (y_off, epilogue_scale) = match fusion {
-            Some(f) => (find_off(&f.out_field)?, Some(f.scale)),
-            None => (y_off, None),
+            Some(f) if a_elem == 4 => (find_off(&f.out_field)?, Some(f.scale)),
+            _ => (y_off, None),
         };
 
         // f16 a/b → the tensor tier (S3b mma kernel); f32 → the naive tier.

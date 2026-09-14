@@ -1500,7 +1500,12 @@ fn cast_opcode(
         let mut offsets = Vec::with_capacity(fields.len());
         let mut offset: u32 = 0;
         for f in fields {
-            if Self::vec4_shape_eligible(builder, &f.ty)? {
+            // 2026-09-14 (gpu_schedule): align EVERY array to 16 bytes — the
+            // tensor kernels read A/B in 16-byte `ld.global.nc.v4.u32` chunks
+            // (8 f16 OR 4 f32), so an 8-aligned f16 array like q@65576
+            // (65576 % 16 == 8) made the fused attention's fill read
+            // misaligned. vec4 (f32) arrays aligned before; f16 now too.
+            if Self::is_vector_type(&f.ty)? {
                 offset = offset.next_multiple_of(16);
             }
             offsets.push(offset);
@@ -1512,6 +1517,13 @@ fn cast_opcode(
     /// Shape half of the vec4 gate — offset-independent (Float32 array,
     /// count % 4 == 0). The layout rule aligns these fields so the offset
     /// half holds by construction.
+    /// 2026-09-14 (gpu_schedule): true for any state ARRAY (vector type) —
+    /// the projection aligns all arrays to 16 bytes (tensor kernels read
+    /// A/B in 16-byte chunks).
+    fn is_vector_type(ty: &Type) -> Result<bool, String> {
+        Ok(matches!(ty, Type::Vector(..)))
+    }
+
     fn vec4_shape_eligible(builder: &mut SpirvBuilder, ty: &Type) -> Result<bool, String> {
         let Type::Vector(inner, dims) = ty else {
             return Ok(false);

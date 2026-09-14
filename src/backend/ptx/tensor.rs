@@ -869,6 +869,38 @@ fn emit_e5a_mma_branch(out: &mut String, mhr: usize, gr: usize) {
 /// Power-of-2 stages keep the `& (stages-1)` mask byte-identical; stages=3
 /// (the 2026-09-14 parity probe) uses a constant `rem`. Other non-power-of-2
 /// values are rejected by the caller's assert.
+/// 2026-09-14 (gpu_schedule Phase 4a): the packed f16x2 immediate for an
+/// epilogue scale — `f16(k)` duplicated into the two halves. `None` when
+/// the value overflows f16 (a fused scale that large is a program error,
+/// but we keep the store untouched rather than emit garbage).
+fn f16x2_pair(k: f64) -> Option<u32> {
+    let bits = f32_to_f16(k as f32);
+    Some((bits as u32) | ((bits as u32) << 16))
+}
+
+/// IEEE-754 round-to-nearest-even f32→f16 (the mma store path's conversion).
+fn f32_to_f16(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32 - 127;
+    let frac = b & 0x7fffff;
+    if exp > 15 {
+        return sign | 0x7c00 | if frac != 0 { 0x200 } else { 0 };
+    }
+    if exp < -14 {
+        return sign;
+    }
+    let mut h = sign | (((exp + 15) as u16) << 10);
+    if exp == -14 && frac != 0 {
+        let m = frac | 0x800000;
+        let s = 14 - exp;
+        h |= (m >> s) as u16;
+    } else {
+        h |= (frac >> 13) as u16;
+    }
+    h
+}
+
 fn emit_stage_modulo(out: &mut String, stages: usize) {
     if stages.is_power_of_two() {
         out.push_str(&format!("    and.b32 %r9, %r9, {};\n", stages - 1));
@@ -961,6 +993,45 @@ pub fn tensor_gemm_ptx_smem_mw(
         kps,
         lowering.ptx_tensor_warp_spec,
         std::env::var("BRIEV_WS_DEBUG").is_ok(),
+        None,
+    )
+}
+
+/// 2026-09-14 (gpu_schedule Phase 4a): the tensor GEMM with an epilogue
+/// scale — a fused consumer's `out = y * k` multiplies the packed f16
+/// accumulator before the store.
+pub fn tensor_gemm_ptx_smem_mw_epilogue(
+    m: i64,
+    n: i64,
+    k: i64,
+    a_off: u64,
+    b_off: u64,
+    y_off: u64,
+    y_elem: u32,
+    mw: usize,
+    nw: usize,
+    f16_acc: bool,
+    stages: usize,
+    warp_mh: usize,
+    scale: f64,
+) -> String {
+    let lowering = crate::config_tuning::ir_lowering();
+    let b_lookahead = f16_acc && lowering.ptx_tensor_b_lookahead;
+    let bsmem_pad = lowering.ptx_tensor_bsmem_pad as usize;
+    let mut kps = lowering.ptx_tensor_ksteps_per_stage as usize;
+    if k % (16 * kps as i64) != 0 {
+        kps = 1;
+    }
+    let stages = if lowering.ptx_tensor_warp_spec {
+        2
+    } else {
+        stages
+    };
+    tensor_gemm_ptx_smem_mw_opt(
+        m, n, k, a_off, b_off, y_off, y_elem, mw, nw, f16_acc, stages, warp_mh, b_lookahead,
+        bsmem_pad, kps, lowering.ptx_tensor_warp_spec,
+        std::env::var("BRIEV_WS_DEBUG").is_ok(),
+        Some(scale),
     )
 }
 
@@ -982,6 +1053,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
     ksteps_per_stage: usize,
     warp_spec: bool,
     ws_debug: bool,
+    epilogue_scale: Option<f64>,
 ) -> String {
     // Warp tiling (2026-09-11 double-pump plan): the warp covers
     // warp_mh 16-row blocks x (16/warp_mh) 8-col groups — mma count per
@@ -1291,7 +1363,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
         )
     };
     out.push_str(&format!(
-        "    .reg .b32  {}, {}, %t0;\n",
+        "    .reg .b32  {}, {}, %t0, %t1;\n",
         aregs.join(", "),
         bregs.join(", ")
     ));
@@ -1383,6 +1455,11 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // RMV round, three reps).
     let mut emit_y_pass = |out: &mut String, mode: u8| {
         let (accumulate, store_only) = (mode == 1, mode == 2);
+        // 2026-09-14 (gpu_schedule Phase 4a): the epilogue scale's packed
+        // f16x2 constant, loaded once into %r15 (mul.rn.f16x2 needs a reg).
+        if let Some(pair_bits) = epilogue_scale.and_then(f16x2_pair) {
+            out.push_str(&format!("    mov.b32 %t1, 0x{:08x};\n", pair_bits));
+        }
         out.push_str("    mov.u32 %r12, %r10;\n");
         out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 16 * mhr as i64 * y_row));
         out.push_str("    mov.u32 %r13, %r11;\n");
@@ -1419,6 +1496,15 @@ fn tensor_gemm_ptx_smem_mw_opt(
                         out.push_str(&format!("    add.u64 %rd5, %rd5, {};\n", d));
                     }
                     let reg = &cregs[cb + pair as usize];
+                    // 2026-09-14 (gpu_schedule Phase 4a): a fused epilogue
+                    // scale multiplies the packed f16x2 acc before the store.
+                    // (mul.rn.f16x2 needs a REGISTER operand, not an immediate.)
+                    if let Some(_) = epilogue_scale.and_then(f16x2_pair) {
+                        out.push_str(&format!(
+                            "    mul.rn.f16x2 {}, {}, %t1;\n",
+                            reg, reg
+                        ));
+                    }
                     if store_only {
                         out.push_str(&format!("    st.global.b32 [%rd5], {};\n", reg));
                     } else if accumulate {
@@ -2311,6 +2397,8 @@ mod r16_dump {
             let ptx = tensor_gemm_ptx_smem_mw_opt(
                 m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, true, 0, 1, false,
                 false,
+            None,
+
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5a_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2332,6 +2420,8 @@ mod r16_dump {
             let ptx = tensor_gemm_ptx_smem_mw_opt(
                 m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4, false, 32, 1, false,
                 false,
+            None,
+
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e5b_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2387,6 +2477,8 @@ mod r16_dump {
                 m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4,
                 false, 0, 1, true,
                 false,
+            None,
+
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_e8a_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2404,6 +2496,7 @@ mod r16_dump {
                 m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4,
                 false, 0, 1, true,
                 true,  // ws_debug = true
+                None,
             );
             std::fs::write(&format!("/tmp/opencode/tgemm_ws_debug_{tag}.ptx"), &ptx).unwrap();
         }
@@ -2422,6 +2515,8 @@ mod r16_dump {
                     m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, stages, 4,
                     false, 0, 2, false,
                     false,
+                None,
+
                 );
                 std::fs::write(
                     &format!("/tmp/opencode/tgemm_e6_{stagetag}_{mtag}.ptx"),
