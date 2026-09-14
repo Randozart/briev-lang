@@ -956,6 +956,44 @@ impl<'a> Parser<'a> {
         // name; the mechanism comes from the active target profile.
         if self.check(&Token::At) {
             self.pos += 1;
+            // 2026-09-14 (rv64-finish plan Phase 4b): `node name @ *<expr>` is
+            // the ADDRESS-WIRED (reactor-pass) form (SPEC §13.2 addresses
+            // namespace): the node stays in reactor dispatch, polled every
+            // pass — the wiring is the eligibility, so `[pre]` may be omitted.
+            // Dynamic pointers are ALWAYS this class. The marker is metadata:
+            // the equilibrium park policy must not `wfi` through it.
+            if self.check(&Token::Star) {
+                self.pos += 1;
+                let _ptr = self.parse_address_wiring_expr()?;
+                let contract = self.parse_contract()?;
+                let body = if self.check(&Token::LBrace) {
+                    self.parse_block()?
+                } else {
+                    Vec::new()
+                };
+                self.eat(&Token::Semicolon);
+                let mut metadata = std::collections::HashMap::new();
+                metadata.insert(
+                    "address_wired".to_string(),
+                    crate::ast::PropertyValue::Int(1),
+                );
+                return Ok(TopLevel::Transaction(Transaction {
+                    name,
+                    is_reactive: true,
+                    is_async,
+                    type_params: vec![],
+                    parameters: vec![],
+                    output_type: None,
+                    outputs: Vec::new(),
+                    contract,
+                    body,
+                    metadata,
+                    derivation: None,
+                    modifiers: vec![],
+                    span: None,
+                    doc: self.take_doc(),
+                }));
+            }
             let vector = match self.peek() {
                 Some(Token::Integer(n)) => {
                     let n = *n;

@@ -8985,6 +8985,55 @@ fn test_embedded_equilibrium_parks_in_wfi() {
     assert!(ir.contains("br label %.ss_main_loop"), "park re-enters the dispatch loop:\n{ir}");
 }
 
+/// 2026-09-14 (rv64-finish plan Phase 4b): an address-wired (reactor-pass)
+/// node — `node n @ *<ptr>` — polls a memory-mapped value that changes
+/// WITHOUT an interrupt. The equilibrium park must SPIN (re-evaluate every
+/// pass), never `wfi` through the eligibility. The `.end` block branches
+/// straight back to the dispatch loop instead of emitting the wfi call.
+#[test]
+fn test_address_wired_node_spins_not_parks() {
+    let src = "let armed: Int = 0;\n\
+               let last: Int = 0;\n\
+               node poll @ *(0x40004000 as Ptr<Int>) [last >= 0][last >= 0] {\n\
+                   last = 1;\n\
+               };\n";
+    let program = parse_isr_program(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new())
+        .with_embedded_mode(true)
+        .with_target_triple("riscv64-unknown-none");
+    let ir = backend.generate(&program, None);
+    // The address-wired node's pre is a state obligation; if it ever reads
+    // false, the reactor must re-read every pass rather than sleep.
+    assert!(ir.contains(".end:\n  br label %.ss_main_loop"),
+        "external frontier must spin, not park:\n{ir}");
+    assert!(!ir.contains(".end:\n  call void asm sideeffect \"wfi\""),
+        "no wfi park with an external frontier:\n{ir}");
+}
+
+/// The parser classifies `node n @ *ptr` as a reactor-pass Transaction (not
+/// a machine-vectored IsrHandler) and the contract brackets are NOT eaten
+/// as an array index.
+#[test]
+fn test_address_wired_node_parses_as_reactive_txn() {
+    let src = "let armed: Int = 0;\n\
+               let last: Int = 0;\n\
+               node poll @ *(0x40004000 as Ptr<Int>) [last >= 0][last >= 0] {\n\
+                   last = 1;\n\
+               };\n";
+    let program = parse_isr_program(src);
+    let txns: Vec<&crate::ast::top::Transaction> = program.iter()
+        .filter_map(|i| match i { crate::ast::TopLevel::Transaction(t) => Some(t), _ => None })
+        .collect();
+    assert_eq!(txns.len(), 1, "address-wired node is one reactive transaction");
+    let t = txns[0];
+    assert_eq!(t.name, "poll");
+    assert!(t.metadata.contains_key("address_wired"), "address-wired marker set");
+    assert!(t.contract.explicit, "contract brackets survive parse (not eaten as index)");
+    assert!(!matches!(program.iter().find(|i| matches!(i, crate::ast::TopLevel::IsrHandler(_))),
+        Some(crate::ast::TopLevel::IsrHandler(_))), "not a machine-serviced handler");
+}
+
 #[test]
 fn test_sync_wrapped_beginprogram_node_emits_flag() {
     // `sync<group> node …` wraps the transaction; its beginprogram entry

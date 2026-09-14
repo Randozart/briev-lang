@@ -1889,6 +1889,12 @@ node timer_tick @ timer_irq [ticks >= 0] { ticks = ticks + 1; };  // board name
     `@ *ptr`): reactor-pass — the node stays in reactor dispatch, gated by
     the wiring (an inline trigger; the wiring is the eligibility, so `[pre]`
     may be omitted). Dynamic pointers are always this class.
+    2026-09-14 (plan `2026-09-14-rv64-finish.md` Phase 4b): the `@ *<ptr>`
+    form is SHIPPED — parses as a reactor-pass Transaction carrying the
+    `address_wired` marker, and the equilibrium park spins (never `wfi`)
+    while such a node exists (an external frontier changes without an
+    interrupt). `addresses.dbvl` names and bare address literals remain
+    pending (literal disambiguation against vector slots is unresolved).
 - **Latency contracts**: a memory-mapped value changing does not notify the
   CPU, so reactor-pass nodes fire within one dispatch pass. A declared bound
   moves the equilibrium tradeoff into the open: `node n @ alert within 1 ms`

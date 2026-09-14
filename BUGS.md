@@ -5951,6 +5951,17 @@ wires permanently in the external frontier), and the emitter picks the park
 policy from it: `wfi` only when the frontier is vectored-only; spin
 (continuous evaluation) when an external frontier exists, or a
 `within`-bounded quantum park when declared. Logged before the fix ships.
+**RESOLVED 2026-09-14** (rv64-finish plan Phase 4b): the address-wired form
+`node n @ *<ptr>` now parses as a reactor-pass Transaction (SPEC §13.2
+addresses namespace; the contract brackets are no longer eaten as an array
+index — `parse_postfix` gained an `allow_index` gate). The equilibrium park
+in `emit_ssa_main`'s `.end` block checks the `address_wired` marker: an
+external frontier SPINS (`br %.ss_main_loop`, no `wfi`); only
+vectored/state-sequenced programs park. Verified end-to-end on QEMU MPS2-AN385
+(`examples/addr_wired.b.bv`: SysTick VAL polls with no interrupt; gate
+`tests/bare/qemu-arm-addr-wired.sh`). The full writer×reader `wake_sets`
+closure (which preconditions a wake re-checks) remains a refinement; the
+correctness property — never sleep through an external frontier — ships.
 
 ## 2026-09-14 — Statement match with void txn arms emits broken expression-match IR
 

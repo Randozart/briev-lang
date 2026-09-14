@@ -1,0 +1,42 @@
+// target: thumbv7m-none-eabi
+// Phase 4b (rv64-finish plan): address-wired (reactor-pass) polling.
+//
+// SysTick runs WITHOUT the TICKINT interrupt — VAL (0xE000E018) changes
+// continuously but no interrupt ever asserts. The address-wired node
+// `poll_val @ *(...)` is the ONLY eligibility: the reactor must spin and
+// re-read VAL every pass, or it sleeps forever and prints nothing.
+//
+// Gate: QEMU prints digits as VAL changes — proof the equilibrium park
+// never wfi's through an external (address) frontier.
+//
+// Board facts (MPS2-AN385):
+//   0x40004000  UART0 DATA (CMSDK APB UART; CTRL 0x40004008 TXEN)
+//   0xE000E014  SysTick LOAD
+//   0xE000E018  SysTick VAL
+//   0xE000E010  SysTick CTRL (bit0 ENABLE, bit2 CLKSOURCE — no TICKINT)
+
+let booted: Int = 0;
+let printed: Int = 0;
+let last_val: Int = 0;
+
+bootstrap node reset [booted == true] {
+    // UART TX on.
+    VolatileStore#(0x40004008 as Ptr<Bit<32>>, 1);
+    // SysTick: LOAD 100000-1, clear VAL, ENABLE|CLKSOURCE (no interrupt).
+    VolatileStore#(0xE000E014 as Ptr<Bit<32>>, 100000 - 1);
+    VolatileStore#(0xE000E018 as Ptr<Bit<32>>, 0);
+    VolatileStore#(0xE000E010 as Ptr<Bit<32>>, 5);
+    booted = 1;
+};
+
+// Address-wired: polls SysTick VAL every dispatch pass. `booted` gates it;
+// while false the reactor must SPIN (re-read every pass), never park.
+node poll_val @ *(0xE000E018 as Ptr<Int>) [booted == 1][printed >= 0] {
+    let v: Int = VolatileLoad#(0xE000E018 as Ptr<Int>);
+    when v != last_val {
+        VolatileStore#(0x40004000 as Ptr<Bit<32>>, 48 + (printed % 10));
+        printed = printed + 1;
+        last_val = v;
+    };
+    term;
+};

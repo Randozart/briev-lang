@@ -63,6 +63,27 @@ node overtemp @ thermal_alert within 1 ms { … }    // bound: compiler picks sp
 (Rule 2): determinism is the default; power saving is the declared,
 checked tradeoff.
 
+### Frontier-driven equilibrium (shipped 2026-09-14, plan `2026-09-14-rv64-finish.md` Phase 4b)
+
+The reactor's equilibrium park is policy-driven, not unconditional. The
+`@ *<ptr>` address-wired form (SPEC §13.2 addresses namespace) is now a
+first-class reactor-pass node: the contract brackets are not eaten as an
+array index (`parse_postfix` gates the `[` subscript), and the node carries
+an `address_wired` metadata marker. At `.end` (no state-sequenced node
+fired this pass) the emitter:
+
+- **spins** (`br %.ss_main_loop`, no `wfi`) when any address-wired node
+  exists — an external frontier's memory-mapped value changes WITHOUT an
+  interrupt, so parking would sleep through the eligibility forever;
+- **parks** in `wfi` only when every frontier is vectored (machine-serviced)
+  or state-sequenced — a trap wakes the core and re-evaluates.
+
+Verified on QEMU MPS2-AN385: `examples/addr_wired.b.bv` polls SysTick VAL
+with no interrupt and prints continuously (gate
+`tests/bare/qemu-arm-addr-wired.sh`). The writer×reader `wake_sets` closure
+(which preconditions a specific wake re-checks) remains a refinement — the
+no-sleep property itself is what ships.
+
 ## `bootstrap node` — the authored program entry
 
 The program's machine beginning. Without one, the compiler emits the canned
