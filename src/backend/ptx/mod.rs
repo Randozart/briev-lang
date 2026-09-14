@@ -19,6 +19,10 @@ use crate::backend::spirv::runner::RunnerKernel;
 use crate::type_universe::TypeUniverse;
 
 pub mod tensor;
+/// 2026-09-14 (gpu_schedule S5-lite): the general elementwise PTX kernel
+/// emitter — non-GEMM eligible nodes (the row-ops between GEMMs in an
+/// attention-decode graph). See general.rs.
+pub mod general;
 
 /// PTX entry point name — the CUDA driver's `create_kernel` resolves "main"
 /// (`cuModuleGetFunction`). Must never drift from `briev_dev_cuda.c`.
@@ -233,6 +237,55 @@ pub(crate) fn compile_cubin(ptx: &str, maxnreg: u32) -> Option<Vec<u8>> {
     cubin
 }
 
+/// Module consts (literals only) for the general-kernel emitter and count
+/// folding — the same rule the runner's emitter uses.
+fn module_expr_consts(program: &[TopLevel]) -> std::collections::HashMap<String, Expr> {
+    let mut m = std::collections::HashMap::new();
+    for item in program {
+        if let TopLevel::Constant(c) = item {
+            if matches!(c.expr, Expr::Decimal(_) | Expr::Float(_)) {
+                m.insert(c.name.clone(), c.expr.clone());
+            }
+        }
+    }
+    m
+}
+
+/// Fold an accel node's work-item count expression to a constant.
+fn fold_count(
+    shape: &crate::analysis::accel::KernelShape,
+    consts: &std::collections::HashMap<String, Expr>,
+) -> Result<i64, String> {
+    let e = shape.count_expr.clone().unwrap_or(Expr::Decimal(0));
+    match e {
+        Expr::Decimal(n) => Ok(n),
+        Expr::Identifier(s) => match consts.get(&s) {
+            Some(Expr::Decimal(n)) => Ok(*n),
+            _ => Err(format!("ptx general: count '{}' is not a constant", s)),
+        },
+        Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) => {
+            let lv = fold_side(&l, consts)?;
+            let rv = fold_side(&r, consts)?;
+            Ok(lv * rv)
+        }
+        other => Err(format!(
+            "ptx general: count expression {:?} not foldable",
+            other
+        )),
+    }
+}
+
+fn fold_side(e: &Expr, consts: &std::collections::HashMap<String, Expr>) -> Result<i64, String> {
+    match e {
+        Expr::Decimal(n) => Ok(*n),
+        Expr::Identifier(s) => match consts.get(s) {
+            Some(Expr::Decimal(n)) => Ok(*n),
+            _ => Err(format!("ptx general: count operand '{}' not a constant", s)),
+        },
+        other => Err(format!("ptx general: count operand {:?} not foldable", other)),
+    }
+}
+
 pub fn build_ptx_kernels(
     program: &[TopLevel],
     universe: &TypeUniverse,
@@ -256,17 +309,37 @@ pub fn build_ptx_kernels(
     let mut out = Vec::new();
     for name in names {
         let e = &entries[name];
-        let plan = GemmPlan::match_stmts(&e.shape, program).ok_or_else(|| {
-            format!(
-                "ptx: node '{}' is not a GEMM-shaped kernel — the PTX tier (S2a) \
-                 lowers GEMM only until the S5 anchor race is won\n  why: the \
-                 surface gate keeps the emitter honest (no silent generic \
-                 lowering)\n  fix: use --backend spirv for this program, or \
-                 retry once the PTX tier grows the general kernel emitter",
-                name
-            )
-        })?;
-
+        let plan = GemmPlan::match_stmts(&e.shape, program);
+        // 2026-09-14 (gpu_schedule S5-lite): a non-GEMM eligible node is an
+        // elementwise kernel (the row-ops between GEMMs in an attention
+        // decode) — emit the general 1D PTX kernel.
+        if plan.is_none() {
+            let consts = module_expr_consts(program);
+            let count = fold_count(&e.shape, &consts)?;
+            let ptx = general::emit_general_ptx(&e.shape, count, &layout, &consts)?;
+            let blob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
+                compile_cubin(&ptx, 64).unwrap_or_else(|| ptx.into_bytes())
+            } else {
+                ptx.into_bytes()
+            };
+            out.push(RunnerKernel {
+                name: name.clone(),
+                spirv: blob,
+                image_plans: Vec::new(),
+                index_var: e.shape.index_var.clone(),
+                count_expr: e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+                work_cols: None,
+                cooperative: false,
+                tiled: false,
+                tensor: false,
+                tensor_tile_rows: 1,
+                ptx_tensor: false,
+                block_threads: 256,
+                shared_bytes: 0,
+            });
+            continue;
+        }
+        let plan = plan.unwrap();
         let find_off = |field: &str| -> Result<u64, String> {
             layout
                 .fields

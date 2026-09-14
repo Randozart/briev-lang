@@ -1,0 +1,11 @@
+import "std/types/float.bv";
+const N: Int = 16384;
+const C: Float = 2.0;
+let i: Int = 0;
+let s: Float[16384];
+let s2: Float[16384];
+async node scale [i < N][i == N] {
+    s2[i] = s[i] * C;
+    i = i + 1;
+    term;
+};
