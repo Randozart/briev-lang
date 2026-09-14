@@ -185,6 +185,12 @@ static int g_program_seeded = 0;
 // 2026-08-31: shared with the #included device drivers (single TU) — they
 // read it for BRIEV_ACCEL_VERBOSE diagnostics.
 static int g_verbose = 0;
+// 2026-09-14 (gpu_schedule Phase 2, sync elimination): kernels on ONE stream
+// execute in submission order, so the per-launch cuStreamSynchronize is pure
+// overhead — the node DAG's edges are already satisfied by stream order.
+// When set (BRIEV_ACCEL_ASYNC=1), resident launches submit WITHOUT syncing;
+// the sync happens at the download / explicit briev_accel_sync.
+static int g_async_launch = 0;
 static void** g_kernels = NULL;       // per-desc kernel handles
 static uint32_t g_n_kernels = 0;
 static const BrievKernelDesc* g_descs = NULL;
@@ -221,6 +227,7 @@ static const BrievDeviceDriver* select_driver(void) {
 /// there was no way to see why. BRIEV_ACCEL_VERBOSE=1 prints the reason.
 int briev_accel_init(const BrievKernelDesc* descs, uint32_t n) {
     g_verbose = getenv("BRIEV_ACCEL_VERBOSE") != NULL;
+    g_async_launch = getenv("BRIEV_ACCEL_ASYNC") != NULL;
     int verbose = g_verbose;
     if (!g_init_done) {
         g_driver = select_driver();

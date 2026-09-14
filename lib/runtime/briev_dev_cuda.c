@@ -358,7 +358,7 @@ static int briev_dev_cuda_set_shared_bytes(void* handle, uint32_t n) {
 // %ctaid.y/%ctaid.x/%tid.x, the same convention as the SPIR-V 2D dispatch.
 // One param: the projection pointer (kernel `.param .b64 param0`).
 static int cuda_launch_grid(BrievCudaKernel* k, size_t nx, size_t ny,
-                            size_t shared_bytes) {
+                            size_t shared_bytes, int sync) {
     unsigned bx = k->block_threads > 0 ? k->block_threads : cu_local_x;
     unsigned gx = (unsigned)((nx + bx - 1) / bx);
     unsigned gy = (unsigned)ny;
@@ -381,6 +381,11 @@ static int cuda_launch_grid(BrievCudaKernel* k, size_t nx, size_t ny,
         return 0;
     }
     rc = p_cuStreamSynchronize(cu_stream);
+    if (!sync) {
+        // 2026-09-14 (gpu_schedule Phase 2): async submit — the stream
+        // orders the kernels; no host wait. The sync happens at download.
+        return 1;
+    }
     if (rc != CUDA_SUCCESS && g_verbose) {
         const char* estr = "?";
         if (p_cuGetErrorString) p_cuGetErrorString(rc, &estr);
@@ -428,7 +433,7 @@ static int briev_dev_cuda_launch(void* handle, const void* proj, size_t proj_byt
         if (verbose) fprintf(stderr, "[briev_accel/cuda] HtoD failed\n");
         return 0;
     }
-    int ok = cuda_launch_grid(k, global_n, 1, k->shared_bytes);
+    int ok = cuda_launch_grid(k, global_n, 1, k->shared_bytes, 1);
     if (ok && proj_out) {
         ok = p_cuMemcpyDtoH(proj_out, k->dev, proj_bytes) == CUDA_SUCCESS;
     }
@@ -489,7 +494,7 @@ static int briev_dev_cuda_launch_dev2d(void* handle, size_t nx, size_t ny,
             }
         }
     }
-    return cuda_launch_grid(k, nx, ny, k->shared_bytes);
+    return cuda_launch_grid(k, nx, ny, k->shared_bytes, !g_async_launch);
 }
 
 /// Flat 1D dispatch: nx work items, one row (the common launch_dev form).
@@ -507,7 +512,7 @@ static int briev_dev_cuda_launch_dev2d_batch(void* handle, size_t nx, size_t ny,
     int ok = briev_dev_cuda_launch_dev2d(handle, nx, ny, full_sync, dirty, n_dirty);
     for (uint32_t t = 1; ok && t < times; t++) {
         // Subsequent dispatches reuse the working set — no sync.
-        ok = cuda_launch_grid(k, nx, ny, k->shared_bytes);
+        ok = cuda_launch_grid(k, nx, ny, k->shared_bytes, !g_async_launch);
     }
     return ok;
 }
@@ -518,6 +523,11 @@ static int briev_dev_cuda_download_dev(void* handle) {
     BrievCudaKernel* k = (BrievCudaKernel*)handle;
     if (!k || k->mapped_host == NULL || k->dev == 0 || k->bytes == 0) {
         return 0;
+    }
+    // 2026-09-14 (gpu_schedule Phase 2): async launches submit without a
+    // host wait — drain the stream before reading the results back.
+    if (p_cuStreamSynchronize && cu_stream) {
+        p_cuStreamSynchronize(cu_stream);
     }
     return p_cuMemcpyDtoH(k->mapped_host, k->dev, k->bytes) == CUDA_SUCCESS;
 }
