@@ -3,8 +3,11 @@
 **Date:** 2026-09-14
 **Baseline:** ship 35.5 TF @4096³ (84.5% of the 42-TF cuBLAS anchor),
 36.3 @8192³ (86%), 31.5 @2048³ (75%). E1f bound: 42.5 = parity. E8a
-built, stage-1-incorrect (consumer path proven exact; producer-fill
-data wrong). Calibration: Briev +32% over Triton 3.2 on this part;
+**stage-1 FIXED (2026-09-14): producer predicate selected warp 8 only;
+`setp.ge %p2, %r9, 8` selects warps 8-9 → 128-K-sweep exact, 4096³
+max_rel_err 5.208e-03 OK. But E8a is 34% SLOWER than the ship (23.8 vs
+35.9 TF @4096³) — L1 closed with a negative result; ship remains the
+best kernel.** Calibration: Briev +32% over Triton 3.2 on this part;
 cuBLAS 42 = 82% of nameplate. Findings-of-record: the plan docs
 2026-09-11/13 series + /tmp working notes.
 
@@ -91,9 +94,10 @@ what E8a (L1) addresses.
 
 ## Order of execution
 
-1. L2 double-fill diagnostic (15 min) → L1 instrument + fix chase
-   (the parity verdict).
-2. L3 split-K (independent; one session).
+1. ~~L2 double-fill diagnostic~~ → ~~L1 instrument + fix chase~~ **L1 CLOSED
+   (2026-09-14): E8a fixed but 34% slower than the ship — ship wins,
+   `ptx_tensor_warp_spec` stays off.**
+2. L3 split-K (independent; one session) — the next performance lever.
 3. L4 small-K gates (cheap, high claim value).
 4. L5 gpu_schedule plan doc + first pass.
 
@@ -177,3 +181,38 @@ iter) pair, then fix the producer's dest (or the consumer's read).
   scheduling side-effect of the instrument (independent of `rd6`, SASS
   shows all STG offsets ≤ +0x800, loop executes once) — does NOT affect
   the real kernel (the y-store path is separate). Not worth chasing.
+
+## L1 RESOLVED (2026-09-14): E8a stage-1 FIXED — and slower than the ship
+
+**Root cause (one line):** the producer-role predicate was
+`setp.eq.u32 %p2, %r9, 8` — it selected only **warp 8**, so warp 9
+(r5 32..63) fell through to the consumer path. The fill formulas assume
+64 producer lanes, so only half of stage-1 landed (B rows 16..23 = warp
+8's `r5>>2` range; warp 9's rows 24..31 never written) — the stage-1
+half-coverage behind the "MSE 91". Fix: `setp.ge.u32 %p2, %r9, 8`.
+
+**Diagnostic trail:** a position-encoded producer canary (store the writer
+lane `r5` at `global[4MB + dest_offset]` per B `st.shared`) proved only
+lanes 0..31 wrote to stage-1; a warp-dependent constant (warp 8 → 1.0,
+warp 9 → 2.0) proved the consumer never saw warp 9's data; the consumer's
+stage-1 chunk was exactly `sum_{k=16..23} A[r][k]` (5.75) = warp 8's half.
+
+**Verified (refcheck, CPU f32):**
+- 128×128 K=16/32/64/96: MSE = 0.000000, every element exact.
+- 512³ / 1024³: correct within f16-accumulation precision (rel ~1.6e-3).
+- 4096³ max_rel_err = 5.208e-03 OK (identical to the ship).
+
+**Benchmark verdict (ptx_gemm_bench, same driver):**
+- 4096³: E8a 23.8 TF vs ship 35.9 TF — **E8a 34% slower**.
+- 2048³: E8a 20.6 TF vs ship 31.1 TF — **E8a 34% slower**.
+
+**Conclusion: E8a is correct but loses.** The producer/consumer split
+trades the ship's cheap consumer-side cp.async self-fill for two idle
+producer warps per CTA (40 vs 32 warps/SM) plus a per-stage barrier
+handshake (`bar.sync 1/2` + `membar.cta`) on the critical path. At 2
+stages the fill is tiny, so the prefetch benefit never materializes.
+L1's parity gate is closed with a negative result — the ship (E4c)
+remains the best kernel. The `ptx_tensor_warp_spec` config stays default
+off. (A deeper-stage E8a variant could amortize the producer cost, but
+the barrier latency on the critical path is structural; not worth it on
+this GPU.)
