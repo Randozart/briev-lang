@@ -79,6 +79,27 @@ Shapes for the gate: 512×512×512 decode (attention head), then
 1024/2048 seqlen. Compare vs the same graph through the llama.cpp
 cuBLAS path (composition).
 
+## Standing status (2026-09-14)
+
+**Phase 0 SHIPPED** — shared device state: one device allocation = the
+full projection; all kernels alias it; the residency seed is program-level
+(full_sync once, scalars-only after). Cross-kernel ARRAY flow works:
+a 2-GEMM chain (gemm1 writes c, gemm2 reads c) runs correct on-device
+(maxrel 0.138% = f16 accumulation). Also fixed: `term` in a host node no
+longer emits `goto done` (it is the node's convergence checkpoint, not
+endprogram) — the reactor loop reaches later nodes. Commits `3ea3ed77`,
+`8328e515`.
+
+**Phase 1 SHIPPED** — the frontend node DAG (`src/analysis/gpu_schedule.rs`):
+per-node reads (accel read_buffers/scalar_ins + pre identifiers) and writes
+(write_buffers + index_var; host nodes: assigned scalars); RAW/WAW/WAR edges
+(WAR direction is writer-first); Kahn topo order; independence pairs. The
+runner iterates the topo order (declaration-order fallback). Verified:
+a 2-GEMM array chain runs correct WITHOUT phase scalars (the shared state
+carries the flow), and with the consumer DECLARED FIRST the DAG reorders
+producer-first and the result is byte-identical. `AnalysisResults.gpu_schedule`
+(frontend-driven; backend never re-derives). 2206 tests green.
+
 ## The contract surface the pass consumes
 
 All decisions are frontend-computed and land in `AnalysisResults`
