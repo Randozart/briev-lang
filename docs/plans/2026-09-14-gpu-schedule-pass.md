@@ -100,6 +100,19 @@ carries the flow), and with the consumer DECLARED FIRST the DAG reorders
 producer-first and the result is byte-identical. `AnalysisResults.gpu_schedule`
 (frontend-driven; backend never re-derives). 2206 tests green.
 
+**S5-lite SHIPPED** — the general elementwise PTX kernel emitter
+(`src/backend/ptx/general.rs`): non-GEMM eligible nodes lower to a flat 1D
+kernel (gid = ctaid.x·256 + tid.x, index_var := gid, guard gid<N, body =
+assignments over buf[index_var], scalars, literals; +-*/%, unary -, lets).
+This is the enabler for the row-ops between GEMMs. Verified on-device:
+`scale s2[i]=s[i]*C` runs EXACT (MSE=0).
+
+**ATTENTION-DECODE STANDING BENCHMARK SHIPPED** (`examples/gpu/attn_decode.abv`):
+qk (GEMM S=Q·Kᵀ) → scale (S2=S·C) → pv (GEMM O=S2·V), gated purely by the
+node DAG (no phase scalars). Runs on-device BIT-EXACT (MSE=0, maxrel=0):
+all three kernels fire in DAG order and the shared state carries the array
+flow through s and s2. This is the recurring gate for Phases 2-4.
+
 ## The contract surface the pass consumes
 
 All decisions are frontend-computed and land in `AnalysisResults`
