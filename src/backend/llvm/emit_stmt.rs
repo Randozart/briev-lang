@@ -6,6 +6,7 @@
 // into scalars for alias analysis and vectorization.
 
 use crate::ast::{Expr, Statement, Type};
+use crate::ast::top::StmtMatchArm;
 use crate::backend::llvm::{emit_expr::member_briev_name, LlvmBackend, TypedRegister};
 use std::fmt::Write;
 
@@ -1124,6 +1125,21 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     }
                 }
                 TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
+            } else if let Expr::Match(scrutinee, arms) = expr {
+                // 2026-09-14 (rv64-finish plan): void-match fix — expression
+                // matches used as statements (e.g. `match x { 7 => f(), _ => {} }`)
+                // must route through the statement-match path (.smt_* blocks), not
+                // the expression-match path (boxing). The boxing path generates IR
+                // referencing undefined values when arms are void txn calls.
+                // Convert MatchArm → StmtMatchArm and re-enter the match handler.
+                let stmt_arms: Vec<StmtMatchArm> = arms.iter().map(|arm| {
+                    StmtMatchArm {
+                        patterns: vec![arm.pattern.clone()],
+                        body: vec![Statement::Expression(*arm.body.clone())],
+                    }
+                }).collect();
+                let stmt_match = Statement::Match { expr: scrutinee.clone(), arms: stmt_arms };
+                emit_statement(backend, out, &stmt_match, indent)
             } else {
                 let reg = backend.emit_expr(out, expr, indent);
                 // 2026-09-14 (machine-entry plan): expression-bodied defns
