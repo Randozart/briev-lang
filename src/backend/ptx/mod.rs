@@ -302,7 +302,19 @@ pub fn build_ptx_kernels(
         // f16-acc halves the accumulator registers (64 f32 -> 32 f16x2),
         // funding 64-reg/256T kernels: 4 CTAs/SM at 16KB smem (E4c, 2026-09-13).
         // f32-acc keeps 4 stages (deep pipeline, 1-2 CTAs by config).
-        let stages = if f16_acc { 2usize } else { 4usize };
+        // 2026-09-14 (parity probe P1): stages=3 at the f16acc (2,4) tile
+        // (24KB, still 4 CTAs/SM) measured +1.0-1.8% at every large square
+        // shape — the auto default. `ptx_tensor_stages` overrides (2|3).
+        let stages = match crate::config_tuning::ir_lowering().ptx_tensor_stages {
+            0 => {
+                if f16_acc {
+                    3usize
+                } else {
+                    4usize
+                }
+            }
+            v => v as usize,
+        };
         // On-device sweep (2026-09-10, 4096^3): the f32 kernel's best is
         // (4,2)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
         // 2026-09-13 (E4c): the f16acc cap drops to 256 — the 8-warp CTA

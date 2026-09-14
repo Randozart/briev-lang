@@ -865,6 +865,34 @@ fn emit_e5a_mma_branch(out: &mut String, mhr: usize, gr: usize) {
     out.push_str("MMA_DONE:\n");
 }
 
+/// Emit `%r9 = %r9 % stages` (the compute-stage wrap at the KLOOP head).
+/// Power-of-2 stages keep the `& (stages-1)` mask byte-identical; stages=3
+/// (the 2026-09-14 parity probe) uses a constant `rem`. Other non-power-of-2
+/// values are rejected by the caller's assert.
+fn emit_stage_modulo(out: &mut String, stages: usize) {
+    if stages.is_power_of_two() {
+        out.push_str(&format!("    and.b32 %r9, %r9, {};\n", stages - 1));
+    } else {
+        out.push_str(&format!("    rem.u32 %r9, %r9, {};\n", stages));
+    }
+}
+
+/// Emit `%r17 = (%r9 + stages-1) % stages` (the fill-stage wrap, the ring
+/// predecessor of the compute stage). Power-of-2 keeps `& (stages-1)`
+/// byte-identical; for stages=3 one conditional subtract suffices — after
+/// the add the value is in [stages-1, 2·stages-2], one subtract of `stages`
+/// lands it in [0, stages-1]. %p1 is dead at this point (the KEND check
+/// already branched on it).
+fn emit_fill_stage(out: &mut String, stages: usize) {
+    out.push_str(&format!("    add.u32 %r17, %r9, {};\n", stages - 1));
+    if stages.is_power_of_two() {
+        out.push_str(&format!("    and.b32 %r17, %r17, {};\n", stages - 1));
+    } else {
+        out.push_str(&format!("    setp.ge.u32 %p1, %r17, {};\n", stages as u32));
+        out.push_str(&format!("    @%p1 sub.u32 %r17, %r17, {};\n", stages as u32));
+    }
+}
+
 /// Tail (after the iteration barrier): load the NEXT stage's B into the
 /// set opposite to %r27, then flip the parity. Skipped on the final kstep.
 fn emit_e5a_tail_prefetch(
@@ -920,6 +948,13 @@ pub fn tensor_gemm_ptx_smem_mw(
     if k % (16 * kps as i64) != 0 {
         kps = 1;
     }
+    // E8a warp-spec is derived for stages=2 exactly (see the assert); with
+    // the 2026-09-14 stages=3 f16acc default, enabling it must force 2.
+    let stages = if lowering.ptx_tensor_warp_spec {
+        2
+    } else {
+        stages
+    };
     tensor_gemm_ptx_smem_mw_opt(
         m, n, k, a_off, b_off, y_off, y_elem, mw, nw, f16_acc, stages, warp_mh, b_lookahead,
         bsmem_pad,
@@ -956,12 +991,12 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // instead of 16x — 21.3 vs 12.8 FLOP per shared-read byte).
     let mhr = warp_mh;
     let gr = 16 / warp_mh;
-    // Stage indexing wraps with `& (stages-1)` (r9/r17 at the KLOOP head);
-    // non-power-of-2 stages silently alias stages and corrupt results
-    // (2026-09-13: a stages=3 dump measured 2.4e-2 — 5x over the gate —
-    // while s4 was exact. The E6 s3 probe died here, not on perf.)
-    debug_assert!(stages.is_power_of_two());
-    debug_assert!(!b_lookahead || f16_acc);
+    // Stage indexing: power-of-2 wraps with `& (stages-1)` (r9/r17 at the
+    // KLOOP head); stages=3 uses a constant modulo (the 2026-09-14 parity
+    // probe — E6 P1 died on the `&2` aliasing bug, not on perf; a stages=3
+    // dump measured 2.4e-2 — 5x over the gate — while s4 was exact).
+    debug_assert!(stages.is_power_of_two() || stages == 3);
+    debug_assert!(!b_lookahead || (f16_acc && stages.is_power_of_two()));
     // E8a: the warp-specialized protocol is derived for exactly this shape.
     debug_assert!(!warp_spec || (f16_acc && stages == 2 && ksteps_per_stage == 1 && !b_lookahead));
     debug_assert!(mhr * gr == 16 && m % (16 * mhr as i64 * mw as i64) == 0 && n % (8 * gr as i64 * nw as i64) == 0 && k % 16 == 0);
@@ -1907,15 +1942,16 @@ fn tensor_gemm_ptx_smem_mw_opt(
     out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", k));
     out.push_str("    @%p1 bra KEND;\n");
 
-    // Compute stage = ((kstep/16)/kps) & (stages-1); fill stage = stage+(stages-1).
+    // Compute stage = ((kstep/16)/kps) % stages; fill stage = (stage + stages-1) % stages.
     // kps>1 divides the strip index first (the fill+bar cadence is per-stage).
+    // Power-of-2 wraps with `& (stages-1)`; stages=3 uses the constant modulo
+    // (the 2026-09-14 parity probe — see emit_stage_modulo/emit_fill_stage).
     out.push_str("    shr.u32 %r9, %r2, 4;\n");
     if kps > 1 {
         out.push_str(&format!("    shr.u32 %r9, %r9, {};\n", kps.trailing_zeros()));
     }
-    out.push_str(&format!("    and.b32 %r9, %r9, {};\n", stages - 1));
-    out.push_str(&format!("    add.u32 %r17, %r9, {};\n", stages - 1));
-    out.push_str(&format!("    and.b32 %r17, %r17, {};\n", stages - 1));
+    emit_stage_modulo(&mut out, stages);
+    emit_fill_stage(&mut out, stages);
 
     // Compute smem base for the FILL stage: asmem + stage * stage_bytes
     out.push_str("    mov.u32 %r12, %r21;\n");
@@ -2470,6 +2506,30 @@ mod r16_dump {
             let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
             let ptx = tensor_gemm_ptx_smem_mw(m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 2, 4);
             std::fs::write(&format!("/tmp/opencode/tgemm_mw2_mh4_{tag}.ptx"), &ptx).unwrap();
+        }
+    }
+
+    /// 2026-09-14 parity probe P1: stages=3 at the (2,4)@256T warp_mh=4
+    /// geometry (24KB smem, 4 CTAs/SM — the never-measured CUTLASS sm80
+    /// default). E6 P1 died on the `&(stages-1)` aliasing bug; the generator
+    /// now emits constant modulo-3 stage math. See
+    /// docs/plans/2026-09-14-parity-stages3-and-fill-instrument.md.
+    #[test]
+    fn dump_s3() {
+        for (m, k, tag) in [
+            (128i64, 128i64, "128"),
+            (128i64, 16i64, "k16"),
+            (128i64, 32i64, "k32"),
+            (128i64, 64i64, "k64"),
+            (128i64, 96i64, "k96"),
+            (2048i64, 2048i64, "2048"),
+            (4096, 4096, "4096"),
+            (8192, 8192, "8192"),
+        ] {
+            let b_off = m * k * 2;
+            let y_off = ((b_off + m * k * 2 + 7) & !7) + 8;
+            let ptx = tensor_gemm_ptx_smem_mw(m, m, k, 0, b_off as u64, y_off as u64, 2, 2, 4, true, 3, 4);
+            std::fs::write(&format!("/tmp/opencode/tgemm_s3_{tag}.ptx"), &ptx).unwrap();
         }
     }
 

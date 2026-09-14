@@ -177,6 +177,14 @@ pub struct IrLoweringSettings {
     /// gate: k % (16·kps) == 0 (no partial-stage fills). 1 = the
     /// historical per-kstep cadence.
     pub ptx_tensor_ksteps_per_stage: u32,
+    /// 2026-09-14 (parity probe P1, plan 2026-09-14-parity-stages3-and-fill-
+    /// instrument): smem pipeline depth. stages=3 (24KB, 4 CTAs/SM at the
+    /// (2,4)@256T f16acc tile) is the CUTLASS sm80 default and the one
+    /// deeper-pipeline point that does NOT cost a CTA slot — measured
+    /// +1.0-1.8% vs stages=2 at every large square shape (correctness
+    /// signatures identical). 0 = auto (f16acc → 3, f32 → 4); other values
+    /// override (only 2 and 3 are valid — see the generator assert).
+    pub ptx_tensor_stages: u32,
     /// 2026-09-13 (E8a, plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec):
     /// warp specialization — the CTA grows to 10 warps (8 consumers keep the
     /// exact ship compute + y pass; 2 producer warps run the cp.async fill
@@ -295,6 +303,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_b_lookahead: false,
     ptx_tensor_bsmem_pad: 0,
     ptx_tensor_ksteps_per_stage: 1,
+    ptx_tensor_stages: 0,
     ptx_tensor_warp_spec: false,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
@@ -528,6 +537,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_tensor_ksteps_per_stage", 1)
             .map(|v| v.clamp(1, 2) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_ksteps_per_stage),
+        ptx_tensor_stages: db
+            .field_int("ptx_tensor_stages", 0)
+            .map(|v| v.max(0).min(3) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_stages),
         ptx_tensor_warp_spec: db
             .field_int("ptx_tensor_warp_spec", 0)
             .map(|v| v != 0)
