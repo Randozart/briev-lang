@@ -90,6 +90,12 @@ typedef struct {
 // ────────────────────────────────────────────────────────────────────────────
 
 #define BRIEV_DEV_CAP_ZERO_COPY 0x1u  // can skip the upload/download copy
+// 2026-09-14 (gpu_schedule Phase 0): the driver keeps ONE program-level
+// device buffer (the full projection) instead of per-kernel buffers —
+// producer array writes are visible to consumers (cross-kernel D2D). The
+// runtime's residency seed becomes program-level (full_sync once), not
+// per-kernel.
+#define BRIEV_DEV_CAP_SHARED_STATE 0x2u
 
 typedef struct {
     /// Raw device transfer: upload `proj` (the flat kernel projection),
@@ -172,6 +178,10 @@ int briev_accel_launch_resident_2d(uint32_t idx, void* state,
 static const BrievDeviceDriver* g_driver = NULL;
 static int g_init_done = 0;
 static uint8_t* g_resident_seeded = NULL;   // per-kernel first-launch flag (residency)
+// 2026-09-14 (gpu_schedule Phase 0): program-level residency seed for
+// drivers with BRIEV_DEV_CAP_SHARED_STATE — the shared buffer is seeded
+// once, then arrays persist on-device (scalars only upload dirty).
+static int g_program_seeded = 0;
 // 2026-08-31: shared with the #included device drivers (single TU) — they
 // read it for BRIEV_ACCEL_VERBOSE diagnostics.
 static int g_verbose = 0;
@@ -337,8 +347,10 @@ static uint64_t proj_size(const BrievKernelDesc* k) {
 /// visible in host state without re-copying read-only inputs. Fields with
 /// is_write=0 are skipped (their staging is stale by design and unused).
 int briev_accel_download_written(uint32_t idx, void* state) {
+    int shared = g_driver && (g_driver->capabilities & BRIEV_DEV_CAP_SHARED_STATE) != 0;
+    int seeded = shared ? g_program_seeded : (idx < 32 && g_resident_seeded[idx]);
     if (!briev_accel_available() || idx >= g_n_kernels || g_kernels == NULL
-        || g_kernels[idx] == NULL || !g_resident_seeded[idx]) {
+        || g_kernels[idx] == NULL || !seeded) {
         return 0;
     }
     void* mapped = g_driver->mapped(g_kernels[idx]);
@@ -381,6 +393,7 @@ void briev_accel_invalidate_resident(void) {
     for (uint32_t i = 0; i < g_n_kernels && i < 32; i++) {
         g_resident_seeded[i] = 0;
     }
+    g_program_seeded = 0;
 }
 
 int briev_accel_launch(uint32_t idx, void* state, uint64_t work_n) {
@@ -466,7 +479,13 @@ int briev_accel_launch_resident_2d(uint32_t idx, void* state,
     int full_sync = 0;
     size_t dirty[2 * 16];
     uint32_t n_dirty = 0;
-    if (!g_resident_seeded[idx]) {
+    // 2026-09-14 (gpu_schedule Phase 0): with a shared device buffer the
+    // FULL projection is seeded once (program-level); every later launch
+    // uploads scalars only, so producer array writes persist on-device for
+    // consumers. Per-kernel drivers keep the historical per-kernel seed.
+    int shared = (g_driver->capabilities & BRIEV_DEV_CAP_SHARED_STATE) != 0;
+    int seeded = shared ? g_program_seeded : (idx < 32 && g_resident_seeded[idx]);
+    if (!seeded) {
         full_sync = 1;
         for (uint32_t i = 0; i < k->n_fields; i++) {
             const BrievField* f = &k->fields[i];
@@ -474,7 +493,11 @@ int briev_accel_launch_resident_2d(uint32_t idx, void* state,
                    (const uint8_t*)state + f->host_offset,
                    (size_t)(f->count * f->elem_bytes));
         }
-        g_resident_seeded[idx] = 1;
+        if (shared) {
+            g_program_seeded = 1;
+        } else if (idx < 32) {
+            g_resident_seeded[idx] = 1;
+        }
     } else {
         // Scalars only: the host's counters/phase gates are authoritative
         // between launches (the phase machine runs on the host).
@@ -534,7 +557,9 @@ int briev_accel_launch_resident_batch(uint32_t idx, void* state,
     int full_sync = 0;
     size_t dirty[2 * 16];
     uint32_t n_dirty = 0;
-    if (!g_resident_seeded[idx]) {
+    int shared = (g_driver->capabilities & BRIEV_DEV_CAP_SHARED_STATE) != 0;
+    int seeded = shared ? g_program_seeded : (idx < 32 && g_resident_seeded[idx]);
+    if (!seeded) {
         full_sync = 1;
         for (uint32_t i = 0; i < k->n_fields; i++) {
             const BrievField* f = &k->fields[i];
@@ -542,7 +567,11 @@ int briev_accel_launch_resident_batch(uint32_t idx, void* state,
                    (const uint8_t*)state + f->host_offset,
                    (size_t)(f->count * f->elem_bytes));
         }
-        g_resident_seeded[idx] = 1;
+        if (shared) {
+            g_program_seeded = 1;
+        } else if (idx < 32) {
+            g_resident_seeded[idx] = 1;
+        }
     } else {
         // Scalars sync ONCE — the batch contract is launch-invariant scalars.
         for (uint32_t i = 0; i < k->n_fields && n_dirty < 16; i++) {
@@ -566,8 +595,11 @@ int briev_accel_launch_resident_batch(uint32_t idx, void* state,
 /// Pull the FULL projection back to the host state (end of a resident run —
 /// observables read host state). Returns 0 when residency isn't active for
 /// `idx` (the caller's state is then already current from full-copy launches).
-int briev_accel_download(uint32_t idx, void* state) {    if (!briev_accel_available() || idx >= g_n_kernels || g_kernels == NULL
-        || g_kernels[idx] == NULL || !g_resident_seeded[idx]) {
+int briev_accel_download(uint32_t idx, void* state) {
+    int shared = g_driver && (g_driver->capabilities & BRIEV_DEV_CAP_SHARED_STATE) != 0;
+    int seeded = shared ? g_program_seeded : (idx < 32 && g_resident_seeded[idx]);
+    if (!briev_accel_available() || idx >= g_n_kernels || g_kernels == NULL
+        || g_kernels[idx] == NULL || !seeded) {
         return 0;
     }
     void* mapped = g_driver->mapped(g_kernels[idx]);

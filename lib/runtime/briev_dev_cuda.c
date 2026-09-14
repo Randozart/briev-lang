@@ -111,6 +111,9 @@ typedef struct {
     CUfunction func;
     // Device residency: a page-locked host mirror (`mapped_host`) + the
     // persistent device working set (`dev`). `bytes` is the projection size.
+    // 2026-09-14 (gpu_schedule Phase 0): ALL kernels share ONE program-level
+    // buffer + mirror (see g_shared_*) so a producer kernel's array writes
+    // are visible to consumers — cross-kernel D2D within a single allocation.
     CUdeviceptr dev;
     void* mapped_host;
     size_t bytes;
@@ -123,6 +126,14 @@ typedef struct {
     // kernel (0 = none). The staged mw kernel's stage arrays live here.
     uint32_t shared_bytes;
 } BrievCudaKernel;
+
+// 2026-09-14 (gpu_schedule Phase 0): the program-level shared device state.
+// The full projection lives in ONE device allocation + ONE page-locked host
+// mirror; every kernel's BrievCudaKernel.dev/mapped_host alias it. First
+// prime allocates; the runtime seeds once (program-level residency).
+static CUdeviceptr g_shared_dev = 0;
+static void* g_shared_host = NULL;
+static size_t g_shared_bytes = 0;
 
 static int cu_resolve(void) {
     if (cu_ready) {
@@ -391,25 +402,26 @@ static int briev_dev_cuda_launch(void* handle, const void* proj, size_t proj_byt
         return 0;
     }
     if (k->mapped_host == NULL || k->bytes < proj_bytes) {
-        if (g_verbose) fprintf(stderr, "[cuda] launch prime bytes=%zu\n", proj_bytes);
-        if (k->mapped_host && p_cuMemFreeHost) {
-            p_cuMemFreeHost(k->mapped_host);
+        if (g_verbose) fprintf(stderr, "[cuda] launch prime bytes=%zu (shared)\n", proj_bytes);
+        // 2026-09-14 (gpu_schedule Phase 0): the program-level shared buffer
+        // is allocated ONCE; every kernel aliases it. Re-prime (bigger
+        // projection) is impossible — the layout is fixed per program.
+        if (g_shared_host == NULL) {
+            if (p_cuMemAllocHost(&g_shared_host, proj_bytes, 0) != CUDA_SUCCESS) {
+                if (verbose) fprintf(stderr, "[briev_accel/cuda] host mirror alloc failed\n");
+                return 0;
+            }
+            if (p_cuMemAlloc(&g_shared_dev, proj_bytes) != CUDA_SUCCESS) {
+                if (verbose) fprintf(stderr, "[briev_accel/cuda] device alloc failed\n");
+                p_cuMemFreeHost(g_shared_host);
+                g_shared_host = NULL;
+                return 0;
+            }
+            g_shared_bytes = proj_bytes;
         }
-        if (k->dev && p_cuMemFree) {
-            p_cuMemFree(k->dev);
-        }
-        if (p_cuMemAllocHost(&k->mapped_host, proj_bytes, 0) != CUDA_SUCCESS) {
-            if (verbose) fprintf(stderr, "[briev_accel/cuda] host mirror alloc failed\n");
-            k->mapped_host = NULL;
-            return 0;
-        }
-        if (p_cuMemAlloc(&k->dev, proj_bytes) != CUDA_SUCCESS) {
-            if (verbose) fprintf(stderr, "[briev_accel/cuda] device alloc failed\n");
-            p_cuMemFreeHost(k->mapped_host);
-            k->mapped_host = NULL;
-            return 0;
-        }
-        k->bytes = proj_bytes;
+        k->mapped_host = g_shared_host;
+        k->dev = g_shared_dev;
+        k->bytes = g_shared_bytes;
     }
     memcpy(k->mapped_host, proj, proj_bytes);
     if (p_cuMemcpyHtoD(k->dev, k->mapped_host, proj_bytes) != CUDA_SUCCESS) {
@@ -515,12 +527,8 @@ static void briev_dev_cuda_destroy_kernel(void* handle) {
     if (!k) {
         return;
     }
-    if (k->mapped_host && p_cuMemFreeHost) {
-        p_cuMemFreeHost(k->mapped_host);
-    }
-    if (k->dev && p_cuMemFree) {
-        p_cuMemFree(k->dev);
-    }
+    // 2026-09-14 (Phase 0): the buffer + mirror are program-shared — freed
+    // once at shutdown, never per-kernel.
     if (k->module && p_cuModuleUnload) {
         p_cuModuleUnload(k->module);
     }
@@ -531,6 +539,15 @@ static void briev_dev_cuda_shutdown(void) {
     if (cu_stream && p_cuStreamSynchronize) {
         p_cuStreamSynchronize(cu_stream);
     }
+    if (g_shared_host && p_cuMemFreeHost) {
+        p_cuMemFreeHost(g_shared_host);
+        g_shared_host = NULL;
+    }
+    if (g_shared_dev && p_cuMemFree) {
+        p_cuMemFree(g_shared_dev);
+        g_shared_dev = 0;
+    }
+    g_shared_bytes = 0;
     if (cu_ctx && p_cuCtxDestroy) {
         p_cuCtxDestroy(cu_ctx);
     }
@@ -549,7 +566,9 @@ static const char* briev_dev_cuda_device_name(void) {
 
 BrievDeviceDriver briev_dev_cuda = {
     "cuda",
-    0,  // capabilities: host copies, no zero-copy
+    // 2026-09-14 (gpu_schedule Phase 0): BRIEV_DEV_CAP_SHARED_STATE — the
+    // program-level shared device buffer enables cross-kernel array flow.
+    BRIEV_DEV_CAP_SHARED_STATE,
     briev_dev_cuda_available,
     briev_dev_cuda_init,
     briev_dev_cuda_create_kernel,

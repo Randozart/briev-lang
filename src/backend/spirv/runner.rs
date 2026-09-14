@@ -355,7 +355,13 @@ fn emit_host_stmt(
             out.push_str(";\n");
             Ok(())
         }
-        Statement::Term(_) | Statement::EndProgram(_) => {
+        // 2026-09-14 (gpu_schedule Phase 0): `term` in a HOST node is the
+        // node's own convergence checkpoint — this firing is done, the node
+        // will re-check its pre next pass. Only `endprogram` exits the
+        // reactor loop (the scheduler must reach LATER nodes; a mid-program
+        // `term` jumping to `done` would skip gemm2 in a GEMM chain).
+        Statement::Term(_) => Ok(()),
+        Statement::EndProgram(_) => {
             *exited = true;
             Ok(())
         }
