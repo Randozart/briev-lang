@@ -4581,11 +4581,24 @@ fn probe_ok_checks(
             self.fun.param_slots.insert(n.clone(), slot);
         }
 
-        writeln!(out, "  br label %loop").ok();
-        writeln!(out, "loop:").ok();
-        // 2026-07-26: Set convergence target so [expr]; gates inside the txn
-        // body branch back to loop: when their condition is false.
-        self.fun.convergence_target = Some("loop".to_string());
+        // 2026-09-14 (rv64-finish plan): defns are LINEAR — their body
+        // runs once, falls through to return. Convergence loops belong to
+        // reactive txns (reactor-dispatched transitions that must reach
+        // their postcondition). A defn's contracts are proof obligations,
+        // not convergence targets.
+        let is_linear_defn = !txn.is_reactive;
+        if is_linear_defn {
+            // Defn: no loop header, no convergence target. Parameters are
+            // loaded once from their slots (below) and the body executes
+            // linearly.
+            self.fun.convergence_target = None;
+        } else {
+            writeln!(out, "  br label %loop").ok();
+            writeln!(out, "loop:").ok();
+            // 2026-07-26: Set convergence target so [expr]; gates inside the txn
+            // body branch back to loop: when their condition is false.
+            self.fun.convergence_target = Some("loop".to_string());
+        }
 
         for (i, (n, t)) in txn.parameters.iter().enumerate() {
             let slot = format!("%p{}_s", i);
@@ -4645,25 +4658,49 @@ fn probe_ok_checks(
             writeln!(out, "  br label %post").ok();
         }
         writeln!(out, "post:").ok();
-        // 2026-09-14 (machine-entry plan): THE CONVERGENCE EXIT — the
-        // postcondition evaluated after the body: satisfied → done (the
-        // callable returns), else → loop (the body re-runs). The old
-        // emission was `br label %loop` UNCONDITIONALLY — the done block
-        // was reachable only via the pre-condition failing, so every
-        // called convergence txn looped forever after its body (found by
-        // the kernel demo's scheduler — the first end-to-end exercise of
-        // this path).
-        if !matches!(txn.contract.post_condition, Expr::Bool(true)) {
-            let cond = self.emit_expr(out, &txn.contract.post_condition, "  ");
-            let i1 = format!("%pc{}", self.fun.txn_counter); self.fun.txn_counter += 1;
-            if cond.ty == Type::bool_() {
-                writeln!(out, "  {} = trunc i8 {} to i1", i1, cond).ok();
-            } else {
-                writeln!(out, "  {} = icmp ne i64 {}, 0", i1, cond).ok();
+        // 2026-09-14 (rv64-finish plan): THE CONVERGENCE EXIT — split by
+        // dispatch class. Reactive txns: the postcondition gates done/loop
+        // (the body re-runs until the postcondition holds). Defns: the
+        // postcondition is a proof obligation, not a convergence target —
+        // the body ran once, fall through to return.
+        if is_linear_defn {
+            // Defn: contracts are documentation/proof obligations.
+            // Emit the postcondition as a debug assertion (unreachable on
+            // failure) but do NOT loop. The body ran once.
+            if !matches!(txn.contract.post_condition, Expr::Bool(true)) {
+                let cond = self.emit_expr(out, &txn.contract.post_condition, "  ");
+                let i1 = format!("%pc{}", self.fun.txn_counter); self.fun.txn_counter += 1;
+                if cond.ty == Type::bool_() {
+                    writeln!(out, "  {} = trunc i8 {} to i1", i1, cond).ok();
+                } else {
+                    writeln!(out, "  {} = icmp ne i64 {}, 0", i1, cond).ok();
+                }
+                // Postcondition failure = unreachable (contract violation).
+                // Postcondition success = fall through to done.
+                let pass = format!(".post_pass{}", self.fun.txn_counter); self.fun.txn_counter += 1;
+                let fail = format!(".post_fail{}", self.fun.txn_counter); self.fun.txn_counter += 1;
+                writeln!(out, "  br i1 {}, label %{}, label %{}", i1, pass, fail).ok();
+                writeln!(out, "{}:", fail).ok();
+                writeln!(out, "  unreachable").ok();
+                writeln!(out, "{}:", pass).ok();
+                self.fun.cur_block = Some(pass);
             }
-            writeln!(out, "  br i1 {}, label %done, label %loop", i1).ok();
-        } else {
             writeln!(out, "  br label %done").ok();
+        } else {
+            // Reactive txn: convergence loop — postcondition satisfied → done,
+            // else → loop (body re-runs).
+            if !matches!(txn.contract.post_condition, Expr::Bool(true)) {
+                let cond = self.emit_expr(out, &txn.contract.post_condition, "  ");
+                let i1 = format!("%pc{}", self.fun.txn_counter); self.fun.txn_counter += 1;
+                if cond.ty == Type::bool_() {
+                    writeln!(out, "  {} = trunc i8 {} to i1", i1, cond).ok();
+                } else {
+                    writeln!(out, "  {} = icmp ne i64 {}, 0", i1, cond).ok();
+                }
+                writeln!(out, "  br i1 {}, label %done, label %loop", i1).ok();
+            } else {
+                writeln!(out, "  br label %done").ok();
+            }
         }
 
         writeln!(out, "done:").ok();

@@ -76,6 +76,44 @@ compiler's own compile time. "Contracts as fuel" applies recursively to the
 compiler writing itself. That is not a weakness relative to C++ — it is the
 one place Briev would be strictly more rigorous.
 
+## The DSL guardrails
+
+The systems tier (the rv64 arc) grew two constructs — `bootstrap node` and
+`node @ wiring` — that touch hardware. The standing test for whether such
+constructs make Briev a *domain-specific* language, applied throughout the
+arc and recorded here as doctrine:
+
+1. **The domain test** — does the construct only mean something in one
+   domain? `bootstrap` = an entry the machine starts (a program beginning
+   — kernel, PID 1, daemon: one shape). `@` wiring = eligibility by event
+   source (interrupts, polled devices, and — future — sockets, signals,
+   GUI events: one shape). Neither is interrupt-specific.
+2. **The knowledge test** — does the *compiler* carry domain knowledge?
+   The machine facts live in three homes, none of them Rust: target
+   profiles (`isr_mechanism`), the mechanism registry (conventions,
+   `full_context`), and board files (`interrupts.dbvl`,
+   `addresses.dbvl`). A second architecture is data.
+3. **The reverse-test** — would another domain reuse the constructs
+   naturally? The kernel uses the same `when`/`match`/`defn`/state-field
+   syntax as a hosted app; a hosted event program would use `@` wiring
+   and a machine entry the same way.
+
+The temptations rejected en route — each resurfaced at a different
+layer, each rejected for the same reason (machine knowledge belongs in
+config or library, never in compiler branches):
+
+| Temptation | Where it resurfaced | Where it lives instead |
+|---|---|---|
+| CSR access as compiler intrinsics (`set_mepc` intrinsic) | the register-shim design | the kernel's `.bv` shim library, typed one-liners over `Asm#` |
+| Per-arch scaffolds as Rust match arms on arch names | the `full_context` scaffold design | the mechanism registry row (`full_context` field) + one emitter arm |
+| `@` semantics keyed to arch/board names in Rust | the `@` wiring design | board-file namespaces (`interrupts.dbvl` vs `addresses.dbvl`) |
+| Folding `Asm#` results to known values | the kernel freeze investigation | the three-tier value model: proven / asserted (`:=`)/ runtime-unknown — unknowns never fold |
+
+The keyword-choice corollary: machine-entry syntax stays
+`bootstrap` — not `boot` — because `boot` is a natural *user identifier*
+(the Phase 3 timer demo had a `node boot`) and the longer form is the
+canonical systems term, self-documenting at the declaration site.
+
 ## Self-hosting endgame
 
 The bootstrap chain today: **rustc → LLVM → machine code** — C++ sits at
@@ -108,7 +146,7 @@ gates in `tests/bare/`:
 
 | Gate | Output | Proves |
 |---|---|---|
-| `qemu-rv64-kernel.sh` | `BABABABABABA…` | **A preemptive two-task micro-kernel**: authored machine entry, full-context trap scaffold, mcause dispatch, restart scheduler over a trap frame, ecall syscall boundary, two U-mode tasks — 8,520 bytes, pure Briev, no C, no runtime |
+| `qemu-rv64-kernel.sh` | `BA21` (finite) | **A preemptive two-task micro-kernel with RESUME scheduling**: authored machine entry, full-context trap scaffold, mcause dispatch, per-task context save/restore over a trap frame (pc via `mepc`, slot 24 = scaffold base), ecall syscall boundary, two U-mode tasks — pure Briev, no C, no runtime. The finite output proves resume: tasks park and stay parked; restart would re-run from the top every slice (continuous) |
 | `qemu-rv64-timer.sh` | `123456789012…` | Machine-timer interrupts serviced from a typed handler; the reactor parked at `wfi` woken by hardware |
 | (bootstrap) | `briev` | The authored machine entry — PMP, mscratch/kernel-stack, task contexts, mtvec, MTIE+MIE — in language-level syntax (`bootstrap node`), compiler-owned ISA scaffold only |
 

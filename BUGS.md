@@ -5951,6 +5951,17 @@ wires permanently in the external frontier), and the emitter picks the park
 policy from it: `wfi` only when the frontier is vectored-only; spin
 (continuous evaluation) when an external frontier exists, or a
 `within`-bounded quantum park when declared. Logged before the fix ships.
+**RESOLVED 2026-09-14** (rv64-finish plan Phase 4b): the address-wired form
+`node n @ *<ptr>` now parses as a reactor-pass Transaction (SPEC §13.2
+addresses namespace; the contract brackets are no longer eaten as an array
+index — `parse_postfix` gained an `allow_index` gate). The equilibrium park
+in `emit_ssa_main`'s `.end` block checks the `address_wired` marker: an
+external frontier SPINS (`br %.ss_main_loop`, no `wfi`); only
+vectored/state-sequenced programs park. Verified end-to-end on QEMU MPS2-AN385
+(`examples/addr_wired.b.bv`: SysTick VAL polls with no interrupt; gate
+`tests/bare/qemu-arm-addr-wired.sh`). The full writer×reader `wake_sets`
+closure (which preconditions a wake re-checks) remains a refinement; the
+correctness property — never sleep through an external frontier — ships.
 
 ## 2026-09-14 — Statement match with void txn arms emits broken expression-match IR
 
@@ -5967,8 +5978,10 @@ clang. Found building kernel_rv64.b.bv.
 `when` per case).
 
 **Fix:** route void-arm statement matches through the statement-match
-emission (`.smt_*` blocks) — never the boxed expression path. Open; demo
-uses the workaround.
+emission (`.smt_*` blocks) — never the boxed expression path.
+**RESOLVED 2026-09-14** (`c98b7189`, plan `2026-09-14-rv64-finish.md`
+Phase 1): `Statement::Expression(Expr::Match(...))` converts to
+`Statement::Match` and routes through the `.smt_*` path.
 
 ## 2026-09-14 — kernel_rv64 freezes entering the first U-mode task
 
@@ -6115,3 +6128,97 @@ brackets keep their typechecking role (documented obligations). OR:
 reject contract brackets on defns entirely until derivation obligations
 make them checkable. Decision needed; the workaround ships in
 examples/kernel_rv64.b.bv.
+**RESOLVED 2026-09-14** (`c98b7189`, plan `2026-09-14-rv64-finish.md`
+Phase 1): `emit_callable_txn()` detects `!txn.is_reactive` → skips the
+loop header + convergence loop, emits the body linearly + fallthrough.
+Contracts stay documentation/proof obligations; a violated postcondition
+is `unreachable` (contract violation), never a loop.
+## 2026-09-14 — Asm# output lacks earlyclobber: input aliased into output
+
+**Where:** `emit_asm_raw` in `src/backend/llvm/intrinsics.rs` — the
+constraint string `"=r,r,…,~{memory}"` had no earlyclobber `&` on the
+output.
+
+**What:** LLVM is free to assign an input operand the SAME register as
+the output when the template is thought to read all inputs before
+writing the output. A template that writes `$0` before reading `$1`
+(`ldr $0, =systick; orr $0, 1; str $0, [$1]`) silently self-destructed
+into `str r2, [r2]` — the SysTick vector patch stored to the handler
+address instead of vector-slot 0x3C. Found building the ARM timer
+(`examples/timer_arm.b.bv`); the rv64 kernel never wrote `$0` before
+reading an input, so the missing `&` was latent there.
+
+**Fix:** `"=&r"` (earlyclobber output). Regression test:
+`test_asm_raw_earlyclobber_constraint`.
+
+## 2026-09-14 — VolatileStore# narrowing emitted invalid `zext i64 to i32`
+
+**Where:** `emit_volatile_store` in `src/backend/llvm/intrinsics.rs` —
+the width-adapt compared Briev types via `resolve_arg_bytes`, which
+under-reports the abstract `Int` on narrow targets (Int is i64 in IR on
+thumbv7m too).
+
+**What:** an MMIO store through `Ptr<Bit<32>>` chose the `zext` branch
+(claimed val_bits < target_bits) and emitted `zext i64 … to i32` —
+invalid IR, clang rejected the module. On the 32-bit ARM bus an `Int`
+(i64) store would ALSO clobber the adjacent register (SysTick CTRL +
+LOAD sit back-to-back), so the typed `Ptr<Bit<32>>` was correct — only
+the cast direction logic was wrong.
+
+**Fix:** compare the EMITTED LLVM type widths (`iN` from
+`backend.llvm_type`) — ground truth at the IR-emission boundary.
+Regression test: `test_volatile_store_narrows_to_32_bit_pointee`.
+
+## 2026-09-14 — ARM bare-metal: .data never copied, begin_boot read 0
+
+**Where:** bare-metal Cortex-M startup — `@briev_begin_boot = global i1
+1` lives in `.data` (VMA RAM, LMA in the code image). Nothing copied
+`.data` to RAM; QEMU zeroes RAM, so the flag read 0 and the reactor
+skipped boot entirely (SysTick never armed, no output).
+
+**What:** found building the ARM timer. rv64 escaped because its
+bootstrap path has no beginprogram flag in `.data`. Real boards have the
+same property as QEMU RAM (garbage/zero at reset), so this is a
+hardware-facing bug, not a QEMU quirk.
+
+**Fix:** `lib/boards/mps2-an385/startup.S` Reset_Handler does the
+canonical bare-metal init before `b _start`: copy `.data` from
+`_data_init` (LMA) to `_data_start.._data_end`, zero `.bss`
+(`_bss_start.._bss_end`). Board data, not compiler code.
+
+## 2026-09-14 — resume scheduler: ctx_save/ctx_restore misrouted the pc through the kernel-stack slot
+
+**Where:** the resume-scheduling attempt in `examples/kernel_rv64.b.bv`
+(failed during the machine-entry era; stale IR preserved in
+`examples/kernel_rv64.b.ll`).
+
+**What:** two coupled mistakes made resume scheduling produce empty QEMU
+output. The `full_context` scaffold keeps the KERNEL STACK at live-frame
+slot 248 (`ld sp, 248(tp)` on trap entry; the scheduler's own comment
+warns "frame slot 248 is the KERNEL stack slot and must never be
+touched").
+
+1. `ctx_save(id)` copied live-frame slot 248 — the kernel STACK value —
+   into `ctx(id)[248]` as the "saved pc", instead of reading the `mepc`
+   CSR (`csrrs $0, mepc, zero`).
+2. `ctx_restore(id)` copied `ctx(id)[248]` (that stack value) back into
+   live-frame slot 248 — corrupting the kernel stack — and never wrote
+   `mepc`, so the scaffold's `mret` resumed at whatever `mepc` still
+   held.
+
+The first switch also had no "has the task ever run" guard: the first
+timer trap preempts the REACTOR (main parked in `wfi`), not a task, so
+`ctx_save(0)` captured the reactor context over task 0's initialized
+entry. The asm-based attempt additionally hit the Asm# earlyclobber bug
+(see `2026-09-14 — Asm# output lacks earlyclobber`).
+
+**Fix (SHIPPED 2026-09-14, plan `2026-09-14-rv64-finish.md` Addendum 3):**
+- `ctx_save(id)`: copy live-frame slots 0..240 (x1–x31) → `ctx(id)`;
+  save `mepc()` (the CSR) → `ctx(id)[248]`.
+- `ctx_restore(id)`: `set_mepc(ctx(id)[248])`; copy `ctx(id)` slots
+  0..240 → live frame; live-frame slot 248 is NEVER touched.
+- `current = 2` sentinel: `when current < 2 { ctx_save(current) }` skips
+  the reactor preemption on the first switch.
+- Task bodies become finite multi-action sequences (`print X; asm delay;
+  print Y; park`) so mid-body preemption is observable.
+- Gate: finite `BA21` (resume) vs continuous `BABABABA…` (restart).

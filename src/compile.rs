@@ -1934,6 +1934,21 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
                 cmd.arg(crt_path);
             }
         }
+        // 2026-09-14 (rv64-finish plan Phase 5): ARM bare-metal — same
+        // compiler-rt need, AEABI ABI names (no hardware divider on
+        // Cortex-M3; LLVM emits __aeabi_ldivmod/__aeabi_memclr8). The
+        // division entries are assembly (.S): LLVM calls them with the
+        // AEABI register convention, which C cannot express.
+        if triple.starts_with("thumb") || triple.starts_with("arm") {
+            let workspace_root = std::env::var("CARGO_MANIFEST_DIR")
+                .unwrap_or_else(|_| ".".to_string());
+            for shim in ["lib/runtime/compiler_rt_arm.c", "lib/runtime/compiler_rt_arm.S"] {
+                let crt_path = std::path::PathBuf::from(&workspace_root).join(shim);
+                if crt_path.exists() {
+                    cmd.arg(crt_path);
+                }
+            }
+        }
     } else {
         for obj in extra_objects {
             cmd.arg(obj.as_os_str());

@@ -1,0 +1,6 @@
+// MPS2-AN385 (ARM Cortex-M3) — named interrupt vectors.
+// ARM Cortex-M exception table: 16 system exceptions + device IRQs.
+// SysTick is exception 15 (system), UART0 is IRQ 3 (device).
+
+timer_irq: 15;
+uart_irq: 3;

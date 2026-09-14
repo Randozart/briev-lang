@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Phase 4 gate (rv64 capability kernel, plan 2026-09-14-bootstrap-kernel.md):
 # two user-mode tasks print through the ecall syscall boundary; the CLINT
-# timer preempts and the scheduler round-robins. Golden: alternating BABA (round-robin starts at index 1).
+# timer preempts them and the scheduler round-robins by RESUME (each task's
+# interrupted pc + full register set is preserved in its context area and
+# restored on switch). Each task prints two chars with a wall-clock delay
+# between them; the timer preempts mid-delay, so the chars land on separate
+# slices. Golden: the FINITE interleave BA21 (restart would re-run from the
+# task top every slice → continuous output; resume parks the tasks forever).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -16,14 +21,14 @@ command -v qemu-system-riscv64 >/dev/null || { echo "SKIP: qemu-system-riscv64 n
     --out /tmp/opencode >/dev/null
 mv /tmp/opencode/kernel_rv64.b "$ELF"
 
-timeout 3 qemu-system-riscv64 -machine virt -bios none -nographic \
+timeout 5 qemu-system-riscv64 -machine virt -bios none -nographic \
     -kernel "$ELF" > "$OUT" 2>/dev/null || true
 
-ACTUAL=$(head -c 12 "$OUT" | tr -d '\n')
-EXPECT="BABABABABABA"
+ACTUAL=$(cat "$OUT" | tr -cd '[:print:]')
+EXPECT="BA21"
 if [[ "$ACTUAL" == "$EXPECT" ]]; then
-    echo "PASS: preemptive two-task kernel ($ACTUAL...)"
+    echo "PASS: resume-scheduled two-task kernel ($ACTUAL — finite)"
 else
-    echo "FAIL: expected '$EXPECT', got '$ACTUAL'"
+    echo "FAIL: expected '$EXPECT' (finite), got '$ACTUAL'"
     exit 1
 fi

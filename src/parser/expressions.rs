@@ -276,18 +276,25 @@ impl<'a> Parser<'a> {
             let expr = self.parse_unary()?;
             return Ok(Expr::AddrOf(Box::new(expr)));
         }
-        self.parse_as()
+        self.parse_as(true)
     }
 
     /// Type cast: expr as Type. Tighter than unary but looser than postfix.
     /// 2026-07-15: Unblocks volatile-io.bv, target-import.bv, etc.
-    fn parse_as(&mut self) -> Result<Expr, SyntaxError> {
-        let mut expr = self.parse_postfix()?;
+    fn parse_as(&mut self, allow_index: bool) -> Result<Expr, SyntaxError> {
+        let mut expr = self.parse_postfix(allow_index)?;
         if self.eat(&Token::As) {
             let ty = self.parse_type()?;
             expr = Expr::Cast(Box::new(expr), ty);
         }
         Ok(expr)
+    }
+
+    /// 2026-09-14 (rv64-finish plan Phase 4b): the pointer expression in
+    /// `node n @ *<expr>` — like `parse_as` but WITHOUT consuming a `[` as
+    /// an index (the following brackets are the contract).
+    pub(crate) fn parse_address_wiring_expr(&mut self) -> Result<Expr, SyntaxError> {
+        self.parse_as(false)
     }
 
     /// Postfix: a[b], a.f, a(args), a within { }
@@ -311,16 +318,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_postfix(&mut self) -> Result<Expr, SyntaxError> {
+    fn parse_postfix(&mut self, allow_index: bool) -> Result<Expr, SyntaxError> {
         let mut expr = self.parse_primary()?;
         loop {
+            // 2026-09-14 (rv64-finish plan Phase 4b): the address-wiring
+            // expression (`node n @ *ptr`) must NOT treat a following `[` as
+            // an index — those are the contract brackets (`[pre][post]`).
+            if !allow_index && self.check(&Token::LBracket) {
+                break;
+            }
             // 2026-08-07 (Phase 7): iterable ranges — `a..b` (half-open) /
             // `a..=b` (inclusive), consumed by `foreach` (SPEC §11.4).
             if self.eat(&Token::DotDot) {
-                let end = self.parse_postfix()?;
+                let end = self.parse_postfix(true)?;
                 expr = Expr::Range { start: Box::new(expr), end: Box::new(end), inclusive: false };
             } else if self.eat(&Token::DotDotEq) {
-                let end = self.parse_postfix()?;
+                let end = self.parse_postfix(true)?;
                 expr = Expr::Range { start: Box::new(expr), end: Box::new(end), inclusive: true };
             } else if self.eat(&Token::LParen) {
                 // Call: f(args)

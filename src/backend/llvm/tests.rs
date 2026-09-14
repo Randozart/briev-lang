@@ -8524,6 +8524,58 @@ fn test_volatile_intrinsics_emit_typed_accesses() {
     assert!(ir.contains("inttoptr"), "boxed-address re-materialization expected:\n{ir}");
 }
 
+/// 2026-09-14 (rv64-finish plan Phase 5): VolatileStore# width-adapts the
+/// value to the POINTEE type (MMIO is Ptr<Bit<32>> on 32-bit targets — an
+/// Int/i64 store would clobber the neighbouring register). The narrowing
+/// cast must be a TRUNC (i64 -> i32), not a zext — the old path compared
+/// Briev metadata via resolve_arg_bytes, which under-reports the abstract
+/// Int on narrow targets and emitted invalid `zext i64 to i32`.
+#[test]
+fn test_volatile_store_narrows_to_32_bit_pointee() {
+    let src = "let out_v: Int = 0;\n\
+        defn poke32(p: Ptr<Bit<32>>, v: Int) {\n\
+            VolatileStore#(p, v);\n\
+        };\n\
+        node n [out_v == 0][true] {\n\
+            poke32(0x40004000 as Ptr<Bit<32>>, 0x41);\n\
+            out_v = 1;\n\
+        };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = crate::parser::Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let tu = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let ir = backend.generate(&items, None);
+    assert!(ir.contains("store volatile i32"), "32-bit volatile store expected:\n{ir}");
+    assert!(!ir.contains("zext i64"), "invalid widening must not appear:\n{ir}");
+    assert!(ir.contains("trunc i64"), "i64 -> i32 narrowing must trunc:\n{ir}");
+}
+
+/// 2026-09-14 (rv64-finish plan Phase 5): Asm#("raw", …) emits the output
+/// with the earlyclobber marker. Without `&`, LLVM may alias an input
+/// register with the output when the template writes $0 before reading an
+/// input (`str $0, [$1]`) — the ARM SysTick vector-patch template
+/// self-destructed into `str r2, [r2]`.
+#[test]
+fn test_asm_raw_earlyclobber_constraint() {
+    let src = "let done: Int = 0;\n\
+        defn patch(slot: Int) {\n\
+            Asm#(\"raw\", \"mov $0, #1; str $0, [$1]\", slot);\n\
+        };\n\
+        node n [done == 0][true] {\n\
+            patch(0x3C);\n\
+            done = 1;\n\
+        };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = crate::parser::Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let tu = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let ir = backend.generate(&items, None);
+    assert!(ir.contains("\"=&r,r,~{memory}\""),
+        "earlyclobber output constraint expected:\n{ir}");
+}
+
 #[test]
 fn test_range_metadata_bounds_are_typed() {
     // A bounded i64 precondition (`[count < 10]`) emits `!range` on the
@@ -8931,6 +8983,55 @@ fn test_embedded_equilibrium_parks_in_wfi() {
     assert!(ir.contains("call void asm sideeffect \"wfi\", \"~{memory}\"()"),
         "equilibrium wfi with memory clobber:\n{ir}");
     assert!(ir.contains("br label %.ss_main_loop"), "park re-enters the dispatch loop:\n{ir}");
+}
+
+/// 2026-09-14 (rv64-finish plan Phase 4b): an address-wired (reactor-pass)
+/// node — `node n @ *<ptr>` — polls a memory-mapped value that changes
+/// WITHOUT an interrupt. The equilibrium park must SPIN (re-evaluate every
+/// pass), never `wfi` through the eligibility. The `.end` block branches
+/// straight back to the dispatch loop instead of emitting the wfi call.
+#[test]
+fn test_address_wired_node_spins_not_parks() {
+    let src = "let armed: Int = 0;\n\
+               let last: Int = 0;\n\
+               node poll @ *(0x40004000 as Ptr<Int>) [last >= 0][last >= 0] {\n\
+                   last = 1;\n\
+               };\n";
+    let program = parse_isr_program(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new())
+        .with_embedded_mode(true)
+        .with_target_triple("riscv64-unknown-none");
+    let ir = backend.generate(&program, None);
+    // The address-wired node's pre is a state obligation; if it ever reads
+    // false, the reactor must re-read every pass rather than sleep.
+    assert!(ir.contains(".end:\n  br label %.ss_main_loop"),
+        "external frontier must spin, not park:\n{ir}");
+    assert!(!ir.contains(".end:\n  call void asm sideeffect \"wfi\""),
+        "no wfi park with an external frontier:\n{ir}");
+}
+
+/// The parser classifies `node n @ *ptr` as a reactor-pass Transaction (not
+/// a machine-vectored IsrHandler) and the contract brackets are NOT eaten
+/// as an array index.
+#[test]
+fn test_address_wired_node_parses_as_reactive_txn() {
+    let src = "let armed: Int = 0;\n\
+               let last: Int = 0;\n\
+               node poll @ *(0x40004000 as Ptr<Int>) [last >= 0][last >= 0] {\n\
+                   last = 1;\n\
+               };\n";
+    let program = parse_isr_program(src);
+    let txns: Vec<&crate::ast::top::Transaction> = program.iter()
+        .filter_map(|i| match i { crate::ast::TopLevel::Transaction(t) => Some(t), _ => None })
+        .collect();
+    assert_eq!(txns.len(), 1, "address-wired node is one reactive transaction");
+    let t = txns[0];
+    assert_eq!(t.name, "poll");
+    assert!(t.metadata.contains_key("address_wired"), "address-wired marker set");
+    assert!(t.contract.explicit, "contract brackets survive parse (not eaten as index)");
+    assert!(!matches!(program.iter().find(|i| matches!(i, crate::ast::TopLevel::IsrHandler(_))),
+        Some(crate::ast::TopLevel::IsrHandler(_))), "not a machine-serviced handler");
 }
 
 #[test]

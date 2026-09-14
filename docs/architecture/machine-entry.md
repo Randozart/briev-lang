@@ -6,7 +6,9 @@ lives. Companion to `briev-execution-model.md` (the reactor) and the plan
 `2026-09-14-bootstrap-kernel.md` (+ Addendum A).
 
 One sentence: **entries are declared, machines wire them, compilers own ABI,
-users own policy.**
+users own policy.** The DSL guardrails doctrine — the test for whether
+machine-entry constructs stay general, and the temptations rejected en
+route — lives in `briev-capability-frontier.md` ("The DSL guardrails").
 
 ## The entry classes
 
@@ -60,6 +62,27 @@ node overtemp @ thermal_alert within 1 ms { … }    // bound: compiler picks sp
 `within` reuses the watchdog deadline syntax. The default needs no keyword
 (Rule 2): determinism is the default; power saving is the declared,
 checked tradeoff.
+
+### Frontier-driven equilibrium (shipped 2026-09-14, plan `2026-09-14-rv64-finish.md` Phase 4b)
+
+The reactor's equilibrium park is policy-driven, not unconditional. The
+`@ *<ptr>` address-wired form (SPEC §13.2 addresses namespace) is now a
+first-class reactor-pass node: the contract brackets are not eaten as an
+array index (`parse_postfix` gates the `[` subscript), and the node carries
+an `address_wired` metadata marker. At `.end` (no state-sequenced node
+fired this pass) the emitter:
+
+- **spins** (`br %.ss_main_loop`, no `wfi`) when any address-wired node
+  exists — an external frontier's memory-mapped value changes WITHOUT an
+  interrupt, so parking would sleep through the eligibility forever;
+- **parks** in `wfi` only when every frontier is vectored (machine-serviced)
+  or state-sequenced — a trap wakes the core and re-evaluates.
+
+Verified on QEMU MPS2-AN385: `examples/addr_wired.b.bv` polls SysTick VAL
+with no interrupt and prints continuously (gate
+`tests/bare/qemu-arm-addr-wired.sh`). The writer×reader `wake_sets` closure
+(which preconditions a specific wake re-checks) remains a refinement — the
+no-sleep property itself is what ships.
 
 ## `bootstrap node` — the authored program entry
 
@@ -127,13 +150,78 @@ fixed).
 
 ## The scheduler pattern
 
-Phase 4's kernel uses **restart scheduling**: each switch writes the
-next task's stack (frame slot 8) and entry (live `mepc`) and mrets —
-the task re-runs from its top, sound for stateless slice bodies.
-**Resume scheduling** (keeping the task's interrupted pc and full
-register set in its context area, copied back on switch) rides the same
-frame rewrite — the ctx_save/ctx_restore helpers in the demo are the
-seed. Both are kernel policy; the scaffold is identical.
+The kernel shipped **restart scheduling** first: each switch writes the
+next task's stack (frame slot 8) and entry (live `mepc`) and mrets — the
+task re-runs from its top, sound for stateless slice bodies.
+**Resume scheduling** (2026-09-14, plan `2026-09-14-rv64-finish.md`
+Phase 3a, SHIPPED) keeps the task's interrupted pc + full register set in
+its context area (`ctx_save` on preempt, `ctx_restore` on switch) and
+rides the same frame rewrite. Both are kernel policy; the scaffold is
+identical. No language loop is needed: a task is a finite multi-action
+body whose wall-clock delay (`Asm#` spin on `mtime`) lets the timer
+preempt mid-body, so resume continuation is observable (finite `BA21`
+vs restart's continuous output).
+
+Two hazards encoded in the shipped `ctx_save`/`ctx_restore`:
+
+- **Live-frame slot 248 is the KERNEL STACK** (the scaffold's
+  `ld sp, 248(tp)`). The task pc travels through the `mepc` CSR, never
+  through the frame: `ctx_save` reads `mepc` into `ctx[248]`;
+  `ctx_restore` writes `ctx[248]` into `mepc` and never touches live
+  slot 248. Writing 248 corrupts the kernel stack and the next trap
+  faults (BUGS.md 2026-09-14).
+- **Live-frame slot 24 must hold the frame base.** The scaffold's
+  restore loop is `ld x1, 0(tp); …; ld x4, 24(tp); ld x5, 32(tp); …` —
+  loading x4 (= tp, the base register) mid-sequence REBASES the rest of
+  the restore. The scaffold's save writes the frame base into slot 24 for
+  this exact reason; `ctx_restore` must preserve it
+  (`sd <fb>, 24(<fb>)`), or a zero-init task x4 makes the next load fault
+  at 0x20.
+
+The first switch is special: the first timer trap preempts the REACTOR
+(main parked in `wfi`), not a task. `current` starts at a sentinel (2) and
+`schedule()` guards `when current < 2 { ctx_save(current) }` — nothing is
+saved until a task has actually run.
+
+## Second-architecture proof (2026-09-14)
+
+The same mechanism-inference chain boots a COMPLETELY different ISA with
+zero Briev-level changes. QEMU MPS2-AN385 (Cortex-M3) runs hello world and
+a SysTick timer via the identical `bootstrap node` / `node @ vector`
+pattern (plan `2026-09-14-rv64-finish.md` Phase 5). The target row
+(`config/targets.dbvl`: `target.thumbv7m` → `arm_cortex_m` mechanism) is
+all that differs. Board data carries what the compiler must not know:
+
+- `lib/boards/mps2-an385/startup.S` — hardware boot table (SP + Reset) and
+  the canonical bare-metal init: copy `.data` from its load address and
+  zero `.bss`. Briev globals like `briev_begin_boot` live in `.data`;
+  without the copy, RAM-starting-at-zero reads the flag as false and the
+  reactor never boots. `Default_Handler` is defined WEAK here (the
+  compiler emits its strong spin-loop only for programs that declare ISR
+  handlers).
+- `lib/targets/qemu-mps2-an385.ld` — code in ZBT SSRAM1 at 0x0 (Cortex-M
+  boots by reading the vector table there), data/stack in RAM.
+- `lib/runtime/compiler_rt_arm.{c,S}` — AEABI division shims (see below).
+
+ISA differences the pattern absorbs:
+
+- **Vector model**: RISC-V has one `mtvec` handler reading `mcause`; Cortex-M
+  has a hardware vector table. The `@ N` node resolves through the target's
+  mechanism row, which supplies the table layout (entry stride, SP slot,
+  Thumb bit) — the compiler emits the table, boot patches the SysTick slot.
+- **Bare-metal entry**: RISC-V `_start` sets `sp`, zeroes `.bss`, calls
+  `main`; Cortex-M vector table sets SP and calls Reset_Handler, which
+  does the `.data` copy / `.bss` zero then branches to the same `_start`.
+- **MMIO width**: `Int` is the abstract 64-bit register; on a 32-bit bus
+  the register is `Ptr<Bit<32>>` (a SysTick CTRL i64 store clobbers the
+  adjacent LOAD register). The volatile intrinsics width-adapt to the
+  pointee.
+- **Compiler-rt ABI**: LLVM emits `__aeabi_ldivmod` for 64-bit division on
+  Cortex-M3 (no hardware divider). The AEABI return convention (quotient
+  + remainder in r0–r3) is not expressible in C (AAPCS uses sret for a
+  >4-byte composite), so the entries are assembly. The core-call
+  convention (n in r2:r3, d as a full 8-byte stack slot, r1 free) was
+  derived from the compiled C core under qemu-arm, not assumed.
 
 ## The register shim
 

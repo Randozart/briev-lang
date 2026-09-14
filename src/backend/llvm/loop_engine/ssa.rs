@@ -478,9 +478,22 @@ impl LlvmBackend {
         let triple = self.ctx.target_triple.clone();
         let wait_family = ["arm", "thumb", "aarch64", "cortex", "riscv"]
             .iter().any(|fam| triple.contains(fam));
+        // 2026-09-14 (rv64-finish plan Phase 4b): frontier-driven equilibrium.
+        // An address-wired (reactor-pass) node — `node n @ *ptr` — polls a
+        // memory-mapped value that changes WITHOUT an interrupt: parking in
+        // `wfi` would sleep through its eligibility forever. The external
+        // frontier must re-read every pass: spin (no wfi). Only a program
+        // whose frontiers are vectored (machine-serviced) or state-sequenced
+        // may park. The marker is parser-set metadata on the Transaction.
+        let has_address_wired = txns.iter()
+            .any(|(_, t)| t.metadata.contains_key("address_wired"));
         if self.ctx.is_embedded && wait_family {
-            writeln!(out, "  call void asm sideeffect \"wfi\", \"~{{memory}}\"()").ok();
-            writeln!(out, "  br label %.ss_main_loop").ok();
+            if has_address_wired {
+                writeln!(out, "  br label %.ss_main_loop").ok();
+            } else {
+                writeln!(out, "  call void asm sideeffect \"wfi\", \"~{{memory}}\"()").ok();
+                writeln!(out, "  br label %.ss_main_loop").ok();
+            }
         } else {
             writeln!(out, "  ret i32 0").ok();
         }

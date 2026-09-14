@@ -1,0 +1,15 @@
+// MPS2-AN385 board — schema definitions.
+// Pattern: lib/boards/stm32f407/map.dbv
+
+schema Device {
+    name: String
+    base: String
+    size: String
+}
+
+schema Register {
+    name: String
+    offset: String
+    width: String
+    access: String
+}

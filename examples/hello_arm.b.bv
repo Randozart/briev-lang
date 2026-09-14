@@ -1,0 +1,34 @@
+// target: thumbv7m-none-eabi
+// Phase 5 (rv64-finish plan): ARM Cortex-M hello world on QEMU MPS2-AN385.
+//
+// Proves the architecture is data, not coincidence: the same bootstrap /
+// @ vector / mechanism-inference pattern works on a completely different ISA.
+// Gate: QEMU prints "Hello, ARM!" via the CMSDK APB UART.
+//
+// Uses startup.S for the vector table + .data copy; brievc emits _start →
+// main. MMIO is Ptr<Bit<32>>: the APB bus is 32-bit and the volatile
+// intrinsics width-adapt to the pointee.
+
+let armed: Int = 0;
+
+bootstrap node reset [armed == true] {
+    // MPS2-AN385 UART0 is a CMSDK APB UART (not PL011).  CTRL (0x008)
+    // bit 0 = TXEN — writes to DATA are dropped while TX is disabled.
+    VolatileStore#(0x40004008 as Ptr<Bit<32>>, 1);
+
+    // DATA (0x000): write each character.
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 72);   // H
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 101);  // e
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 108);  // l
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 108);  // l
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 111);  // o
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 44);   // ,
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 32);   // (space)
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 65);   // A
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 82);   // R
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 77);   // M
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 33);   // !
+    VolatileStore#(0x40004000 as Ptr<Bit<32>>, 10);   // newline
+
+    armed = 1;
+};

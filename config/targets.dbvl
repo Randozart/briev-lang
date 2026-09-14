@@ -50,3 +50,6 @@ target.spirv64: 32; 4.0; 4; 1;
 // (config/isr-targets.dbvl) that mechanism-less `node @ vector` declarations
 // resolve through.
 target.riscv64: 32; 4.0; 0; riscv_machine;
+// 2026-09-14 (rv64-finish plan Phase 5): ARM Cortex-M bare metal (QEMU MPS2 et al) —
+// SysTick/NVIC interrupts; field 4 names the ISR mechanism row.
+target.thumbv7m: 32; 4.0; 0; arm_cortex_m;

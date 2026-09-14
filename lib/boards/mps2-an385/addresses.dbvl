@@ -1,0 +1,7 @@
+// MPS2-AN385 (ARM Cortex-M3) — peripheral base-address table.
+//
+// Sources: ARM CMSDK MPS2 AN385 Technical Reference Manual.
+// UART0 is PL011; SysTick and NVIC are part of the Cortex-M3 system block.
+
+>schema Device from "map.dbv"
+UART0: 0x40004000; 0x1000;
