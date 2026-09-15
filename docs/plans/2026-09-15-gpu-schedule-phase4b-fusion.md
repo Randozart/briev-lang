@@ -104,26 +104,27 @@ Gate: ledger row with both sides measured on the locked-clock box.
 
 ## Milestone B — design (single fused FlashAttention-class kernel)
 
-Status: **not started** (Milestone A is the clean checkpoint). The single
-kernel is a NEW PTX emitter (the FlashAttention forward kernel), not an
-incremental change to the GEMM emitter:
+Status: **in progress**. Fusion is an EMERGENT property of the analysis
+(see the principle recorded in `docs/architecture/agent-reference.md` §6):
+no `FusedAttention`, no attention names — a general `ChainFusion`
+(topology only), operands derived at codegen.
 
-- Detect the full attention chain (qk → softmax → pv) as one `Fusion` in
-  the schedule: `o = softmax_row(Q·Kᵀ·C) · V`, with the S tile provably
-  dead (never HBM).
-- Kernel structure (the "S stays on-chip" form, valid when a Q row-tile's
-  S fits smem):
-  1. Block owns a Q row-tile (e.g. 16 rows).
-  2. GEMM-1: S = Q_tile·Kᵀ (all N cols) → S smem (4KB @128², 16 rows).
-  3. Row-softmax over S in smem (rowmax, then exp/sum) — the
-     cooperative-reduce path.
-  4. GEMM-2: O = S'·V (mma), the S' tile as the B operand.
-  5. Store O.
-- Apply the micro-items to the softmax/scale row walks and the S-tile
-  bank layout (the ldmatrix-read-of-write hazard).
-- Gate: fused 1-kernel vs the 2-kernel composition (Milestone A), both
-  correct (maxrel ≤ 1e-2), fused strictly faster; then the vs-cuBLAS
-  composition benchmark (Milestone C).
+- Analysis: detect any linear RAW chain `N1 → N2 → N3` where N2 is
+  elementwise, each of `mid_in`/`mid_out` has exactly one reader (dead),
+  and `N3`'s output is terminal. Records:
+  ```rust
+  pub struct ChainFusion { producer, middle, consumer, mid_in, mid_out, scale }
+  ```
+- Codegen: ONE fused PTX kernel reusing the tensor machinery (mma,
+  cp.async panels): GEMM-1 (Q·Kt) writes the scaled S tile to SMEM;
+  GEMM-2 (S'·V) reads it via ldmatrix as its A operand — S never touches
+  HBM. Operands derived from the node shapes.
+- Profitability emerges from the analysis: if the S tile (m_tile × N ×
+  elem) exceeds the smem budget or the recompute would lose, the schedule
+  keeps the 2-kernel epilogue fusion (Milestone A). The best shape is the
+  automatic default.
+- Gate: fused 1-kernel vs the 2-kernel composition, both correct
+  (maxrel ≤ 1e-2), fused strictly competitive; then vs-cuBLAS (Milestone C).
 
 ## Milestone C — the vs-cuBLAS composition benchmark (not started)
 

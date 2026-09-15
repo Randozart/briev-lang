@@ -467,6 +467,34 @@ win on speed. A benchmark whose efficient path requires a modifier or a
 non-idiomatic program shape is surfacing a default-codegen gap, not a valid
 comparison.
 
+### Emergent optimization — performance flows from analysis (2026-09-15)
+
+Kernel fusion is an **emergent property of the analysis**, not a hand-coded
+pattern. The analysis already holds the evidence — a RAW chain, dead
+intermediates (single reader), an elementwise middle, a terminal output — and
+the fused shape *falls out* of it: "this intermediate never needs to exist in
+HBM; the consumer consumes it on-chip." The scheduler records a **chain
+topology**, never operand names; the GEMM operands are derived at codegen
+from the node shapes. Any `GEMM → elementwise → GEMM` chain qualifies — not
+one named pattern (`no `FusedAttention`, no `q_field`/`kt_field`).
+
+Three standing rules for this and future work:
+
+1. **Generalize, never for purity.** Structural detection (a foreach
+   accumulation over two arrays; an elementwise middle) is general without
+   being vague. A future middle (softmax row-op, bias-add) is the *same*
+   mechanism — the codegen learns the op, never a new pattern.
+2. **Never at the cost of performance.** A fused kernel is not a
+   correctness-only toy: it reuses the tuned machinery (mma, cp.async
+   panels) and must be competitive with the composition. The analysis picks
+   the best of the available shapes (3-kernel, 2-kernel, 1-kernel) from its
+   own evidence — if the on-chip tile does not fit the budget or the recompute
+   would lose, the efficient shape is the smaller fusion, automatically.
+3. **Performance emerges, it is never decorated.** The most efficient fused
+   shape is the automatic default when the analysis proves it; no keyword
+   makes a fusion appear, and a benchmark beaten only by a keyword is a
+   default-codegen bug. The analysis's proofs ARE the fusion's justification.
+
 ### Long-term best optimization
 
 Emit the IR that produces the BEST FINAL CODE after LLVM's full pipeline

@@ -50,6 +50,11 @@ pub struct GpuSchedule {
     /// after_txn). The runner may alias `new_array` into `dead_slot`'s
     /// projection offset after `after_txn` completes.
     pub reuse_opportunities: Vec<(String, String, String)>,
+    /// 2026-09-15 (Phase 4b): a general GEMM → elementwise → GEMM chain
+    /// with dead intermediates, when detected — the PTX backend emits ONE
+    /// fused kernel (the intermediates stay on-chip) over the epilogue
+    /// fusion (two kernels). Topology only; operands derived at codegen.
+    pub chain_fusion: Option<ChainFusion>,
 }
 
 impl GpuSchedule {
@@ -105,6 +110,28 @@ pub enum EdgeKind {
     Waw,
     /// Producer reads what the consumer writes (read-after-write).
     War,
+}
+
+/// 2026-09-15 (Phase 4b — emergent chain fusion): a general
+/// GEMM → elementwise → GEMM chain with dead intermediates, fusable into
+/// ONE kernel where the middle's output stays on-chip (never HBM).
+/// Topology ONLY — the GEMM operands (q, kt, v, o) are derived at codegen
+/// from the producer/consumer shapes. Any such chain qualifies, not a
+/// named pattern (the analysis must never name specific fields).
+#[derive(Debug, Clone)]
+pub struct ChainFusion {
+    /// The producer node (GEMM-1: writes `mid_in`).
+    pub producer: String,
+    /// The elementwise middle node (reads `mid_in`, writes `mid_out`).
+    pub middle: String,
+    /// The consumer node (GEMM-2: reads `mid_out`, writes the terminal).
+    pub consumer: String,
+    /// The producer's output, dead after the middle (single reader).
+    pub mid_in: String,
+    /// The middle's output, dead after the consumer (single reader).
+    pub mid_out: String,
+    /// The middle's elementwise scale (the only op currently supported).
+    pub scale: f64,
 }
 
 /// Collect the identifiers referenced by an expression (state field names).
@@ -454,6 +481,14 @@ pub fn build_schedule(
         });
     }
 
+    // 2026-09-15 (Phase 4b — emergent chain fusion): a GEMM → elementwise
+    // → GEMM chain with dead intermediates fuses into ONE kernel (the
+    // middle's output stays on-chip). Extends an epilogue fusion
+    // (producer → middle) with a downstream GEMM consumer: the middle's
+    // output has exactly one reader (the consumer), the consumer's output
+    // is a terminal array. Topology only — operands derived at codegen.
+    sched.chain_fusion = detect_chain_fusion(&sched, &sched.fusions, array_meta);
+
     // 2026-09-14 (Phase 3 — buffer reuse): per-array last-use + reuse
     // opportunities. An array is dead after its last-use txn completes; its
     // slot may be reused by a later array of matching size/type.
@@ -462,6 +497,69 @@ pub fn build_schedule(
     compute_reuse_opportunities(&mut sched, array_meta);
 
     sched
+}
+
+/// Phase 4b — detect the GEMM → elementwise → GEMM chain. For each
+/// epilogue fusion (producer → middle writing `mid_out`), find a consumer
+/// node (not the middle) that reads `mid_out` as its only chain input and
+/// writes a TERMINAL ARRAY (an array field, in `array_meta`, read by
+/// nobody). `mid_in` is already single-reader (the epilogue fusion proved
+/// it); `mid_out` must be single-reader too (only the consumer). The
+/// chain's topology is recorded; the GEMM operand sets are read at codegen
+/// from the node shapes. Returns the first such chain.
+fn detect_chain_fusion(
+    sched: &GpuSchedule,
+    fusions: &[Fusion],
+    array_meta: &HashMap<String, ArrayMeta>,
+) -> Option<ChainFusion> {
+    for f in fusions {
+        let mid_out = &f.out_field;
+        // mid_out must have exactly ONE reader — the consumer.
+        let mid_out_readers: Vec<&String> = sched
+            .reads
+            .iter()
+            .filter(|(_, rs)| rs.iter().any(|r| r == mid_out))
+            .map(|(n, _)| n)
+            .collect();
+        if mid_out_readers.len() != 1 {
+            continue;
+        }
+        let consumer = mid_out_readers[0].clone();
+        if consumer == f.consumer {
+            // The middle itself reads mid_out? No — the middle WRITES it.
+            continue;
+        }
+        // The consumer's terminal output: an ARRAY field it writes that
+        // nobody reads, and that is a real state array (in array_meta).
+        let ws = sched
+            .writes
+            .iter()
+            .find(|(n, _)| n == &consumer)
+            .map(|(_, ws)| ws.clone())
+            .unwrap_or_default();
+        let terminal = ws.iter().find(|w| {
+            let wstr = w.as_str();
+            array_meta.contains_key(wstr)
+                && !sched
+                    .reads
+                    .iter()
+                    .any(|(rn, rrs)| rn != &consumer && rrs.iter().any(|r| r.as_str() == wstr))
+        });
+        let Some(o) = terminal else { continue };
+        if ws.iter().any(|w| w.as_str() == f.in_field.as_str()) {
+            // The consumer must not write the producer's intermediate.
+            continue;
+        }
+        return Some(ChainFusion {
+            producer: f.producer.clone(),
+            middle: f.consumer.clone(),
+            consumer,
+            mid_in: f.in_field.clone(),
+            mid_out: mid_out.clone(),
+            scale: f.scale,
+        });
+    }
+    None
 }
 
 /// Phase 3 — per-array last-use: the last txn (topo order) that reads or
@@ -940,5 +1038,84 @@ mod tests {
         let q_targets: Vec<&str> = sched.reuse_opportunities.iter()
             .filter(|(d, _, _)| d == "q").map(|(_, n, _)| n.as_str()).collect();
         assert_eq!(q_targets, vec!["s2"], "q's slot must be reused once");
+    }
+
+    #[test]
+    fn detects_chain_fusion() {
+        // qk (reads q,kt writes s) -> scale (s[i]*2 -> s2) -> pv (reads s2,v
+        // writes o, terminal). The chain fuses into ONE kernel: mid_in = s
+        // (single reader: scale), mid_out = s2 (single reader: pv), o is a
+        // terminal array. Topology only — no field names beyond the chain.
+        let mut accel = HashMap::new();
+        let mk_shape = |reads: &[&str], writes: &[&str], stmts: Vec<Statement>| {
+            crate::analysis::accel::KernelShape {
+                index_var: "i".into(),
+                count_expr: None,
+                kernel_stmts: stmts,
+                host_stmts: vec![],
+                read_buffers: reads.iter().map(|s| s.to_string()).collect(),
+                write_buffers: writes.iter().map(|s| s.to_string()).collect(),
+                scalar_ins: vec![],
+                eligible: true,
+                reasons: vec![],
+                work_cols: None,
+                reduction: None,
+            }
+        };
+        let entry = |shape: crate::analysis::accel::KernelShape| AccelEntry {
+            mode: crate::analysis::accel::AccelMode::TryAll,
+            forced: false,
+            shape,
+            decision: crate::analysis::accel::AccelDecision::Gpu,
+        };
+        accel.insert("qk".into(), entry(mk_shape(&["q", "kt"], &["s"], vec![])));
+        let scale_stmt = Statement::Assign(
+            Expr::Index(Box::new(Expr::Identifier("s2".into())), Box::new(Expr::Identifier("i".into()))),
+            Expr::BinaryOp(
+                BinaryOpKind::Mul,
+                Box::new(Expr::Index(Box::new(Expr::Identifier("s".into())), Box::new(Expr::Identifier("i".into())))),
+                Box::new(Expr::Decimal(2)),
+            ),
+        );
+        accel.insert("scale".into(), entry(mk_shape(&["s"], &["s2"], vec![scale_stmt])));
+        accel.insert("pv".into(), entry(mk_shape(&["s2", "v"], &["o"], vec![])));
+        let txn = |name: &str, pre: &str| -> TopLevel {
+            TopLevel::Transaction(Transaction {
+                name: name.into(),
+                is_reactive: false,
+                is_async: true,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: crate::ast::top::Contract {
+                    pre_condition: Expr::Identifier(pre.into()),
+                    post_condition: Expr::Bool(true),
+                    watchdog: None,
+                    span: None,
+                    explicit: true,
+                    post_authority: false,
+                },
+                body: vec![],
+                metadata: Default::default(),
+                derivation: None,
+                modifiers: vec![],
+                doc: None,
+                span: None,
+            })
+        };
+        let program = vec![txn("qk", "i"), txn("scale", "j"), txn("pv", "k")];
+        let sz = sizes(&[
+            ("q", 65536, 4), ("kt", 65536, 4), ("s", 65536, 4), ("s2", 65536, 4),
+            ("v", 65536, 4), ("o", 65536, 4), ("i", 8, 8), ("j", 8, 8), ("k", 8, 8),
+        ]);
+        let sched = build_schedule(&program, &accel, &sz, true);
+        let cf = sched.chain_fusion.expect("chain fusion detected");
+        assert_eq!(cf.producer, "qk");
+        assert_eq!(cf.middle, "scale");
+        assert_eq!(cf.consumer, "pv");
+        assert_eq!(cf.mid_in, "s");
+        assert_eq!(cf.mid_out, "s2");
+        assert!((cf.scale - 2.0).abs() < 1e-9);
     }
 }
