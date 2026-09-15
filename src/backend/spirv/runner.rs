@@ -392,7 +392,15 @@ pub fn emit_runner(
     kernels: &[RunnerKernel],
     schedule: Option<&crate::analysis::gpu_schedule::GpuSchedule>,
 ) -> Result<String, String> {
-    let reuse = schedule.map(|s| s.reuse_map());
+    let reuse = schedule.and_then(|s| {
+        // Phase 3 gating: default off until per-kernel field packing lands
+        // (the runner packs ALL fields per launch — aliasing would clobber).
+        if crate::config_tuning::ir_lowering().gpu_schedule_buffer_reuse {
+            Some(s.reuse_map())
+        } else {
+            None
+        }
+    });
     let layout = ssbo_layout(
         program,
         universe,
@@ -675,17 +683,16 @@ pub fn build_kernels(
     program: &[TopLevel],
     universe: &TypeUniverse,
     int_bits: u64,
-    entries: &std::collections::HashMap<String, AccelEntry>,
-    image_plans: &std::collections::HashMap<
-        String,
-        Vec<crate::analysis::image_storage::ImageStoragePlan>,
-    >,
+    analysis: &crate::backend::AnalysisResults,
+    reuse_map: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<Vec<RunnerKernel>, String> {
     let mut out = Vec::new();
     // .abv is PURE GPU: every eligible body is a kernel. The Gpu/Probe/Cpu
     // decision (a .bv offload concept — it compares against a CPU lane) does
     // not apply to a standalone volume with no CPU.
     let _ = AccelDecision::Cpu;
+    let entries = &analysis.accel;
+    let image_plans = &analysis.image_storage;
     let mut names: Vec<&String> = entries
         .iter()
         .filter(|(_, e)| e.shape.eligible)
@@ -721,8 +728,12 @@ pub fn build_kernels(
             };
         let kplans: Vec<crate::analysis::image_storage::ImageStoragePlan> =
             image_plans.get(name).cloned().unwrap_or_default();
+        let surface = crate::backend::spirv::kernel::KernelSurface {
+            images: &kplans,
+            reuse_map,
+        };
         crate::backend::spirv::kernel::emit_kernel(
-            &mut sb, "main", &e.shape, program, cooperative, &kplans,
+            &mut sb, "main", &e.shape, program, cooperative, &surface,
         )?;
         out.push(RunnerKernel {
             name: name.clone(),
@@ -967,6 +978,7 @@ pub fn prepare_run(
     universe: &TypeUniverse,
     int_bits: u64,
     kernels: &[RunnerKernel],
+    reuse_map: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<RunProgram, String> {
     let layout = ssbo_layout(
         items,
@@ -976,7 +988,7 @@ pub fn prepare_run(
             .iter()
             .map(|k| (k.name.clone(), k.image_plans.clone()))
             .collect(),
-        None,
+        reuse_map,
     )?;
     let fields = layout.fields;
 

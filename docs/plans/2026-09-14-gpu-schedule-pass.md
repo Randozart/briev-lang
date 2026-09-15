@@ -141,6 +141,36 @@ and is bit-exact (maxrel=0). Unit test `detects_epilogue_scale_fusion`.
   path + the f16 epilogue.
 - **Phase 3 — buffer reuse**: extend `global_lifetime` to arrays (liveness).
 
+## Phase 3 status (2026-09-15)
+
+Infrastructure SHIPPED but **gated off by default**
+(`gpu_schedule_buffer_reuse` in `config/ir-lowering.dbvl`):
+
+- `GpuSchedule.array_last_use` (last txn touching each array) +
+  `reuse_opportunities` (`(dead_slot, new_array, after_txn)` when
+  `last_use(A) < first_use(B)` in topo order).
+- `projection_offsets(builder, fields, reuse_map)` aliases the field's
+  device offset to its target's; `filtered_reuse_map` rejects size-
+  mismatched pairs (a scalar cannot reuse an array's slot). Both the
+  kernel SSBO struct (`setup_state_buffer`) and the runner field table
+  (`ssbo_layout`) call it, so they never disagree.
+- The kernel skips aliased fields from the SSBO struct and remaps
+  `AccessChain` to the target's member index (`alias_map`).
+- Tests: `array_last_use_tracks_dead_arrays`,
+  `projection_offsets_aliases_field_to_target_offset`,
+  `projection_offsets_rejects_size_mismatched_alias`,
+  `buffer_reuse_aliasing_produces_valid_spirv` (spirv-val clean).
+
+**BLOCKER (why the gate stays off)**: the generated runner (`emit_runner`)
+packs **ALL** state fields into the projection at every kernel launch
+(`briev_accel_rt.c::briev_accel_launch`, global `BrievField fields[]`).
+An aliased slot is therefore overwritten by the field that no longer holds
+its live value (k2 packs `c` over `a` before reading `a` → corruption).
+**Fix to open the gate**: per-kernel field packing — each `BrievKernelDesc`
+carries only the fields its kernel touches (read_buffers ∪ write_buffers ∪
+scalar_ins ∪ {index_var}); `proj_size` covers the kernel's SSBO extent.
+That is also a packing-volume win (fewer memcpy per launch).
+
 ## The contract surface the pass consumes
 
 All decisions are frontend-computed and land in `AnalysisResults`

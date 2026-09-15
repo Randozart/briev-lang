@@ -66,7 +66,8 @@ impl super::LlvmBackend {
             // .abv lane; a .bv accel kernel with a spec-Format array simply
             // stays buffer-backed until the lane catches up).
             let emitted = crate::backend::spirv::kernel::emit_kernel(
-                &mut sb, "main", &shape, items, false, &[],
+                &mut sb, "main", &shape, items, false,
+                &crate::backend::spirv::kernel::KernelSurface::default(),
             )
             .and_then(|_| sb.build());
             match emitted {

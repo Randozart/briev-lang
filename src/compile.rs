@@ -1541,12 +1541,19 @@ fn codegen(
             // (same emit_kernel inputs). Entries stay "main": the device
             // drivers hardcode pName "main" — the runner path and the file
             // artifacts must never disagree.
+            let reuse_map = if briev_compiler::config_tuning::ir_lowering()
+                .gpu_schedule_buffer_reuse
+            {
+                analysis.gpu_schedule.reuse_map()
+            } else {
+                std::collections::HashMap::new()
+            };
             let kernels = briev_compiler::backend::spirv::runner::build_kernels(
                 items,
                 universe,
                 opts.int_bits,
-                &analysis.accel,
-                &analysis.image_storage,
+                &analysis,
+                Some(&reuse_map),
             )?;
             let out = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?;
             let out_path = out.replace(".ll", ".spv");
@@ -1575,11 +1582,19 @@ fn codegen(
             // `brievc run x.abv` (Track A) drives the linked GPU runtime
             // in-process — no runner .c file, no cc round trip.
             if opts.run {
+                let reuse_map = if briev_compiler::config_tuning::ir_lowering()
+                    .gpu_schedule_buffer_reuse
+                {
+                    analysis.gpu_schedule.reuse_map()
+                } else {
+                    std::collections::HashMap::new()
+                };
                 let prog = briev_compiler::backend::spirv::runner::prepare_run(
                     items,
                     universe,
                     opts.int_bits,
                     &kernels,
+                    Some(&reuse_map),
                 )?;
                 let counters = briev_compiler::gpu_rt::run_program(&prog)?;
                 for (k, c) in kernels.iter().zip(counters.iter()) {

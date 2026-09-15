@@ -1514,11 +1514,16 @@ fn cast_opcode(
     /// If present, the aliased field's offset is set to the target's offset
     /// (the arrays share a device slot). Both kernel and runner call this
     /// with the same map, so they agree on the layout.
+    ///
+    /// The map is filtered to size-compatible pairs first: an alias whose
+    /// target has a different device storage size would corrupt (a scalar
+    /// sharing an array's slot). `filtered_reuse_map` is the single filter.
     pub fn projection_offsets(
         builder: &mut SpirvBuilder,
         fields: &[StateField],
         reuse_map: Option<&HashMap<String, String>>,
     ) -> Result<Vec<u32>, String> {
+        let reuse = Self::filtered_reuse_map(builder, fields, reuse_map)?;
         let mut offsets = Vec::with_capacity(fields.len());
         let mut offset: u32 = 0;
         for f in fields {
@@ -1536,19 +1541,47 @@ fn cast_opcode(
         // Phase 3 — buffer reuse: remap aliased fields to their target's
         // offset. The target was computed earlier (name-sorted order), so
         // its offset is final. The aliased field shares the same device slot.
-        if let Some(reuse) = reuse_map {
-            for (i, f) in fields.iter().enumerate() {
-                if let Some(target_name) = reuse.get(&f.name) {
-                    if let Some(target_idx) = fields
-                        .iter()
-                        .position(|tf| tf.name == *target_name)
-                    {
-                        offsets[i] = offsets[target_idx];
-                    }
+        for (i, f) in fields.iter().enumerate() {
+            if let Some(target_name) = reuse.get(&f.name) {
+                if let Some(target_idx) = fields
+                    .iter()
+                    .position(|tf| tf.name == *target_name)
+                {
+                    offsets[i] = offsets[target_idx];
                 }
             }
         }
         Ok(offsets)
+    }
+
+    /// Phase 3 — buffer reuse: keep only aliases whose target has the SAME
+    /// device storage size as the aliased field. An array and a scalar share
+    /// nothing; a 1024-float array cannot reuse an 8-byte scalar slot. Both
+    /// `projection_offsets` and `setup_state_buffer` call this so the runner
+    /// field table and the kernel SSBO struct never disagree.
+    pub fn filtered_reuse_map(
+        builder: &mut SpirvBuilder,
+        fields: &[StateField],
+        reuse_map: Option<&HashMap<String, String>>,
+    ) -> Result<HashMap<String, String>, String> {
+        let Some(reuse) = reuse_map else {
+            return Ok(HashMap::new());
+        };
+        let size_of = |builder: &mut SpirvBuilder, name: &str| -> Result<Option<u32>, String> {
+            match fields.iter().find(|f| f.name == name) {
+                Some(f) => Ok(Some(Self::field_storage_bytes(builder, &f.ty)?)),
+                None => Ok(None),
+            }
+        };
+        let mut out = HashMap::new();
+        for (aliased, target) in reuse {
+            let Some(a) = size_of(builder, aliased)? else { continue };
+            let Some(t) = size_of(builder, target)? else { continue };
+            if a == t {
+                out.insert(aliased.clone(), target.clone());
+            }
+        }
+        Ok(out)
     }
 
     /// Shape half of the vec4 gate — offset-independent (Float32 array,
@@ -1690,11 +1723,58 @@ fn cast_opcode(
         Ok(arr)
     }
 
+    /// Phase 3 — buffer reuse: record the alias map (aliased field → target
+    /// field) on the lowerer and return the indices of aliased fields (they
+    /// are skipped from the SSBO struct). No-op when `reuse_map` is None.
+    fn apply_reuse_aliases(
+        &mut self,
+        reuse_map: Option<&HashMap<String, String>>,
+    ) -> HashSet<usize> {
+        let Some(reuse) = reuse_map else {
+            return HashSet::new();
+        };
+        let mut aliased = HashSet::new();
+        for (i, f) in self.state_fields.iter().enumerate() {
+            if reuse.contains_key(&f.name) {
+                aliased.insert(i);
+            }
+        }
+        for (name, target) in reuse {
+            self.alias_map.insert(name.clone(), target.clone());
+        }
+        aliased
+    }
+
+    /// Build the SSBO struct member type ids. Aliased fields are skipped
+    /// (their device slot is occupied by the target). Vec4-typed members use
+    /// their ARRAY-OF-VEC4 id; pair (v2f16) members the paired smem fill id.
+    fn build_member_ids(
+        &mut self,
+        field_types: &[Type],
+        pair_ids: &[(String, Word, Type)],
+        aliased: &HashSet<usize>,
+    ) -> Result<Vec<Word>, String> {
+        let mut members = Vec::with_capacity(field_types.len());
+        for (idx, ty) in field_types.iter().enumerate() {
+            if aliased.contains(&idx) {
+                continue;
+            }
+            if let Some(p) = pair_ids.iter().find(|(n, _, _)| *n == self.state_fields[idx].name) {
+                members.push(p.1);
+            } else {
+                match self.vec4_fields.get(&self.state_fields[idx].name) {
+                    Some(vf) => members.push(vf.array),
+                    None => members.push(self.type_id(ty)?),
+                }
+            }
+        }
+        Ok(members)
+    }
+
     /// Declare the StorageBuffer struct over collected fields (sorted by
     /// name — determinism rule) and create its variable. Called BEFORE any
     /// body statement lowers.
-    pub fn setup_state_buffer(&mut self, reuse_map: Option<&HashMap<String, String>>) -> Result<(), String> {
-        if self.state_fields.is_empty() {
+    pub fn setup_state_buffer(&mut self, reuse_map: Option<&HashMap<String, String>>) -> Result<(), String> {        if self.state_fields.is_empty() {
             return Ok(());
         }
         self.state_fields.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1705,24 +1785,11 @@ fn cast_opcode(
         // 16B-aligned, everything else packed.
         let proj_offsets = Self::projection_offsets(self.builder, &self.state_fields, reuse_map)?;
         // Phase 3 — buffer reuse: identify aliased fields (skipped from the
-        // SSBO struct; AccessChain remaps to the target's member index).
-        let aliased: HashSet<usize> = if let Some(reuse) = reuse_map {
-            let mut set = HashSet::new();
-            for (i, f) in self.state_fields.iter().enumerate() {
-                if reuse.contains_key(&f.name) {
-                    set.insert(i);
-                }
-            }
-            set
-        } else {
-            HashSet::new()
-        };
-        // Populate alias_map: aliased field name → target field name.
-        if let Some(reuse) = reuse_map {
-            for (name, target) in reuse {
-                self.alias_map.insert(name.clone(), target.clone());
-            }
-        }
+        // SSBO struct; AccessChain remaps to the target's member index) and
+        // record the alias map for body lowering. Filtered to size-compatible
+        // pairs — the same filter projection_offsets applied.
+        let reuse = Self::filtered_reuse_map(self.builder, &self.state_fields, reuse_map)?;
+        let aliased = self.apply_reuse_aliases(Some(&reuse));
         let mut vec4_ids: Vec<(String, Word, Type)> = Vec::new();
         let mut pair_ids: Vec<(String, Word, Type)> = Vec::new();
         let state_fields_snapshot: Vec<(String, Type)> = self
@@ -1771,25 +1838,7 @@ fn cast_opcode(
                 },
             );
         }
-        let mut members = Vec::with_capacity(field_types.len());
-        for (idx, ty) in field_types.iter().enumerate() {
-            // Phase 3 — buffer reuse: aliased fields are skipped from the
-            // SSBO struct; their device slot is occupied by the target.
-            if aliased.contains(&idx) {
-                continue;
-            }
-            // Vec4-typed members use their ARRAY-OF-VEC4 id, not the scalar
-            // array id — byte-identical layout, wide loads possible. Pair
-            // (v2f16) members likewise for the paired smem fill.
-            if let Some(p) = pair_ids.iter().find(|(n, _, _)| *n == self.state_fields[idx].name) {
-                members.push(p.1);
-            } else {
-                match self.vec4_fields.get(&self.state_fields[idx].name) {
-                    Some(vf) => members.push(vf.array),
-                    None => members.push(self.type_id(ty)?),
-                }
-            }
-        }
+        let members = self.build_member_ids(&field_types, &pair_ids, &aliased)?;
         let member_ids: Vec<Word> = members.clone();
         let struct_ty = self.builder.builder.type_struct(member_ids);
         // Block decoration (required for SSBO interface).
@@ -2917,5 +2966,30 @@ mod vec4_gate_tests {
         assert_eq!(offs3[0], 0, "a: base offset 0");
         assert_eq!(offs3[1], 16 * 4, "b: packed after a (64 bytes)");
         assert_eq!(offs3[2], 0, "c: aliased to a, shares offset 0");
+    }
+
+    #[test]
+    fn projection_offsets_rejects_size_mismatched_alias() {
+        // A scalar (8 bytes) must NOT alias an array's slot (64 bytes) —
+        // the filter rejects the pair, keeping the scalar at its own offset.
+        let fields = vec![
+            StateField { name: "arr".into(), ty: f32_vec(16) },
+            StateField { name: "scal".into(), ty: Type::Bits(64) },
+        ];
+        let mut reuse = HashMap::new();
+        reuse.insert("scal".into(), "arr".into());
+        let mut sb = SpirvBuilder::new();
+        let offs = FnLowerer::projection_offsets(&mut sb, &fields, Some(&reuse)).expect("layout");
+        assert_eq!(offs[0], 0, "arr: first field, offset 0");
+        assert_eq!(offs[1], 16 * 4, "scal: keeps its own slot (filtered out)");
+        // Same-size pair survives.
+        let mut reuse2 = HashMap::new();
+        reuse2.insert("scal".into(), "arr".into());
+        let fields2 = vec![
+            StateField { name: "arr".into(), ty: f32_vec(8) },
+            StateField { name: "scal".into(), ty: f32_vec(8) },
+        ];
+        let offs2 = FnLowerer::projection_offsets(&mut sb, &fields2, Some(&reuse2)).expect("layout");
+        assert_eq!(offs2[1], 0, "same-size array aliases to arr's offset 0");
     }
 }

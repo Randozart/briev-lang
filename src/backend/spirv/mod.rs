@@ -121,7 +121,7 @@ pub fn compile_spirv_builder(
                 // 2026-09-02: plan-free — this combined-module helper is
                 // single-kernel surface/tests only; the artifact path goes
                 // through build_kernels (one module per kernel).
-                emit_kernel(&mut builder, "main", &entry.shape, program, cooperative, &[])?;
+                emit_kernel(&mut builder, "main", &entry.shape, program, cooperative, &crate::backend::spirv::kernel::KernelSurface::default())?;
                 emitted.push(txn.name.clone());
             }
         }
@@ -291,7 +291,7 @@ mod tests {
         let analysis = analyze(&program);
         let shape = eligible_shape(&analysis).clone();
         let mut builder = SpirvBuilder::new();
-        emit_kernel(&mut builder, "scale", &shape, &program, false, &[])
+        emit_kernel(&mut builder, "scale", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default())
             .expect("kernel with real body must compile");
         let m = builder.module_ref();
 
@@ -339,7 +339,7 @@ mod tests {
         let analysis = analyze(&program);
         let shape = eligible_shape(&analysis).clone();
         let mut builder = SpirvBuilder::new();
-        emit_kernel(&mut builder, "scale", &shape, &program, false, &[]).unwrap();
+        emit_kernel(&mut builder, "scale", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         let binary = builder.build().unwrap();
 
         let dir = std::env::temp_dir().join(format!("briev_spv_{}", std::process::id()));
@@ -443,7 +443,7 @@ mod tests {
         eprintln!("read_buffers={:?} scalars={:?}", reads, entry.shape.scalar_ins);
 
         let mut builder = SpirvBuilder::new();
-        emit_kernel(&mut builder, "mad", &entry.shape, &program, false, &[]).unwrap();
+        emit_kernel(&mut builder, "mad", &entry.shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         let m = builder.module_ref();
         let access_chains = m.functions.iter()
             .flat_map(|f| f.blocks.iter())
@@ -552,7 +552,7 @@ mod tests {
         };
 
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
-        emit_kernel(&mut builder, "fmad", &shape, &program, false, &[])
+        emit_kernel(&mut builder, "fmad", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default())
             .expect("float kernel must lower");
         let ops = {
             let m = builder.module_ref();
@@ -698,7 +698,7 @@ mod tests {
         };
 
         let mut builder = SpirvBuilder::new();
-        emit_kernel(&mut builder, "ls", &shape, &program, false, &[]).unwrap();
+        emit_kernel(&mut builder, "ls", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         // Count inside a scope: module_ref borrows; build() consumes.
         let chain_count = {
             let m = builder.module_ref();
@@ -775,7 +775,7 @@ mod tests {
             other => panic!("expected transaction, got {other:?}"),
         };
         let mut builder = SpirvBuilder::new();
-        let err = emit_kernel(&mut builder, "bad", &raw_shape("i", stmts, &[], &["total"]), &program, false, &[])
+        let err = emit_kernel(&mut builder, "bad", &raw_shape("i", stmts, &[], &["total"]), &program, false, &crate::backend::spirv::kernel::KernelSurface::default())
             .err()
             .expect("Load#(5) must be rejected");
         assert!(err.contains("not an address expression"), "{err}");
@@ -828,7 +828,7 @@ mod tests {
             other => panic!("expected transaction, got {other:?}"),
         };
         let mut builder = SpirvBuilder::new();
-        let err = emit_kernel(&mut builder, "wbad", &raw_shape("i", stmts, &["a"], &[]), &program, false, &[])
+        let err = emit_kernel(&mut builder, "wbad", &raw_shape("i", stmts, &["a"], &[]), &program, false, &crate::backend::spirv::kernel::KernelSurface::default())
             .err()
             .expect("width mismatch must error");
         assert!(err.contains("byte-width"), "{err}");
@@ -915,7 +915,7 @@ mod tests {
             other => panic!("expected transaction, got {other:?}"),
         };
         let mut builder = SpirvBuilder::new().with_universe(&u, 64);
-        emit_kernel(&mut builder, "tk", &raw_shape("i", stmts, &[], &["t"]), &program, false, &[]).unwrap();
+        emit_kernel(&mut builder, "tk", &raw_shape("i", stmts, &[], &["t"]), &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         // The SSBO struct member must be OpTypeFloat 64 — derived from the
         // Temp typedef's Cast.Float property + bits metadata, not from names.
         let has_float64 = builder.module_ref().types_global_values.iter().any(|inst| {
@@ -966,7 +966,7 @@ mod tests {
             other => panic!("expected transaction, got {other:?}"),
         };
         let mut builder = SpirvBuilder::new();
-        emit_kernel(&mut builder, "sk", &raw_shape("i", stmts, &[], &["i"]), &program, false, &[]).unwrap();
+        emit_kernel(&mut builder, "sk", &raw_shape("i", stmts, &[], &["i"]), &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         let int_64_signed = builder.module_ref().types_global_values.iter().any(|inst| {
             inst.class.opcode == rspirv::spirv::Op::TypeInt
                 && inst.operands.get(0)
@@ -1014,7 +1014,7 @@ mod tests {
             other => panic!("expected transaction, got {other:?}"),
         };
         let mut builder = SpirvBuilder::new();
-        let err = emit_kernel(&mut builder, "sk", &raw_shape("i", stmts, &[], &["s"]), &program, false, &[])
+        let err = emit_kernel(&mut builder, "sk", &raw_shape("i", stmts, &[], &["s"]), &program, false, &crate::backend::spirv::kernel::KernelSurface::default())
             .err()
             .expect("String state must be rejected");
         assert!(err.contains("String"), "{err}");
@@ -1108,7 +1108,7 @@ mod tests {
         let analysis = analyze(&program);
         let shape = eligible_shape(&analysis).clone();
         let mut builder = SpirvBuilder::new();
-        emit_kernel(&mut builder, "scale", &shape, &program, false, &[]).unwrap();
+        emit_kernel(&mut builder, "scale", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         let asm = validate_and_disassemble(&builder.build().unwrap(), "harness_scale");
 
         // Entry point: GLCompute on "scale" (spirv-dis quotes the name).
@@ -1273,7 +1273,7 @@ mod tests {
             reduction: None,
         };
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
-        emit_kernel(&mut builder, "main", &shape, &program, false, &[]).unwrap();
+        emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         let m = builder.module_ref();
         // The vec4 type exists, and the array-of-vec4 member type carries
         // ArrayStride 16.
@@ -1421,8 +1421,8 @@ mod tests {
             &program,
             &test_universe(),
             64,
-            &analysis.accel,
-            &Default::default(),
+            &analysis,
+            None,
         )
         .expect("multi-kernel build");
         let mut names: Vec<String> = kernels.iter().map(|k| k.name.clone()).collect();
@@ -1536,12 +1536,14 @@ async node fill [i < N][i == N] {
         };
         let mut plans = std::collections::HashMap::new();
         plans.insert("fill".to_string(), vec![plan.clone()]);
+        let mut analysis = analysis;
+        analysis.image_storage = plans;
         let kernels = crate::backend::spirv::runner::build_kernels(
             &items,
             &universe,
             64,
-            &analysis.accel,
-            &plans,
+            &analysis,
+            None,
         )
         .expect("image kernel build");
         let _ = std::fs::remove_file(&path);
@@ -1646,7 +1648,7 @@ async node fill [i < N][i == N] {
                 reduction: None,
             };
             let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
-            emit_kernel(&mut builder, "main", &shape, &program, false, &[]).unwrap();
+            emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
             let asm = validate_and_disassemble(&builder.build().unwrap(), "math_intrinsics");
             // Disasm shape: `%id = OpExtInst %float %set Exp %x` — the result
             // id sits between the type and the GL opcode name.
@@ -1869,8 +1871,8 @@ async node gemm [i < M * N][i == M * N] {
             &items,
             &universe,
             64,
-            &analysis.accel,
-            &Default::default(),
+            &analysis,
+            None,
         )
         .expect("coopmat kernel build");
         let _ = std::fs::remove_file(&path);
@@ -1911,6 +1913,120 @@ async node gemm [i < M * N][i == M * N] {
         // The regression's actual failure shape: gen_id-valued "masks" are
         // arbitrary integers with sparse bits, never one run.
         assert!(!is_mask_shape(0x1_0000_2A50));
+    }
+
+    /// 2026-09-14 (Phase 3 — buffer reuse): end-to-end test that building
+    /// kernels with a reuse_map produces valid SPIR-V. Kernel "k2" reads
+    /// array "a" and writes "b"; kernel "k3" reads "b" and writes "c".
+    /// Reuse map: "c" aliases to "a" (a is dead after k2, c starts at k3).
+    /// Both kernels must pass spirv-val with the aliased layout.
+    #[test]
+    fn buffer_reuse_aliasing_produces_valid_spirv() {
+        let float_state = |name: &str, n: i64| TopLevel::StateDecl(StateDecl {
+            name: name.into(),
+            ty: Type::Vector(Box::new(Type::float()), vec![Dimension::Anonymous(n as usize)]),
+            span: None,
+        });
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("accel".into(), crate::ast::PropertyValue::String("try_all".into()));
+        let program = vec![
+            TopLevel::ModuleMetadata(meta),
+            TopLevel::StateDecl(StateDecl { name: "i".into(), ty: Type::int(), span: None }),
+            float_state("a", 1024),
+            float_state("b", 1024),
+            float_state("c", 1024),
+            // k2: reads a, writes b.
+            TopLevel::Transaction(Transaction {
+                name: "k2".into(),
+                is_reactive: true, is_async: false,
+                type_params: vec![], parameters: vec![],
+                output_type: None, outputs: vec![],
+                contract: Contract {
+                    pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+                        Box::new(Expr::Identifier("i".into())),
+                        Box::new(Expr::Decimal(1024))),
+                    post_condition: Expr::Bool(true), watchdog: None,
+                    explicit: false, span: None, post_authority: false,
+                },
+                body: vec![
+                    Statement::Assign(
+                        Expr::Index(Box::new(Expr::Identifier("b".into())),
+                                   Box::new(Expr::Identifier("i".into()))),
+                        Expr::Index(Box::new(Expr::Identifier("a".into())),
+                                   Box::new(Expr::Identifier("i".into())))),
+                    Statement::Assign(Expr::Identifier("i".into()),
+                        Expr::BinaryOp(BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("i".into())),
+                            Box::new(Expr::Decimal(1)))),
+                ],
+                metadata: std::collections::HashMap::new(),
+                derivation: None, modifiers: vec![], span: None, doc: None,
+            }),
+            // k3: reads b, writes c.
+            TopLevel::Transaction(Transaction {
+                name: "k3".into(),
+                is_reactive: true, is_async: false,
+                type_params: vec![], parameters: vec![],
+                output_type: None, outputs: vec![],
+                contract: Contract {
+                    pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+                        Box::new(Expr::Identifier("i".into())),
+                        Box::new(Expr::Decimal(1024))),
+                    post_condition: Expr::Bool(true), watchdog: None,
+                    explicit: false, span: None, post_authority: false,
+                },
+                body: vec![
+                    Statement::Assign(
+                        Expr::Index(Box::new(Expr::Identifier("c".into())),
+                                   Box::new(Expr::Identifier("i".into()))),
+                        Expr::Index(Box::new(Expr::Identifier("b".into())),
+                                   Box::new(Expr::Identifier("i".into())))),
+                    Statement::Assign(Expr::Identifier("i".into()),
+                        Expr::BinaryOp(BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("i".into())),
+                            Box::new(Expr::Decimal(1)))),
+                ],
+                metadata: std::collections::HashMap::new(),
+                derivation: None, modifiers: vec![], span: None, doc: None,
+            }),
+        ];
+        let mut analysis = analyze(&program);
+        // Reuse map: "c" aliases to "a" (a is dead after k2, c starts at k3).
+        analysis.gpu_schedule.reuse_opportunities =
+            vec![("a".into(), "c".into(), "k2".into())];
+        let mut reuse = std::collections::HashMap::new();
+        reuse.insert("c".into(), "a".into());
+        let kernels = crate::backend::spirv::runner::build_kernels(
+            &program,
+            &test_universe(),
+            64,
+            &analysis,
+            Some(&reuse),
+        )
+        .expect("aliasing build must succeed");
+        assert_eq!(kernels.len(), 2, "two kernels expected");
+        // Both must pass spirv-val.
+        for k in &kernels {
+            validate_and_disassemble(&k.spirv, &format!("reuse_{}", k.name));
+        }
+        // The k3 kernel (which writes "c") must have "c" aliased to "a" —
+        // verify via the disassembly that the struct has fewer members
+        // (a is skipped in k3's SSBO since c reuses its slot).
+        let k3 = kernels.iter().find(|k| k.name == "k3").expect("k3 kernel");
+        let asm = validate_and_disassemble(&k3.spirv, "k3_alias_check");
+        // With aliasing, "c" is not an SSBO member of k3 — it reuses "a"'s
+        // slot. The struct should have 3 members (a, b, i) not 4
+        // (a, b, c, i). Member offsets confirm: c is absent.
+        let member_offsets: Vec<&str> = asm.lines()
+            .filter(|l| l.contains("OpMemberDecorate") && l.contains("Offset"))
+            .collect();
+        assert_eq!(member_offsets.len(), 3,
+            "k3 SSBO should have 3 member offsets (a, b, i) with c aliased to a: {:?}", member_offsets);
+        // a and b must keep their natural offsets (0 and 4096).
+        assert!(member_offsets.iter().any(|l| l.contains("0 Offset 0")),
+            "a stays at offset 0: {:?}", member_offsets);
+        assert!(member_offsets.iter().any(|l| l.contains("1 Offset 4096")),
+            "b stays at offset 4096: {:?}", member_offsets);
     }
 
 }

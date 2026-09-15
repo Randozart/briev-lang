@@ -62,6 +62,13 @@ pub struct IrLoweringSettings {
     /// 2026-08-31 (VITRIOL GEMM comparison O1): SPIR-V kernel foreach
     /// unroll factor for constant trip counts (0 disables unrolling).
     pub spirv_unroll: u32,
+    /// 2026-09-14 (gpu_schedule Phase 3): device slot reuse for dead arrays
+    /// (a later array aliases an earlier dead array's projection offset).
+    /// OFF by default: the generated runner packs ALL state fields per kernel
+    /// launch, so an aliased slot would be overwritten by the field that no
+    /// longer holds its live value. Enable only after per-kernel field
+    /// packing lands (each kernel's table = its touched set).
+    pub gpu_schedule_buffer_reuse: bool,
     /// 2026-09-01 (plan 2026-09-01-cooperative-row-kernels): cooperative row
     /// kernels (lane-strided accumulation + OpGroupNonUniformFAdd). OFF by
     /// default: the emitted kernel passes spirv-val and the minimal subgroup
@@ -287,6 +294,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     accel_probe_tolerance: 0.0001,
     accel_probe_margin: 0.05,
     spirv_unroll: 16,
+    gpu_schedule_buffer_reuse: false,
     spirv_row_cooperative: false,
     spirv_coopmat: false,
     spirv_coopmat_tile_rows: 4,
@@ -469,6 +477,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("spirv_unroll", 0)
             .map(|v| v.max(0) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.spirv_unroll),
+        gpu_schedule_buffer_reuse: db
+            .field_int("gpu_schedule_buffer_reuse", 0)
+            .map(|v| v != 0)
+            .unwrap_or(DEFAULT_IR_LOWERING.gpu_schedule_buffer_reuse),
         spirv_row_cooperative: db
             .field_int("spirv_row_cooperative", 0)
             .map(|v| v != 0)

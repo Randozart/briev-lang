@@ -33,6 +33,26 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## gpu_schedule buffer reuse — GATED OFF: runner packs all fields per launch — OPEN 2026-09-15
+
+**Date:** 2026-09-15 (gpu_schedule Phase 3)
+**Symptom:** aliasing a dead array's device slot to a later array
+(`reuse_opportunities`, `projection_offsets(reuse_map)`) is structurally
+consistent between the kernel SSBO and the runner field table, but the
+generated runner packs **ALL** state fields into the projection at every
+kernel launch (`briev_accel_rt.c::briev_accel_launch` — the global
+`BrievField fields[]` is shared by every `BrievKernelDesc`). A kernel that
+reads array `a` would have the aliased array `c` packed over `a`'s slot
+before it runs → reads `c`'s bytes. Corruption.
+**Gate:** `config/ir-lowering.dbvl` → `gpu_schedule_buffer_reuse: 0`.
+The infrastructure (analysis, offsets, kernel alias_map, e2e spirv-val
+test) is shipped and tested; production stays off.
+**Fix to open the gate:** per-kernel field packing — each kernel's
+`BrievField[]` = its touched set (read_buffers ∪ write_buffers ∪
+scalar_ins ∪ {index_var}); `proj_size` covers the kernel's SSBO extent.
+Also a packing-volume win.
+**Undo:** `gpu_schedule_buffer_reuse: 1` after the runner change.
+
 ## float → Data → Int bitcast emitted invalid LLVM — FIXED 2026-09-09
 
 **Date:** 2026-09-09 (parity spike)

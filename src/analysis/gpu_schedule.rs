@@ -396,10 +396,19 @@ pub fn build_schedule(
         });
     }
 
-    // 2026-09-14 (Phase 3 — buffer reuse): per-array last-use. Walk the
-    // topo order and record the LAST txn that reads or writes each array.
-    // An array is dead after its last-use txn completes; its slot may be
-    // reused by a later array of matching size/type.
+    // 2026-09-14 (Phase 3 — buffer reuse): per-array last-use + reuse
+    // opportunities. An array is dead after its last-use txn completes; its
+    // slot may be reused by a later array of matching size/type.
+    compute_array_last_use(&mut sched);
+    compute_reuse_opportunities(&mut sched);
+
+    sched
+}
+
+/// Phase 3 — per-array last-use: the last txn (topo order) that reads or
+/// writes each array. Fused consumers are skipped (their work folds into
+/// the producer's epilogue).
+fn compute_array_last_use(sched: &mut GpuSchedule) {
     let all_arrays: HashSet<String> = sched
         .reads
         .iter()
@@ -413,28 +422,28 @@ pub fn build_schedule(
             .order
             .iter()
             .filter(|n| !fused_consumers.contains(*n))
-            .filter(|n| {
-                let reads_match = sched
-                    .reads
-                    .iter()
-                    .find(|(nm, _)| nm == *n)
-                    .map_or(false, |(_, bs)| bs.iter().any(|b| b == arr));
-                let writes_match = sched
-                    .writes
-                    .iter()
-                    .find(|(nm, _)| nm == *n)
-                    .map_or(false, |(_, bs)| bs.iter().any(|b| b == arr));
-                reads_match || writes_match
-            })
+            .filter(|n| txn_touches_array(sched, n, arr))
             .last()
             .cloned();
         if let Some(txn) = last {
             sched.array_last_use.insert(arr.clone(), txn);
         }
     }
+}
 
-    // Phase 3 — buffer reuse: first-use per array. Walk topo order forward;
-    // the first txn touching each array is its live start.
+/// True when txn `n` reads or writes array `arr` (checks BOTH the reads and
+/// writes entries — a txn that only writes `arr` has no reads entry match).
+fn txn_touches_array(sched: &GpuSchedule, n: &str, arr: &str) -> bool {
+    let touches = |sets: &[(String, Vec<String>)]| {
+        sets.iter()
+            .find(|(nm, _)| nm == n)
+            .map_or(false, |(_, bs)| bs.iter().any(|b| b == arr))
+    };
+    touches(&sched.reads) || touches(&sched.writes)
+}
+
+/// Phase 3 — first-use per array: the first txn (topo order) touching it.
+fn compute_array_first_use(sched: &GpuSchedule) -> HashMap<String, String> {
     let mut first_use: HashMap<String, String> = HashMap::new();
     for n in &sched.order {
         let mut arrays_here = BTreeSet::new();
@@ -449,10 +458,14 @@ pub fn build_schedule(
             first_use.entry(arr).or_insert_with(|| n.clone());
         }
     }
+    first_use
+}
 
-    // Reuse opportunities: array A dead after last_use(A), array B starts
-    // at first_use(B). If last_use(A) comes strictly before first_use(B) in
-    // topo order, A's slot is free for B.
+/// Phase 3 — reuse opportunities: array A dead after last_use(A), array B
+/// starts at first_use(B). If last_use(A) precedes first_use(B) in topo
+/// order, A's slot is free for B.
+fn compute_reuse_opportunities(sched: &mut GpuSchedule) {
+    let first_use = compute_array_first_use(sched);
     let order_idx: HashMap<&str, usize> = sched
         .order
         .iter()
@@ -470,8 +483,6 @@ pub fn build_schedule(
             let Some(&first_idx) = order_idx.get(first_b.as_str()) else {
                 continue;
             };
-            // A dead after last_idx; B starts at first_idx. Reuse if
-            // last_idx < first_idx (A's slot is free before B needs it).
             if last_idx < first_idx {
                 sched
                     .reuse_opportunities
@@ -479,8 +490,6 @@ pub fn build_schedule(
             }
         }
     }
-
-    sched
 }
 
 /// Detect a pure elementwise scale: `out[idx] = in[idx] * k` (or `k * in[idx]`).

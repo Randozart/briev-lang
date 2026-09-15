@@ -23,6 +23,15 @@ use crate::ast::Statement;
 /// Local workgroup size — matches the WorkgroupSize# intrinsic constants.
 const LOCAL_SIZE_X: u32 = 256;
 
+/// Per-kernel device surface (Phase 3): the arrays bound as storage images
+/// and the slot-alias map (aliased_field → target_field). Bundled so the
+/// kernel emitter's signature stays small — surface concerns travel together.
+#[derive(Default)]
+pub struct KernelSurface<'a> {
+    pub images: &'a [crate::analysis::image_storage::ImageStoragePlan],
+    pub reuse_map: Option<&'a std::collections::HashMap<String, String>>,
+}
+
 /// Emit one GPU kernel from an analyzed shape. Returns the function id.
 pub fn emit_kernel(
     builder: &mut SpirvBuilder,
@@ -30,10 +39,7 @@ pub fn emit_kernel(
     shape: &KernelShape,
     items: &[crate::ast::TopLevel],
     cooperative: bool,
-    // 2026-09-02 (plan 2026-09-02-image-and-dehashtag, revised): this
-    // kernel's image storage plans — planned arrays leave the SSBO and
-    // bind as STORAGE_IMAGE (set 0, binding 1+).
-    images: &[crate::analysis::image_storage::ImageStoragePlan],
+    surface: &KernelSurface,
 ) -> Result<Word, String> {
     let mut cooperative = cooperative;
     let void_id = builder.lower_type(&Type::void())?;
@@ -103,13 +109,13 @@ pub fn emit_kernel(
             Vec::new()
         }
     };
-    let (ssbo_var, global_id_var, local_id_var, workgroup_id_var, vec4_fields, state_fields_sorted, image_vars, image_types) = {
+    let (ssbo_var, global_id_var, local_id_var, workgroup_id_var, vec4_fields, state_fields_sorted, image_vars, image_types, alias_map) = {
         let mut warm = FnLowerer::new(builder, state_fields.clone());
-        warm.set_image_plans(images);
+        warm.set_image_plans(surface.images);
         warm.set_pair_view_fields(pair_view_fields);
         warm.materialize_consts(items)?;
         warm.warm_builtins()?;
-        warm.setup_state_buffer(None)?;
+        warm.setup_state_buffer(surface.reuse_map)?;
         warm.declare_images()?;
         (
             warm.ssbo_var,
@@ -120,6 +126,7 @@ pub fn emit_kernel(
             warm.state_fields,
             warm.image_vars,
             warm.image_types,
+            warm.alias_map,
         )
     };
     // Types referenced by the function must precede it in the module.
@@ -484,13 +491,14 @@ pub fn emit_kernel(
     }
 
     let mut lower = FnLowerer::new(builder, state_fields);
-    lower.set_image_plans(images);
+    lower.set_image_plans(surface.images);
     lower.image_vars = image_vars.clone();
     lower.image_types = image_types;
     lower.ssbo_var = ssbo_var;
     lower.global_id_var = global_id_var;
     lower.local_id_var = local_id_var;
     lower.vec4_fields = vec4_fields;
+    lower.alias_map = alias_map;
     lower.materialize_consts(items)?;
     lower
         .vars
