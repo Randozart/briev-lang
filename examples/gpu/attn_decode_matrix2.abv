@@ -1,0 +1,27 @@
+type Matrix<T, R, C> {
+    spec Rows: R;
+    spec Cols: C;
+};
+
+let q: Matrix<Float,128,128>;
+let kt: Matrix<Float,128,128>;
+let s: Matrix<Float,128,128>;
+let s2: Matrix<Float,128,128>;
+let v: Matrix<Float,128,128>;
+let o: Matrix<Float,128,128>;
+let i: Int = 0;
+let j: Int = 0;
+let l: Int = 0;
+let K: Int = 128;
+
+async node qk [i < 16384][i == 16384] {
+    let acc: Float = 0.0;
+    let m: Int = i / 128;
+    let n: Int = i % 128;
+    foreach k in 0..K {
+        acc = acc + q[m * 128 + k] * kt[k * 128 + n];
+    }
+    s[i] = acc;
+    i = i + 1;
+    term;
+};

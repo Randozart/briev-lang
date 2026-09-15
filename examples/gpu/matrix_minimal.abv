@@ -1,0 +1,13 @@
+type Matrix<T, R, C> {
+    spec Rows: R;
+    spec Cols: C;
+};
+
+let q: Matrix<Float,128,128>;
+let i: Int = 0;
+
+async node scale [i < 16384][i == 16384] {
+    q[i] = q[i] * 0.5;
+    i = i + 1;
+    term;
+};

@@ -162,12 +162,17 @@ impl ProgramInfo {
                     if let Type::Vector(_, _) = &s.ty {
                         array_types.insert(s.name.clone(), s.ty.clone());
                     }
+                    // 2026-09-14 (Matrix type plan): shape-bearing Applied
+                    // types (Matrix<T,R,C>) are also arrays.
+                    if matches!(&s.ty, Type::Applied(..)) {
+                        array_types.insert(s.name.clone(), s.ty.clone());
+                    }
                 }
                 TopLevel::Statement(stmt) => {
                     if let Statement::Let { name, ty, expr, .. } = stmt.as_ref() {
                         state_fields.insert(name.clone());
-                        if let Some(Type::Vector(_, _)) = ty {
-                            if let Some(ty) = ty {
+                        if let Some(ty) = ty {
+                            if matches!(ty, Type::Vector(..) | Type::Applied(..)) {
                                 array_types.insert(name.clone(), ty.clone());
                             }
                         }
@@ -189,6 +194,12 @@ impl ProgramInfo {
         let ty = self.array_types.get(name).or_else(|| self.const_types.get(name));
         match ty {
             Some(Type::Vector(inner, _)) => is_flat_scalar(universe, inner),
+            // 2026-09-14 (Matrix type plan): shape-bearing Applied type's
+            // element is the first arg.
+            Some(Type::Applied(_, args)) => {
+                let elem = args.first().unwrap();
+                is_flat_scalar(universe, elem)
+            }
             Some(ty) => is_flat_scalar(universe, ty),
             None => false,
         }

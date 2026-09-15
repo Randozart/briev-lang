@@ -27,6 +27,7 @@ pub fn resolve_type(universe: &TypeUniverse, ty: &crate::ast::Type) -> Option<Re
                 alignment: bytes.min(8),
                 properties: std::collections::HashMap::new(),
                 fields: vec![],
+                type_params: vec![],
             })
         },
         crate::ast::Type::Ptr(_) => Some(ResolvedType {
@@ -38,6 +39,7 @@ pub fn resolve_type(universe: &TypeUniverse, ty: &crate::ast::Type) -> Option<Re
             alignment: 8,
             properties: std::collections::HashMap::new(),
             fields: vec![],
+            type_params: vec![],
         }),
         crate::ast::Type::Void => Some(ResolvedType {
             name: "Void".into(),
@@ -48,6 +50,7 @@ pub fn resolve_type(universe: &TypeUniverse, ty: &crate::ast::Type) -> Option<Re
             alignment: 1,
             properties: std::collections::HashMap::new(),
             fields: vec![],
+            type_params: vec![],
         }),
         _ => None,
     }

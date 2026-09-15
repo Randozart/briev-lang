@@ -2918,7 +2918,7 @@ impl<'a> Parser<'a> {
             Some(k) => k,
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Endian, Format, MaxBits",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Cols, Depth, Endian, Format, MaxBits, Rows",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -2941,6 +2941,26 @@ impl<'a> Parser<'a> {
             "format" => {
                 let id = self.expect_identifier()?;
                 metadata.insert(key.into(), PropertyValue::Identifier(id));
+            }
+            // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
+            // (fixed shape) or an IDENTIFIER referencing a type parameter
+            // (`spec Rows: R` on `Matrix<T, R, C>`). The reader resolves the
+            // identifier via ResolvedType.type_params.
+            "rows" | "cols" | "depth" => {
+                if matches!(self.peek(), Some(Token::Identifier(_))) {
+                    let id = self.expect_identifier()?;
+                    metadata.insert(key.into(), PropertyValue::Identifier(id));
+                } else {
+                    let n = self.expect_integer()?;
+                    if n < 0 {
+                        let msg = format!(
+                            "spec {} must be a non-negative integer, got {}",
+                            name, n
+                        );
+                        return self.error_at_current(&msg);
+                    }
+                    metadata.insert(key.into(), PropertyValue::Int(n));
+                }
             }
             _ => {
                 let n = self.expect_integer()?;
@@ -3622,6 +3642,17 @@ fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // key: image-ness is a compiler storage decision, not a type-level
         // one.
         "Format" => Some("format"),
+        // 2026-09-14 (Matrix type plan 2026-09-14-matrix-type-and-shape-
+        // metadata): shape metadata is a first-class type contract (the GPU
+        // GEMM tier AND the CPU array tier read it). Rows/Cols/Depth accept
+        // an integer (fixed shape) or an identifier referencing a type
+        // parameter (`spec Rows: R` on `Matrix<T, R, C>`); the reader
+        // resolves the param via ResolvedType.type_params. This reverses the
+        // "container dims have no spec key" note above — shape is not a
+        // compiler storage decision, it is the type's own contract.
+        "Rows" => Some("rows"),
+        "Cols" => Some("cols"),
+        "Depth" => Some("depth"),
         _ => None,
     }
 }

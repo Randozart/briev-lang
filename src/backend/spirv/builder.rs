@@ -468,6 +468,13 @@ impl SpirvBuilder {
         })
     }
 
+    /// 2026-09-14 (Matrix type plan): delegate to the universe's shape
+    /// reader — the (rows, cols, depth) of a shape-bearing Applied type
+    /// (`Matrix<Float16, 128, 128>`), or None for non-shape types.
+    pub fn matrix_shape(&self, ty: &Type) -> Option<(u64, u64, u64)> {
+        self.universe.matrix_shape(ty)
+    }
+
     /// 2026-08-31 (plan abv-gpu-by-default): the NUMERIC SHAPE of a type for
     /// cast opcode selection — Int/Float/Bool with width and signedness,
     /// resolved through the casting graph (rule 19). Mirrors lower_type's

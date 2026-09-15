@@ -382,6 +382,7 @@ mod tests {
         let mut u = TypeUniverse::new();
         for &(name, bytes, alignment) in pairs {
             u.types.insert(name.to_string(), crate::type_universe::ResolvedType {
+                type_params: vec![],
                 name: name.to_string(),
                 base: "Data".to_string(),
                 bytes,

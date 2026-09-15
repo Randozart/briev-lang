@@ -159,6 +159,15 @@ pub fn ssbo_layout(
                 let flt = sb.is_float_type(inner.as_ref())?;
                 (e, elems, true, flt)
             }
+            // 2026-09-14 (Matrix type plan): a shape-bearing Applied type
+            // (Matrix<T,R,C>) is an array of the element type.
+            Type::Applied(_, args) if sb.matrix_shape(&f.ty).is_some() => {
+                let elem_ty = args.first().unwrap(); // shape-bearing ⇒ args present
+                let (_, rows, cols) = sb.matrix_shape(&f.ty).unwrap();
+                let e = sb.scalar_storage_bytes(elem_ty)?;
+                let flt = sb.is_float_type(elem_ty)?;
+                (e, rows * cols, true, flt)
+            }
             other => {
                 let e = sb.scalar_storage_bytes(other)?;
                 let flt = sb.is_float_type(other)?;

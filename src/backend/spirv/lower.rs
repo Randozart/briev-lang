@@ -1480,6 +1480,16 @@ fn cast_opcode(
                     .max(1);
                 Ok(builder.scalar_storage_bytes(inner)? * elems)
             }
+            // 2026-09-14 (Matrix type plan): a shape-bearing Applied type's
+            // storage is elem(arg[0]) × rows × cols × depth.
+            Type::Applied(_, args) => {
+                if let Some((r, c, d)) = builder.matrix_shape(ty) {
+                    let elem = builder.scalar_storage_bytes(args.first().unwrap_or(&Type::int()))?;
+                    Ok(elem * (r as u32) * (c as u32) * (d as u32))
+                } else {
+                    builder.scalar_storage_bytes(ty)
+                }
+            }
             other => builder.scalar_storage_bytes(other),
         }
     }

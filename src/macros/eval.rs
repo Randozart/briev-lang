@@ -1354,6 +1354,7 @@ fn eval_nav_call(
                     max_bits: 0,
                     alignment: 0,
                     properties: std::collections::HashMap::new(),
+                    type_params: vec![],
                     fields: vec![],
                 }
             });

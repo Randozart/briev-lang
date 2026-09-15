@@ -1125,7 +1125,20 @@ impl CastingGraph {
         ty: &Type,
         default_int_bits: u64,
     ) -> Result<SpirvShape, String> {
-        let (category, variant) = self.type_to_protocol(universe, ty);
+        // 2026-09-14 (Matrix type plan): a shape-bearing Applied type
+        // (e.g. Matrix<T,R,C>) resolves to the ELEMENT type's shape —
+        // the container's storage is elem × rows × cols, but the SPIR-V
+        // shape is the scalar element.
+        let effective = if let Type::Applied(_, args) = ty {
+            if universe.matrix_shape(ty).is_some() {
+                args.first().unwrap_or(ty)
+            } else {
+                ty
+            }
+        } else {
+            ty
+        };
+        let (category, variant) = self.type_to_protocol(universe, effective);
         let resolver = self
             .get_spirv_type(&category, &variant)
             .or_else(|| self.get_spirv_type(&category, self.default_variant(&category)))
@@ -1137,7 +1150,7 @@ impl CastingGraph {
             ));
         };
         let bits_of = |keys: &[&str]| -> Option<u64> {
-            let key = ty.universe_key().and_then(|k| universe.get(k));
+            let key = effective.universe_key().and_then(|k| universe.get(k));
             keys.iter().find_map(|k| {
                 key.and_then(|rt| rt.properties.get(*k)).and_then(|pv| match pv {
                     PropertyValue::Int(n) if *n > 0 => Some(*n as u64),

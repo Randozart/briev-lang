@@ -71,6 +71,11 @@ pub struct ResolvedType {
     pub max_bits: u64,
     pub alignment: u64,
     pub properties: HashMap<String, crate::ast::PropertyValue>,
+    /// 2026-09-14 (Matrix type plan): the type's parameter NAMES in order
+    /// (e.g. `Matrix<T, R, C>` → ["T", "R", "C"]). Lets the reader resolve a
+    /// `spec Rows: R` value (an identifier) to the instantiation's arg index.
+    /// Empty for non-generic types.
+    pub type_params: Vec<String>,
     /// 2026-07-18: Struct field declarations — (name, type) pairs from
     /// TypeDef.body.slots or primordial seed table. Empty for scalars.
     /// Drives LLVM struct type lowering and is_string_like() checks.
@@ -145,6 +150,8 @@ impl TypeUniverse {
         // replaces it as the universal parent (raw storage root). Bit<N>
         // is the bit type, still composed of Cast.Bit (treat-as-bits).
         self.types.insert("Data".to_string(), ResolvedType {
+            type_params: vec![],
+
             name: "Data".to_string(),
             base: "Data".to_string(),
             bytes: 0,
@@ -159,6 +166,8 @@ impl TypeUniverse {
             fields: vec![],
         });
         self.types.insert("Bit".to_string(), ResolvedType {
+            type_params: vec![],
+
             name: "Bit".to_string(),
             base: "Data".to_string(),
             bytes: 0,
@@ -229,6 +238,8 @@ impl TypeUniverse {
                 }
             }
             self.types.insert(name.to_string(), ResolvedType {
+                type_params: vec![],
+
                 name: name.to_string(),
                 // 2026-08-15 (fundamentals): every type refines through Data
                 // (the universal parent / raw storage root).
@@ -264,6 +275,8 @@ impl TypeUniverse {
             p.insert("alignment".into(), crate::ast::PropertyValue::Int(8));
             p.insert("Cast.String".into(), crate::ast::PropertyValue::String("true".into()));
             self.types.insert("String".to_string(), ResolvedType {
+                type_params: vec![],
+
                 name: "String".to_string(),
                 base: "Data".to_string(),
                 bytes: 0,
@@ -291,6 +304,37 @@ impl TypeUniverse {
 
     pub fn contains(&self, name: &str) -> bool {
         self.types.contains_key(name)
+    }
+
+    /// 2026-09-14 (Matrix type plan): the SHAPE of a shape-bearing Applied
+    /// type — one whose declaration has `spec Rows`/`spec Cols`/`spec Depth`
+    /// (e.g. `Matrix<T, R, C>`). Returns `(rows, cols, depth)`. Each value is
+    /// either a fixed `Int` (`spec Rows: 128`) or an identifier referencing a
+    /// type parameter (`spec Rows: R`), resolved via `ResolvedType.type_params`
+    /// to the instantiation's `Number` arg. Returns `None` for non-shape
+    /// types. Generic (Rule 15: reads the universe, never a type-name match).
+    pub fn matrix_shape(&self, ty: &Type) -> Option<(u64, u64, u64)> {
+        let Type::Applied(name, args) = ty else {
+            return None;
+        };
+        let rt = self.types.get(name)?;
+        let read_dim = |key: &str| -> Option<u64> {
+            match rt.properties.get(key)? {
+                crate::ast::PropertyValue::Int(n) => Some(*n as u64),
+                crate::ast::PropertyValue::Identifier(p) => {
+                    let idx = rt.type_params.iter().position(|p2| p2 == p)?;
+                    match args.get(idx)? {
+                        Type::Number(n) => Some(*n as u64),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        };
+        let rows = read_dim("rows")?;
+        let cols = read_dim("cols")?;
+        let depth = read_dim("depth").unwrap_or(1);
+        Some((rows, cols, depth))
     }
 
     /// Look up the `Formatting` property for a type.
@@ -325,6 +369,8 @@ impl TypeUniverse {
     fn test_get_extension_exists() {
         let mut u = TypeUniverse::new();
         u.types.insert("String.c".into(), ResolvedType {
+            type_params: vec![],
+
             name: "String.c".into(), base: "String".into(), bytes: 8, alignment: 8,
             min_bits: 64, max_bits: 64,
             properties: HashMap::new(), fields: vec![],
@@ -337,4 +383,48 @@ impl TypeUniverse {
         let u = TypeUniverse::new();
         assert!(u.get_extension("String", "c").is_none());
     }
+
+    #[test]
+    fn test_matrix_shape_param_ref() {
+        // type Matrix<T, R, C> { spec Rows: R; spec Cols: C; } +
+        // Matrix<Float16, 128, 64> → (128, 64, 1)
+        let mut u = TypeUniverse::new();
+        u.types.insert("Matrix".into(), ResolvedType {
+            type_params: vec!["T".into(), "R".into(), "C".into()],
+            name: "Matrix".into(), base: "Data".into(), bytes: 8, alignment: 8,
+            min_bits: 64, max_bits: 64,
+            properties: [
+                ("rows".into(), crate::ast::PropertyValue::Identifier("R".into())),
+                ("cols".into(), crate::ast::PropertyValue::Identifier("C".into())),
+            ].into_iter().collect(),
+            fields: vec![],
+        });
+        let ty = Type::Applied(
+            "Matrix".into(),
+            vec![Type::Custom("Float16".into()), Type::Number(128), Type::Number(64)],
+        );
+        assert_eq!(u.matrix_shape(&ty), Some((128, 64, 1)));
+        // non-shape type → None
+        let scalar = Type::Custom("Float16".into());
+        assert_eq!(u.matrix_shape(&scalar), None);
+    }
+
+    #[test]
+    fn test_matrix_shape_literal() {
+        // type Mat4x4 : Float { spec Rows: 4; spec Cols: 4; } → (4, 4, 1)
+        let mut u = TypeUniverse::new();
+        u.types.insert("Mat4x4".into(), ResolvedType {
+            type_params: vec![],
+            name: "Mat4x4".into(), base: "Float".into(), bytes: 4, alignment: 4,
+            min_bits: 32, max_bits: 32,
+            properties: [
+                ("rows".into(), crate::ast::PropertyValue::Int(4)),
+                ("cols".into(), crate::ast::PropertyValue::Int(4)),
+            ].into_iter().collect(),
+            fields: vec![],
+        });
+        let ty = Type::Applied("Mat4x4".into(), vec![]);
+        assert_eq!(u.matrix_shape(&ty), Some((4, 4, 1)));
+    }
 }
+

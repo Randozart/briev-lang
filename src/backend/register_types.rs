@@ -88,6 +88,8 @@ pub fn static_struct_resolved_ty(
         (false, None) => 8,
     };
     ResolvedType {
+        type_params: vec![],
+
         name: def.name.clone(),
         base: "Data".to_string(),
         bytes,
@@ -129,6 +131,8 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
         {
             let word = std::mem::size_of::<usize>() as u64;
             let rt = crate::type_universe::ResolvedType {
+                type_params: vec![],
+
                 name: td.name.clone(),
                 base: td.name.clone(),
                 bytes: word,
@@ -286,6 +290,9 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
             alignment,
             properties,
             fields,
+            // 2026-09-14 (Matrix type plan): the param names in order — the
+            // `spec Rows: R` reader resolves the identifier via this index.
+            type_params: td.type_params.iter().map(|p| p.name.clone()).collect(),
         };
 
         // 2026-07-20: No CTD/ALU/encoding inheritance.
@@ -317,6 +324,7 @@ pub fn record_structural_layout(
     base: &str,
     fields: &[(String, Type)],
 ) -> ResolvedType {
+
     let bytes: u64 = fields.iter().map(|(_, ty)| {
         crate::backend::llvm::types::type_size(ty, Some(universe))
     }).sum();
@@ -328,6 +336,8 @@ pub fn record_structural_layout(
         ));
     }
     ResolvedType {
+        type_params: vec![],
+
         name: name.to_string(),
         base: base.to_string(),
         bytes,

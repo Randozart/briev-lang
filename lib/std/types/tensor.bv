@@ -1,0 +1,20 @@
+// ── Matrix / Tensor shape types ──────────────────────────────────────
+//
+// 2026-09-14 (plan 2026-09-14-matrix-type-and-shape-metadata): the shape
+// metadata contract. `Float` is the fundamental; `Matrix<T, R, C>` is a
+// derived type whose R/C parameters carry the row/col counts. The `spec`
+// keys map the parameters to their semantic roles; the compiler reads the
+// shape from the instantiation's arguments (the `Stack<T, N>` numeric-arg
+// precedent). General: the GPU GEMM tier AND the CPU array tier can read it.
+//
+//   let q:  Matrix<Float16, 128, 128>;   // M×K
+//   let kt: Matrix<Float16, 128, 128>;   // K×N
+//   let s2: Matrix<Float16, 128, 128>;   // M×N
+//
+// Fixed-shape types can pin the literal instead:
+//   type Mat4x4 : Float { spec Rows: 4; spec Cols: 4; };
+
+type Matrix<T, R, C> {
+    spec Rows: R;
+    spec Cols: C;
+};

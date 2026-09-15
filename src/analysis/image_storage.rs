@@ -335,6 +335,7 @@ mod tests {
             PropertyValue::Identifier("R32Float".into()),
         );
         universe.register(crate::type_universe::ResolvedType {
+            type_params: vec![],
             name: "R32".into(),
             base: "Float".into(),
             bytes: 4,

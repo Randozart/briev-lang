@@ -427,6 +427,11 @@ fn spec_display_key(key: &str) -> Option<&'static str> {
         "maxbits" => Some("MaxBits"),
         "bytes" => Some("Bytes"),
         "endian" => Some("Endian"),
+        // 2026-09-14 (Matrix type plan): shape keys (the parser's
+        // spec_name_to_key half — keep in sync).
+        "rows" => Some("Rows"),
+        "cols" => Some("Cols"),
+        "depth" => Some("Depth"),
         _ => None,
     }
 }

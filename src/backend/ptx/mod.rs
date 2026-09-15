@@ -13,7 +13,7 @@
 //! (S3b+ occupancy rungs), non-GEMM kernels. Each arrives as a first-class
 //! emitter arm with tests.
 
-use crate::ast::{Expr, TopLevel};
+use crate::ast::{Expr, Statement, TopLevel, Type};
 use crate::backend::spirv::gemm::GemmPlan;
 use crate::backend::spirv::runner::RunnerKernel;
 use crate::type_universe::TypeUniverse;
@@ -257,6 +257,27 @@ fn module_expr_consts(program: &[TopLevel]) -> std::collections::HashMap<String,
     m
 }
 
+/// 2026-09-14 (Matrix type plan): field name → type, from the program's
+/// `let` declarations — used to validate GEMM shapes against Matrix types.
+fn field_type_map(program: &[TopLevel]) -> std::collections::HashMap<String, Type> {
+    program
+        .iter()
+        .filter_map(|tl| {
+            if let TopLevel::Statement(stmt) = tl {
+                if let Statement::Let {
+                    name,
+                    ty: Some(ty),
+                    ..
+                } = stmt.as_ref()
+                {
+                    return Some((name.clone(), ty.clone()));
+                }
+            }
+            None
+        })
+        .collect()
+}
+
 /// Fold an accel node's work-item count expression to a constant.
 fn fold_count(
     shape: &crate::analysis::accel::KernelShape,
@@ -365,6 +386,40 @@ pub fn build_ptx_kernels(
             continue;
         }
         let plan = plan.unwrap();
+        // 2026-09-14 (Matrix type plan): when the a/b/y fields carry
+        // Matrix<T,R,C> types, validate that the type-shape M/N/K matches
+        // the body-derived shape. The type is the contract (Rule 1).
+        let ftypes = field_type_map(program);
+        if let Some(a_ty) = ftypes.get(&plan.a_field) {
+            if let Some((m, k, _)) = universe.matrix_shape(a_ty) {
+                if plan.m != m as i64 || plan.k != k as i64 {
+                    return Err(format!(
+                        "ptx: node '{}': Matrix shape mismatch on '{}': type is {}×{} but body implies M={}, K={}",
+                        name, plan.a_field, m, k, plan.m, plan.k
+                    ));
+                }
+            }
+        }
+        if let Some(b_ty) = ftypes.get(&plan.b_field) {
+            if let Some((b_rows, n, _)) = universe.matrix_shape(b_ty) {
+                if plan.k != b_rows as i64 || plan.n != n as i64 {
+                    return Err(format!(
+                        "ptx: node '{}': Matrix shape mismatch on '{}': type is {}×{} but body implies K={}, N={}",
+                        name, plan.b_field, b_rows, n, plan.k, plan.n
+                    ));
+                }
+            }
+        }
+        if let Some(y_ty) = ftypes.get(&plan.y_field) {
+            if let Some((m, n, _)) = universe.matrix_shape(y_ty) {
+                if plan.m != m as i64 || plan.n != n as i64 {
+                    return Err(format!(
+                        "ptx: node '{}': Matrix shape mismatch on '{}': type is {}×{} but body implies M={}, N={}",
+                        name, plan.y_field, m, n, plan.m, plan.n
+                    ));
+                }
+            }
+        }
         let find_off = |field: &str| -> Result<u64, String> {
             layout
                 .fields
