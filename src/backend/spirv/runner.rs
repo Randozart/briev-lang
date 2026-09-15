@@ -81,6 +81,14 @@ pub struct RunnerKernel {
     /// The count expr is the WORK count (M*N, the counter fast-forward);
     /// the dispatch launches ny = count/(32*16) blocks.
     pub ptx_tensor: bool,
+    /// 2026-09-15 (Phase 4b mma rung): the ONE fused attention kernel
+    /// (f16 mma, m_tile = 16 rows per 32-lane block). The count expr carries
+    /// the WORK count (M·N, for the counter fast-forward); the dispatch
+    /// launches ny = count / fused_mma_blocks_div blocks.
+    pub fused_mma: bool,
+    /// For `fused_mma`: count / this = the block count (16 × on for the
+    /// full-width row-tile kernel).
+    pub fused_mma_blocks_div: u32,
     /// 2026-09-09 (S3b+ perf rungs): CUDA block thread count for this
     /// kernel (default 64 — the driver's fixed block size). The S3b+
     /// multi-warp tensor kernels launch mw*nw*32-thread blocks; the
@@ -895,6 +903,8 @@ pub fn build_kernels(
                 1
             },
             ptx_tensor: false,
+        fused_mma: false,
+        fused_mma_blocks_div: 0,
             block_threads: 64,
             shared_bytes: 0,
             touched_fields: touched,
@@ -1029,6 +1039,14 @@ fn emit_kernel_node(
 /// fallback. Coverage is identical in all three; only the hardware routing
 /// of the work-item id differs.
 fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
+    if k.fused_mma {
+        // Phase 4b mma rung: one 16-row block per 32·nwarps lanes; the count
+        // expr is the WORK count (M·N); ny = count / (16·on) blocks.
+        return format!(
+            "      long long g_{ci} = n_{ci} / {};\n      if (n_{ci} > 0 && !briev_accel_launch_resident_2d({kidx}, state, {}, g_{ci})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n",
+            k.fused_mma_blocks_div, k.block_threads
+        );
+    }
     if k.ptx_tensor {
         if k.block_threads > 64 {
             // PTX tensor multi-warp (mw/nw kernel): block_threads-thread

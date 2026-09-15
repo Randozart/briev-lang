@@ -225,12 +225,220 @@ fn fused_attention_ptx(
     out
 }
 
+/// Fused-attention MMA PTX (Phase 4b mma rung). ONE kernel computing
+/// `o = scale(q · kt) · v` on the m16n8k16 tensor cores, with the scaled S
+/// tile staged in SHARED memory (never HBM). Block = one 32-lane warp per
+/// 16-row m-tile (grid = M/16). Phase 1 computes S' = Q·Kt·scale into smem
+/// via mma (direct global fragment loads); `bar.sync`; phase 2 computes
+/// o = S'·V via mma (A fragments read from smem).
+///
+/// Fragment layouts (m16n8k16): A(16×16) a0..a3 = rows {t/4, t/4+8} × k
+/// {2t', 2t'+1} in k-halves {0, 8} (t' = t%4); B(16×8) b0,b1 = k
+/// {2t', 2t'+1} / {2t'+8, 2t'+9} × col t/4; D(16×8) c0..c3 = rows
+/// {t/4, t/4+8} × cols {2t', 2t'+1}.
+fn fused_attention_mma_ptx(
+    m: i64,
+    k1: i64,
+    kn: i64,
+    on: i64,
+    a_off: u64,
+    b_off: u64,
+    v_off: u64,
+    o_off: u64,
+    scale: f64,
+    nwarps: usize,
+) -> String {
+    debug_assert!(m % 16 == 0 && k1 % 16 == 0 && kn % 16 == 0 && on % 8 == 0);
+    debug_assert!(kn % 8 == 0 && (kn as usize / 8) % nwarps == 0 && (on as usize / 8) % nwarps == 0);
+    let smem_bytes = 16 * kn * 2;
+    let phase1_per = (kn as usize / 8) / nwarps;
+    let phase2_per = (on as usize / 8) / nwarps;
+    let mut out = String::new();
+    out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+    out.push_str(&format!(".visible .entry {} (.param .b64 proj_param)\n{{\n", ENTRY));
+    out.push_str("    .reg .u64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd7;\n");
+    out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10, %r11, %r12, %r13;\n");
+    out.push_str("    .reg .b32  %a0, %a1, %a2, %a3, %b0, %b1, %t0, %t1;\n");
+    out.push_str("    .reg .f32  %c0, %c1, %c2, %c3;\n");
+    out.push_str("    .reg .pred %p1;\n");
+    out.push_str(&format!("    .shared .align 16 .b8 s[{}];\n", smem_bytes));
+    out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+    out.push_str("    mov.u32 %r1, %tid.x;\n");
+    out.push_str("    mov.u32 %r2, %ctaid.y;\n"); // m_tile
+    out.push_str("    and.b32 %r1, %r1, 31;   // lane (fragment math is per-warp)\n");
+    out.push_str("    shr.u32 %r3, %r1, 2;      // lane/4 (row)\n");
+    out.push_str("    and.b32 %r4, %r1, 3;      // lane%4 (col)\n");
+    out.push_str("    shl.b32 %r5, %r4, 1;      // 2t'\n");
+    out.push_str("    mov.u32 %r13, %tid.x;\n");
+    out.push_str("    shr.u32 %r9, %r13, 5;   // warp\n");
+    out.push_str("    mov.u64 %rd5, s;\n");
+
+    // ---- Phase 1: S'[16][kn] = Q·Kt·scale, warp w owns n-subs
+    // [w*phase1_per, (w+1)*phase1_per). Runtime n_sub loop.
+    out.push_str(&format!("    mul.lo.u32 %r10, %r9, {};\n", phase1_per)); // n_sub = warp*per
+    out.push_str(&format!("    add.u32 %r11, %r10, {};\n", phase1_per));   // n_sub_end
+    out.push_str("P1L:\n");
+    out.push_str("    setp.ge.u32 %p1, %r10, %r11;\n");
+    out.push_str("    @%p1 bra P1X;\n");
+    out.push_str("    mov.f32 %c0, 0f00000000; mov.f32 %c1, 0f00000000; mov.f32 %c2, 0f00000000; mov.f32 %c3, 0f00000000;\n");
+    for kstep in 0..(k1 / 16) {
+        // A fragment base: Q[m_tile*16 + row][kstep*16 + k].
+        out.push_str("    mov.u32 %r6, %r2;\n");
+        out.push_str(&format!("    mul.lo.u32 %r6, %r6, {};\n", 16 * k1 * 2));
+        out.push_str(&format!("    mul.lo.u32 %r7, %r3, {};\n", k1 * 2));
+        out.push_str("    add.u32 %r6, %r6, %r7;\n");
+        out.push_str("    mul.lo.u32 %r7, %r5, 2;\n");
+        out.push_str(&format!("    add.u32 %r7, %r7, {};\n", kstep * 16 * 2));
+        out.push_str("    add.u32 %r6, %r6, %r7;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+        out.push_str("    mov.u64 %rd3, %rd1;\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", a_off));
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.global.b32 %a0, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * k1 * 2));
+        out.push_str("    ld.global.b32 %a1, [%rd3];\n");
+        out.push_str(&format!("    sub.u64 %rd3, %rd3, {};\n", 8 * k1 * 2));
+        out.push_str("    add.u64 %rd3, %rd3, 16;\n");
+        out.push_str("    ld.global.b32 %a2, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * k1 * 2));
+        out.push_str("    ld.global.b32 %a3, [%rd3];\n");
+        // B fragments: Kt[(kstep*16 + k)][n_sub*8 + t/4].
+        out.push_str("    mov.u32 %r6, %r3;\n");
+        out.push_str("    mul.lo.u32 %r6, %r6, 2;\n");
+        out.push_str("    mov.u32 %r12, %r10;\n");
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", 8 * 2)); // n_sub*16
+        out.push_str("    add.u32 %r6, %r6, %r12;\n");
+        out.push_str(&format!("    mul.lo.u32 %r7, %r5, {};\n", kn * 2));
+        out.push_str("    add.u32 %r6, %r6, %r7;\n");
+        out.push_str(&format!("    add.u32 %r7, %r6, {};\n", kstep * 16 * kn * 2));
+        out.push_str("    mul.wide.u32 %rd2, %r7, 1;\n");
+        out.push_str("    mov.u64 %rd3, %rd1;\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", b_off));
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.global.b16 %t0, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", kn * 2));
+        out.push_str("    ld.global.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 7 * kn * 2));
+        out.push_str("    ld.global.b16 %t0, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", kn * 2));
+        out.push_str("    ld.global.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
+        out.push_str(&format!(
+            "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c0,%c1,%c2,%c3}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c0,%c1,%c2,%c3}};\n"
+        ));
+    }
+    // Scale + store S' to smem. col = n_sub*8 + 2t'.
+    out.push_str(&format!(
+        "    mul.f32 %c0, %c0, {:e}; mul.f32 %c1, %c1, {:e}; mul.f32 %c2, %c2, {:e}; mul.f32 %c3, %c3, {:e};\n",
+        scale, scale, scale, scale
+    ));
+    out.push_str("    cvt.rn.f16.f32 %t0, %c0; cvt.rn.f16.f32 %t1, %c1;\n");
+    out.push_str("    mov.b32 %a0, %t0; shl.b32 %t1, %t1, 16; or.b32 %a0, %a0, %t1;\n");
+    out.push_str("    cvt.rn.f16.f32 %t0, %c2; cvt.rn.f16.f32 %t1, %c3;\n");
+    out.push_str("    mov.b32 %a1, %t0; shl.b32 %t1, %t1, 16; or.b32 %a1, %a1, %t1;\n");
+    // smem byte = (row*kn + n_sub*8 + 2t')*2.
+    out.push_str(&format!("    mul.lo.u32 %r6, %r3, {};\n", kn * 2));
+    out.push_str("    mov.u32 %r12, %r10;\n");
+    out.push_str("    mul.lo.u32 %r12, %r12, 16;\n");
+    out.push_str("    add.u32 %r6, %r6, %r12;\n");
+    out.push_str("    mul.lo.u32 %r8, %r5, 2;\n");
+    out.push_str("    add.u32 %r6, %r6, %r8;\n");
+    out.push_str("    st.shared.b32 [%r6], %a0;\n");
+    out.push_str(&format!("    add.u32 %r6, %r6, {};\n", 8 * kn * 2));
+    out.push_str("    st.shared.b32 [%r6], %a1;\n");
+    out.push_str("    add.u32 %r10, %r10, 1;\n");
+    out.push_str("    bra.uni P1L;\n");
+    out.push_str("P1X:\n");
+    out.push_str("    bar.sync 0;\n");
+
+    // ---- Phase 2: o[16][on] = S'·V, warp w owns n-subs [w*phase2_per, ...).
+    out.push_str(&format!("    mul.lo.u32 %r10, %r9, {};\n", phase2_per));
+    out.push_str(&format!("    add.u32 %r11, %r10, {};\n", phase2_per));
+    out.push_str("P2L:\n");
+    out.push_str("    setp.ge.u32 %p1, %r10, %r11;\n");
+    out.push_str("    @%p1 bra P2X;\n");
+    out.push_str("    mov.f32 %c0, 0f00000000; mov.f32 %c1, 0f00000000; mov.f32 %c2, 0f00000000; mov.f32 %c3, 0f00000000;\n");
+    for kstep in 0..(kn / 16) {
+        // A from S' smem: S'[row][kstep*16 + k].
+        out.push_str(&format!("    mul.lo.u32 %r6, %r3, {};\n", kn * 2));
+        out.push_str(&format!("    add.u32 %r6, %r6, {};\n", kstep * 16 * 2));
+        out.push_str("    mul.lo.u32 %r8, %r5, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+        out.push_str("    mov.u64 %rd3, %rd5;\n");
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.shared.b32 %a0, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * kn * 2));
+        out.push_str("    ld.shared.b32 %a1, [%rd3];\n");
+        out.push_str(&format!("    sub.u64 %rd3, %rd3, {};\n", 8 * kn * 2));
+        out.push_str("    add.u64 %rd3, %rd3, 16;\n");
+        out.push_str("    ld.shared.b32 %a2, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * kn * 2));
+        out.push_str("    ld.shared.b32 %a3, [%rd3];\n");
+        // B from V: V[(kstep*16 + k)][n_sub*8 + t/4].
+        out.push_str("    mov.u32 %r6, %r3;\n");
+        out.push_str("    mul.lo.u32 %r6, %r6, 2;\n");
+        out.push_str("    mov.u32 %r12, %r10;\n");
+        out.push_str("    mul.lo.u32 %r12, %r12, 16;\n");
+        out.push_str("    add.u32 %r6, %r6, %r12;\n");
+        out.push_str(&format!("    mul.lo.u32 %r7, %r5, {};\n", on * 2));
+        out.push_str("    add.u32 %r6, %r6, %r7;\n");
+        out.push_str(&format!("    add.u32 %r7, %r6, {};\n", kstep * 16 * on * 2));
+        out.push_str("    mul.wide.u32 %rd2, %r7, 1;\n");
+        out.push_str("    mov.u64 %rd3, %rd1;\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", v_off));
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.global.b16 %t0, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", on * 2));
+        out.push_str("    ld.global.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 7 * on * 2));
+        out.push_str("    ld.global.b16 %t0, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", on * 2));
+        out.push_str("    ld.global.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
+        out.push_str(&format!(
+            "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c0,%c1,%c2,%c3}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c0,%c1,%c2,%c3}};\n"
+        ));
+    }
+    // Store o to global: O[(m_tile*16 + row)][n_sub*8 + col].
+    out.push_str("    cvt.rn.f16.f32 %t0, %c0; cvt.rn.f16.f32 %t1, %c1;\n");
+    out.push_str("    mov.b32 %a0, %t0; shl.b32 %t1, %t1, 16; or.b32 %a0, %a0, %t1;\n");
+    out.push_str("    cvt.rn.f16.f32 %t0, %c2; cvt.rn.f16.f32 %t1, %c3;\n");
+    out.push_str("    mov.b32 %a1, %t0; shl.b32 %t1, %t1, 16; or.b32 %a1, %a1, %t1;\n");
+    out.push_str(&format!("    mul.lo.u32 %r6, %r2, {};\n", 16 * on * 2));
+    out.push_str(&format!("    mul.lo.u32 %r7, %r3, {};\n", on * 2));
+    out.push_str("    add.u32 %r6, %r6, %r7;\n");
+    out.push_str("    mov.u32 %r12, %r10;\n");
+    out.push_str("    mul.lo.u32 %r12, %r12, 16;\n");
+    out.push_str("    add.u32 %r6, %r6, %r12;\n");
+    out.push_str("    mul.lo.u32 %r8, %r5, 2;\n");
+    out.push_str("    add.u32 %r6, %r6, %r8;\n");
+    out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+    out.push_str("    mov.u64 %rd3, %rd1;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", o_off));
+    out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+    out.push_str("    st.global.b32 [%rd3], %a0;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * on * 2));
+    out.push_str("    st.global.b32 [%rd3], %a1;\n");
+    out.push_str("    add.u32 %r10, %r10, 1;\n");
+    out.push_str("    bra.uni P2L;\n");
+    out.push_str("P2X:\n");
+    out.push_str("    ret;\n}\n");
+    out
+}
+
 /// Build the ONE fused attention kernel for a detected chain (Phase 4b v1).
 /// Derives the GEMM operands from the producer/consumer shapes (never from
 /// pattern names): the producer GEMM is `a·b → mid_in` (M×K → M×kn), the
 /// consumer is `mid_out·v → o` (M×kn → M×on). v1 scope: f16 operands and a
 /// square middle (on == kn). Returns None when not applicable (the chain
 /// falls back to the 2-kernel epilogue fusion).
+///
+/// 2026-09-15 (mma rung): the kernel is `fused_attention_mma_ptx` (m16n8k16
+/// tensor cores, direct fragment loads); the naive-on-chip kernel remains as
+/// the correctness reference and the fallback when the shape does not tile.
 fn build_fused_attention_kernel(
     program: &[TopLevel],
     universe: &TypeUniverse,
@@ -287,7 +495,31 @@ fn build_fused_attention_kernel(
     let b_off = find_off(&pplan.b_field)?;
     let v_off = find_off(&cplan.b_field)?;
     let o_off = find_off(&cplan.y_field)?;
-    let ptx = fused_attention_ptx(m, k1, kn, on, a_off, b_off, v_off, o_off, cf.scale);
+    // 2026-09-15 (mma rung): the m16n8k16 tensor-core kernel when the shapes
+    // tile (m%16, k1%16, kn%16, on%8); otherwise the naive-on-chip reference.
+    // 8 warps per block (each warp owns an n-slice of the shared S' tile) —
+    // 32 single-warp blocks underfilled the SM count and lost 3.4× to the
+    // composition.
+    let tiles = m % 16 == 0 && k1 % 16 == 0 && kn % 16 == 0 && on % 8 == 0;
+    let nwarps: usize = 8;
+    let mma_ok = tiles && (kn as usize / 8) % nwarps == 0 && (on as usize / 8) % nwarps == 0;
+    let (ptx, fused_mma, block_threads, shared_bytes, fused_div) = if mma_ok {
+        (
+            fused_attention_mma_ptx(m, k1, kn, on, a_off, b_off, v_off, o_off, cf.scale, nwarps),
+            true,
+            (32 * nwarps) as u32,
+            (16 * kn * 2) as u32,
+            (16 * on) as u32,
+        )
+    } else {
+        (
+            fused_attention_ptx(m, k1, kn, on, a_off, b_off, v_off, o_off, cf.scale),
+            false,
+            512,
+            1024,
+            0,
+        )
+    };
     let blob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
         compile_cubin(&ptx, 64).unwrap_or_else(|| ptx.into_bytes())
     } else {
@@ -309,7 +541,9 @@ fn build_fused_attention_kernel(
         spirv: blob,
         image_plans: Vec::new(),
         // The producer's counter drives the runner's pass loop (the fused
-        // kernel covers all three nodes' work in one launch).
+        // kernel covers all three nodes' work in one launch). The count is
+        // the WORK count (M·N) — the dispatch divides by fused_div to get
+        // the block count.
         index_var: producer.shape.index_var.clone(),
         count_expr: Expr::Decimal(m * on),
         work_cols: None,
@@ -318,8 +552,10 @@ fn build_fused_attention_kernel(
         tensor: false,
         tensor_tile_rows: 1,
         ptx_tensor: false,
-        block_threads: 512,
-        shared_bytes: 1024,
+        fused_mma,
+        fused_mma_blocks_div: fused_div,
+        block_threads,
+        shared_bytes,
         touched_fields: touched,
     }))
 }
@@ -647,6 +883,8 @@ pub fn build_ptx_kernels(
                 tensor: false,
                 tensor_tile_rows: 1,
                 ptx_tensor: false,
+        fused_mma: false,
+        fused_mma_blocks_div: 0,
                 block_threads: 256,
                 shared_bytes: 0,
                 touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
@@ -843,6 +1081,8 @@ pub fn build_ptx_kernels(
             tensor: false,
             tensor_tile_rows: 1,
             ptx_tensor,
+            fused_mma: false,
+        fused_mma_blocks_div: 0,
             block_threads,
             shared_bytes,
             touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
@@ -911,5 +1151,21 @@ mod tests {
         let global_stores: Vec<&str> = ptx.lines().filter(|l| l.contains("st.global.b16")).collect();
         assert_eq!(global_stores.len(), 1, "only o stored to global: {:?}", global_stores);
         assert!(ptx.contains("5e-1"), "the middle scale folds into phase 1");
+    }
+
+    #[test]
+    fn fused_attention_mma_uses_tensor_cores_and_smem_s() {
+        // 128² attention: the ONE mma kernel must use the m16n8k16 tensor
+        // cores, stage the scaled S tile in smem, barrier between phases,
+        // and read S' back for the second GEMM.
+        let ptx = fused_attention_mma_ptx(128, 128, 128, 128, 0, 1024, 2048, 4096, 0.5, 8);
+        assert!(ptx.contains("mma.sync.aligned.m16n8k16"), "mma tensor cores: {ptx}");
+        assert!(ptx.contains(".shared .align 16 .b8 s[4096];"), "16×128×2 smem S tile: {ptx}");
+        assert!(ptx.contains("st.shared.b32"), "S' written to smem");
+        assert!(ptx.contains("ld.shared.b32"), "phase-2 reads S' from smem");
+        assert!(ptx.contains("bar.sync 0"), "barrier between phases");
+        // Scale folds into phase 1 (f32 on the accumulator).
+        assert!(ptx.contains("5e-1"), "the middle scale folds into phase 1");
+        assert!(ptx.contains("%ctaid.y"), "m_tile decodes from ctaid.y (the 2D block grid)");
     }
 }
