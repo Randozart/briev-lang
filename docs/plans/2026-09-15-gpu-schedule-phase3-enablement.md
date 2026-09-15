@@ -96,6 +96,21 @@ launch (wasted bandwidth, and the clobber).
    2-kernel array chain correct on-device.
 4. Flip the config only after 1-3 pass.
 
+## Outcome (2026-09-15)
+
+Gate **PASSED on RTX 3060 / Vulkan**: the chain
+`a[i]=i → b=a+1 → c=b*2` (with `c` aliasing `a`'s device slot) produces
+a[63]=63, b[64]=64, c[63]=128 — byte-identical with the flag ON vs OFF.
+`attn_decode` (f32) kernels pass spirv-val and the runner C compiles.
+Two correctness gaps found and fixed during the gate: (1) epilogue fusion
+was detected for any elementwise scale but applied only to f32 — the
+schedule's fused-consumer set now matches the runner (f32-only) so
+last-use stays correct; (2) Track A dispatched kernels by name, not
+schedule order — now ordered by the topo order. 2213 tests green.
+
+The `.abv` SPIR-V lane runs on Vulkan; the CUDA driver in this env expects
+PTX (rc 200 on SPIR-V) — a pre-existing lane split, not aliasing-related.
+
 ## Undo
 
 `gpu_schedule_buffer_reuse: 0` restores the global-table runner byte-for-

@@ -58,10 +58,12 @@ the live slot. Corruption.
 - `config/ir-lowering.dbvl`: `gpu_schedule_buffer_reuse: 1`.
 **Verified:** 2213 tests; `attn_decode` kernels spirv-val VALID; runner C
 compiles; Praetor clean (all changed fns ≤ baseline).
-**Pending:** on-device parity — the `.abv` SPIR-V runner can't load on CUDA
-here (`cuModuleLoadData` rc 200: the CUDA driver expects PTX, the `.abv`
-lane emits SPIR-V; pre-existing, not aliasing-related). Run the attention
-parity gate on the dev box.
+**On-device gate (RTX 3060 via Vulkan, 2026-09-15):** the reuse chain
+`a[i]=i → b=a+1 → c=b*2` (where `c` aliases `a`'s slot) produces
+a[63]=63, b[63]=64, c[63]=128 — byte-identical with
+`gpu_schedule_buffer_reuse` ON vs OFF. The `.abv` SPIR-V runner cannot load
+on CUDA here (the CUDA driver expects PTX, the `.abv` lane emits SPIR-V —
+pre-existing, not aliasing-related); Vulkan runs it.
 
 ## float → Data → Int bitcast emitted invalid LLVM — FIXED 2026-09-09
 

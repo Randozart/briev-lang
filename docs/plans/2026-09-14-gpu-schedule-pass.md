@@ -170,8 +170,9 @@ Reuse is restricted to **write-first** targets, and the greedy interval
 allocation gives each dead slot at most one later array with disjoint live
 ranges (size-matched). The SSBO member-index drift the aliasing introduced
 is fixed (`struct_member_index` + the GEMM `member_of` remap). The flag
-`gpu_schedule_buffer_reuse` is now **1**. On-device verdict pending the
-SPIR-V→CUDA toolchain (see BUGS.md).
+`gpu_schedule_buffer_reuse` is now **1**, and the on-device gate PASSED
+(RTX 3060 / Vulkan: the reuse chain `a→b→c` with `c` aliasing `a` is
+byte-identical to the non-aliased run).
 
 ## The contract surface the pass consumes
 
