@@ -33,25 +33,35 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
-## gpu_schedule buffer reuse — GATED OFF: runner packs all fields per launch — OPEN 2026-09-15
+## gpu_schedule buffer reuse — FIXED: per-kernel field packing + input seed — 2026-09-15
 
-**Date:** 2026-09-15 (gpu_schedule Phase 3)
-**Symptom:** aliasing a dead array's device slot to a later array
-(`reuse_opportunities`, `projection_offsets(reuse_map)`) is structurally
-consistent between the kernel SSBO and the runner field table, but the
-generated runner packs **ALL** state fields into the projection at every
-kernel launch (`briev_accel_rt.c::briev_accel_launch` — the global
-`BrievField fields[]` is shared by every `BrievKernelDesc`). A kernel that
-reads array `a` would have the aliased array `c` packed over `a`'s slot
-before it runs → reads `c`'s bytes. Corruption.
-**Gate:** `config/ir-lowering.dbvl` → `gpu_schedule_buffer_reuse: 0`.
-The infrastructure (analysis, offsets, kernel alias_map, e2e spirv-val
-test) is shipped and tested; production stays off.
-**Fix to open the gate:** per-kernel field packing — each kernel's
-`BrievField[]` = its touched set (read_buffers ∪ write_buffers ∪
-scalar_ins ∪ {index_var}); `proj_size` covers the kernel's SSBO extent.
-Also a packing-volume win.
-**Undo:** `gpu_schedule_buffer_reuse: 1` after the runner change.
+**Date:** 2026-09-15 (gpu_schedule Phase 3 enablement)
+**Original symptom:** aliasing a dead array's device slot to a later array
+was structurally consistent between kernel and runner, but the generated
+runner packed **ALL** state fields per launch (global `BrievField fields[]`
+shared by every `BrievKernelDesc`), so the aliased partner was packed over
+the live slot. Corruption.
+**Fix (all shipped):**
+- Per-kernel `BrievField` tables = the kernel's touched set (runner C +
+  Track A `gpu_rt.rs`); `BrievKernelDesc` gains `program_bytes` (program
+  union extent — every allocation sizes to it) and a shared `seed_fields`
+  table.
+- Runtime seed uploads **input arrays only** (first-use txn reads them);
+  kernel-written arrays are device-produced. Reuse restricted to
+  **write-first** targets so inputs and reuse targets are disjoint.
+- Reuse greedy rewritten as interval allocation: exclusive slots,
+  size-matched, pairwise-disjoint live ranges; `reuse_map()` resolves
+  chains transitively.
+- SSBO member-index drift fixed: `struct_member_index` counts non-aliased
+  fields; the GEMM `member_of` closures remap too. (spirv-val caught
+  `OpAccessChain` past the struct end — the e2e test now covers it.)
+- `config/ir-lowering.dbvl`: `gpu_schedule_buffer_reuse: 1`.
+**Verified:** 2213 tests; `attn_decode` kernels spirv-val VALID; runner C
+compiles; Praetor clean (all changed fns ≤ baseline).
+**Pending:** on-device parity — the `.abv` SPIR-V runner can't load on CUDA
+here (`cuModuleLoadData` rc 200: the CUDA driver expects PTX, the `.abv`
+lane emits SPIR-V; pre-existing, not aliasing-related). Run the attention
+parity gate on the dev box.
 
 ## float → Data → Int bitcast emitted invalid LLVM — FIXED 2026-09-09
 

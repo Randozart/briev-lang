@@ -161,15 +161,17 @@ Infrastructure SHIPPED but **gated off by default**
   `projection_offsets_rejects_size_mismatched_alias`,
   `buffer_reuse_aliasing_produces_valid_spirv` (spirv-val clean).
 
-**BLOCKER (why the gate stays off)**: the generated runner (`emit_runner`)
-packs **ALL** state fields into the projection at every kernel launch
-(`briev_accel_rt.c::briev_accel_launch`, global `BrievField fields[]`).
-An aliased slot is therefore overwritten by the field that no longer holds
-its live value (k2 packs `c` over `a` before reading `a` → corruption).
-**Fix to open the gate**: per-kernel field packing — each `BrievKernelDesc`
-carries only the fields its kernel touches (read_buffers ∪ write_buffers ∪
-scalar_ins ∪ {index_var}); `proj_size` covers the kernel's SSBO extent.
-That is also a packing-volume win (fewer memcpy per launch).
+**BLOCKER RESOLVED (2026-09-15) — see
+`docs/plans/2026-09-15-gpu-schedule-phase3-enablement.md`.** The runner now
+packs **per-kernel touched-field tables** (not the global table), the
+one-time resident seed uploads only **input arrays** (first-use txn reads
+them), and every allocation sizes to the program union (`program_bytes`).
+Reuse is restricted to **write-first** targets, and the greedy interval
+allocation gives each dead slot at most one later array with disjoint live
+ranges (size-matched). The SSBO member-index drift the aliasing introduced
+is fixed (`struct_member_index` + the GEMM `member_of` remap). The flag
+`gpu_schedule_buffer_reuse` is now **1**. On-device verdict pending the
+SPIR-V→CUDA toolchain (see BUGS.md).
 
 ## The contract surface the pass consumes
 

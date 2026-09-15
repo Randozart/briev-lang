@@ -345,10 +345,17 @@ pub fn emit_kernel(
         if gemm_tensor {
             // Tensor tier: cooperative-matrix fragments, one 16×16 tile per
             // warp-sized workgroup. No shared memory, no vec4 machinery.
+            // Phase 3: member indices count only NON-aliased fields (aliased
+            // members are skipped from the SSBO struct).
             let member_of = |name: &str| -> Option<usize> {
-                state_fields_sorted
-                    .iter()
-                    .position(|f| f.name == name)
+                let eff = alias_map.get(name).map(|s| s.as_str()).unwrap_or(name);
+                let pos = state_fields_sorted.iter().position(|f| f.name == eff)?;
+                Some(
+                    state_fields_sorted[..pos]
+                        .iter()
+                        .filter(|f| !alias_map.contains_key(&f.name))
+                        .count(),
+                )
             };
             let exit_bb = builder.gen_id();
             // B2 (plan 2026-09-02-cuda-race): S subgroups per workgroup —
@@ -450,9 +457,14 @@ pub fn emit_kernel(
     {
         let f32_ty = builder.lower_type(&a_v4.elem)?;
         let member_of = |name: &str| -> Option<usize> {
-            state_fields_sorted
-                .iter()
-                .position(|f| f.name == name)
+            let eff = alias_map.get(name).map(|s| s.as_str()).unwrap_or(name);
+            let pos = state_fields_sorted.iter().position(|f| f.name == eff)?;
+            Some(
+                state_fields_sorted[..pos]
+                    .iter()
+                    .filter(|f| !alias_map.contains_key(&f.name))
+                    .count(),
+            )
         };
         let ctx = gemm::TiledCtx {
             ssbo: ssbo_var.ok_or("gemm without SSBO")?,

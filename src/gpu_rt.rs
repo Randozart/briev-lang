@@ -27,8 +27,11 @@ pub(super) struct FfiField {
     proj_offset: u64,
 }
 
-/// The C `BrievKernelDesc` layout (txn_name, spirv, spirv_size, n_fields,
-/// fields).
+/// The C `BrievKernelDesc` layout — MUST match briev_accel_rt.c exactly
+/// (tail fields: images, block_threads, shared_bytes, program_bytes,
+/// seed_fields, n_seed_fields). The 2026-09-15 fix: previously only the
+/// first five fields were declared, so the runtime read garbage for every
+/// tail field.
 #[repr(C)]
 pub(super) struct FfiKernelDesc {
     txn_name: *const std::os::raw::c_char,
@@ -36,6 +39,13 @@ pub(super) struct FfiKernelDesc {
     spirv_size: u32,
     n_fields: u32,
     fields: *const FfiField,
+    n_images: u32,
+    images: *const std::os::raw::c_void,
+    block_threads: u32,
+    shared_bytes: u32,
+    program_bytes: u64,
+    seed_fields: *const FfiField,
+    n_seed_fields: u32,
 }
 
 unsafe extern "C" {
@@ -80,19 +90,17 @@ mod ffi {
         briev_accel_launch_resident_batch, briev_accel_shutdown,
     };
 
-    pub(super) unsafe fn run_program_impl(prog: &RunProgram) -> Result<Vec<i64>, String> {
-        // Field table: name-sorted, host offsets packed, proj offsets declared.
-        let c_names: Vec<std::ffi::CString> = prog
-            .fields
+    /// Build an `FfiField` table over the fields whose name passes `keep`.
+    /// Used for the global table (all), the seed table (inputs only), and
+    /// each kernel's touched table (Phase 3) — one definition of the ABI row.
+    fn ffi_table<'a>(
+        fields: &'a [crate::backend::spirv::runner::RunnerField],
+        c_names: &'a [std::ffi::CString],
+        keep: impl Fn(&crate::backend::spirv::runner::RunnerField) -> bool,
+    ) -> Vec<FfiField> {
+        fields
             .iter()
-            .map(|f| {
-                std::ffi::CString::new(f.name.clone())
-                    .map_err(|_| format!("field '{}': name has NUL byte", f.name))
-            })
-            .collect::<Result<_, _>>()?;
-        let ffi_fields: Vec<FfiField> = prog
-            .fields
-            .iter()
+            .filter(|f| keep(f))
             .zip(c_names.iter())
             .map(|(f, name)| FfiField {
                 name: name.as_ptr(),
@@ -103,21 +111,55 @@ mod ffi {
                 is_write: if f.is_array { 1 } else { 0 },
                 proj_offset: f.proj_offset,
             })
-            .collect();
+            .collect()
+    }
 
-        // Kernel descs: one per node.
+    pub(super) unsafe fn run_program_impl(prog: &RunProgram) -> Result<Vec<i64>, String> {
+        // Field table: name-sorted, host offsets packed, proj offsets declared.
+        let c_names: Vec<std::ffi::CString> = prog
+            .fields
+            .iter()
+            .map(|f| {
+                std::ffi::CString::new(f.name.clone())
+                    .map_err(|_| format!("field '{}': name has NUL byte", f.name))
+            })
+            .collect::<Result<_, _>>()?;
+        let ffi_fields = ffi_table(&prog.fields, &c_names, |_| true);
+
+        // The seed table — input arrays only (Phase 3): the one-time
+        // resident seed uploads these; kernel-written arrays are
+        // device-produced. Reuse targets are write-first and disjoint.
+        let seed_names: std::collections::HashSet<&String> =
+            prog.seed_fields.iter().collect();
+        let seed_ffi =
+            ffi_table(&prog.fields, &c_names, |f| seed_names.contains(&f.name));
+
+        // Kernel descs: one per node, each with its OWN touched-field table
+        // (Phase 3 — no kernel packs a field it does not touch).
         let mut k_names: Vec<std::ffi::CString> = Vec::new();
         let mut ffi_descs: Vec<FfiKernelDesc> = Vec::new();
+        let mut k_tables: Vec<Vec<FfiField>> = Vec::new();
         for k in &prog.kernels {
             k_names.push(std::ffi::CString::new(k.name.clone())
                 .map_err(|e| format!("node '{}': name has NUL byte", k.name))?);
+            let table = ffi_table(&prog.fields, &c_names, |f| {
+                k.touched_fields.iter().any(|n| n == &f.name)
+            });
+            k_tables.push(table);
             let last = ffi_descs.len();
             ffi_descs.push(FfiKernelDesc {
                 txn_name: k_names[last].as_ptr(),
                 spirv: k.spirv.as_ptr(),
                 spirv_size: k.spirv.len() as u32,
-                n_fields: ffi_fields.len() as u32,
-                fields: ffi_fields.as_ptr(),
+                n_fields: k_tables[last].len() as u32,
+                fields: k_tables[last].as_ptr(),
+                n_images: 0,
+                images: std::ptr::null(),
+                block_threads: k.block_threads,
+                shared_bytes: k.shared_bytes,
+                program_bytes: prog.program_bytes,
+                seed_fields: seed_ffi.as_ptr(),
+                n_seed_fields: seed_ffi.len() as u32,
             });
         }
 

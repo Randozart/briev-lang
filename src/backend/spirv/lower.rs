@@ -1473,7 +1473,10 @@ fn cast_opcode(
 // ── State (SSBO) ────────────────────────────────────────────────────
     /// O3 helpers: member byte size (shared by the offset walk) and the
     /// vec4 eligibility / member-type construction.
-    fn field_storage_bytes(builder: &mut SpirvBuilder, ty: &Type) -> Result<u32, String> {
+    /// Device storage bytes for a field type (element × count for arrays).
+    /// Pub: the gpu_schedule analysis computes per-array sizes from this so
+    /// its slot-reuse greedy never pairs size-mismatched arrays.
+    pub fn field_storage_bytes(builder: &mut SpirvBuilder, ty: &Type) -> Result<u32, String> {
         match ty {
             Type::Vector(inner, dims) => {
                 let elems: u32 = dims
@@ -2028,6 +2031,18 @@ fn cast_opcode(
         Ok(())
     }
 
+    /// Phase 3 — buffer reuse: the SSBO struct member index of the field at
+    /// `pos` in `state_fields`. Aliased fields are skipped from the struct
+    /// (their device slot is the target's), so the member index counts only
+    /// non-aliased fields before `pos`. Without this, AccessChain used the
+    /// raw position and walked past the struct end when aliases collapsed it.
+    fn struct_member_index(&self, pos: usize) -> u32 {
+        self.state_fields[..pos]
+            .iter()
+            .filter(|f| !self.alias_map.contains_key(&f.name))
+            .count() as u32
+    }
+
     /// AccessChain to `field[idx]` inside the SSBO. Returns (elem ptr, elem ty).
     fn state_field_elem_ptr(&mut self, field: &str, idx: Word) -> Result<(Word, Type), String> {
         let Some(var) = self.ssbo_var else {
@@ -2045,8 +2060,10 @@ fn cast_opcode(
             other => other.clone(),
         };
         let elem_id = self.type_id(&elem_ty)?;
-        // Chain: ssbo var → member index → element index.
-        let member_idx = self.builder.u32_const(pos as u32);
+        // Chain: ssbo var → member index → element index. The member index
+        // counts only NON-aliased fields (aliased members are skipped from
+        // the SSBO struct, so positions in state_fields ≠ member indices).
+        let member_idx = self.builder.u32_const(self.struct_member_index(pos));
         let ptr_ty = self.builder.ptr_class(StorageClass::StorageBuffer, elem_id);
         let chain = self.builder.gen_id();
         if self.vec4_fields.contains_key(&effective_name) {
@@ -2114,7 +2131,7 @@ fn cast_opcode(
             ));
         }
         let elem_id = self.type_id(&fty)?;
-        let member_idx = self.builder.u32_const(pos as u32);
+        let member_idx = self.builder.u32_const(self.struct_member_index(pos));
         let ptr_ty = self.builder.ptr_class(StorageClass::StorageBuffer, elem_id);
         let chain = self.builder.gen_id();
         self.builder.emit(Instruction::new(

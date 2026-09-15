@@ -382,6 +382,7 @@ pub fn build_ptx_kernels(
                 ptx_tensor: false,
                 block_threads: 256,
                 shared_bytes: 0,
+                touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
             });
             continue;
         }
@@ -568,6 +569,7 @@ pub fn build_ptx_kernels(
             ptx_tensor,
             block_threads,
             shared_bytes,
+            touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
         });
     }
     Ok(out)

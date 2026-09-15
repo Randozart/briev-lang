@@ -76,3 +76,8 @@ spirv_coopmat_stages: 2;
 // strategy — texel-formatted write buffers realize as device storage images
 // when the kernel's index math yields dimensions. Opt-in until measured.
 spirv_image_storage: 0;
+// 2026-09-15 (gpu_schedule Phase 3 enablement): device slot reuse for dead
+// arrays (a later write-first array aliases an earlier dead array's
+// projection offset). Safe after per-kernel field packing + input-only
+// seeding landed (runner + Track A + runtime).
+gpu_schedule_buffer_reuse: 1;

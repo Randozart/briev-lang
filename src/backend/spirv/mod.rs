@@ -1935,6 +1935,7 @@ async node gemm [i < M * N][i == M * N] {
             float_state("a", 1024),
             float_state("b", 1024),
             float_state("c", 1024),
+            float_state("d", 1024),
             // k2: reads a, writes b.
             TopLevel::Transaction(Transaction {
                 name: "k2".into(),
@@ -1962,7 +1963,9 @@ async node gemm [i < M * N][i == M * N] {
                 metadata: std::collections::HashMap::new(),
                 derivation: None, modifiers: vec![], span: None, doc: None,
             }),
-            // k3: reads b, writes c.
+            // k3: reads b, writes c (and reads d — d's struct member sits AFTER the
+            // skipped aliased member c, exercising the member-index drift
+            // the AccessChain remap must correct).
             TopLevel::Transaction(Transaction {
                 name: "k3".into(),
                 is_reactive: true, is_async: false,
@@ -1979,8 +1982,11 @@ async node gemm [i < M * N][i == M * N] {
                     Statement::Assign(
                         Expr::Index(Box::new(Expr::Identifier("c".into())),
                                    Box::new(Expr::Identifier("i".into()))),
-                        Expr::Index(Box::new(Expr::Identifier("b".into())),
-                                   Box::new(Expr::Identifier("i".into())))),
+                        Expr::BinaryOp(BinaryOpKind::Add,
+                            Box::new(Expr::Index(Box::new(Expr::Identifier("b".into())),
+                                                 Box::new(Expr::Identifier("i".into())))),
+                            Box::new(Expr::Index(Box::new(Expr::Identifier("d".into())),
+                                                 Box::new(Expr::Identifier("i".into())))))),
                     Statement::Assign(Expr::Identifier("i".into()),
                         Expr::BinaryOp(BinaryOpKind::Add,
                             Box::new(Expr::Identifier("i".into())),
@@ -2015,12 +2021,13 @@ async node gemm [i < M * N][i == M * N] {
         let k3 = kernels.iter().find(|k| k.name == "k3").expect("k3 kernel");
         let asm = validate_and_disassemble(&k3.spirv, "k3_alias_check");
         // With aliasing, "c" is not an SSBO member of k3 — it reuses "a"'s
-        // slot. The struct should have 3 members (a, b, i) not 4
-        // (a, b, c, i). Member offsets confirm: c is absent.
+        // slot. The struct should have 4 members (a, b, d, i) not 5
+        // (a, b, c, d, i). Member offsets confirm: c is absent, and d sits
+        // at the post-drift struct index (member 2, not its raw position 3).
         let member_offsets: Vec<&str> = asm.lines()
             .filter(|l| l.contains("OpMemberDecorate") && l.contains("Offset"))
             .collect();
-        assert_eq!(member_offsets.len(), 3,
+        assert_eq!(member_offsets.len(), 4,
             "k3 SSBO should have 3 member offsets (a, b, i) with c aliased to a: {:?}", member_offsets);
         // a and b must keep their natural offsets (0 and 4096).
         assert!(member_offsets.iter().any(|l| l.contains("0 Offset 0")),

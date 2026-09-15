@@ -86,6 +86,12 @@ pub struct RunnerKernel {
     /// multi-warp tensor kernels launch mw*nw*32-thread blocks; the
     /// dispatch geometry and the runtime's launch both key off this.
     pub block_threads: u32,
+    /// 2026-09-15 (Phase 3 enablement): this kernel's TOUCHED state fields
+    /// (read_buffers ∪ write_buffers ∪ scalar_ins ∪ {index_var}) — the
+    /// per-kernel `BrievField` table and the SSBO surface. No kernel packs
+    /// a field it does not touch, so aliased slots are never clobbered by a
+    /// foreign field's upload.
+    pub touched_fields: Vec<String>,
 }
 
 /// The SSBO layout EXACTLY as the kernel sees it (name-sorted, real element
@@ -101,6 +107,30 @@ pub struct SsboLayout {
     /// still holds the flat arrays; only the device projection excludes
     /// them).
     pub state_bytes: u64,
+    /// 2026-09-15 (Phase 3 enablement): the program's device projection
+    /// extent — max(proj_offset + elem*count) over buffer fields. The
+    /// shared device buffer and every per-launch allocation use this, so a
+    /// kernel's full SSBO struct (all members, global offsets) always fits.
+    pub program_bytes: u64,
+}
+
+/// 2026-09-15 (Phase 3 enablement): the kernel's touched state fields —
+/// read/write buffers + scalar inputs + the index counter. The per-kernel
+/// `BrievField` table and SSBO surface key off this.
+pub fn kernel_touched_fields(shape: &crate::analysis::accel::KernelShape) -> Vec<String> {
+    let mut touched: Vec<String> = shape
+        .read_buffers
+        .iter()
+        .chain(shape.write_buffers.iter())
+        .chain(shape.scalar_ins.iter())
+        .cloned()
+        .collect();
+    if !shape.index_var.is_empty() {
+        touched.push(shape.index_var.clone());
+    }
+    touched.sort();
+    touched.dedup();
+    touched
 }
 
 pub fn ssbo_layout(
@@ -201,11 +231,84 @@ pub fn ssbo_layout(
         }
         offset += elem as u64 * count;
     }
+    // Phase 3 enablement: the program projection extent — the max end over
+    // BUFFER fields (image arrays live outside the SSBO). Sized once, used
+    // by every allocation.
+    let program_bytes = out
+        .iter()
+        .map(|f| f.proj_offset + f.elem_bytes as u64 * f.count)
+        .max()
+        .unwrap_or(0);
     Ok(SsboLayout {
         state_bytes: offset,
         fields: out,
         images,
+        program_bytes,
     })
+}
+
+/// 2026-09-15 (Phase 3 enablement): the program's seed set — ARRAY fields
+/// whose first-use txn READS them (inputs). Kernel-written arrays are
+/// device-produced and never seeded from stale host. With the write-first
+/// reuse restriction, no two seeded (input) fields share a slot, so the
+/// one-time seed never clobbers a live value. Falls back to ALL array
+/// fields when no schedule is present (no reuse without one).
+pub fn seed_field_names(
+    schedule: Option<&crate::analysis::gpu_schedule::GpuSchedule>,
+    fields: &[RunnerField],
+) -> Vec<String> {
+    fields
+        .iter()
+        .filter(|f| f.is_array)
+        .filter(|f| {
+            let Some(s) = schedule else { return true };
+            let Some(first_txn) = s.array_first_use.get(&f.name) else {
+                return false;
+            };
+            // The first txn touching this array READS it (input), not writes.
+            s.reads
+                .iter()
+                .any(|(nm, bs)| nm == first_txn && bs.iter().any(|b| b == &f.name))
+        })
+        .map(|f| f.name.clone())
+        .collect()
+}
+
+/// Phase 3 gating: the reuse map to apply, or `None` when the config flag
+/// is off (default). The flag is off until the per-kernel field packing +
+/// input-only seed land — without them the global pack would clobber
+/// aliased slots. Shared by `emit_runner` and `prepare_run` so both agree.
+fn gated_reuse_map(
+    schedule: Option<&crate::analysis::gpu_schedule::GpuSchedule>,
+) -> Option<std::collections::HashMap<String, String>> {
+    if !crate::config_tuning::ir_lowering().gpu_schedule_buffer_reuse {
+        return None;
+    }
+    schedule.map(|s| s.reuse_map())
+}
+
+/// Emit a C `BrievField[]` table from a row subset. Empty tables get a
+/// dummy row (zero-size C arrays are invalid; the runtime never iterates it
+/// because the desc's n_fields is 0).
+fn emit_briev_field_table(out: &mut String, table_name: &str, rows: &[&RunnerField]) {
+    out.push_str(&format!("static BrievField {}[] = {{\n", table_name));
+    if rows.is_empty() {
+        out.push_str("    { 0, 0, 0, 0, 0, 0, 0 },\n");
+    } else {
+        for f in rows {
+            out.push_str(&format!(
+                "    {{ \"{}\", {}, {}, {}, {}, {}, {} }},\n",
+                f.name,
+                if f.is_array { 1 } else { 2 },
+                f.offset,
+                f.elem_bytes,
+                f.count,
+                if f.is_array { 1 } else { 0 },
+                f.proj_offset
+            ));
+        }
+    }
+    out.push_str("};\n");
 }
 
 fn c_ident(name: &str) -> String {
@@ -392,15 +495,7 @@ pub fn emit_runner(
     kernels: &[RunnerKernel],
     schedule: Option<&crate::analysis::gpu_schedule::GpuSchedule>,
 ) -> Result<String, String> {
-    let reuse = schedule.and_then(|s| {
-        // Phase 3 gating: default off until per-kernel field packing lands
-        // (the runner packs ALL fields per launch — aliasing would clobber).
-        if crate::config_tuning::ir_lowering().gpu_schedule_buffer_reuse {
-            Some(s.reuse_map())
-        } else {
-            None
-        }
-    });
+    let reuse = gated_reuse_map(schedule);
     let layout = ssbo_layout(
         program,
         universe,
@@ -411,6 +506,7 @@ pub fn emit_runner(
             .collect(),
         reuse.as_ref(),
     )?;
+    let program_bytes = layout.program_bytes;
     let fields = layout.fields;
     // Module consts (literals only) usable in conditions, counts and bodies.
     let mut consts: std::collections::HashMap<String, Expr> = Default::default();
@@ -452,20 +548,32 @@ pub fn emit_runner(
             k.spirv.len()
         ));
     }
-    out.push_str("static BrievField fields[] = {\n");
-    for f in &fields {
-        out.push_str(&format!(
-            "    {{ \"{}\", {}, {}, {}, {}, {}, {} }},\n",
-            f.name,
-            if f.is_array { 1 } else { 2 },
-            f.offset,
-            f.elem_bytes,
-            f.count,
-            if f.is_array { 1 } else { 0 },
-            f.proj_offset
-        ));
+    // The GLOBAL table — host layout, scalar reads, prints (all buffer
+    // fields). Phase 3 enablement: the per-kernel tables below are what
+    // each desc actually packs; this one is the union for diagnostics.
+    emit_briev_field_table(
+        &mut out,
+        "fields",
+        &fields.iter().collect::<Vec<_>>(),
+    );
+    // Phase 3 enablement: the program SEED table — input arrays only (their
+    // first-use txn reads them). The one-time resident seed uploads these;
+    // kernel-written arrays are device-produced. Write-first reuse targets
+    // are disjoint from inputs, so the seed never clobbers a live slot.
+    let seed_names = seed_field_names(schedule, &fields);
+    let seed_rows: Vec<&RunnerField> = fields
+        .iter()
+        .filter(|f| seed_names.iter().any(|n| n == &f.name))
+        .collect();
+    emit_briev_field_table(&mut out, "seed_fields", &seed_rows);
+    // Per-kernel touched tables — no kernel packs a field it does not touch.
+    for (i, k) in kernels.iter().enumerate() {
+        let rows: Vec<&RunnerField> = fields
+            .iter()
+            .filter(|f| k.touched_fields.iter().any(|n| n == &f.name))
+            .collect();
+        emit_briev_field_table(&mut out, &format!("k{}_fields", i), &rows);
     }
-    out.push_str("};\n");
     // 2026-09-02 (plan 2026-09-02-image-and-dehashtag, revised): the image
     // tables — one shared table per kernel set (the kernel's SSBO excluded
     // image arrays; the host %State still holds the flat arrays).
@@ -499,15 +607,24 @@ pub fn emit_runner(
     for (i, k) in kernels.iter().enumerate() {
         // host_offset patch: the runner emits the table with placeholder
         // offsets, then computes them from the state layout below.
+        // Phase 3 enablement: each desc references its OWN touched table;
+        // the shared seed table + program_bytes are appended (C tail).
+        let ntouched = fields
+            .iter()
+            .filter(|f| k.touched_fields.iter().any(|n| n == &f.name))
+            .count();
         out.push_str(&format!(
-            "    {{ \"{}\", k{}, k{}_len, {}, fields, {}, images, {}, {} }},\n",
+            "    {{ \"{}\", k{}, k{}_len, {}, k{}_fields, {}, images, {}, {}, {}ULL, seed_fields, {} }},\n",
             c_ident(&k.name),
             i,
             i,
-            fields.len(),
+            ntouched,
+            i,
             k.image_plans.len(),
             k.block_threads,
-            k.shared_bytes
+            k.shared_bytes,
+            program_bytes,
+            seed_rows.len()
         ));
     }
     out.push_str(&format!(
@@ -728,6 +845,10 @@ pub fn build_kernels(
             };
         let kplans: Vec<crate::analysis::image_storage::ImageStoragePlan> =
             image_plans.get(name).cloned().unwrap_or_default();
+        // Phase 3 enablement: the kernel's touched field set — read/write
+        // buffers + scalar inputs + the index counter. Drives the per-kernel
+        // BrievField table (no foreign field packed, no alias clobber).
+        let touched = kernel_touched_fields(&e.shape);
         let surface = crate::backend::spirv::kernel::KernelSurface {
             images: &kplans,
             reuse_map,
@@ -756,6 +877,7 @@ pub fn build_kernels(
             ptx_tensor: false,
             block_threads: 64,
             shared_bytes: 0,
+            touched_fields: touched,
         });
     }
     Ok(out)
@@ -930,6 +1052,12 @@ pub struct RunProgram {
     pub fields: Vec<RunnerField>,
     pub state_bytes: u64,
     pub kernels: Vec<RunKernel>,
+    /// 2026-09-15 (Phase 3): the program's device projection extent —
+    /// every allocation sizes to this so a kernel's full SSBO struct fits.
+    pub program_bytes: u64,
+    /// 2026-09-15 (Phase 3): input array names (first-use txn reads them) —
+    /// the program-level seed table.
+    pub seed_fields: Vec<String>,
 }
 
 pub struct RunKernel {
@@ -940,6 +1068,14 @@ pub struct RunKernel {
     /// The node's work-item bound (const-folded count).
     pub count: i64,
     pub dispatch: RunDispatch,
+    /// 2026-09-15 (Phase 3): this kernel's touched field names — its
+    /// per-kernel `BrievField` table (no foreign field packed).
+    pub touched_fields: Vec<String>,
+    /// CUDA block thread count (0 = driver default 64) and dynamic
+    /// shared-memory bytes (0 = none) — mirrored from RunnerKernel so the
+    /// Track A desc never carries garbage for the C tail fields.
+    pub block_threads: u32,
+    pub shared_bytes: u32,
 }
 
 pub enum RunDispatch {
@@ -978,8 +1114,10 @@ pub fn prepare_run(
     universe: &TypeUniverse,
     int_bits: u64,
     kernels: &[RunnerKernel],
-    reuse_map: Option<&std::collections::HashMap<String, String>>,
+    schedule: Option<&crate::analysis::gpu_schedule::GpuSchedule>,
 ) -> Result<RunProgram, String> {
+    // Phase 3 gating: default off until per-kernel field packing lands.
+    let reuse_map = gated_reuse_map(schedule);
     let layout = ssbo_layout(
         items,
         universe,
@@ -988,7 +1126,7 @@ pub fn prepare_run(
             .iter()
             .map(|k| (k.name.clone(), k.image_plans.clone()))
             .collect(),
-        reuse_map,
+        reuse_map.as_ref(),
     )?;
     let fields = layout.fields;
 
@@ -1032,12 +1170,18 @@ pub fn prepare_run(
             counter_offset,
             count,
             dispatch,
+            touched_fields: k.touched_fields.clone(),
+            block_threads: k.block_threads,
+            shared_bytes: k.shared_bytes,
         });
     }
 
+    let seed = seed_field_names(schedule, &fields);
     Ok(RunProgram {
         fields,
         state_bytes: layout.state_bytes,
         kernels: run_kernels,
+        program_bytes: layout.program_bytes,
+        seed_fields: seed,
     })
 }

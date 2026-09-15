@@ -231,7 +231,21 @@ pub fn analyze_program(
     // 2026-09-14 (gpu_schedule Phase 1): the node read/write-set DAG —
     // producer-before-consumer topo order + independence proofs, consumed
     // by the GPU runner's dispatch (frontend-driven; see the plan doc).
-    let gpu_schedule = crate::analysis::gpu_schedule::build_schedule(items, &accel);
+    // Phase 3: array sizes feed the slot-reuse greedy (a slot is shared
+    // only by same-size arrays). Computed via the shared layout rule.
+    let array_sizes: std::collections::HashMap<String, u64> = {
+        let mut sb = crate::backend::spirv::SpirvBuilder::new()
+            .with_universe(type_universe.unwrap_or(&crate::type_universe::TypeUniverse::new()), 64);
+        crate::backend::spirv::lower::collect_state_fields(items)
+            .iter()
+            .filter_map(|f| {
+                crate::backend::spirv::lower::FnLowerer::field_storage_bytes(&mut sb, &f.ty)
+                    .ok()
+                    .map(|b| (f.name.clone(), b as u64))
+            })
+            .collect()
+    };
+    let gpu_schedule = crate::analysis::gpu_schedule::build_schedule(items, &accel, &array_sizes);
     // 2026-09-02 (plan 2026-09-02-image-and-dehashtag, revised): image
     // storage strategy — the frontend's storage decision for texel-formatted
     // write buffers. Opt-in until measured (the coopmat precedent; promote

@@ -83,6 +83,18 @@ typedef struct {
     // 2026-09-10 (cp.async stages): dynamic shared-memory bytes for this
     // kernel (0 = none). Tail of the struct, same zero-fill contract.
     uint32_t shared_bytes;
+    // 2026-09-15 (gpu_schedule Phase 3): the PROGRAM projection extent —
+    // max(proj_offset + elem*count) over ALL buffer fields. Per-kernel field
+    // tables list only the kernel's touched fields, but the kernel's SSBO
+    // struct still spans every member at global offsets; allocations use
+    // this so the struct always fits. Tail of the struct, zero-fill contract.
+    uint64_t program_bytes;
+    // 2026-09-15 (gpu_schedule Phase 3): the program SEED table — input
+    // arrays only (first-use txn reads them). The one-time resident seed
+    // uploads these; kernel-written arrays are device-produced. Shared by
+    // every desc (all point at the same table). Tail, zero-fill contract.
+    const BrievField* seed_fields;
+    uint32_t n_seed_fields;
 } BrievKernelDesc;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -335,9 +347,16 @@ const char* briev_accel_device_name(void) {
 // Generic pack/unpack + dispatch
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Total device projection size — fields' declared ends (the projection is
-/// the union of the declared per-field spans; alignment gaps included).
+/// Total device projection size. 2026-09-15 (Phase 3 enablement): the
+/// compiler supplies `program_bytes` (the union extent over ALL buffer
+/// fields) because per-kernel field tables list only the kernel's touched
+/// fields — a kernel's SSBO struct still spans every member, so the buffer
+/// must cover the union, not the touched subset. Falls back to the
+/// field-derived end for older descriptors (program_bytes == 0).
 static uint64_t proj_size(const BrievKernelDesc* k) {
+    if (k->program_bytes != 0) {
+        return k->program_bytes;
+    }
     uint64_t end = 0;
     for (uint32_t j = 0; j < k->n_fields; j++) {
         uint64_t f_end = k->fields[j].proj_offset
@@ -345,6 +364,20 @@ static uint64_t proj_size(const BrievKernelDesc* k) {
         if (f_end > end) { end = f_end; }
     }
     return end;
+}
+
+/// 2026-09-15 (Phase 3 enablement): seed the program's INPUT arrays (the
+/// compiler's seed table) into the device mirror. Inputs are read-first;
+/// write-first reuse targets are disjoint from inputs, so no input shares a
+/// slot — the seed never clobbers a live value.
+static void seed_program_fields(const BrievKernelDesc* k, const void* state,
+                                void* mapped) {
+    for (uint32_t i = 0; i < k->n_seed_fields; i++) {
+        const BrievField* f = &k->seed_fields[i];
+        memcpy((uint8_t*)mapped + f->proj_offset,
+               (const uint8_t*)state + f->host_offset,
+               (size_t)(f->count * f->elem_bytes));
+    }
 }
 
 /// Pack the kernel's fields from the host %State into a flat projection
@@ -494,12 +527,11 @@ int briev_accel_launch_resident_2d(uint32_t idx, void* state,
     int seeded = shared ? g_program_seeded : (idx < 32 && g_resident_seeded[idx]);
     if (!seeded) {
         full_sync = 1;
-        for (uint32_t i = 0; i < k->n_fields; i++) {
-            const BrievField* f = &k->fields[i];
-            memcpy(mapped + f->proj_offset,
-                   (const uint8_t*)state + f->host_offset,
-                   (size_t)(f->count * f->elem_bytes));
-        }
+        // 2026-09-15 (Phase 3 enablement): seed the program's INPUT arrays
+        // (the compiler's seed table), not every touched field. Inputs are
+        // read-first; reuse targets are write-first and disjoint, so no
+        // input shares a slot — the seed never clobbers a live value.
+        seed_program_fields(k, state, mapped);
         if (shared) {
             g_program_seeded = 1;
         } else if (idx < 32) {
@@ -568,12 +600,8 @@ int briev_accel_launch_resident_batch(uint32_t idx, void* state,
     int seeded = shared ? g_program_seeded : (idx < 32 && g_resident_seeded[idx]);
     if (!seeded) {
         full_sync = 1;
-        for (uint32_t i = 0; i < k->n_fields; i++) {
-            const BrievField* f = &k->fields[i];
-            memcpy(mapped + f->proj_offset,
-                   (const uint8_t*)state + f->host_offset,
-                   (size_t)(f->count * f->elem_bytes));
-        }
+        // 2026-09-15 (Phase 3 enablement): seed the program's INPUT arrays.
+        seed_program_fields(k, state, mapped);
         if (shared) {
             g_program_seeded = 1;
         } else if (idx < 32) {

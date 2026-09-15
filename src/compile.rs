@@ -1582,19 +1582,12 @@ fn codegen(
             // `brievc run x.abv` (Track A) drives the linked GPU runtime
             // in-process — no runner .c file, no cc round trip.
             if opts.run {
-                let reuse_map = if briev_compiler::config_tuning::ir_lowering()
-                    .gpu_schedule_buffer_reuse
-                {
-                    analysis.gpu_schedule.reuse_map()
-                } else {
-                    std::collections::HashMap::new()
-                };
                 let prog = briev_compiler::backend::spirv::runner::prepare_run(
                     items,
                     universe,
                     opts.int_bits,
                     &kernels,
-                    Some(&reuse_map),
+                    Some(&analysis.gpu_schedule),
                 )?;
                 let counters = briev_compiler::gpu_rt::run_program(&prog)?;
                 for (k, c) in kernels.iter().zip(counters.iter()) {
