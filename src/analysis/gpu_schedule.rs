@@ -411,6 +411,14 @@ pub fn build_schedule(
         if readers != 1 {
             continue;
         }
+        // 2026-09-15: the runner applies epilogue fusion ONLY to f32 (elem
+        // 4) producers — the f16 tensor epilogue isn't ready. The schedule's
+        // fused-consumer set drives `compute_array_last_use` (a fused
+        // consumer is skipped), so it must match: an Int/f16 scale still
+        // runs as its own node, and excluding it would corrupt last-use.
+        if array_sizes.get(&in_field).copied() != Some(4) {
+            continue;
+        }
         sched.fusions.push(Fusion {
             producer: a.clone(),
             consumer: b.clone(),
@@ -783,7 +791,9 @@ mod tests {
             })
         };
         let program = vec![txn("gemm1", "i"), txn("scale", "j")];
-        let sched = build_schedule(&program, &accel, &HashMap::new());
+        // The fusion is f32-only (matches the runner): in_field "c" is f32.
+        let sz = sizes(&[("c", 4), ("d", 4)]);
+        let sched = build_schedule(&program, &accel, &sz);
         assert_eq!(sched.fusions.len(), 1, "one fusion expected");
         let f = &sched.fusions[0];
         assert_eq!(f.producer, "gemm1");
@@ -791,6 +801,12 @@ mod tests {
         assert_eq!(f.out_field, "d");
         assert_eq!(f.in_field, "c");
         assert!((f.scale - 2.0).abs() < 1e-9);
+        // 2026-09-15: an Int (elem 8) in_field must NOT fuse — the runner
+        // only applies f32 epilogue fusion, and excluding a still-running
+        // consumer from last-use would corrupt the reuse analysis.
+        let sz_int = sizes(&[("c", 8), ("d", 8)]);
+        let sched_int = build_schedule(&program, &accel, &sz_int);
+        assert_eq!(sched_int.fusions.len(), 0, "Int scale must not fuse");
     }
 
     #[test]

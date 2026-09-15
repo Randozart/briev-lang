@@ -1176,6 +1176,20 @@ pub fn prepare_run(
         });
     }
 
+    // 2026-09-15: order the run kernels by the schedule's producer-before-
+    // consumer topo order (the C runner dispatches this order; Track A must
+    // mirror it — name order is wrong for a dependency chain). Kernels not in
+    // the schedule keep declaration order at the end.
+    if let Some(s) = schedule {
+        let pos: std::collections::HashMap<&str, usize> = s
+            .order
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), i))
+            .collect();
+        run_kernels.sort_by_key(|rk| pos.get(rk.name.as_str()).copied().unwrap_or(usize::MAX));
+    }
+
     let seed = seed_field_names(schedule, &fields);
     Ok(RunProgram {
         fields,
