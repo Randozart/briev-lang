@@ -271,10 +271,32 @@ fn txn_writes(
 /// Topological order falls back to declaration order on a cycle (a
 /// well-formed reactive program has none; a cycle is a contract bug the
 /// causality pass would already flag).
+/// Per-array device layout metadata for the schedule's size-aware decisions.
+#[derive(Clone, Copy)]
+pub struct ArrayMeta {
+    /// Total device storage bytes (element × count) — slot-reuse matching.
+    pub bytes: u64,
+    /// Element byte width (4 = f32, 2 = f16, 8 = i64). The epilogue-fusion
+    /// gate uses THIS (the runner fuses only f32 producers), not `bytes`.
+    pub elem: u64,
+}
+
+/// Whether an epilogue-scale fusion applies to a producer whose consumed
+/// field has element width `elem`. f32 always fuses (the naive + SPIR-V
+/// epilogues handle it); f16 fuses ONLY under the f16-acc tier (the packed
+/// f16x2 accumulator's `mul.rn.f16x2` epilogue). An f32-acc f16 producer
+/// has no packed-acc epilogue and would silently DROP the scale — so it
+/// stays a separate kernel. Single source for the schedule's fused-consumer
+/// set, the PTX epilogue, and the runner's dispatch skip — they must agree.
+pub fn fusion_applies(elem: u64, f16_acc: bool) -> bool {
+    elem == 4 || (elem == 2 && f16_acc)
+}
+
 pub fn build_schedule(
     program: &[TopLevel],
     accel: &HashMap<String, AccelEntry>,
-    array_sizes: &HashMap<String, u64>,
+    array_meta: &HashMap<String, ArrayMeta>,
+    f16_acc: bool,
 ) -> GpuSchedule {
     let mut nodes: Vec<(String, BTreeSet<String>, BTreeSet<String>)> = Vec::new();
     for item in program {
@@ -411,12 +433,16 @@ pub fn build_schedule(
         if readers != 1 {
             continue;
         }
-        // 2026-09-15: the runner applies epilogue fusion ONLY to f32 (elem
-        // 4) producers — the f16 tensor epilogue isn't ready. The schedule's
-        // fused-consumer set drives `compute_array_last_use` (a fused
-        // consumer is skipped), so it must match: an Int/f16 scale still
-        // runs as its own node, and excluding it would corrupt last-use.
-        if array_sizes.get(&in_field).copied() != Some(4) {
+        // Fusion applicability gate (2026-09-15): the runner/PTX epilogue
+        // applies a fused scale to f32 producers always, and to f16 tensor
+        // producers ONLY under the f16-acc tier (packed f16x2 accumulator —
+        // the mul.rn.f16x2 epilogue). An f32-acc f16 producer has no
+        // packed-acc epilogue and would silently DROP the scale — so f16
+        // fusions require f16_acc. Keeping the fused-consumer set consistent
+        // with what the backend actually applies keeps `array_last_use` (and
+        // the runner's dispatch skip) correct.
+        let elem = array_meta.get(&in_field).map(|m| m.elem).unwrap_or(0);
+        if !fusion_applies(elem, f16_acc) {
             continue;
         }
         sched.fusions.push(Fusion {
@@ -433,7 +459,7 @@ pub fn build_schedule(
     // slot may be reused by a later array of matching size/type.
     compute_array_last_use(&mut sched);
     sched.array_first_use = compute_array_first_use(&sched);
-    compute_reuse_opportunities(&mut sched, array_sizes);
+    compute_reuse_opportunities(&mut sched, array_meta);
 
     sched
 }
@@ -514,7 +540,7 @@ fn compute_array_first_use(sched: &GpuSchedule) -> HashMap<String, String> {
 /// Write-first only (B's first-use txn writes it): a read-first (input)
 /// array must keep its own seeded slot, because the one-time seed uploads
 /// inputs before any kernel runs — a shared slot would be clobbered.
-fn compute_reuse_opportunities(sched: &mut GpuSchedule, array_sizes: &HashMap<String, u64>) {
+fn compute_reuse_opportunities(sched: &mut GpuSchedule, array_meta: &HashMap<String, ArrayMeta>) {
     let first_use = compute_array_first_use(sched);
     let order_idx: HashMap<&str, usize> = sched
         .order
@@ -542,7 +568,7 @@ fn compute_reuse_opportunities(sched: &mut GpuSchedule, array_sizes: &HashMap<St
         if *write_first {
             // Tightest free slot: largest last_use still < first_use, and
             // the same size as this array.
-            let size = array_sizes.get(name).copied().unwrap_or(0);
+            let size = array_meta.get(name).map(|m| m.bytes).unwrap_or(0);
             let cand = slot_owner
                 .iter()
                 .enumerate()
@@ -563,7 +589,7 @@ fn compute_reuse_opportunities(sched: &mut GpuSchedule, array_sizes: &HashMap<St
                 continue;
             }
         }
-        slot_owner.push((name.clone(), *li, array_sizes.get(name).copied().unwrap_or(0)));
+        slot_owner.push((name.clone(), *li, array_meta.get(name).map(|m| m.bytes).unwrap_or(0)));
     }
 }
 
@@ -641,8 +667,12 @@ fn module_consts(program: &[TopLevel]) -> HashMap<String, f64> {
 mod tests {
     use super::*;
 
-    fn sizes(pairs: &[(&str, u64)]) -> HashMap<String, u64> {
-        pairs.iter().map(|(n, s)| (n.to_string(), *s)).collect()
+    /// (name, total_bytes, elem_bytes) → ArrayMeta map for tests.
+    fn sizes(pairs: &[(&str, u64, u64)]) -> HashMap<String, ArrayMeta> {
+        pairs
+            .iter()
+            .map(|(n, b, e)| (n.to_string(), ArrayMeta { bytes: *b, elem: *e }))
+            .collect()
     }
 
     #[test]
@@ -699,7 +729,7 @@ mod tests {
             })
         };
         let program = vec![txn("gemm2", "j"), txn("gemm1", "i")];
-        let sched = build_schedule(&program, &accel, &HashMap::new());
+        let sched = build_schedule(&program, &accel, &HashMap::new(), false);
         let gemm1_pos = sched.order.iter().position(|n| n == "gemm1");
         let gemm2_pos = sched.order.iter().position(|n| n == "gemm2");
         assert!(gemm1_pos.is_some() && gemm2_pos.is_some());
@@ -792,8 +822,8 @@ mod tests {
         };
         let program = vec![txn("gemm1", "i"), txn("scale", "j")];
         // The fusion is f32-only (matches the runner): in_field "c" is f32.
-        let sz = sizes(&[("c", 4), ("d", 4)]);
-        let sched = build_schedule(&program, &accel, &sz);
+        let sz = sizes(&[("c", 4, 4), ("d", 4, 4)]);
+        let sched = build_schedule(&program, &accel, &sz, false);
         assert_eq!(sched.fusions.len(), 1, "one fusion expected");
         let f = &sched.fusions[0];
         assert_eq!(f.producer, "gemm1");
@@ -801,12 +831,20 @@ mod tests {
         assert_eq!(f.out_field, "d");
         assert_eq!(f.in_field, "c");
         assert!((f.scale - 2.0).abs() < 1e-9);
-        // 2026-09-15: an Int (elem 8) in_field must NOT fuse — the runner
+// 2026-09-15: an Int (elem 8) in_field must NOT fuse — the runner
         // only applies f32 epilogue fusion, and excluding a still-running
         // consumer from last-use would corrupt the reuse analysis.
-        let sz_int = sizes(&[("c", 8), ("d", 8)]);
-        let sched_int = build_schedule(&program, &accel, &sz_int);
+        let sz_int = sizes(&[("c", 8, 8), ("d", 8, 8)]);
+        let sched_int = build_schedule(&program, &accel, &sz_int, false);
         assert_eq!(sched_int.fusions.len(), 0, "Int scale must not fuse");
+        // 2026-09-15: an f16 (elem 2) in_field fuses ONLY under the f16-acc
+        // tier (the packed f16x2 epilogue). Without it, the f32-acc producer
+        // would silently drop the scale — so it stays a separate kernel.
+        let sz16 = sizes(&[("c", 2, 2), ("d", 2, 2)]);
+        let sched16_off = build_schedule(&program, &accel, &sz16, false);
+        assert_eq!(sched16_off.fusions.len(), 0, "f16 must not fuse without f16acc");
+        let sched16_on = build_schedule(&program, &accel, &sz16, true);
+        assert_eq!(sched16_on.fusions.len(), 1, "f16 fuses under f16acc");
     }
 
     #[test]
@@ -866,10 +904,10 @@ mod tests {
         let program = vec![txn("qk", "i"), txn("scale", "j"), txn("pv", "k")];
         // q, kt, s, s2, o are arrays (65536 bytes each); i/j/k are scalars.
         let sz = sizes(&[
-            ("q", 65536), ("kt", 65536), ("s", 65536), ("s2", 65536), ("o", 65536),
-            ("i", 8), ("j", 8), ("k", 8),
+            ("q", 65536, 4), ("kt", 65536, 4), ("s", 65536, 4), ("s2", 65536, 4), ("o", 65536, 4),
+            ("i", 8, 8), ("j", 8, 8), ("k", 8, 8),
         ]);
-        let sched = build_schedule(&program, &accel, &sz);
+        let sched = build_schedule(&program, &accel, &sz, false);
         // qk fires first, then scale, then pv.
         assert_eq!(sched.order, vec!["qk", "scale", "pv"]);
         // s is last used by scale (qk writes it, scale reads it).

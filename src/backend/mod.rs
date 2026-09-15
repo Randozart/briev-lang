@@ -231,21 +231,37 @@ pub fn analyze_program(
     // 2026-09-14 (gpu_schedule Phase 1): the node read/write-set DAG —
     // producer-before-consumer topo order + independence proofs, consumed
     // by the GPU runner's dispatch (frontend-driven; see the plan doc).
-    // Phase 3: array sizes feed the slot-reuse greedy (a slot is shared
-    // only by same-size arrays). Computed via the shared layout rule.
-    let array_sizes: std::collections::HashMap<String, u64> = {
+    // Phase 3: array layout metadata feeds the slot-reuse greedy (same
+    // total bytes) AND the epilogue-fusion gate (element width — the runner
+    // fuses f32 producers only). Computed via the shared layout rule.
+    let array_meta: std::collections::HashMap<
+        String,
+        crate::analysis::gpu_schedule::ArrayMeta,
+    > = {
         let mut sb = crate::backend::spirv::SpirvBuilder::new()
             .with_universe(type_universe.unwrap_or(&crate::type_universe::TypeUniverse::new()), 64);
         crate::backend::spirv::lower::collect_state_fields(items)
             .iter()
             .filter_map(|f| {
-                crate::backend::spirv::lower::FnLowerer::field_storage_bytes(&mut sb, &f.ty)
-                    .ok()
-                    .map(|b| (f.name.clone(), b as u64))
+                let bytes =
+                    crate::backend::spirv::lower::FnLowerer::field_storage_bytes(&mut sb, &f.ty)
+                        .ok()? as u64;
+                // Element width: the array's inner scalar, else the type.
+                let inner = match &f.ty {
+                    crate::ast::Type::Vector(inner, _) => (**inner).clone(),
+                    other => other.clone(),
+                };
+                let elem = sb.scalar_storage_bytes(&inner).ok()? as u64;
+                Some((f.name.clone(), crate::analysis::gpu_schedule::ArrayMeta { bytes, elem }))
             })
             .collect()
     };
-    let gpu_schedule = crate::analysis::gpu_schedule::build_schedule(items, &accel, &array_sizes);
+    let gpu_schedule = crate::analysis::gpu_schedule::build_schedule(
+        items,
+        &accel,
+        &array_meta,
+        crate::config_tuning::ir_lowering().ptx_tensor_f16acc,
+    );
     // 2026-09-02 (plan 2026-09-02-image-and-dehashtag, revised): image
     // storage strategy — the frontend's storage decision for texel-formatted
     // write buffers. Opt-in until measured (the coopmat precedent; promote

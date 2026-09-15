@@ -141,6 +141,25 @@ and is bit-exact (maxrel=0). Unit test `detects_epilogue_scale_fusion`.
   path + the f16 epilogue.
 - **Phase 3 — buffer reuse**: extend `global_lifetime` to arrays (liveness).
 
+## f16 epilogue status (2026-09-15)
+
+The plan previously recorded the f16 tensor epilogue (`mul.rn.f16x2` on
+the packed f16x2 accumulator) as "miscompiled ~5%". **On-device A/B
+(RTX 3060, CUDA, f16acc) does NOT reproduce it** — the fused f16 GEMM
+`y = (a@b)*scale` is correct at the f16 rounding bound (maxrel 1.9e-3)
+for exact and inexact scales. The real gap was the **f32-acc** tensor
+producer: it has no packed-acc epilogue, so fusing silently DROPPED the
+scale (maxrel 2.33). 
+
+The fusion gate is now one rule (`fusion_applies(elem, f16_acc)`): f32
+always fuses; f16 only under f16acc. The schedule's fused-consumer set,
+the PTX epilogue, and the runner skip all share it, so an f32-acc f16
+scale stays a separate kernel instead of a silent drop. The
+`tensor_gemm_ptx_smem_mw_epilogue` wiring (missing — the mw path never
+forwarded the scale) is now in place. With `ptx_tensor_f16acc: 1` the
+f16 attention pipeline can fuse qk+scale and run in two tensor kernels.
+Next: Phase 4b.
+
 ## Phase 3 status (2026-09-15)
 
 Infrastructure SHIPPED but **gated off by default**

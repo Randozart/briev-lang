@@ -722,14 +722,22 @@ pub fn emit_runner(
         // work is done by its producer's kernel — skip its dispatch entirely.
         if let Some(s) = schedule {
             if let Some(f) = s.fusions.iter().find(|f| f.consumer == *name) {
-                // 2026-09-14: only f32 (naive) epilogue fusions drop the
-                // consumer node; the f16 tensor epilogue is not ready yet.
-                let f32 = fields
+                // 2026-09-14: epilogue-fused consumers drop their dispatch —
+                // the producer's kernel applies the scale. The schedule gates
+                // f16 fusions on the f16-acc tier (fusion_applies); f32 always
+                // fuses. Mirror that so a consumer the PTX path did not build
+                // is skipped (never dispatched as a host node).
+                let fuses = fields
                     .iter()
                     .find(|fl| fl.name == f.in_field)
-                    .map(|fl| fl.elem_bytes == 4)
+                    .map(|fl| {
+                        crate::analysis::gpu_schedule::fusion_applies(
+                            fl.elem_bytes as u64,
+                            crate::config_tuning::ir_lowering().ptx_tensor_f16acc,
+                        )
+                    })
                     .unwrap_or(false);
-                if f32 {
+                if fuses {
                     out.push_str(&format!(
                         "    // node '{}' fused into its producer's epilogue (skipped)\n",
                         name

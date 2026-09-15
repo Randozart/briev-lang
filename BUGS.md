@@ -33,6 +33,31 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## f16 tensor epilogue — VERIFIED CORRECT; f32-acc silently dropped the scale — RESOLVED 2026-09-15
+
+**Date:** 2026-09-15 (gpu_schedule Phase 4a follow-up)
+**Background:** the plan recorded the f16 tensor epilogue (`mul.rn.f16x2` on
+the packed f16x2 accumulator) as "miscompiled ~5% (SASS HMUL2 reads wrong
+fragment)" and gated f16 fusion off.
+**Finding:** the ~5% miscompile is NOT reproduced. On-device A/B
+(RTX 3060, CUDA, f16acc tier): the fused f16 GEMM `y = (a@b) * scale`
+matches the CPU reference at maxrel 1.9e-3 (the f16 rounding bound) for
+both exact (0.5) and inexact (0.3) scales. The `mul.rn.f16x2` / SASS
+`HMUL2` is correct.
+**Real gap found instead:** the f32-acc tensor producer has NO packed-acc
+epilogue — fusing it SILENTLY DROPPED the scale (verified: maxrel 2.33,
+i.e. y = a@b instead of a@b*0.3). 
+**Fix:** fusion applicability is now one rule, `fusion_applies(elem,
+f16_acc)`: f32 always fuses; f16 fuses ONLY under the f16-acc tier. The
+schedule's fused-consumer set (which drives `array_last_use`), the PTX
+epilogue, and the runner's dispatch skip all use it — consistent, so an
+f32-acc f16 scale stays a separate kernel (correct) instead of fusing into
+a silent scale-drop. The `tensor_gemm_ptx_smem_mw_epilogue` wiring was
+also missing (the mw path never forwarded the scale) — now wired.
+**Verified:** fused epi_h 128³ (f16acc): maxrel 1.9e-3 CORRECT. f16acc
+off: scale stays a separate kernel (no fusion, no drop). 2213 tests.
+**Undo:** revert the `fusion_applies` gate to `elem == 4`.
+
 ## gpu_schedule buffer reuse — FIXED: per-kernel field packing + input seed — 2026-09-15
 
 **Date:** 2026-09-15 (gpu_schedule Phase 3 enablement)

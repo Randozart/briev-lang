@@ -338,20 +338,23 @@ pub fn build_ptx_kernels(
     for name in names {
         let e = &entries[name];
         // 2026-09-14 (gpu_schedule Phase 4a): a fused consumer's work is done
-        // by its producer's epilogue — no kernel is emitted for it. The f16
-        // tensor epilogue is NOT ready (the HMUL2 on the packed acc is
-        // miscompiled — see the plan doc), so only f32 NAIVE producers fuse;
-        // the f16 scale stays a separate general kernel.
+        // by its producer's epilogue — no kernel is emitted for it. The
+        // schedule already gates f16 fusions on the f16-acc tier; f32 always
+        // fuses. (2026-09-15: the f16 packed-acc epilogue is verified
+        // correct; the f32-acc f16 producer has no packed-acc epilogue and
+        // would silently drop the scale, so the schedule excludes it.)
         let fused = schedule.fusions.iter().find(|f| f.consumer == *name);
         if let Some(f) = fused {
-            let producer = &entries[&f.producer];
             let a_elem = layout
                 .fields
                 .iter()
                 .find(|fl| fl.name == f.in_field)
                 .map(|fl| fl.elem_bytes)
                 .unwrap_or(4);
-            if a_elem == 4 {
+            if crate::analysis::gpu_schedule::fusion_applies(
+                a_elem as u64,
+                crate::config_tuning::ir_lowering().ptx_tensor_f16acc,
+            ) {
                 continue;
             }
         }
@@ -435,9 +438,10 @@ pub fn build_ptx_kernels(
         // 2026-09-14 (gpu_schedule Phase 4a): epilogue fusion — if this GEMM
         // is the producer of a pure-scale consumer, write the consumer's
         // output field with the scale applied, and drop the consumer node.
-        // The f16 tensor epilogue is NOT ready (the packed-f16 mul is
-        // miscompiled), so only f32 NAIVE producers fuse; the f16 scale stays
-        // a separate general kernel.
+        // 2026-09-15: the f16 tensor epilogue (packed f16x2 mul) is verified
+        // correct on the f16-acc tier; f32 naive always fuses. The schedule
+        // gates f16 fusions on f16_acc, so a fusion here is always
+        // applicable.
         let fusion = schedule.fusions.iter().find(|f| f.producer == *name);
         let a_elem = layout
             .fields
@@ -446,7 +450,7 @@ pub fn build_ptx_kernels(
             .map(|fl| fl.elem_bytes)
             .unwrap_or(4);
         let (y_off, epilogue_scale) = match fusion {
-            Some(f) if a_elem == 4 => (find_off(&f.out_field)?, Some(f.scale)),
+            Some(f) => (find_off(&f.out_field)?, Some(f.scale)),
             _ => (y_off, None),
         };
 
@@ -503,12 +507,20 @@ pub fn build_ptx_kernels(
             let mw_ok = plan.m % ((16 * warp_mh * mw) as i64) == 0
                 && plan.n % ((8 * gr * nw) as i64) == 0;
             if mw_ok && (mw > 1 || nw > 1) {
-                (
-                    tensor::tensor_gemm_ptx_smem_mw(
+                // 2026-09-15 (repro): wire the epilogue variant when a
+                // fused scale applies (the f16 packed-f16x2 mul path).
+                let ptx = match epilogue_scale {
+                    Some(s) => tensor::tensor_gemm_ptx_smem_mw_epilogue(
                         plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
-                        f16_acc, stages,
-                        warp_mh,
+                        f16_acc, stages, warp_mh, s,
                     ),
+                    None => tensor::tensor_gemm_ptx_smem_mw(
+                        plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
+                        f16_acc, stages, warp_mh,
+                    ),
+                };
+                (
+                    ptx,
                     true,
                     e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
                     (mw * nw * 32) as u32,
