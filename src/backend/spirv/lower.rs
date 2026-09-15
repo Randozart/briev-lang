@@ -12,7 +12,7 @@
 //!
 //! To undo: revert kernel.rs to placeholder body + delete this file.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rspirv::dr::{Instruction, Operand};
 use rspirv::spirv::{self, StorageClass, Word};
@@ -96,6 +96,11 @@ pub struct FnLowerer<'a> {
     /// are EXCLUDED from state_fields (they are not SSBO members); their
     /// writes lower to OpImageWrite against a UniformConstant image.
     pub image_plans: HashMap<String, crate::analysis::image_storage::ImageStoragePlan>,
+    /// 2026-09-14 (Phase 3 — buffer reuse): fields aliased to another
+    /// field's slot. Maps aliased_field_name → target_field_name. The
+    /// aliased field is skipped in the SSBO struct; AccessChain remaps
+    /// to the target's member index. Both kernel and runner agree.
+    pub alias_map: HashMap<String, String>,
     /// Array name → the emitted image variable id (UniformConstant).
     pub image_vars: HashMap<String, Word>,
     /// Array name → the OpTypeImage id (the OpLoad result type — the
@@ -123,6 +128,7 @@ impl<'a> FnLowerer<'a> {
             vec4_coop_components: HashMap::new(),
             vec4_component_vars: HashMap::new(),
             image_plans: HashMap::new(),
+            alias_map: HashMap::new(),
             image_vars: HashMap::new(),
             image_types: HashMap::new(),
         }
@@ -1503,9 +1509,15 @@ fn cast_opcode(
     /// descriptor path — device offsets have exactly this one definition.
     /// The HOST state layouts (runner `state[]`, LLVM %State) stay packed;
     /// the RT copies per field, so host ≠ projection needs no bridging.
+    ///
+    /// `reuse_map` (Phase 3 — buffer reuse): maps aliased_field → target_field.
+    /// If present, the aliased field's offset is set to the target's offset
+    /// (the arrays share a device slot). Both kernel and runner call this
+    /// with the same map, so they agree on the layout.
     pub fn projection_offsets(
         builder: &mut SpirvBuilder,
         fields: &[StateField],
+        reuse_map: Option<&HashMap<String, String>>,
     ) -> Result<Vec<u32>, String> {
         let mut offsets = Vec::with_capacity(fields.len());
         let mut offset: u32 = 0;
@@ -1520,6 +1532,21 @@ fn cast_opcode(
             }
             offsets.push(offset);
             offset += Self::field_storage_bytes(builder, &f.ty)?;
+        }
+        // Phase 3 — buffer reuse: remap aliased fields to their target's
+        // offset. The target was computed earlier (name-sorted order), so
+        // its offset is final. The aliased field shares the same device slot.
+        if let Some(reuse) = reuse_map {
+            for (i, f) in fields.iter().enumerate() {
+                if let Some(target_name) = reuse.get(&f.name) {
+                    if let Some(target_idx) = fields
+                        .iter()
+                        .position(|tf| tf.name == *target_name)
+                    {
+                        offsets[i] = offsets[target_idx];
+                    }
+                }
+            }
         }
         Ok(offsets)
     }
@@ -1666,7 +1693,7 @@ fn cast_opcode(
     /// Declare the StorageBuffer struct over collected fields (sorted by
     /// name — determinism rule) and create its variable. Called BEFORE any
     /// body statement lowers.
-    pub fn setup_state_buffer(&mut self) -> Result<(), String> {
+    pub fn setup_state_buffer(&mut self, reuse_map: Option<&HashMap<String, String>>) -> Result<(), String> {
         if self.state_fields.is_empty() {
             return Ok(());
         }
@@ -1676,7 +1703,26 @@ fn cast_opcode(
         // THE layout rule (plan 2026-09-01-vec4-projection-layout): shared
         // with the runner + LLVM descriptor paths; vec4-eligible arrays are
         // 16B-aligned, everything else packed.
-        let proj_offsets = Self::projection_offsets(self.builder, &self.state_fields)?;
+        let proj_offsets = Self::projection_offsets(self.builder, &self.state_fields, reuse_map)?;
+        // Phase 3 — buffer reuse: identify aliased fields (skipped from the
+        // SSBO struct; AccessChain remaps to the target's member index).
+        let aliased: HashSet<usize> = if let Some(reuse) = reuse_map {
+            let mut set = HashSet::new();
+            for (i, f) in self.state_fields.iter().enumerate() {
+                if reuse.contains_key(&f.name) {
+                    set.insert(i);
+                }
+            }
+            set
+        } else {
+            HashSet::new()
+        };
+        // Populate alias_map: aliased field name → target field name.
+        if let Some(reuse) = reuse_map {
+            for (name, target) in reuse {
+                self.alias_map.insert(name.clone(), target.clone());
+            }
+        }
         let mut vec4_ids: Vec<(String, Word, Type)> = Vec::new();
         let mut pair_ids: Vec<(String, Word, Type)> = Vec::new();
         let state_fields_snapshot: Vec<(String, Type)> = self
@@ -1727,6 +1773,11 @@ fn cast_opcode(
         }
         let mut members = Vec::with_capacity(field_types.len());
         for (idx, ty) in field_types.iter().enumerate() {
+            // Phase 3 — buffer reuse: aliased fields are skipped from the
+            // SSBO struct; their device slot is occupied by the target.
+            if aliased.contains(&idx) {
+                continue;
+            }
             // Vec4-typed members use their ARRAY-OF-VEC4 id, not the scalar
             // array id — byte-identical layout, wide loads possible. Pair
             // (v2f16) members likewise for the paired smem fill.
@@ -1745,18 +1796,20 @@ fn cast_opcode(
                 self.builder
             .decorate_raw(struct_ty, spirv::Decoration::Block, vec![]);
         // Explicit member offsets — Block structs must be fully laid out.
-        // 2026-09-01: from the shared projection rule (vec4 arrays 16B-aligned);
-        // member byte-size commentary: the element's REAL storage width —
-        // arrays are count × elem (matching the ArrayStride layout), scalars
-        // are their own width. The old fixed-8 sizing mis-slotted every
-        // Float32 element.
+        // Only non-aliased fields get Offset decorations (aliased fields
+        // share their target's offset and are not SSBO members).
+        let mut member_idx: u32 = 0;
         for (idx, &off) in proj_offsets.iter().enumerate() {
+            if aliased.contains(&idx) {
+                continue;
+            }
             self.builder.builder.member_decorate(
                 struct_ty,
-                idx as u32,
+                member_idx,
                 spirv::Decoration::Offset,
                 [rspirv::dr::Operand::LiteralBit32(off)],
             );
+            member_idx += 1;
         }
         let struct_ptr = self.builder.ptr_class(StorageClass::StorageBuffer, struct_ty);
         let var = self.builder.gen_id();
@@ -1931,8 +1984,11 @@ fn cast_opcode(
         let Some(var) = self.ssbo_var else {
             return self.err("kernel touches state but no state fields were collected");
         };
-        let Some(pos) = self.state_fields.iter().position(|f| f.name == field) else {
-            return self.err(format!("state field '{}' was not declared", field));
+        // Phase 3 — buffer reuse: aliased fields are not SSBO members;
+        // remap to the target's member index.
+        let effective_name: String = self.alias_map.get(field).cloned().unwrap_or_else(|| field.to_string());
+        let Some(pos) = self.state_fields.iter().position(|f| f.name == effective_name) else {
+            return self.err(format!("state field '{}' was not declared", effective_name));
         };
         let fty = self.state_fields[pos].ty.clone();
         let elem_ty = match &fty {
@@ -1944,7 +2000,7 @@ fn cast_opcode(
         let member_idx = self.builder.u32_const(pos as u32);
         let ptr_ty = self.builder.ptr_class(StorageClass::StorageBuffer, elem_id);
         let chain = self.builder.gen_id();
-        if self.vec4_fields.contains_key(field) {
+        if self.vec4_fields.contains_key(&effective_name) {
             // O3: the member is an array of 4-wide vectors (byte-identical
             // layout). The scalar element lives at [idx >> 2][idx & 3].
             let int_ty = self.type_id(&Type::int())?;
@@ -1996,8 +2052,10 @@ fn cast_opcode(
         let Some(var) = self.ssbo_var else {
             return self.err("kernel touches state but no state fields were collected");
         };
-        let Some(pos) = self.state_fields.iter().position(|f| f.name == field) else {
-            return self.err(format!("state field '{}' was not declared", field));
+        // Phase 3 — buffer reuse: remap aliased fields to target member.
+        let effective_name: String = self.alias_map.get(field).cloned().unwrap_or_else(|| field.to_string());
+        let Some(pos) = self.state_fields.iter().position(|f| f.name == effective_name) else {
+            return self.err(format!("state field '{}' was not declared", effective_name));
         };
         let fty = self.state_fields[pos].ty.clone();
         if matches!(fty, Type::Vector(_, _)) {
@@ -2816,7 +2874,7 @@ mod vec4_gate_tests {
             StateField { name: "y".into(), ty: f32_vec(16) },
         ];
         let mut sb = SpirvBuilder::new();
-        let offs = FnLowerer::projection_offsets(&mut sb, &fields).expect("layout");
+        let offs = FnLowerer::projection_offsets(&mut sb, &fields, None).expect("layout");
         // a @ 0 (already 16-aligned)
         assert_eq!(offs[0], 0, "a: first field, naturally aligned");
         // i: scalar Bit<64> → 8 bytes, PACKED right after a (host==this rule
@@ -2827,7 +2885,37 @@ mod vec4_gate_tests {
         // y: x ends 16400+64=16464 (already aligned) → packed
         assert_eq!(offs[3], 16464, "y: already aligned after x");
         // Determinism: same input, same output.
-        let offs2 = FnLowerer::projection_offsets(&mut sb, &fields).expect("layout");
+        let offs2 = FnLowerer::projection_offsets(&mut sb, &fields, None).expect("layout");
         assert_eq!(offs, offs2, "the layout rule must be deterministic");
+    }
+
+    #[test]
+    fn projection_offsets_aliases_field_to_target_offset() {
+        // Phase 3 — buffer reuse: "y" is aliased to "x" (same type, dead
+        // before y's first use). Both get the same device offset.
+        let fields = vec![
+            StateField { name: "x".into(), ty: f32_vec(16) },
+            StateField { name: "y".into(), ty: f32_vec(16) },
+        ];
+        let mut reuse = HashMap::new();
+        reuse.insert("y".into(), "x".into());
+        let mut sb = SpirvBuilder::new();
+        let offs = FnLowerer::projection_offsets(&mut sb, &fields, Some(&reuse)).expect("layout");
+        // x gets its natural 16B-aligned offset (0 for the first field).
+        assert_eq!(offs[0], 0, "x: first field, base offset 0");
+        // y is aliased to x → same offset.
+        assert_eq!(offs[1], 0, "y: aliased to x, shares offset 0");
+        // Non-aliased fields still pack normally.
+        let fields3 = vec![
+            StateField { name: "a".into(), ty: f32_vec(16) },
+            StateField { name: "b".into(), ty: f32_vec(16) },
+            StateField { name: "c".into(), ty: f32_vec(16) },
+        ];
+        let mut reuse3 = HashMap::new();
+        reuse3.insert("c".into(), "a".into());
+        let offs3 = FnLowerer::projection_offsets(&mut sb, &fields3, Some(&reuse3)).expect("layout");
+        assert_eq!(offs3[0], 0, "a: base offset 0");
+        assert_eq!(offs3[1], 16 * 4, "b: packed after a (64 bytes)");
+        assert_eq!(offs3[2], 0, "c: aliased to a, shares offset 0");
     }
 }

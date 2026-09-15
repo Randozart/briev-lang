@@ -109,7 +109,7 @@ pub fn emit_kernel(
         warm.set_pair_view_fields(pair_view_fields);
         warm.materialize_consts(items)?;
         warm.warm_builtins()?;
-        warm.setup_state_buffer()?;
+        warm.setup_state_buffer(None)?;
         warm.declare_images()?;
         (
             warm.ssbo_var,

@@ -11,7 +11,7 @@
 //! Every decision is a structural proof over the declared reads/writes —
 //! the contract-leverage tier: the compiler sees across kernel boundaries.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::analysis::accel::AccelEntry;
 use crate::ast::Expr;
@@ -36,6 +36,27 @@ pub struct GpuSchedule {
     /// consumed by a pure elementwise SCALE (`out[c] = producer_y[c] * k`)
     /// that is dead afterwards — the scale folds into the GEMM's y-store.
     pub fusions: Vec<Fusion>,
+    /// 2026-09-14 (Phase 3 — buffer reuse): per-array last-use — the last
+    /// txn (topo order) that reads or writes each array. An array is dead
+    /// after its last-use txn completes; its slot may be reused by a later
+    /// array of matching size/type.
+    pub array_last_use: HashMap<String, String>,
+    /// 2026-09-14 (Phase 3): reuse opportunities — (dead_slot, new_array,
+    /// after_txn). The runner may alias `new_array` into `dead_slot`'s
+    /// projection offset after `after_txn` completes.
+    pub reuse_opportunities: Vec<(String, String, String)>,
+}
+
+impl GpuSchedule {
+    /// Phase 3 — convert reuse opportunities to a mapping: aliased field →
+    /// target field (the one whose device slot is reused). For `projection_offsets`
+    /// and the kernel's SSBO struct.
+    pub fn reuse_map(&self) -> HashMap<String, String> {
+        self.reuse_opportunities
+            .iter()
+            .map(|(dead, new, _)| (new.clone(), dead.clone()))
+            .collect()
+    }
 }
 
 /// A producer→consumer epilogue fusion: the consumer's elementwise scale
@@ -374,6 +395,91 @@ pub fn build_schedule(
             in_field,
         });
     }
+
+    // 2026-09-14 (Phase 3 — buffer reuse): per-array last-use. Walk the
+    // topo order and record the LAST txn that reads or writes each array.
+    // An array is dead after its last-use txn completes; its slot may be
+    // reused by a later array of matching size/type.
+    let all_arrays: HashSet<String> = sched
+        .reads
+        .iter()
+        .chain(sched.writes.iter())
+        .flat_map(|(_, names)| names.iter().cloned())
+        .collect();
+    let fused_consumers: HashSet<String> =
+        sched.fusions.iter().map(|f| f.consumer.clone()).collect();
+    for arr in &all_arrays {
+        let last = sched
+            .order
+            .iter()
+            .filter(|n| !fused_consumers.contains(*n))
+            .filter(|n| {
+                let reads_match = sched
+                    .reads
+                    .iter()
+                    .find(|(nm, _)| nm == *n)
+                    .map_or(false, |(_, bs)| bs.iter().any(|b| b == arr));
+                let writes_match = sched
+                    .writes
+                    .iter()
+                    .find(|(nm, _)| nm == *n)
+                    .map_or(false, |(_, bs)| bs.iter().any(|b| b == arr));
+                reads_match || writes_match
+            })
+            .last()
+            .cloned();
+        if let Some(txn) = last {
+            sched.array_last_use.insert(arr.clone(), txn);
+        }
+    }
+
+    // Phase 3 — buffer reuse: first-use per array. Walk topo order forward;
+    // the first txn touching each array is its live start.
+    let mut first_use: HashMap<String, String> = HashMap::new();
+    for n in &sched.order {
+        let mut arrays_here = BTreeSet::new();
+        for (nm, bs) in sched.reads.iter().chain(sched.writes.iter()) {
+            if nm == n {
+                for b in bs {
+                    arrays_here.insert(b.clone());
+                }
+            }
+        }
+        for arr in arrays_here {
+            first_use.entry(arr).or_insert_with(|| n.clone());
+        }
+    }
+
+    // Reuse opportunities: array A dead after last_use(A), array B starts
+    // at first_use(B). If last_use(A) comes strictly before first_use(B) in
+    // topo order, A's slot is free for B.
+    let order_idx: HashMap<&str, usize> = sched
+        .order
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.as_str(), i))
+        .collect();
+    for (a, last_a) in &sched.array_last_use {
+        let Some(&last_idx) = order_idx.get(last_a.as_str()) else {
+            continue;
+        };
+        for (b, first_b) in &first_use {
+            if a == b {
+                continue;
+            }
+            let Some(&first_idx) = order_idx.get(first_b.as_str()) else {
+                continue;
+            };
+            // A dead after last_idx; B starts at first_idx. Reuse if
+            // last_idx < first_idx (A's slot is free before B needs it).
+            if last_idx < first_idx {
+                sched
+                    .reuse_opportunities
+                    .push((a.clone(), b.clone(), last_a.clone()));
+            }
+        }
+    }
+
     sched
 }
 
@@ -605,5 +711,87 @@ mod tests {
         assert_eq!(f.out_field, "d");
         assert_eq!(f.in_field, "c");
         assert!((f.scale - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn array_last_use_tracks_dead_arrays() {
+        // 3-node attention-decode: qk (reads q,kt / writes s),
+        // scale (reads s / writes s2), pv (reads s2,kt / writes o).
+        // s is dead after scale; s2 is dead after pv; q/kt are dead after qk/pv.
+        let mut accel = HashMap::new();
+        let mk = |name: &str, reads: &[&str], writes: &[&str]| -> AccelEntry {
+            AccelEntry {
+                mode: crate::analysis::accel::AccelMode::TryAll,
+                forced: false,
+                shape: crate::analysis::accel::KernelShape {
+                    index_var: "i".into(),
+                    count_expr: None,
+                    kernel_stmts: vec![],
+                    host_stmts: vec![],
+                    read_buffers: reads.iter().map(|s| s.to_string()).collect(),
+                    write_buffers: writes.iter().map(|s| s.to_string()).collect(),
+                    scalar_ins: vec![],
+                    eligible: true,
+                    reasons: vec![],
+                    work_cols: None,
+                    reduction: None,
+                },
+                decision: crate::analysis::accel::AccelDecision::Gpu,
+            }
+        };
+        accel.insert("qk".into(), mk("qk", &["q", "kt"], &["s"]));
+        accel.insert("scale".into(), mk("scale", &["s"], &["s2"]));
+        accel.insert("pv".into(), mk("pv", &["s2", "kt"], &["o"]));
+        let txn = |name: &str, pre: &str| -> TopLevel {
+            TopLevel::Transaction(Transaction {
+                name: name.into(),
+                is_reactive: false,
+                is_async: true,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: crate::ast::top::Contract {
+                    pre_condition: Expr::Identifier(pre.into()),
+                    post_condition: Expr::Bool(true),
+                    watchdog: None,
+                    span: None,
+                    explicit: true,
+                    post_authority: false,
+                },
+                body: vec![],
+                metadata: Default::default(),
+                derivation: None,
+                modifiers: vec![],
+                doc: None,
+                span: None,
+            })
+        };
+        let program = vec![txn("qk", "i"), txn("scale", "j"), txn("pv", "k")];
+        let sched = build_schedule(&program, &accel);
+        // qk fires first, then scale, then pv.
+        assert_eq!(sched.order, vec!["qk", "scale", "pv"]);
+        // s is last used by scale (qk writes it, scale reads it).
+        assert_eq!(sched.array_last_use.get("s").map(|s| s.as_str()), Some("scale"));
+        // s2 is last used by pv.
+        assert_eq!(sched.array_last_use.get("s2").map(|s| s.as_str()), Some("pv"));
+        // q is last used by qk.
+        assert_eq!(sched.array_last_use.get("q").map(|s| s.as_str()), Some("qk"));
+        // kt is last used by pv.
+        assert_eq!(sched.array_last_use.get("kt").map(|s| s.as_str()), Some("pv"));
+        // o is last used by pv.
+        assert_eq!(sched.array_last_use.get("o").map(|s| s.as_str()), Some("pv"));
+
+        // Reuse opportunities: q is dead after qk (index 0), so its slot
+        // is free for arrays first used later: s2 (first use at scale, idx 1)
+        // and o (first use at pv, idx 2). s is dead after scale (idx 1),
+        // reusable by o (first use at pv, idx 2).
+        // kt and s2 are last used by pv (last txn) → no reuse.
+        assert!(sched.reuse_opportunities.iter().any(|(d, n, _)| d == "q" && n == "s2"),
+            "q slot reusable by s2");
+        assert!(sched.reuse_opportunities.iter().any(|(d, n, _)| d == "q" && n == "o"),
+            "q slot reusable by o");
+        assert!(sched.reuse_opportunities.iter().any(|(d, n, _)| d == "s" && n == "o"),
+            "s slot reusable by o");
     }
 }

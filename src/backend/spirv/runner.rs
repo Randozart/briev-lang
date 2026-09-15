@@ -111,6 +111,7 @@ pub fn ssbo_layout(
         String,
         Vec<crate::analysis::image_storage::ImageStoragePlan>,
     >,
+    reuse_map: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<SsboLayout, String> {
     let mut sb = SpirvBuilder::new().with_universe(universe, int_bits);
     let mut fields = collect_state_fields(items);
@@ -138,7 +139,7 @@ pub fn ssbo_layout(
     // (vec4-eligible arrays 16B-aligned) — they can never drift. Computed
     // over the BUFFER fields only (the blob's SSBO struct).
     let proj_offsets = crate::backend::spirv::lower::FnLowerer::projection_offsets(
-        &mut sb, &buffer_fields,
+        &mut sb, &buffer_fields, reuse_map,
     )?;
     let mut out = Vec::new();
     let mut images = Vec::new();
@@ -391,6 +392,7 @@ pub fn emit_runner(
     kernels: &[RunnerKernel],
     schedule: Option<&crate::analysis::gpu_schedule::GpuSchedule>,
 ) -> Result<String, String> {
+    let reuse = schedule.map(|s| s.reuse_map());
     let layout = ssbo_layout(
         program,
         universe,
@@ -399,6 +401,7 @@ pub fn emit_runner(
             .iter()
             .map(|k| (k.name.clone(), k.image_plans.clone()))
             .collect(),
+        reuse.as_ref(),
     )?;
     let fields = layout.fields;
     // Module consts (literals only) usable in conditions, counts and bodies.
@@ -973,6 +976,7 @@ pub fn prepare_run(
             .iter()
             .map(|k| (k.name.clone(), k.image_plans.clone()))
             .collect(),
+        None,
     )?;
     let fields = layout.fields;
 

@@ -323,7 +323,7 @@ fn kernel_field_table(
             .with_universe(backend.ctx.type_universe.as_ref().expect("type universe"), backend.ctx.int_bits);
         let mut sfields = crate::backend::spirv::lower::collect_state_fields(items);
         sfields.sort_by(|a, b| a.name.cmp(&b.name));
-        crate::backend::spirv::lower::FnLowerer::projection_offsets(&mut sb, &sfields)
+        crate::backend::spirv::lower::FnLowerer::projection_offsets(&mut sb, &sfields, None)
             .unwrap_or_default()
     };
     let mut fields = Vec::new();

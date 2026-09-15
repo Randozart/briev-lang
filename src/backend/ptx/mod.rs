@@ -331,7 +331,7 @@ pub fn build_ptx_kernels(
     // hardcoded PTX offsets and the runner's field table agree by
     // construction (no image plans in the GEMM tier).
     let layout = crate::backend::spirv::runner::ssbo_layout(
-        program, universe, int_bits, &std::collections::HashMap::new(),
+        program, universe, int_bits, &std::collections::HashMap::new(), None,
     )?;
 
     let mut out = Vec::new();
