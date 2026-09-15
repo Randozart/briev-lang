@@ -102,6 +102,31 @@ Gate: ledger row with both sides measured on the locked-clock box.
       the first GEMM's mma.
 - [ ] ptxas register count ≤ 64 (no spill) at the fused occupancy.
 
+## Milestone B — design (single fused FlashAttention-class kernel)
+
+Status: **not started** (Milestone A is the clean checkpoint). The single
+kernel is a NEW PTX emitter (the FlashAttention forward kernel), not an
+incremental change to the GEMM emitter:
+
+- Detect the full attention chain (qk → softmax → pv) as one `Fusion` in
+  the schedule: `o = softmax_row(Q·Kᵀ·C) · V`, with the S tile provably
+  dead (never HBM).
+- Kernel structure (the "S stays on-chip" form, valid when a Q row-tile's
+  S fits smem):
+  1. Block owns a Q row-tile (e.g. 16 rows).
+  2. GEMM-1: S = Q_tile·Kᵀ (all N cols) → S smem (4KB @128², 16 rows).
+  3. Row-softmax over S in smem (rowmax, then exp/sum) — the
+     cooperative-reduce path.
+  4. GEMM-2: O = S'·V (mma), the S' tile as the B operand.
+  5. Store O.
+- Apply the micro-items to the softmax/scale row walks and the S-tile
+  bank layout (the ldmatrix-read-of-write hazard).
+- Gate: fused 1-kernel vs the 2-kernel composition (Milestone A), both
+  correct (maxrel ≤ 1e-2), fused strictly faster; then the vs-cuBLAS
+  composition benchmark (Milestone C).
+
+## Milestone C — the vs-cuBLAS composition benchmark (not started)
+
 ## Docs
 
 - `docs/plans/2026-09-15-gpu-schedule-phase4b-fusion.md` (this).
