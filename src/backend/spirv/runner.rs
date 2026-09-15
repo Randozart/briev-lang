@@ -719,6 +719,17 @@ pub fn emit_runner(
             continue;
         };
         let t: &Transaction = t;
+        // 2026-09-15 (Phase 4b — emergent chain fusion): the schedule's ONE
+        // fused kernel covers the producer + middle + consumer in a single
+        // launch. Dispatch it at the producer's order position; the
+        // middle/consumer nodes are absorbed.
+        if let Some(s) = schedule {
+            if let Some(cf) = &s.chain_fusion {
+                if try_emit_chain_fusion(&mut out, t, &cf, &kernels, &fields, &consts)? {
+                    continue;
+                }
+            }
+        }
         // 2026-09-14 (gpu_schedule Phase 4a): an epilogue-fused consumer's
         // work is done by its producer's kernel — skip its dispatch entirely.
         if let Some(s) = schedule {
@@ -955,6 +966,36 @@ mod runner_tests {
 /// dispatch (see `dispatch_geometry_stmt`), and the counter fast-forward
 /// (the pass covers every work item, so `i = N` makes the pre false next
 /// pass).
+/// 2026-09-15 (Phase 4b — emergent chain fusion): dispatch the schedule's
+/// ONE fused kernel at the producer's order position, or skip the absorbed
+/// middle/consumer nodes. Returns true when `t` belongs to the chain
+/// (handled); false lets the caller fall through to the normal path.
+fn try_emit_chain_fusion(
+    out: &mut String,
+    t: &crate::ast::top::Transaction,
+    cf: &crate::analysis::gpu_schedule::ChainFusion,
+    kernels: &[RunnerKernel],
+    fields: &[RunnerField],
+    consts: &std::collections::HashMap<String, Expr>,
+) -> Result<bool, String> {
+    if t.name == cf.producer {
+        let fname = format!("{}__{}_{}", cf.producer, cf.middle, cf.consumer);
+        if let Some(ki) = kernels.iter().position(|k| k.name == fname) {
+            emit_kernel_node(out, t, &kernels[ki], ki, fields, consts);
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+    if t.name == cf.middle || t.name == cf.consumer {
+        out.push_str(&format!(
+            "    // node '{}' fused into the chain kernel (skipped)\n",
+            t.name
+        ));
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 fn emit_kernel_node(
     out: &mut String,
     t: &crate::ast::top::Transaction,

@@ -104,9 +104,10 @@ Gate: ledger row with both sides measured on the locked-clock box.
 
 ## Milestone B — design (single fused FlashAttention-class kernel)
 
-Status: **in progress**. Fusion is an EMERGENT property of the analysis
-(see the principle recorded in `docs/architecture/agent-reference.md` §6):
-no `FusedAttention`, no attention names — a general `ChainFusion`
+Status: **v1 DONE — the ONE fused kernel is correct on-device**
+(2026-09-15). Fusion is an EMERGENT property of the analysis (see the
+principle recorded in `docs/architecture/agent-reference.md` §6): no
+`FusedAttention`, no attention names — a general `ChainFusion`
 (topology only), operands derived at codegen.
 
 - Analysis: detect any linear RAW chain `N1 → N2 → N3` where N2 is
@@ -115,16 +116,25 @@ no `FusedAttention`, no attention names — a general `ChainFusion`
   ```rust
   pub struct ChainFusion { producer, middle, consumer, mid_in, mid_out, scale }
   ```
-- Codegen: ONE fused PTX kernel reusing the tensor machinery (mma,
-  cp.async panels): GEMM-1 (Q·Kt) writes the scaled S tile to SMEM;
-  GEMM-2 (S'·V) reads it via ldmatrix as its A operand — S never touches
-  HBM. Operands derived from the node shapes.
-- Profitability emerges from the analysis: if the S tile (m_tile × N ×
-  elem) exceeds the smem budget or the recompute would lose, the schedule
-  keeps the 2-kernel epilogue fusion (Milestone A). The best shape is the
-  automatic default.
+- Codegen: ONE fused PTX kernel (`fused_attention_ptx`): phase 1 computes
+  the scaled S tile into SHARED memory (the on-chip intermediate — never
+  HBM), `bar.sync`, phase 2 computes `o = S'·V` reading S' from smem.
+  Operands derived from the producer/consumer GEMM shapes.
+- v1 scope: f16 operands + a square middle (`on == kn`); the mma rung is
+  the next optimization.
 - Gate: fused 1-kernel vs the 2-kernel composition, both correct
   (maxrel ≤ 1e-2), fused strictly competitive; then vs-cuBLAS (Milestone C).
+
+## Milestone B v1 — DONE (2026-09-15)
+
+On-device (RTX 3060/CUDA): `attn_decode_h` compiles to ONE kernel
+(`qk__scale_pv`) that computes `o = (Q·Kt)·0.5·V` at **maxrel 4.5e-4** —
+the f16 rounding bound. The scaled S tile stays in shared memory; the
+kernel has exactly ONE global store (o). The 3-node chain is absorbed:
+the runner dispatches the fused kernel at the producer's order position
+and skips the middle/consumer. Tests: `detects_chain_fusion`,
+`fused_attention_ptx_stages_s_in_smem` (smem staging, single global
+store, scale folded). 2215 tests pass.
 
 ## Milestone C — the vs-cuBLAS composition benchmark (not started)
 

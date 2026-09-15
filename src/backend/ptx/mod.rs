@@ -91,6 +91,239 @@ fn naive_gemm_ptx(m: i64, n: i64, k: i64, elem_bytes: u32,
     out
 }
 
+/// Fused-attention PTX (Phase 4b v1 — the correctness reference; the mma
+/// rung follows). ONE kernel computing `o = scale(q · kt) · v` with the
+/// scaled S tile staged in SHARED memory — the intermediate never touches
+/// HBM (the emergent chain-fusion claim). Block = 512 threads covering
+/// `block_rows = 512/kn` rows: phase 1 computes S'[tid] = (Q·Kt)·scale into
+/// smem; `bar.sync`; phase 2 computes O = S'·V reading the row from smem.
+///
+/// General shapes (not attention-specific): `m`/`k1` = the producer GEMM's
+/// M/K; `kn` = the S width (producer output cols = the consumer's inner
+/// dim); `on` = the consumer's output cols. `a_off`/`b_off`/`v_off`/`o_off`
+/// are the DEVICE projection offsets (from `ssbo_layout`).
+fn fused_attention_ptx(
+    m: i64,
+    k1: i64,
+    kn: i64,
+    on: i64,
+    a_off: u64,
+    b_off: u64,
+    v_off: u64,
+    o_off: u64,
+    scale: f64,
+) -> String {
+    const BLOCK: i64 = 512;
+    let block_rows = (BLOCK / kn).max(1);
+    let _ = block_rows;
+    let mut out = String::new();
+    out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+    out.push_str(&format!(".visible .entry {} (.param .b64 proj_param)\n{{\n", ENTRY));
+    // u64: %rd1 = proj base; %rd2 = Q row base; %rd3 = Kt col base;
+    //      %rd4 = V col base; %rd5 = O addr; %rd6 = address scratch.
+    // u32: %r1 = ctaid; %r2 = tid; %r3 = local_m; %r4 = col; %r5 = global_m;
+    //      %r6 = kk; %r7 = elem scratch; %r8 = elem scratch; %r9 = byte idx.
+    // f32: %f1 = acc; %f2/%f3 = operands; %f4 = product.
+    out.push_str("    .reg .u64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6;\n");
+    out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9;\n");
+    out.push_str("    .reg .f32  %f1, %f2, %f3, %f4;\n");
+    out.push_str("    .reg .b16  %b1, %b2;\n");
+    out.push_str("    .reg .pred %p1, %p2, %p3;\n");
+    out.push_str("    .shared .b16 s[512];\n");
+    out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+    out.push_str("    mov.u32 %r1, %ctaid.x;\n");
+    out.push_str("    mov.u32 %r2, %tid.x;\n");
+    // local_m = tid / kn ; col = tid % kn.
+    out.push_str(&format!("    div.u32 %r3, %r2, {};\n", kn));
+    out.push_str(&format!("    rem.u32 %r4, %r2, {};\n", kn));
+    // global_m = ctaid.x * block_rows + local_m.
+    out.push_str(&format!("    mul.lo.u32 %r5, %r1, {};\n", block_rows));
+    out.push_str("    add.u32 %r5, %r5, %r3;\n");
+    // Guards: p1 = global_m >= m ; p2 = col >= on.
+    out.push_str(&format!("    setp.ge.u32 %p1, %r5, {};\n", m));
+    out.push_str(&format!("    setp.ge.u32 %p2, %r4, {};\n", on));
+    // ---- Phase 1: S'[tid] = (Q·Kt)·scale ----
+    out.push_str("    mov.f32 %f1, 0f00000000;\n");
+    out.push_str("    mov.u32 %r6, 0;\n");
+    // Q row base = proj + a_off + global_m*(k1*2).
+    out.push_str("    mov.u64 %rd2, %rd1;\n");
+    out.push_str(&format!("    add.u64 %rd2, %rd2, {};\n", a_off));
+    out.push_str(&format!("    mul.wide.u32 %rd6, %r5, {};\n", k1 * 2));
+    out.push_str("    add.u64 %rd2, %rd2, %rd6;\n");
+    // Kt col base = proj + b_off + col*2.
+    out.push_str("    mov.u64 %rd3, %rd1;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", b_off));
+    out.push_str("    mul.wide.u32 %rd6, %r4, 2;\n");
+    out.push_str("    add.u64 %rd3, %rd3, %rd6;\n");
+    out.push_str("L1:\n");
+    out.push_str(&format!("    setp.ge.u32 %p3, %r6, {};\n", k1));
+    out.push_str("    @%p3 bra L1X;\n");
+    // Q[global_m*k1 + kk] — addr = rd2 + kk*2.
+    out.push_str("    mul.wide.u32 %rd6, %r6, 2;\n");
+    out.push_str("    add.u64 %rd6, %rd2, %rd6;\n");
+    out.push_str("    ld.global.b16 %b1, [%rd6];\n");
+    out.push_str("    cvt.f32.f16 %f2, %b1;\n");
+    // Kt[kk*kn + col] — addr = rd3 + kk*kn*2.
+    out.push_str(&format!("    mul.wide.u32 %rd6, %r6, {};\n", kn * 2));
+    out.push_str("    add.u64 %rd6, %rd3, %rd6;\n");
+    out.push_str("    ld.global.b16 %b2, [%rd6];\n");
+    out.push_str("    cvt.f32.f16 %f3, %b2;\n");
+    out.push_str("    mul.f32 %f4, %f2, %f3;\n");
+    out.push_str("    add.f32 %f1, %f1, %f4;\n");
+    out.push_str("    add.u32 %r6, %r6, 1;\n");
+    out.push_str("    bra.uni L1;\n");
+    out.push_str("L1X:\n");
+    out.push_str(&format!("    mul.f32 %f1, %f1, {:e};\n", scale));
+    out.push_str("    cvt.rn.f16.f32 %b1, %f1;\n");
+    // Store S'[tid] at smem byte 2*tid (predicated on global_m < m);
+    // bar.sync is UNCONDITIONAL (all threads must reach it).
+    out.push_str("    @%p1 bra L1S;\n");
+    out.push_str("    mul.lo.u32 %r9, %r2, 2;\n");
+    out.push_str("    st.shared.b16 [%r9], %b1;\n");
+    out.push_str("L1S:\n");
+    out.push_str("    bar.sync 0;\n");
+    // ---- Phase 2: O[global_m*on + col] = S'[local_m*kn + kk]·V[kk*on + col] ----
+    out.push_str("    @%p1 ret;\n");
+    out.push_str("    @%p2 ret;\n");
+    out.push_str("    mov.f32 %f1, 0f00000000;\n");
+    out.push_str("    mov.u32 %r6, 0;\n");
+    // S' row base (smem element idx) = local_m*kn.
+    out.push_str(&format!("    mul.lo.u32 %r7, %r3, {};\n", kn));
+    // V col base = proj + v_off + col*2.
+    out.push_str("    mov.u64 %rd4, %rd1;\n");
+    out.push_str(&format!("    add.u64 %rd4, %rd4, {};\n", v_off));
+    out.push_str("    mul.wide.u32 %rd6, %r4, 2;\n");
+    out.push_str("    add.u64 %rd4, %rd4, %rd6;\n");
+    out.push_str("L2L:\n");
+    out.push_str(&format!("    setp.ge.u32 %p3, %r6, {};\n", kn));
+    out.push_str("    @%p3 bra L2X;\n");
+    // S'[local_m*kn + kk] — smem byte 2*(r7 + kk).
+    out.push_str("    add.u32 %r8, %r7, %r6;\n");
+    out.push_str("    mul.lo.u32 %r9, %r8, 2;\n");
+    out.push_str("    ld.shared.b16 %b2, [%r9];\n");
+    out.push_str("    cvt.f32.f16 %f2, %b2;\n");
+    // V[kk*on + col] — addr = rd4 + kk*on*2.
+    out.push_str(&format!("    mul.wide.u32 %rd6, %r6, {};\n", on * 2));
+    out.push_str("    add.u64 %rd6, %rd4, %rd6;\n");
+    out.push_str("    ld.global.b16 %b2, [%rd6];\n");
+    out.push_str("    cvt.f32.f16 %f3, %b2;\n");
+    out.push_str("    mul.f32 %f4, %f2, %f3;\n");
+    out.push_str("    add.f32 %f1, %f1, %f4;\n");
+    out.push_str("    add.u32 %r6, %r6, 1;\n");
+    out.push_str("    bra.uni L2L;\n");
+    out.push_str("L2X:\n");
+    out.push_str("    cvt.rn.f16.f32 %b1, %f1;\n");
+    // O[global_m*on + col] — addr = proj + o_off + (global_m*on + col)*2.
+    out.push_str(&format!("    mul.lo.u32 %r8, %r5, {};\n", on));
+    out.push_str("    add.u32 %r8, %r8, %r4;\n");
+    out.push_str("    mul.wide.u32 %rd6, %r8, 2;\n");
+    out.push_str("    mov.u64 %rd5, %rd1;\n");
+    out.push_str(&format!("    add.u64 %rd5, %rd5, {};\n", o_off));
+    out.push_str("    add.u64 %rd5, %rd5, %rd6;\n");
+    out.push_str("    st.global.b16 [%rd5], %b1;\n");
+    out.push_str("    ret;\n}\n");
+    out
+}
+
+/// Build the ONE fused attention kernel for a detected chain (Phase 4b v1).
+/// Derives the GEMM operands from the producer/consumer shapes (never from
+/// pattern names): the producer GEMM is `a·b → mid_in` (M×K → M×kn), the
+/// consumer is `mid_out·v → o` (M×kn → M×on). v1 scope: f16 operands and a
+/// square middle (on == kn). Returns None when not applicable (the chain
+/// falls back to the 2-kernel epilogue fusion).
+fn build_fused_attention_kernel(
+    program: &[TopLevel],
+    universe: &TypeUniverse,
+    layout: &crate::backend::spirv::runner::SsboLayout,
+    entries: &std::collections::HashMap<String, crate::analysis::accel::AccelEntry>,
+    cf: &crate::analysis::gpu_schedule::ChainFusion,
+    consts: &std::collections::HashMap<String, Expr>,
+) -> Result<Option<RunnerKernel>, String> {
+    let producer = entries.get(&cf.producer).ok_or_else(|| {
+        format!("ptx fused: producer '{}' not in accel entries", cf.producer)
+    })?;
+    let consumer = entries.get(&cf.consumer).ok_or_else(|| {
+        format!("ptx fused: consumer '{}' not in accel entries", cf.consumer)
+    })?;
+    let Some(pplan) = GemmPlan::match_stmts(&producer.shape, program) else {
+        return Ok(None);
+    };
+    let Some(cplan) = GemmPlan::match_stmts(&consumer.shape, program) else {
+        return Ok(None);
+    };
+    // The consumer's A operand must be the middle's output (the chain).
+    if cplan.a_field != cf.mid_out || pplan.y_field != cf.mid_in {
+        return Ok(None);
+    }
+    // Shapes: producer M×K → M×kn; consumer M×kn → M×on. v1: square middle
+    // (on == kn) and f16 operands throughout.
+    let (m, k1, kn) = (pplan.m, pplan.k, pplan.n);
+    let on = cplan.n;
+    if on != kn {
+        return Ok(None);
+    }
+    let elem_of = |field: &str| -> u32 {
+        layout
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .map(|f| f.elem_bytes)
+            .unwrap_or(4)
+    };
+    let f16 = elem_of(&pplan.a_field) == 2 && elem_of(&pplan.b_field) == 2
+        && elem_of(&cplan.b_field) == 2;
+    if !f16 {
+        return Ok(None);
+    }
+    let find_off = |field: &str| -> Result<u64, String> {
+        layout
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .map(|f| f.proj_offset)
+            .ok_or_else(|| format!("ptx fused: field '{}' not in layout", field))
+    };
+    let a_off = find_off(&pplan.a_field)?;
+    let b_off = find_off(&pplan.b_field)?;
+    let v_off = find_off(&cplan.b_field)?;
+    let o_off = find_off(&cplan.y_field)?;
+    let ptx = fused_attention_ptx(m, k1, kn, on, a_off, b_off, v_off, o_off, cf.scale);
+    let blob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
+        compile_cubin(&ptx, 64).unwrap_or_else(|| ptx.into_bytes())
+    } else {
+        ptx.into_bytes()
+    };
+    let mut touched = vec![
+        pplan.a_field.clone(),
+        pplan.b_field.clone(),
+        cplan.b_field.clone(),
+        cplan.y_field.clone(),
+    ];
+    if !producer.shape.index_var.is_empty() {
+        touched.push(producer.shape.index_var.clone());
+    }
+    touched.sort();
+    touched.dedup();
+    Ok(Some(RunnerKernel {
+        name: format!("{}__{}_{}", cf.producer, cf.middle, cf.consumer),
+        spirv: blob,
+        image_plans: Vec::new(),
+        // The producer's counter drives the runner's pass loop (the fused
+        // kernel covers all three nodes' work in one launch).
+        index_var: producer.shape.index_var.clone(),
+        count_expr: Expr::Decimal(m * on),
+        work_cols: None,
+        cooperative: false,
+        tiled: false,
+        tensor: false,
+        tensor_tile_rows: 1,
+        ptx_tensor: false,
+        block_threads: 512,
+        shared_bytes: 1024,
+        touched_fields: touched,
+    }))
+}
+
 /// Select multi-warp CTA dimensions (mw, nw) for the mw kernel.
 /// CTA tile = (mw*32) × (nw*64), block_threads = mw*nw*32 (max 256).
 /// Register budget: the mw kernel compiles to 128 regs natural, 0 spills
@@ -339,7 +572,34 @@ pub fn build_ptx_kernels(
     )?;
 
     let mut out = Vec::new();
+    // 2026-09-15 (Phase 4b — emergent chain fusion): when the schedule
+    // detected a GEMM → elementwise → GEMM chain with dead intermediates,
+    // emit ONE fused kernel (the middle's output stays on-chip). v1 scope:
+    // f16 operands and a square middle (on == kn). The producer/middle/
+    // consumer nodes are then skipped below.
+    let mut chain_skip: std::collections::HashSet<String> = Default::default();
+    let mut chain_name: Option<String> = None;
+    if let Some(cf) = &schedule.chain_fusion {
+        let fused_kernel = build_fused_attention_kernel(
+            program,
+            universe,
+            &layout,
+            entries,
+            cf,
+            &module_expr_consts(program),
+        )?;
+        if let Some(k) = fused_kernel {
+            out.push(k);
+            chain_skip.insert(cf.producer.clone());
+            chain_skip.insert(cf.middle.clone());
+            chain_skip.insert(cf.consumer.clone());
+            chain_name = Some(format!("{}__{}_{}", cf.producer, cf.middle, cf.consumer));
+        }
+    }
     for name in names {
+        if chain_skip.contains(name) {
+            continue;
+        }
         let e = &entries[name];
         // 2026-09-14 (gpu_schedule Phase 4a): a fused consumer's work is done
         // by its producer's epilogue — no kernel is emitted for it. The
@@ -635,5 +895,21 @@ mod tests {
         assert!(ptx.contains("setp.ge.u32 %p1, %r3, 128;"), "8*16 items: {ptx}");
         assert!(ptx.contains("div.u32 %r4, %r3, 16;"), "N: {ptx}");
         assert!(ptx.contains("setp.ge.u32 %p2, %r6, 4;"), "K: {ptx}");
+    }
+
+    #[test]
+    fn fused_attention_ptx_stages_s_in_smem() {
+        // 128×128 attention: the ONE fused kernel must stage the scaled S
+        // tile in shared memory (the on-chip intermediate) and never write
+        // the intermediate to global — only the output o is stored.
+        let ptx = fused_attention_ptx(128, 128, 128, 128, 0, 1024, 2048, 4096, 0.5);
+        assert!(ptx.contains(".shared .b16 s[512];"), "S smem tile: {ptx}");
+        assert!(ptx.contains("st.shared.b16"), "S' written to smem: {ptx}");
+        assert!(ptx.contains("ld.shared.b16"), "phase-2 reads S' from smem: {ptx}");
+        assert!(ptx.contains("bar.sync 0"), "barrier between phases: {ptx}");
+        // The only global store is the output o.
+        let global_stores: Vec<&str> = ptx.lines().filter(|l| l.contains("st.global.b16")).collect();
+        assert_eq!(global_stores.len(), 1, "only o stored to global: {:?}", global_stores);
+        assert!(ptx.contains("5e-1"), "the middle scale folds into phase 1");
     }
 }
