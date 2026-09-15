@@ -81,3 +81,4 @@ spirv_image_storage: 0;
 // projection offset). Safe after per-kernel field packing + input-only
 // seeding landed (runner + Track A + runtime).
 gpu_schedule_buffer_reuse: 1;
+ptx_tensor_f16acc: 1;

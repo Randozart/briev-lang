@@ -277,8 +277,9 @@ pub fn seed_field_names(
 /// Phase 3 gating: the reuse map to apply, or `None` when the config flag
 /// is off (default). The flag is off until the per-kernel field packing +
 /// input-only seed land — without them the global pack would clobber
-/// aliased slots. Shared by `emit_runner` and `prepare_run` so both agree.
-fn gated_reuse_map(
+/// aliased slots. Shared by `emit_runner`, `prepare_run`, and the PTX
+/// backend (whose kernel offsets must match the runner's aliased layout).
+pub fn gated_reuse_map(
     schedule: Option<&crate::analysis::gpu_schedule::GpuSchedule>,
 ) -> Option<std::collections::HashMap<String, String>> {
     if !crate::config_tuning::ir_lowering().gpu_schedule_buffer_reuse {

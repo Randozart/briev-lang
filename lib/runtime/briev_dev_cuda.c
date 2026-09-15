@@ -444,7 +444,15 @@ static int briev_dev_cuda_launch(void* handle, const void* proj, size_t proj_byt
 /// working set (created at first launch_dev2d). NULL until then.
 static void* briev_dev_cuda_mapped(void* handle) {
     BrievCudaKernel* k = (BrievCudaKernel*)handle;
-    return k && k->mapped_host ? k->mapped_host : NULL;
+    if (k && k->mapped_host) {
+        return k->mapped_host;
+    }
+    // 2026-09-15 (gpu_schedule pipeline fix): with the program-level shared
+    // working set allocated, an UNPRIMED kernel's handle maps onto it — so
+    // the second kernel of a pipeline does NOT re-prime (re-priming packs its
+    // touched fields from host state and full-HtoD's them, WIPING the first
+    // kernel's device output before the consumer runs).
+    return g_shared_host;
 }
 
 /// Flat 1D dispatch: nx work items, one row (the common launch_dev form).
@@ -461,17 +469,21 @@ static int briev_dev_cuda_launch_dev2d(void* handle, size_t nx, size_t ny,
     if (!k || !k->func) {
         return 0;
     }
+    // 2026-09-15 (gpu_schedule pipeline fix): an unprimed kernel in a
+    // shared-buffer program attaches to the existing working set here —
+    // its `mapped()` already returned g_shared_host, so the resident path
+    // skipped the re-prime; `k->dev` must follow.
     if (k->mapped_host == NULL) {
-        // First launch_dev2d — allocate the page-locked host mirror + the
-        // device working set. Size comes from the runtime's prior
-        // briev_accel_download-driven seed? No: the projection size is not
-        // known here. Fall back to a full-copy launch (correct, PCIe-bound).
-        if (g_verbose) {
-            fprintf(stderr, "[briev_accel/cuda] residency before size known — full-copy launch\n");
+        if (g_shared_host != NULL) {
+            k->mapped_host = g_shared_host;
+            k->dev = g_shared_dev;
+            k->bytes = g_shared_bytes;
+        } else {
+            if (g_verbose) {
+                fprintf(stderr, "[briev_accel/cuda] residency before size known — full-copy launch\n");
+            }
+            return 1;
         }
-        // The runtime calls launch_dev2d only after it has seeded mapped();
-        // with no mirror there is nothing to sync, so this is a no-op path.
-        return 1;
     }
     size_t bytes = k->bytes;
     if (g_verbose) fprintf(stderr, "[cuda] launch_dev2d bytes=%zu dev=%llx host=%p nx=%zu ny=%zu full=%d ndirty=%u\n", bytes, (unsigned long long)k->dev, (void*)k->mapped_host, nx, ny, full_sync, n_dirty);

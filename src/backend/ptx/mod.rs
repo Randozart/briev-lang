@@ -329,9 +329,13 @@ pub fn build_ptx_kernels(
 
     // The ONE layout rule — the same `ssbo_layout` the runner uses, so the
     // hardcoded PTX offsets and the runner's field table agree by
-    // construction (no image plans in the GEMM tier).
+    // construction (no image plans in the GEMM tier). 2026-09-15: pass the
+    // schedule's reuse map (Phase 3 buffer aliasing) so the PTX kernel
+    // offsets match the runner's ALIASED projection — without it the kernel
+    // writes s2@131120 while the runner reads s2@98352 (its aliased slot).
+    let reuse = crate::backend::spirv::runner::gated_reuse_map(Some(schedule));
     let layout = crate::backend::spirv::runner::ssbo_layout(
-        program, universe, int_bits, &std::collections::HashMap::new(), None,
+        program, universe, int_bits, &std::collections::HashMap::new(), reuse.as_ref(),
     )?;
 
     let mut out = Vec::new();
