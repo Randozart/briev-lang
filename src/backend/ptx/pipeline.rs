@@ -148,63 +148,28 @@ where
 // Main loop body
 // ---------------------------------------------------------------------------
 
-/// Emit the main K-loop body skeleton. The caller supplies:
-/// - `emit_load_fragments`: loads A/B fragments from smem (ldmatrix or
-///   direct loads), after the barrier.
-/// - `emit_compute`: the mma / compute body.
-/// - `emit_fill_next`: fills the next stage's panels into smem.
-/// - `check_k_end`: emits the loop-back branch and the k-step counter update.
-///
-/// The skeleton per iteration:
-/// ```text
-///     // fill next stage (issued before the barrier for maximum overlap)
-///     emit_fill_next(stage)
-///     ldgdepbar
-///     bar.sync
-///     emit_load_fragments(stage)
-///     emit_compute
-///     stage = (stage + 1) % N
-///     k += K_STEP
-///     if k < K: goto loop_head
-/// ```
-pub fn emit_main_loop<FLoad, FComp, FFill, FBranch>(
+/// Emit the main K-loop body skeleton. The caller supplies a single
+/// `body` closure that emits fill-next, barrier, ldmatrix, mma, and
+/// stage-wrap per iteration. The skeleton handles the loop label and
+/// the k-step counter / branch.
+pub fn emit_main_loop(
     out: &mut String,
     sc: StageConfig,
     k_step: i64,
     k_bound: i64,
-    mut emit_load_fragments: FLoad,
-    mut emit_compute: FComp,
-    mut emit_fill_next: FFill,
-    mut emit_branch: FBranch,
-) where
-    FLoad: FnMut(&mut String, usize),
-    FComp: FnMut(&mut String),
-    FFill: FnMut(&mut String, usize),
-    FBranch: FnMut(&mut String, &str), // receives the loop_head label
-{
+    body: &mut dyn FnMut(&mut String, usize),
+) {
     let loop_head = "KLOOP";
-    let loop_tail = "KEND";
 
     write!(out, "{loop_head}:\n").unwrap();
 
-    // Fill next stage (overlaps with the current stage's mma).
-    emit_fill_next(out, 0); // stage is managed by the caller's counter
-    emit_ldgdepbar(out);
-
-    // Synchronize: wait for the current stage's fills to be visible.
-    emit_bar_sync(out);
-
-    // Load fragments from smem.
-    emit_load_fragments(out, 0);
-
-    // Compute (mma).
-    emit_compute(out);
-
-    // Stage wrap.
-    emit_stage_modulo(out, sc.stages);
+    // The body closure emits: fill → ldgdepbar → bar.sync → load → compute → stage wrap.
+    body(out, 0);
 
     // K-step increment and branch.
-    emit_branch(out, loop_head);
+    write!(out, "    add.u32 %r2, %r2, {};\n", k_step).unwrap();
+    write!(out, "    setp.ge.u32 %p1, %r2, {};\n", k_bound).unwrap();
+    write!(out, "    @%p1 bra {loop_head};\n").unwrap();
 }
 
 // ---------------------------------------------------------------------------
