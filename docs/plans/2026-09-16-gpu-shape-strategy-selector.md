@@ -247,10 +247,36 @@ on-device optimum:
 A runtime probe was deemed unnecessary: the static model now matches the
 measured optimum on sm_86, and the probe's residual (clock variance,
 cross-GPU calibration) is a future per-device hardware-table concern, not
-a kernel-selection concern. The full post-fix sweep BEATS cuBLAS at every
-shape:
+a kernel-selection concern.
 
-| Shape | Briev | cuBLAS | Ratio |
+### CORRECTED A/B (2026-09-16): cuBLAS best-algo search, interleaved
+
+The original post-fix sweep (below) used cuBLAS's DEFAULT algo and an
+optimistic clock state, claiming "beats cuBLAS at every shape". A rigorous
+re-measurement (cuBLAS best-of-11 tensor algos, interleaved on device 0)
+corrects it:
+
+| Shape | Briev | cuBLAS best | Verdict |
+|-------|-------|-------------|---------|
+| 64³ | 0.16 | 0.05 | Briev 3.2× |
+| 128³ | 0.88 | 0.36 | Briev 2.4× |
+| 256³ | 4.34 | 3.34 | Briev 1.3× |
+| 512³ | 11.3 | 14.3 | **cuBLAS 1.26×** |
+| 1024³ | 20.0 | 19.6 | Briev 1.02× (parity) |
+| 2048³ | 25.4 | 24.5 | Briev 1.04× |
+| 4096³ | 23.4 | 26.2 | **cuBLAS 1.12×** |
+
+**Honest verdict: Briev wins small shapes (64³–256³, up to 3.2×), holds
+parity at 1024³/2048³, and loses 512³ (26%) and 4096³ (12%).** The 4096³
+gap is NOT tile selection — the selector correctly picks our best
+(128×128/stages=3 = 23.4 TF vs our 512-thread 256×128 = 21.0 TF,
+2026-09-11). It is a kernel-efficiency gap: cuBLAS's 256×128 kernel has
+more per-thread register blocking. That is the honest next target (the E8a
+warp-specialization path).
+
+### Original (DEPRECATED) post-fix sweep — retained for the record
+
+| Shape | Briev | cuBLAS (default) | Ratio |
 |-------|-------|--------|-------|
 | 64³ | 0.16 | 0.04 | 4.0× |
 | 128³ | 0.88 | 0.33 | 2.7× |

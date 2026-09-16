@@ -78,7 +78,35 @@ empirical search artifacts, not formula outputs.
 
 ## Measured results (RTX 3060, sm_86, batch timing, all max_rel ≤ 6e-3)
 
-| Shape | Briev GEMM | cuBLAS | Ratio |
+### Corrected A/B (2026-09-16, interleaved rounds, cuBLAS BEST-algo search)
+
+An earlier table (below, marked DEPRECATED) claimed "Briev beats cuBLAS at
+every shape". That used cuBLAS's DEFAULT algo, which is suboptimal, and a
+different clock state. The rigorous re-measurement — cuBLAS with a
+best-of-11-tensor-algo search, both sides interleaved on device 0, 3+
+rounds each — tells the honest story:
+
+| Shape | Briev | cuBLAS best | Verdict |
+|-------|-------|-------------|---------|
+| 64³   | 0.16 TF | 0.05 TF | **Briev 3.2×** |
+| 128³  | 0.88 TF | 0.36 TF | **Briev 2.4×** |
+| 256³  | 4.34 TF | 3.34 TF | **Briev 1.3×** |
+| 512³  | 11.3 TF | 14.3 TF | cuBLAS 1.26× |
+| 1024³ | 20.0 TF | 19.6 TF | **Briev 1.02×** (parity) |
+| 2048³ | 25.4 TF | 24.5 TF | **Briev 1.04×** |
+| 4096³ | 23.4 TF | 26.2 TF | cuBLAS 1.12× |
+
+**Verdict: Briev decisively wins small shapes (64³/128³/256³), holds
+parity at mid sizes (1024³/2048³), and loses the largest shapes (512³ by
+26%, 4096³ by 12%).** The 4096³ gap is NOT a strategy-selection failure:
+the selector correctly picks the best of OUR strategies (128×128/stages=3,
+23.4 TF vs the 512-thread 256×128 at 21.0 TF measured 2026-09-11), and
+cuBLAS's 256×128 win is a different kernel's register blocking — a
+kernel-efficiency gap, not a tile-selection gap.
+
+### DEPRECATED table (retained for the record — see correction above)
+
+| Shape | Briev GEMM | cuBLAS (default algo) | Ratio |
 |-------|-----------|--------|-------|
 | 64³   | 0.16 TF   | 0.04   | 4.0× |
 | 128³  | 0.88 TF   | 0.33   | 2.7× |
@@ -88,11 +116,12 @@ empirical search artifacts, not formula outputs.
 | 2048³ | 26.31 TF  | 23.63  | 1.11× |
 | 4096³ | 27.05 TF  | 25.42  | 1.06× |
 
-**Briev beats cuBLAS at every measured shape.** The wins came from the
-analysis (tile from shape), not tuning: the small-shape gap (+85%/+87% at
-128³/256³) was the one-config-for-all 128×128 tile underfilling small
-grids; the stage-count residual was the pipeline term over-weighting
-stages=4 (fixed by the occupancy penalty).
+The wins that ARE solid: small shapes (the one-config-for-all 128×128 tile
+underfilled small grids — the selector's smaller tiles close it), and
+mid-size parity. The large-shape gap (512³/4096³) is the honest next-step
+target: cuBLAS's kernel has more per-thread work (register blocking /
+warp-specialization), which the tensor tier's E8a warp-spec path was built
+to explore but has not yet shipped at parity.
 
 ## The fused-attention lesson (Finding C)
 
