@@ -1,0 +1,19 @@
+frgn P(v: Int) -> Int : briev_host_print_int from "lib/runtime/briev_rt.c";
+
+defn only_eq(a: Int, b: Int) -> Int {
+    let r: Int = 5;
+    when a == b { r = 1; };
+    term r;
+};
+defn only_ne(a: Int, b: Int) -> Int {
+    let r: Int = 5;
+    when a != b { r = 0; };
+    term r;
+};
+defn ne_val(a: Int, b: Int) -> Int {
+    term (a != b) as Int;
+};
+
+export defn run() -> Int {
+    term only_eq(7, 7);
+};

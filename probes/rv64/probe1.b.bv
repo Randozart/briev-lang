@@ -1,0 +1,7 @@
+let x: Int = 0;
+defn f() { 
+    match x {
+        7 => x = 1,
+        _ => {}
+    };
+};

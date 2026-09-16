@@ -1,0 +1,63 @@
+// target: riscv64-unknown-none
+// Phase 4 (rv64 capability kernel): the micro-kernel capability demo.
+//
+// Two user-mode tasks print through the ecall syscall boundary; the CLINT
+// machine-timer preempts them and the scheduler round-robins by RESTART
+// (each slice re-enters the task body from its top — sound for stateless
+// slice bodies; resume scheduling rides the same frame rewrite by keeping
+// the saved pc instead). Gate: QEMU prints ABABAB… — one char per tick
+// (0.1 s @ 10 MHz CLINT), interleaved through the syscall boundary.
+//
+// Shape of the machine:
+//   bootstrap node reset    — authored machine entry (sp/.bss scaffold is
+//                             compiler-owned; the body arms the trap vector,
+//                             initializes task contexts, enables interrupts)
+//   node trap_service @ 7   — machine-serviced: direct mode routes ALL traps
+//                             here; the body dispatches on mcause (7 = timer,
+//                             8 = ecall-from-U)
+//   the full_context scaffold (compiler-owned) saves x1–x31+sp into
+//   @__briev_trap_frame, swaps to the kernel stack, runs the body, restores,
+//   and mrets — the context switch IS the frame rewrite below.
+//
+// Kernel memory map (offsets from @__briev_trap_frame):
+//     0..256    live trap context (compiler-owned scaffold layout)
+//   256..768    task contexts ×2 (same layout; slot 31 = saved pc)
+//   768         kernel tick cell (published, task-readable)
+//   2560..      task stacks ×2 (512 bytes each)
+
+let armed: Int    = 0;
+let current: Int  = 0;
+let ticks: Int    = 0;
+
+// ── register-access shim (the riscv::register pattern) ────────────────
+defn trap_frame_base() -> Int      { Asm#("raw", "la $0, __briev_trap_frame", 0); }
+defn trap_cause() -> Int           { (Asm#("raw", "csrrs $0, mcause, zero", 0)) & 15; }
+defn mepc() -> Int                 { Asm#("raw", "csrrs $0, mepc, zero", 0); }
+defn set_mepc(v: Int)              { Asm#("raw", "csrw mepc, $1", v); }
+defn enter_user_mode()             { Asm#("raw", "csrc mstatus, $1", 6144); }
+defn uart_putc(c: Int)             { VolatileStore#(0x10000000 as Ptr<Int>, c); }
+defn frame_store(off: Int, v: Int) { VolatileStore#((trap_frame_base() + off) as Ptr<Int>, v); }
+defn frame_load(off: Int) -> Int   { VolatileLoad#((trap_frame_base() + off) as Ptr<Int>); }
+defn task_pc_a() -> Int            { Asm#("raw", "la $0, task_a", 0); }
+defn task_pc_b() -> Int            { Asm#("raw", "la $0, task_b", 0); }
+
+// Task bodies — one print per slice, then park (j self) until preempted.
+// The scheduler restarts them at their top each switch.
+defn task_a() {
+    Asm#("raw", "li a0, 65; li a7, 64; ecall", 0);   // write 'A'
+    Asm#("raw", "1: j 1b", 0);                       // park until preempted
+};
+defn task_b() {
+    Asm#("raw", "li a0, 66; li a7, 64; ecall", 0);   // write 'B'
+    Asm#("raw", "1: j 1b", 0);                       // park until preempted
+};
+
+// ── context helpers (8-byte slots; slot 31 = saved pc) ────────────────
+defn ctx_base(id: Int) -> Int  { trap_frame_base() + 256 + id * 256; }
+defn stack_top(id: Int) -> Int { trap_frame_base() + 2560 + id * 512 + 512 - 16; }
+defn task_entry(id: Int) -> Int {
+    when id == 0 {
+        return task_pc_a();
+    };
+    return task_pc_b();
+}

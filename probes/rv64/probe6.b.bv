@@ -1,0 +1,8 @@
+let n: Int = 0;
+node svc @ 7 [n >= 0] {
+    match n {
+        7 => n = 1,
+        _ => {}
+    };
+    term;
+};

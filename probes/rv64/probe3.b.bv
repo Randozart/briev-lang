@@ -1,0 +1,7 @@
+let r: Int = 0;
+let c: Int = 0;
+txn t() [c >= 0][c >= 0] {
+    when r == 1 {
+        c = 1;
+    };
+};

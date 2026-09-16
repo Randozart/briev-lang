@@ -1,0 +1,10 @@
+let n: Int = 0;
+defn s1() { n = 7; };
+defn s2() { };
+defn f() {
+    match n {
+        7 => s1(),
+        8 => s2(),
+        _ => {}
+    };
+};

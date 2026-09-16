@@ -1,0 +1,22 @@
+// Probe: qualified enum paths through the CIRCT backend.
+// Expect: clean capability rejection (no enums in register-level logic),
+// not a panic.
+enum Http {
+    Ok(Int),
+    Fail,
+};
+
+defn pick(h: Http) -> Int {
+  term match h {
+    Http::Ok(v) => v,
+    Http::Fail => 0 - 1,
+  };
+};
+
+let done: Int = 0;
+let acc: Int = 0;
+
+node run [done == 0][done == 2] {
+  acc = pick(Http::Ok(7));
+  done = 2;
+}
