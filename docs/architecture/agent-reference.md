@@ -61,6 +61,16 @@ variant — never a metadata key that codegen must check.
   registry, fundamental types) it is PascalCase; if a user could rename it and
   the compiler still works it is snake_case.
 
+### 1.1.1 Universal chaining (2026-09-16)
+
+Every `.`-suffixed call — method, `#` intrinsic, `$` compile-time navigation,
+`!` plugin, `^`/`^^` reflection — applies the right-side operation to the
+left-side result. The suffix is a naming convention selecting dispatch, not a
+different syntax. Priority: member → operation/intrinsic (`#`) → plugin
+intercept (`!`) → UFCS fallback. Power features: `.N>>`/`.name>>`
+back-references (leading args), `expr >> name` captures, `.(Type)>>` casts.
+Full reference: `docs/architecture/universal-chaining.md`.
+
 ### 1.2 `<-` arrow operator (2026-08-01, Phase 3)
 
 Statement-level only. The arrow has no `&` marker — the dispatch finds the
