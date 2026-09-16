@@ -72,7 +72,7 @@ pub fn run(items: &[TopLevel]) -> CausalGraph {
             if overlap.is_empty() {
                 continue;
             }
-            let proof = if entails(&a.post_facts, &a.pre_facts, &b.pre_facts) {
+            let proof = if entails(&a.post_facts, &a.pre_facts, &b.pre_facts, &a.writes) {
                 EdgeProof::Proven
             } else {
                 EdgeProof::Weak
@@ -281,14 +281,22 @@ fn as_field_fact(e: &Expr) -> Option<FieldFact> {
 }
 
 /// Conservative structural entailment: every `next` conjunct must be
-/// entailed by `curr` facts (A's post — fields A rewrote) or `prior`
-/// facts (A's pre — fields A preserves). Conjuncts on fields with no
-/// stated fact anywhere (calls, triggers, enum literals) are not provable
-/// v1 → the edge is WEAK.
-pub fn entails(curr: &[FieldFact], prior: &[FieldFact], next: &[FieldFact]) -> bool {
+/// entailed by `curr` facts (A's post — fields A rewrote) or, for fields
+/// A does NOT rewrite (A preserves them), by A's own `prior` facts. A
+/// rewritten field cannot vouch for itself through the pre — a self-edge
+/// is PROVEN only if the post alone re-establishes the pre. Conjuncts on
+/// fields with no stated fact anywhere (calls, triggers, enum literals)
+/// are not provable v1 → the edge is WEAK.
+pub fn entails(
+    curr: &[FieldFact],
+    prior: &[FieldFact],
+    next: &[FieldFact],
+    rewritten: &BTreeSet<String>,
+) -> bool {
     next.iter().all(|n| {
         let by_curr = curr.iter().any(|c| c.field == n.field && dominates(c, n));
-        let by_prior = prior.iter().any(|p| p.field == n.field && dominates(p, n));
+        let by_prior = !rewritten.contains(&n.field)
+            && prior.iter().any(|p| p.field == n.field && dominates(p, n));
         by_curr || by_prior
     })
 }
@@ -530,6 +538,33 @@ mod tests {
         assert!(g.refusals.is_empty());
         let e = g.edges.iter().find(|e| e.from == "producer" && e.to == "consumer").expect("edge");
         assert_eq!(e.proof, EdgeProof::Proven, "[y==1] post entails [y==1] pre");
+    }
+
+    #[test]
+    fn rewritten_field_cannot_vouch_for_own_pre() {
+        // 2026-09-16 (electronics fixups): A rewrites `y` (y = 2) but its
+        // post does NOT re-establish `y == 1`; its pre (`y == 1`) must not
+        // vouch for B's matching pre through the stale pre-facts. The edge is
+        // WEAK — A destroys the very state B requires. Before the fix A's pre
+        // entailed B's pre and the edge was falsely PROVEN.
+        let src = r#"
+            let y: Int = 0;
+            node a
+                [y == 1]
+                [y == 2]
+            { y = 2; }
+            node b
+                [y == 1]
+                [y == 2]
+            { }
+        "#;
+        let g = graph(src);
+        let e = g.edges.iter().find(|e| e.from == "a" && e.to == "b").expect("a->b edge");
+        assert_eq!(
+            e.proof,
+            EdgeProof::Weak,
+            "a rewrites y without re-establishing y==1 — the edge must be WEAK, not PROVEN"
+        );
     }
 
     #[test]
