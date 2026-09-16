@@ -877,32 +877,33 @@ fn fused_attention_mma_kv_staged_ptx(
     out.push_str("    mov.f32 %c4, 0f00000000; mov.f32 %c5, 0f00000000; mov.f32 %c6, 0f00000000; mov.f32 %c7, 0f00000000;\n");
     for kstep in 0..(k1 / 16) {
         // Fill bsmem with Kt panel: Kt[(kstep*16 + krow)][n_panel*16 .. +16].
-        // 16 threads fill 16 rows; each row = 16 f16 = 32 bytes = 2× v4.b32.
+        // 32 threads fill the 16×16 tile: thread t fills row t/2, col-half
+        // (t%2)*8 → 8 f16 (16 B). Row-major smem: row k at k*32, col n at n*2.
+        // NB: r12/r14 temps only — r9 (warp) must survive to the B reads.
         out.push_str("    mov.u32 %r6, %r1;\n"); // lane
-        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
-        // global Kt addr: b_off + (kstep*16 + lane) * kn * 2 + n_panel * 32
+        out.push_str("    shr.u32 %r6, %r6, 1;\n"); // lane/2 (krow)
+        out.push_str("    and.b32 %r7, %r1, 1;\n"); // lane%2 (half)
+        // global Kt addr: b_off + (kstep*16 + krow)*kn*2 + n_panel*32 + half*16
         out.push_str(&format!("    add.u64 %rd3, %rd1, {};\n", b_off));
-        out.push_str(&format!("    mov.u32 %r7, {};\n", kstep * 16));
-        out.push_str("    add.u32 %r7, %r7, %r6;\n");
-        out.push_str(&format!("    mul.lo.u32 %r7, %r7, {};\n", kn * 2));
-        out.push_str("    mov.u32 %r8, %r10;\n");
-        out.push_str("    mul.lo.u32 %r8, %r8, 32;\n");
-        out.push_str("    add.u32 %r7, %r7, %r8;\n");
-        out.push_str("    mul.wide.u32 %rd2, %r7, 1;\n");
+        out.push_str(&format!("    mov.u32 %r12, {};\n", kstep * 16));
+        out.push_str("    add.u32 %r12, %r12, %r6;\n");
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", kn * 2));
+        out.push_str("    mov.u32 %r14, %r10;\n");
+        out.push_str("    mul.lo.u32 %r14, %r14, 32;\n");
+        out.push_str("    add.u32 %r12, %r12, %r14;\n");
+        out.push_str("    mul.lo.u32 %r14, %r7, 16;\n");
+        out.push_str("    add.u32 %r12, %r12, %r14;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r12, 1;\n");
         out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
-        // smem dst: bsmem + lane * 32
+        // smem dst: bsmem + krow*32 + half*16
         out.push_str("    mov.u64 %rd6, %rd5;\n");
-        out.push_str("    shl.b32 %r7, %r6, 5;\n"); // lane * 32
-        out.push_str("    mul.wide.u32 %rd4, %r7, 1;\n");
+        out.push_str("    mul.lo.u32 %r12, %r6, 32;\n");
+        out.push_str("    mul.lo.u32 %r14, %r7, 16;\n");
+        out.push_str("    add.u32 %r12, %r12, %r14;\n");
+        out.push_str("    mul.wide.u32 %rd4, %r12, 1;\n");
         out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
-        // Fill if lane < 16
-        out.push_str("    setp.lt.u32 %p1, %r6, 16;\n");
-        out.push_str("    @%p1 bra KFILL_GO;\n");
-        out.push_str("    bra.uni KFILL_SKIP;\n");
-        out.push_str("KFILL_GO:\n");
         out.push_str("    ld.global.v4.b32 {%f0,%f1,%f2,%f3}, [%rd3];\n");
         out.push_str("    st.shared.v4.b32 [%rd6], {%f0,%f1,%f2,%f3};\n");
-        out.push_str("KFILL_SKIP:\n");
         out.push_str("    bar.sync 0;\n");
 
         // A fragments from Q (direct global loads — same as fused_attention_mma_ptx).
@@ -926,26 +927,48 @@ fn fused_attention_mma_kv_staged_ptx(
         out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * k1 * 2));
         out.push_str("    ld.global.b32 %a3, [%rd3];\n");
 
-        // B fragments from bsmem (Kt staged).
-        // b0: smem[(row)*32 + 2t'], b1: smem[(row+8)*32 + 2t'] — first mma.
-        out.push_str("    mov.u32 %r6, %r3;\n");
-        out.push_str("    shl.b32 %r6, %r6, 5;\n"); // row * 32
-        out.push_str("    add.u32 %r6, %r6, %r5;\n"); // + 2t'
+        // B fragments from bsmem (Kt staged): byte = k*32 + n*2 (row-major
+        // 16-col tile). b0 = (k=2t', n=t/4) & (k=2t'+1, n=t/4) packed;
+        // b1 = k+8 (byte +8*32). Second mma reads n+8 (byte +16).
+        out.push_str("    mov.u32 %r6, %r5;\n");
+        out.push_str("    mul.lo.u32 %r6, %r6, 32;\n");
+        out.push_str("    mov.u32 %r8, %r3;\n");
+        out.push_str("    mul.lo.u32 %r8, %r8, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
         out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
         out.push_str("    add.u64 %rd3, %rd5, %rd2;\n");
-        out.push_str("    ld.shared.b32 %b0, [%rd3];\n");
-        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * 32));
-        out.push_str("    ld.shared.b32 %b1, [%rd3];\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n"); // next k row
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str("    sub.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    add.u64 %rd3, %rd3, 256;\n"); // k+8 rows
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
         out.push_str(&format!(
             "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c0,%c1,%c2,%c3}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c0,%c1,%c2,%c3}};\n"
         ));
-        // Second mma: B at cols +8 → smem offset +16 bytes.
-        out.push_str("    add.u32 %r6, %r6, 16;\n");
+        // Second mma: B cols +8 (n = t/4 + 8) → +16 bytes.
+        out.push_str("    mov.u32 %r6, %r5;\n");
+        out.push_str("    mul.lo.u32 %r6, %r6, 32;\n");
+        out.push_str("    mov.u32 %r8, %r3;\n");
+        out.push_str("    add.u32 %r8, %r8, 8;\n");
+        out.push_str("    mul.lo.u32 %r8, %r8, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
         out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
         out.push_str("    add.u64 %rd3, %rd5, %rd2;\n");
-        out.push_str("    ld.shared.b32 %b0, [%rd3];\n");
-        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * 32));
-        out.push_str("    ld.shared.b32 %b1, [%rd3];\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str("    sub.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    add.u64 %rd3, %rd3, 256;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
         out.push_str(&format!(
             "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c4,%c5,%c6,%c7}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c4,%c5,%c6,%c7}};\n"
         ));
@@ -1002,28 +1025,29 @@ fn fused_attention_mma_kv_staged_ptx(
     out.push_str("    mov.f32 %c4, 0f00000000; mov.f32 %c5, 0f00000000; mov.f32 %c6, 0f00000000; mov.f32 %c7, 0f00000000;\n");
     for kstep in 0..(kn / 16) {
         // Fill bsmem with V panel: V[(kstep*16 + krow)][n_panel*16 .. +16].
-        out.push_str("    mov.u32 %r6, %r1;\n");
-        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+        // 32 threads fill the 16×16 tile (same as Kt): row = lane/2, half = lane%2.
+        out.push_str("    mov.u32 %r6, %r1;\n"); // lane
+        out.push_str("    shr.u32 %r6, %r6, 1;\n"); // lane/2 (krow)
+        out.push_str("    and.b32 %r7, %r1, 1;\n"); // lane%2 (half)
         out.push_str(&format!("    add.u64 %rd3, %rd1, {};\n", v_off));
-        out.push_str(&format!("    mov.u32 %r7, {};\n", kstep * 16));
-        out.push_str("    add.u32 %r7, %r7, %r6;\n");
-        out.push_str(&format!("    mul.lo.u32 %r7, %r7, {};\n", on * 2));
-        out.push_str("    mov.u32 %r8, %r10;\n");
-        out.push_str("    mul.lo.u32 %r8, %r8, 32;\n");
-        out.push_str("    add.u32 %r7, %r7, %r8;\n");
-        out.push_str("    mul.wide.u32 %rd2, %r7, 1;\n");
+        out.push_str(&format!("    mov.u32 %r12, {};\n", kstep * 16));
+        out.push_str("    add.u32 %r12, %r12, %r6;\n");
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", on * 2));
+        out.push_str("    mov.u32 %r14, %r10;\n");
+        out.push_str("    mul.lo.u32 %r14, %r14, 32;\n");
+        out.push_str("    add.u32 %r12, %r12, %r14;\n");
+        out.push_str("    mul.lo.u32 %r14, %r7, 16;\n");
+        out.push_str("    add.u32 %r12, %r12, %r14;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r12, 1;\n");
         out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
         out.push_str("    mov.u64 %rd6, %rd5;\n");
-        out.push_str("    shl.b32 %r7, %r6, 5;\n");
-        out.push_str("    mul.wide.u32 %rd4, %r7, 1;\n");
+        out.push_str("    mul.lo.u32 %r12, %r6, 32;\n");
+        out.push_str("    mul.lo.u32 %r14, %r7, 16;\n");
+        out.push_str("    add.u32 %r12, %r12, %r14;\n");
+        out.push_str("    mul.wide.u32 %rd4, %r12, 1;\n");
         out.push_str("    add.u64 %rd6, %rd6, %rd4;\n");
-        out.push_str("    setp.lt.u32 %p1, %r6, 16;\n");
-        out.push_str("    @%p1 bra VFILL_GO;\n");
-        out.push_str("    bra.uni VFILL_SKIP;\n");
-        out.push_str("VFILL_GO:\n");
         out.push_str("    ld.global.v4.b32 {%f0,%f1,%f2,%f3}, [%rd3];\n");
         out.push_str("    st.shared.v4.b32 [%rd6], {%f0,%f1,%f2,%f3};\n");
-        out.push_str("VFILL_SKIP:\n");
         out.push_str("    bar.sync 0;\n");
 
         // A from ssmem: S'[(row)][kstep*16 + 2t'].
@@ -1042,25 +1066,47 @@ fn fused_attention_mma_kv_staged_ptx(
         out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * kn * 2));
         out.push_str("    ld.shared.b32 %a3, [%rd3];\n");
 
-        // B from bsmem (V staged).
-        out.push_str("    mov.u32 %r6, %r3;\n");
-        out.push_str("    shl.b32 %r6, %r6, 5;\n");
-        out.push_str("    add.u32 %r6, %r6, %r5;\n");
+        // B from bsmem (V staged): byte = k*32 + n*2. b0 = (2t', t/4),
+        // b1 = k+8. Second mma reads n+8 (+16 bytes).
+        out.push_str("    mov.u32 %r6, %r5;\n");
+        out.push_str("    mul.lo.u32 %r6, %r6, 32;\n");
+        out.push_str("    mov.u32 %r8, %r3;\n");
+        out.push_str("    mul.lo.u32 %r8, %r8, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
         out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
         out.push_str("    add.u64 %rd3, %rd5, %rd2;\n");
-        out.push_str("    ld.shared.b32 %b0, [%rd3];\n");
-        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * 32));
-        out.push_str("    ld.shared.b32 %b1, [%rd3];\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str("    sub.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    add.u64 %rd3, %rd3, 256;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
         out.push_str(&format!(
             "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c0,%c1,%c2,%c3}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c0,%c1,%c2,%c3}};\n"
         ));
-        // Second mma: B at cols +8.
-        out.push_str("    add.u32 %r6, %r6, 16;\n");
+        // Second mma: B cols +8.
+        out.push_str("    mov.u32 %r6, %r5;\n");
+        out.push_str("    mul.lo.u32 %r6, %r6, 32;\n");
+        out.push_str("    mov.u32 %r8, %r3;\n");
+        out.push_str("    add.u32 %r8, %r8, 8;\n");
+        out.push_str("    mul.lo.u32 %r8, %r8, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
         out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
         out.push_str("    add.u64 %rd3, %rd5, %rd2;\n");
-        out.push_str("    ld.shared.b32 %b0, [%rd3];\n");
-        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * 32));
-        out.push_str("    ld.shared.b32 %b1, [%rd3];\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str("    sub.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    add.u64 %rd3, %rd3, 256;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
         out.push_str(&format!(
             "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c4,%c5,%c6,%c7}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c4,%c5,%c6,%c7}};\n"
         ));

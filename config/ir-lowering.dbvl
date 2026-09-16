@@ -82,3 +82,8 @@ spirv_image_storage: 0;
 // seeding landed (runner + Track A + runtime).
 gpu_schedule_buffer_reuse: 1;
 ptx_tensor_f16acc: 1;
+// 2026-09-16 (fused attention kv-staged): coalesced 16-byte smem fills for
+// Kt/V panels while Q stays as direct global loads. Correct but a wash at
+// 512² (+9%) vs 1024² (−10%) — the load path is not the fused kernel's
+// dominant bottleneck (block tile 16 rows has no Kt/V reuse across m-tiles).
+ptx_fused_staged: 0;
