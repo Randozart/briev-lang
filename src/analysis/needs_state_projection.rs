@@ -168,7 +168,7 @@ fn emit_expr_flat(out: &mut Vec<String>, expr: &Expr) {
         // mirrors export_abi.rs expr_needs_state so the Briev pass sees the
         // same nodes the Rust reference does.
         Expr::Cast(inner, _) => emit_expr_flat(out, inner),
-        Expr::MethodCall(recv, name, args, _) => {
+        Expr::MethodCall(recv, name, args, _, _) => {
             out.push(format!("C:{}", name));
             emit_expr_flat(out, recv);
             for a in args { emit_expr_flat(out, a); }

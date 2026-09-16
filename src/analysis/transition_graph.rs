@@ -1107,7 +1107,7 @@ fn collect_state_identifiers(expr: &Expr, state_fields: &HashSet<String>, out: &
         // 2026-07-31 (A5): MethodCall / Reflect receivers ARE uses — a
         // struct-typed state field that is a method-call receiver (or
         // reflected upon) must not be dead-eliminated.
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             collect_state_identifiers(recv, state_fields, out);
             for arg in args {
                 collect_state_identifiers(arg, state_fields, out);

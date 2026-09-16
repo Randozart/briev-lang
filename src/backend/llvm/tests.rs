@@ -1123,6 +1123,7 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
                 "inc".to_string(),
                 vec![],
                 None,
+                vec![],
             )),
             Statement::Assign(
                 Expr::Identifier("ticks".to_string()),
@@ -1324,6 +1325,7 @@ fn spawn_pool_countdown_program_storage(
                 "inc".to_string(),
                 vec![],
                 None,
+                vec![],
             )),
             Statement::Assign(
                 Expr::Identifier("ticks".to_string()),
@@ -1553,6 +1555,7 @@ fn test_spawn_only_base_registers_pool() {
                 "inc".to_string(),
                 vec![],
                 None,
+                vec![],
             )),
             Statement::Assign(
                 Expr::Identifier("ticks".to_string()),

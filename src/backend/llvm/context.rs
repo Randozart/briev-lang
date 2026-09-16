@@ -677,7 +677,7 @@ fn collect_free_expr(
                 collect_free_expr(&arm.body, bound, free);
             }
         }
-        crate::ast::Expr::MethodCall(recv, _, args, _) => {
+        crate::ast::Expr::MethodCall(recv, _, args, _, _) => {
             collect_free_expr(recv, bound, free);
             collect_free_exprs(args, bound, free);
         }
@@ -802,6 +802,16 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// `end` labels. Pushed when a `foreach` body begins, popped after. A
     /// `break;` emits `br label %<top>` — the nearest enclosing foreach end.
     pub foreach_break_labels: Vec<String>,
+    /// 2026-09-16 (universal chaining): chain result stack — (register, type,
+    /// source expr) triples for the dot-chain currently being emitted.
+    /// Positional back-references (`.N>>`) resolve from here (`.1` = last
+    /// element); the source expr lets the UFCS fallback reconstruct a leading
+    /// argument without losing the value. Cleared when the outermost call of a
+    /// chain finishes.
+    pub chain_stack: Vec<(String, Type, Expr)>,
+    /// 2026-09-16: nesting depth of `emit_method_call`. 0 = outermost call;
+    /// the stack is cleared when the outermost call completes.
+    pub chain_depth: usize,
 
     // Register type caches
     pub reg_float_cache: HashMap<String, String>,
@@ -1110,6 +1120,8 @@ impl FunctionContext {
             self_binding: None,
             self_prefix: None,
             foreach_break_labels: Vec::new(),
+            chain_stack: Vec::new(),
+            chain_depth: 0,
             reg_float_cache: HashMap::new(),
             reg_type_cache: HashMap::new(),
             ssa_old_int_regs: HashMap::new(),

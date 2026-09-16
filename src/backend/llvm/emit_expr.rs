@@ -1112,7 +1112,7 @@ impl LlvmBackend {
                     // (the Index arm's String-element path inttoprts), so no
                     // extra conversion here.
                     let out_tmp = self.fun.gen_reg();
-                    return self.emit_method_call(out, &out_tmp, obj, "At", &[(**index).clone()], indent);
+                    return self.emit_method_call(out, &out_tmp, obj, "At", &[(**index).clone()], &[], indent);
                 }
                 let idx_reg = self.emit_expr(out, index, indent);
                 // 2026-08-10: clone so gep_index can take &mut self while the
@@ -1680,11 +1680,11 @@ impl LlvmBackend {
             Expr::Reflect(recv, target, kind) => {
                 return self.emit_reflection(out, v, recv, target, *kind, indent);
             }
-            Expr::MethodCall(recv, name, args, _) => {
+            Expr::MethodCall(recv, name, args, _, refs) => {
                 // 2026-07-31 (A5): self-bound member emission. Emit the
                 // receiver's struct address, bind `self`, bind the params,
                 // emit the member body inline, restore the previous binding.
-                return self.emit_method_call(out, v, recv, name, args, indent);
+                return self.emit_method_call(out, v, recv, name, args, refs, indent);
             }
             Expr::DerivationBlock(_) | Expr::FormattingAnnotation(_) => {
                 writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
@@ -1875,6 +1875,14 @@ impl LlvmBackend {
                 let reg = self.fun.gen_reg();
                 writeln!(out, "{indent}{reg} = call double @__briev_f64_to_bits(double {value})").ok();
                 TypedRegister { name: reg, ty: Type::float() }
+            }
+            Expr::Capture { expr, name } => {
+                // 2026-09-16: bind the captured name to the register so a later
+                // `.name>>func()` back-reference can resolve it as a leading arg.
+                let r = self.emit_expr_inner(out, v, expr, indent);
+                self.fun.let_bindings.insert(name.clone(), r.name.clone());
+                self.fun.let_binding_types.insert(name.clone(), r.ty.clone());
+                r
             }
         }
     }
@@ -2693,8 +2701,14 @@ impl LlvmBackend {
         recv: &Expr,
         name: &str,
         args: &[Expr],
+        refs: &[ChainRef],
         indent: &str,
     ) -> TypedRegister {
+        // 2026-09-16: chain-stack depth management. The outermost call (depth 0
+        // on entry) clears the stack when the whole chain completes; inner calls
+        // leave it in place so outer back-references can resolve it.
+        let is_outer = self.fun.chain_depth == 0;
+        self.fun.chain_depth += 1;
         let recv_tmp = self.fun.gen_reg();
         // 2026-08-07 (object instance pools): an unpacked instance receiver
         // (`b.set(...)`) — `b` has no slot (its members unpacked), so emitting
@@ -2748,6 +2762,58 @@ impl LlvmBackend {
                 }
             }
         }
+        // 2026-09-16: record the receiver on the chain stack. Nested
+        // MethodCall/Capture receivers already pushed their own result; a plain
+        // receiver (base value, identifier, field load) is pushed here so
+        // back-references can resolve it.
+        if !matches!(recv, Expr::MethodCall(..) | Expr::Capture { .. }) {
+            self.fun.chain_stack.push((recv_reg.name.clone(), recv_reg.ty.clone(), (*recv).clone()));
+        }
+        // 2026-09-16: resolve chain back-references to leading argument
+        // registers (+ their source exprs for the UFCS fallback).
+        let mut leading_regs: Vec<(String, Type)> = Vec::new();
+        let mut leading_exprs: Vec<Expr> = Vec::new();
+        for cr in refs {
+            match cr {
+                ChainRef::Positional(n) => {
+                    let idx = self
+                        .fun
+                        .chain_stack
+                        .len()
+                        .checked_sub(*n)
+                        .filter(|i| *n > 0 && *i < self.fun.chain_stack.len());
+                    match idx {
+                        Some(i) => {
+                            leading_regs.push((self.fun.chain_stack[i].0.clone(), self.fun.chain_stack[i].1.clone()));
+                            leading_exprs.push(self.fun.chain_stack[i].2.clone());
+                        }
+                        None => {
+                            panic!(
+                                "back-reference '.{}>>': the chain has only {} available result(s); '.1' is the immediately previous result",
+                                n,
+                                self.fun.chain_stack.len()
+                            );
+                        }
+                    }
+                }
+                ChainRef::Named(cname) => {
+                    let reg = self.fun.let_bindings.get(cname).cloned().unwrap_or_else(|| {
+                        panic!(
+                            "named back-reference '.{}>>': no capture '{}' — bind one with `expr >> {}`",
+                            cname, cname, cname
+                        )
+                    });
+                    let ty = self
+                        .fun
+                        .let_binding_types
+                        .get(cname)
+                        .cloned()
+                        .unwrap_or(Type::int());
+                    leading_regs.push((reg.clone(), ty.clone()));
+                    leading_exprs.push(Expr::Identifier(cname.clone()));
+                }
+            }
+        }
         let members = self.ctx.obj_members.get(&type_name).cloned().unwrap_or_default();
         // 2026-08-14 (UOL §6b.2): `a.OpName#(b)` — UFCS method form. Strip a
         // trailing `#` so the member lookup matches the op member (`op At`,
@@ -2765,23 +2831,39 @@ impl LlvmBackend {
                 // through the intrinsic signature (`Add#`) or generative op
                 // identity, NOT a bare top-level function named `Add`.
                 let mut all = vec![(*recv).clone()];
+                all.extend(leading_exprs.iter().cloned());
                 all.extend(args.iter().cloned());
-                return self.emit_expr_inner(out, v, &Expr::Call(name.to_string(), all, None), indent);
+                let r = self.emit_expr_inner(out, v, &Expr::Call(name.to_string(), all, None), indent);
+                if is_outer { self.fun.chain_stack.clear(); }
+                self.fun.chain_depth -= 1;
+                return r;
             }
             if self.ctx.defn_params.contains_key(name) {
                 let mut all = vec![(*recv).clone()];
+                all.extend(leading_exprs.iter().cloned());
                 all.extend(args.iter().cloned());
-                return self.emit_user_call(out, v, name, &all, indent);
+                let r = self.emit_user_call(out, v, name, &all, indent);
+                if is_outer { self.fun.chain_stack.clear(); }
+                self.fun.chain_depth -= 1;
+                return r;
             }
             panic!("method call '.{}()': no member '{}' on '{}'", name, name, type_name);
         };
-        let arg_regs: Vec<(String, Type)> = args.iter().map(|a| {
+        let mut arg_regs: Vec<(String, Type)> = leading_regs;
+        arg_regs.extend(args.iter().map(|a| {
             let arg_tmp = self.fun.gen_reg();
             let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
             (r.name, r.ty)
-        }).collect();
-
-        self.emit_member_body(out, v, MemberInvocation { recv_reg: &recv_reg, type_name: &type_name, member: &member, arg_regs: &arg_regs, prefix: recv_prefix }, indent)
+        }));
+        // 2026-09-16: push this call's result so outer chain back-references
+        // can resolve it; clear the whole stack when the outermost call ends.
+        let result = self.emit_member_body(out, v, MemberInvocation { recv_reg: &recv_reg, type_name: &type_name, member: &member, arg_regs: &arg_regs, prefix: recv_prefix }, indent);
+        self.fun.chain_stack.push((result.name.clone(), result.ty.clone(), Expr::MethodCall(Box::new((*recv).clone()), name.to_string(), args.to_vec(), None, refs.to_vec())));
+        if is_outer {
+            self.fun.chain_stack.clear();
+        }
+        self.fun.chain_depth -= 1;
+        result
     }
 
     /// 2026-07-31 (A5/A6): emit a member body with `self` bound to the

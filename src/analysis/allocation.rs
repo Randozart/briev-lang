@@ -307,7 +307,7 @@ impl<'a> DagBuilder<'a> {
             | Expr::Identifier(_) | Expr::Lambda(_, _) | Expr::Within(_, _)
             | Expr::DerivationBlock(_) | Expr::FormattingAnnotation(_) | Expr::StructLiteral { .. } => {}
             Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => { self.walk_expr(recv); }
-            Expr::MethodCall(recv, _, args, _) => {
+            Expr::MethodCall(recv, _, args, _, _) => {
                 self.walk_expr(recv);
                 for a in args { self.walk_expr(a); }
             }
@@ -321,6 +321,7 @@ Expr::Slice { .. } => {},
             Expr::Spawn { args, .. } => {},
             Expr::Named { inner, .. } => { self.walk_expr(inner); },
             Expr::UnitLiteral { .. } => {}
+            Expr::Capture { expr, .. } => { self.walk_expr(expr); }
         }
     }
 }

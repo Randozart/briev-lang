@@ -2367,7 +2367,7 @@ fn collect_hoist_identifiers(
             }
         }
         Expr::Field(base, _) => collect_hoist_identifiers(base, fields, constants, out),
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             collect_hoist_identifiers(recv, fields, constants, out);
             for a in args {
                 collect_hoist_identifiers(a, fields, constants, out);

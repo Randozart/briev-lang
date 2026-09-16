@@ -151,9 +151,39 @@ result.value         // Result unwrapping
 **Priority hierarchy:**
 1. **Internal struct field/defn** — if `subject` has a field or internal `defn` defined in its struct body, it compiles as a direct access
 2. **Operation/intrinsic (`OpName#`)** — `subject.OpName#(args)` resolves to `OpName#(subject, args)` (the op member or registered intrinsic)
-3. **UFCS fallback** — otherwise resolves to `method(subject, args)`
+3. **Plugin intercept (`name!`)** — `subject.name!(args)` dispatches through the plugin system (2026-09-16: chained plugin calls carry the receiver)
+4. **UFCS fallback** — otherwise resolves to `method(subject, args)`
 
 **What this means**: Briev is transparent. If you see `something.field`, that struct exists somewhere in the standard library. Nothing is hidden magic.
+
+**2026-09-16 (universal chaining):** every `.`-call — method, `#` intrinsic, `$` compile-time navigation, `!` plugin, `^`/`^^` reflection — follows the same rule: **the right-side operation applies to the left-side result**. The suffix is a naming convention that tells the compiler how to dispatch, not a different syntax. `a.Nav$(x)` and `Nav$(a, x)` are the same call; `a.serialize!()` and `a.serialize(a)` share the receiver-preserving shape.
+
+### Chaining power features (2026-09-16)
+
+```briev
+// Capture an intermediate value without breaking the chain.
+data.parse() >> input
+    .validate() >> valid
+    .emit(valid, input);
+
+// Back-references — pass an earlier chain result as a leading argument.
+variable
+    .op()                 // result 1
+    .2>>secondOp()        // secondOp(op_result, variable) — .2 = 2 ops back
+    .step_1,1>>combined() // combined(prev_result, step_1, ...)
+
+// Cast annotation — cast then continue.
+value.rawParse().(Int)>>clamp(0, 255);
+```
+
+- `.1` is the immediately previous result (the same value the chain would
+  pass implicitly); `.2` is two back, `.N` is N back.
+- References are **leading arguments**: `receiver.N>>func(a)` dispatches as
+  `func(receiver, <ref>, a)` — the receiver binds `self` (member) or arg 0
+  (UFCS), then the resolved references precede the written args.
+- `expr >> name` captures the result as `name` for later `.name>>` references.
+- `>>` is a capture only at a chain position (followed by `.`, `;`, `}`, or
+  end of expression); inside `f(x >> y)` it stays a shift.
 
 ---
 

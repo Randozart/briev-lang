@@ -5,7 +5,7 @@
 // @ prefix forces any token to Quoted(bytes).
 
 use super::helpers::Parser;
-use crate::ast::{BinaryOpKind, Expr, ReflectKind, SpawnStorage, UnaryOpKind};
+use crate::ast::{BinaryOpKind, ChainRef, Expr, ReflectKind, SpawnStorage, Type, UnaryOpKind};
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
@@ -318,6 +318,101 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// 2026-09-16: Convert a parsed `.name` token (identifier or integer) into
+    /// a `ChainRef` — a number is positional, anything else is named.
+    fn chain_ref_from_name(name: &str) -> ChainRef {
+        match name.parse::<usize>() {
+            Ok(n) => ChainRef::Positional(n),
+            Err(_) => ChainRef::Named(name.to_string()),
+        }
+    }
+
+    /// 2026-09-16: true when the next two tokens are `identifier (` — the
+    /// shape a back-reference call must have after `>>`.
+    fn peek_is_call_head(&self) -> bool {
+        self.peek_is_identifier() && matches!(self.peek_next(), Some(Token::LParen))
+    }
+
+    /// 2026-09-16: true when the token two ahead is a chain-capture terminator
+    /// (`.`, `;`, `}`, or EOF) — the shape `expr >> name` must be read as a
+    /// capture rather than a shift expression. `>>` inside an argument list
+    /// (`f(x >> y)`) is followed by `)`, so it stays a shift.
+    fn peek_is_capture_terminator(&self) -> bool {
+        match self.tokens.get(self.pos + 2).map(|(t, _)| t) {
+            Some(Token::Dot) | Some(Token::Semicolon) | Some(Token::RBrace) | None => true,
+            _ => false,
+        }
+    }
+
+    /// 2026-09-16: Try to parse a back-reference list after `.name`/`.N`.
+    /// Returns `Some(refs)` and consumes through `>>` when the tokens form a
+    /// back-reference (`.N>>f()`, `.name>>f()`, `.N,M>>f()`). Returns `None`
+    /// with the position unchanged otherwise — the caller then treats
+    /// `.name` as ordinary field access. A call (`identifier(`) must follow
+    /// the `>>`, which keeps `x.2 >> d` (shift) unambiguous.
+    fn try_parse_chain_refs(&mut self, first_name: &str) -> Result<Option<Vec<ChainRef>>, SyntaxError> {
+        let save = self.pos;
+        if self.eat(&Token::Shr) {
+            if self.peek_is_call_head() {
+                return Ok(Some(vec![Self::chain_ref_from_name(first_name)]));
+            }
+            self.pos = save;
+            return Ok(None);
+        }
+        if !self.check(&Token::Comma) {
+            return Ok(None);
+        }
+        // Comma-separated ref list — may also be a tuple/arg separator.
+        let mut refs = vec![Self::chain_ref_from_name(first_name)];
+        while self.eat(&Token::Comma) {
+            let next = match self.peek() {
+                Some(Token::Integer(_)) => match self.advance() {
+                    Some((Token::Integer(n), _)) => n.to_string(),
+                    _ => unreachable!(),
+                },
+                Some(Token::Identifier(_)) => self.expect_identifier()?,
+                _ => { self.pos = save; return Ok(None); }
+            };
+            refs.push(Self::chain_ref_from_name(&next));
+        }
+        if !self.eat(&Token::Shr) || !self.peek_is_call_head() {
+            self.pos = save;
+            return Ok(None);
+        }
+        Ok(Some(refs))
+    }
+
+    /// 2026-09-16: `.(Type)>>func(args)` — cast the previous result to `Type`,
+    /// then invoke `func` with the cast value as receiver. Returns `None` with
+    /// the position unchanged when the tokens are not this form.
+    fn try_parse_cast_chain(&mut self, recv: &Expr) -> Result<Option<Expr>, SyntaxError> {
+        let save = self.pos;
+        if !self.eat(&Token::LParen) {
+            return Ok(None);
+        }
+        let type_name = match self.peek() {
+            Some(Token::Identifier(n)) if self.known_types.contains(n) => n.clone(),
+            _ => { self.pos = save; return Ok(None); }
+        };
+        self.advance();
+        if !self.eat(&Token::RParen) || !self.eat(&Token::Shr) || !self.peek_is_call_head() {
+            self.pos = save;
+            return Ok(None);
+        }
+        let func_name = self.expect_identifier()?;
+        self.expect(Token::LParen)?;
+        let mut args = Vec::new();
+        if !self.check(&Token::RParen) {
+            loop {
+                args.push(self.parse_expression()?);
+                if !self.eat(&Token::Comma) { break; }
+            }
+        }
+        self.expect(Token::RParen)?;
+        let cast = Expr::Cast(Box::new(recv.clone()), Type::Custom(type_name));
+        Ok(Some(Expr::MethodCall(Box::new(cast), func_name, args, None, vec![])))
+    }
+
     fn parse_postfix(&mut self, allow_index: bool) -> Result<Expr, SyntaxError> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -386,6 +481,13 @@ impl<'a> Parser<'a> {
                     expr = Expr::Call(qualified, Vec::new(), None);
                 }
             } else if self.eat(&Token::Dot) {
+                // 2026-09-16: cast annotation in a chain — `.(Type)>>func()`.
+                if self.check(&Token::LParen) {
+                    if let Some(cast_expr) = self.try_parse_cast_chain(&expr)? {
+                        expr = cast_expr;
+                        continue;
+                    }
+                }
                 // Field access: a.f — the receiver is PRESERVED.
                 // 2026-08-17 (tuple correctness, plan
                 // 2026-08-17-hashmap-storage-tuple-correctness.md): a NUMERIC
@@ -412,10 +514,13 @@ impl<'a> Parser<'a> {
                 } else {
                     self.expect_identifier()?
                 };
-                // 2026-07-21: Navigation chain call: a.first$(args).
-                if name.ends_with('$') && self.check(&Token::LParen) {
+                // 2026-09-16: back-reference chain — `.N>>f()` / `.name>>f()`.
+                // Must be checked before field access so `.2>>f()` is not read
+                // as tuple element `.2` followed by a shift.
+                if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
+                    let func_name = self.expect_identifier()?;
                     self.expect(Token::LParen)?;
-                    let mut args = vec![expr];
+                    let mut args = Vec::new();
                     if !self.check(&Token::RParen) {
                         loop {
                             args.push(self.parse_expression()?);
@@ -423,7 +528,43 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(Token::RParen)?;
-                    expr = Expr::Call(name, args, None);
+                    expr = Expr::MethodCall(Box::new(expr), func_name, args, None, chain_refs);
+                // 2026-07-21: Navigation chain call: a.first$(args).
+                // 2026-09-16: Unified under MethodCall — receiver is first-class.
+                } else if name.ends_with('$') && self.check(&Token::LParen) {
+                    let recv = expr;
+                    self.expect(Token::LParen)?;
+                    let mut args = Vec::new();
+                    if !self.check(&Token::RParen) {
+                        loop {
+                            args.push(self.parse_expression()?);
+                            if !self.eat(&Token::Comma) { break; }
+                        }
+                    }
+                    self.expect(Token::RParen)?;
+                    expr = Expr::MethodCall(Box::new(recv), name, args, None, vec![]);
+                } else if self.check(&Token::Not) {
+                    // 2026-09-16: Chained plugin intercept — obj.name!(args).
+                    // The receiver is the expression built so far.
+                    self.advance(); // consume !
+                    if !self.eat(&Token::LParen) {
+                        return self.error_at_current("expected '(' after '!' for plugin-intercept call");
+                    }
+                    let mut p_args = Vec::new();
+                    if !self.check(&Token::RParen) {
+                        loop {
+                            p_args.push(self.parse_expression()?);
+                            if !self.eat(&Token::Comma) { break; }
+                        }
+                    }
+                    self.expect(Token::RParen)?;
+                    expr = Expr::PluginIntercept {
+                        name,
+                        args: p_args,
+                        type_args: vec![],
+                        receiver: Some(Box::new(expr)),
+                        chain_refs: vec![],
+                    };
                 } else if self.check(&Token::LParen) {
                     // 2026-07-31: Method call: a.f(x) — receiver preserved.
                     self.expect(Token::LParen)?;
@@ -435,7 +576,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(Token::RParen)?;
-                    expr = Expr::MethodCall(Box::new(expr), name, args, None);
+                    expr = Expr::MethodCall(Box::new(expr), name, args, None, vec![]);
                 } else {
                     expr = Expr::Field(Box::new(expr), name);
                 }
@@ -544,7 +685,23 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect(Token::RParen)?;
-                expr = Expr::PluginIntercept { name: p_name, args: p_args, type_args: vec![] };
+                expr = Expr::PluginIntercept {
+                    name: p_name,
+                    args: p_args,
+                    type_args: vec![],
+                    receiver: None,
+                    chain_refs: vec![],
+                };
+            } else if self.check(&Token::Shr)
+                && self.peek_next_is_identifier()
+                && self.peek_is_capture_terminator()
+            {
+                // 2026-09-16: chain capture — `expr >> name`. Binds the current
+                // result to `name` and keeps the chain alive so a following
+                // `.next()` continues on the same value.
+                self.advance(); // consume >>
+                let name = self.expect_identifier()?;
+                expr = Expr::Capture { expr: Box::new(expr), name };
             } else {
                 break;
             }
@@ -1389,6 +1546,216 @@ mod tests {
                 assert_eq!(storage, crate::ast::SpawnStorage::Pooled);
             }
             other => panic!("expected spawn, got {other:?}"),
+        }
+    }
+
+    // ── 2026-09-16: universal chaining ─────────────────────────────
+
+    #[test]
+    fn chained_plugin_intercept_parses() {
+        // `data.serialize!()` — the plugin intercept now carries a receiver.
+        let expr = parse_expr("data.serialize!()").unwrap();
+        match expr {
+            Expr::PluginIntercept { name, receiver, chain_refs, .. } => {
+                assert_eq!(name, "serialize");
+                assert!(receiver.is_some(), "chained plugin must carry a receiver");
+                assert!(chain_refs.is_empty());
+            }
+            other => panic!("expected plugin intercept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chained_plugin_intercept_after_method_parses() {
+        // `a.b().serialize!(x)` — a full chain ending in a plugin call.
+        let expr = parse_expr("a.b().serialize!(x)").unwrap();
+        match expr {
+            Expr::PluginIntercept { name, args, receiver, .. } => {
+                assert_eq!(name, "serialize");
+                assert_eq!(args.len(), 1);
+                let recv = receiver.expect("must carry receiver");
+                assert!(matches!(recv.as_ref(), Expr::MethodCall(..)));
+            }
+            other => panic!("expected plugin intercept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_plugin_intercept_has_no_receiver() {
+        let expr = parse_expr("print!(1)").unwrap();
+        match expr {
+            Expr::PluginIntercept { name, receiver, .. } => {
+                assert_eq!(name, "print");
+                assert!(receiver.is_none(), "bare plugin must have no receiver");
+            }
+            other => panic!("expected plugin intercept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dollar_nav_chain_unifies_under_method_call() {
+        // `a.First$()` must produce MethodCall (receiver preserved), not Call.
+        let expr = parse_expr("a.First$()").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, args, _, refs) => {
+                assert_eq!(name, "First$");
+                assert!(matches!(recv.as_ref(), Expr::Identifier(n) if n == "a"));
+                assert!(args.is_empty());
+                assert!(refs.is_empty());
+            }
+            other => panic!("expected MethodCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dollar_nav_chain_continues() {
+        // `Tag$("x").First$()` — bare call then chained method.
+        let expr = parse_expr("Tag$(\"x\").First$()").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, ..) => {
+                assert_eq!(name, "First$");
+                assert!(matches!(recv.as_ref(), Expr::Call(n, ..) if n == "Tag$"));
+            }
+            other => panic!("expected MethodCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chain_capture_parses() {
+        // `a.b() >> step;` at statement level becomes Expr::Capture.
+        let expr = parse_expr("a.b() >> step").unwrap();
+        match expr {
+            Expr::Capture { expr, name } => {
+                assert_eq!(name, "step");
+                assert!(matches!(expr.as_ref(), Expr::MethodCall(..)));
+            }
+            other => panic!("expected capture, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chain_capture_keeps_chain_alive() {
+        // `a.b() >> x.c()` — the capture binds then the chain continues.
+        let expr = parse_expr("a.b() >> x .c()").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, ..) => {
+                assert_eq!(name, "c");
+                assert!(matches!(recv.as_ref(), Expr::Capture { name: n, .. } if n == "x"));
+            }
+            other => panic!("expected MethodCall wrapping capture, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_inside_args_stays_shift() {
+        // `f(x >> y)` — `>>` inside an argument list is a shift, not capture.
+        let expr = parse_expr("f(x >> y)").unwrap();
+        match expr {
+            Expr::Call(_, args, _) => {
+                assert!(matches!(&args[0], Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, ..)),
+                    "x >> y must stay a shift, got {:?}", args[0]);
+            }
+            other => panic!("expected call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn positional_backref_parses() {
+        // `.2>>func()` — positional back-reference in a chain.
+        let expr = parse_expr("a.b().2>>func()").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, args, _, refs) => {
+                assert_eq!(name, "func");
+                assert!(args.is_empty());
+                assert_eq!(refs.len(), 1);
+                assert_eq!(refs[0], ChainRef::Positional(2));
+                assert!(matches!(recv.as_ref(), Expr::MethodCall(..)));
+            }
+            other => panic!("expected MethodCall with ref, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn named_backref_parses() {
+        // `.step_1>>func()` — named capture reference.
+        let expr = parse_expr("a.b().step_1>>func()").unwrap();
+        match expr {
+            Expr::MethodCall(_, name, _, _, refs) => {
+                assert_eq!(name, "func");
+                assert_eq!(refs.len(), 1);
+                assert_eq!(refs[0], ChainRef::Named("step_1".into()));
+            }
+            other => panic!("expected MethodCall with named ref, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_backrefs_parse() {
+        // `.step_1,1>>func(a)` — multiple references become leading args.
+        let expr = parse_expr("a.b().step_1,1>>func(x)").unwrap();
+        match expr {
+            Expr::MethodCall(_, name, args, _, refs) => {
+                assert_eq!(name, "func");
+                assert_eq!(args.len(), 1);
+                assert_eq!(refs.len(), 2);
+                assert_eq!(refs[0], ChainRef::Named("step_1".into()));
+                assert_eq!(refs[1], ChainRef::Positional(1));
+            }
+            other => panic!("expected MethodCall with two refs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cast_annotation_parses() {
+        // `value.(Int)>>clamp(0, 255)` — cast then call.
+        let expr = parse_expr("value.(Int)>>clamp(0, 255)").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, args, _, refs) => {
+                assert_eq!(name, "clamp");
+                assert_eq!(args.len(), 2);
+                assert!(refs.is_empty());
+                assert!(matches!(recv.as_ref(), Expr::Cast(inner, t) if matches!(t, Type::Custom(n) if n == "Int")));
+            }
+            other => panic!("expected cast + MethodCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dot_identifier_without_shr_is_field_access() {
+        // `.name` without `>>` must stay field access, never a reference.
+        let expr = parse_expr("a.b.c").unwrap();
+        match expr {
+            Expr::Field(inner, name) => {
+                assert_eq!(name, "c");
+                assert!(matches!(inner.as_ref(), Expr::Field(_, n) if n == "b"));
+            }
+            other => panic!("expected field access, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dot_number_without_shr_is_tuple_access() {
+        // `.2` without `>>` must stay tuple element access.
+        let expr = parse_expr("t.2").unwrap();
+        match expr {
+            Expr::Field(recv, name) => {
+                assert_eq!(name, "2");
+                assert!(matches!(recv.as_ref(), Expr::Identifier(n) if n == "t"));
+            }
+            other => panic!("expected tuple field access, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backref_requires_call_after_shr() {
+        // `.2>>` must be followed by a call; otherwise fall back to field+shift.
+        let expr = parse_expr("t.2 >> 3").unwrap();
+        match expr {
+            Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, l, r) => {
+                assert!(matches!(l.as_ref(), Expr::Field(..)));
+                assert!(matches!(r.as_ref(), Expr::Decimal(3)));
+            }
+            other => panic!("expected shift after field, got {other:?}"),
         }
     }
 }

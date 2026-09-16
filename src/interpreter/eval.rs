@@ -246,7 +246,13 @@ pub fn eval_expr(
 
         // ── Field / reflection / method ─────────────────────────
         Expr::Reflect(recv, name, kind) => eval_reflect(recv, name, *kind, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions }),
-        Expr::MethodCall(recv, name, args, _) => eval_method_call(recv, name, args, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions }),
+        Expr::MethodCall(recv, name, args, _, refs) => {
+            if refs.is_empty() {
+                eval_method_call(recv, name, args, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions })
+            } else {
+                eval_method_call_chained(recv, name, args, refs, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions })
+            }
+        }
 
         // ── Formatting annotation ────────────────────────────────
         Expr::FormattingAnnotation(_) => Ok(Value::Void),
@@ -357,6 +363,11 @@ pub fn eval_expr(
             }
             Expr::Named { inner, .. } => eval_expr(inner, heap, bindings, functions),
             Expr::UnitLiteral { value, .. } => Ok(f64_to_bits(*value)),
+            Expr::Capture { expr, name } => {
+                let val = eval_expr(expr, heap, bindings, functions)?;
+                bindings.insert(name.clone(), val.clone());
+                Ok(val)
+            }
 
     }
 }
@@ -825,7 +836,18 @@ fn eval_method_call(
     let recv_val = eval_expr(recv, heap, scope.bindings, scope.functions)?;
     let arg_vals: Result<Vec<Value>, _> =
         args.iter().map(|a| eval_expr(a, heap, scope.bindings, scope.functions)).collect();
-    let arg_vals = arg_vals?;
+    dispatch_method_value(recv_val, name, arg_vals?, heap, scope)
+}
+
+/// 2026-09-16: dispatch a method call given the already-evaluated receiver and
+/// arguments (chain back-references prepend leading values here).
+fn dispatch_method_value(
+    recv_val: Value,
+    name: &str,
+    arg_vals: Vec<Value>,
+    heap: &mut VirtualHeap,
+    scope: &mut EvalScope,
+) -> Result<Value, RuntimeError> {
     if name.ends_with('#') {
         let mut all = vec![recv_val];
         all.extend(arg_vals);
@@ -911,6 +933,113 @@ fn eval_method_call(
         return result;
     }
     Ok(scope.bindings.get(name).cloned().unwrap_or(Value::Void))
+}
+
+/// 2026-09-16: evaluate a method call carrying chain back-references.
+/// Walks the receiver chain to collect the result stack, resolves `.N` and
+/// `.name` references to leading argument values, then dispatches.
+fn eval_method_call_chained(
+    recv: &Expr,
+    name: &str,
+    args: &[Expr],
+    refs: &[ChainRef],
+    heap: &mut VirtualHeap,
+    scope: &mut EvalScope,
+) -> Result<Value, RuntimeError> {
+    let stack = eval_chain_stack(recv, heap, scope)?;
+    let recv_val = stack.last().cloned().unwrap_or(Value::Void);
+    let mut leading = Vec::new();
+    for cr in refs {
+        match cr {
+            ChainRef::Positional(n) => {
+                let idx = stack.len().checked_sub(*n).filter(|i| *n > 0 && *i < stack.len());
+                match idx {
+                    Some(i) => leading.push(stack[i].clone()),
+                    None => {
+                        return Err(RuntimeError::TypeError {
+                            expected: "a valid chain back-reference".into(),
+                            found: format!(
+                                "'.{}>>' — the chain has only {} available result(s); '.1' is the immediately previous result",
+                                n, stack.len()
+                            ),
+                        });
+                    }
+                }
+            }
+            ChainRef::Named(name) => {
+                let val = scope.bindings.get(name).cloned().ok_or_else(|| RuntimeError::TypeError {
+                    expected: "a named chain capture in scope".into(),
+                    found: format!(
+                        "'.{}>>' — no capture named '{}'; bind one with `expr >> {}`",
+                        name, name, name
+                    ),
+                })?;
+                leading.push(val);
+            }
+        }
+    }
+    let arg_vals: Result<Vec<Value>, _> =
+        args.iter().map(|a| eval_expr(a, heap, scope.bindings, scope.functions)).collect();
+    let mut all = leading;
+    all.extend(arg_vals?);
+    dispatch_method_value(recv_val, name, all, heap, scope)
+}
+
+/// 2026-09-16: compute the runtime chain stack `[base, r1, ..., prev]` for an
+/// expression. Nested MethodCall/Capture receivers are walked; the stack is
+/// the sequence of values produced before the current call.
+fn eval_chain_stack(
+    expr: &Expr,
+    heap: &mut VirtualHeap,
+    scope: &mut EvalScope,
+) -> Result<Vec<Value>, RuntimeError> {
+    match expr {
+        Expr::MethodCall(recv, name, args, _, refs) => {
+            let mut stack = eval_chain_stack(recv, heap, scope)?;
+            let recv_val = stack.last().cloned().unwrap_or(Value::Void);
+            let mut leading = Vec::new();
+            for cr in refs {
+                match cr {
+                    ChainRef::Positional(n) => {
+                        let idx = stack.len().checked_sub(*n).filter(|i| *n > 0 && *i < stack.len());
+                        match idx {
+                            Some(i) => leading.push(stack[i].clone()),
+                            None => {
+                                return Err(RuntimeError::TypeError {
+                                    expected: "a valid chain back-reference".into(),
+                                    found: format!(
+                                        "'.{}>>' — the chain has only {} available result(s)",
+                                        n, stack.len()
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    ChainRef::Named(name) => {
+                        let val = scope.bindings.get(name).cloned().ok_or_else(|| {
+                            RuntimeError::TypeError {
+                                expected: "a named chain capture in scope".into(),
+                                found: format!(
+                                    "'.{}>>' — no capture named '{}'; bind one with `expr >> {}`",
+                                    name, name, name
+                                ),
+                            }
+                        })?;
+                        leading.push(val);
+                    }
+                }
+            }
+            let arg_vals: Result<Vec<Value>, _> =
+                args.iter().map(|a| eval_expr(a, heap, scope.bindings, scope.functions)).collect();
+            let mut all = leading;
+            all.extend(arg_vals?);
+            let result = dispatch_method_value(recv_val, name, all, heap, scope)?;
+            stack.push(result);
+            Ok(stack)
+        }
+        Expr::Capture { expr, .. } => eval_chain_stack(expr, heap, scope),
+        _ => Ok(vec![eval_expr(expr, heap, scope.bindings, scope.functions)?]),
+    }
 }
 
 /// The three optional slice bounds (`array[start:end:stride]`), borrowed.
@@ -2095,6 +2224,49 @@ mod tests {
         .to_string()
     }
 
+    // 2026-09-16: chain back-references (`.N>>`) resolve to leading args.
+    #[test]
+    fn chain_backref_prepends_leading_arg() {
+        // `5.Add#(3).1>>Add#(0)` — the `.1` leading ref forwards the previous
+        // result (8) as the intrinsic's FIRST operand: Add#(8, 8, 0) = 16.
+        // Without leading passing this would be Add#(8, 0) = 8.
+        let inner = Expr::MethodCall(
+            Box::new(Expr::Decimal(5)),
+            "Add#".into(),
+            vec![Expr::Decimal(3)],
+            None,
+            vec![],
+        );
+        let outer = Expr::MethodCall(
+            Box::new(inner),
+            "Add#".into(),
+            vec![Expr::Decimal(0)],
+            None,
+            vec![ChainRef::Positional(1)],
+        );
+        let val = eval1(&outer);
+        assert_eq!(val.as_i64(), Some(16), "leading ref must reach the intrinsic");
+    }
+
+    #[test]
+    fn chain_capture_binds_name() {
+        // `expr >> name` binds the value; the interpreter's Capture arm stores it.
+        let mut bindings = HashMap::new();
+        let cap = Expr::Capture {
+            expr: Box::new(Expr::Decimal(42)),
+            name: "step".into(),
+        };
+        let val = eval_expr(
+            &cap,
+            &mut VirtualHeap::new(),
+            &mut bindings,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(val.as_i64(), Some(42));
+        assert_eq!(bindings.get("step").and_then(Value::as_i64), Some(42));
+    }
+
     // 2026-08-01 (audit): Char/Bool are first-class values — literals
     // produce Value::Atom(Atom::Char)/Value::Atom(Atom::Bool), and casts convert across categories
     // (mirroring codegen, so Print# prints the same thing on both backends).
@@ -2996,15 +3168,15 @@ defn go() -> Int {
 
     #[test]
     fn test_method_call_intrinsic_dispatches_with_receiver() {
-        let m = Expr::MethodCall(Box::new(Expr::Decimal(-7)), "Abs#".into(), vec![], None);
+        let m = Expr::MethodCall(Box::new(Expr::Decimal(-7)), "Abs#".into(), vec![], None, vec![]);
         assert_eq!(eval1(&m).as_i64(), Some(7));
     }
 
     #[test]
     fn test_method_call_binding_lookup() {
-        let m = Expr::MethodCall(Box::new(Expr::Decimal(5)), "foo".into(), vec![], None);
+        let m = Expr::MethodCall(Box::new(Expr::Decimal(5)), "foo".into(), vec![], None, vec![]);
         assert_eq!(eval1(&m), Value::Void);
-        let m2 = Expr::MethodCall(Box::new(Expr::Decimal(5)), "seven".into(), vec![], None);
+        let m2 = Expr::MethodCall(Box::new(Expr::Decimal(5)), "seven".into(), vec![], None, vec![]);
         let mut heap = VirtualHeap::new();
         let mut bindings = HashMap::new();
         bindings.insert("seven".into(), Value::int(7));

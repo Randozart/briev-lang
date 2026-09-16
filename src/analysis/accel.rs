@@ -811,7 +811,7 @@ fn child_exprs(e: &Expr) -> Vec<&Expr> {
         Expr::UnaryOp(_, a) => vec![a.as_ref()],
         Expr::Index(o, i) => vec![o.as_ref(), i.as_ref()],
         Expr::Call(_, args, _) => args.iter().collect(),
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             let mut v: Vec<&Expr> = vec![recv.as_ref()];
             v.extend(args.iter());
             v

@@ -285,6 +285,7 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         Expr::Range { .. } => { SymbolicValue::Unknown },
         Expr::Spawn { .. } => { SymbolicValue::Unknown },
         Expr::Named { inner, .. } => eval_symbolic(inner, state),
+        Expr::Capture { expr, .. } => eval_symbolic(expr, state),
 
     }
 }

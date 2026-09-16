@@ -1628,6 +1628,42 @@ exists (member wins, then UFCS). Symbols are sugar over the same dispatch.
 Metadata that is compiler-known but non-operational is reflection. Transfer
 `c <- x` / `x <- c` resolves the mutation operators (§15.3).
 
+**2026-09-16 (universal chaining):** every `.`-suffixed call — method, `#`
+intrinsic, `$` compile-time navigation, `!` plugin, `^`/`^^` reflection —
+obeys one rule: *the right-side operation applies to the left-side result.*
+The suffix is a naming convention selecting the dispatch mechanism (member →
+intrinsic → plugin → UFCS fallback); the receiver is preserved as the
+operation's input. `a.Nav$(x)` and `Nav$(a, x)` are the same call; a chained
+plugin `a.serialize!(x)` carries the receiver. Priority: member, then
+operation/intrinsic (`#`), then plugin intercept (`!`), then UFCS fallback.
+
+**Chain captures and back-references (§11.4.1):**
+
+```briev
+data.parse() >> input          // capture result as `input`, chain continues
+    .validate() >> valid
+    .emit(valid, input);
+
+variable
+    .op()                      // result 1
+    .2>>secondOp()             // secondOp(op_result, variable) — .2 = 2 ops back
+    .step_1,1>>combined()      // combined(prev, step_1) — named + positional refs
+```
+
+- `expr >> name` captures the chain result into `name`, available for later
+  `.name>>` references. A capture does not break the chain.
+- `.N>>func(a)` passes the result N operations back as a **leading argument**:
+  `func(receiver, <ref>, a)` — the receiver binds `self` (member) or arg 0
+  (UFCS), the resolved references precede the written args. `.1` is the
+  immediately previous result (the implicit receiver); `.2` is two back.
+- `.(Type)>>func()` casts the previous result to `Type` before the call.
+- `>>` is a capture only at a chain position (followed by `.`, `;`, `}`, or
+  expression end); inside `f(x >> y)` it remains the shift operator. `.N>>`/
+  `.name>>` are back-references only when followed by a call head
+  (`identifier (`).
+- A literal receiver directly before `.N>>` (e.g. `5.1>>f()`) lexes as a
+  float; parenthesize (`(5).1>>f()`) or use a named expression.
+
 #### 11.4.2 `String` is `Iterable<Char>`
 
 `String` is a fundamental (`Data`-refining) type — a `[len][bytes]` buffer

@@ -253,7 +253,7 @@ fn emit_expr(e: &Expr) -> SExpr {
             };
             list(&[atom(kind_atom), emit_expr(recv), atom(target)])
         }
-        Expr::MethodCall(recv, name, args, _) => {
+        Expr::MethodCall(recv, name, args, _, _) => {
             let mut children = vec![atom("method"), emit_expr(recv), atom(name)];
             for a in args { children.push(emit_expr(a)); }
             SExpr::List(children)

@@ -90,6 +90,14 @@ impl<'a> Parser<'a> {
         self.tokens.get(self.pos + 1).map(|(t, _)| t)
     }
 
+    /// 2026-09-16: true when the token after the current one is an identifier.
+    /// Used by the chain-capture/back-reference postfix disambiguation.
+    pub fn peek_next_is_identifier(&self) -> bool {
+        self.tokens
+            .get(self.pos + 1)
+            .is_some_and(|(t, _)| matches!(t, Token::Identifier(_)))
+    }
+
     /// 2026-08-05 (Phase 3): `optional frgn` — true when the current token is
     /// the identifier `optional` and the following token is the `frgn` keyword.
     pub fn peek_next_is_frgn(&self) -> bool {

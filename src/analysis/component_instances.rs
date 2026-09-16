@@ -849,7 +849,7 @@ fn expr_vars(e: &Expr, out: &mut std::collections::HashSet<String>) {
         }
         Expr::UnaryOp(_, i) => expr_vars(i, out),
         Expr::Field(o, _) => expr_vars(o, out),
-        Expr::MethodCall(o, _, args, _) => {
+        Expr::MethodCall(o, _, args, _, _) => {
             expr_vars(o, out);
             for a in args.iter() {
                 expr_vars(a, out);
@@ -961,7 +961,7 @@ fn rewrite_expr_mut(e: &mut Expr, qualifier: &dyn Fn(&str) -> Option<String>) {
         }
         Expr::UnaryOp(_, i) => rewrite_expr_mut(i, qualifier),
         Expr::Field(o, _) => rewrite_expr_mut(o, qualifier),
-        Expr::MethodCall(o, _, args, _) => {
+        Expr::MethodCall(o, _, args, _, _) => {
             rewrite_expr_mut(o, qualifier);
             for a in args.iter_mut() {
                 rewrite_expr_mut(a, qualifier);

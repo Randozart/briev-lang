@@ -2,7 +2,13 @@
 
 **Date added:** 2026-06-22  
 **Phase:** Expression-level desugaring  
-**Status:** Complete
+**Status:** **Removed — superseded by universal chaining (2026-09-16)**
+
+> The `|>` pipe token was removed (language audit, 2026-08-05). Its
+> positional-history concept lives on as **universal chaining**
+> (`docs/architecture/universal-chaining.md`): `.N>>`/`.name>>` back-references
+> and `expr >> name` captures under the dot. This page is kept as historical
+> reference for the removed `|>` design.
 
 ## Syntax
 

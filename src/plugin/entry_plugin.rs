@@ -445,7 +445,7 @@ fn rewrite_expr(
     arg_flags: &[(String, Option<String>)],
 ) -> Result<Expr, String> {
     match expr {
-        Expr::PluginIntercept { name, args, type_args } => match name.as_str() {
+        Expr::PluginIntercept { name, args, type_args, receiver: _, chain_refs: _ } => match name.as_str() {
             "entry" => {
                 let cmd = match args.first() {
                     Some(Expr::Quoted(c)) => String::from_utf8_lossy(c).to_string(),
@@ -497,7 +497,7 @@ fn rewrite_expr(
                 let _ = ty;
                 Ok(Expr::Identifier(field))
             }
-            _ => Ok(Expr::PluginIntercept { name, args, type_args }),
+            _ => Ok(Expr::PluginIntercept { name, args, type_args, receiver: None, chain_refs: vec![] }),
         },
         Expr::BinaryOp(kind, l, r) => Ok(Expr::BinaryOp(
             kind,

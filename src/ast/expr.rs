@@ -68,7 +68,8 @@ pub enum Expr {
     Field(Box<Expr>, String),
     /// 2026-07-31: Method call with a receiver: a.f(x). The receiver is
     /// preserved and bound to the `self` parameter of the obj member.
-    MethodCall(Box<Expr>, String, Vec<Expr>, Option<usize>),
+    /// 2026-09-16: Fifth field carries chain back-references (`.N>>` / `.name>>`).
+    MethodCall(Box<Expr>, String, Vec<Expr>, Option<usize>, Vec<ChainRef>),
     /// 2026-07-31: Reflection access: `a.^Length` (runtime) / `a.^^Size`
     /// (compile-time). The receiver is preserved; the target is a PascalCase
     /// compiler-known identifier resolved by the D1 reflection table.
@@ -147,10 +148,21 @@ pub enum Expr {
 
     // ── Plugin intercept ────────────────────────────────────────
     // 2026-07-19: name!(args). Resolved by Front or Mid stage plugins.
+    // 2026-09-16: `receiver` supports chained plugin calls: obj.plugin!(args).
+    // `chain_refs` supports positional/named back-references in chains.
     PluginIntercept {
         name: String,
         args: Vec<Expr>,
         type_args: Vec<Type>,
+        receiver: Option<Box<Expr>>,
+        chain_refs: Vec<ChainRef>,
+    },
+
+    // ── Chain capture ──────────────────────────────────────────
+    // 2026-09-16: `expr >> name;` — capture a chain result into a named variable.
+    Capture {
+        expr: Box<Expr>,
+        name: String,
     },
 
     // ── Metadata ────────────────────────────────────────────────
@@ -180,6 +192,17 @@ pub enum ReflectKind {
     Runtime,
     /// `x.^^Size`, `x.^^Bytes` — compile-time type-derived, foldable.
     CompileTime,
+}
+
+/// 2026-09-16: A reference to a previous chain result — positional or named.
+/// Used in `MethodCall` and `PluginIntercept` to support back-references
+/// (`.N>>`) and named capture references (`.name>>`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChainRef {
+    /// `.N>>` — N operations back (1-indexed, .1 = previous).
+    Positional(usize),
+    /// `.name>>` — reference to a named capture from a `>> name` statement.
+    Named(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,7 +339,7 @@ impl Expr {
             }
             Expr::UnaryOp(_, e) => e.collect_vars_into(acc),
             Expr::Field(e, _) => e.collect_vars_into(acc),
-            Expr::MethodCall(recv, _, args, _) => {
+            Expr::MethodCall(recv, _, args, _, _) => {
                 recv.collect_vars_into(acc);
                 for a in args {
                     a.collect_vars_into(acc);

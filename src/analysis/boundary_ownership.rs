@@ -453,7 +453,7 @@ impl<'a> FlowCtx<'a> {
             Expr::UnaryOp(_, inner) => self.expr_ownership(inner),
             Expr::List(items) => fold_ownership(items.iter().filter_map(|e| self.expr_ownership(e))),
             Expr::Cast(inner, _) => self.expr_ownership(inner),
-            Expr::MethodCall(recv, _, args, _) => {
+            Expr::MethodCall(recv, _, args, _, _) => {
                 let r = self.expr_ownership(recv);
                 let args_own = fold_ownership(args.iter().filter_map(|a| self.expr_ownership(a)));
                 meet_option(r, args_own)
