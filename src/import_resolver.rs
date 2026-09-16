@@ -219,7 +219,7 @@ fn referenced_function_names(item: &TopLevel) -> Vec<String> {
                     expr_calls(a, acc);
                 }
             }
-            crate::ast::Expr::MethodCall(recv, _, args, _) => {
+            crate::ast::Expr::MethodCall(recv, _, args, _, _) => {
                 expr_calls(recv, acc);
                 for a in args {
                     expr_calls(a, acc);

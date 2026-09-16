@@ -323,7 +323,7 @@ fn collect_expr_coll_writes(
     out: &mut HashSet<String>,
 ) {
     match e {
-        Expr::MethodCall(recv, name, _, _) => {
+        Expr::MethodCall(recv, name, _, _, _) => {
             if name == "push" || name == "pop" {
                 insert_if_field(recv, state_inits, out);
             }
@@ -361,7 +361,7 @@ fn coll_name_of(e: &Expr) -> Option<&str> {
         Expr::Identifier(n) => Some(n),
         Expr::Index(base, _) => coll_name_of(base),
         Expr::Field(base, _) => coll_name_of(base),
-        Expr::MethodCall(recv, _, _, _) => coll_name_of(recv),
+        Expr::MethodCall(recv, _, _, _, _) => coll_name_of(recv),
         _ => None,
     }
 }
@@ -457,7 +457,7 @@ fn stmt_contains_push(stmt: &Statement, coll: &str) -> bool {
 
 fn expr_contains_push(e: &Expr, coll: &str) -> bool {
     match e {
-        Expr::MethodCall(recv, name, _, _) => name == "push" && coll_name_of(recv) == Some(coll),
+        Expr::MethodCall(recv, name, _, _, _) => name == "push" && coll_name_of(recv) == Some(coll),
         _ => false,
     }
 }
@@ -636,7 +636,7 @@ fn apply_foreach_transform(
 fn stmt_has_coll_op(s: &Statement) -> bool {
     match s {
         Statement::ArrowAssign { .. } => true,
-        Statement::Expression(Expr::MethodCall(_, name, _, _)) => name == "push" || name == "pop",
+        Statement::Expression(Expr::MethodCall(_, name, _, _, _)) => name == "push" || name == "pop",
         _ => false,
     }
 }
@@ -694,7 +694,7 @@ fn merge_path(t: &mut Track, ta: &Track, tb: Option<&Track>) {
 fn walk_expr(e: &Expr, tracks: &mut HashMap<String, Track>) {
     match e {
         Expr::Call(name, args, _) => walk_call(name, args, tracks),
-        Expr::MethodCall(recv, name, _, _) => {
+        Expr::MethodCall(recv, name, _, _, _) => {
             if let Some(n) = coll_name_of(recv) {
                 if let Some(t) = tracks.get_mut(n) {
                     match name.as_str() {

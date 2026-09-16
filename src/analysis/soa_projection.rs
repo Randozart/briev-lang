@@ -35,7 +35,7 @@ pub(crate) fn collect_ref_names(expr: &Expr, out: &mut Vec<String>) {
         Expr::BinaryOp(_, l, r) => { collect_ref_names(l, out); collect_ref_names(r, out); }
         Expr::UnaryOp(_, e) => collect_ref_names(e, out),
         Expr::Field(recv, _) => collect_ref_names(recv, out),
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             collect_ref_names(recv, out);
             for a in args { collect_ref_names(a, out); }
         }

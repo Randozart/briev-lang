@@ -159,7 +159,7 @@ fn expr_ids(e: &Expr, out: &mut BTreeSet<String>) {
                 expr_ids(a, out);
             }
         }
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             expr_ids(recv, out);
             for a in args {
                 expr_ids(a, out);

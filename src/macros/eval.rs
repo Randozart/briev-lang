@@ -383,6 +383,13 @@ pub fn eval_nav_chain(
         Expr::Call(name, args, _) if name.ends_with('$') || name.ends_with('#') => {
             eval_nav_call(name, args, program, universe, stage, scope, sandbox, pm)
         }
+        // 2026-09-16: MethodCall with $-suffix — unified chaining.
+        // Prepend receiver to args, then delegate to the Call handler.
+        Expr::MethodCall(recv, name, args, _, _) if name.ends_with('$') => {
+            let mut call_args = vec![(**recv).clone()];
+            call_args.extend(args.iter().cloned());
+            eval_nav_call(name, &call_args, program, universe, stage, scope, sandbox, pm)
+        }
         // 2026-07-23: Non-$ function call — look up compile-time fn_registry.
         // 2026-07-25: Fall back to program search for regular defn/txn.
         Expr::Call(name, args, _) => {
@@ -2041,11 +2048,10 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
         }
         // Literals and simple values — no nested identifiers
         Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _) | Expr::Decimal(_) | Expr::Char(_) | Expr::Float(_) | Expr::Bool(_) | Expr::BeginProgram
-        | Expr::TaggedLiteral(_, _)
-        | Expr::FormattingAnnotation(_) | Expr::StructLiteral { .. } | Expr::Slice { .. } => Ok(()),
-| Expr::FormattingAnnotation(_) | Expr::StructLiteral { .. } | Expr::Slice { .. } | Expr::Range { .. } | Expr::Spawn { .. } => Ok(()),
+        | Expr::TaggedLiteral(_,_)
+        | Expr::FormattingAnnotation(_) | Expr::StructLiteral { .. } | Expr::Slice { .. } | Expr::Range { .. } | Expr::Spawn { .. } => Ok(()),
         Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => resolve_dollar_refs_in_expr(recv, scope),
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             resolve_dollar_refs_in_expr(recv, scope)?;
             for a in args {
                 resolve_dollar_refs_in_expr(a, scope)?;
@@ -2054,6 +2060,16 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
         }
         Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
         Expr::Named { inner, .. } => resolve_dollar_refs_in_expr(inner, scope),
+        Expr::Capture { expr, .. } => resolve_dollar_refs_in_expr(expr, scope),
+        Expr::PluginIntercept { receiver, args, .. } => {
+            if let Some(recv) = receiver {
+                resolve_dollar_refs_in_expr(recv, scope)?;
+            }
+            for a in args {
+                resolve_dollar_refs_in_expr(a, scope)?;
+            }
+            Ok(())
+        }
 
     }
 }

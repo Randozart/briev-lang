@@ -1680,7 +1680,7 @@ impl LlvmBackend {
             Expr::Reflect(recv, target, kind) => {
                 return self.emit_reflection(out, v, recv, target, *kind, indent);
             }
-            Expr::MethodCall(recv, name, args, _) => {
+            Expr::MethodCall(recv, name, args, _, _) => {
                 // 2026-07-31 (A5): self-bound member emission. Emit the
                 // receiver's struct address, bind `self`, bind the params,
                 // emit the member body inline, restore the previous binding.
@@ -1876,6 +1876,7 @@ impl LlvmBackend {
                 writeln!(out, "{indent}{reg} = call double @__briev_f64_to_bits(double {value})").ok();
                 TypedRegister { name: reg, ty: Type::float() }
             }
+            Expr::Capture { expr, .. } => self.emit_expr_inner(out, v, expr, indent),
         }
     }
 

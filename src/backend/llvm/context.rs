@@ -677,7 +677,7 @@ fn collect_free_expr(
                 collect_free_expr(&arm.body, bound, free);
             }
         }
-        crate::ast::Expr::MethodCall(recv, _, args, _) => {
+        crate::ast::Expr::MethodCall(recv, _, args, _, _) => {
             collect_free_expr(recv, bound, free);
             collect_free_exprs(args, bound, free);
         }

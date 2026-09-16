@@ -2318,7 +2318,7 @@ impl LlvmBackend {
                     || observable.contains(name)
                     || args.iter().any(|a| Self::has_observable_expr(a, observable))
             }
-            Expr::MethodCall(recv, _, args, _) => {
+            Expr::MethodCall(recv, _, args, _, _) => {
                 Self::has_observable_expr(recv, observable)
                     || args.iter().any(|a| Self::has_observable_expr(a, observable))
             }

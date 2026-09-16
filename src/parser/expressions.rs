@@ -413,9 +413,11 @@ impl<'a> Parser<'a> {
                     self.expect_identifier()?
                 };
                 // 2026-07-21: Navigation chain call: a.first$(args).
+                // 2026-09-16: Unified under MethodCall — receiver is first-class.
                 if name.ends_with('$') && self.check(&Token::LParen) {
+                    let recv = expr;
                     self.expect(Token::LParen)?;
-                    let mut args = vec![expr];
+                    let mut args = Vec::new();
                     if !self.check(&Token::RParen) {
                         loop {
                             args.push(self.parse_expression()?);
@@ -423,7 +425,29 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(Token::RParen)?;
-                    expr = Expr::Call(name, args, None);
+                    expr = Expr::MethodCall(Box::new(recv), name, args, None, vec![]);
+                } else if self.check(&Token::Not) {
+                    // 2026-09-16: Chained plugin intercept — obj.name!(args).
+                    // The receiver is the expression built so far.
+                    self.advance(); // consume !
+                    if !self.eat(&Token::LParen) {
+                        return self.error_at_current("expected '(' after '!' for plugin-intercept call");
+                    }
+                    let mut p_args = Vec::new();
+                    if !self.check(&Token::RParen) {
+                        loop {
+                            p_args.push(self.parse_expression()?);
+                            if !self.eat(&Token::Comma) { break; }
+                        }
+                    }
+                    self.expect(Token::RParen)?;
+                    expr = Expr::PluginIntercept {
+                        name,
+                        args: p_args,
+                        type_args: vec![],
+                        receiver: Some(Box::new(expr)),
+                        chain_refs: vec![],
+                    };
                 } else if self.check(&Token::LParen) {
                     // 2026-07-31: Method call: a.f(x) — receiver preserved.
                     self.expect(Token::LParen)?;
@@ -435,7 +459,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(Token::RParen)?;
-                    expr = Expr::MethodCall(Box::new(expr), name, args, None);
+                    expr = Expr::MethodCall(Box::new(expr), name, args, None, vec![]);
                 } else {
                     expr = Expr::Field(Box::new(expr), name);
                 }
@@ -544,7 +568,13 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect(Token::RParen)?;
-                expr = Expr::PluginIntercept { name: p_name, args: p_args, type_args: vec![] };
+                expr = Expr::PluginIntercept {
+                    name: p_name,
+                    args: p_args,
+                    type_args: vec![],
+                    receiver: None,
+                    chain_refs: vec![],
+                };
             } else {
                 break;
             }

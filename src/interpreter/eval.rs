@@ -246,7 +246,7 @@ pub fn eval_expr(
 
         // ── Field / reflection / method ─────────────────────────
         Expr::Reflect(recv, name, kind) => eval_reflect(recv, name, *kind, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions }),
-        Expr::MethodCall(recv, name, args, _) => eval_method_call(recv, name, args, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions }),
+        Expr::MethodCall(recv, name, args, _, _) => eval_method_call(recv, name, args, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions }),
 
         // ── Formatting annotation ────────────────────────────────
         Expr::FormattingAnnotation(_) => Ok(Value::Void),
@@ -357,6 +357,11 @@ pub fn eval_expr(
             }
             Expr::Named { inner, .. } => eval_expr(inner, heap, bindings, functions),
             Expr::UnitLiteral { value, .. } => Ok(f64_to_bits(*value)),
+            Expr::Capture { expr, name } => {
+                let val = eval_expr(expr, heap, bindings, functions)?;
+                bindings.insert(name.clone(), val.clone());
+                Ok(val)
+            }
 
     }
 }
@@ -2996,15 +3001,15 @@ defn go() -> Int {
 
     #[test]
     fn test_method_call_intrinsic_dispatches_with_receiver() {
-        let m = Expr::MethodCall(Box::new(Expr::Decimal(-7)), "Abs#".into(), vec![], None);
+        let m = Expr::MethodCall(Box::new(Expr::Decimal(-7)), "Abs#".into(), vec![], None, vec![]);
         assert_eq!(eval1(&m).as_i64(), Some(7));
     }
 
     #[test]
     fn test_method_call_binding_lookup() {
-        let m = Expr::MethodCall(Box::new(Expr::Decimal(5)), "foo".into(), vec![], None);
+        let m = Expr::MethodCall(Box::new(Expr::Decimal(5)), "foo".into(), vec![], None, vec![]);
         assert_eq!(eval1(&m), Value::Void);
-        let m2 = Expr::MethodCall(Box::new(Expr::Decimal(5)), "seven".into(), vec![], None);
+        let m2 = Expr::MethodCall(Box::new(Expr::Decimal(5)), "seven".into(), vec![], None, vec![]);
         let mut heap = VirtualHeap::new();
         let mut bindings = HashMap::new();
         bindings.insert("seven".into(), Value::int(7));

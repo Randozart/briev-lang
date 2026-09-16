@@ -81,13 +81,14 @@ impl LlvmBackend {
                 target.clone(),
                 *kind,
             ),
-            Expr::MethodCall(recv, name, args, id) => Expr::MethodCall(
+            Expr::MethodCall(recv, name, args, id, chain_refs) => Expr::MethodCall(
                 Box::new(Self::rewrite_cell_identifiers(recv, cell_name)),
                 name.clone(),
                 args.iter()
                     .map(|a| Self::rewrite_cell_identifiers(a, cell_name))
                     .collect(),
                 *id,
+                chain_refs.clone(),
             ),
             Expr::Index(obj, idx) => Expr::Index(
                 Box::new(Self::rewrite_cell_identifiers(obj, cell_name)),
@@ -158,6 +159,8 @@ impl LlvmBackend {
                     .map(|a| Self::rewrite_cell_identifiers(a, cell_name))
                     .collect(),
                 type_args: vec![],
+                receiver: None,
+                chain_refs: vec![],
             },
             Expr::Exists(name) => { panic!("compile-time existence check '{}' reached LLVM codegen", name) },
             Expr::Slice { array, start, end, stride } => {
@@ -177,6 +180,10 @@ impl LlvmBackend {
                 inner: Box::new(Self::rewrite_cell_identifiers(inner, cell_name)),
             },
             Expr::UnitLiteral { value, unit } => Expr::UnitLiteral { value: *value, unit: unit.clone() },
+            Expr::Capture { expr, name } => Expr::Capture {
+                expr: Box::new(Self::rewrite_cell_identifiers(expr, cell_name)),
+                name: name.clone(),
+            },
 
         }
     }

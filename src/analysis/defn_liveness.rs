@@ -391,7 +391,7 @@ impl<'a> Builder<'a> {
                     self.walk_expr(a, queue);
                 }
             }
-            Expr::MethodCall(recv, _, args, _) => {
+            Expr::MethodCall(recv, _, args, _, _) => {
                 // Op-member dispatch — members are conservatively rooted;
                 // walk receiver/args for their own edges.
                 self.walk_expr(recv, queue);
@@ -676,7 +676,7 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_call_names_expr(a, out);
             }
         }
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             collect_call_names_expr(recv, out);
             for a in args {
                 collect_call_names_expr(a, out);

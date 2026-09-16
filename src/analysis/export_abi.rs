@@ -215,7 +215,7 @@ fn expr_needs_state(
         // an export calling a regular defn through a cast got a STATELESS shim
         // that referenced `%state` (opt: "use of undefined value '%state'").
         Expr::Cast(inner, _) => expr_needs_state(inner, regular, txns, exports, state_fields, memo, visiting),
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             expr_needs_state(recv, regular, txns, exports, state_fields, memo, visiting)
                 || args.iter().any(|a| expr_needs_state(a, regular, txns, exports, state_fields, memo, visiting))
         }

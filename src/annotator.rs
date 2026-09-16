@@ -210,7 +210,7 @@ impl Annotator {
             Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => {
                 self.collect_calls_from_expr(recv, calls);
             }
-            Expr::MethodCall(recv, _, args, _) => {
+            Expr::MethodCall(recv, _, args, _, _) => {
                 self.collect_calls_from_expr(recv, calls);
                 for a in args {
                     self.collect_calls_from_expr(a, calls);
@@ -226,6 +226,9 @@ impl Annotator {
                 self.collect_calls_from_expr(inner, calls);
             }
             Expr::UnitLiteral { .. } => {}
+            Expr::Capture { expr, .. } => {
+                self.collect_calls_from_expr(expr, calls);
+            }
         }
     }
 
@@ -657,7 +660,7 @@ impl Annotator {
                 ReflectKind::Runtime => format!("{}.^{}", self.format_expr(recv), name),
                 ReflectKind::CompileTime => format!("{}.^^{}", self.format_expr(recv), name),
             },
-            Expr::MethodCall(recv, name, args, _) => {
+            Expr::MethodCall(recv, name, args, _, _) => {
                 let args_str: Vec<String> = args.iter().map(|a| self.format_expr(a)).collect();
                 format!("{}.{}({})", self.format_expr(recv), name, args_str.join(", "))
             }
@@ -688,6 +691,9 @@ impl Annotator {
             }
             Expr::UnitLiteral { value, unit } => {
                 format!("{}{}", value, unit)
+            }
+            Expr::Capture { expr, name } => {
+                format!("({}) >> {}", self.format_expr(expr), name)
             }
         }
     }

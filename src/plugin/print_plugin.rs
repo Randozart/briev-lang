@@ -216,7 +216,7 @@ fn walk_expr(
     universe: &TypeUniverse,
 ) -> Result<(), String> {
     match expr {
-        Expr::PluginIntercept { name, args, type_args: _ } => {
+        Expr::PluginIntercept { name, args, type_args: _, receiver: _, chain_refs: _ } => {
             if let Some(replacement) = resolve_print(name, args, known_types, universe)? {
                 *expr = replacement;
             }

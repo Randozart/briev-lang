@@ -1394,7 +1394,7 @@ pub fn infer_expression(
         // receiver's obj type, binds the receiver as the implicit `self`, and
         // validates the args against the member's (type-arg-substituted)
         // parameter list.
-        Expr::MethodCall(recv, name, args, _) => {
+        Expr::MethodCall(recv, name, args, _, _chain_refs) => {
             let (recv_ty, recv_prov) = infer_expression(recv, ctx)?;
             let result_ty = resolve_method_call(recv, &recv_ty, name, args, ctx)?;
             Ok((result_ty, recv_prov))
@@ -1481,6 +1481,7 @@ pub fn infer_expression(
             }
             Expr::Named { inner, .. } => infer_expression(inner, ctx),
             Expr::UnitLiteral { .. } => Ok((Type::float(), Provenance::Unknown)),
+            Expr::Capture { expr, .. } => infer_expression(expr, ctx),
 
     }
 }
@@ -2457,7 +2458,7 @@ fn elaborate_expr(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<
         | Expr::AddrOf(e)
         | Expr::Reflect(e, _, _)
         | Expr::Within(e, _) => elaborate_expr(e, ctx, errors),
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             elaborate_expr(recv, ctx, errors);
             for a in args.iter_mut() {
                 elaborate_expr(a, ctx, errors);

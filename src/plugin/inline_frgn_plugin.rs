@@ -144,7 +144,7 @@ fn rewrite_expr(
     rewrites: &mut Vec<(Expr, Expr)>,
 ) -> Result<(), String> {
     match expr {
-        Expr::PluginIntercept { name, args, type_args: _ } if name == "inline_frgn" => {
+        Expr::PluginIntercept { name, args, type_args: _, receiver: _, chain_refs: _ } if name == "inline_frgn" => {
             // Shape: inline_frgn!(symbol, path, "fn(params) -> ret", call_args...)
             let mut strs = args.iter().take(3).filter_map(|a| match a {
                 Expr::Quoted(b) => Some(String::from_utf8_lossy(b).to_string()),

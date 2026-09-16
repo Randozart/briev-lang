@@ -214,7 +214,7 @@ fn walk_expr_for_storage(e: &Expr, out: &mut HashMap<String, crate::ast::SpawnSt
         Expr::Field(o, _) | Expr::Index(o, _) | Expr::Reflect(o, _, _) => {
             walk_expr_for_storage(o, out)
         }
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             walk_expr_for_storage(recv, out);
             for a in args {
                 walk_expr_for_storage(a, out);
@@ -500,7 +500,7 @@ fn walk_expr(
         Expr::Field(o, _) | Expr::Index(o, _) | Expr::Reflect(o, _, _) => {
             walk_expr(o, multiplier, ctx, live, terms, errors);
         }
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             walk_expr(recv, multiplier, ctx, live, terms, errors);
             for a in args {
                 walk_expr(a, multiplier, ctx, live, terms, errors);

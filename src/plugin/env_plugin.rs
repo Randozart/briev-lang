@@ -112,7 +112,7 @@ fn walk_stmt(stmt: &mut crate::ast::Statement) {
 
 fn walk_expr(expr: &mut Expr) {
     match expr {
-        Expr::PluginIntercept { name, args, type_args: _ } => {
+        Expr::PluginIntercept { name, args, type_args: _, receiver: _, chain_refs: _ } => {
             if let Some(replacement) = resolve_intercept(name, args) {
                 *expr = replacement;
             }
@@ -159,7 +159,7 @@ fn walk_expr(expr: &mut Expr) {
         Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => {
             walk_expr(recv);
         }
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             walk_expr(recv);
             for a in args { walk_expr(a); }
         }
@@ -169,6 +169,7 @@ fn walk_expr(expr: &mut Expr) {
 Expr::Slice { .. } => {},
         Expr::Range { .. } => {},
         Expr::Named { inner, .. } => walk_expr(inner),
+        Expr::Capture { expr, .. } => walk_expr(expr),
 
     }
 }

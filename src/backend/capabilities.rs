@@ -425,7 +425,7 @@ fn check_expr_call_access(e: &Expr, caps: &BackendCapabilities, out: &mut Vec<St
             require(caps.field_access, "field access", caps, out);
             check_expr(recv, caps, out);
         }
-        Expr::MethodCall(recv, _, args, _) => {
+        Expr::MethodCall(recv, _, args, _, _) => {
             require(caps.method_calls, "method calls", caps, out);
             check_expr(recv, caps, out);
             walk_args(args, caps, out);

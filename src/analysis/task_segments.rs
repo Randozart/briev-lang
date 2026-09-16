@@ -213,7 +213,7 @@ fn expr_children(e: &Expr) -> Vec<&Expr> {
         Expr::Index(l, r) => vec![l, r],
         Expr::Range { start, end, .. } => vec![start, end],
         Expr::BinaryOp(_, l, r) => vec![l, r],
-        Expr::Call(_, args, _) | Expr::MethodCall(_, _, args, _) => args.iter().collect(),
+        Expr::Call(_, args, _) | Expr::MethodCall(_, _, args, _, _) => args.iter().collect(),
         _ => Vec::new(),
     }
 }
