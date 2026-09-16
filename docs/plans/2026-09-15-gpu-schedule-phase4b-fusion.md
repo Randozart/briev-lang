@@ -155,6 +155,49 @@ composition, so the fused kernel wins on the S-round-trip it avoids:
 The emergent-fusion thesis holds: one kernel, S never touches HBM, and
 the fused shape beats the composition it replaces.
 
+## Milestone C — vs-cuBLAS composition benchmark — DONE (2026-09-15)
+
+New harness: `benchmarks/gpu/cublas_attn_bench.cu` (nvcc + cuBLAS 13) —
+the same composition the fused kernel replaces (S = Q·kt, S' = S·0.5,
+O = S'·V), f16 operands, f32 acc, beta=0 fresh outputs. Measured on the
+RTX 3060, synchronous, 20 iters:
+
+| shape | Briev fused 1-kernel | Briev 2-kernel | cuBLAS composition |
+|---|---|---|---|
+| 512² | 0.559 ms | 0.577 ms | 0.063 ms |
+| 1024² | 2.271 ms | — | 0.232 ms |
+
+**The fused kernel BEATS the Briev composition (the emergent-fusion
+claim holds) but cuBLAS is ~9-10× faster at the shapes the fused kernel
+supports.** The gap is the fused kernel's LOAD PATH, not its math: the
+direct per-warp global fragment loads have no cp.async/smem staging, so
+the ~54× mma-time overhead dominates. The tensor tier's staged pipeline
+(the fills + ldmatrix) is the missing rung — the same machinery that
+took the 4096³ GEMM from naive to 35 TF. The fused kernel's supported
+shapes are also capped by the S' tile (16·kn·2 ≤ 48KB ⇒ kn ≤ ~1500), so
+it cannot reach the large-K shapes where Briev's tensor kernels approach
+cuBLAS.
+
+Next: the cp.async smem-staged fused kernel (fills + ldmatrix fragments,
+the D3 lesson applied to the fused shape).
+
+The fused kernel moved to the m16n8k16 tensor cores (`fused_attention_mma_ptx`,
+direct per-warp fragment loads, the scaled S' staged in smem). Occupancy
+was the whole game: the first mma version ran 32 single-warp blocks and
+was 3.4× SLOWER than the 2-kernel composition (1.94 vs 0.58 ms @512²) —
+the on-chip-S win was lost to the underfilled SM count. Fix: **8 warps
+per block**, each warp owning an n-slice of the shared S' tile (the
+fragment math is per-LANE, `tid % 32` — using the block tid was the OOB
+bug). The 256-thread blocks give the same total mma count as the
+composition, so the fused kernel wins on the S-round-trip it avoids:
+
+- **@512²: fused 1-kernel 0.559 ms vs 2-kernel composition 0.577 ms** —
+  the fused kernel is ~3% faster (both correct, maxrel ≤ 1e-2).
+- Correct on-device at 128² and 512² (maxrel 0.00026–0.00045).
+
+The emergent-fusion thesis holds: one kernel, S never touches HBM, and
+the fused shape beats the composition it replaces.
+
 ## Milestone C — the vs-cuBLAS composition benchmark (not started)
 
 ## Docs
