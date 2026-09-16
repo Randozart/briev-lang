@@ -126,3 +126,39 @@ makes it a compiler property, not a per-benchmark hack.
 - `docs/architecture/agent-reference.md` §6 if a new standing principle
   emerges (e.g. "the staged pipeline is the general load path").
 - BUGS.md for defects found.
+
+## Experiment results (2026-09-16)
+
+### cuBLAS kernel map (verified via cuda-gdb)
+
+cuBLAS selects **4 different kernels** for 7 sizes on RTX 3060:
+- 64³: CUTLASS WMMA 32×32, 1 stage
+- 128³: CUTLASS WMMA 32×32, 2 stages
+- 256³: cuBLAS-native 64×64, 5 stages (32 HMMA, 28 LDGSTS.128)
+- 512³: cuBLAS-native 96×128, 4 stages (48 HMMA, 14 LDGSTS.128)
+- 1024³: cuBLAS-native 128×128, 1 stage
+- 2048³: cuBLAS-native 128×128, 1 stage
+- 4096³: CUTLASS mma 256×128, 3 stages (64 HMMA, 18 LDGSTS.128)
+
+Every pipelined kernel follows the SAME skeleton (prologue fills →
+barrier → loop: ldmatrix + HMMA + fill next + depbar → epilogue).
+The tile/stage selection is a compiler decision, not a kernel decision.
+
+### Pipeline module (pipeline.rs)
+
+13 unit tests. Provides: StageConfig, SmemLayout, emit_stage_modulo,
+emit_fill_stage, emit_ldgdepbar, emit_bar_sync, emit_prologue,
+emit_main_loop, emit_ldmatrix_b_trans/a_x4/a_x2, emit_cp_async,
+FillConfig, f16 utilities.
+
+### Load-path experiment (single warp, M=16)
+
+Staged smem fills = +18% over direct scalar loads at 4096³ (13.2 vs
+11.2 TF). Both correct. The fill path helps but is NOT the dominant
+bottleneck — the remaining 10× gap is occupancy (1 warp vs 128-256T)
+and tile size (16×8 vs 256×128).
+
+### Cross-kernel validation
+
+All 5 .abv test files (gemm_small, gemm, gemm_chain, gemm_h, gemv)
+type-check successfully. 2229 lib tests pass.
