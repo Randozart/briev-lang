@@ -391,9 +391,14 @@ impl<'a> Builder<'a> {
                     self.walk_expr(a, queue);
                 }
             }
-            Expr::MethodCall(recv, _, args, _, _) => {
+            Expr::MethodCall(recv, name, args, _, _) => {
                 // Op-member dispatch — members are conservatively rooted;
                 // walk receiver/args for their own edges.
+                // 2026-09-16 (Bug F): a UFCS method call (`a.f(x)` → `f(a, x)`)
+                // targets a TOP-LEVEL defn, not a member. Mark the name so a
+                // defn reached only through UFCS is not eliminated. `mark` is a
+                // no-op for genuine member names (they are not defns/txns).
+                self.mark(name, queue);
                 self.walk_expr(recv, queue);
                 for a in args {
                     self.walk_expr(a, queue);
@@ -676,7 +681,10 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_call_names_expr(a, out);
             }
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, name, args, _, _) => {
+            // 2026-09-16 (Bug F): a UFCS method call targets a top-level defn
+            // (`a.f(x)` → `f(a, x)`); collect the name so the defn is rooted.
+            out.push(name.clone());
             collect_call_names_expr(recv, out);
             for a in args {
                 collect_call_names_expr(a, out);

@@ -6731,6 +6731,96 @@ node go [done == false][done == true] {
     );
 }
 
+/// 2026-09-16 (Bug B, chaining fixups): a member body that contains its own
+/// method chain must NOT pollute the caller's positional back-reference stack.
+/// `c.bump().2>>sum2(c)`: `.2` is two operations back from `sum2` — the value
+/// `c` — not a register from `bump`'s internal `base.Add#(1)` chain. The
+/// interpreter derives a fresh stack per chain; the codegen previously shared
+/// one stack across inline member bodies, so `.2` resolved to `bump`'s internal
+/// Add# result (an Int where a Calc is expected) and the run produced garbage.
+#[test]
+fn test_chain_backref_isolated_from_member_body_chains() {
+    let src = r#"
+obj Calc {
+    base: Int;
+    defn bump() -> Int { term base.Add#(1); };
+};
+defn pick(a: Int, b: Calc) -> Int { term a + b.base; };
+let c: Calc = 0;
+let done: Bool = false;
+node go [done == false][done == true] {
+    when done == false {
+        let r: Int = c.bump().2>>pick();
+        println!(r);
+        done = true;
+    };
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.register(Box::new(crate::plugin::print_plugin::PrintPlugin));
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+
+    use std::process::Command;
+    let rt = std::env::temp_dir().join(format!("briev_chain_bug_b_{}.c", std::process::id()));
+    std::fs::write(
+        &rt,
+        "#include <stdio.h>\n#include <stdint.h>\nint64_t __print_int(int64_t n) { printf(\"%ld\", (long)n); return 0; }\nint64_t __print_char(int64_t c) { putchar((int)c); return 0; }\n",
+    )
+    .expect("write stub");
+    let out = std::env::temp_dir().join(format!(
+        "briev_chain_bug_b_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let ll = out.with_extension("ll");
+    let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\n";
+    let ir = if let Some(pos) = ir.find("target triple") {
+        let end = ir[pos..].find('\n').map(|e| pos + e + 1).unwrap_or(ir.len());
+        format!("{}{}{}", &ir[..end], prelude, &ir[end..])
+    } else {
+        format!("{prelude}{ir}")
+    };
+    std::fs::write(&ll, &ir).expect("write .ll");
+    let compile = Command::new("clang")
+        .arg("-O0")
+        .arg(&ll)
+        .arg(&rt)
+        .arg("-lm")
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        compile.status.success(),
+        "link failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&out).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&out);
+    assert!(
+        run.status.success(),
+        "program crashed: {} (ir:\n{ir})",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        stdout.trim(),
+        "1",
+        "`.2` must resolve to `c` (base 10), not a register from bump()'s \
+         internal chain; got:\n{stdout}\n---\n{ir}"
+    );
+}
+
 /// 2026-08-18 (Phase D, PiggyBank): the arrow's CONSUME flag selects the
 /// value-side op — `dest <- src` (read) resolves `op CopyFrom`, `dest ~<- src`
 /// (destructive) resolves `op ExtractFrom` (extract_op_order in the

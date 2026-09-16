@@ -2833,8 +2833,17 @@ impl LlvmBackend {
                 let mut all = vec![(*recv).clone()];
                 all.extend(leading_exprs.iter().cloned());
                 all.extend(args.iter().cloned());
+                // 2026-09-16 (Bug B): the fallback re-emits the receiver chain;
+                // snapshot the chain stack so the re-emission's pushes do not
+                // pollute outer back-references.
+                let pre = self.fun.chain_stack.len();
                 let r = self.emit_expr_inner(out, v, &Expr::Call(name.to_string(), all, None), indent);
-                if is_outer { self.fun.chain_stack.clear(); }
+                self.fun.chain_stack.truncate(pre);
+                if is_outer {
+                    self.fun.chain_stack.clear();
+                } else {
+                    self.fun.chain_stack.push((r.name.clone(), r.ty.clone(), Expr::MethodCall(Box::new((*recv).clone()), name.to_string(), args.to_vec(), None, refs.to_vec())));
+                }
                 self.fun.chain_depth -= 1;
                 return r;
             }
@@ -2842,8 +2851,14 @@ impl LlvmBackend {
                 let mut all = vec![(*recv).clone()];
                 all.extend(leading_exprs.iter().cloned());
                 all.extend(args.iter().cloned());
+                let pre = self.fun.chain_stack.len();
                 let r = self.emit_user_call(out, v, name, &all, indent);
-                if is_outer { self.fun.chain_stack.clear(); }
+                self.fun.chain_stack.truncate(pre);
+                if is_outer {
+                    self.fun.chain_stack.clear();
+                } else {
+                    self.fun.chain_stack.push((r.name.clone(), r.ty.clone(), Expr::MethodCall(Box::new((*recv).clone()), name.to_string(), args.to_vec(), None, refs.to_vec())));
+                }
                 self.fun.chain_depth -= 1;
                 return r;
             }
@@ -2855,9 +2870,15 @@ impl LlvmBackend {
             let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
             (r.name, r.ty)
         }));
+        // 2026-09-16 (Bug B): the member body runs inline and may contain its
+        // own chains; snapshot the chain stack so those internal pushes do not
+        // pollute this call's outer back-references. The interpreter derives a
+        // fresh stack per chain, so this keeps codegen aligned with it.
+        let pre_body = self.fun.chain_stack.len();
+        let result = self.emit_member_body(out, v, MemberInvocation { recv_reg: &recv_reg, type_name: &type_name, member: &member, arg_regs: &arg_regs, prefix: recv_prefix }, indent);
+        self.fun.chain_stack.truncate(pre_body);
         // 2026-09-16: push this call's result so outer chain back-references
         // can resolve it; clear the whole stack when the outermost call ends.
-        let result = self.emit_member_body(out, v, MemberInvocation { recv_reg: &recv_reg, type_name: &type_name, member: &member, arg_regs: &arg_regs, prefix: recv_prefix }, indent);
         self.fun.chain_stack.push((result.name.clone(), result.ty.clone(), Expr::MethodCall(Box::new((*recv).clone()), name.to_string(), args.to_vec(), None, refs.to_vec())));
         if is_outer {
             self.fun.chain_stack.clear();

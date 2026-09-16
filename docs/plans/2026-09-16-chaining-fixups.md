@@ -45,6 +45,15 @@
 
 **Fix:** `.N`/`.name` followed by `>>` is an unconditional back-ref; a missing direct call head is a clear error (preserve tuple-shift via parens).
 
+### F — Liveness misses UFCS calls to top-level defns (pre-existing)
+
+`defn_liveness` only roots `Expr::Call` edges; a MethodCall to a top-level defn
+via UFCS (`a.f(x)` → `f(a, x)`) is not rooted, so the defn is eliminated even
+though codegen calls it. Found while testing Bug B (`.2>>pick()`).
+
+**Fix:** `self.mark(name)` / `out.push(name)` in the MethodCall arms of the
+liveness walker — a no-op for genuine member names (they are not defns/txns).
+
 ---
 
 ## Files
@@ -63,6 +72,7 @@
 | D | `src/beast/serialize.rs` | serialize ChainRef/Capture/Plugin |
 | D | `src/beast/deserialize.rs` | deserialize them |
 | E | `src/parser/expressions.rs` | back-ref unconditional + error on missing call head |
+| F | `src/analysis/defn_liveness.rs` | root UFCS MethodCall names |
 
 ## Tests
 
