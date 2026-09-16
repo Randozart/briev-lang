@@ -109,6 +109,13 @@ fn push_stages(
     hw: &GpuHardware,
     (tile_m, tile_n): (u64, u64),
 ) {
+    // 2026-09-16 (L4): shallow-K (K < 128) at M*N >= 1024² has a
+    // NON-DETERMINISTIC fill/compute race in the tensor mw kernel
+    // (BUGS.md 2026-09-16). The dispatch routes gated shapes to the
+    // race-free single-warp S3b kernel (see build_ptx_kernels).
+    if shallow_k_race(m, n, k) {
+        return;
+    }
     for stages in 1..=3u64 {
         let cta_smem = smem_for(tile_m, tile_n, k, stages);
         let ctas = (m / tile_m) * (n / tile_n);
@@ -199,6 +206,14 @@ pub fn select(m: u64, n: u64, k: u64, hw: &GpuHardware) -> Option<Strategy> {
             let tb = estimate_time(m, n, k, b, hw).seconds;
             ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
         })
+}
+
+/// Whether a shape hits the shallow-K fill/compute race (2026-09-16, L4).
+/// The tensor mw kernel's race at K < 128 and M*N >= 1024² is
+/// non-deterministic (BUGS.md 2026-09-16); the dispatch must route such
+/// shapes to the race-free single-warp S3b kernel.
+pub fn shallow_k_race(m: u64, n: u64, k: u64) -> bool {
+    k < 128 && m * n >= 1024 * 1024
 }
 
 #[cfg(test)]
@@ -335,4 +350,16 @@ mod tests {
                 s.tile_m, s.tile_n
             );
         }
+    }
+
+    #[test]
+    fn shallow_k_race_gates_large_grids_only() {
+        // The race (BUGS.md 2026-09-16) hits K<128 at M*N >= 1024².
+        assert!(shallow_k_race(1024, 1024, 64));
+        assert!(shallow_k_race(1024, 2048, 64));
+        // Small decode shapes are safe — they keep the mw kernel.
+        assert!(!shallow_k_race(512, 512, 64));
+        assert!(!shallow_k_race(512, 512, 128));
+        // Deep K is safe.
+        assert!(!shallow_k_race(1024, 1024, 512));
     }

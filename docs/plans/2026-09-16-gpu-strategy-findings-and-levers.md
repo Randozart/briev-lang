@@ -170,12 +170,16 @@ prefill split: attention decode runs at small batch (M≤512), prefill at
 large M. Briev owns the decode regime.
 
 **Correctness gate is M≤512 for shallow K.** The stages cap (below) fixed
-512²×128, but 1024²×64/128 remain wrong — a scattered (m_cta,n_cta) tile
-corruption at shallow K (BUGS.md 2026-09-16, OPEN). 2048²×128 is correct,
-so the trigger is not simply M. Do not ship shallow-K dispatch at
-M≥1024 until the emitter bug is resolved.
+512²×128, but 1024²×64/128 remain wrong — a non-deterministic race across
+scattered (m_cta,n_cta) tiles at shallow K (BUGS.md 2026-09-16, OPEN).
+2048²×128 is correct, so the trigger is not simply M. **Shipped gate:**
+`gpu_strategy::shallow_k_race` routes K<128 × M·N≥1024² to the race-free
+single-warp S3b kernel (correct, max_rel=0, but 1.56 TF vs cuBLAS 9.46 at
+1024²×64 — the mw path would give ~7.3 TF once the race is fixed).
 
-**Model change shipped with this finding:** `candidate_strategies` caps
-stages at 3 (was 4). stages=4 at shallow K (8 ksteps) triggers the ring-
-reuse corruption; large shapes already prefer 3, so no perf regression
-(4096³ 23.4 TF, 1024³ 20.6 TF unchanged, all correct).
+**Model changes shipped with this finding:**
+1. `candidate_strategies` caps stages at 3 (was 4). stages=4 at shallow K
+   (8 ksteps) triggers ring-reuse corruption; large shapes already prefer
+   3, so no perf regression (4096³ 23.4 TF, 1024³ 20.6 TF unchanged).
+2. `shallow_k_race(m,n,k)` public gate + `build_ptx_kernels` mw_kernel_ok
+   guard routes gated shapes to S3b. Tests cover the boundary.

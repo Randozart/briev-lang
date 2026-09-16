@@ -6333,4 +6333,21 @@ CTA set needs a ws_debug-style position-encoded fill to isolate (the
 2026-09-14 L2 instrument). Do NOT ship shallow-K (K<=128) dispatch at
 M,N >= 1024 until resolved.
 
+**RESOLVED-AS-GATED 2026-09-16 (same session):** the race is
+non-deterministic (corrupt tile counts vary run to run: 18/132 at
+m_cta=1 n_cta=4 across runs; 1024^2x64 max_rel 4.8-8.6e-2, bad 24-99).
+It hits BOTH 4-warp and 8-warp tiles at K<128, M*N >= 1024². The
+dispatch now routes gated shapes to the race-free single-warp S3b kernel
+via `gpu_strategy::shallow_k_race` (public, tested) + the mw_kernel_ok
+guard in build_ptx_kernels. Gated shapes are CORRECT (max_rel=0, 3
+runs) but slow (1024^2x64 S3b = 1.56 TF vs cuBLAS 9.46). The emitter
+race itself remains OPEN — this is a correctness gate, not a fix. The
+perf cost is the reason to fix the race (expected ~7.3 TF at 1024^2x64
+from the mw path).
+
+The root cause needs the ws_debug position-encoded fill (2026-09-14 L2
+instrument): the corrupt tile set is non-deterministic across runs, so
+it is a fill/compute timing race, not a decode error. 512^2x64 and below
+are stable-correct (max_rel=0, 3 runs) — the decode regime is safe.
+
 Recorded while L4: docs/plans/2026-09-16-gpu-strategy-findings-and-levers.md.
