@@ -1,5 +1,6 @@
 # GPU shape-strategy selector — complete findings & lever ledger
 
+**Author:** Randy Smits-Schreuder Goedheijt <randozart@gmail.com>
 **2026-09-16.** Consolidates the full session: the baseline that redirected
 the plan, the fused-attention regression finding, the cost model, the
 dispatch wiring, the honest vs-cuBLAS A/B correction, and every lever

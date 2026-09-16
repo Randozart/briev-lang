@@ -1,5 +1,6 @@
 # Shape-driven GPU strategy selection — the analysis that picks the efficient kernel per shape
 
+**Author:** Randy Smits-Schreuder Goedheijt <randozart@gmail.com>
 **2026-09-16.** The goal: the compiler picks the most efficient codegen
 strategy (tile, stage count, load path, warp geometry) for EVERY GPU shape
 automatically — the "maximum efficient default" made real. Imitate cuBLAS's

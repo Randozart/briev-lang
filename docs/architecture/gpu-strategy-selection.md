@@ -1,5 +1,6 @@
 # GPU strategy selection — the cost model behind the efficient default
 
+**Author:** Randy Smits-Schreuder Goedheijt <randozart@gmail.com>
 **2026-09-16.** The compiler picks the GPU codegen strategy (tile, stages,
 load path) per shape automatically, from shape evidence + measured hardware
 parameters — the "maximum efficient default" (AGENTS.md Golden Rule 2) made

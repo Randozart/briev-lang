@@ -1,5 +1,6 @@
 # Briev vs CUDA — the structural-capability thesis
 
+**Author:** Randy Smits-Schreuder Goedheijt <randozart@gmail.com>
 **2026-09-16.** Why Briev's architecture enables automatic behaviors that
 CUDA's model has no mechanism to produce. This is a thesis document for
 future reference, not a finished implementation. Companion to:

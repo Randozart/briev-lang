@@ -236,6 +236,12 @@ contracts.
 
 ## Working Rules
 
+- **License (2026-09-16)**: the compiler is Apache-2.0 **with the LLVM
+  exceptions** (`LICENSE`, `NOTICE`). New source files get the LLVM-style
+  boxed header (`SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception`).
+  Compiled output of Briev programs is EXEMPT from the notice/attribution
+  obligations (Sections 4(a)/(b)/(d)) — never add license headers to
+  emitted kernels/binaries.
 - **Helpful diagnostics** — every user-facing error/warning must state what is
   wrong, supply the relevant proof/why where one exists (e.g. which obligation
   failed), and give the concrete fix. Never dismiss the code or author, and do

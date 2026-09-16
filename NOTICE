@@ -1,0 +1,16 @@
+Briev: A Programming Language
+=============================
+
+Copyright (c) 2026 Randy Smits-Schreuder Goedheijt <randozart@gmail.com>
+
+This product includes software developed by Randy Smits-Schreuder Goedheijt.
+
+The Briev compiler is licensed under the Apache License, Version 2.0, with
+the LLVM Exceptions to the Apache 2.0 License (see the LICENSE file). In
+particular, code written in Briev and compiled by the Briev compiler is
+exempt from the notice, attribution, and redistribution obligations of
+Sections 4(a), 4(b), and 4(d) of the Apache License — you may use,
+redistribute, and ship the compiled output of Briev programs without
+carrying this notice.
+
+For the full license text and the exception, see the LICENSE file.
