@@ -223,7 +223,7 @@ impl LlvmBackend {
     ) -> Option<IterKind> {
         if let Some((element_ty, _base)) = self.tier2_op_collection(list) {
             let out_tmp = self.fun.gen_reg();
-            let count_reg = self.emit_method_call(out, &out_tmp, list, "Count", &[], indent);
+            let count_reg = self.emit_method_call(out, &out_tmp, list, "Count", &[], &[], indent);
             // 2026-08-12 (slice 4, wasm32 maze): the foreach's loop counter
             // slot is i64; the Count result on wasm32 is i32 — widen it so the
             // header `icmp slt i64` matches.
@@ -243,7 +243,7 @@ impl LlvmBackend {
         }
         if let Some((element_ty, _base)) = self.tier1_cursor_collection(list) {
             let out_tmp = self.fun.gen_reg();
-            let iter_reg = self.emit_method_call(out, &out_tmp, list, "Iter", &[], indent);
+            let iter_reg = self.emit_method_call(out, &out_tmp, list, "Iter", &[], &[], indent);
             return Some(IterKind::Tier1Cursor {
                 iter_reg: iter_reg.name,
                 list: list.clone(),
@@ -1816,7 +1816,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 backend.fun.let_original_types.insert(cur_tmp.clone(), Type::int());
                 let arg = Expr::Identifier(cur_tmp);
                 let out_tmp = backend.fun.gen_reg();
-                let end = backend.emit_method_call(out, &out_tmp, list, "IsEnd", &[arg], indent);
+                let end = backend.emit_method_call(out, &out_tmp, list, "IsEnd", &[arg], &[], indent);
                 let end_i1 = backend.fun.gen_reg();
                 // 2026-08-12: the IsEnd op returns a native Bool (i8); the
                 // loop condition needs i1 — the standard Bool truncation.
@@ -1857,7 +1857,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     backend.fun.let_original_types.insert(counter_tmp.clone(), Type::int());
                     let arg = Expr::Identifier(counter_tmp);
                     let out_tmp = backend.fun.gen_reg();
-                    let mut at = backend.emit_method_call(out, &out_tmp, list, "At", &[arg], indent);
+                    let mut at = backend.emit_method_call(out, &out_tmp, list, "At", &[arg], &[], indent);
                     // 2026-08-12 (slice 2 String gap): a String/Data element is
                     // the [len][bytes] ADDRESS stored as an i64 handle in the
                     // collection — the item must be the ptr representation
@@ -1888,7 +1888,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     backend.fun.let_original_types.insert(cur_tmp.clone(), Type::int());
                     let arg = Expr::Identifier(cur_tmp);
                     let out_tmp = backend.fun.gen_reg();
-                    let mut item = backend.emit_method_call(out, &out_tmp, list, "Current", &[arg], indent);
+                    let mut item = backend.emit_method_call(out, &out_tmp, list, "Current", &[arg], &[], indent);
                     // 2026-08-28: same boxed-only guard as the Tier-2 arm above.
                     if (backend.is_string_operand(element_ty) || backend.is_blob_operand(element_ty))
                         && item.ty == Type::int()
@@ -2016,7 +2016,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     backend.fun.let_original_types.insert(cur_tmp.clone(), Type::int());
                     let arg = Expr::Identifier(cur_tmp);
                     let out_tmp = backend.fun.gen_reg();
-                    let step = backend.emit_method_call(out, &out_tmp, list, "Step", &[arg], indent);
+                    let step = backend.emit_method_call(out, &out_tmp, list, "Step", &[arg], &[], indent);
                     step.name
                 } else {
                     let n = backend.fun.gen_reg();

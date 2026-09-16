@@ -317,7 +317,7 @@ pub fn emit_intrinsic_call(
             let recv = &args[0];
             let rest: Vec<Expr> = args.iter().skip(1).cloned().collect();
             let out_tmp = backend.fun.gen_reg();
-            return backend.emit_method_call(out, &out_tmp, recv, op_name, &rest, indent);
+            return backend.emit_method_call(out, &out_tmp, recv, op_name, &rest, &[], indent);
         }
     }
 

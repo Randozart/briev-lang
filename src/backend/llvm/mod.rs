@@ -5310,7 +5310,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             let fn_name = format!("__view_items_{}", field);
             writeln!(out, "define i32 @{}(ptr noundef noalias nocapture align 8 %state) local_unnamed_addr #0 {{", fn_name).ok();
             let count_tmp = self.fun.gen_reg();
-            let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", &[], "  ");
+            let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", &[], &[], "  ");
             // The Int width on wasm32 is i32; the At index + loop counter are
             // Int, so use i32 (the count register may be i32 already or i64 —
             // adapt).
@@ -5337,7 +5337,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             self.fun.let_original_types.insert(cur_tmp.clone(), crate::ast::Type::int());
             let arg = crate::ast::Expr::Identifier(cur_tmp);
             let at_tmp = self.fun.gen_reg();
-            let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", &[arg], "  ");
+            let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", &[arg], &[], "  ");
             // 2026-08-12 (slice 4, String elements): a String/Data element's At
             // return is a PTR (the [len][bytes] address) — box it to the i64
             // snapshot word via adapt_to_i64 (ptrtoint); an Int element zexts
