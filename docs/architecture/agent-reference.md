@@ -505,6 +505,36 @@ Three standing rules for this and future work:
    makes a fusion appear, and a benchmark beaten only by a keyword is a
    default-codegen bug. The analysis's proofs ARE the fusion's justification.
 
+### Shape-driven strategy selection — performance flows from shape evidence (2026-09-16)
+
+GPU kernel codegen strategy (tile size, pipeline stage count, load path) is
+chosen by a **cost model over a candidate strategy space** — not a lookup
+table and not config knobs. Every shape is efficient in SOME use case:
+small shapes win with small tiles (parallelism), large with big tiles
+(arithmetic intensity), thin-K with no pipeline, deep-K with a pipeline.
+The same cost function derives all of them.
+
+The model (`src/analysis/gpu_strategy.rs`): `candidate_strategies(m,n,k)`
+enumerates warp-tiles × stages, pruned by divisibility, smem ≤ cap, threads
+≤ 256, CTA count; `estimate_time` = roofline (compute + memory/stages
+pipeline overlap) + underfill penalty (< SM count) + occupancy penalty
+(smem pinning CTAs/SM below the measured 4-CTA sweet spot). Calibrated
+against the decompiled cuBLAS kernel map: reproduces cuBLAS's tile family
+for all 7 measured shapes, and **beats cuBLAS at every shape** (1.06×–4.0×
+on RTX 3060 after the 2026-09-16 calibration).
+
+Two standing rules:
+
+1. **Tiles first, load path second.** A small tile is a structural gap (no
+   operand reuse, redundant HBM re-reads); the load path (direct vs staged
+   vs cp.async) is a secondary constant. Fix the tile before polishing the
+   path — the fused-kernel regression was 90% tile, not load path.
+2. **Model, not probe, for calibration.** When the model mis-predicts a
+   measured optimum (e.g. stage count), fix the model's term (the occupancy
+   penalty) — do not bolt on a runtime kernel probe until the static model
+   provably cannot capture the decision (cross-GPU calibration is the
+   honest future case, a per-device hardware table in config).
+
 ### Long-term best optimization
 
 Emit the IR that produces the BEST FINAL CODE after LLVM's full pipeline
