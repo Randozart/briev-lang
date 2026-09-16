@@ -1180,6 +1180,14 @@ fn build_fused_attention_kernel(
     let Some(cplan) = GemmPlan::match_stmts(&consumer.shape, program) else {
         return Ok(None);
     };
+    // 2026-09-16 (shape strategy selector Stage 0a): the ONE-kernel fused
+    // emitter is a 10× REGRESSION vs the 2-kernel tensor-tier composition
+    // (0.752 vs 0.073 ms @512², both correct) — the 16-row m-tile gives zero
+    // Kt/V reuse across m-tiles. Default OFF; the composition is correct.
+    // Re-enable when the cost model gates fusion on "beats the composition".
+    if !crate::config_tuning::ir_lowering().ptx_fused_attention {
+        return Ok(None);
+    }
     // The consumer's A operand must be the middle's output (the chain).
     if cplan.a_field != cf.mid_out || pplan.y_field != cf.mid_in {
         return Ok(None);

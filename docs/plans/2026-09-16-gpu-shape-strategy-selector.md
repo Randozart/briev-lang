@@ -153,22 +153,30 @@ This is exactly the "every shape is efficient in some use case" case: small
 shapes need SMALL tiles (parallelism), not the 128×128 big tile. The
 selector's first clear win.
 
-**Finding C — the fused attention kernel is a 9× REGRESSION, not a win.**
+**Finding C — the fused attention kernel is a 10× REGRESSION, not a win.**
 The phase4b milestone "fused 0.559 < comp 0.577 @512²" compared against a
 STALE composition that predated the tensor-tier wiring. Re-measured on the
-CURRENT compiler:
+CURRENT compiler (both paths correct on-device: fused max_rel 2.6e-4, comp
+1.6e-3):
 
 | 512² path | Time | TF |
 |-----------|------|-----|
 | fused 1-kernel (`qk__scale_pv`) | 0.752 ms | 0.71 |
-| 2-kernel composition (qk+pv, tensor tier) | 0.080 ms | 6.7 |
+| 2-kernel composition (qk+pv, tensor tier) | 0.073 ms | 7.4 |
 | cuBLAS composition | 0.063 ms | 8.5 |
 
-The composition is 9.4× faster than the fused kernel AND 1.27× of cuBLAS
+The composition is 10.3× faster than the fused kernel AND 1.16× of cuBLAS
 (the tensor tier's 512³ GEMM is at parity). The fused kernel's 16-row
 m-tile gives zero Kt/V reuse; the composition gets the big-tile GEMM. The
 chain-fusion detection fires automatically and slows every f16 attention
-down by 9× — a maximum-efficient-default violation.
+down by 10× — a maximum-efficient-default violation.
+
+**Action from Finding C:** the fused attention path must be gated OFF by
+default (or gated on "fused beats composition", which the Stage-0 cost
+model will compute). The composition IS the correct default. This removes
+the urgency of the Stage-2 k-chunked fused kernel: the composition already
+reaches cuBLAS parity, so a fused rewrite is only worth it if it can beat
+0.073 ms — a much higher bar than the plan assumed.
 
 **Action from Finding C:** the fused attention path must be gated OFF by
 default (or gated on "fused beats composition", which the Stage-0 cost

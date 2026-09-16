@@ -208,6 +208,13 @@ pub struct IrLoweringSettings {
     /// f16acc-only; requires stages=2, kps=1, no lookahead. 0 = the
     /// cooperative-fill ship schedule.
     pub ptx_tensor_warp_spec: bool,
+    /// 2026-09-16 (shape strategy selector Stage 0a): the ONE-kernel fused
+    /// attention emitter (`fused_attention_mma_*`). Measured 10× SLOWER than
+    /// the 2-kernel tensor-tier composition (0.752 vs 0.073 ms @512²) — the
+    /// 16-row m-tile gives zero Kt/V reuse. Default OFF; the composition is
+    /// the correct default until the cost model gates fusion on "beats the
+    /// composition".
+    pub ptx_fused_attention: bool,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -320,6 +327,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_ksteps_per_stage: 1,
     ptx_tensor_stages: 0,
     ptx_tensor_warp_spec: false,
+    ptx_fused_attention: false,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -568,6 +576,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_tensor_warp_spec", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_warp_spec),
+        ptx_fused_attention: db
+            .field_int("ptx_fused_attention", 0)
+            .map(|v| v != 0)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_fused_attention),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)
