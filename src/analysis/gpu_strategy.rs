@@ -163,6 +163,17 @@ pub fn estimate_time(m: u64, n: u64, k: u64, s: &Strategy, hw: &GpuHardware) -> 
         seconds *= hw.sm_count as f64 / ctas as f64;
     }
 
+    // Occupancy (2026-09-16 Stage 3 calibration): deeper pipelines cost
+    // smem, and dropping below 4 CTAs/SM loses latency hiding — the E4c
+    // measured sweet spot (16KB stages=2 → 4 CTAs/SM; 24KB stages=3 still
+    // 4 CTAs/SM; 32KB stages=4 → 3 CTAs/SM loses ~1%). Penalize smem that
+    // pins the CTA count below the 4-CTA optimum.
+    let cta_smem = smem_for(s.tile_m, s.tile_n, k, s.stages).max(1);
+    let ctas_per_sm = hw.smem_per_sm / cta_smem;
+    if ctas_per_sm < 4 {
+        seconds *= 4.0 / ctas_per_sm as f64;
+    }
+
     Estimate {
         seconds,
         compute_bound,
@@ -293,3 +304,16 @@ mod tests {
         );
     }
 }
+
+    #[test]
+    fn stage_preference_calibration() {
+        let hw = GpuHardware::SM86;
+        for shape in [1024u64, 4096] {
+            let s = select(shape, shape, shape, &hw).expect("candidate");
+            assert!(
+                s.stages == 3,
+                "{shape}³: E4c measured optimum is stages=3, model picked {}",
+                s.stages
+            );
+        }
+    }
