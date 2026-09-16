@@ -322,7 +322,7 @@ contracts.
 | **Bug diagnoses** | `BUGS.md` |
 | **Architecture overview** | `docs/architecture/overview.md` |
 | **GPU backend strategy (full optimization landscape)** | `docs/architecture/gpu-backend-strategy.md` — Roofline reality, emitter-route evaluation (hand-PTX vs LLVM NVPTX vs SPIR-V), async pipelines (cp.async/ldmatrix), Briev "beat CUDA" levers (cross-node fusion, zero-divergence vectorization, bank-conflict synthesis), multi-vendor matrix, roadmap |
-| **GPU strategy selection (shape-driven, 2026-09-16)** | `docs/architecture/gpu-strategy-selection.md` — the cost model (`src/analysis/gpu_strategy.rs`) that picks tile/stages/load-path per shape, beats cuBLAS at every measured shape; fused-attention 10×-regression finding |
+| **GPU strategy selection (shape-driven, 2026-09-16)** | `docs/architecture/gpu-strategy-selection.md` — the cost model (`src/analysis/gpu_strategy.rs`) that picks tile/stages/load-path per shape; wins small shapes (64³–256³) vs cuBLAS, parity at 1024³/2048³, loses 512³/4096³ (kernel-efficiency gap); fused-attention 10×-regression finding. Full lever ledger: `docs/plans/2026-09-16-gpu-strategy-findings-and-levers.md` |
 | **Backend type dispatch** | `docs/architecture/backend-type-dispatch.md` — read first before backend type code |
 | **LLVM backend architecture** | `docs/architecture/backend-architecture.md` — read first before LLVM backend changes |
 | **Casting protocol** | `docs/architecture/casting-protocol.md` |
