@@ -112,8 +112,16 @@ fn walk_stmt(stmt: &mut crate::ast::Statement) {
 
 fn walk_expr(expr: &mut Expr) {
     match expr {
-        Expr::PluginIntercept { name, args, type_args: _, receiver: _, chain_refs: _ } => {
-            if let Some(replacement) = resolve_intercept(name, args) {
+        Expr::PluginIntercept { name, args, type_args: _, receiver, chain_refs: _ } => {
+            // 2026-09-16 (Bug A): walk the receiver for nested intercepts, then
+            // prepend it as the first argument (UFCS-style chaining) so it is
+            // not silently dropped.
+            let mut full_args = args.clone();
+            if let Some(recv) = receiver {
+                walk_expr(recv);
+                full_args.insert(0, (**recv).clone());
+            }
+            if let Some(replacement) = resolve_intercept(name, &full_args) {
                 *expr = replacement;
             }
         }

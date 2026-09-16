@@ -263,7 +263,14 @@ pub fn eval_expr(
         // Parsed stage; this native path keeps direct interpreter use correct
         // (rule #4: the interpreter is the reference) and reports a rename
         // hint for the deprecated PascalCase names.
-        Expr::PluginIntercept { name, args, .. } => eval_intercept(name, args, heap, bindings, functions),
+        Expr::PluginIntercept { name, args, receiver, .. } => eval_intercept(
+            name,
+            receiver.as_deref(),
+            args,
+            heap,
+            bindings,
+            functions,
+        ),
         Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
         Expr::Slice { array, start, end, stride } => eval_slice(
             array,
@@ -1440,20 +1447,33 @@ fn literal_pattern_value(lit: &Expr) -> Option<Value> {
 /// identically to codegen via crate::plugin::print_plugin::parse_format.
 fn eval_intercept(
     name: &str,
+    receiver: Option<&Expr>,
     args: &[Expr],
     heap: &mut VirtualHeap,
     bindings: &mut HashMap<String, Value>,
     functions: &HashMap<String, crate::interpreter::FunctionDef>,
 ) -> Result<Value, RuntimeError> {
+    // 2026-09-16 (Bug A): a chained plugin call (`obj.print!(x)`) passes the
+    // receiver as the first argument (UFCS-style) — it is evaluated (side
+    // effects preserved) and reaches the plugin as args[0]. It is no longer
+    // silently dropped.
+    let full_args: Vec<Expr> = match receiver {
+        Some(r) => {
+            let mut v = vec![(*r).clone()];
+            v.extend(args.iter().cloned());
+            v
+        }
+        None => args.to_vec(),
+    };
     match name {
-        "print" | "println" => eval_print_macro(name, args, heap, bindings, functions),
+        "print" | "println" => eval_print_macro(name, &full_args, heap, bindings, functions),
         "get_env" => {
-            let key = eval_string_arg(args, heap, bindings, functions)?;
+            let key = eval_string_arg(&full_args, heap, bindings, functions)?;
             let val = std::env::var(&key).unwrap_or_default();
             Ok(Value::bits(val.into_bytes()))
         }
         "get_env_int" => {
-            let key = eval_string_arg(args, heap, bindings, functions)?;
+            let key = eval_string_arg(&full_args, heap, bindings, functions)?;
             let val = std::env::var(&key).unwrap_or_default();
             Ok(i64_to_bits(val.parse::<i64>().unwrap_or(0)))
         }
@@ -2273,6 +2293,24 @@ mod tests {
         .unwrap();
         assert_eq!(val.as_i64(), Some(42));
         assert_eq!(bindings.get("step").and_then(Value::as_i64), Some(42));
+    }
+
+    #[test]
+    fn chained_plugin_evaluates_receiver() {
+        // 2026-09-16 (Bug A): a chained plugin call evaluates its receiver —
+        // an undefined receiver must error, not be silently dropped.
+        let expr = Expr::PluginIntercept {
+            name: "print".into(),
+            args: vec![Expr::Decimal(1)],
+            type_args: vec![],
+            receiver: Some(Box::new(Expr::Identifier("nope".into()))),
+            chain_refs: vec![],
+        };
+        let err = eval1_err(&expr);
+        assert!(
+            err.contains("nope"),
+            "receiver must be evaluated; got: {err}"
+        );
     }
 
     #[test]

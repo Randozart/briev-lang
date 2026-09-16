@@ -445,9 +445,17 @@ fn rewrite_expr(
     arg_flags: &[(String, Option<String>)],
 ) -> Result<Expr, String> {
     match expr {
-        Expr::PluginIntercept { name, args, type_args, receiver: _, chain_refs: _ } => match name.as_str() {
+        Expr::PluginIntercept { name, args, type_args, receiver, chain_refs: _ } => {
+            // 2026-09-16 (Bug A): walk the receiver for nested intercepts, then
+            // prepend it as the first argument (UFCS-style chaining) so it is
+            // not silently dropped.
+            let mut full_args = args.clone();
+            if let Some(recv) = receiver {
+                full_args.insert(0, rewrite_expr(*recv, entries, arg_flags)?);
+            }
+            match name.as_str() {
             "entry" => {
-                let cmd = match args.first() {
+                let cmd = match full_args.first() {
                     Some(Expr::Quoted(c)) => String::from_utf8_lossy(c).to_string(),
                     _ => return Err("entry!: expected a string literal command".into()),
                 };
@@ -472,14 +480,14 @@ fn rewrite_expr(
                 ))
             }
             "args" => {
-                let flag = match args.first() {
+                let flag = match full_args.first() {
                     Some(Expr::Quoted(f)) => String::from_utf8_lossy(f).to_string(),
                     _ => return Err("args!: expected a string literal flag".into()),
                 };
                 let _ = type_args;
                 // Typed form: args!("--flag", T) → arg_<flag> (T-typed snapshot).
                 // The field type is resolved from the second arg if present.
-                let ty = args.get(1).and_then(|a| match a {
+                let ty = full_args.get(1).and_then(|a| match a {
                     Expr::Identifier(n) => {
                         let t = match n.as_str() {
                             "Int" => Some(Type::int()),
@@ -498,7 +506,8 @@ fn rewrite_expr(
                 Ok(Expr::Identifier(field))
             }
             _ => Ok(Expr::PluginIntercept { name, args, type_args, receiver: None, chain_refs: vec![] }),
-        },
+        }
+        }
         Expr::BinaryOp(kind, l, r) => Ok(Expr::BinaryOp(
             kind,
             Box::new(rewrite_expr(*l, entries, arg_flags)?),

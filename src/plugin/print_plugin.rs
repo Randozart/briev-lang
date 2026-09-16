@@ -216,8 +216,16 @@ fn walk_expr(
     universe: &TypeUniverse,
 ) -> Result<(), String> {
     match expr {
-        Expr::PluginIntercept { name, args, type_args: _, receiver: _, chain_refs: _ } => {
-            if let Some(replacement) = resolve_print(name, args, known_types, universe)? {
+        Expr::PluginIntercept { name, args, type_args: _, receiver, chain_refs: _ } => {
+            // 2026-09-16 (Bug A): walk the receiver for nested intercepts, then
+            // prepend it as the first argument (UFCS-style chaining) so it is
+            // not silently dropped.
+            let mut full_args = args.clone();
+            if let Some(recv) = receiver {
+                walk_expr(recv, known_types, universe)?;
+                full_args.insert(0, (**recv).clone());
+            }
+            if let Some(replacement) = resolve_print(name, &full_args, known_types, universe)? {
                 *expr = replacement;
             }
             Ok(())
@@ -370,8 +378,12 @@ fn resolve_print(
         }
         stmts.append(&mut parts);
     } else {
-        // Legacy value form: a single non-literal argument printed directly.
-        stmts.push(Statement::Expression(print_call(&args[0])));
+        // Legacy value form: every non-literal argument printed directly.
+        // 2026-09-16 (Bug A): all args, not just the first — a chained
+        // `obj.print!(x)` passes the receiver as args[0] and must print it too.
+        for a in args {
+            stmts.push(Statement::Expression(print_call(a)));
+        }
     }
 
     if is_println {

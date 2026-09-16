@@ -1413,7 +1413,13 @@ pub fn infer_expression(
         // 2026-08-01: Phase 1 of the plugin-macro rework — only lowercase
         // macro names are recognized. PascalCase legacy names (`PrintLn!`,
         // `GetEnvInt!`, ...) are rejected with a rename hint.
-        Expr::PluginIntercept { name, args, .. } => {
+        Expr::PluginIntercept { name, args, receiver, .. } => {
+            // 2026-09-16 (Bug A): a chained plugin call's receiver is a real
+            // expression — infer it so an undefined receiver is caught (it is
+            // passed to the plugin as the first argument at runtime).
+            if let Some(recv) = receiver {
+                infer_type_only(recv, ctx)?;
+            }
             for a in args {
                 infer_type_only(a, ctx)?;
             }
@@ -9709,4 +9715,43 @@ txn go [true][true] {
 "#;
         let e = check(src);
         assert!(e.is_err(), "a reference to an unknown capture must error");
+    }
+
+    #[test]
+    fn chained_plugin_undefined_receiver_errors() {
+        // 2026-09-16 (Bug A): a chained plugin call's receiver is a real
+        // expression — an undefined receiver is caught at typecheck time.
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = r#"
+let base: Int = 0;
+txn go [base == 0][base == 0] {
+    bogus.print!(1);
+};
+"#;
+        let e = check(src);
+        assert!(e.is_err(), "an undefined chained-plugin receiver must error");
+    }
+
+    #[test]
+    fn chained_plugin_defined_receiver_typechecks() {
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = r#"
+let base: Int = 0;
+txn go [base == 0][base == 0] {
+    base.print!(1);
+};
+"#;
+        check(src).expect("a valid chained plugin receiver must typecheck");
     }

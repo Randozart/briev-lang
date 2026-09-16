@@ -144,9 +144,18 @@ fn rewrite_expr(
     rewrites: &mut Vec<(Expr, Expr)>,
 ) -> Result<(), String> {
     match expr {
-        Expr::PluginIntercept { name, args, type_args: _, receiver: _, chain_refs: _ } if name == "inline_frgn" => {
+        Expr::PluginIntercept { name, args, type_args: _, receiver, chain_refs: _ } if name == "inline_frgn" => {
+            // 2026-09-16 (Bug A): walk the receiver for nested intercepts, then
+            // prepend it as the first argument (UFCS-style chaining) so it is
+            // not silently dropped. A chained inline_frgn fails the first-three-
+            // literals check with a clear error.
+            let mut full_args = args.clone();
+            if let Some(recv) = receiver {
+                rewrite_expr(recv, synthesized, seen, rewrites)?;
+                full_args.insert(0, (**recv).clone());
+            }
             // Shape: inline_frgn!(symbol, path, "fn(params) -> ret", call_args...)
-            let mut strs = args.iter().take(3).filter_map(|a| match a {
+            let mut strs = full_args.iter().take(3).filter_map(|a| match a {
                 Expr::Quoted(b) => Some(String::from_utf8_lossy(b).to_string()),
                 _ => None,
             });
