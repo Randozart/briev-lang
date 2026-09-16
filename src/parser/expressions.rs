@@ -5,7 +5,7 @@
 // @ prefix forces any token to Quoted(bytes).
 
 use super::helpers::Parser;
-use crate::ast::{BinaryOpKind, Expr, ReflectKind, SpawnStorage, UnaryOpKind};
+use crate::ast::{BinaryOpKind, ChainRef, Expr, ReflectKind, SpawnStorage, Type, UnaryOpKind};
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
@@ -318,6 +318,101 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// 2026-09-16: Convert a parsed `.name` token (identifier or integer) into
+    /// a `ChainRef` — a number is positional, anything else is named.
+    fn chain_ref_from_name(name: &str) -> ChainRef {
+        match name.parse::<usize>() {
+            Ok(n) => ChainRef::Positional(n),
+            Err(_) => ChainRef::Named(name.to_string()),
+        }
+    }
+
+    /// 2026-09-16: true when the next two tokens are `identifier (` — the
+    /// shape a back-reference call must have after `>>`.
+    fn peek_is_call_head(&self) -> bool {
+        self.peek_is_identifier() && matches!(self.peek_next(), Some(Token::LParen))
+    }
+
+    /// 2026-09-16: true when the token two ahead is a chain-capture terminator
+    /// (`.`, `;`, `}`, or EOF) — the shape `expr >> name` must be read as a
+    /// capture rather than a shift expression. `>>` inside an argument list
+    /// (`f(x >> y)`) is followed by `)`, so it stays a shift.
+    fn peek_is_capture_terminator(&self) -> bool {
+        match self.tokens.get(self.pos + 2).map(|(t, _)| t) {
+            Some(Token::Dot) | Some(Token::Semicolon) | Some(Token::RBrace) | None => true,
+            _ => false,
+        }
+    }
+
+    /// 2026-09-16: Try to parse a back-reference list after `.name`/`.N`.
+    /// Returns `Some(refs)` and consumes through `>>` when the tokens form a
+    /// back-reference (`.N>>f()`, `.name>>f()`, `.N,M>>f()`). Returns `None`
+    /// with the position unchanged otherwise — the caller then treats
+    /// `.name` as ordinary field access. A call (`identifier(`) must follow
+    /// the `>>`, which keeps `x.2 >> d` (shift) unambiguous.
+    fn try_parse_chain_refs(&mut self, first_name: &str) -> Result<Option<Vec<ChainRef>>, SyntaxError> {
+        let save = self.pos;
+        if self.eat(&Token::Shr) {
+            if self.peek_is_call_head() {
+                return Ok(Some(vec![Self::chain_ref_from_name(first_name)]));
+            }
+            self.pos = save;
+            return Ok(None);
+        }
+        if !self.check(&Token::Comma) {
+            return Ok(None);
+        }
+        // Comma-separated ref list — may also be a tuple/arg separator.
+        let mut refs = vec![Self::chain_ref_from_name(first_name)];
+        while self.eat(&Token::Comma) {
+            let next = match self.peek() {
+                Some(Token::Integer(_)) => match self.advance() {
+                    Some((Token::Integer(n), _)) => n.to_string(),
+                    _ => unreachable!(),
+                },
+                Some(Token::Identifier(_)) => self.expect_identifier()?,
+                _ => { self.pos = save; return Ok(None); }
+            };
+            refs.push(Self::chain_ref_from_name(&next));
+        }
+        if !self.eat(&Token::Shr) || !self.peek_is_call_head() {
+            self.pos = save;
+            return Ok(None);
+        }
+        Ok(Some(refs))
+    }
+
+    /// 2026-09-16: `.(Type)>>func(args)` — cast the previous result to `Type`,
+    /// then invoke `func` with the cast value as receiver. Returns `None` with
+    /// the position unchanged when the tokens are not this form.
+    fn try_parse_cast_chain(&mut self, recv: &Expr) -> Result<Option<Expr>, SyntaxError> {
+        let save = self.pos;
+        if !self.eat(&Token::LParen) {
+            return Ok(None);
+        }
+        let type_name = match self.peek() {
+            Some(Token::Identifier(n)) if self.known_types.contains(n) => n.clone(),
+            _ => { self.pos = save; return Ok(None); }
+        };
+        self.advance();
+        if !self.eat(&Token::RParen) || !self.eat(&Token::Shr) || !self.peek_is_call_head() {
+            self.pos = save;
+            return Ok(None);
+        }
+        let func_name = self.expect_identifier()?;
+        self.expect(Token::LParen)?;
+        let mut args = Vec::new();
+        if !self.check(&Token::RParen) {
+            loop {
+                args.push(self.parse_expression()?);
+                if !self.eat(&Token::Comma) { break; }
+            }
+        }
+        self.expect(Token::RParen)?;
+        let cast = Expr::Cast(Box::new(recv.clone()), Type::Custom(type_name));
+        Ok(Some(Expr::MethodCall(Box::new(cast), func_name, args, None, vec![])))
+    }
+
     fn parse_postfix(&mut self, allow_index: bool) -> Result<Expr, SyntaxError> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -386,6 +481,13 @@ impl<'a> Parser<'a> {
                     expr = Expr::Call(qualified, Vec::new(), None);
                 }
             } else if self.eat(&Token::Dot) {
+                // 2026-09-16: cast annotation in a chain — `.(Type)>>func()`.
+                if self.check(&Token::LParen) {
+                    if let Some(cast_expr) = self.try_parse_cast_chain(&expr)? {
+                        expr = cast_expr;
+                        continue;
+                    }
+                }
                 // Field access: a.f — the receiver is PRESERVED.
                 // 2026-08-17 (tuple correctness, plan
                 // 2026-08-17-hashmap-storage-tuple-correctness.md): a NUMERIC
@@ -412,9 +514,24 @@ impl<'a> Parser<'a> {
                 } else {
                     self.expect_identifier()?
                 };
+                // 2026-09-16: back-reference chain — `.N>>f()` / `.name>>f()`.
+                // Must be checked before field access so `.2>>f()` is not read
+                // as tuple element `.2` followed by a shift.
+                if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
+                    let func_name = self.expect_identifier()?;
+                    self.expect(Token::LParen)?;
+                    let mut args = Vec::new();
+                    if !self.check(&Token::RParen) {
+                        loop {
+                            args.push(self.parse_expression()?);
+                            if !self.eat(&Token::Comma) { break; }
+                        }
+                    }
+                    self.expect(Token::RParen)?;
+                    expr = Expr::MethodCall(Box::new(expr), func_name, args, None, chain_refs);
                 // 2026-07-21: Navigation chain call: a.first$(args).
                 // 2026-09-16: Unified under MethodCall — receiver is first-class.
-                if name.ends_with('$') && self.check(&Token::LParen) {
+                } else if name.ends_with('$') && self.check(&Token::LParen) {
                     let recv = expr;
                     self.expect(Token::LParen)?;
                     let mut args = Vec::new();
@@ -575,6 +692,16 @@ impl<'a> Parser<'a> {
                     receiver: None,
                     chain_refs: vec![],
                 };
+            } else if self.check(&Token::Shr)
+                && self.peek_next_is_identifier()
+                && self.peek_is_capture_terminator()
+            {
+                // 2026-09-16: chain capture — `expr >> name`. Binds the current
+                // result to `name` and keeps the chain alive so a following
+                // `.next()` continues on the same value.
+                self.advance(); // consume >>
+                let name = self.expect_identifier()?;
+                expr = Expr::Capture { expr: Box::new(expr), name };
             } else {
                 break;
             }
