@@ -127,3 +127,63 @@ This turns the two biggest wins — the staged pipeline (35.5 TF) and the
 analysis discipline — into ONE compiler property: the strategy chosen from
 shape evidence, calibrated against the competitor, resolved by measurement
 at runtime where static cannot predict. Parity-or-beyond is the yardstick.
+
+## Stage 0a results (2026-09-16) — the baseline that redirects the plan
+
+Measured on RTX 3060 (sm_86), f16 tensor tier, 50-iter batch timing:
+
+| Shape | Briev GEMM (TF) | cuBLAS (TF) | Ratio |
+|-------|-----------------|-------------|-------|
+| 64³   | 0.14            | 0.04        | 0.29× |
+| 128³  | 0.46            | 0.33        | 0.71× |
+| 256³  | 2.32            | 3.10        | 1.34× |
+| 512³  | 10.00           | 9.52        | 0.95× |
+| 1024³ | 19.63           | 18.61       | 0.95× |
+| 2048³ | 26.92           | 23.63       | 0.88× |
+| 4096³ | 27.05           | 25.42       | 0.94× |
+
+**Finding A — the GEMM is already at cuBLAS parity for 256³+.** The tensor
+tier's hardcoded (2,4)@256T tile (128×128 CTA, stages=3) matches cuBLAS
+within 12% from 256³ up. The "10× gap" was never a GEMM problem at big
+shapes — it was the fused kernel.
+
+**Finding B — the real GEMM gaps are SMALL shapes: 64³ (7×), 128³ (3×).**
+The single warp-tile (32×16) and one-CTA grids underfill the SM count.
+This is exactly the "every shape is efficient in some use case" case: small
+shapes need SMALL tiles (parallelism), not the 128×128 big tile. The
+selector's first clear win.
+
+**Finding C — the fused attention kernel is a 9× REGRESSION, not a win.**
+The phase4b milestone "fused 0.559 < comp 0.577 @512²" compared against a
+STALE composition that predated the tensor-tier wiring. Re-measured on the
+CURRENT compiler:
+
+| 512² path | Time | TF |
+|-----------|------|-----|
+| fused 1-kernel (`qk__scale_pv`) | 0.752 ms | 0.71 |
+| 2-kernel composition (qk+pv, tensor tier) | 0.080 ms | 6.7 |
+| cuBLAS composition | 0.063 ms | 8.5 |
+
+The composition is 9.4× faster than the fused kernel AND 1.27× of cuBLAS
+(the tensor tier's 512³ GEMM is at parity). The fused kernel's 16-row
+m-tile gives zero Kt/V reuse; the composition gets the big-tile GEMM. The
+chain-fusion detection fires automatically and slows every f16 attention
+down by 9× — a maximum-efficient-default violation.
+
+**Action from Finding C:** the fused attention path must be gated OFF by
+default (or gated on "fused beats composition", which the Stage-0 cost
+model will compute). The composition IS the correct default. This removes
+the urgency of the Stage-2 k-chunked fused kernel: the composition already
+reaches cuBLAS parity, so a fused rewrite is only worth it if it can beat
+0.080 ms — a much higher bar than the plan assumed.
+
+**Revised Stage 2 direction:** skip the k-chunked fused kernel for now
+(composition wins). Instead: (1) gate chain fusion on the cost model, (2)
+focus the selector on the small-shape GEMM gap (Finding B). The k-chunked
+fused kernel becomes a stretch goal gated on beating the composition.
+
+**Finding D — the current one-config-for-all default is the root cause.**
+Every shape 128³–4096³ uses the same (2,4)@256T tile. cuBLAS varies
+32×32→256×128. The cost model (Stage 0b) will derive the tile from shape;
+the parity at 256³+ is the calibration anchor that validates the model's
+tile term.
