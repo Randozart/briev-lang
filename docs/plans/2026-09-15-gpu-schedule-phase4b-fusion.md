@@ -233,6 +233,30 @@ These are the SAME mechanisms the tensor GEMM already ships at 35 TF —
 the fused kernel must adopt them. The direct-load fused kernel remains
 the correctness reference; the staged version is the performance target.
 
+## Staged fused kernel — built, correct, but SLOWER (the lesson refined)
+
+Implemented `fused_attention_mma_staged_ptx` (coalesced 16-byte
+`ld.global.v4.b32` fills into smem + fragment reads from smem — the
+cuBLAS fill/ldmatrix discipline) and verified it correct on-device
+(maxrel 4.5e-4 @128²). But it is **3.9× SLOWER than the direct-load
+kernel** (2.155 vs 0.559 ms @512²). The lesson refines:
+
+1. **Full-width staging crushes occupancy.** The staged kernel stages the
+   ENTIRE Q tile (16·k1·2 = 16KB @512²) → 32.5KB smem → 1 block/SM.
+   The direct kernel's 16KB S' only → 3 blocks/SM. cuBLAS stages a SMALL
+   2-stage panel pipeline (32×32 tile × 128×2 K), not the full operand.
+2. **Per-step barriers serialize.** Single-buffered bsmem forces 2
+   `bar.sync` per (n,k) — the fills and mma alternate with no overlap.
+   cuBLAS's `BAR.SYNC.DEFER_BLOCKING` + the stage ring overlap the fills
+   with the mma.
+
+The cuBLAS win is the SMALL multi-stage pipeline, not staging per se.
+The staged emitter stays behind `ptx_fused_staged` (default off) as the
+reference; the direct-load mma kernel remains the default (fastest).
+The next rung is a tight 2-stage panel pipeline (small smem, deferred
+barriers) — the tensor GEMM's stage-ring machinery applied to the fused
+shape.
+
 The fused kernel moved to the m16n8k16 tensor cores (`fused_attention_mma_ptx`,
 direct per-warp fragment loads, the scaled S' staged in smem). Occupancy
 was the whole game: the first mma version ran 32 single-warp blocks and

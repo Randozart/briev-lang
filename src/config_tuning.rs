@@ -69,6 +69,12 @@ pub struct IrLoweringSettings {
     /// longer holds its live value. Enable only after per-kernel field
     /// packing lands (each kernel's table = its touched set).
     pub gpu_schedule_buffer_reuse: bool,
+    /// 2026-09-15 (Phase 4b): use the smem-STAGED fused attention emitter
+    /// (coalesced fills + smem fragments) instead of the direct-load mma
+    /// kernel. Measured 3.9× SLOWER (the full-width staging crushes
+    /// occupancy; the per-step barriers serialize) — experimental until a
+    /// small multi-stage pipeline lands.
+    pub ptx_fused_staged: bool,
     /// 2026-09-01 (plan 2026-09-01-cooperative-row-kernels): cooperative row
     /// kernels (lane-strided accumulation + OpGroupNonUniformFAdd). OFF by
     /// default: the emitted kernel passes spirv-val and the minimal subgroup
@@ -295,6 +301,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     accel_probe_margin: 0.05,
     spirv_unroll: 16,
     gpu_schedule_buffer_reuse: false,
+    ptx_fused_staged: false,
     spirv_row_cooperative: false,
     spirv_coopmat: false,
     spirv_coopmat_tile_rows: 4,
@@ -481,6 +488,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("gpu_schedule_buffer_reuse", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.gpu_schedule_buffer_reuse),
+        ptx_fused_staged: db
+            .field_int("ptx_fused_staged", 0)
+            .map(|v| v != 0)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_fused_staged),
         spirv_row_cooperative: db
             .field_int("spirv_row_cooperative", 0)
             .map(|v| v != 0)

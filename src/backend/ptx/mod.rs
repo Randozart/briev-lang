@@ -429,6 +429,387 @@ fn fused_attention_mma_ptx(
     out
 }
 
+/// Fused-attention MMA PTX, SMEM-STAGED (Phase 4b — the cuBLAS lesson).
+/// Same math as `fused_attention_mma_ptx` (m16n8k16, S' on-chip) but the
+/// operands are staged through shared memory with COALESCED 16-byte fills
+/// and the fragments are read from smem — not scattered direct global
+/// loads (the ~10× cuBLAS gap was the load path; cuBLAS = LDG.128 fills →
+/// STS.128 → ldmatrix → HMMA). Single-buffered first (correctness); the
+/// multi-stage pipeline is the next rung.
+///
+/// smem: qsmem[16×k1×2] (the Q tile, filled once), bsmem[16×16×2] (the Kt/V
+/// panel, reused), ssmem[16×kn×2] (the scaled S' tile, phase 2's A).
+fn fused_attention_mma_staged_ptx(
+    m: i64,
+    k1: i64,
+    kn: i64,
+    on: i64,
+    a_off: u64,
+    b_off: u64,
+    v_off: u64,
+    o_off: u64,
+    scale: f64,
+    nwarps: usize,
+) -> String {
+    debug_assert!(m % 16 == 0 && k1 % 16 == 0 && kn % 16 == 0 && on % 8 == 0);
+    debug_assert!(kn % 16 == 0 && on % 16 == 0);
+    let phase1_per = (kn as usize / 16) / nwarps;
+    let phase2_per = (on as usize / 16) / nwarps;
+    let mut out = String::new();
+    out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n\n");
+    out.push_str(&format!(".visible .entry {} (.param .b64 proj_param)\n{{\n", ENTRY));
+    out.push_str("    .reg .u64  %rd1, %rd2, %rd3, %rd4, %rd5, %rd6, %rd7, %rd8, %rd9;\n");
+    out.push_str("    .reg .u32  %r1, %r2, %r3, %r4, %r5, %r6, %r7, %r8, %r9, %r10, %r11, %r12, %r13, %r14;\n");
+    out.push_str("    .reg .b32  %a0, %a1, %a2, %a3, %b0, %b1, %t0, %t1;\n");
+    out.push_str("    .reg .b32  %f0, %f1, %f2, %f3;\n");
+    out.push_str("    .reg .f32  %c0, %c1, %c2, %c3, %c4, %c5, %c6, %c7;\n");
+    out.push_str("    .reg .pred %p1;\n");
+    out.push_str(&format!("    .shared .align 16 .b8 qsmem[{}];\n", 16 * k1 * 2));
+    out.push_str(&format!("    .shared .align 16 .b8 bsmem[{}];\n", nwarps * 512));
+    out.push_str(&format!("    .shared .align 16 .b8 ssmem[{}];\n", 16 * kn * 2));
+    out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+    out.push_str("    mov.u32 %r1, %tid.x;\n");
+    out.push_str("    and.b32 %r1, %r1, 31;      // lane\n");
+    out.push_str("    mov.u32 %r2, %ctaid.y;     // m_tile\n");
+    out.push_str("    shr.u32 %r3, %r1, 2;       // lane/4 (row)\n");
+    out.push_str("    and.b32 %r4, %r1, 3;       // lane%4\n");
+    out.push_str("    shl.b32 %r5, %r4, 1;       // 2t'\n");
+    out.push_str("    mov.u32 %r13, %tid.x;\n");
+    out.push_str("    shr.u32 %r9, %r13, 5;      // warp\n");
+
+    // ---- Fill qsmem: Q[m_tile*16 .. +16][0..k1], coalesced 16-byte.
+    // Thread t copies row t/2, col-half t%2: 8 f16 (16 bytes) each; the
+    // tile is 16 rows × k1 cols → (16·k1·2)/32 = k1 bytes per lane.
+    // Thread t copies bytes [t*128, (t+1)*128) of the contiguous Q tile
+    // (16 rows × k1 cols, row-major): base = t*128, 8× 16-byte chunks.
+    out.push_str("    mov.u32 %r10, %r1;\n");
+    out.push_str(&format!("    mul.lo.u32 %r10, %r10, {};\n", (16 * k1 * 2) / 32)); // t*128
+    out.push_str("    mov.u32 %r11, %r2;\n");
+    out.push_str(&format!("    mul.lo.u32 %r11, %r11, {};\n", 16 * k1 * 2)); // m_tile*4096
+    out.push_str("    add.u32 %r11, %r10, %r11;\n"); // GLOBAL offset
+    out.push_str("    mul.wide.u32 %rd2, %r11, 1;\n");
+    out.push_str("    mov.u64 %rd3, %rd1;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", a_off));
+    out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+    out.push_str("    mov.u64 %rd5, qsmem;\n");
+    out.push_str("    mul.wide.u32 %rd6, %r10, 1;\n"); // SMEM offset (t*128 only)
+    out.push_str("    add.u64 %rd5, %rd5, %rd6;\n");
+    out.push_str(&format!("    mov.u32 %r14, {};\n", ((16 * k1 * 2) / 32) / 16));
+    out.push_str("QFILL:\n");
+    out.push_str("    setp.eq.u32 %p1, %r14, 0;\n");
+    out.push_str("    @%p1 bra QFILLX;\n");
+    out.push_str("    ld.global.v4.b32 {%f0,%f1,%f2,%f3}, [%rd3];\n");
+    out.push_str("    st.shared.v4.b32 [%rd5], {%f0,%f1,%f2,%f3};\n");
+    out.push_str("    add.u64 %rd3, %rd3, 16; add.u64 %rd5, %rd5, 16;\n");
+    out.push_str("    sub.u32 %r14, %r14, 1;\n");
+    out.push_str("    bra.uni QFILL;\n");
+    out.push_str("QFILLX:\n");
+    out.push_str("    bar.sync 0;\n");
+
+    // ---- Phase 1: S'[16][kn] = Q·Kt·scale. Warp w owns n-panels
+    // [w*phase1_per, (w+1)*phase1_per). n-panel outer, k-panel inner.
+    out.push_str(&format!("    mul.lo.u32 %r10, %r9, {};\n", phase1_per));
+    out.push_str(&format!("    add.u32 %r11, %r10, {};\n", phase1_per));
+    out.push_str("P1L:\n");
+    out.push_str("    setp.ge.u32 %p1, %r10, %r11;\n");
+    out.push_str("    @%p1 bra P1X;\n");
+    out.push_str("    mov.f32 %c0, 0f00000000; mov.f32 %c1, 0f00000000; mov.f32 %c2, 0f00000000; mov.f32 %c3, 0f00000000;\n");
+    out.push_str("    mov.f32 %c4, 0f00000000; mov.f32 %c5, 0f00000000; mov.f32 %c6, 0f00000000; mov.f32 %c7, 0f00000000;\n");
+    for kpanel in 0..(k1 / 16) {
+        // Fill bsmem: Kt[(kpanel*16 + k)][(n_panel*16 + n)], 16×16 tile.
+        // Thread t copies row t/2, 8 f16 (16 B) starting at col (t%2)*8.
+        out.push_str("    mov.u32 %r6, %r1;\n");
+        out.push_str("    shr.u32 %r6, %r6, 1;   // t/2 (k row)\n");
+        out.push_str("    and.b32 %r7, %r1, 1;   // t%2\n");
+        // global Kt addr.
+        out.push_str("    mov.u32 %r12, %r10;\n");
+        out.push_str("    mul.lo.u32 %r12, %r12, 16; // n_panel*16\n");
+        out.push_str(&format!("    add.u32 %r12, %r12, {};\n", kpanel * 16));
+        out.push_str("    add.u32 %r12, %r12, %r6;\n"); // + t/2 (k row)
+        out.push_str("    mul.lo.u32 %r12, %r12, 0; // placeholder\n");
+        // simpler: byte = b_off + (kpanel*16 + t/2)*kn*2 + (n_panel*16 + (t%2)*8)*2
+        out.push_str("    mov.u32 %r12, %r6;\n");
+        out.push_str(&format!("    add.u32 %r12, %r12, {};\n", kpanel * 16));
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", kn * 2));
+        out.push_str("    mov.u32 %r8, %r10;\n");
+        out.push_str("    mul.lo.u32 %r8, %r8, 32; // n_panel*16*2\n");
+        out.push_str("    add.u32 %r12, %r12, %r8;\n");
+        out.push_str("    mul.lo.u32 %r8, %r7, 16; // (t%2)*8*2\n");
+        out.push_str("    add.u32 %r12, %r12, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r12, 1;\n");
+        out.push_str("    mov.u64 %rd3, %rd1;\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", b_off));
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        // smem target.
+        out.push_str("    mov.u64 %rd5, bsmem;\n");
+        out.push_str(&format!("    mul.wide.u32 %rd7, %r9, {};\n", 512));
+        out.push_str("    add.u64 %rd5, %rd5, %rd7;\n");
+        out.push_str("    mov.u32 %r12, %r6;\n");
+        out.push_str("    mul.lo.u32 %r12, %r12, 32; // (t/2)*16*2\n");
+        out.push_str("    mul.lo.u32 %r8, %r7, 16;\n");
+        out.push_str("    add.u32 %r12, %r12, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd6, %r12, 1;\n");
+        out.push_str("    add.u64 %rd6, %rd5, %rd6;\n");
+        out.push_str("    ld.global.v4.b32 {%f0,%f1,%f2,%f3}, [%rd3];\n");
+        out.push_str("    st.shared.v4.b32 [%rd6], {%f0,%f1,%f2,%f3};\n");
+        out.push_str("    bar.sync 0;\n");
+        // A fragments from qsmem, B from bsmem; 2 mma side-by-side.
+        // A: a0=(t/4, 2t') a1=(t/4+8, 2t') a2=(t/4, 2t'+8) a3=(t/4+8, 2t'+8)
+        //   from qsmem at ((t/4+ro)*k1 + kpanel*16 + 2t'+ko)*2.
+        out.push_str("    mov.u32 %r6, %r3;\n");
+        out.push_str(&format!("    mul.lo.u32 %r6, %r6, {};\n", k1 * 2));
+        out.push_str(&format!("    add.u32 %r6, %r6, {};\n", kpanel * 16 * 2));
+        out.push_str("    mul.lo.u32 %r8, %r5, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+        out.push_str("    mov.u64 %rd3, qsmem;\n");
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.shared.b32 %a0, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * k1 * 2));
+        out.push_str("    ld.shared.b32 %a1, [%rd3];\n");
+        out.push_str(&format!("    sub.u64 %rd3, %rd3, {};\n", 8 * k1 * 2));
+        out.push_str("    add.u64 %rd3, %rd3, 16;\n");
+        out.push_str("    ld.shared.b32 %a2, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * k1 * 2));
+        out.push_str("    ld.shared.b32 %a3, [%rd3];\n");
+        // B: b0=(2t', t/4) b1=(2t'+8, t/4) from bsmem at (k*16 + n)*2.
+        out.push_str("    mov.u32 %r6, %r5;\n");
+        out.push_str(&format!("    mul.lo.u32 %r6, %r6, {};\n", 32));
+        out.push_str("    mov.u32 %r8, %r3;\n");
+        out.push_str("    mul.lo.u32 %r8, %r8, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+        out.push_str("    mov.u64 %rd3, bsmem;\n");
+        out.push_str(&format!("    mul.wide.u32 %rd7, %r9, {};\n", 512));
+        out.push_str("    add.u64 %rd3, %rd3, %rd7;\n");
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n"); // next k row (16 n × 2)
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str("    sub.u64 %rd3, %rd3, 32;\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * 16 * 2));
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
+        out.push_str(&format!(
+            "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c0,%c1,%c2,%c3}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c0,%c1,%c2,%c3}};\n"
+        ));
+        // Second mma: B cols +8 (n = t/4 + 8).
+        out.push_str("    mov.u32 %r6, %r5;\n");
+        out.push_str("    mul.lo.u32 %r6, %r6, 32;\n");
+        out.push_str("    mov.u32 %r8, %r3;\n");
+        out.push_str(&format!("    add.u32 %r8, %r8, {};\n", 8));
+        out.push_str("    mul.lo.u32 %r8, %r8, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+        out.push_str("    mov.u64 %rd3, bsmem;\n");
+        out.push_str(&format!("    mul.wide.u32 %rd7, %r9, {};\n", 512));
+        out.push_str("    add.u64 %rd3, %rd3, %rd7;\n");
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str("    sub.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    add.u64 %rd3, %rd3, 256;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
+        out.push_str(&format!(
+            "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c4,%c5,%c6,%c7}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c4,%c5,%c6,%c7}};\n"
+        ));
+        out.push_str("    bar.sync 0;\n");
+    }
+    // Scale + store S' to ssmem. n_panel*16 + 2t' cols.
+    out.push_str(&format!(
+        "    mul.f32 %c0, %c0, {:e}; mul.f32 %c1, %c1, {:e}; mul.f32 %c2, %c2, {:e}; mul.f32 %c3, %c3, {:e};\n",
+        scale, scale, scale, scale
+    ));
+    out.push_str(&format!(
+        "    mul.f32 %c4, %c4, {:e}; mul.f32 %c5, %c5, {:e}; mul.f32 %c6, %c6, {:e}; mul.f32 %c7, %c7, {:e};\n",
+        scale, scale, scale, scale
+    ));
+    out.push_str("    cvt.rn.f16.f32 %t0, %c0; cvt.rn.f16.f32 %t1, %c1;\n");
+    out.push_str("    mov.b32 %a0, %t0; shl.b32 %t1, %t1, 16; or.b32 %a0, %a0, %t1;\n");
+    out.push_str("    cvt.rn.f16.f32 %t0, %c2; cvt.rn.f16.f32 %t1, %c3;\n");
+    out.push_str("    mov.b32 %a1, %t0; shl.b32 %t1, %t1, 16; or.b32 %a1, %a1, %t1;\n");
+    out.push_str("    cvt.rn.f16.f32 %t0, %c4; cvt.rn.f16.f32 %t1, %c5;\n");
+    out.push_str("    mov.b32 %a2, %t0; shl.b32 %t1, %t1, 16; or.b32 %a2, %a2, %t1;\n");
+    out.push_str("    cvt.rn.f16.f32 %t0, %c6; cvt.rn.f16.f32 %t1, %c7;\n");
+    out.push_str("    mov.b32 %a3, %t0; shl.b32 %t1, %t1, 16; or.b32 %a3, %a3, %t1;\n");
+    // ssmem byte = (row*kn + n_panel*16 + 2t')*2.
+    out.push_str(&format!("    mul.lo.u32 %r6, %r3, {};\n", kn * 2));
+    out.push_str("    mov.u32 %r12, %r10;\n");
+    out.push_str("    mul.lo.u32 %r12, %r12, 32;\n");
+    out.push_str("    add.u32 %r6, %r6, %r12;\n");
+    out.push_str("    mul.lo.u32 %r8, %r5, 2;\n");
+    out.push_str("    add.u32 %r6, %r6, %r8;\n");
+    out.push_str("    mov.u64 %rd3, ssmem;\n");
+    out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+    out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+    out.push_str("    st.shared.b32 [%rd3], %a0;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * kn * 2));
+    out.push_str("    st.shared.b32 [%rd3], %a1;\n");
+    out.push_str("    sub.u64 %rd3, %rd3, 0;\n");
+    // a2/a3 at col +8 (the second mma's cols) → +16 bytes.
+    out.push_str("    sub.u64 %rd3, %rd3, 0;\n");
+    out.push_str("    mov.u64 %rd3, ssmem;\n");
+    out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+    out.push_str("    add.u64 %rd3, %rd3, 16;\n");
+    out.push_str("    st.shared.b32 [%rd3], %a2;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * kn * 2));
+    out.push_str("    st.shared.b32 [%rd3], %a3;\n");
+    out.push_str("    add.u32 %r10, %r10, 1;\n");
+    out.push_str("    bra.uni P1L;\n");
+    out.push_str("P1X:\n");
+    out.push_str("    bar.sync 0;\n");
+
+    // ---- Phase 2: o[16][on] = S'·V. A from ssmem, B (V) staged.
+    out.push_str(&format!("    mul.lo.u32 %r10, %r9, {};\n", phase2_per));
+    out.push_str(&format!("    add.u32 %r11, %r10, {};\n", phase2_per));
+    out.push_str("P2L:\n");
+    out.push_str("    setp.ge.u32 %p1, %r10, %r11;\n");
+    out.push_str("    @%p1 bra P2X;\n");
+    out.push_str("    mov.f32 %c0, 0f00000000; mov.f32 %c1, 0f00000000; mov.f32 %c2, 0f00000000; mov.f32 %c3, 0f00000000;\n");
+    out.push_str("    mov.f32 %c4, 0f00000000; mov.f32 %c5, 0f00000000; mov.f32 %c6, 0f00000000; mov.f32 %c7, 0f00000000;\n");
+    for kpanel in 0..(kn / 16) {
+        // Fill bsmem: V[(kpanel*16 + k)][(n_panel*16 + n)].
+        out.push_str("    mov.u32 %r6, %r1;\n");
+        out.push_str("    shr.u32 %r6, %r6, 1;\n");
+        out.push_str("    and.b32 %r7, %r1, 1;\n");
+        out.push_str("    mov.u32 %r12, %r6;\n");
+        out.push_str(&format!("    add.u32 %r12, %r12, {};\n", kpanel * 16));
+        out.push_str(&format!("    mul.lo.u32 %r12, %r12, {};\n", on * 2));
+        out.push_str("    mov.u32 %r8, %r10;\n");
+        out.push_str("    mul.lo.u32 %r8, %r8, 32;\n");
+        out.push_str("    add.u32 %r12, %r12, %r8;\n");
+        out.push_str("    mul.lo.u32 %r8, %r7, 16;\n");
+        out.push_str("    add.u32 %r12, %r12, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r12, 1;\n");
+        out.push_str("    mov.u64 %rd3, %rd1;\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", v_off));
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    mov.u64 %rd5, bsmem;\n");
+        out.push_str(&format!("    mul.wide.u32 %rd7, %r9, {};\n", 512));
+        out.push_str("    add.u64 %rd5, %rd5, %rd7;\n");
+        out.push_str("    mov.u32 %r12, %r6;\n");
+        out.push_str("    mul.lo.u32 %r12, %r12, 32;\n");
+        out.push_str("    mul.lo.u32 %r8, %r7, 16;\n");
+        out.push_str("    add.u32 %r12, %r12, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd6, %r12, 1;\n");
+        out.push_str("    add.u64 %rd6, %rd5, %rd6;\n");
+        out.push_str("    ld.global.v4.b32 {%f0,%f1,%f2,%f3}, [%rd3];\n");
+        out.push_str("    st.shared.v4.b32 [%rd6], {%f0,%f1,%f2,%f3};\n");
+        out.push_str("    bar.sync 0;\n");
+        // A from ssmem: S'[(t/4+ro)][kpanel*16 + 2t'+ko].
+        out.push_str(&format!("    mul.lo.u32 %r6, %r3, {};\n", kn * 2));
+        out.push_str(&format!("    add.u32 %r6, %r6, {};\n", kpanel * 16 * 2));
+        out.push_str("    mul.lo.u32 %r8, %r5, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+        out.push_str("    mov.u64 %rd3, ssmem;\n");
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.shared.b32 %a0, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * kn * 2));
+        out.push_str("    ld.shared.b32 %a1, [%rd3];\n");
+        out.push_str(&format!("    sub.u64 %rd3, %rd3, {};\n", 8 * kn * 2));
+        out.push_str("    add.u64 %rd3, %rd3, 16;\n");
+        out.push_str("    ld.shared.b32 %a2, [%rd3];\n");
+        out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * kn * 2));
+        out.push_str("    ld.shared.b32 %a3, [%rd3];\n");
+        // B from bsmem (first mma): b0=(2t', t/4) b1=(2t'+8, t/4).
+        out.push_str("    mov.u32 %r6, %r5;\n");
+        out.push_str("    mul.lo.u32 %r6, %r6, 32;\n");
+        out.push_str("    mov.u32 %r8, %r3;\n");
+        out.push_str("    mul.lo.u32 %r8, %r8, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+        out.push_str("    mov.u64 %rd3, bsmem;\n");
+        out.push_str(&format!("    mul.wide.u32 %rd7, %r9, {};\n", 512));
+        out.push_str("    add.u64 %rd3, %rd3, %rd7;\n");
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str("    sub.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    add.u64 %rd3, %rd3, 256;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
+        out.push_str(&format!(
+            "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c0,%c1,%c2,%c3}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c0,%c1,%c2,%c3}};\n"
+        ));
+        // Second mma: B cols +8.
+        out.push_str("    mov.u32 %r6, %r5;\n");
+        out.push_str("    mul.lo.u32 %r6, %r6, 32;\n");
+        out.push_str("    mov.u32 %r8, %r3;\n");
+        out.push_str(&format!("    add.u32 %r8, %r8, {};\n", 8));
+        out.push_str("    mul.lo.u32 %r8, %r8, 2;\n");
+        out.push_str("    add.u32 %r6, %r6, %r8;\n");
+        out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+        out.push_str("    mov.u64 %rd3, bsmem;\n");
+        out.push_str(&format!("    mul.wide.u32 %rd7, %r9, {};\n", 512));
+        out.push_str("    add.u64 %rd3, %rd3, %rd7;\n");
+        out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b0, %t0; shl.b32 %t1, %t1, 16; or.b32 %b0, %b0, %t1;\n");
+        out.push_str("    sub.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    add.u64 %rd3, %rd3, 256;\n");
+        out.push_str("    ld.shared.b16 %t0, [%rd3];\n");
+        out.push_str("    add.u64 %rd3, %rd3, 32;\n");
+        out.push_str("    ld.shared.b16 %t1, [%rd3];\n");
+        out.push_str("    mov.b32 %b1, %t0; shl.b32 %t1, %t1, 16; or.b32 %b1, %b1, %t1;\n");
+        out.push_str(&format!(
+            "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {{%c4,%c5,%c6,%c7}}, {{%a0,%a1,%a2,%a3}}, {{%b0,%b1}}, {{%c4,%c5,%c6,%c7}};\n"
+        ));
+        out.push_str("    bar.sync 0;\n");
+    }
+    // Store o to global.
+    out.push_str("    cvt.rn.f16.f32 %t0, %c0; cvt.rn.f16.f32 %t1, %c1;\n");
+    out.push_str("    mov.b32 %a0, %t0; shl.b32 %t1, %t1, 16; or.b32 %a0, %a0, %t1;\n");
+    out.push_str("    cvt.rn.f16.f32 %t0, %c2; cvt.rn.f16.f32 %t1, %c3;\n");
+    out.push_str("    mov.b32 %a1, %t0; shl.b32 %t1, %t1, 16; or.b32 %a1, %a1, %t1;\n");
+    out.push_str("    cvt.rn.f16.f32 %t0, %c4; cvt.rn.f16.f32 %t1, %c5;\n");
+    out.push_str("    mov.b32 %a2, %t0; shl.b32 %t1, %t1, 16; or.b32 %a2, %a2, %t1;\n");
+    out.push_str("    cvt.rn.f16.f32 %t0, %c6; cvt.rn.f16.f32 %t1, %c7;\n");
+    out.push_str("    mov.b32 %a3, %t0; shl.b32 %t1, %t1, 16; or.b32 %a3, %a3, %t1;\n");
+    out.push_str(&format!("    mul.lo.u32 %r6, %r2, {};\n", 16 * on * 2));
+    out.push_str(&format!("    mul.lo.u32 %r7, %r3, {};\n", on * 2));
+    out.push_str("    add.u32 %r6, %r6, %r7;\n");
+    out.push_str("    mov.u32 %r12, %r10;\n");
+    out.push_str("    mul.lo.u32 %r12, %r12, 32;\n");
+    out.push_str("    add.u32 %r6, %r6, %r12;\n");
+    out.push_str("    mul.lo.u32 %r8, %r5, 2;\n");
+    out.push_str("    add.u32 %r6, %r6, %r8;\n");
+    out.push_str("    mul.wide.u32 %rd2, %r6, 1;\n");
+    out.push_str("    mov.u64 %rd3, %rd1;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", o_off));
+    out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+    out.push_str("    st.global.b32 [%rd3], %a0;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * on * 2));
+    out.push_str("    st.global.b32 [%rd3], %a1;\n");
+    out.push_str("    add.u64 %rd3, %rd3, 0;\n");
+    out.push_str("    mov.u64 %rd3, %rd1;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", o_off));
+    out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+    out.push_str("    add.u64 %rd3, %rd3, 16;\n");
+    out.push_str("    st.global.b32 [%rd3], %a2;\n");
+    out.push_str(&format!("    add.u64 %rd3, %rd3, {};\n", 8 * on * 2));
+    out.push_str("    st.global.b32 [%rd3], %a3;\n");
+    out.push_str("    add.u32 %r10, %r10, 1;\n");
+    out.push_str("    bra.uni P2L;\n");
+    out.push_str("P2X:\n");
+    out.push_str("    ret;\n}\n");
+    out
+}
+
 /// Build the ONE fused attention kernel for a detected chain (Phase 4b v1).
 /// Derives the GEMM operands from the producer/consumer shapes (never from
 /// pattern names): the producer GEMM is `a·b → mid_in` (M×K → M×kn), the
@@ -502,8 +883,25 @@ fn build_fused_attention_kernel(
     // composition.
     let tiles = m % 16 == 0 && k1 % 16 == 0 && kn % 16 == 0 && on % 8 == 0;
     let nwarps: usize = 8;
+    let staged_ok = tiles && kn % 16 == 0 && on % 16 == 0
+        && (kn as usize / 16) % nwarps == 0 && (on as usize / 16) % nwarps == 0;
     let mma_ok = tiles && (kn as usize / 8) % nwarps == 0 && (on as usize / 8) % nwarps == 0;
-    let (ptx, fused_mma, block_threads, shared_bytes, fused_div) = if mma_ok {
+    // 2026-09-15: the smem-STAGED emitter (coalesced 16-byte fills + smem
+    // fragment reads) is the cuBLAS lesson, but its full-width Q staging
+    // crushes occupancy (1 block/SM vs 3) and per-step barriers serialize —
+    // measured 3.9x SLOWER than the direct-load kernel. It stays behind
+    // `ptx_fused_staged` (experimental); the DIRECT-load mma is the default;
+    // the naive is the last resort.
+    let staged_on = crate::config_tuning::ir_lowering().ptx_fused_staged;
+    let (ptx, fused_mma, block_threads, shared_bytes, fused_div) = if staged_on && staged_ok {
+        (
+            fused_attention_mma_staged_ptx(m, k1, kn, on, a_off, b_off, v_off, o_off, cf.scale, nwarps),
+            true,
+            (32 * nwarps) as u32,
+            (16 * k1 * 2 + 16 * kn * 2 + 512) as u32,
+            (16 * on) as u32,
+        )
+    } else if mma_ok {
         (
             fused_attention_mma_ptx(m, k1, kn, on, a_off, b_off, v_off, o_off, cf.scale, nwarps),
             true,
