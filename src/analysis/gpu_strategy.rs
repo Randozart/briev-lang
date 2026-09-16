@@ -317,3 +317,17 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn rectangular_shapes_get_feasible_tiles() {
+        let hw = GpuHardware::SM86;
+        // M != N: a thin GEMM (4096x512x512) and a tall one (512x4096x512).
+        for (m, n, k) in [(4096u64, 512, 512), (512, 4096, 512), (2048, 1024, 1024)] {
+            let s = select(m, n, k, &hw).expect("candidate");
+            assert!(
+                m % s.tile_m == 0 && n % s.tile_n == 0,
+                "{m}x{n}x{k}: tile {}x{} must divide the shape",
+                s.tile_m, s.tile_n
+            );
+        }
+    }

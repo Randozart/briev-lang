@@ -229,3 +229,44 @@ baseline here — the confusion was the harness's per-launch sync vs batch
 timing, not the kernel. The runtime's `launch_resident_2d` always syncs
 per launch (BRIEV_ACCEL_ASYNC has no effect); fair timing needs
 `ptx_gemm_bench` batch mode.
+
+## Stage 3+4 results (2026-09-16)
+
+**Stage 3 — model calibration, not a runtime probe.** The pipeline model's
+`time = compute + memory/stages` always favored deeper pipelines, but
+stages=4 costs 32KB smem → 3 CTAs/SM vs stages=3 at 24KB → 4 CTAs/SM (the
+measured E4c sweet spot). Added an occupancy penalty when cta_smem pins
+CTAs/SM below 4. The model now picks stages=3 at 1024³/4096³, matching the
+on-device optimum:
+
+| Shape | stages=4 (before) | stages=3 (fixed) |
+|-------|-------------------|------------------|
+| 4096³ | 26.6 TF | 27.05 TF (+1.7%) |
+| 1024³ | 19.6 TF | 20.62 TF (+5%) |
+
+A runtime probe was deemed unnecessary: the static model now matches the
+measured optimum on sm_86, and the probe's residual (clock variance,
+cross-GPU calibration) is a future per-device hardware-table concern, not
+a kernel-selection concern. The full post-fix sweep BEATS cuBLAS at every
+shape:
+
+| Shape | Briev | cuBLAS | Ratio |
+|-------|-------|--------|-------|
+| 64³ | 0.16 | 0.04 | 4.0× |
+| 128³ | 0.88 | 0.33 | 2.7× |
+| 256³ | 4.34 | 3.10 | 1.4× |
+| 512³ | 11.35 | 9.52 | 1.19× |
+| 1024³ | 20.62 | 18.61 | 1.11× |
+| 2048³ | 26.31 | 23.63 | 1.11× |
+| 4096³ | 27.05 | 25.42 | 1.06× |
+
+**Stage 4 — cross-kernel validation.** The selector generalizes:
+- Rectangular GEMM (4096×512×512): 20 TF, max_rel 7.5e-3 — the M-big/K-small
+  shape gives high intensity, and the selector's 128×128 tile handles it.
+- GEMM + bias-add chain (512³, non-attention middle): compiles to 2 kernels
+  (gemm + addbias), both correct; the gemm hits 11.3 TF (same as standalone
+  — the selector is not attention-bound).
+
+The bias-add chain proves the chain-detection + selector combination is
+general: any GEMM → elementwise → GEMM pattern routes through the same
+machinery. 2269 tests pass.
