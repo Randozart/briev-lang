@@ -1548,4 +1548,214 @@ mod tests {
             other => panic!("expected spawn, got {other:?}"),
         }
     }
+
+    // ── 2026-09-16: universal chaining ─────────────────────────────
+
+    #[test]
+    fn chained_plugin_intercept_parses() {
+        // `data.serialize!()` — the plugin intercept now carries a receiver.
+        let expr = parse_expr("data.serialize!()").unwrap();
+        match expr {
+            Expr::PluginIntercept { name, receiver, chain_refs, .. } => {
+                assert_eq!(name, "serialize");
+                assert!(receiver.is_some(), "chained plugin must carry a receiver");
+                assert!(chain_refs.is_empty());
+            }
+            other => panic!("expected plugin intercept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chained_plugin_intercept_after_method_parses() {
+        // `a.b().serialize!(x)` — a full chain ending in a plugin call.
+        let expr = parse_expr("a.b().serialize!(x)").unwrap();
+        match expr {
+            Expr::PluginIntercept { name, args, receiver, .. } => {
+                assert_eq!(name, "serialize");
+                assert_eq!(args.len(), 1);
+                let recv = receiver.expect("must carry receiver");
+                assert!(matches!(recv.as_ref(), Expr::MethodCall(..)));
+            }
+            other => panic!("expected plugin intercept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_plugin_intercept_has_no_receiver() {
+        let expr = parse_expr("print!(1)").unwrap();
+        match expr {
+            Expr::PluginIntercept { name, receiver, .. } => {
+                assert_eq!(name, "print");
+                assert!(receiver.is_none(), "bare plugin must have no receiver");
+            }
+            other => panic!("expected plugin intercept, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dollar_nav_chain_unifies_under_method_call() {
+        // `a.First$()` must produce MethodCall (receiver preserved), not Call.
+        let expr = parse_expr("a.First$()").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, args, _, refs) => {
+                assert_eq!(name, "First$");
+                assert!(matches!(recv.as_ref(), Expr::Identifier(n) if n == "a"));
+                assert!(args.is_empty());
+                assert!(refs.is_empty());
+            }
+            other => panic!("expected MethodCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dollar_nav_chain_continues() {
+        // `Tag$("x").First$()` — bare call then chained method.
+        let expr = parse_expr("Tag$(\"x\").First$()").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, ..) => {
+                assert_eq!(name, "First$");
+                assert!(matches!(recv.as_ref(), Expr::Call(n, ..) if n == "Tag$"));
+            }
+            other => panic!("expected MethodCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chain_capture_parses() {
+        // `a.b() >> step;` at statement level becomes Expr::Capture.
+        let expr = parse_expr("a.b() >> step").unwrap();
+        match expr {
+            Expr::Capture { expr, name } => {
+                assert_eq!(name, "step");
+                assert!(matches!(expr.as_ref(), Expr::MethodCall(..)));
+            }
+            other => panic!("expected capture, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chain_capture_keeps_chain_alive() {
+        // `a.b() >> x.c()` — the capture binds then the chain continues.
+        let expr = parse_expr("a.b() >> x .c()").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, ..) => {
+                assert_eq!(name, "c");
+                assert!(matches!(recv.as_ref(), Expr::Capture { name: n, .. } if n == "x"));
+            }
+            other => panic!("expected MethodCall wrapping capture, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_inside_args_stays_shift() {
+        // `f(x >> y)` — `>>` inside an argument list is a shift, not capture.
+        let expr = parse_expr("f(x >> y)").unwrap();
+        match expr {
+            Expr::Call(_, args, _) => {
+                assert!(matches!(&args[0], Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, ..)),
+                    "x >> y must stay a shift, got {:?}", args[0]);
+            }
+            other => panic!("expected call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn positional_backref_parses() {
+        // `.2>>func()` — positional back-reference in a chain.
+        let expr = parse_expr("a.b().2>>func()").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, args, _, refs) => {
+                assert_eq!(name, "func");
+                assert!(args.is_empty());
+                assert_eq!(refs.len(), 1);
+                assert_eq!(refs[0], ChainRef::Positional(2));
+                assert!(matches!(recv.as_ref(), Expr::MethodCall(..)));
+            }
+            other => panic!("expected MethodCall with ref, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn named_backref_parses() {
+        // `.step_1>>func()` — named capture reference.
+        let expr = parse_expr("a.b().step_1>>func()").unwrap();
+        match expr {
+            Expr::MethodCall(_, name, _, _, refs) => {
+                assert_eq!(name, "func");
+                assert_eq!(refs.len(), 1);
+                assert_eq!(refs[0], ChainRef::Named("step_1".into()));
+            }
+            other => panic!("expected MethodCall with named ref, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_backrefs_parse() {
+        // `.step_1,1>>func(a)` — multiple references become leading args.
+        let expr = parse_expr("a.b().step_1,1>>func(x)").unwrap();
+        match expr {
+            Expr::MethodCall(_, name, args, _, refs) => {
+                assert_eq!(name, "func");
+                assert_eq!(args.len(), 1);
+                assert_eq!(refs.len(), 2);
+                assert_eq!(refs[0], ChainRef::Named("step_1".into()));
+                assert_eq!(refs[1], ChainRef::Positional(1));
+            }
+            other => panic!("expected MethodCall with two refs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cast_annotation_parses() {
+        // `value.(Int)>>clamp(0, 255)` — cast then call.
+        let expr = parse_expr("value.(Int)>>clamp(0, 255)").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, args, _, refs) => {
+                assert_eq!(name, "clamp");
+                assert_eq!(args.len(), 2);
+                assert!(refs.is_empty());
+                assert!(matches!(recv.as_ref(), Expr::Cast(inner, t) if matches!(t, Type::Custom(n) if n == "Int")));
+            }
+            other => panic!("expected cast + MethodCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dot_identifier_without_shr_is_field_access() {
+        // `.name` without `>>` must stay field access, never a reference.
+        let expr = parse_expr("a.b.c").unwrap();
+        match expr {
+            Expr::Field(inner, name) => {
+                assert_eq!(name, "c");
+                assert!(matches!(inner.as_ref(), Expr::Field(_, n) if n == "b"));
+            }
+            other => panic!("expected field access, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dot_number_without_shr_is_tuple_access() {
+        // `.2` without `>>` must stay tuple element access.
+        let expr = parse_expr("t.2").unwrap();
+        match expr {
+            Expr::Field(recv, name) => {
+                assert_eq!(name, "2");
+                assert!(matches!(recv.as_ref(), Expr::Identifier(n) if n == "t"));
+            }
+            other => panic!("expected tuple field access, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backref_requires_call_after_shr() {
+        // `.2>>` must be followed by a call; otherwise fall back to field+shift.
+        let expr = parse_expr("t.2 >> 3").unwrap();
+        match expr {
+            Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, l, r) => {
+                assert!(matches!(l.as_ref(), Expr::Field(..)));
+                assert!(matches!(r.as_ref(), Expr::Decimal(3)));
+            }
+            other => panic!("expected shift after field, got {other:?}"),
+        }
+    }
 }

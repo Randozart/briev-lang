@@ -2224,6 +2224,49 @@ mod tests {
         .to_string()
     }
 
+    // 2026-09-16: chain back-references (`.N>>`) resolve to leading args.
+    #[test]
+    fn chain_backref_prepends_leading_arg() {
+        // `5.Add#(3).1>>Add#(0)` — the `.1` leading ref forwards the previous
+        // result (8) as the intrinsic's FIRST operand: Add#(8, 8, 0) = 16.
+        // Without leading passing this would be Add#(8, 0) = 8.
+        let inner = Expr::MethodCall(
+            Box::new(Expr::Decimal(5)),
+            "Add#".into(),
+            vec![Expr::Decimal(3)],
+            None,
+            vec![],
+        );
+        let outer = Expr::MethodCall(
+            Box::new(inner),
+            "Add#".into(),
+            vec![Expr::Decimal(0)],
+            None,
+            vec![ChainRef::Positional(1)],
+        );
+        let val = eval1(&outer);
+        assert_eq!(val.as_i64(), Some(16), "leading ref must reach the intrinsic");
+    }
+
+    #[test]
+    fn chain_capture_binds_name() {
+        // `expr >> name` binds the value; the interpreter's Capture arm stores it.
+        let mut bindings = HashMap::new();
+        let cap = Expr::Capture {
+            expr: Box::new(Expr::Decimal(42)),
+            name: "step".into(),
+        };
+        let val = eval_expr(
+            &cap,
+            &mut VirtualHeap::new(),
+            &mut bindings,
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(val.as_i64(), Some(42));
+        assert_eq!(bindings.get("step").and_then(Value::as_i64), Some(42));
+    }
+
     // 2026-08-01 (audit): Char/Bool are first-class values — literals
     // produce Value::Atom(Atom::Char)/Value::Atom(Atom::Bool), and casts convert across categories
     // (mirroring codegen, so Print# prints the same thing on both backends).

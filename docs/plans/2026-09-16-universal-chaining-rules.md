@@ -6,6 +6,51 @@
 
 ---
 
+## 0. Implementation Status (2026-09-16)
+
+All layers implemented and tested (`cargo test --lib`: 2237 passing).
+
+### Delivered
+
+| Feature | Status |
+|---------|--------|
+| `!` plugin chaining (`obj.plugin!(x)`) | parser + AST (`PluginIntercept.receiver`) + typechecker + plugin walks |
+| `$` nav-chain unified under `MethodCall` | parser + macro evaluator (`eval_nav_chain` handles `MethodCall` with `$` suffix) |
+| `.N>>func()` positional back-reference | parser + typechecker + interpreter + LLVM codegen |
+| `.name>>func()` named capture reference | parser + typechecker + interpreter + LLVM codegen |
+| `expr >> name;` capture statement | parser (postfix capture) + typechecker + interpreter + codegen |
+| `.(Type)>>func()` cast annotation | parser |
+
+### Resolved Semantics (from implementation)
+
+- **Back-reference counts operations back**: `.1` = the immediately previous
+  result (which is also the receiver), `.2` = two back, `.N` = N back. The
+  chain stack is `[base, r1, r2, ..., prev]`; `.N` resolves to
+  `stack[len - N]`.
+- **References are leading args**: `receiver.N>>func(a, b)` dispatches as
+  `func(receiver, <ref>, a, b)` — the receiver binds `self` (member path) or
+  arg 0 (UFCS path), then each resolved reference precedes the written args.
+- **Named captures bind in the interpreter's `bindings` and the typechecker's
+  `bindings`+`captures`**, so both `.name>>` and a plain identifier reference
+  resolve.
+- **`>>` disambiguation**: `expr >> name` is a capture only when followed by
+  `.`, `;`, `}`, or EOF (chain position). Inside an argument list
+  (`f(x >> y)`) it stays a shift. `.N>>`/`.name>>` are back-references only
+  when followed by a call head (`identifier (`).
+- **Lexing caveat**: `5.1>>f()` lexes as a float `5.1` followed by `>>` — a
+  literal receiver before `.N>>` must be parenthesized or used via a
+  non-literal expression.
+
+### Not Yet Delivered
+
+- `ChainRef` on `PluginIntercept` (`obj.plugin!()` with back-refs) — the
+  field exists but plugin expansion does not yet resolve chain refs.
+- `ChainRef::Named` runtime lookup in codegen for the UFCS fallback uses the
+  capture binding (correct); positional refs in the UFCS fallback re-emit the
+  receiver chain (matches the pre-existing UFCS double-emission behavior).
+
+---
+
 ## 1. Mental Model
 
 **Dot is member access first, UFCS fallback. Suffixes are naming conventions

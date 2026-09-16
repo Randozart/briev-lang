@@ -1489,8 +1489,12 @@ pub fn infer_expression(
             Expr::Capture { expr, name } => {
                 // 2026-09-16: `expr >> name` — register the captured value's
                 // type so a later `.name>>func()` back-reference can resolve it.
+                // Registered in BOTH `captures` (for back-reference resolution)
+                // and `bindings` (so an `Expr::Identifier(name)` leading arg
+                // re-infers cleanly through the UFCS fallback).
                 let ty = infer_expression(expr, ctx)?.0;
                 ctx.captures.insert(name.clone(), ty.clone());
+                ctx.bindings.insert(name.clone(), ty.clone());
                 Ok((ty, Provenance::Unknown))
             }
 
@@ -9583,8 +9587,94 @@ mod section_proof_tests {
             let universe = crate::type_universe::TypeUniverse::new();
             check_program(&mut items, &universe)
         }
-        let src = "let armed: Bool = false;\n\
+let src = "let armed: Bool = false;\n\
                    bootstrap node reset [armed == true] { };\n";
         let e = check(src);
         assert!(e.is_err(), "unprovable handoff must error, got: {:?}", e);
+    }
+
+    // 2026-09-16: chain back-references resolve to leading args.
+    #[test]
+    fn chain_backref_typechecks() {
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = r#"
+defn tri(a: Int, b: Int, c: Int) -> Int { term a + b + c; };
+let base: Int = 2;
+txn go [base == 2][base == 2] {
+    let a: Int = base.Add#(3).1>>tri(10, 20);
+};
+"#;
+        check(src).expect("a valid positional back-reference must typecheck");
+    }
+
+    #[test]
+    fn chain_named_capture_typechecks() {
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = r#"
+defn tri(a: Int, b: Int, c: Int) -> Int { term a + b + c; };
+let base: Int = 2;
+txn go [base == 2][base == 2] {
+    base.Add#(3) >> cap;
+    let a: Int = base.Add#(4).cap>>tri(5, 6);
+};
+"#;
+        check(src).expect("a named capture back-reference must typecheck");
+    }
+
+    #[test]
+    fn chain_out_of_range_backref_errors() {
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = r#"
+obj Calc {
+    base: Int;
+    op Double(x: Int) -> Int { term x + x; };
+};
+let calc: Calc = Calc { base: 0 };
+txn go [true][true] {
+    let a: Int = calc.Double(2).5>>Double(1);
+};
+"#;
+        let e = check(src);
+        assert!(e.is_err(), "an out-of-range positional back-reference must error");
+    }
+
+    #[test]
+    fn chain_unknown_named_backref_errors() {
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = r#"
+obj Calc {
+    base: Int;
+    op Double(x: Int) -> Int { term x + x; };
+};
+let calc: Calc = Calc { base: 0 };
+txn go [true][true] {
+    let a: Int = calc.Double(2).nope>>Double(1);
+};
+"#;
+        let e = check(src);
+        assert!(e.is_err(), "a reference to an unknown capture must error");
     }
