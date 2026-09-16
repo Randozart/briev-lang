@@ -253,8 +253,22 @@ fn emit_expr(e: &Expr) -> SExpr {
             };
             list(&[atom(kind_atom), emit_expr(recv), atom(target)])
         }
-        Expr::MethodCall(recv, name, args, _, _) => {
+        Expr::MethodCall(recv, name, args, _, refs) => {
             let mut children = vec![atom("method"), emit_expr(recv), atom(name)];
+            children.push(emit_chain_refs(refs));
+            for a in args { children.push(emit_expr(a)); }
+            SExpr::List(children)
+        }
+        Expr::Capture { expr, name } => {
+            list(&[atom("capture"), emit_expr(expr), atom(name)])
+        }
+        Expr::PluginIntercept { name, args, type_args: _, receiver, chain_refs } => {
+            let mut children = vec![atom("plugin"), atom(name)];
+            match receiver {
+                Some(r) => children.push(emit_expr(r)),
+                None => children.push(list(&[atom("none")])),
+            }
+            children.push(emit_chain_refs(chain_refs));
             for a in args { children.push(emit_expr(a)); }
             SExpr::List(children)
         }
@@ -291,6 +305,21 @@ fn emit_expr(e: &Expr) -> SExpr {
 
 fn emit_type(ty: &Type) -> SExpr {
     atom(&format!("{}", ty))
+}
+
+/// 2026-09-16 (Bug D): serialize a chain's back-references as
+/// `(refs (pos N) (named X) ...)`.
+fn emit_chain_refs(refs: &[ChainRef]) -> SExpr {
+    let mut items = vec![atom("refs")];
+    for r in refs {
+        match r {
+            ChainRef::Positional(n) => {
+                items.push(list(&[atom("pos"), SExpr::Atom(Atom::Int(*n as i64))]))
+            }
+            ChainRef::Named(name) => items.push(list(&[atom("named"), atom(name)])),
+        }
+    }
+    SExpr::List(items)
 }
 
 fn emit_params(params: &[(String, Type)]) -> SExpr {
@@ -486,6 +515,49 @@ mod tests {
         let parsed = crate::beast::sexpr::parse(&tokens).unwrap();
         let restored = crate::beast::deserialize::parse_expr(&parsed).unwrap();
         assert_eq!(expr, restored);
+    }
+
+    #[test]
+    fn test_roundtrip_chain_backref_and_capture() {
+        // 2026-09-16 (Bug D): BEAST must round-trip a MethodCall carrying chain
+        // back-references, a PluginIntercept receiver, and a Capture — the
+        // serializer previously dropped the 5th field and routed Capture to a
+        // Debug atom.
+        let method = Expr::MethodCall(
+            Box::new(Expr::Identifier("c".into())),
+            "pick".into(),
+            vec![Expr::Decimal(1)],
+            None,
+            vec![ChainRef::Positional(2), ChainRef::Named("mid".into())],
+        );
+        let s = to_string(&emit_expr(&method));
+        let tokens = crate::beast::sexpr::tokenize(&s).unwrap();
+        let parsed = crate::beast::sexpr::parse(&tokens).unwrap();
+        let restored = crate::beast::deserialize::parse_expr(&parsed).unwrap();
+        assert_eq!(method, restored, "MethodCall chain refs must round-trip");
+
+        let cap = Expr::Capture {
+            expr: Box::new(Expr::Decimal(42)),
+            name: "mid".into(),
+        };
+        let s = to_string(&emit_expr(&cap));
+        let tokens = crate::beast::sexpr::tokenize(&s).unwrap();
+        let parsed = crate::beast::sexpr::parse(&tokens).unwrap();
+        let restored = crate::beast::deserialize::parse_expr(&parsed).unwrap();
+        assert_eq!(cap, restored, "Capture must round-trip");
+
+        let plugin = Expr::PluginIntercept {
+            name: "print".into(),
+            args: vec![Expr::Decimal(1)],
+            type_args: vec![],
+            receiver: Some(Box::new(Expr::Identifier("obj".into()))),
+            chain_refs: vec![],
+        };
+        let s = to_string(&emit_expr(&plugin));
+        let tokens = crate::beast::sexpr::tokenize(&s).unwrap();
+        let parsed = crate::beast::sexpr::parse(&tokens).unwrap();
+        let restored = crate::beast::deserialize::parse_expr(&parsed).unwrap();
+        assert_eq!(plugin, restored, "PluginIntercept receiver must round-trip");
     }
 
     #[test]
