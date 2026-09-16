@@ -1037,7 +1037,15 @@ fn eval_chain_stack(
             stack.push(result);
             Ok(stack)
         }
-        Expr::Capture { expr, .. } => eval_chain_stack(expr, heap, scope),
+        Expr::Capture { expr, name } => {
+            // 2026-09-16 (Bug C): an inline capture binds the name so a later
+            // `.name>>` back-reference in the same chain resolves at runtime.
+            let stack = eval_chain_stack(expr, heap, scope)?;
+            if let Some(top) = stack.last() {
+                scope.bindings.insert(name.clone(), top.clone());
+            }
+            Ok(stack)
+        }
         _ => Ok(vec![eval_expr(expr, heap, scope.bindings, scope.functions)?]),
     }
 }
@@ -2265,6 +2273,27 @@ mod tests {
         .unwrap();
         assert_eq!(val.as_i64(), Some(42));
         assert_eq!(bindings.get("step").and_then(Value::as_i64), Some(42));
+    }
+
+    #[test]
+    fn inline_capture_binds_for_named_backref() {
+        // 2026-09-16 (Bug C): `5 >> mid .mid>>Add#(...)` — an INLINE capture
+        // mid-chain binds `mid` so the `.mid>>` reference in the same chain
+        // resolves. Previously eval_chain_stack skipped the binding.
+        let cap = Expr::Capture {
+            expr: Box::new(Expr::Decimal(5)),
+            name: "mid".into(),
+        };
+        let outer = Expr::MethodCall(
+            Box::new(cap),
+            "Add#".into(),
+            vec![Expr::Identifier("mid".into())],
+            None,
+            vec![ChainRef::Named("mid".into())],
+        );
+        // receiver=5, leading=mid=5, args=[mid=5] → Add#(5, 5, 5) = 10.
+        let val = eval1(&outer);
+        assert_eq!(val.as_i64(), Some(10), "inline capture must resolve .mid>>");
     }
 
     // 2026-08-01 (audit): Char/Bool are first-class values — literals

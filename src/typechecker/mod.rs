@@ -5962,8 +5962,18 @@ fn chain_value_stack(
             Ok(stack)
         }
         // A capture passes the value through unchanged — `.op()>>x` is both a
-        // step of the chain and a binding of the same value.
-        Expr::Capture { expr, .. } => chain_value_stack(expr, ctx),
+        // step of the chain and a binding of the same value. 2026-09-16 (Bug C):
+        // the INLINE capture registers the name so a later `.x>>` back-reference
+        // in the same chain resolves (codegen already bound it via emit_expr).
+        Expr::Capture { expr, name } => {
+            let stack = chain_value_stack(expr, ctx)?;
+            if let Some(top) = stack.last() {
+                let ty = top.ty.clone();
+                ctx.captures.insert(name.clone(), ty.clone());
+                ctx.bindings.insert(name.clone(), ty.clone());
+            }
+            Ok(stack)
+        }
         _ => {
             let ty = infer_expression(expr, ctx)?.0;
             Ok(vec![ChainValue { ty, expr: expr.clone() }])
@@ -9631,6 +9641,28 @@ txn go [base == 2][base == 2] {
 };
 "#;
         check(src).expect("a named capture back-reference must typecheck");
+    }
+
+    #[test]
+    fn inline_capture_in_chain_registers_for_backref() {
+        // 2026-09-16 (Bug C): `expr >> mid .mid>>f(...)` — an INLINE capture
+        // mid-chain must register `mid` so the `.mid>>` reference in the same
+        // chain resolves. Codegen bound it; the typechecker previously did not.
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, src);
+            let mut items = p.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+        let src = r#"
+defn tri(a: Int, b: Int, c: Int) -> Int { term a + b + c; };
+let base: Int = 2;
+txn go [base == 2][base == 2] {
+    let a: Int = base.Add#(3) >> mid .mid>>tri(5);
+};
+"#;
+        check(src).expect("an inline capture followed by .name>> must typecheck");
     }
 
     #[test]
