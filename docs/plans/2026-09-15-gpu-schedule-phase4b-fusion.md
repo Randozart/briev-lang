@@ -181,6 +181,58 @@ cuBLAS.
 Next: the cp.async smem-staged fused kernel (fills + ldmatrix fragments,
 the D3 lesson applied to the fused shape).
 
+## cuBLAS mechanism investigation — WHY it is 10× faster (2026-09-15)
+
+Captured the JIT'd cuBLAS HGEMM kernel via cuda-gdb break-on-launch
+(sm_86, the 3060's exact arch). It is a **CUTLASS** kernel:
+`cutlass_80_wmma_tensorop_f16_s161616gemm_f16_32x32_128x2_nn_align8` —
+CTA tile 32×32, K-tile 128, **2-stage** software pipeline, 128-thread
+block, 16-byte alignment.
+
+**SASS instruction mix per loop iteration (128² GEMM):**
+
+| instruction | cuBLAS (CUTLASS) | our tensor GEMM (35 TF) | our FUSED kernel |
+|---|---|---|---|
+| global fills | 16× `LDG.E.LTC128B.128` (16B, L2) | 6× `LDGSTS.E.BYPASS.128` (cp.async 16B) | **64× `LDG.E.U16` + 32× `LDG.E` (scalar, scattered)** |
+| smem stores | 16× `STS.128` (16B) | (cp.async bypasses) | 2× `STS` |
+| fragments | 18× `LDSM.16.MT88.4/M88.4` (ldmatrix) | 8× `LDSM.16.MT88.2/M88.4` | 32× `LDS` (scalar) |
+| mma | 16× `HMMA.16816.F32` | 16× `HMMA.16816.F16` | 16× `HMMA.16816.F32` |
+| barriers | 5× `BAR.SYNC.DEFER_BLOCKING` | 2× `BAR.SYNC.DEFER_BLOCKING` + depbar | 1× `BAR.SYNC` |
+
+**The mechanism (the why):**
+1. **Coalesced 16-byte fills.** cuBLAS loads operands as 128-bit
+   `LDG.128` with L2-sector caching (`LTC128B`) — one instruction moves
+   8 f16 contiguously per lane. The fills feed a **2-stage K-pipeline**,
+   so loads for stage k+1 overlap the mma of stage k (deferred
+   `BAR.SYNC.DEFER_BLOCKING`).
+2. **Staging through smem + ldmatrix.** The fills write smem in 16-byte
+   chunks; the mma operands are read via `ldmatrix` (purpose-built,
+   swizzle-free fragment loads). The mma never touches a scattered global
+   address.
+3. **The math is identical.** Same `HMMA.16816` count — the 10× gap is
+   ENTIRELY the load path.
+
+**Our tensor GEMM already has all of this** (`LDGSTS.128` cp.async +
+`LDSM` + pipelined barriers — the 35 TF path). The FUSED kernel is the
+outlier: it loads fragments directly from global with **scalar scattered
+`LDG.E.U16`** (2-byte, uncoalesced) — ~8 load instructions per mma vs
+cuBLAS's amortized 16-byte fills.
+
+**Lessons extracted (the next rung, in priority order):**
+1. **128-bit coalesced fills** — stage Q/Kt/V through smem with 16-byte
+   loads (LDG.128, or cp.async which is 16-byte), never scalar fragment
+   loads from global. (The user's "128-bit load rule" — cuBLAS IS it.)
+2. **ldmatrix fragment reads** — read the mma operands from smem via
+   ldmatrix (the tensor GEMM already emits these).
+3. **Multi-stage K-pipeline** — 2+ stages with deferred barriers so the
+   fills overlap the mma (the tensor GEMM's cp.async staging).
+4. **L2-sector loads (`LTC128B`)** — hint the fills to use 128-byte L2
+   sectors (cp.async does this implicitly).
+
+These are the SAME mechanisms the tensor GEMM already ships at 35 TF —
+the fused kernel must adopt them. The direct-load fused kernel remains
+the correctness reference; the staged version is the performance target.
+
 The fused kernel moved to the m16n8k16 tensor cores (`fused_attention_mma_ptx`,
 direct per-warp fragment loads, the scaled S' staged in smem). Occupancy
 was the whole game: the first mma version ran 32 single-warp blocks and
