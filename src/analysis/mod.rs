@@ -24,6 +24,7 @@ pub mod range;
 pub mod roofline;
 pub mod struct_generator;
 pub mod gpu_cost;
+pub mod gpu_strategy;
 pub mod accel;
 pub mod region;
 pub mod schema_validator;
