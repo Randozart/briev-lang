@@ -178,12 +178,16 @@ the urgency of the Stage-2 k-chunked fused kernel: the composition already
 reaches cuBLAS parity, so a fused rewrite is only worth it if it can beat
 0.073 ms — a much higher bar than the plan assumed.
 
-**Action from Finding C:** the fused attention path must be gated OFF by
-default (or gated on "fused beats composition", which the Stage-0 cost
-model will compute). The composition IS the correct default. This removes
-the urgency of the Stage-2 k-chunked fused kernel: the composition already
-reaches cuBLAS parity, so a fused rewrite is only worth it if it can beat
-0.080 ms — a much higher bar than the plan assumed.
+**NOT a softmax problem (2026-09-16):** the measured chain is
+`qk → scale → pv` where the middle is a single scalar multiply
+(`s2[j] = s[j] * SCALE`) — there is NO softmax (no max/exp/divide). The
+fused kernel's regression is purely the 16-row m-tile (no Kt/V reuse),
+NOT a softmax synchronization barrier. The online-softmax (FlashAttention)
+reformulation IS the right answer for a REAL attention chain (with exp/
+max/divide), but it does not apply to this benchmark. If a real softmax
+chain is added later, the k-chunked fused rewrite should use the online
+running-max/sum update in registers — the same structural fix, different
+math.
 
 **Revised Stage 2 direction:** skip the k-chunked fused kernel for now
 (composition wins). Instead: (1) gate chain fusion on the cost model, (2)
