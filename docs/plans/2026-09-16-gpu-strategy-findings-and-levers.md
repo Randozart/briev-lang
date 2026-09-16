@@ -148,3 +148,34 @@ the A/B correction) which is 1 commit ahead of origin/main — push pending.
    kernel architecture.
 5. Optional rigor: clock-locked A/B (`sudo nvidia-smi -lgc`) and a cublasLt
    workspace search to firm the absolute cuBLAS comparison.
+
+## L4 progress (2026-09-16) — the decode-shape claim, measured
+
+Swept K∈{64,128} × M=N∈{256,512,1024,2048,4096} vs cuBLAS (best-algo):
+
+| Shape | Briev | cuBLAS | Verdict |
+|-------|-------|--------|---------|
+| 256×256×64 | 2.10 TF | 0.74 | **Briev 2.8×** |
+| 256×256×128 | 3.27 TF | 1.38 | **Briev 2.4×** |
+| 512×512×64 | 5.01 TF | 1.86 | **Briev 2.7×** |
+| 512×512×128 | 7.28 TF | 3.65 | **Briev 2.0×** |
+| 1024×1024×64 | 7.23 TF | 9.46 | cuBLAS 1.3× |
+| 1024×1024×128 | 11.2 TF | 13.3 | cuBLAS 1.18× |
+| 2048×2048×128 | 14.1 TF | 19.3 | cuBLAS 1.37× |
+| 4096×4096×128 | 15.6 TF | 21.9 | cuBLAS 1.4× |
+
+**The claim boundary is sharp: Briev wins decode shapes up to M=N=512
+(2-2.8×), loses 1024²+ (1.2-1.4×).** This matches the real decode-vs-
+prefill split: attention decode runs at small batch (M≤512), prefill at
+large M. Briev owns the decode regime.
+
+**Correctness gate is M≤512 for shallow K.** The stages cap (below) fixed
+512²×128, but 1024²×64/128 remain wrong — a scattered (m_cta,n_cta) tile
+corruption at shallow K (BUGS.md 2026-09-16, OPEN). 2048²×128 is correct,
+so the trigger is not simply M. Do not ship shallow-K dispatch at
+M≥1024 until the emitter bug is resolved.
+
+**Model change shipped with this finding:** `candidate_strategies` caps
+stages at 3 (was 4). stages=4 at shallow K (8 ksteps) triggers the ring-
+reuse corruption; large shapes already prefer 3, so no perf regression
+(4096³ 23.4 TF, 1024³ 20.6 TF unchanged, all correct).

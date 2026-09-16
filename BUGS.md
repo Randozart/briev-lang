@@ -6279,3 +6279,58 @@ entry. The asm-based attempt additionally hit the Asm# earlyclobber bug
 - Task bodies become finite multi-action sequences (`print X; asm delay;
   print Y; park`) so mid-body preemption is observable.
 - Gate: finite `BA21` (resume) vs continuous `BABABABA…` (restart).
+
+## 2026-09-16: tensor mw kernel corrupts m-tiles >= 1 at small-K (K=64/128), M>=512 [OPEN]
+
+Found during the L4 small-K sweep. The (2,4)-style mw tensor kernel returns
+WRONG results (max_rel up to 7e-2, rows 64+ corrupt) for shallow-K GEMMs at
+larger M/N, while the same shapes at K=64 with M<=512 pass.
+
+Repro (runtime harness, max_rel vs CPU f32 ref):
+- 256x256x64:   max_rel=0        OK
+- 256x256x128:  max_rel=0        OK
+- 512x512x64:   max_rel=0        OK
+- 512x512x128:  max_rel=5.1e-2   FAIL — rows 64..447 bad (m-tiles >= 1)
+- 1024x1024x64: max_rel=6.8e-2   FAIL
+- 1024x1024x128: FAIL
+
+Pattern: M,N >= 512 with K in {64,128} (shallow K). Row 0..63 (first
+m-tile) correct; the corruption starts at the second m-tile boundary.
+512x512x128 selects tile 64x128, stages=4 (24KB). The first m-tile works,
+subsequent m-tiles corrupt — a KLOOP stage-ring wrap interacting with
+m-tile re-entry at >= 5 ksteps (K=128/16 = 8 ksteps wraps the 4-stage
+ring twice; K=64/16 = 4 ksteps wraps once — and 512x512x64 passes).
+
+Hypothesis: the fill/compute stage-ring state is not fully re-initialized
+between m-tiles when the ring wraps > once (stages=4 at 8 ksteps). The
+power-of-2 `& (stages-1)` wrap is documented as exact at 4096^3 (256
+ksteps, many wraps) — so the trigger is the SHALLOW K (few ksteps) at a
+specific tile, not the wrap count per se. Possibly the m-tile loop's
+prologue/fill-skip guard at K < stages*16 (the K<=32-class bug from
+2026-09-13, which was "resolved" for the empty-commit but the shallow-K
+prologue path may still be wrong at small grids).
+
+Gate: the L4 decode-shape claim (Briev 2.7x vs cuBLAS at 512x512x64) is
+VALID for M,N <= 512; for M,N >= 1024 the small-K results are WRONG and
+must not be shipped. Fix before any decode-shape dispatch entry.
+
+**Refined 2026-09-16 (same session):** cap stages at 3 in the strategy
+selector (stages=4 was the ring-reuse trigger) fixed 512x512x128 (was
+5.1e-2, now max_rel=0 at stages=3, sm 18KB, 7.28 TF vs cuBLAS 3.65).
+The failure is NOT a clean m-tile boundary — it is scattered across
+specific (m_cta, n_cta) tiles. Measured map at 1024x1024x64 (tile 128x128,
+stages=3): m_cta=0 all clean; m_cta=1 n_cta=4,5 bad; m_cta=2 n_cta=1,2,5,7
+bad; m_cta=3 n_cta=2,6 bad. 2048x2048x128 is CORRECT (max_rel=0), so the
+trigger is not simply "M >= 1024". 1024x1024x128 marginally fails
+(max_rel 2.35e-2, 8 elements). The corrupt (m_cta,n_cta) set is
+inconsistent — points to a race/uninitialized-smem at specific tile
+positions at shallow K, not a decode formula error (the decode is
+position-independent and correct at deep K).
+
+Fix status: stages cap (model) is a PARTIAL mitigation (fixes 512^2x128);
+1024^2x64/128 still fail. The emitter bug itself is OPEN — the corrupt
+CTA set needs a ws_debug-style position-encoded fill to isolate (the
+2026-09-14 L2 instrument). Do NOT ship shallow-K (K<=128) dispatch at
+M,N >= 1024 until resolved.
+
+Recorded while L4: docs/plans/2026-09-16-gpu-strategy-findings-and-levers.md.

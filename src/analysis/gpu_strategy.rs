@@ -96,6 +96,11 @@ pub fn candidate_strategies(m: u64, n: u64, k: u64, hw: &GpuHardware) -> Vec<Str
 }
 
 /// Push the stage variants of a divisible tile that fit the smem cap.
+/// Stages capped at 3 (2026-09-16, L4): stages=4 at shallow K (8 ksteps)
+/// triggers a ring-reuse corruption in the tensor mw kernel (BUGS.md
+/// 2026-09-16) — 512x512x128 was wrong at stages=4 (5.1e-2), exact at
+/// stages=3. Large shapes already prefer stages=3 (the E4c optimum), so
+/// the cap costs nothing there.
 fn push_stages(
     out: &mut Vec<Strategy>,
     m: u64,
@@ -104,7 +109,7 @@ fn push_stages(
     hw: &GpuHardware,
     (tile_m, tile_n): (u64, u64),
 ) {
-    for stages in 1..=4u64 {
+    for stages in 1..=3u64 {
         let cta_smem = smem_for(tile_m, tile_n, k, stages);
         let ctas = (m / tile_m) * (n / tile_n);
         if cta_smem <= hw.smem_cta_cap && ctas > 0 {
