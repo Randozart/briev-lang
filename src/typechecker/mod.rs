@@ -5941,6 +5941,15 @@ struct ChainValue {
     expr: Expr,
 }
 
+/// 2026-09-16: chain back-references resolved to leading arguments — the
+/// values (re-inferable exprs for the UFCS path) and their types (for member
+/// param validation). Passed as one value to keep resolve_method_call at
+/// ≤6 parameters.
+struct ChainLeading {
+    exprs: Vec<Expr>,
+    tys: Vec<Type>,
+}
+
 /// 2026-09-16: Compute the chain-value stack for an expression. Walks nested
 /// MethodCall/Capture receivers, inferring each result type along the way.
 fn chain_value_stack(
@@ -5954,14 +5963,13 @@ fn chain_value_stack(
                 .last()
                 .cloned()
                 .unwrap_or(ChainValue { ty: Type::void(), expr: Expr::Decimal(0) });
-            let (leading_exprs, leading_tys) = resolve_chain_refs(&stack, refs, ctx)?;
+            let leading = resolve_chain_refs(&stack, refs, ctx)?;
             let result_ty = resolve_method_call(
                 recv,
                 &recv_val.ty,
                 name,
                 args,
-                &leading_exprs,
-                &leading_tys,
+                &leading,
                 ctx,
             )?;
             stack.push(ChainValue { ty: result_ty, expr: expr.clone() });
@@ -5993,7 +6001,7 @@ fn resolve_chain_refs(
     stack: &[ChainValue],
     refs: &[ChainRef],
     ctx: &TypecheckContext,
-) -> Result<(Vec<Expr>, Vec<Type>), TypeError> {
+) -> Result<ChainLeading, TypeError> {
     let mut exprs = Vec::new();
     let mut tys = Vec::new();
     for cr in refs {
@@ -6033,7 +6041,7 @@ fn resolve_chain_refs(
             },
         }
     }
-    Ok((exprs, tys))
+    Ok(ChainLeading { exprs, tys })
 }
 
 /// 2026-09-16: Type a method call that may carry chain back-references.
@@ -6051,14 +6059,13 @@ fn infer_chain_call(
         .last()
         .cloned()
         .unwrap_or(ChainValue { ty: Type::void(), expr: Expr::Decimal(0) });
-    let (leading_exprs, leading_tys) = resolve_chain_refs(&stack, refs, ctx)?;
+    let leading = resolve_chain_refs(&stack, refs, ctx)?;
     resolve_method_call(
         recv,
         &recv_val.ty,
         name,
         args,
-        &leading_exprs,
-        &leading_tys,
+        &leading,
         ctx,
     )
 }
@@ -6071,7 +6078,7 @@ fn infer_chain_call(
 /// generative op (`a.At#(i)` → `At#(a, i)`), then a plain top-level function
 /// with the receiver prepended (`a.f(x)` → `f(a, x)`). A trailing `#` is
 /// stripped for the member lookup.
-/// 2026-09-16: `leading_exprs`/`leading_tys` are the chain back-references
+/// 2026-09-16: `leading.exprs`/`leading.tys` are the chain back-references
 /// (`.N>>`/`.name>>`) resolved to leading arguments. They occupy the first
 /// parameter positions of the member, before the written `args`.
 fn resolve_method_call(
@@ -6079,8 +6086,7 @@ fn resolve_method_call(
     receiver: &Type,
     name: &str,
     args: &[Expr],
-    leading_exprs: &[Expr],
-    leading_tys: &[Type],
+    leading: &ChainLeading,
     ctx: &mut TypecheckContext,
 ) -> Result<Type, TypeError> {
     // 2026-08-22 (Phase 5, SPEC §8.6): a `dyn Trait` receiver resolves the
@@ -6111,7 +6117,7 @@ fn resolve_method_call(
                     } else {
                         &d.parameters[..]
                     };
-                    let total_args = leading_tys.len() + args.len();
+                    let total_args = leading.tys.len() + args.len();
                     if total_args != value_params.len() {
                         return Err(TypeError::InvalidOperation {
                             operation: format!(
@@ -6124,7 +6130,7 @@ fn resolve_method_call(
                             type_name: format!("dyn {}", trait_name),
                         });
                     }
-                    for (i, lty) in leading_tys.iter().enumerate() {
+                    for (i, lty) in leading.tys.iter().enumerate() {
                         let pty = &value_params[i].1;
                         if !types_compatible(pty, lty, ctx) && lty != pty {
                             return Err(TypeError::TypeMismatch {
@@ -6136,7 +6142,7 @@ fn resolve_method_call(
                     }
                     for (i, a) in args.iter().enumerate() {
                         let aty = infer_type_only(a, ctx)?;
-                        let pty = &value_params[leading_tys.len() + i].1;
+                        let pty = &value_params[leading.tys.len() + i].1;
                         if !types_compatible(pty, &aty, ctx) && aty != *pty {
                             return Err(TypeError::TypeMismatch {
                                 expected: format!("{}", pty),
@@ -6180,7 +6186,7 @@ fn resolve_method_call(
             // 2026-09-16: chain back-references are leading args — they
             // resolve to the same call shape as written args.
             let mut all = vec![(*recv).clone()];
-            all.extend(leading_exprs.iter().cloned());
+            all.extend(leading.exprs.iter().cloned());
             all.extend(args.iter().cloned());
             if name.ends_with('#') {
                 // 2026-08-14 (UOL §6b): keep the `#` — `a.Add#(b)` resolves via
@@ -6213,7 +6219,7 @@ fn resolve_method_call(
     let params = member_params(&member);
     let out = member_output(&member);
     // 2026-09-16: chain back-references occupy the first parameter positions.
-    for (i, lty) in leading_tys.iter().enumerate() {
+    for (i, lty) in leading.tys.iter().enumerate() {
         let param_ty = params
             .get(i)
             .cloned()
@@ -6230,7 +6236,7 @@ fn resolve_method_call(
     for (i, arg) in args.iter().enumerate() {
         let arg_ty = infer_type_only(arg, ctx)?;
         let param_ty = params
-            .get(leading_tys.len() + i)
+            .get(leading.tys.len() + i)
             .cloned()
             .map(|t| substitute_type(&t, &subst))
             .unwrap_or(Type::int());
@@ -6238,7 +6244,7 @@ fn resolve_method_call(
             return Err(TypeError::TypeMismatch {
                 expected: format!("{}", param_ty),
                 found: format!("{}", arg_ty),
-                context: format!("argument {} of '.{}()'", leading_tys.len() + i, name),
+                context: format!("argument {} of '.{}()'", leading.tys.len() + i, name),
             });
         }
     }

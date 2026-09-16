@@ -99,5 +99,10 @@ value.rawParse().(Int)>>clamp(0, 255);   // cast then call
 
 ## Remaining work
 
-- `ChainRef` on `PluginIntercept` (back-references inside `obj.plugin!()`)
-  — the field exists; plugin expansion does not yet resolve chain refs.
+- `ChainRef` on `PluginIntercept` (back-references inside `obj.plugin!()`) —
+  the field exists; plugin expansion does not yet resolve chain refs.
+- **2026-09-16 fixups** (`docs/plans/2026-09-16-chaining-fixups.md`): chained
+  plugins pass the receiver as the first argument; codegen chain-stack is
+  isolated per call (member bodies and UFCS fallbacks no longer pollute `.N`
+  back-ref indices); inline captures bind for same-chain refs; BEAST
+  round-trips chain data; numeric `.N>>` without a call target errors.
