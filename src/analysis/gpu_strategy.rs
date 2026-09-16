@@ -243,24 +243,6 @@ mod tests {
         assert!(select(100, 100, 100, &hw).is_none() || candidate_strategies(100, 100, 100, &hw).is_empty());
     }
 
-    #[test]
-    fn debug_candidates_4096() {
-        let hw = GpuHardware::SM86;
-        let mut cands = candidate_strategies(4096, 4096, 4096, &hw);
-        cands.sort_by(|a, b| {
-            estimate_time(4096, 4096, 4096, a, &hw).seconds
-                .partial_cmp(&estimate_time(4096, 4096, 4096, b, &hw).seconds)
-                .unwrap()
-        });
-        for s in cands.iter().take(6) {
-            let e = estimate_time(4096, 4096, 4096, s, &hw);
-            println!(
-                "tile {}x{} stages={} staged={} ctas={} compute_bound={} t={:.3e}",
-                s.tile_m, s.tile_n, s.stages, s.staged, e.occupancy_ctas, e.compute_bound, e.seconds
-            );
-        }
-    }
-
     /// Stage 0c calibration: the model's selected tile family must track
     /// the decompiled cuBLAS map (docs/plans/2026-09-16-panel-pipeline
     /// -generalization.md:134): small shapes → small tiles, large → big
@@ -289,5 +271,25 @@ mod tests {
                 s.tile_m, s.tile_n, cublas_area / shape, shape
             );
         }
+    }
+
+    #[test]
+    fn e4c_tile_preserved_at_4096() {
+        let hw = GpuHardware::SM86;
+        let s = select(4096, 4096, 4096, &hw).expect("candidate");
+        // E4c: 128x128 tile (the (2,4)@256T f16acc point).
+        assert_eq!((s.tile_m, s.tile_n), (128, 128), "4096³ must keep E4c tile: {:?}", s);
+    }
+
+    #[test]
+    fn small_shape_gets_smaller_tile_than_big() {
+        let hw = GpuHardware::SM86;
+        let small = select(128, 128, 128, &hw).expect("candidate");
+        let big = select(2048, 2048, 2048, &hw).expect("candidate");
+        assert!(
+            small.tile_m * small.tile_n < big.tile_m * big.tile_n,
+            "128³ tile {}x{} should be smaller than 2048³ {}x{}",
+            small.tile_m, small.tile_n, big.tile_m, big.tile_n
+        );
     }
 }

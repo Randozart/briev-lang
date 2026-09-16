@@ -199,3 +199,33 @@ Every shape 128³–4096³ uses the same (2,4)@256T tile. cuBLAS varies
 32×32→256×128. The cost model (Stage 0b) will derive the tile from shape;
 the parity at 256³+ is the calibration anchor that validates the model's
 tile term.
+
+## Stage 1 results (2026-09-16) — selector wired into the tensor GEMM dispatch
+
+Wired `gpu_strategy::select` into `build_ptx_kernels` (mod.rs): the model
+picks (tile, stages), mapped back to the emitter's (mw, nw, stages) via
+`strategy_to_mwnw`; the legacy `select_mw_nw` walker stays as the fallback.
+Also fixed a latent runner bug exposed by the selector: a 2-warp mw kernel
+(block_threads=64, shared>0) was mis-dispatched through the S3b single-warp
+grid — `dispatch_geometry_stmt` now distinguishes them.
+
+Measured on RTX 3060, batch timing, all shapes max_rel ≤ 6e-3 (correct):
+
+| Shape | Baseline | Selector | Delta |
+|-------|----------|----------|-------|
+| 128³ | 0.47 TF | 0.87 TF | **+85%** |
+| 256³ | 2.33 TF | 4.35 TF | **+87%** |
+| 512³ | 10.0 TF | 11.3 TF | +13% |
+| 4096³ | 26.7 TF | 26.6 TF | −0.3% (noise) |
+
+The small-shape gap (Finding B) is closed by the selector's smaller tiles
+(64×64 @128³ vs the 128×128 default). Large shapes keep the E4c tile. The
+cost model's tile choice, not a knob, drives the win — the
+maximum-efficient-default principle realized.
+
+Note: the earlier Stage 0a small-shape baseline (0.46/2.32 TF) used the
+correct mw grid (ctas = M·N/(64·256) = 1/4) and matches the re-measured
+baseline here — the confusion was the harness's per-launch sync vs batch
+timing, not the kernel. The runtime's `launch_resident_2d` always syncs
+per launch (BRIEV_ACCEL_ASYNC has no effect); fair timing needs
+`ptx_gemm_bench` batch mode.

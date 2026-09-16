@@ -1048,13 +1048,17 @@ fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
         );
     }
     if k.ptx_tensor {
-        if k.block_threads > 64 {
+        if k.block_threads > 64 || (k.block_threads == 64 && k.shared_bytes > 0) {
             // PTX tensor multi-warp (mw/nw kernel): block_threads-thread
             // blocks. CTA tile = mw*32 rows × nw*64 cols = mw*nw*2048
             // elements. Each thread covers 64 elements. count = M*N.
             // nx = count/64 → gx = count/(64*block_threads) =
             // count/(2048*mw*nw) = correct CTA count. The kernel decodes
             // m_cta and n_cta from ctaid.x.
+            // 2026-09-16 (shape strategy selector Stage 1): a 2-warp mw
+            // kernel is block_threads=64 WITH shared smem — distinguished
+            // from the S3b single-warp warp-tile (also 64-thread blocks,
+            // but shared_bytes=0) so the mw grid math applies.
             return format!(
                 "      if (n_{ci} > 0 && !briev_accel_launch_resident_2d({kidx}, state, n_{ci} / 64, 1)) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
             );

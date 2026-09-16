@@ -1393,6 +1393,36 @@ fn select_mw_nw(m: i64, n: i64, thread_cap: usize, mhr: usize) -> (usize, usize)
     (mw, nw)
 }
 
+/// 2026-09-16 (shape strategy selector Stage 1): map the cost model's
+/// strategy back onto the tensor-GEMM (mw, nw, stages) so the dispatch is
+/// analysis-driven, not hardcoded. The model picks the CTA tile (tile_m,
+/// tile_n) and stages; the emitter wants (mw, nw) warp-grid + warp_mh.
+/// Returns None when the strategy doesn't map to the tensor tier (falls
+/// back to the legacy select_mw_nw).
+fn strategy_to_mwnw(
+    s: &crate::analysis::gpu_strategy::Strategy,
+    warp_mh: usize,
+    m: i64,
+    n: i64,
+    thread_cap: usize,
+) -> Option<(usize, usize, usize)> {
+    let gr = 16 / warp_mh;
+    let tile_m = (16 * warp_mh) as u64;
+    let tile_n = (8 * gr) as u64;
+    if s.tile_m % tile_m != 0 || s.tile_n % tile_n != 0 {
+        return None;
+    }
+    let mw = (s.tile_m / tile_m) as usize;
+    let nw = (s.tile_n / tile_n) as usize;
+    if mw == 0 || nw == 0 || mw * nw * 32 > thread_cap {
+        return None;
+    }
+    if m % ((mw * 16 * warp_mh) as i64) != 0 || n % ((nw * 8 * gr) as i64) != 0 {
+        return None;
+    }
+    Some((mw, nw, s.stages as usize))
+}
+
 /// Build the PTX kernel set for an `.abv` — one kernel per eligible accel
 /// entry. GEMM-shaped entries lower to the naive PTX kernel; anything else
 /// is a hard error (the S2a surface gate — GEMM family ONLY until S5).
@@ -1758,7 +1788,25 @@ pub fn build_ptx_kernels(
             // Select mw/nw for multi-warp CTA. The mw kernel needs
             // M%(16*mhr*mw)==0 and N%(8*gr*nw)==0; fall back to single-warp
             // smem kernel when the shape doesn't tile cleanly.
-            let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
+            // 2026-09-16 (shape strategy selector Stage 1): prefer the cost
+            // model's strategy (tile + stages chosen from shape evidence,
+            // calibrated against cuBLAS); fall back to the legacy walker
+            // when the strategy doesn't map (or the model has no candidate).
+            let strategy = crate::analysis::gpu_strategy::select(
+                plan.m as u64,
+                plan.n as u64,
+                plan.k as u64,
+                &crate::analysis::gpu_strategy::GpuHardware::SM86,
+            );
+            let (mw, nw, eff_stages) = match strategy
+                .and_then(|s| strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, thread_cap))
+            {
+                Some((mw, nw, st)) => (mw, nw, st),
+                None => {
+                    let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
+                    (mw, nw, stages)
+                }
+            };
             let mw_ok = plan.m % ((16 * warp_mh * mw) as i64) == 0
                 && plan.n % ((8 * gr * nw) as i64) == 0;
             if mw_ok && (mw > 1 || nw > 1) {
@@ -1767,11 +1815,11 @@ pub fn build_ptx_kernels(
                 let ptx = match epilogue_scale {
                     Some(s) => tensor::tensor_gemm_ptx_smem_mw_epilogue(
                         plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
-                        f16_acc, stages, warp_mh, s,
+                        f16_acc, eff_stages, warp_mh, s,
                     ),
                     None => tensor::tensor_gemm_ptx_smem_mw(
                         plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
-                        f16_acc, stages, warp_mh,
+                        f16_acc, eff_stages, warp_mh,
                     ),
                 };
                 (
@@ -1779,7 +1827,7 @@ pub fn build_ptx_kernels(
                     true,
                     e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
                     (mw * nw * 32) as u32,
-                    ((mw * warp_mh * 512 + nw * gr * 256) * stages) as u32,
+                    ((mw * warp_mh * 512 + nw * gr * 256) * eff_stages) as u32,
                 )
             } else {
                 // Single-warp smem kernel (32×16 tile, 1 warp).
