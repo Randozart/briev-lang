@@ -320,3 +320,17 @@ examples/gpu/run_abv/
 examples/*.b
 examples/*.b.ll
 examples/*.b.o
+
+# GPU example build artifacts (2026-09-16): compiled SPIR-V/runner outputs
+# and copied runtime drivers land in examples/gpu when built in place
+# (brievc build examples/gpu/<name>.abv --out examples/gpu). Source of
+# truth for the drivers is lib/runtime/briev_dev_*.c; runners are generated.
+examples/gpu/*.spv
+examples/gpu/*_runner.c
+examples/gpu/briev_dev_cuda.c
+examples/gpu/briev_dev_opencl.c
+examples/gpu/briev_dev_vulkan.c
+examples/gpu/briev_accel_rt.c
+
+# stray benchmark ELF binaries
+benchmarks/mandelbrot_c
