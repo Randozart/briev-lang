@@ -356,6 +356,18 @@ impl<'a> Parser<'a> {
             if self.peek_is_call_head() {
                 return Ok(Some(vec![Self::chain_ref_from_name(first_name)]));
             }
+            // 2026-09-16 (Bug E): a NUMERIC back-ref marker (`.N>>`) followed by
+            // a non-call silently misparsed as tuple-field + shift/capture
+            // (`.2>>obj.method()`). Numbers are unambiguous back-ref markers —
+            // error with the paren-shift fix. NAMED refs fall through so a field
+            // capture (`obj.field >> save`) still parses; `.name>>` is only a
+            // back-ref when a direct call follows.
+            if first_name.parse::<usize>().is_ok() {
+                return self.error_at_current(&format!(
+                    "back-reference '.{}>>' must target a direct call — parenthesize a shift like `(t.{}) >> x`",
+                    first_name, first_name
+                ));
+            }
             self.pos = save;
             return Ok(None);
         }
@@ -1747,9 +1759,18 @@ mod tests {
     }
 
     #[test]
-    fn backref_requires_call_after_shr() {
-        // `.2>>` must be followed by a call; otherwise fall back to field+shift.
-        let expr = parse_expr("t.2 >> 3").unwrap();
+    fn numeric_backref_without_call_errors() {
+        // `.2>>` (numeric marker) without a direct call target is a clear error,
+        // not a silent tuple-field + shift misparse.
+        assert!(parse_expr("t.2 >> 3").is_err(), "numeric .N>> must target a call");
+        assert!(parse_expr("a.b().2>>obj.method()").is_err(), "method targets are not direct calls");
+    }
+
+    #[test]
+    fn named_backref_falls_through_to_field_shift() {
+        // A NAMED `.name>>` with no call is a field access + shift — this keeps
+        // a field capture (`obj.field >> save`) and field shifts working.
+        let expr = parse_expr("t.step >> 3").unwrap();
         match expr {
             Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, l, r) => {
                 assert!(matches!(l.as_ref(), Expr::Field(..)));
