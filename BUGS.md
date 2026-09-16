@@ -6350,4 +6350,15 @@ instrument): the corrupt tile set is non-deterministic across runs, so
 it is a fill/compute timing race, not a decode error. 512^2x64 and below
 are stable-correct (max_rel=0, 3 runs) — the decode regime is safe.
 
+**RESOLVED 2026-09-16 (real fix, gate removed):** root cause WAS the
+fill/compute sync, isolated empirically: `wait_group stages-2` (=1 at
+stages=3) leaves a stage in flight that the ring reuse reads early. Full
+drain (`wait_group 0`) at shallow K (<= 128) fixes it — 1024^2x64 AND
+1024^2x128 both max_rel=0, 3+ runs stable. Deep K keeps `stages-2` for
+the async overlap (wait_group 0 costs 8% at 2048^3: 24.74 vs 26.90 TF).
+Measured: wait_group 0 at 1024^2x64 = 7.13 TF (ship 7.28, ~2% — free),
+4096^3 unchanged (23.36 vs 23.15). The `shallow_k_race` S3b gate and its
+dispatch guard were REMOVED (the mw kernel is correct at shallow K now);
+the stages cap (1..=3) stays.
+
 Recorded while L4: docs/plans/2026-09-16-gpu-strategy-findings-and-levers.md.

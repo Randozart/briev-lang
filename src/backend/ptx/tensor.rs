@@ -1710,7 +1710,15 @@ fn tensor_gemm_ptx_smem_mw_opt(
         }
         out.push_str("    cp.async.commit_group;\n");
     }
-    out.push_str(&format!("    cp.async.wait_group {};\n", stages - 2));
+    // 2026-09-16 (L4): at shallow K (<= 128) the `stages-2` wait_group
+    // leaves a stage in flight that the ring reuse reads early — a
+    // non-deterministic fill/compute race (BUGS.md 2026-09-16). Full
+    // drain (wait_group 0) at shallow K is free (measured 7.13 vs 7.28
+    // TF @1024²×64) and fixes it. Deep K keeps `stages-2` (the
+    // 2048³/4096³ overlap — wait_group 0 costs 8% at 2048³: 24.74 vs
+    // 26.90 TF).
+    let wait_depth = if k <= 128 { 0 } else { stages.saturating_sub(2) };
+    out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
     // Async-write visibility (2026-09-10, driver 580.178 / sm_86): the
     // documented wait_group + bar.sync pattern alone let ldmatrix read
     // stale smem natively (serialized debuggers masked it). membar.cta
@@ -2156,7 +2164,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
         out.push_str("    setp.ne.u32 %p1, %r19, 0;\n");
         out.push_str("    @%p1 bra WAIT_DONE;\n");
     }
-    out.push_str(&format!("    cp.async.wait_group {};\n", stages - 2));
+    out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
     out.push_str("    membar.cta;\n");
     out.push_str("    bar.sync 0;\n");
     if kps > 1 {

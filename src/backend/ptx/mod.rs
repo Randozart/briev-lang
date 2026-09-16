@@ -1798,27 +1798,14 @@ pub fn build_ptx_kernels(
                 plan.k as u64,
                 &crate::analysis::gpu_strategy::GpuHardware::SM86,
             );
-            // 2026-09-16 (L4): shallow-K at M*N >= 1024² has a
-            // non-deterministic fill/compute race in the mw kernel
-            // (BUGS.md 2026-09-16). Route to the race-free single-warp
-            // S3b path (mw=1,nw=1 forces the fallback below).
-            let mw_kernel_ok = !crate::analysis::gpu_strategy::shallow_k_race(
-                plan.m as u64,
-                plan.n as u64,
-                plan.k as u64,
-            );
-            let (mw, nw, eff_stages) = if mw_kernel_ok {
-                match strategy
-                    .and_then(|s| strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, thread_cap))
-                {
-                    Some((mw, nw, st)) => (mw, nw, st),
-                    None => {
-                        let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
-                        (mw, nw, stages)
-                    }
+            let (mw, nw, eff_stages) = match strategy
+                .and_then(|s| strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, thread_cap))
+            {
+                Some((mw, nw, st)) => (mw, nw, st),
+                None => {
+                    let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
+                    (mw, nw, stages)
                 }
-            } else {
-                (1, 1, stages)
             };
             let mw_ok = plan.m % ((16 * warp_mh * mw) as i64) == 0
                 && plan.n % ((8 * gr * nw) as i64) == 0;
