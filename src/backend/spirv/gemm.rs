@@ -1043,7 +1043,7 @@ mod tests {
             eligible: true,
             reasons: vec![],
             work_cols: None,
-            reduction: Some(ReductionInfo { inner: idx("K") }),
+            reduction: Some(ReductionInfo::dot(idx("K"))),
         };
         (shape, items)
     }

@@ -3,11 +3,11 @@
 // Row-per-thread: work-item i = the row; each thread runs the three passes
 // serially over NKV. Zero-seeded logits → uniform 1/NKV = 0.125 expected.
 const ROWS: Int = 4;
-const NKV: Int = 8;
+const NKV: Int = 256;
 
 let i: Int = 0;
-let logits: Float[32];
-let result: Float[32];
+let logits: Float[1024];
+let result: Float[1024];
 
 async node softmax_rows [i < ROWS][i == ROWS] {
     // max pass

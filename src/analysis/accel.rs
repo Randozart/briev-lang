@@ -125,6 +125,26 @@ pub struct KernelShape {
 pub struct ReductionInfo {
     /// The foreach END expression (e.g. `Identifier("K")`).
     pub inner: crate::ast::Expr,
+    /// 2026-09-17 (M2a): Dot = the mul-add fold (gemv); Softmax = the
+    /// three-phase row softmax (max → exp-sum → normalize). The lowering
+    /// branches on this; the detection is structural either way.
+    pub kind: ReductionKind,
+    /// Softmax only: the row source and result buffers.
+    pub row_buf: String,
+    pub out_buf: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReductionKind {
+    Dot,
+    Softmax,
+}
+
+impl ReductionInfo {
+    /// The Dot-shape constructor (the 2026-09-01 cooperative form).
+    pub fn dot(inner: crate::ast::Expr) -> Self {
+        Self { inner, kind: ReductionKind::Dot, row_buf: String::new(), out_buf: String::new() }
+    }
 }
 
 /// One analyzed candidate body, keyed by transaction name.
@@ -662,10 +682,132 @@ fn prove_kernel(
     //    conservative structural match — the LAST statement is a foreach
     //    whose body is one mul-add into a local accumulator.
     shape.reduction = detect_reduction(&shape.kernel_stmts);
+    // 8. Row softmax (M2a, plan 2026-09-17-abv-attention-ab): the three-pass
+    //    form — Max# fold, Exp#-sum, normalize — over one row stride.
+    //    Mutually exclusive with the dot reduction.
+    if shape.reduction.is_none() {
+        shape.reduction = detect_row_softmax(&shape.kernel_stmts, &index_var);
+    }
 
     shape.eligible = reasons.is_empty();
     shape.reasons = reasons;
     shape
+}
+
+/// Recognize the three-phase row softmax (2026-09-17, M2a): a conservative
+/// structural match over the kernel statements —
+///   let m   = row[i * S + 0];
+///   foreach c   { let v = row[..c..];  m = Max#(m, v); }
+///   let s   = 0;
+///   foreach c   { s = s + Exp#(row[..c..] - m); }
+///   foreach c   { out[..c..] = Exp#(row[..c..] - m) / s; }
+/// The cooperative lowering replaces the whole body: one 32-lane workgroup
+/// per row, strided passes, warp reductions between phases. Constraints:
+/// the row stride must fold to a literal-const (the same contract the dot
+/// path enforces) AND be a multiple of 32 (in-bounds striding — no bounds
+/// guards; attention KV strides are 256-aligned by construction).
+fn detect_row_softmax(stmts: &[Statement], _index_var: &str) -> Option<ReductionInfo> {
+    // Statement walk: [Let(m, ..), Foreach, Let(s, 0), Foreach, Foreach]
+    let mut max_local: Option<String> = None;
+    let mut sum_local: Option<String> = None;
+    let mut row_buf: Option<String> = None;
+    let mut out_buf: Option<String> = None;
+    let mut loops: Vec<(String, Expr)> = Vec::new(); // (col var, end)
+
+    for stmt in stmts {
+        match stmt {
+            Statement::Let { name, expr: Some(e), .. } => {
+                // The max init: `let m = row[i * S + 0]` — an Index read.
+                if max_local.is_none() {
+                    if let Expr::Index(buf, _) = e {
+                        max_local = Some(name.clone());
+                        row_buf = Some(match buf.as_ref() {
+                            Expr::Identifier(n) => n.clone(),
+                            _ => return None,
+                        });
+                    }
+                } else if sum_local.is_none() && matches!(e, Expr::Decimal(_)) {
+                    sum_local = Some(name.clone());
+                }
+            }
+            Statement::Foreach { item, list, body } => {
+                let Expr::Range { end, .. } = list.as_ref() else {
+                    return None;
+                };
+                loops.push((item.clone(), end.as_ref().clone()));
+                match loops.len() {
+                    1 => {
+                        // Max fold: let v = row[..c..]; m = Max#(m, v);
+                        if body.len() != 2 {
+                            return None;
+                        }
+                        if !matches!(&body[0], Statement::Let { expr: Some(Expr::Index(_, _)), .. }) {
+                            return None;
+                        }
+                        let Statement::Assign(_, rhs) = &body[1] else {
+                            return None;
+                        };
+                        if !matches!(rhs, Expr::Call(n, args, _) if n == "Max#" && args.len() == 2) {
+                            return None;
+                        }
+                    }
+                    2 => {
+                        // Exp-sum: s = s + Exp#(row[..c..] - m);
+                        if body.len() != 1 {
+                            return None;
+                        }
+                        let Statement::Assign(_, rhs) = &body[0] else {
+                            return None;
+                        };
+                        if !matches!(rhs, Expr::BinaryOp(crate::ast::BinaryOpKind::Add, _, _)) {
+                            return None;
+                        }
+                        if !format!("{:?}", rhs).contains("\"Exp#\"") {
+                            return None;
+                        }
+                    }
+                    3 => {
+                        // Normalize: out[..c..] = Exp#(row[..c..] - m) / s;
+                        if body.len() != 1 {
+                            return None;
+                        }
+                        let Statement::Assign(Expr::Index(buf, _), _) = &body[0] else {
+                            return None;
+                        };
+                        out_buf = Some(match buf.as_ref() {
+                            Expr::Identifier(n) => n.clone(),
+                            _ => return None,
+                        });
+                        if !format!("{:?}", &body[0]).contains("\"Exp#\"") {
+                            return None;
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Exactly three loops + both locals + both buffers; the three loops
+    // share ONE end expression (folded to a literal + %32 gate at emission,
+    // where consts are known).
+    let _ = (max_local?, sum_local?);
+    let row = row_buf?;
+    let out = out_buf?;
+    if loops.len() != 3 {
+        return None;
+    }
+    let end0 = format!("{:?}", loops[0].1);
+    if format!("{:?}", loops[1].1) != end0 || format!("{:?}", loops[2].1) != end0 {
+        return None;
+    }
+    Some(ReductionInfo {
+        inner: loops[0].1.clone(),
+        kind: ReductionKind::Softmax,
+        row_buf: row,
+        out_buf: out,
+    })
 }
 
 /// Recognize a dot-product reduction: a foreach whose body is exactly one
@@ -703,9 +845,7 @@ fn detect_reduction(stmts: &[Statement]) -> Option<ReductionInfo> {
         // Both mul operands must reference the loop var — they index with it.
         // The loop item name check is structural (the mul sides contain
         // Index expressions); a full var-flow proof is the lowerer's job.
-        return Some(ReductionInfo {
-            inner: end.as_ref().clone(),
-        });
+        return Some(ReductionInfo::dot(end.as_ref().clone()));
     }
     None
 }

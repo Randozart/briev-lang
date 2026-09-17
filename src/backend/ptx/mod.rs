@@ -1522,7 +1522,7 @@ pub(crate) fn compile_cubin(ptx: &str, maxnreg: u32) -> Option<Vec<u8>> {
 
 /// Module consts (literals only) for the general-kernel emitter and count
 /// folding — the same rule the runner's emitter uses.
-fn module_expr_consts(program: &[TopLevel]) -> std::collections::HashMap<String, Expr> {
+pub fn module_expr_consts(program: &[TopLevel]) -> std::collections::HashMap<String, Expr> {
     let mut m = std::collections::HashMap::new();
     for item in program {
         if let TopLevel::Constant(c) = item {

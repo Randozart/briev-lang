@@ -291,6 +291,52 @@ pub fn emit_kernel(
     };
     let index_var = builder.gen_id();
 
+    // 2026-09-17 (M2a): the cooperative row softmax lowers to SYNTHESIZED
+    // statements — strided (lane + t*32) index expressions over the row,
+    // SubgroupFMax#/SubgroupFAdd# between the phases — replacing the source
+    // body BEFORE local collection, so the generic declaration/emission
+    // machinery handles everything. The synthesis must precede the entry
+    // block's OpVariables; by the emission branch it is too late.
+    let shape_owned;
+    let shape = if cooperative
+        && matches!(
+            shape.reduction.as_ref().map(|r| &r.kind),
+            Some(crate::analysis::accel::ReductionKind::Softmax)
+        ) {
+        let red = shape.reduction.as_ref().unwrap();
+        // Const resolution: the lowerer's const map is built later
+        // (materialize_consts) — resolve here from the program's constants.
+        let consts = crate::backend::ptx::module_expr_consts(items);
+        let inner_len = match &red.inner {
+            Expr::Identifier(name) => match consts.get(name) {
+                Some(Expr::Decimal(n)) => *n,
+                _ => {
+                    return Err(format!(
+                        "softmax row length '{}' is not a literal const",
+                        name
+                    ))
+                }
+            },
+            Expr::Decimal(n) => *n,
+            other => {
+                return Err(format!(
+                    "softmax row length {:?} must be a literal const",
+                    other
+                ))
+            }
+        };
+        if inner_len <= 0 || inner_len % 32 != 0 {
+            return Err(format!(
+                "cooperative softmax needs a row length divisible by 32 (got {})",
+                inner_len
+            ));
+        }
+        shape_owned = synthesize_softmax_stmts(shape, red, inner_len as u64);
+        &shape_owned
+    } else {
+        shape
+    };
+
     let mut collected: Vec<(String, Type)> = Vec::new();
     collect_locals(&shape.kernel_stmts, &mut collected);
     // 2026-09-02: Vulkan forbids 16-bit-typed variables in Function
@@ -553,9 +599,15 @@ pub fn emit_kernel(
         Some(Expr::Decimal(n)) => n % LOCAL_SIZE_X as i64 == 0,
         _ => false,
     };
-    let needs_guard = !count_is_literal
-        || shape.work_cols.is_some()
-        || !count_multiple_of_workgroup;
+    // 2026-09-17 (M2a correction): cooperative row kernels dispatch EXACTLY
+    // (ny=rows workgroups × 32 lanes) — every invocation is a valid
+    // (row, lane) pair, and the flat count (rows) would wrongly kill
+    // lanes ≥ rows of every workgroup. No guard on the cooperative path.
+    let needs_guard = if cooperative {
+        false
+    } else {
+        !count_is_literal || shape.work_cols.is_some() || !count_multiple_of_workgroup
+    };
     let exit_bb = lower.builder.gen_id();
     if needs_guard {
         let body_bb = lower.builder.gen_id();
@@ -593,7 +645,16 @@ pub fn emit_kernel(
         lower.builder.begin_block(Some(body_bb));
     }
 
-    if cooperative {
+    // 2026-09-17 (M2a): the softmax body was already synthesized into plain
+    // statements before local collection — it lowers through the generic
+    // emit_stmt path below. Only the DOT shape takes the fused reduce
+    // lowering.
+    let dot_cooperative = cooperative
+        && matches!(
+            shape.reduction.as_ref().map(|r| &r.kind),
+            Some(crate::analysis::accel::ReductionKind::Dot)
+        );
+    if dot_cooperative {
         let red = shape
             .reduction
             .as_ref()
@@ -654,6 +715,151 @@ pub fn emit_kernel(
     Ok(func_id)
 }
 
+/// Synthesize the cooperative row-softmax body (2026-09-17, M2a): plain
+/// statements — strided (lane + t*32) row reads, `Max#` fold, `Exp#`-sum,
+/// normalize, with `SubgroupFMax#`/`SubgroupFAdd#` warp reductions between
+/// the phases (SPIR-V GroupNonUniform Reduce — the result is uniform across
+/// the subgroup, so no barrier is needed). The generic machinery (local
+/// collection/declaration, emit_stmt, the cooperative row binding) handles
+/// the rest. Requires inner % 32 == 0 (enforced by the caller) so strided
+/// accesses are exactly in-bounds — no bounds guards.
+fn synthesize_softmax_stmts(
+    shape: &KernelShape,
+    red: &crate::analysis::accel::ReductionInfo,
+    inner_len: u64,
+) -> KernelShape {
+    use crate::ast::BinaryOpKind::{Add, BitAnd, Div, Mul, Sub};
+    let mut out = shape.clone();
+    let gid0 = || {
+        Expr::Call("GetGlobalId#".into(), vec![Expr::Decimal(0)], None)
+    };
+    let lane = Expr::BinaryOp(
+        BitAnd,
+        Box::new(gid0()),
+        Box::new(Expr::Decimal(31)),
+    );
+    let base = Expr::BinaryOp(
+        Mul,
+        Box::new(Expr::Identifier(shape.index_var.clone())),
+        Box::new(Expr::Decimal(inner_len as i64)),
+    );
+    // element index = base + lane + t*32
+    let elem = |t: Expr| -> Expr {
+        Expr::BinaryOp(
+            Add,
+            Box::new(base.clone()),
+            Box::new(Expr::BinaryOp(
+                Add,
+                Box::new(lane.clone()),
+                Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+            )),
+        )
+    };
+    let row_read = |t: Expr| -> Expr {
+        Expr::Index(
+            Box::new(Expr::Identifier(red.row_buf.clone())),
+            Box::new(elem(t)),
+        )
+    };
+    let out_write = |t: Expr| -> Expr {
+        Expr::Index(
+            Box::new(Expr::Identifier(red.out_buf.clone())),
+            Box::new(elem(t)),
+        )
+    };
+    let fty = Some(crate::ast::Type::float());
+    let tiles = (inner_len / 32) as i64;
+    let id = |n: &str| Expr::Identifier(n.into());
+    let m = "briev_sm_m";
+    let s = "briev_sm_s";
+    let v = "briev_sm_v";
+    let t = "briev_sm_t";
+    let range = |a: i64, b: i64| Expr::Range {
+        start: Box::new(Expr::Decimal(a)),
+        end: Box::new(Expr::Decimal(b)),
+        inclusive: false,
+    };
+
+    let mut stmts: Vec<Statement> = Vec::new();
+    // Phase 1 — row max (the t=0 round duplicates the init; Max# idempotent)
+    stmts.push(Statement::Let {
+        name: m.into(),
+        names: vec![],
+        ty: fty.clone(),
+        expr: Some(row_read(Expr::Decimal(0))),
+        modifiers: vec![],
+    });
+    stmts.push(Statement::Foreach {
+        item: t.into(),
+        list: Box::new(range(0, tiles)),
+        body: vec![
+            Statement::Let {
+                name: v.into(),
+                names: vec![],
+                ty: fty.clone(),
+                expr: Some(row_read(id(t))),
+                modifiers: vec![],
+            },
+            Statement::Assign(
+                id(m),
+                Expr::Call("Max#".into(), vec![id(m), id(v)], None),
+            ),
+        ],
+    });
+    stmts.push(Statement::Assign(
+        id(m),
+        Expr::Call("SubgroupFMax#".into(), vec![id(m)], None),
+    ));
+    // Phase 2 — exp-sum
+    stmts.push(Statement::Let {
+        name: s.into(),
+        names: vec![],
+        ty: fty.clone(),
+        expr: Some(Expr::Decimal(0)),
+        modifiers: vec![],
+    });
+    stmts.push(Statement::Foreach {
+        item: t.into(),
+        list: Box::new(range(0, tiles)),
+        body: vec![Statement::Assign(
+            id(s),
+            Expr::BinaryOp(
+                Add,
+                Box::new(id(s)),
+                Box::new(Expr::Call(
+                    "Exp#".into(),
+                    vec![Expr::BinaryOp(Sub, Box::new(row_read(id(t))), Box::new(id(m)))],
+                    None,
+                )),
+            ),
+        )],
+    });
+    stmts.push(Statement::Assign(
+        id(s),
+        Expr::Call("SubgroupFAdd#".into(), vec![id(s)], None),
+    ));
+    // Phase 3 — normalize
+    stmts.push(Statement::Foreach {
+        item: t.into(),
+        list: Box::new(range(0, tiles)),
+        body: vec![Statement::Assign(
+            out_write(id(t)),
+            Expr::BinaryOp(
+                Div,
+                Box::new(Expr::Call(
+                    "Exp#".into(),
+                    vec![Expr::BinaryOp(Sub, Box::new(row_read(id(t))), Box::new(id(m)))],
+                    None,
+                )),
+                Box::new(id(s)),
+            ),
+        )],
+    });
+
+    out.kernel_stmts = stmts;
+    out
+}
+
 /// BIND the work-item index (2026-08-31, plan abv-gpu-by-default): the doc
 /// once claimed "index_var binds to get_global_id(0)" but nothing stored it —
 /// the standalone kernels were never executed, so every invocation read an
@@ -699,9 +905,13 @@ fn bind_work_item_index(
 /// the work-item index to `GetGlobalId#(1)` — the ROW. The lane is
 /// `GetGlobalId#(0)`, referenced inside the synthesized body.
 fn bind_work_item_row(lower: &mut FnLowerer, index_var: spirv::Word) -> Result<(), String> {
-    // The grid is FLATTENED into X (the driver dispatches rows workgroups of
-    // 32 lanes along X only — the Y dimension proved inert on this driver),
-    // so the row is gid.x >> 5 and the lane is gid.x & 31.
+    // The runner FLATTENS the cooperative grid into X (vkCmdDispatch
+    // (groups_x*ny, 1, 1) — the 09-01 Y-inert diagnosis still holds on
+    // 615.71.09), so the row is gid.x >> 5 and the lane is gid.x & 31.
+    // 2026-09-17: the real cooperative regression was the BOUNDS GUARD —
+    // it compared the flat count (rows) against the flattened gid, killing
+    // every workgroup past the first. The guard is now skipped for
+    // cooperative kernels (exact dispatch); this binding was never wrong.
     let (gid64, _t) = lower.emit_expr(&Expr::BinaryOp(
         crate::ast::BinaryOpKind::Shr,
         Box::new(Expr::Call("GetGlobalId#".into(), vec![Expr::Decimal(0)], None)),
@@ -1408,7 +1618,7 @@ mod decomposition_gate_tests {
             eligible: true,
             reasons: vec![],
             work_cols: None,
-            reduction: Some(ReductionInfo { inner: Expr::Decimal(64) }),
+            reduction: Some(ReductionInfo::dot(Expr::Decimal(64))),
         }
     }
 
