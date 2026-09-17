@@ -100,6 +100,13 @@ pub struct RunnerKernel {
     /// a field it does not touch, so aliased slots are never clobbered by a
     /// foreign field's upload.
     pub touched_fields: Vec<String>,
+    /// 2026-09-17 (CyberLlama plan M2.0): optional PTX/CUBIN image for the
+    /// CUDA lane — `briev_dev_cuda` feeds it to cuModuleLoadData (entry
+    /// sentinel "main"). Empty = no CUDA image; the runtime's per-driver
+    /// blob selection then falls back per kernel (CPU lane for it). The
+    /// `.spirv` field keeps serving the Vulkan/OpenCL lanes; `build_ptx_
+    /// kernels` blobs are merged in by the compile pipeline (compile.rs).
+    pub ptx: Vec<u8>,
 }
 
 /// The SSBO layout EXACTLY as the kernel sees it (name-sorted, real element
@@ -556,6 +563,30 @@ pub fn emit_runner(
             i,
             k.spirv.len()
         ));
+        // 2026-09-17 (M2.0): the CUDA-lane image (PTX text or cubin —
+        // cuModuleLoadData accepts both). A dummy 1-byte array keeps the
+        // positional desc initializer total when a kernel has no CUDA
+        // image (kp_len = 0 → the runtime's per-driver skip contract).
+        if k.ptx.is_empty() {
+            out.push_str(&format!(
+                "static const uint8_t kp{}[1] = {{0}};\nstatic const uint32_t kp{}_len = 0u;\n",
+                i, i
+            ));
+        } else {
+            out.push_str(&format!("static const uint8_t kp{}[] = {{", i));
+            for (j, b) in k.ptx.iter().enumerate() {
+                if j % 20 == 0 {
+                    out.push('\n');
+                }
+                out.push_str(&format!("{},", b));
+            }
+            out.push_str("\n};\n");
+            out.push_str(&format!(
+                "static const uint32_t kp{}_len = {}u;\n",
+                i,
+                k.ptx.len()
+            ));
+        }
     }
     // The GLOBAL table — host layout, scalar reads, prints (all buffer
     // fields). Phase 3 enablement: the per-kernel tables below are what
@@ -623,7 +654,7 @@ pub fn emit_runner(
             .filter(|f| k.touched_fields.iter().any(|n| n == &f.name))
             .count();
         out.push_str(&format!(
-            "    {{ \"{}\", k{}, k{}_len, {}, k{}_fields, {}, images, {}, {}, {}ULL, seed_fields, {} }},\n",
+            "    {{ \"{}\", k{}, k{}_len, {}, k{}_fields, {}, images, {}, {}, {}ULL, seed_fields, {}, kp{}, kp{}_len }},\n",
             c_ident(&k.name),
             i,
             i,
@@ -633,7 +664,9 @@ pub fn emit_runner(
             k.block_threads,
             k.shared_bytes,
             program_bytes,
-            seed_rows.len()
+            seed_rows.len(),
+            i,
+            i
         ));
     }
     out.push_str(&format!(
@@ -908,6 +941,9 @@ pub fn build_kernels(
             block_threads: 64,
             shared_bytes: 0,
             touched_fields: touched,
+            // 2026-09-17 (M2.0): the SPIR-V producer carries no CUDA image;
+            // compile.rs merges build_ptx_kernels blobs in by node name.
+            ptx: Vec::new(),
         });
     }
     Ok(out)

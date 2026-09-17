@@ -1548,13 +1548,37 @@ fn codegen(
             } else {
                 std::collections::HashMap::new()
             };
-            let kernels = briev_compiler::backend::spirv::runner::build_kernels(
+            let mut kernels = briev_compiler::backend::spirv::runner::build_kernels(
                 items,
                 universe,
                 opts.int_bits,
                 &analysis,
                 Some(&reuse_map),
             )?;
+            // 2026-09-17 (CyberLlama plan M2.0): dual-image kernels — merge
+            // the PTX tier's blobs into the SPIR-V kernels by node name so
+            // ONE runner serves both device lanes (the runtime's per-driver
+            // blob selection: cuda consumes desc.ptx, vulkan desc.spirv).
+            // Best-effort: shapes without a PTX lowering keep their Vulkan
+            // image only (per-kernel CPU fallback on the CUDA lane).
+            match briev_compiler::backend::ptx::build_ptx_kernels(
+                items,
+                universe,
+                opts.int_bits,
+                &analysis.accel,
+                &analysis.gpu_schedule,
+            ) {
+                Ok(ptx_kernels) => {
+                    for k in &mut kernels {
+                        if let Some(p) = ptx_kernels.iter().find(|p| p.name == k.name) {
+                            k.ptx = p.spirv.clone();
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("note: PTX images unavailable for this program ({e}); CUDA lane skipped");
+                }
+            }
             let out = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?;
             let out_path = out.replace(".ll", ".spv");
             if kernels.len() == 1 {

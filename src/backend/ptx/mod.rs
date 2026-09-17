@@ -1331,6 +1331,10 @@ fn build_fused_attention_kernel(
         block_threads,
         shared_bytes,
         touched_fields: touched,
+        // 2026-09-17 (M2.0): PTX producers park their blob in `.spirv`
+        // (the generic image slot); compile.rs relocates it to `.ptx`
+        // during the dual-image merge.
+        ptx: Vec::new(),
     }))
 }
 
@@ -1692,6 +1696,7 @@ pub fn build_ptx_kernels(
                 block_threads: 256,
                 shared_bytes: 0,
                 touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
+                ptx: Vec::new(),
             });
             continue;
         }
@@ -1908,6 +1913,7 @@ pub fn build_ptx_kernels(
             block_threads,
             shared_bytes,
             touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
+            ptx: Vec::new(),
         });
     }
     Ok(out)

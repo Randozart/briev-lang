@@ -95,6 +95,14 @@ typedef struct {
     // every desc (all point at the same table). Tail, zero-fill contract.
     const BrievField* seed_fields;
     uint32_t n_seed_fields;
+    // 2026-09-17 (CyberLlama plan M2.0): optional PTX TEXT blob for the
+    // CUDA driver — cuModuleLoadData JITs it; entry sentinel "main" (one
+    // entry per module; blob-ABI detail, Briev node names stay arbitrary).
+    // NULL/0 = no CUDA-side image (the SPIR-V blob is not valid PTX and
+    // the CUDA lane rejects the kernel, clean CPU/Vulkan fallback).
+    // Tail of the struct, zero-fill contract.
+    const uint8_t* ptx;
+    uint32_t ptx_size;
 } BrievKernelDesc;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -271,17 +279,28 @@ int briev_accel_init(const BrievKernelDesc* descs, uint32_t n) {
     free(g_resident_seeded);
     g_resident_seeded = calloc(n, 1);
     for (uint32_t i = 0; i < n; i++) {
-        // 2026-08-31: an EMPTY blob is a per-kernel CPU fallback slot (the
+        // 2026-09-17 (CyberLlama plan M2.0): per-driver blob selection —
+        // the CUDA lane consumes PTX TEXT (desc.ptx, cuModuleLoadData
+        // JITs it), Vulkan/OpenCL consume the SPIR-V blob. A kernel with
+        // no image for the chosen driver is a per-kernel CPU fallback
+        // slot, same contract as the old empty-blob skip (2026-08-31).
+        const uint8_t* blob = descs[i].spirv;
+        uint32_t blob_size = descs[i].spirv_size;
+        if (strcmp(g_driver->name, "cuda") == 0) {
+            blob = descs[i].ptx;
+            blob_size = descs[i].ptx_size;
+        }
+        // An EMPTY blob is a per-kernel CPU fallback slot (the
         // compiler keeps descriptor indices stable) — skip, don't fail all.
-        if (descs[i].spirv_size == 0) {
+        if (blob_size == 0) {
             if (verbose) {
-                fprintf(stderr, "[briev_accel] kernel '%s' has no binary — CPU lane\n",
-                        descs[i].txn_name);
+                fprintf(stderr, "[briev_accel] kernel '%s' has no %s image — CPU lane\n",
+                        descs[i].txn_name, g_driver->name);
             }
             g_kernels[i] = NULL;
             continue;
         }
-        if (!g_driver->create_kernel(descs[i].spirv, descs[i].spirv_size, &g_kernels[i])) {
+        if (!g_driver->create_kernel(blob, blob_size, &g_kernels[i])) {
             if (verbose) {
                 fprintf(stderr, "[briev_accel] kernel '%s' rejected by driver '%s' — CPU fallback\n",
                         descs[i].txn_name, g_driver->name);
