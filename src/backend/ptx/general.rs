@@ -387,6 +387,20 @@ impl<'a> Gen<'a> {
                 body.push_str(&format!("    exp.approx.f32 {}, {};\n", out, xreg));
                 Ok(())
             }
+            "Max#" | "Min#" => {
+                if args.len() != 2 {
+                    return Err(format!("{} takes (a, b)", name));
+                }
+                let areg = self.fresh_f();
+                let breg = self.fresh_f();
+                decl.push_str(&format!("    .reg .f32 {};\n", areg));
+                decl.push_str(&format!("    .reg .f32 {};\n", breg));
+                self.emit_expr(&args[0], &areg, decl, body)?;
+                self.emit_expr(&args[1], &breg, decl, body)?;
+                let op = if name == "Max#" { "max" } else { "min" };
+                body.push_str(&format!("    {}.f32 {}, {}, {};\n", op, out, areg, breg));
+                Ok(())
+            }
             "Fma#" => {
                 if args.len() != 3 {
                     return Err("Fma# takes (a, b, c)".into());

@@ -1,0 +1,30 @@
+// softmax_rows.abv — M2a correctness baseline (plan 2026-09-17-abv-attention-ab).
+// Row-wise softmax: out[i, c] = Exp#(logits[i, c] - max_c) / sum_c(Exp#(...)).
+// Row-per-thread: work-item i = the row; each thread runs the three passes
+// serially over NKV. Zero-seeded logits → uniform 1/NKV = 0.125 expected.
+const ROWS: Int = 4;
+const NKV: Int = 8;
+
+let i: Int = 0;
+let logits: Float[32];
+let result: Float[32];
+
+async node softmax_rows [i < ROWS][i == ROWS] {
+    // max pass
+    let m: Float = logits[i * NKV + 0];
+    foreach c in 0..NKV {
+        let v: Float = logits[i * NKV + c];
+        m = Max#(m, v);
+    }
+    // exp-sum pass
+    let s: Float = 0;
+    foreach c in 0..NKV {
+        s = s + Exp#(logits[i * NKV + c] - m);
+    }
+    // normalize pass
+    foreach c in 0..NKV {
+        result[i * NKV + c] = Exp#(logits[i * NKV + c] - m) / s;
+    }
+    i = i + 1;
+    term;
+};

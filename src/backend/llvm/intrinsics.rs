@@ -278,6 +278,21 @@ pub fn emit_intrinsic_call(
         return BTypedRegister { name: v.to_string(), ty: ret_ty };
     }
 
+    // 2026-09-17 (M2a): Max#/Min# — binary float intrinsics (llvm.maxnum/minnum).
+    let is_float_binary = matches!(op_name, "Max" | "Min");
+    if is_float_binary && arg_regs.len() >= 2 {
+        let llvm_name = if op_name == "Max" { "maxnum" } else { "minnum" };
+        let (float_suffix, float_llvm_ty, ret_ty) = match llvm_ty.as_str() {
+            "double" => ("f64", "double", Type::float64()),
+            _ => ("f32", "float", Type::float()),
+        };
+        writeln!(out, "{}{} = call {} @llvm.{}.{}({} {}, {} {})",
+            indent, v, float_llvm_ty, llvm_name, float_suffix,
+            float_llvm_ty, arg_regs[0].name,
+            float_llvm_ty, arg_regs[1].name).ok();
+        return BTypedRegister { name: v.to_string(), ty: ret_ty };
+    }
+
     // 2026-09-17: Fma# — ternary float intrinsic (a*b+c, single rounding).
     let is_float_ternary = matches!(op_name, "Fma");
     if is_float_ternary && arg_regs.len() >= 3 {

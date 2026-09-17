@@ -46,22 +46,38 @@ pub fn rewrite_multi_index(items: &mut Vec<TopLevel>) -> Result<(), String> {
     }
 
     for item in items.iter_mut() {
-        match item {
-            TopLevel::Statement(s) => rewrite_stmt(s, &universe, &fields)?,
-            // `async node` parses to Transaction (parser/definitions.rs:917)
-            // — nodes need no separate arm.
-            TopLevel::Definition(d) | TopLevel::TypeDefOperator(d) => {
-                for s in d.body.iter_mut() {
-                    rewrite_stmt(s, &universe, &fields)?;
-                }
-            }
-            TopLevel::Transaction(t) => {
-                for s in t.body.iter_mut() {
-                    rewrite_stmt(s, &universe, &fields)?;
-                }
-            }
-            _ => {}
+        rewrite_item(item, &universe, &fields)?;
+    }
+    Ok(())
+}
+
+/// Rewrite one top-level item's statement bodies. `async node` parses to
+/// Transaction (parser/definitions.rs:917) — nodes need no separate arm.
+fn rewrite_item(
+    item: &mut TopLevel,
+    universe: &TypeUniverse,
+    fields: &HashMap<String, Type>,
+) -> Result<(), String> {
+    match item {
+        TopLevel::Statement(s) => rewrite_stmt(s, universe, fields)?,
+        TopLevel::Definition(d) | TopLevel::TypeDefOperator(d) => {
+            rewrite_body(&mut d.body, universe, fields)?;
         }
+        TopLevel::Transaction(t) => {
+            rewrite_body(&mut t.body, universe, fields)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn rewrite_body(
+    body: &mut [Statement],
+    universe: &TypeUniverse,
+    fields: &HashMap<String, Type>,
+) -> Result<(), String> {
+    for s in body.iter_mut() {
+        rewrite_stmt(s, universe, fields)?;
     }
     Ok(())
 }

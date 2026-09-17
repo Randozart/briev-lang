@@ -60,7 +60,7 @@ check does not exist — the backend silently falls through to external call.
 | Pointers | `Deref#`, `AddrOf#` | `*ptr` and `&x` desugar to these; needed for memory model |
 | Index | `Index#` | `a[b]` desugars to this |
 | Memory | `Malloc#`, `Free#`, `Load#`, `Store#`, `Copy#`, `Fill#` | Heap operations are language primitives |
-| Math hardware | `Sqrt#`, `Sin#`, `Cos#`, `Fabs#`, `Ceil#`, `Floor#`, `Exp#`, `Pow#`, `Fma#` | Cannot be expressed in Briev without hardware access. `Fma#` (2026-09-17): fused multiply-add, single rounding. `Exp#`: `GLSL.std.450 Exp` on SPIR-V, `@llvm.exp.f32` on native. |
+| Math hardware | `Sqrt#`, `Sin#`, `Cos#`, `Fabs#`, `Ceil#`, `Floor#`, `Exp#`, `Pow#`, `Fma#`, `Max#`, `Min#` | Cannot be expressed in Briev without hardware access. `Fma#` (2026-09-17): fused multiply-add, single rounding. `Max#`/`Min#` (2026-09-17): branchless select for kernel bodies (kernels are bounded structured control flow — no data-dependent branches). `Exp#`: `GLSL.std.450 Exp` on SPIR-V, `@llvm.exp.f32` on native. |
 | I/O | — | Migrated to stdlib. `!Print`/`!PrintLn` dispatched via Front plugin; `!GetEnv`/`!GetEnvInt` resolved to pure-Briev environ scan. All use `SysCall#(Write, ...)` or `Load#` underneath. |
 | Atomic | `AtomicLoad#`, `AtomicStore#`, `AtomicCas#`, etc. | Hardware memory model primitives |
 | GPU subgroup | `SubgroupFAdd#`, `SubgroupFMax#`, `SubgroupFMin#`, `ShuffleDown#`, `ShuffleXor#`, `SubgroupBallot#`, `SubgroupBroadcast#` | GPU-unique warp-level primitives. SPIR-V: `OpGroupNonUniform*` instructions. PTX: `shfl.*.sync` / `redux.sync.*` / `vote.sync.*`. CPU: identity (single-lane). |

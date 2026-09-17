@@ -392,6 +392,8 @@ fn expr_is_pure(expr: &Expr) -> bool {
                 || name == "SubgroupBallot#"
                 || name == "SubgroupBroadcast#"
                 || name == "Fma#"
+                || name == "Max#"
+                || name == "Min#"
                 || name == "GetGlobalId#"
                 || name == "GetLocalId#"
                 || name == "Exp#"

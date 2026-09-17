@@ -68,6 +68,8 @@ fn build_supported_ops() -> HashSet<String> {
     set.insert("ShuffleDown#".to_string());
     set.insert("ShuffleXor#".to_string());
     set.insert("Fma#".to_string());
+    set.insert("Max#".to_string());
+    set.insert("Min#".to_string());
     set.insert("SubgroupBallot#".to_string());
     set.insert("SubgroupBroadcast#".to_string());
     set

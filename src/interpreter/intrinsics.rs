@@ -230,6 +230,8 @@ pub fn execute_intrinsic(
         "Sin#"   => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.sin())) }
         "Cos#"   => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.cos())) }
         "Fabs#"  => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.abs())) }
+        "Max#"   => { let a = arg_as_f64(args, 0)?; let b = arg_as_f64(args, 1)?; Ok(f64_to_bits(a.max(b))) }
+        "Min#"   => { let a = arg_as_f64(args, 0)?; let b = arg_as_f64(args, 1)?; Ok(f64_to_bits(a.min(b))) }
         "Ceil#"  => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.ceil())) }
         "Floor#" => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.floor())) }
         "Exp#"   => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.exp())) }

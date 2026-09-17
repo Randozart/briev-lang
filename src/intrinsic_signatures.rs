@@ -111,6 +111,12 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
         "Sin#"   => Some(Signature { name: "Sin#",   parameters: vec![], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
         "Cos#"   => Some(Signature { name: "Cos#",   parameters: vec![], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
         "Fabs#"  => Some(Signature { name: "Fabs#",  parameters: vec![], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
+        // 2026-09-17 (M2a softmax): scalar float max/min — single hardware
+        // instructions (PTX max/min.f32, GLSL FMax/FMin, llvm.maxnum/minnum);
+        // the branchless-select primitive for kernel bodies (kernels are
+        // bounded structured control flow — no data-dependent branches).
+        "Max#"   => Some(Signature { name: "Max#",   parameters: vec![], return_kind: ReturnKind::Inferred, observable: false, variadic: false }),
+        "Min#"   => Some(Signature { name: "Min#",   parameters: vec![], return_kind: ReturnKind::Inferred, observable: false, variadic: false }),
         "Ceil#"  => Some(Signature { name: "Ceil#",  parameters: vec![], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
         "Floor#" => Some(Signature { name: "Floor#", parameters: vec![], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
         "Exp#"   => Some(Signature { name: "Exp#",   parameters: vec![], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
@@ -508,7 +514,7 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     "Not#",
     "Deref#", "Index#", "Ptr#", "PtrAdd#", "PtrSub#", "PtrDiff#", "PtrEq#", "PtrLt#",
     "Capacity#", "Resize#", "EnsureCap#", "TrimCap#",
-    "Sqrt#", "Sin#", "Cos#", "Fabs#", "Ceil#", "Floor#", "Exp#", "Pow#",
+    "Sqrt#", "Sin#", "Cos#", "Fabs#", "Ceil#", "Floor#", "Exp#", "Pow#", "Max#", "Min#",
     "Print#",
     "Malloc#", "Alloc#", "Free#", "Load#", "Store#",
     "VolatileLoad#", "VolatileStore#", "Copy#", "Fill#",
@@ -542,7 +548,7 @@ mod tests {
             "Add#", "Sub#", "Mul#", "Div#", "Rem#", "Neg#", "Abs#",
             "BitReverse#", "Popcount#", "LeadingZeros#", "TrailingZeros#",
             "Eq#", "Neq#", "Lt#", "Gt#", "Le#", "Ge#",
-    "Sqrt#", "Sin#", "Cos#", "Fabs#", "Ceil#", "Floor#", "Exp#", "Pow#", "Fma#",
+    "Sqrt#", "Sin#", "Cos#", "Fabs#", "Ceil#", "Floor#", "Exp#", "Pow#", "Max#", "Min#", "Fma#",
             "Malloc#", "Alloc#", "Free#", "Load#", "Store#", "Copy#", "Fill#",
             "VolatileLoad#", "VolatileStore#",
             "Concat#", "Length#", "ToInt#", "ToFloat#", "ToString#",

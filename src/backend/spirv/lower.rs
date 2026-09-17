@@ -1117,6 +1117,19 @@ impl<'a> FnLowerer<'a> {
                 let res = self.builder.glsl_fabs(ty_id, x);
                 Ok((res, xty))
             }
+            "Max#" | "Min#" => {
+                if args.len() < 2 {
+                    return self.err(format!("{} needs (a, b)", name));
+                }
+                let (a, aty) = self.emit_expr(&args[0])?;
+                let (b, _bty) = self.emit_expr(&args[1])?;
+                if !self.builder.is_float_type(&aty)? {
+                    return self.err(format!("{} is a float intrinsic", name));
+                }
+                let ty_id = self.type_id(&aty)?;
+                let res = self.builder.glsl_fmaxmin(ty_id, a, b, name == "Max#");
+                Ok((res, aty))
+            }
             "Fma#" => {
                 if args.len() < 3 {
                     return self.err("Fma# needs (a, b, c)");

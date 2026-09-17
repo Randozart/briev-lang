@@ -220,7 +220,7 @@ Tagged `[legacy]` = registered/unreachable or emitter-only; see notes.
 ### Float math (→ native Float)
 
 `Sqrt#` `Sin#` `Cos#` `Fabs#` `Ceil#` `Floor#` `Exp#`
-`Pow#` `Fma#` `[fall-to-external @Pow]`
+`Pow#` `Fma#` `Max#` `Min#` `[fall-to-external @Pow]`
 
 ### Printing / IO
 
