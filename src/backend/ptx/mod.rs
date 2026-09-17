@@ -1522,6 +1522,88 @@ pub(crate) fn compile_cubin(ptx: &str, maxnreg: u32) -> Option<Vec<u8>> {
 
 /// Module consts (literals only) for the general-kernel emitter and count
 /// folding — the same rule the runner's emitter uses.
+/// Cooperative reduction PTX (2026-09-17, M2a increment 3): the dedicated
+/// 32-lane kernels for the row softmax and the row dot — the CUDA-lane
+/// twins of the SPIR-V cooperative lowerings. Gate failures (non-literal
+/// length, %32 != 0, gridDim.y overflow) are HARD errors: the SPIR-V router
+/// (is_cooperative_shape) claims these shapes and its own gates reject the
+/// same inputs, so a silent fall-through would pair a row-per-thread CUDA
+/// image with cooperative dispatch — the gemv rows-32+ bug. Returns None
+/// only for a reduction kind without a PTX emitter.
+fn emit_cooperative_reduction_ptx(
+    name: String,
+    shape: &crate::analysis::accel::KernelShape,
+    red: &crate::analysis::accel::ReductionInfo,
+    program: &[TopLevel],
+    layout: &crate::backend::spirv::runner::SsboLayout,
+) -> Result<Option<RunnerKernel>, String> {
+    use crate::analysis::accel::ReductionKind;
+    let consts = module_expr_consts(program);
+    let inner = match &red.inner {
+        Expr::Identifier(n) => match consts.get(n) {
+            Some(Expr::Decimal(v)) => *v as u64,
+            _ => {
+                return Err(format!(
+                    "reduction length '{}' is not a literal const",
+                    n
+                ))
+            }
+        },
+        Expr::Decimal(v) => *v as u64,
+        other => {
+            return Err(format!(
+                "reduction length {other:?} must be a literal const"
+            ))
+        }
+    };
+    let rows = fold_count(shape, &consts)? as u64;
+    let what = match red.kind {
+        ReductionKind::Softmax => "softmax",
+        ReductionKind::Dot => "dot",
+    };
+    let ptx = match red.kind {
+        ReductionKind::Softmax => general::emit_cooperative_softmax_ptx(
+            inner,
+            rows,
+            &red.row_buf,
+            &red.out_buf,
+            layout,
+        )?,
+        ReductionKind::Dot => general::emit_cooperative_dot_ptx(
+            inner,
+            rows,
+            &red.row_buf,
+            &red.col_buf,
+            &red.out_buf,
+            layout,
+        )?,
+    };
+    let blob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
+        compile_cubin(&ptx, 32).unwrap_or_else(|| ptx.into_bytes())
+    } else {
+        ptx.into_bytes()
+    };
+    Ok(Some(RunnerKernel {
+        name,
+        spirv: blob,
+        image_plans: Vec::new(),
+        index_var: shape.index_var.clone(),
+        count_expr: shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+        work_cols: None,
+        cooperative: true,
+        tiled: false,
+        tensor: false,
+        tensor_tile_rows: 1,
+        ptx_tensor: false,
+        fused_mma: false,
+        fused_mma_blocks_div: 0,
+        block_threads: 32,
+        shared_bytes: 0,
+        touched_fields: crate::backend::spirv::runner::kernel_touched_fields(shape),
+        ptx: Vec::new(),
+    }))
+}
+
 pub fn module_expr_consts(program: &[TopLevel]) -> std::collections::HashMap<String, Expr> {
     let mut m = std::collections::HashMap::new();
     for item in program {
@@ -1666,11 +1748,25 @@ pub fn build_ptx_kernels(
                 continue;
             }
         }
+        // 2026-09-17 (M2a increment 3): a recognized cooperative reduction
+        // (row softmax, row dot) routes to its dedicated cooperative PTX
+        // kernel BEFORE GemmPlan matching — a gemv body is also an N=1 GEMM
+        // shape, and letting the GEMM tier claim it produced a tiled kernel
+        // under cooperative dispatch (rows 32+ never computed on CUDA).
+        // Precedence mirrors the SPIR-V router (is_cooperative_shape).
+        if let Some(red) = &e.shape.reduction {
+            if let Some(k) =
+                emit_cooperative_reduction_ptx(name.clone(), &e.shape, red, program, &layout)?
+            {
+                out.push(k);
+                continue;
+            }
+        }
         let plan = GemmPlan::match_stmts(&e.shape, program);
-        // 2026-09-14 (gpu_schedule S5-lite): a non-GEMM eligible node is an
-        // elementwise kernel (the row-ops between GEMMs in an attention
-        // decode) — emit the general 1D PTX kernel.
         if plan.is_none() {
+            // Non-reduction eligible nodes are elementwise/loop kernels —
+            // the general 1D PTX emitter (the row-ops between GEMMs in an
+            // attention decode live here).
             let consts = module_expr_consts(program);
             let count = fold_count(&e.shape, &consts)?;
             let ptx = general::emit_general_ptx(&e.shape, count, &layout, &consts)?;

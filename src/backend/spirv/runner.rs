@@ -832,6 +832,15 @@ pub fn emit_runner(
     if done_label_used {
         out.push_str("done:\n");
     }
+    // 2026-09-17 (M2a): resident launches leave array results ON DEVICE
+    // ("arrays stay device-resident until briev_accel_download") — the
+    // observability prints read HOST state, so pull every resident kernel's
+    // projection back before dumping scalars. Without this, device-local
+    // runs (device-local working set ON) printed the PRIME launch's stale
+    // values and multi-row cooperative results never reached the host.
+    for (i, k) in kernels.iter().enumerate() {
+        out.push_str(&format!("  briev_accel_download({}, state);\n", i));
+    }
     // Observability: dump scalar state.
     for f in &fields {
         if f.is_array {
@@ -938,7 +947,15 @@ pub fn build_kernels(
             ptx_tensor: false,
         fused_mma: false,
         fused_mma_blocks_div: 0,
-            block_threads: 64,
+            // 2026-09-17 (M2a): cooperative row kernels run 32-lane blocks —
+            // the descriptor's block_threads is what the CUDA lane launches
+            // with (the Vulkan lane parses the module's LocalSize). 64 here
+            // made the CUDA lane run cooperative row kernels as one
+            // 256-thread block stuck on row 0 (ctaid.y = 0 for the single
+            // over-sized block... with gx = ceil(32/256) = 1, gy = rows but
+            // every block's warps strided across row 0 only — rows 1..n
+            // never written).
+            block_threads: if cooperative { 32 } else { 64 },
             shared_bytes: 0,
             touched_fields: touched,
             // 2026-09-17 (M2.0): the SPIR-V producer carries no CUDA image;

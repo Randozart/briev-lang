@@ -46,6 +46,265 @@ use crate::backend::spirv::runner::SsboLayout;
 const BLOCK: u32 = 256;
 
 /// Emit the general 1D PTX kernel for one eligible node.
+/// Cooperative row-softmax PTX (2026-09-17, M2a increment 3 — the CUDA-lane
+/// twin of the SPIR-V `synthesize_softmax_stmts` lowering).
+///
+/// Grid contract (matches the CUDA driver's launch_dev2d): block (32,1,1),
+/// grid (1, rows) — `ctaid.y` is the row, `tid.x` is the lane. Three
+/// strided passes (c = lane, lane+32, ... < inner; inner % 32 == 0 so
+/// every access is exactly in-bounds), with butterfly shuffle-tree
+/// reductions between them (redux.f32 is sm_100+; NOT available on sm_86).
+/// exp(x) = ex2(x * log2(e)) — there is no exp instruction in PTX.
+/// All ptxas-verified forms (2026-09-17 isolation sweep).
+pub fn emit_cooperative_softmax_ptx(
+    inner: u64,
+    rows: u64,
+    row_buf: &str,
+    out_buf: &str,
+    layout: &SsboLayout,
+) -> Result<String, String> {
+    if inner == 0 || inner % 32 != 0 {
+        return Err(format!(
+            "cooperative softmax needs a row length divisible by 32 (got {inner})"
+        ));
+    }
+    if rows == 0 || rows > 65535 {
+        return Err(format!(
+            "cooperative softmax row count {rows} outside the CUDA gridDim.y range 1..=65535"
+        ));
+    }
+    let off = |name: &str| -> Result<u64, String> {
+        layout
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.proj_offset)
+            .ok_or_else(|| format!("ptx softmax: buffer '{name}' not in layout"))
+    };
+    let off_row = off(row_buf)?;
+    let off_out = off(out_buf)?;
+    let elem = |name: &str| -> Result<u64, String> {
+        layout
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.elem_bytes as u64)
+            .ok_or_else(|| format!("ptx softmax: buffer '{name}' not in layout"))
+    };
+    if elem(row_buf)? != 4 || elem(out_buf)? != 4 {
+        return Err("cooperative softmax operates on f32 rows (elem_bytes 4)".into());
+    }
+
+    // Fixed register allocation — the kernel is small and straight-line
+    // per phase; numbered regs keep the emission readable.
+    let mut decl = String::new();
+    let mut body = String::new();
+    decl.push_str("    .reg .b64 %rd1, %rd2;\n");
+    decl.push_str("    .reg .u32 %r1, %r2, %r3, %r4, %r5;\n");
+    decl.push_str("    .reg .b32 %r6, %r7;\n");
+    decl.push_str("    .reg .pred %p1;\n");
+    decl.push_str("    .reg .f32 %f1, %f2, %f3, %f4, %f5;\n");
+
+    // row = ctaid.y; bounds; lane = tid.x; base = row * inner
+    body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+    body.push_str("    mov.u32 %r1, %ctaid.y;\n");
+    body.push_str(&format!("    setp.ge.u32 %p1, %r1, {rows};\n"));
+    body.push_str("    @%p1 ret;\n");
+    body.push_str("    mov.u32 %r2, %tid.x;\n");
+    body.push_str(&format!("    mul.lo.u32 %r3, %r1, {inner};\n"));
+    // TEMP debug: out[base] = row + 1 (probe row execution)
+    body.push_str("    add.u32 %r5, %r3, %r2;\n");
+    body.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
+    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
+    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_out};\n"));
+    body.push_str("    cvt.rn.f32.s32 %f1, %r1;\n");
+    body.push_str("    add.f32 %f1, %f1, 0f3F800000;\n");
+    body.push_str("    st.global.f32 [%rd2], %f1;\n");
+
+    // addr(row_buf, base + c) → %rd2 — the shared load sequence.
+    let load_row = |body: &mut String| {
+        body.push_str("    add.u32 %r5, %r3, %r4;\n");
+        body.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
+        body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
+        body.push_str(&format!("    add.u64 %rd2, %rd2, {off_row};\n"));
+        body.push_str("    ld.global.f32 %f1, [%rd2];\n");
+    };
+
+    // Phase MAX — strided fold into %f2, init -inf.
+    body.push_str("    mov.f32 %f2, 0fFF800000;\n");
+    body.push_str("    mov.u32 %r4, %r2;\n");
+    body.push_str("Lmax0:\n");
+    body.push_str(&format!("    setp.ge.u32 %p1, %r4, {inner};\n"));
+    body.push_str("    @%p1 bra Lmax1;\n");
+    load_row(&mut body);
+    body.push_str("    max.f32 %f2, %f2, %f1;\n");
+    body.push_str("    add.u32 %r4, %r4, 32;\n");
+    body.push_str("    bra Lmax0;\n");
+    body.push_str("Lmax1:\n");
+
+    // Butterfly reduction (5 rounds) — op-selectable.
+    let mut butterfly = |body: &mut String, val: &str, op: &str| {
+        for offset in [16u32, 8, 4, 2, 1] {
+            body.push_str(&format!("    mov.b32 %r6, {};\n", val));
+            body.push_str(&format!(
+                "    shfl.sync.bfly.b32 %r7, %r6, {offset}, 0x1f, 0xffffffff;\n"
+            ));
+            body.push_str("    mov.b32 %f5, %r7;\n");
+            body.push_str(&format!("    {} {}, {}, %f5;\n", op, val, val));
+        }
+    };
+    butterfly(&mut body, "%f2", "max.f32");
+
+    // Phase SUM — s = Σ exp(v - m).
+    body.push_str("    mov.f32 %f3, 0f00000000;\n");
+    body.push_str("    mov.u32 %r4, %r2;\n");
+    body.push_str("Lsum0:\n");
+    body.push_str(&format!("    setp.ge.u32 %p1, %r4, {inner};\n"));
+    body.push_str("    @%p1 bra Lsum1;\n");
+    load_row(&mut body);
+    body.push_str("    sub.f32 %f4, %f1, %f2;\n");
+    body.push_str("    mul.f32 %f4, %f4, 0f3FB8AA3B;\n");
+    body.push_str("    ex2.approx.f32 %f1, %f4;\n");
+    body.push_str("    add.f32 %f3, %f3, %f1;\n");
+    body.push_str("    add.u32 %r4, %r4, 32;\n");
+    body.push_str("    bra Lsum0;\n");
+    body.push_str("Lsum1:\n");
+    butterfly(&mut body, "%f3", "add.f32");
+
+    // Phase NORM — out[base + c] = exp(v - m) / s.
+    body.push_str("    mov.u32 %r4, %r2;\n");
+    body.push_str("Lnorm0:\n");
+    body.push_str(&format!("    setp.ge.u32 %p1, %r4, {inner};\n"));
+    body.push_str("    @%p1 bra Lnorm1;\n");
+    load_row(&mut body);
+    body.push_str("    sub.f32 %f4, %f1, %f2;\n");
+    body.push_str("    mul.f32 %f4, %f4, 0f3FB8AA3B;\n");
+    body.push_str("    ex2.approx.f32 %f1, %f4;\n");
+    body.push_str("    div.rn.f32 %f1, %f1, %f3;\n");
+    body.push_str("    add.u32 %r5, %r3, %r4;\n");
+    body.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
+    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
+    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_out};\n"));
+    body.push_str("    st.global.f32 [%rd2], %f1;\n");
+    body.push_str("    add.u32 %r4, %r4, 32;\n");
+    body.push_str("    bra Lnorm0;\n");
+    body.push_str("Lnorm1:\n");
+    body.push_str("    ret;\n");
+
+    Ok(format!(
+        ".version 8.0\n.target sm_86\n.address_size 64\n.visible .entry main (.param .b64 proj_param)\n{{\n{}\n{}\n}}\n",
+        decl, body
+    ))
+}
+
+/// Cooperative row dot-product PTX (2026-09-17, M2a) — `y[i] = Σ_k a[i*K+k]
+/// * x[k]`, the CUDA-lane twin of the SPIR-V cooperative dot lowering.
+/// Same grid contract as emit_cooperative_softmax_ptx: block (32,1,1),
+/// grid (1, rows), ctaid.y = row, tid.x = lane; one strided pass, one
+/// butterfly add-tree, one store per row.
+pub fn emit_cooperative_dot_ptx(
+    inner: u64,
+    rows: u64,
+    row_buf: &str,
+    col_buf: &str,
+    out_buf: &str,
+    layout: &SsboLayout,
+) -> Result<String, String> {
+    if inner == 0 || inner % 32 != 0 {
+        return Err(format!(
+            "cooperative dot needs a reduction length divisible by 32 (got {inner})"
+        ));
+    }
+    if rows == 0 || rows > 65535 {
+        return Err(format!(
+            "cooperative dot row count {rows} outside the CUDA gridDim.y range 1..=65535"
+        ));
+    }
+    let off = |name: &str| -> Result<u64, String> {
+        layout
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.proj_offset)
+            .ok_or_else(|| format!("ptx dot: buffer '{name}' not in layout"))
+    };
+    let (off_row, off_col, off_out) = (off(row_buf)?, off(col_buf)?, off(out_buf)?);
+    for name in [row_buf, col_buf, out_buf] {
+        if elem_bytes_of(layout, name)? != 4 {
+            return Err(format!(
+                "cooperative dot operates on f32 buffers ('{name}' is not)"
+            ));
+        }
+    }
+
+
+    let mut decl = String::new();
+    let mut body = String::new();
+    decl.push_str("    .reg .b64 %rd1, %rd2;\n");
+    decl.push_str("    .reg .u32 %r1, %r2, %r3, %r4, %r5;\n");
+    decl.push_str("    .reg .b32 %r6, %r7;\n");
+    decl.push_str("    .reg .pred %p1;\n");
+    decl.push_str("    .reg .f32 %f1, %f2, %f3, %f4, %f5;\n");
+
+    body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+    body.push_str("    mov.u32 %r1, %ctaid.y;\n");
+    body.push_str(&format!("    setp.ge.u32 %p1, %r1, {rows};\n"));
+    body.push_str("    @%p1 ret;\n");
+    body.push_str("    mov.u32 %r2, %tid.x;\n");
+    body.push_str(&format!("    mul.lo.u32 %r3, %r1, {inner};\n"));
+
+    // acc = 0; strided mul-add over the row.
+    body.push_str("    mov.f32 %f2, 0f00000000;\n");
+    body.push_str("    mov.u32 %r4, %r2;\n");
+    body.push_str("Ldot0:\n");
+    body.push_str(&format!("    setp.ge.u32 %p1, %r4, {inner};\n"));
+    body.push_str("    @%p1 bra Ldot1;\n");
+    // a[base + c]
+    body.push_str("    add.u32 %r5, %r3, %r4;\n");
+    body.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
+    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
+    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_row};\n"));
+    body.push_str("    ld.global.f32 %f1, [%rd2];\n");
+    // x[c]
+    body.push_str("    mul.wide.u32 %rd2, %r4, 4;\n");
+    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
+    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_col};\n"));
+    body.push_str("    ld.global.f32 %f3, [%rd2];\n");
+    body.push_str("    fma.rn.f32 %f2, %f1, %f3, %f2;\n");
+    body.push_str("    add.u32 %r4, %r4, 32;\n");
+    body.push_str("    bra Ldot0;\n");
+    body.push_str("Ldot1:\n");
+    // Butterfly add-tree → every lane holds the row total.
+    for offset in [16u32, 8, 4, 2, 1] {
+        body.push_str("    mov.b32 %r6, %f2;\n");
+        body.push_str(&format!(
+            "    shfl.sync.bfly.b32 %r7, %r6, {offset}, 0x1f, 0xffffffff;\n"
+        ));
+        body.push_str("    mov.b32 %f5, %r7;\n");
+        body.push_str("    add.f32 %f2, %f2, %f5;\n");
+    }
+    // y[row] = acc
+    body.push_str("    mul.wide.u32 %rd2, %r1, 4;\n");
+    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
+    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_out};\n"));
+    body.push_str("    st.global.f32 [%rd2], %f2;\n");
+    body.push_str("    ret;\n");
+
+    Ok(format!(
+        ".version 8.0\n.target sm_86\n.address_size 64\n.visible .entry main (.param .b64 proj_param)\n{{\n{}\n{}\n}}\n",
+        decl, body
+    ))
+}
+
+fn elem_bytes_of(layout: &SsboLayout, name: &str) -> Result<u64, String> {
+    layout
+        .fields
+        .iter()
+        .find(|f| f.name == name)
+        .map(|f| f.elem_bytes as u64)
+        .ok_or_else(|| format!("ptx: field '{name}' not in layout"))
+}
+
 pub fn emit_general_ptx(
     shape: &KernelShape,
     count: i64,

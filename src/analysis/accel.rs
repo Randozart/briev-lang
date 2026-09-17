@@ -129,8 +129,11 @@ pub struct ReductionInfo {
     /// three-phase row softmax (max → exp-sum → normalize). The lowering
     /// branches on this; the detection is structural either way.
     pub kind: ReductionKind,
-    /// Softmax only: the row source and result buffers.
+    /// Dot: row (`a[i*K+k]`) and col (`x[k]`) sources. Softmax: the row
+    /// source. Filled by the detectors; empty when not applicable.
     pub row_buf: String,
+    pub col_buf: String,
+    /// Dot: the single write target (`y[i]`). Softmax: the result buffer.
     pub out_buf: String,
 }
 
@@ -143,7 +146,13 @@ pub enum ReductionKind {
 impl ReductionInfo {
     /// The Dot-shape constructor (the 2026-09-01 cooperative form).
     pub fn dot(inner: crate::ast::Expr) -> Self {
-        Self { inner, kind: ReductionKind::Dot, row_buf: String::new(), out_buf: String::new() }
+        Self {
+            inner,
+            kind: ReductionKind::Dot,
+            row_buf: String::new(),
+            col_buf: String::new(),
+            out_buf: String::new(),
+        }
     }
 }
 
@@ -681,7 +690,13 @@ fn prove_kernel(
     // 7. Dot-product reduction (plan 2026-09-01-cooperative-row-kernels):
     //    conservative structural match — the LAST statement is a foreach
     //    whose body is one mul-add into a local accumulator.
-    shape.reduction = detect_reduction(&shape.kernel_stmts);
+    shape.reduction = detect_reduction(&shape.kernel_stmts, &index_var);
+    // Dot: the OUT buffer is the shape's single write target.
+    if let Some(red) = shape.reduction.as_mut() {
+        if red.kind == ReductionKind::Dot {
+            red.out_buf = shape.write_buffers.first().cloned().unwrap_or_default();
+        }
+    }
     // 8. Row softmax (M2a, plan 2026-09-17-abv-attention-ab): the three-pass
     //    form — Max# fold, Exp#-sum, normalize — over one row stride.
     //    Mutually exclusive with the dot reduction.
@@ -806,6 +821,7 @@ fn detect_row_softmax(stmts: &[Statement], _index_var: &str) -> Option<Reduction
         inner: loops[0].1.clone(),
         kind: ReductionKind::Softmax,
         row_buf: row,
+        col_buf: String::new(),
         out_buf: out,
     })
 }
@@ -814,7 +830,7 @@ fn detect_row_softmax(stmts: &[Statement], _index_var: &str) -> Option<Reduction
 /// assignment `acc = acc + f1[..k..] * f2[..k..]` (either mul order) with
 /// the accumulator self-referencing on one additive side. Returns the loop
 /// END expression for the cooperative lowering.
-fn detect_reduction(stmts: &[Statement]) -> Option<ReductionInfo> {
+fn detect_reduction(stmts: &[Statement], index_var: &str) -> Option<ReductionInfo> {
     use crate::ast::BinaryOpKind::{Add, Mul};
     for stmt in stmts {
         let Statement::Foreach { list, body, .. } = stmt else {
@@ -845,7 +861,56 @@ fn detect_reduction(stmts: &[Statement]) -> Option<ReductionInfo> {
         // Both mul operands must reference the loop var — they index with it.
         // The loop item name check is structural (the mul sides contain
         // Index expressions); a full var-flow proof is the lowerer's job.
-        return Some(ReductionInfo::dot(end.as_ref().clone()));
+        // 2026-09-17 (M2a): name the dot's buffers for the cooperative PTX
+        // lowering — the mul operand whose index references the node's index
+        // var is the ROW buffer (`a[i*K + k]`), the other is the COL buffer
+        // (`x[k]`). The out buffer is the shape's single write target (the
+        // caller fills it — write_buffers is computed before this runs).
+        let mut row = String::new();
+        let mut col = String::new();
+        let mul = if is_mul(ar) { ar } else { br };
+        if let Expr::BinaryOp(Mul, l, r) = mul {
+            // 2026-09-17: proper identifier containment — a substring check
+            // on the Debug dump matches the word "Identifier" itself.
+            let has_iv = |e: &Expr| -> bool {
+                let mut found = false;
+                fn walk(e: &Expr, name: &str, found: &mut bool) {
+                    match e {
+                        Expr::Identifier(n) => {
+                            if n == name {
+                                *found = true;
+                            }
+                        }
+                        Expr::BinaryOp(_, l, r) => {
+                            walk(l, name, found);
+                            walk(r, name, found);
+                        }
+                        Expr::Index(_, i) => walk(i, name, found),
+                        _ => {}
+                    }
+                }
+                walk(e, index_var, &mut found);
+                found
+            };
+            for f in [l.as_ref(), r.as_ref()] {
+                if let Expr::Index(buf, i) = f {
+                    if let Expr::Identifier(name) = buf.as_ref() {
+                        if has_iv(i) {
+                            row = name.clone();
+                        } else {
+                            col = name.clone();
+                        }
+                    }
+                }
+            }
+        }
+        return Some(ReductionInfo {
+            inner: end.as_ref().clone(),
+            kind: ReductionKind::Dot,
+            row_buf: row,
+            col_buf: col,
+            out_buf: String::new(),
+        });
     }
     None
 }
