@@ -6362,3 +6362,42 @@ dispatch guard were REMOVED (the mw kernel is correct at shallow K now);
 the stages cap (1..=3) stays.
 
 Recorded while L4: docs/plans/2026-09-16-gpu-strategy-findings-and-levers.md.
+
+## 2026-09-16: f16 attention composition fails at 1024² (qk→pv aliased s2/s) [OPEN]
+
+The 2-kernel f16 attention chain (qk with fused scale → pv) is correct at
+512² (max_rel 1.6e-3) but FAILS at 1024² (max_rel 5.4e24, o=+inf).
+
+Isolated: BOTH kernels are correct standalone at 1024² — qk max_rel 1.3e-3
+(its fused-scale output lands in the aliased s2 slot: host s2[0]=720
+after qk), pv max_rel 3.9e-3 (hand-seeded s2). The chain (launch qk then
+pv) produces garbage pv output. The aliased proj (s output = s2 input =
+6291504 at 1024²; 1572912 at 512²) flows qk→pv at 512² but not 1024².
+
+Hypothesis: the buffer-reuse aliasing (gpu_schedule_buffer_reuse=1) maps
+s2's device slot differently at 1024² than the field table claims, so pv
+reads a stale/remapped location during execution. The download (host read)
+shows the correct s2 because it uses the field table; the kernel uses the
+baked SSBO member index.
+
+**REFINED root cause (same session, PTX text dump):** the PTX kernels and
+the runner field table DIVERGE on the buffer-reuse aliased proj at 1024².
+The kernels bake (from the layout): qk s-store @8388656 (the fused
+epilogue writes the scaled result to s2's OWN slot), pv s2-read @8388656,
+pv o-store @2097200. The runner's BrievField table says: s2 proj @6291504
+(aliased to s's slot), o proj @4194352 (aliased to q's slot). At 512² the
+kernel-baked and field-table projs coincide; at 1024² they diverge, so the
+pv output lands at 2097200 while the runner reads o via 4194352 (garbage).
+
+Fix direction: the Phase 3 buffer-reuse PTX path (mod.rs:1603-1612 builds
+the layout WITH gated_reuse_map, and find_off uses proj_offset) must
+produce kernel-baked offsets that match the runner's field table. The
+runner builds its layout with the kernels' image_plans; the ptx builder
+passes empty image plans — if that changes the projection (an image-plan
+field excluded from one layout but not the other), the aliased offsets
+drift. Verify both layouts produce identical proj_offsets for the buffer
+fields, and that the fused-epilogue out_field (s2) and the GEMM y (o) use
+the SAME layout instance.
+
+Repro: attn_chain2 (qk+pv, 1024², t=256 sm=24576). Recorded while L3/
+attention-remeasure: docs/plans/2026-09-16-l3-split-k-and-attention-remeasure.md.
