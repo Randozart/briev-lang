@@ -397,26 +397,7 @@ impl<'a> Gen<'a> {
                 body.push_str(&format!("    mov.f32 {}, {:e};\n", out, f));
             }
             Expr::Identifier(name) => {
-                // 2026-09-17 (M2a): a LOCAL (let-bound) reads its register.
-                // f32 locals only — the index var is u32 and lives in index
-                // positions (emit_index), never value positions.
-                if let Some(reg) = self.regs.get(name).cloned() {
-                    if reg.starts_with("%f") {
-                        body.push_str(&format!("    mov.f32 {}, {};\n", out, reg));
-                        return Ok(());
-                    }
-                }
-                // Module const (baked) or a state scalar field.
-                if let Some(Expr::Decimal(n)) = self.consts.get(name) {
-                    body.push_str(&format!("    mov.f32 {}, {};\n", out, n));
-                } else if let Some(Expr::Float(f)) = self.consts.get(name) {
-                    body.push_str(&format!("    mov.f32 {}, {:e};\n", out, f));
-                } else {
-                    let off = self.field_off(name).ok_or_else(|| {
-                        format!("ptx general: scalar '{}' not in layout or consts", name)
-                    })?;
-                    body.push_str(&format!("    ld.global.f32 {}, [%rd1+{}];\n", out, off));
-                }
+                self.emit_ident_read(name, out, decl, body)?;
             }
             Expr::Index(buf, idx) => {
                 let buf_name = self.field_of(buf)?;
@@ -474,6 +455,36 @@ impl<'a> Gen<'a> {
                     other
                 ))
             }
+        }
+        Ok(())
+    }
+
+    /// Identifier read in value position: a let-bound local reads its
+    /// register (f32 locals only — the index var is u32 and lives in index
+    /// positions, never value positions); otherwise a baked const or a
+    /// state scalar field.
+    fn emit_ident_read(
+        &mut self,
+        name: &str,
+        out: &str,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        if let Some(reg) = self.regs.get(name).cloned() {
+            if reg.starts_with("%f") {
+                body.push_str(&format!("    mov.f32 {}, {};\n", out, reg));
+                return Ok(());
+            }
+        }
+        if let Some(Expr::Decimal(n)) = self.consts.get(name) {
+            body.push_str(&format!("    mov.f32 {}, {};\n", out, n));
+        } else if let Some(Expr::Float(f)) = self.consts.get(name) {
+            body.push_str(&format!("    mov.f32 {}, {:e};\n", out, f));
+        } else {
+            let off = self.field_off(name).ok_or_else(|| {
+                format!("ptx general: scalar '{}' not in layout or consts", name)
+            })?;
+            body.push_str(&format!("    ld.global.f32 {}, [%rd1+{}];\n", out, off));
         }
         Ok(())
     }
