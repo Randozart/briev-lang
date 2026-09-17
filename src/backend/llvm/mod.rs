@@ -2417,9 +2417,15 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
     pub fn generate(&mut self, items: &[TopLevel], exit_condition: Option<Box<Expr>>) -> String {
         // 2026-09-11 (buffered stdout): gate the epilogue flush on the
         // stdlib lane actually being present — bare programs get no call.
+        // 2026-09-17: ALSO gate on liveness — the defn existing is not
+        // enough (a program that never prints defines __stdout_flush but
+        // nothing roots it, so the tail call would hit the defn-liveness
+        // gate: "emitted code calls unreached defns"). Print# roots the
+        // whole stdout family via intrinsic_helpers, so the tail fires
+        // exactly when output actually happened.
         self.has_stdout_flush = items.iter().any(|i| {
             matches!(i, TopLevel::Definition(d) if d.name == "__stdout_flush")
-        });
+        }) && self.ctx.live_defns.contains("__stdout_flush");
         // 2026-07-31: Phase 3 (§8.1) — warn once when the target triple's prefix
         // is unknown to config/targets.dbvl, so the x86_64 tuning fallback is
         // never applied silently to a foreign target.
