@@ -31,12 +31,35 @@ the Briev integration touches ONLY the attention dispatch.
    so `main` stays a clean mirror of the fork).
 4. Verify: `git log -1` matches, CMakeLists present, source count sane.
 
-### M1 — Baseline build (next session)
+### M1 — Baseline build — DONE (2026-09-17)
 
-`cmake -B build -DGGML_CUDA=ON` + `cmake --build build` on the unmodified
-tree. Purpose: prove the extraction is buildable BEFORE any Briev work, and
-produce the reference binary for all later A/Bs. No timing yet — correctness
-baseline only.
+**Hardware amendment (2026-09-17):** the machine now carries **2× RTX 3060
+12GB** (the GTX 1070 Ti is gone — CachyOS reinstall). Consequences, applied:
+
+- Build config: `-DCMAKE_CUDA_ARCHITECTURES=86` only (was `61;86`).
+- CUDA toolkit: 13.4 at `/opt/cuda` (12.9 was kept only for Pascal).
+- Driver: **580.178.04 pinned — no upgrade mid-milestone.** The Briev GPU
+  stack carries driver-pinned workarounds (Vulkan image barriers,
+  `cp.async` visibility) validated on exactly this version. Upgrade later,
+  as its own controlled step.
+- sm_61 removed from the test matrix; stock CUDA fallback arms stay in
+  source for other hardware.
+- Two symmetric cards → `--split-mode row` (tensor parallel) viable for M5+;
+  24 GB aggregate VRAM. VITRIOL's LULL/MoE streaming handles both devices.
+
+Configure (working incantation):
+```bash
+cmake -B build -DGGML_CUDA=ON -DGGML_CUDA_FA=ON \
+    -DCMAKE_CUDA_ARCHITECTURES=86 -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
+    -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-14
+cmake --build build --config Release -j8
+```
+
+Smoke result (`llama-bench`, mellum 12B.A2.5B Q2_K, ngl 99, single GPU):
+`pp128 = 1193 ± 87 t/s`, `tg32 = 155.8 ± 2.1 t/s`; both CUDA devices
+enumerated (23.8 GB total); VITRIOL stats block intact. Baseline binary at
+`build/bin/llama-bench`, build `ab61c2a01 (1737)`.
 
 ### M2 — Briev attention library skeleton
 
@@ -74,7 +97,8 @@ GPU experiment: no win = no integration kept.
 
 ## Non-goals / constraints
 
-- sm_61 (GTX 1070 Ti) keeps stock CUDA kernels — Briev tensor tier needs sm_80+.
+- ~~sm_61 (GTX 1070 Ti) keeps stock CUDA kernels~~ **moot (2026-09-17):**
+  hardware is now 2× 3060; stock kernels remain in source for portability.
 - Quantized KV (Q4_0/Q8_0/TQ3) NOT in scope for M2-M5 — F16 KV cache path
   only. Quantized dequant-in-kernel is a later milestone if F16 wins hold.
 - VITRIOL's MoE/TQ3/MTP machinery: untouched.
