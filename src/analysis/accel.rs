@@ -721,83 +721,120 @@ fn prove_kernel(
 /// the row stride must fold to a literal-const (the same contract the dot
 /// path enforces) AND be a multiple of 32 (in-bounds striding — no bounds
 /// guards; attention KV strides are 256-aligned by construction).
+/// Classify an init `let`: the first Index-read names the max local + row
+/// buffer (`let m = row[i*S + 0]`), the first Decimal names the sum local
+/// (`let s = 0`). Anything else is ignored (fail-closed via the pass
+/// matchers).
+fn note_init(
+    name: &str,
+    e: &Expr,
+    max_local: &mut Option<String>,
+    sum_local: &mut Option<String>,
+    row_buf: &mut Option<String>,
+) {
+    if max_local.is_none() {
+        if let Some(row) = row_init_buffer(e) {
+            *max_local = Some(name.to_string());
+            *row_buf = Some(row);
+        }
+    } else if sum_local.is_none() && matches!(e, Expr::Decimal(_)) {
+        *sum_local = Some(name.to_string());
+    }
+}
+
+/// The max-init read: `row[...]` — returns the row-buffer name.
+fn row_init_buffer(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Index(buf, _) => match buf.as_ref() {
+            Expr::Identifier(n) => Some(n.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Record a range loop's end expression; returns its 1-based position
+/// (None for non-ranges). The loop-item name is structural only — the
+/// matchers key off the body, not the variable name — so it is not stored.
+fn loop_index(list: &Expr, loops: &mut Vec<Expr>) -> Option<usize> {
+    let Expr::Range { end, .. } = list else {
+        return None;
+    };
+    loops.push(end.as_ref().clone());
+    Some(loops.len())
+}
+
+/// Max pass: `let v = row[..c..]; m = Max#(m, v);`
+fn match_max_pass(body: &[Statement]) -> bool {
+    if body.len() != 2 {
+        return false;
+    }
+    if !matches!(&body[0], Statement::Let { expr: Some(Expr::Index(_, _)), .. }) {
+        return false;
+    }
+    let Statement::Assign(_, rhs) = &body[1] else {
+        return false;
+    };
+    matches!(rhs, Expr::Call(n, args, _) if n == "Max#" && args.len() == 2)
+}
+
+/// Exp-sum pass: `s = s + Exp#(row[..c..] - m);`
+fn match_expsum_pass(body: &[Statement]) -> bool {
+    if body.len() != 1 {
+        return false;
+    }
+    let Statement::Assign(_, rhs) = &body[0] else {
+        return false;
+    };
+    matches!(rhs, Expr::BinaryOp(crate::ast::BinaryOpKind::Add, _, _))
+        && format!("{:?}", rhs).contains("\"Exp#\"")
+}
+
+/// Normalize pass: `out[..c..] = Exp#(row[..c..] - m) / s;` — returns the
+/// out-buffer name.
+fn match_normalize_pass(body: &[Statement]) -> Option<String> {
+    if body.len() != 1 {
+        return None;
+    }
+    let Statement::Assign(Expr::Index(buf, _), _) = &body[0] else {
+        return None;
+    };
+    let out = match buf.as_ref() {
+        Expr::Identifier(n) => n.clone(),
+        _ => return None,
+    };
+    if !format!("{:?}", &body[0]).contains("\"Exp#\"") {
+        return None;
+    }
+    Some(out)
+}
+
 fn detect_row_softmax(stmts: &[Statement], _index_var: &str) -> Option<ReductionInfo> {
     // Statement walk: [Let(m, ..), Foreach, Let(s, 0), Foreach, Foreach]
     let mut max_local: Option<String> = None;
     let mut sum_local: Option<String> = None;
     let mut row_buf: Option<String> = None;
     let mut out_buf: Option<String> = None;
-    let mut loops: Vec<(String, Expr)> = Vec::new(); // (col var, end)
+    let mut loops: Vec<Expr> = Vec::new(); // loop END expressions, in order
 
     for stmt in stmts {
         match stmt {
             Statement::Let { name, expr: Some(e), .. } => {
-                // The max init: `let m = row[i * S + 0]` — an Index read.
-                if max_local.is_none() {
-                    if let Expr::Index(buf, _) = e {
-                        max_local = Some(name.clone());
-                        row_buf = Some(match buf.as_ref() {
-                            Expr::Identifier(n) => n.clone(),
-                            _ => return None,
-                        });
-                    }
-                } else if sum_local.is_none() && matches!(e, Expr::Decimal(_)) {
-                    sum_local = Some(name.clone());
-                }
+                note_init(name, e, &mut max_local, &mut sum_local, &mut row_buf);
             }
-            Statement::Foreach { item, list, body } => {
-                let Expr::Range { end, .. } = list.as_ref() else {
-                    return None;
-                };
-                loops.push((item.clone(), end.as_ref().clone()));
-                match loops.len() {
-                    1 => {
-                        // Max fold: let v = row[..c..]; m = Max#(m, v);
-                        if body.len() != 2 {
-                            return None;
-                        }
-                        if !matches!(&body[0], Statement::Let { expr: Some(Expr::Index(_, _)), .. }) {
-                            return None;
-                        }
-                        let Statement::Assign(_, rhs) = &body[1] else {
-                            return None;
-                        };
-                        if !matches!(rhs, Expr::Call(n, args, _) if n == "Max#" && args.len() == 2) {
-                            return None;
-                        }
-                    }
-                    2 => {
-                        // Exp-sum: s = s + Exp#(row[..c..] - m);
-                        if body.len() != 1 {
-                            return None;
-                        }
-                        let Statement::Assign(_, rhs) = &body[0] else {
-                            return None;
-                        };
-                        if !matches!(rhs, Expr::BinaryOp(crate::ast::BinaryOpKind::Add, _, _)) {
-                            return None;
-                        }
-                        if !format!("{:?}", rhs).contains("\"Exp#\"") {
-                            return None;
-                        }
-                    }
+            Statement::Foreach { list, body, .. } => {
+                let pass = loop_index(list, &mut loops)?;
+                let ok = match pass {
+                    1 => match_max_pass(body),
+                    2 => match_expsum_pass(body),
                     3 => {
-                        // Normalize: out[..c..] = Exp#(row[..c..] - m) / s;
-                        if body.len() != 1 {
-                            return None;
-                        }
-                        let Statement::Assign(Expr::Index(buf, _), _) = &body[0] else {
-                            return None;
-                        };
-                        out_buf = Some(match buf.as_ref() {
-                            Expr::Identifier(n) => n.clone(),
-                            _ => return None,
-                        });
-                        if !format!("{:?}", &body[0]).contains("\"Exp#\"") {
-                            return None;
-                        }
+                        out_buf = match_normalize_pass(body);
+                        out_buf.is_some()
                     }
-                    _ => return None,
+                    _ => false,
+                };
+                if !ok {
+                    return None;
                 }
             }
             _ => {}
@@ -813,12 +850,12 @@ fn detect_row_softmax(stmts: &[Statement], _index_var: &str) -> Option<Reduction
     if loops.len() != 3 {
         return None;
     }
-    let end0 = format!("{:?}", loops[0].1);
-    if format!("{:?}", loops[1].1) != end0 || format!("{:?}", loops[2].1) != end0 {
+    let end0 = format!("{:?}", loops[0]);
+    if format!("{:?}", loops[1]) != end0 || format!("{:?}", loops[2]) != end0 {
         return None;
     }
     Some(ReductionInfo {
-        inner: loops[0].1.clone(),
+        inner: loops[0].clone(),
         kind: ReductionKind::Softmax,
         row_buf: row,
         col_buf: String::new(),
