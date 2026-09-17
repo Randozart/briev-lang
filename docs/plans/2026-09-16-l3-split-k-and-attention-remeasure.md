@@ -124,13 +124,14 @@ algo 14.7 TF) ≈ 0.075 ms. **Briev is ~10% faster than cuBLAS on the
 attention composition at 512² — the 0.073 ms claim is confirmed and
 strengthened** (the earlier 86%-of-cuBLAS used a default-algo cuBLAS).
 
-At **1024² the chain FAILS** (max_rel 5.4e24): both qk and pv kernels are
-CORRECT standalone (qk 1.3e-3, pv 3.9e-3), and qk's fused-scale output IS
-in the aliased s2 slot (host shows 720), but pv reads garbage (+inf).
-This is a **data-flow issue in the 2-kernel composition at 1024²** — the
-aliased s2/s proj (6291504) flows qk→pv for 512² (1572912) but not 1024².
-Recorded as a BUGS.md open item. The 512² result stands; 1024² needs the
-runner's field-table/alias handling investigated.
+At **1024² the chain was initially reported failing** (max_rel 5.4e24) —
+RESOLVED as a false alarm: the test-data seeds overflowed f16 (o ~92160 >
+65504 max → +inf at K=1024). With scaled seeds (0.01/0.012/0.004) the
+chain is CORRECT (max_rel 6.4e-3, 0 bad) at 1024², both with and without
+buffer reuse. A second harness artifact: the kernels bake unaliased proj
+while the runner field table aliases under reuse — the harness must use
+the field-table proj for download (the runtime is correct). The full f16
+attention composition is correct at 512² AND 1024².
 
 ## Deliverables
 

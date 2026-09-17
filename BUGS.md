@@ -6401,3 +6401,20 @@ the SAME layout instance.
 
 Repro: attn_chain2 (qk+pv, 1024², t=256 sm=24576). Recorded while L3/
 attention-remeasure: docs/plans/2026-09-16-l3-split-k-and-attention-remeasure.md.
+
+**RESOLVED — FALSE ALARM (same session).** The compiler is CORRECT. Two
+harness bugs caused the "failure":
+1. **Test-data f16 overflow**: the seed values (q up to 2.25, kt up to
+   2.5, v up to 0.5) accumulate to o ~92160 at K=1024, exceeding f16's
+   65504 max → +inf. With scaled-down seeds (0.01/0.012/0.004) the chain
+   is CORRECT (max_rel 6.4e-3, 0 bad) at 1024², both with and without
+   buffer reuse.
+2. **Harness proj mismatch**: the kernels bake UNALIASED proj (o@2097200,
+   s2@8388656); the runner's field table (with reuse) aliases them
+   (o@4194352, s2@6291504). The harness must use the field-table proj for
+   download — with it, the reuse build is correct. The runtime correctly
+   uses the field table; the kernels use their baked offsets consistently.
+   The divergence is BY DESIGN (the alias is real and correct), not a bug.
+
+The full f16 attention composition is correct at 512² AND 1024². The
+earlier "o=+inf" and "s2=0" were the overflow + wrong-proj artifacts.
