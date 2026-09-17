@@ -183,7 +183,7 @@ const STANDARD_OPS: &[&str] = &[
     "Eq", "Neq", "Lt", "Gt", "Le", "Ge",
     "Neg", "Abs",
     "BitAnd", "BitOr", "BitXor", "Shl", "Shr",
-    "Sqrt", "Sin", "Cos", "Fabs", "Ceil", "Floor", "Pow",
+    "Sqrt", "Sin", "Cos", "Fabs", "Ceil", "Floor", "Exp", "Pow",
     "Print",
     "Malloc", "Free",
 ];

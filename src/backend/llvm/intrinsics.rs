@@ -266,7 +266,7 @@ pub fn emit_intrinsic_call(
 
     let op_name = name.trim_end_matches('#');
     // 2026-07-17: Directly emit float intrinsics (Sqrt#, Sin#, Cos#, etc.)
-    let is_float_unary = matches!(op_name, "Sqrt" | "Sin" | "Cos" | "Fabs" | "Ceil" | "Floor");
+    let is_float_unary = matches!(op_name, "Sqrt" | "Sin" | "Cos" | "Fabs" | "Ceil" | "Floor" | "Exp");
     if is_float_unary {
         let llvm_name = op_name.to_lowercase();
         let (float_suffix, float_llvm_ty, ret_ty) = match llvm_ty.as_str() {

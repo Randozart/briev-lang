@@ -63,6 +63,7 @@ check does not exist — the backend silently falls through to external call.
 | Math hardware | `Sqrt#`, `Sin#`, `Cos#`, `Fabs#`, `Ceil#`, `Floor#`, `Exp#`, `Pow#` | Cannot be expressed in Briev without hardware access. `Exp#` (2026-09-02): `GLSL.std.450 Exp` on SPIR-V, `expf` on native. |
 | I/O | — | Migrated to stdlib. `!Print`/`!PrintLn` dispatched via Front plugin; `!GetEnv`/`!GetEnvInt` resolved to pure-Briev environ scan. All use `SysCall#(Write, ...)` or `Load#` underneath. |
 | Atomic | `AtomicLoad#`, `AtomicStore#`, `AtomicCas#`, etc. | Hardware memory model primitives |
+| GPU subgroup | `SubgroupFAdd#`, `SubgroupFMax#`, `SubgroupFMin#`, `ShuffleDown#`, `ShuffleXor#` | GPU-unique warp-level primitives. SPIR-V: `OpGroupNonUniform*` instructions. PTX: `shfl.*.sync` / shared-memory reduction. CPU: identity (single-lane). |
 
 ### Stdlib (`lib/std/` — can be absent, feels native)
 

@@ -385,6 +385,10 @@ fn expr_is_pure(expr: &Expr) -> bool {
         // builtins are pure reads too.
         Expr::Call(name, args, _)
             if name == "SubgroupFAdd#"
+                || name == "SubgroupFMax#"
+                || name == "SubgroupFMin#"
+                || name == "ShuffleDown#"
+                || name == "ShuffleXor#"
                 || name == "GetGlobalId#"
                 || name == "GetLocalId#"
                 || name == "Exp#"

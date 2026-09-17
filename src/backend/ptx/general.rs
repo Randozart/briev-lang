@@ -355,6 +355,9 @@ impl<'a> Gen<'a> {
                     body.push_str(&format!("    mov.f32 {}, {};\n", out, xreg));
                 }
             }
+            Expr::Call(name, args, _) => {
+                self.emit_intrinsic_call(name, args, out, decl, body)?;
+            }
             other => {
                 return Err(format!(
                     "ptx general: expression {:?} outside the elementwise surface",
@@ -363,6 +366,72 @@ impl<'a> Gen<'a> {
             }
         }
         Ok(())
+    }
+
+    fn emit_intrinsic_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        out: &str,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        match name {
+            "Exp#" => {
+                if args.len() != 1 {
+                    return Err("Exp# takes exactly 1 argument".into());
+                }
+                let xreg = self.fresh_f();
+                decl.push_str(&format!("    .reg .f32 {};\n", xreg));
+                self.emit_expr(&args[0], &xreg, decl, body)?;
+                body.push_str(&format!("    exp.approx.f32 {}, {};\n", out, xreg));
+                Ok(())
+            }
+            "ShuffleDown#" => {
+                if args.len() != 2 {
+                    return Err("ShuffleDown# takes (value, delta)".into());
+                }
+                let vreg = self.fresh_f();
+                let dreg = self.fresh_r();
+                decl.push_str(&format!("    .reg .f32 {};\n", vreg));
+                decl.push_str(&format!("    .reg .u32 {};\n", dreg));
+                self.emit_expr(&args[0], &vreg, decl, body)?;
+                if let Expr::Decimal(n) = &args[1] {
+                    body.push_str(&format!("    mov.u32 {}, {};\n", dreg, n));
+                } else {
+                    return Err("ShuffleDown# delta must be a compile-time constant".into());
+                }
+                body.push_str(&format!(
+                    "    shfl.down.sync.b32 {}, {}, {}, 0xFFFFFFFF;\n",
+                    out, vreg, dreg
+                ));
+                Ok(())
+            }
+            "ShuffleXor#" => {
+                if args.len() != 2 {
+                    return Err("ShuffleXor# takes (value, lane_mask)".into());
+                }
+                let vreg = self.fresh_f();
+                let mreg = self.fresh_r();
+                decl.push_str(&format!("    .reg .f32 {};\n", vreg));
+                decl.push_str(&format!("    .reg .u32 {};\n", mreg));
+                self.emit_expr(&args[0], &vreg, decl, body)?;
+                if let Expr::Decimal(n) = &args[1] {
+                    body.push_str(&format!("    mov.u32 {}, {};\n", mreg, n));
+                } else {
+                    return Err("ShuffleXor# lane_mask must be a compile-time constant".into());
+                }
+                body.push_str(&format!(
+                    "    shfl.xor.sync.b32 {}, {}, {}, 0xFFFFFFFF;\n",
+                    out, vreg, mreg
+                ));
+                Ok(())
+            }
+            _ => Err(format!(
+                "ptx general: intrinsic call '{}' not supported in elementwise kernel",
+                name
+            )),
+        }
     }
 
     fn elem_bytes(&self, name: &str) -> Result<u64, String> {

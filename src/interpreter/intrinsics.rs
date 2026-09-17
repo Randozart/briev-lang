@@ -232,7 +232,24 @@ pub fn execute_intrinsic(
         "Fabs#"  => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.abs())) }
         "Ceil#"  => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.ceil())) }
         "Floor#" => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.floor())) }
+        "Exp#"   => { let x = arg_as_f64(args, 0)?; Ok(f64_to_bits(x.exp())) }
         "Pow#"   => { let a = arg_as_f64(args, 0)?; let b = arg_as_f64(args, 1)?; Ok(f64_to_bits(a.powf(b))) }
+        // ── Warp shuffle (CPU fallback: identity — single lane) ───
+        "ShuffleDown#" | "ShuffleXor#" => {
+            args.first().cloned().ok_or_else(|| RuntimeError::HeapError("shuffle needs a value".into()))
+        }
+        "SubgroupFAdd#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x))
+        }
+        "SubgroupFMax#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x))
+        }
+        "SubgroupFMin#" => {
+            let x = arg_as_f64(args, 0)?;
+            Ok(f64_to_bits(x))
+        }
 
         // ── Memory (observable) ─────────────────────────────────────
         "Malloc#" => {

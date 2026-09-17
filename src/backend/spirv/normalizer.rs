@@ -63,6 +63,10 @@ fn build_supported_ops() -> HashSet<String> {
     // 2026-09-01 (plan 2026-09-01-cooperative-row-kernels): subgroup
     // reduction — lowered to OpGroupNonUniformFAdd (Subgroup scope).
     set.insert("SubgroupFAdd#".to_string());
+    set.insert("SubgroupFMax#".to_string());
+    set.insert("SubgroupFMin#".to_string());
+    set.insert("ShuffleDown#".to_string());
+    set.insert("ShuffleXor#".to_string());
     set
 }
 

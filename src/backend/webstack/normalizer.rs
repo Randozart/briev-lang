@@ -90,7 +90,7 @@ fn build_supported_ops() -> HashSet<String> {
         "Eq#", "Neq#", "Lt#", "Gt#", "Le#", "Ge#",
         "BitAnd#", "BitOr#", "BitXor#", "Shl#", "Shr#", "BitNot#",
         "Not#",
-        "Fabs#", "Ceil#", "Floor#", "Sqrt#", "Sin#", "Cos#", "Pow#",
+        "Fabs#", "Ceil#", "Floor#", "Sqrt#", "Sin#", "Cos#", "Exp#", "Pow#",
     ] { set.insert(op.to_string()); }
     // Tier 2: WASM runtime (memory, atomics, pointer, string ops)
     for op in &[

@@ -957,6 +957,94 @@ impl<'a> FnLowerer<'a> {
                 ));
                 Ok((res, vty))
             }
+            "SubgroupFMax#" => {
+                let (v, vty) = match args.first() {
+                    Some(e) => self.emit_expr(e)?,
+                    None => return self.err("SubgroupFMax# needs an operand"),
+                };
+                if !self.builder.is_float_type(&vty)? {
+                    return self.err("SubgroupFMax# is a float reduction");
+                }
+                let ty_id = self.type_id(&vty)?;
+                let res = self.builder.gen_id();
+                let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+                self.builder.emit(Instruction::new(
+                    spirv::Op::GroupNonUniformFMax,
+                    Some(ty_id),
+                    Some(res),
+                    vec![
+                        Operand::IdRef(scope),
+                        Operand::LiteralBit32(spirv::GroupOperation::Reduce as u32),
+                        Operand::IdRef(v),
+                    ],
+                ));
+                Ok((res, vty))
+            }
+            "SubgroupFMin#" => {
+                let (v, vty) = match args.first() {
+                    Some(e) => self.emit_expr(e)?,
+                    None => return self.err("SubgroupFMin# needs an operand"),
+                };
+                if !self.builder.is_float_type(&vty)? {
+                    return self.err("SubgroupFMin# is a float reduction");
+                }
+                let ty_id = self.type_id(&vty)?;
+                let res = self.builder.gen_id();
+                let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+                self.builder.emit(Instruction::new(
+                    spirv::Op::GroupNonUniformFMin,
+                    Some(ty_id),
+                    Some(res),
+                    vec![
+                        Operand::IdRef(scope),
+                        Operand::LiteralBit32(spirv::GroupOperation::Reduce as u32),
+                        Operand::IdRef(v),
+                    ],
+                ));
+                Ok((res, vty))
+            }
+            "ShuffleDown#" => {
+                if args.len() < 2 {
+                    return self.err("ShuffleDown# needs (value, delta)");
+                }
+                let (v, vty) = self.emit_expr(&args[0])?;
+                let (delta, _delta_ty) = self.emit_expr(&args[1])?;
+                let ty_id = self.type_id(&vty)?;
+                let res = self.builder.gen_id();
+                let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+                self.builder.emit(Instruction::new(
+                    spirv::Op::GroupNonUniformShuffleDown,
+                    Some(ty_id),
+                    Some(res),
+                    vec![
+                        Operand::IdRef(scope),
+                        Operand::IdRef(v),
+                        Operand::IdRef(delta),
+                    ],
+                ));
+                Ok((res, vty))
+            }
+            "ShuffleXor#" => {
+                if args.len() < 2 {
+                    return self.err("ShuffleXor# needs (value, lane_mask)");
+                }
+                let (v, vty) = self.emit_expr(&args[0])?;
+                let (mask, _mask_ty) = self.emit_expr(&args[1])?;
+                let ty_id = self.type_id(&vty)?;
+                let res = self.builder.gen_id();
+                let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+                self.builder.emit(Instruction::new(
+                    spirv::Op::GroupNonUniformShuffleXor,
+                    Some(ty_id),
+                    Some(res),
+                    vec![
+                        Operand::IdRef(scope),
+                        Operand::IdRef(v),
+                        Operand::IdRef(mask),
+                    ],
+                ));
+                Ok((res, vty))
+            }
             "Exp#" => {
                 let (x, xty) = match args.first() {
                     Some(e) => self.emit_expr(e)?,

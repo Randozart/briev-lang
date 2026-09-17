@@ -250,7 +250,7 @@ Generative op-member forms (dispatch to declared `op` members):
 ### GPU / SIMT (SPIR-V target; fall to external call on LLVM)
 
 `GetGlobalId#` `GetGlobalSize#` `GetLocalId#` `WorkgroupSize#` `GetGroupId#`
-`GetNumGroups#` `Dims#` `SubgroupFAdd#` `Barrier#`
+`GetNumGroups#` `Dims#` `SubgroupFAdd#` `SubgroupFMax#` `SubgroupFMin#` `ShuffleDown#` `ShuffleXor#` `Barrier#`
 
 ### Process & environment
 

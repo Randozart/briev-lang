@@ -176,6 +176,12 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
         // ── GPU ───────────────────────────────────────────────────────
         "GetGlobalId#"   => Some(Signature { name: "GetGlobalId#",   parameters: vec![], return_kind: ReturnKind::Native("Int"), observable: false, variadic: false }),
         "SubgroupFAdd#"  => Some(Signature { name: "SubgroupFAdd#",  parameters: vec![("v", Type::float())], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
+        "SubgroupFMax#"  => Some(Signature { name: "SubgroupFMax#",  parameters: vec![("v", Type::float())], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
+        "SubgroupFMin#"  => Some(Signature { name: "SubgroupFMin#",  parameters: vec![("v", Type::float())], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
+        // 2026-09-17: warp shuffle intrinsics — GPU-unique hardware primitives
+        // for lane-to-lane data exchange. CPU fallback is identity (single-lane).
+        "ShuffleDown#"   => Some(Signature { name: "ShuffleDown#",   parameters: vec![], return_kind: ReturnKind::Inferred, observable: false, variadic: false }),
+        "ShuffleXor#"    => Some(Signature { name: "ShuffleXor#",    parameters: vec![], return_kind: ReturnKind::Inferred, observable: false, variadic: false }),
         "GetGlobalSize#" => Some(Signature { name: "GetGlobalSize#", parameters: vec![], return_kind: ReturnKind::Native("Int"), observable: false, variadic: false }),
         "GetLocalId#"    => Some(Signature { name: "GetLocalId#",    parameters: vec![], return_kind: ReturnKind::Native("Int"), observable: false, variadic: false }),
         "WorkgroupSize#" => Some(Signature { name: "WorkgroupSize#", parameters: vec![], return_kind: ReturnKind::Native("Int"), observable: false, variadic: false }),
@@ -505,7 +511,7 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     "Get#", "Insert#",
     "Count#", "At#", "Slice#", "InsertAt#", "ExtractFrom#", "CopyFrom#",
     "GetGlobalId#", "GetGlobalSize#", "GetLocalId#", "WorkgroupSize#",
-    "GetGroupId#", "GetNumGroups#", "Dims#", "SubgroupFAdd#", "Barrier#",
+    "GetGroupId#", "GetNumGroups#", "Dims#", "SubgroupFAdd#", "SubgroupFMax#", "SubgroupFMin#", "ShuffleDown#", "ShuffleXor#", "Barrier#",
     "Spawn#", "SpawnWithOutput#", "SetEnv#", "GetCwd#", "ChDir#",
     "AddressOf#", "CallPtr#", "TaskCall#", "Asm#",
     "CancelRequested#", "ClearCancel#",
@@ -542,7 +548,7 @@ mod tests {
             // 2026-09-01 (plan 2026-09-01-cooperative-row-kernels): the
         // SPIR-V backend lowers this to OpGroupNonUniformFAdd (subgroup
         // scope) — bit-exact fixed-tree reduction, no atomics.
-        "SubgroupFAdd#",        "GetGlobalId#", "GetGlobalSize#", "GetLocalId#", "WorkgroupSize#",
+        "SubgroupFAdd#", "SubgroupFMax#", "SubgroupFMin#", "ShuffleDown#", "ShuffleXor#",        "GetGlobalId#", "GetGlobalSize#", "GetLocalId#", "WorkgroupSize#",
             "GetGroupId#", "GetNumGroups#", "Dims#",
             "AddressOf#", "SysCall#", "SysConf#",
             "AtomicLoad#", "AtomicStore#", "AtomicCas#", "AtomicXchg#", "AtomicAdd#", "Fence#",
