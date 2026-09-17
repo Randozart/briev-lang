@@ -40,6 +40,16 @@ Revised order (riskiest unknown first):
    runner-eligible `.abv` nodes — the ptx-tier general emitter
    (src/backend/ptx/general.rs) is the engine, wiring it into the .abv
    build pipeline is the open work.
+
+   **Blob naming layering (settled 2026-09-17)**: the PTX entry sentinel
+   `"main"` is a blob-ABI detail ONLY — one entry per module, looked up by
+   the driver (`briev_dev_cuda.c:316`, mirroring the SPIR-V runner's
+   `"main"` convention, runner.rs:498; the PTX emitters already name
+   entries `main`, general.rs:154). Briev node names stay fully arbitrary
+   (`descs[]` is keyed by node name). Guard: never pack multiple node
+   kernels into one module — that would drag blob-internal names toward
+   user-visible ones. If it ever matters, the driver can look up
+   `desc->name` instead (two-line change).
 2. **M2a — softmax row kernel on the PTX tier**: cooperative row shape
    (work-item = row, lane = strided position — the dot-product precedent
    from plan 2026-09-01), three phases (max → exp-sum → normalize) with
