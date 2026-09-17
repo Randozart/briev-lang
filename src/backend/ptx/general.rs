@@ -387,51 +387,114 @@ impl<'a> Gen<'a> {
                 body.push_str(&format!("    exp.approx.f32 {}, {};\n", out, xreg));
                 Ok(())
             }
-            "ShuffleDown#" => {
-                if args.len() != 2 {
-                    return Err("ShuffleDown# takes (value, delta)".into());
+            "Fma#" => {
+                if args.len() != 3 {
+                    return Err("Fma# takes (a, b, c)".into());
                 }
-                let vreg = self.fresh_f();
-                let dreg = self.fresh_r();
-                decl.push_str(&format!("    .reg .f32 {};\n", vreg));
-                decl.push_str(&format!("    .reg .u32 {};\n", dreg));
-                self.emit_expr(&args[0], &vreg, decl, body)?;
-                if let Expr::Decimal(n) = &args[1] {
-                    body.push_str(&format!("    mov.u32 {}, {};\n", dreg, n));
-                } else {
-                    return Err("ShuffleDown# delta must be a compile-time constant".into());
-                }
-                body.push_str(&format!(
-                    "    shfl.down.sync.b32 {}, {}, {}, 0xFFFFFFFF;\n",
-                    out, vreg, dreg
-                ));
+                let areg = self.fresh_f();
+                let breg = self.fresh_f();
+                let creg = self.fresh_f();
+                decl.push_str(&format!("    .reg .f32 {};\n", areg));
+                decl.push_str(&format!("    .reg .f32 {};\n", breg));
+                decl.push_str(&format!("    .reg .f32 {};\n", creg));
+                self.emit_expr(&args[0], &areg, decl, body)?;
+                self.emit_expr(&args[1], &breg, decl, body)?;
+                self.emit_expr(&args[2], &creg, decl, body)?;
+                body.push_str(&format!("    fma.rn.f32 {}, {}, {}, {};\n", out, areg, breg, creg));
                 Ok(())
             }
-            "ShuffleXor#" => {
-                if args.len() != 2 {
-                    return Err("ShuffleXor# takes (value, lane_mask)".into());
-                }
-                let vreg = self.fresh_f();
-                let mreg = self.fresh_r();
-                decl.push_str(&format!("    .reg .f32 {};\n", vreg));
-                decl.push_str(&format!("    .reg .u32 {};\n", mreg));
-                self.emit_expr(&args[0], &vreg, decl, body)?;
-                if let Expr::Decimal(n) = &args[1] {
-                    body.push_str(&format!("    mov.u32 {}, {};\n", mreg, n));
-                } else {
-                    return Err("ShuffleXor# lane_mask must be a compile-time constant".into());
-                }
-                body.push_str(&format!(
-                    "    shfl.xor.sync.b32 {}, {}, {}, 0xFFFFFFFF;\n",
-                    out, vreg, mreg
-                ));
-                Ok(())
+            "ShuffleDown#" | "ShuffleXor#" | "SubgroupBallot#" | "SubgroupBroadcast#" => {
+                self.emit_lane_intrinsic(name, args, out, decl, body)
+            }
+            "SubgroupFAdd#" | "SubgroupFMax#" | "SubgroupFMin#" => {
+                self.emit_warp_reduce(name, args, out, decl, body)
             }
             _ => Err(format!(
                 "ptx general: intrinsic call '{}' not supported in elementwise kernel",
                 name
             )),
         }
+    }
+
+    /// Lane-coordination family: shuffles (Down/Xor — value + constant lane
+    /// selector), broadcast (value + constant lane index), ballot (predicate
+    /// → warp bitmask). Split from the dispatcher (2026-09-17 warp-pr plan).
+    fn emit_lane_intrinsic(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        out: &str,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        if name == "SubgroupBallot#" {
+            if args.len() != 1 {
+                return Err("SubgroupBallot# takes (pred)".into());
+            }
+            let preg = self.fresh_r();
+            decl.push_str(&format!("    .reg .pred {};\n", preg));
+            let xreg = self.fresh_f();
+            decl.push_str(&format!("    .reg .f32 {};\n", xreg));
+            self.emit_expr(&args[0], &xreg, decl, body)?;
+            body.push_str(&format!("    setp.ne.f32 {}, {}, 0.0;\n", preg, xreg));
+            body.push_str(&format!("    vote.sync.ballot.b32 {}, {}, 0xFFFFFFFF;\n", out, preg));
+            return Ok(());
+        }
+        // Shuffle family: (f32 value, compile-time-constant lane selector).
+        // Down/Xor clamp width 0x1F; idx (broadcast) selects an absolute lane.
+        if args.len() != 2 {
+            return Err(format!("{} takes (value, lane_selector)", name));
+        }
+        let vreg = self.fresh_f();
+        let sreg = self.fresh_r();
+        decl.push_str(&format!("    .reg .f32 {};\n", vreg));
+        decl.push_str(&format!("    .reg .u32 {};\n", sreg));
+        self.emit_expr(&args[0], &vreg, decl, body)?;
+        if let Expr::Decimal(n) = &args[1] {
+            body.push_str(&format!("    mov.u32 {}, {};\n", sreg, n));
+        } else {
+            return Err(format!("{} lane selector must be a compile-time constant", name));
+        }
+        match name {
+            "ShuffleDown#" => body.push_str(&format!(
+                "    shfl.down.sync.b32 {}, {}, {}, 0xFFFFFFFF;\n",
+                out, vreg, sreg
+            )),
+            "ShuffleXor#" => body.push_str(&format!(
+                "    shfl.xor.sync.b32 {}, {}, {}, 0xFFFFFFFF;\n",
+                out, vreg, sreg
+            )),
+            _ => body.push_str(&format!(
+                "    shfl.sync.idx.b32 {}, {}, {}, 0x1F, 0xFFFFFFFF;\n",
+                out, vreg, sreg
+            )),
+        }
+        Ok(())
+    }
+
+    /// Warp-wide float reduction via redux.sync (sm_80+, register-only —
+    /// no shared memory). FAdd/FMax/FMin are identical modulo the op.
+    fn emit_warp_reduce(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        out: &str,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        if args.len() != 1 {
+            return Err(format!("{} takes (v)", name));
+        }
+        let vreg = self.fresh_f();
+        decl.push_str(&format!("    .reg .f32 {};\n", vreg));
+        self.emit_expr(&args[0], &vreg, decl, body)?;
+        let op = match name {
+            "SubgroupFMax#" => "max",
+            "SubgroupFMin#" => "min",
+            _ => "add",
+        };
+        body.push_str(&format!("    redux.sync.{}.f32 {}, {}, 0xFFFFFFFF;\n", op, out, vreg));
+        Ok(())
     }
 
     fn elem_bytes(&self, name: &str) -> Result<u64, String> {

@@ -927,123 +927,159 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// Subgroup-family intrinsics: the reduce trio (FAdd/FMax/FMin), lane
+    /// shuffles (Down/Xor), ballot, broadcast. Split from `emit_intrinsic_call`
+    /// (2026-09-17 warp-pr plan) to keep the dispatcher's complexity in check;
+    /// the three reduce forms are identical modulo the opcode, so they share
+    /// one body (DRY).
+    fn emit_subgroup_intrinsic(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<(Word, Type), String> {
+        match name {
+            "SubgroupFAdd#" | "SubgroupFMax#" | "SubgroupFMin#" => {
+                self.emit_subgroup_reduce(name, args)
+            }
+            "ShuffleDown#" | "ShuffleXor#" => self.emit_subgroup_shuffle(name, args),
+            "SubgroupBallot#" => self.emit_subgroup_ballot(args),
+            _ => self.emit_subgroup_broadcast(args),
+        }
+    }
+
+    /// FAdd/FMax/FMin share the OpGroupNonUniform*Reduce shape — only the
+    /// opcode differs. Scope is IdScope (a uint-constant reference; spirv-val
+    /// rejected the literal form).
+    fn emit_subgroup_reduce(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<(Word, Type), String> {
+        let (v, vty) = match args.first() {
+            Some(e) => self.emit_expr(e)?,
+            None => return self.err(format!("{} needs an operand", name)),
+        };
+        if !self.builder.is_float_type(&vty)? {
+            return self.err(format!("{} is a float reduction", name));
+        }
+        let op = match name {
+            "SubgroupFMax#" => spirv::Op::GroupNonUniformFMax,
+            "SubgroupFMin#" => spirv::Op::GroupNonUniformFMin,
+            _ => spirv::Op::GroupNonUniformFAdd,
+        };
+        let ty_id = self.type_id(&vty)?;
+        let res = self.builder.gen_id();
+        let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+        self.builder.emit(Instruction::new(
+            op,
+            Some(ty_id),
+            Some(res),
+            vec![
+                Operand::IdRef(scope),
+                Operand::LiteralBit32(spirv::GroupOperation::Reduce as u32),
+                Operand::IdRef(v),
+            ],
+        ));
+        Ok((res, vty))
+    }
+
+    /// ShuffleDown/ShuffleXor: (value, lane-selector) → OpGroupNonUniform*.
+    fn emit_subgroup_shuffle(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<(Word, Type), String> {
+        if args.len() < 2 {
+            return self.err(format!("{} needs (value, lane_selector)", name));
+        }
+        let (v, vty) = self.emit_expr(&args[0])?;
+        let (sel, _sel_ty) = self.emit_expr(&args[1])?;
+        let op = match name {
+            "ShuffleXor#" => spirv::Op::GroupNonUniformShuffleXor,
+            _ => spirv::Op::GroupNonUniformShuffleDown,
+        };
+        let ty_id = self.type_id(&vty)?;
+        let res = self.builder.gen_id();
+        let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+        self.builder.emit(Instruction::new(
+            op,
+            Some(ty_id),
+            Some(res),
+            vec![
+                Operand::IdRef(scope),
+                Operand::IdRef(v),
+                Operand::IdRef(sel),
+            ],
+        ));
+        Ok((res, vty))
+    }
+
+    /// Ballot: predicate → uvec4 mask; extract component 0 (lanes 0–31) and
+    /// widen to Briev Int. Subgroups wider than 32 lanes lose bits 32+ here —
+    /// all current targets (NV warp, AMD wave32/64→split) fit the low word.
+    fn emit_subgroup_ballot(&mut self, args: &[Expr]) -> Result<(Word, Type), String> {
+        let (pred, _pty) = match args.first() {
+            Some(e) => self.emit_expr(e)?,
+            None => return self.err("SubgroupBallot# needs a predicate"),
+        };
+        let u32_ty = self.builder.u32_type();
+        let uvec4_ty = self.builder.builder.type_vector(u32_ty, 4);
+        let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+        let ballot = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::GroupNonUniformBallot,
+            Some(uvec4_ty),
+            Some(ballot),
+            vec![Operand::IdRef(scope), Operand::IdRef(pred)],
+        ));
+        let x_comp = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::CompositeExtract,
+            Some(u32_ty),
+            Some(x_comp),
+            vec![Operand::IdRef(ballot), Operand::LiteralBit32(0)],
+        ));
+        let int_ty = self.type_id(&Type::int())?;
+        let res = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::UConvert,
+            Some(int_ty),
+            Some(res),
+            vec![Operand::IdRef(x_comp)],
+        ));
+        Ok((res, Type::int()))
+    }
+
+    /// Broadcast: (value, lane) → the value held by the selected lane.
+    fn emit_subgroup_broadcast(&mut self, args: &[Expr]) -> Result<(Word, Type), String> {
+        if args.len() < 2 {
+            return self.err("SubgroupBroadcast# needs (val, lane)");
+        }
+        let (v, vty) = self.emit_expr(&args[0])?;
+        let (lane, _lty) = self.emit_expr(&args[1])?;
+        let ty_id = self.type_id(&vty)?;
+        let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+        let res = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::GroupNonUniformBroadcast,
+            Some(ty_id),
+            Some(res),
+            vec![
+                Operand::IdRef(scope),
+                Operand::IdRef(v),
+                Operand::IdRef(lane),
+            ],
+        ));
+        Ok((res, vty))
+    }
+
     fn emit_intrinsic_call(&mut self, name: &str, args: &[Expr]) -> Result<(Word, Type), String> {
         match name {
-            // Cooperative row kernels (plan 2026-09-01-cooperative-row-kernels):
-            // reduce `v` across the invocation's subgroup with a fixed-shape
-            // FAdd tree — bit-exact across runs, no atomics.
-            "SubgroupFAdd#" => {
-                let (v, vty) = match args.first() {
-                    Some(e) => self.emit_expr(e)?,
-                    None => return self.err("SubgroupFAdd# needs an operand"),
-                };
-                if !self.builder.is_float_type(&vty)? {
-                    return self.err("SubgroupFAdd# is a float reduction");
-                }
-                let ty_id = self.type_id(&vty)?;
-                let res = self.builder.gen_id();
-                // Scope is IdScope — a reference to a uint constant, not a
-                // literal (spirv-val rejected the literal form).
-                let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
-                self.builder.emit(Instruction::new(
-                    spirv::Op::GroupNonUniformFAdd,
-                    Some(ty_id),
-                    Some(res),
-                    vec![
-                        Operand::IdRef(scope),
-                        Operand::LiteralBit32(spirv::GroupOperation::Reduce as u32),
-                        Operand::IdRef(v),
-                    ],
-                ));
-                Ok((res, vty))
-            }
-            "SubgroupFMax#" => {
-                let (v, vty) = match args.first() {
-                    Some(e) => self.emit_expr(e)?,
-                    None => return self.err("SubgroupFMax# needs an operand"),
-                };
-                if !self.builder.is_float_type(&vty)? {
-                    return self.err("SubgroupFMax# is a float reduction");
-                }
-                let ty_id = self.type_id(&vty)?;
-                let res = self.builder.gen_id();
-                let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
-                self.builder.emit(Instruction::new(
-                    spirv::Op::GroupNonUniformFMax,
-                    Some(ty_id),
-                    Some(res),
-                    vec![
-                        Operand::IdRef(scope),
-                        Operand::LiteralBit32(spirv::GroupOperation::Reduce as u32),
-                        Operand::IdRef(v),
-                    ],
-                ));
-                Ok((res, vty))
-            }
-            "SubgroupFMin#" => {
-                let (v, vty) = match args.first() {
-                    Some(e) => self.emit_expr(e)?,
-                    None => return self.err("SubgroupFMin# needs an operand"),
-                };
-                if !self.builder.is_float_type(&vty)? {
-                    return self.err("SubgroupFMin# is a float reduction");
-                }
-                let ty_id = self.type_id(&vty)?;
-                let res = self.builder.gen_id();
-                let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
-                self.builder.emit(Instruction::new(
-                    spirv::Op::GroupNonUniformFMin,
-                    Some(ty_id),
-                    Some(res),
-                    vec![
-                        Operand::IdRef(scope),
-                        Operand::LiteralBit32(spirv::GroupOperation::Reduce as u32),
-                        Operand::IdRef(v),
-                    ],
-                ));
-                Ok((res, vty))
-            }
-            "ShuffleDown#" => {
-                if args.len() < 2 {
-                    return self.err("ShuffleDown# needs (value, delta)");
-                }
-                let (v, vty) = self.emit_expr(&args[0])?;
-                let (delta, _delta_ty) = self.emit_expr(&args[1])?;
-                let ty_id = self.type_id(&vty)?;
-                let res = self.builder.gen_id();
-                let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
-                self.builder.emit(Instruction::new(
-                    spirv::Op::GroupNonUniformShuffleDown,
-                    Some(ty_id),
-                    Some(res),
-                    vec![
-                        Operand::IdRef(scope),
-                        Operand::IdRef(v),
-                        Operand::IdRef(delta),
-                    ],
-                ));
-                Ok((res, vty))
-            }
-            "ShuffleXor#" => {
-                if args.len() < 2 {
-                    return self.err("ShuffleXor# needs (value, lane_mask)");
-                }
-                let (v, vty) = self.emit_expr(&args[0])?;
-                let (mask, _mask_ty) = self.emit_expr(&args[1])?;
-                let ty_id = self.type_id(&vty)?;
-                let res = self.builder.gen_id();
-                let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
-                self.builder.emit(Instruction::new(
-                    spirv::Op::GroupNonUniformShuffleXor,
-                    Some(ty_id),
-                    Some(res),
-                    vec![
-                        Operand::IdRef(scope),
-                        Operand::IdRef(v),
-                        Operand::IdRef(mask),
-                    ],
-                ));
-                Ok((res, vty))
+            // Subgroup family (reduces, shuffles, ballot, broadcast) — split
+            // out to keep this dispatcher readable; see emit_subgroup_intrinsic.
+            "SubgroupFAdd#" | "SubgroupFMax#" | "SubgroupFMin#" | "ShuffleDown#"
+            | "ShuffleXor#" | "SubgroupBallot#" | "SubgroupBroadcast#" => {
+                self.emit_subgroup_intrinsic(name, args)
             }
             "Exp#" => {
                 let (x, xty) = match args.first() {
@@ -1080,6 +1116,20 @@ impl<'a> FnLowerer<'a> {
                 let ty_id = self.type_id(&xty)?;
                 let res = self.builder.glsl_fabs(ty_id, x);
                 Ok((res, xty))
+            }
+            "Fma#" => {
+                if args.len() < 3 {
+                    return self.err("Fma# needs (a, b, c)");
+                }
+                let (a, aty) = self.emit_expr(&args[0])?;
+                let (b, _bty) = self.emit_expr(&args[1])?;
+                let (c, _cty) = self.emit_expr(&args[2])?;
+                if !self.builder.is_float_type(&aty)? {
+                    return self.err("Fma# is a float intrinsic");
+                }
+                let ty_id = self.type_id(&aty)?;
+                let res = self.builder.glsl_fma(ty_id, a, b, c);
+                Ok((res, aty))
             }
             "GetGlobalId#" | "GetLocalId#" => {
                 let dim = match args.first() {

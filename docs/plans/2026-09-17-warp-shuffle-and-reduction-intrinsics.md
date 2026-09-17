@@ -1,139 +1,230 @@
-# Warp Shuffle & Reduction Intrinsics + Exp# Generalization
+# Warp Shuffle, Reduction & Vote Intrinsics — Phase 2
 
 **Date:** 2026-09-17
 **Status:** Active
-**Motivation:** Flash attention requires warp-level reductions (row-max, row-sum) and fast exp for softmax. These are GPU-unique hardware primitives that cannot be expressed in pure `.bv` code — they must be compiler intrinsics. Exp# is broken on LLVM/interpreter and needs generalization over float types.
+**Depends on:** Phase 1 (commit `d9501df3`) — ShuffleDown#, ShuffleXor#, SubgroupFAdd#, SubgroupFMax#, SubgroupFMin#, Exp# fixes
+**Motivation:** Flash attention requires fused multiply-add for intermediate accumulators, warp ballot for lane predicates, lane-index broadcast for cross-lane data exchange, and warp-level max/min reductions on PTX. These are GPU-unique hardware primitives that cannot be expressed in pure `.bv` code.
 
 ---
 
-## What we're adding
+## Phase 1 — COMPLETED (commit d9501df3)
 
-### New intrinsics (GPU-unique hardware primitives)
-
-| Intrinsic | Signature | PTX | SPIR-V | LLVM (CPU) |
-|-----------|-----------|-----|--------|------------|
-| `ShuffleDown#(val, delta) -> val` | `(T, Int) -> T` | `shfl.down.sync 0xFFFFFFFF, val, delta, 31` | `OpGroupNonUniformShuffleDown` | No-op (identity for single-lane) |
-| `ShuffleXor#(val, lane_mask) -> val` | `(T, Int) -> T` | `shfl.xor.sync 0xFFFFFFFF, val, lane_mask, 31` | `OpGroupNonUniformShuffleXor` | No-op (identity for single-lane) |
-| `SubgroupFMax#(v) -> Float` | `(Float) -> Float` | `red.max.s32` pattern (PTX lacks direct subgroup max; use shared memory + shuffles) | `OpGroupNonUniformFMax` | No-op (identity for single-lane) |
-| `SubgroupFMin#(v) -> Float` | `(Float) -> Float` | Same as above | `OpGroupNonUniformFMin` | No-op (identity for single-lane) |
-
-### Exp# generalization
-
-| Backend | Current | After |
-|---------|---------|-------|
-| Interpreter | **Missing entirely** | Add `Exp#` with `arg_as_f64` + `.exp()` |
-| LLVM | **Missing** — falls through to broken `emit_external_call` | Add `"Exp"` to `is_float_unary` match → emits `@llvm.exp.f64`/`@llvm.exp.f32` |
-| SPIR-V | Already generic | No change |
-| Webstack | **Missing** from supported ops | Add `"Exp#"` to supported set |
-| Type signature | `Native("Float")` hardcoded | Keep `Native("Float")` — same as Sqrt#/Sin#/Cos# |
+| Intrinsic | Signature | Status |
+|-----------|-----------|--------|
+| `ShuffleDown#(val, delta) -> val` | `(T, Int) -> T` | Done — PTX + SPIR-V |
+| `ShuffleXor#(val, lane_mask) -> val` | `(T, Int) -> T` | Done — PTX + SPIR-V |
+| `SubgroupFAdd#(v) -> Float` | `(Float) -> Float` | Done — SPIR-V (PTX pending) |
+| `SubgroupFMax#(v) -> Float` | `(Float) -> Float` | Done — SPIR-V (PTX pending) |
+| `SubgroupFMin#(v) -> Float` | `(Float) -> Float` | Done — SPIR-V (PTX pending) |
+| `Exp#(x) -> Float` | Generic float | Done — all backends |
 
 ---
 
-## Files to modify
+## Phase 2 — THIS PLAN
 
-### New intrinsics — each needs changes in 4-5 files:
+### New intrinsics
+
+| Intrinsic | Signature | PTX (sm_80+) | SPIR-V | LLVM (CPU) | Interpreter |
+|-----------|-----------|--------------|--------|------------|-------------|
+| `Fma#(a, b, c) -> val` | `(Float, Float, Float) -> Float` | `fma.rn.f32` | `GLSL.std.450 Fma` | `@llvm.fma.f32` / `@llvm.fma.f64` | `a.mul_add(b, c)` |
+| `SubgroupBallot#(pred) -> mask` | `(Bool) -> Int` | `vote.sync.ballot.b32 %out, %pred, 0xFFFFFFFF` | `OpGroupNonUniformBallot` → extract `.x` → cast to Int | Return 1 | Return 1 |
+| `SubgroupBroadcast#(val, lane) -> val` | `(T, Int) -> T` | `shfl.sync.idx.b32 %out, %val, %lane, 0x1F, 0xFFFFFFFF` | `OpGroupNonUniformBroadcast` | Return val | Return val |
+
+### PTX reductions for existing intrinsics
+
+| Intrinsic | PTX emission |
+|-----------|-------------|
+| `SubgroupFMax#(v)` | `redux.sync.max.f32 %out, %v, 0xFFFFFFFF` (sm_80+, register-only) |
+| `SubgroupFMin#(v)` | `redux.sync.min.f32 %out, %v, 0xFFFFFFFF` (sm_80+, register-only) |
+
+**Note on `redux.sync`:** Register-only warp reduction. No shared memory needed. Requires sm_80+. All PTX targets sm_86 (verified in `general.rs:154`).
+
+---
+
+## Files to modify per intrinsic
+
+### Fma# — 9 files
 
 | File | Change |
 |------|--------|
-| `src/intrinsic_signatures.rs` | Add 4 signature arms + `REGISTERED_INTRINSICS` entries |
-| `src/backend/spirv/normalizer.rs` | Add 4 to `build_supported_ops()` |
-| `src/backend/spirv/lower.rs` | Add 4 match arms in `emit_intrinsic_call()` |
-| `src/backend/ptx/general.rs` | Add intrinsic call emission (currently no Call handling) |
-| `src/analysis/accel.rs` | Add 4 to `expr_is_pure()` |
-| `src/backend/llvm/normalizer.rs` | Do NOT add (GPU-only) |
+| `src/intrinsic_signatures.rs` | Add signature `("Fma#", params vec![(a, Float), (b, Float), (c, Float)], ReturnKind::Native("Float"))` + add to `REGISTERED_INTRINSICS` + add to test list |
+| `src/interpreter/intrinsics.rs` | Add `"Fma#"` arm: `arg_as_f64(args, 0)?, arg_as_f64(args, 1)?, arg_as_f64(args, 2)?` → `a.mul_add(b, c)` |
+| `src/backend/llvm/intrinsics.rs` | Add `is_float_ternary` match for "Fma" → `@llvm.fma.f32`/`@llvm.fma.f64` (3 args) |
+| `src/backend/llvm/normalizer.rs` | Add "Fma" to `STANDARD_OPS` |
+| `src/backend/spirv/lower.rs` | Add `"Fma#"` arm: emit 3 args, call `builder.glsl_fma(ty_id, a, b, c)` |
+| `src/backend/spirv/normalizer.rs` | Add "Fma#" to `build_supported_ops()` |
+| `src/backend/ptx/general.rs` | Add `"Fma#"` in `emit_intrinsic_call`: emit 3 args, `fma.rn.f32 %out, %a, %b, %c` |
+| `src/analysis/accel.rs` | Add `"Fma#"` to `expr_is_pure()` |
+| `docs/reference/MASTER-SYNTAX-REFERENCE.md` | Add `Fma#` to math section |
 
-### Exp# fixes — 4 files:
+### SubgroupBallot# — 9 files
 
 | File | Change |
 |------|--------|
-| `src/intrinsic_signatures.rs` | No change (already registered) |
-| `src/interpreter/intrinsics.rs` | Add `"Exp#"` arm |
-| `src/backend/llvm/intrinsics.rs` | Add `"Exp"` to `is_float_unary` match |
-| `src/backend/llvm/normalizer.rs` | Add `"Exp"` to `STANDARD_OPS` |
-| `src/backend/webstack/normalizer.rs` | Add `"Exp#"` to supported ops |
+| `src/intrinsic_signatures.rs` | Add signature `("SubgroupBallot#", params vec![(pred, Bool)], ReturnKind::Native("Int"))` + list + test |
+| `src/interpreter/intrinsics.rs` | Add arm: return `Ok(i64_to_bits(1))` |
+| `src/backend/spirv/lower.rs` | Add arm: `OpGroupNonUniformBallot` with Subgroup scope → extract component `.x` via `OpCompositeExtract` → cast u32 to Int via `OpUConvert` |
+| `src/backend/spirv/normalizer.rs` | Add |
+| `src/backend/ptx/general.rs` | Add in `emit_intrinsic_call`: `vote.sync.ballot.b32 %out, %pred, 0xFFFFFFFF` |
+| `src/analysis/accel.rs` | Add to purity |
+| `docs/reference/MASTER-SYNTAX-REFERENCE.md` | Add to GPU section |
+
+### SubgroupBroadcast# — 9 files
+
+| File | Change |
+|------|--------|
+| `src/intrinsic_signatures.rs` | Add signature `("SubgroupBroadcast#", params vec![], ReturnKind::Inferred)` + list + test |
+| `src/interpreter/intrinsics.rs` | Add arm: return `args.first().cloned()` (identity) |
+| `src/backend/spirv/lower.rs` | Add arm: `OpGroupNonUniformBroadcast` with Subgroup scope |
+| `src/backend/spirv/normalizer.rs` | Add |
+| `src/backend/ptx/general.rs` | Add in `emit_intrinsic_call`: `shfl.sync.idx.b32 %out, %val, %lane, 0x1F, 0xFFFFFFFF` |
+| `src/analysis/accel.rs` | Add to purity |
+| `docs/reference/MASTER-SYNTAX-REFERENCE.md` | Add to GPU section |
+
+### SubgroupFMax# / SubgroupFMin# — PTX (1 file)
+
+| File | Change |
+|------|--------|
+| `src/backend/ptx/general.rs` | Add in `emit_intrinsic_call`: `redux.sync.max.f32 %out, %v, 0xFFFFFFFF` / `redux.sync.min.f32 ...` |
+
+### Docs — 2 files
+
+| File | Change |
+|------|--------|
+| `docs/reference/MASTER-SYNTAX-REFERENCE.md` | Add Fma#, SubgroupBallot#, SubgroupBroadcast# |
+| `docs/architecture/intrinsics-vs-stdlib.md` | Update GPU subgroup row with new intrinsics |
 
 ---
 
-## Implementation order
+## SPIR-V emission details
 
-1. **Exp# fixes** (smallest, unblocks everything else)
-   - Interpreter: add missing arm
-   - LLVM: add to `is_float_unary` + `STANDARD_OPS`
-   - Webstack: add to supported ops
-   - Test: `cargo test --lib`
+### SubgroupBallot# — composite extract pattern
 
-2. **SubgroupFMax# / SubgroupFMin#** (follows existing SubgroupFAdd# pattern exactly)
-   - Signatures, SPIR-V emission, accel purity
-   - PTX: shared memory reduction pattern
-   - Test: `cargo test --lib`
+```rust
+// 1. Create uvec4 type
+let u32_ty = self.builder.u32_type();
+let uvec4_ty = self.builder.type_vector(u32_ty, 4);
 
-3. **ShuffleDown# / ShuffleXor#** (new pattern — no existing reference)
-   - Signatures, SPIR-V emission, accel purity
-   - PTX: `shfl.down.sync` / `shfl.xor.sync` emission
-   - Test: `cargo test --lib`
+// 2. Emit ballot
+let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+let ballot = self.builder.group_non_uniform_ballot(uvec4_ty, res, scope, pred);
 
-4. **PTX intrinsic dispatch** (prerequisite for intrinsics in PTX kernels)
-   - Add `Call` handling to `general.rs` for intrinsic calls
-   - Currently the general emitter only handles `Identifier`, `Decimal`, `Float`, `Index`, `BinaryOp`, `UnaryOp`
+// 3. Extract .x component (lanes 0–31)
+let x_idx = self.builder.u32_const(0);
+let x_comp = self.builder.extract_dynamic(u32_ty, ballot, x_idx);
 
-5. **Docs update** (architecture docs)
-   - `docs/architecture/intrinsics-vs-stdlib.md` — add new intrinsics
-   - `docs/architecture/agent-reference.md` — add new intrinsics to reference table
+// 4. Cast u32 → i64 (Briev Int)
+let int_ty = self.type_id(&Type::int())?;
+let result = self.builder.u_convert(int_ty, x_comp);
+```
+
+### SubgroupBroadcast# — direct op
+
+```rust
+let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+let res = self.builder.gen_id();
+self.builder.emit(Instruction::new(
+    spirv::Op::GroupNonUniformBroadcast,
+    Some(ty_id),
+    Some(res),
+    vec![
+        Operand::IdRef(scope),
+        Operand::IdRef(v),
+        Operand::IdRef(lane),
+    ],
+));
+```
+
+### Fma# — GLSL.std.450
+
+```rust
+let ty_id = self.type_id(&vty)?;
+let res = self.builder.glsl_fma(ty_id, a, b, c);
+```
+
+---
+
+## LLVM emission details
+
+### Fma# — ternary float intrinsic
+
+New `is_float_ternary` category (after `is_float_unary`):
+
+```rust
+let is_float_ternary = matches!(op_name, "Fma");
+if is_float_ternary {
+    let llvm_name = op_name.to_lowercase(); // "fma"
+    let (float_suffix, float_llvm_ty, ret_ty) = match llvm_ty.as_str() {
+        "double" => ("f64", "double", Type::float64()),
+        _ => ("f32", "float", Type::float()),
+    };
+    writeln!(out, "{}{} = call {} @llvm.{}.{}({} {}, {} {}, {} {})",
+        indent, v, float_llvm_ty, llvm_name, float_suffix,
+        float_llvm_ty, arg_regs[0].name,
+        float_llvm_ty, arg_regs[1].name,
+        float_llvm_ty, arg_regs[2].name).ok();
+    return BTypedRegister { name: v.to_string(), ty: ret_ty };
+}
+```
 
 ---
 
 ## PTX emission details
 
-### ShuffleDown#
+### Fma#
 
 ```ptx
-shfl.down.sync.b32 %out, %val, %delta, 31;
-// For f32: shfl.down.sync.b32
-// For f16: pack into u32, shuffle, unpack
+fma.rn.f32 %out, %a, %b, %c;
 ```
 
-Mask `0xFFFFFFFF` = all lanes participate. Width `31` = max delta.
-
-### ShuffleXor#
+### SubgroupBallot#
 
 ```ptx
-shfl.xor.sync.b32 %out, %val, %mask, 31;
+vote.sync.ballot.b32 %out, %pred, 0xFFFFFFFF;
+```
+
+### SubgroupBroadcast#
+
+```ptx
+shfl.sync.idx.b32 %out, %val, %lane, 0x1F, 0xFFFFFFFF;
 ```
 
 ### SubgroupFMax# / SubgroupFMin#
 
-PTX doesn't have a direct subgroup max/min. Implementation:
-1. Each lane writes its value to shared memory
-2. `bar.sync 0`
-3. Tree reduction in shared memory using `max.f32` / `min.f32`
-4. Read result from lane 0
-
-This is slower than a warp shuffle reduction but correct. For flash attention, the SPIR-V path is the primary target; PTX can be optimized later with `red.max.s32` patterns or cooperative groups.
-
-### LLVM CPU fallback
-
-For single-lane CPU execution, all shuffles are identity (return the input value). The LLVM backend emits:
-```llvm
-%out = add <ty> %val, 0  ; no-op
+```ptx
+redux.sync.max.f32 %out, %v, 0xFFFFFFFF;
+redux.sync.min.f32 %out, %v, 0xFFFFFFFF;
 ```
+
+---
+
+## Implementation order
+
+1. **Fma#** — all backends (interpreter, LLVM, SPIR-V, PTX, accel, signatures)
+2. **SubgroupBallot#** — all backends
+3. **SubgroupBroadcast#** — all backends
+4. **SubgroupFMax#/Min# PTX** — add `redux.sync` emission to `emit_intrinsic_call`
+5. **Docs** — MASTER-SYNTAX-REFERENCE.md + intrinsics-vs-stdlib.md
+6. **Test** — `cargo test --lib`
+7. **Praetor** — changed files
 
 ---
 
 ## Risk assessment
 
-- **Low risk**: Exp# fixes — purely additive, existing patterns to follow
-- **Low risk**: SubgroupFMax/Min — exact same pattern as SubgroupFAdd#
-- **Medium risk**: ShuffleDown/Xor — new pattern, but PTX and SPIR-V have well-documented instructions
-- **Medium risk**: PTX intrinsic dispatch — the general emitter needs a new code path for `Expr::Call`
-- **No risk**: Doc updates — purely additive
+- **Low risk**: Fma# — follows exact same pattern as Sqrt#/Sin#/Exp# for unary; ternary is trivial extension
+- **Low risk**: SubgroupFMax#/Min# PTX — single `redux.sync` instruction, no shared memory
+- **Medium risk**: SubgroupBallot# SPIR-V — requires composite extract + type cast (uvec4 → u32 → i64)
+- **Low risk**: SubgroupBroadcast# — direct `OpGroupNonUniformBroadcast`, straightforward
 
 ---
 
 ## Success criteria
 
-- `cargo test --lib` passes (all existing tests + new intrinsic tests)
-- Exp# works on all backends (interpreter, LLVM, SPIR-V)
-- SubgroupFMax#/Min# emit correct SPIR-V
-- ShuffleDown#/Xor# emit correct PTX and SPIR-V
-- CPU fallback is identity (no-op) for shuffles
-- Praetor on all changed files: no new diagnostics
+- `cargo test --lib` passes (2269+ tests)
+- Fma# emits correct PTX (`fma.rn.f32`), SPIR-V (`GLSL.std.450 Fma`), LLVM (`@llvm.fma.f32`)
+- SubgroupBallot# emits correct PTX (`vote.sync.ballot.b32`) and SPIR-V (`OpGroupNonUniformBallot`)
+- SubgroupBroadcast# emits correct PTX (`shfl.sync.idx.b32`) and SPIR-V (`OpGroupNonUniformBroadcast`)
+- SubgroupFMax#/Min# emit `redux.sync.max/min.f32` on PTX
+- CPU fallback: Fma# uses `mul_add`, ballot returns 1, broadcast returns val
+- Praetor on all changed files: no NEW diagnostics

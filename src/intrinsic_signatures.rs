@@ -115,6 +115,8 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
         "Floor#" => Some(Signature { name: "Floor#", parameters: vec![], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
         "Exp#"   => Some(Signature { name: "Exp#",   parameters: vec![], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
         "Pow#"   => Some(Signature { name: "Pow#",   parameters: vec![], return_kind: ReturnKind::Inferred, observable: false, variadic: false }),
+        // 2026-09-17: fused multiply-add — single-instruction `a*b+c` on GPU.
+        "Fma#"   => Some(Signature { name: "Fma#",   parameters: vec![("a", Type::float()), ("b", Type::float()), ("c", Type::float())], return_kind: ReturnKind::Native("Float"), observable: false, variadic: false }),
 
         // ── Runtime (observable) ────────────────────────────────────
         // 2026-07-19: GetEnv#/GetEnvInt# moved to stdlib env.bv via ! plugin.
@@ -182,6 +184,9 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
         // for lane-to-lane data exchange. CPU fallback is identity (single-lane).
         "ShuffleDown#"   => Some(Signature { name: "ShuffleDown#",   parameters: vec![], return_kind: ReturnKind::Inferred, observable: false, variadic: false }),
         "ShuffleXor#"    => Some(Signature { name: "ShuffleXor#",    parameters: vec![], return_kind: ReturnKind::Inferred, observable: false, variadic: false }),
+        // 2026-09-17: warp vote/broadcast — GPU-unique lane coordination primitives.
+        "SubgroupBallot#"    => Some(Signature { name: "SubgroupBallot#",    parameters: vec![("pred", Type::bool_())], return_kind: ReturnKind::Native("Int"), observable: false, variadic: false }),
+        "SubgroupBroadcast#" => Some(Signature { name: "SubgroupBroadcast#", parameters: vec![], return_kind: ReturnKind::Inferred, observable: false, variadic: false }),
         "GetGlobalSize#" => Some(Signature { name: "GetGlobalSize#", parameters: vec![], return_kind: ReturnKind::Native("Int"), observable: false, variadic: false }),
         "GetLocalId#"    => Some(Signature { name: "GetLocalId#",    parameters: vec![], return_kind: ReturnKind::Native("Int"), observable: false, variadic: false }),
         "WorkgroupSize#" => Some(Signature { name: "WorkgroupSize#", parameters: vec![], return_kind: ReturnKind::Native("Int"), observable: false, variadic: false }),
@@ -511,7 +516,7 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     "Get#", "Insert#",
     "Count#", "At#", "Slice#", "InsertAt#", "ExtractFrom#", "CopyFrom#",
     "GetGlobalId#", "GetGlobalSize#", "GetLocalId#", "WorkgroupSize#",
-    "GetGroupId#", "GetNumGroups#", "Dims#", "SubgroupFAdd#", "SubgroupFMax#", "SubgroupFMin#", "ShuffleDown#", "ShuffleXor#", "Barrier#",
+    "GetGroupId#", "GetNumGroups#", "Dims#", "SubgroupFAdd#", "SubgroupFMax#", "SubgroupFMin#", "ShuffleDown#", "ShuffleXor#", "SubgroupBallot#", "SubgroupBroadcast#", "Barrier#",
     "Spawn#", "SpawnWithOutput#", "SetEnv#", "GetCwd#", "ChDir#",
     "AddressOf#", "CallPtr#", "TaskCall#", "Asm#",
     "CancelRequested#", "ClearCancel#",
@@ -537,7 +542,7 @@ mod tests {
             "Add#", "Sub#", "Mul#", "Div#", "Rem#", "Neg#", "Abs#",
             "BitReverse#", "Popcount#", "LeadingZeros#", "TrailingZeros#",
             "Eq#", "Neq#", "Lt#", "Gt#", "Le#", "Ge#",
-            "Sqrt#", "Sin#", "Cos#", "Fabs#", "Ceil#", "Floor#", "Exp#", "Pow#",
+    "Sqrt#", "Sin#", "Cos#", "Fabs#", "Ceil#", "Floor#", "Exp#", "Pow#", "Fma#",
             "Malloc#", "Alloc#", "Free#", "Load#", "Store#", "Copy#", "Fill#",
             "VolatileLoad#", "VolatileStore#",
             "Concat#", "Length#", "ToInt#", "ToFloat#", "ToString#",
@@ -548,7 +553,7 @@ mod tests {
             // 2026-09-01 (plan 2026-09-01-cooperative-row-kernels): the
         // SPIR-V backend lowers this to OpGroupNonUniformFAdd (subgroup
         // scope) — bit-exact fixed-tree reduction, no atomics.
-        "SubgroupFAdd#", "SubgroupFMax#", "SubgroupFMin#", "ShuffleDown#", "ShuffleXor#",        "GetGlobalId#", "GetGlobalSize#", "GetLocalId#", "WorkgroupSize#",
+        "SubgroupFAdd#", "SubgroupFMax#", "SubgroupFMin#", "ShuffleDown#", "ShuffleXor#", "SubgroupBallot#", "SubgroupBroadcast#",        "GetGlobalId#", "GetGlobalSize#", "GetLocalId#", "WorkgroupSize#",
             "GetGroupId#", "GetNumGroups#", "Dims#",
             "AddressOf#", "SysCall#", "SysConf#",
             "AtomicLoad#", "AtomicStore#", "AtomicCas#", "AtomicXchg#", "AtomicAdd#", "Fence#",

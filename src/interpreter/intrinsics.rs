@@ -250,6 +250,20 @@ pub fn execute_intrinsic(
             let x = arg_as_f64(args, 0)?;
             Ok(f64_to_bits(x))
         }
+        "Fma#" => {
+            let a = arg_as_f64(args, 0)?;
+            let b = arg_as_f64(args, 1)?;
+            let c = arg_as_f64(args, 2)?;
+            Ok(f64_to_bits(a.mul_add(b, c)))
+        }
+        "SubgroupBallot#" => {
+            // CPU fallback: single lane, always satisfied → bitmask 1
+            Ok(i64_to_bits(1))
+        }
+        "SubgroupBroadcast#" => {
+            // CPU fallback: identity (single lane, val is from lane 0)
+            args.first().cloned().ok_or_else(|| RuntimeError::HeapError("broadcast needs a value".into()))
+        }
 
         // ── Memory (observable) ─────────────────────────────────────
         "Malloc#" => {

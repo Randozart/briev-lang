@@ -278,6 +278,22 @@ pub fn emit_intrinsic_call(
         return BTypedRegister { name: v.to_string(), ty: ret_ty };
     }
 
+    // 2026-09-17: Fma# — ternary float intrinsic (a*b+c, single rounding).
+    let is_float_ternary = matches!(op_name, "Fma");
+    if is_float_ternary && arg_regs.len() >= 3 {
+        let llvm_name = op_name.to_lowercase();
+        let (float_suffix, float_llvm_ty, ret_ty) = match llvm_ty.as_str() {
+            "double" => ("f64", "double", Type::float64()),
+            _ => ("f32", "float", Type::float()),
+        };
+        writeln!(out, "{}{} = call {} @llvm.{}.{}({} {}, {} {}, {} {})",
+            indent, v, float_llvm_ty, llvm_name, float_suffix,
+            float_llvm_ty, arg_regs[0].name,
+            float_llvm_ty, arg_regs[1].name,
+            float_llvm_ty, arg_regs[2].name).ok();
+        return BTypedRegister { name: v.to_string(), ty: ret_ty };
+    }
+
     // 2026-07-20: Simple hardcoded template dispatch for standard ops.
     // Replaces the old TOML config lookup. Phase 3 will replace this with
     // proper hashword category dispatch from op signatures.

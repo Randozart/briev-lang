@@ -220,7 +220,7 @@ Tagged `[legacy]` = registered/unreachable or emitter-only; see notes.
 ### Float math (→ native Float)
 
 `Sqrt#` `Sin#` `Cos#` `Fabs#` `Ceil#` `Floor#` `Exp#`
-`Pow#` `[fall-to-external @Pow]`
+`Pow#` `Fma#` `[fall-to-external @Pow]`
 
 ### Printing / IO
 
@@ -250,7 +250,7 @@ Generative op-member forms (dispatch to declared `op` members):
 ### GPU / SIMT (SPIR-V target; fall to external call on LLVM)
 
 `GetGlobalId#` `GetGlobalSize#` `GetLocalId#` `WorkgroupSize#` `GetGroupId#`
-`GetNumGroups#` `Dims#` `SubgroupFAdd#` `SubgroupFMax#` `SubgroupFMin#` `ShuffleDown#` `ShuffleXor#` `Barrier#`
+`GetNumGroups#` `Dims#` `SubgroupFAdd#` `SubgroupFMax#` `SubgroupFMin#` `ShuffleDown#` `ShuffleXor#` `SubgroupBallot#` `SubgroupBroadcast#` `Barrier#`
 
 ### Process & environment
 
