@@ -64,6 +64,8 @@ struct Gen<'a> {
     freg: u32,
     rreg: u32,
     rdreg: u32,
+    preg: u32,
+    label: u32,
     /// The register holding gid (the index_var's binding).
     gid: &'static str,
     /// index_var name -> register (locals too).
@@ -84,6 +86,8 @@ impl<'a> Gen<'a> {
             freg: 0,
             rreg: 3,
             rdreg: 2,
+            preg: 2,
+            label: 0,
             gid: "%r1",
             regs: std::collections::HashMap::new(),
         }
@@ -105,6 +109,28 @@ impl<'a> Gen<'a> {
         let n = self.rdreg;
         self.rdreg += 1;
         format!("%rd{}", n)
+    }
+
+    fn fresh_p(&mut self) -> String {
+        let n = self.preg;
+        self.preg += 1;
+        format!("%p{}", n)
+    }
+
+    /// A loop bound: a literal or a module const (the same literal-const
+    /// contract the SPIR-V cooperative path enforces).
+    fn const_int(&self, e: &Expr) -> Result<i64, String> {
+        match e {
+            Expr::Decimal(n) => Ok(*n),
+            Expr::Identifier(name) => match self.consts.get(name) {
+                Some(Expr::Decimal(n)) => Ok(*n),
+                _ => Err(format!(
+                    "ptx general: loop bound '{}' must be a literal or module const",
+                    name
+                )),
+            },
+            _ => Err("ptx general: loop bound must be a literal or module const".into()),
+        }
     }
 
     fn field_off(&self, name: &str) -> Option<u64> {
@@ -174,6 +200,45 @@ impl<'a> Gen<'a> {
                 }
                 Ok(())
             }
+            Statement::Foreach { item, list, body: loop_body } => {
+                // 2026-09-17 (M2a): bounded loops in the general PTX kernel —
+                // `foreach c in start..end` lowers to a counter register +
+                // label/branch pair; the item binds like a local so body
+                // index expressions resolve through `regs`. Registers are
+                // function-scoped in PTX, so loop-carried locals (the
+                // softmax's running max/sum) persist across iterations.
+                let Expr::Range { start, end, .. } = list.as_ref() else {
+                    return Err(
+                        "ptx general: foreach over a non-range collection — kernel loops iterate `start..end` ranges only"
+                            .into(),
+                    );
+                };
+                let start_v = self.const_int(start)?;
+                let end_v = self.const_int(end)?;
+                if end_v <= start_v {
+                    return Ok(()); // empty range — no code
+                }
+                let cnt = self.fresh_r();
+                decl.push_str(&format!("    .reg .u32 {};\n", cnt));
+                let pred = self.fresh_p();
+                decl.push_str(&format!("    .reg .pred {};\n", pred));
+                let lab = self.label;
+                self.label += 1;
+                let head = format!("L{}_head", lab);
+                let tail = format!("L{}_end", lab);
+                body.push_str(&format!("    mov.u32 {}, {};\n", cnt, start_v));
+                body.push_str(&format!("{}:\n", head));
+                body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, cnt, end_v));
+                body.push_str(&format!("    @{} bra {};\n", pred, tail));
+                self.regs.insert(item.clone(), cnt.clone());
+                for s in loop_body {
+                    self.emit_stmt(s, decl, body)?;
+                }
+                body.push_str(&format!("    add.u32 {}, {}, 1;\n", cnt, cnt));
+                body.push_str(&format!("    bra {};\n", head));
+                body.push_str(&format!("{}:\n", tail));
+                Ok(())
+            }
             other => Err(format!(
                 "ptx general: statement {:?} outside the elementwise surface\n  \
                  why: the S5-lite emitter handles assignments, lets, and the \
@@ -212,6 +277,15 @@ impl<'a> Gen<'a> {
             return Ok(());
         }
         if let Expr::Identifier(name) = lhs {
+            // 2026-09-17 (M2a): a LOCAL assignment writes the bound register
+            // (PTX registers are function-scoped — the value persists across
+            // loop iterations). State-scalar writes keep the global store.
+            // The index_var is host-owned (the runner fast-forwards it) and
+            // never appears here.
+            if let Some(reg) = self.regs.get(name).cloned() {
+                self.emit_expr(rhs, &reg, decl, body)?;
+                return Ok(());
+            }
             let off = self.field_off(name).ok_or_else(|| {
                 format!("ptx general: scalar '{}' not in layout", name)
             })?;
@@ -255,22 +329,48 @@ impl<'a> Gen<'a> {
         &mut self,
         idx: &Expr,
         out: &str,
-        _decl: &mut String,
+        decl: &mut String,
         body: &mut String,
     ) -> Result<(), String> {
-        // index_var → gid; a literal → the value.
+        // u32 index arithmetic: identifiers (gid, loop vars, consts) and
+        // Add/Sub/Mul trees — `i * NKV + c` from the row kernels.
         match idx {
             Expr::Identifier(name) => {
-                let reg = self
-                    .regs
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| format!("ptx general: index var '{}' not bound", name))?;
-                body.push_str(&format!("    mov.u32 {}, {};\n", out, reg));
-                Ok(())
+                if let Some(reg) = self.regs.get(name).cloned() {
+                    body.push_str(&format!("    mov.u32 {}, {};\n", out, reg));
+                    return Ok(());
+                }
+                match self.consts.get(name) {
+                    Some(Expr::Decimal(n)) => {
+                        body.push_str(&format!("    mov.u32 {}, {};\n", out, n));
+                        Ok(())
+                    }
+                    _ => Err(format!("ptx general: index var '{}' not bound", name)),
+                }
             }
             Expr::Decimal(n) => {
                 body.push_str(&format!("    mov.u32 {}, {};\n", out, n));
+                Ok(())
+            }
+            Expr::BinaryOp(kind, l, r) => {
+                let lr = self.fresh_r();
+                let rr = self.fresh_r();
+                decl.push_str(&format!("    .reg .u32 {};\n", lr));
+                decl.push_str(&format!("    .reg .u32 {};\n", rr));
+                self.emit_index(l, &lr, decl, body)?;
+                self.emit_index(r, &rr, decl, body)?;
+                let op = match kind {
+                    crate::ast::BinaryOpKind::Add => "add.u32",
+                    crate::ast::BinaryOpKind::Sub => "sub.u32",
+                    crate::ast::BinaryOpKind::Mul => "mul.lo.u32",
+                    other => {
+                        return Err(format!(
+                            "ptx general: index arithmetic {:?} outside the supported surface (Add/Sub/Mul)",
+                            other
+                        ))
+                    }
+                };
+                body.push_str(&format!("    {} {}, {}, {};\n", op, out, lr, rr));
                 Ok(())
             }
             other => Err(format!(
@@ -290,12 +390,22 @@ impl<'a> Gen<'a> {
     ) -> Result<(), String> {
         match expr {
             Expr::Decimal(n) => {
-                body.push_str(&format!("    mov.f32 {}, {};\n", out, n));
+                // ptxas rejects integer literals in .f32 position — 0 -> 0.0
+                body.push_str(&format!("    mov.f32 {}, {}.0;\n", out, n));
             }
             Expr::Float(f) => {
                 body.push_str(&format!("    mov.f32 {}, {:e};\n", out, f));
             }
             Expr::Identifier(name) => {
+                // 2026-09-17 (M2a): a LOCAL (let-bound) reads its register.
+                // f32 locals only — the index var is u32 and lives in index
+                // positions (emit_index), never value positions.
+                if let Some(reg) = self.regs.get(name).cloned() {
+                    if reg.starts_with("%f") {
+                        body.push_str(&format!("    mov.f32 {}, {};\n", out, reg));
+                        return Ok(());
+                    }
+                }
                 // Module const (baked) or a state scalar field.
                 if let Some(Expr::Decimal(n)) = self.consts.get(name) {
                     body.push_str(&format!("    mov.f32 {}, {};\n", out, n));
@@ -334,7 +444,7 @@ impl<'a> Gen<'a> {
                     BinaryOpKind::Add => "add.f32",
                     BinaryOpKind::Sub => "sub.f32",
                     BinaryOpKind::Mul => "mul.f32",
-                    BinaryOpKind::Div => "div.f32",
+                    BinaryOpKind::Div => "div.rn.f32",
                     BinaryOpKind::Mod => "fmod.f32",
                     _ => {
                         return Err(format!(
@@ -382,9 +492,13 @@ impl<'a> Gen<'a> {
                     return Err("Exp# takes exactly 1 argument".into());
                 }
                 let xreg = self.fresh_f();
-                decl.push_str(&format!("    .reg .f32 {};\n", xreg));
+                let treg = self.fresh_f();
+                decl.push_str(&format!("    .reg .f32 {}, {};\n", xreg, treg));
                 self.emit_expr(&args[0], &xreg, decl, body)?;
-                body.push_str(&format!("    exp.approx.f32 {}, {};\n", out, xreg));
+                // 2026-09-17 ptxas correction: there is NO exp.approx.f32 in
+                // PTX — exp(x) = ex2(x * log2(e)). log2(e) = 0f3FB8AA3B.
+                body.push_str(&format!("    mul.f32 {}, {}, 0f3FB8AA3B;\n", treg, xreg));
+                body.push_str(&format!("    ex2.approx.f32 {}, {};\n", out, treg));
                 Ok(())
             }
             "Max#" | "Min#" => {
@@ -451,43 +565,52 @@ impl<'a> Gen<'a> {
             decl.push_str(&format!("    .reg .f32 {};\n", xreg));
             self.emit_expr(&args[0], &xreg, decl, body)?;
             body.push_str(&format!("    setp.ne.f32 {}, {}, 0.0;\n", preg, xreg));
-            body.push_str(&format!("    vote.sync.ballot.b32 {}, {}, 0xFFFFFFFF;\n", out, preg));
+            // vote.sync.ballot: verified against sm_86 ptxas (2026-09-17)
+            body.push_str(&format!("    vote.sync.ballot.b32 {}, {}, 0xffffffff;\n", out, preg));
             return Ok(());
         }
         // Shuffle family: (f32 value, compile-time-constant lane selector).
-        // Down/Xor clamp width 0x1F; idx (broadcast) selects an absolute lane.
+        // 2026-09-17 ptxas-verified forms on sm_86 (CUDA 13.4):
+        //   shfl.sync.{down|bfly|idx}.b32 d, a, b, clamp, membermask;
+        // — .sync BEFORE the mode, FIVE operands (clamp required), b32-only
+        // registers (f32 values punning through mov.b32), xor = bfly.
         if args.len() != 2 {
             return Err(format!("{} takes (value, lane_selector)", name));
         }
         let vreg = self.fresh_f();
         let sreg = self.fresh_r();
-        decl.push_str(&format!("    .reg .f32 {};\n", vreg));
-        decl.push_str(&format!("    .reg .u32 {};\n", sreg));
+        let ra = self.fresh_r();
+        let rb = self.fresh_r();
+        let fout = self.fresh_f();
+        decl.push_str(&format!("    .reg .f32 {}, {};\n", vreg, fout));
+        decl.push_str(&format!("    .reg .u32 {}, {}, {};\n", sreg, ra, rb));
         self.emit_expr(&args[0], &vreg, decl, body)?;
         if let Expr::Decimal(n) = &args[1] {
             body.push_str(&format!("    mov.u32 {}, {};\n", sreg, n));
         } else {
             return Err(format!("{} lane selector must be a compile-time constant", name));
         }
-        match name {
-            "ShuffleDown#" => body.push_str(&format!(
-                "    shfl.down.sync.b32 {}, {}, {}, 0xFFFFFFFF;\n",
-                out, vreg, sreg
-            )),
-            "ShuffleXor#" => body.push_str(&format!(
-                "    shfl.xor.sync.b32 {}, {}, {}, 0xFFFFFFFF;\n",
-                out, vreg, sreg
-            )),
-            _ => body.push_str(&format!(
-                "    shfl.sync.idx.b32 {}, {}, {}, 0x1F, 0xFFFFFFFF;\n",
-                out, vreg, sreg
-            )),
-        }
+        let mode = match name {
+            "ShuffleDown#" => "down",
+            "ShuffleXor#" => "bfly",
+            _ => "idx",
+        };
+        body.push_str(&format!("    mov.b32 {}, {};\n", ra, vreg));
+        body.push_str(&format!(
+            "    shfl.sync.{}.b32 {}, {}, {}, 0x1f, 0xffffffff;\n",
+            mode, rb, ra, sreg
+        ));
+        body.push_str(&format!("    mov.b32 {}, {};\n", fout, rb));
+        body.push_str(&format!("    mov.f32 {}, {};\n", out, fout));
         Ok(())
     }
 
-    /// Warp-wide float reduction via redux.sync (sm_80+, register-only —
-    /// no shared memory). FAdd/FMax/FMin are identical modulo the op.
+    /// Warp-wide float reduction. 2026-09-17 correction: `redux.sync.*.f32`
+    /// is NOT supported on sm_86 (integer redux only until sm_100) — the
+    /// phase-1 plan's redux finding was wrong for float. The sm_86 form is
+    /// the butterfly shuffle tree: 5 rounds (16/8/4/2/1), f32 punning
+    /// through b32, combine in registers. Butterfly gives EVERY lane the
+    /// warp total (the SPIR-V Reduce semantics the intrinsics promise).
     fn emit_warp_reduce(
         &mut self,
         name: &str,
@@ -503,11 +626,30 @@ impl<'a> Gen<'a> {
         decl.push_str(&format!("    .reg .f32 {};\n", vreg));
         self.emit_expr(&args[0], &vreg, decl, body)?;
         let op = match name {
-            "SubgroupFMax#" => "max",
-            "SubgroupFMin#" => "min",
-            _ => "add",
+            "SubgroupFMax#" => "max.f32",
+            "SubgroupFMin#" => "min.f32",
+            _ => "add.f32",
         };
-        body.push_str(&format!("    redux.sync.{}.f32 {}, {}, 0xFFFFFFFF;\n", op, out, vreg));
+        // f32 <-> b32 scratch, reused across rounds.
+        let fa = self.fresh_f();
+        let ra = self.fresh_r();
+        let rb = self.fresh_r();
+        decl.push_str(&format!("    .reg .f32 {};\n", fa));
+        decl.push_str(&format!("    .reg .u32 {}, {};\n", ra, rb));
+        body.push_str(&format!("    mov.f32 {}, {};\n", fa, vreg));
+        for offset in [16u32, 8, 4, 2, 1] {
+            body.push_str(&format!("    mov.b32 {}, {};\n", ra, fa));
+            body.push_str(&format!(
+                "    shfl.sync.bfly.b32 {}, {}, {}, 0x1f, 0xffffffff;\n",
+                rb, ra, offset
+            ));
+            // fa = fa op rb  — combine on the f32 side
+            let fb = self.fresh_f();
+            decl.push_str(&format!("    .reg .f32 {};\n", fb));
+            body.push_str(&format!("    mov.b32 {}, {};\n", fb, rb));
+            body.push_str(&format!("    {} {}, {}, {};\n", op, fa, fa, fb));
+        }
+        body.push_str(&format!("    mov.f32 {}, {};\n", out, fa));
         Ok(())
     }
 
