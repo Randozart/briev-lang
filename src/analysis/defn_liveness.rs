@@ -159,6 +159,14 @@ impl<'a> Builder<'a> {
                 if t.is_reactive {
                     self.roots.insert(t.name.clone());
                 }
+                // 2026-09-17 (same class as the stdout-flush gate fix): an
+                // async txn makes the program reactive-unbounded — the main
+                // tail yields through __wait_for_trigger__ (loop_engine's
+                // no-wake/no-exit branch). The call is backend-emitted, so
+                // liveness must root its helper alongside the txn.
+                if t.is_async {
+                    self.roots.insert("__wait_for_trigger__".into());
+                }
             }
             TopLevel::Export(e) => {
                 // ABI surface: the exported defn/txn is always emitted.
