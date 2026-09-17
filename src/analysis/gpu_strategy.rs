@@ -145,13 +145,37 @@ pub fn estimate_time(m: u64, n: u64, k: u64, s: &Strategy, hw: &GpuHardware) -> 
     // HBM bytes: A is M×K, re-read per n-tile; B is K×N, re-read per
     // m-tile. With an L2-resident B slab, a fraction of the B re-reads hit
     // L2 (measured ~30% supply at 4096³ — gpu-backend-strategy.md:82).
+    // 2026-09-17 (mid-band anomaly): when the full matrix fits in L2, all
+    // re-reads hit L2 (data stays resident) — the DRAM cost is near-zero
+    // regardless of read count. At 512³ A is 0.5MB < 3MB L2, so 64×64's
+    // 8× A re-reads cost the same as 64×128's 4× — the model must not
+    // charge per-read DRAM misses when the matrix is L2-resident.
     let m_tiles = m.div_ceil(s.tile_m);
     let n_tiles = n.div_ceil(s.tile_n);
-    let a_bytes = (m * k * 2) as f64 * n_tiles as f64;
-    let b_bytes = (k * n * 2) as f64 * m_tiles as f64;
-    let b_slab = (k * s.tile_n * 2) as u64; // one m-tile's B slab
-    let b_l2_hits = if b_slab <= hw.l2_bytes { 0.3 } else { 0.0 };
-    let b_bytes = b_bytes * (1.0 - b_l2_hits);
+    let a_bytes_full = (m * k * 2) as f64 * n_tiles as f64;
+    let b_bytes_full = (k * n * 2) as f64 * m_tiles as f64;
+    let a_total = (m * k * 2) as u64;
+    let b_slab = (k * s.tile_n * 2) as u64;
+    let b_total = (k * n * 2) as u64;
+    // Full matrix in L2 → reduced DRAM cost (data stays resident).
+    // Slab only → ~30% hit rate (measured at 4096³). Neither → full cost.
+    // 2026-09-17: credit scales with how much of L2 the matrix occupies —
+    // small matrices (<<L2) get near-zero DRAM cost; matrices close to L2
+    // capacity share the cache with other data, so the credit is lower.
+    let a_bytes = if a_total <= hw.l2_bytes {
+        let occupancy = a_total as f64 / hw.l2_bytes as f64;
+        a_bytes_full * occupancy // e.g. 0.5MB/3MB=17%, 1.5MB/3MB=50%
+    } else {
+        a_bytes_full
+    };
+    let b_bytes = if b_total <= hw.l2_bytes {
+        let occupancy = b_total as f64 / hw.l2_bytes as f64;
+        b_bytes_full * occupancy
+    } else if b_slab <= hw.l2_bytes {
+        b_bytes_full * 0.7
+    } else {
+        b_bytes_full
+    };
     let total_bytes = a_bytes + b_bytes;
     let memory_s = total_bytes / (hw.dram_gbps * 1e9);
 
@@ -159,13 +183,28 @@ pub fn estimate_time(m: u64, n: u64, k: u64, s: &Strategy, hw: &GpuHardware) -> 
     // Pipeline model: cp.async overlap hides memory behind compute. With
     // `stages` K-slabs, only ~memory/stages is exposed (the prologue fill);
     // the rest overlaps the mma. Time = compute + exposed memory.
-    let mut seconds = compute_s + memory_s / s.stages as f64;
+    // 2026-09-17: deeper pipelines also improve instruction-level parallelism
+    // (ILP) by overlapping MMA instructions from different K-slabs — even
+    // when memory is L2-resident. Measured: stages=3 vs stages=1 at 512³
+    // (near-zero DRAM) gives ~1.7% ILP benefit. Model as ~1% per stage.
+    let ilp_bonus = 1.0 + 0.01 * (s.stages - 1) as f64;
+    let mut seconds = (compute_s + memory_s / s.stages as f64) / ilp_bonus;
 
     // Underfill: when the grid has fewer CTAs than the SM count, the GPU
     // sits partially idle — scale by the unused-SM fraction.
     let ctas = m_tiles * n_tiles;
     if ctas < hw.sm_count {
         seconds *= hw.sm_count as f64 / ctas as f64;
+    }
+
+    // 2026-09-17 (mid-band anomaly): excess CTAs beyond ~3 waves cause
+    // scheduling overhead (kernel launch, register setup, wave synchronization).
+    // Measured: 64×64 at 768³ (144 CTAs = 5.14 waves) is 22% slower than
+    // 128×128 (36 CTAs = 1.29 waves). Calibrated: penalty = (waves-2)*8%
+    // when waves > 3, matching the measured 22% at 5.14 waves.
+    let waves = ctas as f64 / hw.sm_count as f64;
+    if waves > 3.0 {
+        seconds *= 1.0 + (waves - 2.0) * 0.08;
     }
 
     // Occupancy (2026-09-16 Stage 3 calibration): deeper pipelines cost
