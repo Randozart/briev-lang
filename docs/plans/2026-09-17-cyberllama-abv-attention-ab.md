@@ -22,11 +22,24 @@ hard architectural constraint that reorders M2a/M2b:
   **panics** on a defn-liveness error (`__stdout_flush` unreached).
 
 Revised order (riskiest unknown first):
-1. **M2.0 — CUDA path end-to-end**: fix the `--backend gpu` defn-liveness
-   panic; make the standalone runner embed PTX for the CUDA driver (SPIR-V
-   blob stays for Vulkan); `pairs.abv` runs and verifies on device through
-   `cuModuleLoadData`. *This is the M4 foundation — without it there is no
-   integration path at all.*
+1. **M2.0 — CUDA path end-to-end** — **FOUNDATION PROVEN (2026-09-17, same
+   day)**: the `--backend gpu` defn-liveness panic is fixed (flush tail now
+   gated on liveness); the CUDA chain was validated end-to-end with a
+   hand-written pairs kernel: PTX text → `ptxas -arch=sm_86` clean →
+   `briev_dev_cuda` loaded it via `cuModuleLoadData` (JIT regs=8) → launch
+   against the projection buffer → correct device-computed values
+   downloaded (`fx = -1.00` at all probed indices). Key mechanics learned:
+   the CUDA driver looks the function up as `"main"` inside the module;
+   `[reg+reg]` addressing is illegal in ld/st operands (fold the base into
+   the address register).
+   **Remaining wiring (mechanical)**: (a) `BrievKernelDesc`
+   (`lib/runtime/briev_accel_rt.c`) gains a PTX blob pointer+len;
+   (b) `briev_dev_cuda.c` prefers the PTX blob; (c) `emit_runner`
+   (src/backend/spirv/runner.rs:500) embeds `kp{i}` arrays from a new
+   `RunnerKernel.ptx` field; (d) **the deep part**: a PTX producer for
+   runner-eligible `.abv` nodes — the ptx-tier general emitter
+   (src/backend/ptx/general.rs) is the engine, wiring it into the .abv
+   build pipeline is the open work.
 2. **M2a — softmax row kernel on the PTX tier**: cooperative row shape
    (work-item = row, lane = strided position — the dot-product precedent
    from plan 2026-09-01), three phases (max → exp-sum → normalize) with
