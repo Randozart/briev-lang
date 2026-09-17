@@ -7,6 +7,35 @@
 
 ---
 
+## Execution order (amended 2026-09-17, post device-gate study)
+
+The study of `src/backend/spirv/kernel.rs` + the M0 runner artifacts exposed a
+hard architectural constraint that reorders M2a/M2b:
+
+- **GGML integration must run on the CUDA path.** ggml's device allocations
+  are CUDA buffers; a Vulkan-launched kernel cannot consume them. The
+  exported `briev_flash_attn_f16` must therefore launch through
+  `briev_dev_cuda` (`cuModuleLoadData` on PTX text), not the SPIR-V runner.
+- The standalone runner embeds **SPIR-V only** (`k0` blob = SPIR-V magic) —
+  the CUDA device driver ("S2: compiler emits PTX text") never receives a
+  blob. `brievc build --backend gpu` — the PTX-tier build — currently
+  **panics** on a defn-liveness error (`__stdout_flush` unreached).
+
+Revised order (riskiest unknown first):
+1. **M2.0 — CUDA path end-to-end**: fix the `--backend gpu` defn-liveness
+   panic; make the standalone runner embed PTX for the CUDA driver (SPIR-V
+   blob stays for Vulkan); `pairs.abv` runs and verifies on device through
+   `cuModuleLoadData`. *This is the M4 foundation — without it there is no
+   integration path at all.*
+2. **M2a — softmax row kernel on the PTX tier**: cooperative row shape
+   (work-item = row, lane = strided position — the dot-product precedent
+   from plan 2026-09-01), three phases (max → exp-sum → normalize) with
+   subgroup reductions between: PTX `redux.sync.max/add.f32` +
+   `shfl`-style phase sync; SPIR-V twin via `emit_coop_reduce_store`
+   machinery. Detected from explicit three-pass source (honest shape, no
+   hidden treatment).
+3. M2b / M3 / M4 / M5 as written above.
+
 ## Goal
 
 Answer with numbers: **does replacing CyberLlama's flash-attention kernels
