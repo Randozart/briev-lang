@@ -669,12 +669,28 @@ impl<'a> Parser<'a> {
                         self.expect(Token::RBracket)?;
                         expr = Expr::Slice { array: Box::new(expr), start: Some(Box::new(first)), end, stride };
                     } else {
-                        // Simple index: arr[idx]
-                        if self.eat(&Token::Comma) {
-                            return self.reject_multidim();
+                        // Index: arr[idx] or the 2D/3D sugar arr[i, j, ...]
+                        // (2026-09-17, plan 2026-09-17-row-2d-index-desugar).
+                        // Multi-index parses to the internal marker call
+                        // __briev_multiindex__(base, i0, ...) — the desugar
+                        // pass (analysis/desugar.rs) rewrites it to plain
+                        // row-major 1D arithmetic before typecheck/analysis.
+                        let mut idxs = vec![first];
+                        while self.eat(&Token::Comma) {
+                            idxs.push(self.parse_expression()?);
                         }
                         self.expect(Token::RBracket)?;
-                        expr = Expr::Index(Box::new(expr), Box::new(first));
+                        expr = if idxs.len() == 1 {
+                            Expr::Index(Box::new(expr), Box::new(idxs.pop().unwrap()))
+                        } else {
+                            let mut args = vec![expr];
+                            args.extend(idxs);
+                            Expr::Call(
+                                crate::analysis::desugar::MULTIINDEX_MARKER.to_string(),
+                                args,
+                                None,
+                            )
+                        };
                     }
                 }
             } else if self.eat(&Token::Not) {

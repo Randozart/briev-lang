@@ -1,5 +1,6 @@
 pub mod address_space;
 pub mod casing;
+pub mod desugar;
 pub mod defn_liveness;
 pub mod electronics;
 pub mod strict;
