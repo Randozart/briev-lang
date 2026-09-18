@@ -94,6 +94,23 @@ expression position on PTX (`emit_lane_intrinsic` reachable in loop
 bodies) + SPIR-V (group ops with correct loop convergence); interpreter
 semantics per M2a. Additive match arms only; `_ => None` fallthroughs
 untouched. | 2273 tests + M3 matrix + **baseline A/B clean** |
+
+**P1 sharpened (2026-09-18, post probe `12a45506`):** the nested
+foreach-reduction shape already LOWERS CORRECTLY on both lanes
+(probe_fused_shape.abv: worst_rel=3.63e-06) — the emitters are not the
+blocker. P1 is the *lane-mapping capability*: the analysis detects
+"serial outer foreach + inner reduction foreach" and the cooperative
+emitters map the INNER loop across lanes with an in-loop cross-lane
+combine (per outer iteration); serial fallback stays exactly as
+proven. Serial alternatives are analytically dead: (h,d) work items
+re-read all of K per item through a 3 MB L2; (h) work items need
+D-wide acc state. P1 is therefore required for the fused kernel's
+performance, and its scope is: (a) analysis detection of the nested
+shape, (b) PTX: reuse emit_warp_reduce inside the outer loop body,
+(c) SPIR-V: nested structured loop (begin/end_structured_loop
+reusable), (d) in-loop SubgroupFAdd# on both — position-independent
+PTX text, OpGroupNonUniform* needs no extra convergence on Subgroup
+scope.
 | **P2** | `examples/gpu/attention_decode_fused.abv` (one node), M3-style
 correctness vs the same CPU reference, then the microbench gate vs
 `test-backend-ops` rows | beat f16-3-kernel AND competitive with 58 µs |

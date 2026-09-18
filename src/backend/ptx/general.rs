@@ -320,6 +320,137 @@ pub fn emit_general_ptx(
     g.emit(shape)
 }
 
+/// 2026-09-18 (P1, plan fused-f16-decode-node): a lane-mapped inner
+/// reduction found in a foreach body — [Let acc = 0, Foreach d in range {
+/// acc = acc + <mul> }, ..rest reading acc..]. The matcher is structural
+/// (no type names): the inner loop must be a SINGLE self-referencing Add
+/// assign over a constant range divisible by the warp width (uniform
+/// convergence for the in-loop butterfly), and the accumulator must be
+/// consumed by the statements after it.
+struct LaneReductionPlan {
+    /// accumulator name (`p` in the probe)
+    acc: String,
+    /// inner loop item (`d`)
+    inner_item: String,
+    inner_start: i64,
+    inner_end: i64,
+    /// the inner loop's single assign (lowered with d bound to the lane
+    /// strided register)
+    inner_body: Vec<Statement>,
+}
+
+impl LaneReductionPlan {
+    /// Find the lane-mappable inner foreach: returns (position in `body`,
+    /// plan). The position lets the emitter lower preceding statements
+    /// normally before switching to the lane-mapped form.
+    fn match_body(
+        body: &[Statement],
+        consts: &std::collections::HashMap<String, Expr>,
+    ) -> Option<(usize, LaneReductionPlan)> {
+        // Range bounds resolve through the module consts (foreach d in
+        // 0..D carries the IDENTIFIER D at this stage).
+        let const_int = |e: &Expr| -> Option<i64> {
+            match e {
+                Expr::Decimal(v) => Some(*v),
+                Expr::Identifier(n) => consts.get(n).and_then(|v| {
+                    match v {
+                        Expr::Decimal(w) => Some(*w),
+                        _ => None,
+                    }
+                }),
+                _ => None,
+            }
+        };
+        for (pos, stmt) in body.iter().enumerate() {
+            let Statement::Foreach {
+                item,
+                list,
+                body: inner,
+            } = stmt
+            else {
+                continue;
+            };
+            if inner.len() != 1 {
+                continue;
+            }
+            // Self-referencing Add assign: acc = acc + <something>.
+            let Statement::Assign(Expr::Identifier(acc), rhs) = &inner[0] else {
+                continue;
+            };
+            let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, l, r) = rhs else {
+                continue;
+            };
+            let recurses = matches!(l.as_ref(), Expr::Identifier(n) if n == acc)
+                || matches!(r.as_ref(), Expr::Identifier(n) if n == acc);
+            if !recurses {
+                continue;
+            }
+            // Constant range, warp-divisible (uniform lane iterations).
+            let Expr::Range {
+                start,
+                end,
+                inclusive,
+            } = list.as_ref()
+            else {
+                continue;
+            };
+            let (Some(s), Some(e)) = (const_int(start), const_int(end)) else {
+                continue;
+            };
+            let span = if *inclusive { e - s + 1 } else { e - s };
+            if span <= 0 || span % 32 != 0 {
+                continue;
+            }
+            // The accumulator must be consumed AFTER the loop (otherwise
+            // the mapping is unobservable and the serial path is fine).
+            let consumed = body[pos + 1..]
+                .iter()
+                .any(|st| stmt_mentions_ident(st, acc));
+            if !consumed {
+                continue;
+            }
+            return Some((
+                pos,
+                LaneReductionPlan {
+                    acc: acc.clone(),
+                    inner_item: item.clone(),
+                    inner_start: s,
+                    inner_end: e,
+                    inner_body: inner.clone(),
+                },
+            ));
+        }
+        None
+    }
+}
+
+/// Does the statement mention this identifier anywhere (shallow but sound
+/// for the consumption check: assignments and lets cover the surface).
+fn stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
+    fn expr_mentions(e: &Expr, name: &str) -> bool {
+        match e {
+            Expr::Identifier(n) => n == name,
+            Expr::BinaryOp(_, l, r) => expr_mentions(l, name) || expr_mentions(r, name),
+            Expr::UnaryOp(_, x) => expr_mentions(x, name),
+            Expr::Index(o, i) => expr_mentions(o, name) || expr_mentions(i, name),
+            Expr::Call(_, args, _) => args.iter().any(|a| expr_mentions(a, name)),
+            Expr::Cast(x, _) => expr_mentions(x, name),
+            _ => false,
+        }
+    }
+    match stmt {
+        Statement::Assign(lhs, rhs) => {
+            expr_mentions(lhs, name) || expr_mentions(rhs, name)
+        }
+        Statement::Let {
+            name: n, expr, ..
+        } => {
+            n == name || expr.as_ref().is_some_and(|e| expr_mentions(e, name))
+        }
+        _ => false,
+    }
+}
+
 struct Gen<'a> {
     layout: &'a SsboLayout,
     consts: &'a std::collections::HashMap<String, Expr>,
@@ -471,8 +602,7 @@ impl<'a> Gen<'a> {
         decl: &mut String,
         body: &mut String,
     ) -> Result<(), String> {
-        match stmt {
-            Statement::Assign(lhs, rhs) => self.emit_assign(lhs, rhs, decl, body),
+        match stmt {            Statement::Assign(lhs, rhs) => self.emit_assign(lhs, rhs, decl, body),
             Statement::Let { name, expr, ty, .. } => {
                 // A pure local: lower the initializer into a register of the
                 // DECLARED class — Int locals are u32 with integer ops (the
@@ -512,6 +642,23 @@ impl<'a> Gen<'a> {
                 if end_v <= start_v {
                     return Ok(()); // empty range — no code
                 }
+                // 2026-09-18 (P1, plan fused-f16-decode-node): a LANE-MAPPED
+                // inner reduction. Shape: outer body = [.., Let acc = 0,
+                // Foreach d in range { acc = acc + a[..d..] * b[..d..] },
+                // ..rest reading acc..]. The serial fallback computes the
+                // full dot REDUNDANTLY on every lane (probe: 71.5 ms at
+                // bitnet NKV=4096 — 20 blocks x 64 lanes x full-D serial);
+                // this path strides the inner loop across lanes (base =
+                // lane-in-warp, step = warp) and combines per outer
+                // iteration with the butterfly reduce. Sequential semantics
+                // preserved: the butterfly hands EVERY lane the warp total,
+                // so `rest` reads exactly what the serial form produced.
+                // Gated on (end-start) % 32 == 0 for uniform convergence
+                // (all lanes iterate the same count) — anything else keeps
+                // the serial fallback. tid&31 because BLOCK=64 spans two
+                // warps and a raw tid base would double-count d across
+                // them; both warps then compute the same full total.
+                let lane_plan = LaneReductionPlan::match_body(loop_body, self.consts);
                 let cnt = self.fresh_r();
                 decl.push_str(&format!("    .reg .u32 {};\n", cnt));
                 let pred = self.fresh_p();
@@ -525,8 +672,25 @@ impl<'a> Gen<'a> {
                 body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, cnt, end_v));
                 body.push_str(&format!("    @{} bra {};\n", pred, tail));
                 self.regs.insert(item.clone(), cnt.clone());
-                for s in loop_body {
-                    self.emit_stmt(s, decl, body)?;
+                match &lane_plan {
+                    Some((split, r)) => {
+                        // Statements before the inner foreach lower
+                        // normally (the `let acc = 0` zero-init); the lane
+                        // reduction replaces the inner foreach; statements
+                        // after it consume the reduced accumulator.
+                        for s in &loop_body[..*split] {
+                            self.emit_stmt(s, decl, body)?;
+                        }
+                        self.emit_lane_reduction(r, decl, body)?;
+                        for s in &loop_body[split + 1..] {
+                            self.emit_stmt(s, decl, body)?;
+                        }
+                    }
+                    None => {
+                        for s in loop_body {
+                            self.emit_stmt(s, decl, body)?;
+                        }
+                    }
                 }
                 body.push_str(&format!("    add.u32 {}, {}, 1;\n", cnt, cnt));
                 body.push_str(&format!("    bra {};\n", head));
@@ -541,6 +705,86 @@ impl<'a> Gen<'a> {
                 std::mem::discriminant(other)
             )),
         }
+    }
+
+    /// Emit the lane-mapped inner reduction: acc starts at its Let value,
+    /// lanes stride the inner range (base = tid&31, step = warp), then the
+    /// butterfly reduce hands every lane the total. `rest` rebinds acc to
+    /// the reduced register and lowers normally.
+    fn emit_lane_reduction(
+        &mut self,
+        r: &LaneReductionPlan,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        // zero init (the Let statement's initializer is Decimal(0) by the
+        // matcher's contract — emit it as a plain mov).
+        let acc = self.fresh_f();
+        decl.push_str(&format!("    .reg .f32 {};\n", acc));
+        body.push_str(&format!("    mov.f32 {}, 0.0e0;\n", acc));
+
+        // lane-strided inner loop over d: base = tid.x & 31, step 32.
+        let d = self.fresh_r();
+        let pred = self.fresh_p();
+        decl.push_str(&format!("    .reg .u32 {};\n", d));
+        decl.push_str(&format!("    .reg .pred {};\n", pred));
+        let lab = self.label;
+        self.label += 1;
+        let head = format!("L{}_head", lab);
+        let tail = format!("L{}_end", lab);
+        body.push_str("    mov.u32 %r2, %tid.x;\n");
+        body.push_str("    and.b32 %r2, %r2, 31;\n");
+        body.push_str(&format!("    mov.u32 {}, %r2;\n", d));
+        body.push_str(&format!("{}:\n", head));
+        body.push_str(&format!(
+            "    setp.ge.u32 {}, {}, {};\n",
+            pred, d, r.inner_end
+        ));
+        body.push_str(&format!("    @{} bra {};\n", pred, tail));
+        self.regs.insert(r.inner_item.clone(), d.clone());
+        self.regs.insert(r.acc.clone(), acc.clone());
+        // The dot body: exactly one self-referencing Add assign (matcher
+        // contract).
+        if let Statement::Assign(lhs, rhs) = &r.inner_body[0] {
+            self.emit_assign(lhs, rhs, decl, body)?;
+        }
+        body.push_str(&format!("    add.u32 {}, {}, 32;\n", d, d));
+        body.push_str(&format!("    bra {};\n", head));
+        body.push_str(&format!("{}:\n", tail));
+
+        // Butterfly reduce: every lane ends with the warp total.
+        let total = self.fresh_f();
+        decl.push_str(&format!("    .reg .f32 {};\n", total));
+        let reduced = self.emit_butterfly_add(acc, total, decl, body)?;
+        self.regs.insert(r.acc.clone(), reduced);
+        Ok(())
+    }
+
+    /// Butterfly sum over the warp: 5 shfl.bfly rounds, f32 punned through
+    /// b32. Returns the register holding the full total (every lane).
+    fn emit_butterfly_add(
+        &mut self,
+        v: String,
+        out: String,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<String, String> {
+        let mut fa = v;
+        for offset in [16u32, 8, 4, 2, 1] {
+            let fb = self.fresh_f();
+            let tb = self.fresh_r();
+            decl.push_str(&format!("    .reg .f32 {};\n", fb));
+            decl.push_str(&format!("    .reg .u32 {};\n", tb));
+            body.push_str(&format!("    mov.b32 %r2, {};\n", fa));
+            body.push_str(&format!(
+                "    shfl.sync.bfly.b32 {}, %r2, {}, 0x1f, 0xffffffff;\n",
+                tb, offset
+            ));
+            body.push_str(&format!("    mov.b32 {}, {};\n", fb, tb));
+            body.push_str(&format!("    add.f32 {}, {}, {};\n", fa, fa, fb));
+        }
+        body.push_str(&format!("    mov.f32 {}, {};\n", out, fa));
+        Ok(out)
     }
 
     fn emit_assign(

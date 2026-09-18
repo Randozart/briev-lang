@@ -1,19 +1,18 @@
 // P1 probe (plan 2026-09-18-fused-f16-decode-node): the fused decode shape —
-// serial outer loop over KV, LANE-MAPPED inner reduction per iteration.
-// NOT the real kernel: smallest expression of the nested-cooperative shape
-// (one head's worth of state, no online softmax yet). Question: what does
-// the analysis/emission do with an inner foreach-reduction inside a serial
-// outer loop?
+// serial outer loop over KV, inner foreach-reduction, sequential semantics.
+// Defaults to bitnet-real geometry so the serial form can be TIMED against
+// the 3-kernel composition (probe commitment: correctness proven in
+// 12a45506, this file is the perf measurement vehicle).
 import "std/types/float.bv";
 
 const D: Int = 128;
 const H: Int = 20;
-const NKV: Int = 256;
+const NKV: Int = 4096;
 const SCALE: Float = 0.08838834764831845;
 
 let w: Int = 0;
 let q: Float[2560];
-let k: Float[32768];
+let k: Float[2621440];
 let o: Float[20];
 
 async node fused [w < H][w == H] {
