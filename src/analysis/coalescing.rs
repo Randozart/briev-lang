@@ -34,8 +34,9 @@ enum Coeff {
     /// no dependence on the work item; carries the folded value so a
     /// multiplication can scale a stride (index j*D needs D's value)
     Constant(i64),
-    /// unprovable — suppresses diagnostics
-    Unknown,
+    /// unprovable — carries WHICH term defeated the affine proof (the
+    /// limits-of-proof report, G002: the honest boundary is visible)
+    Unknown(&'static str),
 }
 
 pub fn analyze_coalescing(
@@ -69,10 +70,18 @@ pub fn analyze_coalescing(
         });
         let mut loads: Vec<(String, Expr)> = Vec::new();
         collect_array_loads(&shape.kernel_stmts, &mut loads);
+        let mut unproven: HashMap<String, &'static str> = HashMap::new();
         for (field, idx) in &loads {
-            let coeff = stride_coeff(idx, shape, consts, &locals);
-            let Coeff::Stride(elems) = coeff else {
-                continue;
+            let elems = match stride_coeff(idx, shape, consts, &locals) {
+                Coeff::Stride(e) => e,
+                Coeff::Unknown(why) => {
+                    // Limits-of-proof report (F2, doctrine point 1): the
+                    // boundary of the analysis is visible, always on. One
+                    // reason per (kernel, field).
+                    unproven.entry(field.clone()).or_insert(why);
+                    continue;
+                }
+                Coeff::Constant(_) => continue,
             };
             if elems.abs() < 2 {
                 continue;
@@ -103,6 +112,28 @@ pub fn analyze_coalescing(
                 ))
                 .with_note(
                     "layout is part of the program's host contract; the compiler reports, the author decides",
+                );
+            out.push(d);
+        }
+        // Flush the limits-of-proof reports for this kernel (G002, Info):
+        // the analysis names what it could NOT prove, per field, with the
+        // defeating construct. Always on — the honest boundary is part of
+        // the output, not a debug mode.
+        for (field, why) in &unproven {
+            let mut d = Diagnostic::new(
+                "G002",
+                Severity::Info,
+                &format!("coalescing of field '{field}' in kernel '{name}' unproven"),
+            );
+            if let Some(s) = txn_span {
+                d = d.with_span(s);
+            }
+            d = d
+                .with_explanation(&format!(
+                    "the load index is not provably affine in the work-item counter: {why}"
+                ))
+                .with_note(
+                    "the compiler can neither confirm coalescing nor prove a defect here; this is the analysis limit, not a verified-clean bill",
                 );
             out.push(d);
         }
@@ -173,12 +204,6 @@ fn stride_coeff(
     consts: &HashMap<String, Expr>,
     locals: &HashMap<String, Expr>,
 ) -> Coeff {
-    // Defensive: accept either the bare index expression or the full
-    // `field[idx]` form — the stride question is about the index.
-    let idx = match idx {
-        Expr::Index(_, i) => i.as_ref(),
-        other => other,
-    };
     // Collect inner foreach items so they can be held at zero.
     let mut inner_items: Vec<String> = Vec::new();
     fn find_items(stmts: &[Statement], out: &mut Vec<String>) {
@@ -234,7 +259,7 @@ impl CoeffEnv<'_> {
                 Expr::BinaryOp(kind, l, r) => {
                     let a = ev(l, consts, locals, depth + 1)?;
                     let b = ev(r, consts, locals, depth + 1)?;
-                    use crate::ast::BinaryOpKind::{Add, Div, Mul, Sub};
+                    use crate::ast::BinaryOpKind::{Add, Div, Mod, Mul, Sub};
                     match kind {
                         Add => Some(a + b),
                         Sub => Some(a - b),
@@ -256,7 +281,7 @@ impl CoeffEnv<'_> {
         self.depth += 1;
         if self.depth > 16 {
             self.depth -= 1;
-            return Coeff::Unknown;
+            return Coeff::Unknown("analysis depth limit");
         }
         let out = self.coeff_inner(e);
         self.depth -= 1;
@@ -277,7 +302,7 @@ impl CoeffEnv<'_> {
                     if self.depth < 12 {
                         self.coeff(def)
                     } else {
-                        Coeff::Unknown
+                        Coeff::Unknown("local inlining depth limit")
                     }
                 } else {
                     // scalar state read or unknown name: uniform across
@@ -289,9 +314,10 @@ impl CoeffEnv<'_> {
             Expr::BinaryOp(kind, l, r) => {
                 let lc = self.coeff(l);
                 let rc = self.coeff(r);
-                use crate::ast::BinaryOpKind::{Add, Div, Mul, Sub};
+                use crate::ast::BinaryOpKind::{Add, Div, Mod, Mul, Sub};
                 match (kind, &lc, &rc) {
-                    (_, Coeff::Unknown, _) | (_, _, Coeff::Unknown) => Coeff::Unknown,
+                    (_, Coeff::Unknown(w), _) => Coeff::Unknown(w),
+                    (_, _, Coeff::Unknown(w)) => Coeff::Unknown(w),
                     (Add, a, b) => match (a, b) {
                         (Coeff::Stride(x), Coeff::Stride(y)) => Coeff::Stride(x + y),
                         (Coeff::Stride(x), Coeff::Constant(c)) => Coeff::Stride(x + c),
@@ -318,12 +344,17 @@ impl CoeffEnv<'_> {
                     // a broadcast term rather than a stride term). Value 0
                     // is the safe identity: it contributes no stride.
                     (Div, _, _) => Coeff::Constant(0),
-                    _ => Coeff::Unknown,
+                    // Modulo is locally affine (consecutive work items
+                    // advance the remainder by one until the wrap), so the
+                    // dividend's coefficient is the honest local stride.
+                    (Mod, l, _) => l.clone(),
+                    _ => Coeff::Unknown("unsupported index operator"),
                 }
             }
-            // div/mod in the AST surface straight to the run-constant view
             Expr::UnaryOp(_, x) => self.coeff(x),
-            _ => Coeff::Unknown,
+            Expr::Call(_, _, _) => Coeff::Unknown("intrinsic call result"),
+            Expr::Index(_, _) => Coeff::Unknown("nested buffer indexing"),
+            _ => Coeff::Unknown("unmodeled expression form"),
         }
     }
 }
@@ -452,17 +483,14 @@ mod tests {
             m
         };
         let c = stride_coeff(
-            &Expr::Index(
-                Box::new(id("k")),
-                Box::new(b(
+            &b(
+                BinaryOpKind::Add,
+                b(
                     BinaryOpKind::Add,
-                    b(
-                        BinaryOpKind::Add,
-                        b(BinaryOpKind::Mul, id("kh"), b(BinaryOpKind::Mul, id("D"), id("NKV"))),
-                        b(BinaryOpKind::Mul, id("j"), id("D")),
-                    ),
-                    id("d"),
-                )),
+                    b(BinaryOpKind::Mul, id("kh"), b(BinaryOpKind::Mul, id("D"), id("NKV"))),
+                    b(BinaryOpKind::Mul, id("j"), id("D")),
+                ),
+                id("d"),
             ),
             &s,
             &const_exprs(),
@@ -489,18 +517,62 @@ mod tests {
             m
         };
         let c = stride_coeff(
-            &Expr::Index(
-                Box::new(id("q")),
-                Box::new(b(
-                    BinaryOpKind::Add,
-                    b(BinaryOpKind::Mul, id("h"), id("D")),
-                    id("d_held"),
-                )),
+            &b(
+                BinaryOpKind::Add,
+                b(BinaryOpKind::Mul, id("h"), id("D")),
+                id("d_held"),
             ),
             &s,
             &const_exprs(),
             &locals,
         );
         assert_eq!(c, Coeff::Constant(0), "div-protected h must read as broadcast");
+    }
+
+    /// F2 limits-of-proof (plan coalesced-kv-memory-path): a load indexed
+    /// through ANOTHER buffer (`k[ii[j]]`) is not affine in the work item —
+    /// the analysis must NAME the defeat (G002) instead of staying silent.
+    /// Silence on the unprovable would overstate the analysis.
+    #[test]
+    fn nested_index_load_is_reported_unproven() {
+        let stmts = vec![
+            Statement::Foreach {
+                item: "j".into(),
+                list: Box::new(Expr::Range {
+                    start: Box::new(num(0)),
+                    end: Box::new(id("D")),
+                    inclusive: false,
+                }),
+                body: vec![Statement::Assign(
+                    id("acc"),
+                    b(
+                        BinaryOpKind::Add,
+                        id("acc"),
+                        Expr::Index(
+                            Box::new(id("k")),
+                            Box::new(Expr::Index(Box::new(id("ii")), Box::new(id("j")))),
+                        ),
+                    ),
+                )],
+            },
+        ];
+        let s = shape(stmts, "t");
+        let locals = {
+            let mut m = HashMap::new();
+            collect_locals_into(&s.kernel_stmts, &mut m);
+            m
+        };
+        // The k load's index is `ii[j]` — a nested buffer read.
+        let c = stride_coeff(
+            &Expr::Index(Box::new(id("ii")), Box::new(id("j"))),
+            &s,
+            &const_exprs(),
+            &locals,
+        );
+        assert_eq!(
+            c,
+            Coeff::Unknown("nested buffer indexing"),
+            "nested indexing must be reported as an analysis limit"
+        );
     }
 }
