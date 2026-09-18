@@ -426,6 +426,33 @@ impl LaneReductionPlan {
 
 /// Does the statement mention this identifier anywhere (shallow but sound
 /// for the consumption check: assignments and lets cover the surface).
+/// 2026-09-18 (M3 pipelining): the load operands of a reduction addend —
+/// every direct `field[idx]` node, in walk order, NOT recursing into a
+/// collected node (nested loads like `k[ii[d]]` stay inline; only the
+/// outer load pipelines). Each becomes a double-buffered register pair.
+fn collect_operand_loads(e: &Expr) -> Vec<Expr> {
+    let mut out = Vec::new();
+    fn walk(e: &Expr, out: &mut Vec<Expr>) {
+        match e {
+            Expr::Index(_, _) => out.push(e.clone()),
+            Expr::BinaryOp(_, l, r) => {
+                walk(l, out);
+                walk(r, out);
+            }
+            Expr::UnaryOp(_, x) => walk(x, out),
+            Expr::Cast(x, _) => walk(x, out),
+            Expr::Call(_, args, _) => {
+                for a in args {
+                    walk(a, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(e, &mut out);
+    out
+}
+
 fn stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
     fn expr_mentions(e: &Expr, name: &str) -> bool {
         match e {
@@ -465,6 +492,12 @@ struct Gen<'a> {
     gid: &'static str,
     /// index_var name -> register (locals too).
     regs: std::collections::HashMap<String, String>,
+    /// 2026-09-18 (M3 pipelining, plan coalesced-kv-memory-path): operand
+    /// loads pre-issued by the lane-reduction's software pipeline — key is
+    /// the operand's Debug form, value the register holding its value.
+    /// The Index arm checks this BEFORE emitting a load: the body consumes
+    /// registers, the pipeline schedule owns the loads.
+    pipelined: std::collections::HashMap<String, String>,
     /// 2026-09-18 (P0 f16 swap, plan fused-f16-decode-node): cast targets
     /// resolve through the casting graph (rule 19 — no type-name matching).
     universe: &'a crate::type_universe::TypeUniverse,
@@ -492,6 +525,7 @@ impl<'a> Gen<'a> {
             label: 0,
             gid: "%r1",
             regs: std::collections::HashMap::new(),
+            pipelined: std::collections::HashMap::new(),
             universe,
             int_bits,
             casting_graph: crate::casting::graph::CastingGraph::new(),
@@ -724,33 +758,127 @@ impl<'a> Gen<'a> {
         body.push_str(&format!("    mov.f32 {}, 0.0e0;\n", acc));
 
         // lane-strided inner loop over d: base = tid.x & 31, step 32.
-        let d = self.fresh_r();
+        let dcur = self.fresh_r();
+        let dnext = self.fresh_r();
         let pred = self.fresh_p();
-        decl.push_str(&format!("    .reg .u32 {};\n", d));
+        decl.push_str(&format!("    .reg .u32 {};\n", dcur));
+        decl.push_str(&format!("    .reg .u32 {};\n", dnext));
         decl.push_str(&format!("    .reg .pred {};\n", pred));
         let lab = self.label;
         self.label += 1;
         let head = format!("L{}_head", lab);
         let tail = format!("L{}_end", lab);
+
+        // ── M3 software pipelining (plan coalesced-kv-memory-path) ────
+        // The serial-fallback dot is LOAD-LATENCY bound: each iteration
+        // issues two global loads and stalls on the first (~500 cycles
+        // with 40 warps on the machine — nothing hides them). This
+        // schedule double-buffers: iteration i+1's operands are loaded
+        // BEFORE iteration i's FMA consumes the previous pair, so one
+        // load's latency is amortized per iteration instead of paid
+        // serially. The doctrine obligation is that the DEFAULT does
+        // this — no source change, no keyword.
+        //
+        // Shape (count = iterations, guaranteed >= 1 by the matcher):
+        //   load(cur, base)
+        //   head: if base+32*(i+1) >= end -> tail
+        //         load(next, dnext)        // always in-bounds here
+        //         body(cur)                // consumes pipelined regs
+        //         dcur = dnext; dnext += 32; cur <- next (mov per operand)
+        //         bra head
+        //   tail: body(cur)                // peeled final iteration
+        //   butterfly(acc)
+        let addend = match &r.inner_body[0] {
+            Statement::Assign(_, rhs) => rhs.clone(),
+            _ => unreachable!("matcher guarantees one Assign"),
+        };
+        let ops = collect_operand_loads(&addend);
+
         body.push_str("    mov.u32 %r2, %tid.x;\n");
         body.push_str("    and.b32 %r2, %r2, 31;\n");
-        body.push_str(&format!("    mov.u32 {}, %r2;\n", d));
-        body.push_str(&format!("{}:\n", head));
-        body.push_str(&format!(
-            "    setp.ge.u32 {}, {}, {};\n",
-            pred, d, r.inner_end
-        ));
-        body.push_str(&format!("    @{} bra {};\n", pred, tail));
-        self.regs.insert(r.inner_item.clone(), d.clone());
+        body.push_str(&format!("    mov.u32 {}, %r2;\n", dcur));
+        body.push_str(&format!("    add.u32 {}, {}, 32;\n", dnext, dcur));
+
         self.regs.insert(r.acc.clone(), acc.clone());
-        // The dot body: exactly one self-referencing Add assign (matcher
-        // contract).
-        if let Statement::Assign(lhs, rhs) = &r.inner_body[0] {
-            self.emit_assign(lhs, rhs, decl, body)?;
+        eprintln!("[lane-dbg] ops={} first_is_assign={}", ops.len(), matches!(&r.inner_body[0], Statement::Assign(_, _)));
+
+        if ops.is_empty() {
+            // No pipelineable loads — the plain loop (previous behavior).
+            body.push_str(&format!("{}:\n", head));
+            body.push_str(&format!(
+                "    setp.ge.u32 {}, {}, {};\n",
+                pred, dcur, r.inner_end
+            ));
+            body.push_str(&format!("    @{} bra {};\n", pred, tail));
+            self.regs.insert(r.inner_item.clone(), dcur.clone());
+            if let Statement::Assign(lhs, rhs) = &r.inner_body[0] {
+                self.emit_assign(lhs, rhs, decl, body)?;
+            }
+            body.push_str(&format!("    add.u32 {}, {}, 32;\n", dcur, dcur));
+            body.push_str(&format!("    bra {};\n", head));
+            body.push_str(&format!("{}:\n", tail));
+        } else {
+            // Per-operand double buffers.
+            let mut cur = Vec::with_capacity(ops.len());
+            let mut nxt = Vec::with_capacity(ops.len());
+            for _ in &ops {
+                let c = self.fresh_f();
+                let n = self.fresh_f();
+                decl.push_str(&format!("    .reg .f32 {}, {};\n", c, n));
+                cur.push(c);
+                nxt.push(n);
+            }
+
+            // Prologue: iteration 0's operands (index regs bound to dcur).
+            self.regs.insert(r.inner_item.clone(), dcur.clone());
+            for (op, creg) in ops.iter().zip(&cur) {
+                self.emit_expr(op, creg, decl, body)?;
+            }
+
+            body.push_str(&format!("{}:\n", head));
+            body.push_str(&format!(
+                "    setp.ge.u32 {}, {}, {};\n",
+                pred, dnext, r.inner_end
+            ));
+            body.push_str(&format!("    @{} bra {};\n", pred, tail));
+
+            // Next iteration's loads (index regs bound to dnext).
+            self.regs.insert(r.inner_item.clone(), dnext.clone());
+            for (op, nreg) in ops.iter().zip(&nxt) {
+                self.emit_expr(op, nreg, decl, body)?;
+            }
+
+            // Body: consumes the CURRENT registers via the pipelined map.
+            self.regs.insert(r.inner_item.clone(), dcur.clone());
+            for (op, creg) in ops.iter().zip(&cur) {
+                self.pipelined
+                    .insert(format!("{:?}", op), creg.clone());
+            }
+            if let Statement::Assign(lhs, rhs) = &r.inner_body[0] {
+                self.emit_assign(lhs, rhs, decl, body)?;
+            }
+            self.pipelined.clear();
+
+            // Advance + swap.
+            body.push_str(&format!("    mov.u32 {}, {};\n", dcur, dnext));
+            body.push_str(&format!("    add.u32 {}, {}, 32;\n", dnext, dnext));
+            for (creg, nreg) in cur.iter().zip(&nxt) {
+                body.push_str(&format!("    mov.f32 {}, {};\n", creg, nreg));
+            }
+            body.push_str(&format!("    bra {};\n", head));
+
+            // Peeled final iteration (no next load exists).
+            body.push_str(&format!("{}:\n", tail));
+            self.regs.insert(r.inner_item.clone(), dcur.clone());
+            for (op, creg) in ops.iter().zip(&cur) {
+                self.pipelined
+                    .insert(format!("{:?}", op), creg.clone());
+            }
+            if let Statement::Assign(lhs, rhs) = &r.inner_body[0] {
+                self.emit_assign(lhs, rhs, decl, body)?;
+            }
+            self.pipelined.clear();
         }
-        body.push_str(&format!("    add.u32 {}, {}, 32;\n", d, d));
-        body.push_str(&format!("    bra {};\n", head));
-        body.push_str(&format!("{}:\n", tail));
 
         // Butterfly reduce: every lane ends with the warp total.
         let total = self.fresh_f();
@@ -946,6 +1074,15 @@ impl<'a> Gen<'a> {
                 self.emit_ident_read(name, out, decl, body)?;
             }
             Expr::Index(buf, idx) => {
+                // M3 pipelining: a pre-issued operand load consumes its
+                // register instead of re-loading (the schedule owns the
+                // memory traffic; see emit_lane_reduction).
+                let key = format!("{:?}", expr);
+                if let Some(reg) = self.pipelined.get(&key) {
+                    body.push_str(&format!("    mov.f32 {}, {};
+", out, reg));
+                    return Ok(());
+                }
                 let buf_name = self.field_of(buf)?;
                 let off = self.field_off(&buf_name).ok_or_else(|| {
                     format!("ptx general: read buffer '{}' not in layout", buf_name)

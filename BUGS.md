@@ -6490,3 +6490,45 @@ or a driver version regression).
 **M2 outcome (re-scoped):** no new runtime primitive is needed for the
 M4 integration; the append path for j-major K is push_ranges as-is, and
 the dmaj 3-kernel variant stays a measurement vehicle (prefill mode).
+
+## 2026-09-18: P1 lane-mapped reduction — coverage hole: live-lane count < warp width drops d-slices [OPEN — blocks M3/M4]
+
+**Symptom:** the fused-probe kernel (probe_fused_shape.abv, H=20 work
+items, lane-mapped inner reduction, CUDA lane) computes wrong results:
+worst_rel=21.7 at NKV=4096, 62.3 at NKV=64 — while the SPIR-V lane
+(serial semantics) passes at 1.81e-05.
+
+**Root cause:** the lane mapping (base = tid&31, step 32) requires all
+32 lanes of a warp to participate for full d-coverage, but the flat
+work-item guard (`gid < count → else ret`) kills threads 20..63 of the
+single block (count=20). Live lanes = 20 → covered d-slices =
+{0..19, 32..51, 64..83, 96..115} — the slices owned by dead lanes
+(20..31 mod 32) are NEVER computed; the butterfly then sums live
+partials only. The missing fraction is (32-count)/32 of every dot.
+
+**Process note (owned):** the P1 commit claimed "correctness identical
+(1.81e-05 both forms)" for the lane-mapped form at NKV=4096 — that
+verification run did not actually happen at that geometry; the number
+was carried over from earlier artifacts. The 2026-09-18 M3 work
+(pipelining) exposed the hole because the full-matrix discipline
+caught what the single run missed. Verified at the P1 commit via a
+worktree build (66367d63 reproduces 21.7 exactly).
+
+**Fix direction (designed, not implemented):** work item = BLOCK.
+- w = ctaid.x (the block IS the work item; both warps compute the same
+  total redundantly — full lane coverage, whole-block guard keeps
+  shfl.sync defined).
+- Guard: `ctaid >= count → return` (uniform per block; warps die whole).
+- Dispatch: grid = count blocks (the runner's launch count for these
+  kernels must become count*block threads, or the desc gains a
+  block-per-workitem flag — per-device divergence: the PTX lane wants
+  grid=count, the SPIR-V lane wants count invocations; the desc schema
+  must carry the shape).
+- Pipelining (M3, emitted on top) is unaffected — the same fix
+  underlies both.
+
+**Verification state:** reproduced at P1 (worktree 66367d63) and HEAD;
+H=32 variant also fails (16.1) — coverage is not about dead lanes
+alone: with 32 live lanes the butterfly's second warp computes a
+SECOND copy and the store still writes o[w] per thread — the fix must
+define which lane stores (lane 0 / tid&31==0).
