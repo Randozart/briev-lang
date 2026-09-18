@@ -2070,3 +2070,45 @@ mod resident_gate_tests {
         assert!(verdict.blocker.is_none());
     }
 }
+
+
+/// 2026-09-18 (M3.5, moved from the SPIR-V router so frontend analyses and
+/// backend routers share one source of truth): a cooperative row kernel
+/// maps its LANES independently of the work-item counter — the counter is
+/// the row, the lanes are positions inside it. Coalescing and lane-mapping
+/// analyses must treat the two dimensions separately.
+pub fn is_cooperative_shape(shape: &KernelShape) -> bool {
+    crate::config_tuning::ir_lowering().spirv_row_cooperative
+        && shape.reduction.is_some()
+        && !kernel_stmts_decompose_counter(shape)
+}
+
+/// True when any kernel statement derives a value from the counter via
+/// division or modulo (the flattened-2D signature: `m = i / N`, `n = i % N`).
+pub fn kernel_stmts_decompose_counter(shape: &KernelShape) -> bool {
+    fn expr_decomposes(e: &Expr, iv: &str) -> bool {
+        match e {
+            Expr::BinaryOp(kind, l, r) => {
+                let here = matches!(kind, crate::ast::BinaryOpKind::Div | crate::ast::BinaryOpKind::Mod)
+                    && matches!(l.as_ref(), Expr::Identifier(n) if n == iv);
+                here || expr_decomposes(l, iv) || expr_decomposes(r, iv)
+            }
+            Expr::Call(_, args, _) => args.iter().any(|a| expr_decomposes(a, iv)),
+            _ => false,
+        }
+    }
+    fn stmt_decomposes(s: &Statement, iv: &str) -> bool {
+        match s {
+            Statement::Assign(_, rhs) => expr_decomposes(rhs, iv),
+            Statement::Let { expr: Some(e), .. } => expr_decomposes(e, iv),
+            Statement::Foreach { list, body, .. } => {
+                expr_decomposes(list, iv) || body.iter().any(|b| stmt_decomposes(b, iv))
+            }
+            _ => false,
+        }
+    }
+    shape
+        .kernel_stmts
+        .iter()
+        .any(|s| stmt_decomposes(s, &shape.index_var))
+}

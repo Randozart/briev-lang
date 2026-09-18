@@ -228,6 +228,24 @@ pub fn analyze_program(
         .collect();
     let module_metadata = collect_module_metadata(items);
     let accel = crate::analysis::accel::analyze(items, &module_metadata, type_universe);
+    // 2026-09-18 (M3.5, plan coalesced-kv-memory-path): the coalescing
+    // analysis — under the analysis-transparency doctrine the compiler
+    // must show what the fastest code would be. Advisory only: layout is
+    // part of the program's host contract (field tables, seed, append
+    // ranges), so the compiler reports the proven stride and the
+    // mechanical fix; the author decides.
+    if !accel.is_empty() {
+        let consts = crate::backend::ptx::module_expr_consts(items);
+        for d in crate::analysis::coalescing::analyze_coalescing(items, &accel, &consts) {
+            eprintln!("warning: [{}] {}", d.code, d.title);
+            for e in &d.explanation {
+                eprintln!("  {e}");
+            }
+            for h in &d.hints {
+                eprintln!("  Hint: {h}");
+            }
+        }
+    }
     // 2026-09-14 (gpu_schedule Phase 1): the node read/write-set DAG —
     // producer-before-consumer topo order + independence proofs, consumed
     // by the GPU runner's dispatch (frontend-driven; see the plan doc).
