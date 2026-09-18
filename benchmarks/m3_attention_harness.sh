@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
-# M3 harness (plan 2026-09-17-abv-attention-ab): build the decode-attention
-# composition (qk -> softmax -> pv, GQA, f32), inject a deterministic seed +
-# scalar CPU reference into the generated runner, run BOTH device lanes,
-# gate on max relative error < 1e-3.
+# M3 harness (plan 2026-09-18-m3-matrix-and-m4-fattn-shim): build the
+# decode-attention composition (qk -> softmax -> pv, GQA, f32), inject a
+# deterministic seed + scalar CPU reference into the generated runner, run
+# BOTH device lanes, gate on max relative error < 1e-3.
 #
 # Usage: bash benchmarks/m3_attention_harness.sh [NKV]   (default 256)
+#        env D H HKV override the geometry (defaults 128/32/8; G = H/HKV).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NKV="${1:-256}"
+D="${D:-128}"
+H="${H:-32}"
+HKV="${HKV:-8}"
+[ $((H % HKV)) -eq 0 ] || { echo "H=$H not divisible by HKV=$HKV" >&2; exit 1; }
+G=$((H / HKV))
 BRIEVC=./target/release/brievc
 OUT=$(mktemp -d /tmp/opencode/m3.XXXX)
 
-# 1. Instantiate the .abv (D/H/HKV/G fixed to the bitnet-2b decode geometry).
-sed "s/const NKV: Int = 256;/const NKV: Int = ${NKV};/" \
-    examples/gpu/attention_decode.abv > examples/gpu/m3_attn_tmp.abv
+# 1. Instantiate the .abv at the requested geometry.
+python3 benchmarks/attn_instantiate.py \
+    --d "$D" --h "$H" --hkv "$HKV" --nkv "$NKV" \
+    --template examples/gpu/attention_decode.abv \
+    --out examples/gpu/m3_attn_tmp.abv
 
 # 2. Build the dual-image runner.
 "$BRIEVC" build examples/gpu/m3_attn_tmp.abv --out "$OUT" >/dev/null
@@ -25,10 +33,11 @@ for kp in 0 1 2; do
 done
 
 # 3. Inject the harness (seed + CPU reference + verdict).
-python3 - "$OUT/attention_decode_runner.c" "$OUT/harness.c" "$NKV" <<'PYEOF'
-import re, sys
+python3 - "$OUT/attention_decode_runner.c" "$OUT/harness.c" "$NKV" "$D" "$H" "$HKV" "$G" <<'PYEOF'
+import math, re, sys
 
-runner_path, out_path, NKV = sys.argv[1], sys.argv[2], int(sys.argv[3])
+runner_path, out_path = sys.argv[1], sys.argv[2]
+NKV, D, H, HKV, G = (int(x) for x in sys.argv[3:8])
 src = open(runner_path).read()
 
 def off(name):
@@ -36,27 +45,29 @@ def off(name):
     return int(m.group(1))
 
 Q, K, V, A = off('q'), off('k'), off('v'), off('a_out')
+QLEN, KVLEN = H * D, HKV * NKV * D
+scale = 1.0 / math.sqrt(D)
 
 seed = (
     "\n  { unsigned rng = 12345;\n"
     "    float* q_ = (float*)(state + QOFF);\n"
     "    float* k_ = (float*)(state + KOFF);\n"
     "    float* v_ = (float*)(state + VOFF);\n"
-    "    for (long long i = 0; i < 4096; i++) { rng = rng*1103515245u+12345u; q_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }\n"
-    "    for (long long i = 0; i < 262144; i++) { rng = rng*1103515245u+12345u; k_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }\n"
-    "    for (long long i = 0; i < 262144; i++) { rng = rng*1103515245u+12345u; v_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }\n"
+    f"    for (long long i = 0; i < {QLEN}; i++) {{ rng = rng*1103515245u+12345u; q_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}\n"
+    f"    for (long long i = 0; i < {KVLEN}; i++) {{ rng = rng*1103515245u+12345u; k_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}\n"
+    f"    for (long long i = 0; i < {KVLEN}; i++) {{ rng = rng*1103515245u+12345u; v_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}\n"
     "  }\n"
     "  /* backup Q/K/V before composition (q and a_out alias in proj) */\n"
-    "  float* Qbak = (float*)malloc(4096 * sizeof(float));\n"
-    "  float* Kbak = (float*)malloc(262144 * sizeof(float));\n"
-    "  float* Vbak = (float*)malloc(262144 * sizeof(float));\n"
-    "  memcpy(Qbak, state + QOFF, 4096 * sizeof(float));\n"
-    "  memcpy(Kbak, state + KOFF, 262144 * sizeof(float));\n"
-    "  memcpy(Vbak, state + VOFF, 262144 * sizeof(float));\n"
+    f"  float* Qbak = (float*)malloc({QLEN} * sizeof(float));\n"
+    f"  float* Kbak = (float*)malloc({KVLEN} * sizeof(float));\n"
+    f"  float* Vbak = (float*)malloc({KVLEN} * sizeof(float));\n"
+    f"  memcpy(Qbak, state + QOFF, {QLEN} * sizeof(float));\n"
+    f"  memcpy(Kbak, state + KOFF, {KVLEN} * sizeof(float));\n"
+    f"  memcpy(Vbak, state + VOFF, {KVLEN} * sizeof(float));\n"
 )
 tail = (
     "\n  {\n"
-    "    const int D_ = 128, H_ = 32, G_ = 4, NKV_ = NKVOFF;\n"
+    f"    const int D_ = {D}, H_ = {H}, G_ = {G}, NKV_ = NKVOFF;\n"
     "    const float* Q = Qbak;\n"
     "    const float* K = Kbak;\n"
     "    const float* V = Vbak;\n"
@@ -70,7 +81,7 @@ tail = (
     "    float dump_a0 = 0.0f, dump_ref0 = 0.0f;\n"
     "    int n_bad = 0;\n"
     "    int ws_i = -1; double ws_dev = 0.0, ws_ref = 0.0;\n"
-    "    const float scale_ = 0.08838834764831845f;\n"
+    f"    const float scale_ = {scale:.17g}f;\n"
     "    for (int h = 0; h < H_; h++) {\n"
     "        int kh = h / G_;\n"
     "        float mx = -1e30f;\n"
