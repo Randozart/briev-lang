@@ -49,7 +49,9 @@ Two decisive facts:
 | **M1 — layout experiment** (validator, no compiler work) | `examples/gpu/attention_decode_kdmaj.abv` (K-only d-major), `KLAYOUT=dmaj` env in the m3 harness (seed scatters into d-major; CPU reference indexes d-major) and the m4 microbench. Run correctness (both lanes) + timing at bitnet p4096. | qk 227 µs → ≤ ~100 µs proves coalescing dominance; chain 413 → ~230–260 µs predicted. Correctness stays exact (same values, different storage order). **Kill line:** qk does not move ⇒ coalescing model wrong ⇒ re-derive, no M3. |
 | **M2 — append-path batching** (runtime, small) | d-major K means a per-token append = D scattered 4 B elements vs 1 row; `briev_accel_push_ranges` caps at 16 ranges — needs a bulk mode (cap raise or batched copy). | only gates M4 integration; not on M1's critical path |
 | **M3 — compiler software pipelining** | `emit_lane_reduction`: double-buffer the loaded operands (prologue load → consume-current/issue-next loop). Additive in the lane path only; serial fallback untouched. Rule 2 discipline: the DEFAULT must beat any hand-pipelined source. | probe dot drops toward the load-amortized bound; 2275 tests + M3 matrix + baseline A/B |
-| **M4 — fused node v2** | Real fused node (online softmax + acc + f16) on the pipelined lane form with d-major K | the P2 gate as written: beat 3-kernel, competitive with 58 µs |
+| **F1 — keyword-vs-default gate** (doctrine enforcement) | Harness mode: build a program with a strategy keyword + the identical program without; run both; RECORD the finding. A keyword win is a **genuine find**: classify instance-specific (causal reason stated — e.g. the default's cost model lacks the shape) vs general (a compiler gap). Either way the default is expected to close the gap; the gate never silently passes a loss. | gate ships with a seed pair + a golden test proving it fails loudly on a default loss |
+| **F2 — limits-of-proof reporting** (doctrine, always on) | G002: when the coalescing proof cannot close, report WHICH term defeated it (non-affine in the work item), one Info per kernel, deduped. Silence on the provable is a bug — pinned by unit tests. | full suite; jd/kdmaj G001 behavior unchanged |
+| **M4 — fused node v2** | Real fused node (online softmax + acc + f16) on the pipelined lane form. Layout note: the fused node's lanes-over-d read K **j-major** — the OPPOSITE of qk's d-major (see `docs/architecture/layout-contracts.md`); if both forms share a buffer the composition owns an explicit transpose node. | the P2 gate as written: beat 3-kernel, competitive with 58 µs |
 | **M5/M6** | fattn.cu arm + llama-bench matrix | only on M4 pass; verdict rules as before |
 
 ## Honesty constraints
@@ -63,6 +65,10 @@ Two decisive facts:
   the finding: recorded as the measured gap between the compiler's
   default and ggml's hand scheduling, never papered over with an
   escape hatch.
+- Pressure-valve candidate recorded, NOT built: a `spec`-level
+  storage-order key for machine-checked append agreement. Evidence gate:
+  M2/M4 must show append paths drifting from .abv index order first
+  (`docs/architecture/layout-contracts.md`).
 
 ## Doctrine (user directive, 2026-09-18)
 

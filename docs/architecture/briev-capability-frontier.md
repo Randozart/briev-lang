@@ -76,6 +76,56 @@ compiler's own compile time. "Contracts as fuel" applies recursively to the
 compiler writing itself. That is not a weakness relative to C++ — it is the
 one place Briev would be strictly more rigorous.
 
+## The analysis-transparency doctrine
+
+The compiler is smart and must be smart: under all circumstances it must
+**show through analysis what the fastest code would be**. If a program is
+poorly written, the compiler can only emit as fast as it can **prove**.
+The programmer's role is real and exercised exactly one way — by writing
+better **algorithms** — never through strategy keywords or pragma
+trickery.
+
+Enforceable phrasing (the doctrine is not omniscience — fastest-code
+questions are undecidable in general):
+
+1. **Prove-and-report.** The compiler must never silently miss what it
+   can prove, and must report the limits of what it proved. Every
+   performance advisory carries its proof; every unprovable case is
+   *named* (which term defeated the proof), always on — the honest
+   boundary is visible, not hidden behind a verbosity flag. A provable
+   case that goes unreported is a compiler bug, pinned by tests.
+2. **Semantic-content test for keywords.** A strategy keyword must
+   encode observable behavior — `seq` = execution order, `vol` =
+   volatile memory, `atomic` = memory model, `pack`/`union` = layout
+   ABI. A keyword that changes only *speed* is a pragma in disguise and
+   is rejected.
+3. **The keyword-vs-default gate is a discovery instrument.** When a
+   program runs faster *with* a strategy keyword, that is a genuine
+   find — and the gate must record the finding, classified: is the win
+   **instance-specific** (this shape only; the causal reason stated —
+   e.g. the default's cost model lacks the shape) or **general** (the
+   default is missing an optimization class — a compiler gap)? Instance
+   findings feed the analysis roadmap; general findings are bugs against
+   the default. Either way the default is expected to close the gap;
+   keywords stay speed-neutral by continuous falsification, not by
+   review fiat.
+4. **The contract pressure valve.** Programmer knowledge the compiler
+   cannot yet prove enters the language as *contracts* (`spec` metadata,
+   `[pre]` bounds — semantic facts reusable by many analyses), never as
+   one-point directives. Each pressure-valve addition must be general;
+   shape-specific metadata is forbidden (Rule 15).
+
+First worked example (2026-09-18, the memory-path campaign): the
+composition's qk kernel read K scattered across threads — 227 µs where
+64 µs was provable. The compiler now **proves** the stride
+(`src/analysis/coalescing.rs`, G001: affine coefficient of the
+work-item counter, div-protected terms as run-constant), **reports** it
+with the mechanical fix, **stays silent** where it cannot prove, and
+**names its limits** (G002) where it cannot. The fix itself was an
+algorithm-level decision — the author chose d-major storage; the
+compiler never rewrites layout, because layout is part of the program's
+host ABI (see `layout-contracts.md`). No keyword was needed or wanted.
+
 ## The DSL guardrails
 
 The systems tier (the rv64 arc) grew two constructs — `bootstrap node` and
