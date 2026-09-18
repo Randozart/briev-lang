@@ -1,0 +1,28 @@
+// F1 seed pair, DEFAULT side (plan coalesced-kv-memory-path): a single-node
+// dot kernel with no co-firing peers. The keyword side (kwab_dot_async.abv)
+// is byte-identical except `async` on the node — vacuous here (one node,
+// no concurrency to declare) but declarable, so the pair is semantically
+// identical by construction and the gate exercises pure scheduling.
+const D: Int = 128;
+const H: Int = 20;
+const NKV: Int = 256;
+const SCALE: Float = 0.08838834764831845;
+
+let w: Int = 0;
+let q: Float[2560];
+let k: Float[327680];
+let o: Float[20];
+
+node dot [w < H][w == H] {
+    let acc: Float = 0;
+    foreach j in 0..NKV {
+        let p: Float = 0;
+        foreach d in 0..D {
+            p = p + q[w * D + d] * (k[j * D + d] as Float);
+        }
+        acc = acc + p * SCALE;
+    }
+    o[w] = acc;
+    w = w + 1;
+    term;
+};
