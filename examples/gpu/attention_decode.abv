@@ -1,0 +1,72 @@
+// attention_decode.abv — M2b (plan 2026-09-17-abv-attention-ab).
+// Decode-path flash attention composition, GQA-aware, all f32:
+//   1. qk      : S[h,j]   = scale * Σ_d Q[h,d] * K[kh,j,d]   (kh = h/G)
+//   2. softmax : O1[h,j]  = Exp#(S[h,j] - max_j) / Σ_j Exp#(...)
+//   3. pv      : A[h,d]   = Σ_j O1[h,j] * V[kh,j,d]
+// Layouts mirror ggml's flash-attn decode tensors (N=1 token):
+//   Q[h*D+d]  · K[kh*NKV*D + j*D + d]  · V like K  · S/O1[h*NKV+j]
+//   A[h*D+d]
+// The C shim (M4) copies ggml's device tensors into these offsets (D2D),
+// launches the four kernels in stream order, and pulls A back.
+const D: Int = 128;
+const H: Int = 32;
+const HKV: Int = 8;
+const G: Int = 4;
+const NKV: Int = 256;
+const SCALE: Float = 0.08838834764831845;
+
+let t: Int = 0;
+let r: Int = 0;
+let u: Int = 0;
+let q: Float[4096];
+let k: Float[262144];
+let v: Float[262144];
+let s: Float[8192];
+let o1: Float[8192];
+let a_out: Float[4096];
+
+// ── 1. QK^T: one work item per (head, kv position) ──────────────────────
+async node qk [t < H * NKV][t == H * NKV] {
+    let h: Int = t / NKV;
+    let j: Int = t - h * NKV;
+    let kh: Int = h / G;
+    let acc: Float = 0;
+    foreach d in 0..D {
+        acc = acc + q[h * D + d] * k[kh * (D * NKV) + j * D + d];
+    }
+    s[t] = acc * SCALE;
+    t = t + 1;
+    term;
+};
+
+// ── 2. row softmax over the KV dimension (per head) ─────────────────────
+async node softmax [r < H][r == H] {
+    let m: Float = s[r * NKV + 0];
+    foreach c in 0..NKV {
+        let w: Float = s[r * NKV + c];
+        m = Max#(m, w);
+    }
+    let sum: Float = 0;
+    foreach c in 0..NKV {
+        sum = sum + Exp#(s[r * NKV + c] - m);
+    }
+    foreach c in 0..NKV {
+        o1[r * NKV + c] = Exp#(s[r * NKV + c] - m) / sum;
+    }
+    r = r + 1;
+    term;
+};
+
+// ── 3. PV: one work item per (head, out dim) ────────────────────────────
+async node pv [u < H * D][u == H * D] {
+    let h: Int = u / D;
+    let d: Int = u - h * D;
+    let kh: Int = h / G;
+    let acc: Float = 0;
+    foreach j in 0..NKV {
+        acc = acc + o1[h * NKV + j] * v[kh * (D * NKV) + j * D + d];
+    }
+    a_out[u] = acc;
+    u = u + 1;
+    term;
+};

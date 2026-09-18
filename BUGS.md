@@ -6418,3 +6418,36 @@ harness bugs caused the "failure":
 
 The full f16 attention composition is correct at 512² AND 1024². The
 earlier "o=+inf" and "s2=0" were the overflow + wrong-proj artifacts.
+
+## 2026-09-17: Multi-node resident programs — prime full-upload clobbers device arrays (OPEN)
+
+**Symptom:** attention_decode.abv (qk → softmax → pv, 3 kernels) produces
+wrong A on both lanes; each kernel VERIFIED correct in isolation (gemv
+y=4096 exact; softmax uniform exact, both lanes).
+
+**Root cause:** `launch_resident_2d`'s lazy prime (briev_accel_rt.c: the
+`mapped == NULL → briev_accel_launch(...)` fallback) performs a FULL-COPY
+launch: it uploads the ENTIRE host projection (HtoD) and pulls everything
+back (DtoH). For node 2..N in a program, the full upload carries the HOST
+copy of arrays that node 1 computed ON DEVICE — overwriting them with
+stale host zeros. softmax's o1 (device) is clobbered by pv's prime; the
+composition then consumes zeros.
+
+**Also:** the prime dispatches with FLAT 1D geometry (global_n = nx*ny,
+ctaid.y = 0 for every block) — for cooperative kernels the prime executes
+the whole program's work on row 0 with the wrong mapping (harmless for
+row 0, but conceptually wrong and wasteful).
+
+**Fix direction (designed, not yet implemented):** the prime must upload
+ONLY the seed fields (the compiler's seed table — input arrays; the
+mechanism already exists as `seed_program_fields` + per-launch dirty
+ranges) and must NOT dispatch; then the resident launch runs with the
+correct 2D geometry. I.e. replace the `briev_accel_launch` fallback with
+a driver `prime(handle, seed_fields)` operation (upload-only, buffer
+creation), keeping every dispatch on the resident 2D path. The pull
+(`briev_accel_download`, added to the runner emitter this session) stays
+end-of-program.
+
+**Verification state:** single-kernel programs verified device-correct on
+both lanes post-fix (gemv 4096×4096 y=4096.0 exact; softmax_rows 4×256
+uniform 0.003906 exact). The composition awaits the prime fix.

@@ -376,6 +376,15 @@ impl<'a> Gen<'a> {
         format!("%p{}", n)
     }
 
+    /// 2026-09-17 (M2b): integer-class locals — Int/UInt families get u32
+    /// registers and integer ops. Names not starting with Int/UInt are float.
+    fn is_int_ty(ty: &Option<crate::ast::Type>) -> bool {
+        match ty {
+            Some(crate::ast::Type::Custom(n)) => n.starts_with("Int") || n.starts_with("UInt"),
+            _ => false,
+        }
+    }
+
     /// A loop bound: a literal or a module const (the same literal-const
     /// contract the SPIR-V cooperative path enforces).
     fn const_int(&self, e: &Expr) -> Result<i64, String> {
@@ -449,13 +458,24 @@ impl<'a> Gen<'a> {
     ) -> Result<(), String> {
         match stmt {
             Statement::Assign(lhs, rhs) => self.emit_assign(lhs, rhs, decl, body),
-            Statement::Let { name, expr, .. } => {
-                // A pure local: lower the initializer into a register.
+            Statement::Let { name, expr, ty, .. } => {
+                // A pure local: lower the initializer into a register of the
+                // DECLARED class — Int locals are u32 with integer ops (the
+                // GQA decompositions h = t/NKV need integer semantics; f32
+                // division silently truncates only for power-of-2 divisors
+                // and corrupts the bit pattern for everything else).
                 if let Some(e) = expr {
-                    let reg = self.fresh_f();
-                    decl.push_str(&format!("    .reg .f32 {};\n", reg));
-                    self.emit_expr(e, &reg, decl, body)?;
-                    self.regs.insert(name.clone(), reg);
+                    if Self::is_int_ty(ty) {
+                        let reg = self.fresh_r();
+                        decl.push_str(&format!("    .reg .u32 {};\n", reg));
+                        self.emit_index(e, &reg, decl, body)?;
+                        self.regs.insert(name.clone(), reg);
+                    } else {
+                        let reg = self.fresh_f();
+                        decl.push_str(&format!("    .reg .f32 {};\n", reg));
+                        self.emit_expr(e, &reg, decl, body)?;
+                        self.regs.insert(name.clone(), reg);
+                    }
                 }
                 Ok(())
             }
@@ -542,7 +562,11 @@ impl<'a> Gen<'a> {
             // The index_var is host-owned (the runner fast-forwards it) and
             // never appears here.
             if let Some(reg) = self.regs.get(name).cloned() {
-                self.emit_expr(rhs, &reg, decl, body)?;
+                if reg.starts_with("%r") {
+                    self.emit_index(rhs, &reg, decl, body)?;
+                } else {
+                    self.emit_expr(rhs, &reg, decl, body)?;
+                }
                 return Ok(());
             }
             let off = self.field_off(name).ok_or_else(|| {
@@ -622,9 +646,13 @@ impl<'a> Gen<'a> {
                     crate::ast::BinaryOpKind::Add => "add.u32",
                     crate::ast::BinaryOpKind::Sub => "sub.u32",
                     crate::ast::BinaryOpKind::Mul => "mul.lo.u32",
+                    // 2026-09-17 (M2b): index-space division — the GQA head
+                    // decompositions (h = t / NKV). Unsigned: indices are
+                    // non-negative by construction.
+                    crate::ast::BinaryOpKind::Div => "div.u32",
                     other => {
                         return Err(format!(
-                            "ptx general: index arithmetic {:?} outside the supported surface (Add/Sub/Mul)",
+                            "ptx general: index arithmetic {:?} outside the supported surface (Add/Sub/Mul/Div)",
                             other
                         ))
                     }
@@ -736,7 +764,9 @@ impl<'a> Gen<'a> {
             }
         }
         if let Some(Expr::Decimal(n)) = self.consts.get(name) {
-            body.push_str(&format!("    mov.f32 {}, {};\n", out, n));
+            // ptxas rejects integer literals in .f32 position (as does the
+            // Decimal arm above) — bake with a decimal fraction.
+            body.push_str(&format!("    mov.f32 {}, {}.0;\n", out, n));
         } else if let Some(Expr::Float(f)) = self.consts.get(name) {
             body.push_str(&format!("    mov.f32 {}, {:e};\n", out, f));
         } else {
