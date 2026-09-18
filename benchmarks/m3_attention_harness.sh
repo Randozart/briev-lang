@@ -14,6 +14,7 @@ D="${D:-128}"
 H="${H:-32}"
 HKV="${HKV:-8}"
 F16KV="${F16KV:-0}"
+KLAYOUT="${KLAYOUT:-jd}"
 [ $((H % HKV)) -eq 0 ] || { echo "H=$H not divisible by HKV=$HKV" >&2; exit 1; }
 G=$((H / HKV))
 BRIEVC=./target/release/brievc
@@ -22,9 +23,11 @@ OUT=$(mktemp -d /tmp/opencode/m3.XXXX)
 # 1. Instantiate the .abv at the requested geometry.
 F16FLAG=""
 [ "$F16KV" = "1" ] && F16FLAG="--f16-kv"
+TMPL="${TEMPLATE:-examples/gpu/attention_decode.abv}"
+[ "$KLAYOUT" = "dmaj" ] && TMPL="examples/gpu/attention_decode_kdmaj.abv"
 python3 benchmarks/attn_instantiate.py \
     --d "$D" --h "$H" --hkv "$HKV" --nkv "$NKV" $F16FLAG \
-    --template "${TEMPLATE:-examples/gpu/attention_decode.abv}" \
+    --template "$TMPL" \
     --out examples/gpu/m3_attn_tmp.abv
 # Float16 fields need the stdlib type in scope (float.bv declares it).
 [ "$F16KV" = "1" ] && sed -i '1i import "std/types/float.bv";' examples/gpu/m3_attn_tmp.abv
@@ -38,11 +41,11 @@ for kp in 0 1 2; do
 done
 
 # 3. Inject the harness (seed + CPU reference + verdict).
-python3 - "$OUT/attention_decode_runner.c" "$OUT/harness.c" "$NKV" "$D" "$H" "$HKV" "$G" "$F16KV" <<'PYEOF'
+python3 - "$OUT/attention_decode_runner.c" "$OUT/harness.c" "$NKV" "$D" "$H" "$HKV" "$G" "$F16KV" "$KLAYOUT" <<'PYEOF'
 import math, re, sys
 
 runner_path, out_path = sys.argv[1], sys.argv[2]
-NKV, D, H, HKV, G, F16KV = (int(x) for x in sys.argv[3:9])
+NKV, D, H, HKV, G, F16KV, KLAYOUT = (int(x) if x.isdigit() else x for x in sys.argv[3:10])
 src = open(runner_path).read()
 
 def field(name):
@@ -61,35 +64,67 @@ scale = 1.0 / math.sqrt(D)
 # pure composition error (f16 quantization is the pipeline's input contract,
 # shared with ggml's f16 KV — not an error source here).
 kv_decl = (
-    "    unsigned short* k_ = (unsigned short*)(state + KOFF);\n"
     "    unsigned short* v_ = (unsigned short*)(state + VOFF);\n"
     if F16
-    else (
-        "    float* k_ = (float*)(state + KOFF);\n"
-        "    float* v_ = (float*)(state + VOFF);\n"
-    )
+    else "    float* v_ = (float*)(state + VOFF);\n"
 )
 kv_store_f = "{k_}[i] = (unsigned short)(_Float16)(((rng>>16)%997)/997.0f - 0.5f);" if F16 \
     else "{k_}[i] = (float)((rng>>16)%997)/997.0f - 0.5f;"
 bak_f = "    {b}[i] = (float)((_Float16*)({p}))[i];" if F16 else "    {b}[i] = ((float*)({p}))[i];"
 
+# M1 layout experiment (plan coalesced-kv-memory-path): KLAYOUT=dmaj stores
+# K d-major in STATE (kh, d, j) while the seed/reference keep j-major host
+# arrays — one scatter pass in, one rebuild pass out, values identical.
+# The index uses the KOFF token convention so the plain-string replace
+# below injects the offset.
+if KLAYOUT == "dmaj":
+    kidx = "(size_t)kh_ * (KSCATTER_BASE) + (size_t)d_ * (NKVS) + (size_t)j_"
+else:
+    kidx = "(size_t)kh_ * (NKVS) * (DS) + (size_t)j_ * (DS) + (size_t)d_"
+kstore = ("(unsigned short)(_Float16)kv" if F16 else "kv")
+kload = ("(float)((_Float16*)(state + KOFF))[" + kidx + "]" if F16 else
+         "((float*)(state + KOFF))[" + kidx + "]")
+kscatter = (
+    "    for (int kh_ = 0; kh_ < KHKV_N; kh_++)\n"
+    "      for (int j_ = 0; j_ < NKV_N; j_++)\n"
+    "        for (int d_ = 0; d_ < D_N; d_++) {\n"
+    "          float kv = kref[(size_t)kh_ * (NKV_N) * (D_N) + (size_t)j_ * (D_N) + d_];\n"
+    "          " + ("((unsigned short*)(state + KOFF))[" if F16 else "((float*)(state + KOFF))[") + kidx + "] = " + kstore + ";\n"
+    "        }\n"
+)
+krebuild = (
+    "    for (int kh_ = 0; kh_ < KHKV_N; kh_++)\n"
+    "      for (int j_ = 0; j_ < NKV_N; j_++)\n"
+    "        for (int d_ = 0; d_ < D_N; d_++) {\n"
+    "          Kbak[(size_t)kh_ * (NKV_N) * (D_N) + (size_t)j_ * (D_N) + d_] = " + kload + ";\n"
+    "        }\n"
+)
+
 seed = (
-    "\n  { unsigned rng = 12345;\n"
+    "\n  float* kref = (float*)malloc((size_t)" + str(KVLEN) + " * sizeof(float));\n"
+    "  { unsigned rng = 12345;\n"
     "    float* q_ = (float*)(state + QOFF);\n"
     + kv_decl
     + f"    for (long long i = 0; i < {QLEN}; i++) {{ rng = rng*1103515245u+12345u; q_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}\n"
-    + f"    for (long long i = 0; i < {KVLEN}; i++) {{ rng = rng*1103515245u+12345u; " + kv_store_f.format(k_='k_') + " }\n"
+    + f"    for (long long i = 0; i < {KVLEN}; i++) {{ rng = rng*1103515245u+12345u; kref[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}\n"
     + f"    for (long long i = 0; i < {KVLEN}; i++) {{ rng = rng*1103515245u+12345u; " + kv_store_f.format(k_='v_') + " }\n"
     "  }\n"
-    "  /* backup Q/K/V before composition (q and a_out alias in proj); K/V\n"
-    "   * decode the f16 storage so the reference computes on what the\n"
+    "  /* K: seed j-major into kref, scatter into STATE at the layout's\n"
+    "   * index (KLAYOUT=dmaj stores kh,d,j — the M1 coalescing experiment),\n"
+    "   * then rebuild Kbak from the same storage so the CPU reference\n"
+    "   * computes on what the device reads. V stays j-major. */\n"
+    + f"  const int KHKV_N = {HKV}, NKV_N = {NKV}, D_N = {D}, KSCATTER_BASE = {D * NKV}, NKVS = {NKV}, DS = {D};\n"
+    + f"  float* Kbak = (float*)malloc((size_t){KVLEN} * sizeof(float));\n"
+    + kscatter
+    + krebuild
+    + "  /* backup Q/V before composition (q and a_out alias in proj); V\n"
+    "   * decodes the f16 storage so the reference computes on what the\n"
     "   * device actually reads */\n"
     f"  float* Qbak = (float*)malloc({QLEN} * sizeof(float));\n"
-    f"  float* Kbak = (float*)malloc({KVLEN} * sizeof(float));\n"
     f"  float* Vbak = (float*)malloc({KVLEN} * sizeof(float));\n"
     f"  memcpy(Qbak, state + QOFF, {QLEN} * sizeof(float));\n"
-    f"    for (long long i = 0; i < {KVLEN}; i++) {{ " + bak_f.format(b='Kbak', p='state + KOFF') + " }\n"
     f"    for (long long i = 0; i < {KVLEN}; i++) {{ " + bak_f.format(b='Vbak', p='state + VOFF') + " }\n"
+    "  free(kref);\n"
 )
 tail = (
     "\n  {\n"

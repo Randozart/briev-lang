@@ -26,9 +26,16 @@ echo "artifacts: $OUT"
 # ── 1. Briev side ────────────────────────────────────────────────────────────
 F16FLAG=""
 [ "$F16KV" = "1" ] && F16FLAG="--f16-kv"
+# M1 layout experiment (plan coalesced-kv-memory-path): KLAYOUT=dmaj builds
+# the K-d-major template and PREFILLS all K rows (seed path) — per-step K
+# appends are skipped, so push/chain times exclude K append cost (the
+# d-major append shape is M2's batching problem, deliberately out of M1).
+KLAYOUT="${KLAYOUT:-jd}"
+TMPL="examples/gpu/attention_decode.abv"
+[ "$KLAYOUT" = "dmaj" ] && TMPL="examples/gpu/attention_decode_kdmaj.abv"
 python3 benchmarks/attn_instantiate.py \
     --d "$D" --h "$H" --hkv "$HKV" --nkv "$NKV" $F16FLAG \
-    --template examples/gpu/attention_decode.abv \
+    --template "$TMPL" \
     --out examples/gpu/m4_attn_tmp.abv
 # Float16 fields need the stdlib type in scope (float.bv declares it).
 [ "$F16KV" = "1" ] && sed -i '1i import "std/types/float.bv";' examples/gpu/m4_attn_tmp.abv
@@ -36,11 +43,12 @@ python3 benchmarks/attn_instantiate.py \
 mv "$OUT/m4_attn_tmp_runner.c" "$OUT/attn_runner.c"
 rm -f examples/gpu/m4_attn_tmp.abv
 
-python3 - "$OUT/attn_runner.c" "$OUT/m4_briev.c" "$D" "$H" "$HKV" "$G" "$NKV" "$REPS" "$F16KV" <<'PYEOF'
+python3 - "$OUT/attn_runner.c" "$OUT/m4_briev.c" "$D" "$H" "$HKV" "$G" "$NKV" "$REPS" "$F16KV" "$KLAYOUT" <<'PYEOF'
 import re, sys
 
 runner_path, out_path = sys.argv[1], sys.argv[2]
 D, H, HKV, G, NKV, REPS, F16KV = (int(x) for x in sys.argv[3:10])
+KLAYOUT = sys.argv[10]
 src = open(runner_path).read()
 
 # Field tables: { name, kind, host_offset, elem_bytes, count, is_write, proj_offset }
@@ -80,6 +88,68 @@ kcast = "(_Float16)" if KEB == 2 else "(float)"
 vptr = "unsigned short" if VEB == 2 else "float"
 vcast = "(_Float16)" if VEB == 2 else "(float)"
 
+# Per-step K/V handling: jd appends both rows (contiguous per kv head);
+# dmaj prefills all K rows before the warmup (d-major scatter) and appends
+# V only — K append under d-major is M2's batching problem.
+if KLAYOUT == "dmaj":
+    kv_step_block = (
+        "        for (int kh = 0; kh < " + str(HKV) + "; kh++) {\n"
+        "            size_t row_off = ((size_t)kh * " + str(NKV) + " + (size_t)j) * " + str(D) + " * " + str(VEB) + ";\n"
+        "            rng = 8888u + (unsigned)step;\n"
+        "            for (int i = 0; i < " + str(D) + "; i++) {\n"
+        "                rng = rng * 1103515245u + 12345u;\n"
+        "                float val = (float)((rng >> 16) % 997) / 997.0f - 0.5f;\n"
+        "                M4_VROW(state, " + str(VOFF) + " + row_off + (size_t)i * " + str(VEB) + ") =\n"
+        "                    " + vcast + "val;\n"
+        "            }\n"
+        "            m4_ranges[3 * n] = " + str(VPROJ) + " + row_off;\n"
+        "            m4_ranges[3 * n + 1] = " + str(VOFF) + " + row_off;\n"
+        "            m4_ranges[3 * n + 2] = (size_t)" + str(D) + " * " + str(VEB) + ";\n"
+        "            n++;\n"
+        "        }\n"
+    )
+else:
+    kv_step_block = (
+        "        for (int kh = 0; kh < " + str(HKV) + "; kh++) {\n"
+        "            size_t row_off = ((size_t)kh * " + str(NKV) + " + (size_t)j) * " + str(D) + " * " + str(KEB) + ";\n"
+        "            rng = 7777u + (unsigned)step;\n"
+        "            for (int i = 0; i < " + str(D) + "; i++) {\n"
+        "                rng = rng * 1103515245u + 12345u;\n"
+        "                float val = (float)((rng >> 16) % 997) / 997.0f - 0.5f;\n"
+        "                M4_KROW(state, " + str(KOFF) + " + row_off + (size_t)i * " + str(KEB) + ") =\n"
+        "                    " + kcast + "val;\n"
+        "            }\n"
+        "            rng = 8888u + (unsigned)step;\n"
+        "            for (int i = 0; i < " + str(D) + "; i++) {\n"
+        "                rng = rng * 1103515245u + 12345u;\n"
+        "                float val = (float)((rng >> 16) % 997) / 997.0f - 0.5f;\n"
+        "                M4_VROW(state, " + str(VOFF) + " + row_off + (size_t)i * " + str(VEB) + ") =\n"
+        "                    " + vcast + "val;\n"
+        "            }\n"
+        "            m4_ranges[3 * n] = " + str(KPROJ) + " + row_off;\n"
+        "            m4_ranges[3 * n + 1] = " + str(KOFF) + " + row_off;\n"
+        "            m4_ranges[3 * n + 2] = (size_t)" + str(D) + " * " + str(KEB) + ";\n"
+        "            n++;\n"
+        "            m4_ranges[3 * n] = " + str(VPROJ) + " + row_off;\n"
+        "            m4_ranges[3 * n + 1] = " + str(VOFF) + " + row_off;\n"
+        "            m4_ranges[3 * n + 2] = (size_t)" + str(D) + " * " + str(VEB) + ";\n"
+        "            n++;\n"
+        "        }\n"
+    )
+k_prefill_block = (
+    ""
+    if KLAYOUT != "dmaj"
+    else (
+        "    /* dmaj: prefill the whole K cache (d-major); per-step K\n"
+        "     * appends skipped — M2 batches that append shape. */\n"
+        "    for (int kh = 0; kh < " + str(HKV) + "; kh++)\n"
+        "        for (int j = 0; j < " + str(NKV) + "; j++)\n"
+        "            for (int i = 0; i < " + str(D) + "; i++)\n"
+        "                M4_KROW(state, " + str(KOFF) + " + ((size_t)kh * " + str(D * NKV) + " + (size_t)i * " + str(NKV) + " + (size_t)j) * " + str(KEB) + ") =\n"
+        "                    " + kcast + "0.25f;\n"
+    )
+)
+
 main = f'''
 #include <time.h>
 /* ── M4 decode-shim main (plan 2026-09-18-m3-matrix-and-m4-fattn-shim) ──
@@ -106,7 +176,7 @@ static int m4_cmp(const void* a, const void* b) {{
 
 int main(void) {{
     if (!briev_accel_init(descs, N_KERNELS)) {{ fprintf(stderr, "briev: no device\\n"); return 1; }}
-    /* warmup chain: triggers the program-level seed (full_sync) */
+{k_prefill_block}    /* warmup chain: triggers the program-level seed (full_sync) */
     *(long long*)(state + {TOFF}) = 0;
     *(long long*)(state + {ROFF}) = 0;
     *(long long*)(state + {UOFF}) = 0;
@@ -134,32 +204,7 @@ int main(void) {{
         m4_ranges[3 * n + 1] = {QOFF};
         m4_ranges[3 * n + 2] = (size_t){QLEN} * 4;
         n++;
-        for (int kh = 0; kh < {HKV}; kh++) {{
-            size_t row_off = ((size_t)kh * {NKV} + (size_t)j) * {D} * {KEB};
-            rng = 7777u + (unsigned)step;
-            for (int i = 0; i < {D}; i++) {{
-                rng = rng * 1103515245u + 12345u;
-                float val = (float)((rng >> 16) % 997) / 997.0f - 0.5f;
-                M4_KROW(state, {KOFF} + row_off + (size_t)i * {KEB}) =
-                    {kcast}val;
-            }}
-            rng = 8888u + (unsigned)step;
-            for (int i = 0; i < {D}; i++) {{
-                rng = rng * 1103515245u + 12345u;
-                float val = (float)((rng >> 16) % 997) / 997.0f - 0.5f;
-                M4_VROW(state, {VOFF} + row_off + (size_t)i * {VEB}) =
-                    {vcast}val;
-            }}
-            m4_ranges[3 * n] = {KPROJ} + row_off;
-            m4_ranges[3 * n + 1] = {KOFF} + row_off;
-            m4_ranges[3 * n + 2] = (size_t){D} * {KEB};
-            n++;
-            m4_ranges[3 * n] = {VPROJ} + row_off;
-            m4_ranges[3 * n + 1] = {VOFF} + row_off;
-            m4_ranges[3 * n + 2] = (size_t){D} * {VEB};
-            n++;
-        }}
-        double t0 = m4_now();
+{kv_step_block}        double t0 = m4_now();
         if (!briev_accel_push_ranges(state, m4_ranges, n)) {{
             fprintf(stderr, "push failed at step %d\\n", step);
             return 1;
