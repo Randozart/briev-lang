@@ -1781,7 +1781,9 @@ pub fn build_ptx_kernels(
             // attention decode live here).
             let consts = module_expr_consts(program);
             let count = fold_count(&e.shape, &consts)?;
-            let ptx = general::emit_general_ptx(&e.shape, count, &layout, &consts)?;
+            let ptx = general::emit_general_ptx(
+                &e.shape, count, &layout, &consts, universe, int_bits,
+            )?;
             let blob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
                 compile_cubin(&ptx, 64).unwrap_or_else(|| ptx.into_bytes())
             } else {

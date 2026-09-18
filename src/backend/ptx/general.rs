@@ -313,8 +313,10 @@ pub fn emit_general_ptx(
     count: i64,
     layout: &SsboLayout,
     consts: &std::collections::HashMap<String, Expr>,
+    universe: &crate::type_universe::TypeUniverse,
+    int_bits: u64,
 ) -> Result<String, String> {
-    let mut g = Gen::new(layout, consts, count);
+    let mut g = Gen::new(layout, consts, count, universe, int_bits);
     g.emit(shape)
 }
 
@@ -332,6 +334,11 @@ struct Gen<'a> {
     gid: &'static str,
     /// index_var name -> register (locals too).
     regs: std::collections::HashMap<String, String>,
+    /// 2026-09-18 (P0 f16 swap, plan fused-f16-decode-node): cast targets
+    /// resolve through the casting graph (rule 19 — no type-name matching).
+    universe: &'a crate::type_universe::TypeUniverse,
+    int_bits: u64,
+    casting_graph: crate::casting::graph::CastingGraph,
 }
 
 impl<'a> Gen<'a> {
@@ -339,6 +346,8 @@ impl<'a> Gen<'a> {
         layout: &'a SsboLayout,
         consts: &'a std::collections::HashMap<String, Expr>,
         count: i64,
+        universe: &'a crate::type_universe::TypeUniverse,
+        int_bits: u64,
     ) -> Self {
         Self {
             layout,
@@ -352,6 +361,9 @@ impl<'a> Gen<'a> {
             label: 0,
             gid: "%r1",
             regs: std::collections::HashMap::new(),
+            universe,
+            int_bits,
+            casting_graph: crate::casting::graph::CastingGraph::new(),
         }
     }
 
@@ -738,6 +750,30 @@ impl<'a> Gen<'a> {
             }
             Expr::Call(name, args, _) => {
                 self.emit_intrinsic_call(name, args, out, decl, body)?;
+            }
+            Expr::Cast(x, target) => {
+                // 2026-09-18 (P0 f16 swap, plan 2026-09-18-fused-f16-decode-node):
+                // a widening cast in value position lowers to its operand —
+                // this surface computes in f32 registers and the Index arm
+                // converts f16 storage at the load (ld.global.u16 +
+                // cvt.f32.f16), so the f32 target is already satisfied. The
+                // target resolves through the casting graph (rule 19 — no
+                // type-name matching); anything else (narrowing to f16,
+                // f64) stays outside the surface and errors honestly.
+                let shape = self
+                    .casting_graph
+                    .resolve_spirv_shape(self.universe, target, self.int_bits)?;
+                if matches!(
+                    shape,
+                    crate::casting::graph::SpirvShape::Float { bits: 32 }
+                ) {
+                    self.emit_expr(x, out, decl, body)?;
+                } else {
+                    return Err(format!(
+                        "ptx general: cast to {:?} outside the elementwise surface",
+                        shape
+                    ));
+                }
             }
             other => {
                 return Err(format!(

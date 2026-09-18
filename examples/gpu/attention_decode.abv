@@ -26,13 +26,17 @@ let o1: Float[8192];
 let a_out: Float[4096];
 
 // ── 1. QK^T: one work item per (head, kv position) ──────────────────────
+// The `as Float` casts are compute-width widenings: they are no-ops when
+// k/v are Float and the honest f16→f32 conversion when they are Float16
+// (the storage type carries the precision; arithmetic is f32 — the same
+// contract as the smem GEMM's fp16-in/fp32-accumulate).
 async node qk [t < H * NKV][t == H * NKV] {
     let h: Int = t / NKV;
     let j: Int = t - h * NKV;
     let kh: Int = h / G;
     let acc: Float = 0;
     foreach d in 0..D {
-        acc = acc + q[h * D + d] * k[kh * (D * NKV) + j * D + d];
+        acc = acc + q[h * D + d] * (k[kh * (D * NKV) + j * D + d] as Float);
     }
     s[t] = acc * SCALE;
     t = t + 1;
@@ -64,7 +68,7 @@ async node pv [u < H * D][u == H * D] {
     let kh: Int = h / G;
     let acc: Float = 0;
     foreach j in 0..NKV {
-        acc = acc + o1[h * NKV + j] * v[kh * (D * NKV) + j * D + d];
+        acc = acc + o1[h * NKV + j] * (v[kh * (D * NKV) + j * D + d] as Float);
     }
     a_out[u] = acc;
     u = u + 1;

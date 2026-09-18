@@ -2748,6 +2748,13 @@ pub(crate) fn subst_var_expr(e: &Expr, name: &str, repl: &Expr) -> Expr {
             Box::new(subst_var_expr(o, name, repl)),
             Box::new(subst_var_expr(i, name, repl)),
         ),
+        // 2026-09-18 (P0 f16 swap): same hole as subst_var — the runtime
+        // vec4 form substitutes the loop var through the scalar side, which
+        // may carry a widening cast around the load.
+        Expr::Cast(inner, ty) => Expr::Cast(
+            Box::new(subst_var_expr(inner, name, repl)),
+            ty.clone(),
+        ),
         other => other.clone(),
     }
 }
@@ -2765,6 +2772,15 @@ fn subst_var(e: &Expr, name: &str, value: i64) -> Expr {
         Expr::Index(o, i) => Expr::Index(
             Box::new(subst_var(o, name, value)),
             Box::new(subst_var(i, name, value)),
+        ),
+        // 2026-09-18 (P0 f16 swap): the var also hides inside a widening
+        // cast around a load (`k[kh*D*NKV + j*D + d] as Float`). Without
+        // this arm the unrolled vec4 scalar side kept the raw loop var and
+        // read garbage strides (Vulkan s_err=158, caught by the M3
+        // f32-with-casts probe).
+        Expr::Cast(inner, ty) => Expr::Cast(
+            Box::new(subst_var(inner, name, value)),
+            ty.clone(),
         ),
         other => other.clone(),
     }
@@ -2905,6 +2921,15 @@ pub(crate) fn collect_vec4_indices(
             collect_vec4_indices(l, vec4_fields, item, consts, indices);
             collect_vec4_indices(r, vec4_fields, item, consts, indices);
         }
+        // 2026-09-18 (P0 f16 swap): a widening cast AROUND a load
+        // (`k[..] as Float`) is the same load — recurse so the field still
+        // collects as vec4-eligible. Without this the cast silently knocked
+        // the field off the vec4 path and the unrolled body read the raw
+        // scalar slot with a stale index (Vulkan s_err=227, caught by the
+        // M3 f32-with-casts probe).
+        Expr::Cast(inner, _) => {
+            collect_vec4_indices(inner, vec4_fields, item, consts, indices);
+        }
         Expr::Call(_, args, _) => {
             for a in args {
                 collect_vec4_indices(a, vec4_fields, item, consts, indices);
@@ -2967,6 +2992,16 @@ pub(crate) fn replace_index_in_expr(e: &Expr, fname: &str, orig_idx: &Expr, repl
                 .collect(),
             ty.clone(),
         ),
+        // 2026-09-18 (P0 f16 swap): recurse through a widening cast so the
+        // cast-wrapped `field[idx]` still rewrites to the synthetic vec4
+        // component var (the Cast wrapper stays; over an f32 component it
+        // is a passthrough at lowering time — cast_opcode returns None).
+        Expr::Cast(inner, ty) => {
+            Expr::Cast(
+                Box::new(replace_index_in_expr(inner, fname, orig_idx, repl)),
+                ty.clone(),
+            )
+        }
         other => other.clone(),
     }
 }
@@ -3066,6 +3101,47 @@ mod vec4_gate_tests {
             &mut got,
         );
         assert_eq!(got.len(), 1, "bare loop-var index must be vec4-collected");
+    }
+
+    #[test]
+    fn vec4_collector_sees_through_cast() {
+        // 2026-09-18 (P0 f16 swap, plan fused-f16-decode-node):
+        // `k[kh*D*NKV + j*D + d] as Float` — the widening cast wraps the
+        // load; the field must STILL collect as vec4-eligible. Without the
+        // Cast arm the unrolled body read the raw scalar slot with a stale
+        // loop var (Vulkan s_err=158 in the M3 f32-with-casts probe).
+        let inner = Expr::Index(Box::new(Expr::Identifier("k".into())),
+                                Box::new(idx_expr("gemv_x")));
+        let access = Expr::Cast(Box::new(inner), Type::Bits(32));
+        let mut got = Vec::new();
+        collect_vec4_indices(
+            &access, &vec4_map(&["k"]), "k",
+            &HashMap::new(),
+            &mut got,
+        );
+        assert_eq!(got.len(), 1, "cast-wrapped load must be vec4-collected");
+    }
+
+    #[test]
+    fn subst_var_substitutes_through_cast() {
+        // Same probe, substitution side: the vec4 fma group's scalar side
+        // rebinds the loop var per unrolled step — the binding must reach
+        // the loop var hiding inside a Cast-wrapped index.
+        let inner = Expr::Index(Box::new(Expr::Identifier("k".into())),
+                                Box::new(idx_expr("gemv_x")));
+        let cast = Expr::Cast(Box::new(inner), Type::Bits(32));
+        let out = subst_var(&cast, "k", 7);
+        let replaced = replace_index_in_expr(&out, "k", &idx_expr("gemv_x"),
+                                             &Expr::Identifier("syn".into()));
+        // After substitution the index must be the constant 7 (the loop var
+        // was replaced INSIDE the cast, not skipped).
+        let Expr::Cast(inner, _) = replaced else {
+            panic!("cast wrapper must survive substitution");
+        };
+        let Expr::Index(_, idx) = inner.as_ref() else {
+            panic!("index must survive inside the cast");
+        };
+        assert_eq!(**idx, Expr::Decimal(7), "loop var must substitute through the cast");
     }
 
     #[test]
