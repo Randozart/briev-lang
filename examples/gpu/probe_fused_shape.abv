@@ -1,0 +1,31 @@
+// P1 probe (plan 2026-09-18-fused-f16-decode-node): the fused decode shape —
+// serial outer loop over KV, LANE-MAPPED inner reduction per iteration.
+// NOT the real kernel: smallest expression of the nested-cooperative shape
+// (one head's worth of state, no online softmax yet). Question: what does
+// the analysis/emission do with an inner foreach-reduction inside a serial
+// outer loop?
+import "std/types/float.bv";
+
+const D: Int = 128;
+const H: Int = 20;
+const NKV: Int = 256;
+const SCALE: Float = 0.08838834764831845;
+
+let w: Int = 0;
+let q: Float[2560];
+let k: Float[32768];
+let o: Float[20];
+
+async node fused [w < H][w == H] {
+    let acc: Float = 0;
+    foreach j in 0..NKV {
+        let p: Float = 0;
+        foreach d in 0..D {
+            p = p + q[w * D + d] * (k[j * D + d] as Float);
+        }
+        acc = acc + p * SCALE;
+    }
+    o[w] = acc;
+    w = w + 1;
+    term;
+};
