@@ -15,6 +15,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 D="${1:-128}"; H="${2:-20}"; HKV="${3:-5}"; NKV="${4:-4096}"; REPS="${5:-200}"
+F16KV="${F16KV:-0}"
 [ $((H % HKV)) -eq 0 ] || { echo "H=$H not divisible by HKV=$HKV" >&2; exit 1; }
 G=$((H / HKV))
 BRIEVC=./target/release/brievc
@@ -23,25 +24,34 @@ OUT=$(mktemp -d /tmp/opencode/m4.XXXX)
 echo "artifacts: $OUT"
 
 # ── 1. Briev side ────────────────────────────────────────────────────────────
+F16FLAG=""
+[ "$F16KV" = "1" ] && F16FLAG="--f16-kv"
 python3 benchmarks/attn_instantiate.py \
-    --d "$D" --h "$H" --hkv "$HKV" --nkv "$NKV" \
+    --d "$D" --h "$H" --hkv "$HKV" --nkv "$NKV" $F16FLAG \
     --template examples/gpu/attention_decode.abv \
     --out examples/gpu/m4_attn_tmp.abv
+# Float16 fields need the stdlib type in scope (float.bv declares it).
+[ "$F16KV" = "1" ] && sed -i '1i import "std/types/float.bv";' examples/gpu/m4_attn_tmp.abv
 "$BRIEVC" build examples/gpu/m4_attn_tmp.abv --out "$OUT" >/dev/null
 mv "$OUT/m4_attn_tmp_runner.c" "$OUT/attn_runner.c"
 rm -f examples/gpu/m4_attn_tmp.abv
 
-python3 - "$OUT/attn_runner.c" "$OUT/m4_briev.c" "$D" "$H" "$HKV" "$G" "$NKV" "$REPS" <<'PYEOF'
+python3 - "$OUT/attn_runner.c" "$OUT/m4_briev.c" "$D" "$H" "$HKV" "$G" "$NKV" "$REPS" "$F16KV" <<'PYEOF'
 import re, sys
 
 runner_path, out_path = sys.argv[1], sys.argv[2]
-D, H, HKV, G, NKV, REPS = (int(x) for x in sys.argv[3:9])
+D, H, HKV, G, NKV, REPS, F16KV = (int(x) for x in sys.argv[3:10])
 src = open(runner_path).read()
 
 # Field tables: { name, kind, host_offset, elem_bytes, count, is_write, proj_offset }
 fields = {}
 for m in re.finditer(r'\{ "(\w+)", (\d+), (\d+), (\d+), (\d+), ([01]), (\d+) \}', src):
-    fields[m.group(1)] = (int(m.group(2)), int(m.group(3)), int(m.group(7)))
+    fields[m.group(1)] = {
+        "kind": int(m.group(2)),
+        "host": int(m.group(3)),
+        "elem": int(m.group(4)),
+        "proj": int(m.group(7)),
+    }
 
 need = ["q", "k", "v", "a_out", "t", "r", "u"]
 missing = [n for n in need if n not in fields]
@@ -54,13 +64,21 @@ if len(kernels) != 3:
     raise SystemExit(f"expected 3 kernel descs, found {kernels}")
 QKIDX, SMIDX, PVIDX = (kernels.index(n) for n in ("qk", "softmax", "pv"))
 
-QOFF, QPROJ = fields["q"][1], fields["q"][2]
-KOFF, KPROJ = fields["k"][1], fields["k"][2]
-VOFF, VPROJ = fields["v"][1], fields["v"][2]
-TOFF, ROFF, UOFF = fields["t"][1], fields["r"][1], fields["u"][1]
+F16 = fields["k"]["elem"] == 2
+if F16KV != (1 if F16 else 0):
+    raise SystemExit(f"f16-kv flag mismatch: harness={F16KV} tables k elem={fields['k']['elem']}")
+QOFF, QPROJ = fields["q"]["host"], fields["q"]["proj"]
+KOFF, KPROJ = fields["k"]["host"], fields["k"]["proj"]
+VOFF, VPROJ = fields["v"]["host"], fields["v"]["proj"]
+TOFF, ROFF, UOFF = fields["t"]["host"], fields["r"]["host"], fields["u"]["host"]
+KEB, VEB = fields["k"]["elem"], fields["v"]["elem"]
 QLEN = H * D
 NQK = H * NKV
 NPD = H * D
+kptr = "unsigned short" if KEB == 2 else "float"
+kcast = "(_Float16)" if KEB == 2 else "(float)"
+vptr = "unsigned short" if VEB == 2 else "float"
+vcast = "(_Float16)" if VEB == 2 else "(float)"
 
 main = f'''
 #include <time.h>
@@ -70,6 +88,11 @@ main = f'''
    device-resident (the ggml integration consumes it on-device). */
 static float m4_qrow[{QLEN}];
 static size_t m4_ranges[3 * 16];
+/* k/v row fills honor the field element width: 4 = f32, 2 = f16 storage
+ * (_Float16 rows — the device's widening loads read the same values the
+ * host wrote, plan fused-f16-decode-node P0). */
+#define M4_KROW(state, off) (*({kptr}*)((unsigned char*)(state) + (off)))
+#define M4_VROW(state, off) (*({vptr}*)((unsigned char*)(state) + (off)))
 
 static double m4_now(void) {{
     struct timespec ts;
@@ -112,26 +135,28 @@ int main(void) {{
         m4_ranges[3 * n + 2] = (size_t){QLEN} * 4;
         n++;
         for (int kh = 0; kh < {HKV}; kh++) {{
-            size_t row_off = ((size_t)kh * {NKV} + (size_t)j) * {D} * 4;
+            size_t row_off = ((size_t)kh * {NKV} + (size_t)j) * {D} * {KEB};
             rng = 7777u + (unsigned)step;
-            float* kr = (float*)(state + {KOFF} + row_off);
             for (int i = 0; i < {D}; i++) {{
                 rng = rng * 1103515245u + 12345u;
-                kr[i] = (float)((rng >> 16) % 997) / 997.0f - 0.5f;
+                float val = (float)((rng >> 16) % 997) / 997.0f - 0.5f;
+                M4_KROW(state, {KOFF} + row_off + (size_t)i * {KEB}) =
+                    {kcast}val;
             }}
             rng = 8888u + (unsigned)step;
-            float* vr = (float*)(state + {VOFF} + row_off);
             for (int i = 0; i < {D}; i++) {{
                 rng = rng * 1103515245u + 12345u;
-                vr[i] = (float)((rng >> 16) % 997) / 997.0f - 0.5f;
+                float val = (float)((rng >> 16) % 997) / 997.0f - 0.5f;
+                M4_VROW(state, {VOFF} + row_off + (size_t)i * {VEB}) =
+                    {vcast}val;
             }}
             m4_ranges[3 * n] = {KPROJ} + row_off;
             m4_ranges[3 * n + 1] = {KOFF} + row_off;
-            m4_ranges[3 * n + 2] = (size_t){D} * 4;
+            m4_ranges[3 * n + 2] = (size_t){D} * {KEB};
             n++;
             m4_ranges[3 * n] = {VPROJ} + row_off;
             m4_ranges[3 * n + 1] = {VOFF} + row_off;
-            m4_ranges[3 * n + 2] = (size_t){D} * 4;
+            m4_ranges[3 * n + 2] = (size_t){D} * {VEB};
             n++;
         }}
         double t0 = m4_now();
@@ -183,8 +208,7 @@ BRIEV_ACCEL_DEVICE=cuda "$OUT/m4_briev"
 # stock fattn per-layer time at kv=$NKV. Head count is nearly free at fixed
 # kv (KV-read-bound: nr23=[1,1]/[4,1]/[8,1] rows are flat), so bitnet's
 # H=20/HKV=5 sits on the same rows.
-echo "== GGML STOCK FATTN (test-backend-ops, hsk=128, nb=1, kv=$NKV) =="
+echo "== GGML STOCK FATTN (test-backend-ops, nb=1, kv=$NKV) =="
 CUDA_VISIBLE_DEVICES=0 "$CYBER/build/bin/test-backend-ops" perf \
-    -o FLASH_ATTN_EXT 2>&1 \
-    | grep -E "hsk=128,hsv=128.*kv=$NKV,nb=1," -A1 \
-    | grep "runs -" || true
+    -o FLASH_ATTN_EXT -p "kv=$NKV,nb=1" 2>&1 \
+    | grep -E "hsk=128" -A1 | grep "runs -" || true

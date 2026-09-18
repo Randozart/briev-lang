@@ -13,16 +13,21 @@ NKV="${1:-256}"
 D="${D:-128}"
 H="${H:-32}"
 HKV="${HKV:-8}"
+F16KV="${F16KV:-0}"
 [ $((H % HKV)) -eq 0 ] || { echo "H=$H not divisible by HKV=$HKV" >&2; exit 1; }
 G=$((H / HKV))
 BRIEVC=./target/release/brievc
 OUT=$(mktemp -d /tmp/opencode/m3.XXXX)
 
 # 1. Instantiate the .abv at the requested geometry.
+F16FLAG=""
+[ "$F16KV" = "1" ] && F16FLAG="--f16-kv"
 python3 benchmarks/attn_instantiate.py \
-    --d "$D" --h "$H" --hkv "$HKV" --nkv "$NKV" \
-    --template examples/gpu/attention_decode.abv \
+    --d "$D" --h "$H" --hkv "$HKV" --nkv "$NKV" $F16FLAG \
+    --template "${TEMPLATE:-examples/gpu/attention_decode.abv}" \
     --out examples/gpu/m3_attn_tmp.abv
+# Float16 fields need the stdlib type in scope (float.bv declares it).
+[ "$F16KV" = "1" ] && sed -i '1i import "std/types/float.bv";' examples/gpu/m3_attn_tmp.abv
 
 # 2. Build the dual-image runner.
 "$BRIEVC" build examples/gpu/m3_attn_tmp.abv --out "$OUT" >/dev/null
@@ -33,37 +38,58 @@ for kp in 0 1 2; do
 done
 
 # 3. Inject the harness (seed + CPU reference + verdict).
-python3 - "$OUT/attention_decode_runner.c" "$OUT/harness.c" "$NKV" "$D" "$H" "$HKV" "$G" <<'PYEOF'
+python3 - "$OUT/attention_decode_runner.c" "$OUT/harness.c" "$NKV" "$D" "$H" "$HKV" "$G" "$F16KV" <<'PYEOF'
 import math, re, sys
 
 runner_path, out_path = sys.argv[1], sys.argv[2]
-NKV, D, H, HKV, G = (int(x) for x in sys.argv[3:8])
+NKV, D, H, HKV, G, F16KV = (int(x) for x in sys.argv[3:9])
 src = open(runner_path).read()
 
-def off(name):
-    m = re.search(r'\{ "%s", 1, (\d+), 4,' % name, src)
-    return int(m.group(1))
+def field(name):
+    m = re.search(r'\{ "%s", 1, (\d+), (\d+),' % name, src)
+    return int(m.group(1)), int(m.group(2))  # host_offset, elem_bytes
 
-Q, K, V, A = off('q'), off('k'), off('v'), off('a_out')
+Q, QEB = field('q'); K, KEB = field('k'); V, VEB = field('v'); A, _ = field('a_out')
+F16 = KEB == 2 or VEB == 2
+if F16KV != (1 if F16 else 0):
+    raise SystemExit(f"f16-kv flag mismatch: harness={F16KV} tables k/v elem={KEB}/{VEB}")
 QLEN, KVLEN = H * D, HKV * NKV * D
 scale = 1.0 / math.sqrt(D)
+
+# P0 f16 swap: k/v seed as _Float16 (2-byte elements) when the tables say 2;
+# the CPU reference decodes the SAME f16 values, so the 1e-3 gate measures
+# pure composition error (f16 quantization is the pipeline's input contract,
+# shared with ggml's f16 KV — not an error source here).
+kv_decl = (
+    "    unsigned short* k_ = (unsigned short*)(state + KOFF);\n"
+    "    unsigned short* v_ = (unsigned short*)(state + VOFF);\n"
+    if F16
+    else (
+        "    float* k_ = (float*)(state + KOFF);\n"
+        "    float* v_ = (float*)(state + VOFF);\n"
+    )
+)
+kv_store_f = "{k_}[i] = (unsigned short)(_Float16)(((rng>>16)%997)/997.0f - 0.5f);" if F16 \
+    else "{k_}[i] = (float)((rng>>16)%997)/997.0f - 0.5f;"
+bak_f = "    {b}[i] = (float)((_Float16*)({p}))[i];" if F16 else "    {b}[i] = ((float*)({p}))[i];"
 
 seed = (
     "\n  { unsigned rng = 12345;\n"
     "    float* q_ = (float*)(state + QOFF);\n"
-    "    float* k_ = (float*)(state + KOFF);\n"
-    "    float* v_ = (float*)(state + VOFF);\n"
-    f"    for (long long i = 0; i < {QLEN}; i++) {{ rng = rng*1103515245u+12345u; q_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}\n"
-    f"    for (long long i = 0; i < {KVLEN}; i++) {{ rng = rng*1103515245u+12345u; k_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}\n"
-    f"    for (long long i = 0; i < {KVLEN}; i++) {{ rng = rng*1103515245u+12345u; v_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}\n"
+    + kv_decl
+    + f"    for (long long i = 0; i < {QLEN}; i++) {{ rng = rng*1103515245u+12345u; q_[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}\n"
+    + f"    for (long long i = 0; i < {KVLEN}; i++) {{ rng = rng*1103515245u+12345u; " + kv_store_f.format(k_='k_') + " }\n"
+    + f"    for (long long i = 0; i < {KVLEN}; i++) {{ rng = rng*1103515245u+12345u; " + kv_store_f.format(k_='v_') + " }\n"
     "  }\n"
-    "  /* backup Q/K/V before composition (q and a_out alias in proj) */\n"
+    "  /* backup Q/K/V before composition (q and a_out alias in proj); K/V\n"
+    "   * decode the f16 storage so the reference computes on what the\n"
+    "   * device actually reads */\n"
     f"  float* Qbak = (float*)malloc({QLEN} * sizeof(float));\n"
     f"  float* Kbak = (float*)malloc({KVLEN} * sizeof(float));\n"
     f"  float* Vbak = (float*)malloc({KVLEN} * sizeof(float));\n"
     f"  memcpy(Qbak, state + QOFF, {QLEN} * sizeof(float));\n"
-    f"  memcpy(Kbak, state + KOFF, {KVLEN} * sizeof(float));\n"
-    f"  memcpy(Vbak, state + VOFF, {KVLEN} * sizeof(float));\n"
+    f"    for (long long i = 0; i < {KVLEN}; i++) {{ " + bak_f.format(b='Kbak', p='state + KOFF') + " }\n"
+    f"    for (long long i = 0; i < {KVLEN}; i++) {{ " + bak_f.format(b='Vbak', p='state + VOFF') + " }\n"
 )
 tail = (
     "\n  {\n"
@@ -112,7 +138,7 @@ tail = (
     "    printf(\"worst S: idx=%d dev=%.6f ref=%.6f | A0=%.6f ref=%.6f\\n\", ws_i, ws_dev, ws_ref, dump_a0, dump_ref0);\n"
     "  }\n"
 )
-for key, val in [('SOFF', off('s')), ('O1OFF', off('o1')), ('NKVOFF', NKV), ('QOFF', Q), ('KOFF', K), ('VOFF', V), ('AOFF', A)]:
+for key, val in [('SOFF', field('s')[0]), ('O1OFF', field('o1')[0]), ('NKVOFF', NKV), ('QOFF', Q), ('KOFF', K), ('VOFF', V), ('AOFF', A)]:
     seed = seed.replace(key, str(val))
     tail = tail.replace(key, str(val))
 tail = tail.replace('PASSFAIL', '%s')

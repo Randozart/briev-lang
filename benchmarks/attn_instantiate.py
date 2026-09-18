@@ -17,6 +17,9 @@ p.add_argument("--d", type=int, default=128, help="head dim")
 p.add_argument("--h", type=int, default=32, help="query heads")
 p.add_argument("--hkv", type=int, default=8, help="kv heads")
 p.add_argument("--nkv", type=int, default=256, help="kv length")
+p.add_argument("--f16-kv", action="store_true",
+               help="declare k/v as Float16 (P0 f16 swap, plan "
+                    "2026-09-18-fused-f16-decode-node)")
 p.add_argument("--template", default="examples/gpu/attention_decode.abv")
 p.add_argument("--out", required=True)
 a = p.parse_args()
@@ -45,8 +48,10 @@ sizes = {
     "s": a.h * a.nkv,
     "o1": a.h * a.nkv,
 }
+kv_elem = "Float16" if a.f16_kv else "Float"
 for name, n in sizes.items():
-    src, cnt = re.subn(rf"let {name}: Float\[\d+\];", f"let {name}: Float[{n}];", src)
+    elem = kv_elem if name in ("k", "v") else "Float"
+    src, cnt = re.subn(rf"let {name}: \w+\[\d+\];", f"let {name}: {elem}[{n}];", src)
     if cnt != 1:
         raise SystemExit(f"field '{name}': expected exactly 1 decl, found {cnt}")
 
