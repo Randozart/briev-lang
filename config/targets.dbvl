@@ -13,11 +13,11 @@
 //     <vector_min_width>;` — read by config_tuning::load_target_settings.
 // The .toml remains until both parity tests prove identical output.
 
-.bv: llvm; --budget 256; prelude-native env print inline-frgn entry script; none; 50;
+.bv: llvm; --budget 256; prelude-native env print inline-frgn entry script execute-many; none; 50;
 .ebv: electronics; ; prelude-electronics;
 .sbv: circt; ; prelude-hw;
 .rbv: webstack; --target wasm; prelude;
-.abv: spirv; ; prelude;
+.abv: spirv; ; prelude execute-many;
 
 // ── Per-target tuning (plan §8.1, frontend-driven-dispatch) ──────────
 // Looked up by matching the compiler's target_triple PREFIX. Absent prefix →

@@ -2414,6 +2414,32 @@ regex!(#r"[a-z]+")
 
 Privileged macros declare capabilities at definition. Calls still use `name!(...)`; `$!name` does not exist.
 
+**`execute_many!`** — repeated application with heterogeneous literal blocks
+(2026-09-18):
+
+```briev
+execute_many!(callee, block₁, block₂, …);
+// block := "(" [expr ("," expr)*] ")"
+```
+
+Expands at the Parsed stage to sequential applications `callee(block₁);
+callee(block₂); …` — order guaranteed. `callee` is a named `defn` or `#`
+intrinsic. The block delimiter is `()` at both levels: the outer `!()`
+invokes the macro, each inner `()` is one application spine written
+without its callee — the application delimiter meaning application,
+at every depth. A parenthesized tuple `(a, b)` is a multi-arg block;
+any other expression `(x)` is a single-arg block; `()` is the empty
+block. At least one block is required (a zero-invocation call site is
+a mistake, not a no-op). Statement-only: in expression position it is
+an error — the construct keeps side effects and discards results; bind
+calls explicitly instead. Each block is checked against the callee in
+order, and block *N*'s mismatch names *N*. Use cases: document-fill
+printing and repeated `Asm#` invocations with per-call compile-time
+immediates — heterogeneous blocks a runtime `foreach` cannot express.
+Braces were rejected as the block delimiter (collides with block
+expressions and struct literals; wrong delimiter load); brackets were
+rejected (list literals imply evaluation).
+
 ### 18.3 Stages
 
 ```briev

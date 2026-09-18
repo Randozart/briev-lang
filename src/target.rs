@@ -421,7 +421,7 @@ mod tests {
 [".bv"]
 backend = "llvm"
 defaults = ["--budget", "256"]
-plugins = ["prelude-native", "env", "print", "inline-frgn", "entry", "script"]
+plugins = ["prelude-native", "env", "print", "inline-frgn", "entry", "script", "execute-many"]
 assembler = "none"
 cross_verify_samples = 50
 
@@ -443,7 +443,7 @@ plugins = ["prelude"]
 [".abv"]
 backend = "spirv"
 defaults = []
-plugins = ["prelude"]
+plugins = ["prelude", "execute-many"]
 
 [target.x86_64]
 float_registers = 16
