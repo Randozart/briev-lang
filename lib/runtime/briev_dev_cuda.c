@@ -529,6 +529,33 @@ static int briev_dev_cuda_launch_dev2d_batch(void* handle, size_t nx, size_t ny,
     return ok;
 }
 
+/// 2026-09-18 (M4 decode-append): range upload without dispatch — the
+/// launch_dev2d dirty loop minus the grid launch. Same synchronous-copy
+/// contract (previous launch already drained; see cuda_launch_grid's sync
+/// default). Returns 0 on any range that would leave the working set.
+static int briev_dev_cuda_upload_ranges(void* handle, const size_t* dirty,
+                                        uint32_t n_dirty) {
+    BrievCudaKernel* k = (BrievCudaKernel*)handle;
+    if (!k || k->dev == 0 || k->mapped_host == NULL || k->bytes == 0) {
+        return 0;
+    }
+    if (p_cuStreamSynchronize && cu_stream) {
+        p_cuStreamSynchronize(cu_stream);
+    }
+    for (uint32_t r = 0; r < n_dirty; r++) {
+        size_t off = dirty[2 * r];
+        size_t sz = dirty[2 * r + 1];
+        if (off + sz > k->bytes) {
+            return 0;
+        }
+        if (p_cuMemcpyHtoD(k->dev + off, (char*)k->mapped_host + off, sz)
+            != CUDA_SUCCESS) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /// Pull the device working set into the page-locked host mirror
 /// (briev_accel_download's tail).
 static int briev_dev_cuda_download_dev(void* handle) {
@@ -610,4 +637,6 @@ BrievDeviceDriver briev_dev_cuda = {
     briev_dev_cuda_set_block_threads,
     // 2026-09-10 (cp.async stages): per-kernel dynamic shared-memory size.
     briev_dev_cuda_set_shared_bytes,
+    // 2026-09-18 (M4 decode-append): array-range upload without dispatch.
+    briev_dev_cuda_upload_ranges,
 };

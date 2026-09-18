@@ -182,6 +182,14 @@ typedef struct BrievDeviceDriver {
     // 2026-09-10 (cp.async stages): optional per-kernel dynamic shared-
     // memory size (CUDA tier). NULL → 0 (no dynamic shared memory).
     int (*set_shared_bytes)(void* kernel, uint32_t n);
+    // 2026-09-18 (M4 decode-append, plan 2026-09-18-m3-matrix-and-m4-fattn-shim):
+    // optional array-range upload — push (offset, bytes) pairs from the
+    // mapped host mirror into the device working set WITHOUT a dispatch.
+    // Decode attention appends one KV row per step between kernel chains;
+    // the scalar dirty path covers counters only. Uses the same synchronous
+    // copy contract as launch_dev2d's dirty loop. NULL → the decode-append
+    // path is unavailable (briev_accel_push_ranges returns 0).
+    int (*upload_ranges)(void* kernel, const size_t* dirty, uint32_t n_dirty);
 } BrievDeviceDriver;
 
 extern BrievDeviceDriver briev_dev_cuda;
@@ -698,6 +706,45 @@ int briev_accel_download(uint32_t idx, void* state) {
                (size_t)(f->count * f->elem_bytes));
     }
     return 1;
+}
+
+/// 2026-09-18 (M4 decode-append, plan 2026-09-18-m3-matrix-and-m4-fattn-shim):
+/// push array byte ranges from the host staging `state` into the device
+/// working set WITHOUT a dispatch. Decode attention appends one KV row per
+/// step between kernel chains; the launch-time dirty path covers scalar
+/// counters only. `ranges` holds TRIPLES: projection offset, host offset,
+/// bytes — the two layouts differ (alignment padding). Contract: the
+/// program must already be seeded through the shared-state resident path
+/// and previous launches synchronized (the default sync-launch contract).
+/// Requires the driver's upload_ranges hook; returns 0 when unavailable.
+int briev_accel_push_ranges(void* state, const size_t* ranges, uint32_t n) {
+    if (!briev_accel_available() || g_driver == NULL || g_kernels == NULL
+        || g_n_kernels == 0 || g_kernels[0] == NULL || !g_program_seeded
+        || (g_driver->capabilities & BRIEV_DEV_CAP_SHARED_STATE) == 0) {
+        return 0;
+    }
+    if (g_driver->upload_ranges == NULL || g_driver->mapped == NULL) {
+        return 0;
+    }
+    void* mapped = g_driver->mapped(g_kernels[0]);
+    if (mapped == NULL) {
+        return 0;
+    }
+    size_t* dev_ranges = (size_t*)malloc(2 * sizeof(size_t) * n);
+    if (dev_ranges == NULL) {
+        return 0;
+    }
+    for (uint32_t r = 0; r < n; r++) {
+        size_t proj_off = ranges[3 * r];
+        size_t len = ranges[3 * r + 2];
+        memcpy(mapped + proj_off,
+               (const uint8_t*)state + ranges[3 * r + 1], len);
+        dev_ranges[2 * r] = proj_off;
+        dev_ranges[2 * r + 1] = len;
+    }
+    int ok = g_driver->upload_ranges(g_kernels[0], dev_ranges, n);
+    free(dev_ranges);
+    return ok;
 }
 
 /// Free kernel handles + driver shutdown. Called by program exit.

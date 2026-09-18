@@ -1,7 +1,12 @@
 # M3 Matrix Completion + M4 fattn Shim (CyberLlama A/B track)
 
 **Date:** 2026-09-18
-**Status:** Active
+**Status:** Step 1 DONE (M3 matrix 18/18 PASS). Step 2 DONE — gate verdict
+**NO WIN** (Briev chain 412.8 µs vs stock fattn 58.3–59.6 µs at bitnet
+NKV=4096; `benchmarks/results/2026-09-18-m4-decode-microbench-gate.md`).
+Step 3 NOT built (gate says stop). Step 4 moot. Future path: fused f16
+single-node decode composition — frontend expressiveness work, its own
+plan.
 **Parent:** CyberLlama plan `37ab73093` (cyberllama repo, M0-M5) + before-ledger
 `benchmarks/results/2026-09-17-cyberllama-before-ledger.md`
 **Preceded by:** SPIR-V vec4 member-index fix (`ac1f9d2a`) — both M3 lanes PASS
