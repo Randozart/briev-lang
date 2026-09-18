@@ -43,7 +43,10 @@ use crate::analysis::accel::KernelShape;
 use crate::ast::{BinaryOpKind, Expr, Statement};
 use crate::backend::spirv::runner::SsboLayout;
 
-const BLOCK: u32 = 256;
+// 2026-09-18 (M3 composition debug): BLOCK must match the CUDA driver's
+// default block_threads (64). The old value (256) caused gid = cta*256+tid
+// to scramble thread→element mapping when the launch used 64 threads/block.
+const BLOCK: u32 = 64;
 
 /// Emit the general 1D PTX kernel for one eligible node.
 /// Cooperative row-softmax PTX (2026-09-17, M2a increment 3 — the CUDA-lane

@@ -575,8 +575,17 @@ int briev_accel_launch_resident_2d(uint32_t idx, void* state,
     }
     // No device→host scalar sync: the host owns the scalars (they were just
     // uploaded); arrays stay device-resident until briev_accel_download.
-    return g_driver->launch_dev2d(g_kernels[idx], nx, ny, full_sync,
-                                  dirty, n_dirty);
+    int ok = g_driver->launch_dev2d(g_kernels[idx], nx, ny, full_sync,
+                                     dirty, n_dirty);
+    // 2026-09-18 (multi-kernel composition): after the FIRST resident
+    // dispatch (full_sync=1), the output arrays live on-device but NOT in
+    // host state. The next kernel's seed_program_fields reads state — stale
+    // zeros would be uploaded. Pull written fields back after each full_sync
+    // dispatch so subsequent kernels see correct inputs.
+    if (ok && full_sync) {
+        briev_accel_download_written(idx, state);
+    }
+    return ok;
 }
 
 /// Batched resident launch (plan 2026-09-01-smallm-splitk): `times`

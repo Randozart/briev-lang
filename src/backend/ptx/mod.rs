@@ -1754,12 +1754,24 @@ pub fn build_ptx_kernels(
         // shape, and letting the GEMM tier claim it produced a tiled kernel
         // under cooperative dispatch (rows 32+ never computed on CUDA).
         // Precedence mirrors the SPIR-V router (is_cooperative_shape).
-        if let Some(red) = &e.shape.reduction {
-            if let Some(k) =
-                emit_cooperative_reduction_ptx(name.clone(), &e.shape, red, program, &layout)?
-            {
-                out.push(k);
-                continue;
+        // Only TRULY cooperative shapes take the dedicated emitters — the
+        // same gate the SPIR-V router uses. A Dot shape whose counter is
+        // decomposed (qk/pv: h = t/NKV) is a row-per-thread kernel under
+        // 1D dispatch; its reduction field is structural noise and the
+        // general emitter handles it. Without this gate the cooperative
+        // emitter's hard gates killed the whole PTX build.
+        if crate::backend::spirv::kernel::is_cooperative_shape(&e.shape) {
+            if let Some(red) = &e.shape.reduction {
+                if let Some(k) = emit_cooperative_reduction_ptx(
+                    name.clone(),
+                    &e.shape,
+                    red,
+                    program,
+                    &layout,
+                )? {
+                    out.push(k);
+                    continue;
+                }
             }
         }
         let plan = GemmPlan::match_stmts(&e.shape, program);
