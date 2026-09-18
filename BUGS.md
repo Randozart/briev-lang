@@ -6451,3 +6451,42 @@ end-of-program.
 **Verification state:** single-kernel programs verified device-correct on
 both lanes post-fix (gemv 4096×4096 y=4096.0 exact; softmax_rows 4×256
 uniform 0.003906 exact). The composition awaits the prime fix.
+
+## 2026-09-18: CUDA 13.4 cuMemcpy2D silently no-ops under legacy-context dlopen [OPEN]
+
+**Context:** M2 strided append (plan 2026-09-18-coalesced-kv-memory-path) —
+the pitched-copy primitive (`briev_accel_push_strided` + driver
+`push_strided` hook, CUDA shim `CuMemcpy2D` struct) for the d-major K
+append.
+
+**Symptom:** every cuMemcpy2D returns CUDA_SUCCESS but writes nothing,
+when the process context was created by the legacy 3-arg `cuCtxCreate`
+(via dlopen, the runtime's pattern). Verified in the live harness
+(in-hook DtoH probe read the prefill value after a "successful" copy)
+AND reproduced standalone (`probe_repl.c`: dlopen libcuda.so.1 + shim
+struct + legacy ctx → 128/128 mismatches; the shim struct layout was
+verified field-by-field against /opt/cuda/include/cuda.h, sizeof 128).
+
+**Isolation evidence:**
+- Directly-linked cuMemcpy2D (real header, `-lcuda`) in the SAME
+  process/legacy context returns **201 (CUDA_ERROR_INVALID_CONTEXT)** —
+  the honest error the dlsym'd entry hides. Same params, same context.
+- The identical pitched copy PASSES in a standalone process using the
+  linked lib + **cuCtxCreate_v4** context.
+- Switching the runtime to cuCtxCreate_v4 made cuMemcpy2D work but
+  BROKE cuLaunchKernel ("qk failed" on the first resident launch) —
+  reverted. Legacy context creation is the load-bearing path for every
+  other driver call in the shim.
+
+**Status:** `push_strided` API + `BrievPushDesc`/`BrievStridedCopy` are
+landed; the CUDA hook returns 0 (honest unavailability) with the reason
+inlined. The use it would serve (d-major K append) is NOT the M4
+integration shape — the fused node's j-major K appends are contiguous
+and ride `push_ranges`; a ggml column-major row transposes host-side in
+the adapter. Re-enable when the quirk is understood (candidates: the
+legacy-context's visibility to the new batched-memcpy implementation,
+or a driver version regression).
+
+**M2 outcome (re-scoped):** no new runtime primitive is needed for the
+M4 integration; the append path for j-major K is push_ranges as-is, and
+the dmaj 3-kernel variant stays a measurement vehicle (prefill mode).

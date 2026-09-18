@@ -92,10 +92,14 @@ vcast = "(_Float16)" if VEB == 2 else "(float)"
 # dmaj prefills all K rows before the warmup (d-major scatter) and appends
 # V only — K append under d-major is M2's batching problem.
 if KLAYOUT == "dmaj":
+    # dmaj mode (post-M2): K appends need the strided push — DISABLED
+    # pending the cuMemcpy2D driver quirk (BUGS.md) — so K stays
+    # prefilled (the M1 measurement mode) and per-step appends are V-only
+    # on the flat ranges path.
     kv_step_block = (
+        "        rng = 8888u + (unsigned)step;\n"
         "        for (int kh = 0; kh < " + str(HKV) + "; kh++) {\n"
         "            size_t row_off = ((size_t)kh * " + str(NKV) + " + (size_t)j) * " + str(D) + " * " + str(VEB) + ";\n"
-        "            rng = 8888u + (unsigned)step;\n"
         "            for (int i = 0; i < " + str(D) + "; i++) {\n"
         "                rng = rng * 1103515245u + 12345u;\n"
         "                float val = (float)((rng >> 16) % 997) / 997.0f - 0.5f;\n"
@@ -136,6 +140,7 @@ else:
         "            n++;\n"
         "        }\n"
     )
+k_statics = ""
 k_prefill_block = (
     ""
     if KLAYOUT != "dmaj"
@@ -150,6 +155,21 @@ k_prefill_block = (
     )
 )
 
+# Correctness check for the M2 strided path: stage a known row, push it
+# strided, download K, verify every element landed at its pitched slot.
+# M2 strided-append verification: moot while push_strided is disabled
+# (BUGS.md cuMemcpy2D quirk). Restore with the strided kv_step_block.
+verify_block = ""
+# Push call: both layouts ride the flat ranges path (K/V rows contiguous
+# per kv head in jd; V-only in dmaj — the d-major K append needs the
+# strided push, disabled pending the cuMemcpy2D driver quirk, BUGS.md).
+push_call = (
+    '        if (!briev_accel_push_ranges(state, m4_ranges, n)) {{\n'
+    '            fprintf(stderr, "push failed at step %d\\\\n", step);\n'
+    '            return 1;\n'
+    '        }}'
+)
+
 main = f'''
 #include <time.h>
 /* ── M4 decode-shim main (plan 2026-09-18-m3-matrix-and-m4-fattn-shim) ──
@@ -158,6 +178,7 @@ main = f'''
    device-resident (the ggml integration consumes it on-device). */
 static float m4_qrow[{QLEN}];
 static size_t m4_ranges[3 * 16];
+{k_statics}
 /* k/v row fills honor the field element width: 4 = f32, 2 = f16 storage
  * (_Float16 rows — the device's widening loads read the same values the
  * host wrote, plan fused-f16-decode-node P0). */
@@ -204,11 +225,8 @@ int main(void) {{
         m4_ranges[3 * n + 1] = {QOFF};
         m4_ranges[3 * n + 2] = (size_t){QLEN} * 4;
         n++;
-{kv_step_block}        double t0 = m4_now();
-        if (!briev_accel_push_ranges(state, m4_ranges, n)) {{
-            fprintf(stderr, "push failed at step %d\\n", step);
-            return 1;
-        }}
+ {kv_step_block}        double t0 = m4_now();
+{push_call}
         double t1 = m4_now();
         if (!briev_accel_launch_resident({QKIDX}, state, {NQK})) {{ fprintf(stderr, "qk failed\\n"); return 1; }}
         double t2a = m4_now();
@@ -234,7 +252,7 @@ int main(void) {{
            qk_t[{REPS} / 2] + sm_t[{REPS} / 2] + pv_t[{REPS} / 2],
            push_t[{REPS} / 2] + qk_t[{REPS} / 2] + sm_t[{REPS} / 2] + pv_t[{REPS} / 2]);
     free(push_t); free(qk_t); free(sm_t); free(pv_t);
-    briev_accel_shutdown();
+{verify_block}    briev_accel_shutdown();
     return 0;
 }}
 '''

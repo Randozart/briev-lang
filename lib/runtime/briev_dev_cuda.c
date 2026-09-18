@@ -60,6 +60,10 @@ typedef int (*cu_ret_dev)(CUdevice*, int);
 typedef int (*cu_name)(char*, int, CUdevice);
 typedef int (*cu_attr)(int*, int, CUdevice);
 typedef int (*cu_ctx_create)(CUcontext*, unsigned, CUdevice);
+// 2026-09-18 (M2): CUDA 13's cuMemcpy2D does not see contexts created by
+// the legacy cuCtxCreate entry (it no-ops returning success) — the v4
+// entry is the compatible one. Temp probe evidence: probe_repl.c.
+typedef int (*cu_ctx_create_v4)(CUcontext*, void*, unsigned, CUdevice);
 typedef int (*cu_module_load)(CUmodule*, const void*);
 typedef int (*cu_module_load_ex)(CUmodule*, const void*, unsigned int,
                                  unsigned int*, void**);
@@ -69,6 +73,32 @@ typedef int (*cu_mem_alloc)(CUdeviceptr*, size_t);
 typedef int (*cu_mem_free)(CUdeviceptr);
 typedef int (*cu_memcpy_htod)(CUdeviceptr, const void*, size_t);
 typedef int (*cu_memcpy_dtoh)(void*, CUdeviceptr, size_t);
+// CUDA_MEMCPY2D shim (driver ABI, 64-bit Linux: 16 eight-byte fields,
+// no padding surprises). Only the host→device pitched form is used.
+#define CU_MEMORYTYPE_HOST 1
+#define CU_MEMORYTYPE_DEVICE 2
+typedef struct CuMemcpy2D {
+    size_t srcXInBytes;
+    size_t srcY;
+    // CUmemorytype is a 4-byte ENUM in cuda.h — using size_t here shifted
+    // every following field and the copies silently landed nowhere (the
+    // M2 verify caught it; /opt/cuda/include/cuda.h is the reference).
+    unsigned int srcMemoryType;
+    const void* srcHost;
+    CUdeviceptr srcDevice;
+    void* srcReserved;
+    size_t srcPitch;
+    size_t dstXInBytes;
+    size_t dstY;
+    unsigned int dstMemoryType;
+    void* dstHost;
+    CUdeviceptr dstDevice;
+    void* dstReserved;
+    size_t dstPitch;
+    size_t WidthInBytes;
+    size_t Height;
+} CuMemcpy2D;
+typedef int (*cu_memcpy_2d)(const CuMemcpy2D*);
 typedef int (*cu_launch)(CUfunction, unsigned, unsigned, unsigned,
                          unsigned, unsigned, unsigned, unsigned, CUstream,
                          void**, void**);
@@ -87,6 +117,7 @@ static cu_ret_dev p_cuDeviceGet = NULL;
 static cu_name p_cuDeviceGetName = NULL;
 static cu_attr p_cuDeviceGetAttribute = NULL;
 static cu_ctx_create p_cuCtxCreate = NULL;
+static cu_ctx_create_v4 p_cuCtxCreate_v4 = NULL;
 static cu_module_load p_cuModuleLoadData = NULL;
 static cu_module_load_ex p_cuModuleLoadDataEx = NULL;
 static cu_func_get_attribute p_cuFuncGetAttribute = NULL;
@@ -94,6 +125,7 @@ static cu_module_func p_cuModuleGetFunction = NULL;
 static cu_mem_alloc p_cuMemAlloc = NULL;
 static cu_mem_free p_cuMemFree = NULL;
 static cu_memcpy_htod p_cuMemcpyHtoD = NULL;
+static cu_memcpy_2d p_cuMemcpy2D = NULL;
 static cu_memcpy_dtoh p_cuMemcpyDtoH = NULL;
 static cu_launch p_cuLaunchKernel = NULL;
 static cu_func_attr p_cuFuncSetAttribute = NULL;
@@ -153,6 +185,7 @@ static int cu_resolve(void) {
     CU_SYM(cuDeviceGetName);
     CU_SYM(cuDeviceGetAttribute);
     CU_SYM(cuCtxCreate);
+    CU_SYM(cuCtxCreate_v4);
     CU_SYM(cuModuleLoadData);
     CU_SYM(cuModuleLoadDataEx);
     CU_SYM(cuFuncGetAttribute);
@@ -161,6 +194,7 @@ static int cu_resolve(void) {
     CU_SYM(cuMemFree);
     CU_SYM(cuMemcpyHtoD);
     CU_SYM(cuMemcpyDtoH);
+    CU_SYM(cuMemcpy2D);
     CU_SYM(cuLaunchKernel);
     CU_SYM(cuFuncSetAttribute);
     CU_SYM(cuStreamSynchronize);
@@ -239,6 +273,9 @@ static int briev_dev_cuda_init(void) {
     }
     if (chosen < 0 || p_cuDeviceGet(&cu_device, chosen) != CUDA_SUCCESS) {
         return 0;
+    }
+    if (p_cuCtxCreate_v4 == NULL && cu_lib != NULL) {
+        p_cuCtxCreate_v4 = (cu_ctx_create_v4)dlsym(cu_lib, "cuCtxCreate_v4");
     }
     if (p_cuCtxCreate(&cu_ctx, CU_CTX_SCHED_AUTO, cu_device) != CUDA_SUCCESS) {
         if (verbose) fprintf(stderr, "[briev_accel/cuda] cuCtxCreate failed\n");
@@ -529,6 +566,28 @@ static int briev_dev_cuda_launch_dev2d_batch(void* handle, size_t nx, size_t ny,
     return ok;
 }
 
+/// 2026-09-18 (M2 strided append, plan coalesced-kv-memory-path): pitched
+/// host→device copies without a dispatch — one cuMemcpy2D (height 1) per
+/// descriptor. The runtime already gathered the host mirror; these copies
+/// read the CALLER'S staging buffer directly (absolute pointers), so the
+/// mirror gather and the device copy see the same values. Same synchronous
+/// contract as upload_ranges. Returns 0 if cuMemcpy2D is unavailable or
+/// any copy would leave the working set.
+static int briev_dev_cuda_push_strided(void* handle, const void* copies_opaque,
+                                       uint32_t n) {
+    (void)handle; (void)copies_opaque; (void)n;
+    // 2026-09-18 (M2, BUGS.md "cuMemcpy2D silent no-op"): DISABLED on
+    // CUDA 13.4 / driver 615.71.09 — cuMemcpy2D returns CUDA_SUCCESS but
+    // writes nothing when the context was created by the legacy
+    // cuCtxCreate entry (reproduced standalone, probe_repl.c); the v4
+    // context creation fixes 2D copies but breaks cuLaunchKernel. The
+    // strided-append use it would serve (d-major K) is not the M4
+    // integration shape — the fused node's j-major K appends are
+    // contiguous and ride push_ranges. Re-enable when the driver quirk
+    // is understood or the context story settles.
+    return 0;
+}
+
 /// 2026-09-18 (M4 decode-append): range upload without dispatch — the
 /// launch_dev2d dirty loop minus the grid launch. Same synchronous-copy
 /// contract (previous launch already drained; see cuda_launch_grid's sync
@@ -639,4 +698,6 @@ BrievDeviceDriver briev_dev_cuda = {
     briev_dev_cuda_set_shared_bytes,
     // 2026-09-18 (M4 decode-append): array-range upload without dispatch.
     briev_dev_cuda_upload_ranges,
+    // 2026-09-18 (M2 strided append): pitched copies without dispatch.
+    briev_dev_cuda_push_strided,
 };

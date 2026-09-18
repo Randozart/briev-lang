@@ -125,6 +125,19 @@ typedef struct {
                   size_t global_n, void* proj_out);
 } BrievDriverOps;
 
+/// 2026-09-18 (M2 strided append): driver-level pitched-copy descriptor —
+/// absolute host source, projection-relative device offset. The runtime
+/// translates BrievPushDesc (offsets) into these; drivers implement them
+/// (CUDA: one cuMemcpy2D height-1 per descriptor).
+typedef struct BrievStridedCopy {
+    const void* src;      // absolute host memory (the staging buffer)
+    size_t proj_off;      // projection byte offset, element 0
+    size_t src_pitch;     // host stride between elements (bytes)
+    size_t dst_pitch;     // projection stride between elements (bytes)
+    size_t width_bytes;   // count * elem_bytes (one row of the gather)
+    size_t count;         // element count
+} BrievStridedCopy;
+
 typedef struct BrievDeviceDriver {
     const char* name;            // "vulkan" | "opencl" | ...
     uint32_t capabilities;
@@ -190,6 +203,13 @@ typedef struct BrievDeviceDriver {
     // copy contract as launch_dev2d's dirty loop. NULL → the decode-append
     // path is unavailable (briev_accel_push_ranges returns 0).
     int (*upload_ranges)(void* kernel, const size_t* dirty, uint32_t n_dirty);
+    // 2026-09-18 (M2 strided append, plan coalesced-kv-memory-path):
+    // pitched host→device copies without a dispatch — the strided
+    // generalization of upload_ranges. `copies` are driver-level
+    // (absolute host source pointers, projection-relative device
+    // offsets). CUDA: one cuMemcpy2D (height 1) per descriptor. NULL →
+    // briev_accel_push_strided returns 0.
+    int (*push_strided)(void* kernel, const void* copies, uint32_t n);
 } BrievDeviceDriver;
 
 extern BrievDeviceDriver briev_dev_cuda;
@@ -744,6 +764,72 @@ int briev_accel_push_ranges(void* state, const size_t* ranges, uint32_t n) {
     }
     int ok = g_driver->upload_ranges(g_kernels[0], dev_ranges, n);
     free(dev_ranges);
+    return ok;
+}
+
+/// 2026-09-18 (M2 strided append, plan coalesced-kv-memory-path): the
+/// public strided-push descriptor. A d-major K append writes ONE new token
+/// row as `count` elements spaced `dst_pitch` bytes apart in the state
+/// (the source row arrives packed — ggml's cache row or the adapter's
+/// staging buffer). One descriptor per (buffer, kv head); a whole decode
+/// step is ~2*HKV+1 descriptors instead of hundreds of 4-byte ranges.
+typedef struct BrievPushDesc {
+    const void* src;   // ABSOLUTE host source (a staging row, or state+off)
+    size_t proj_off;   // projection (device/mirror) byte offset, element 0
+    size_t count;      // element count
+    size_t elem_bytes; // 2 (f16) or 4 (f32)
+    size_t src_pitch;  // host stride between elements; elem_bytes = packed
+    size_t dst_pitch;  // projection stride between elements
+} BrievPushDesc;
+
+/// 2026-09-18 (M2 strided append): push strided element ranges from the
+/// host staging `state` into the device working set WITHOUT a dispatch —
+/// the pitched-copy generalization of briev_accel_push_ranges. The host
+/// mirror is gathered first (coherence with download/mirror readers),
+/// then the driver performs the pitched host→device copies in one call
+/// per descriptor (CUDA: cuMemcpy2D, height 1). Same contract as
+/// push_ranges: program seeded through the shared-state resident path,
+/// previous launches synchronized. Returns 0 when the driver lacks the
+/// hook (a failed push leaves the mirror partially gathered; treat 0 as
+/// fatal, the caller aborts).
+int briev_accel_push_strided(const BrievPushDesc* descs, uint32_t n) {
+    if (!briev_accel_available() || g_driver == NULL || g_kernels == NULL
+        || g_n_kernels == 0 || g_kernels[0] == NULL || !g_program_seeded
+        || (g_driver->capabilities & BRIEV_DEV_CAP_SHARED_STATE) == 0) {
+        return 0;
+    }
+    if (g_driver->push_strided == NULL || g_driver->mapped == NULL) {
+        return 0;
+    }
+    void* mapped = g_driver->mapped(g_kernels[0]);
+    if (mapped == NULL) {
+        return 0;
+    }
+    // Host mirror gather (element-wise; descriptors are few and rows are
+    // 512 B—2 KB, CPU cost negligible next to the HtoD) + driver-level
+    // copies: both read the descriptor's ABSOLUTE source pointer.
+    BrievStridedCopy* copies =
+        (BrievStridedCopy*)malloc(sizeof(BrievStridedCopy) * n);
+    if (copies == NULL) {
+        return 0;
+    }
+    for (uint32_t r = 0; r < n; r++) {
+        const BrievPushDesc* dsc = &descs[r];
+        uint8_t* dst = (uint8_t*)mapped + dsc->proj_off;
+        for (size_t i = 0; i < dsc->count; i++) {
+            memcpy(dst + i * dsc->dst_pitch,
+                   (const uint8_t*)dsc->src + i * dsc->src_pitch,
+                   dsc->elem_bytes);
+        }
+        copies[r].src = dsc->src;
+        copies[r].proj_off = dsc->proj_off;
+        copies[r].src_pitch = dsc->src_pitch;
+        copies[r].dst_pitch = dsc->dst_pitch;
+        copies[r].width_bytes = dsc->count * dsc->elem_bytes;
+        copies[r].count = dsc->count;
+    }
+    int ok = g_driver->push_strided(g_kernels[0], copies, n);
+    free(copies);
     return ok;
 }
 
