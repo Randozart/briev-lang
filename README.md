@@ -58,6 +58,10 @@ Regards,
 
 ## The Thesis: Topology over Timing
 
+When we sit down to write software, write specifications and build systems, the first thing we do is not make a list of commands. We write a flowchart.
+
+And yet, despite us knowing precisely what needs to hold true at each step, many languages offer us no way to express this knowledge. Not easily at least.
+
 Most programming languages are built around _operations in sequence_. Briev describes the _sequence of operations_ — the spatial connections between logical states.
 
 *   **Logic as a Map:** Briev defines a world where roads exist all at once. The "sequence" is then better called a _connection_, not the _timing_.
