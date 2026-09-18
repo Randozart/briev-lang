@@ -1251,8 +1251,13 @@ fn collect_vec4_field_data(
         let vf = lower.vec4_fields.get(fname)
             .ok_or_else(|| format!("vec4 field '{}' lost", fname))?
             .clone();
-        let member_pos = lower.state_fields.iter().position(|f| f.name == *fname)
+        // Phase 3 — buffer reuse: remap aliased fields to their target and
+        // compute the correct SSBO struct member index (aliases are skipped
+        // from the struct).
+        let effective_name = lower.alias_map.get(fname).cloned().unwrap_or_else(|| fname.clone());
+        let raw_pos = lower.state_fields.iter().position(|f| f.name == effective_name)
             .ok_or_else(|| format!("vec4 field '{}' not in state", fname))?;
+        let member_pos = lower.struct_member_index(raw_pos) as usize;
         field_data.push((fname.clone(), vf, member_pos));
     }
     Ok(field_data)

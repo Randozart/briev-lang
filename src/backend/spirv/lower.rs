@@ -2187,7 +2187,7 @@ fn cast_opcode(
     /// (their device slot is the target's), so the member index counts only
     /// non-aliased fields before `pos`. Without this, AccessChain used the
     /// raw position and walked past the struct end when aliases collapsed it.
-    fn struct_member_index(&self, pos: usize) -> u32 {
+    pub(crate) fn struct_member_index(&self, pos: usize) -> u32 {
         self.state_fields[..pos]
             .iter()
             .filter(|f| !self.alias_map.contains_key(&f.name))
@@ -2624,11 +2624,14 @@ impl<'a> FnLowerer<'a> {
         let Some(ssbo) = self.ssbo_var else {
             return Err("vec4 group without an SSBO".into());
         };
-        let member_pos = self
+        let raw_pos = self
             .state_fields
             .iter()
             .position(|f| f.name == g.vec_field)
             .ok_or_else(|| format!("vec4 field '{}' lost", g.vec_field))?;
+        // Phase 3 — buffer reuse: compute the correct SSBO struct member
+        // index (aliases are skipped from the struct).
+        let member_pos = self.struct_member_index(raw_pos);
         // Group base index: the vec side with the loop var substituted by
         // the group start / k, divided by 4; for the runtime form, the var
         // coefficient is 1 so the phi value IS the group index offset.
@@ -2668,7 +2671,7 @@ impl<'a> FnLowerer<'a> {
         let v4_ptr = self
             .builder
             .ptr_class(StorageClass::StorageBuffer, vf.vector);
-        let member = self.builder.u32_const(member_pos as u32);
+        let member = self.builder.u32_const(member_pos);
         let group = self.builder.gen_id();
         self.builder.emit(Instruction::new(
             spirv::Op::AccessChain,

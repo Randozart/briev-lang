@@ -1050,11 +1050,18 @@ fn try_emit_chain_fusion(
         return Ok(false);
     }
     if t.name == cf.middle || t.name == cf.consumer {
-        out.push_str(&format!(
-            "    // node '{}' fused into the chain kernel (skipped)\n",
-            t.name
-        ));
-        return Ok(true);
+        // Only skip if the fused kernel binary actually exists (PTX builds
+        // it; SPIR-V does not). Without this gate the Vulkan runner silently
+        // drops softmax/pv in attention_decode, producing all-zero output.
+        let fname = format!("{}__{}_{}", cf.producer, cf.middle, cf.consumer);
+        if kernels.iter().any(|k| k.name == fname) {
+            out.push_str(&format!(
+                "    // node '{}' fused into the chain kernel (skipped)\n",
+                t.name
+            ));
+            return Ok(true);
+        }
+        // Fused kernel not built — fall through to normal dispatch.
     }
     Ok(false)
 }
