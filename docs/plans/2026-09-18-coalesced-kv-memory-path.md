@@ -63,3 +63,31 @@ Two decisive facts:
   the finding: recorded as the measured gap between the compiler's
   default and ggml's hand scheduling, never papered over with an
   escape hatch.
+
+## Doctrine (user directive, 2026-09-18)
+
+The compiler is smart and must be smart: under all circumstances it
+must SHOW THROUGH ANALYSIS what the fastest code would be. If the
+program is poorly written, the compiler can only emit as fast as it
+can prove. The programmer's role is real but is exercised one way —
+by writing better algorithms — never through strategy keywords or
+pragma trickery.
+
+Consequences landed with M1/M3.5:
+
+- Layout is a CONDITIONAL best, not a default: coalescing is a property
+  of (layout × work-item mapping), and the preference flips with the
+  mapping (qk wants d-major K; pv wants j-major V; the fused node's
+  lanes-over-d wants j-major K — the OPPOSITE of qk). A blanket
+  compiler default cannot exist, and auto-transposing state would
+  cross the host ABI (field tables, seed, append ranges). The knowledge
+  lives in the composition/stdlib layer, which owns the kernel and its
+  buffer layout together — the BLAS model.
+- What the compiler owes by default is the ANALYSIS: the G001 pass
+  (`src/analysis/coalescing.rs`, `113f3b94`) reports proven cross-thread
+  strides with the mechanical fix, silently for broadcasts and
+  cooperative-row mappings, never rewriting. "As fast as the compiler
+  can prove" now has a memory-coalescing voice.
+- M4 note: the fused node uses j-major K (opposite of qk's d-major).
+  If both forms ever share a state buffer, the composition owns an
+  explicit transpose node (expressible today, amortized per context).
