@@ -308,6 +308,25 @@ fn elem_bytes_of(layout: &SsboLayout, name: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("ptx: field '{name}' not in layout"))
 }
 
+/// 2026-09-18 (P1 lane-coverage fix): detect whether `kernel_stmts`
+/// contains a foreach whose body has a lane-mappable inner reduction.
+/// Used by both the PTX emitter (guard shape) and the runner (dispatch
+/// geometry).  Structural match: the kernel's top-level statements must
+/// include a Foreach whose body calls `LaneReductionPlan::match_body`.
+pub fn has_lane_reduction(
+    kernel_stmts: &[Statement],
+    consts: &std::collections::HashMap<String, Expr>,
+) -> bool {
+    for stmt in kernel_stmts {
+        if let Statement::Foreach { body, .. } = stmt {
+            if LaneReductionPlan::match_body(body, consts).is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn emit_general_ptx(
     shape: &KernelShape,
     count: i64,
@@ -503,6 +522,11 @@ struct Gen<'a> {
     universe: &'a crate::type_universe::TypeUniverse,
     int_bits: u64,
     casting_graph: crate::casting::graph::CastingGraph,
+    /// 2026-09-18 (P1 lane-coverage fix): when true, the kernel's work
+    /// item IS the block (w = ctaid.x).  The entry guard must be
+    /// whole-block (`ctaid >= count → ret`) so all 64 threads enter the
+    /// body and the lane-strided butterfly has full 32-lane coverage.
+    is_lane_reduction: bool,
 }
 
 impl<'a> Gen<'a> {
@@ -529,6 +553,7 @@ impl<'a> Gen<'a> {
             universe,
             int_bits,
             casting_graph: crate::casting::graph::CastingGraph::new(),
+            is_lane_reduction: false,
         }
     }
 
@@ -608,17 +633,45 @@ impl<'a> Gen<'a> {
         decl.push_str("    .reg .pred %p1;\n");
         decl.push_str("    .reg .b32  %t0;\n");
 
-        // gid = ctaid.x * BLOCK + tid.x
-        body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
-        body.push_str("    mov.u32 %r1, %ctaid.x;\n");
-        body.push_str(&format!("    mul.lo.u32 %r1, %r1, {};\n", BLOCK));
-        body.push_str("    mov.u32 %r2, %tid.x;\n");
-        body.push_str("    add.u32 %r1, %r1, %r2;\n");
-        body.push_str(&format!("    setp.ge.u32 %p1, %r1, {};\n", self.count));
-        body.push_str("    @%p1 ret;\n");
+        // 2026-09-18 (P1 lane-coverage fix): detect lane-reduction BEFORE
+        // the guard so we can emit a block-level guard (whole-block exit)
+        // instead of the flat gid guard.  The lane-mapped reduction needs
+        // all32 lanes of each warp alive for full d-coverage; the flat
+        // guard kills threads beyond `count`, leaving <32 live lanes.
+        self.is_lane_reduction = has_lane_reduction(&shape.kernel_stmts, self.consts);
 
-        self.regs
-            .insert(shape.index_var.clone(), self.gid.to_string());
+        body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+        if self.is_lane_reduction {
+            // Work item = BLOCK: w = ctaid.x.  Move the special register
+            // to %r1 (a GPR) so it can be used in setp and address math.
+            // The guard kills entire blocks (r1 >= count → ret) — uniform
+            // per block, safe for the warp-wide butterfly.
+            body.push_str("    mov.u32 %r1, %ctaid.x;\n");
+            body.push_str(&format!(
+                "    setp.ge.u32 %p1, %r1, {};\n",
+                self.count
+            ));
+            body.push_str("    @%p1 ret;\n");
+            // Bind index_var to %r1 (holds ctaid = work item).
+            self.regs
+                .insert(shape.index_var.clone(), self.gid.to_string());
+        } else {
+            // Flat gid: gid = ctaid.x * BLOCK + tid.x
+            body.push_str("    mov.u32 %r1, %ctaid.x;\n");
+            body.push_str(&format!(
+                "    mul.lo.u32 %r1, %r1, {};\n",
+                BLOCK
+            ));
+            body.push_str("    mov.u32 %r2, %tid.x;\n");
+            body.push_str("    add.u32 %r1, %r1, %r2;\n");
+            body.push_str(&format!(
+                "    setp.ge.u32 %p1, %r1, {};\n",
+                self.count
+            ));
+            body.push_str("    @%p1 ret;\n");
+            self.regs
+                .insert(shape.index_var.clone(), self.gid.to_string());
+        }
 
         for stmt in &shape.kernel_stmts {
             self.emit_stmt(stmt, &mut decl, &mut body)?;

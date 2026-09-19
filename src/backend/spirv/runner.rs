@@ -107,6 +107,13 @@ pub struct RunnerKernel {
     /// `.spirv` field keeps serving the Vulkan/OpenCL lanes; `build_ptx_
     /// kernels` blobs are merged in by the compile pipeline (compile.rs).
     pub ptx: Vec<u8>,
+    /// 2026-09-18 (P1 lane-coverage fix): each block IS one work item.
+    /// The lane-mapped reduction needs all32 lanes of each warp alive for
+    /// full d-coverage; the grid must be `count` blocks (not
+    /// `ceil(count/block_threads)`). The dispatch multiplies the launch
+    /// count by `block_threads` so the driver's `gx = ceil(n*bx/bx) = n`.
+    /// False for every non-lane-reduction kernel (zero-fill contract).
+    pub block_per_workitem: bool,
 }
 
 /// The SSBO layout EXACTLY as the kernel sees it (name-sorted, real element
@@ -654,7 +661,7 @@ pub fn emit_runner(
             .filter(|f| k.touched_fields.iter().any(|n| n == &f.name))
             .count();
         out.push_str(&format!(
-            "    {{ \"{}\", k{}, k{}_len, {}, k{}_fields, {}, images, {}, {}, {}ULL, seed_fields, {}, kp{}, kp{}_len }},\n",
+            "    {{ \"{}\", k{}, k{}_len, {}, k{}_fields, {}, images, {}, {}, {}ULL, seed_fields, {}, kp{}, kp{}_len, {} }},\n",
             c_ident(&k.name),
             i,
             i,
@@ -666,7 +673,8 @@ pub fn emit_runner(
             program_bytes,
             seed_rows.len(),
             i,
-            i
+            i,
+            k.block_per_workitem as u32,
         ));
     }
     out.push_str(&format!(
@@ -961,6 +969,7 @@ pub fn build_kernels(
             // 2026-09-17 (M2.0): the SPIR-V producer carries no CUDA image;
             // compile.rs merges build_ptx_kernels blobs in by node name.
             ptx: Vec::new(),
+            block_per_workitem: false,
         });
     }
     Ok(out)
@@ -1172,6 +1181,12 @@ fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
             kidx
         );
     }
+    // 2026-09-18 (P1 lane-coverage fix): lane-mapped reduction kernels
+    // treat each block as one work item (w = ctaid.x, all64 threads
+    // compute redundantly).  The dispatch sends the WORK-ITEM count (n);
+    // the CUDA driver multiplies by block_threads internally when
+    // block_per_workitem is set in the desc (Vulkan/SPIR-V ignores it —
+    // serial semantics, each thread = one work item).
     format!(
         "      if (n_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, n_{ci})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
     )
@@ -1208,6 +1223,10 @@ pub struct RunKernel {
     /// Track A desc never carries garbage for the C tail fields.
     pub block_threads: u32,
     pub shared_bytes: u32,
+    /// 2026-09-18 (P1 lane-coverage fix): block-per-workitem dispatch
+    /// multiplier — the RunDispatch count is multiplied by block_threads
+    /// at dispatch time when true.
+    pub block_per_workitem: bool,
 }
 
 pub enum RunDispatch {
@@ -1305,6 +1324,7 @@ pub fn prepare_run(
             touched_fields: k.touched_fields.clone(),
             block_threads: k.block_threads,
             shared_bytes: k.shared_bytes,
+            block_per_workitem: k.block_per_workitem,
         });
     }
 

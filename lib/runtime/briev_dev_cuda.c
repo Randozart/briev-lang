@@ -157,6 +157,11 @@ typedef struct {
     // 2026-09-10 (cp.async stages): dynamic shared-memory bytes for THIS
     // kernel (0 = none). The staged mw kernel's stage arrays live here.
     uint32_t shared_bytes;
+    // 2026-09-18 (P1 lane-coverage fix): when set, the launch multiplies
+    // nx by block_threads so the driver's gx = ceil(n*bx/bx) = n blocks.
+    // The PTX kernel's lane-mapped reduction treats each block as one
+    // work item (w = ctaid.x) with all64 threads computing redundantly.
+    uint32_t block_per_workitem;
 } BrievCudaKernel;
 
 // 2026-09-14 (gpu_schedule Phase 0): the program-level shared device state.
@@ -380,6 +385,17 @@ static int briev_dev_cuda_set_block_threads(void* handle, uint32_t n) {
     return 1;
 }
 
+// 2026-09-18 (P1 lane-coverage fix): per-kernel block-per-workitem flag.
+// When set, launch_dev2d multiplies nx by block_threads so the driver
+// launches `n` blocks of `block_threads` threads (lane-mapped reduction:
+// w = ctaid.x, all threads compute redundantly for full d-coverage).
+static int briev_dev_cuda_set_block_per_workitem(void* handle, uint32_t flag) {
+    BrievCudaKernel* k = (BrievCudaKernel*)handle;
+    if (k == NULL) return 0;
+    k->block_per_workitem = flag;
+    return 1;
+}
+
 // 2026-09-10 (cp.async stages): per-kernel dynamic shared-memory size.
 static int briev_dev_cuda_set_shared_bytes(void* handle, uint32_t n) {
     BrievCudaKernel* k = (BrievCudaKernel*)handle;
@@ -543,6 +559,13 @@ static int briev_dev_cuda_launch_dev2d(void* handle, size_t nx, size_t ny,
             }
         }
     }
+    // 2026-09-18 (P1 lane-coverage fix): lane-mapped reduction kernels
+    // treat each block as one work item (w = ctaid.x).  The dispatch
+    // sends the WORK-ITEM count (nx = count); multiply by block_threads
+    // so the driver's gx = ceil(nx*bx/bx) = nx blocks.
+    if (k->block_per_workitem) {
+        nx *= k->block_threads;
+    }
     return cuda_launch_grid(k, nx, ny, k->shared_bytes, !g_async_launch);
 }
 
@@ -700,4 +723,6 @@ BrievDeviceDriver briev_dev_cuda = {
     briev_dev_cuda_upload_ranges,
     // 2026-09-18 (M2 strided append): pitched copies without dispatch.
     briev_dev_cuda_push_strided,
+    // 2026-09-18 (P1 lane-coverage fix): block-per-workitem dispatch flag.
+    briev_dev_cuda_set_block_per_workitem,
 };

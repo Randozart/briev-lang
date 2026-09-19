@@ -1577,6 +1577,12 @@ fn codegen(
                     for k in &mut kernels {
                         if let Some(p) = ptx_kernels.iter().find(|p| p.name == k.name) {
                             k.ptx = p.spirv.clone();
+                            // 2026-09-18 (P1 lane-coverage fix): propagate
+                            // the lane-reduction dispatch flag from the PTX
+                            // emitter to the merged runner kernel.
+                            if p.block_per_workitem {
+                                k.block_per_workitem = true;
+                            }
                         }
                     }
                 }

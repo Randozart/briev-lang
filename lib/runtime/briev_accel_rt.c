@@ -103,6 +103,13 @@ typedef struct {
     // Tail of the struct, zero-fill contract.
     const uint8_t* ptx;
     uint32_t ptx_size;
+    // 2026-09-18 (P1 lane-coverage fix): when nonzero, the dispatch
+    // multiplies the launch count by block_threads so the CUDA driver's
+    // gx = ceil(n*bx/bx) = n blocks — the kernel's lane-mapped reduction
+    // treats each block as one work item (w = ctaid.x) with all64 threads
+    // computing redundantly for full 32-lane d-coverage.  0 = the flat
+    // gid model (every thread is a work item).  Tail, zero-fill contract.
+    uint32_t block_per_workitem;
 } BrievKernelDesc;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -210,6 +217,11 @@ typedef struct BrievDeviceDriver {
     // offsets). CUDA: one cuMemcpy2D (height 1) per descriptor. NULL →
     // briev_accel_push_strided returns 0.
     int (*push_strided)(void* kernel, const void* copies, uint32_t n);
+    // 2026-09-18 (P1 lane-coverage fix): optional per-kernel flag — when
+    // nonzero the CUDA driver multiplies the launch nx by block_threads
+    // so the grid has `n` blocks (lane-mapped reduction: w = ctaid.x).
+    // NULL → flat gid model.  Tail, zero-fill.
+    int (*set_block_per_workitem)(void* kernel, uint32_t flag);
 } BrievDeviceDriver;
 
 extern BrievDeviceDriver briev_dev_cuda;
@@ -345,6 +357,12 @@ int briev_accel_init(const BrievKernelDesc* descs, uint32_t n) {
         }
         if (descs[i].shared_bytes > 0 && g_driver->set_shared_bytes != NULL) {
             g_driver->set_shared_bytes(g_kernels[i], descs[i].shared_bytes);
+        }
+        // 2026-09-18 (P1 lane-coverage fix): per-kernel block-per-workitem
+        // dispatch flag — the CUDA driver multiplies nx by block_threads
+        // when this is set (lane-mapped reduction: w = ctaid.x).
+        if (descs[i].block_per_workitem && g_driver->set_block_per_workitem != NULL) {
+            g_driver->set_block_per_workitem(g_kernels[i], descs[i].block_per_workitem);
         }
         // 2026-09-02: image-resident arrays need the driver's image path.
         // Absent = loud refusal (a silent skip would leave the image

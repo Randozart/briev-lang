@@ -1335,6 +1335,7 @@ fn build_fused_attention_kernel(
         // (the generic image slot); compile.rs relocates it to `.ptx`
         // during the dual-image merge.
         ptx: Vec::new(),
+        block_per_workitem: false,
     }))
 }
 
@@ -1601,6 +1602,7 @@ fn emit_cooperative_reduction_ptx(
         shared_bytes: 0,
         touched_fields: crate::backend::spirv::runner::kernel_touched_fields(shape),
         ptx: Vec::new(),
+        block_per_workitem: false,
     }))
 }
 
@@ -1803,10 +1805,17 @@ pub fn build_ptx_kernels(
                 ptx_tensor: false,
         fused_mma: false,
         fused_mma_blocks_div: 0,
-                block_threads: 256,
+                block_threads: 64,
                 shared_bytes: 0,
                 touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
                 ptx: Vec::new(),
+                // 2026-09-18 (P1 lane-coverage fix): lane-mapped reduction
+                // kernels treat each block as one work item — dispatch
+                // multiplies count by block_threads so the CUDA driver
+                // launches `count` blocks of 64 threads.
+                block_per_workitem: general::has_lane_reduction(
+                    &e.shape.kernel_stmts, &consts,
+                ),
             });
             continue;
         }
@@ -2024,6 +2033,7 @@ pub fn build_ptx_kernels(
             shared_bytes,
             touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
             ptx: Vec::new(),
+            block_per_workitem: false,
         });
     }
     Ok(out)

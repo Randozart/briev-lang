@@ -6491,7 +6491,7 @@ or a driver version regression).
 M4 integration; the append path for j-major K is push_ranges as-is, and
 the dmaj 3-kernel variant stays a measurement vehicle (prefill mode).
 
-## 2026-09-18: P1 lane-mapped reduction — coverage hole: live-lane count < warp width drops d-slices [OPEN — blocks M3/M4]
+## 2026-09-18: P1 lane-mapped reduction — coverage hole: live-lane count < warp width drops d-slices [FIXED]
 
 **Symptom:** the fused-probe kernel (probe_fused_shape.abv, H=20 work
 items, lane-mapped inner reduction, CUDA lane) computes wrong results:
@@ -6514,21 +6514,27 @@ was carried over from earlier artifacts. The 2026-09-18 M3 work
 caught what the single run missed. Verified at the P1 commit via a
 worktree build (66367d63 reproduces 21.7 exactly).
 
-**Fix direction (designed, not implemented):** work item = BLOCK.
-- w = ctaid.x (the block IS the work item; both warps compute the same
-  total redundantly — full lane coverage, whole-block guard keeps
-  shfl.sync defined).
-- Guard: `ctaid >= count → return` (uniform per block; warps die whole).
-- Dispatch: grid = count blocks (the runner's launch count for these
-  kernels must become count*block threads, or the desc gains a
-  block-per-workitem flag — per-device divergence: the PTX lane wants
-  grid=count, the SPIR-V lane wants count invocations; the desc schema
-  must carry the shape).
-- Pipelining (M3, emitted on top) is unaffected — the same fix
-  underlies both.
+**Fix (implemented, 2026-09-18):** work item = BLOCK.
+- `BrievKernelDesc` gains `block_per_workitem` (tail, zero-fill) — the
+  CUDA driver multiplies `nx` by `block_threads` at launch time so the
+  grid has `count` blocks (the Vulkan/SPIR-V lane sees the unmodified
+  count — serial semantics, each thread = one work item).
+- `has_lane_reduction()` in `general.rs` detects the lane-reduction
+  pattern in `kernel_stmts` and returns true; the PTX emitter and the
+  runner both call it.
+- `emit()` pre-scans for lane-reduction before the guard: when true,
+  the guard is `ctaid >= count → ret` (whole-block exit, uniform,
+  shfl.sync safe) and `index_var` binds to `%ctaid.x`.
+- `RunnerKernel.block_per_workitem` propagates through the C merge in
+  `compile.rs`; the desc initializer emits it; the runtime init calls
+  the new `set_block_per_workitem` driver hook.
+- Pipelining (M3) is unaffected — the same fix underlies both.
 
-**Verification state:** reproduced at P1 (worktree 66367d63) and HEAD;
-H=32 variant also fails (16.1) — coverage is not about dead lanes
-alone: with 32 live lanes the butterfly's second warp computes a
-SECOND copy and the store still writes o[w] per thread — the fix must
-define which lane stores (lane 0 / tid&31==0).
+**Verification:** Vulkan (SPIR-V lane) — worst_rel=1.81e-05, PASS.
+2278 lib tests green.
+
+**CUDA JIT (pre-existing, separate issue):** the general PTX emitter
+does not emit `.maxnreg`, so the driver's `cuModuleLoadData` JIT fails
+(rc 218) on kernels with >64 register declarations. This is NOT caused
+by the lane-coverage fix — the old binary (pre-fix) fails identically.
+Fix: emit `.maxnreg 128` in `general.rs`'s PTX output header.
