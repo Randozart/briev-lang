@@ -543,11 +543,17 @@ static int briev_dev_cuda_launch_dev2d(void* handle, size_t nx, size_t ny,
     if (k->dev == 0 || k->mapped_host == NULL || bytes == 0) {
         return 0;
     }
-    if (full_sync || n_dirty == 0) {
+    // 2026-09-19 (flash-decode gate forensics #4): n_dirty == 0 with
+    // full_sync == 0 means NOTHING changed on the host — skip the copy
+    // entirely. The old `full_sync || n_dirty == 0` read "no dirty
+    // scalars" as "re-upload the whole projection", costing a full
+    // PCIe round trip (21 MB ≈ 3.8 ms) on EVERY launch of every
+    // scalar-free kernel. full_sync alone is the seed/everything signal.
+    if (full_sync) {
         if (p_cuMemcpyHtoD(k->dev, k->mapped_host, bytes) != CUDA_SUCCESS) {
             return 0;
         }
-    } else {
+    } else if (n_dirty > 0) {
         for (uint32_t r = 0; r < n_dirty; r++) {
             size_t off = dirty[2 * r];
             size_t sz = dirty[2 * r + 1];

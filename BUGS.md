@@ -6538,3 +6538,25 @@ does not emit `.maxnreg`, so the driver's `cuModuleLoadData` JIT fails
 (rc 218) on kernels with >64 register declarations. This is NOT caused
 by the lane-coverage fix — the old binary (pre-fix) fails identically.
 Fix: emit `.maxnreg 128` in `general.rs`'s PTX output header.
+
+## 2026-09-19: `n_dirty == 0` triggered a full-projection HtoD on every launch
+
+**Symptom:** every launch of a scalar-free resident kernel re-uploaded the
+ENTIRE projection over PCIe (bitnet decode state: 21 MB ≈ 3.8 ms) — the
+"kernel time" in the flash-decode gate's first measurements was almost
+entirely this copy. Any kernel without scalar state fields hit it; the m3
+attention kernels did not (their counters give `n_dirty = 1`).
+
+**Root cause:** `briev_dev_cuda_launch_dev2d` treated "no dirty ranges"
+as "everything may have changed": `if (full_sync || n_dirty == 0) { full
+HtoD }`. The dirty-scalar sync loop and the seed path are different
+contracts; `full_sync` alone means seed/everything.
+
+**Fix:** `if (full_sync) { full HtoD } else if (n_dirty > 0) { dirty
+loop }` — `n_dirty == 0 && !full_sync` now copies nothing. Callers
+(`launch_resident`, the batch wrapper) compute both flags themselves and
+are unaffected.
+
+**Found by:** the flash-decode gate (docs/plans/2026-09-19-flash-decode-gate.md,
+forensics #4); the gate kernel only ran fast once given a dummy scalar
+field, which exposed the real per-launch cost difference.
