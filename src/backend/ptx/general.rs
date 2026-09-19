@@ -792,6 +792,12 @@ struct Gen<'a> {
     universe: &'a crate::type_universe::TypeUniverse,
     int_bits: u64,
     casting_graph: crate::casting::graph::CastingGraph,
+    /// 2026-09-19 (M1-finish): while a deferred region's strips are
+    /// emitted, element references to this buffer resolve to per-lane
+    /// registers (buf, d item, one register per strip).
+    strip_acc: Option<(String, String, Vec<String>)>,
+    /// The strip currently being emitted (indexes strip_acc's registers).
+    active_strip: usize,
     /// 2026-09-18 (P1 lane-coverage fix): when true, the kernel's work
     /// item IS the block (w = ctaid.x).  The entry guard must be
     /// whole-block (`ctaid >= count → ret`) so all 64 threads enter the
@@ -824,6 +830,8 @@ impl<'a> Gen<'a> {
             int_bits,
             casting_graph: crate::casting::graph::CastingGraph::new(),
             block_work_item: false,
+            strip_acc: None,
+            active_strip: 0,
         }
     }
 
@@ -910,6 +918,16 @@ impl<'a> Gen<'a> {
         // guard kills threads beyond `count`, leaving <32 live lanes.
         self.block_work_item = has_lane_reduction(&shape.kernel_stmts, self.consts)
             || has_warp_slice(&shape.kernel_stmts, self.consts);
+        // 2026-09-19 (M1-finish): the deferred-softmax region is a
+        // block-per-workitem dispatch at 1024 threads (32 warp slices).
+        let region = if crate::config_tuning::ir_lowering().ptx_deferred_region {
+            detect_deferred_region(&shape.kernel_stmts, &shape.index_var)
+        } else {
+            None
+        };
+        if region.is_some() {
+            self.block_work_item = true;
+        }
 
         body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
         if self.block_work_item {
@@ -944,8 +962,20 @@ impl<'a> Gen<'a> {
                 .insert(shape.index_var.clone(), self.gid.to_string());
         }
 
-        for stmt in &shape.kernel_stmts {
-            self.emit_stmt(stmt, &mut decl, &mut body)?;
+        if let Some((start, count, parts)) = region {
+            // The deferred-softmax region lowers as one unit; statements
+            // outside it (none in practice) walk normally.
+            self.emit_deferred_region(&parts, &mut decl, &mut body)?;
+            for (i, stmt) in shape.kernel_stmts.iter().enumerate() {
+                if i >= start && i < start + count {
+                    continue;
+                }
+                self.emit_stmt(stmt, &mut decl, &mut body)?;
+            }
+        } else {
+            for stmt in &shape.kernel_stmts {
+                self.emit_stmt(stmt, &mut decl, &mut body)?;
+            }
         }
 
         Ok(format!(
@@ -1591,6 +1621,23 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         body: &mut String,
     ) -> Result<(), String> {
         // lhs = Index(buf, index) → array store; lhs = Identifier(scalar) → scalar store.
+        // 2026-09-19 (M1-finish): a deferred region's element-wise RMW on
+        // the strip buffer resolves to the strip's register (the rhs's own
+        // acc reference reads the same register — the add happens in
+        // registers; the smem merge owns the cross-warp traffic).
+        if let Expr::Index(buf, idx) = lhs {
+            let strip = self.strip_acc.clone();
+            if let Some((buf_name_s, d_item, regs)) = &strip {
+                if *buf_name_s == self.field_of(buf)? && format!("{:?}", idx).contains(&format!("\"{}\"", d_item)) {
+                    let acc_reg = regs[self.active_strip].clone();
+                    let tmp = self.fresh_f();
+                    decl.push_str(&format!("    .reg .f32 {};\n", tmp));
+                    self.emit_expr(rhs, &tmp, decl, body)?;
+                    body.push_str(&format!("    mov.f32 {}, {};\n", acc_reg, tmp));
+                    return Ok(());
+                }
+            }
+        }
         if let Expr::Index(buf, idx) = lhs {
             let buf_name = self.field_of(buf)?;
             let off = self.field_off(&buf_name).ok_or_else(|| {
@@ -1750,6 +1797,18 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                     body.push_str(&format!("    mov.f32 {}, {};
 ", out, reg));
                     return Ok(());
+                }
+                // 2026-09-19 (M1-finish): inside a deferred region's strips,
+                // element references to the accumulator buffer resolve to
+                // per-lane registers (the vector state lives in registers;
+                // the smem merge owns the cross-warp traffic).
+                let strip = self.strip_acc.clone();
+                if let Some((buf_name, d_item, regs)) = &strip {
+                    if *buf_name == self.field_of(buf)? && format!("{:?}", idx).contains(&format!("\"{}\"", d_item)) {
+                        let r = regs[self.active_strip].clone();
+                        body.push_str(&format!("    mov.f32 {}, {};\n", out, r));
+                        return Ok(());
+                    }
                 }
                 let buf_name = self.field_of(buf)?;
                 let off = self.field_off(&buf_name).ok_or_else(|| {
@@ -2368,4 +2427,758 @@ mod tests {
             "counter steps by 4: {ptx}"
         );
     }
+}
+
+#[cfg(test)]
+mod probe_tmp {
+    use super::*;
+    #[test]
+    fn dump_flash2p_stmts() {
+        let src = std::fs::read_to_string("examples/gpu/flash2p_fixture_tmp.abv")
+            .expect("fixture");
+        let tokens = crate::lexer::tokenize(&src).expect("lex");
+        let mut parser = crate::parser::Parser::new(tokens, &src);
+        let items = parser.parse_program().expect("parse");
+        let universe = crate::type_universe::TypeUniverse::new();
+        let info = crate::analysis::accel::ProgramInfo::build(&items);
+        for item in &items {
+            if let crate::ast::TopLevel::Transaction(t) = item {
+                let shape = crate::analysis::accel::prove_kernel_pub(
+                    &t.name, &t.body, &t.contract, &info, &universe,
+                );
+                println!("=== {} eligible={} deferred={} ===", t.name, shape.eligible, detect_deferred_region(&shape.kernel_stmts, &shape.index_var).is_some());
+                for r in &shape.reasons { println!("reason: {}", r); }
+                for (i, s) in shape.kernel_stmts.iter().enumerate() {
+                    println!("[{}] {:#?}", i, s);
+                }
+            }
+        }
+    }
+}
+
+// ── 2026-09-19 (M1-finish, plan general-machinery): the deferred-softmax
+// region — a head-mapped node whose body is [max pass, accumulate pass,
+// deferred normalize] over a KV dimension. Lowering = the gate kernel's
+// composition of GENERIC mechanisms: warps slice the KV dimension, lanes
+// own element strips (coalesced), merges are declared-by-shape operators
+// (max for the max pass, + for the accumulation and exp-sum). No
+// softmax-specific algebra lives here: every index expression, scale and
+// exp/max call is emitted verbatim from the source with d bound to strips
+// and sc bound to the butterfly total. ─────────────────────────────────
+
+/// One recognized deferred-softmax region.
+struct DeferredRegion {
+    /// Index of the first statement (the leading lets) in kernel_stmts.
+    start: usize,
+    /// Number of statements the region replaces.
+    count: usize,
+    /// The max-pass j loop index (the region's statements reference the
+    /// loop item names for binding).
+    body: Vec<Statement>,
+}
+
+/// Strip state: a vector buffer whose element references resolve to
+/// per-lane registers while a region is being emitted.
+struct StripAcc {
+    buf: String,
+    d_item: String,
+    regs: Vec<String>,
+}
+
+/// Match the deferred-softmax region: [leading lets (kh/m/l)],
+/// max pass (dot + Max# accumulate), exp-sum + vector accumulation pass,
+/// deferred normalize. Structural and conservative; anything else → None
+/// and the general path keeps the node.
+fn detect_deferred_region(
+    stmts: &[Statement],
+    index_var: &str,
+) -> Option<(usize, usize, DeferredRegionParts)> {
+    // Statement shapes we track.
+    let mut kh: Option<String> = None;
+    let mut kh_stmt: Option<Statement> = None;
+    let mut m_name: Option<String> = None;
+    let mut m_init: Option<Expr> = None;
+    let mut l_name: Option<String> = None;
+    let mut l_init: Option<Expr> = None;
+    let mut loop_a: Option<&Statement> = None;
+    let mut loop_b: Option<&Statement> = None;
+    let mut loop_c: Option<&Statement> = None;
+    let mut region_start = usize::MAX;
+    let mut region_end = 0usize;
+    for (i, stmt) in stmts.iter().enumerate() {
+        match stmt {
+            Statement::Let { name, expr: Some(e), .. } => {
+                // leading scalar inits: kh (head/G), m (neg float), l (zero)
+                if let Expr::BinaryOp(crate::ast::BinaryOpKind::Div, a, _) = e {
+                    if matches!(a.as_ref(), Expr::Identifier(n) if n == index_var) {
+                        kh = Some(name.clone());
+                        kh_stmt = Some(stmt.clone());
+                        region_start = region_start.min(i);
+                        region_end = i + 1;
+                        continue;
+                    }
+                }
+                if let Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, x) = e {
+                    if matches!(x.as_ref(), Expr::Float(_)) && m_name.is_none() {
+                        m_name = Some(name.clone());
+                        m_init = Some((**x).clone());
+                        region_start = region_start.min(i);
+                        region_end = i + 1;
+                        continue;
+                    }
+                }
+                if matches!(e, Expr::Decimal(0) | Expr::Float(0.0)) && l_name.is_none() && m_name.is_some() {
+                    l_name = Some(name.clone());
+                    l_init = Some(e.clone());
+                    region_start = region_start.min(i);
+                    region_end = i + 1;
+                    continue;
+                }
+            }
+            Statement::Foreach { .. } => {
+                // loop A: before l's init; loop B: after; loop C: last (d-ranged)
+                if l_name.is_none() && loop_a.is_none() {
+                    loop_a = Some(stmt);
+                    region_end = i + 1;
+                } else if l_name.is_some() && loop_b.is_none() {
+                    loop_b = Some(stmt);
+                    region_end = i + 1;
+                } else {
+                    loop_c = Some(stmt);
+                    region_end = i + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    let (Some(la), Some(lb), Some(lc)) = (loop_a, loop_b, loop_c) else {
+        return None;
+    }
+    ;
+    let _ = kh;
+    let Statement::Foreach { item: ja, list: la_range, body: la_body } = la else { return None };
+    let j_name = ja.clone();
+    let Expr::Range { end: la_end, .. } = la_range.as_ref() else { return None };
+    let Statement::Foreach { item: jb, list: lb_range, body: lb_body } = lb else { return None };
+    let Expr::Range { end: lb_end, .. } = lb_range.as_ref() else { return None };
+    if format!("{:?}", la_end) != format!("{:?}", lb_end) || jb != &j_name {
+        return None;
+    }
+    let Statement::Foreach { item: dc, list: lc_range, body: lc_body } = lc else { return None };
+    let Expr::Range { end: lc_end, .. } = lc_range.as_ref() else { return None };
+
+    let m_name = m_name?;
+    let l_name = l_name.clone()?;
+    let l_init = l_init?;
+
+    // Loop A: [Let sc = 0, Foreach d { sc = sc + a*b }, m = Max#(m, expr(sc))]
+    let la_stmts = la_body;
+    if la_stmts.len() != 3 {
+        return None;
+    }
+    let (sc_a, dot_a) = match &la_stmts[0] {
+        Statement::Let { name, expr: Some(Expr::Decimal(0)), .. } => (name.clone(), &la_stmts[1]),
+        _ => return None,
+    };
+    let Statement::Foreach { item: da, list: da_range, body: da_body } = dot_a else { return None };
+    let Expr::Range { end: da_end, .. } = da_range.as_ref() else { return None };
+    if da_body.len() != 1 {
+        return None;
+    }
+    if !dot_shape(&da_body[0], &sc_a, &da) {
+        return None;
+    }
+    let (q_buf, k_buf) = dot_buffers(&da_body[0], da);
+    let Statement::Assign(max_lhs, max_rhs) = &la_stmts[2] else { return None };
+    let Expr::Identifier(m_target) = max_lhs else { return None };
+    if m_target != &m_name {
+        return None;
+    }
+    let Expr::Call(max_fn, max_args, _) = max_rhs else { return None };
+    if max_fn != "Max#" || max_args.len() != 2 {
+        return None;
+    }
+    let score_a = if matches!(&max_args[0], Expr::Identifier(n) if n == &m_name) {
+        &max_args[1]
+    } else if matches!(&max_args[1], Expr::Identifier(n) if n == &m_name) {
+        &max_args[0]
+    } else {
+        return None;
+    };
+
+    // Loop B: [Let sc2 = 0, Foreach d {dot}, Let p = Exp#(...sc2...),
+    //          l = l + p, Foreach d { acc[..d..] = acc[..d..] + p * v }]
+    let lb_stmts = lb_body;
+    if lb_stmts.len() != 5 {
+        return None;
+    }
+    let (sc_b, dot_b) = match &lb_stmts[0] {
+        Statement::Let { name, expr: Some(Expr::Decimal(0)), .. } => (name.clone(), &lb_stmts[1]),
+        _ => return None,
+    };
+    let Statement::Foreach { item: db, list: db_range, body: db_body } = dot_b else { return None };
+    let Expr::Range { end: db_end, .. } = db_range.as_ref() else { return None };
+    if format!("{:?}", db_end) != format!("{:?}", da_end) || db_body.len() != 1 {
+        return None;
+    }
+    if !dot_shape(&db_body[0], &sc_b, &db) {
+        return None;
+    }
+    let Statement::Let { name: p_name, expr: Some(p_expr), .. } = &lb_stmts[2] else { return None };
+    if !format!("{:?}", p_expr).contains(&format!("\"{}\"", sc_b)) {
+        return None;
+    }
+    let Statement::Assign(l_lhs, l_rhs) = &lb_stmts[3] else { return None };
+    let Expr::Identifier(l_t) = l_lhs else { return None };
+    if l_t != &l_name {
+        return None;
+    }
+    if !format!("{:?}", l_rhs).contains(&format!("\"{}\"", p_name)) {
+        return None;
+    }
+    let Statement::Foreach { item: dc2, list: dc2_range, body: dc2_body } = &lb_stmts[4] else { return None };
+    if format!("{:?}", dc2_range) != format!("{:?}", lc_range) || dc2_body.is_empty() {
+        return None;
+    }
+    // every acc statement: element-wise RMW on the same buffer, d-affine
+    let mut acc_buf = String::new();
+    for s in dc2_body {
+        let Statement::Assign(lhs_a, rhs) = s else { return None };
+        let Expr::Index(b1, i1) = lhs_a else { return None };
+        let Expr::Identifier(bname) = b1.as_ref() else { return None };
+        if !format!("{:?}", i1).contains(&format!("\"{}\"", dc2)) {
+            return None;
+        }
+        if acc_buf.is_empty() {
+            acc_buf = bname.clone();
+        } else if &acc_buf != bname {
+            return None;
+        }
+        if !format!("{:?}", rhs).contains(&format!("\"{}\"", acc_buf)) {
+            return None;
+        }
+        if !format!("{:?}", rhs).contains(&format!("\"{}\"", p_name)) {
+            return None;
+        }
+    }
+
+    // Loop C: [Foreach d { out[..d..] = acc[..d..] / l }]
+    let lc_stmts = lc_body;
+    if lc_stmts.len() != 1 {
+        return None;
+    }
+    let Statement::Assign(lhs_c, out_val) = &lc_stmts[0] else { return None };
+    let Expr::Index(cbuf, idx_c) = lhs_c else { return None };
+    let Expr::Identifier(out_buf) = cbuf.as_ref() else { return None };
+    let out_buf = out_buf.clone();
+    let Expr::BinaryOp(crate::ast::BinaryOpKind::Div, num, den) = out_val else { return None };
+    let Expr::Index(nbuf, _) = num.as_ref() else { return None };
+    let Expr::Identifier(num_buf) = nbuf.as_ref() else { return None };
+    if num_buf != &acc_buf {
+        return None;
+    }
+    let Expr::Identifier(den_name) = den.as_ref() else { return None };
+    if den_name != &l_name {
+        return None;
+    }
+
+    Some((
+        region_start,
+        region_end,
+        DeferredRegionParts {
+            kh_stmt: kh_stmt.clone(),
+            m_init: m_init?,
+            l_init: l_init.clone(),
+            q_buf: q_buf.clone(),
+            k_buf: k_buf.clone(),
+            v_buf: acc_v_buf(lb_body, &acc_buf),
+            acc_buf,
+            out_buf: out_buf.clone(),
+            score_a: score_a.clone(),
+            p_expr: p_expr.clone(),
+            l_rhs: l_rhs.clone(),
+            dot_a: dot_a.clone(),
+            dot_b: dot_b.clone(),
+            acc_stmts: dc2_body.clone(),
+            norm_stmt: lc_stmts[0].clone(),
+            max_stmt: la_stmts[2].clone(),
+            p_name: p_name.clone(),
+            sc_a,
+            sc_b,
+            da: da.clone(),
+            db: db.clone(),
+            dc2: dc2.clone(),
+            dc: dc.clone(),
+            la_end: (**la_end).clone(),
+            lc_end: (**lc_end).clone(),
+            m_name,
+            l_name,
+            j_name,
+        },
+    ))
+}
+
+use crate::ast::UnaryOpKind;
+
+struct DeferredRegionParts {
+    j_name: String,
+    kh_stmt: Option<Statement>,
+    m_init: Expr,
+    l_init: Expr,
+    q_buf: String,
+    k_buf: String,
+    v_buf: String,
+    acc_buf: String,
+    out_buf: String,
+    score_a: Expr,
+    p_expr: Expr,
+    l_rhs: Expr,
+    dot_a: Statement,
+    dot_b: Statement,
+    acc_stmts: Vec<Statement>,
+    norm_stmt: Statement,
+    max_stmt: Statement,
+    p_name: String,
+    sc_a: String,
+    sc_b: String,
+    da: String,
+    db: String,
+    dc2: String,
+    dc: String,
+    la_end: Expr,
+    lc_end: Expr,
+    m_name: String,
+    l_name: String,
+}
+
+/// The dot statement shape: `sc = sc + a * b` (either mul order), where at
+/// least one side is an index expression mentioning the loop item.
+fn dot_shape(stmt: &Statement, sc: &str, d_item: &str) -> bool {
+    let Statement::Assign(Expr::Identifier(lhs), rhs) = stmt else { return false };
+    if lhs != sc {
+        return false;
+    }
+    let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, a, b) = rhs else { return false };
+    let is_self = |e: &Expr| matches!(e, Expr::Identifier(n) if n == sc);
+    let mul = if is_self(a) { b.as_ref() } else if is_self(b) { a.as_ref() } else { return false };
+    let Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) = mul else { return false };
+    let mentions_d = |e: &Expr| {
+        let mut found = false;
+        fn walk(e: &Expr, name: &str, found: &mut bool) {
+            match e {
+                Expr::Identifier(n) => { if n == name { *found = true; } }
+                Expr::BinaryOp(_, l, r) => { walk(l, name, found); walk(r, name, found); }
+                Expr::Index(_, i) => walk(i, name, found),
+                Expr::Cast(x, _) => walk(x, name, found),
+                _ => {}
+            }
+        }
+        walk(l, d_item, &mut found);
+        walk(r, d_item, &mut found);
+        found
+    };
+    mentions_d(l) && mentions_d(r)
+}
+
+/// The two d-affine load buffers of a dot statement (Cast-transparent).
+fn dot_buffers(stmt: &Statement, _d_item: &str) -> (String, String) {
+    let mut bufs = Vec::new();
+    if let Statement::Assign(_, rhs) = stmt {
+        fn walk(e: &Expr, bufs: &mut Vec<String>) {
+            match e {
+                Expr::Index(b, _) => { if let Expr::Identifier(bn) = b.as_ref() { bufs.push(bn.clone()); } }
+                Expr::Cast(x, _) => walk(x, bufs),
+                Expr::BinaryOp(_, l, r) => { walk(l, bufs); walk(r, bufs); }
+                _ => {}
+            }
+        }
+        walk(rhs, &mut bufs);
+    }
+    let a = bufs.first().cloned().unwrap_or_default();
+    let b = bufs.get(1).cloned().unwrap_or_default();
+    (a, b)
+}
+
+/// The V buffer of the accumulation pass: the load inside the acc statements
+/// that is not the accumulator itself.
+fn acc_v_buf(lb_body: &[Statement], acc_buf: &str) -> String {
+    let Some(Statement::Foreach { body, .. }) = lb_body.iter().nth(4) else { return String::new() };
+    let mut found = String::new();
+    if let Some(Statement::Assign(_, rhs)) = body.first() {
+        fn walk(e: &Expr, acc: &str, found: &mut String) {
+            match e {
+                Expr::Index(b, _) => { if let Expr::Identifier(bn) = b.as_ref() { if bn != acc { *found = bn.clone(); } } }
+                Expr::Cast(x, _) => walk(x, acc, found),
+                Expr::BinaryOp(_, l, r) => { walk(l, acc, found); walk(r, acc, found); }
+                _ => {}
+            }
+        }
+        walk(rhs, acc_buf, &mut found);
+    }
+    found
+}
+
+fn r_tmp_name() -> &'static str {
+    "%r2"
+}
+
+fn f32_imm(v: f32) -> String {
+    format!("0f{:08X}", v.to_bits())
+}
+
+fn fold_f32(
+    e: &Expr,
+    consts: &std::collections::HashMap<String, Expr>,
+) -> Option<f32> {
+    match e {
+        Expr::Float(f) => Some(*f as f32),
+        Expr::Decimal(n) => Some(*n as f32),
+        Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, x) => Some(-fold_f32(x, consts)?),
+        Expr::Identifier(n) => match consts.get(n) {
+            Some(v) => fold_f32(v, consts),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
+impl Gen<'_> {
+    /// 2026-09-19 (M1-finish, plan general-machinery): lower the deferred-
+    /// softmax region as the gate-proven composition — 32 warps slice the
+    /// KV dimension (exact slices, KV % 32 == 0), lanes own 4-element
+    /// strips of the head dim (coalesced loads, per-lane partials),
+    /// merges are the bodies' own generic operators (max for the max
+    /// pass, + for the accumulation and the exp-sum), and the dot is
+    /// butterfly-reduced per KV position. Every index expression, scale
+    /// and call is emitted verbatim from the source with d bound to strip
+    /// registers and sc bound to the butterfly total.
+    fn emit_deferred_region(
+        &mut self,
+        parts: &DeferredRegionParts,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let kv = self.const_int(&parts.la_end)?;
+        let dim = self.const_int(&parts.lc_end)?;
+        if kv % 32 != 0 || dim % 32 != 0 || kv < 32 || dim < 32 {
+            return Err(format!(
+                "ptx general: deferred region needs KV and D divisible by 32 (got KV {kv}, D {dim})"
+            ));
+        }
+        let strips = (dim / 32) as usize;
+        let jslice = (kv / 32) as u32;
+        let warps = 32u32;
+
+        // leading let: kh through the normal path (h is bound to ctaid).
+        if let Some(kh_stmt) = &parts.kh_stmt {
+            self.emit_stmt(kh_stmt, decl, body)?;
+        }
+
+        // warp/lane/slice registers.
+        let r_tid = self.fresh_r();
+        let r_warp = self.fresh_r();
+        let r_lane = self.fresh_r();
+        let r_cnt = self.fresh_r();
+        let r_lo = self.fresh_r();
+        let r_hi = self.fresh_r();
+        let r_w = self.fresh_r();
+        let pred = self.fresh_p();
+        let f_t = self.fresh_f();
+        let sc_lane = self.fresh_f();
+        let sc_w = self.fresh_f();
+        let p_reg = self.fresh_f();
+        let m_reg = self.fresh_f();
+        let l_reg = self.fresh_f();
+        let l_w = self.fresh_f();
+        let l_tot = self.fresh_f();
+        for r in [&r_tid, &r_warp, &r_lane, &r_cnt, &r_lo, &r_hi, &r_w] {
+            decl.push_str(&format!("    .reg .u32 {};\n", r));
+        }
+        decl.push_str(&format!("    .reg .pred {};\n", pred));
+        for f in [&f_t, &sc_lane, &sc_w, &p_reg, &m_reg, &l_reg, &l_w, &l_tot] {
+            decl.push_str(&format!("    .reg .f32 {};\n", f));
+        }
+        // shared: per-warp max (32), per-warp l (32), per-warp acc rows.
+        decl.push_str("    .shared .align 4 .b8 redm[128];\n");
+        decl.push_str("    .shared .align 4 .b8 redl[128];\n");
+        decl.push_str("    .shared .align 4 .b8 smacc[16384];\n");
+
+        // lane/warp ids + d strip regs (loop-invariant).
+        body.push_str(&format!("    mov.u32 {}, %tid.x;\n", r_tid));
+        body.push_str(&format!("    and.b32 {}, {}, 31;\n", r_lane, r_tid));
+        body.push_str(&format!("    shr.u32 {}, {}, 5;\n", r_warp, r_tid));
+        let mut d_regs = Vec::new();
+        for i in 0..strips {
+            let d = self.fresh_r();
+            decl.push_str(&format!("    .reg .u32 {};\n", d));
+            if i == 0 {
+                body.push_str(&format!("    mov.u32 {}, {};\n", d, r_lane));
+            } else {
+                body.push_str(&format!("    add.u32 {}, {}, {};\n", d, d_regs[0], 32 * i));
+            }
+            d_regs.push(d);
+        }
+        // state init: m from the author's constant, everything else zero.
+        let m_init = fold_f32(&parts.m_init, self.consts)
+            .ok_or_else(|| "ptx general: deferred region max init is not a constant".to_string())?;
+        body.push_str(&format!("    mov.f32 {}, {};\n", m_reg, f32_imm(m_init)));
+        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", l_reg));
+        let mut a_regs = Vec::new();
+        for _ in 0..strips {
+            let a = self.fresh_f();
+            decl.push_str(&format!("    .reg .f32 {};\n", a));
+            body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", a));
+            a_regs.push(a);
+        }
+
+        // ── pass A: row max (dot per j, butterfly, per-warp max) ──
+        body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
+        body.push_str(&format!(
+            "    mad.lo.u32 {}, {}, {}, {};\n",
+            r_lo, r_warp, jslice, r_lo
+        ));
+        body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
+        body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
+        let saved_j = self.regs.insert(parts.j_name.clone(), r_cnt.clone());
+        let lab = self.label;
+        self.label += 3;
+        let h1h = format!("L{}_a", lab);
+        let h1e = format!("L{}_ax", lab);
+        let m_loop = format!("L{}_m", lab);
+        let m_done = format!("L{}_md", lab);
+        body.push_str(&format!("{}:\n", h1h));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_cnt, r_hi));
+        body.push_str(&format!("    @{} bra {};\n", pred, h1e));
+        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
+        let saved_d = self.regs.insert(parts.da.clone(), d_regs[0].clone());
+        for i in 0..strips {
+            self.active_strip = i;
+            self.regs.insert(parts.da.clone(), d_regs[i].clone());
+            self.regs.insert(parts.sc_a.clone(), sc_lane.clone());
+            self.emit_stmt(&parts.dot_a, decl, body)?;
+        }
+        match saved_d {
+            Some(v) => { self.regs.insert(parts.da.clone(), v); }
+            None => { self.regs.remove(&parts.da); }
+        }
+        self.emit_butterfly_add(sc_lane.clone(), sc_w.clone(), decl, body)?;
+        let saved_sc = self.regs.insert(parts.sc_a.clone(), sc_w.clone());
+        let saved_m0 = self.regs.insert(parts.m_name.clone(), m_reg.clone());
+        self.emit_stmt(&parts.max_stmt, decl, body)?;
+        match saved_m0 {
+            Some(v) => { self.regs.insert(parts.m_name.clone(), v); }
+            None => { self.regs.remove(&parts.m_name); }
+        }
+        match saved_sc {
+            Some(v) => { self.regs.insert(parts.sc_a.clone(), v); }
+            None => { self.regs.remove(&parts.sc_a); }
+        }
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_cnt, r_cnt));
+        body.push_str(&format!("    bra {};\n", h1h));
+        body.push_str(&format!("{}:\n", h1e));
+        // per-warp max → smem → M (32-slot max loop; base reset per iter).
+        let rd_m = self.fresh_rd();
+        decl.push_str(&format!("    .reg .b64 {};\n", rd_m));
+        body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_m, r_warp, rd_m
+        ));
+        body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_m, m_reg));
+        body.push_str("    bar.sync 0;\n");
+        body.push_str(&format!("    mov.f32 {}, {};\n", m_reg, f32_imm(-1e30)));
+        body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
+        body.push_str(&format!("{}:\n", m_loop));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_w, warps));
+        body.push_str(&format!("    @{} bra {};\n", pred, m_done));
+        body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_m, r_w, rd_m
+        ));
+        body.push_str(&format!("    ld.shared.f32 {}, [{}];\n", f_t, rd_m));
+        body.push_str(&format!("    max.f32 {}, {}, {};\n", m_reg, m_reg, f_t));
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
+        body.push_str(&format!("    bra {};\n", m_loop));
+        body.push_str(&format!("{}:\n", m_done));
+
+        // ── pass B: unnormalized accumulation (dot recompute, p, l, acc strips) ──
+        body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
+        body.push_str(&format!(
+            "    mad.lo.u32 {}, {}, {}, {};\n",
+            r_lo, r_warp, jslice, r_lo
+        ));
+        body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
+        body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
+        let h2h = format!("L{}_b", lab);
+        let h2e = format!("L{}_bx", lab);
+        let l_loop = format!("L{}_l", lab);
+        let l_done = format!("L{}_ld", lab);
+        let a_loop = format!("L{}_s", lab);
+        let a_done = format!("L{}_sd", lab);
+        body.push_str(&format!("{}:\n", h2h));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_cnt, r_hi));
+        body.push_str(&format!("    @{} bra {};\n", pred, h2e));
+        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
+        let saved_d = self.regs.insert(parts.db.clone(), d_regs[0].clone());
+        for i in 0..strips {
+            self.active_strip = i;
+            self.regs.insert(parts.db.clone(), d_regs[i].clone());
+            self.regs.insert(parts.sc_b.clone(), sc_lane.clone());
+            self.emit_stmt(&parts.dot_b, decl, body)?;
+        }
+        match saved_d {
+            Some(v) => { self.regs.insert(parts.db.clone(), v); }
+            None => { self.regs.remove(&parts.db); }
+        }
+        self.emit_butterfly_add(sc_lane.clone(), sc_w.clone(), decl, body)?;
+        let saved_sc = self.regs.insert(parts.sc_b.clone(), sc_w.clone());
+        let saved_m = self.regs.insert(parts.m_name.clone(), m_reg.clone());
+        self.emit_expr(&parts.p_expr, &p_reg, decl, body)?;
+        let saved_l = self.regs.insert(parts.l_name.clone(), l_reg.clone());
+        let saved_p = self.regs.insert(parts.p_name.clone(), p_reg.clone());
+        self.emit_stmt(
+            &Statement::Assign(
+                Expr::Identifier(parts.l_name.clone()),
+                parts.l_rhs.clone(),
+            ),
+            decl,
+            body,
+        )?;
+        // acc strips: registers; the smem merge owns cross-warp traffic.
+        self.strip_acc = Some((parts.acc_buf.clone(), parts.dc2.clone(), a_regs.clone()));
+        for i in 0..strips {
+            self.active_strip = i;
+            self.regs.insert(parts.dc2.clone(), d_regs[i].clone());
+            for s in &parts.acc_stmts {
+                self.emit_stmt(s, decl, body)?;
+            }
+        }
+        self.strip_acc = None;
+        match saved_p {
+            Some(v) => { self.regs.insert(parts.p_name.clone(), v); }
+            None => { self.regs.remove(&parts.p_name); }
+        }
+        match saved_l {
+            Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
+            None => { self.regs.remove(&parts.l_name); }
+        }
+        match saved_m {
+            Some(v) => { self.regs.insert(parts.m_name.clone(), v); }
+            None => { self.regs.remove(&parts.m_name); }
+        }
+        match saved_sc {
+            Some(v) => { self.regs.insert(parts.sc_b.clone(), v); }
+            None => { self.regs.remove(&parts.sc_b); }
+        }
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_cnt, r_cnt));
+        body.push_str(&format!("    bra {};\n", h2h));
+        body.push_str(&format!("{}:\n", h2e));
+
+        // ── merges: l (butterfly + smem sum), acc strips (smem sum) ──
+        self.emit_butterfly_add(l_reg.clone(), l_w.clone(), decl, body)?;
+        let rd_l = self.fresh_rd();
+        decl.push_str(&format!("    .reg .b64 {};\n", rd_l));
+        body.push_str(&format!("    mov.u64 {}, redl;\n", rd_l));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_l, r_warp, rd_l
+        ));
+        body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_l, l_w));
+        body.push_str("    bar.sync 0;\n");
+        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", l_tot));
+        body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
+        body.push_str(&format!("{}:\n", l_loop));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_w, warps));
+        body.push_str(&format!("    @{} bra {};\n", pred, l_done));
+        body.push_str(&format!("    mov.u64 {}, redl;\n", rd_l));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_l, r_w, rd_l
+        ));
+        body.push_str(&format!("    ld.shared.f32 {}, [{}];\n", f_t, rd_l));
+        body.push_str(&format!("    add.f32 {}, {}, {};\n", l_tot, l_tot, f_t));
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
+        body.push_str(&format!("    bra {};\n", l_loop));
+        body.push_str(&format!("{}:\n", l_done));
+
+        // acc strips → this warp's smem row.
+        let rd_a = self.fresh_rd();
+        decl.push_str(&format!("    .reg .b64 {};\n", rd_a));
+        body.push_str(&format!("    mov.u64 {}, smacc;\n", rd_a));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 512, {};\n",
+            rd_a, r_warp, rd_a
+        ));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_a, r_lane, rd_a
+        ));
+        for i in 0..strips {
+            body.push_str(&format!(
+                "    st.shared.f32 [{}+{}], {};\n",
+                rd_a,
+                i * 128,
+                a_regs[i]
+            ));
+        }
+        body.push_str("    bar.sync 0;\n");
+        // a_i = Σ over the 32 warp rows (row pointer reset per iteration).
+        for i in 0..strips {
+            body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", a_regs[i]));
+        }
+        let rd_row = self.fresh_rd();
+        decl.push_str(&format!("    .reg .b64 {};\n", rd_row));
+        body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
+        body.push_str(&format!("{}:\n", a_loop));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_w, warps));
+        body.push_str(&format!("    @{} bra {};\n", pred, a_done));
+        body.push_str(&format!("    mov.u64 {}, smacc;\n", rd_row));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 512, {};\n",
+            rd_row, r_w, rd_row
+        ));
+        for i in 0..strips {
+            body.push_str(&format!(
+                "    ld.shared.f32 {}, [{}+{}];\n",
+                f_t,
+                rd_row,
+                i * 128
+            ));
+            body.push_str(&format!(
+                "    add.f32 {}, {}, {};\n",
+                a_regs[i], a_regs[i], f_t
+            ));
+        }
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
+        body.push_str(&format!("    bra {};\n", a_loop));
+        body.push_str(&format!("{}:\n", a_done));
+
+        // ── deferred normalize: strips own d; l broadcast; global stores ──
+        let saved_l2 = self.regs.insert(parts.l_name.clone(), l_tot.clone());
+        self.strip_acc = Some((parts.acc_buf.clone(), parts.dc.clone(), a_regs.clone()));
+        for i in 0..strips {
+            self.active_strip = i;
+            self.regs.insert(parts.dc.clone(), d_regs[i].clone());
+            self.emit_stmt(&parts.norm_stmt, decl, body)?;
+        }
+        self.strip_acc = None;
+        match saved_l2 {
+            Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
+            None => { self.regs.remove(&parts.l_name); }
+        }
+        let _ = warps;
+        match saved_j {
+            Some(v) => { self.regs.insert(parts.j_name.clone(), v); }
+            None => { self.regs.remove(&parts.j_name); }
+        }
+        Ok(())
+    }
+}
+
+/// 2026-09-19 (M1-finish): shape-level predicate for the runner dispatch —
+/// the deferred-softmax region is a 1024-thread block-per-workitem kernel
+/// (32 warp slices of the KV dimension).
+pub fn has_deferred_region(stmts: &[Statement], index_var: &str) -> bool {
+    detect_deferred_region(stmts, index_var).is_some()
 }

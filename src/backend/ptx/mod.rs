@@ -1791,9 +1791,21 @@ pub fn build_ptx_kernels(
             // (4 warp slices + shared-memory merge) — the desc carries the
             // geometry so the runtime dispatches `count` blocks of 128.
             let warp_sliced = general::has_warp_slice(&e.shape.kernel_stmts, &consts);
-            let block_threads = if warp_sliced { 128 } else { 64 };
+            let deferred = crate::config_tuning::ir_lowering().ptx_deferred_region
+                && general::has_deferred_region(&e.shape.kernel_stmts, &e.shape.index_var);
+            let block_threads = if deferred {
+                1024
+            } else if warp_sliced {
+                128
+            } else {
+                64
+            };
+            // The second compile_cubin argument is -maxrregcount (NOT the
+            // block size): the 1024-thread deferred region needs ≤ 64 regs
+            // per thread to fit an SM's register file (M1-finish).
+            let maxnreg = if deferred { 64 } else { block_threads };
             let blob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
-                compile_cubin(&ptx, block_threads).unwrap_or_else(|| ptx.into_bytes())
+                compile_cubin(&ptx, maxnreg).unwrap_or_else(|| ptx.into_bytes())
             } else {
                 ptx.into_bytes()
             };
@@ -1822,7 +1834,8 @@ pub fn build_ptx_kernels(
                 // 2026-09-19 (M1): warp-sliced serial reductions use the
                 // same dispatch model at block_threads 128 (4 warp slices
                 // + shared-memory merge — plan general-machinery).
-                block_per_workitem: warp_sliced
+                block_per_workitem: deferred
+                    || warp_sliced
                     || general::has_lane_reduction(
                     &e.shape.kernel_stmts, &consts,
                 ),

@@ -104,3 +104,9 @@ ptx_serial_unroll: 4;
 // blocks). fp reassociation via slice sums — gated by the a_err contract.
 // false keeps the 1-wide/unrolled serial form.
 ptx_warp_slice: 0;
+
+// 2026-09-19 (M1-finish): the deferred-softmax region lowering —
+// EXPERIMENTAL, default off: launches at 1024 threads (64-reg cap spills)
+// but produces NaN output; debugging continues (general-machinery plan,
+// M1 status). 0 keeps the general serial path.
+ptx_deferred_region: 0;

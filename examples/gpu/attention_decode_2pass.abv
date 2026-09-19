@@ -1,0 +1,52 @@
+// attention_decode_2pass.abv — FlashDecode deferred form (plan
+// 2026-09-19-general-machinery M1): ONE node, head-per-work-item, softmax
+// written as TWO passes (max, then accumulate) + deferred normalization.
+// Unlike the online form, every loop here carries generic-mergeable state
+// (max, +) — warp-sliceable by the general machinery without any
+// softmax-specific lowering. Numerically identical to the online form
+// (both compute softmax(Q·K)·V); the dot is recomputed per pass.
+const D: Int = 128;
+const H: Int = 32;
+const HKV: Int = 8;
+const G: Int = 4;
+const NKV: Int = 256;
+const SCALE: Float = 0.08838834764831845;
+
+let h: Int = 0;
+let q: Float[4096];
+let k: Float[262144];
+let v: Float[262144];
+let acc: Float[4096];
+let a_out: Float[4096];
+
+async node fattn [h < H][h == H] {
+    let kh: Int = h / G;
+    // Pass 1: the row max of the scaled scores.
+    let m: Float = -1e30;
+    foreach j in 0..NKV {
+        let sc: Float = 0;
+        foreach d in 0..D {
+            sc = sc + q[h * D + d] * (k[kh * (D * NKV) + j * D + d] as Float);
+        }
+        m = Max#(m, sc * SCALE);
+    }
+    // Pass 2: unnormalized accumulation + the exp-sum.
+    let l: Float = 0;
+    foreach j in 0..NKV {
+        let sc: Float = 0;
+        foreach d in 0..D {
+            sc = sc + q[h * D + d] * (k[kh * (D * NKV) + j * D + d] as Float);
+        }
+        let p: Float = Exp#(sc * SCALE - m);
+        l = l + p;
+        foreach d in 0..D {
+            acc[h * D + d] = acc[h * D + d] + p * (v[kh * (D * NKV) + j * D + d] as Float);
+        }
+    }
+    // Deferred normalization.
+    foreach d in 0..D {
+        a_out[h * D + d] = acc[h * D + d] / l;
+    }
+    h = h + 1;
+    term;
+};
