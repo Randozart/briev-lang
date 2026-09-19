@@ -98,3 +98,9 @@ ptx_fused_attention: 0;
 // pv kernel at bitnet geometry: 212 -> 153 us at 4, 146 us at 8 — 4 is the
 // knee. 0 disables (plain 1-wide serial loop).
 ptx_serial_unroll: 4;
+// 2026-09-19 (M1 warp-sliced reductions, plan general-machinery): long
+// serial foreach-reduce loops split across the block's 4 warps
+// (block-per-workitem dispatch, shared-memory partial merge, 128-thread
+// blocks). fp reassociation via slice sums — gated by the a_err contract.
+// false keeps the 1-wide/unrolled serial form.
+ptx_warp_slice: 0;

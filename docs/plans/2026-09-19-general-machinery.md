@@ -55,10 +55,26 @@ j ∈ [w·N/4, (w+1)·N/4), per-warp serial accumulation, smem partials
 loads linear in the item); takes priority over the unroll pass (parallelism
 beats MLP; unroll remains for short/singular loops).
 
-*Gate: pv 98 → ≤55 µs (2-warp→4-warp parallelism halves the serial chain),
-chain ≤ ~155 µs, a_err < 1e-3 both lanes, m3 harness PASS, lib tests
-green.* M1 composes with the existing machinery by construction; a
-slice+unroll composition is a follow-up measurement, not a promise.
+*Gate: pv 98 → ≤55 µs, chain ≤ ~155 µs, a_err < 1e-3 both lanes.*
+
+**STATUS (2026-09-19, first pass — measured, disabled):** the naive form
+(warp-uniform slices: every lane executes the same j redundantly, loads
+are same-address broadcasts) is CORRECT (a_err 7.4e-06) but 4.4× SLOWER
+(pv 932 µs vs 212). Redundant-lane compute + 8× sector waste swamps the
+parallelism gain. Knob `ptx_warp_slice` ships **disabled**.
+
+**The correct form (next pass):** compose warp-slice(outer j) ×
+lane-map(inner d) — lanes own the element dim (coalesced strips, per-lane
+partials), warps own j slices, merges are generic operators (+ for sums,
+max for max-reductions). For the ONLINE-softmax body (acc·cf + p·v) the
+cf-coupling is not + -mergeable: the sliceable form is the deferred/
+2-pass body (m pass + acc/l passes), which the deferred normalizer (M2)
+and chain fusion (M3) produce from the natural source. The LSE one-pass
+form returns as M4's DECLARED merge operator (softmax composite), not as
+derived algebra. Forensics: the first build also shipped a missing
+back-branch + merge-after-tail-label pair (branch skipped the merge
+entirely — dead STS/LDS/BAR in SASS) — fixed; check emitted SASS, not
+just PTX text, when a lowering touches control flow.
 
 ### M2 — deferred normalizer (algebraic pass)
 

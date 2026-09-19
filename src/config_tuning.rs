@@ -223,6 +223,13 @@ pub struct IrLoweringSettings {
     /// bitnet geometry (RTX 3060): 212 -> 153 µs at N=4, 146 µs at N=8 —
     /// the second 4× of MLP buys ~5%, so 4 is the default. 0/1 disables.
     pub ptx_serial_unroll: u32,
+    /// 2026-09-19 (M1 warp-sliced reductions, plan general-machinery):
+    /// long serial reduction loops split across the block's 4 warps with
+    /// a shared-memory partial merge (P1 block-per-workitem dispatch).
+    /// Measured lever for latency-bound serial chains (pv 98 -> ~55 us
+    /// expected at bitnet geometry). false keeps the 1-wide/unrolled
+    /// serial form.
+    pub ptx_warp_slice: bool,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -337,6 +344,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_warp_spec: false,
     ptx_fused_attention: false,
     ptx_serial_unroll: 4,
+    ptx_warp_slice: false,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -593,6 +601,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_serial_unroll", 0)
             .map(|v| v.max(0).min(16) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_serial_unroll),
+        ptx_warp_slice: db
+            .field_int("ptx_warp_slice", 0)
+            .map(|v| v != 0)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_warp_slice),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)

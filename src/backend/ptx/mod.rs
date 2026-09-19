@@ -1786,8 +1786,14 @@ pub fn build_ptx_kernels(
             let ptx = general::emit_general_ptx(
                 &e.shape, count, &layout, &consts, universe, int_bits,
             )?;
+            // 2026-09-19 (M1 warp-sliced reductions, plan general-machinery):
+            // a sliced kernel is a 128-thread block-per-workitem dispatch
+            // (4 warp slices + shared-memory merge) — the desc carries the
+            // geometry so the runtime dispatches `count` blocks of 128.
+            let warp_sliced = general::has_warp_slice(&e.shape.kernel_stmts, &consts);
+            let block_threads = if warp_sliced { 128 } else { 64 };
             let blob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
-                compile_cubin(&ptx, 64).unwrap_or_else(|| ptx.into_bytes())
+                compile_cubin(&ptx, block_threads).unwrap_or_else(|| ptx.into_bytes())
             } else {
                 ptx.into_bytes()
             };
@@ -1805,7 +1811,7 @@ pub fn build_ptx_kernels(
                 ptx_tensor: false,
         fused_mma: false,
         fused_mma_blocks_div: 0,
-                block_threads: 64,
+                block_threads,
                 shared_bytes: 0,
                 touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
                 ptx: Vec::new(),
@@ -1813,7 +1819,11 @@ pub fn build_ptx_kernels(
                 // kernels treat each block as one work item — dispatch
                 // multiplies count by block_threads so the CUDA driver
                 // launches `count` blocks of 64 threads.
-                block_per_workitem: general::has_lane_reduction(
+                // 2026-09-19 (M1): warp-sliced serial reductions use the
+                // same dispatch model at block_threads 128 (4 warp slices
+                // + shared-memory merge — plan general-machinery).
+                block_per_workitem: warp_sliced
+                    || general::has_lane_reduction(
                     &e.shape.kernel_stmts, &consts,
                 ),
             });

@@ -308,6 +308,61 @@ fn elem_bytes_of(layout: &SsboLayout, name: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("ptx: field '{name}' not in layout"))
 }
 
+/// 2026-09-19 (M1 warp-sliced reductions, plan general-machinery):
+/// detect a top-level serial foreach-reduce long enough to split across
+/// the block's warps: the body matches the serial-unroll shape (single
+/// accumulator, loads linear in the item), the span is ≥ 512, and
+/// span % 4 == 0 (4 warps per 128-thread block, exact slices, no tail).
+/// Used by both the emitter (lowering choice) and the runner
+/// (block-per-workitem dispatch, block_threads 128). Structural match,
+/// same discipline as has_lane_reduction.
+pub fn has_warp_slice(
+    kernel_stmts: &[Statement],
+    consts: &std::collections::HashMap<String, Expr>,
+) -> bool {
+    for stmt in kernel_stmts {
+        let Statement::Foreach {
+            item,
+            list,
+            body,
+            ..
+        } = stmt
+        else {
+            continue;
+        };
+        let Expr::Range { start, end, .. } = list.as_ref() else {
+            continue;
+        };
+        let fold = |e: &Expr| -> Option<i64> {
+            match e {
+                Expr::Decimal(n) => Some(*n),
+                Expr::Identifier(name) => match consts.get(name) {
+                    Some(Expr::Decimal(w)) => Some(*w),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let (Some(s), Some(e)) = (fold(start), fold(end)) else {
+            continue;
+        };
+        let span = e - s;
+        if span < 512 || span % 4 != 0 {
+            continue;
+        }
+        let ctx = UnrollCtx {
+            item,
+            start: s,
+            end: e,
+            unroll: 4,
+        };
+        if SerialUnrollPlan::match_body(body, &ctx, consts).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
 /// 2026-09-18 (P1 lane-coverage fix): detect whether `kernel_stmts`
 /// contains a foreach whose body has a lane-mappable inner reduction.
 /// Used by both the PTX emitter (guard shape) and the runner (dispatch
@@ -741,7 +796,7 @@ struct Gen<'a> {
     /// item IS the block (w = ctaid.x).  The entry guard must be
     /// whole-block (`ctaid >= count → ret`) so all 64 threads enter the
     /// body and the lane-strided butterfly has full 32-lane coverage.
-    is_lane_reduction: bool,
+    block_work_item: bool,
 }
 
 impl<'a> Gen<'a> {
@@ -768,7 +823,7 @@ impl<'a> Gen<'a> {
             universe,
             int_bits,
             casting_graph: crate::casting::graph::CastingGraph::new(),
-            is_lane_reduction: false,
+            block_work_item: false,
         }
     }
 
@@ -853,10 +908,11 @@ impl<'a> Gen<'a> {
         // instead of the flat gid guard.  The lane-mapped reduction needs
         // all32 lanes of each warp alive for full d-coverage; the flat
         // guard kills threads beyond `count`, leaving <32 live lanes.
-        self.is_lane_reduction = has_lane_reduction(&shape.kernel_stmts, self.consts);
+        self.block_work_item = has_lane_reduction(&shape.kernel_stmts, self.consts)
+            || has_warp_slice(&shape.kernel_stmts, self.consts);
 
         body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
-        if self.is_lane_reduction {
+        if self.block_work_item {
             // Work item = BLOCK: w = ctaid.x.  Move the special register
             // to %r1 (a GPR) so it can be used in setp and address math.
             // The guard kills entire blocks (r1 >= count → ret) — uniform
@@ -974,6 +1030,36 @@ impl<'a> Gen<'a> {
                     end: self.range_exclusive_end(list, end_v)?,
                     unroll,
                 };
+                // 2026-09-19 (M1 warp-sliced reductions, plan
+                // general-machinery): a LONG serial reduction splits across
+                // the block's 4 warps (P1 block-per-workitem dispatch,
+                // smem partial merge). Parallelism beats the unroll's MLP,
+                // so the slice takes priority; the unroll stays the
+                // fallback for short or non-divisible loops.
+                if crate::config_tuning::ir_lowering().ptx_warp_slice
+                    && matches!(lane_plan, None)
+                    && ctx.end >= ctx.start + 512
+                    && (ctx.end - ctx.start) % 4 == 0
+                {
+                    let slice_ctx = UnrollCtx {
+                        item,
+                        start: ctx.start,
+                        end: ctx.end,
+                        unroll: 4,
+                    };
+                    if SerialUnrollPlan::match_body(loop_body, &slice_ctx, self.consts)
+                        .is_some()
+                    {
+                        return self.emit_warp_sliced(
+                            loop_body,
+                            item,
+                            ctx.start,
+                            ctx.end - ctx.start,
+                            decl,
+                            body,
+                        );
+                    }
+                }
                 let serial_plan = if matches!(lane_plan, None) {
                     SerialUnrollPlan::match_body(loop_body, &ctx, self.consts)
                 } else {
@@ -1246,6 +1332,125 @@ impl<'a> Gen<'a> {
     ) -> Result<(), String> {
         for s in stmts {
             self.emit_stmt(s, decl, body)?;
+        }
+        Ok(())
+    }
+
+/// The accumulator of a warp-slice body: the LAST `x = x + …` assign in
+/// the loop (the serial reduction's carried scalar). None = not a
+/// scalar-reduce body (the caller keeps the serial/unroll fallback).
+fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
+    let mut name: Option<String> = None;
+    for s in body_stmts {
+        let Statement::Assign(Expr::Identifier(lhs), rhs) = s else {
+            continue;
+        };
+        let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, l, _) = rhs else {
+            continue;
+        };
+        let Expr::Identifier(acc) = l.as_ref() else {
+            continue;
+        };
+        if acc == lhs {
+            name = Some(lhs.clone());
+        }
+    }
+    name
+}
+
+/// 2026-09-19 (M1 warp-sliced reductions, plan general-machinery):
+    /// lower a serial foreach-reduce as FOUR warp-private slices over the
+    /// block's single work item (P1 block-per-workitem dispatch, 128
+    /// threads): warp w accumulates j ∈ [start + w·span/4,
+    /// start + (w+1)·span/4), the four partials merge through shared
+    /// memory, and every thread leaves with the full total. The loop is
+    /// warp-uniform (lanes execute the same trips redundantly — the P1
+    /// contract), so the bar.sync is race-free. fp reassociation (slice
+    /// sums before the total) is accepted under the a_err gate — same
+    /// contract as the butterflies and the unroll pass.
+    fn emit_warp_sliced(
+        &mut self,
+        body_stmts: &[Statement],
+        item: &str,
+        start: i64,
+        span: i64,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let acc_name = Self::slice_acc_name(body_stmts)
+            .ok_or_else(|| "ptx general: warp slice without a scalar accumulator".to_string())?;
+        let quarter = (span / 4) as u32;
+        let r_warp = self.fresh_r();
+        let r_lo = self.fresh_r();
+        let r_hi = self.fresh_r();
+        let cnt = self.fresh_r();
+        let pred = self.fresh_p();
+        let rd_part = self.fresh_rd();
+        let f_t = self.fresh_f();
+        for r in [&r_warp, &r_lo, &r_hi, &cnt] {
+            decl.push_str(&format!("    .reg .u32 {};\n", r));
+        }
+        decl.push_str(&format!("    .reg .pred {};\n", pred));
+        decl.push_str(&format!("    .reg .f32 {};\n", f_t));
+        decl.push_str(&format!("    .reg .b64 {};\n", rd_part));
+        decl.push_str("    .shared .align 4 .b8 wpart[16];\n");
+
+        let acc_reg = self.regs.get(&acc_name).cloned().ok_or_else(|| {
+            format!("ptx general: warp slice accumulator '{acc_name}' is not bound")
+        })?;
+
+        // warp id + slice bounds: lo = start + warp*quarter, hi = lo + quarter
+        body.push_str(&format!("    mov.u32 {}, %tid.x;\n", r_warp));
+        body.push_str(&format!("    shr.u32 {}, {}, 5;\n", r_warp, r_warp));
+        body.push_str(&format!("    mov.u32 {}, {};\n", r_lo, start));
+        body.push_str(&format!(
+            "    mad.lo.u32 {}, {}, {}, {};\n",
+            r_lo, r_warp, quarter, r_lo
+        ));
+        body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, quarter));
+        body.push_str(&format!("    mov.u32 {}, {};\n", cnt, r_lo));
+        let lab = self.label;
+        self.label += 1;
+        let head = format!("L{}_head", lab);
+        let tail = format!("L{}_end", lab);
+        body.push_str(&format!("{}:\n", head));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, cnt, r_hi));
+        body.push_str(&format!("    @{} bra {};\n", pred, tail));
+        let saved_item = self.regs.insert(item.to_string(), cnt.clone());
+        self.emit_body_slice(body_stmts, decl, body)?;
+        match saved_item {
+            Some(v) => {
+                self.regs.insert(item.to_string(), v);
+            }
+            None => {
+                self.regs.remove(item);
+            }
+        }
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", cnt, cnt));
+        body.push_str(&format!("    bra {};\n", head));
+        body.push_str(&format!("{}:\n", tail));
+        // partial -> shared memory (all 32 lanes store the same value to
+        // the same slot: benign same-value race). mad.wide folds the
+        // row offset: address = wpart + warp*4.
+        body.push_str(&format!("    mov.u64 {}, wpart;\n", rd_part));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_part, r_warp, rd_part
+        ));
+        body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_part, acc_reg));
+        body.push_str("    bar.sync 0;\n");
+        // merge: the accumulator becomes the sum of the four warp partials.
+        body.push_str(&format!("    mov.u64 {}, wpart;\n", rd_part));
+        body.push_str(&format!("    ld.shared.f32 {}, [{}+0];\n", acc_reg, rd_part));
+        for k in 1..4 {
+            body.push_str(&format!(
+                "    ld.shared.f32 {}, [{}+{}];\n",
+                f_t, rd_part, k * 4
+            ));
+            body.push_str(&format!(
+                "    add.f32 {}, {}, {};\n",
+                acc_reg, acc_reg, f_t
+            ));
         }
         Ok(())
     }
@@ -2065,17 +2270,91 @@ mod tests {
     }
 
     #[test]
-    fn serial_unroll_emits_n_loads_per_site_and_running_pointers() {
+    fn warp_slice_emission_has_block_guard_merge_and_bar() {
+        // Direct emitter test (config-independent — the knob ships off
+        // until the slice composes with lane-mapping; see the plan's M1
+        // status note).
         let shape = pv_shape();
+        let shape = pv_shape();
+        let layout = pv_layout();
+        let consts = consts();
+        let universe = crate::type_universe::TypeUniverse::new();
+        let mut g = Gen::new(&layout, &consts, 2560, &universe, 32);
+        g.block_work_item = true;
+        g.regs.insert("h".into(), "%r1".into());
+        g.regs.insert("d".into(), "%r6".into());
+        g.regs.insert("kh".into(), "%r11".into());
+        // The accumulator binding the sliced loop merges into.
+        g.regs.insert("acc".into(), "%f0".into());
+        let mut decl = String::from("    .reg .b64  %rd1;\n");
+        let mut body = String::from("    mov.u32 %r1, %ctaid.x;\n");
+        // The pv j loop body (the slice's statements).
+        let body_stmts = vec![Statement::Assign(
+            id("acc"),
+            bin(
+                Add,
+                id("acc"),
+                bin(
+                    Mul,
+                    idx("o1", bin(Add, bin(Mul, id("h"), id("NKV")), id("j"))),
+                    idx(
+                        "v",
+                        bin(
+                            Add,
+                            bin(
+                                Add,
+                                bin(Mul, id("kh"), bin(Mul, id("NKV"), id("D"))),
+                                bin(Mul, id("j"), id("D")),
+                            ),
+                            id("d"),
+                        ),
+                    ),
+                ),
+            ),
+        )];
+        g.emit_warp_sliced(&body_stmts, "j", 0, 4096, &mut decl, &mut body)
+            .expect("emits");
+        let ptx = format!("{decl}{body}");
+        // Warp id, exact quarter slices (4096/4), smem partials, barrier.
+        assert!(ptx.contains("shr.u32"), "warp id: {ptx}");
+        assert!(ptx.contains(", 1024, "), "slice quarter: {ptx}");
+        assert!(ptx.contains(".shared .align 4 .b8 wpart[16];"), "smem: {ptx}");
+        assert!(ptx.contains("st.shared.f32"), "partial store: {ptx}");
+        assert!(ptx.contains("bar.sync 0;"), "merge barrier: {ptx}");
+        assert_eq!(ptx.matches("ld.shared.f32").count(), 4, "4 partial reads");
+        // has_warp_slice agrees at the shape level (mod.rs dispatch reads it).
+        assert!(has_warp_slice(&shape.kernel_stmts, &consts));
+    }
+
+    #[test]
+    fn serial_unroll_fires_when_the_slice_does_not_apply() {
+        // NKV=256: span 256 < 512 -> below the slice threshold, the unroll
+        // keeps the loop (MLP within one warp).
+        let mut shape = pv_shape();
+        let mut consts = consts();
+        consts.insert("NKV".into(), num(256));
+        // Rebuild the j loop end so the span follows the consts.
+        if let Some(Statement::Foreach { list, .. }) = shape
+            .kernel_stmts
+            .iter_mut()
+            .find(|s| matches!(s, Statement::Foreach { .. }))
+        {
+            *list = Box::new(Expr::Range {
+                start: Box::new(num(0)),
+                end: Box::new(num(256)),
+                inclusive: false,
+            });
+        }
         let ptx = emit_general_ptx(
             &shape,
             2560,
             &pv_layout(),
-            &consts(),
+            &consts,
             &crate::type_universe::TypeUniverse::new(),
             32,
         )
         .expect("emits");
+        assert!(!has_warp_slice(&shape.kernel_stmts, &consts));
         // 4 slots x 2 sites = 8 back-to-back loads per iteration.
         let loads: Vec<&str> = ptx.lines().filter(|l| l.contains("ld.global.f32")).collect();
         assert_eq!(loads.len(), 8, "4x unroll x 2 sites: {ptx}");
