@@ -215,6 +215,14 @@ pub struct IrLoweringSettings {
     /// the correct default until the cost model gates fusion on "beats the
     /// composition".
     pub ptx_fused_attention: bool,
+    /// 2026-09-19 (serial-loop unroll, plan flash-decode-gate): unroll
+    /// factor for serial reduction foreach loops in the general PTX
+    /// emitter (the work-item-decomposed shape — pv/qk attention kernels).
+    /// Running byte pointers + N independent load registers per site; the
+    /// serial accumulation order is preserved exactly. Measured on pv at
+    /// bitnet geometry (RTX 3060): 212 -> 153 µs at N=4, 146 µs at N=8 —
+    /// the second 4× of MLP buys ~5%, so 4 is the default. 0/1 disables.
+    pub ptx_serial_unroll: u32,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -328,6 +336,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_stages: 0,
     ptx_tensor_warp_spec: false,
     ptx_fused_attention: false,
+    ptx_serial_unroll: 4,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -580,6 +589,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_fused_attention", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_fused_attention),
+        ptx_serial_unroll: db
+            .field_int("ptx_serial_unroll", 0)
+            .map(|v| v.max(0).min(16) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_serial_unroll),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)

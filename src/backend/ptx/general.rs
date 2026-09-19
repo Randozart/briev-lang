@@ -443,12 +443,225 @@ impl LaneReductionPlan {
     }
 }
 
-/// Does the statement mention this identifier anywhere (shallow but sound
-/// for the consumption check: assignments and lets cover the surface).
+/// 2026-09-19 (serial-loop unroll, plan flash-decode-gate): a SERIAL
+/// reduction foreach — the work-item loop was already decomposed, so the
+/// reduction loop runs whole inside every thread and the *coalescing*
+/// comes from neighbouring work items (consecutive gids reading
+/// consecutive addresses). Lane-mapping such a loop would wreck that
+/// coalescing (M1 lesson), so the fix is issue-rate, not mapping: unroll
+/// the loop by N with per-site running byte pointers and N independent
+/// load registers per site (no false WAR deps), preserving the strict
+/// left-to-right accumulation order (bit-exact vs the serial form).
+/// Measured on the pv kernel (bitnet geometry, RTX 3060): 212 -> 153 µs
+/// at N=4, 146 µs at N=8 — N defaults to 4 (`ptx_serial_unroll`).
+struct SerialUnrollPlan {
+    /// the loop variable (also the non-site substitution key)
+    item: String,
+    /// unroll factor the plan was matched for
+    unroll: usize,
+    /// distinct load sites whose address is linear in the loop item with
+    /// nonzero coefficient: (the exact Index expr — the `pipelined` key —
+    /// coefficient of the item in the address)
+    sites: Vec<(Expr, i64)>,
+    start: i64,
+    /// exclusive end (inclusive ranges normalized)
+    end: i64,
+}
+
+/// A resolved preload site: the `pipelined` key, the running base address
+/// register, the per-item byte stride, and the element width.
+struct UnrollSite {
+    key: String,
+    base: String,
+    stride_bytes: i64,
+    elem: u64,
+}
+
+/// Coefficient of `item` in the linear address form `a*item + c`:
+/// `Some(a)`, or `None` when the item appears non-linearly (nested index,
+/// divide, product of two item terms, unknown scalar factor). Everything
+/// else is treated as a loop-invariant contribution.
+fn linear_coeff(
+    e: &Expr,
+    item: &str,
+    consts: &std::collections::HashMap<String, Expr>,
+) -> Option<i64> {
+    match e {
+        Expr::Decimal(_) => Some(0),
+        Expr::Identifier(n) if n == item => Some(1),
+        Expr::Identifier(_) => Some(0),
+        // A nested index inside an address (k[ii[j]]) is neither linearly
+        // addressable nor lowerable by emit_index — reject the body.
+        Expr::Index(..) => None,
+        Expr::BinaryOp(crate::ast::BinaryOpKind::Add, l, r) => {
+            Some(linear_coeff(l, item, consts)? + linear_coeff(r, item, consts)?)
+        }
+        Expr::BinaryOp(crate::ast::BinaryOpKind::Sub, l, r) => {
+            Some(linear_coeff(l, item, consts)? - linear_coeff(r, item, consts)?)
+        }
+        Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) => {
+            let la = linear_coeff(l, item, consts)?;
+            let ra = linear_coeff(r, item, consts)?;
+            let cv = |x: &Expr| -> Option<i64> {
+                match x {
+                    Expr::Decimal(n) => Some(*n),
+                    Expr::Identifier(n) => match consts.get(n) {
+                        Some(Expr::Decimal(w)) => Some(*w),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            };
+            if la != 0 && ra != 0 {
+                return None; // quadratic in the item
+            }
+            if la != 0 {
+                Some(la * cv(r)?)
+            } else if ra != 0 {
+                Some(ra * cv(l)?)
+            } else {
+                Some(0)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Clone of `e` with every `Identifier(item)` replaced by `repl` — builds
+/// the loop-invariant base address expression (item bound to the range
+/// start) for a running pointer.
+fn subst_item(e: &Expr, item: &str, repl: &Expr) -> Expr {
+    match e {
+        Expr::Identifier(n) if n == item => repl.clone(),
+        Expr::BinaryOp(kind, l, r) => Expr::BinaryOp(
+            *kind,
+            Box::new(subst_item(l, item, repl)),
+            Box::new(subst_item(r, item, repl)),
+        ),
+        Expr::UnaryOp(kind, x) => Expr::UnaryOp(*kind, Box::new(subst_item(x, item, repl))),
+        Expr::Index(buf, idx) => Expr::Index(buf.clone(), Box::new(subst_item(idx, item, repl))),
+        Expr::Cast(x, t) => Expr::Cast(Box::new(subst_item(x, item, repl)), t.clone()),
+        other => other.clone(),
+    }
+}
+
+impl SerialUnrollPlan {
+    /// Match a serial foreach body: every statement an Assign/Let, every
+    /// load address linear in the item, at least one nonzero-coefficient
+    /// site, constant range divisible by the unroll factor. Anything else
+    /// keeps the serial fallback.
+    fn match_body(
+        body: &[Statement],
+        ctx: &UnrollCtx,
+        consts: &std::collections::HashMap<String, Expr>,
+    ) -> Option<SerialUnrollPlan> {
+        unroll_span(ctx.start, ctx.end, ctx.unroll)?;
+        let mut sites: Vec<(Expr, i64)> = Vec::new();
+        let mut site_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut found = false;
+        for stmt in body {
+            found |= collect_stmt_sites(stmt, ctx, consts, &mut sites, &mut site_keys)?;
+        }
+        if !found {
+            return None;
+        }
+        Some(SerialUnrollPlan {
+            item: ctx.item.to_string(),
+            unroll: ctx.unroll,
+            sites,
+            start: ctx.start,
+            end: ctx.end,
+        })
+    }
+}
+
+/// The match inputs of one serial foreach: the loop variable, its constant
+/// range (end exclusive), and the requested unroll factor.
+struct UnrollCtx<'a> {
+    item: &'a str,
+    start: i64,
+    end: i64,
+    unroll: usize,
+}
+
+/// The unroll factor must be ≥ 2 and tile the trip count exactly (no tail
+/// in v1 — a tail would need a peeled remainder loop; not worth it while
+/// the whole point is a dense issue stream).
+fn unroll_span(start: i64, end: i64, unroll: usize) -> Option<i64> {
+    if unroll < 2 {
+        return None;
+    }
+    let n = unroll as i64;
+    let span = end - start;
+    if span < 2 * n || span % n != 0 {
+        return None;
+    }
+    Some(n)
+}
+
+/// Collect one statement's preload sites into `sites` (deduped by the
+/// expr-debug key). Returns whether a nonzero-coefficient site was found.
+/// `None` = the statement shape is not serial-unrollable (bails the whole
+/// body back to the plain serial loop).
+fn collect_stmt_sites(
+    stmt: &Statement,
+    ctx: &UnrollCtx,
+    consts: &std::collections::HashMap<String, Expr>,
+    sites: &mut Vec<(Expr, i64)>,
+    site_keys: &mut std::collections::HashSet<String>,
+) -> Option<bool> {
+    let exprs: Vec<&Expr> = match stmt {
+        Statement::Assign(lhs, rhs) => {
+            // A store inside the loop keeps its address via the per-slot
+            // item register (regs[item]); only the rhs loads are preloaded.
+            if matches!(lhs, Expr::Index(_, idx) if linear_coeff(idx, ctx.item, consts).is_none())
+            {
+                return None;
+            }
+            vec![rhs]
+        }
+        Statement::Let { expr: Some(e), .. } => vec![e],
+        _ => return None,
+    };
+    let mut found = false;
+    for e in exprs {
+        found |= collect_expr_sites(e, ctx, consts, sites, site_keys)?;
+    }
+    Some(found)
+}
+
+/// The per-expression half of `collect_stmt_sites`.
+fn collect_expr_sites(
+    e: &Expr,
+    ctx: &UnrollCtx,
+    consts: &std::collections::HashMap<String, Expr>,
+    sites: &mut Vec<(Expr, i64)>,
+    site_keys: &mut std::collections::HashSet<String>,
+) -> Option<bool> {
+    let mut found = false;
+    for load in collect_operand_loads(e) {
+        let Expr::Index(_, idx) = &load else {
+            continue;
+        };
+        let a = linear_coeff(idx, ctx.item, consts)?;
+        if a == 0 {
+            continue;
+        }
+        found = true;
+        let key = format!("{:?}", load);
+        if site_keys.insert(key) {
+            sites.push((load, a));
+        }
+    }
+    Some(found)
+}
 /// 2026-09-18 (M3 pipelining): the load operands of a reduction addend —
 /// every direct `field[idx]` node, in walk order, NOT recursing into a
 /// collected node (nested loads like `k[ii[d]]` stay inline; only the
 /// outer load pipelines). Each becomes a double-buffered register pair.
+/// 2026-09-19 (serial-loop unroll): the same walk collects the unroll's
+/// preload sites (with the same non-recursion guarantee — a nested load's
+/// index never yields a site, so `linear_coeff` rejects those bodies).
 fn collect_operand_loads(e: &Expr) -> Vec<Expr> {
     let mut out = Vec::new();
     fn walk(e: &Expr, out: &mut Vec<Expr>) {
@@ -472,6 +685,8 @@ fn collect_operand_loads(e: &Expr) -> Vec<Expr> {
     out
 }
 
+/// Does the statement mention this identifier anywhere (shallow but sound
+/// for the consumption check: assignments and lets cover the surface).
 fn stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
     fn expr_mentions(e: &Expr, name: &str) -> bool {
         match e {
@@ -746,6 +961,27 @@ impl<'a> Gen<'a> {
                 // warps and a raw tid base would double-count d across
                 // them; both warps then compute the same full total.
                 let lane_plan = LaneReductionPlan::match_body(loop_body, self.consts);
+                // 2026-09-19 (serial-loop unroll, plan flash-decode-gate):
+                // the serial fallback is the workhorse shape for
+                // work-item-decomposed reduction kernels (pv, qk) — its
+                // coalescing comes from neighbouring gids, so lane-mapping
+                // is wrong here; the win is issue rate. Try the unroll
+                // before falling back to the plain 1-wide loop.
+                let unroll = crate::config_tuning::ir_lowering().ptx_serial_unroll as usize;
+                let ctx = UnrollCtx {
+                    item,
+                    start: start_v,
+                    end: self.range_exclusive_end(list, end_v)?,
+                    unroll,
+                };
+                let serial_plan = if matches!(lane_plan, None) {
+                    SerialUnrollPlan::match_body(loop_body, &ctx, self.consts)
+                } else {
+                    None
+                };
+                if let Some(plan) = &serial_plan {
+                    return self.emit_serial_unrolled(plan, loop_body, decl, body);
+                }
                 let cnt = self.fresh_r();
                 decl.push_str(&format!("    .reg .u32 {};\n", cnt));
                 let pred = self.fresh_p();
@@ -938,6 +1174,180 @@ impl<'a> Gen<'a> {
         decl.push_str(&format!("    .reg .f32 {};\n", total));
         let reduced = self.emit_butterfly_add(acc, total, decl, body)?;
         self.regs.insert(r.acc.clone(), reduced);
+        Ok(())
+    }
+
+    /// 2026-09-19 (serial-loop unroll, plan flash-decode-gate): emit the
+    /// serial foreach unrolled by `unroll` with running byte pointers per
+    /// load site and `unroll` independent load registers per site issued
+    /// back-to-back before the consuming math (MLP = sites × unroll).
+    /// Accumulation order is exactly the serial one: per slot, statements
+    /// lower in source order against that slot's preloaded registers.
+    /// The loop item in non-site positions (store addresses, scalar math)
+    /// reads a per-slot register (cnt + k) so correctness never depends on
+    /// the site analysis.
+    fn emit_serial_unrolled(
+        &mut self,
+        plan: &SerialUnrollPlan,
+        body_stmts: &[Statement],
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let n = plan.unroll as i64;
+        let sites = self.emit_unroll_site_bases(plan, decl, body)?;
+
+        let cnt = self.fresh_r();
+        decl.push_str(&format!("    .reg .u32 {};\n", cnt));
+        let pred = self.fresh_p();
+        decl.push_str(&format!("    .reg .pred {};\n", pred));
+        let lab = self.label;
+        self.label += 1;
+        let head = format!("L{}_head", lab);
+        let tail = format!("L{}_end", lab);
+        // Per-slot item register for non-site uses (stores, scalar math).
+        let item_reg = self.fresh_r();
+        decl.push_str(&format!("    .reg .u32 {};\n", item_reg));
+
+        body.push_str(&format!("    mov.u32 {}, {};\n", cnt, plan.start));
+        body.push_str(&format!("{}:\n", head));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, cnt, plan.end));
+        body.push_str(&format!("    @{} bra {};\n", pred, tail));
+        // One shot per slot: preloads first (all sites issue back-to-back),
+        // then the statements consume them in source order.
+        let saved_pipelined = std::mem::take(&mut self.pipelined);
+        let saved_item = self.regs.insert(plan.item.clone(), item_reg.clone());
+        for k in 0..n {
+            body.push_str(&format!("    add.u32 {}, {}, {};\n", item_reg, cnt, k));
+            self.emit_unroll_slot_loads(&sites, k, decl, body)?;
+            self.emit_body_slice(body_stmts, decl, body)?;
+        }
+        // Bump the running pointers by the whole unroll span.
+        self.emit_unroll_pointer_bumps(&sites, n, body);
+        self.pipelined = saved_pipelined;
+        match saved_item {
+            Some(v) => {
+                self.regs.insert(plan.item.clone(), v);
+            }
+            None => {
+                self.regs.remove(&plan.item);
+            }
+        }
+        body.push_str(&format!("    add.u32 {}, {}, {};\n", cnt, cnt, n));
+        body.push_str(&format!("    bra {};\n", head));
+        body.push_str(&format!("{}:\n", tail));
+        Ok(())
+    }
+
+    fn emit_body_slice(
+        &mut self,
+        stmts: &[Statement],
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        for s in stmts {
+            self.emit_stmt(s, decl, body)?;
+        }
+        Ok(())
+    }
+
+    /// The exclusive end of a foreach range (inclusive ranges normalize to
+    /// end + 1) — the same contract the lane matcher's span arithmetic
+    /// uses, factored so both arms share it.
+    fn range_exclusive_end(&self, list: &Expr, fallback: i64) -> Result<i64, String> {
+        let Expr::Range {
+            end,
+            inclusive,
+            ..
+        } = list
+        else {
+            return Ok(fallback);
+        };
+        if *inclusive {
+            Ok(self.const_int(end)? + 1)
+        } else {
+            Ok(self.const_int(end)?)
+        }
+    }
+
+    fn emit_unroll_pointer_bumps(&mut self, sites: &[UnrollSite], n: i64, body: &mut String) {
+        for site in sites {
+            body.push_str(&format!(
+                "    add.u64 {}, {}, {};\n",
+                site.base,
+                site.base,
+                n * site.stride_bytes
+            ));
+        }
+    }
+
+    /// Prologue of the unrolled loop: one loop-invariant base address
+    /// register per preload site (item bound to the range start). The site
+    /// bounds check rejects shapes whose slot offsets leave the PTX
+    /// immediate range.
+    fn emit_unroll_site_bases(
+        &mut self,
+        plan: &SerialUnrollPlan,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<Vec<UnrollSite>, String> {
+        let n = plan.unroll as i64;
+        let mut sites = Vec::new();
+        let start_expr = Expr::Decimal(plan.start);
+        for (load, a) in &plan.sites {
+            let Expr::Index(buf, idx) = load else {
+                continue;
+            };
+            let buf_name = self.field_of(buf)?;
+            let off = self.field_off(&buf_name).ok_or_else(|| {
+                format!("ptx general: unroll buffer '{}' not in layout", buf_name)
+            })?;
+            let elem = self.elem_bytes(&buf_name)?;
+            if n * a.abs() * elem as i64 > (1 << 30) {
+                return Err(format!(
+                    "ptx general: unroll site '{}' needs slot offset {}x{}x{} beyond the PTX immediate range",
+                    buf_name, n, a, elem
+                ));
+            }
+            let idx_base = subst_item(idx, &plan.item, &start_expr);
+            let base = self.array_addr(buf_name, off, elem, &idx_base, decl, body)?;
+            sites.push(UnrollSite {
+                key: format!("{:?}", load),
+                base,
+                stride_bytes: a * elem as i64,
+                elem,
+            });
+        }
+        Ok(sites)
+    }
+
+    /// Issue slot `k`'s preload for every site (back-to-back, independent
+    /// destination registers — no false WAR dependencies) and register the
+    /// values under the site keys for the consuming statements.
+    fn emit_unroll_slot_loads(
+        &mut self,
+        sites: &[UnrollSite],
+        k: i64,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        for site in sites {
+            let val = self.fresh_f();
+            decl.push_str(&format!("    .reg .f32 {};\n", val));
+            let slot_bytes = site.stride_bytes * k;
+            if site.elem == 2 {
+                body.push_str(&format!(
+                    "    ld.global.u16 %t0, [{}+{}];\n",
+                    site.base, slot_bytes
+                ));
+                body.push_str(&format!("    cvt.f32.f16 {}, %t0;\n", val));
+            } else {
+                body.push_str(&format!(
+                    "    ld.global.f32 {}, [{}+{}];\n",
+                    val, site.base, slot_bytes
+                ));
+            }
+            self.pipelined.insert(site.key.clone(), val);
+        }
         Ok(())
     }
 
@@ -1433,5 +1843,250 @@ impl<'a> Gen<'a> {
             .find(|f| f.name == name)
             .map(|f| f.elem_bytes as u64)
             .ok_or_else(|| format!("ptx general: field '{}' not in layout", name))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::BinaryOpKind::*;
+
+    fn id(n: &str) -> Expr {
+        Expr::Identifier(n.into())
+    }
+    fn num(n: i64) -> Expr {
+        Expr::Decimal(n)
+    }
+    fn idx(buf: &str, e: Expr) -> Expr {
+        Expr::Index(Box::new(id(buf)), Box::new(e))
+    }
+    fn bin(kind: BinaryOpKind, l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(kind, Box::new(l), Box::new(r))
+    }
+    fn consts() -> std::collections::HashMap<String, Expr> {
+        let mut m = std::collections::HashMap::new();
+        m.insert("D".into(), num(128));
+        m.insert("NKV".into(), num(4096));
+        m.insert("G".into(), num(4));
+        m
+    }
+
+    /// pv-like reduction addend: acc = acc + o1[h*NKV + j] * v[kh*NKV*D + j*D + di]
+    fn pv_addend() -> Expr {
+        bin(
+            Add,
+            id("acc"),
+            bin(
+                Mul,
+                idx("o1", bin(Add, bin(Mul, id("h"), id("NKV")), id("j"))),
+                idx(
+                    "v",
+                    bin(
+                        Add,
+                        bin(
+                            Add,
+                            bin(Mul, id("kh"), bin(Mul, id("NKV"), id("D"))),
+                            bin(Mul, id("j"), id("D")),
+                        ),
+                        id("di"),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    #[test]
+    fn linear_coeff_extracts_item_stride() {
+        let c = consts();
+        // h*NKV + j -> coefficient 1
+        assert_eq!(
+            linear_coeff(&bin(Add, bin(Mul, id("h"), id("NKV")), id("j")), "j", &c),
+            Some(1)
+        );
+        // j*D -> coefficient D (const ident factor)
+        assert_eq!(
+            linear_coeff(&bin(Mul, id("j"), id("D")), "j", &c),
+            Some(128)
+        );
+        // kh*NKV*D + j*D + di -> coefficient D
+        assert_eq!(
+            linear_coeff(
+                &bin(
+                    Add,
+                    bin(Add, bin(Mul, id("kh"), bin(Mul, id("NKV"), id("D"))), bin(Mul, id("j"), id("D"))),
+                    id("di"),
+                ),
+                "j",
+                &c
+            ),
+            Some(128)
+        );
+        // quadratic: j*j -> None
+        assert_eq!(linear_coeff(&bin(Mul, id("j"), id("j")), "j", &c), None);
+        // non-linear: nested index k[ii[j]] -> None
+        assert_eq!(
+            linear_coeff(&idx("k", idx("ii", id("j"))), "j", &c),
+            None
+        );
+    }
+
+    #[test]
+    fn subst_item_bakes_the_range_start() {
+        let e = bin(Add, bin(Mul, id("h"), id("NKV")), id("j"));
+        let out = subst_item(&e, "j", &num(0));
+        assert_eq!(
+            format!("{:?}", out),
+            format!("{:?}", bin(Add, bin(Mul, id("h"), id("NKV")), num(0)))
+        );
+    }
+
+    #[test]
+    fn serial_unroll_matches_the_pv_body() {
+        let c = consts();
+        let body = vec![Statement::Assign(id("acc"), pv_addend())];
+        let plan = SerialUnrollPlan::match_body(&body, &ctx("j", 0, 4096, 4), &c)
+            .expect("pv body must match");
+        assert_eq!(plan.sites.len(), 2, "o1 and v sites");
+        let strides: Vec<i64> = plan.sites.iter().map(|(_, a)| *a).collect();
+        assert!(strides.contains(&1), "o1 stride: {:?}", strides);
+        assert!(strides.contains(&128), "v stride: {:?}", strides);
+        // Non-divisible trip count keeps the serial form.
+        assert!(SerialUnrollPlan::match_body(&body, &ctx("j", 0, 4095, 4), &c).is_none());
+        // Unroll factor below 2 is a no-op request.
+        assert!(SerialUnrollPlan::match_body(&body, &ctx("j", 0, 4096, 1), &c).is_none());
+        // A foreach inside the body is not serial-unrollable.
+        let nested = vec![Statement::Foreach {
+            item: "k".into(),
+            list: Box::new(Expr::Range {
+                start: Box::new(num(0)),
+                end: Box::new(id("D")),
+                inclusive: false,
+            }),
+            body: vec![Statement::Assign(id("acc"), pv_addend())],
+        }];
+        assert!(SerialUnrollPlan::match_body(&nested, &ctx("j", 0, 4096, 4), &c).is_none());
+    }
+
+    fn ctx(item: &str, start: i64, end: i64, unroll: usize) -> UnrollCtx<'_> {
+        UnrollCtx {
+            item,
+            start,
+            end,
+            unroll,
+        }
+    }
+
+    fn f64_field(name: &str, proj: u64, elems: u64) -> crate::backend::spirv::runner::RunnerField {
+        crate::backend::spirv::runner::RunnerField {
+            name: name.into(),
+            offset: proj,
+            proj_offset: proj,
+            elem_bytes: 4,
+            count: elems,
+            is_array: true,
+            type_is_float: true,
+        }
+    }
+
+    fn pv_layout() -> crate::backend::spirv::runner::SsboLayout {
+        crate::backend::spirv::runner::SsboLayout {
+            fields: vec![
+                f64_field("out", 0, 2560),
+                f64_field("o1", 1 << 16, 81920),
+                f64_field("v", 1 << 20, 2_621_440),
+            ],
+            images: vec![],
+            state_bytes: 1 << 24,
+            program_bytes: 1 << 24,
+        }
+    }
+
+    fn pv_shape() -> crate::analysis::accel::KernelShape {
+        // let h = t / NKV; let kh = h / G; let di = t - h * D;
+        // acc = 0; foreach j in 0..NKV { acc = acc + o1[..j..] * v[..j*D+di..]; }
+        // out[t] = acc;
+        let lets = [
+            Statement::Let {
+                name: "h".into(),
+                names: vec![],
+                ty: Some(crate::ast::Type::Custom("Int".into())),
+                expr: Some(bin(Div, id("t"), id("NKV"))),
+                modifiers: vec![],
+            },
+            Statement::Let {
+                name: "kh".into(),
+                names: vec![],
+                ty: Some(crate::ast::Type::Custom("Int".into())),
+                expr: Some(bin(Div, id("h"), id("G"))),
+                modifiers: vec![],
+            },
+            Statement::Let {
+                name: "di".into(),
+                names: vec![],
+                ty: Some(crate::ast::Type::Custom("Int".into())),
+                expr: Some(bin(
+                    Sub,
+                    id("t"),
+                    bin(Mul, id("h"), id("D")),
+                )),
+                modifiers: vec![],
+            },
+            Statement::Let {
+                name: "acc".into(),
+                names: vec![],
+                ty: None,
+                expr: Some(crate::ast::Expr::Float(0.0)),
+                modifiers: vec![],
+            },
+        ];
+        let mut kernel_stmts: Vec<Statement> = lets.into_iter().collect();
+        kernel_stmts.push(Statement::Foreach {
+            item: "j".into(),
+            list: Box::new(Expr::Range {
+                start: Box::new(num(0)),
+                end: Box::new(id("NKV")),
+                inclusive: false,
+            }),
+            body: vec![Statement::Assign(id("acc"), pv_addend())],
+        });
+        kernel_stmts.push(Statement::Assign(idx("out", id("t")), id("acc")));
+        crate::analysis::accel::KernelShape {
+            index_var: "t".into(),
+            count_expr: Some(num(2560)),
+            kernel_stmts,
+            host_stmts: vec![],
+            read_buffers: vec!["o1".into(), "v".into()],
+            write_buffers: vec!["out".into()],
+            scalar_ins: vec![],
+            eligible: true,
+            reasons: vec![],
+            work_cols: None,
+            reduction: None,
+        }
+    }
+
+    #[test]
+    fn serial_unroll_emits_n_loads_per_site_and_running_pointers() {
+        let shape = pv_shape();
+        let ptx = emit_general_ptx(
+            &shape,
+            2560,
+            &pv_layout(),
+            &consts(),
+            &crate::type_universe::TypeUniverse::new(),
+            32,
+        )
+        .expect("emits");
+        // 4 slots x 2 sites = 8 back-to-back loads per iteration.
+        let loads: Vec<&str> = ptx.lines().filter(|l| l.contains("ld.global.f32")).collect();
+        assert_eq!(loads.len(), 8, "4x unroll x 2 sites: {ptx}");
+        // Running pointers advance by the whole unroll span per iteration:
+        // o1 by 4*1*4 = 16 bytes, v by 4*128*4 = 2048 bytes.
+        assert!(ptx.contains(", 16;\n"), "o1 pointer bump: {ptx}");
+        assert!(ptx.contains(", 2048;\n"), "v pointer bump: {ptx}");
+        // The loop counter advances by the unroll factor, not by 1.
+        assert!(
+            ptx.lines().any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 4;")),
+            "counter steps by 4: {ptx}"
+        );
     }
 }

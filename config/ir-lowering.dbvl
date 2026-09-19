@@ -92,3 +92,9 @@ ptx_fused_staged: 0;
 // composition (0.752 vs 0.073 ms @512²). Default OFF; the composition is
 // the correct default until the cost model gates fusion on winning.
 ptx_fused_attention: 0;
+// 2026-09-19 (serial-loop unroll, plan flash-decode-gate): general-PTX
+// serial reduction foreach loops unroll by this factor with running byte
+// pointers and independent load registers (bit-exact accumulation order).
+// pv kernel at bitnet geometry: 212 -> 153 us at 4, 146 us at 8 — 4 is the
+// knee. 0 disables (plain 1-wide serial loop).
+ptx_serial_unroll: 4;
