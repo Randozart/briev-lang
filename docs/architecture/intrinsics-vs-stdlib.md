@@ -113,3 +113,36 @@ replaces a compiler-intrinsic + Rust match arm. A user writing `MyQueue<T>`
 with `InsertAt <~ my_push(#L, #R)` gets the same `<-` syntax without touching
 the compiler. The only hardcoded Rust code is the strategy dispatch reading the
 property value — and even that is generic.
+
+## Declared Vocabulary and the Two Tiers (2026-09-19)
+
+Review decision (plan `2026-09-19-general-machinery.md`): algorithm
+knowledge enters the compiler as **declared stdlib composites with
+registered lowerings**, not as Rust matchers on hand-written expansions.
+
+| Tier | Mechanism | Examples | Home |
+|---|---|---|---|
+| 1 — property-based | analysis over dataflow/algebraic properties; `_ => None` fallthrough | chain fusion, epilogue fusion, warp-sliced reductions, serial unroll, deferred normalizer, dispatch-geometry derivation | `src/analysis/`, `src/backend/ptx/general.rs` |
+| 2 — recognized vocabulary | structural matcher on a hand-expansion + dedicated lowering | softmax (3-pass matcher), dot, GEMM, the dormant fused-attention family | retiring into declarations |
+
+Rules:
+
+1. **Vocabulary is nameable.** softmax/dot/matmul are declared once in
+   lib/std (numeric composition module) with canonical bodies; the
+   compiler lowers the declaration, not the expansion.
+2. **Lowerings are registered per declaration**, keyed by declared name —
+   e.g. softmax's cooperative lowering and its online (m,l) fused
+   lowering are two strategies of one declared composite. The declaration
+   also declares its state merge operator (softmax: LSE) — warp-slicing
+   consumes that instead of deriving algebra.
+3. **Tier-1 grows; Tier-2 retires.** New performance mechanisms must be
+   property-based (general machinery). A Tier-2 matcher is accepted only
+   as a deprecation shim for an in-flight declaration, and each carries a
+   retirement ledger entry (see the general-machinery plan, §4).
+4. **The declaration lives in stdlib, the lowering in the backend** — the
+   layout-contracts model: composition owns kernel+layout; the compiler
+   proves and consumes.
+
+Migration ledger: fused-attention family → superseded by general fusion
+(ledger #1); softmax matcher → numeric.bv declaration (ledger #2); dot →
+declaration (ledger #3); GEMM/GemmPlan → BLAS declaration (ledger #4).

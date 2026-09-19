@@ -462,6 +462,18 @@ lookups are fine. Reference: commit `139c345`,
 
 ## 6. Optimization Philosophy
 
+### GPU vocabulary doctrine (2026-09-19, plan general-machinery)
+
+Algorithm shapes are NOT recognized by the compiler — they EMERGE from
+general machinery. Two tiers: property-based analyses (chain fusion, warp
+slicing, deferred normalizers — Tier 1, grows) versus recognized-vocabulary
+matchers with dedicated lowerings (softmax/dot/GEMM/attention — Tier 2,
+retires into declared stdlib composites with registered lowerings). New
+performance mechanisms must be Tier 1. A Tier-2 matcher is accepted only
+as a deprecation shim carrying a retirement-ledger entry. Full doctrine:
+`intrinsics-vs-stdlib.md` §Declared Vocabulary; program:
+`docs/plans/2026-09-19-general-machinery.md`.
+
 ### The maximum-efficient default (foundational)
 
 The compiler MUST pick the most efficient codegen strategy for every program

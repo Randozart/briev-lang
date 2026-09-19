@@ -143,19 +143,6 @@ pub enum ReductionKind {
     Softmax,
 }
 
-impl ReductionInfo {
-    /// The Dot-shape constructor (the 2026-09-01 cooperative form).
-    pub fn dot(inner: crate::ast::Expr) -> Self {
-        Self {
-            inner,
-            kind: ReductionKind::Dot,
-            row_buf: String::new(),
-            col_buf: String::new(),
-            out_buf: String::new(),
-        }
-    }
-}
-
 /// One analyzed candidate body, keyed by transaction name.
 #[derive(Debug, Clone)]
 pub struct AccelEntry {

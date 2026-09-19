@@ -1,3 +1,9 @@
+> **SUPERSEDED 2026-09-19** by `2026-09-19-general-machinery.md`
+> (review decision: no application-level shape recognizer; general
+> machinery instead). The runtime-layout findings (§5) remain valid and
+> are absorbed there. The FlashDecodeInfo struct edit this plan spawned
+> was deliberately reverted before commit.
+
 # FlashDecode LoopShape + PTX Emitter
 
 **Date:** 2026-09-19
