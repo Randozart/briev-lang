@@ -86,7 +86,50 @@ reference, then time launch+sync.
    LoopShape + emitter feature (frontend-driven per dispatch doctrine).
 4. f16 V for pv path (re-test the refuted hypothesis on the L2-bound kernel).
 
-## 5. Results (updated 2026-09-19, work queue item 1 LANDED)
+## 6. GATE VERDICT (2026-09-19, work queue item 2 EXECUTED)
+
+Hand-PTX flash-decode kernel (`benchmarks/flash-decode-gate/`): **PASS**.
+
+| path                                | correctness      | time     |
+|-------------------------------------|------------------|----------|
+| 3-kernel chain (serial)             | a_err 9.65e-06   | 317 µs   |
+| 3-kernel chain (serial-unrolled)    | a_err 9.65e-06   | 202 µs   |
+| **flash-decode v4 (one kernel)**    | max_rel 2.34e-06 | **123 µs** |
+| ggml fattn parity target            | —                | 58 µs    |
+| f32 DRAM floor (21 MB KV)           | —                | 58 µs    |
+
+Design that won: 20 blocks (one per query head) × 32 warps; warp w owns
+j slice [w·128, (w+1)·128); per-warp online softmax (m, l) + per-lane
+acc[4] over di = lane+32i (FULL di range — warps split ONLY j); strip dot
++ 5-round shfl butterfly; ONE smem LSE merge per kernel (1 bar.sync).
+K/V j-major: all loads coalesced, no smem staging for loads.
+
+### Forensics ledger (what cost time — do not re-learn)
+
+1. a_out aliasing q's proj slot: the seeder skips inputs whose slot a
+   write-first field claims → kernel read zeros. Output slots must be
+   disjoint from inputs.
+2. The first launch primes via a RAW host→device copy plus an extra
+   dispatch; a v proj ≠ host offset reads shifted data on that dispatch.
+   Keep v proj = host offset.
+3. Debug regions inside a_out overlap real outputs (heads 18/19) — races
+   made three "fixes" look like no-ops. Dump slots must be outside
+   [0, H·D) or the field extended.
+4. A scalar-free desc takes the `n_dirty == 0` full-projection HtoD path
+   EVERY launch (21 MB PCIe ≈ 3.8 ms) — that was the "kernel time" in the
+   first measurements. A dummy scalar field routes to the dirty path.
+5. The di/j coupling mistake (v2): warps split j AND di → each di saw only
+   ¼ of its j's. Split ONLY j; each warp accumulates the full di range.
+
+### Decision
+
+Build the frontend `FlashDecode` LoopShape + emitter (plan §3's first
+criterion: ≥2× over the pipelined chain — measured 253/123 = 2.06×).
+Parity (<58 µs) needs f16 KV (halves the DRAM floor to 29 µs) and/or
+software-pipelining the j loop (latency dominates: 491 µs @ 4 warps vs
+123 µs @ 32 warps). f16 remains work queue item 4.
+
+## 5. Serial-loop unroll pass (work queue item 1, LANDED pre-gate)
 
 The serial-loop unroll pass shipped as a first-class emitter feature
 (`SerialUnrollPlan` in `src/backend/ptx/general.rs`, knob
