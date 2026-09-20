@@ -132,6 +132,18 @@ Patches are unacceptable. There is no "go fast and break things."
     acknowledgement of simultaneous firing) or `sync<group>` on both (group
     barrier: members that fire hold off finishing until all fired members have).
     An unclassified eligible pair is a compile error.
+23. **NO VOCABULARY MATCHING**: The compiler must never recognize specific
+    algorithm patterns (softmax, attention, GEMM, dot product, convolution)
+    and emit special-case codegen for them. General-purpose passes (warp
+    slicing, chain fusion, deferred normalizer, serial unroll) must handle
+    every shape. If a specific shape needs a different codegen strategy, the
+    GENERAL pass must learn to detect and emit it — not a new match arm in
+    the backend. Tier-2 recognized-vocabulary matchers are retired into
+    declared stdlib composites once Tier-1 handles them. Vocabulary matching
+    is the algorithmic equivalent of type name matching (Rule 15) — it
+    creates invisible knowledge the compiler must carry forever and makes the
+    language's performance ceiling depend on which patterns the compiler
+    author happened to recognize.
 
 ## Performance Recovery Protocol
 
@@ -194,6 +206,12 @@ clang -O3 -flto -march=native -ffast-math -fdata-sections -ffunction-sections \
   sole bare protocol hashword. See `docs/architecture/hash-words.md`.
 - **Intrinsics vs stdlib**: `rm -rf lib/std && brievc --no-stdlib` still
   type-checks `let x: Int = 5` ⇒ intrinsic; else stdlib.
+- **No vocabulary matching.** The backend must never pattern-match specific
+  algorithms (softmax, attention, GEMM, dot, convolution) and emit
+  special-case code. General-purpose passes must handle every shape. If a
+  shape needs different codegen, the general pass learns it — not a new
+  match arm. The compiler's performance ceiling must never depend on which
+  patterns the author happened to recognize.
 
 ## Observability as Liveness
 
