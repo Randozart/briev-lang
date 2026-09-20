@@ -170,8 +170,15 @@ acc = acc / L;  // single division after loop
 **Gate:** Correctness via M3; standalone test on mean-then-weighted-sum
 fixture. a_err < 1e-3.
 
-**Status:** Not started. Prerequisite for M3 (softmax's normalize must not
-block pv fusion).
+**Status:** DETECTION DONE (2026-09-20, `56bfbaa8`): `detect_deferred_normalizer`
+in `src/analysis/accel.rs` proves the deferrable-normalize structure
+(single-writer self-add denominator + trailing pure-division foreach);
+`KernelShape.deferred_normalize` carries the proof; the PTX deferred-region
+dispatch consumes it (frontend-driven). 8 tests; flash2p fixture
+byte-identical when the knob is on (max_rel 1.95e-06, 200 µs); m3 PASS
+both lanes. REMAINING: mean-then-weighted-sum runtime fixture; the
+normalize-as-barrier removal for M3 fusion (the consumer-side absorption
+of the raw numerator).
 
 ### M3 — Producer-Consumer Chain Fusion
 
