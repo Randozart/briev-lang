@@ -1044,6 +1044,7 @@ mod tests {
             reasons: vec![],
             work_cols: None,
             reduction: Some(ReductionInfo::dot(idx("K"))),
+            deferred_normalize: None,
         };
         (shape, items)
     }

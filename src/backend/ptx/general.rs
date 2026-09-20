@@ -2330,6 +2330,7 @@ mod tests {
             reasons: vec![],
             work_cols: None,
             reduction: None,
+            deferred_normalize: None,
         }
     }
 

@@ -318,6 +318,7 @@ mod tests {
             reasons: vec![],
             work_cols: None,
             reduction: None,
+            deferred_normalize: None,
         };
         let entry = AccelEntry {
             mode: crate::analysis::accel::AccelMode::TryKeyword,

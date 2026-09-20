@@ -1605,6 +1605,7 @@ mod decomposition_gate_tests {
             reasons: vec![],
             work_cols: None,
             reduction: Some(ReductionInfo::dot(Expr::Decimal(64))),
+            deferred_normalize: None,
         }
     }
 

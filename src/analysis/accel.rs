@@ -118,6 +118,11 @@ pub struct KernelShape {
     /// accumulation + OpGroupNonUniformFAdd + one store per row. Holds the
     /// loop END expression (K — resolved at emission).
     pub reduction: Option<ReductionInfo>,
+    /// 2026-09-20 (M2 deferred normalizer): a division by a loop-completed
+    /// scalar that can be deferred past the consumer's accumulation. Enables
+    /// chain fusion (M3) by removing the normalization barrier between
+    /// softmax and its consumer.
+    pub deferred_normalize: Option<DeferredNormalization>,
 }
 
 /// The inner-loop length expression of a recognized dot-product reduction.
@@ -141,6 +146,39 @@ pub struct ReductionInfo {
 pub enum ReductionKind {
     Dot,
     Softmax,
+}
+
+/// 2026-09-20 (M2 deferred normalizer): the deferrable-normalize structure —
+/// a division of array elements by a loop-completed scalar, in a trailing
+/// foreach. The consumer (M3's fusion target) accumulates raw (unnormalized)
+/// terms; one division after the loop.
+///
+/// Proof obligations (all structural, checked by `detect_deferred_normalizer`):
+/// 1. `denominator` is self-additively accumulated in exactly ONE foreach
+///    (`den = den + e` — the associative/commutative merge), initialized to 0
+///    before that loop.
+/// 2. `denominator` is single-writer: no other statement assigns it.
+/// 3. The normalize foreach trails the accumulator loop and every body
+///    statement is `out[..v..] = <numerator> / den` with a numerator that
+///    does not read `den` (no circularity) — division is the only effect.
+///
+/// This is the property the PTX deferred-region path and M3 chain fusion
+/// consume: the normalize tail is a linear finalize, so a downstream
+/// accumulation may absorb the raw numerator and divide once at the end.
+#[derive(Debug, Clone)]
+pub struct DeferredNormalization {
+    /// The denominator variable name (e.g. `l` in the softmax pattern).
+    pub denominator: String,
+    /// The accumulator buffer the numerator reads, when the numerator is a
+    /// plain element read (`acc[..d..]`); empty when the numerator is a
+    /// computed expression (e.g. the row-softmax `Exp#(row[..c..] - m)`).
+    pub acc_buf: String,
+    /// The output buffer the normalize pass writes (e.g. `a_out`).
+    pub out_buf: String,
+    /// The normalize foreach's loop variable (e.g. `d`).
+    pub normalize_var: String,
+    /// The normalize foreach's range END expression (resolved at emission).
+    pub normalize_end: Expr,
 }
 
 impl ReductionInfo {
@@ -605,6 +643,7 @@ fn prove_kernel(
         reasons: Vec::new(),
         work_cols: None,
         reduction: None,
+        deferred_normalize: None,
     };
 
     // 1. Bound: the contract precondition must CONTAIN an `[i < N]` conjunct
@@ -707,6 +746,12 @@ fn prove_kernel(
     if shape.reduction.is_none() {
         shape.reduction = detect_row_softmax(&shape.kernel_stmts, &index_var);
     }
+
+    // 9. Deferred normalizer (M2, plan 2026-09-20-gpu-dialect-beyond-cuda):
+    //    a division by a loop-completed scalar that can be deferred past the
+    //    consumer's accumulation. Enables chain fusion (M3) by removing the
+    //    normalization barrier.
+    shape.deferred_normalize = detect_deferred_normalizer(&shape.kernel_stmts, &index_var);
 
     shape.eligible = reasons.is_empty();
     shape.reasons = reasons;
@@ -865,6 +910,247 @@ fn detect_row_softmax(stmts: &[Statement], _index_var: &str) -> Option<Reduction
         col_buf: String::new(),
         out_buf: out,
     })
+}
+
+/// True when `name` appears as an identifier anywhere in `e`.
+fn expr_mentions(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Identifier(n) => n == name,
+        Expr::Index(a, i) => expr_mentions(a, name) || expr_mentions(i, name),
+        Expr::BinaryOp(_, a, b) => expr_mentions(a, name) || expr_mentions(b, name),
+        Expr::UnaryOp(_, a) => expr_mentions(a, name),
+        Expr::Call(_, args, _) => args.iter().any(|a| expr_mentions(a, name)),
+        Expr::MethodCall(recv, _, args, _, _) => {
+            expr_mentions(recv, name) || args.iter().any(|a| expr_mentions(a, name))
+        }
+        Expr::Cast(a, _)
+        | Expr::Deref(a)
+        | Expr::AddrOf(a)
+        | Expr::Consume(a)
+        | Expr::Await(a) => expr_mentions(a, name),
+        Expr::Range { start, end, .. } => expr_mentions(start, name) || expr_mentions(end, name),
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
+            expr_mentions(array, name)
+                || start.as_ref().is_some_and(|a| expr_mentions(a, name))
+                || end.as_ref().is_some_and(|a| expr_mentions(a, name))
+                || stride.as_ref().is_some_and(|a| expr_mentions(a, name))
+        }
+        Expr::Field(a, _) | Expr::Reflect(a, _, _) => expr_mentions(a, name),
+        Expr::Tuple(xs) | Expr::List(xs) => xs.iter().any(|x| expr_mentions(x, name)),
+        Expr::Within(a, b) => expr_mentions(a, name) || expr_mentions(b, name),
+        _ => false,
+    }
+}
+
+/// The top-level `dest = value` assigns of one statement list. Does NOT
+/// descend into nested foreach bodies — every template keeps per-loop
+/// effects at the loop's top level, and skipping nests only shrinks the
+/// match (fail-closed).
+fn top_assigns(stmts: &[Statement]) -> Vec<(&Expr, &Expr)> {
+    stmts
+        .iter()
+        .filter_map(|s| match s {
+            Statement::Assign(lhs, rhs) => Some((lhs, rhs)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assigns_to(lhs: &Expr, name: &str) -> bool {
+    matches!(lhs, Expr::Identifier(n) if n == name)
+}
+
+/// The self-additive merge form: `name = name + e` (either side). The
+/// associativity/commutativity of `+` is what makes the deferral algebra
+/// sound — a max-multiply or other merge does NOT qualify.
+fn is_self_add(rhs: &Expr, name: &str) -> bool {
+    let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, a, b) = rhs else {
+        return false;
+    };
+    matches!(a.as_ref(), Expr::Identifier(n) if n == name)
+        || matches!(b.as_ref(), Expr::Identifier(n) if n == name)
+}
+
+/// One normalize body statement of the deferrable form:
+/// `out[..v..] = <num> / den` with a numerator that never reads `den` (no
+/// circularity). Returns `(out_buf, acc_elem)`; `acc_elem` is None when the
+/// numerator is not a plain element read from a named buffer.
+fn normalize_stmt_buffers(s: &Statement, den: &str) -> Option<(String, Option<String>)> {
+    let Statement::Assign(lhs, rhs) = s else {
+        return None;
+    };
+    if expr_mentions(lhs, den) {
+        return None;
+    }
+    let Expr::Index(o, _) = lhs else {
+        return None;
+    };
+    let Expr::Identifier(ob) = o.as_ref() else {
+        return None;
+    };
+    let Expr::BinaryOp(crate::ast::BinaryOpKind::Div, num, divisor) = rhs else {
+        return None;
+    };
+    let Expr::Identifier(dn) = divisor.as_ref() else {
+        return None;
+    };
+    if dn != den || expr_mentions(num, den) {
+        return None;
+    }
+    let acc = match num.as_ref() {
+        Expr::Index(nb, _) => match nb.as_ref() {
+            Expr::Identifier(nbn) => Some(nbn.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    Some((ob.clone(), acc))
+}
+
+/// Every body statement is `out[..v..] = <num> / den` with a numerator that
+/// never reads `den` (no circularity). Returns `(out_buf, acc_buf)`;
+/// `acc_buf` is non-empty only when EVERY numerator is a plain element read
+/// from ONE buffer (the accumulator array form, e.g. attention's
+/// `a_out[..d..] = acc[..d..] / l`).
+fn normalize_body_buffers(body: &[Statement], den: &str) -> Option<(String, String)> {
+    if body.is_empty() {
+        return None;
+    }
+    let mut out_buf = String::new();
+    let mut acc_buf = String::new();
+    let mut all_acc_reads = true;
+    for s in body {
+        let (ob, acc) = normalize_stmt_buffers(s, den)?;
+        if !out_buf.is_empty() && out_buf != ob {
+            return None;
+        }
+        if out_buf.is_empty() {
+            out_buf = ob;
+        }
+        match acc {
+            Some(a) => {
+                if !acc_buf.is_empty() && acc_buf != a {
+                    return None;
+                }
+                acc_buf = a;
+            }
+            None => all_acc_reads = false,
+        }
+    }
+    if !all_acc_reads {
+        acc_buf.clear();
+    }
+    Some((out_buf, acc_buf))
+}
+
+/// Recognize the deferrable-normalize structure (M2, plan
+/// 2026-09-20-gpu-dialect-beyond-cuda): a scalar accumulated by self-add in
+/// exactly ONE foreach, and a trailing foreach whose body divides array
+/// elements by it. The same structural class the PTX deferred-region
+/// detector applies — lifted here so the decision is computed ONCE in the
+/// frontend and consumed by the backend (frontend-driven dispatch; the
+/// backend never re-derives it). No type or algorithm names are matched.
+fn detect_deferred_normalizer(stmts: &[Statement], _index_var: &str) -> Option<DeferredNormalization> {
+    // Candidate denominators: top-level zero-init scalar lets, each name
+    // considered once.
+    let mut seen: Vec<String> = Vec::new();
+    for stmt in stmts {
+        if let Statement::Let { name, expr: Some(e), .. } = stmt {
+            if matches!(e, Expr::Decimal(0) | Expr::Float(0.0)) && !seen.contains(name) {
+                seen.push(name.clone());
+            }
+        }
+    }
+    for den in seen {
+        if let Some(info) = match_den(stmts, &den) {
+            return Some(info);
+        }
+    }
+    None
+}
+
+/// Prove one candidate denominator: single-writer (self-add in one loop
+/// only), and a trailing normalize foreach whose body is pure division by
+/// it. Anything else fails closed.
+fn match_den(stmts: &[Statement], den: &str) -> Option<DeferredNormalization> {
+    let w = single_self_add_loop(stmts, den)?;
+    trailing_normalize_loop(stmts, den, w)
+}
+
+/// The single loop holding self-add writes to `den`, provided every write
+/// to `den` is a self-add confined to that one loop and the init appears
+/// exactly once. Any other write shape fails closed (None).
+fn single_self_add_loop(stmts: &[Statement], den: &str) -> Option<usize> {
+    // The init must appear exactly once (re-init would break the
+    // loop-completed proof).
+    if stmts
+        .iter()
+        .filter(|s| matches!(s, Statement::Let { name, .. } if name == den))
+        .count()
+        != 1
+    {
+        return None;
+    }
+    let mut writer: Option<usize> = None;
+    for (idx, stmt) in stmts.iter().enumerate() {
+        let Statement::Foreach { body, .. } = stmt else {
+            continue;
+        };
+        for (lhs, rhs) in top_assigns(body) {
+            if !assigns_to(lhs, den) {
+                continue;
+            }
+            if !is_self_add(rhs, den) {
+                return None;
+            }
+            if writer.is_some() && writer != Some(idx) {
+                return None;
+            }
+            writer = Some(idx);
+        }
+    }
+    let w = writer?;
+    // No top-level scalar write outside loops.
+    for (lhs, _) in top_assigns(stmts) {
+        if assigns_to(lhs, den) {
+            return None;
+        }
+    }
+    Some(w)
+}
+
+/// The first foreach AFTER `after` whose body is pure division by `den`.
+/// Earlier non-matching loops (e.g. an intermediate fill pass) are skipped,
+/// not fatal.
+fn trailing_normalize_loop(
+    stmts: &[Statement],
+    den: &str,
+    after: usize,
+) -> Option<DeferredNormalization> {
+    for (idx, stmt) in stmts.iter().enumerate().skip(after + 1) {
+        let Statement::Foreach { item, list, body } = stmt else {
+            continue;
+        };
+        let Expr::Range { end, .. } = list.as_ref() else {
+            continue;
+        };
+        let Some((out_buf, acc_buf)) = normalize_body_buffers(body, den) else {
+            continue;
+        };
+        return Some(DeferredNormalization {
+            denominator: den.to_string(),
+            acc_buf,
+            out_buf,
+            normalize_var: item.clone(),
+            normalize_end: end.as_ref().clone(),
+        });
+    }
+    None
 }
 
 /// Recognize a dot-product reduction: a foreach whose body is exactly one
@@ -1711,6 +1997,275 @@ mod tests {
         let map = analyze(&items, &HashMap::new(), Some(&universe()));
         assert_eq!(entry(&map, "mix").shape.work_cols, None);
     }
+
+    // ── M2 deferred normalizer (2026-09-20, plan gpu-dialect-beyond-cuda) ──
+
+    fn ident(n: &str) -> Expr {
+        Expr::Identifier(n.into())
+    }
+
+    fn fidx(buf: &str, i: &str) -> Expr {
+        Expr::Index(Box::new(ident(buf)), Box::new(ident(i)))
+    }
+
+    fn add_e(a: Expr, b: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Add, Box::new(a), Box::new(b))
+    }
+
+    fn div_e(a: Expr, b: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Div, Box::new(a), Box::new(b))
+    }
+
+    fn let_zero(name: &str) -> Statement {
+        Statement::Let {
+            name: name.into(),
+            names: vec![],
+            ty: None,
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+        }
+    }
+
+    fn foreach(item: &str, end: Expr, body: Vec<Statement>) -> Statement {
+        Statement::Foreach {
+            item: item.into(),
+            list: Box::new(Expr::Range {
+                start: Box::new(Expr::Decimal(0)),
+                end: Box::new(end),
+                inclusive: false,
+            }),
+            body,
+        }
+    }
+
+    #[test]
+    fn deferred_normalize_attention_2pass_form() {
+        // acc loop accumulating l, then a_out[..d..] = acc[..d..] / l.
+        let stmts = vec![
+            let_zero("l"),
+            foreach(
+                "j",
+                ident("NKV"),
+                vec![Statement::Assign(ident("l"), add_e(ident("l"), ident("p")))],
+            ),
+            foreach(
+                "d",
+                ident("D"),
+                vec![Statement::Assign(
+                    fidx("a_out", "d"),
+                    div_e(fidx("acc", "d"), ident("l")),
+                )],
+            ),
+        ];
+        let info = detect_deferred_normalizer(&stmts, "h").expect("2-pass form must match");
+        assert_eq!(info.denominator, "l");
+        assert_eq!(info.acc_buf, "acc");
+        assert_eq!(info.out_buf, "a_out");
+        assert_eq!(info.normalize_var, "d");
+        assert_eq!(info.normalize_end, ident("D"));
+    }
+
+    #[test]
+    fn deferred_normalize_computed_numerator_has_empty_acc() {
+        // Row-softmax numerator: out[..c..] = Exp#(row[..c..] - m) / s — the
+        // numerator is a computed expression, so no accumulator buffer.
+        let num = Expr::Call(
+            "Exp#".into(),
+            vec![add_e(fidx("row", "c"), ident("m"))],
+            None,
+        );
+        let stmts = vec![
+            let_zero("s"),
+            foreach(
+                "c",
+                ident("C"),
+                vec![Statement::Assign(ident("s"), add_e(ident("s"), num.clone()))],
+            ),
+            foreach(
+                "c",
+                ident("C"),
+                vec![Statement::Assign(fidx("out", "c"), div_e(num, ident("s")))],
+            ),
+        ];
+        let info = detect_deferred_normalizer(&stmts, "i").expect("softmax form must match");
+        assert_eq!(info.denominator, "s");
+        assert_eq!(info.acc_buf, "", "computed numerator ⇒ no acc buffer");
+        assert_eq!(info.out_buf, "out");
+    }
+
+    #[test]
+    fn deferred_normalize_rejects_two_writer_loops() {
+        let stmts = vec![
+            let_zero("l"),
+            foreach(
+                "j",
+                ident("N"),
+                vec![Statement::Assign(ident("l"), add_e(ident("l"), ident("a")))],
+            ),
+            foreach(
+                "j",
+                ident("N"),
+                vec![Statement::Assign(ident("l"), add_e(ident("l"), ident("b")))],
+            ),
+            foreach(
+                "d",
+                ident("N"),
+                vec![Statement::Assign(fidx("out", "d"), div_e(fidx("x", "d"), ident("l")))],
+            ),
+        ];
+        assert!(
+            detect_deferred_normalizer(&stmts, "i").is_none(),
+            "two accumulating loops break the single-writer proof"
+        );
+    }
+
+    #[test]
+    fn deferred_normalize_rejects_non_additive_merge() {
+        // l = l * 2 — multiplication is not the +-merge the deferral needs.
+        let mul = |a: Expr, b: Expr| Expr::BinaryOp(BinaryOpKind::Mul, Box::new(a), Box::new(b));
+        let stmts = vec![
+            let_zero("l"),
+            foreach(
+                "j",
+                ident("N"),
+                vec![Statement::Assign(ident("l"), mul(ident("l"), Expr::Decimal(2)))],
+            ),
+            foreach(
+                "d",
+                ident("N"),
+                vec![Statement::Assign(fidx("out", "d"), div_e(fidx("x", "d"), ident("l")))],
+            ),
+        ];
+        assert!(detect_deferred_normalizer(&stmts, "i").is_none());
+    }
+
+    #[test]
+    fn deferred_normalize_rejects_circular_numerator() {
+        // Exp#(x - l) / l reads the denominator inside the numerator.
+        let num = Expr::Call(
+            "Exp#".into(),
+            vec![Expr::BinaryOp(
+                BinaryOpKind::Sub,
+                Box::new(fidx("x", "d")),
+                Box::new(ident("l")),
+            )],
+            None,
+        );
+        let stmts = vec![
+            let_zero("l"),
+            foreach(
+                "j",
+                ident("N"),
+                vec![Statement::Assign(ident("l"), add_e(ident("l"), ident("p")))],
+            ),
+            foreach(
+                "d",
+                ident("N"),
+                vec![Statement::Assign(fidx("out", "d"), div_e(num, ident("l")))],
+            ),
+        ];
+        assert!(detect_deferred_normalizer(&stmts, "i").is_none());
+    }
+
+    #[test]
+    fn deferred_normalize_skips_intermediate_loop() {
+        // A non-div fill pass between the accumulator and the normalize
+        // loop is skipped, not fatal.
+        let stmts = vec![
+            let_zero("l"),
+            foreach(
+                "j",
+                ident("N"),
+                vec![Statement::Assign(ident("l"), add_e(ident("l"), fidx("a", "j")))],
+            ),
+            foreach(
+                "j",
+                ident("N"),
+                vec![Statement::Assign(fidx("raw", "j"), mul_by(fidx("a", "j")))],
+            ),
+            foreach(
+                "j",
+                ident("N"),
+                vec![Statement::Assign(fidx("out", "j"), div_e(fidx("raw", "j"), ident("l")))],
+            ),
+        ];
+        let info = detect_deferred_normalizer(&stmts, "r").expect("must skip the fill pass");
+        assert_eq!(info.out_buf, "out");
+        assert_eq!(info.acc_buf, "raw");
+    }
+
+    fn mul_by(e: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Mul, Box::new(e), Box::new(Expr::Float(2.0)))
+    }
+
+    #[test]
+    fn deferred_normalize_rejects_top_level_den_write() {
+        // A scalar re-assign outside any loop breaks loop-completedness.
+        let stmts = vec![
+            let_zero("l"),
+            foreach(
+                "j",
+                ident("N"),
+                vec![Statement::Assign(ident("l"), add_e(ident("l"), fidx("a", "j")))],
+            ),
+            foreach(
+                "d",
+                ident("N"),
+                vec![Statement::Assign(fidx("out", "d"), div_e(fidx("x", "d"), ident("l")))],
+            ),
+            Statement::Assign(ident("l"), add_e(ident("l"), Expr::Decimal(1))),
+        ];
+        assert!(detect_deferred_normalizer(&stmts, "i").is_none());
+    }
+
+    #[test]
+    fn deferred_normalize_wired_through_analyze() {
+        // Full path: an eligible kernel with the deferred form carries the
+        // proof on its KernelShape (the backend dispatch consumes this).
+        let mut items = vec![];
+        state(&mut items);
+        let body = vec![
+            let_zero("l"),
+            foreach(
+                "j",
+                Expr::Decimal(64),
+                vec![Statement::Assign(ident("l"), add_e(ident("l"), fidx("px", "j")))],
+            ),
+            foreach(
+                "j",
+                Expr::Decimal(64),
+                vec![Statement::Assign(
+                    // The write must be affine in the work-item counter
+                    // (i * 64 + j) — element-local writes are host-only.
+                    Expr::Index(
+                        Box::new(ident("dv")),
+                        Box::new(add_e(
+                            Expr::BinaryOp(
+                                BinaryOpKind::Mul,
+                                Box::new(ident("i")),
+                                Box::new(Expr::Decimal(64)),
+                            ),
+                            ident("j"),
+                        )),
+                    ),
+                    div_e(fidx("px", "j"), ident("l")),
+                )],
+            ),
+            inc_i(),
+        ];
+        items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
+        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let e = entry(&map, "t");
+        assert!(e.shape.eligible, "kernel must stay eligible: {:?}", e.shape.reasons);
+        let info = e
+            .shape
+            .deferred_normalize
+            .clone()
+            .expect("eligible kernel must carry the deferred-normalize proof");
+        assert_eq!(info.denominator, "l");
+        assert_eq!(info.out_buf, "dv");
+        assert_eq!(info.normalize_var, "j");
+    }
 }
 
 /// Resident-launch safety verdict (plan gpu-backend-hardening Track B).
@@ -1976,6 +2531,7 @@ mod resident_gate_tests {
             reasons: Vec::new(),
             work_cols: None,
             reduction: None,
+            deferred_normalize: None,
         };
         shape.eligible = true;
         shape.read_buffers = reads.iter().map(|s| s.to_string()).collect();
@@ -2073,6 +2629,7 @@ mod resident_gate_tests {
         assert!(verdict.resident_ok, "kernel-only program goes resident");
         assert!(verdict.blocker.is_none());
     }
+
 }
 
 

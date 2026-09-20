@@ -1791,7 +1791,13 @@ pub fn build_ptx_kernels(
             // (4 warp slices + shared-memory merge) — the desc carries the
             // geometry so the runtime dispatches `count` blocks of 128.
             let warp_sliced = general::has_warp_slice(&e.shape.kernel_stmts, &consts);
+            // 2026-09-20 (M2 deferred normalizer): the deferred-region
+            // dispatch is a FRONTEND decision — `deferred_normalize` proves
+            // the deferrable-normalize structure in analysis. The backend's
+            // detailed matcher only extracts emission parts; without the
+            // frontend proof it never takes this path.
             let deferred = crate::config_tuning::ir_lowering().ptx_deferred_region
+                && e.shape.deferred_normalize.is_some()
                 && general::has_deferred_region(&e.shape.kernel_stmts, &e.shape.index_var);
             let block_threads = if deferred {
                 1024

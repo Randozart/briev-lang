@@ -794,6 +794,7 @@ mod tests {
                     reasons: vec![],
                     work_cols: None,
                     reduction: None,
+                    deferred_normalize: None,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             }
@@ -853,6 +854,7 @@ mod tests {
             reasons: vec![],
             work_cols: None,
             reduction: None,
+            deferred_normalize: None,
         };
         accel.insert(
             "gemm1".into(),
@@ -889,6 +891,7 @@ mod tests {
                     reasons: vec![],
                     work_cols: None,
                     reduction: None,
+                    deferred_normalize: None,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             },
@@ -967,6 +970,7 @@ mod tests {
                     reasons: vec![],
                     work_cols: None,
                     reduction: None,
+                    deferred_normalize: None,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             }
@@ -1060,6 +1064,7 @@ mod tests {
                 reasons: vec![],
                 work_cols: None,
                 reduction: None,
+                deferred_normalize: None,
             }
         };
         let entry = |shape: crate::analysis::accel::KernelShape| AccelEntry {

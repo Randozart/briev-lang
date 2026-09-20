@@ -384,6 +384,7 @@ mod tests {
             scalar_ins: vec![],
             work_cols: None,
             reduction: None,
+            deferred_normalize: None,
             kernel_stmts: stmts,
             host_stmts: vec![],
             eligible: true,

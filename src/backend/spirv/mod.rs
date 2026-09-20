@@ -196,6 +196,7 @@ mod tests {
             reasons: vec![],
             work_cols: None,
             reduction: None,
+            deferred_normalize: None,
         }
     }
 
@@ -549,6 +550,7 @@ mod tests {
             reasons: vec![],
             work_cols: None,
             reduction: None,
+            deferred_normalize: None,
         };
 
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
@@ -695,6 +697,7 @@ mod tests {
             reasons: vec![],
             work_cols: None,
             reduction: None,
+            deferred_normalize: None,
         };
 
         let mut builder = SpirvBuilder::new();
@@ -1271,6 +1274,7 @@ mod tests {
             reasons: vec![],
             work_cols: None,
             reduction: None,
+            deferred_normalize: None,
         };
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
         emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
@@ -1646,6 +1650,7 @@ async node fill [i < N][i == N] {
                 reasons: vec![],
                 work_cols: None,
                 reduction: None,
+                deferred_normalize: None,
             };
             let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
             emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
