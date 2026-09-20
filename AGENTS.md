@@ -144,6 +144,19 @@ Patches are unacceptable. There is no "go fast and break things."
     creates invisible knowledge the compiler must carry forever and makes the
     language's performance ceiling depend on which patterns the compiler
     author happened to recognize.
+24. **PROOFS, NOT SHAPES (2026-09-20)**: The compiler keeps the eternal —
+    proofs (aliasing, linearity, single-writer, independence, lifetime),
+    rewrite rules licensed by proofs, general lowering machinery,
+    metaprogramming, expressiveness. The language keeps the temporal —
+    algorithm shapes, composites, stdlib. Softmax is hot now; research
+    renames the hot kernel within two years; the compiler must not care.
+    The test: delete every algorithm from stdlib; an author writes the
+    year-two algorithm with contracts; it reaches the hardware ceiling
+    with ZERO compiler changes. Existence proofs (hand-written kernels,
+    hand-lowered emitters) are legitimate but MUST carry a retirement
+    gate — they retire when general machinery drives the declared
+    composite to their numbers. Full doctrine:
+    `docs/architecture/proof-vs-shape.md`.
 
 ## Performance Recovery Protocol
 
@@ -332,6 +345,7 @@ contracts.
 | **Briev-native runtime + family realignment (active 2026-09-09)** | `docs/plans/2026-09-09-briev-native-runtime-and-family-realignment.md` — briev_rt.c elimination family-by-family (A+B+C DONE on `feat/briev-native-runtime`: cast lanes, print family, string ops — 14/14 parity corpora), embedded fold, Electronics `.ebv`, `.sbv` Silicon, logo swap. Parity harness: `bash benchmarks/parity/run.sh`. Amendments (2026-09-10): expressiveness closure, allocator ownership, `Asm#` two-mode intrinsic, `inline_frgn!` plugin |
 | **Briev capability frontier (2026-09-10)** | `docs/architecture/briev-capability-frontier.md` — expressiveness-closure principle (the compiler's optimum must be expressible in the language), tier table, contracts-vs-UB inversion, self-hosting endgame |
 | **GPU backend handoff (.abv/.bv, active 2026-08-31)** | `docs/HANDOFF-2026-08-31-gpu.md` — SPIR-V kernel backend + offload chain state, doctrine (.abv = pure GPU, .bv = CPU + verified offload), next steps (M1 GEMV bench, O2-O6 ladder), trap list. Also: `docs/plans/2026-08-31-vitriol-gemm-comparison.md` (benchmark target + ledger), `docs/plans/2026-08-31-abv-gpu-by-default.md` (route fixes log)
+| **Proof vs shape doctrine (2026-09-20)** | `docs/architecture/proof-vs-shape.md` — Golden Rule 24's full statement: the compiler keeps the eternal (proofs, proof-licensed rewrites, general lowering, metaprogramming), the language keeps the temporal (algorithm shapes, composites, stdlib). Worked example: the M3 synthesis near-miss. Metaprogrammed-composites plan (M3/M4 revised): `docs/plans/2026-09-20-metaprogrammed-composites.md` |
 | **GPU dialect beyond CUDA/ggml (active 2026-09-20)** | `docs/plans/2026-09-20-gpu-dialect-beyond-cuda.md` — 4 tracks: general machinery (M2→M3→M4), GEMM pipeline (S3b→S5), proof infrastructure, hand-written references. Benchmark targets: 4096³ ≥42 TF, attention ≤58 µs f16 |
 | **GPU CODEGEN DOCTRINE (.abv = peak everywhere, active 2026-09-04)** | `docs/architecture/abv-gpu-doctrine.md` — one program → peak on every probed device; Briev-owned codegen only (no nvcc/cuBLAS in the path); backend tier architecture (portable SPIR-V + per-vendor projections from ONE frontend plan); coopmat ceiling physics + the standing microkernel measurement. Campaign: `docs/plans/2026-09-04-beyond-coopmat.md` (Stage 0 ceiling truth → Stage 1 portable extraction → Stage 2 Briev PTX tier, gated)
 | **cbv foreign HW + MMIO (active 2026-08-27)** | `docs/plans/2026-08-27-cbv-foreign-hardware-and-mmio.md` — extern HDL imports + `@addr` MMIO pins on .cbv; Slice C (VolatileLoad#/Store#) DONE |
