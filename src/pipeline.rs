@@ -877,6 +877,11 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
     }
     pm.run_ast(StageKind::Resolved, &mut items, &mut TypeUniverse::new())?;
     resolve_comptime_refs(&pm, &mut items)?;
+    // 2026-09-20 (Front A, plan metaprogrammed-composites): expand
+    // declared expression-parameterized composites before typecheck —
+    // ONE IR afterwards: typecheck, contracts, accel analysis, and both
+    // backends see the expanded body as if hand-written.
+    crate::plugin::composite::expand_composites(&mut items, &pm)?;
     let mut universe = TypeUniverse::new();
     check_types(&mut items, &universe, effective_isr_mechanism(opts).as_deref())?;
     pm.run_ast(StageKind::Typed, &mut items, &mut universe)?;

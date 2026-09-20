@@ -274,6 +274,11 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // 2026-07-25: Resolve comptime var references in const initializers
     // and trg instance expressions before type checking.
     resolve_comptime_refs(&pm, &mut items)?;
+    // 2026-09-20 (Front A, plan metaprogrammed-composites): expand
+    // declared expression-parameterized composites before the multi-index
+    // desugar and typecheck — ONE IR: every analysis and backend sees the
+    // expanded body as if hand-written.
+    briev_compiler::plugin::composite::expand_composites(&mut items, &pm)?;
     // 2026-09-17 (plan 2026-09-17-row-2d-index-desugar): `a[i, j]` markers
     // → 1D row-major arithmetic. MUST run before check_types (the marker is
     // a parse artifact, not a resolvable call) and before every analysis —
