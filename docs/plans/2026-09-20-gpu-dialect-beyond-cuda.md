@@ -170,15 +170,15 @@ acc = acc / L;  // single division after loop
 **Gate:** Correctness via M3; standalone test on mean-then-weighted-sum
 fixture. a_err < 1e-3.
 
-**Status:** DETECTION DONE (2026-09-20, `56bfbaa8`): `detect_deferred_normalizer`
+**Status:** DONE (2026-09-20, `56bfbaa8` + `757e69d1`): `detect_deferred_normalizer`
 in `src/analysis/accel.rs` proves the deferrable-normalize structure
 (single-writer self-add denominator + trailing pure-division foreach);
 `KernelShape.deferred_normalize` carries the proof; the PTX deferred-region
 dispatch consumes it (frontend-driven). 8 tests; flash2p fixture
 byte-identical when the knob is on (max_rel 1.95e-06, 200 µs); m3 PASS
-both lanes. REMAINING: mean-then-weighted-sum runtime fixture; the
-normalize-as-barrier removal for M3 fusion (the consumer-side absorption
-of the raw numerator).
+both lanes. Gate fixture `examples/gpu/m2_deferred_norm.abv` numeric
+PASS (max_rel 1.34e-04, gate 1e-3). The consumer-side absorption of the
+raw numerator (the fusion enabler) lands with M3.
 
 ### M3 — Producer-Consumer Chain Fusion
 
