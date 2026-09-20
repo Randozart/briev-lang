@@ -69,19 +69,25 @@ the RTX 3060 (max_rel < 1e-3 vs double reference).
 `detect_row_softmax` retires when the composite covers its forms — earlier
 than the original ledger planned.
 
-## Front C — M3 chain fusion as a rewrite, not a synthesis
+## Front C — the composite dissolves chain synthesis
 
-Detector (survives from the in-flight work): producer = pure score
-expression; middle = the DECLARED softmax (identity by declaration, not
-shape matching); consumer = M2-proven linear fold. Narrow by design —
-Lane 2 covers everything detection cannot prove, so narrow auto-detection
-no longer caps capability.
+**RESOLVED 2026-09-20 (`0aa69a9e` + `dd70f144`), by dissolution rather
+than rewrite:** once `softmax_fused!` is declared (Front B), the program
+expresses the fused form DIRECTLY — one node, score reading q/k, no
+score buffer. The 3-node chain is a source-level choice, not a compiler
+transformation. The planned chain detector was RETIRED before shipping:
+it leaned on `ReductionKind::Softmax` (a Tier-2 loan) for the middle's
+identity, and its honest consumer was gone.
 
-Rewrite: three nodes → ONE composite invocation with bound parameters →
-expansion → the same deferred lowering. No Rust-built AST bodies anywhere.
+`examples/gpu/attention_decode_composite.abv`: launches 3 → 1;
+CUDA lane a_err 2.93e-06 PASS at gate geometry; ~198-200 µs (chain:
+202 µs). `softmax_fused_row!` added for programs that keep a
+dot-producer (score pre-summed at row level).
 
-**Gates:** m3 harness PASS both lanes; launches 3 → 1; ≤ ~120 µs f32
-target (chain today: 202 µs; deferred emitter: 198 µs at gate geometry).
+**OPEN (BUGS.md 2026-09-20):** the Vulkan lane 2×es — the SPIR-V
+backend mis-lowers the composite RMW body (same program passes on the
+CUDA blob). General path must handle every shape (Golden Rule 2):
+MUST-FIX before Front D.
 
 ## Front D — Stage 2: the deferred emitter retires
 
