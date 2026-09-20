@@ -1595,16 +1595,21 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         decl: &mut String,
         body: &mut String,
     ) -> Result<String, String> {
+        // 2026-09-20 (M1-finish NaN fix): use a dedicated scratch register
+        // instead of the pre-declared %r2, which may hold live values from
+        // the general emit pipeline.
         let mut fa = v;
+        let scratch = self.fresh_r();
+        decl.push_str(&format!("    .reg .u32 {};\n", scratch));
         for offset in [16u32, 8, 4, 2, 1] {
             let fb = self.fresh_f();
             let tb = self.fresh_r();
             decl.push_str(&format!("    .reg .f32 {};\n", fb));
             decl.push_str(&format!("    .reg .u32 {};\n", tb));
-            body.push_str(&format!("    mov.b32 %r2, {};\n", fa));
+            body.push_str(&format!("    mov.b32 {}, {};\n", scratch, fa));
             body.push_str(&format!(
-                "    shfl.sync.bfly.b32 {}, %r2, {}, 0x1f, 0xffffffff;\n",
-                tb, offset
+                "    shfl.sync.bfly.b32 {}, {}, {}, 0x1f, 0xffffffff;\n",
+                tb, scratch, offset
             ));
             body.push_str(&format!("    mov.b32 {}, {};\n", fb, tb));
             body.push_str(&format!("    add.f32 {}, {}, {};\n", fa, fa, fb));
@@ -2697,8 +2702,8 @@ fn detect_deferred_region(
             score_a: score_a.clone(),
             p_expr: p_expr.clone(),
             l_rhs: l_rhs.clone(),
-            dot_a: dot_a.clone(),
-            dot_b: dot_b.clone(),
+            dot_a_body: da_body.clone(),
+            dot_b_body: db_body.clone(),
             acc_stmts: dc2_body.clone(),
             norm_stmt: lc_stmts[0].clone(),
             max_stmt: la_stmts[2].clone(),
@@ -2733,8 +2738,8 @@ struct DeferredRegionParts {
     score_a: Expr,
     p_expr: Expr,
     l_rhs: Expr,
-    dot_a: Statement,
-    dot_b: Statement,
+    dot_a_body: Vec<Statement>,
+    dot_b_body: Vec<Statement>,
     acc_stmts: Vec<Statement>,
     norm_stmt: Statement,
     max_stmt: Statement,
@@ -2919,9 +2924,11 @@ impl Gen<'_> {
             d_regs.push(d);
         }
         // state init: m from the author's constant, everything else zero.
+        // 2026-09-20 (NaN fix): the detector extracts Float(1e30) from
+        // Neg(Float(1e30)), stripping the negation.  Negate here.
         let m_init = fold_f32(&parts.m_init, self.consts)
             .ok_or_else(|| "ptx general: deferred region max init is not a constant".to_string())?;
-        body.push_str(&format!("    mov.f32 {}, {};\n", m_reg, f32_imm(m_init)));
+        body.push_str(&format!("    mov.f32 {}, {};\n", m_reg, f32_imm(-m_init)));
         body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", l_reg));
         let mut a_regs = Vec::new();
         for _ in 0..strips {
@@ -2950,12 +2957,18 @@ impl Gen<'_> {
         body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_cnt, r_hi));
         body.push_str(&format!("    @{} bra {};\n", pred, h1e));
         body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
+        // 2026-09-20 (M1-finish NaN fix): emit the dot body directly,
+        // NOT the Foreach — emit_stmt on a Foreach overwrites the d binding
+        // with its own loop counter, producing a full-D serial loop instead
+        // of the inlined strip computation.
         let saved_d = self.regs.insert(parts.da.clone(), d_regs[0].clone());
         for i in 0..strips {
             self.active_strip = i;
             self.regs.insert(parts.da.clone(), d_regs[i].clone());
             self.regs.insert(parts.sc_a.clone(), sc_lane.clone());
-            self.emit_stmt(&parts.dot_a, decl, body)?;
+            for s in &parts.dot_a_body {
+                self.emit_stmt(s, decl, body)?;
+            }
         }
         match saved_d {
             Some(v) => { self.regs.insert(parts.da.clone(), v); }
@@ -3025,7 +3038,9 @@ impl Gen<'_> {
             self.active_strip = i;
             self.regs.insert(parts.db.clone(), d_regs[i].clone());
             self.regs.insert(parts.sc_b.clone(), sc_lane.clone());
-            self.emit_stmt(&parts.dot_b, decl, body)?;
+            for s in &parts.dot_b_body {
+                self.emit_stmt(s, decl, body)?;
+            }
         }
         match saved_d {
             Some(v) => { self.regs.insert(parts.db.clone(), v); }
@@ -3075,8 +3090,11 @@ impl Gen<'_> {
         body.push_str(&format!("    bra {};\n", h2h));
         body.push_str(&format!("{}:\n", h2e));
 
-        // ── merges: l (butterfly + smem sum), acc strips (smem sum) ──
-        self.emit_butterfly_add(l_reg.clone(), l_w.clone(), decl, body)?;
+        // ── merges: l (warp-direct smem sum), acc strips (smem sum) ──
+        // 2026-09-20 (M1-finish NaN fix): l is warp-uniform (all 32 lanes
+        // compute the same p and accumulate the same l).  A butterfly would
+        // sum 32 identical copies → 32× overcount per warp → 1024× in
+        // l_tot.  Store l_reg directly; the merge loop sums 32 warp values.
         let rd_l = self.fresh_rd();
         decl.push_str(&format!("    .reg .b64 {};\n", rd_l));
         body.push_str(&format!("    mov.u64 {}, redl;\n", rd_l));
@@ -3084,7 +3102,7 @@ impl Gen<'_> {
             "    mad.wide.u32 {}, {}, 4, {};\n",
             rd_l, r_warp, rd_l
         ));
-        body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_l, l_w));
+        body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_l, l_reg));
         body.push_str("    bar.sync 0;\n");
         body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", l_tot));
         body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
@@ -3137,6 +3155,12 @@ impl Gen<'_> {
         body.push_str(&format!(
             "    mad.wide.u32 {}, {}, 512, {};\n",
             rd_row, r_w, rd_row
+        ));
+        // 2026-09-20 (M1-finish NaN fix): include the lane offset so each
+        // thread reads its OWN partial from smem, not lane 0's.
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_row, r_lane, rd_row
         ));
         for i in 0..strips {
             body.push_str(&format!(

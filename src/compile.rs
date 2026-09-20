@@ -1583,6 +1583,14 @@ fn codegen(
                             if p.block_per_workitem {
                                 k.block_per_workitem = true;
                             }
+                            // 2026-09-19 (M1 warp-sliced reductions, plan
+                            // general-machinery): the desc's block_threads
+                            // is what the CUDA lane launches with, and the
+                            // CUDA image is the PTX blob — take the PTX
+                            // emitter's geometry (warp-sliced kernels: 128
+                            // threads = 4 warp slices; the Vulkan lane
+                            // parses LocalSize and ignores this field).
+                            k.block_threads = p.block_threads;
                         }
                     }
                 }

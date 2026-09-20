@@ -105,8 +105,11 @@ ptx_serial_unroll: 4;
 // false keeps the 1-wide/unrolled serial form.
 ptx_warp_slice: 0;
 
-// 2026-09-19 (M1-finish): the deferred-softmax region lowering —
-// EXPERIMENTAL, default off: launches at 1024 threads (64-reg cap spills)
-// but produces NaN output; debugging continues (general-machinery plan,
-// M1 status). 0 keeps the general serial path.
+// 2026-09-20: CUBIN emission (normal production mode).
+ptx_emit_cubin: 1;
+
+// 2026-09-20 (M1-finish): deferred-region emitter — experimental.
+// NaN fixed: m_init negation, dot body inlining, l butterfly, acc
+// merge lane offset, butterfly scratch register.  198 us on 1024-thread
+// fixture (64-reg cap).  OFF: 64-reg spilling costs ~2× vs flash gate.
 ptx_deferred_region: 0;

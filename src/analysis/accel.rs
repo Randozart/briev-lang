@@ -143,6 +143,19 @@ pub enum ReductionKind {
     Softmax,
 }
 
+impl ReductionInfo {
+    /// The Dot-shape constructor (the 2026-09-01 cooperative form).
+    pub fn dot(inner: crate::ast::Expr) -> Self {
+        Self {
+            inner,
+            kind: ReductionKind::Dot,
+            row_buf: String::new(),
+            col_buf: String::new(),
+            out_buf: String::new(),
+        }
+    }
+}
+
 /// One analyzed candidate body, keyed by transaction name.
 #[derive(Debug, Clone)]
 pub struct AccelEntry {
@@ -166,7 +179,7 @@ pub(crate) struct ProgramInfo {
 }
 
 impl ProgramInfo {
-    fn build(items: &[TopLevel]) -> ProgramInfo {
+    pub(crate) fn build(items: &[TopLevel]) -> ProgramInfo {
         let mut state_fields = HashSet::new();
         let mut array_types = HashMap::new();
         let mut consts = HashMap::new();
@@ -568,6 +581,10 @@ fn index_write_is_kernel(
 }
 
 /// Prove the whole kernel and collect its buffer contracts.
+pub fn prove_kernel_pub(name: &str, body: &[Statement], contract: &Contract, info: &ProgramInfo, universe: &TypeUniverse) -> KernelShape {
+    prove_kernel(name, body, contract, info, universe)
+}
+
 fn prove_kernel(
     name: &str,
     body: &[Statement],
