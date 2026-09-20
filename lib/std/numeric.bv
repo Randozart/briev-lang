@@ -1,0 +1,67 @@
+// numeric — declared numeric composites (Front B, plan
+// 2026-09-20-metaprogrammed-composites).
+//
+// Algorithm shapes live HERE, in the language — never in the compiler
+// (Golden Rule 24, docs/architecture/proof-vs-shape.md). The compiler's
+// expansion machinery (plugin/composite.rs) substitutes parameters
+// hygienically before typecheck; its general analyses prove what each
+// instantiated body needs (contracts, single-reader intermediates, the
+// M2 deferral); its lowerings map the proven body to hardware.
+
+// softmax_fused! — the deferred-softmax structure: a running max of the
+// scaled scores, then unnormalized weights accumulated DIRECTLY into the
+// consumer's slice (the deferral — one division at the end, algebra: a
+// division by a loop-completed scalar may move past a linear consumer),
+// then the normalize tail.
+//
+// `expr` parameters (substituted at the call site):
+//   score   — one score summand; may reference the binders `j` and `d`
+//             (the position and dim loop variables this composite binds)
+//   value   — the value operand; may reference `j` and `d`
+//   jlen    — the position span (e.g. NKV)
+//   dlen    — the dim span (e.g. D)
+//   accbuf  — the accumulator scratch; holds `dlen` elements per head and
+//             is ZERO on entry (its slice is read-modify-written)
+//   outbuf  — the normalized output buffer
+//   accbase — the head's slice base in accbuf
+//   outbase — the head's slice base in outbuf
+//
+// `expr_item` parameters (exposed binders — bound by the body, never
+// passed): `j` (position), `d` (dim).
+//
+// Across work items, slices [accbase .. accbase+dlen) must be disjoint —
+// each head owns its own slice.
+$defn softmax_fused(
+    score: expr, value: expr,
+    jlen: expr, dlen: expr,
+    accbuf: expr, outbuf: expr,
+    accbase: expr, outbase: expr,
+    j: expr_item, d: expr_item
+) {
+    // Pass 1: the running max of the scores (the Max# identity init).
+    let m_: Float = -1e30;
+    foreach j in 0..jlen {
+        let sc: Float = 0;
+        foreach d in 0..dlen {
+            sc = sc + score;
+        }
+        m_ = Max#(m_, sc);
+    }
+    // Pass 2: unnormalized weights, the exp-sum, and the raw accumulation.
+    let s_: Float = 0;
+    foreach j in 0..jlen {
+        let sc: Float = 0;
+        foreach d in 0..dlen {
+            sc = sc + score;
+        }
+        let p_: Float = Exp#(sc - m_);
+        s_ = s_ + p_;
+        foreach d in 0..dlen {
+            accbuf[accbase + d] = accbuf[accbase + d] + p_ * value;
+        }
+    }
+    // The deferred normalize tail (one division per element).
+    foreach d in 0..dlen {
+        outbuf[outbase + d] = accbuf[accbase + d] / s_;
+    }
+};

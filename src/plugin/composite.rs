@@ -18,27 +18,35 @@ use crate::ast::Expr;
 use crate::plugin::{FnDef, PluginManager};
 use std::collections::{HashMap, HashSet};
 
-/// True when this `$defn` declares at least one `expr` parameter — the
-/// composite marker. Ordinary `$defn`s (value parameters) are executed by
-/// the macro evaluator, never expanded.
+/// True when this `$defn` declares composite parameters — `expr`
+/// (substituted expression) or `expr_item` (an exposed binder: the body
+/// binds a loop/item with this name and arguments MAY reference it).
+/// Ordinary `$defn`s (value parameters) are executed by the macro
+/// evaluator, never expanded.
 pub fn is_composite(def: &Definition) -> bool {
-    def.parameters
-        .iter()
-        .any(|(_, t)| matches!(t, crate::ast::Type::Custom(n) if n == "expr"))
+    def.parameters.iter().any(|(_, t)| is_expr_param(t))
 }
 
-/// The composite's expression-parameter names, in declaration order.
-/// `None` when the composite mixes `expr` and value parameters (v1
-/// restriction — fail closed).
-fn expr_params(def: &Definition) -> Option<Vec<String>> {
-    let mut names = Vec::new();
+fn is_expr_param(t: &crate::ast::Type) -> bool {
+    matches!(t, crate::ast::Type::Custom(n) if n == "expr" || n == "expr_item")
+}
+
+/// The composite's signature: (substitution parameters in declaration
+/// order, exposed binder names). `None` when the composite mixes in value
+/// parameters (v1 restriction — fail closed).
+fn composite_signature(def: &Definition) -> Option<(Vec<String>, HashSet<String>)> {
+    let mut subst = Vec::new();
+    let mut exposed: HashSet<String> = HashSet::new();
     for (n, t) in &def.parameters {
         match t {
-            crate::ast::Type::Custom(k) if k == "expr" => names.push(n.clone()),
+            crate::ast::Type::Custom(k) if k == "expr" => subst.push(n.clone()),
+            crate::ast::Type::Custom(k) if k == "expr_item" => {
+                exposed.insert(n.clone());
+            }
             _ => return None,
         }
     }
-    Some(names)
+    Some((subst, exposed))
 }
 
 /// Expand one `name!(args...)` invocation against its declared composite:
@@ -51,22 +59,24 @@ pub fn expand_composite_invocation(
     args: &[Expr],
 ) -> Result<Vec<Statement>, String> {
     let name = &def.name;
-    let Some(params) = expr_params(def) else {
+    let Some((params, exposed)) = composite_signature(def) else {
         return Err(format!(
-            "composite '{name}' mixes `expr` and value parameters — declare all \
-             parameters as `name: expr` (v1 supports expression parameters only)"
+            "composite '{name}' mixes `expr`/`expr_item` and value parameters — \
+             declare all parameters as `name: expr` or `name: expr_item` (v1 \
+             supports expression parameters only)"
         ));
     };
     if args.len() != params.len() {
         return Err(format!(
             "composite '{name}' expects {} expression arguments ({}), got {} — \
-             supply one expression per `expr` parameter",
+             supply one expression per `expr` parameter (`expr_item` binders \
+             are bound by the body, never passed)",
             params.len(),
             params.join(", "),
             args.len()
         ));
     }
-    check_hygiene(def, &params, args)?;
+    check_hygiene(def, &params, &exposed, args)?;
     let mut out: Vec<Statement> = Vec::new();
     let trivial = Expr::Bool(true);
     if def.contract.pre_condition != trivial {
@@ -86,12 +96,14 @@ pub fn expand_composite_invocation(
 }
 
 /// Hygiene: identifiers the caller's arguments carry must not collide with
-/// names the body binds, and must not reference the composite's own
-/// parameters. Either case would silently change meaning at the expansion
-/// site — both fail closed with a diagnostic naming both sides.
+/// names the body binds PRIVATELY (exposed `expr_item` binders are the
+/// sanctioned exception — arguments reference them deliberately), and must
+/// not reference the composite's own `expr` parameters. Either violation
+/// would silently change meaning — both fail closed, naming both sides.
 fn check_hygiene(
     def: &Definition,
     params: &[String],
+    exposed: &HashSet<String>,
     args: &[Expr],
 ) -> Result<(), String> {
     let mut binders: HashSet<String> = HashSet::new();
@@ -101,6 +113,9 @@ fn check_hygiene(
     for p in params {
         binders.remove(p);
     }
+    for b in exposed {
+        binders.remove(b);
+    }
     for (param, arg) in params.iter().zip(args) {
         let mut idents = HashSet::new();
         collect_idents(arg, &mut idents);
@@ -108,8 +123,9 @@ fn check_hygiene(
             if binders.contains(id) {
                 return Err(format!(
                     "composite '{}': argument for '{}' mentions '{}', which the \
-                     composite body binds — capture would silently change \
-                     meaning; rename the caller's '{}' or the composite's binder",
+                     composite body binds privately — capture would silently \
+                     change meaning; rename the caller's '{}' or the composite's \
+                     binder (exposed `expr_item` binders may be referenced)",
                     def.name, param, id, id
                 ));
             }
@@ -465,15 +481,43 @@ mod tests {
         );
         let d = defn_of(&items, "f");
         assert!(is_composite(&d), "`expr` params mark a composite");
-        assert_eq!(
-            expr_params(&d).unwrap(),
-            vec!["x".to_string(), "y".to_string()]
-        );
+        let (subst, exposed) = composite_signature(&d).unwrap();
+        assert_eq!(subst, vec!["x".to_string(), "y".to_string()]);
+        assert!(exposed.is_empty());
         let plain = defn_of(
             &parse_program("$defn g(v: Int) -> Int { v; };"),
             "g",
         );
         assert!(!is_composite(&plain), "value params are not a composite");
+    }
+
+    #[test]
+    fn expr_item_params_expose_binders() {
+        // `expr_item` names a binder the body binds; arguments may reference
+        // it, and it is never passed at the call site.
+        let items = parse_program(
+            "$defn f(fill: expr, n: expr, i: expr_item) { \n\
+             \x20 foreach i in 0..n { \n\
+             \x20  buf[i] = fill; \n\
+             \x20 } \n\
+             };",
+        );
+        let d = defn_of(&items, "f");
+        let (subst, exposed) = composite_signature(&d).unwrap();
+        assert_eq!(subst, vec!["fill".to_string(), "n".to_string()]);
+        assert!(exposed.contains("i"));
+        // The argument references the exposed binder `i` — allowed.
+        let fill = Expr::BinaryOp(
+            BinaryOpKind::Mul,
+            Box::new(Expr::Identifier("w".into())),
+            Box::new(Expr::Identifier("i".into())),
+        );
+        let out = expand_composite_invocation(
+            &d,
+            &[fill, Expr::Identifier("N".into())],
+        )
+        .expect("exposed-binder reference is legal");
+        assert_eq!(out.len(), 1);
     }
 
     #[test]
@@ -621,5 +665,46 @@ async node k [i < 1][i == 1] {
         let n = expand_composites(&mut items, &pm).expect("runs");
         assert_eq!(n, 0, "ordinary $defn calls are not composite expansions");
         let _ = Type::int();
+    }
+}
+
+#[cfg(test)]
+mod frontb {
+    use super::*;
+    use crate::ast::top::TopLevel as TL;
+
+    fn parse_program(src: &str) -> Vec<TL> {
+        let tokens = crate::pipeline::lex_for_path("t.bv", src).expect("lex");
+        crate::pipeline::parse("t.bv", &tokens, src).expect("parse")
+    }
+
+    #[test]
+    fn softmax_fused_composite_expands() {
+        let lib = std::fs::read_to_string("lib/std/numeric.bv").expect("read numeric.bv");
+        let user = "\
+let h: Int = 0;
+let q: Float[1024];
+async node s [h < 8][h == 8] {
+    softmax_fused!(
+        q[h * 128 + d],
+        v[h * 32768 + j * 128 + d],
+        256, 128,
+        acc, a_out,
+        h * 128, h * 128
+    );
+    h = h + 1;
+    term;
+};";
+        let mut items = parse_program(user);
+        items.extend(parse_program(&lib));
+        let mut pm = PluginManager::new();
+        crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
+        println!("registry keys: {:?}", pm.fn_registry.keys().collect::<Vec<_>>());
+        let n = expand_composites(&mut items, &pm);
+        match n {
+            Ok(k) => println!("expanded {k}"),
+            Err(e) => panic!("expansion failed: {e}"),
+        }
+        assert_eq!(n.unwrap(), 1);
     }
 }

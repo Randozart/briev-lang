@@ -6560,3 +6560,36 @@ are unaffected.
 **Found by:** the flash-decode gate (docs/plans/2026-09-19-flash-decode-gate.md,
 forensics #4); the gate kernel only ran fast once given a dummy scalar
 field, which exposed the real per-launch cost difference.
+
+## 2026-09-20: composite-expanded softmax body 2×es on the knob-off lane-reduction path [OPEN]
+
+**Symptom:** the `softmax_fused!` composite expansion (Front B fixture,
+`examples/gpu/softmax_composite.abv`) validates at exactly 2× the
+reference on the general lane-reduction path (`ptx_deferred_region: 0`,
+block 64, `block_per_workitem=1` from `has_lane_reduction`). max_rel
+0.98; every element = 2 × reference — a clean double accumulation, not
+a race. The same lowered body via the DEFERRED path (knob on, 1024
+threads) validates at 7.03e-06 (PASS), and the hand-written flash2p
+template — same structure, knob off — validates at 8.63e-06 (PASS).
+
+**Delta vs the passing template:** the expanded body has no `kh` local
+(the fixture indexes `h * (D * NKV)` directly) and different local
+names (`m_`, `s_`, `p_`). The lane-reduction lowering or its lane
+coverage math is sensitive to one of these; every element doubling
+points at the dispatch/coverage side (each element written by exactly
+two lanes/blocks) rather than value semantics.
+
+**Impact:** Front B/Front C lanes are unaffected (the intended lowering
+for this shape is the deferred path, which is correct). The lane-
+reduction path mis-lowers this NEW body spelling — a general-path bug
+that will bite any composite-shaped body at knob-off defaults.
+
+**Next:** diff the lane-reduction lowering's lane-coverage decision for
+the two bodies (template vs expanded); the suspect is
+`has_lane_reduction` + the P1 lane-coverage fix interaction with the
+missing `kh` let. Log in the retirement ledger — the general path must
+handle every shape (Golden Rule 2), so this is a MUST-FIX before any
+Front D parity claim.
+
+**Found by:** the Front B Lane 2 gate (plan
+2026-09-20-metaprogrammed-composites).
