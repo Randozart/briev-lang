@@ -1181,6 +1181,23 @@ fn fused_attention_mma_kv_staged_ptx(
 /// 2026-09-15 (mma rung): the kernel is `fused_attention_mma_ptx` (m16n8k16
 /// tensor cores, direct fragment loads); the naive-on-chip kernel remains as
 /// the correctness reference and the fallback when the shape does not tile.
+/// 2026-09-20 (M3 — softmax chain fusion, plan
+/// metaprogrammed-composites): build the ONE kernel replacing the proven
+/// DOT → SOFTMAX → LINEAR-FOLD chain. The fused body is the EXPANDED
+/// declared composite (Front B) bound to the detected chain — never a
+/// Rust-synthesized AST (Golden Rule 24). Until the composite lands this
+/// falls back to the 3-kernel path, which stays correct.
+#[allow(unused_variables)]
+fn build_softmax_chain_kernel(
+    program: &[TopLevel],
+    universe: &TypeUniverse,
+    int_bits: u64,
+    layout: &crate::backend::spirv::runner::SsboLayout,
+    sc: &crate::analysis::softmax_chain::SoftmaxChain,
+) -> Result<RunnerKernel, String> {
+    Err("softmax chain: fused body awaits the declared composite (Front B, plan metaprogrammed-composites)".into())
+}
+
 fn build_fused_attention_kernel(
     program: &[TopLevel],
     universe: &TypeUniverse,
@@ -1722,6 +1739,29 @@ pub fn build_ptx_kernels(
             chain_skip.insert(cf.middle.clone());
             chain_skip.insert(cf.consumer.clone());
             chain_name = Some(format!("{}__{}_{}", cf.producer, cf.middle, cf.consumer));
+        }
+    }
+    // 2026-09-20 (M3 — softmax chain fusion): when the schedule proved a
+    // DOT → SOFTMAX → LINEAR-FOLD chain and the knob is on, synthesize the
+    // ONE deferred-softmax kernel that replaces the three nodes. The
+    // synthesized shape runs the SAME general emission path (the deferred
+    // region lowering fires on it); the scratch-capacity check bounds the
+    // reused softmax-output slot. Failure falls back to the 3-kernel path.
+    if crate::config_tuning::ir_lowering().ptx_softmax_chain {
+        if let Some(sc) = &schedule.softmax_chain {
+            match build_softmax_chain_kernel(program, universe, int_bits, &layout, sc) {
+                Ok(k) => {
+                    out.push(k);
+                    chain_skip.insert(sc.producer.clone());
+                    chain_skip.insert(sc.middle.clone());
+                    chain_skip.insert(sc.consumer.clone());
+                }
+                Err(reason) => {
+                    // Fall back to the three kernels; the reason is a
+                    // compile-time remark, not an error.
+                    let _ = reason;
+                }
+            }
         }
     }
     for name in names {

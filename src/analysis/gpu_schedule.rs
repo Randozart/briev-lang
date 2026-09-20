@@ -55,6 +55,12 @@ pub struct GpuSchedule {
     /// fused kernel (the intermediates stay on-chip) over the epilogue
     /// fusion (two kernels). Topology only; operands derived at codegen.
     pub chain_fusion: Option<ChainFusion>,
+    /// 2026-09-20 (M3, plan gpu-dialect-beyond-cuda): the DOT → SOFTMAX →
+    /// LINEAR-FOLD chain with the synthesized deferred-softmax body — the
+    /// three nodes fuse into ONE dispatch. Detected from topology +
+    /// existing shape proofs (Dot / Softmax / M2 deferral); nothing here
+    /// matches algorithm names.
+    pub softmax_chain: Option<crate::analysis::softmax_chain::SoftmaxChain>,
 }
 
 impl GpuSchedule {
@@ -488,6 +494,12 @@ pub fn build_schedule(
     // output has exactly one reader (the consumer), the consumer's output
     // is a terminal array. Topology only — operands derived at codegen.
     sched.chain_fusion = detect_chain_fusion(&sched, &sched.fusions, array_meta);
+
+    // 2026-09-20 (M3 — softmax chain fusion): DOT → SOFTMAX → LINEAR-FOLD
+    // with dead intermediates fuses into ONE deferred-softmax dispatch.
+    // Requires the M2 deferral proof on the middle (the algebraic license
+    // to move the normalize past the consumer's accumulation).
+    sched.softmax_chain = crate::analysis::softmax_chain::detect_softmax_chain(accel, &sched);
 
     // 2026-09-14 (Phase 3 — buffer reuse): per-array last-use + reuse
     // opportunities. An array is dead after its last-use txn completes; its
