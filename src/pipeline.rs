@@ -975,6 +975,11 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
         pm.run_ast(StageKind::Resolved, &mut items, &mut TypeUniverse::new())?;
     }
     resolve_comptime_refs(&pm, &mut items)?;
+    // 2026-09-20 (Front A, plan metaprogrammed-composites): expand
+    // declared composites before typecheck on the check path too —
+    // `brievc check` and the conformance sweep must see the same ONE IR
+    // the build path sees (the divergence class this fn's doc records).
+    crate::plugin::composite::expand_composites(&mut items, &pm)?;
 
     let universe = TypeUniverse::new();
     check_types(&mut items, &universe, effective_isr_mechanism(opts).as_deref())?;
