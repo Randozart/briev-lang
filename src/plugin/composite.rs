@@ -66,37 +66,7 @@ pub fn expand_composite_invocation(
             args.len()
         ));
     }
-    // Hygiene: identifiers the caller's arguments carry must not collide
-    // with names the body binds, and must not reference the composite's
-    // own parameters. Either case would silently change meaning.
-    let mut binders: HashSet<String> = HashSet::new();
-    for s in &def.body {
-        collect_binders(s, &mut binders);
-    }
-    for p in &params {
-        binders.remove(p);
-    }
-    for (param, arg) in params.iter().zip(args) {
-        let mut idents = HashSet::new();
-        collect_idents(arg, &mut idents);
-        for id in &idents {
-            if binders.contains(id) {
-                return Err(format!(
-                    "composite '{name}': argument for '{param}' mentions '{id}', \
-                     which the composite body binds — capture would silently \
-                     change meaning; rename the caller's '{id}' or the \
-                     composite's binder"
-                ));
-            }
-            if params.contains(id) {
-                return Err(format!(
-                    "composite '{name}': argument for '{param}' references \
-                     parameter '{id}' — a parameter is not visible inside \
-                     another argument; inline the intended expression"
-                ));
-            }
-        }
-    }
+    check_hygiene(def, &params, args)?;
     let mut out: Vec<Statement> = Vec::new();
     let trivial = Expr::Bool(true);
     if def.contract.pre_condition != trivial {
@@ -113,6 +83,47 @@ pub fn expand_composite_invocation(
         out.push(Statement::Gate(def.contract.post_condition.clone()));
     }
     Ok(out)
+}
+
+/// Hygiene: identifiers the caller's arguments carry must not collide with
+/// names the body binds, and must not reference the composite's own
+/// parameters. Either case would silently change meaning at the expansion
+/// site — both fail closed with a diagnostic naming both sides.
+fn check_hygiene(
+    def: &Definition,
+    params: &[String],
+    args: &[Expr],
+) -> Result<(), String> {
+    let mut binders: HashSet<String> = HashSet::new();
+    for s in &def.body {
+        collect_binders(s, &mut binders);
+    }
+    for p in params {
+        binders.remove(p);
+    }
+    for (param, arg) in params.iter().zip(args) {
+        let mut idents = HashSet::new();
+        collect_idents(arg, &mut idents);
+        for id in &idents {
+            if binders.contains(id) {
+                return Err(format!(
+                    "composite '{}': argument for '{}' mentions '{}', which the \
+                     composite body binds — capture would silently change \
+                     meaning; rename the caller's '{}' or the composite's binder",
+                    def.name, param, id, id
+                ));
+            }
+            if params.contains(id) {
+                return Err(format!(
+                    "composite '{}': argument for '{}' references parameter '{}' — \
+                     a parameter is not visible inside another argument; inline \
+                     the intended expression",
+                    def.name, param, id
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Driver: expand every statement-position `composite!(...)` in the
