@@ -1,0 +1,32 @@
+// m2_deferred_norm.abv — M2 deferred-normalizer gate fixture (plan
+// 2026-09-20-gpu-dialect-beyond-cuda M2). The deferrable form in its
+// plainest shape: a loop-completed scalar (row sum), an intermediate fill
+// pass, then a normalize tail dividing every element by the scalar.
+// detect_deferred_normalizer proves this structure (single-writer self-add
+// denominator + trailing pure-division foreach); the kernel stays numerically
+// exact through ANY lowering — the analysis is the deliverable.
+const R: Int = 32;
+const N: Int = 256;
+
+let r: Int = 0;
+let a: Float[8192];
+let raw: Float[8192];
+let y: Float[8192];
+
+async node dnorm [r < R][r == R] {
+    // The loop-completed denominator: row sum of a.
+    let s: Float = 0;
+    foreach j in 0..N {
+        s = s + a[r * N + j];
+    }
+    // Intermediate pass (not part of the deferral — the detector skips it).
+    foreach j in 0..N {
+        raw[r * N + j] = a[r * N + j] * 2.0;
+    }
+    // The normalize tail: y[..j..] = raw[..j..] / s.
+    foreach j in 0..N {
+        y[r * N + j] = raw[r * N + j] / s;
+    }
+    r = r + 1;
+    term;
+};
