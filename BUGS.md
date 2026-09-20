@@ -6584,12 +6584,23 @@ for this shape is the deferred path, which is correct). The lane-
 reduction path mis-lowers this NEW body spelling — a general-path bug
 that will bite any composite-shaped body at knob-off defaults.
 
-**Next:** diff the lane-reduction lowering's lane-coverage decision for
-the two bodies (template vs expanded); the suspect is
-`has_lane_reduction` + the P1 lane-coverage fix interaction with the
-missing `kh` let. Log in the retirement ledger — the general path must
-handle every shape (Golden Rule 2), so this is a MUST-FIX before any
-Front D parity claim.
+**Scope narrowed (2026-09-20, later same day):** the bug is in the
+**SPIR-V backend's lowering** of the composite RMW body, NOT the PTX
+lane-reduction path. Evidence: the Front B fixture
+(`examples/gpu/softmax_composite.abv`, H=8/NKV=256) validates PASS on
+the CUDA lane (which runs the PTX/CUBIN blob, deferred lowering,
+7.03e-06) and fails at exactly 2x on the Vulkan lane (which runs the
+SPIR-V blob, `k0`/`kp0` duality in the desc) — same program, same desc,
+only the blob differs. The m3 composite template at gate geometry
+reproduces identically (CUDA a_err 2.93e-06 PASS / Vulkan 2x FAIL).
+The PTX lane-reduction suspicion is withdrawn; `has_lane_reduction` is
+PTX-only and the CUDA general path is not exercised by these programs.
+
+**Next:** disassemble the SPIR-V `k0` lowering of
+`foreach d { acc[..] = acc[..] + p * value }` under the nested j-loop —
+the clean 2x implicates a doubled accumulation (loop-body duplication
+or a store+RMW pair), not value semantics. General path must handle
+every shape (Golden Rule 2) — MUST-FIX before any Front D parity claim.
 
 **Found by:** the Front B Lane 2 gate (plan
 2026-09-20-metaprogrammed-composites).

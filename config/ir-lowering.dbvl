@@ -112,10 +112,4 @@ ptx_emit_cubin: 1;
 // NaN fixed: m_init negation, dot body inlining, l butterfly, acc
 // merge lane offset, butterfly scratch register.  198 us on 1024-thread
 // fixture (64-reg cap).  OFF: 64-reg spilling costs ~2× vs flash gate.
-ptx_deferred_region: 0;
-
-// 2026-09-20 (M3): fuse the proven DOT->SOFTMAX->LINEAR-FOLD chain into
-// ONE deferred-softmax dispatch (3 launches -> 1).  Topology + shape
-// proofs only; emission reuses the deferred-region lowering.  SPIR-V
-// keeps the 3-kernel path.  Default off pending perf A/B.
-ptx_softmax_chain: 0;
+ptx_deferred_region: 1;

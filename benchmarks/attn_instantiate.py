@@ -51,8 +51,11 @@ sizes = {
 kv_elem = "Float16" if a.f16_kv else "Float"
 for name, n in sizes.items():
     elem = kv_elem if name in ("k", "v") else "Float"
+    # 2026-09-20 (Front C, plan metaprogrammed-composites): the composite
+    # form has no score buffer s — buffers the template omits are skipped,
+    # not fatal.
     src, cnt = re.subn(rf"let {name}: \w+\[\d+\];", f"let {name}: {elem}[{n}];", src)
-    if cnt != 1:
+    if cnt != 1 and not (name == "s" and cnt == 0):
         raise SystemExit(f"field '{name}': expected exactly 1 decl, found {cnt}")
 
 pathlib.Path(a.out).write_text(src)

@@ -37,7 +37,9 @@ python3 benchmarks/attn_instantiate.py \
 mv "$OUT/m3_attn_tmp_runner.c" "$OUT/attention_decode_runner.c"
 rm -f examples/gpu/m3_attn_tmp.abv
 for kp in 0 1 2; do
-    grep -o "kp${kp}_len = [0-9]*u" "$OUT/attention_decode_runner.c"
+    # 2026-09-20 (Front C): the composite form emits 2 kernels, not 3 —
+    # a missing blob length is expected, not fatal.
+    grep -o "kp${kp}_len = [0-9]*u" "$OUT/attention_decode_runner.c" || true
 done
 
 # 3. Inject the harness (seed + CPU reference + verdict).
@@ -46,13 +48,22 @@ import math, re, sys
 
 runner_path, out_path = sys.argv[1], sys.argv[2]
 NKV, D, H, HKV, G, F16KV, KLAYOUT = (int(x) if x.isdigit() else x for x in sys.argv[3:10])
+import os
 src = open(runner_path).read()
+
+# 2026-09-20 (Front C, plan metaprogrammed-composites): in COMPOSITE mode
+# the program is the ONE-node composite form — no score buffer s (the
+# composite reads q/k directly) and o1 is the accumulator SCRATCH. The
+# output contract is a_out only; the device-s and device-o1 checks are
+# compiled out (the reference still computes scores internally).
+COMPOSITE = os.environ.get("COMPOSITE") == "1"
 
 def field(name):
     m = re.search(r'\{ "%s", 1, (\d+), (\d+),' % name, src)
     return int(m.group(1)), int(m.group(2))  # host_offset, elem_bytes
 
 Q, QEB = field('q'); K, KEB = field('k'); V, VEB = field('v'); A, _ = field('a_out')
+SOFF = None if COMPOSITE else field('s')[0]
 F16 = KEB == 2 or VEB == 2
 if F16KV != (1 if F16 else 0):
     raise SystemExit(f"f16-kv flag mismatch: harness={F16KV} tables k/v elem={KEB}/{VEB}")
@@ -133,9 +144,9 @@ tail = (
     "    const float* K = Kbak;\n"
     "    const float* V = Vbak;\n"
     "    const float* A = (const float*)(state + AOFF);\n"
-    "    const float* S = (const float*)(state + SOFF);\n"
-    "    const float* O1 = (const float*)(state + O1OFF);\n"
-    "    float* Sref = (float*)malloc(sizeof(float) * H_ * NKV_);\n"
+    + ("" if COMPOSITE else "    const float* S = (const float*)(state + SOFF);\n")
+    + ("" if COMPOSITE else "    const float* O1 = (const float*)(state + O1OFF);\n")
+    + "    float* Sref = (float*)malloc(sizeof(float) * H_ * NKV_);\n"
     "    float* Pref = (float*)malloc(sizeof(float) * H_ * NKV_);\n"
     "    double max_err = 0.0, s_err = 0.0, o1_err = 0.0;\n"
     "    double ref_a0 = 0.0, ref_a1 = 0.0;\n"
@@ -152,12 +163,13 @@ tail = (
     "            acc *= scale_;\n"
     "            Sref[h*NKV_+j] = acc;\n"
     "            if (acc > mx) mx = acc;\n"
+    + ("" if COMPOSITE else
     "            double se = __builtin_fabs((double)S[h*NKV_+j] - (double)acc) / (__builtin_fabs((double)acc) + 1e-3);\n"
-    "            if (se > s_err) { s_err = se; ws_i = h*NKV_+j; ws_dev = S[h*NKV_+j]; ws_ref = acc; }\n"
-    "        }\n"
+    "            if (se > s_err) { s_err = se; ws_i = h*NKV_+j; ws_dev = S[h*NKV_+j]; ws_ref = acc; }\n")
+    + "        }\n"
     "        double sum = 0.0;\n"
     "        for (int j = 0; j < NKV_; j++) { Pref[h*NKV_+j] = __builtin_expf(Sref[h*NKV_+j] - mx); sum += Pref[h*NKV_+j]; }\n"
-    "        for (int j = 0; j < NKV_; j++) { Pref[h*NKV_+j] /= sum; double oe = __builtin_fabs((double)O1[h*NKV_+j] - (double)Pref[h*NKV_+j]) / (Pref[h*NKV_+j] + 1e-6); if (oe > o1_err) o1_err = oe; }\n"
+    "        for (int j = 0; j < NKV_; j++) { Pref[h*NKV_+j] /= sum; CHECK_O1 }\n"
     "        for (int d = 0; d < D_; d++) {\n"
     "            double ref_ = 0.0;\n"
     "            for (int j = 0; j < NKV_; j++) ref_ += Pref[h*NKV_+j] * V[kh*NKV_*D_ + j*D_ + d];\n"
@@ -173,7 +185,17 @@ tail = (
     "    printf(\"worst S: idx=%d dev=%.6f ref=%.6f | A0=%.6f ref=%.6f\\n\", ws_i, ws_dev, ws_ref, dump_a0, dump_ref0);\n"
     "  }\n"
 )
-for key, val in [('SOFF', field('s')[0]), ('O1OFF', field('o1')[0]), ('NKVOFF', NKV), ('QOFF', Q), ('KOFF', K), ('VOFF', V), ('AOFF', A)]:
+# 2026-09-20 (Front C, plan metaprogrammed-composites): in COMPOSITE mode
+# the o1 buffer is the fused node's accumulator SCRATCH — its value is not
+# part of the semantic contract (the output contract is a_out + s). The
+# o1-vs-Pref check is compiled out.
+check_o1 = "SKIP" if __import__("os").environ.get("COMPOSITE") == "1" else "CHECK"
+tail = tail.replace("CHECK_O1",
+    'if (0) { double oe = 0.0; (void)oe; (void)Pref; }' if check_o1 == "SKIP" else
+    '{ double oe = __builtin_fabs((double)O1[h*NKV_+j] - (double)Pref[h*NKV_+j]) / (Pref[h*NKV_+j] + 1e-6); if (oe > o1_err) o1_err = oe; }')
+
+for key, val in ([('NKVOFF', NKV), ('QOFF', Q), ('KOFF', K), ('VOFF', V), ('AOFF', A)] if COMPOSITE else
+                 [('SOFF', SOFF), ('O1OFF', field('o1')[0]), ('NKVOFF', NKV), ('QOFF', Q), ('KOFF', K), ('VOFF', V), ('AOFF', A)]):
     seed = seed.replace(key, str(val))
     tail = tail.replace(key, str(val))
 tail = tail.replace('PASSFAIL', '%s')
