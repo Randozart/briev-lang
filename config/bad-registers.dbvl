@@ -120,6 +120,10 @@ push_width: "x86_64:8"; "aarch64:16"; "riscv64:16";
 // targets (aarch64, riscv64) share one table; x86_64 carries its legacy
 // numbers. Adding a call is a data change.
 syscall_nums: "x86_64:read=0,write=1,open=2,close=3,brk=12,mmap=9,exit=60,exit_group=231"; "aarch64:read=63,write=64,open=56,close=57,brk=214,mmap=222,exit=93,exit_group=94"; "riscv64:read=63,write=64,open=56,close=57,brk=214,mmap=222,exit=93,exit_group=94";
+// float_literal: how FP literals materialize — `pool` = the lowerer
+// emits a `.rodata` block of `.double` entries (all three targets; GAS
+// aarch64 dropped the arm32 `=literal` form for FP registers).
+float_literal: "x86_64:pool"; "aarch64:pool"; "riscv64:pool";
 // dynamic_linker: the ld flag value for --with-libc runs.
 dynamic_linker: "x86_64:/lib64/ld-linux-x86-64.so.2"; "aarch64:/lib/ld-linux-aarch64.so.1"; "riscv64:/lib/ld-linux-riscv64-lp64d.so.1";
 // cross_as / cross_ld: prefixed toolchains for hardware-verification of

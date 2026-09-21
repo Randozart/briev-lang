@@ -719,3 +719,76 @@ mod hardening_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod phase3_hardening_tests {
+    use super::tests::lower_ok;
+    use super::*;
+
+    #[test]
+    fn fmov_imm_pools_on_x86_and_riscv() {
+        let src = "f:\n    fmov f0, 1.5\n    fmov f1, 1.5\n    fmov f2, 2.25\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        // Dedup by value: one pool entry for the two 1.5s.
+        assert!(x86.contains("movsd .Lfloat_0(%rip), %xmm0"), "{}", x86);
+        assert!(x86.contains("movsd .Lfloat_0(%rip), %xmm1"), "{}", x86);
+        assert!(x86.contains("movsd .Lfloat_1(%rip), %xmm2"), "{}", x86);
+        assert!(x86.contains(".Lfloat_0:\n.double 1.5"), "{}", x86);
+        assert!(x86.contains(".Lfloat_1:\n.double 2.25"), "{}", x86);
+        let riscv = lower_ok(src, "riscv64");
+        let joined = riscv.replace('\n', "; ");
+        assert!(joined.contains("la t0, .Lfloat_0; fld fa0, 0(t0)"), "{}", riscv);
+    }
+
+    #[test]
+    fn fmov_imm_pools_on_aarch64_via_adrp() {
+        let asm = lower_ok("f:\n    fmov f0, 1.5\n    ret\n", "aarch64");
+        let joined = asm.replace('\n', "; ");
+        assert!(joined.contains("adrp x9, .Lfloat_0"), "{}", asm);
+        assert!(joined.contains("ldr d0, [x9]"), "{}", asm);
+        assert!(asm.contains(".double 1.5"), "{}", asm);
+    }
+
+    #[test]
+    fn float_literals_cross_assemble_and_run_where_toolchains_exist() {
+        let src = "section .text\nglobal _start\n_start:\n    fmov f0, 1.5\n    fmov f1, \
+                   2.25\n    fadd f2, f0, f1\n    addr r4, out\n    fstore f2, r4\n    addr \
+                   r9, out\n    mov r5, 1\n    mov r2, 8\n    syscall write, r5, r9, r2\n    \
+                   syscall exit, r5, r4, r4\n\nsection .data\nbuf: .zero 8\nout: .double \
+                   0\n";
+        for family in ["x86_64", "aarch64", "riscv64"] {
+            if !toolchain_available(family) {
+                eprintln!("skip: {family} cross toolchain not installed");
+                continue;
+            }
+            let asm = generate(src, &format!("{family}-linux-gnu"))
+                .unwrap_or_else(|e| panic!("{family}: {e}"));
+            let dir = std::env::temp_dir()
+                .join(format!("bad_fp_{}_{}", family, std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let o = dir.join("fp.o");
+            assemble(&asm, family, &o).unwrap_or_else(|e| panic!("{family} assemble: {e}"));
+            let (_, regs) = registries();
+            let bin = dir.join("fp");
+            let st = std::process::Command::new(regs.cross_ld(family).unwrap())
+                .arg(&o)
+                .arg("-o")
+                .arg(&bin)
+                .status()
+                .expect("ld");
+            assert!(st.success(), "{family} link failed");
+            let stdout = std::process::Command::new(format!("qemu-{family}"))
+                .arg(&bin)
+                .output()
+                .map(|o| o.stdout)
+                .unwrap_or_else(|e| panic!("{family} qemu: {e}"));
+            // fstore wrote the f64 bit pattern of 1.5 + 2.25.
+            assert_eq!(
+                stdout,
+                3.75f64.to_bits().to_le_bytes(),
+                "{family} fp math"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+}

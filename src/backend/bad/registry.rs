@@ -195,7 +195,7 @@ impl BadRegisters {
             if matches!(
                 key.as_str(),
                 "imm" | "comment" | "abi_args" | "push_width" | "dynamic_linker"
-                    | "cross_as" | "cross_ld" | "syscall_nums"
+                    | "cross_as" | "cross_ld" | "syscall_nums" | "float_literal"
             ) {
                 scalars.insert(key, pairs);
             } else {
@@ -273,6 +273,15 @@ impl BadRegisters {
     /// The linker binary for `family`.
     pub fn cross_ld(&self, family: &str) -> Option<&'static str> {
         self.scalar("cross_ld", family).map(leak_static)
+    }
+
+    /// How float literals materialize: `pool` (a `.rodata` block of
+    /// `.double` entries) or `literal` (GAS `=` literal pools).
+    pub fn float_literal(&self, family: &str) -> &'static str {
+        match self.scalar("float_literal", family) {
+            Some(m) => leak_static(m),
+            None => "pool",
+        }
     }
 
     /// Kernel-call number for a NAME on `family` (`write` → 1 on x86_64,

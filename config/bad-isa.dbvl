@@ -150,7 +150,10 @@ pop2: "2"; "x86_64:popq $2; popq $1"; "aarch64:ldp $2, $1, [sp], #16"; "riscv64:
 // riscv fp compares have no flags — the fp branch family borrows t0.
 fload: "2"; "x86_64:movsd ($2), $1"; "aarch64:ldr $1, [$2]"; "riscv64:fld $1, 0($2)";
 fstore: "2"; "x86_64:movsd $1, ($2)"; "aarch64:str $1, [$2]"; "riscv64:fsd $1, 0($2)";
-fmov: "2"; "x86_64:movsd $2, $1|-"; "aarch64:mov $1, $2|-"; "riscv64:fmv.d $1, $2|-";
+// fmov imm: pool label on every target — x86_64 rip-relative, aarch64
+// adrp+ldr through x9 (caller-saved, disclosed), riscv64 la+fld through
+// t0 (caller-saved, disclosed).
+fmov: "2"; "x86_64:movsd $2, $1|movsd $2!(%rip), $1"; "aarch64:mov $1, $2|adrp x9, $2; add x9, x9, :lo12:$2; ldr $1, [x9]"; "riscv64:fmv.d $1, $2|la t0, $2; fld $1, 0(t0)";
 fadd: "3"; "x86_64:movsd $2, $1; addsd $3, $1|-"; "aarch64:fadd $1, $2, $3|-"; "riscv64:fadd.d $1, $2, $3|-";
 fsub: "3"; "x86_64:movsd $2, $1; subsd $3, $1|-"; "aarch64:fsub $1, $2, $3|-"; "riscv64:fsub.d $1, $2, $3|-";
 fmul: "3"; "x86_64:movsd $2, $1; mulsd $3, $1|-"; "aarch64:fmul $1, $2, $3|-"; "riscv64:fmul.d $1, $2, $3|-";

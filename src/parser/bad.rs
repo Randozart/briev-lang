@@ -434,6 +434,16 @@ impl<'s> Parser<'s> {
             }
             if let Ok(n) = piece.parse::<i64>() {
                 operands.push(BadOperand::Int(n));
+            } else if is_float_literal(piece) {
+                if piece.parse::<f64>().is_ok() {
+                    operands.push(BadOperand::Float(piece.to_string()));
+                } else {
+                    return Err(BadParseError {
+                        message: format!("float literal `{piece}` does not parse"),
+                        line,
+                        span: Span::new(off, off + piece.len(), line, 0),
+                    });
+                }
             } else if is_ident(piece) || piece.starts_with('[') || piece.starts_with('(') {
                 // Name or raw operand text (memory refs like `[sp, #-16]!`):
                 // resolved at lowering — params first, then the register
@@ -552,6 +562,16 @@ fn split_top(s: &str, sep: u8) -> Vec<&str> {
     }
     out.push(&s[start..]);
     out
+}
+
+/// `1.5`, `3.14e-2`, `2E10` — a decimal float literal (validated by the
+/// caller's f64 parse).
+fn is_float_literal(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.is_empty() || !(b[0].is_ascii_digit()) {
+        return false;
+    }
+    s.contains('.') || s.contains('e') || s.contains('E')
 }
 
 fn is_ident_char(c: char) -> bool {

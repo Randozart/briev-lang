@@ -24,6 +24,26 @@ use std::collections::HashMap;
 /// `--optimize-budget` spirit: deep expansion is an authoring error.
 const MAX_EXPANSION_DEPTH: usize = 64;
 
+/// The FP literal pool: insertion-ordered entries + a bits index.
+#[derive(Default)]
+struct FloatPool {
+    entries: Vec<(String, String)>,
+    index: HashMap<u64, String>,
+}
+
+impl FloatPool {
+    fn intern(&mut self, text: &str) -> String {
+        let bits = text.parse::<f64>().unwrap_or(0.0).to_bits();
+        if let Some(label) = self.index.get(&bits) {
+            return label.clone();
+        }
+        let label = format!(".Lfloat_{}", self.entries.len());
+        self.entries.push((label.clone(), text.to_string()));
+        self.index.insert(bits, label.clone());
+        label
+    }
+}
+
 pub struct Lowerer<'a> {
     isa: &'a BadIsa,
     regs: &'a BadRegisters,
@@ -48,6 +68,10 @@ pub struct Lowerer<'a> {
     /// Depth-first flattened items: imported files expand at their
     /// `import` line, so pass 1 / pass 2 see them in source order.
     emit_items: Vec<BadTopLevel>,
+    /// FP literal pool: value bits → (label, source text). Registration
+    /// happens during substitution (&self path), so the map is a RefCell;
+    /// the pool block is appended after pass 2.
+    float_pool: std::cell::RefCell<FloatPool>,
     out: String,
     errors: Vec<String>,
     trace: bool,
@@ -85,6 +109,7 @@ impl<'a> Lowerer<'a> {
             base_dir: None,
             visited: std::collections::HashSet::new(),
             emit_items: Vec::new(),
+            float_pool: std::cell::RefCell::new(FloatPool::default()),
             out: String::new(),
             errors: Vec::new(),
             trace: false,
@@ -133,6 +158,8 @@ impl<'a> Lowerer<'a> {
                 BadTopLevel::Label(l) => self.emit_label(l),
             }
         }
+
+        self.flush_float_pool();
 
         if self.errors.is_empty() {
             Ok(self.out)
@@ -520,7 +547,8 @@ impl<'a> Lowerer<'a> {
                 ));
             }
         };
-        let has_imm = instr.operands.iter().any(|o| matches!(o, BadOperand::Int(_)));
+        let has_imm =
+            instr.operands.iter().any(|o| matches!(o, BadOperand::Int(_) | BadOperand::Float(_)));
         let template = match (&lowering.imm, has_imm) {
             (ImmHandling::Form(t), true) => t,
             (ImmHandling::Illegal, true) => {
@@ -571,6 +599,14 @@ impl<'a> Lowerer<'a> {
         for (param, op) in d.params.iter().zip(&call.operands) {
             let bound = match op {
                 BadOperand::Int(n) => Bound::Imm(*n),
+                BadOperand::Float(_) => {
+                    return Err(format!(
+                        "defn param `{}` bound to a float literal (line {}) - floats ride \
+                         the FP register class (f0-f15) via fmov/fload, not integer params",
+                        op_debug_name(op),
+                        call.span.line
+                    ));
+                }
                 BadOperand::Expr(e) => match self.eval_operand_expr(e, outer, call) {
                     Ok(v) => Bound::Imm(v),
                     Err(err) => {
@@ -647,6 +683,7 @@ impl<'a> Lowerer<'a> {
     ) -> String {
         match op {
             BadOperand::Int(n) => format!("{}{}", self.regs.imm_prefix(&self.family), n),
+            BadOperand::Float(t) => self.float_operand(t, instr),
             BadOperand::Expr(e) => match self.eval_operand_expr(e, env, instr) {
                 Ok(v) => format!("{}{}", self.regs.imm_prefix(&self.family), v),
                 Err(err) => {
@@ -722,6 +759,7 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(format!("{imm}{v}"))
             }
+            BadOperand::Float(t) => Ok(self.float_operand(t, instr)),
             BadOperand::Expr(e) => match self.eval_operand_expr(e, env, instr) {
                 Ok(v) if r.bare => Ok(v.to_string()),
                 Ok(v) => Ok(format!("{imm}{v}")),
@@ -899,6 +937,41 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A Float operand's final text: a pool label (x86_64/riscv64 ride
+    /// `.rodata` pool entries) or the literal itself (aarch64 `ldr =1.5`
+    /// GAS literal pools), per the `float_literal` config row.
+    fn float_operand(&self, text: &str, instr: &BadInstr) -> String {
+        let mode = self.regs.float_literal(&self.family);
+        match mode {
+            "literal" => text.to_string(),
+            // The parser validates the f64 parse; re-parse failure here
+            // cannot occur. The instr parameter documents the call site.
+            _ => {
+                let _ = instr;
+                self.float_pool.borrow_mut().intern(text)
+            }
+        }
+    }
+
+    /// Append the FP literal pool (`.rodata`) when the target rides the
+    /// pool and any float was interned.
+    fn flush_float_pool(&mut self) {
+        if self.regs.float_literal(&self.family) != "pool" {
+            return;
+        }
+        let entries = self.float_pool.borrow().entries.clone();
+        if entries.is_empty() {
+            return;
+        }
+        self.push_line("");
+        self.push_line(".section .rodata");
+        self.push_line(".balign 8");
+        for (label, text) in &entries {
+            self.push_line(&format!("{label}:"));
+            self.push_line(&format!(".double {text}"));
+        }
+    }
+
     fn push_line(&mut self, line: &str) {
         self.out.push_str(line);
         self.out.push('\n');
@@ -970,6 +1043,15 @@ fn take_width_suffix(s: &str, j: usize, r: Ref) -> (Ref, usize) {
 }
 
 /// Start of the next identifier-ish word at or after byte 0 of `s`.
+fn op_debug_name(op: &BadOperand) -> String {
+    match op {
+        BadOperand::Int(n) => n.to_string(),
+        BadOperand::Float(t) => t.clone(),
+        BadOperand::Name(n) => n.clone(),
+        BadOperand::Expr(e) => e.clone(),
+    }
+}
+
 fn split_ws(s: &str) -> (&str, &str) {
     match s.find(char::is_whitespace) {
         Some(i) => (&s[..i], s[i..].trim()),

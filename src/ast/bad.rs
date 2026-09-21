@@ -149,6 +149,10 @@ pub struct BadBranch {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BadOperand {
     Int(i64),
+    /// Float literal (`1.5`, `3.14e-2`) — original text kept for
+    /// literal-form targets (aarch64 `ldr =1.5`); pool targets key on
+    /// the parsed value's bits.
+    Float(String),
     Name(String),
     Expr(String),
 }
