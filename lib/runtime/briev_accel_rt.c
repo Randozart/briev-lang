@@ -568,11 +568,49 @@ int briev_accel_launch_resident_2d(uint32_t idx, void* state,
         return briev_accel_launch(idx, state, nx * ny);  // driver can't
     }
     void* mapped = g_driver->mapped(g_kernels[idx]);
+    const BrievKernelDesc* k = &g_descs[idx];
     if (mapped == NULL) {
         // The vulkan driver creates its buffer + map LAZILY on the first
         // full-copy launch — prime it once, then take the resident path.
         // A second NULL means the driver genuinely cannot go resident.
-        if (!briev_accel_launch(idx, state, nx * ny)) {
+        //
+        // 2026-09-21 (BUGS.md 2026-09-20, root cause found): the prime is
+        // a FULL launch — seed + dispatch + download — and its download
+        // replaces host state with run-1 OUTPUTS. The resident seed below
+        // then uploads those clobbered bytes as the "zero-on-entry"
+        // inputs, and dispatch #2 re-accumulates: any kernel that
+        // read-modify-writes a seeded scratch (composite deferred softmax:
+        // acc += p*v) lands at exactly 2x. Snapshot the seed spans before
+        // the prime, restore the authored bytes after it — the resident
+        // seed then uploads what the program author wrote. (The prime's
+        // device-side work is discarded: full_sync re-seeds every seed
+        // field, including the scratch.) One-time cost per program.
+        size_t snap_bytes = 0;
+        for (uint32_t i = 0; i < k->n_seed_fields; i++) {
+            const BrievField* f = &k->seed_fields[i];
+            snap_bytes += (size_t)(f->count * f->elem_bytes);
+        }
+        uint8_t* snap = (uint8_t*)malloc(snap_bytes ? snap_bytes : 1);
+        if (snap == NULL) {
+            return 0;  // fail closed: a silent 2x beats a failed launch
+        }
+        size_t snap_off = 0;
+        for (uint32_t i = 0; i < k->n_seed_fields; i++) {
+            const BrievField* f = &k->seed_fields[i];
+            size_t n = (size_t)(f->count * f->elem_bytes);
+            memcpy(snap + snap_off, (const uint8_t*)state + f->host_offset, n);
+            snap_off += n;
+        }
+        int primed = briev_accel_launch(idx, state, nx * ny);
+        snap_off = 0;
+        for (uint32_t i = 0; i < k->n_seed_fields; i++) {
+            const BrievField* f = &k->seed_fields[i];
+            size_t n = (size_t)(f->count * f->elem_bytes);
+            memcpy((uint8_t*)state + f->host_offset, snap + snap_off, n);
+            snap_off += n;
+        }
+        free(snap);
+        if (!primed) {
             return 0;
         }
         mapped = g_driver->mapped(g_kernels[idx]);
@@ -580,7 +618,6 @@ int briev_accel_launch_resident_2d(uint32_t idx, void* state,
             return 0;
         }
     }
-    const BrievKernelDesc* k = &g_descs[idx];
     int full_sync = 0;
     size_t dirty[2 * 16];
     uint32_t n_dirty = 0;

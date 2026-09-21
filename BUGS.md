@@ -6561,7 +6561,7 @@ are unaffected.
 forensics #4); the gate kernel only ran fast once given a dummy scalar
 field, which exposed the real per-launch cost difference.
 
-## 2026-09-20: composite-expanded softmax body 2×es on the knob-off lane-reduction path [OPEN]
+## 2026-09-20: composite-expanded softmax body 2×es on the knob-off lane-reduction path [RESOLVED 2026-09-21 — runtime, not compiler]
 
 **Symptom:** the `softmax_fused!` composite expansion (Front B fixture,
 `examples/gpu/softmax_composite.abv`) validates at exactly 2× the
@@ -6596,11 +6596,41 @@ reproduces identically (CUDA a_err 2.93e-06 PASS / Vulkan 2x FAIL).
 The PTX lane-reduction suspicion is withdrawn; `has_lane_reduction` is
 PTX-only and the CUDA general path is not exercised by these programs.
 
-**Next:** disassemble the SPIR-V `k0` lowering of
-`foreach d { acc[..] = acc[..] + p * value }` under the nested j-loop —
-the clean 2x implicates a doubled accumulation (loop-body duplication
-or a store+RMW pair), not value semantics. General path must handle
-every shape (Golden Rule 2) — MUST-FIX before any Front D parity claim.
+**RESOLVED (2026-09-21) — both prior hypotheses withdrawn.** The PTX
+lane-reduction suspicion AND the SPIR-V-backend suspicion were wrong:
+the SPIR-V `k0` blob was verified correct instruction-by-instruction.
+The bug was a RUNTIME DOUBLE-DISPATCH: the lazy-buffer "prime" in
+`briev_accel_rt.c` (`briev_accel_launch_resident_2d`, mapped==NULL path)
+called `briev_accel_launch` — a FULL seed+dispatch+download — purely as
+a buffer-allocation hook. The prime dispatched the kernel once (run 1,
+correct), its download replaced host state with run-1 OUTPUTS, and the
+resident path then re-seeded "inputs only" from that clobbered host
+state (violating its own no-live-value-clobber contract) and dispatched
+again: `acc = Σ + Σ` → exactly 2x. Verbose log showed two dispatches
+per firing; per-element ratio 2.000000±7e-6 across all d.
+
+**Why the shape dependency fooled us:** the ONLINE arm (D=16) passes
+because its first iteration multiplies acc by `Exp#(m_ - mn_)` with
+`m_ = -1e30` → `Exp(-inf) = 0` — run 2 SELF-ZEROS run 1's stale acc.
+The deferred arm's plain self-add has no rescale. Every earlier
+Vulkan-validated kernel used pure stores (idempotent under double
+fire); the composite's RMW-into-zero-scratch is the first shape that
+can observe the bug. The CUDA lane was immune only because the PTX
+deferred kernel keeps acc in REGISTERS (never uploads it).
+
+**Fix (`briev_accel_rt.c`, 2026-09-21):** snapshot the seed-field spans
+before the prime, restore the authored bytes after it — the resident
+seed then uploads what the program author wrote (acc=0), and full_sync
+re-seeds every seed field on-device, discarding the prime's work.
+One-time cost per program. Gates after: softmax fixtures + m3 harness,
+BOTH arms, BOTH lanes PASS (2.06e-05 worst on Vulkan deferred).
+benchmarks/results/2026-09-21-composite-gates-both-lanes.md.
+
+**Minor open item (cosmetic, same family):** `gpu_rt.rs` ffi_table marks
+`is_write: if f.is_array {1} else {0}` — every array is download-
+eligible even when the kernel never writes it (extra readback bytes);
+and host-side scalar counters (`h`) ride the download path. Efficiency
+cleanup, not correctness.
 
 **Found by:** the Front B Lane 2 gate (plan
 2026-09-20-metaprogrammed-composites).
