@@ -32,11 +32,22 @@ pub fn registries() -> (registry::BadIsa, registry::BadRegisters) {
 /// `family` is the target-triple first component (x86_64, aarch64,
 /// riscv64) — the same family extraction asm-lowering.dbvl uses.
 pub fn generate(source: &str, target_triple: &str) -> Result<String, String> {
+    generate_with(source, target_triple, false, None)
+}
+
+/// `--trace-lowering`: stderr note per instruction — which exception
+/// fired / which form picked / where registers landed.
+pub fn generate_with(
+    source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
+) -> Result<String, String> {
     let program: BadProgram =
         parse_bad(source).map_err(|e| format!("bad: line {}: {}", e.line, e.message))?;
     let (isa, regs) = registries();
     let family = target_triple.split('-').next().unwrap_or(target_triple);
-    lower::Lowerer::new(&isa, &regs, family).run(&program)
+    lower::Lowerer::new(&isa, &regs, family)
+        .with_trace(trace)
+        .with_base_dir(base_dir.map(|p| p.to_path_buf()))
+        .run(&program)
 }
 
 /// Assemble emitted text to an object file via the platform assembler.
@@ -510,5 +521,125 @@ mod phase_c_tests {
                    other:\n    ret\n";
         let err = generate(bad, "x86_64").unwrap_err();
         assert!(err.contains("16-aligned"), "{}", err);
+    }
+}
+
+#[cfg(test)]
+
+fn branch_target_of(line: &str) -> Option<String> {
+    let head = line.split_whitespace().next()?;
+    let branches = ["jmp", "je", "jne", "b", "b.eq", "b.ne", "j", "beq", "bne"];
+    if branches.iter().any(|m| head.starts_with(m)) {
+        line.split_whitespace().last().map(String::from)
+    } else {
+        None
+    }
+}
+
+/// Label -> referenced-labels adjacency, parsed from emitted asm. The
+/// cross-target equivalence proof: lowering is semantics-preserving, so
+/// every target's control-flow graph must match.
+#[cfg(test)]
+fn branch_graph(asm: &str) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let mut current = String::new();
+    for line in asm.lines() {
+        let line = line.trim();
+        if let Some(name) = line.strip_suffix(':') {
+            if !line.starts_with('L') || line.contains("__") {
+                current = name.to_string();
+                out.push((current.clone(), Vec::new()));
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            if let Some(target) = branch_target_of(line) {
+                out.last_mut().unwrap().1.push(target);
+            }
+        }
+    }
+    out
+}
+
+mod phase_d_tests {
+    use super::*;
+    const STDLIB: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/std/bad/string.bad"));
+
+    fn assert_all_syms(asm: &str, triple: &str, syms: &[&str]) {
+        for sym in syms {
+            assert!(asm.contains(sym), "{triple} missing {sym}: {asm}");
+        }
+    }
+
+    #[test]
+    fn stdlib_lowers_to_all_three_targets() {
+        for triple in ["x86_64", "aarch64", "riscv64"] {
+            let asm = generate(STDLIB, triple)
+                .unwrap_or_else(|e| panic!("stdlib failed on {triple}: {e}"));
+            assert_all_syms(&asm, triple, &["memcpy:", "memset:", "strlen:", "strcmp:"]);
+        }
+    }
+
+    #[test]
+    fn stdlib_assembles_on_host() {
+        let asm = generate(STDLIB, "x86_64").unwrap();
+        let out = std::env::temp_dir().join(format!("bad_std_{}.o", std::process::id()));
+        assemble(&asm, "x86_64", &out).expect("stdlib assemble failed");
+        std::fs::remove_file(&out).ok();
+    }
+
+    #[test]
+    fn import_expands_at_the_import_line() {
+        let dir = std::env::temp_dir().join(format!("bad_import_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = dir.join("lib.bad");
+        std::fs::write(&lib, "defn double_it x\n    add r0, x, x\n    ret\n").unwrap();
+        let main_src = "import \"lib.bad\"\n\n_start:\n    double_it r5\n    ret\n";
+        let asm = generate_with(main_src, "x86_64", false, Some(&dir)).unwrap();
+        std::fs::remove_file(&lib).ok();
+        std::fs::remove_dir(&dir).ok();
+        // `add r0, x, x` with x = r5 rides the x86 lea imm-form row.
+        assert!(asm.contains("leaq (%rdi, %rdi), %rax"), "{}", asm);
+        // The defn is inlined, NOT emitted as a label.
+        assert!(!asm.contains("double_it:"), "{}", asm);
+    }
+
+    #[test]
+    fn import_cycles_terminate_idempotently() {
+        // A cycle is not an error: re-import is a no-op (diamond-safe),
+        // depth is capped at 16 for pathological graphs.
+        let dir = std::env::temp_dir().join(format!("bad_cycle_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.bad"), "import \"b.bad\"\n.const V 1\n").unwrap();
+        std::fs::write(dir.join("b.bad"), "import \"a.bad\"\n").unwrap();
+        let src = "import \"a.bad\"\n\n_start:\n    mov r0, V\n    ret\n";
+        let asm = generate_with(src, "x86_64", false, Some(&dir)).unwrap();
+        std::fs::remove_file(dir.join("a.bad")).ok();
+        std::fs::remove_file(dir.join("b.bad")).ok();
+        std::fs::remove_dir(&dir).ok();
+        assert!(asm.contains("movq $1, %rax"), "{}", asm);
+    }
+
+    #[test]
+    fn duplicate_labels_across_imports_are_loud() {
+        let dir = std::env::temp_dir().join(format!("bad_dup_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("l.bad"), "dup:\n    ret\n").unwrap();
+        let src = "import \"l.bad\"\n\ndup:\n    ret\n";
+        let err = generate_with(src, "x86_64", false, Some(&dir)).unwrap_err();
+        std::fs::remove_file(dir.join("l.bad")).ok();
+        std::fs::remove_dir(&dir).ok();
+        assert!(err.contains("declared twice"), "{}", err);
+    }
+
+    #[test]
+    fn cross_target_branch_graph_is_identical() {
+        let src = "_start:\n    jz r0, 1, .exit\n    jmp .mid\n.mid:\n    jlt r1, 2, .exit\n    \
+                   ret\n.exit:\n    ret\n";
+        let g1 = branch_graph(&generate(src, "x86_64").unwrap());
+        let g2 = branch_graph(&generate(src, "aarch64").unwrap());
+        let g3 = branch_graph(&generate(src, "riscv64").unwrap());
+        assert_eq!(g1, g2, "x86 vs aarch64 branch graph");
+        assert_eq!(g2, g3, "aarch64 vs riscv branch graph");
     }
 }

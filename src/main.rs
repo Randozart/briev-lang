@@ -504,6 +504,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let mut triple: Option<String> = None;
     let mut emit_asm = false;
     let mut with_libc = false;
+    let mut trace = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -513,6 +514,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
             }
             "--emit-asm" => emit_asm = true,
             "--with-libc" => with_libc = true,
+            "--trace-lowering" => trace = true,
             other => return Err(format!("bad: unknown option `{other}`")),
         }
         i += 1;
@@ -521,15 +523,23 @@ fn run_bad(args: &[String]) -> Result<(), String> {
 
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("bad: cannot read '{}': {}", file_path, e))?;
-    let asm =
-        briev_compiler::backend::bad::generate(&source, &triple).map_err(|e| format!("bad: {e}"))?;
+    let base_dir = std::path::Path::new(file_path).parent().map(|p| p.to_path_buf());
+    let asm = briev_compiler::backend::bad::generate_with(
+        &source,
+        &triple,
+        trace,
+        base_dir.as_deref(),
+    )
+    .map_err(|e| format!("bad: {e}"))?;
 
     let stem = std::path::Path::new(file_path)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "program".to_string());
     let family = triple.split('-').next().unwrap_or(&triple).to_string();
-    let s_path = std::path::PathBuf::from(format!("{stem}.s"));
+    let s_path = std::path::Path::new(file_path)
+        .with_extension("s")
+        .to_path_buf();
     std::fs::write(&s_path, &asm)
         .map_err(|e| format!("bad: cannot write '{}': {}", s_path.display(), e))?;
     println!("wrote {}", s_path.display());
@@ -537,7 +547,9 @@ fn run_bad(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
-    let o_path = std::path::PathBuf::from(format!("{stem}.o"));
+    let o_path = std::path::Path::new(file_path)
+        .with_extension("o")
+        .to_path_buf();
     briev_compiler::backend::bad::assemble(&asm, &family, &o_path)
         .map_err(|e| format!("bad: {e}"))?;
     println!("wrote {}", o_path.display());

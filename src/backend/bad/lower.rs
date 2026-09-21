@@ -28,7 +28,7 @@ pub struct Lowerer<'a> {
     isa: &'a BadIsa,
     regs: &'a BadRegisters,
     family: String,
-    defns: HashMap<String, &'a BadDefn>,
+    defns: HashMap<String, BadDefn>,
     aliases: HashMap<String, String>,
     /// `.const NAME expr` raw expressions — evaluated lazily (forward
     /// refs OK), cycle-guarded.
@@ -41,8 +41,16 @@ pub struct Lowerer<'a> {
     current_label: Option<String>,
     /// Global label names — `.export` targets must exist.
     label_names: std::collections::HashSet<String>,
+    /// Import resolution root (the importing file's directory).
+    base_dir: Option<std::path::PathBuf>,
+    /// Canonicalized import paths already expanded (cycle guard).
+    visited: std::collections::HashSet<std::path::PathBuf>,
+    /// Depth-first flattened items: imported files expand at their
+    /// `import` line, so pass 1 / pass 2 see them in source order.
+    emit_items: Vec<BadTopLevel>,
     out: String,
     errors: Vec<String>,
+    trace: bool,
 }
 
 /// One `.field name, size[, align]` inside a `.struct` block.
@@ -74,42 +82,47 @@ impl<'a> Lowerer<'a> {
             current_struct: None,
             current_label: None,
             label_names: std::collections::HashSet::new(),
+            base_dir: None,
+            visited: std::collections::HashSet::new(),
+            emit_items: Vec::new(),
             out: String::new(),
             errors: Vec::new(),
+            trace: false,
         }
+    }
+
+    /// Enable per-instruction lowering traces on stderr.
+    pub fn with_trace(mut self, trace: bool) -> Self {
+        self.trace = trace;
+        self
+    }
+
+    /// Root directory for resolving `import` paths.
+    pub fn with_base_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
+        self.base_dir = dir;
+        self
     }
 
     /// Lower the whole program. First pass collects defns + aliases
     /// (forward references allowed); second pass emits.
     pub fn run(mut self, program: &'a BadProgram) -> Result<String, String> {
-        for item in &program.items {
-            match item {
-                BadTopLevel::Defn(d) => {
-                    if self.defns.insert(d.name.clone(), d).is_some() {
-                        self.errors.push(format!(
-                            "defn `{}` is declared twice - remove one of the declarations",
-                            d.name
-                        ));
-                    }
-                }
-                BadTopLevel::Alias(a) => {
-                    if self.aliases.insert(a.name.clone(), a.register.clone()).is_some() {
-                        self.errors.push(format!(
-                            "alias `{}` is declared twice - remove one of the declarations",
-                            a.name
-                        ));
-                    }
-                }
-                BadTopLevel::Directive(d) => self.collect_directive(d),
-                BadTopLevel::Label(l) if !l.local => {
-                    self.label_names.insert(l.name.clone());
-                }
-                _ => {}
-            }
+        // Depth-first import expansion: imported files clone in at their
+        // `import` line, so both passes see source order. Root items are
+        // cloned once — a one-shot compile can afford it.
+        let root: Vec<BadTopLevel> = program.items.clone();
+        self.expand_imports(root, 0)?;
+
+        // Pass 1: names — defns, aliases, consts, struct fields, labels.
+        let pass1 = std::mem::take(&mut self.emit_items);
+        for item in &pass1 {
+            self.collect_names(item);
         }
+        self.emit_items = pass1;
         self.layout_structs();
 
-        for item in &program.items {
+        // Pass 2: emission (take the vec — borrow split vs self.errors).
+        let emit_items = std::mem::take(&mut self.emit_items);
+        for item in &emit_items {
             match item {
                 BadTopLevel::Directive(d) => self.emit_directive(d),
                 BadTopLevel::Data(d) => {
@@ -128,6 +141,89 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Pass 1 name collection for one item.
+    fn collect_names(&mut self, item: &BadTopLevel) {
+        match item {
+            BadTopLevel::Defn(d) => {
+                if self.defns.insert(d.name.clone(), d.clone()).is_some() {
+                    self.errors.push(format!(
+                        "defn `{}` is declared twice - remove one of the declarations",
+                        d.name
+                    ));
+                }
+            }
+            BadTopLevel::Alias(a) => {
+                if self.aliases.insert(a.name.clone(), a.register.clone()).is_some() {
+                    self.errors.push(format!(
+                        "alias `{}` is declared twice - remove one of the declarations",
+                        a.name
+                    ));
+                }
+            }
+            BadTopLevel::Directive(d) => self.collect_directive(d),
+            BadTopLevel::Label(l) if !l.local => {
+                if !self.label_names.insert(l.name.clone()) {
+                    self.errors.push(format!(
+                        "label `{}` is declared twice - labels share one global \
+                         namespace; rename one or use a local label (.name:)",
+                        l.name
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Recursively inline `import "path.bad"` files at their position.
+    /// `depth` bounds pathological import graphs.
+    fn expand_imports(&mut self, items: Vec<BadTopLevel>, depth: usize) -> Result<(), String> {
+        if depth > 16 {
+            return Err("import graph deeper than 16 - break the import cycle".to_string());
+        }
+        for item in items {
+            if let BadTopLevel::Directive(d) = &item {
+                if d.name == "import" {
+                    let raw = d.args.trim().trim_matches('"').to_string();
+                    self.load_import(&raw, depth)?;
+                    continue;
+                }
+            }
+            self.emit_items.push(item);
+        }
+        Ok(())
+    }
+
+    fn load_import(&mut self, path: &str, depth: usize) -> Result<(), String> {
+        let mut candidates = Vec::new();
+        if path.starts_with('/') {
+            candidates.push(std::path::PathBuf::from(path));
+        } else {
+            if let Some(base) = &self.base_dir {
+                candidates.push(base.join(path));
+            }
+            candidates.push(std::path::PathBuf::from(path));
+        }
+        let resolved = candidates
+            .into_iter()
+            .find(|p| p.is_file())
+            .ok_or_else(|| {
+                format!(
+                    "import `{path}` not found - resolve it against the importing file's \
+                     directory or the working directory"
+                )
+            })?;
+        let canonical = resolved
+            .canonicalize()
+            .map_err(|e| format!("import `{path}` cannot be canonicalized: {e}"))?;
+        if !self.visited.insert(canonical.clone()) {
+            return Ok(()); // already expanded — imports are idempotent
+        }
+        let src = std::fs::read_to_string(&resolved)
+            .map_err(|e| format!("import `{path}`: cannot read: {e}"))?;
+        let imported = crate::parser::bad::parse_bad(&src)
+            .map_err(|e| format!("import `{path}`: line {}: {}", e.line, e.message))?;
+        self.expand_imports(imported.items, depth + 1)
+    }
     fn emit_directive(&mut self, d: &BadDirective) {
         match d.name.as_str() {
             // Consumed in pass 1 — never emitted.
@@ -148,7 +244,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Pass 1: `.const NAME expr` rows and `.struct` field declarations.
     fn collect_directive(&mut self, d: &BadDirective) {
         let bare_name: &str = d.name.trim_start_matches('.');
         match bare_name {
@@ -333,6 +428,34 @@ impl<'a> Lowerer<'a> {
         format!("L{parent}__{name}:")
     }
 
+    /// Step 2 of the dispatch: a target-matched exception emits raw.
+    fn emit_exception(
+        &mut self, instr: &BadInstr, branch: &BadBranch, env: &HashMap<String, Bound>,
+    ) {
+        if self.trace {
+            eprintln!(
+                "trace: `{mn}` (line {ln}) -> {fam} EXCEPTION `{tgt}`",
+                mn = instr.mnemonic,
+                ln = instr.span.line,
+                fam = self.family,
+                tgt = branch.target
+            );
+        }
+        for raw in &branch.body {
+            self.emit_raw_instr(raw, env);
+        }
+    }
+
+    fn unknown_mnemonic(&self, instr: &BadInstr) -> String {
+        format!(
+            "instruction `{}` is unknown at line {} - it is not a core op ({}) \
+             and no defn with that name exists",
+            instr.mnemonic,
+            instr.span.line,
+            self.isa.known_ops().join(", ")
+        )
+    }
+
     /// Emit one instruction under `env` (defn param bindings). `depth`
     /// guards defn recursion.
     fn emit_instr(
@@ -341,23 +464,16 @@ impl<'a> Lowerer<'a> {
         contracts::check_inline_contract(instr, self.regs, &self.family, &mut self.errors);
         // 1. Defn call → inline expansion.
         if !self.isa.is_core(&instr.mnemonic) {
-            if let Some(d) = self.defns.get(&instr.mnemonic).copied() {
-                return self.expand_defn(d, instr, env, depth);
+            if self.defns.contains_key(&instr.mnemonic) {
+                let d = self.defns.get(&instr.mnemonic).cloned().unwrap();
+                return self.expand_defn(&d, instr, env, depth);
             }
-            return Err(format!(
-                "instruction `{}` is unknown at line {} - it is not a core op ({}) \
-                 and no defn with that name exists",
-                instr.mnemonic,
-                instr.span.line,
-                self.isa.known_ops().join(", ")
-            ));
+            return Err(self.unknown_mnemonic(instr));
         }
 
         // 2. Attached exception matching this target → raw emission.
         if let Some(branch) = instr.exceptions.iter().find(|b| b.target == self.family) {
-            for raw in &branch.body {
-                self.emit_raw_instr(raw, env);
-            }
+            self.emit_exception(instr, branch, env);
             return Ok(());
         }
         // A `default =>` row on an inline exception is a category error —
@@ -405,13 +521,22 @@ impl<'a> Lowerer<'a> {
         };
 
         let text = self.substitute(template, instr, env, self.isa.is_sym(&instr.mnemonic))?;
+        if self.trace {
+            let form = if has_imm { "imm" } else { "reg" };
+            eprintln!(
+                "trace: `{mn}` (line {ln}) -> {fam} universal {form}-form",
+                mn = instr.mnemonic,
+                ln = instr.span.line,
+                fam = self.family
+            );
+        }
         self.emit_mapped(&text, env);
         Ok(())
     }
 
     /// Expand a defn call: bind params positionally, emit its body/rows.
     fn expand_defn(
-        &mut self, d: &'a BadDefn, call: &BadInstr, outer: &HashMap<String, Bound>, depth: usize,
+        &mut self, d: &BadDefn, call: &BadInstr, outer: &HashMap<String, Bound>, depth: usize,
     ) -> Result<(), String> {
         if depth >= MAX_EXPANSION_DEPTH {
             return Err(format!(

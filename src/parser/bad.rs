@@ -288,10 +288,11 @@ impl<'s> Parser<'s> {
         if let Some(rest) = content.strip_prefix("alias ") {
             return Ok(Some(self.parse_alias(rest, line, span)?));
         }
-        // `section X` / `global X` / `export name`
+        // `section X` / `global X` / `export name` / `import "path"`
         if let Some(rest) = content.strip_prefix("section ")
             .or_else(|| content.strip_prefix("global "))
             .or_else(|| content.strip_prefix("export "))
+            .or_else(|| content.strip_prefix("import "))
         {
             let name = content.split_whitespace().next().unwrap_or("").to_string();
             return Ok(Some(BadTopLevel::Directive(BadDirective {
