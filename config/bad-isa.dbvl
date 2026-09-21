@@ -31,7 +31,9 @@ mov: "2"; "x86_64:movq $2, $1"; "aarch64:mov $1, $2"; "riscv64:mv $1, $2|li $1, 
 // addr d, sym — address-of a data label, the portable way. Symbols in
 // other non-branch ops are a loud error (x86 `movq msg, %rdi` would load
 // MEMORY, not the address — the classic footgun this op exists to close).
-addr: "2"; "x86_64:leaq $2(%rip), $1"; "aarch64:adr $1, $2"; "riscv64:la $1, $2"; "sym";
+// aarch64 rides adrp+add (page-based, full range, PIC-safe) — `adr`
+// would cap at ±1MB.
+addr: "2"; "x86_64:leaq $2(%rip), $1"; "aarch64:adrp $1, $2; add $1, $1, :lo12:$2"; "riscv64:la $1, $2"; "sym";
 
 // ── Arithmetic ───────────────────────────────────────────────────────
 // x86_64 add reg-form rides lea (no flags touched, no intermediate copy);
