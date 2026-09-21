@@ -39,8 +39,12 @@ pub fn check_label_contracts(
     let mut proven = Vec::new();
     let ctx = Ctx { regs, family, label: &label.name };
     let preds = label.contracts.iter().flat_map(|c| &c.preds);
+    let instrs: Vec<&BadInstr> = label.body.iter().filter_map(|item| match item {
+        BadBodyItem::Instr(i) => Some(i),
+        BadBodyItem::Local(_) => None,
+    }).collect();
     for pred in preds {
-        check_pred(pred, &label.body, &ctx, errors, &mut proven);
+        check_pred(pred, &instrs, &ctx, errors, &mut proven);
     }
     proven
 }
@@ -67,7 +71,7 @@ pub fn check_data_label(_d: &BadDataLabel, _errors: &mut Vec<String>) {
 
 fn check_pred(
     pred: &BadContractPred,
-    body: &[BadInstr],
+    body: &[&BadInstr],
     ctx: &Ctx,
     errors: &mut Vec<String>,
     proven: &mut Vec<String>,
@@ -113,7 +117,7 @@ fn check_pred(
 
 fn check_preserved(
     reg: &str,
-    body: &[BadInstr],
+    body: &[&BadInstr],
     ctx: &Ctx,
     errors: &mut Vec<String>,
     proven: &mut Vec<String>,
@@ -164,7 +168,7 @@ fn check_preserved(
 /// resolved through the portable name only — exceptions are per-target and
 /// counted by their textual `reg` too, since a raw body's registers still
 /// map through the same table).
-fn count_push_pop(reg: &str, body: &[BadInstr]) -> (usize, usize) {
+fn count_push_pop(reg: &str, body: &[&BadInstr]) -> (usize, usize) {
     let mut pushes = 0;
     let mut pops = 0;
     for instr in body {

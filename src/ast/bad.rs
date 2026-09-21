@@ -55,13 +55,32 @@ pub struct BadDataLabel {
     pub span: Span,
 }
 
-/// A code label and the instructions it owns (until the next top-level item).
+/// A code label and the items it owns (until the next top-level item).
 #[derive(Debug, Clone)]
 pub struct BadLabel {
     pub name: String,
+    /// True for local labels (`.name:`) — scoped to the enclosing global
+    /// label and uniquified at emission.
+    pub local: bool,
     /// Label-level contracts: `[pre: ...] [post: ...]` on the label line.
     pub contracts: Vec<BadContract>,
-    pub body: Vec<BadInstr>,
+    pub body: Vec<BadBodyItem>,
+    pub span: Span,
+}
+
+/// One item inside a label body: an instruction or an intermediate local
+/// label (`.loop:` between instructions).
+#[derive(Debug, Clone)]
+pub enum BadBodyItem {
+    Instr(BadInstr),
+    Local(BadLocal),
+}
+
+/// A local label definition inside a label body: `.loop:`.
+#[derive(Debug, Clone)]
+pub struct BadLocal {
+    /// Name WITHOUT the leading dot.
+    pub name: String,
     pub span: Span,
 }
 
@@ -121,13 +140,17 @@ pub struct BadBranch {
     pub span: Span,
 }
 
-/// An operand token. `42` / `-42` are immediates; everything else
-/// (r0, sp, msg, _start, defn params) is a Name resolved at lowering:
-/// params first (defn scope), then the register table, else label/symbol.
+/// An operand token. `42` / `-42` are immediates; identifier-shaped
+/// tokens (r0, sp, msg, _start, defn params) are Names resolved at
+/// lowering: params first (defn scope), then the register table, else
+/// label/symbol. Anything with arithmetic shape (`addr + 8`, `MAX * 4`)
+/// is an Expr — evaluated at lowering through the comptime pass
+/// (`.const` table + defn-param immediates).
 #[derive(Debug, Clone, PartialEq)]
 pub enum BadOperand {
     Int(i64),
     Name(String),
+    Expr(String),
 }
 
 /// Contract predicates (MVP grammar — chained compare on a register term,

@@ -15,6 +15,7 @@
 // `BackendKind::Bad`, the targets.dbvl row, and the parser/AST modules.
 
 pub mod contracts;
+pub mod comptime;
 pub mod lower;
 pub mod registry;
 
@@ -373,5 +374,82 @@ mod appgrade_tests {
         let bad = "g: [post: f0 preserved]\n    fmov f0, f1\n    ret\n";
         let err = generate(bad, "aarch64").unwrap_err();
         assert!(err.contains("caller-saved"), "{}", err);
+    }
+}
+
+#[cfg(test)]
+mod phase_b_tests {
+    use super::tests::lower_ok;
+    use super::*;
+
+    #[test]
+    fn const_directive_feeds_expressions() {
+        let src = ".const MAX_ROWS 64\n.const LIMIT MAX_ROWS * 4 - 1\n\
+                   _start:\n    mov r0, LIMIT\n    mov r1, MAX_ROWS >> 2\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $255, %rax"), "{}", x86);
+        assert!(x86.contains("movq $16, %rcx"), "{}", x86);
+    }
+
+    #[test]
+    fn const_cycle_is_a_loud_error() {
+        let src = ".const A B + 1\n.const B A + 1\n_start:\n    mov r0, A\n    ret\n";
+        let err = generate(src, "x86_64").unwrap_err();
+        assert!(err.contains("const cycle"), "{}", err);
+    }
+
+    #[test]
+    fn struct_layout_computes_field_offsets() {
+        let src = ".const RIDE_SIZE 12\n.struct Ride\n.field excitement, 8\n.field \
+                   nausea, RIDE_SIZE - 8\n.field level, 1\n.end\n\
+                   _start:\n    loadoff r0, r1, Ride.nausea\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        // excitement: 0 (size 8) → nausea at 8 (size 4) → level at 12.
+        assert!(x86.contains("movq 8(%rcx), %rax"), "{}", x86);
+    }
+
+    #[test]
+    fn struct_size_const_lands() {
+        let src = ".struct P\n.field x, 4\n.field y, 4\n.end\n.const HALF P.size / 2\n\
+                   _start:\n    mov r0, HALF\n    ret\n";
+        let asm = lower_ok(src, "x86_64");
+        assert!(asm.contains("movq $4, %rax"), "{}", asm);
+    }
+
+    #[test]
+    fn expr_operands_evaluate_at_use() {
+        let src = ".const BASE 4096\n_start:\n    mov r0, BASE + 16\n    loadoff r1, r2, \
+                   BASE / 2\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $4112, %rax"), "{}", x86);
+        assert!(x86.contains("movq 2048(%rdx), %rcx"), "{}", x86);
+    }
+
+    #[test]
+    fn register_param_inside_expr_is_a_type_error() {
+        let src = "defn f x\n    mov r0, x + 1\n    ret\n\n_start:\n    f r3\n    ret\n";
+        let err = generate(src, "x86_64").unwrap_err();
+        assert!(err.contains("REGISTER"), "{}", err);
+    }
+
+    #[test]
+    fn local_labels_scope_and_resolve() {
+        let src = "foo:\n.loop:\n    jnz r0, 1, .loop\n    ret\n\nbar:\n.loop:\n    jnz \
+                   r1, 1, .loop\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("Lfoo__loop:"), "{}", x86);
+        assert!(x86.contains("jne Lfoo__loop"), "{}", x86);
+        assert!(x86.contains("Lbar__loop:"), "{}", x86);
+        assert!(x86.contains("jne Lbar__loop"), "{}", x86);
+        assert!(!x86.contains(".loop"), "{}", x86);
+    }
+
+    #[test]
+    fn word_relocation_passes_through() {
+        let src = "section .text\nglobal _start\n_start:\n    ret\n\nsection .data\n\
+                   table: .word _start\n     .word 42\n";
+        let asm = lower_ok(src, "x86_64");
+        assert!(asm.contains("table: .word _start"), "{}", asm);
+        assert!(asm.contains(".word 42"), "{}", asm);
     }
 }

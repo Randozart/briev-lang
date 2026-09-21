@@ -14,6 +14,7 @@
 //
 // To undo: delete this module with the rest of src/backend/bad/.
 
+use super::comptime;
 use super::contracts;
 use super::registry::{BadIsa, BadRegisters, ImmHandling};
 use crate::ast::bad::*;
@@ -29,8 +30,25 @@ pub struct Lowerer<'a> {
     family: String,
     defns: HashMap<String, &'a BadDefn>,
     aliases: HashMap<String, String>,
+    /// `.const NAME expr` raw expressions — evaluated lazily (forward
+    /// refs OK), cycle-guarded.
+    consts: HashMap<String, String>,
+    /// Sequential `.struct` field layout, computed after pass 1.
+    structs: Vec<StructField>,
+    /// The open `.struct` block, for `.field` context.
+    current_struct: Option<String>,
+    /// Enclosing global label — scopes local labels (`.loop:`).
+    current_label: Option<String>,
     out: String,
     errors: Vec<String>,
+}
+
+/// One `.field name, size[, align]` inside a `.struct` block.
+struct StructField {
+    struct_name: String,
+    field: String,
+    size_expr: String,
+    align_expr: Option<String>,
 }
 
 /// A resolved operand inside a defn expansion: either a final token
@@ -49,6 +67,10 @@ impl<'a> Lowerer<'a> {
             family: family.to_string(),
             defns: HashMap::new(),
             aliases: HashMap::new(),
+            consts: HashMap::new(),
+            structs: Vec::new(),
+            current_struct: None,
+            current_label: None,
             out: String::new(),
             errors: Vec::new(),
         }
@@ -75,9 +97,11 @@ impl<'a> Lowerer<'a> {
                         ));
                     }
                 }
+                BadTopLevel::Directive(d) => self.collect_directive(d),
                 _ => {}
             }
         }
+        self.layout_structs();
 
         for item in &program.items {
             match item {
@@ -100,23 +124,197 @@ impl<'a> Lowerer<'a> {
 
     fn emit_directive(&mut self, d: &BadDirective) {
         match d.name.as_str() {
+            // Consumed in pass 1 — never emitted.
+            ".const" | ".struct" | ".field" | ".end" => {}
             "section" => self.push_line(&format!(".section {}", d.args)),
             "global" => self.push_line(&format!(".global {}", d.args)),
             _ => self.push_line(&format!("{} {}", d.name, d.args)),
         }
     }
 
+    /// Pass 1: `.const NAME expr` rows and `.struct` field declarations.
+    fn collect_directive(&mut self, d: &BadDirective) {
+        let bare_name: &str = d.name.trim_start_matches('.');
+        match bare_name {
+            "const" => {
+                let (name, expr) = split_ws(&d.args);
+                if name.is_empty() || expr.is_empty() {
+                    self.errors.push(format!(
+                        ".const needs `const NAME expr` form (line {})",
+                        d.span.line
+                    ));
+                    return;
+                }
+                if self.consts.insert(name.to_string(), expr.to_string()).is_some() {
+                    self.errors.push(format!(
+                        "const `{}` is declared twice (line {}) - remove one declaration",
+                        name, d.span.line
+                    ));
+                }
+            }
+            "struct" => {
+                let (name, _) = split_ws(&d.args);
+                if name.is_empty() {
+                    self.errors.push(format!(
+                        ".struct needs a name (line {})",
+                        d.span.line
+                    ));
+                    return;
+                }
+                self.current_struct = Some(name.to_string());
+            }
+            "field" => {
+                // `.field name, size[, align]` — context is the open
+                // `.struct` block (directives are sequential).
+                let Some(struct_name) = self.current_struct.clone() else {
+                    self.errors.push(format!(
+                        ".field outside a .struct block (line {})",
+                        d.span.line
+                    ));
+                    return;
+                };
+                let mut parts = d.args.split(',');
+                let field = parts.next().unwrap_or("").trim().to_string();
+                let size_expr = parts.next().unwrap_or("").trim().to_string();
+                let align_expr = parts.next().map(|a| a.trim().to_string());
+                if field.is_empty() || size_expr.is_empty() {
+                    self.errors.push(format!(
+                        ".field needs `.field name, size[, align]` (line {})",
+                        d.span.line
+                    ));
+                    return;
+                }
+                self.structs.push(StructField { struct_name, field, size_expr, align_expr });
+            }
+            "end" => {
+                self.current_struct = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Sequential natural layout: each field's offset is its align
+    /// (default: the field size clamped to 8) rounded up to; `.size`
+    /// lands as the struct-name const.
+    fn layout_structs(&mut self) {
+        let mut offset: i64 = 0;
+        let mut current = String::new();
+        let fields = std::mem::take(&mut self.structs);
+        for f in &fields {
+            if f.struct_name != current {
+                // New struct: close the previous one, reset the offset.
+                if !current.is_empty() {
+                    self.consts.insert(format!("{current}.size"), offset.to_string());
+                }
+                current = f.struct_name.clone();
+                offset = 0;
+                self.consts.insert(current.clone(), "0".to_string());
+            }
+            let (size, align) = match self.eval_two(&f.size_expr, f.align_expr.as_deref()) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    self.errors.push(e);
+                    continue;
+                }
+            };
+            let natural = match size.clamp(1, 8) {
+                1 | 2 => size.clamp(1, 8),
+                3..=4 => 4,
+                _ => 8,
+            };
+            let align = align.unwrap_or(natural).max(1);
+            offset = (offset + align - 1) / align * align;
+            self.consts.insert(format!("{current}.{}", f.field), offset.to_string());
+            offset += size;
+        }
+        if !current.is_empty() {
+            self.consts.insert(format!("{current}.size"), offset.to_string());
+        }
+    }
+
+    /// Evaluate up to two const expressions (size, optional align).
+    fn eval_two(&self, a: &str, b: Option<&str>) -> Result<(i64, Option<i64>), String> {
+        let va = comptime::eval(a, &|n: &str| self.const_value(n, &[]))
+            .map_err(|e| format!("struct field: {e}"))?;
+        let vb = match b {
+            Some(e) => Some(
+                comptime::eval(e, &|n: &str| self.const_value(n, &[]))
+                    .map_err(|e| format!("struct field: {e}"))?,
+            ),
+            None => None,
+        };
+        Ok((va, vb))
+    }
+
+    /// Const value with a cycle-guarded path.
+    fn const_value(&self, name: &str, path: &[String]) -> Result<i64, String> {
+        if path.iter().any(|p| p == name) {
+            let mut cycle = path.join(" -> ");
+            cycle.push_str(&format!(" -> {name}"));
+            return Err(format!("const cycle: {cycle}"));
+        }
+        let expr = self
+            .consts
+            .get(name)
+            .ok_or_else(|| format!("unknown constant `{name}`"))?;
+        let mut next = path.to_vec();
+        next.push(name.to_string());
+        comptime::eval(expr, &|n: &str| self.const_value(n, &next))
+    }
+
+    /// Evaluate an operand expression: consts + defn-param immediates.
+    fn eval_operand_expr(
+        &self, expr: &str, env: &HashMap<String, Bound>, instr: &BadInstr,
+    ) -> Result<i64, String> {
+        comptime::eval(expr, &|n: &str| {
+            if let Some(v) = self.const_value(n, &[]).ok() {
+                return Ok(v);
+            }
+            if let Some(Bound::Imm(v)) = env.get(n) {
+                return Ok(*v);
+            }
+            if env.contains_key(n) {
+                return Err(format!(
+                    "expression `{expr}` (line {}) uses `{n}`, which is bound to a \
+                     REGISTER - register values are not compile-time constants",
+                    instr.span.line
+                ));
+            }
+            self.const_value(n, &[])
+        })
+        .map_err(|e| format!("{e} (line {})", instr.span.line))
+    }
+
     fn emit_label(&mut self, l: &BadLabel) {
+        // Local labels never open a new scope — the parser only nests
+        // them inside a body, so current_label is already the parent.
+        if !l.local {
+            self.current_label = Some(l.name.clone());
+        }
         self.push_line(&format!("{}:", l.name));
         let proven = contracts::check_label_contracts(l, self.regs, &self.family, &mut self.errors);
         for note in &proven {
             self.push_line(&format!("{} {}", self.regs.comment_prefix(&self.family), note));
         }
-        for instr in &l.body {
-            if let Err(e) = self.emit_instr(instr, &HashMap::new(), 0) {
-                self.errors.push(e);
+        for item in &l.body {
+            match item {
+                BadBodyItem::Instr(instr) => {
+                    if let Err(e) = self.emit_instr(instr, &HashMap::new(), 0) {
+                        self.errors.push(e);
+                    }
+                }
+                BadBodyItem::Local(local) => {
+                    self.push_line(&self.local_label_name(&l.name, &local.name));
+                }
             }
         }
+    }
+
+    /// Local label `.name` inside global label `parent` → unique symbol.
+    /// The same mapping applies at REFERENCE sites (sym operands starting
+    /// with `.` inside the same parent), so `.loop` and `jnz .loop` meet.
+    fn local_label_name(&self, parent: &str, name: &str) -> String {
+        format!("L{parent}__{name}:")
     }
 
     /// Emit one instruction under `env` (defn param bindings). `depth`
@@ -219,6 +417,13 @@ impl<'a> Lowerer<'a> {
         for (param, op) in d.params.iter().zip(&call.operands) {
             let bound = match op {
                 BadOperand::Int(n) => Bound::Imm(*n),
+                BadOperand::Expr(e) => match self.eval_operand_expr(e, outer, call) {
+                    Ok(v) => Bound::Imm(v),
+                    Err(err) => {
+                        self.errors.push(err);
+                        return Ok(());
+                    }
+                },
                 BadOperand::Name(name) => {
                     // An operand that names an outer param inherits its
                     // binding; anything else is a token resolved at
@@ -266,7 +471,7 @@ impl<'a> Lowerer<'a> {
         let operands: Vec<String> = instr
             .operands
             .iter()
-            .map(|op| self.resolve_raw_operand(op, env, instr.span.line))
+            .map(|op| self.resolve_raw_operand(op, env, instr.span.line, instr))
             .collect();
         let mut line = instr.mnemonic.clone();
         for op in &operands {
@@ -284,9 +489,17 @@ impl<'a> Lowerer<'a> {
     /// register table, then boundary-replaced composite text.
     fn resolve_raw_operand(
         &mut self, op: &BadOperand, env: &HashMap<String, Bound>, line: usize,
+        instr: &BadInstr,
     ) -> String {
         match op {
             BadOperand::Int(n) => format!("{}{}", self.regs.imm_prefix(&self.family), n),
+            BadOperand::Expr(e) => match self.eval_operand_expr(e, env, instr) {
+                Ok(v) => format!("{}{}", self.regs.imm_prefix(&self.family), v),
+                Err(err) => {
+                    self.errors.push(err);
+                    String::new()
+                }
+            },
             BadOperand::Name(name) => self.resolve_raw_name(name, env, line),
         }
     }
@@ -355,6 +568,11 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(format!("{imm}{v}"))
             }
+            BadOperand::Expr(e) => match self.eval_operand_expr(e, env, instr) {
+                Ok(v) if r.bare => Ok(v.to_string()),
+                Ok(v) => Ok(format!("{imm}{v}")),
+                Err(err) => Err(err),
+            },
             BadOperand::Name(name) => {
                 if let Some(Bound::Imm(v)) = env.get(name) {
                     return Ok(format!("{imm}{v}"));
@@ -393,7 +611,26 @@ impl<'a> Lowerer<'a> {
         if let Some(t) = tok {
             return Ok(t.to_string());
         }
+        // A `.const` name resolves to an immediate token. Known key =
+        // committed: cycle errors are loud, never a silent symbol.
+        if self.consts.contains_key(name) {
+            let v = self.const_value(name, &[])?;
+            return Ok(format!("{}{}", self.regs.imm_prefix(&self.family), v));
+        }
         if allow_symbols {
+            // Local-label reference: `.loop` inside label `foo` →
+            // `Lfoo__loop`. A missing parent is a hard error (the
+            // parser already rejects orphan local labels).
+            if let Some(rest) = name.strip_prefix('.') {
+                return match &self.current_label {
+                    Some(parent) => Ok(format!("L{parent}__{rest}")),
+                    None => Err(format!(
+                        "reference `.{rest}` (line {}) is outside any label - local \
+                         labels resolve within the global label that contains them",
+                        instr.span.line
+                    )),
+                };
+            }
             return Ok(name.to_string());
         }
         let bound = param
@@ -544,6 +781,13 @@ fn take_width_suffix(s: &str, j: usize, r: Ref) -> (Ref, usize) {
 }
 
 /// Start of the next identifier-ish word at or after byte 0 of `s`.
+fn split_ws(s: &str) -> (&str, &str) {
+    match s.find(char::is_whitespace) {
+        Some(i) => (&s[..i], s[i..].trim()),
+        None => (s, ""),
+    }
+}
+
 fn find_word_start(s: &str) -> Option<usize> {
     s.char_indices()
         .find(|(_, c)| c.is_alphabetic() || *c == '_' || *c == '.')

@@ -86,6 +86,36 @@ impl<'s> Parser<'s> {
             let (off, content, line) = self.lines[self.pos];
             let span = Span::new(off, off + content.len(), line, 0);
 
+            // Local label `.name:` — nests into the owning label's body
+            // (directives never carry a colon, so the colon keeps the
+            // token-shape disambiguation honest).
+            if content.starts_with('.') {
+                if let Some((name, rest)) = split_label(content) {
+                    if is_ident(name) && rest.trim().is_empty() {
+                        let local = BadLocal { name: name[1..].to_string(), span };
+                        match owner.as_mut() {
+                            Some(Owner::Label(i)) => {
+                                if let Some(BadTopLevel::Label(l)) = self.items.get_mut(*i) {
+                                    l.body.push(BadBodyItem::Local(local));
+                                }
+                                self.pos += 1;
+                                continue;
+                            }
+                            _ => {
+                                return Err(BadParseError {
+                                    message: format!(
+                                        "local label `{content}` is outside any label - \
+                                         local labels must follow a global label"
+                                    ),
+                                    line,
+                                    span,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
             // Top-level shapes always close the current owner.
             if let Some(item) = self.try_top_level(content, line, span)? {
                 match &item {
@@ -178,8 +208,14 @@ impl<'s> Parser<'s> {
             }
             Owner::Label(i) => {
                 let attached = match self.items.get_mut(*i) {
-                    Some(BadTopLevel::Label(l)) => l.body.last_mut().map(|last| {
-                        last.exceptions.push(branch);
+                    Some(BadTopLevel::Label(l)) => l.body.last_mut().and_then(|last| {
+                        match last {
+                            BadBodyItem::Instr(i) => {
+                                i.exceptions.push(branch);
+                                Some(())
+                            }
+                            BadBodyItem::Local(_) => None,
+                        }
                     }),
                     _ => None,
                 };
@@ -208,7 +244,7 @@ impl<'s> Parser<'s> {
             Owner::Label(i) => {
                 if let Some(BadTopLevel::Label(l)) = self.items.get_mut(*i) {
                     instr.contract = self.pending_contract.take();
-                    l.body.push(instr);
+                    l.body.push(BadBodyItem::Instr(instr));
                 }
             }
             Owner::Defn { seq_body, branch_rows, .. } => {
@@ -293,7 +329,13 @@ impl<'s> Parser<'s> {
         } else {
             Vec::new()
         };
-        Ok(Some(BadTopLevel::Label(BadLabel { name: name.to_string(), contracts, body: Vec::new(), span })))
+        Ok(Some(BadTopLevel::Label(BadLabel {
+            name: name.to_string(),
+            local: false,
+            contracts,
+            body: Vec::new(),
+            span,
+        })))
     }
 
     fn parse_alias(
@@ -390,12 +432,16 @@ impl<'s> Parser<'s> {
             }
             if let Ok(n) = piece.parse::<i64>() {
                 operands.push(BadOperand::Int(n));
-            } else {
+            } else if is_ident(piece) || piece.starts_with('[') || piece.starts_with('(') {
                 // Name or raw operand text (memory refs like `[sp, #-16]!`):
                 // resolved at lowering — params first, then the register
                 // table, with identifier-boundary replacement inside raw
                 // operand text.
                 operands.push(BadOperand::Name(piece.to_string()));
+            } else {
+                // Arithmetic shape (`addr + 8`, `MAX * 4 - 1`) — evaluated
+                // at lowering through the comptime pass.
+                operands.push(BadOperand::Expr(piece.to_string()));
             }
         }
         Ok(BadInstr {
@@ -634,8 +680,9 @@ mod tests {
         let BadTopLevel::Label(l) = &p.items[2] else { panic!("expected label") };
         assert_eq!(l.name, "_start");
         assert_eq!(l.body.len(), 2);
-        assert_eq!(l.body[0].mnemonic, "mov");
-        assert_eq!(l.body[0].operands, vec![BadOperand::Name("r0".into()), BadOperand::Int(1)]);
+        let BadBodyItem::Instr(first) = &l.body[0] else { panic!("expected instr") };
+        assert_eq!(first.mnemonic, "mov");
+        assert_eq!(first.operands, vec![BadOperand::Name("r0".into()), BadOperand::Int(1)]);
         let BadTopLevel::Data(d) = &p.items[4] else { panic!("expected data") };
         assert_eq!(d.name, "msg");
         assert_eq!(d.directive.name, ".asciz");
@@ -668,13 +715,14 @@ mod tests {
         );
         let BadTopLevel::Label(l) = &p.items[0] else { panic!("expected label") };
         assert_eq!(l.body.len(), 2);
-        let add = &l.body[0];
+        let BadBodyItem::Instr(add) = &l.body[0] else { panic!("expected instr") };
         assert!(add.contract.is_some(), "inline contract attaches to next instruction");
         assert_eq!(add.exceptions.len(), 1);
         assert_eq!(add.exceptions[0].target, "x86_64");
         assert_eq!(add.exceptions[0].body[0].mnemonic, "lea");
-        assert_eq!(l.body[1].mnemonic, "ret");
-        assert!(l.body[1].exceptions.is_empty(), "exception binds to the add, not ret");
+        let BadBodyItem::Instr(ret_i) = &l.body[1] else { panic!("expected instr") };
+        assert_eq!(ret_i.mnemonic, "ret");
+        assert!(ret_i.exceptions.is_empty(), "exception binds to the add, not ret");
     }
 
     #[test]
