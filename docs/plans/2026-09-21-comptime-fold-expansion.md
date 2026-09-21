@@ -95,6 +95,35 @@ additive trajectory via `eval_expr`).
 - Unit tests: fold, degradation, recursive arms, comptime lets, hygiene,
   `when` both polarities.
 
+## Status: Phase 1 LANDED (2026-09-21, same day)
+
+- `dedadd96` — the fold pass: `eval_const` (checked Int/Float/Bool
+  arithmetic; overflow declines), `fold_stmt_list` (spliced taken arms
+  under the SAME env, kept nested bodies under a clone; every runtime
+  bind/mutate kills the env entry), both match forms (statement-form and
+  the F1 expression form the parser actually produces), `when` both
+  polarities, `$let`/`$const` AND top-level `const` seeding.
+- Substitution gap fixed en route: `subst_expr` never walked
+  `Expr::Match`/`Expr::Block` — parameters inside match scrutinees/bodies
+  were silently unsubstituted (pre-existing, exposed by the new tests).
+- `0051d920` — adaptive `softmax_fused!` + gates:
+  - `softmax_composite` (D=128, deferred arm): CUDA 7.03e-06 PASS —
+    exact Front B parity. Vulkan FAIL = known SPIR-V RMW 2x (BUGS.md).
+  - `softmax_composite_small` (D=16, ONLINE arm): CUDA 6.45e-06 PASS /
+    Vulkan 6.45e-06 PASS — the general path lowers the online structure
+    correctly on BOTH lanes.
+- Backend agreement: `detect_deferred_region` gained an additive arm for
+  the folded max-init literal (`Float(-x)`; m_init stays the positive
+  magnitude). The matcher and the M2 proof now agree on spliced bodies.
+- Soundness detail: an already-literal `let` init is never rewritten —
+  the tree keeps its exact shape (the Neg/Float matcher lesson above).
+- `benchmarks/softmax_gate.sh <fixture> <H> <NKV> <D>` — reusable gate:
+  builds, injects a double-reference validation into the generated
+  runner, runs both device lanes.
+- `7ee9597a` — landed the softmax_chain retirement wiring that
+  0aa69a9e silently missed (an aborted git add; HEAD was unbuildable
+  alone). Lesson: never pipe `git add` stderr to /dev/null.
+
 ## Phase 2 (boundary, NOT this plan)
 
 - Early reflection resolution: `buf.^^Size` / `.^^Element` conditions in
