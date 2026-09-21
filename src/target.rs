@@ -16,6 +16,9 @@ pub enum BackendKind {
     Spirv,
     Vm,
     Ptx,
+    /// 2026-09-21 (bad-dialect plan): .bad — Briev Assembly Dialect.
+    /// Portable core ISA + `target =>` exceptions → target assembly text.
+    Bad,
 }
 
 /// One entry from config/targets.dbvl.
@@ -394,7 +397,8 @@ impl TargetConfig {
             "spirv" => Ok(BackendKind::Spirv),
             "vm" => Ok(BackendKind::Vm),
             "ptx" => Ok(BackendKind::Ptx),
-            _ => Err(format!("unknown backend '{}'. Supported: llvm, circt, electronics, webstack, vm, spirv, ptx", name)),
+            "bad" => Ok(BackendKind::Bad),
+            _ => Err(format!("unknown backend '{}'. Supported: llvm, circt, electronics, webstack, vm, spirv, ptx, bad", name)),
         }
     }
 }
@@ -444,6 +448,12 @@ plugins = ["prelude"]
 backend = "spirv"
 defaults = []
 plugins = ["prelude", "execute-many"]
+
+# 2026-09-21 (bad-dialect plan): .bad — Briev Assembly Dialect.
+[".bad"]
+backend = "bad"
+defaults = []
+plugins = ["prelude"]
 
 [target.x86_64]
 float_registers = 16
@@ -508,7 +518,7 @@ vector_min_width = 4
     #[test]
     fn test_target_config_has_extensions() {
         let config = TargetConfig::load();
-        for ext in &[".bv", ".sbv", ".ebv", ".rbv", ".abv"] {
+        for ext in &[".bv", ".sbv", ".ebv", ".rbv", ".abv", ".bad"] {
             assert!(config.lookup(ext).is_some(), "missing entry for {}", ext);
         }
     }
