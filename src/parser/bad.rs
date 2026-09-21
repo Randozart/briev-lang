@@ -94,11 +94,15 @@ impl<'s> Parser<'s> {
                     Some(Owner::Label(i)) => {
                         self.append_local(*i, content, span);
                     }
+                    Some(Owner::Defn { idx, branch_rows, .. }) => {
+                        self.append_defn_local(*idx, *branch_rows, content, span)?;
+                    }
                     _ => {
                         return Err(BadParseError {
                             message: format!(
                                 "local label `{content}` is outside any label - \
-                                 local labels must follow a global label"
+                                 local labels must follow a global label or sit inside \
+                                 a defn body"
                             ),
                             line,
                             span,
@@ -178,6 +182,43 @@ impl<'s> Parser<'s> {
         if let Some(BadTopLevel::Label(l)) = self.items.get_mut(idx) {
             l.body.push(BadBodyItem::Local(BadLocal { name, span }));
         }
+    }
+
+    /// `.name:` inside a defn body — hygienically renamed per expansion
+    /// at lowering. Illegal in branch shapes (rows are one line each).
+    fn append_defn_local(
+        &mut self, idx: usize, branch_rows: bool, content: &str, span: Span,
+    ) -> Result<(), BadParseError> {
+        let name = split_label(content).map(|(n, _)| n[1..].to_string()).unwrap_or_default();
+        if let Some(BadTopLevel::Defn(d)) = self.items.get_mut(idx) {
+            match &mut d.shape {
+                BadDefnShape::Sequence(items) => {
+                    items.push(BadBodyItem::Local(BadLocal { name, span }));
+                    return Ok(());
+                }
+                BadDefnShape::Branch(rows) => {
+                    // A provisional Branch shape with no rows yet is an
+                    // unwritten sequence (the local came first) — convert
+                    // it; real branch rows make locals an error.
+                    if rows.is_empty() && !branch_rows {
+                        d.shape = BadDefnShape::Sequence(vec![BadBodyItem::Local(BadLocal {
+                            name,
+                            span,
+                        })]);
+                        return Ok(());
+                    }
+                    return Err(BadParseError {
+                        message: format!(
+                            "local label `{content}` inside a branch defn - branch defns \
+                             contain only `default => ...` / `target => ...` rows"
+                        ),
+                        line: span.line,
+                        span,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Route a `target => ...` row to its owner (defn table or last
@@ -272,7 +313,7 @@ impl<'s> Parser<'s> {
                 }
                 if let BadDefnShape::Sequence(body) = &mut defn.shape {
                     push_with_contract(instrs, &mut self.pending_contract, |i| {
-                        body.push(i)
+                        body.push(BadBodyItem::Instr(i))
                     });
                 }
                 if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {

@@ -97,8 +97,9 @@ pub struct BadAlias {
 #[derive(Debug, Clone)]
 pub enum BadDefnShape {
     /// Universal body lines (+ optional per-instruction exceptions). The
-    /// body IS the default; no `default =>` row present.
-    Sequence(Vec<BadInstr>),
+    /// body IS the default; no `default =>` row present. Local labels
+    /// (`.name:`) are legal — every expansion hygienically renames them.
+    Sequence(Vec<BadBodyItem>),
     /// Pure target table: `default? => instr; instr` rows. A `default`
     /// row must use universal core syntax; a target row replaces the
     /// whole defn on match.

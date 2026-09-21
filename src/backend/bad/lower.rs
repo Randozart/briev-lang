@@ -59,6 +59,10 @@ pub struct Lowerer<'a> {
     current_struct: Option<String>,
     /// Enclosing global label — scopes local labels (`.loop:`).
     current_label: Option<String>,
+    /// Per-defn expansion counters (hygienic local-label gensym).
+    defn_calls: HashMap<String, usize>,
+    /// The active defn expansion scope, when inside one.
+    local_scope: Option<String>,
     /// Global label names — `.export` targets must exist.
     label_names: std::collections::HashSet<String>,
     /// Import resolution root (the importing file's directory).
@@ -105,6 +109,8 @@ impl<'a> Lowerer<'a> {
             structs: Vec::new(),
             current_struct: None,
             current_label: None,
+            defn_calls: HashMap::new(),
+            local_scope: None,
             label_names: std::collections::HashSet::new(),
             base_dir: None,
             visited: std::collections::HashSet::new(),
@@ -715,10 +721,27 @@ impl<'a> Lowerer<'a> {
             env.insert(param.clone(), bound);
         }
 
+        // Hygiene scope: every expansion renames its local labels
+        // (`L<defn>__<local>__<n>`) and rewrites branch references
+        // through the same scope — double invocation cannot collide.
+        let call_n = self.defn_calls.entry(d.name.clone()).or_insert(0);
+        *call_n += 1;
+        let scope = format!("L{}__{}", d.name, call_n);
+        let prev_scope = self.local_scope.take();
+        self.local_scope = Some(scope);
+
         match &d.shape {
-            BadDefnShape::Sequence(body) => {
-                for instr in body {
-                    self.emit_instr(instr, &env, depth + 1)?;
+            BadDefnShape::Sequence(items) => {
+                for item in items {
+                    match item {
+                        BadBodyItem::Instr(instr) => {
+                            self.emit_instr(instr, &env, depth + 1)?;
+                        }
+                        BadBodyItem::Local(local) => {
+                            let s = self.local_scope.clone().unwrap_or_default();
+                            self.push_line(&format!("{}__{}:", s, local.name));
+                        }
+                    }
                 }
             }
             BadDefnShape::Branch(rows) => {
@@ -742,6 +765,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+        self.local_scope = prev_scope;
         Ok(())
     }
 
@@ -927,6 +951,9 @@ impl<'a> Lowerer<'a> {
             // `Lfoo__loop`. A missing parent is a hard error (the
             // parser already rejects orphan local labels).
             if let Some(rest) = name.strip_prefix('.') {
+                if let Some(scope) = &self.local_scope {
+                    return Ok(format!("{scope}__{rest}"));
+                }
                 return match &self.current_label {
                     Some(parent) => Ok(format!("L{parent}__{rest}")),
                     None => Err(format!(

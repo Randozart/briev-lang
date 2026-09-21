@@ -880,3 +880,32 @@ mod arg_tests {
         assert!(err.contains("must be a constant"), "{}", err);
     }
 }
+
+#[cfg(test)]
+mod hygiene_tests {
+    use super::tests::lower_ok;
+    use super::*;
+
+    #[test]
+    fn local_labels_inside_defns_are_hygienic_across_calls() {
+        // ChargeGuest-style defn invoked twice — the same .full label
+        // must materialize twice without collision.
+        let src = "defn twice x\n.loop:\n    sub x, x, 1\n    jnz x, 1, .loop\n\n\
+                   _start:\n    twice r3\n    twice r4\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("Ltwice__1__loop:"), "{}", x86);
+        assert!(x86.contains("Ltwice__2__loop:"), "{}", x86);
+        assert_eq!(x86.matches("Ltwice__1__loop").count(), 2, "label + branch ref");
+        assert_eq!(x86.matches("Ltwice__2__loop").count(), 2, "{}", x86);
+    }
+
+    #[test]
+    fn local_labels_are_illegal_in_branch_defns() {
+        let err = generate(
+            "defn f x\n    default => nop\n.name:\n",
+            "x86_64",
+        )
+        .unwrap_err();
+        assert!(err.contains("branch defn"), "{}", err);
+    }
+}
