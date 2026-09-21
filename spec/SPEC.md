@@ -2608,6 +2608,25 @@ asm<x86_64> add_words(left: Int, right: Int) -> Int
 
 The target capability profile validates instruction syntax. Every assembly declaration supplies contracts and an effect profile including read/write sets, clobbers, blocking, FFI, and purity facts as applicable.
 
+### 20.1 The .bad assembly dialect
+
+`.bad` files are portable assembly programs compiled by their own backend
+(`brievc bad <file.bad>`); they never enter the .bv pipeline. A universal
+core ISA (mov, add, sub, mul, div, load, store, cmp, jmp, jz, jnz, call,
+ret, push, pop, nop, syscall, halt, addr) is lowered per target through
+`config/bad-isa.dbvl`; portable registers `r0`-`r15`, `sp`, `pc` map
+through `config/bad-registers.dbvl` with caller/callee/ro proof
+properties. Target-specific optimization is expressed as bare
+`target => ...` exception rows — attached to a single instruction, or
+forming a `defn`'s branch table (`default =>` carries the universal core
+syntax). `defn` bodies are inlined as-is. Contracts (`[pre: ...]`,
+`[post: ...]`, inline `[expr]`) are proven at compile time from the
+register properties (e.g. `[post: r10 preserved]` via callee-saved
+status or balanced push/pop pairing); proven proofs are emitted as
+comments into the assembly. The grammar is strictly line-oriented with
+no braces; the full dialect reference is
+`docs/architecture/bad-dialect.md`.
+
 ## 21. Rendered Briev
 
 ### 21.1 Document structure

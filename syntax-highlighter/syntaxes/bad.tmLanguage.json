@@ -1,0 +1,89 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Briev Assembly Dialect",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#directives" },
+    { "include": "#top-level" },
+    { "include": "#exceptions" },
+    { "include": "#contracts" },
+    { "include": "#registers" },
+    { "include": "#numbers" },
+    { "include": "#labels" },
+    { "include": "#mnemonics" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.bad",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.bad",
+      "match": "\"(?:[^\"\\\\]|\\\\.)*\""
+    },
+    "directives": {
+      "patterns": [
+        {
+          "name": "support.function.directive.bad",
+          "match": "^\\s*(section|global)\\b|^\\s*\\.[a-zA-Z]+\\b"
+        }
+      ]
+    },
+    "top-level": {
+      "patterns": [
+        {
+          "name": "storage.type.bad",
+          "match": "^\\s*(defn|alias)\\b"
+        }
+      ]
+    },
+    "exceptions": {
+      "patterns": [
+        {
+          "name": "keyword.operator.exception.bad",
+          "match": "=>"
+        },
+        {
+          "name": "entity.name.tag.target.bad",
+          "match": "^\\s*(default|x86_64|aarch64|riscv64|arm|thumb)(?=\\s*=>)"
+        }
+      ]
+    },
+    "contracts": {
+      "patterns": [
+        {
+          "name": "meta.contract.bad",
+          "begin": "\\[",
+          "end": "\\]",
+          "name": "support.type.contract.bad"
+        }
+      ]
+    },
+    "registers": {
+      "name": "variable.other.register.bad",
+      "match": "\\b(r[0-9]|r1[0-5]|sp|pc)\\b"
+    },
+    "numbers": {
+      "name": "constant.numeric.bad",
+      "match": "\\b-?[0-9]+\\b"
+    },
+    "labels": {
+      "patterns": [
+        {
+          "name": "entity.name.function.label.bad",
+          "match": "^\\s*[a-zA-Z_][a-zA-Z0-9_.]*:"
+        }
+      ]
+    },
+    "mnemonics": {
+      "name": "keyword.other.mnemonic.bad",
+      "match": "^\\s*[a-zA-Z_][a-zA-Z0-9_.]*"
+    }
+  },
+  "scopeName": "source.bad"
+}

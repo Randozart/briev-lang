@@ -106,6 +106,12 @@
         "configuration": "./language-configuration.json"
       },
       {
+        "id": "bad",
+        "aliases": ["Briev Assembly Dialect", "briev-assembly", "BAD", ".bad"],
+        "extensions": [".bad"],
+        "configuration": "./language-configuration.json"
+      },
+      {
         "id": "beast",
         "aliases": ["BEAST", "beast"],
         "extensions": [".beast"],
@@ -141,6 +147,11 @@
         "language": "sbriev",
         "scopeName": "source.briev",
         "path": "./syntaxes/briev.tmLanguage.json"
+      },
+      {
+        "language": "bad",
+        "scopeName": "source.bad",
+        "path": "./syntaxes/bad.tmLanguage.json"
       },
       {
         "language": "srbv",
