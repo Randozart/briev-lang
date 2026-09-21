@@ -100,6 +100,17 @@ pub fn assemble(text: &str, family: &str, out_path: &std::path::Path) -> Result<
 }
 
 #[cfg(test)]
+fn test_dir(tag: &str) -> std::path::PathBuf {
+    // Under target/ — gitignored, cargo-cleanable, and immune to /tmp
+    // pressure from other sessions.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/bad-test")
+        .join(format!("{tag}_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -255,7 +266,7 @@ mod tests {
     #[test]
     fn assemble_produces_object_file() {
         let asm = lower_ok(THREE_WAY, "x86_64");
-        let out = std::env::temp_dir().join(format!("bad_test_{}.o", std::process::id()));
+        let out = test_dir("assemble").join("t.o");
         assemble(&asm, "x86_64", &out).expect("assemble failed");
         let bytes = std::fs::read(&out).unwrap();
         std::fs::remove_file(&out).ok();
@@ -599,15 +610,14 @@ mod phase_d_tests {
     #[test]
     fn stdlib_assembles_on_host() {
         let asm = generate(STDLIB, "x86_64").unwrap();
-        let out = std::env::temp_dir().join(format!("bad_std_{}.o", std::process::id()));
+        let out = test_dir("stdlib").join("t.o");
         assemble(&asm, "x86_64", &out).expect("stdlib assemble failed");
         std::fs::remove_file(&out).ok();
     }
 
     #[test]
     fn import_expands_at_the_import_line() {
-        let dir = std::env::temp_dir().join(format!("bad_import_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = test_dir("import");
         let lib = dir.join("lib.bad");
         std::fs::write(&lib, "defn double_it x\n    add r0, x, x\n    ret\n").unwrap();
         let main_src = "import \"lib.bad\"\n\n_start:\n    double_it r5\n    ret\n";
@@ -624,8 +634,7 @@ mod phase_d_tests {
     fn import_cycles_terminate_idempotently() {
         // A cycle is not an error: re-import is a no-op (diamond-safe),
         // depth is capped at 16 for pathological graphs.
-        let dir = std::env::temp_dir().join(format!("bad_cycle_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = test_dir("cycle");
         std::fs::write(dir.join("a.bad"), "import \"b.bad\"\n.const V 1\n").unwrap();
         std::fs::write(dir.join("b.bad"), "import \"a.bad\"\n").unwrap();
         let src = "import \"a.bad\"\n\n_start:\n    mov r0, V\n    ret\n";
@@ -638,8 +647,7 @@ mod phase_d_tests {
 
     #[test]
     fn duplicate_labels_across_imports_are_loud() {
-        let dir = std::env::temp_dir().join(format!("bad_dup_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = test_dir("dup");
         std::fs::write(dir.join("l.bad"), "dup:\n    ret\n").unwrap();
         let src = "import \"l.bad\"\n\ndup:\n    ret\n";
         let err = generate_with(src, "x86_64", false, Some(&dir)).unwrap_err();
@@ -703,8 +711,7 @@ mod hardening_tests {
             }
             let asm = generate(HELLO, &format!("{family}-linux-gnu"))
                 .unwrap_or_else(|e| panic!("{family} generate: {e}"));
-            let dir = std::env::temp_dir().join(format!("bad_cross_{}_{}", family, std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
+            let dir = test_dir(&format!("cross_{family}"));
             let o = dir.join("hello.o");
             assemble(&asm, family, &o).unwrap_or_else(|e| panic!("{family} assemble: {e}"));
             let (_, regs) = registries();
@@ -763,9 +770,7 @@ mod phase3_hardening_tests {
             }
             let asm = generate(src, &format!("{family}-linux-gnu"))
                 .unwrap_or_else(|e| panic!("{family}: {e}"));
-            let dir = std::env::temp_dir()
-                .join(format!("bad_fp_{}_{}", family, std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
+            let dir = test_dir(&format!("fp_{family}"));
             let o = dir.join("fp.o");
             assemble(&asm, family, &o).unwrap_or_else(|e| panic!("{family} assemble: {e}"));
             let (_, regs) = registries();

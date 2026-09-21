@@ -41,8 +41,13 @@ int main(void) {
 #[test]
 fn eight_arg_export_sums_via_stack_for_c_caller() {
     let exe = env!("CARGO_BIN_EXE_brievc");
-    let dir = std::env::temp_dir().join(format!("bad_c_{}", std::process::id()));
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("bad_c_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    // cc (and the assembler) stage their own temporaries in $TMPDIR —
+    // point it under target/ so the test survives a full /tmp.
+    let tmpdir = dir.join("tmp");
+    std::fs::create_dir_all(&tmpdir).unwrap();
     let bad = dir.join("sum8.bad");
     let c = dir.join("caller.c");
     std::fs::write(&bad, SUM8).unwrap();
@@ -53,6 +58,7 @@ fn eight_arg_export_sums_via_stack_for_c_caller() {
     if !Command::new(exe)
         .args(["bad", bad.to_str().unwrap(), "--target", "x86_64"])
         .current_dir(&dir)
+        .env("TMPDIR", &tmpdir)
         .status()
         .expect("brievc")
         .success()
@@ -64,6 +70,7 @@ fn eight_arg_export_sums_via_stack_for_c_caller() {
         .arg(dir.join("sum8.o"))
         .arg("-o")
         .arg(dir.join("interop"))
+        .env("TMPDIR", &tmpdir)
         .status()
         .expect("cc");
     assert!(cc.success(), "cc link failed");
