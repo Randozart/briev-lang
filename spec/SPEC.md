@@ -293,6 +293,19 @@ A dangling pin — declared but on no net — is a compile error naming the
 pin. Compilation emits a KiCad 7 schematic; the backend refuses any board
 that is incomplete or electrically violated.
 
+> **2026-09-21 (intent synthesis — PLANNED, non-normative).** The `.ebv`
+> surface is being extended toward intent-based synthesis: the author
+> declares behaviors and invariants over `volatile` component pins
+> (`node name [guard] { drive-maps }`), and the compiler infers both the
+> wiring (net membership) and the physics. Planned constructs — pin
+> electrical classes (`power`/`ground`/`in`/`out`/`io`/`io_od`/`nc`),
+> `spec` datasheet-fact clauses, pin arrays, population facts
+> (`populated = false`), `chain`/`await` sequencing sugar, and
+> ambiguity-lifting modifiers — are inventoried with full semantics in
+> `docs/plans/2026-09-21-intent-synthesis-node-semantics.md`. Grammar is
+> unfrozen pending implementation; this section documents the current
+> surface only.
+
 ## 4. Lexical conventions
 
 ### 4.1 Keywords and identifiers

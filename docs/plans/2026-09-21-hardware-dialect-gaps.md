@@ -404,3 +404,30 @@ problem is bandwidth, never the adders. The candidates below serve Bachi
   `docs/plans/2026-08-27-cbv-foreign-hardware-and-mmio.md`,
   `docs/architecture/backend-contracts.md` §6,
   `docs/architecture/electronics-frontend.md`.
+
+---
+
+## Amendment 2026-09-21 (same-day): intent-synthesis reframe
+
+The design record `2026-09-21-intent-synthesis-node-semantics.md`
+(landed in the same commit batch) supersedes the FRAMING of the
+electronics track above. The silicon track (S0–S9, S10–S12 candidates,
+S8 decision) is untouched by this amendment.
+
+- **E1–E5, E8–E10 stand** as emitter/analysis work, with reframes:
+  E3's authoring-side hierarchy is owned by CELLS (design record D10) —
+  the multi-sheet KiCad *emitter* scope remains; E7's budgets attach to
+  SOURCE PINS, not nets (design record D4) — the roll-up analysis
+  machinery is unchanged; E13 becomes `spec` clauses on catalog types
+  (D5).
+- **E14 is replaced** by the staged ladder **E14a** (intent completion —
+  explicit equalities still allowed, drive-map intents infer remaining
+  memberships) → **E14b** (pure intent — guards and behaviors only).
+  Foundation: existing primitives only (reactor nodes, cells, trg,
+  Rule 22 classification, per-firing physics fixpoint). New machinery =
+  membership inference + behavioral-equivalence-class enumeration. Gate
+  fixture and the ambiguity-surface enumerator spec live in the design
+  record (§2 D13, §3.2). Effort: L each; strict generalization order.
+- **Ambiguity-lifting keywords are SLOTS** (persist-tighten,
+  commit-select), names provisional until implementation — no gate
+  depends on a spelling.
