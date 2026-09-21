@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn preserved_contract_proven_by_callee_saved_property() {
-        let src = "section .text\nglobal _start\n_start: [post: r10 preserved]\n    \
+        let src = "section .text\nglobal _start\n_start: [r10 preserved]\n    \
                    mov r10, 5\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("proven: callee-saved"), "{}", x86);
@@ -238,10 +238,10 @@ mod tests {
 
     #[test]
     fn preserved_caller_saved_needs_push_pop_pairing() {
-        let ok = "_start: [post: r0 preserved]\n    push r0\n    mov r0, 1\n    pop r0\n    \
+        let ok = "_start: [r0 preserved]\n    push r0\n    mov r0, 1\n    pop r0\n    \
                   ret\n";
         lower_ok(ok, "x86_64");
-        let bad = "_start: [post: r0 preserved]\n    mov r0, 1\n    ret\n";
+        let bad = "_start: [r0 preserved]\n    mov r0, 1\n    ret\n";
         let err = generate(bad, "x86_64").unwrap_err();
         assert!(err.contains("unproven") && err.contains("caller-saved"), "{}", err);
         assert!(err.contains("push r0"), "error must state the fix: {}", err);
@@ -249,8 +249,8 @@ mod tests {
 
     #[test]
     fn valid_contract_checks_register_existence() {
-        lower_ok("_start: [pre: r0 valid]\n    ret\n", "x86_64");
-        let err = generate("_start: [pre: r14 valid]\n    ret\n", "x86_64").unwrap_err();
+        lower_ok("_start: [r0 valid]\n    ret\n", "x86_64");
+        let err = generate("_start: [r14 valid]\n    ret\n", "x86_64").unwrap_err();
         assert!(err.contains("does not exist"), "{}", err);
     }
 
@@ -417,9 +417,9 @@ mod appgrade_tests {
     #[test]
     fn callee_saved_fp_detected_on_aarch64() {
         // f8 is d8 on aarch64 = callee-saved; f0 is caller-saved.
-        let ok = "g: [post: f8 preserved]\n    fmov f8, f0\n    ret\n";
+        let ok = "g: [f8 preserved]\n    fmov f8, f0\n    ret\n";
         lower_ok(ok, "aarch64");
-        let bad = "g: [post: f0 preserved]\n    fmov f0, f1\n    ret\n";
+        let bad = "g: [f0 preserved]\n    fmov f0, f1\n    ret\n";
         let err = generate(bad, "aarch64").unwrap_err();
         assert!(err.contains("caller-saved"), "{}", err);
     }
@@ -520,7 +520,7 @@ mod phase_c_tests {
 
     #[test]
     fn export_validates_label_existence_and_emits_global() {
-        let ok = "section .text\nglobal _start\nexport add_one\n\nadd_one: [post: r0 \
+        let ok = "section .text\nglobal _start\nexport add_one\n\nadd_one: [r0 \
                   valid]\n    add r0, r0, 1\n    ret\n\n_start:\n    ret\n";
         let asm = lower_ok(ok, "x86_64");
         assert!(asm.contains(".global add_one"), "{}", asm);

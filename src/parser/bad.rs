@@ -554,6 +554,10 @@ impl<'s> Parser<'s> {
     }
 
     /// `[pre: ...] [post: ...]` trailing a label line.
+    /// Positional label contracts: one group = postcondition (implied),
+    /// two groups = precondition then postcondition. `[frame: N]` keeps
+    /// its keyword (a different proof kind). No `pre:`/`post:` keywords —
+    /// position is the whole story.
     fn parse_contract_list(
         &mut self, content: &str, line: usize, span: Span,
     ) -> Result<Vec<BadContract>, BadParseError> {
@@ -564,7 +568,19 @@ impl<'s> Parser<'s> {
             out.push(BadContract { preds: parse_pred_group(inner, line, span)?, span });
             rest = rest[start + 1 + end_rel + 1..].trim();
         }
-        Ok(out)
+        match out.len() {
+            1 => Ok(out),                            // single = post
+            2 => Ok(out),                            // [pre, post] — order is the meaning
+            0 => Ok(out),
+            n => Err(BadParseError {
+                message: format!(
+                    "{n} contract groups on one label - a label takes at most two: \
+                     `[pre] [post]` (a single group is the postcondition)"
+                ),
+                line,
+                span,
+            }),
+        }
     }
 }
 
@@ -872,12 +888,22 @@ mod tests {
     }
 
     #[test]
-    fn parses_label_contracts() {
-        let p = parse_ok("_start: [pre: r0 valid] [post: r10 preserved]\n    ret\n");
+    fn parses_label_contracts_positionally() {
+        // Two groups: first = pre, second = post. Keywords are gone.
+        let p = parse_ok("_start: [r0 valid] [r10 preserved]\n    ret\n");
         let BadTopLevel::Label(l) = &p.items[0] else { panic!("expected label") };
         assert_eq!(l.contracts.len(), 2);
         assert!(matches!(&l.contracts[0].preds[0], BadContractPred::Valid(r) if r == "r0"));
         assert!(matches!(&l.contracts[1].preds[0], BadContractPred::Preserved(r) if r == "r10"));
+    }
+
+    #[test]
+    fn single_group_is_the_postcondition_and_keywords_are_rejected() {
+        let p = parse_ok("_start: [r0 valid]\n    ret\n");
+        let BadTopLevel::Label(l) = &p.items[0] else { panic!("expected label") };
+        assert_eq!(l.contracts.len(), 1, "single group = post");
+        let err = parse_bad("_start: [post: r0 == 0]\n    ret\n").unwrap_err();
+        assert!(err.message.contains("positional"), "{}", err.message);
     }
 
     #[test]
@@ -934,11 +960,17 @@ fn next_group(s: &str) -> Option<(usize, usize)> {
 fn parse_pred_group(
     inner: &str, line: usize, span: Span,
 ) -> Result<Vec<BadContractPred>, BadParseError> {
-    if let Some(body) = inner.strip_prefix("pre:") {
-        return parse_preds(body.trim(), line, span);
-    }
-    if let Some(body) = inner.strip_prefix("post:") {
-        return parse_preds(body.trim(), line, span);
+    for kw in ["pre:", "post:"] {
+        if inner.starts_with(kw) {
+            return Err(BadParseError {
+                message: format!(
+                    "contract keywords are gone - contracts are positional: one group is \
+                     the postcondition, two groups are `[pre] [post]` ('{inner}')"
+                ),
+                line,
+                span,
+            });
+        }
     }
     if let Some(body) = inner.strip_prefix("frame:") {
         return parse_frame_group(body, line, span);

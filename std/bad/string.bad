@@ -11,7 +11,7 @@
 // C-ABI wrappers can layer on top via the abi_args map.
 
 // memcpy(dst: r0, src: r1, n: r2) -> r0
-memcpy: [frame: 0] [post: r0 valid]
+memcpy: [frame: 0] [r0 valid]
     mov r3, r0
 .loop:
     jz r2, 0, .done
@@ -26,7 +26,7 @@ memcpy: [frame: 0] [post: r0 valid]
     ret
 
 // memset(dst: r0, val: r1, n: r2) -> r0
-memset: [frame: 0] [post: r0 valid]
+memset: [frame: 0] [r0 valid]
     mov r3, r0
 .loop:
     jz r2, 0, .done
