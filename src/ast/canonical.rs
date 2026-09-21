@@ -161,6 +161,10 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             indent(out, level);
             let _ = write!(out, "trg {} @ {};", trg.name, trg.instance);
         }
+        TopLevel::Budget(b) => {
+            indent(out, level);
+            let _ = write!(out, "budget {};", b.contract);
+        }
         TopLevel::TriggerBinding { name, instance, .. } => {
             indent(out, level);
             let _ = write!(out, "trg {} @ {};", name, instance);

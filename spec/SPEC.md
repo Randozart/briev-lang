@@ -283,6 +283,13 @@ property live on stdlib declarations; the checker consumes the property
 interface generically. An un-bridged instance is a hard compile error —
 the backend refuses any board whose decoupling convention is violated.
 
+**Source-pin budgets (2026-09-21).** `budget u1.out <= 250mA;` caps the
+derived current draw across the named pin's net. The roll-up is the KCL
+boundary sum over the proven part graph — the same derivations that
+prove postcondition currents, summed direction-agnostically at the net.
+A net with no derived draw passes vacuously (nothing provable flows).
+An exceeded budget is a hard compile error.
+
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive

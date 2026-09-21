@@ -43,6 +43,12 @@ impl<'a> Parser<'a> {
         if self.eat(&Token::Export) {
             return self.parse_export();
         }
+        // 2026-09-21 (E7, design record D4): `budget <inst>.<pin> <=
+        // <current>;` — a source-pin budget. Contextual keyword: only a
+        // top-level `budget` identifier enters this arm.
+        if self.check_identifier("budget") {
+            return self.parse_top_level_budget();
+        }
         // 2026-09-06 (Phase 8, plan 2026-09-06-cpp-expressiveness.md):
         // `section(".name")` placement prefix — contextual keyword (the
         // asm/isr pattern). A PLACEMENT declaration (where the bytes live),
@@ -1637,6 +1643,19 @@ impl<'a> Parser<'a> {
     /// Parse: meld name -> target;
     /// Parse top-level trg binding: trg name @ instance.#port;
     /// 2026-07-15: The # prefix is required for layout port access.
+    /// `budget <inst>.<pin> <= <current>;` — a source-pin budget (E7).
+    /// Parsed as one expression; the pin-path/current destructuring
+    /// happens in analysis, mirroring postcondition bounds.
+    fn parse_top_level_budget(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume `budget`
+        let contract = self.parse_expression()?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::Budget(crate::ast::top::BudgetDecl {
+            contract,
+            span: None,
+        }))
+    }
+
     fn parse_top_level_trg(&mut self) -> Result<Trigger, SyntaxError> {
         self.pos += 1;
         let name = self.expect_identifier()?;

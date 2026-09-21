@@ -466,3 +466,18 @@ interface generically — the compiler knows no type or class names
 (Rules 14/15). Violations are hard `convention_errors` that refuse
 emission. Value matching (cap value vs. the stated "100n") remains OPEN
 under E13 — presence check only in this slice.
+
+### Amendment 2026-09-21 (night): E7 landed — source-pin budgets
+
+IMPLEMENTED per design record D4: `budget u1.out <= 250mA;` attaches to a
+source PIN (not a net). The roll-up is the KCL boundary sum over the B4
+part graph (direction-agnostic — a source net has current LEAVING it,
+which the sink-side per-net map cannot express). No derived draw =
+vacuous pass. Exceeded budgets are hard `budget_errors` refusing
+emission. OPEN under E7: black-box draws (IC internals) are not yet
+derivable — the intent machinery (E14a) owns making them provable.
+
+With this, every E-track prerequisite for the usb_sensor gate fixture is
+in place: classes (E12), arrays (E11), decoupling (E13), budgets (E7).
+E14a — intent completion: node guards, drive maps, keep/store ambiguity
+machinery — is the next and final slice before the fixture can compile.

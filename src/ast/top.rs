@@ -27,6 +27,11 @@ pub enum TopLevel {
     /// Replaces the `op X: member(#Y)` binding form (SPEC §15.2).
     TypeDefOperator(Definition),
     Transaction(Transaction),
+    /// 2026-09-21 (E7, design record D4): a source-pin current budget —
+    /// `budget u1.out <= 250mA;`. One comparison expression; analysis
+    /// destructures it (pin path vs current literal, either order) and
+    /// checks the pin's net derived draw against the limit.
+    Budget(BudgetDecl),
     Cell(CellDef),
     Import(Import),
     Export(Export),
@@ -1165,6 +1170,16 @@ pub struct PinDecl {
     pub name: String,
     pub number: u64,
     pub class_ref: Option<String>,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-21 (E7, design record D4): one `budget` statement. The whole
+/// comparison is kept as an expression — the LHS/R destructuring (pin
+/// path, current literal, either order) happens in analysis, mirroring
+/// how postcondition bounds are read.
+#[derive(Debug, Clone)]
+pub struct BudgetDecl {
+    pub contract: Expr,
     pub span: Option<Span>,
 }
 

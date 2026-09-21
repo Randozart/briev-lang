@@ -93,6 +93,10 @@ pub struct ElectronicsNetlist {
     /// a `spec Decouple` type without a bridging `spec Decoupler` part.
     /// Hard diagnostics: the backend refuses to emit.
     pub convention_errors: Vec<String>,
+    /// 2026-09-21 (E7): source-pin budget violations — a net's derived
+    /// draw past its stated `budget`. Hard diagnostics: the backend
+    /// refuses to emit.
+    pub budget_errors: Vec<String>,
     /// 2026-09-11 (electrical proving): net voltage classes + violations.
     pub voltage: VoltageCheck,
 }
@@ -1253,6 +1257,132 @@ fn collect_no_connect_pins(
     nc
 }
 
+/// The net (if any) currently carrying this pin key.
+fn net_of<'a>(nets: &'a [Net], key: &str) -> Option<&'a Net> {
+    nets.iter()
+        .find(|n| n.pins.iter().any(|p| pin_key(&p.component, &p.pin) == key))
+}
+
+/// 2026-09-21 (E7): total derived current crossing net N — the sum of
+/// branch currents of every series part attached to N (the KCL boundary
+/// sum, direction-agnostic: a source pin's net has current LEAVING it,
+/// which the per-net sink-side map cannot express).
+fn net_draw(
+    net: &str,
+    parts: &[SeriesPart],
+    net_voltage: &BTreeMap<String, f64>,
+) -> Option<f64> {
+    let mut total = 0.0f64;
+    let mut any = false;
+    for p in parts {
+        if p.net_a != net && p.net_b != net {
+            continue;
+        }
+        let va = net_voltage.get(&p.net_a).copied();
+        let vb = net_voltage.get(&p.net_b).copied();
+        let current = match (va, vb) {
+            (Some(a), Some(b)) => (a - b).abs() / p.ohms,
+            (Some(a), None) => a / p.ohms,
+            (None, Some(b)) => b / p.ohms,
+            (None, None) => continue,
+        };
+        total += current;
+        any = true;
+    }
+    any.then_some(total)
+}
+
+/// 2026-09-21 (E7, design record D4): source-pin budgets — `budget
+/// u1.out <= 250mA;` caps the derived current draw across the pin's net.
+/// The roll-up is the KCL boundary sum over the B4-derived part graph;
+/// nets with no derived draw pass vacuously — nothing provable flows.
+/// Black-box draws (IC internals) are not yet derivable; the intent
+/// machinery owns that later. Violations are hard budget_errors.
+fn check_budgets(
+    items: &[TopLevel],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    nets: &[Net],
+    net_voltage: &BTreeMap<String, f64>,
+) -> Vec<String> {
+    // resolve_pin wants the (name, number) table; TypeInfo.pins is the
+    // same data, number-sorted — derive the view locally.
+    let type_pins: BTreeMap<String, Vec<(String, u64)>> = type_info
+        .iter()
+        .map(|(name, ti)| (name.clone(), ti.pins.clone()))
+        .collect();
+    let mut errors = Vec::new();
+    if !items
+        .iter()
+        .any(|i| matches!(i, TopLevel::Budget(_)))
+    {
+        return errors;
+    }
+    // The part graph, rebuilt from the finished nets (cheap at board
+    // scale; the B4 passes own the incremental machinery).
+    let mut pin_to_net: BTreeMap<(String, String), String> = BTreeMap::new();
+    for net in nets {
+        for p in &net.pins {
+            pin_to_net.insert((p.component.clone(), p.pin.clone()), net.name.clone());
+        }
+    }
+    let parts = collect_series_parts(instances, type_info, &pin_to_net);
+    let mut errors = Vec::new();
+    for item in items {
+        let TopLevel::Budget(b) = item else {
+            continue;
+        };
+        let Expr::BinaryOp(op, l, r) = &b.contract else {
+            errors.push(
+                "a budget must state `budget <instance>.<pin> <= <current>;`".to_string(),
+            );
+            continue;
+        };
+        // Pin on either side of the comparison — mirror the voltage-drive
+        // shape so `[250mA >= u1.out]` states the same budget.
+        let (pin_expr, limit_expr) = match op {
+            BinaryOpKind::Le => (l.as_ref(), r.as_ref()),
+            BinaryOpKind::Ge => (r.as_ref(), l.as_ref()),
+            _ => {
+                errors.push(
+                    "a budget compares a pin with a current limit using `<=` (or `>=`, reversed)"
+                        .to_string(),
+                );
+                continue;
+            }
+        };
+        let Some(pin) = resolve_pin(pin_expr, instances, &type_pins) else {
+            errors.push(
+                "a budget targets a pin — state `budget <instance>.<pin> <= <current>;`"
+                    .to_string(),
+            );
+            continue;
+        };
+        let Some(limit) = extract_current(limit_expr) else {
+            errors.push(
+                "a budget limit is a current — state it with a unit (`250mA`, `1.5A`) or as a bare ampere number"
+                    .to_string(),
+            );
+            continue;
+        };
+        let key = pin_key(&pin.component, &pin.pin);
+        let Some(drawn) = net_of(nets, &key).and_then(|n| net_draw(&n.name, &parts, net_voltage))
+        else {
+            continue; // no derived draw on this net — nothing to cap
+        };
+        if drawn > limit {
+            errors.push(format!(
+                "budget exceeded: '{}.{}' allows {} but its net draws {} — the derived sum over the net (B4 fixpoint) is past the stated limit. Raise the budget or reduce the draw",
+                pin.component,
+                pin.pin,
+                format_amps(limit),
+                format_amps(drawn)
+            ));
+        }
+    }
+    errors
+}
+
 /// Every declared pin of every instance, ready for union-find grouping
 /// (E13 extraction: keeps derive_netlist a coordinator, not a worker).
 fn collect_all_pins(
@@ -1270,6 +1400,37 @@ fn collect_all_pins(
         }
     }
     all_pins
+}
+
+/// Group the union-find roots into named nets and report unconnected
+/// non-nc pins as dangling — the netlist B-half, extracted so
+/// derive_netlist stays a coordinator (E7 refactor).
+fn partition_nets(
+    groups: &BTreeMap<String, Vec<PinRef>>,
+    net_names: &mut BTreeMap<String, String>,
+    nc_pins: &std::collections::HashSet<String>,
+) -> (Vec<Net>, Vec<String>) {
+    let mut nets = Vec::new();
+    let mut dangling = Vec::new();
+    let mut net_index = 0;
+    for (root, members) in groups {
+        if members.len() >= 2 {
+            net_index += 1;
+            let name = net_names.remove(root).unwrap_or_else(|| format!("N{}", net_index));
+            nets.push(Net { name, pins: members.clone() });
+        } else {
+            let p = &members[0];
+            if nc_pins.contains(&pin_key(&p.component, &p.pin)) {
+                continue;
+            }
+            dangling.push(format!(
+                "pin '{}.{}' (pin {}) is on no net — it never appears in a precondition pin equality. \
+                 State its connection, e.g. [{}.{}.voltage == other.pin.voltage]",
+                p.component, p.pin, p.number, p.component, p.pin
+            ));
+        }
+    }
+    (nets, dangling)
 }
 
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
@@ -1301,26 +1462,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         groups.entry(root).or_default().push(p.clone());
     }
 
-    let mut nets = Vec::new();
-    let mut dangling = Vec::new();
-    let mut net_index = 0;
-    for (root, members) in &groups {
-        if members.len() >= 2 {
-            net_index += 1;
-            let name = net_names.remove(root).unwrap_or_else(|| format!("N{}", net_index));
-            nets.push(Net { name, pins: members.clone() });
-        } else {
-            let p = &members[0];
-            if nc_pins.contains(&pin_key(&p.component, &p.pin)) {
-                continue;
-            }
-            dangling.push(format!(
-                "pin '{}.{}' (pin {}) is on no net — it never appears in a precondition pin equality. \
-                 State its connection, e.g. [{}.{}.voltage == other.pin.voltage]",
-                p.component, p.pin, p.number, p.component, p.pin
-            ));
-        }
-    }
+    let (nets, dangling) = partition_nets(&groups, &mut net_names, &nc_pins);
 
     let net_conflicts = raw_conflicts
         .into_iter()
@@ -1350,6 +1492,10 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     // netlist — every union is final when it fires.
     let mut ctx = NetlistContext::new(items, &mut ds, &type_pins, &type_info);
     let convention_errors = check_decoupling(&mut ctx, &instances);
+    // 2026-09-21 (E7): source-pin budgets run last — they read the
+    // derived per-net currents the voltage fixpoint just produced.
+    let budget_errors =
+        check_budgets(items, &instances, &type_info, &nets, &voltage.net_voltage);
 
     ElectronicsNetlist {
         components: instance_list,
@@ -1359,6 +1505,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         is_electronics: true,
         class_errors,
         convention_errors,
+        budget_errors,
         voltage,
         type_info,
     }
@@ -1570,6 +1717,65 @@ mod tests {
             nl.convention_errors[0].contains("supply-class"),
             "{}",
             nl.convention_errors[0]
+        );
+    }
+
+    // ── 2026-09-21 (E7): source-pin budgets ───────────────────────────────
+
+    const BUDGET_BOARD: &str = r#"
+        type Resistor { pin a; pin b; reference "R"; };
+        type Led { pin a; pin k; reference "D"; tolerance 3.6; };
+        type Connector { pin vcc; pin gnd; reference "J"; };
+
+        let j1: Connector = Connector { value: "JST-2" };
+        let r1: Resistor = Resistor { value: "330" };
+        let d1: Led = Led { value: "red" };
+
+        budget j1.vcc <= 0.05;
+
+        txn on
+            [j1.vcc.voltage == 3.3V && j1.vcc.voltage == r1.a.voltage &&
+             r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.gnd.voltage]
+            [d1.a.current > 0.0 && d1.a.current <= 0.02]
+        { }
+    "#;
+
+    #[test]
+    fn budget_under_derived_draw_passes() {
+        // 3.3 V / 330 R = 10 mA derived across the source net; 50 mA caps it.
+        let nl = analyze(BUDGET_BOARD);
+        assert!(nl.budget_errors.is_empty(), "{:?}", nl.budget_errors);
+    }
+
+    #[test]
+    fn budget_exceeded_is_an_error() {
+        let src = BUDGET_BOARD.replace("budget j1.vcc <= 0.05;", "budget j1.vcc <= 0.005;");
+        let nl = analyze(&src);
+        assert_eq!(nl.budget_errors.len(), 1, "{:?}", nl.budget_errors);
+        assert!(
+            nl.budget_errors[0].contains("j1.vcc") && nl.budget_errors[0].contains("exceeded"),
+            "{}",
+            nl.budget_errors[0]
+        );
+    }
+
+    #[test]
+    fn budget_reversed_form_and_unit_literals() {
+        // `250mA >= pin` states the same budget; unit literals are A-normalized.
+        let src = BUDGET_BOARD.replace("budget j1.vcc <= 0.05;", "budget 50mA >= j1.vcc;");
+        let nl = analyze(&src);
+        assert!(nl.budget_errors.is_empty(), "{:?}", nl.budget_errors);
+    }
+
+    #[test]
+    fn budget_on_unknown_pin_is_an_error() {
+        let src = BUDGET_BOARD.replace("budget j1.vcc <= 0.05;", "budget j1.nope <= 0.05;");
+        let nl = analyze(&src);
+        assert_eq!(nl.budget_errors.len(), 1, "{:?}", nl.budget_errors);
+        assert!(
+            nl.budget_errors[0].contains("targets a pin"),
+            "{}",
+            nl.budget_errors[0]
         );
     }
 
