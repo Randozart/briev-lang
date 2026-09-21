@@ -450,6 +450,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // uniformly — minimal shared registration, nothing backend-specific.
             briev_compiler::backend::vm::normalizer::normalize(&mut items, &mut universe, int_bits)?;
         }
+        BackendKind::Bad => {
+            // 2026-09-21 (bad-dialect plan): .bad never enters the .bv
+            // pipeline — pure assembly, own parser/backend. Compiled via
+            // `brievc bad <file.bad>`; this arm exists only to keep the
+            // BackendKind match exhaustive.
+        }
     }
 
     emit_beast_snapshot(file_path, BeastStage::Normalize, BeastPosition::Before, &items, &universe, opts)?;
@@ -1720,6 +1726,17 @@ fn codegen(
             println!("wrote {}", runner_path);
             output = String::new();
             ".ptx"
+        }
+        BackendKind::Bad => {
+            // 2026-09-21 (bad-dialect plan): .bad never reaches here — the
+            // `brievc bad <file.bad>` entry short-circuits before the .bv
+            // pipeline (pure assembly, own parser/backend). This arm keeps
+            // the dispatch exhaustive; reaching it is a routing bug.
+            return Err(
+                "bad: route .bad programs through `brievc bad <file.bad>` - they do not \
+                 enter the .bv pipeline"
+                    .to_string(),
+            );
         }
         BackendKind::Vm => {
             // 2026-07-25: VM backend emits .lair bytecode

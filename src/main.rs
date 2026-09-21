@@ -45,6 +45,7 @@ fn main() {
         "config" => run_config(&args[2..]),
         "init" => run_init(args.get(2).map(|s| s.as_str())),
         "bounty" => run_bounty(&args[2..]),
+        "bad" => run_bad(&args[2..]),
         "registry" => run_registry(&args[2..]),
         "register" => run_register(&args[2..]),
         "vocab" => run_vocab(&args[2..]),
@@ -54,10 +55,12 @@ fn main() {
         "install-highlighter" => run_install_highlighter(&args[2..]),
         "help" | "--help" | "-h" => { print_usage(&args[0]); Ok(()) }
         _ => {
-            // Default: compile the file
-            if args[1].ends_with(".bv") || args[1].ends_with(".rbv") || args[1].ends_with(".abv") {
-                run_build(&args[1..])
-            } else {
+        // Default: compile the file
+        if args[1].ends_with(".bv") || args[1].ends_with(".rbv") || args[1].ends_with(".abv") {
+            run_build(&args[1..])
+        } else if args[1].ends_with(".bad") {
+            run_bad(&args[1..])
+        } else {
                 eprintln!("unknown command: {}", args[1]);
                 print_usage(&args[0]);
                 Ok(())
@@ -480,6 +483,78 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         triple_override,
         linker_script_override,
     })
+}
+
+/// `brievc bad <file.bad> [--target <triple>] [--emit-asm]` — compile a
+/// .bad (Briev Assembly Dialect) program: lower through the config
+/// registries, emit target assembly, assemble to an object, and link a
+/// freestanding executable. `--emit-asm` stops at the .s file.
+///
+/// 2026-09-21 (bad-dialect plan): .bad is a separate dialect — it never
+/// enters the .bv pipeline.
+fn run_bad(args: &[String]) -> Result<(), String> {
+    let file_path = args
+        .first()
+        .ok_or("usage: brievc bad <file.bad> [--target <triple>] [--emit-asm]")?;
+    if !file_path.ends_with(".bad") {
+        return Err(format!(
+            "bad: `{file_path}` is not a .bad file - the dialect compiles .bad sources only"
+        ));
+    }
+    let mut triple: Option<String> = None;
+    let mut emit_asm = false;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--target" => {
+                i += 1;
+                triple = Some(args.get(i).cloned().ok_or("bad: --target needs a triple")?);
+            }
+            "--emit-asm" => emit_asm = true,
+            other => return Err(format!("bad: unknown option `{other}`")),
+        }
+        i += 1;
+    }
+    let triple = triple.unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
+
+    let source = std::fs::read_to_string(file_path)
+        .map_err(|e| format!("bad: cannot read '{}': {}", file_path, e))?;
+    let asm =
+        briev_compiler::backend::bad::generate(&source, &triple).map_err(|e| format!("bad: {e}"))?;
+
+    let stem = std::path::Path::new(file_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "program".to_string());
+    let family = triple.split('-').next().unwrap_or(&triple).to_string();
+    let s_path = std::path::PathBuf::from(format!("{stem}.s"));
+    std::fs::write(&s_path, &asm)
+        .map_err(|e| format!("bad: cannot write '{}': {}", s_path.display(), e))?;
+    println!("wrote {}", s_path.display());
+    if emit_asm {
+        return Ok(());
+    }
+
+    let o_path = std::path::PathBuf::from(format!("{stem}.o"));
+    briev_compiler::backend::bad::assemble(&asm, &family, &o_path)
+        .map_err(|e| format!("bad: {e}"))?;
+    println!("wrote {}", o_path.display());
+
+    let bin_path = std::path::PathBuf::from(&stem);
+    let status = std::process::Command::new("ld")
+        .arg(&o_path)
+        .arg("-o")
+        .arg(&bin_path)
+        .status()
+        .map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
+    if !status.success() {
+        return Err(format!(
+            "bad: linking failed for `{family}` - the program needs an entry label \
+             (e.g. `_start:`) or external symbols the freestanding link cannot resolve"
+        ));
+    }
+    println!("wrote {}", bin_path.display());
+    Ok(())
 }
 
 /// `brievc bounty <file.bv>` — package a .bounty for install-time compilation.
