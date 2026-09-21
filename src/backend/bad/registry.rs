@@ -190,9 +190,12 @@ impl BadRegisters {
         let mut scalars = HashMap::new();
         for key in db.keys() {
             let (entries, pairs) = parse_register_row(&db, &key);
+            // Rows whose fields are "target:value" scalars (not
+            // "target:token:prop" register entries).
             if matches!(
                 key.as_str(),
                 "imm" | "comment" | "abi_args" | "push_width" | "dynamic_linker"
+                    | "cross_as" | "cross_ld" | "syscall_nums"
             ) {
                 scalars.insert(key, pairs);
             } else {
@@ -259,6 +262,41 @@ impl BadRegisters {
     /// The dynamic-linker path for --with-libc runs.
     pub fn dynamic_linker(&self, family: &str) -> Option<&'static str> {
         self.scalar("dynamic_linker", family).map(leak_static)
+    }
+
+    /// The assembler binary for `family` (host `as` for x86_64, prefixed
+    /// cross-binutils for the others).
+    pub fn cross_as(&self, family: &str) -> Option<&'static str> {
+        self.scalar("cross_as", family).map(leak_static)
+    }
+
+    /// The linker binary for `family`.
+    pub fn cross_ld(&self, family: &str) -> Option<&'static str> {
+        self.scalar("cross_ld", family).map(leak_static)
+    }
+
+    /// Kernel-call number for a NAME on `family` (`write` → 1 on x86_64,
+    /// 64 on aarch64). Unknown name = None (caller raises loudly).
+    pub fn syscall_number(&self, family: &str, name: &str) -> Option<i64> {
+        self.scalar("syscall_nums", family)?
+            .split(',')
+            .find_map(|pair| {
+                let (n, v) = pair.split_once('=')?;
+                (n.trim() == name).then(|| v.trim().parse().ok())?
+            })
+    }
+
+    /// Every syscall name known for `family` — diagnostics.
+    pub fn known_syscalls(&self, family: &str) -> Vec<String> {
+        self.scalar("syscall_nums", family)
+            .map(|s| {
+                let mut v: Vec<String> = s.split(',')
+                    .filter_map(|p| p.split_once('=').map(|(n, _)| n.trim().to_string()))
+                    .collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default()
     }
 
     /// Immediate-literal prefix per target (`$` / `#` / empty).

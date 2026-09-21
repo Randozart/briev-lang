@@ -728,6 +728,9 @@ impl<'a> Lowerer<'a> {
                 Err(err) => Err(err),
             },
             BadOperand::Name(name) => {
+                if r.named {
+                    return self.syscall_number_token(name, instr);
+                }
                 if let Some(Bound::Imm(v)) = env.get(name) {
                     return Ok(format!("{imm}{v}"));
                 }
@@ -749,6 +752,25 @@ impl<'a> Lowerer<'a> {
                     return Ok(token[imm.len()..].to_string());
                 }
                 Ok(token)
+            }
+        }
+    }
+
+    /// `$N#` — a kernel-call number by name, per the syscall_nums rows.
+    fn syscall_number_token(&self, name: &str, instr: &BadInstr) -> Result<String, String> {
+        match self.regs.syscall_number(&self.family, name) {
+            Some(v) => Ok(format!("{}{}", self.regs.imm_prefix(&self.family), v)),
+            None => {
+                let known = self.regs.known_syscalls(&self.family).join(", ");
+                Err(format!(
+                    "syscall `{}` (line {}) names `{}`, which is not in the \
+                     syscall_nums row for `{}` - add it to config/bad-registers.dbvl \
+                     (known: {known})",
+                    instr.mnemonic,
+                    instr.span.line,
+                    name,
+                    self.family
+                ))
             }
         }
     }
@@ -895,12 +917,15 @@ struct TokReq<'a> {
 }
 
 /// A parsed `$N` template reference: operand index, optional width
-/// qualifier (`.w8/.w16/.w32`), and the bare flag (`$N!` = no imm prefix).
+/// qualifier (`.w8/.w16/.w32`), the bare flag (`$N!` = no imm prefix),
+/// and the named flag (`$N#` = kernel-call number by NAME, resolved
+/// through the syscall_nums rows).
 #[derive(Debug, Clone, Copy)]
 struct Ref {
     n: usize,
     width: Option<u8>,
     bare: bool,
+    named: bool,
 }
 
 /// `$N` template ref at byte `i` — `$N`, `$N.w8/.w16/.w32`, `$N!`.
@@ -917,10 +942,13 @@ fn take_operand_ref(s: &str, i: usize) -> Option<(Ref, usize)> {
     if j == i + 1 {
         return None;
     }
-    let r = Ref { n: s[i + 1..j].parse().unwrap_or(0), width: None, bare: false };
+    let r = Ref { n: s[i + 1..j].parse().unwrap_or(0), width: None, bare: false, named: false };
     let (r, j) = take_width_suffix(s, j, r);
     if bytes.get(j) == Some(&b'!') {
         return Some((Ref { bare: true, ..r }, j + 1));
+    }
+    if bytes.get(j) == Some(&b'#') {
+        return Some((Ref { named: true, ..r }, j + 1));
     }
     Some((r, j))
 }

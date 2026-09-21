@@ -505,6 +505,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let mut emit_asm = false;
     let mut with_libc = false;
     let mut trace = false;
+    let mut run = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -515,6 +516,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
             "--emit-asm" => emit_asm = true,
             "--with-libc" => with_libc = true,
             "--trace-lowering" => trace = true,
+            "--run" => run = true,
             other => return Err(format!("bad: unknown option `{other}`")),
         }
         i += 1;
@@ -556,7 +558,8 @@ fn run_bad(args: &[String]) -> Result<(), String> {
 
     let bin_path = std::path::PathBuf::from(&stem);
     let (_, regs) = briev_compiler::backend::bad::registries();
-    let mut link = std::process::Command::new("ld");
+    let ld_bin = regs.cross_ld(&family).unwrap_or("ld").to_string();
+    let mut link = std::process::Command::new(&ld_bin);
     link.arg(&o_path).arg("-o").arg(&bin_path);
     if with_libc {
         match regs.dynamic_linker(&family) {
@@ -581,7 +584,34 @@ fn run_bad(args: &[String]) -> Result<(), String> {
         ));
     }
     println!("wrote {}", bin_path.display());
-    Ok(())
+    if !run {
+        return Ok(());
+    }
+    // Non-host families run under qemu-<family>; the gnu cross sysroot
+    // (when present) feeds -L so dynamic loaders resolve.
+    let host = "x86_64"; // MVP: the compiler's own host family
+    if family == host {
+        let status = std::process::Command::new(&bin_path)
+            .status()
+            .map_err(|e| format!("bad: cannot run '{}': {e}", bin_path.display()))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    let qemu = format!("qemu-{family}");
+    let sysroot = format!("/usr/{family}-linux-gnu");
+    let mut cmd = std::process::Command::new(&qemu);
+    if std::path::Path::new(&sysroot).is_dir() {
+        cmd.arg("-L").arg(&sysroot);
+    }
+    let status = cmd
+        .arg(&bin_path)
+        .status()
+        .map_err(|e| {
+            format!(
+                "bad: cannot run `{qemu}`: {e} - install qemu-user for {family} to \
+                 use --run"
+            )
+        })?;
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 /// `brievc bounty <file.bv>` — package a .bounty for install-time compilation.

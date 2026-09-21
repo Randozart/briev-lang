@@ -50,24 +50,37 @@ pub fn generate_with(
         .run(&program)
 }
 
+/// Whether the cross toolchain for `family` is installed.
+pub fn toolchain_available(family: &str) -> bool {
+    let (isa, regs) = registries();
+    let _ = isa;
+    regs.cross_as(family)
+        .and_then(|as_bin| {
+            std::process::Command::new(as_bin)
+                .arg("--version")
+                .output()
+                .ok()
+                .map(|o| o.status.success())
+        })
+        .unwrap_or(false)
+}
+
 /// Assemble emitted text to an object file via the platform assembler.
-/// Returns the object path. Arch flags match PlatformAssembler's table.
+/// The toolchain comes from the `cross_as` row per family.
 pub fn assemble(text: &str, family: &str, out_path: &std::path::Path) -> Result<(), String> {
-    use std::io::Write;
+    let (_, regs) = registries();
+    let as_bin = regs.cross_as(family).ok_or_else(|| {
+        format!(
+            "no cross_as row for target `{family}` - add one to bad-registers.dbvl"
+        )
+    })?;
+    let flags: Vec<&str> = match family {
+        "x86_64" => vec!["--64"],
+        _ => vec![],
+    };
     let s_path = out_path.with_extension("s");
     std::fs::write(&s_path, text)
         .map_err(|e| format!("cannot write '{}': {}", s_path.display(), e))?;
-    let (as_bin, flags) = match family {
-        "x86_64" => ("as", vec!["--64"]),
-        "aarch64" => ("as", vec![]),
-        "riscv64" => ("as", vec![]),
-        other => {
-            return Err(format!(
-                "no platform assembler mapping for target `{other}` - extend \
-                 backend::bad::assemble or use a supported triple"
-            ));
-        }
-    };
     let status = std::process::Command::new(as_bin)
         .args(&flags)
         .arg(&s_path)
@@ -98,13 +111,16 @@ mod tests {
 
     #[test]
     fn hello_world_end_to_end_x86_64() {
-        // SysV write(fd=rdi, buf=rsi, len=rdx) with rax=1.
+        // SysV write(fd=rdi, buf=rsi, len=rdx): portable syscall routes
+        // the operands per target.
         let src = "section .text\nglobal _start\n_start:\n    addr r4, msg\n    mov r5, 1\n    \
-                   mov r2, 16\n    mov r0, 1\n    syscall\n    mov r0, 60\n    mov r5, 0\n    \
-                   syscall\n\nsection .data\nmsg: .asciz \"ok\\n\"\n";
+                   mov r2, 16\n    syscall write, r5, r4, r2\n    syscall exit, r5, r4, r5\n\n\
+                   section .data\nmsg: .asciz \"ok\\n\"\n";
         let asm = lower_ok(src, "x86_64-unknown-linux-gnu");
         assert!(asm.contains("leaq msg(%rip), %rsi"), "{}", asm);
-        assert!(asm.contains("movq $1, %rax"));
+        assert!(asm.contains("syscall"), "{}", asm);
+        let joined = asm.replace('\n', "; ");
+        assert!(joined.contains("movq $1, %rax; movq %rdi, %rdi"), "routing: {}", asm);
         assert!(asm.contains(".asciz \"ok\\n\""));
     }
 
@@ -652,4 +668,54 @@ fn sym_op_with_immediate_last_operand_is_rejected() {
     )
     .unwrap_err();
     assert!(err.contains("label or symbol") && err.contains("mov` for values"), "{}", err);
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+
+    const HELLO: &str = "section .text\nglobal _start\n_start:\n    mov r5, 1\n    addr \
+                         r4, msg\n    mov r2, 6\n    syscall write, r5, r4, r2\n    mov \
+                         r5, 0\n    mov r4, 0\n    mov r3, 0\n    syscall exit, r5, r4, \
+                         r3\n\nsection .data\nmsg: .asciz \"cross\\n\"\n";
+
+    /// Run a linked binary under the family's emulator; returns stdout.
+    fn run_under_qemu(bin: &std::path::Path, family: &str) -> Result<String, String> {
+        let qemu = format!("qemu-{family}");
+        let sysroot = format!("/usr/{family}-linux-gnu");
+        let mut cmd = std::process::Command::new(&qemu);
+        if std::path::Path::new(&sysroot).is_dir() {
+            cmd.arg("-L").arg(&sysroot);
+        }
+        let out = cmd
+            .arg(bin)
+            .output()
+            .map_err(|e| format!("qemu: {e}"))?;
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    #[test]
+    fn hello_cross_verifies_on_installed_targets() {
+        for family in ["x86_64", "aarch64", "riscv64"] {
+            if !toolchain_available(family) {
+                eprintln!("skip: {family} cross toolchain not installed");
+                continue;
+            }
+            let asm = generate(HELLO, &format!("{family}-linux-gnu"))
+                .unwrap_or_else(|e| panic!("{family} generate: {e}"));
+            let dir = std::env::temp_dir().join(format!("bad_cross_{}_{}", family, std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let o = dir.join("hello.o");
+            assemble(&asm, family, &o).unwrap_or_else(|e| panic!("{family} assemble: {e}"));
+            let (_, regs) = registries();
+            let ld = regs.cross_ld(family).unwrap();
+            let bin = dir.join("hello");
+            let st = std::process::Command::new(ld).arg(&o).arg("-o").arg(&bin).status()
+                .expect("ld");
+            assert!(st.success(), "{family} link failed");
+            let stdout = run_under_qemu(&bin, family).unwrap_or_else(|e| panic!("{family}: {e}"));
+            assert_eq!(stdout, "cross\n", "{family} output");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
 }

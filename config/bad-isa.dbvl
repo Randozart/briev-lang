@@ -70,9 +70,15 @@ pop: "1"; "x86_64:popq $1"; "aarch64:ldr $1, [sp], #16"; "riscv64:ld $1, 0(sp); 
 
 // ── System ───────────────────────────────────────────────────────────
 nop: "0"; "x86_64:nop"; "aarch64:nop"; "riscv64:nop";
-// syscall args ride the platform ABI (documented in bad-dialect.md):
-// x86_64 SysV rax/rdi/rsi/rdx, aarch64 x8/x0-x2, riscv64 a7/a0-a2.
-syscall: "0"; "x86_64:syscall"; "aarch64:svc #0"; "riscv64:ecall";
+// syscall num, a1, a2, a3 — PORTABLE end to end. Kernel-call NUMBERS
+// differ per target (x86_64 write=1, aarch64/riscv64 write=64), so the
+// number operand is a NAME (`syscall write, ...`) substituted through
+// the syscall_nums rows via the `$1#` named-number template ref. The
+// number and three args arrive in ANY portable registers; the templates
+// route them into each target's syscall ABI (x86_64 rax+rdi/rsi/rdx,
+// aarch64 x8+x0-x2, riscv64 a7+a0-a2). Register operands only (`|-`
+// illegal): immediates load into a register first.
+syscall: "4"; "x86_64:movq $1#, %rax; movq $2, %rdi; movq $3, %rsi; movq $4, %rdx; syscall|-"; "aarch64:mov x8, $1#; mov x0, $2; mov x1, $3; mov x2, $4; svc #0|-"; "riscv64:mv a7, $1#; mv a0, $2; mv a1, $3; mv a2, $4; ecall|-";
 halt: "0"; "x86_64:hlt"; "aarch64:wfi"; "riscv64:wfi";
 
 // ── Application-grade ISA (2026-09-21, application-grade plan) ───────

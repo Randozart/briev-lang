@@ -115,5 +115,15 @@ abi_args: "x86_64:r5,r4,r2,r1,r6,r7"; "aarch64:r0,r1,r2,r3,r4,r5"; "riscv64:r0,r
 // push_width: the portable `push` decrement (x86 = 8, arm/riscv keep sp
 // 16-aligned at 16). Feeds the [frame: N] sp-tracking proof.
 push_width: "x86_64:8"; "aarch64:16"; "riscv64:16";
+// syscall_nums: kernel-call numbers by NAME per target — `syscall write,
+// ...` substitutes through the $1# named-number template ref. asm-generic
+// targets (aarch64, riscv64) share one table; x86_64 carries its legacy
+// numbers. Adding a call is a data change.
+syscall_nums: "x86_64:read=0,write=1,open=2,close=3,brk=12,mmap=9,exit=60,exit_group=231"; "aarch64:read=63,write=64,open=56,close=57,brk=214,mmap=222,exit=93,exit_group=94"; "riscv64:read=63,write=64,open=56,close=57,brk=214,mmap=222,exit=93,exit_group=94";
 // dynamic_linker: the ld flag value for --with-libc runs.
 dynamic_linker: "x86_64:/lib64/ld-linux-x86-64.so.2"; "aarch64:/lib/ld-linux-aarch64.so.1"; "riscv64:/lib/ld-linux-riscv64-lp64d.so.1";
+// cross_as / cross_ld: prefixed toolchains for hardware-verification of
+// non-host targets. `assemble()` and `brievc bad --run` probe for these;
+// absent toolchains degrade to documented skips, never silent passes.
+cross_as: "x86_64:as"; "aarch64:aarch64-linux-gnu-as"; "riscv64:riscv64-linux-gnu-as";
+cross_ld: "x86_64:ld"; "aarch64:aarch64-linux-gnu-ld"; "riscv64:riscv64-linux-gnu-ld";
