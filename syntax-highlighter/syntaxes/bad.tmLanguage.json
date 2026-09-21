@@ -38,7 +38,19 @@
       "patterns": [
         {
           "name": "storage.type.bad",
-          "match": "^\\s*(defn|alias)\\b"
+          "match": "^\\s*(defn|alias|import|export)\\b"
+        },
+        {
+          "name": "support.function.directive.bad",
+          "match": "^\\s*(\\.const|\\.struct|\\.field|\\.end)\\b"
+        },
+        {
+          "name": "entity.name.function.local.bad",
+          "match": "^\\s*\\.[a-zA-Z_][a-zA-Z0-9_.]*:"
+        },
+        {
+          "name": "variable.other.register.fp.bad",
+          "match": "\\bf(?:[0-9]|1[0-5])\\b"
         }
       ]
     },

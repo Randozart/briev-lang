@@ -64,8 +64,14 @@ tracking. Blank lines are inert. `//` comments (respecting string literals).
 
 ## Core ISA (18 ops)
 
-`mov add sub mul div load store cmp jmp jz jnz call ret push pop nop
-syscall halt addr`
+`mov add sub mul div mod mulhi mulhiu and or xor shl shr sar not neg
+slt sltu load store ldb ldub ldh lduh stb sth loadoff storeoff cmp
+jmp jz jnz jlt jle jgt jge jlo jls jhi jhs call ret push pop push2
+pop2 nop syscall halt addr`
+
+Floating point (double precision, `f0`-`f15`): `fmov fadd fsub fmul
+fdiv fneg fabs fcmp fload fstore fjz fjnz fjlt fjle fjgt fjge itof
+ftoi` — the fj family mirrors the integer j-family.
 
 Universal lowerings live in `config/bad-isa.dbvl` — one row per op,
 per-target `"target:reg-form|imm-form"` fields:
@@ -89,9 +95,11 @@ per-target `"target:reg-form|imm-form"` fields:
 `adr` / `la`). `cmp` has **no riscv64 row** — riscv has no flags; use the
 portable compare-and-branch ops `jz a, b, label` / `jnz a, b, label`.
 
-MVP scope: `load`/`store` take a register address; offset access composes
-through `add` into a scratch register (caller-saved on all three targets).
-Width is 64-bit only; subregisters are a clean later extension.
+Offset access is a first-class op: `loadoff`/`storeoff d, base, imm`.
+Sub-width fields ride `ldb/ldub/ldh/lduh/stb/sth` via `.w8/.w16/.w32`
+width-token register rows (x86 `%al`, aarch64 `w`-regs). Template refs:
+`$N.w8` = width-qualified register; `$N!` = raw substitute (no imm
+prefix — x86 displacements are bare).
 
 ## Registers
 
@@ -116,6 +124,9 @@ properties (`caller` / `callee` / `ro`):
   — the proof trail rides the artifact.
 - `[pre: rN valid]` — proven when `rN` maps on the target. (Full pointer
   validity proofs deferred.)
+- `[frame: N]` — static sp tracking at the target's `push_width`
+  (8 on x86_64, 16 elsewhere): the body may stack at most N bytes, must
+  restore sp exactly, and must hold 16-alignment at every `call`.
 - `[sp % 16 == 0]`-style compare chains — the lhs register's existence is
   checked; constant folding lands with the comptime pass.
 - Label-level (`name: [pre: ...] [post: ...]`) and inline (`[expr]`
@@ -130,6 +141,17 @@ properties (`caller` / `callee` / `ro`):
    code), a target row emits raw on match.
 
 Params bind positionally; recursion is cycle-guarded (depth 64).
+
+## ABI boundary
+
+`.export name` marks a C-ABI-visible entry point (emits `.global` and
+validates the label exists). Argument registers come from the
+`abi_args` row per target (SysV: x86_64 `r5,r4,r2,r1,r6,r7`; aarch64
+and riscv64 are `r0..r5`) — the same `.bad` function body serves every
+target because the ABI map is data. `brievc bad --with-libc` links
+`-lc` via the per-target `dynamic_linker` row so `call malloc` and
+friends resolve. The stdlib (`std/bad/string.bad`) uses the documented
+internal convention (args `r0`-`r2`, result `r0`, `r3`-`r5` scratch).
 
 ## Error doctrine
 
@@ -146,7 +168,9 @@ blocks it). No silent remaps, no silent substitutions.
 | AST | `src/ast/bad.rs` |
 | Parser | `src/parser/bad.rs` |
 | Config registries | `src/backend/bad/registry.rs` + `config/bad-isa.dbvl` + `config/bad-registers.dbvl` |
+| Comptime evaluator | `src/backend/bad/comptime.rs` |
 | Lowerer | `src/backend/bad/lower.rs` |
+| Stdlib | `std/bad/string.bad` |
 | Contract proofs | `src/backend/bad/contracts.rs` |
 | Entry + assembler path | `src/backend/bad/mod.rs`, `brievc bad` in `src/main.rs` |
 | Target routing | `BackendKind::Bad` + `.bad` row in `config/targets.dbvl` |
