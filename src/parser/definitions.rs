@@ -2313,13 +2313,77 @@ impl<'a> Parser<'a> {
     // syntax). `pin` / `reference` / `tolerance` carry identical grammar
     // and identical enforcement everywhere.
 
-    /// `pin <name> [= <int>] [':' <TypeName>];` — first-class component
-    /// pin. Auto-numbered pins continue after the highest explicit number
-    /// (high-water rule). The class ascription (E12, design record D6) may
-    /// sit on either side of the number: `pin vbus: Power;`,
-    /// `pin p1 = 1;`, `pin p1 = 1: Nc;`. ANY type name is accepted here —
-    /// resolution against the imported class fundamentals happens in
-    /// analysis; the parser carries no class vocabulary (Rules 14/15).
+    /// `'[' <int> ']'` — the array-count half of a pin clause (E11).
+    /// Absent → single pin (count 1); present → at least 1 element.
+    fn parse_pin_count(&mut self, pin_name: &str) -> Result<u64, SyntaxError> {
+        if !self.eat(&Token::LBracket) {
+            return Ok(1);
+        }
+        let n = self.expect_integer()?;
+        if n < 1 {
+            return self.error_at_current(&format!(
+                "pin array '{}' must have at least 1 element, got {}",
+                pin_name, n
+            ));
+        }
+        self.expect(Token::RBracket)?;
+        Ok(n as u64)
+    }
+
+    /// `'=' <int>` or the high-water continuation — the number half of a
+    /// pin clause. Explicit numbers must be ≥ 1 (KiCad pin numbers start
+    /// at 1).
+    fn parse_pin_number(
+        &mut self,
+        pin_name: &str,
+        high_water: &mut u64,
+    ) -> Result<u64, SyntaxError> {
+        if !self.eat(&Token::Eq) {
+            return Ok(*high_water + 1);
+        }
+        let n = self.expect_integer()?;
+        if n < 1 {
+            return self.error_at_current(&format!(
+                "pin '{}' number must be 1 or greater (KiCad pin numbers start at 1), got {}",
+                pin_name, n
+            ));
+        }
+        Ok(n as u64)
+    }
+
+    /// `':' <TypeName>` — the class-ascription half of a pin clause (E12).
+    /// Legal on either side of the pin number, at most once. ANY type name
+    /// is stored verbatim: resolution against the imported class
+    /// fundamentals happens in analysis (design record D6 — the parser
+    /// carries no class vocabulary).
+    fn parse_pin_class_ref(
+        &mut self,
+        pin_name: &str,
+        slot: &mut Option<String>,
+    ) -> Result<(), SyntaxError> {
+        if slot.is_some() {
+            return self.error_at_current(&format!(
+                "pin '{}' has two class ascriptions — state one: `pin {}: Type;`",
+                pin_name, pin_name
+            ));
+        }
+        *slot = Some(self.expect_identifier()?);
+        Ok(())
+    }
+
+    /// `pin <name>[[<count>]] [':' <TypeName>] ['=' <int>] [':' <TypeName>];`
+    /// — first-class component pin. Auto-numbered pins continue after the
+    /// highest explicit number (high-water rule). The class ascription
+    /// (E12, design record D6) may sit on either side of the number:
+    /// `pin vbus: Power;`, `pin p1 = 1;`, `pin p1 = 1: Nc;`.
+    ///
+    /// 2026-09-21 (E11): `pin gpio[8]: Io;` declares an ARRAY of pins. The
+    /// parser expands it eagerly into one PinDecl per element, named
+    /// `gpio[0]…gpio[7]` (KiCad pin names are arbitrary strings), numbered
+    /// consecutively from the high-water rule (or from the explicit number
+    /// upward). Arrays are declaration sugar — every downstream consumer
+    /// (BEAST, netlist, emitter) sees plain pins. Contracts address an
+    /// element as `inst.gpio[3]` (analysis::electronics resolve_pin).
     fn parse_pin_clause(
         &mut self,
         pins: &mut Vec<crate::ast::top::PinDecl>,
@@ -2327,30 +2391,14 @@ impl<'a> Parser<'a> {
     ) -> Result<(), SyntaxError> {
         self.pos += 1; // consume `pin`
         let pin_name = self.expect_identifier()?;
+        let count = self.parse_pin_count(&pin_name)?;
         let mut class_ref: Option<String> = None;
         if self.eat(&Token::Colon) {
-            class_ref = Some(self.expect_identifier()?);
+            self.parse_pin_class_ref(&pin_name, &mut class_ref)?;
         }
-        let number = if self.eat(&Token::Eq) {
-            let n = self.expect_integer()?;
-            if n < 1 {
-                return self.error_at_current(&format!(
-                    "pin '{}' number must be 1 or greater (KiCad pin numbers start at 1), got {}",
-                    pin_name, n
-                ));
-            }
-            n as u64
-        } else {
-            *high_water + 1
-        };
+        let number = self.parse_pin_number(&pin_name, high_water)?;
         if self.eat(&Token::Colon) {
-            if class_ref.is_some() {
-                return self.error_at_current(&format!(
-                    "pin '{}' has two class ascriptions — state one: `pin {}: Type;`",
-                    pin_name, pin_name
-                ));
-            }
-            class_ref = Some(self.expect_identifier()?);
+            self.parse_pin_class_ref(&pin_name, &mut class_ref)?;
         }
         self.eat(&Token::Semicolon);
         if pins.iter().any(|p| p.name == pin_name) {
@@ -2359,13 +2407,23 @@ impl<'a> Parser<'a> {
                 pin_name
             ));
         }
-        *high_water = (*high_water).max(number);
-        pins.push(crate::ast::top::PinDecl {
-            name: pin_name,
-            number,
-            class_ref,
-            span: None,
-        });
+        // 2026-09-21 (E11): eager expansion — a single pin keeps its bare
+        // name; an array emits `name[0]…name[count-1]` with consecutive
+        // numbers so downstream passes stay array-blind.
+        for i in 0..count {
+            let element = if count == 1 {
+                pin_name.clone()
+            } else {
+                format!("{}[{}]", pin_name, i)
+            };
+            pins.push(crate::ast::top::PinDecl {
+                name: element,
+                number: number + i,
+                class_ref: class_ref.clone(),
+                span: None,
+            });
+        }
+        *high_water = (*high_water).max(number + count - 1);
         Ok(())
     }
 
@@ -4133,6 +4191,25 @@ mod tests {
         let pins = parse_pins("type J { pin vcc = 1; pin gnd = 2; reference \"J\"; };");
         assert_eq!((pins[0].name.as_str(), pins[0].number), ("vcc", 1));
         assert_eq!((pins[1].name.as_str(), pins[1].number), ("gnd", 2));
+    }
+
+    #[test]
+    fn test_pin_array_expands_elements() {
+        // 2026-09-21 (E11): `pin gpio[3]` expands to gpio[0]…gpio[2] with
+        // consecutive numbers; the high-water rule continues after the
+        // array; the class ascription copies to every element.
+        let pins = parse_pins(
+            "type U { pin en = 7; pin gpio[3]: Nc; pin a; reference \"U\"; };",
+        );
+        assert_eq!(pins.len(), 5);
+        assert_eq!((pins[0].name.as_str(), pins[0].number), ("en", 7));
+        assert_eq!(pins[1].name, "gpio[0]");
+        assert_eq!(pins[1].number, 8);
+        assert_eq!(pins[1].class_ref.as_deref(), Some("Nc"));
+        assert_eq!(pins[3].name, "gpio[2]");
+        assert_eq!(pins[3].number, 10);
+        assert_eq!(pins[4].name, "a");
+        assert_eq!(pins[4].number, 11);
     }
 
     #[test]

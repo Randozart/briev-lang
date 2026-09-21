@@ -267,6 +267,13 @@ analysis resolves the ascription against the declared types and consumes
 the properties generically — the compiler knows no class names, and a
 new class is a stdlib declaration, not a compiler release.
 
+**Pin arrays (2026-09-21).** `pin gpio[8]: Io;` declares eight pins
+named `gpio[0]`…`gpio[7]`, numbered consecutively — the high-water rule
+continues past the array, and an explicit number seeds the first
+element. Contracts address an element as `inst.gpio[3].voltage`; every
+element is an ordinary pin to the netlist, the serialization, and the
+emitter (arrays are declaration sugar, expanded by the parser).
+
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive

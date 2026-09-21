@@ -443,3 +443,14 @@ generically — no class names in Rust. Gate unchanged in substance
 (`nc` pin compiles clean from the dangling error; class-keyed violations
 compile errors once ERC consumes the properties in later slices).
 Effort S→M (type-universe resolution plumbing in analysis + emitter).
+
+### Amendment 2026-09-21 (evening, II): E11 landed in stages
+
+Array declaration + per-element indexed wiring are IMPLEMENTED
+(`pin gpio[8]: Io;` expands to `gpio[0]…gpio[7]`; contracts address
+elements as `inst.gpio[3].voltage`; netlist/BEAST/emitter stay
+array-blind — the parser expands eagerly). The whole-bus equality
+sugar (`j1.data == mcu.data` expanding to per-element equalities)
+remains OPEN under E11 until the gate fixture demands it; the E11 gate
+("64-bit bus netlist ≡ manual per-pin clauses") is already satisfiable
+via indexed equalities.

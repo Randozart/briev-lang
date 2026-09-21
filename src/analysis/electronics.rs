@@ -363,13 +363,31 @@ fn resolve_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInstance>, ty
         }
     }
     let Expr::Field(base, pin_name) = cur else { return None };
-    let Expr::Identifier(inst_name) = base.as_ref() else { return None };
+    // 2026-09-21 (E11): `u2.gpio[3]` — indexed element of a pin array.
+    // The parser expanded the array into elements named `gpio[0]…`, so
+    // the element resolves by its bracketed name against the same table.
+    let (inst_name, pin_name) = match base.as_ref() {
+        Expr::Identifier(inst_name) => (inst_name, pin_name.clone()),
+        Expr::Index(inner, idx) => {
+            let Expr::Field(inner_base, arr_name) = inner.as_ref() else {
+                return None;
+            };
+            let Expr::Identifier(inst_name) = inner_base.as_ref() else {
+                return None;
+            };
+            let Expr::Decimal(d) = idx.as_ref() else {
+                return None;
+            };
+            (inst_name, format!("{}[{}]", arr_name, d))
+        }
+        _ => return None,
+    };
     let inst = instances.get(inst_name)?;
     let pins = type_pins.get(&inst.type_name)?;
-    let (_, number) = pins.iter().find(|(n, _)| n == pin_name)?;
+    let (_, number) = pins.iter().find(|(n, _)| n == &pin_name)?;
     Some(PinRef {
         component: inst.name.clone(),
-        pin: pin_name.clone(),
+        pin: pin_name,
         number: *number,
     })
 }
@@ -1249,6 +1267,31 @@ mod tests {
             "{}",
             nl.class_errors[0]
         );
+    }
+
+    #[test]
+    fn pin_array_elements_wire_by_index() {
+        // 2026-09-21 (E11): indexed element access `u1.gpio[3]` resolves to
+        // the parser-expanded element — each equality forms its own
+        // per-element net, exactly like the manual per-pin clauses.
+        let src = r#"
+            type Chip { pin gpio[4]; reference "U"; };
+            type Header { pin p[4]; reference "J"; };
+
+            let u1: Chip = Chip { value: "x" };
+            let j1: Header = Header { value: "y" };
+
+            txn on
+                [j1.p[0].voltage == u1.gpio[0].voltage && j1.p[1].voltage == u1.gpio[1].voltage &&
+                 j1.p[2].voltage == u1.gpio[2].voltage && j1.p[3].voltage == u1.gpio[3].voltage]
+                [u1.gpio[0].current >= 0.0 && u1.gpio[0].current <= 0.02]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        assert_eq!(nl.nets.len(), 4, "four indexed equalities → four nets");
+        assert!(nl.nets.iter().all(|n| n.pins.len() == 2));
     }
 
     #[test]

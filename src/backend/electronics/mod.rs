@@ -483,6 +483,30 @@ mod tests {
     }
 
     #[test]
+    fn emits_pin_array_elements() {
+        // 2026-09-21 (E11): expanded array elements emit as ordinary pins
+        // named `gpio[0]`… — KiCad pin names are arbitrary strings.
+        let src = r#"
+            type Chip { pin gpio[2]; reference "U"; };
+            type Header { pin a; pin b; reference "J"; };
+
+            let u1: Chip = Chip { value: "x" };
+            let j1: Header = Header { value: "y" };
+
+            txn on
+                [j1.a.voltage == u1.gpio[0].voltage && j1.b.voltage == u1.gpio[1].voltage]
+                [u1.gpio[0].current >= 0.0 && u1.gpio[0].current <= 0.02]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        let sch = ElectronicsBackend::generate(&nl).unwrap();
+        assert!(sch.contains("name \"gpio[0]\""), "{sch}");
+        assert!(sch.contains("name \"gpio[1]\""));
+        assert_eq!(sch.matches("(wire ").count(), 6, "2 nets × 3 segments");
+    }
+
+    #[test]
     fn emits_balanced_sexpr_with_components_and_wires() {
         let nl = netlist_of(LED_CIRCUIT);
         let sch = ElectronicsBackend::generate(&nl).unwrap();
