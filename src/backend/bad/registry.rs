@@ -216,6 +216,7 @@ impl BadRegisters {
             "syscall_nums",
             "float_literal",
             "abi_stack_arg_base",
+            "abi_reg_args",
         ];
         for key in db.keys() {
             let is_scalar = SCALAR_ROWS.contains(&key.as_str());
@@ -314,6 +315,13 @@ impl BadRegisters {
             Some(m) => leak_static(m),
             None => "pool",
         }
+    }
+
+    /// How many arguments arrive in registers (the abi_args order).
+    pub fn abi_reg_args(&self, family: &str) -> usize {
+        self.scalar("abi_reg_args", family)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(6)
     }
 
     /// Byte offset of the first stack-passed argument at entry.

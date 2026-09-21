@@ -17,6 +17,44 @@ friendly mnemonic aliases default-on via the prelude, and first-class
 | AsmFn | `asm<Target>` node, parser path, and LLVM inline-asm emission REMOVED — zero user-facing uses exist (verified by grep). `AsmLowering`/`Asm#` intrinsic is a different mechanism and stays. |
 | Entry | `_start` raw + `global _start` — universal ELF convention, no alias, no keyword. |
 
+## External critique (2026-09-21, integrated)
+
+An architectural review of the park.bad example raised four points;
+triaged against the mission (**contract-verifiable low-level
+optimization for Briev**, WYSIWYG hand-scheduled asm — NOT an IR):
+
+1. **ABI/stack-arg leak — ACCEPTED.** `LoadOffset r8, sp, 8` hardcodes
+   the x86_64 SysV layout; on aarch64 arg 7 arrives in `x6` (a
+   register). Fix: the `Arg dst, n` core op materializes the Nth
+   argument per target — register move when `n <= abi_reg_args`,
+   `loadoff` at `abi_stack_arg_base + (n - reg_args - 1) * 8` beyond.
+   Fully config-driven (`abi_args` + `abi_reg_args` +
+   `abi_stack_arg_base`); one general routine, zero target knowledge.
+   Raw `target =>` stack offsets remain the low-level fallback.
+2. **Zeroing exception is decorative — PARTIALLY ACCEPTED.** The
+   assembler stays WYSIWYG (no hidden peephole pass — hand-scheduled
+   code means what you write is what runs; an auto-xor pass is a
+   surprising transformation in an optimization context). But xor-zeroing
+   IS decorative as an exception (core has `Xor`), so the example now
+   demonstrates exceptions with a genuinely inexpressible win: ×constant
+   via `Lea` (x86) / shifted-add (aarch64) where the core `Multiply`
+   costs imul latency. riscv64 rides universal — the teaching point
+   stands: exceptions are per-target opportunity, never obligation.
+3. **Call/Return on inlined defns — ACCEPTED, three real bugs.**
+   `Call ChargeGuest` emits a call to an undefined symbol (defns are not
+   labels — invocation is at the INSTRUCTION position: `ChargeGuest r1`);
+   a `Return` inside an inlined defn exits the ENCLOSING function (legal
+   but mid-function use is a footgun — documented); `.local` labels did
+   not parse inside defn bodies, and double invocation would collide
+   them. Fix: locals allowed in defn bodies with **hygienic per-call-site
+   gensym** (`L<defn>__<local>__<n>`); references rewrite through the
+   same scope.
+4. **Virtual registers — REJECTED BY DESIGN.** .bad is WYSIWYG
+   hand-scheduled asm; a register allocator would make it a compiler and
+   betray the mission (YOU schedule registers; the config table maps
+   them). r14/r15-absent-on-x86_64 style existence errors are the
+   feature.
+
 ## Phases
 
 ### Phase 1 — universal `;`
@@ -36,14 +74,22 @@ body, and a branch row lowers identically.
    Jump, JumpIfZero, JumpIfNotZero, JumpIfLess, JumpIfLessEqual,
    JumpIfGreater, JumpIfGreaterEqual, JumpBelow, JumpBelowEqual,
    JumpAbove, JumpAboveOrEqual, Compare, Call, Return, Push, Pop,
-   Push2, Pop2, NoOp, SystemCall, Halt, Addr, FloatMove, FloatLoad,
-   FloatStore, FloatAdd, FloatSubtract, FloatMultiply, FloatDivide,
-   FloatNegate, FloatAbsolute, FloatCompare, FloatJumpIfZero,
-   FloatJumpIfNotZero, FloatJumpIfLess, FloatJumpIfLessEqual,
-   FloatJumpIfGreater, FloatJumpIfGreaterEqual, IntToFloat,
-   FloatToInt.
+   Push2, Pop2, NoOp, SystemCall, Halt, Addr, Arg, FloatMove,
+   FloatLoad, FloatStore, FloatAdd, FloatSubtract, FloatMultiply,
+   FloatDivide, FloatNegate, FloatAbsolute, FloatCompare,
+   FloatJumpIfZero, FloatJumpIfNotZero, FloatJumpIfLess,
+   FloatJumpIfLessEqual, FloatJumpIfGreater, FloatJumpIfGreaterEqual,
+   IntToFloat, FloatToInt. (No `Start` — `_start` is universal.)
 3. Default load: the lowerer expands the sheet as a virtual import
    unless `--raw`. `--trace-lowering` prints canonical mnemonics.
+4. **`Arg dst, n`** — materialize the Nth C-ABI argument (critique fix
+   #1): register move within `abi_reg_args`, stack `loadoff` beyond.
+5. **Defn hygiene** (critique fix #3): `.local` labels legal in defn
+   bodies; every expansion renames them `L<defn>__<local>__<callsite_n>`
+   and rewrites branch references through the expansion scope. Defn
+   invocation is at the INSTRUCTION position (`ChargeGuest r1`); a
+   `Return` inside an inlined defn is the enclosing function's return
+   (documented footgun).
 
 ### Phase 3 — positional contracts in .bad
 Label contract groups lose their keywords: `[a]` = post, `[a] [b]` =
