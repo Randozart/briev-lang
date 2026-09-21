@@ -32,13 +32,15 @@ pub fn registries() -> (registry::BadIsa, registry::BadRegisters) {
 /// `family` is the target-triple first component (x86_64, aarch64,
 /// riscv64) — the same family extraction asm-lowering.dbvl uses.
 pub fn generate(source: &str, target_triple: &str) -> Result<String, String> {
-    generate_with(source, target_triple, false, None)
+    generate_with(source, target_triple, false, None, true)
 }
 
 /// `--trace-lowering`: stderr note per instruction — which exception
-/// fired / which form picked / where registers landed.
+/// fired / which form picked / where registers landed. `friendly`
+/// selects the default alias sheet; `--raw` passes false.
 pub fn generate_with(
     source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
+    friendly: bool,
 ) -> Result<String, String> {
     let program: BadProgram =
         parse_bad(source).map_err(|e| format!("bad: line {}: {}", e.line, e.message))?;
@@ -46,6 +48,7 @@ pub fn generate_with(
     let family = target_triple.split('-').next().unwrap_or(target_triple);
     lower::Lowerer::new(&isa, &regs, family)
         .with_trace(trace)
+        .with_friendly(friendly)
         .with_base_dir(base_dir.map(|p| p.to_path_buf()))
         .run(&program)
 }
@@ -131,7 +134,7 @@ mod tests {
         assert!(asm.contains("leaq msg(%rip), %rsi"), "{}", asm);
         assert!(asm.contains("syscall"), "{}", asm);
         let joined = asm.replace('\n', "; ");
-        assert!(joined.contains("movq $1, %rax; movq %rdi, %rdi"), "routing: {}", asm);
+        assert!(joined.contains("movq $1, %rax; syscall"), "number loads last: {}", asm);
         assert!(asm.contains(".asciz \"ok\\n\""));
     }
 
@@ -621,7 +624,7 @@ mod phase_d_tests {
         let lib = dir.join("lib.bad");
         std::fs::write(&lib, "defn double_it x\n    add r0, x, x\n    ret\n").unwrap();
         let main_src = "import \"lib.bad\"\n\n_start:\n    double_it r5\n    ret\n";
-        let asm = generate_with(main_src, "x86_64", false, Some(&dir)).unwrap();
+        let asm = generate_with(main_src, "x86_64", false, Some(&dir), true).unwrap();
         std::fs::remove_file(&lib).ok();
         std::fs::remove_dir(&dir).ok();
         // `add r0, x, x` with x = r5 rides the x86 lea imm-form row.
@@ -638,7 +641,7 @@ mod phase_d_tests {
         std::fs::write(dir.join("a.bad"), "import \"b.bad\"\n.const V 1\n").unwrap();
         std::fs::write(dir.join("b.bad"), "import \"a.bad\"\n").unwrap();
         let src = "import \"a.bad\"\n\n_start:\n    mov r0, V\n    ret\n";
-        let asm = generate_with(src, "x86_64", false, Some(&dir)).unwrap();
+        let asm = generate_with(src, "x86_64", false, Some(&dir), true).unwrap();
         std::fs::remove_file(dir.join("a.bad")).ok();
         std::fs::remove_file(dir.join("b.bad")).ok();
         std::fs::remove_dir(&dir).ok();
@@ -650,7 +653,7 @@ mod phase_d_tests {
         let dir = test_dir("dup");
         std::fs::write(dir.join("l.bad"), "dup:\n    ret\n").unwrap();
         let src = "import \"l.bad\"\n\ndup:\n    ret\n";
-        let err = generate_with(src, "x86_64", false, Some(&dir)).unwrap_err();
+        let err = generate_with(src, "x86_64", false, Some(&dir), true).unwrap_err();
         std::fs::remove_file(dir.join("l.bad")).ok();
         std::fs::remove_dir(&dir).ok();
         assert!(err.contains("declared twice"), "{}", err);
@@ -907,5 +910,65 @@ mod hygiene_tests {
         )
         .unwrap_err();
         assert!(err.contains("branch defn"), "{}", err);
+    }
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::tests::lower_ok;
+    use super::*;
+
+    #[test]
+    fn friendly_sheet_loads_by_default() {
+        let asm = lower_ok("t:\n    Move r0, 1\n    Return\n", "x86_64");
+        assert!(asm.contains("movq $1, %rax"), "{}", asm);
+        assert!(asm.contains("ret"), "{}", asm);
+    }
+
+    #[test]
+    fn raw_mode_skips_the_sheet() {
+        let (_, regs) = registries();
+        let _ = regs;
+        let err = generate_with("t:\n    Move r0, 1\n", "x86_64", false, None, false)
+            .unwrap_err();
+        assert!(err.contains("Move") && err.contains("not a core op"), "{}", err);
+        // Raw names work in both modes.
+        lower_ok("t:\n    mov r0, 1\n", "x86_64");
+        lower_ok("t:\n    mov r0, 1\n", "x86_64");
+    }
+
+    #[test]
+    fn user_alias_overrides_the_sheet() {
+        let src = "alias Jump = jz
+
+_start:
+    Jump r0, r1, .done
+.done:
+    jmp .done
+";
+        let asm = lower_ok(src, "x86_64");
+        // Jump = jz: compare-and-branch (3 operands) wins over jmp;
+        // line breaks in the output join with "; " in the assertion.
+        let joined = asm.replace('\n', "; ");
+        assert!(joined.contains("cmpq %rcx, %rax; je L_start__done"), "{}", asm);
+    }
+
+    #[test]
+    fn label_aliases_resolve_at_emission_and_reference() {
+        let src = "alias entry = _start\n\nentry:\n    Jump entry\n";
+        let asm = lower_ok(src, "x86_64");
+        assert!(asm.contains("_start:"), "{}", asm);
+        assert!(asm.contains("jmp _start"), "{}", asm);
+        assert!(!asm.contains("entry:"), "{}", asm);
+    }
+
+    #[test]
+    fn branch_exception_bodies_use_friendly_names() {
+        let src = "defn f x\n    default => Move x, 0\n    x86_64 => Xor x, x, x\n\n\
+                   _start:\n    f r3\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("xor %rbx, %rbx, %rbx"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("mov x3, #0"), "{}", arm);
     }
 }

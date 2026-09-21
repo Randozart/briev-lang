@@ -186,6 +186,13 @@ impl<'s> Parser<'s> {
 
     /// `.name:` inside a defn body — hygienically renamed per expansion
     /// at lowering. Illegal in branch shapes (rows are one line each).
+    fn defn_name_hint(&self) -> String {
+        match self.items.last() {
+            Some(BadTopLevel::Defn(d)) => d.name.clone(),
+            _ => "?".to_string(),
+        }
+    }
+
     fn append_defn_local(
         &mut self, idx: usize, branch_rows: bool, content: &str, span: Span,
     ) -> Result<(), BadParseError> {
@@ -229,16 +236,42 @@ impl<'s> Parser<'s> {
         let (content, line, span) = (lc.content, lc.line, lc.span);
         match owner {
             Owner::Defn { branch_rows, seq_body, .. } => {
+                // After sequence lines, a `target =>` row is a
+                // PER-INSTRUCTION exception (same as in label bodies) —
+                // not a branch row. `default =>` here is a category
+                // error: the body IS the default.
                 if *seq_body {
-                    return Err(BadParseError {
-                        message: format!(
-                            "defn mixes sequence body lines with branch rows - \
-                             pick one shape: instruction lines are the default body, \
-                             `target => ...` rows are the target table ('{content}')"
-                        ),
-                        line,
-                        span,
-                    });
+                    if branch.is_default {
+                        return Err(BadParseError {
+                            message: format!(
+                                "`default =>` rows belong in branch defns - the sequence \
+                                 body of `{}` already lowers universally",
+                                self.defn_name_hint()
+                            ),
+                            line,
+                            span,
+                        });
+                    }
+                    if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {
+                        if let BadDefnShape::Sequence(items) = &mut d.shape {
+                            match items.last_mut() {
+                                Some(BadBodyItem::Instr(last)) => {
+                                    last.exceptions.push(branch);
+                                }
+                                _ => {
+                                    return Err(BadParseError {
+                                        message: format!(
+                                            "`{content}` follows a local label - exceptions \
+                                             replace the nearest preceding instruction"
+                                        ),
+                                        line,
+                                        span,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    return Ok(());
                 }
                 *branch_rows = true;
                 if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {
@@ -867,9 +900,20 @@ mod tests {
     }
 
     #[test]
-    fn errors_on_defn_shape_mix() {
-        let err = parse_bad("defn f a\n    push a\n    x86_64 => pop a\n").unwrap_err();
-        assert!(err.message.contains("mixes sequence body"), "{}", err.message);
+    fn seq_defn_inline_exceptions_attach_to_last() {
+        // A `target =>` row after sequence lines is a per-instruction
+        // exception, NOT a shape mix (the design-session gap, fixed).
+        let p = parse_ok("defn f a\n    push a\n    x86_64 => pop a\n");
+        let BadTopLevel::Defn(d) = &p.items[0] else { panic!("defn") };
+        let BadDefnShape::Sequence(body) = &d.shape else { panic!("sequence") };
+        let BadBodyItem::Instr(push) = &body[0] else { panic!("push") };
+        assert_eq!(push.exceptions.len(), 1, "exception binds to push");
+    }
+
+    #[test]
+    fn default_row_after_sequence_body_is_a_category_error() {
+        let err = parse_bad("defn f a\n    push a\n    default => pop a\n").unwrap_err();
+        assert!(err.message.contains("belong in branch defns"), "{}", err.message);
     }
 
     #[test]

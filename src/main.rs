@@ -506,6 +506,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let mut with_libc = false;
     let mut trace = false;
     let mut run = false;
+    let mut raw = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -517,6 +518,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
             "--with-libc" => with_libc = true,
             "--trace-lowering" => trace = true,
             "--run" => run = true,
+            "--raw" => raw = true,
             other => return Err(format!("bad: unknown option `{other}`")),
         }
         i += 1;
@@ -531,6 +533,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
         &triple,
         trace,
         base_dir.as_deref(),
+        !raw,
     )
     .map_err(|e| format!("bad: {e}"))?;
 

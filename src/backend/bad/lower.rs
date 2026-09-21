@@ -79,6 +79,11 @@ pub struct Lowerer<'a> {
     out: String,
     errors: Vec<String>,
     trace: bool,
+    /// The friendly alias sheet loads by default; `--raw` skips it.
+    friendly: bool,
+    /// Names the sheet provided — user redeclarations overwrite these
+    /// silently (the sheet is a default), user-vs-user dups still error.
+    sheet_aliases: std::collections::HashSet<String>,
 }
 
 /// One `.field name, size[, align]` inside a `.struct` block.
@@ -119,12 +124,20 @@ impl<'a> Lowerer<'a> {
             out: String::new(),
             errors: Vec::new(),
             trace: false,
+            friendly: true,
+            sheet_aliases: std::collections::HashSet::new(),
         }
     }
 
     /// Enable per-instruction lowering traces on stderr.
     pub fn with_trace(mut self, trace: bool) -> Self {
         self.trace = trace;
+        self
+    }
+
+    /// `--raw`: skip the default friendly alias sheet.
+    pub fn with_friendly(mut self, friendly: bool) -> Self {
+        self.friendly = friendly;
         self
     }
 
@@ -141,6 +154,9 @@ impl<'a> Lowerer<'a> {
         // `import` line, so both passes see source order. Root items are
         // cloned once — a one-shot compile can afford it.
         let root: Vec<BadTopLevel> = program.items.clone();
+        if self.friendly {
+            self.load_friendly_sheet()?;
+        }
         self.expand_imports(root, 0)?;
 
         // Pass 1: names — defns, aliases, consts, struct fields, labels.
@@ -158,7 +174,8 @@ impl<'a> Lowerer<'a> {
                 BadTopLevel::Directive(d) => self.emit_directive(d),
                 BadTopLevel::Data(d) => {
                     contracts::check_data_label(d, &mut self.errors);
-                    self.push_line(&format!("{}: {} {}", d.name, d.directive.name, d.directive.args));
+                    let args = self.resolve_data_args(&d.directive.args);
+                    self.push_line(&format!("{}: {} {}", d.name, d.directive.name, args));
                 }
                 BadTopLevel::Alias(_) | BadTopLevel::Defn(_) => {}
                 BadTopLevel::Label(l) => self.emit_label(l),
@@ -186,7 +203,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
             BadTopLevel::Alias(a) => {
-                if self.aliases.insert(a.name.clone(), a.register.clone()).is_some() {
+                // Sheet defaults are silently overridable; user-vs-user
+                // duplicates remain a loud error.
+                if self.aliases.insert(a.name.clone(), a.register.clone()).is_some()
+                    && !self.sheet_aliases.contains(&a.name)
+                {
                     self.errors.push(format!(
                         "alias `{}` is declared twice - remove one of the declarations",
                         a.name
@@ -205,6 +226,50 @@ impl<'a> Lowerer<'a> {
             }
             _ => {}
         }
+    }
+
+    /// The shipped friendly alias sheet (std/bad/friendly.bad, baked in)
+    /// — aliases only, user declarations override.
+    fn load_friendly_sheet(&mut self) -> Result<(), String> {
+        let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/std/bad/friendly.bad"));
+        let sheet = crate::parser::bad::parse_bad(src)
+            .map_err(|e| format!("friendly sheet: line {}: {}", e.line, e.message))?;
+        for item in &sheet.items {
+            if let BadTopLevel::Alias(a) = item {
+                self.sheet_aliases.insert(a.name.clone());
+                self.aliases.insert(a.name.clone(), a.register.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Label aliases: `alias Name = real` where the value is neither a
+    /// register nor a core op. Bounded chain, like mnemonics.
+    fn canonical_label(&self, name: &str) -> String {
+        let mut cur = name.to_string();
+        for _ in 0..8 {
+            match self.aliases.get(&cur) {
+                Some(t) if !self.isa.is_core(t) && !self.regs.exists(t, &self.family) => {
+                    cur = t.clone();
+                }
+                _ => break,
+            }
+        }
+        cur
+    }
+
+    /// Canonicalize a mnemonic through the alias table (bounded chain).
+    fn canonical_mnemonic(&self, mnemonic: &str) -> String {
+        let mut cur = mnemonic.to_string();
+        for _ in 0..8 {
+            match self.aliases.get(&cur) {
+                Some(t) if self.isa.is_core(t) || self.defns.contains_key(t) => {
+                    cur = t.clone();
+                }
+                _ => break,
+            }
+        }
+        cur
     }
 
     /// Recursively inline `import "path.bad"` files at their position.
@@ -257,6 +322,32 @@ impl<'a> Lowerer<'a> {
             .map_err(|e| format!("import `{path}`: line {}: {}", e.line, e.message))?;
         self.expand_imports(imported.items, depth + 1)
     }
+    /// Data-directive args: comptime consts resolve to values
+    /// (`.zero Guest.size` → `.zero 24`); string literals pass verbatim;
+    /// unknown identifiers stay (GAS resolves labels).
+    fn resolve_data_args(&self, args: &str) -> String {
+        if args.starts_with('"') {
+            return args.to_string();
+        }
+        let mut out = String::new();
+        let mut rest = args;
+        while let Some(start) = find_word_start(rest) {
+            let after = &rest[start..];
+            let end = after
+                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+                .unwrap_or(after.len());
+            let word = &after[..end];
+            out.push_str(&rest[..start]);
+            match self.const_value(word, &[]) {
+                Ok(v) => out.push_str(&v.to_string()),
+                Err(_) => out.push_str(word),
+            }
+            rest = &after[end..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     fn emit_directive(&mut self, d: &BadDirective) {
         match d.name.as_str() {
             // Consumed in pass 1 — never emitted.
@@ -436,7 +527,7 @@ impl<'a> Lowerer<'a> {
         if !l.local {
             self.current_label = Some(l.name.clone());
         }
-        self.push_line(&format!("{}:", l.name));
+        self.push_line(&format!("{}:", self.canonical_label(&l.name)));
         let proven = contracts::check_label_contracts(l, self.regs, &self.family, &mut self.errors);
         for note in &proven {
             self.push_line(&format!("{} {}", self.regs.comment_prefix(&self.family), note));
@@ -566,6 +657,34 @@ impl<'a> Lowerer<'a> {
         Err(self.unknown_mnemonic(instr))
     }
 
+    /// Arity + sym-position checks for a core-op call.
+    fn check_call_shape(&self, instr: &BadInstr) -> Result<(), String> {
+        let arity = self.isa.arity(&instr.mnemonic).unwrap_or(0);
+        if instr.operands.len() != arity {
+            return Err(format!(
+                "core op `{}` takes {} operand(s), got {} at line {} - fix the call",
+                instr.mnemonic,
+                arity,
+                instr.operands.len(),
+                instr.span.line
+            ));
+        }
+        // A sym op's LAST operand is the label/symbol — an immediate
+        // there is always a mistake (`addr r5, 1` wants `mov r5, 1`).
+        if self.isa.is_sym(&instr.mnemonic)
+            && instr.operands.last().is_some_and(|o| matches!(o, BadOperand::Int(_)))
+        {
+            return Err(format!(
+                "`{mn}` (line {ln}) takes a label or symbol as its last operand - an \
+                 immediate was supplied; use `mov` for values, `addr d, label` for \
+                 addresses",
+                mn = instr.mnemonic,
+                ln = instr.span.line
+            ));
+        }
+        Ok(())
+    }
+
     fn unknown_mnemonic(&self, instr: &BadInstr) -> String {
         format!(
             "instruction `{}` is unknown at line {} - it is not a core op ({}) \
@@ -582,6 +701,19 @@ impl<'a> Lowerer<'a> {
         &mut self, instr: &BadInstr, env: &HashMap<String, Bound>, depth: usize,
     ) -> Result<(), String> {
         contracts::check_inline_contract(instr, self.regs, &self.family, &mut self.errors);
+
+        // 0. Mnemonic aliases (`Move` → `mov`): canonicalize once, then
+        // every later stage sees the core name.
+        let canonical = self.canonical_mnemonic(&instr.mnemonic);
+        let instr: BadInstr = if canonical == instr.mnemonic {
+            instr.clone()
+        } else {
+            let mut owned = instr.clone();
+            owned.mnemonic = canonical;
+            owned
+        };
+        let instr = &instr;
+
         // 1. Defn call → inline expansion.
         if !self.isa.is_core(&instr.mnemonic) {
             return self.route_non_core(instr, env, depth);
@@ -610,30 +742,9 @@ impl<'a> Lowerer<'a> {
             ));
         }
 
-        // 3. Universal core lowering. A sym op's LAST operand is the
-        // label/symbol — an immediate there is always a mistake
-        // (`addr r5, 1` wants `mov r5, 1`).
-        if self.isa.is_sym(&instr.mnemonic)
-            && instr.operands.last().is_some_and(|o| matches!(o, BadOperand::Int(_)))
-        {
-            return Err(format!(
-                "`{mn}` (line {ln}) takes a label or symbol as its last operand - an \
-                 immediate was supplied; use `mov` for values, `addr d, label` for \
-                 addresses",
-                mn = instr.mnemonic,
-                ln = instr.span.line
-            ));
-        }
-        let arity = self.isa.arity(&instr.mnemonic).unwrap_or(0);
-        if instr.operands.len() != arity {
-            return Err(format!(
-                "core op `{}` takes {} operand(s), got {} at line {} - fix the call",
-                instr.mnemonic,
-                arity,
-                instr.operands.len(),
-                instr.span.line
-            ));
-        }
+        // 3. Universal core lowering.
+        self.check_call_shape(instr)?;
+
         let lowering = match self.isa.lookup(&instr.mnemonic, &self.family) {
             Some(l) => l,
             None => {
@@ -644,8 +755,13 @@ impl<'a> Lowerer<'a> {
                 ));
             }
         };
-        let has_imm =
-            instr.operands.iter().any(|o| matches!(o, BadOperand::Int(_) | BadOperand::Float(_)));
+        let has_imm = instr.operands.iter().any(|o| match o {
+            BadOperand::Int(_) | BadOperand::Float(_) => true,
+            // Const names resolve to immediates at substitution — they
+            // must pick the imm form too (aarch64 mul takes no #imm).
+            BadOperand::Name(name) => self.consts.contains_key(name),
+            BadOperand::Expr(_) => false,
+        });
         let template = match (&lowering.imm, has_imm) {
             (ImmHandling::Form(t), true) => t,
             (ImmHandling::Illegal, true) => {
@@ -773,12 +889,15 @@ impl<'a> Lowerer<'a> {
     /// resolved through the env/register table with boundary replacement
     /// inside composite operand text.
     fn emit_raw_instr(&mut self, instr: &BadInstr, env: &HashMap<String, Bound>) {
+        // Raw bodies are target-owned, but friendly mnemonics still
+        // canonicalize (the sheet is active grammar, not decoration).
+        let mnemonic = self.canonical_mnemonic(&instr.mnemonic);
         let operands: Vec<String> = instr
             .operands
             .iter()
             .map(|op| self.resolve_raw_operand(op, env, instr.span.line, instr))
             .collect();
-        let mut line = instr.mnemonic.clone();
+        let mut line = mnemonic;
         for op in &operands {
             line.push(' ');
             line.push_str(op);
@@ -799,13 +918,9 @@ impl<'a> Lowerer<'a> {
         match op {
             BadOperand::Int(n) => format!("{}{}", self.regs.imm_prefix(&self.family), n),
             BadOperand::Float(t) => self.float_operand(t, instr),
-            BadOperand::Expr(e) => match self.eval_operand_expr(e, env, instr) {
-                Ok(v) => format!("{}{}", self.regs.imm_prefix(&self.family), v),
-                Err(err) => {
-                    self.errors.push(err);
-                    String::new()
-                }
-            },
+            // Raw-row Expr operands are TARGET-OWNED text (`lsl #1`) —
+            // verbatim with name substitution, never comptime.
+            BadOperand::Expr(e) => self.resolve_raw_name(e, env, line),
             BadOperand::Name(name) => self.resolve_raw_name(name, env, line),
         }
     }
@@ -963,7 +1078,10 @@ impl<'a> Lowerer<'a> {
                     )),
                 };
             }
-            return Ok(name.to_string());
+            // Label aliases: `alias entry = _start` — references rewrite
+            // to the canonical name (values naming registers or core ops
+            // are register/mnemonic aliases, handled earlier).
+            return Ok(self.canonical_label(name));
         }
         let bound = param
             .map(|p| format!(" (bound from param `{p}`)"))

@@ -38,11 +38,12 @@ _start: [frame: 16]
 
     Addr r1, guest                  // r1 = &guest
     Move r0, 0
-    x86_64 => Xor r0, r0, r0        // INLINE EXCEPTION: on x86_64 the
-                                    // xor-self zeroing is the canonical
-                                    // idiom (no immediate encoder, no
-                                    // latency). aarch64/riscv64 have no
-                                    // row here — their universal mov IS
+    x86_64 => Xor r0, r0        // INLINE EXCEPTION: .bad is WYSIWYG —
+                                    // no hidden peephole pass rewrites
+                                    // your code. On x86_64 xor-self beats
+                                    // mov-imm (3 bytes, no immediate);
+                                    // the AUTHOR expresses it. Other
+                                    // targets have no row — their mov is
                                     // already optimal. Exceptions are
                                     // per-target opportunity, never an
                                     // obligation.
@@ -52,19 +53,27 @@ _start: [frame: 16]
     Move r0, 1
     StoreOffset r0, r1, Guest.visits
 
-    Call ChargeGuest                // sequence defn below — inlined as-is
+    ChargeGuest r1                  // defn invocation: instruction
+                                    // position, inlined as-is — the two
+                                    // .local labels are hygienically
+                                    // renamed per expansion
     Addr r4, priced
     Move r2, 8
     Move r0, 1
     SystemCall write, r5, r4, r2
 
     Move r0, GUEST_CAP
-    Call SumSales                   // branch defn below
-    Multiply r0, r0, TICKET_PRICE   // total sales = sum x price
+    SumSales r0                     // sequence defn below
+    TripleSales r0                  // branch defn below — ×3 per target
+    Move r3, TICKET_PRICE           // constants load first — mul takes
+    Multiply r0, r0, r3             // register operands on arm/riscv
     SystemCall exit, r0, r0, r0     // exit code = total sales
 
 // ── defn, sequence shape: universal body lines, inlined as-is ─────────
-// ChargeGuest(g): wallet -= ticket price, floored at zero.
+// ChargeGuest(g): wallet -= ticket price, floored at zero. Invoked at
+// the instruction position; .local labels rename per expansion; there
+// is NO Return — the defn has no frame of its own, control falls
+// through to the instruction after the invocation.
 defn ChargeGuest g
     LoadOffset r2, g, Guest.wallet
     JumpIfGreaterOrEqual r2, TICKET_PRICE, .full
@@ -75,22 +84,31 @@ defn ChargeGuest g
     Move r0, r2
 .store:
     StoreOffset r0, g, Guest.wallet
-    Return
 
-// ── defn, branch shape: default = universal core syntax ───────────────
-// SumSales(n: r0) -> r0 — 1+2+...+n. The x86_64 row replaces the whole
-// defn on that target (xor-zeroing idiom again); every other target
-// rides the default. A target with no winning form needs NO row.
+// SumSales(n: r0) -> r0 — 1+2+...+n. Sequence shape with an inline
+// x86_64 exception: xor-self zeroing over mov-imm (shorter encode).
+// No Return: control falls through post-expansion. The .loop/.done
+// labels rename per expansion — call it twice, no collisions.
 defn SumSales n
-    default => { Move r1, 0; Move r3, r0 }
-    x86_64 => { Xor r1, r1, r1; Move r3, r0 }
+    Move r1, 0
+    x86_64 => Xor r1, r1        // same WYSIWYG idiom as the entry
+    Move r3, n
 .loop:
-    JumpIfZero r3, .done
+    JumpIfZero r3, 0, .done
     Add r1, r1, r3; Subtract r3, r3, 1
     Jump .loop
 .done:
     Move r0, r1
-    Return
+
+// ── defn, branch shape: default = core syntax, rows = whole-defn ──────
+// TripleSales(n): n x= 3. imul has ~3c latency; x86_64 wins with ONE
+// lea (1c), aarch64 with two shifted adds (2c), riscv64 has no win —
+// so it has NO row and rides the default. Rows are raw target-owned
+// text; portable registers inside still map per target.
+defn TripleSales n
+    default => Move r9, GUEST_CAP; Multiply n, n, r9
+    x86_64 => lea (n, n, 2), n
+    aarch64 => add n, n, n, lsl #1; add n, n, n
 
 // ── C-ABI export: six register args + stack args via loadoff ──────────
 // price_ticket(base, discount, guest_fee, tax, a5, a6, extra1, extra2)
