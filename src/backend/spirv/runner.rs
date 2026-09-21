@@ -778,15 +778,6 @@ pub fn emit_runner(
                     continue;
                 }
             }
-            // 2026-09-20 (M3 — softmax chain fusion): same dispatch-at-
-            // producer pattern for the DOT → SOFTMAX → LINEAR-FOLD chain.
-            // The fused binary exists only when the PTX path built it; the
-            // SPIR-V lane keeps the 3-kernel path otherwise.
-            if let Some(sc) = &s.softmax_chain {
-                if try_emit_softmax_chain(&mut out, t, &sc, &kernels, &fields, &consts)? {
-                    continue;
-                }
-            }
         }
         // 2026-09-14 (gpu_schedule Phase 4a): an epilogue-fused consumer's
         // work is done by its producer's kernel — skip its dispatch entirely.
@@ -1084,37 +1075,6 @@ fn try_emit_chain_fusion(
     Ok(false)
 }
 
-/// 2026-09-20 (M3 — softmax chain fusion): dispatch the ONE deferred-
-/// softmax kernel at the producer's order position; the middle/consumer
-/// nodes are absorbed. Skips only when the fused binary exists (PTX
-/// builds it); otherwise the three kernels dispatch normally.
-fn try_emit_softmax_chain(
-    out: &mut String,
-    t: &crate::ast::top::Transaction,
-    sc: &crate::analysis::softmax_chain::SoftmaxChain,
-    kernels: &[RunnerKernel],
-    fields: &[RunnerField],
-    consts: &std::collections::HashMap<String, Expr>,
-) -> Result<bool, String> {
-    let fname = format!("{}__{}__{}", sc.producer, sc.middle, sc.consumer);
-    if t.name == sc.producer {
-        if let Some(ki) = kernels.iter().position(|k| k.name == fname) {
-            emit_kernel_node(out, t, &kernels[ki], ki, fields, consts);
-            return Ok(true);
-        }
-        return Ok(false);
-    }
-    if t.name == sc.middle || t.name == sc.consumer {
-        if kernels.iter().any(|k| k.name == fname) {
-            out.push_str(&format!(
-                "    // node '{}' fused into the softmax-chain kernel (skipped)\n",
-                t.name
-            ));
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
 
 fn emit_kernel_node(
     out: &mut String,

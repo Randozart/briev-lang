@@ -237,13 +237,6 @@ pub struct IrLoweringSettings {
     /// flash2p fixture; dispatch requires the M2 frontend proof
     /// (`KernelShape.deferred_normalize`). Default off pending a perf A/B.
     pub ptx_deferred_region: bool,
-    /// 2026-09-20 (M3, plan gpu-dialect-beyond-cuda): fuse the proven
-    /// DOT → SOFTMAX → LINEAR-FOLD chain into ONE deferred-softmax
-    /// dispatch (3 launches → 1). Detection is topology + shape proofs
-    /// (no vocabulary); emission reuses the deferred-region lowering.
-    /// SPIR-V keeps the 3-kernel path (correct, un-fused) until a fused
-    /// portable emitter exists.
-    pub ptx_softmax_chain: bool,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -360,7 +353,6 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_serial_unroll: 4,
     ptx_warp_slice: false,
     ptx_deferred_region: false,
-    ptx_softmax_chain: false,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -625,10 +617,6 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_deferred_region", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_deferred_region),
-        ptx_softmax_chain: db
-            .field_int("ptx_softmax_chain", 0)
-            .map(|v| v != 0)
-            .unwrap_or(DEFAULT_IR_LOWERING.ptx_softmax_chain),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)
