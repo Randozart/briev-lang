@@ -54,9 +54,13 @@ Inside a composite body, `foreach k in 0..N` where the range evaluates
 comptime (`eval_const` on both ends) → expansion splices the body once
 per iteration, binding `k` to the iteration value in the fold env
 (arithmetic on `k` folds; conditions on `k` prune). Runtime range →
-stays a runtime `foreach` (fail-open, same rule as match). Loop-count
-cap: 4096 iterations at expansion, then error (runaway generation is an
-authoring bug, not silently accepted).
+stays a runtime `foreach` (fail-open, same rule as match). A comptime
+range LARGER than the 4096-generation cap also degrades to a runtime
+loop — a big range legitimately wants loop semantics, and degradation
+gives correct + efficient without forcing the author to wrap anything
+(revised from "error": an error would be hostile to the correct
+pattern; runaway *statements-per-iteration* is capped by the same
+number in practice via nesting depth).
 
 Soundness: the body folds under a CLONE of the env (a runtime loop may
 run zero times); the item name is bound per-iteration clone, never
@@ -97,3 +101,38 @@ Front D, not here).
 - Statement-typed params, out-bindings (postponed — documented earlier).
 - Backend changes: none. Generation happens at expansion; both lanes'
   kernels come out of the same ordinary-body machinery.
+
+## Status: LANDED (2026-09-21, same day)
+
+**A** (`02418f49`): pre-prime snapshot/restore in
+`briev_accel_rt.c`. All gates both lanes PASS — deferred arm on Vulkan
+0.99 -> 2.06e-05; m3 composite template a_err 2.93e-06 / 8.30e-06.
+BUGS.md re-narrowed (both compiler hypotheses withdrawn).
+
+**B** (this commit): comptime generation landed with one design
+revision — generation is a PRE-SUBSTITUTION static pass
+(`unroll_static`): only the declaration's OWN text generates (literal
+ranges, list literals, seed consts); caller spans never do. First
+draft unrolled post-substitution ranges, which would have exploded the
+softmax composite's caller-span loops (256x128) — the conformance
+sweep plus a compile-time look caught it before any gate ran. An
+`expr` parameter is a runtime quantity by contract, even when a
+particular call passes a literal: that literal is POLICY, not
+structure. The fold stays the selection layer (Phase 1); in-place
+subexpression folding was added for assign sides and kept loop lists
+(unrolled items leave fully-folded arithmetic behind).
+
+Soundness fixes en route (both caught by the conformance sweep):
+- stale-outer-env after kept bodies: a runtime loop's clone folds under
+  a clone, so its runtime kills never reached the outer env — `s_`
+  survived as Int(0) and the in-place fold rewrote the normalize tail
+  into acc/0 (a NaN kernel). Rule: after ANY kept (may-run-zero-times)
+  body, `env_kill_tree` kills its binders in the outer env (all four
+  kept sites: foreach, both match forms, when).
+- the unroll item is a VALUE: substituted literally per iteration
+  (reuse of the parameter substitution), not merely env-bound.
+
+Tests: 30 composite tests (unroll/prune per iteration, param-range
+stays runtime, list literals + const lists, comptime check true/false/
+degrade, arithmetic on unrolled items, shift folding). 2323 lib tests
+green; gates re-run after the fold changes: all PASS both lanes.

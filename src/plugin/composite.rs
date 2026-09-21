@@ -88,15 +88,18 @@ pub fn expand_composite_invocation(
         out.push(Statement::Gate(def.contract.pre_condition.clone()));
     }
     let mut env: HashMap<String, ComptimeVal> = comptime.clone();
+    // Generation FIRST (static text, consts only), then substitution.
+    let generated = unroll_static(&def.body, comptime);
     let mut body_stmts: Vec<Statement> = Vec::new();
-    for s in &def.body {
+    for s in &generated {
         let mut cloned = s.clone();
         for (param, arg) in params.iter().zip(args) {
             substitute_param(&mut cloned, param, arg);
         }
         body_stmts.push(cloned);
     }
-    out.extend(fold_stmt_list(body_stmts, &mut env));
+    let folded = fold_stmt_list(body_stmts, &mut env, name)?;
+    out.extend(folded);
     if def.contract.post_condition != trivial {
         out.push(Statement::Gate(def.contract.post_condition.clone()));
     }
@@ -122,6 +125,10 @@ pub enum ComptimeVal {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// Comptime-generated sequence (plan 2026-09-21 §B2): the target of a
+    /// comptime `foreach`. Scalars only — the fold never guesses at
+    /// nested structures.
+    List(Vec<ComptimeVal>),
 }
 
 /// Evaluate one expression against the fold env. `None` = not
@@ -148,6 +155,13 @@ fn eval_const(e: &Expr, env: &HashMap<String, ComptimeVal>) -> Option<ComptimeVa
             let r = eval_const(b, env)?;
             apply_binop_const(*kind, l, r)
         }
+        Expr::List(xs) => {
+            let mut out = Vec::with_capacity(xs.len());
+            for x in xs {
+                out.push(eval_const(x, env)?);
+            }
+            Some(ComptimeVal::List(out))
+        }
         _ => None,
     }
 }
@@ -158,6 +172,7 @@ fn as_f(v: &ComptimeVal) -> f64 {
         ComptimeVal::Int(i) => *i as f64,
         ComptimeVal::Float(f) => *f,
         ComptimeVal::Bool(_) => f64::NAN,
+        ComptimeVal::List(_) => f64::NAN,
     }
 }
 
@@ -205,6 +220,16 @@ fn apply_binop_const(kind: BinaryOpKind, l: ComptimeVal, r: ComptimeVal) -> Opti
             (Bool(a), Bool(b)) => Some(Bool(a || b)),
             _ => None,
         },
+        BinaryOpKind::Shl | BinaryOpKind::Shr => match (l, r) {
+            (Int(a), Int(b)) if b >= 0 && b < 64 => {
+                if kind == BinaryOpKind::Shl {
+                    a.checked_shl(b as u32).map(Int)
+                } else {
+                    Some(Int(a >> b))
+                }
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -216,6 +241,8 @@ fn literal_expr(v: &ComptimeVal) -> Expr {
         ComptimeVal::Int(i) => Expr::Decimal(*i),
         ComptimeVal::Float(f) => Expr::Float(*f),
         ComptimeVal::Bool(b) => Expr::Bool(*b),
+        // Lists never reach this — fold_let_stmt keeps the source literal.
+        ComptimeVal::List(_) => Expr::List(vec![]),
     }
 }
 
@@ -266,7 +293,10 @@ fn fold_let_stmt(
     let init = match folded {
         Some(v) => {
             env.insert(name.clone(), v.clone());
-            if already_literal {
+            if already_literal || matches!(v, ComptimeVal::List(_)) {
+                // A literal keeps its exact shape (downstream matchers
+                // pattern-match Neg/Float nodes); a comptime list has no
+                // scalar literal — the source list literal IS its form.
                 expr
             } else {
                 Some(literal_expr(&v))
@@ -297,8 +327,9 @@ fn fold_stmt_form_match(
     expr: Expr,
     arms: Vec<StmtMatchArm>,
     env: &mut HashMap<String, ComptimeVal>,
+    composite: &str,
     out: &mut Vec<Statement>,
-) {
+) -> Result<(), String> {
     let mut arms = arms;
     let scrut = eval_const(&expr, env);
     let decidable = scrut.is_some()
@@ -315,23 +346,24 @@ fn fold_stmt_form_match(
         });
         if let Some(idx) = taken_idx {
             let StmtMatchArm { body, .. } = arms.swap_remove(idx);
-            out.extend(fold_stmt_list(body, env));
-            return;
+            out.extend(fold_stmt_list(body, env, composite)?);
+            return Ok(());
         }
         // No arm takes the value: keep verbatim — the typechecker
         // diagnoses exhaustiveness, unchanged.
     }
-    let arms = arms
-        .into_iter()
-        .map(|a| {
-            let mut clone = env.clone();
-            StmtMatchArm {
-                patterns: a.patterns,
-                body: fold_stmt_list(a.body, &mut clone),
-            }
-        })
-        .collect();
-    out.push(Statement::Match { expr: Box::new(expr), arms });
+    let mut folded_arms = Vec::with_capacity(arms.len());
+    for mut a in arms {
+        let mut clone = env.clone();
+        a.body = fold_stmt_list(a.body, &mut clone, composite)?;
+        env_kill_tree(&a.body, env);
+        folded_arms.push(a);
+    }
+    out.push(Statement::Match {
+        expr: Box::new(expr),
+        arms: folded_arms,
+    });
+    Ok(())
 }
 
 /// Fold an expression-form `match` used as a statement (the F1 unified
@@ -340,8 +372,9 @@ fn fold_stmt_form_match(
 fn fold_expr_form_match(
     m: Expr,
     env: &mut HashMap<String, ComptimeVal>,
+    composite: &str,
     out: &mut Vec<Statement>,
-) {
+) -> Result<(), String> {
     let Expr::Match(scrut_e, mut m_arms) = m else {
         unreachable!("caller matched Expr::Match");
     };
@@ -359,13 +392,19 @@ fn fold_expr_form_match(
             if matches!(m_arms[idx].body.as_ref(), Expr::Block(_)) {
                 let arm = m_arms.swap_remove(idx);
                 if let Expr::Block(body) = *arm.body {
-                    out.extend(fold_stmt_list(body, env));
-                    return;
+                    out.extend(fold_stmt_list(body, env, composite)?);
+                    return Ok(());
                 }
             }
         }
     }
+    for a in &m_arms {
+        if let Expr::Block(body) = a.body.as_ref() {
+            env_kill_tree(body, env);
+        }
+    }
     out.push(Statement::Expression(Expr::Match(scrut_e, m_arms)));
+    Ok(())
 }
 
 
@@ -376,22 +415,235 @@ fn fold_expr_form_match(
 /// - spliced taken arms execute deterministically in sequence — they fold
 ///   under the SAME env; every kept nested body (0+ or unknown iterations)
 ///   folds under a CLONE (mutations must not leak out).
+/// Comptime generation cap: an unroll beyond this is an authoring bug
+/// (runaway generation), not a big loop — fail the expansion with the fix.
+const COMPTIME_UNROLL_CAP: i64 = 4096;
+
+/// Comptime-known iteration values for a STATIC (pre-substitution) loop
+/// list: ranges bounded by literals or seed consts, list literals of
+/// literals, or seed-const lists. A range whose bound mentions ANY other
+/// identifier (a caller span, a body let) is a runtime loop — generation
+/// only comes from the declaration's own static text.
+fn comptime_iters(
+    list: &Expr,
+    consts: &HashMap<String, ComptimeVal>,
+) -> Option<Vec<ComptimeVal>> {
+    match list {
+        Expr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let static_end = match end.as_ref() {
+                Expr::Decimal(_) => true,
+                Expr::Identifier(n) => consts.contains_key(n),
+                _ => false,
+            };
+            if !static_end {
+                return None;
+            }
+            let a = match eval_const(start, consts)? {
+                ComptimeVal::Int(i) => i,
+                _ => return None,
+            };
+            let b = match eval_const(end, consts)? {
+                ComptimeVal::Int(i) => i,
+                _ => return None,
+            };
+            let stop = if *inclusive {
+                b.checked_add(1)?
+            } else {
+                b
+            };
+            if a >= stop {
+                return Some(Vec::new());
+            }
+            let n = stop.checked_sub(a)?;
+            if n > COMPTIME_UNROLL_CAP {
+                return None;
+            }
+            Some((a..stop).map(ComptimeVal::Int).collect())
+        }
+        Expr::List(xs) => {
+            if xs.len() as i64 > COMPTIME_UNROLL_CAP {
+                return None;
+            }
+            let mut out = Vec::with_capacity(xs.len());
+            for x in xs {
+                match x {
+                    Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_) => {}
+                    _ => return None,
+                }
+                out.push(eval_const(x, consts)?);
+            }
+            Some(out)
+        }
+        Expr::Identifier(n) => match consts.get(n) {
+            Some(ComptimeVal::List(xs)) => Some(xs.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Splice one static loop's body once per iteration value, substituting
+/// the item's literal (the recursion re-generates nested static loops).
+fn unroll_iterations(
+    item: &str,
+    iters: &[ComptimeVal],
+    body: &[Statement],
+    consts: &HashMap<String, ComptimeVal>,
+    out: &mut Vec<Statement>,
+) {
+    for val in iters {
+        let mut iter_body = unroll_static(body, consts);
+        for b in iter_body.iter_mut() {
+            substitute_param(b, item, &literal_expr(val));
+        }
+        out.extend(iter_body);
+    }
+}
+
+/// Pre-substitution generation pass (plan 2026-09-21 §B1/B2): unroll
+/// `foreach` loops whose lists are the declaration's OWN static text —
+/// literal ranges, list literals, seed consts. Caller spans never
+/// generate: an `expr` parameter is a runtime quantity even when a
+/// particular call passes a literal (that literal is POLICY, not
+/// structure). Recurses through nesting; item substitution reuses the
+/// parameter machinery so arithmetic on the item folds downstream.
+fn unroll_static(
+    body: &[Statement],
+    consts: &HashMap<String, ComptimeVal>,
+) -> Vec<Statement> {
+    let mut out = Vec::with_capacity(body.len());
+    for s in body {
+        match s {
+            Statement::Foreach { item, list, body } => {
+                match comptime_iters(list, consts) {
+                    Some(iters) => {
+                        unroll_iterations(item, &iters, body, consts, &mut out);
+                    }
+                    None => {
+                        let mut st = s.clone();
+                        if let Statement::Foreach { body, .. } = &mut st {
+                            *body = unroll_static(body, consts);
+                        }
+                        out.push(st);
+                    }
+                }
+            }
+            Statement::Guarded(_, body)
+            | Statement::Block(body)
+            | Statement::SyncBlock(body)
+            | Statement::Mutex(body)
+            | Statement::Defer(body)
+            | Statement::Barrier { body, .. } => {
+                let mut st = s.clone();
+                let inner = match &mut st {
+                    Statement::Guarded(_, b)
+                    | Statement::Block(b)
+                    | Statement::SyncBlock(b)
+                    | Statement::Mutex(b)
+                    | Statement::Defer(b) => b,
+                    Statement::Barrier { body, .. } => body,
+                    _ => unreachable!("matched above"),
+                };
+                *inner = unroll_static(body, consts);
+                out.push(st);
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
+/// Kill every comptime env entry a KEPT (may-run-zero-times) body
+/// rebinds or mutates — Lets, assignments to identifiers, nested loop
+/// items. The clone that folded the body never propagates its kills, so
+/// the outer env would otherwise keep a stale value the runtime overwrites
+/// (found by conformance: `s_` surviving as Int(0) let the in-place fold
+/// rewrite the normalize tail into acc/0). Over-killing is safe: the fold
+/// merely declines.
+fn env_kill_tree(body: &[Statement], env: &mut HashMap<String, ComptimeVal>) {
+    for s in body {
+        match s {
+            Statement::Let { name, names, .. } => {
+                env.remove(name);
+                for n in names {
+                    env.remove(n);
+                }
+            }
+            Statement::Assign(Expr::Identifier(n), _) => {
+                env.remove(n);
+            }
+            Statement::Foreach { item, body, .. } => {
+                env.remove(item);
+                env_kill_tree(body, env);
+            }
+            Statement::Guarded(_, body)
+            | Statement::Block(body)
+            | Statement::SyncBlock(body)
+            | Statement::Mutex(body)
+            | Statement::Defer(body)
+            | Statement::Barrier { body, .. } => env_kill_tree(body, env),
+            _ => {}
+        }
+    }
+}
+
+/// Fold comptime-known SUBexpressions in place (post-order): pure scalar
+/// arithmetic that became known — typically through item substitution in
+/// an unrolled body — is replaced by its literal at every position
+/// (assign sides, kept loop lists). Already-literal nodes are untouched.
+fn fold_expr_in_place(e: &mut Expr, env: &HashMap<String, ComptimeVal>) {
+    match e {
+        Expr::BinaryOp(_, a, b) => {
+            fold_expr_in_place(a, env);
+            fold_expr_in_place(b, env);
+        }
+        Expr::UnaryOp(_, a) => fold_expr_in_place(a, env),
+        Expr::Index(a, i) => {
+            fold_expr_in_place(a, env);
+            fold_expr_in_place(i, env);
+        }
+        Expr::Range { start, end, .. } => {
+            fold_expr_in_place(start, env);
+            fold_expr_in_place(end, env);
+        }
+        _ => {}
+    }
+    if matches!(
+        e,
+        Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_)
+    ) {
+        return;
+    }
+    if let Some(v) = eval_const(e, env) {
+        if !matches!(v, ComptimeVal::List(_)) {
+            *e = literal_expr(&v);
+        }
+    }
+}
+
 fn fold_stmt_list(
     stmts: Vec<Statement>,
     env: &mut HashMap<String, ComptimeVal>,
-) -> Vec<Statement> {
+    composite: &str,
+) -> Result<Vec<Statement>, String> {
     let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
     for s in stmts {
         match s {
             stmt @ Statement::Let { .. } => fold_let_stmt(stmt, env, &mut out),
-            Statement::Assign(l, r) => {
+            Statement::Assign(mut l, mut r) => {
                 if let Expr::Identifier(n) = &l {
                     env.remove(n);
                 }
+                fold_expr_in_place(&mut l, env);
+                fold_expr_in_place(&mut r, env);
                 out.push(Statement::Assign(l, r));
             }
             Statement::Match { expr, arms } => {
-                fold_stmt_form_match(*expr, arms, env, &mut out);
+                fold_stmt_form_match(*expr, arms, env, composite, &mut out)?;
             }
             // 2026-08-23 (F1 unified dispatch): the parser routes ALL match
             // to the EXPRESSION form — `Statement::Expression(Expr::Match)`.
@@ -399,57 +651,95 @@ fn fold_stmt_list(
             // arm's statements (same env — the arm executes); anything else
             // stays an ordinary runtime match (fail-open).
             Statement::Expression(e @ Expr::Match(_, _)) => {
-                fold_expr_form_match(e, env, &mut out);
+                fold_expr_form_match(e, env, composite, &mut out)?;
             }
+            // 2026-09-21 (comptime generation, §B3): a check that folds
+            // true is proven — spliced out; false fails the expansion with
+            // the composite and expression named; a non-foldable check
+            // stays on the ordinary runtime path (fail-open).
+            Statement::Check(e) => match eval_const(&e, env) {
+                Some(ComptimeVal::Bool(true)) => {}
+                Some(ComptimeVal::Bool(false)) => {
+                    return Err(format!(
+                        "composite '{composite}': comptime check `{e}` is \
+                         FALSE for this instantiation — the call arguments \
+                         violate a requirement the composite declares; \
+                         adjust the arguments or weaken the check"
+                    ));
+                }
+                _ => out.push(Statement::Check(e)),
+            },
             Statement::Guarded(cond, body) => match eval_const(&cond, env) {
                 Some(ComptimeVal::Bool(true)) => {
-                    out.extend(fold_stmt_list(body, env));
+                    out.extend(fold_stmt_list(body, env, composite)?);
                 }
                 Some(ComptimeVal::Bool(false)) => {}
                 _ => {
                     let mut clone = env.clone();
-                    out.push(Statement::Guarded(
-                        cond,
-                        fold_stmt_list(body, &mut clone),
-                    ));
+                    let folded = fold_stmt_list(body.clone(), &mut clone, composite)?;
+                    env_kill_tree(&body, env);
+                    out.push(Statement::Guarded(cond, folded));
                 }
             },
-            Statement::Foreach { item, list, body } => {
+            Statement::Foreach { item, mut list, body } => {
+                // Generation happened in unroll_static (PRE-substitution):
+                // by the time a composite body reaches the fold, every
+                // loop range is caller-derived — a RUNTIME quantity by
+                // contract. The loop stays; its body folds under a clone.
                 env.remove(&item);
                 let mut clone = env.clone();
+                let folded = fold_stmt_list(body.clone(), &mut clone, composite)?;
+                env_kill_tree(&body, env);
+                fold_expr_in_place(&mut list, env);
                 out.push(Statement::Foreach {
                     item,
                     list,
-                    body: fold_stmt_list(body, &mut clone),
+                    body: folded,
                 });
             }
             Statement::Block(body) => {
                 let mut clone = env.clone();
-                out.push(Statement::Block(fold_stmt_list(body, &mut clone)));
+                out.push(Statement::Block(fold_stmt_list(
+                    body,
+                    &mut clone,
+                    composite,
+                )?));
             }
             Statement::SyncBlock(body) => {
                 let mut clone = env.clone();
-                out.push(Statement::SyncBlock(fold_stmt_list(body, &mut clone)));
+                out.push(Statement::SyncBlock(fold_stmt_list(
+                    body,
+                    &mut clone,
+                    composite,
+                )?));
             }
             Statement::Mutex(body) => {
                 let mut clone = env.clone();
-                out.push(Statement::Mutex(fold_stmt_list(body, &mut clone)));
+                out.push(Statement::Mutex(fold_stmt_list(
+                    body,
+                    &mut clone,
+                    composite,
+                )?));
             }
             Statement::Defer(body) => {
                 let mut clone = env.clone();
-                out.push(Statement::Defer(fold_stmt_list(body, &mut clone)));
+                out.push(Statement::Defer(fold_stmt_list(
+                    body,
+                    &mut clone,
+                    composite,
+                )?));
             }
             Statement::Barrier { groups, body } => {
                 let mut clone = env.clone();
                 out.push(Statement::Barrier {
                     groups,
-                    body: fold_stmt_list(body, &mut clone),
+                    body: fold_stmt_list(body, &mut clone, composite)?,
                 });
             }
             other => out.push(other),
         }
     }
-    out
+    Ok(out)
 }
 
 /// Hygiene: identifiers the caller's arguments carry must not collide with
@@ -570,6 +860,13 @@ fn nav_comptime(v: &crate::macros::eval::NavValue) -> Option<ComptimeVal> {
         crate::macros::eval::NavValue::Int(i) => Some(ComptimeVal::Int(*i)),
         crate::macros::eval::NavValue::Bool(b) => Some(ComptimeVal::Bool(*b)),
         crate::macros::eval::NavValue::Count(c) => Some(ComptimeVal::Int(*c as i64)),
+        crate::macros::eval::NavValue::List(xs) => {
+            let mut out = Vec::with_capacity(xs.len());
+            for x in xs {
+                out.push(nav_comptime(x)?);
+            }
+            Some(ComptimeVal::List(out))
+        }
         _ => None,
     }
 }
@@ -1283,11 +1580,35 @@ async node k [i < 1][i == 1] {
     }
 
     #[test]
-    fn loop_binder_is_never_comptime() {
+    fn comptime_range_unrolls_and_prunes_per_iteration() {
+        // LITERAL range in the declaration = generation (static text).
+        let items = parse_program(
+            "$defn f(p: expr) { \n\
+             \x20 foreach j in 0..16 { \n\
+             \x20  match j < 4 { true => { lo = 1; }, false => { hi = 1; }, } \n\
+             \x20 } \n\
+             };",
+        );
+        let d = defn_of(&items, "f");
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new())
+            .expect("expands");
+        let dump = format!("{out:?}");
+        let los = dump.matches("\"lo\"").count();
+        let his = dump.matches("\"hi\"").count();
+        assert_eq!(los, 4, "j=0..3 take the true arm: {dump}");
+        assert_eq!(his, 12, "j=4..15 take the false arm: {dump}");
+        assert!(!dump.contains("Foreach"), "unrolled: {dump}");
+        assert!(!dump.contains("Match"), "per-iteration pruning: {dump}");
+    }
+
+    #[test]
+    fn param_derived_range_stays_a_runtime_loop() {
+        // A range over an expr PARAMETER is a runtime quantity even when
+        // this call passes a literal — caller spans never generate.
         let items = parse_program(
             "$defn f(n: expr) { \n\
              \x20 foreach j in 0..n { \n\
-             \x20  match j < 4 { true => { lo = 1; }, false => { hi = 1; }, }; \n\
+             \x20  work = 1; \n\
              \x20 } \n\
              };",
         );
@@ -1295,7 +1616,118 @@ async node k [i < 1][i == 1] {
         let out = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new())
             .expect("expands");
         let dump = format!("{out:?}");
-        assert!(dump.contains("Match"), "j is a runtime binder: {dump}");
+        assert!(dump.contains("Foreach"), "param range stays runtime: {dump}");
+    }
+
+    #[test]
+    fn runtime_list_keeps_the_runtime_foreach() {
+        let items = parse_program(
+            "$defn f(rows: expr) { \n\
+             \x20 foreach j in rows { \n\
+             \x20  match j < 4 { true => { lo = 1; }, false => { hi = 1; }, } \n\
+             \x20 } \n\
+             };",
+        );
+        let d = defn_of(&items, "f");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Identifier("R".into())],
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Foreach"), "R is runtime: {dump}");
+        assert!(dump.contains("Match"), "j unknown: {dump}");
+    }
+
+    #[test]
+    fn comptime_list_literal_unrolls_per_element() {
+        let items = parse_program(
+            "$defn f(p: expr) { \n\
+             \x20 foreach w in [1, 2, 4] { \n\
+             \x20  acc[p + w] = w; \n\
+             \x20 } \n\
+             };",
+        );
+        let d = defn_of(&items, "f");
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new())
+            .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(1)") && dump.contains("Decimal(2)")
+            && dump.contains("Decimal(4)"), "each element spliced: {dump}");
+        assert!(!dump.contains("Foreach"), "unrolled: {dump}");
+        assert!(!dump.contains("\"w\""), "item substituted: {dump}");
+    }
+
+    #[test]
+    fn comptime_const_list_unrolls_per_element() {
+        let items = parse_program(
+            "$defn f() { \n\
+             \x20 foreach w in PHASES { \n\
+             \x20  acc[0] = acc[0] + w; \n\
+             \x20 } \n\
+             };",
+        );
+        let d = defn_of(&items, "f");
+        let mut seed = HashMap::new();
+        seed.insert(
+            "PHASES".to_string(),
+            ComptimeVal::List(vec![
+                ComptimeVal::Int(1),
+                ComptimeVal::Int(2),
+                ComptimeVal::Int(4),
+                ComptimeVal::Int(8),
+            ]),
+        );
+        let out =
+            expand_composite_invocation(&d, &[], &seed).expect("expands");
+        let dump = format!("{out:?}");
+        assert_eq!(dump.matches("Decimal(8)").count(), 1, "w=8 spliced: {dump}");
+        assert!(!dump.contains("Foreach"), "unrolled: {dump}");
+    }
+
+    #[test]
+    fn comptime_check_true_splices_false_errors() {
+        let items = parse_program(
+            "$defn f(n: expr) { \n\
+             \x20 check n <= 32; \n\
+             \x20 mark = n; \n\
+             };",
+        );
+        let d = defn_of(&items, "f");
+        let ok = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new())
+            .expect("16 <= 32 proven");
+        let dump = format!("{ok:?}");
+        assert!(!dump.contains("Check"), "proven check spliced out: {dump}");
+        assert!(dump.contains("\"mark\""), "body present: {dump}");
+        let err = expand_composite_invocation(&d, &[Expr::Decimal(64)], &HashMap::new())
+            .unwrap_err();
+        assert!(err.contains("comptime check") && err.contains("FALSE"), "{err}");
+        // Non-foldable check degrades to the runtime path.
+        let rt = expand_composite_invocation(
+            &d,
+            &[Expr::Identifier("N".into())],
+            &HashMap::new(),
+        )
+        .expect("runtime check kept");
+        assert!(format!("{rt:?}").contains("Check"), "{rt:?}");
+    }
+
+    #[test]
+    fn arithmetic_on_unrolled_item_folds() {
+        let items = parse_program(
+            "$defn f() { \n\
+             \x20 foreach k in 0..3 { \n\
+             \x20  stage[(1 << k)] = k; \n\
+             \x20 } \n\
+             };",
+        );
+        let d = defn_of(&items, "f");
+        let out = expand_composite_invocation(&d, &[], &HashMap::new()).expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(1)") && dump.contains("Decimal(2)")
+            && dump.contains("Decimal(4)"), "1<<k folded per iteration: {dump}");
+        assert!(!dump.contains("Shl"), "shift folded away: {dump}");
     }
 
     #[test]
