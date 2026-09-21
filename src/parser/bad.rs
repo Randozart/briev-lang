@@ -89,31 +89,24 @@ impl<'s> Parser<'s> {
             // Local label `.name:` — nests into the owning label's body
             // (directives never carry a colon, so the colon keeps the
             // token-shape disambiguation honest).
-            if content.starts_with('.') {
-                if let Some((name, rest)) = split_label(content) {
-                    if is_ident(name) && rest.trim().is_empty() {
-                        let local = BadLocal { name: name[1..].to_string(), span };
-                        match owner.as_mut() {
-                            Some(Owner::Label(i)) => {
-                                if let Some(BadTopLevel::Label(l)) = self.items.get_mut(*i) {
-                                    l.body.push(BadBodyItem::Local(local));
-                                }
-                                self.pos += 1;
-                                continue;
-                            }
-                            _ => {
-                                return Err(BadParseError {
-                                    message: format!(
-                                        "local label `{content}` is outside any label - \
-                                         local labels must follow a global label"
-                                    ),
-                                    line,
-                                    span,
-                                });
-                            }
-                        }
+            if content.starts_with('.') && is_local_label_shape(content) {
+                match owner.as_ref() {
+                    Some(Owner::Label(i)) => {
+                        self.append_local(*i, content, span);
+                    }
+                    _ => {
+                        return Err(BadParseError {
+                            message: format!(
+                                "local label `{content}` is outside any label - \
+                                 local labels must follow a global label"
+                            ),
+                            line,
+                            span,
+                        });
                     }
                 }
+                self.pos += 1;
+                continue;
             }
 
             // Top-level shapes always close the current owner.
@@ -162,7 +155,7 @@ impl<'s> Parser<'s> {
             }
 
             // Instruction line — must have an owner.
-            let instr = self.parse_instr_line(content, line, span)?;
+            let instrs = self.parse_instr_line(content, line, span)?;
             let owner = owner.as_mut().ok_or_else(|| BadParseError {
                 message: format!(
                     "instruction `{content}` has no owner - every instruction \
@@ -171,14 +164,21 @@ impl<'s> Parser<'s> {
                 line,
                 span,
             })?;
-                let lctx = LineCtx { content, line, span };
-                self.push_instruction(owner, instr, &lctx)?;
+            let lctx = LineCtx { content, line, span };
+            self.push_instruction(owner, instrs, &lctx)?;
             self.pos += 1;
         }
         let end = self.lines.last().map(|(o, c, _)| o + c.len()).unwrap_or(0);
         Ok(BadProgram { items: self.items, span: Span::new(0, end, 0, 0) })
     }
 
+
+    fn append_local(&mut self, idx: usize, content: &str, span: Span) {
+        let name = split_label(content).map(|(n, _)| n[1..].to_string()).unwrap_or_default();
+        if let Some(BadTopLevel::Label(l)) = self.items.get_mut(idx) {
+            l.body.push(BadBodyItem::Local(BadLocal { name, span }));
+        }
+    }
 
     /// Route a `target => ...` row to its owner (defn table or last
     /// instruction of a label).
@@ -237,14 +237,14 @@ impl<'s> Parser<'s> {
     /// Route an instruction line to its owner (label body or defn
     /// sequence body).
     fn push_instruction(
-        &mut self, owner: &mut Owner, mut instr: BadInstr, lc: &LineCtx,
+        &mut self, owner: &mut Owner, instrs: Vec<BadInstr>, lc: &LineCtx,
     ) -> Result<(), BadParseError> {
-        let (content, line, span) = (lc.content, lc.line, lc.span);
         match owner {
             Owner::Label(i) => {
                 if let Some(BadTopLevel::Label(l)) = self.items.get_mut(*i) {
-                    instr.contract = self.pending_contract.take();
-                    l.body.push(BadBodyItem::Instr(instr));
+                    push_with_contract(instrs, &mut self.pending_contract, |i| {
+                        l.body.push(BadBodyItem::Instr(i))
+                    });
                 }
             }
             Owner::Defn { seq_body, branch_rows, .. } => {
@@ -253,23 +253,30 @@ impl<'s> Parser<'s> {
                         message: format!(
                             "defn mixes branch rows with sequence body lines - \
                              a branch defn contains only `default => ...` / \
-                             `target => ...` rows ('{content}')"
+                             `target => ...` rows ('{}')",
+                            lc.content
                         ),
-                        line,
-                        span,
+                        line: lc.line,
+                        span: lc.span,
                     });
                 }
                 *seq_body = true;
+                let mut defn = match self.items.last_mut() {
+                    Some(BadTopLevel::Defn(d)) => d.clone(),
+                    _ => return Ok(()),
+                };
+                // First sequence line converts the provisional Branch
+                // shape (see parse_defn) to Sequence.
+                if matches!(defn.shape, BadDefnShape::Branch(_)) {
+                    defn.shape = BadDefnShape::Sequence(Vec::new());
+                }
+                if let BadDefnShape::Sequence(body) = &mut defn.shape {
+                    push_with_contract(instrs, &mut self.pending_contract, |i| {
+                        body.push(i)
+                    });
+                }
                 if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {
-                    // First sequence line converts the provisional
-                    // Branch shape (see parse_defn) to Sequence.
-                    if matches!(d.shape, BadDefnShape::Branch(_)) {
-                        d.shape = BadDefnShape::Sequence(Vec::new());
-                    }
-                    if let BadDefnShape::Sequence(body) = &mut d.shape {
-                        instr.contract = self.pending_contract.take();
-                        body.push(instr);
-                    }
+                    d.shape = defn.shape;
                 }
             }
         }
@@ -415,11 +422,26 @@ impl<'s> Parser<'s> {
     /// `mnemonic ops` — a plain instruction line.
     fn parse_instr_line(
         &mut self, content: &str, line: usize, span: Span,
-    ) -> Result<BadInstr, BadParseError> {
+    ) -> Result<Vec<BadInstr>, BadParseError> {
         let (off, _, _) = self.lines[self.pos];
-        let mut instr = self.parse_instr_text(content, off, line)?;
-        instr.span = span;
-        Ok(instr)
+        let mut out = Vec::new();
+        for piece in split_semicolons(content) {
+            let piece = piece.trim();
+            if piece.is_empty() {
+                continue;
+            }
+            let mut instr = self.parse_instr_text(piece, off, line)?;
+            instr.span = span;
+            out.push(instr);
+        }
+        if out.is_empty() {
+            return Err(BadParseError {
+                message: format!("instruction line `{content}` contains no instruction"),
+                line,
+                span,
+            });
+        }
+        Ok(out)
     }
 
     fn parse_instr_text(
@@ -432,29 +454,7 @@ impl<'s> Parser<'s> {
             if piece.is_empty() {
                 continue;
             }
-            if let Ok(n) = piece.parse::<i64>() {
-                operands.push(BadOperand::Int(n));
-            } else if is_float_literal(piece) {
-                if piece.parse::<f64>().is_ok() {
-                    operands.push(BadOperand::Float(piece.to_string()));
-                } else {
-                    return Err(BadParseError {
-                        message: format!("float literal `{piece}` does not parse"),
-                        line,
-                        span: Span::new(off, off + piece.len(), line, 0),
-                    });
-                }
-            } else if is_ident(piece) || piece.starts_with('[') || piece.starts_with('(') {
-                // Name or raw operand text (memory refs like `[sp, #-16]!`):
-                // resolved at lowering — params first, then the register
-                // table, with identifier-boundary replacement inside raw
-                // operand text.
-                operands.push(BadOperand::Name(piece.to_string()));
-            } else {
-                // Arithmetic shape (`addr + 8`, `MAX * 4 - 1`) — evaluated
-                // at lowering through the comptime pass.
-                operands.push(BadOperand::Expr(piece.to_string()));
-            }
+            operands.push(classify_operand(piece, line, off)?);
         }
         Ok(BadInstr {
             mnemonic: mnemonic.to_string(),
@@ -495,6 +495,32 @@ impl<'s> Parser<'s> {
 }
 
 // ── small scanners ─────────────────────────────────────────────────────
+
+/// `.name:` shape test — ident after the dot, nothing after the colon
+/// (directives never carry a colon, so the colon keeps the token-shape
+/// disambiguation honest).
+fn is_local_label_shape(content: &str) -> bool {
+    match split_label(content) {
+        Some((name, rest)) => is_ident(name) && rest.trim().is_empty(),
+        None => false,
+    }
+}
+
+/// Push a `;`-packed instruction run; the pending contract binds to the
+/// FIRST of the run (exceptions from later lines attach to the LAST).
+fn push_with_contract(
+    instrs: Vec<BadInstr>, pending: &mut Option<BadContract>,
+    mut push: impl FnMut(BadInstr),
+) {
+    let mut first = true;
+    for mut instr in instrs {
+        if first {
+            instr.contract = pending.take();
+            first = false;
+        }
+        push(instr);
+    }
+}
 
 /// Strip a `//` comment, respecting string literals.
 fn strip_comment(line: &str) -> &str {
@@ -566,6 +592,30 @@ fn split_top(s: &str, sep: u8) -> Vec<&str> {
 
 /// `1.5`, `3.14e-2`, `2E10` — a decimal float literal (validated by the
 /// caller's f64 parse).
+/// One operand token → its AST kind. Int; float literal; Name (or raw
+/// memory-ref text like `[sp, #-16]!`, resolved at lowering); or an
+/// arithmetic Expr (`addr + 8`, `MAX * 4`) for the comptime pass.
+fn classify_operand(
+    piece: &str, line: usize, off: usize,
+) -> Result<BadOperand, BadParseError> {
+    if let Ok(n) = piece.parse::<i64>() {
+        return Ok(BadOperand::Int(n));
+    }
+    if is_float_literal(piece) {
+        return piece.parse::<f64>().map(|_| BadOperand::Float(piece.to_string())).map_err(|_| {
+            BadParseError {
+                message: format!("float literal `{piece}` does not parse"),
+                line,
+                span: Span::new(off, off + piece.len(), line, 0),
+            }
+        });
+    }
+    if is_ident(piece) || piece.starts_with('[') || piece.starts_with('(') {
+        return Ok(BadOperand::Name(piece.to_string()));
+    }
+    Ok(BadOperand::Expr(piece.to_string()))
+}
+
 fn is_float_literal(s: &str) -> bool {
     let b = s.as_bytes();
     if b.is_empty() || !(b[0].is_ascii_digit()) {
@@ -686,7 +736,7 @@ fn take_cmp_op(s: &str) -> Option<(BadCmpOp, &str)> {
 mod tests {
     use super::*;
 
-    fn parse_ok(src: &str) -> BadProgram {
+    pub(crate) fn parse_ok(src: &str) -> BadProgram {
         parse_bad(src).unwrap_or_else(|e| panic!("parse failed: {}", e))
     }
 
@@ -800,19 +850,64 @@ fn parse_pred_group(
     inner: &str, line: usize, span: Span,
 ) -> Result<Vec<BadContractPred>, BadParseError> {
     if let Some(body) = inner.strip_prefix("pre:") {
-        parse_preds(body.trim(), line, span)
-    } else if let Some(body) = inner.strip_prefix("post:") {
-        parse_preds(body.trim(), line, span)
-    } else if let Some(body) = inner.strip_prefix("frame:") {
-        let n: i64 = body.trim().parse().map_err(|_| BadParseError {
-            message: format!(
-                "frame contract needs a byte bound: `[frame: 32]` ('{inner}')"
-            ),
-            line,
-            span,
-        })?;
-        Ok(vec![BadContractPred::Frame(n)])
-    } else {
-        parse_preds(inner, line, span)
+        return parse_preds(body.trim(), line, span);
+    }
+    if let Some(body) = inner.strip_prefix("post:") {
+        return parse_preds(body.trim(), line, span);
+    }
+    if let Some(body) = inner.strip_prefix("frame:") {
+        return parse_frame_group(body, line, span);
+    }
+    parse_preds(inner, line, span)
+}
+
+/// `[frame: 32]` — the byte bound.
+fn parse_frame_group(
+    body: &str, line: usize, span: Span,
+) -> Result<Vec<BadContractPred>, BadParseError> {
+    let n: i64 = body.trim().parse().map_err(|_| BadParseError {
+        message: format!("frame contract needs a byte bound: `[frame: 32]` ('{body}')"),
+        line,
+        span,
+    })?;
+    Ok(vec![BadContractPred::Frame(n)])
+}
+
+#[cfg(test)]
+mod semicolon_tests {
+    use super::tests::parse_ok;
+    use super::*;
+
+    #[test]
+    fn packed_lines_split_in_every_context() {
+        // Label body, defn sequence body, and branch row all accept the
+        // same packed line — one rule everywhere.
+        let p = parse_ok(
+            "t:\n    mov r0, 1; mov r1, 2; ret\n\ndefn f x\n    push x; pop x\n\n\
+             defn g x\n    default => mov r0, x; ret\n",
+        );
+        let BadTopLevel::Label(t) = &p.items[0] else { panic!("label") };
+        assert_eq!(t.body.len(), 3, "label body: packed line = 3 instructions");
+        let BadTopLevel::Defn(d) = &p.items[1] else { panic!("defn") };
+        let BadDefnShape::Sequence(body) = &d.shape else { panic!("sequence") };
+        assert_eq!(body.len(), 2, "defn body: packed line = 2 instructions");
+        let BadTopLevel::Defn(g) = &p.items[2] else { panic!("defn g") };
+        let BadDefnShape::Branch(rows) = &g.shape else { panic!("branch shape") };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body.len(), 2, "branch-row packed line = 2 instructions");
+    }
+
+    #[test]
+    fn contract_binds_first_exception_binds_last() {
+        let p = parse_ok(
+            "t:\n    [sp % 16 == 0]\n    push r0; call f\n    x86_64 => nop\n    \
+             ret\n\ndefn f\n    ret\n",
+        );
+        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
+        let BadBodyItem::Instr(push) = &l.body[0] else { panic!("push") };
+        let BadBodyItem::Instr(call) = &l.body[1] else { panic!("call") };
+        assert!(push.contract.is_some(), "contract binds to the FIRST packed");
+        assert!(call.contract.is_none());
+        assert_eq!(call.exceptions.len(), 1, "exception binds to the LAST");
     }
 }
