@@ -1,0 +1,120 @@
+// ── park.bad — the .bad showcase ──────────────────────────────────────
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// A tiny park simulator: greets guests, charges wallets, sums sales.
+// Run:  brievc bad park.bad --run
+//
+// On display: friendly mnemonic aliases (default prelude — raw names
+// like mov/jz always work), universal ';' (a line is a sequence of
+// instructions, anywhere), positional contracts (one group = post, two
+// groups = pre then post), comptime constants, struct layouts, local
+// labels, defns with per-target exceptions, portable named syscalls,
+// FP literals, C-ABI exports with stack args, and imports.
+
+import "string.bad"                 // pure-.bad stdlib (strlen, memcpy...)
+
+// ── Compile-time constants and struct layouts ─────────────────────────
+.const TICKET_PRICE 42
+.const GUEST_CAP 3
+
+.struct Guest
+.field happiness, 8
+.field wallet, 8
+.field visits, 2
+.end                                // Guest.happiness=0, Guest.wallet=8,
+                                    // Guest.visits=16, Guest.size=24
+
+section .text
+global _start
+export price_ticket                 // C-ABI visible: callable from .bv/C
+
+// ── Entry ─────────────────────────────────────────────────────────────
+// Positional contracts: one bracket group = post; two = pre then post.
+_start: [frame: 16]
+    Addr r4, banner; Move r5, 1     // universal ';' — packed sequence
+    Move r2, 11
+    Move r0, 1
+    SystemCall write, r5, r4, r2    // portable: write=1/64/64 per target
+
+    Addr r1, guest                  // r1 = &guest
+    Move r0, 0
+    x86_64 => Xor r0, r0, r0        // INLINE EXCEPTION: on x86_64 the
+                                    // xor-self zeroing is the canonical
+                                    // idiom (no immediate encoder, no
+                                    // latency). aarch64/riscv64 have no
+                                    // row here — their universal mov IS
+                                    // already optimal. Exceptions are
+                                    // per-target opportunity, never an
+                                    // obligation.
+    StoreOffset r0, r1, Guest.happiness
+    Move r0, TICKET_PRICE
+    StoreOffset r0, r1, Guest.wallet
+    Move r0, 1
+    StoreOffset r0, r1, Guest.visits
+
+    Call ChargeGuest                // sequence defn below — inlined as-is
+    Addr r4, priced
+    Move r2, 8
+    Move r0, 1
+    SystemCall write, r5, r4, r2
+
+    Move r0, GUEST_CAP
+    Call SumSales                   // branch defn below
+    Multiply r0, r0, TICKET_PRICE   // total sales = sum x price
+    SystemCall exit, r0, r0, r0     // exit code = total sales
+
+// ── defn, sequence shape: universal body lines, inlined as-is ─────────
+// ChargeGuest(g): wallet -= ticket price, floored at zero.
+defn ChargeGuest g
+    LoadOffset r2, g, Guest.wallet
+    JumpIfGreaterOrEqual r2, TICKET_PRICE, .full
+    Move r0, 0
+    Jump .store
+.full:
+    Subtract r2, r2, TICKET_PRICE
+    Move r0, r2
+.store:
+    StoreOffset r0, g, Guest.wallet
+    Return
+
+// ── defn, branch shape: default = universal core syntax ───────────────
+// SumSales(n: r0) -> r0 — 1+2+...+n. The x86_64 row replaces the whole
+// defn on that target (xor-zeroing idiom again); every other target
+// rides the default. A target with no winning form needs NO row.
+defn SumSales n
+    default => { Move r1, 0; Move r3, r0 }
+    x86_64 => { Xor r1, r1, r1; Move r3, r0 }
+.loop:
+    JumpIfZero r3, .done
+    Add r1, r1, r3; Subtract r3, r3, 1
+    Jump .loop
+.done:
+    Move r0, r1
+    Return
+
+// ── C-ABI export: six register args + stack args via loadoff ──────────
+// price_ticket(base, discount, guest_fee, tax, a5, a6, extra1, extra2)
+//   = base - discount + guest_fee + tax + extra1 + extra2
+price_ticket: [r0 valid]
+    Subtract r0, r0, r1
+    Add r0, r0, r2
+    Add r0, r0, r3
+    LoadOffset r8, sp, 8            // arg 7 — abi_stack_arg_base (x86_64)
+    Add r0, r0, r8
+    LoadOffset r8, sp, 16           // arg 8
+    Add r0, r0, r8
+    Return
+
+// ── FP: literal pool, no ceremony ─────────────────────────────────────
+// Refund a wallet by 15% of its value, in place.
+refund_rate: [r5 valid]
+    FloatMove f0, 0.15
+    FloatLoad f1, r5
+    FloatMultiply f0, f0, f1
+    FloatStore f0, r5
+    Return
+
+section .data
+banner: .asciz "park open\n"
+priced: .asciz "charged\n"
+guest: .zero Guest.size
