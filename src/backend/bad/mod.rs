@@ -764,36 +764,37 @@ mod phase3_hardening_tests {
                    syscall exit, r5, r4, r4\n\nsection .data\nbuf: .zero 8\nout: .double \
                    0\n";
         for family in ["x86_64", "aarch64", "riscv64"] {
-            if !toolchain_available(family) {
-                eprintln!("skip: {family} cross toolchain not installed");
-                continue;
-            }
-            let asm = generate(src, &format!("{family}-linux-gnu"))
-                .unwrap_or_else(|e| panic!("{family}: {e}"));
-            let dir = test_dir(&format!("fp_{family}"));
-            let o = dir.join("fp.o");
-            assemble(&asm, family, &o).unwrap_or_else(|e| panic!("{family} assemble: {e}"));
-            let (_, regs) = registries();
-            let bin = dir.join("fp");
-            let mut ld_cmd = std::process::Command::new(regs.cross_ld(family).unwrap());
-            for flag in regs.cross_ld_flags(family) {
-                ld_cmd.arg(flag);
-            }
-            let st = ld_cmd.arg(&o).arg("-o").arg(&bin).status().expect("ld");
-            assert!(st.success(), "{family} link failed");
-            let stdout = std::process::Command::new(format!("qemu-{family}"))
-                .arg(&bin)
-                .output()
-                .map(|o| o.stdout)
-                .unwrap_or_else(|e| panic!("{family} qemu: {e}"));
-            // fstore wrote the f64 bit pattern of 1.5 + 2.25.
-            assert_eq!(
-                stdout,
-                3.75f64.to_bits().to_le_bytes(),
-                "{family} fp math"
-            );
-            std::fs::remove_dir_all(&dir).ok();
+            fp_cross_verify(src, family);
         }
+    }
+
+    /// Generate → assemble → link → run one program on one target under
+    /// qemu; asserts the stored f64 bit pattern of 1.5 + 2.25.
+    fn fp_cross_verify(src: &str, family: &str) {
+        if !toolchain_available(family) {
+            eprintln!("skip: {family} cross toolchain not installed");
+            return;
+        }
+        let asm = generate(src, &format!("{family}-linux-gnu"))
+            .unwrap_or_else(|e| panic!("{family}: {e}"));
+        let dir = test_dir(&format!("fp_{family}"));
+        let o = dir.join("fp.o");
+        assemble(&asm, family, &o).unwrap_or_else(|e| panic!("{family} assemble: {e}"));
+        let (_, regs) = registries();
+        let bin = dir.join("fp");
+        let mut ld_cmd = std::process::Command::new(regs.cross_ld(family).unwrap());
+        for flag in regs.cross_ld_flags(family) {
+            ld_cmd.arg(flag);
+        }
+        let st = ld_cmd.arg(&o).arg("-o").arg(&bin).status().expect("ld");
+        assert!(st.success(), "{family} link failed");
+        let stdout = std::process::Command::new(format!("qemu-{family}"))
+            .arg(&bin)
+            .output()
+            .map(|o| o.stdout)
+            .unwrap_or_else(|e| panic!("{family} qemu: {e}"));
+        assert_eq!(stdout, 3.75f64.to_bits().to_le_bytes(), "{family} fp math");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
