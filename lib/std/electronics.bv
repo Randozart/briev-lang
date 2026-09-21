@@ -21,6 +21,23 @@ type Hertz { spec Bits: 32; };
 type Watt { spec Bits: 32; };
 type Kelvin { spec Bits: 32; };
 
+// ── 2026-09-21 (E12, design record D6): pin electrical classes ──────────
+// Fundamentals, not keywords: a pin clause ascribes one by type name —
+// `pin vbus: Power;` — and the compiler resolves the reference and reads
+// these spec properties generically. The compiler knows no class names
+// (Rules 14/15): declaring a NEW class is a declaration here, not a
+// compiler release.
+// No `spec Bits` here: classes are valueless markers — nothing ever holds
+// a `Power` or an `Nc`, so no storage width exists to declare. Bits stays
+// on the value quantities above (they enter proven arithmetic).
+type Power { spec KicadType: "power_in"; };
+type Ground { spec KicadType: "power_in"; };
+type In { spec KicadType: "input"; };
+type Out { spec KicadType: "output"; };
+type Io { spec KicadType: "bidirectional"; };
+type IoOd { spec KicadType: "open_collector"; };
+type Nc { spec KicadType: "no_connect"; spec NoConnect: true; };
+
 // A pin: two electrical quantities. Contracts reference them directly —
 // `r1.a.voltage == j1.p1.voltage` — and the netlist derives from those
 // obligations.

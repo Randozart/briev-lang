@@ -52,6 +52,9 @@ pub struct TypeInfo {
     pub reference_prefix: String,
     /// Declared pins (name, KiCad number), sorted by number.
     pub pins: Vec<(String, u64)>,
+    /// 2026-09-21 (E12): resolved class properties, index-aligned to
+    /// `pins`. Defaults apply for unclassed pins.
+    pub pin_classes: Vec<PinClassProps>,
     /// Max voltage any pin of this type tolerates — `!> Tolerance: 3.3`.
     /// None = unrated: the pin places no constraint (skeleton semantics;
     /// per-pin ratings are a follow-on).
@@ -82,8 +85,36 @@ pub struct ElectronicsNetlist {
     pub is_electronics: bool,
     /// Schematic facts per component type name.
     pub type_info: BTreeMap<String, TypeInfo>,
+    /// 2026-09-21 (E12): pin-class ascription failures — a pin names a
+    /// class type that is not in scope. Hard diagnostics: the backend
+    /// refuses to emit.
+    pub class_errors: Vec<String>,
     /// 2026-09-11 (electrical proving): net voltage classes + violations.
     pub voltage: VoltageCheck,
+}
+
+/// 2026-09-21 (E12, design record D6): resolved property set for a pin's
+/// class fundamental. Defaults apply when the pin carries no ascription:
+/// passive KiCad electrical type, no no-connect marking. The class NAMES
+/// live in stdlib (`Power`/`Ground`/… in std/electronics.bv); the
+/// compiler reads properties generically and knows no class names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinClassProps {
+    /// `spec KicadType: "power_in";` on the class fundamental — the KiCad
+    /// electrical pin type for symbol emission.
+    pub kicad_type: String,
+    /// `spec NoConnect: true;` — the pin is intentionally unconnected and
+    /// is exempt from the dangling-pin error.
+    pub no_connect: bool,
+}
+
+impl Default for PinClassProps {
+    fn default() -> Self {
+        PinClassProps {
+            kicad_type: "passive".to_string(),
+            no_connect: false,
+        }
+    }
 }
 
 /// 2026-09-11 (electrical proving): voltage classes over the derived netlist.
@@ -157,11 +188,52 @@ fn pin_key(component: &str, pin: &str) -> String {
     format!("{}\u{1F}{}", component, pin)
 }
 
+/// 2026-09-21 (E12): metadata property readers — `spec` values arrive as
+/// `PropertyValue` variants; these tolerate the identifier spellings too.
+fn property_string(pv: &crate::ast::PropertyValue) -> Option<String> {
+    match pv {
+        crate::ast::PropertyValue::String(s) => Some(s.clone()),
+        crate::ast::PropertyValue::Identifier(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn property_bool(pv: &crate::ast::PropertyValue) -> Option<bool> {
+    match pv {
+        crate::ast::PropertyValue::Bool(b) => Some(*b),
+        crate::ast::PropertyValue::Identifier(s) if s == "true" => Some(true),
+        crate::ast::PropertyValue::Identifier(s) if s == "false" => Some(false),
+        _ => None,
+    }
+}
+
 /// Extract declared pins per component type from TypeDef bodies, plus the
-/// schematic facts (`!> Reference` prefix) each type carries.
-fn collect_type_pins(items: &[TopLevel]) -> (BTreeMap<String, Vec<(String, u64)>>, BTreeMap<String, TypeInfo>) {
+/// schematic facts (`!> Reference` prefix) each type carries. Also resolves
+/// pin-class ascriptions (E12) against the program's declared types —
+/// the prelude injects the class fundamentals from std/electronics.bv.
+fn collect_type_pins(
+    items: &[TopLevel],
+) -> (
+    BTreeMap<String, Vec<(String, u64)>>,
+    BTreeMap<String, TypeInfo>,
+    Vec<String>,
+) {
     let mut out = BTreeMap::new();
     let mut info = BTreeMap::new();
+    // E12: every declared type is a candidate class fundamental — the
+    // resolution reads its metadata property bag (spec KicadType /
+    // spec NoConnect), nothing else.
+    let class_defs: BTreeMap<
+        String,
+        &std::collections::HashMap<String, crate::ast::PropertyValue>,
+    > = items
+        .iter()
+        .filter_map(|it| match it {
+            TopLevel::TypeDef(td) => Some((td.name.clone(), &td.body.metadata)),
+            _ => None,
+        })
+        .collect();
+    let mut class_errors: Vec<String> = Vec::new();
     for item in items {
         if let TopLevel::TypeDef(td) = item {
             if !td.body.pins.is_empty() {
@@ -193,11 +265,49 @@ fn collect_type_pins(items: &[TopLevel]) -> (BTreeMap<String, Vec<(String, u64)>
                 let mut pins: Vec<(String, u64)> =
                     td.body.pins.iter().map(|p| (p.name.clone(), p.number)).collect();
                 pins.sort_by_key(|&(_, n)| n);
-                info.insert(td.name.clone(), TypeInfo { reference_prefix: prefix, pins, tolerance, rating });
+                // 2026-09-21 (E12): resolve each pin's class ascription in
+                // the pin's SORTED order, so `pin_classes` is index-aligned
+                // to `pins` above.
+                let declared_class: std::collections::HashMap<&str, &str> = td
+                    .body
+                    .pins
+                    .iter()
+                    .filter_map(|p| p.class_ref.as_deref().map(|c| (p.name.as_str(), c)))
+                    .collect();
+                let mut pin_classes = Vec::with_capacity(pins.len());
+                for (pname, _) in &pins {
+                    let props = match declared_class.get(pname.as_str()) {
+                        None => PinClassProps::default(),
+                        Some(cname) => match class_defs.get(*cname) {
+                            Some(md) => PinClassProps {
+                                kicad_type: md
+                                    .get("kicad_type")
+                                    .and_then(property_string)
+                                    .unwrap_or_else(|| "passive".to_string()),
+                                no_connect: md
+                                    .get("no_connect")
+                                    .and_then(property_bool)
+                                    .unwrap_or(false),
+                            },
+                            None => {
+                                class_errors.push(format!(
+                                    "pin '{}.{}' ascribes class '{}' — no such type is in scope. Declare it (see std/electronics.bv: Power, Ground, In, Out, Io, IoOd, Nc) or drop the ascription",
+                                    td.name, pname, cname
+                                ));
+                                PinClassProps::default()
+                            }
+                        },
+                    };
+                    pin_classes.push(props);
+                }
+                info.insert(
+                    td.name.clone(),
+                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating },
+                );
             }
         }
     }
-    (out, info)
+    (out, info, class_errors)
 }
 
 /// Collect component instances: top-level `let name: T = T { fields };` where
@@ -933,8 +1043,29 @@ fn resolve_net_names(
     (net_names, raw_conflicts)
 }
 
+/// 2026-09-21 (E12): pin keys ascribed a no_connect class — intentionally
+/// unconnected, exempt from the dangling-pin error. Property-driven from
+/// the class fundamentals; the compiler knows no class names (D6).
+fn collect_no_connect_pins(
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+) -> std::collections::HashSet<String> {
+    let mut nc = std::collections::HashSet::new();
+    for inst in instances.values() {
+        let Some(ti) = type_info.get(&inst.type_name) else {
+            continue;
+        };
+        for (i, (pname, _)) in ti.pins.iter().enumerate() {
+            if ti.pin_classes[i].no_connect {
+                nc.insert(pin_key(&inst.name, pname));
+            }
+        }
+    }
+    nc
+}
+
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
-    let (type_pins, type_info) = collect_type_pins(items);
+    let (type_pins, type_info, class_errors) = collect_type_pins(items);
     if type_pins.is_empty() {
         return ElectronicsNetlist::default();
     }
@@ -961,6 +1092,9 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         }
     }
     all_pins.sort();
+    // 2026-09-21 (E12): pins ascribed a no_connect class are intentionally
+    // unconnected — exempt from the dangling-pin error below.
+    let nc_pins = collect_no_connect_pins(&instances, &type_info);
     for p in &all_pins {
         let key = pin_key(&p.component, &p.pin);
         ds.make(key.clone());
@@ -978,6 +1112,9 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
             nets.push(Net { name, pins: members.clone() });
         } else {
             let p = &members[0];
+            if nc_pins.contains(&pin_key(&p.component, &p.pin)) {
+                continue;
+            }
             dangling.push(format!(
                 "pin '{}.{}' (pin {}) is on no net — it never appears in a precondition pin equality. \
                  State its connection, e.g. [{}.{}.voltage == other.pin.voltage]",
@@ -1016,6 +1153,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         dangling,
         net_conflicts,
         is_electronics: true,
+        class_errors,
         voltage,
         type_info,
     }
@@ -1063,6 +1201,54 @@ mod tests {
         for net in &nl.nets {
             assert_eq!(net.pins.len(), 2);
         }
+    }
+
+    // ── 2026-09-21 (E12): pin electrical classes ──────────────────────────
+
+    #[test]
+    fn no_connect_pin_is_exempt_from_dangling() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; };
+            type Nc { spec KicadType: "no_connect"; spec NoConnect: true; };
+            type Chip { pin vdd: Power; pin prog: Nc; reference "U"; };
+            type Header { pin p1: Power; pin gnd; reference "J"; };
+
+            let u1: Chip = Chip { value: "x" };
+            let j1: Header = Header { value: "y" };
+
+            txn on
+                [j1.p1.voltage == u1.vdd.voltage && j1.gnd.voltage == u1.vdd.voltage]
+                [u1.vdd.current >= 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(
+            nl.dangling.is_empty(),
+            "nc pin exempt from dangling: {:?}",
+            nl.dangling
+        );
+        let ti = &nl.type_info["Chip"];
+        assert_eq!(ti.pin_classes[0].kicad_type, "power_in");
+        assert!(!ti.pin_classes[0].no_connect);
+        assert_eq!(ti.pin_classes[1].kicad_type, "no_connect");
+        assert!(ti.pin_classes[1].no_connect);
+    }
+
+    #[test]
+    fn unknown_class_type_is_a_hard_error() {
+        // A class ascription to a type that is not in scope refuses —
+        // an unresolvable class can never prove anything downstream.
+        let src = r#"
+            type Widget { pin x: Bogus; reference "W"; };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.class_errors.len(), 1, "{:?}", nl.class_errors);
+        assert!(
+            nl.class_errors[0].contains("Bogus"),
+            "{}",
+            nl.class_errors[0]
+        );
     }
 
     #[test]

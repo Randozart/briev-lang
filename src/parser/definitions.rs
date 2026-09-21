@@ -2313,8 +2313,13 @@ impl<'a> Parser<'a> {
     // syntax). `pin` / `reference` / `tolerance` carry identical grammar
     // and identical enforcement everywhere.
 
-    /// `pin <name> [= <int>];` — first-class component pin. Auto-numbered
-    /// pins continue after the highest explicit number (high-water rule).
+    /// `pin <name> [= <int>] [':' <TypeName>];` — first-class component
+    /// pin. Auto-numbered pins continue after the highest explicit number
+    /// (high-water rule). The class ascription (E12, design record D6) may
+    /// sit on either side of the number: `pin vbus: Power;`,
+    /// `pin p1 = 1;`, `pin p1 = 1: Nc;`. ANY type name is accepted here —
+    /// resolution against the imported class fundamentals happens in
+    /// analysis; the parser carries no class vocabulary (Rules 14/15).
     fn parse_pin_clause(
         &mut self,
         pins: &mut Vec<crate::ast::top::PinDecl>,
@@ -2322,9 +2327,12 @@ impl<'a> Parser<'a> {
     ) -> Result<(), SyntaxError> {
         self.pos += 1; // consume `pin`
         let pin_name = self.expect_identifier()?;
+        let mut class_ref: Option<String> = None;
+        if self.eat(&Token::Colon) {
+            class_ref = Some(self.expect_identifier()?);
+        }
         let number = if self.eat(&Token::Eq) {
             let n = self.expect_integer()?;
-            self.eat(&Token::Semicolon);
             if n < 1 {
                 return self.error_at_current(&format!(
                     "pin '{}' number must be 1 or greater (KiCad pin numbers start at 1), got {}",
@@ -2333,9 +2341,18 @@ impl<'a> Parser<'a> {
             }
             n as u64
         } else {
-            self.eat(&Token::Semicolon);
             *high_water + 1
         };
+        if self.eat(&Token::Colon) {
+            if class_ref.is_some() {
+                return self.error_at_current(&format!(
+                    "pin '{}' has two class ascriptions — state one: `pin {}: Type;`",
+                    pin_name, pin_name
+                ));
+            }
+            class_ref = Some(self.expect_identifier()?);
+        }
+        self.eat(&Token::Semicolon);
         if pins.iter().any(|p| p.name == pin_name) {
             return self.error_at_current(&format!(
                 "duplicate pin '{}' in declaration body — pin names must be unique within a component",
@@ -2346,6 +2363,7 @@ impl<'a> Parser<'a> {
         pins.push(crate::ast::top::PinDecl {
             name: pin_name,
             number,
+            class_ref,
             span: None,
         });
         Ok(())
@@ -2918,7 +2936,7 @@ impl<'a> Parser<'a> {
             Some(k) => k,
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Cols, Depth, Endian, Format, MaxBits, Rows",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Cols, Depth, Endian, Format, KicadType, MaxBits, NoConnect, Rows",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -2941,6 +2959,31 @@ impl<'a> Parser<'a> {
             "format" => {
                 let id = self.expect_identifier()?;
                 metadata.insert(key.into(), PropertyValue::Identifier(id));
+            }
+            // 2026-09-21 (E12, design record D6): pin-class property keys.
+            "kicad_type" => {
+                let s = self.expect_string()?;
+                metadata.insert(key.into(), PropertyValue::String(s));
+            }
+            "no_connect" => {
+                // `true`/`false` lex as dedicated Bool tokens, not
+                // identifiers — accept the tokens directly.
+                let v = match self.peek() {
+                    Some(Token::BoolTrue) => Some(true),
+                    Some(Token::BoolFalse) => Some(false),
+                    _ => None,
+                };
+                match v {
+                    Some(b) => {
+                        self.advance();
+                        metadata.insert(key.into(), PropertyValue::Bool(b));
+                    }
+                    None => {
+                        return self.error_at_current(
+                            "spec NoConnect must be `true` or `false`",
+                        );
+                    }
+                }
             }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
@@ -3653,6 +3696,14 @@ fn spec_name_to_key(name: &str) -> Option<&'static str> {
         "Rows" => Some("rows"),
         "Cols" => Some("cols"),
         "Depth" => Some("depth"),
+        // 2026-09-21 (E12, design record D6): pin-class property keys —
+        // declared on the class fundamentals in std/electronics.bv and
+        // consumed generically by the analysis + KiCad emitter. The KEY
+        // spellings are metadata plumbing (like the layout keys above);
+        // the class NAMES live only in stdlib — the compiler never sees
+        // `Power` or `Nc` in Rust.
+        "KicadType" => Some("kicad_type"),
+        "NoConnect" => Some("no_connect"),
         _ => None,
     }
 }
@@ -4082,6 +4133,20 @@ mod tests {
         let pins = parse_pins("type J { pin vcc = 1; pin gnd = 2; reference \"J\"; };");
         assert_eq!((pins[0].name.as_str(), pins[0].number), ("vcc", 1));
         assert_eq!((pins[1].name.as_str(), pins[1].number), ("gnd", 2));
+    }
+
+    #[test]
+    fn test_pin_class_ascription_both_positions() {
+        // 2026-09-21 (E12): the class fundamental name is stored verbatim —
+        // resolution against declared types happens in analysis, never here
+        // (design record D6: the parser carries no class vocabulary).
+        let pins = parse_pins(
+            "type C { pin vbus: Power; pin p2 = 3: Nc; pin plain; reference \"C\"; };",
+        );
+        assert_eq!(pins[0].class_ref.as_deref(), Some("Power"));
+        assert_eq!(pins[1].class_ref.as_deref(), Some("Nc"));
+        assert_eq!(pins[1].number, 3);
+        assert_eq!(pins[2].class_ref, None);
     }
 
     #[test]

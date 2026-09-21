@@ -1146,15 +1146,25 @@ pub struct TypeDefBody {
     pub span: Option<Span>,
 }
 
+/// 2026-09-21 (E12, design record D6): electrical class of a pin — declared
+/// as a FUNDAMENTAL in `std/electronics.bv` (`Power`, `Ground`, `In`,
+/// `Out`, `Io`, `IoOd`, `Nc`), never a compiler keyword. The pin clause
+/// ascribes the type by name (`pin vbus: Power;`); resolution and property
+/// lookup (`spec KicadType` / `spec NoConnect`) happen in analysis against
+/// the imported declarations. No enum here: a closed class set is compiler
+/// vocabulary the language cannot extend (Rules 14/15).
+
 /// 2026-09-11 (Part C, Electronics Briev): one `pin` declaration inside a
 /// component type body. `number` is the KiCad pin number — explicit from
 /// `pin a = 7;` or auto-assigned by the parser (highest number so far + 1,
 /// starting at 1) for `pin a;`. Name is the contract-facing handle
-/// (`r1.a.voltage`); number is the physical mapping.
+/// (`r1.a.voltage`); number is the physical mapping. `class_ref` is the
+/// ascribed class-fundamental name, if any.
 #[derive(Debug, Clone)]
 pub struct PinDecl {
     pub name: String,
     pub number: u64,
+    pub class_ref: Option<String>,
     pub span: Option<Span>,
 }
 

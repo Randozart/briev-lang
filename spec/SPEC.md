@@ -255,6 +255,18 @@ never instance-construction fields. `tolerance any;` DECLARED unrated — a
 pin with no clause at all is an undeclared decision and violates any net
 driving it.
 
+**Pin electrical classes (2026-09-21).** A pin may ascribe a class
+fundamental — `pin vbus: Power;` — on either side of the pin number
+(`pin p2 = 3: Nc;`). Classes are PARENTLESS TYPES in
+`std/electronics.bv` (`Power`, `Ground`, `In`, `Out`, `Io`, `IoOd`,
+`Nc`) carrying their facts as `spec` properties: `spec KicadType: "…"`
+is the KiCad electrical pin type the backend emits, and
+`spec NoConnect: true` marks the intentionally-unconnected class
+(exempt from the dangling-pin error). The parser accepts any type name;
+analysis resolves the ascription against the declared types and consumes
+the properties generically — the compiler knows no class names, and a
+new class is a stdlib declaration, not a compiler release.
+
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive
@@ -297,17 +309,14 @@ that is incomplete or electrically violated.
 > surface is being extended toward intent-based synthesis: the author
 > declares behaviors and invariants over `volatile` component pins
 > (`node name [guard] { drive-maps }`), and the compiler infers both the
-> wiring (net membership) and the physics. Planned constructs — pin
-> electrical classes declared as **fundamentals in
-> `std/electronics.bv`** (`Power`/`Ground`/`In`/`Out`/`Io`/`IoOd`/`Nc`,
-> PascalCase — they are types, carrying `spec KicadType`/`spec NoConnect`
-> properties the compiler consumes generically), `spec` datasheet-fact
-> clauses, pin arrays, population facts (`populated = false`),
-> `chain`/`await` sequencing sugar, and ambiguity-lifting modifiers — are
-> inventoried with full semantics in
+> wiring (net membership) and the physics. Planned constructs — `spec`
+> datasheet-fact clauses on component types, pin arrays, population facts
+> (`populated = false`), `chain`/`await` sequencing sugar, and
+> ambiguity-lifting modifiers — are inventoried with full semantics in
 > `docs/plans/2026-09-21-intent-synthesis-node-semantics.md`. Grammar is
 > unfrozen pending implementation; this section documents the current
-> surface only.
+> surface only. (Pin electrical classes left this list 2026-09-21: they
+> are implemented — see above.)
 
 ## 4. Lexical conventions
 

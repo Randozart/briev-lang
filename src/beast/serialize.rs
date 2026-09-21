@@ -163,11 +163,18 @@ fn emit_typedef(t: &TypeDef) -> SExpr {
     if !t.body.pins.is_empty() {
         let mut pins: Vec<SExpr> = vec![atom("pins")];
         for p in &t.body.pins {
-            pins.push(list(&[
+            let mut entry = vec![
                 atom("pin"),
                 atom(&p.name),
                 atom(&p.number.to_string()),
-            ]));
+            ];
+            // 2026-09-21 (E12): class ascription serialized only when
+            // present — pre-E12 byte streams stay byte-identical (the
+            // reader defaults to None when the 4th atom is absent).
+            if let Some(cls) = &p.class_ref {
+                entry.push(atom(cls));
+            }
+            pins.push(list(&entry));
         }
         children.push(SExpr::List(pins));
     }
@@ -409,8 +416,8 @@ mod tests {
             rating: None,
                 slots: vec![TypeDefSlot { name: "r".into(), ty: Type::int(), bit_range: None }],
                 pins: vec![
-                    crate::ast::top::PinDecl { name: "a".into(), number: 1, span: None },
-                    crate::ast::top::PinDecl { name: "b".into(), number: 7, span: None },
+                    crate::ast::top::PinDecl { name: "a".into(), number: 1, class_ref: None, span: None },
+                    crate::ast::top::PinDecl { name: "b".into(), number: 7, class_ref: Some("Power".into()), span: None },
                 ],
                 metadata: {
                     let mut m = std::collections::HashMap::new();
@@ -437,6 +444,10 @@ mod tests {
                 assert_eq!(b.body.pins[0].number, 1);
                 assert_eq!(b.body.pins[1].name, "b");
                 assert_eq!(b.body.pins[1].number, 7);
+                // 2026-09-21 (E12): the class ascription survives the
+                // round-trip; unclassed stays None.
+                assert_eq!(b.body.pins[0].class_ref, None);
+                assert_eq!(b.body.pins[1].class_ref, Some("Power".to_string()));
                 // 2026-09-11: slots + metadata round-trip restored — the old
                 // flat-parts parse loop never matched the nested emit shape.
                 assert_eq!(b.body.slots.len(), 1);

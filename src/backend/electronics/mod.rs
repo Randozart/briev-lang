@@ -139,6 +139,15 @@ impl ElectronicsBackend {
             errs.extend(netlist.net_conflicts.iter().map(|c| format!("  {}", c)));
             return Err(errs);
         }
+        // 2026-09-21 (E12): unresolved pin-class ascriptions — the class
+        // type is not in scope. Refuse before anything else emits.
+        if !netlist.class_errors.is_empty() {
+            let mut errs = vec![
+                "cannot emit schematic: a pin names a class type that is not in scope".to_string(),
+            ];
+            errs.extend(netlist.class_errors.iter().map(|e| format!("  {}", e)));
+            return Err(errs);
+        }
         // 2026-09-11 (B4): voltage/current proving — shorted supplies,
         // over-voltage into rated pins, undeclared unrated pins, and
         // postcondition current bounds violated by derived physics.
@@ -175,7 +184,13 @@ impl ElectronicsBackend {
                 .type_info
                 .get(&comp.type_name)
                 .expect("analysis guarantees TypeInfo for every component type");
-            Self::emit_symbol_def(out, &comp.type_name, &info.reference_prefix, &info.pins);
+            Self::emit_symbol_def(
+                out,
+                &comp.type_name,
+                &info.reference_prefix,
+                &info.pins,
+                &info.pin_classes,
+            );
             lib_done.push(&comp.type_name);
         }
         out.push_str("  )\n\n");
@@ -288,7 +303,13 @@ impl ElectronicsBackend {
         out.push_str("  (paper \"A4\")\n");
     }
 
-    fn emit_symbol_def(out: &mut String, name: &str, reference: &str, pins: &[(String, u64)]) {
+    fn emit_symbol_def(
+        out: &mut String,
+        name: &str,
+        reference: &str,
+        pins: &[(String, u64)],
+        classes: &[crate::analysis::electronics::PinClassProps],
+    ) {
         out.push_str(&format!("    (symbol \"{}\" (in_bom yes) (on_board yes)\n", name));
         out.push_str(&format!(
             "      (property \"Reference\" \"{}\" (at 0 5.08 0) (effects (font (size 1.27 1.27))))\n",
@@ -307,11 +328,16 @@ impl ElectronicsBackend {
         ));
         out.push_str("      )\n");
         out.push_str(&format!("      (symbol \"{}_1_1\"\n", name));
-        for (x, y, pname, number) in pin_layout(pins) {
+        // 2026-09-21 (E12): the KiCad electrical pin type comes from the
+        // pin's class fundamental (`spec KicadType`), resolved in analysis.
+        // Unclassed pins default to `passive` — pre-E12 output unchanged.
+        for ((x, y, pname, number), cls) in
+            pin_layout(pins).into_iter().zip(classes.iter())
+        {
             let angle = if x < 0.0 { 0 } else { 180 };
             out.push_str(&format!(
-                "        (pin passive line (at {} {} {}) (length 2.54) (name \"{}\" (effects (font (size 1.27 1.27)))) (number \"{}\" (effects (font (size 1.27 1.27)))))\n",
-                x, y, angle, pname, number
+                "        (pin {} line (at {} {} {}) (length 2.54) (name \"{}\" (effects (font (size 1.27 1.27)))) (number \"{}\" (effects (font (size 1.27 1.27)))))\n",
+                cls.kicad_type, x, y, angle, pname, number
             ));
         }
         out.push_str("      )\n");
@@ -429,6 +455,32 @@ mod tests {
         {
         }
     "#;
+
+    #[test]
+    fn emits_class_electrical_pin_types() {
+        // 2026-09-21 (E12): KiCad electrical pin types come from the class
+        // fundamentals' spec KicadType properties; unclassed = passive.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; };
+            type Nc { spec KicadType: "no_connect"; spec NoConnect: true; };
+            type Chip { pin vdd: Power; pin prog: Nc; pin gnd; reference "U"; };
+            type Header { pin p1: Power; pin gnd; reference "J"; };
+
+            let u1: Chip = Chip { value: "x" };
+            let j1: Header = Header { value: "y" };
+
+            txn on
+                [j1.p1.voltage == u1.vdd.voltage && j1.gnd.voltage == u1.gnd.voltage]
+                [u1.vdd.current >= 0.0]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        let sch = ElectronicsBackend::generate(&nl).unwrap();
+        assert_eq!(sch.matches("(pin power_in line").count(), 2, "vdd + p1");
+        assert_eq!(sch.matches("(pin no_connect line").count(), 1, "prog");
+        assert_eq!(sch.matches("(pin passive line").count(), 2, "unclassed gnd pins");
+    }
 
     #[test]
     fn emits_balanced_sexpr_with_components_and_wires() {

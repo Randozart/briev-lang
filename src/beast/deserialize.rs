@@ -153,13 +153,23 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
             "pins" => {
                 for sub in entry.iter().skip(1) {
                     if let SExpr::List(pp) = sub {
-                        if pp.len() == 3 && sexpr_str(&pp[0]).unwrap_or_default() == "pin" {
+                        // 2026-09-21 (E12): `(pin name number)` or
+                        // `(pin name number ClassType)` — the class
+                        // ascription is optional for pre-E12 streams.
+                        let is_pin = sexpr_str(&pp[0]).unwrap_or_default() == "pin";
+                        if is_pin && (pp.len() == 3 || pp.len() == 4) {
                             let num: u64 = sexpr_str(&pp[2])?
                                 .parse()
                                 .map_err(|_| "bad pin number".to_string())?;
+                            let class_ref = if pp.len() == 4 {
+                                Some(sexpr_str(&pp[3])?.to_string())
+                            } else {
+                                None
+                            };
                             pins.push(crate::ast::top::PinDecl {
                                 name: sexpr_str(&pp[1])?.to_string(),
                                 number: num,
+                                class_ref,
                                 span: None,
                             });
                         }
