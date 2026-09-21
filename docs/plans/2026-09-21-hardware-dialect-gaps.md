@@ -499,3 +499,14 @@ names provisional; slice 1's body-assignments and guard facts cover the
 wiring surface), multi-pin intent completion, class-semantics ERC
 (drive-single, contention), `chain`/`await` sugar, whole-bus equality.
 The usb_sensor fixture compiles after these land.
+
+### Amendment 2026-09-21 (night, IV): D16 phase 1 — guarded body facts
+
+IMPLEMENTED: `when` bodies in nodes are SEEN and CLASSIFIED (the
+silent-skip hole is closed). Pin-referencing conditions are signal-level
+→ the D7 gate fires: conditional wiring demands a mechanism, hard error
+naming the compound condition and both fixes (region carve in the
+guard, or switching part). Pin-free conditions (`true`) carve a region:
+facts apply as ordinary wiring. Nested whens compound. Phase 2
+(mechanism synthesis via switch-part `spec Control` vocabulary) and
+phase 3 (cross-region complement check) remain open under D16.

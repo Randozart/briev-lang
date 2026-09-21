@@ -1407,41 +1407,106 @@ fn pin_connected(ds: &DisjointSet, key: &str) -> bool {
     ds.contains(key)
 }
 
-/// Body facts of one reactive transaction: wiring unions applied
-/// immediately, drive intents returned for the completion pass (E14a).
+/// Diagnostic sink for body-fact collection (E14a) — keeps the walker's
+/// parameter list flat.
+struct FactSink<'a> {
+    node: &'a str,
+    proofs: &'a mut Vec<String>,
+    errors: &'a mut Vec<String>,
+    intents: &'a mut Vec<(String, String)>,
+}
+
+/// Does this expression mention a pin of a declared instance? (E14a/D16:
+/// pin-mentioning conditions are SIGNAL-LEVEL — the conditional-mechanism
+/// trigger. Conditions referencing no pin are region-level facts.)
+fn mentions_pin(
+    expr: &Expr,
+    ctx: &NetlistContext,
+    instances: &BTreeMap<String, &ComponentInstance>,
+) -> bool {
+    if resolve_pin(expr, instances, ctx.type_pins).is_some() {
+        return true;
+    }
+    match expr {
+        Expr::BinaryOp(_, l, r) => {
+            mentions_pin(l, ctx, instances) || mentions_pin(r, ctx, instances)
+        }
+        Expr::Field(base, _) => mentions_pin(base, ctx, instances),
+        Expr::Index(l, r) => mentions_pin(l, ctx, instances) || mentions_pin(r, ctx, instances),
+        _ => false,
+    }
+}
+
+impl FactSink<'_> {
+    /// Walk statements, threading the enclosing condition (E14a/D16).
+    /// `cond` is None while region-level; Some(description) once a
+    /// pin-mentioning condition has been seen — facts under it demand a
+    /// mechanism (D7): copper cannot be conditional.
+    fn walk(
+        &mut self,
+        stmts: &[Statement],
+        cond: Option<&str>,
+        ctx: &mut NetlistContext,
+        instances: &BTreeMap<String, &ComponentInstance>,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Statement::Guarded(c, inner) => {
+                    let joined = match cond {
+                        Some(outer) => format!("{outer} && {c}"),
+                        None => format!("{c}"),
+                    };
+                    let child = if cond.is_none() && !mentions_pin(c, ctx, instances) {
+                        None
+                    } else {
+                        Some(joined)
+                    };
+                    self.walk(inner, child.as_deref(), ctx, instances);
+                }
+                Statement::Assign(target, value) => {
+                    if let Some(desc) = cond {
+                        self.errors.push(format!(
+                            "wiring inside `when {desc}` (node '{}') is conditional — copper cannot be. \
+                             State the condition in the node guard (making the wiring unconditional in \
+                             that region), or declare a switching part driven by the condition \
+                             (mechanism synthesis, design record D16 phase 2)",
+                            self.node
+                        ));
+                        continue;
+                    }
+                    if let (Expr::Identifier(name), Expr::Bool(true)) = (target, value) {
+                        self.intents.push((self.node.to_string(), name.clone()));
+                        continue;
+                    }
+                    if let (Some(lp), Some(rp)) = (
+                        resolve_pin(target, instances, ctx.type_pins),
+                        resolve_pin(value, instances, ctx.type_pins),
+                    ) {
+                        let lk = pin_key(&lp.component, &lp.pin);
+                        let rk = pin_key(&rp.component, &rp.pin);
+                        ctx.ds.make(lk.clone());
+                        ctx.ds.make(rk.clone());
+                        ctx.ds.union(&lk, &rk);
+                        self.proofs.push(format!(
+                            "wired in node '{}': {}.{} <-> {}.{}",
+                            self.node, lp.component, lp.pin, rp.component, rp.pin
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Body facts of one reactive transaction (E14a).
 fn body_facts(
     t: &crate::ast::top::Transaction,
     ctx: &mut NetlistContext,
     instances: &BTreeMap<String, &ComponentInstance>,
-    proofs: &mut Vec<String>,
-) -> Vec<(String, String)> {
-    let mut intents = Vec::new();
-    for stmt in &t.body {
-        let Statement::Assign(target, value) = stmt else {
-            continue;
-        };
-        // Drive intent: `inst = true;`
-        if let (Expr::Identifier(name), Expr::Bool(true)) = (target, value) {
-            intents.push((t.name.clone(), name.clone()));
-            continue;
-        }
-        // Wiring fact: pin = pin.
-        if let (Some(lp), Some(rp)) = (
-            resolve_pin(&target.clone(), instances, ctx.type_pins),
-            resolve_pin(&value.clone(), instances, ctx.type_pins),
-        ) {
-            let lk = pin_key(&lp.component, &lp.pin);
-            let rk = pin_key(&rp.component, &rp.pin);
-            ctx.ds.make(lk.clone());
-            ctx.ds.make(rk.clone());
-            ctx.ds.union(&lk, &rk);
-            proofs.push(format!(
-                "wired in node '{}': {}.{} <-> {}.{}",
-                t.name, lp.component, lp.pin, rp.component, rp.pin
-            ));
-        }
-    }
-    intents
+    sink: &mut FactSink,
+) {
+    sink.walk(&t.body, None, ctx, instances);
 }
 
 /// Complete one drive intent (E14a): the instance must have exactly one
@@ -1556,7 +1621,13 @@ fn collect_intents(
         let TopLevel::Transaction(t) = item else {
             continue;
         };
-        intents.extend(body_facts(t, ctx, instances, &mut proofs));
+        let mut sink = FactSink {
+            node: t.name.as_str(),
+            proofs: &mut proofs,
+            errors: &mut errors,
+            intents: &mut intents,
+        };
+        body_facts(t, ctx, instances, &mut sink);
     }
     for (node, inst_name) in &intents {
         match complete_intent(inst_name, node, ctx, instances) {
@@ -2096,6 +2167,111 @@ mod tests {
             nl.nets
         );
         assert!(nl.intent_proofs.iter().any(|p| p.contains("wired in node 'on'")));
+    }
+
+    #[test]
+    fn region_level_when_applies_wiring() {
+        // `when true { ... }` — a pin-free condition carves a region whose
+        // facts are ordinary wiring (D16 phase 1).
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Mcu { pin gpio0: Io; pin gnd: Ground; reference "U"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Conn { pin gnd: Ground; reference "J"; };
+
+            let u1: Mcu = Mcu { value: "x" };
+            let d1: Led = Led { value: "red" };
+            let j1: Conn = Conn { value: "y" };
+
+            node on
+                [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+                [true]
+            {
+                when true {
+                    d1.a = u1.gpio0;
+                };
+            }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        assert!(
+            nl.nets.iter().any(|n| {
+                let ps: Vec<&str> = n.pins.iter().map(|p| p.pin.as_str()).collect();
+                ps.contains(&"a") && ps.contains(&"gpio0")
+            }),
+            "region fact wired: {:?}",
+            nl.nets
+        );
+    }
+
+    #[test]
+    fn signal_level_when_demands_mechanism() {
+        // A pin-referencing condition makes the wiring conditional —
+        // copper cannot be (D7/D16): hard error naming the condition.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Mcu { pin gpio0: Io; pin gnd: Ground; reference "U"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Conn { pin p1: Power; pin gnd: Ground; reference "J"; };
+
+            let u1: Mcu = Mcu { value: "x" };
+            let d1: Led = Led { value: "red" };
+            let j1: Conn = Conn { value: "y" };
+
+            node on
+                [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+                [true]
+            {
+                when j1.p1.voltage == 3.3V {
+                    d1.a = u1.gpio0;
+                };
+            }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        let e = &nl.intent_errors[0];
+        assert!(e.contains("copper cannot be"), "{}", e);
+        assert!(e.contains("j1.p1.voltage == 3.3V"), "{}", e);
+    }
+
+    #[test]
+    fn nested_whens_compound_conditions() {
+        // `when a { when b { f } }` — the error names the conjunction.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Mcu { pin gpio0: Io; pin gnd: Ground; reference "U"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Conn { pin p1: Power; pin gnd: Ground; reference "J"; };
+
+            let u1: Mcu = Mcu { value: "x" };
+            let d1: Led = Led { value: "red" };
+            let j1: Conn = Conn { value: "y" };
+
+            node on
+                [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+                [true]
+            {
+                when j1.p1.voltage == 3.3V {
+                    when true {
+                        d1.a = u1.gpio0;
+                    };
+                };
+            }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        let e = &nl.intent_errors[0];
+        assert!(
+            e.contains("&&") && e.contains("true"),
+            "compound condition named: {}",
+            e
+        );
     }
 
     #[test]
