@@ -510,3 +510,20 @@ guard, or switching part). Pin-free conditions (`true`) carve a region:
 facts apply as ordinary wiring. Nested whens compound. Phase 2
 (mechanism synthesis via switch-part `spec Control` vocabulary) and
 phase 3 (cross-region complement check) remain open under D16.
+
+### Amendment 2026-09-21 (night, V): D16 phase 2 plan + D17 model boundaries
+
+D16 phase 2 (mechanism synthesis) is PLANNED and finalized in the design
+record: `when <cond> { … } via <Name>;` strategy clause (trailing,
+type-first narrowing, instance-second), Control/Path class fundamentals
+(+ two spec-gate keys), bridge-request synthesis into three unions,
+`conditional_bridges` record, emitter untouched. This closes the
+D7-gate into a constructive mechanism: signal-level when-clauses stop
+erroring and start synthesizing once the vocabulary lands.
+
+D17 (model boundaries) is the standing honesty ledger: parasitics (B1),
+SI/EMI (B2), thermal spreading (B3), thresholds (B4), test & safety
+provisions (B5), layout reality (B6). Each named with its trigger and
+eventual home; the compiler claims schematic-level truth only. D17 is a
+standing obligation: any slice approaching a boundary re-states it in
+that slice's output rather than silently crossing.

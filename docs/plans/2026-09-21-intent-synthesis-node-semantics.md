@@ -373,3 +373,81 @@ mechanism demand). Condition vocabulary: level-comparisons first
 Guarded statements are `Statement::Guarded` — already parsed by the
 core; this slice is analysis-only. Nested whens compound their
 conditions (`when a { when b { f } }` ≡ conditioned on `a && b`).
+
+---
+
+## Amendment 2026-09-21 — D16 phase 2 finalized: mechanism synthesis via strategy clause
+
+**Grammar** (additive, in the shared when-statement parse):
+`when <cond> { <facts> } via <Name>;`
+`via` is a contextual identifier; the selection desugars into the body as
+a marker statement the analysis reads — zero new Statement variants.
+
+**Selection semantics** (narrowing filter, never a silent pick — D13):
+- No `via` → enumerate qualifying mechanisms: declared instances with
+  exactly one `Control`-class pin + ≥2 `Path`-class pins, control
+  unconnected or already on the condition's net. 1 → synthesize; 0/n →
+  hard error with candidates + the `via Type` fix.
+- `via T` → narrow to instances **of type T**: 1 → synthesize; 0 → error
+  ("declare `let sw: T = …`"); n → error listing instances (pre-wire a
+  control pin to disambiguate).
+- Name resolution: type first, instance second (bare `via sw1;` exact-pick
+  also works). Synthesis wires **declared instances only**.
+
+**Vocabulary** (stdlib + two new spec-gate keys):
+- `type Control { spec KicadType: "input"; spec Control: true; };`
+- `type Path { spec KicadType: "passive"; spec Switchable: true; };`
+- A switch type: exactly one Control pin, ≥2 Path pins. Property interface
+  decides — the compiler never knows "MOSFET" (Rules 14/15).
+
+**Synthesis**: condition = single pin voltage-comparison (the `x = high`
+abstraction comes later via `spec default_level`); condition pin's net
+feeds control; bridge request (A, B, control) → three unions + a
+`conditional_bridges` record (the phase-3 complement check and eventual
+per-region physics consume it) + proof provenance. Path-side assignment
+canonical for symmetric parts. Emitter untouched — the mechanism is
+ordinary copper. Conduction physics stays black-box (D15): the compiler
+proves the wiring; the part's datasheet owns the conduction.
+
+**General rule now in force (D14 realization):** ambiguity diagnostics
+REQUEST the strategy selection and name the candidates — the compiler
+never picks silently, in mechanisms or anywhere else.
+
+---
+
+## Amendment 2026-09-21 — D17: model boundaries (the honesty ledger)
+
+The schematic-level model is sound and honestly bounded. These are the
+incomplete items we MUST account for later — each with its trigger and
+its eventual home. None may be silently claimed as covered.
+
+- **B1 — Parasitics.** Traces have R/L/C; every current proof assumes
+  ideal wire. *Trigger:* first board that misbehaves in silicon, or the
+  first budget check that needs trace-resistance terms. *Home:* layout
+  domain (non-goal) with schematic-level budget hooks last.
+- **B2 — Signal integrity / EMI.** A 20 V rail beside a 1.8 V sense line
+  is a layout problem. *Trigger:* real-world failure or a standards
+  requirement (EMC). *Home:* post-layout analysis; explicitly non-goal.
+- **B3 — Thermal.** Dissipation is PROVEN per part (P = V × I vs rating);
+  heat SPREADING (copper pours, vias, airflow) is not. *Trigger:* a part
+  whose rating passes electrically but fails thermally. *Home:* layout +
+  a future convention slice (thermal pad / pour requirements per part
+  class, property-driven like E13).
+- **B4 — Thresholds.** "High" is really "above VIH-min, worst case over
+  temperature." The voltage-comparison vocabulary is the first honest
+  cut. *Trigger:* first level-sensitive proof that must survive
+  tolerance. *Home:* `tolerance` machinery + per-class threshold specs.
+- **B5 — Test & safety provisions.** Test points, ESD structures,
+  creepage/clearance on the 20 V input, fuse conventions. *Trigger:*
+  first fab-worthy board (the usb_sensor or the IdeaPad-class gate).
+  *Home:* convention slices — the E13 pattern (declared property,
+  generic checker) extends directly.
+- **B6 — Layout reality.** A real board is ~40% schematic, ~60% layout;
+  most fabbed-board failures live in the deferred 60%. *Standing rule:*
+  the compiler claims SCHEMATIC-LEVEL truth only — every verification
+  output carries that scope. The ledger (this file + D16/D17
+  amendments) is the record of what is and is not claimed.
+
+D17 is a standing obligation: whenever a slice's proofs approach one of
+these boundaries, the boundary is re-stated in that slice's output —
+never silently crossed.
