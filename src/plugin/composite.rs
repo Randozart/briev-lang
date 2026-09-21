@@ -231,7 +231,144 @@ fn pattern_const_match(p: &Pattern, v: &ComptimeVal) -> Option<bool> {
     }
 }
 
-/// Fold one statement list in order. Soundness rules:
+/// Fold one `let`. A comptime init is recorded in the env; the tree is
+/// rewritten to the folded literal only when folding COLLAPSED something
+/// (an already-literal init keeps its exact shape — downstream matchers
+/// pattern-match Neg/Float nodes). A non-comptime init kills the binder in
+/// the env.
+fn fold_let_stmt(
+    s: Statement,
+    env: &mut HashMap<String, ComptimeVal>,
+    out: &mut Vec<Statement>,
+) {
+    let Statement::Let {
+        name,
+        names,
+        ty,
+        expr,
+        modifiers,
+    } = s
+    else {
+        unreachable!("caller matched Statement::Let");
+    };
+    // Single-binder let (the parser also lists the name in `names`) with a
+    // comptime init folds in place; multi-lets never enter the env.
+    let single = names.is_empty() || (names.len() == 1 && &names[0] == &name);
+    let folded = if single {
+        expr.as_ref().and_then(|e| eval_const(e, env))
+    } else {
+        None
+    };
+    let already_literal = matches!(
+        expr.as_ref(),
+        Some(Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_))
+    );
+    let init = match folded {
+        Some(v) => {
+            env.insert(name.clone(), v.clone());
+            if already_literal {
+                expr
+            } else {
+                Some(literal_expr(&v))
+            }
+        }
+        None => {
+            env.remove(&name);
+            for n in &names {
+                env.remove(n);
+            }
+            expr
+        }
+    };
+    out.push(Statement::Let {
+        name,
+        names,
+        ty,
+        expr: init,
+        modifiers,
+    });
+}
+
+/// Fold a statement-form `match`: splices the taken arm on a comptime,
+/// fully-decidable scrutinee; otherwise splices the kept runtime form
+/// (each arm body folds under a clone of the env — which arm runs is
+/// unknown).
+fn fold_stmt_form_match(
+    expr: Expr,
+    arms: Vec<StmtMatchArm>,
+    env: &mut HashMap<String, ComptimeVal>,
+    out: &mut Vec<Statement>,
+) {
+    let mut arms = arms;
+    let scrut = eval_const(&expr, env);
+    let decidable = scrut.is_some()
+        && arms.iter().all(|a| {
+            a.patterns
+                .iter()
+                .all(|p| pattern_const_match(p, scrut.as_ref().unwrap()).is_some())
+        });
+    if let (Some(v), true) = (scrut, decidable) {
+        let taken_idx = arms.iter().position(|a| {
+            a.patterns
+                .iter()
+                .any(|p| pattern_const_match(p, &v) == Some(true))
+        });
+        if let Some(idx) = taken_idx {
+            let StmtMatchArm { body, .. } = arms.swap_remove(idx);
+            out.extend(fold_stmt_list(body, env));
+            return;
+        }
+        // No arm takes the value: keep verbatim — the typechecker
+        // diagnoses exhaustiveness, unchanged.
+    }
+    let arms = arms
+        .into_iter()
+        .map(|a| {
+            let mut clone = env.clone();
+            StmtMatchArm {
+                patterns: a.patterns,
+                body: fold_stmt_list(a.body, &mut clone),
+            }
+        })
+        .collect();
+    out.push(Statement::Match { expr: Box::new(expr), arms });
+}
+
+/// Fold an expression-form `match` used as a statement (the F1 unified
+/// dispatch shape). Splices the taken arm's block statements on a comptime
+/// scrutinee; otherwise pushes the kept runtime form.
+fn fold_expr_form_match(
+    m: Expr,
+    env: &mut HashMap<String, ComptimeVal>,
+    out: &mut Vec<Statement>,
+) {
+    let Expr::Match(scrut_e, mut m_arms) = m else {
+        unreachable!("caller matched Expr::Match");
+    };
+    let scrut = eval_const(&scrut_e, env);
+    let decidable = scrut.is_some()
+        && m_arms.iter().all(|a| {
+            a.guard.is_none()
+                && pattern_const_match(&a.pattern, scrut.as_ref().unwrap()).is_some()
+        });
+    if let (Some(v), true) = (scrut, decidable) {
+        let taken_idx = m_arms
+            .iter()
+            .position(|a| pattern_const_match(&a.pattern, &v) == Some(true));
+        if let Some(idx) = taken_idx {
+            if matches!(m_arms[idx].body.as_ref(), Expr::Block(_)) {
+                let arm = m_arms.swap_remove(idx);
+                if let Expr::Block(body) = *arm.body {
+                    out.extend(fold_stmt_list(body, env));
+                    return;
+                }
+            }
+        }
+    }
+    out.push(Statement::Expression(Expr::Match(scrut_e, m_arms)));
+}
+
+
 /// - a comptime-known `let` stays (its binder may be referenced by runtime
 ///   statements) — its init is rewritten to the folded literal and the
 ///   value feeds later condition folding;
@@ -246,64 +383,7 @@ fn fold_stmt_list(
     let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
     for s in stmts {
         match s {
-            Statement::Let {
-                name,
-                names,
-                ty,
-                expr,
-                modifiers,
-            } => {
-                // Single-binder let (the parser also lists the name in
-                // `names`) with a comptime init folds in place; multi-lets
-                // never enter the env. An init that is ALREADY a literal is
-                // recorded but never rewritten — the tree must keep its
-                // shape (downstream matchers pattern-match Neg/Float etc.).
-                let single = names.is_empty() || (names.len() == 1 && &names[0] == &name);
-                let folded = if single {
-                    expr.as_ref().and_then(|e| eval_const(e, env))
-                } else {
-                    None
-                };
-                let already_literal = matches!(
-                    expr.as_ref(),
-                    Some(Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_))
-                );
-                match folded {
-                    Some(v) => {
-                        env.insert(name.clone(), v.clone());
-                        if already_literal {
-                            out.push(Statement::Let {
-                                name,
-                                names,
-                                ty,
-                                expr,
-                                modifiers,
-                            });
-                        } else {
-                            out.push(Statement::Let {
-                                name,
-                                names,
-                                ty,
-                                expr: Some(literal_expr(&v)),
-                                modifiers,
-                            });
-                        }
-                    }
-                    None => {
-                        env.remove(&name);
-                        for n in &names {
-                            env.remove(n);
-                        }
-                        out.push(Statement::Let {
-                            name,
-                            names,
-                            ty,
-                            expr,
-                            modifiers,
-                        });
-                    }
-                }
-            }
+            stmt @ Statement::Let { .. } => fold_let_stmt(stmt, env, &mut out),
             Statement::Assign(l, r) => {
                 if let Expr::Identifier(n) = &l {
                     env.remove(n);
@@ -311,39 +391,7 @@ fn fold_stmt_list(
                 out.push(Statement::Assign(l, r));
             }
             Statement::Match { expr, arms } => {
-                let mut arms = arms;
-                let scrut = eval_const(&expr, env);
-                let decidable = scrut.is_some()
-                    && arms.iter().all(|a| {
-                        a.patterns
-                            .iter()
-                            .all(|p| pattern_const_match(p, scrut.as_ref().unwrap()).is_some())
-                    });
-                if let (Some(v), true) = (scrut, decidable) {
-                    let taken_idx = arms.iter().position(|a| {
-                        a.patterns
-                            .iter()
-                            .any(|p| pattern_const_match(p, &v) == Some(true))
-                    });
-                    if let Some(idx) = taken_idx {
-                        let StmtMatchArm { body, .. } = arms.swap_remove(idx);
-                        out.extend(fold_stmt_list(body, env));
-                        continue;
-                    }
-                    // No arm takes the value: keep verbatim — the
-                    // typechecker diagnoses exhaustiveness, unchanged.
-                }
-                let arms = arms
-                    .into_iter()
-                    .map(|a| {
-                        let mut clone = env.clone();
-                        StmtMatchArm {
-                            patterns: a.patterns,
-                            body: fold_stmt_list(a.body, &mut clone),
-                        }
-                    })
-                    .collect();
-                out.push(Statement::Match { expr, arms });
+                fold_stmt_form_match(*expr, arms, env, &mut out);
             }
             // 2026-08-23 (F1 unified dispatch): the parser routes ALL match
             // to the EXPRESSION form — `Statement::Expression(Expr::Match)`.
@@ -351,30 +399,7 @@ fn fold_stmt_list(
             // arm's statements (same env — the arm executes); anything else
             // stays an ordinary runtime match (fail-open).
             Statement::Expression(e @ Expr::Match(_, _)) => {
-                let Expr::Match(scrut_e, mut m_arms) = e else {
-                    unreachable!("matched above");
-                };
-                let scrut = eval_const(&scrut_e, env);
-                let decidable = scrut.is_some()
-                    && m_arms.iter().all(|a| {
-                        a.guard.is_none()
-                            && pattern_const_match(&a.pattern, scrut.as_ref().unwrap()).is_some()
-                    });
-                if let (Some(v), true) = (scrut, decidable) {
-                    let taken_idx = m_arms
-                        .iter()
-                        .position(|a| pattern_const_match(&a.pattern, &v) == Some(true));
-                    if let Some(idx) = taken_idx {
-                        if matches!(m_arms[idx].body.as_ref(), Expr::Block(_)) {
-                            let arm = m_arms.swap_remove(idx);
-                            if let Expr::Block(body) = *arm.body {
-                                out.extend(fold_stmt_list(body, env));
-                                continue;
-                            }
-                        }
-                    }
-                }
-                out.push(Statement::Expression(Expr::Match(scrut_e, m_arms)));
+                fold_expr_form_match(e, env, &mut out);
             }
             Statement::Guarded(cond, body) => match eval_const(&cond, env) {
                 Some(ComptimeVal::Bool(true)) => {
