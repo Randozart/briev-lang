@@ -206,6 +206,16 @@ impl BadRegisters {
             .map(|e| e.token.as_str())
     }
 
+    /// Width-qualified resolution: the `$N.w8`-style template refs. Looks
+    /// up the `.wN` row first (x86 %al, aarch64 w0, ...), falling back to
+    /// the base row (riscv stores low bits of the full register).
+    pub fn resolve_w(&self, reg: &str, family: &str, width: u8) -> Option<&str> {
+        let wide = self.regs.get(&format!("{reg}.w{width}"))?.iter()
+            .find(|e| family.starts_with(e.target.as_str()))
+            .map(|e| e.token.as_str());
+        wide.or_else(|| self.resolve(reg, family))
+    }
+
     /// The proof property for `reg` on `family`.
     pub fn property(&self, reg: &str, family: &str) -> Option<RegProp> {
         self.regs.get(reg)?.iter()

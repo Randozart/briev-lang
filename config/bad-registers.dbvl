@@ -39,3 +39,70 @@ imm: "x86_64:$"; "aarch64:#"; "riscv64:";
 
 // GAS comment prefix per target — emitted contract annotations use it.
 comment: "x86_64:#"; "aarch64://"; "riscv64:#";
+
+// ── Application-grade additions (2026-09-21) ─────────────────────────
+// Width tokens: `.w8/.w16/.w32` rows back the `$N.w8` template refs
+// (x86 needs %al/%ax/%eax for sub-width ops, aarch64 needs w-regs;
+// riscv stores the low bits of the full reg, so the rows alias it).
+//
+// FP register class f0-f15 (double precision). SysV: ALL xmm are
+// caller-saved; aarch64 d8-d15 and riscv fs0-fs7 are callee-saved.
+r0.w8: "x86_64:%al:caller"; "aarch64:w0:caller"; "riscv64:a0:caller";
+r1.w8: "x86_64:%cl:caller"; "aarch64:w1:caller"; "riscv64:a1:caller";
+r2.w8: "x86_64:%dl:caller"; "aarch64:w2:caller"; "riscv64:a2:caller";
+r3.w8: "x86_64:%bl:callee"; "aarch64:w3:callee"; "riscv64:a3:callee";
+r4.w8: "x86_64:%sil:caller"; "aarch64:w4:caller"; "riscv64:a4:caller";
+r5.w8: "x86_64:%dil:caller"; "aarch64:w5:caller"; "riscv64:a5:caller";
+r6.w8: "x86_64:%r8b:caller"; "aarch64:w6:caller"; "riscv64:a6:caller";
+r7.w8: "x86_64:%r9b:caller"; "aarch64:w7:caller"; "riscv64:a7:caller";
+r8.w8: "x86_64:%r10b:caller"; "aarch64:w8:caller"; "riscv64:at0:caller";
+r9.w8: "x86_64:%r11b:caller"; "aarch64:w9:caller"; "riscv64:at1:caller";
+r10.w8: "x86_64:%r12b:callee"; "aarch64:w10:callee"; "riscv64:at2:callee";
+r11.w8: "x86_64:%r13b:callee"; "aarch64:w11:callee"; "riscv64:at3:callee";
+r12.w8: "x86_64:%r14b:callee"; "aarch64:w12:callee"; "riscv64:at4:callee";
+r13.w8: "x86_64:%r15b:callee"; "aarch64:w13:callee"; "riscv64:at5:callee";
+r0.w16: "x86_64:%ax:caller"; "aarch64:w0:caller"; "riscv64:a0:caller";
+r1.w16: "x86_64:%cx:caller"; "aarch64:w1:caller"; "riscv64:a1:caller";
+r2.w16: "x86_64:%dx:caller"; "aarch64:w2:caller"; "riscv64:a2:caller";
+r3.w16: "x86_64:%bx:callee"; "aarch64:w3:callee"; "riscv64:a3:callee";
+r4.w16: "x86_64:%si:caller"; "aarch64:w4:caller"; "riscv64:a4:caller";
+r5.w16: "x86_64:%di:caller"; "aarch64:w5:caller"; "riscv64:a5:caller";
+r6.w16: "x86_64:%r8w:caller"; "aarch64:w6:caller"; "riscv64:a6:caller";
+r7.w16: "x86_64:%r9w:caller"; "aarch64:w7:caller"; "riscv64:a7:caller";
+r8.w16: "x86_64:%r10w:caller"; "aarch64:w8:caller"; "riscv64:at0:caller";
+r9.w16: "x86_64:%r11w:caller"; "aarch64:w9:caller"; "riscv64:at1:caller";
+r10.w16: "x86_64:%r12w:callee"; "aarch64:w10:callee"; "riscv64:at2:callee";
+r11.w16: "x86_64:%r13w:callee"; "aarch64:w11:callee"; "riscv64:at3:callee";
+r12.w16: "x86_64:%r14w:callee"; "aarch64:w12:callee"; "riscv64:at4:callee";
+r13.w16: "x86_64:%r15w:callee"; "aarch64:w13:callee"; "riscv64:at5:callee";
+r0.w32: "x86_64:%eax:caller"; "aarch64:x0:caller"; "riscv64:a0:caller";
+r1.w32: "x86_64:%ecx:caller"; "aarch64:x1:caller"; "riscv64:a1:caller";
+r2.w32: "x86_64:%edx:caller"; "aarch64:x2:caller"; "riscv64:a2:caller";
+r3.w32: "x86_64:%ebx:callee"; "aarch64:x3:callee"; "riscv64:a3:callee";
+r4.w32: "x86_64:%esi:caller"; "aarch64:x4:caller"; "riscv64:a4:caller";
+r5.w32: "x86_64:%edi:caller"; "aarch64:x5:caller"; "riscv64:a5:caller";
+r6.w32: "x86_64:%r8d:caller"; "aarch64:x6:caller"; "riscv64:a6:caller";
+r7.w32: "x86_64:%r9d:caller"; "aarch64:x7:caller"; "riscv64:a7:caller";
+r8.w32: "x86_64:%r10d:caller"; "aarch64:x8:caller"; "riscv64:at0:caller";
+r9.w32: "x86_64:%r11d:caller"; "aarch64:x9:caller"; "riscv64:at1:caller";
+r10.w32: "x86_64:%r12d:callee"; "aarch64:x10:callee"; "riscv64:at2:callee";
+r11.w32: "x86_64:%r13d:callee"; "aarch64:x11:callee"; "riscv64:at3:callee";
+r12.w32: "x86_64:%r14d:callee"; "aarch64:x12:callee"; "riscv64:at4:callee";
+r13.w32: "x86_64:%r15d:callee"; "aarch64:x13:callee"; "riscv64:at5:callee";
+
+f0: "x86_64:%xmm0:caller"; "aarch64:d0:caller"; "riscv64:fa0:caller";
+f1: "x86_64:%xmm1:caller"; "aarch64:d1:caller"; "riscv64:fa1:caller";
+f2: "x86_64:%xmm2:caller"; "aarch64:d2:caller"; "riscv64:fa2:caller";
+f3: "x86_64:%xmm3:caller"; "aarch64:d3:caller"; "riscv64:fa3:caller";
+f4: "x86_64:%xmm4:caller"; "aarch64:d4:caller"; "riscv64:fa4:caller";
+f5: "x86_64:%xmm5:caller"; "aarch64:d5:caller"; "riscv64:fa5:caller";
+f6: "x86_64:%xmm6:caller"; "aarch64:d6:caller"; "riscv64:fa6:caller";
+f7: "x86_64:%xmm7:caller"; "aarch64:d7:caller"; "riscv64:fa7:caller";
+f8: "x86_64:%xmm8:caller"; "aarch64:d8:callee"; "riscv64:fs0:callee";
+f9: "x86_64:%xmm9:caller"; "aarch64:d9:callee"; "riscv64:fs1:callee";
+f10: "x86_64:%xmm10:caller"; "aarch64:d10:callee"; "riscv64:fs2:callee";
+f11: "x86_64:%xmm11:caller"; "aarch64:d11:callee"; "riscv64:fs3:callee";
+f12: "x86_64:%xmm12:caller"; "aarch64:d12:callee"; "riscv64:fs4:callee";
+f13: "x86_64:%xmm13:caller"; "aarch64:d13:callee"; "riscv64:fs5:callee";
+f14: "x86_64:%xmm14:caller"; "aarch64:d14:callee"; "riscv64:fs6:callee";
+f15: "x86_64:%xmm15:caller"; "aarch64:d15:callee"; "riscv64:fs7:callee";

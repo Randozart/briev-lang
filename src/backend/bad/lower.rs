@@ -327,8 +327,8 @@ impl<'a> Lowerer<'a> {
         let mut i = 0;
         while i < template.len() {
             match take_operand_ref(template, i) {
-                Some((n, next)) => {
-                    out.push_str(&self.operand_text(instr, n, env, allow_symbols)?);
+                Some((r, next)) => {
+                    out.push_str(&self.operand_text(instr, r, env, allow_symbols)?);
                     i = next;
                 }
                 None => {
@@ -341,61 +341,82 @@ impl<'a> Lowerer<'a> {
     }
 
     fn operand_text(
-        &self, instr: &BadInstr, n: usize, env: &HashMap<String, Bound>,
+        &self, instr: &BadInstr, r: Ref, env: &HashMap<String, Bound>,
         allow_symbols: bool,
     ) -> Result<String, String> {
-        if n == 0 || n > instr.operands.len() {
-            return Ok(format!("$<{}>", n)); // unreachable: arity checked first
+        if r.n == 0 || r.n > instr.operands.len() {
+            return Ok(format!("$<{}>", r.n)); // unreachable: arity checked first
         }
-        match &instr.operands[n - 1] {
-            BadOperand::Int(v) => Ok(format!("{}{}", self.regs.imm_prefix(&self.family), v)),
+        let imm = self.regs.imm_prefix(&self.family);
+        match &instr.operands[r.n - 1] {
+            BadOperand::Int(v) => {
+                if r.bare {
+                    return Ok(v.to_string());
+                }
+                Ok(format!("{imm}{v}"))
+            }
             BadOperand::Name(name) => {
                 if let Some(Bound::Imm(v)) = env.get(name) {
-                    return Ok(format!("{}{}", self.regs.imm_prefix(&self.family), v));
+                    return Ok(format!("{imm}{v}"));
                 }
-                // A defn param bound to a caller token (register/label name)
-                // resolves through the same pipeline as a direct name.
-                if let Some(Bound::Token(t)) = env.get(name) {
-                    if let Some(tok) = self.resolve_register(t) {
-                        return Ok(tok.to_string());
-                    }
-                    if allow_symbols {
-                        return Ok(t.clone());
-                    }
-                    return Err(format!(
-                        "defn param `{name}` was bound to `{t}`, which is not a register \
-                         on `{fam}` - pass a register or a label this target has",
-                        name = name,
-                        t = t,
-                        fam = self.family
-                    ));
+                let (bound_name, param) = match env.get(name) {
+                    Some(Bound::Token(t)) => (t.as_str(), Some(name.as_str())),
+                    _ => (name.as_str(), None),
+                };
+                let req = TokReq {
+                    name: bound_name,
+                    width: r.width,
+                    allow_symbols,
+                    instr,
+                    param,
+                };
+                let token = self.token_for(&req)?;
+                if r.bare && !imm.is_empty() && token.starts_with(imm) {
+                    // A bare ref to an immediate-bound param strips the
+                    // prefix; a register token is already prefix-free.
+                    return Ok(token[imm.len()..].to_string());
                 }
-                if let Some(tok) = self.resolve_register(name) {
-                    return Ok(tok.to_string());
-                }
-                if allow_symbols {
-                    // Branch target — verbatim label/symbol.
-                    return Ok(name.clone());
-                }
-                Err(format!(
-                    "operand `{name}` in `{mn}` (line {line}) is not a register on \
-                     `{fam}` and `{mn}` does not take a branch target - use \
-                     `addr d, {name}` to take an address, or load the value into a \
-                     register first",
-                    name = name,
-                    mn = instr.mnemonic,
-                    line = instr.span.line,
-                    fam = self.family
-                ))
+                Ok(token)
             }
         }
     }
 
-    /// After template substitution, replace portable names inside the
-    /// emitted line (raw operand text may embed registers/params).
-    fn emit_mapped(&mut self, text: &str, env: &HashMap<String, Bound>) {
-        let line = self.replace_names(text, env);
-        self.push_line(&line);
+    fn token_for(&self, req: &TokReq) -> Result<String, String> {
+        let TokReq { name, width, allow_symbols, instr, param } = req;
+        let name = *name;
+        let width = *width;
+        let allow_symbols = *allow_symbols;
+        let tok = match width {
+            Some(w) => self.regs.resolve_w(name, &self.family, w),
+            None => self.resolve_register(name),
+        };
+        if let Some(t) = tok {
+            return Ok(t.to_string());
+        }
+        if allow_symbols {
+            return Ok(name.to_string());
+        }
+        let bound = param
+            .map(|p| format!(" (bound from param `{p}`)"))
+            .unwrap_or_default();
+        Err(format!(
+            "operand `{name}`{bound} in `{mn}` (line {line}) is not a register on \
+             `{fam}` and `{mn}` does not take a branch target - use `addr d, {name}` \
+             to take an address, or load the value into a register first",
+            name = name,
+            mn = instr.mnemonic,
+            line = instr.span.line,
+            fam = self.family
+        ))
+    }
+
+    /// Emit a fully substituted template line. NO name re-scan here: the
+    /// output already holds final tokens, and boundary-replacing them
+    /// would corrupt them (`%r8` contains the word `r8`, which would
+    /// re-map to r8's own token). Raw-operand text is resolved earlier,
+    /// per operand, in emit_raw_instr.
+    fn emit_mapped(&mut self, text: &str, _env: &HashMap<String, Bound>) {
+        self.push_line(text);
     }
 
     /// Identifier-boundary replacement of aliases, params, and portable
@@ -464,8 +485,29 @@ impl<'a> Lowerer<'a> {
     }
 }
 
-/// `$N` operand ref at byte `i` (greedy digit run) → (n, next byte index).
-fn take_operand_ref(s: &str, i: usize) -> Option<(usize, usize)> {
+/// Everything `token_for` needs to resolve one name — keeps the helper
+/// at two parameters.
+struct TokReq<'a> {
+    name: &'a str,
+    width: Option<u8>,
+    allow_symbols: bool,
+    instr: &'a BadInstr,
+    /// Set when `name` came from a defn param binding (for diagnostics).
+    param: Option<&'a str>,
+}
+
+/// A parsed `$N` template reference: operand index, optional width
+/// qualifier (`.w8/.w16/.w32`), and the bare flag (`$N!` = no imm prefix).
+#[derive(Debug, Clone, Copy)]
+struct Ref {
+    n: usize,
+    width: Option<u8>,
+    bare: bool,
+}
+
+/// `$N` template ref at byte `i` — `$N`, `$N.w8/.w16/.w32`, `$N!`.
+/// Returns (Ref, next byte index).
+fn take_operand_ref(s: &str, i: usize) -> Option<(Ref, usize)> {
     let bytes = s.as_bytes();
     if bytes.get(i) != Some(&b'$') {
         return None;
@@ -477,7 +519,28 @@ fn take_operand_ref(s: &str, i: usize) -> Option<(usize, usize)> {
     if j == i + 1 {
         return None;
     }
-    Some((s[i + 1..j].parse().unwrap_or(0), j))
+    let r = Ref { n: s[i + 1..j].parse().unwrap_or(0), width: None, bare: false };
+    let (r, j) = take_width_suffix(s, j, r);
+    if bytes.get(j) == Some(&b'!') {
+        return Some((Ref { bare: true, ..r }, j + 1));
+    }
+    Some((r, j))
+}
+
+/// `.w8` / `.w16` / `.w32` suffix scan.
+fn take_width_suffix(s: &str, j: usize, r: Ref) -> (Ref, usize) {
+    let bytes = s.as_bytes();
+    if bytes.get(j) != Some(&b'.') || bytes.get(j + 1) != Some(&b'w') {
+        return (r, j);
+    }
+    let mut k = j + 2;
+    while k < bytes.len() && bytes[k].is_ascii_digit() {
+        k += 1;
+    }
+    match s[j + 2..k].parse::<u8>() {
+        Ok(w) if matches!(w, 8 | 16 | 32) => (Ref { width: Some(w), ..r }, k),
+        _ => (r, j),
+    }
 }
 
 /// Start of the next identifier-ish word at or after byte 0 of `s`.

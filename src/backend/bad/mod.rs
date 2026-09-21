@@ -78,7 +78,7 @@ pub fn assemble(text: &str, family: &str, out_path: &std::path::Path) -> Result<
 mod tests {
     use super::*;
 
-    fn lower_ok(src: &str, triple: &str) -> String {
+    pub(crate) fn lower_ok(src: &str, triple: &str) -> String {
         generate(src, triple).unwrap_or_else(|e| panic!("generate failed: {}", e))
     }
 
@@ -232,5 +232,146 @@ mod tests {
         let bytes = std::fs::read(&out).unwrap();
         std::fs::remove_file(&out).ok();
         assert_eq!(&bytes[..4], b"\x7fELF");
+    }
+}
+
+#[cfg(test)]
+mod appgrade_tests {
+    use super::tests::lower_ok;
+    use super::*;
+
+    #[test]
+    fn signed_and_unsigned_branch_families() {
+        let src = "loop:\n    jlt r0, r1, loop\n    jhs r0, r1, loop\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("jl loop"), "{}", x86);
+        assert!(x86.contains("jae loop"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("b.lt loop") && arm.contains("b.hs loop"), "{}", arm);
+        let riscv = lower_ok(src, "riscv64");
+        assert!(riscv.contains("blt a0, a1, loop"), "{}", riscv);
+        assert!(riscv.contains("bgeu a0, a1, loop"), "{}", riscv);
+    }
+
+    #[test]
+    fn riscv_branch_imm_borrows_t0() {
+        let riscv = lower_ok("l:\n    jlt r0, 10, l\n    ret\n", "riscv64");
+        assert!(riscv.contains("li t0, 10; blt a0, t0, l"), "{}", riscv);
+    }
+
+    #[test]
+    fn logic_and_shift_ops() {
+        let src = "s:\n    and r0, r1, 15\n    xor r2, r2, r2\n    shl r3, r3, 4\n    \
+                   shl r4, r4, r5\n    not r6, r7\n    neg r8, r9\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("andq $15, %rax"), "{}", x86);
+        assert!(x86.contains("shlq $4, %rbx"), "{}", x86);
+        assert!(x86.contains("movq %rdi, %rcx; shlq %cl"), "variable shift uses %cl: {}", x86);
+        assert!(x86.contains("notq %r8"), "{}", x86);
+        let riscv = lower_ok(src, "riscv64");
+        assert!(riscv.contains("andi a0, a1, 15"), "{}", riscv);
+        assert!(riscv.contains("slli a3, a3, 4"), "{}", riscv);
+        assert!(riscv.contains("xori a6, a7, -1"), "{}", riscv);
+    }
+
+    #[test]
+    fn math_ops_mod_mulhi_slt() {
+        // mod-with-imm works where the row teaches an imm form (x86, riscv);
+        // aarch64 mod is register-only (`|-`) — compose or take the error.
+        let src = "m:\n    mod r0, r1, r2\n    mulhi r3, r4, r5\n    slt r6, r7, 7\n    \
+                   sltu r8, r9, r10\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("cqto; idivq %rdx; movq %rdx, %rax"), "{}", x86);
+        assert!(x86.contains("cmpq $7, %r9; setl %al; movzbq %al, %r8"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("sdiv x9, x1, x2; msub x0, x9, x2, x1"), "{}", arm);
+        assert!(arm.contains("smulh x3, x4, x5"), "{}", arm);
+        assert!(arm.contains("cset x6, lt"), "{}", arm);
+        let riscv = lower_ok(src, "riscv64");
+        assert!(riscv.contains("rem a0, a1, a2"), "{}", riscv);
+        assert!(riscv.contains("mulh a3, a4, a5"), "{}", riscv);
+        assert!(riscv.contains("slti a6, a7, 7"), "{}", riscv);
+    }
+
+    #[test]
+    fn aarch64_mod_imm_is_a_capability_error() {
+        let err = generate("m:\n    mod r0, r1, 10\n    ret\n", "aarch64").unwrap_err();
+        assert!(err.contains("no immediate form"), "{}", err);
+    }
+
+    #[test]
+    fn subwidth_memory_and_width_tokens() {
+        let src = "w:\n    ldb r0, r1\n    ldub r2, r1\n    ldh r3, r1\n    stb r4, r1\n    \
+                   sth r5, r1\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movsbq (%rcx), %rax"), "{}", x86);
+        assert!(x86.contains("movb %sil, (%rcx)"), "stb uses r4.w8=%sil: {}", x86);
+        assert!(x86.contains("movw %di, (%rcx)"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("ldrsb x0, [x1]"), "{}", arm);
+        assert!(arm.contains("strb w4, [x1]"), "{}", arm);
+        assert!(arm.contains("strh w5, [x1]"), "{}", arm);
+        let riscv = lower_ok(src, "riscv64");
+        assert!(riscv.contains("lb a0, 0(a1)") && riscv.contains("sb a4, 0(a1)"), "{}", riscv);
+    }
+
+    #[test]
+    fn loadoff_storeoff_and_bare_disp_ref() {
+        let src = "o:\n    loadoff r0, r1, 8\n    storeoff r2, r1, 16\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq 8(%rcx), %rax"), "bare $N! strips the $ prefix: {}", x86);
+        assert!(x86.contains("movq %rdx, 16(%rcx)"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("ldr x0, [x1, #8]") && arm.contains("str x2, [x1, #16]"), "{}", arm);
+        let riscv = lower_ok(src, "riscv64");
+        assert!(riscv.contains("ld a0, 8(a1)") && riscv.contains("sd a2, 16(a1)"), "{}", riscv);
+    }
+
+    #[test]
+    fn push2_pop2_first_param_is_higher_address() {
+        let src = "s:\n    push2 r0, r1\n    pop2 r0, r1\n    ret\n";
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("stp x1, x0, [sp, #-16]!"), "{}", arm);
+        assert!(arm.contains("ldp x1, x0, [sp], #16"), "{}", arm);
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("pushq %rax; pushq %rcx"), "{}", x86);
+        assert!(x86.contains("popq %rcx; popq %rax"), "{}", x86);
+    }
+
+    #[test]
+    fn fp_ops_and_register_classes() {
+        let src = "f:\n    fadd f0, f1, f2\n    fneg f3, f4\n    fmul f5, f0, f1\n    \
+                   itof f6, r0\n    ftoi r1, f6\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movsd %xmm1, %xmm0; addsd %xmm2, %xmm0"), "{}", x86);
+        assert!(x86.contains("cvtsi2sdq %rax, %xmm6"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("fadd d0, d1, d2"), "{}", arm);
+        assert!(arm.contains("scvtf d6, x0"), "{}", arm);
+        let riscv = lower_ok(src, "riscv64");
+        assert!(riscv.contains("fadd.d fa0, fa1, fa2"), "{}", riscv);
+        assert!(riscv.contains("fcvt.d.l fa6, a0"), "{}", riscv);
+    }
+
+    #[test]
+    fn fp_branch_family_mirrors_j() {
+        let src = "fl:\n    fjlt f0, f1, fl\n    fjge f2, f3, fl\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("ucomisd %xmm1, %xmm0; jb fl"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("fcmp d0, d1; b.mi fl"), "{}", arm);
+        let riscv = lower_ok(src, "riscv64");
+        assert!(riscv.contains("flt.d t0, fa0, fa1; bne t0, zero, fl"), "{}", riscv);
+        assert!(riscv.contains("fle.d t0, fa3, fa2; bne t0, zero, fl"), "{}", riscv);
+    }
+
+    #[test]
+    fn callee_saved_fp_detected_on_aarch64() {
+        // f8 is d8 on aarch64 = callee-saved; f0 is caller-saved.
+        let ok = "g: [post: f8 preserved]\n    fmov f8, f0\n    ret\n";
+        lower_ok(ok, "aarch64");
+        let bad = "g: [post: f0 preserved]\n    fmov f0, f1\n    ret\n";
+        let err = generate(bad, "aarch64").unwrap_err();
+        assert!(err.contains("caller-saved"), "{}", err);
     }
 }
