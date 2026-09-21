@@ -35,9 +35,11 @@ type Kelvin { spec Bits: 32; };
 type Power { spec KicadType: "power_in"; spec Supply: true; };
 type Ground { spec KicadType: "power_in"; spec Return: true; };
 type In { spec KicadType: "input"; };
-type Out { spec KicadType: "output"; };
-type Io { spec KicadType: "bidirectional"; };
-type IoOd { spec KicadType: "open_collector"; };
+// Drive capability (E14a): which classes may hold a drive — the intent
+// machinery enumerates candidates through this property.
+type Out { spec KicadType: "output"; spec CanDrive: true; };
+type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; };
 type Nc { spec KicadType: "no_connect"; spec NoConnect: true; };
 
 // A pin: two electrical quantities. Contracts reference them directly —

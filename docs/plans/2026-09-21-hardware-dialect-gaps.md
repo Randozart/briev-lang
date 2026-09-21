@@ -481,3 +481,21 @@ With this, every E-track prerequisite for the usb_sensor gate fixture is
 in place: classes (E12), arrays (E11), decoupling (E13), budgets (E7).
 E14a — intent completion: node guards, drive maps, keep/store ambiguity
 machinery — is the next and final slice before the fixture can compile.
+
+### Amendment 2026-09-21 (night, II): E14a slice 1 — node-body intents
+
+IMPLEMENTED (first vertical of E14a): `node` guards already carry
+topology (they are Transactions); bodies now carry two fact forms —
+pin-to-pin assignments are wiring facts, and `inst = true;` is a drive
+intent completing the last open pin against unconnected `spec CanDrive`
+pins (property on Out/Io/IoOd fundamentals). Ambiguity enumerates
+candidates and hard-errors; every synthesized connection carries
+provenance in `intent_proofs` (design record D3). INTENT ERRORS REFUSE
+EMISSION FIRST — they outrank downstream diagnostics on an incomplete
+board.
+
+Deferred (named, owned): `keep`/`store` syntax (the D14 lifting slots —
+names provisional; slice 1's body-assignments and guard facts cover the
+wiring surface), multi-pin intent completion, class-semantics ERC
+(drive-single, contention), `chain`/`await` sugar, whole-bus equality.
+The usb_sensor fixture compiles after these land.

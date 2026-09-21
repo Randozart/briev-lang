@@ -126,6 +126,17 @@ impl ElectronicsBackend {
     /// violations — an incomplete or electrically-unsound board never leaves
     /// the compiler.
     pub fn generate(netlist: &ElectronicsNetlist) -> Result<String, Vec<String>> {
+        // 2026-09-21 (E14a): drive-intent failures — an intent that could
+        // not complete, or completed ambiguously. Refuse FIRST: intent
+        // diagnostics outrank downstream diagnostics on an incomplete
+        // board (the intent is what was supposed to complete it).
+        if !netlist.intent_errors.is_empty() {
+            let mut errs = vec![
+                "cannot emit schematic: a drive intent could not be completed".to_string(),
+            ];
+            errs.extend(netlist.intent_errors.iter().map(|e| format!("  {}", e)));
+            return Err(errs);
+        }
         if !netlist.dangling.is_empty() {
             let mut errs = vec!["cannot emit schematic: the netlist is incomplete".to_string()];
             errs.extend(netlist.dangling.iter().map(|d| format!("  {}", d)));
@@ -522,6 +533,33 @@ mod tests {
         assert!(sch.contains("name \"gpio[0]\""), "{sch}");
         assert!(sch.contains("name \"gpio[1]\""));
         assert_eq!(sch.matches("(wire ").count(), 6, "2 nets × 3 segments");
+    }
+
+    #[test]
+    fn refuses_ambiguous_intents() {
+        // 2026-09-21 (E14a): an ambiguous drive intent never leaves the
+        // compiler — the candidates are enumerated, never chosen silently.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Mcu { pin gpio0: Io; pin gpio1: Io; pin gnd: Ground; reference "U"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Conn { pin gnd: Ground; reference "J"; };
+
+            let u1: Mcu = Mcu { value: "x" };
+            let d1: Led = Led { value: "red" };
+            let j1: Conn = Conn { value: "y" };
+
+            node on
+                [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+                [true]
+            {
+                d1 = true;
+            }
+        "#;
+        let nl = netlist_of(src);
+        let err = ElectronicsBackend::generate(&nl).unwrap_err();
+        assert!(err[0].contains("drive intent"), "{:?}", err);
     }
 
     #[test]

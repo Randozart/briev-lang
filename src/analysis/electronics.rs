@@ -97,6 +97,12 @@ pub struct ElectronicsNetlist {
     /// draw past its stated `budget`. Hard diagnostics: the backend
     /// refuses to emit.
     pub budget_errors: Vec<String>,
+    /// 2026-09-21 (E14a): drive-intent failures — an intent that could
+    /// not complete, or completed ambiguously. Hard diagnostics.
+    pub intent_errors: Vec<String>,
+    /// 2026-09-21 (E14a): wiring facts the intents established, reported
+    /// so synthesized connections carry provenance (design record D3).
+    pub intent_proofs: Vec<String>,
     /// 2026-09-11 (electrical proving): net voltage classes + violations.
     pub voltage: VoltageCheck,
 }
@@ -119,6 +125,9 @@ pub struct PinClassProps {
     pub supply: bool,
     /// 2026-09-21 (E13): `spec Return: true;` — the return-side rail pin.
     pub return_pin: bool,
+    /// 2026-09-21 (E14a): `spec CanDrive: true;` — the class may hold a
+    /// drive; drive intents enumerate candidates through this property.
+    pub can_drive: bool,
 }
 
 impl Default for PinClassProps {
@@ -128,6 +137,7 @@ impl Default for PinClassProps {
             no_connect: false,
             supply: false,
             return_pin: false,
+            can_drive: false,
         }
     }
 }
@@ -162,6 +172,10 @@ struct DisjointSet {
 impl DisjointSet {
     fn new() -> Self {
         Self { parent: BTreeMap::new() }
+    }
+    /// Membership test (E14a): a pin is connected iff it has been made.
+    fn contains(&self, k: &str) -> bool {
+        self.parent.contains_key(k)
     }
     fn make(&mut self, k: String) {
         let missing = !self.parent.contains_key(&k);
@@ -311,6 +325,10 @@ fn collect_type_pins(
                                 supply: md.get("supply").and_then(property_bool).unwrap_or(false),
                                 return_pin: md
                                     .get("return")
+                                    .and_then(property_bool)
+                                    .unwrap_or(false),
+                                can_drive: md
+                                    .get("can_drive")
                                     .and_then(property_bool)
                                     .unwrap_or(false),
                             },
@@ -1383,6 +1401,172 @@ fn check_budgets(
     errors
 }
 
+/// Disjoint-set membership: a pin is CONNECTED when it has been made in
+/// the union-find (only wiring facts make pins).
+fn pin_connected(ds: &DisjointSet, key: &str) -> bool {
+    ds.contains(key)
+}
+
+/// Body facts of one reactive transaction: wiring unions applied
+/// immediately, drive intents returned for the completion pass (E14a).
+fn body_facts(
+    t: &crate::ast::top::Transaction,
+    ctx: &mut NetlistContext,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    proofs: &mut Vec<String>,
+) -> Vec<(String, String)> {
+    let mut intents = Vec::new();
+    for stmt in &t.body {
+        let Statement::Assign(target, value) = stmt else {
+            continue;
+        };
+        // Drive intent: `inst = true;`
+        if let (Expr::Identifier(name), Expr::Bool(true)) = (target, value) {
+            intents.push((t.name.clone(), name.clone()));
+            continue;
+        }
+        // Wiring fact: pin = pin.
+        if let (Some(lp), Some(rp)) = (
+            resolve_pin(&target.clone(), instances, ctx.type_pins),
+            resolve_pin(&value.clone(), instances, ctx.type_pins),
+        ) {
+            let lk = pin_key(&lp.component, &lp.pin);
+            let rk = pin_key(&rp.component, &rp.pin);
+            ctx.ds.make(lk.clone());
+            ctx.ds.make(rk.clone());
+            ctx.ds.union(&lk, &rk);
+            proofs.push(format!(
+                "wired in node '{}': {}.{} <-> {}.{}",
+                t.name, lp.component, lp.pin, rp.component, rp.pin
+            ));
+        }
+    }
+    intents
+}
+
+/// Complete one drive intent (E14a): the instance must have exactly one
+/// open pin, and exactly one unconnected drive-capable pin (spec
+/// CanDrive) may exist elsewhere. One of each — the intent wires them.
+/// Anything else is an Err naming the facts (candidates included, sorted
+/// — never a silent choice, D13).
+fn complete_intent(
+    inst_name: &str,
+    node: &str,
+    ctx: &mut NetlistContext,
+    instances: &BTreeMap<String, &ComponentInstance>,
+) -> Result<String, String> {
+    let Some(inst) = instances.get(inst_name) else {
+        return Err(format!(
+            "drive intent '{} = true' (node '{}') names no declared instance",
+            inst_name, node
+        ));
+    };
+    let Some(ti) = ctx.type_info.get(&inst.type_name) else {
+        return Ok(format!(
+            "intent '{} = true' (node '{}'): typeless — recorded",
+            inst_name, node
+        ));
+    };
+    let Some(pins) = ctx.type_pins.get(&inst.type_name) else {
+        return Ok(format!(
+            "intent '{} = true' (node '{}'): typeless — recorded",
+            inst_name, node
+        ));
+    };
+    let open: Vec<&(String, u64)> = pins
+        .iter()
+        .filter(|(n, _)| !pin_connected(ctx.ds, &pin_key(inst_name, n)))
+        .collect();
+    if open.is_empty() {
+        return Ok(format!(
+            "intent '{} = true' (node '{}'): fully wired — recorded",
+            inst_name, node
+        ));
+    }
+    if open.len() > 1 {
+        let names: Vec<String> =
+            open.iter().map(|(n, _)| format!("{}.{}", inst_name, n)).collect();
+        return Err(format!(
+            "drive intent '{} = true' (node '{}') cannot complete: {} pins of '{}' are unconnected ({}). Wire all but one — the intent completes the last open pin",
+            inst_name,
+            node,
+            open.len(),
+            inst_name,
+            names.join(", ")
+        ));
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    for (other, oi) in instances {
+        if other == inst_name {
+            continue;
+        }
+        let Some(oti) = ctx.type_info.get(&oi.type_name) else {
+            continue;
+        };
+        for (i, (n, _)) in oti.pins.iter().enumerate() {
+            let key = pin_key(other, n);
+            if oti.pin_classes[i].can_drive && !pin_connected(ctx.ds, &key) {
+                candidates.push(format!("{}.{}", other, n));
+            }
+        }
+    }
+    candidates.sort();
+    match candidates.len() {
+        0 => Err(format!(
+            "drive intent '{} = true' (node '{}') has no completion: no unconnected drive-capable pin (spec CanDrive) remains in scope",
+            inst_name, node
+        )),
+        1 => {
+            let mut parts = candidates[0].splitn(2, '.');
+            let (co, cp) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            let open_pin = &open[0].0;
+            let lk = pin_key(inst_name, open_pin);
+            let rk = pin_key(co, cp);
+            ctx.ds.make(lk.clone());
+            ctx.ds.make(rk.clone());
+            ctx.ds.union(&lk, &rk);
+            Ok(format!(
+                "wired by intent '{} = true' (node '{}'): {}.{} <-> {} — single drive-capable candidate",
+                inst_name, node, inst_name, open_pin, candidates[0]
+            ))
+        }
+        n => Err(format!(
+            "drive intent '{} = true' (node '{}') is ambiguous: {} drive-capable pins could complete '{}.{}' ({}). State the connection explicitly in the node guard",
+            inst_name, node, n, inst_name, open[0].0, candidates.join(", ")
+        )),
+    }
+}
+
+/// 2026-09-21 (E14a slice 1, design record D2/D3): node-body intents.
+/// Two body fact forms on the electronics surface:
+/// - `a = b;` where both sides resolve to pins — a wiring fact (union).
+/// - `inst = true;` — a DRIVE INTENT: the instance participates; its
+///   wiring must complete. Exactly one open pin plus exactly one
+///   unconnected drive-capable pin completes; anything else is a hard
+///   intent_error — never a silent choice (D13).
+fn collect_intents(
+    ctx: &mut NetlistContext,
+    items: &[TopLevel],
+    instances: &BTreeMap<String, &ComponentInstance>,
+) -> (Vec<String>, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut proofs = Vec::new();
+    let mut intents: Vec<(String, String)> = Vec::new();
+    for item in items {
+        let TopLevel::Transaction(t) = item else {
+            continue;
+        };
+        intents.extend(body_facts(t, ctx, instances, &mut proofs));
+    }
+    for (node, inst_name) in &intents {
+        match complete_intent(inst_name, node, ctx, instances) {
+            Ok(proof) => proofs.push(proof),
+            Err(e) => errors.push(e),
+        }
+    }
+    (errors, proofs)
+}
+
 /// Every declared pin of every instance, ready for union-find grouping
 /// (E13 extraction: keeps derive_netlist a coordinator, not a worker).
 fn collect_all_pins(
@@ -1447,6 +1631,12 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let mut ds = DisjointSet::new();
     let named = collect_pin_unions(items, &instances, &type_pins, &mut ds);
     let (mut net_names, raw_conflicts) = resolve_net_names(&mut ds, named);
+    // 2026-09-21 (E14a): node-body intents — body wiring facts union
+    // first; drive intents then complete the last open pin.
+    let (intent_errors, intent_proofs) = {
+        let mut ictx = NetlistContext::new(items, &mut ds, &type_pins, &type_info);
+        collect_intents(&mut ictx, items, &instances)
+    };
 
     // Group members by root; sort everything for determinism (HashMap rule).
     let mut groups: BTreeMap<String, Vec<PinRef>> = BTreeMap::new();
@@ -1506,6 +1696,8 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         class_errors,
         convention_errors,
         budget_errors,
+        intent_errors,
+        intent_proofs,
         voltage,
         type_info,
     }
@@ -1776,6 +1968,148 @@ mod tests {
             nl.budget_errors[0].contains("targets a pin"),
             "{}",
             nl.budget_errors[0]
+        );
+    }
+
+    // ── 2026-09-21 (E14a slice 1): node-body intents ──────────────────────
+
+    #[test]
+    fn drive_intent_completes_single_candidate() {
+        // d1.a is the one open pin; u1.gpio0 is the one unconnected
+        // drive-capable pin — the intent wires them and records proof.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Mcu { pin gpio0: Io; pin vdd: Power; pin gnd: Ground; reference "U"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Conn { pin p1: Power; pin gnd: Ground; reference "J"; };
+
+            let u1: Mcu = Mcu { value: "x" };
+            let d1: Led = Led { value: "red" };
+            let j1: Conn = Conn { value: "y" };
+
+            node on
+                [j1.p1.voltage == 3.3V && j1.p1.voltage == u1.vdd.voltage &&
+                 j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+                [true]
+            {
+                d1 = true;
+            }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("wired by intent") && p.contains("d1.a")),
+            "proof recorded: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn ambiguous_drive_intent_enumerates_candidates() {
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Mcu { pin gpio0: Io; pin gpio1: Io; pin gnd: Ground; reference "U"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Conn { pin gnd: Ground; reference "J"; };
+
+            let u1: Mcu = Mcu { value: "x" };
+            let d1: Led = Led { value: "red" };
+            let j1: Conn = Conn { value: "y" };
+
+            node on
+                [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+                [true]
+            {
+                d1 = true;
+            }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        let e = &nl.intent_errors[0];
+        assert!(e.contains("ambiguous") && e.contains("u1.gpio0") && e.contains("u1.gpio1"), "{}", e);
+        assert!(e.contains("node 'on'"), "{}", e);
+    }
+
+    #[test]
+    fn drive_intent_without_candidates_is_an_error() {
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Mcu { pin gnd: Ground; reference "U"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Conn { pin gnd: Ground; reference "J"; };
+
+            let u1: Mcu = Mcu { value: "x" };
+            let d1: Led = Led { value: "red" };
+            let j1: Conn = Conn { value: "y" };
+
+            node on
+                [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+                [true]
+            {
+                d1 = true;
+            }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_errors[0].contains("no unconnected drive-capable"),
+            "{}",
+            nl.intent_errors[0]
+        );
+    }
+
+    #[test]
+    fn body_wiring_facts_union_pins() {
+        // `d1.a = u1.gpio0;` in a node body is a wiring fact — the net
+        // forms even without any precondition equality stating it.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Mcu { pin gpio0: Io; pin gnd: Ground; reference "U"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Conn { pin gnd: Ground; reference "J"; };
+
+            let u1: Mcu = Mcu { value: "x" };
+            let d1: Led = Led { value: "red" };
+            let j1: Conn = Conn { value: "y" };
+
+            node on
+                [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+                [true]
+            {
+                d1.a = u1.gpio0;
+            }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        assert!(
+            nl.nets.iter().any(|n| {
+                let ps: Vec<&str> = n.pins.iter().map(|p| p.pin.as_str()).collect();
+                ps.contains(&"a") && ps.contains(&"gpio0")
+            }),
+            "body wiring forms the net: {:?}",
+            nl.nets
+        );
+        assert!(nl.intent_proofs.iter().any(|p| p.contains("wired in node 'on'")));
+    }
+
+    #[test]
+    fn intent_on_unknown_instance_is_an_error() {
+        let src = r#"
+            type Led { pin a; pin k; reference "D"; };
+            node on [true] [true] { ghost = true; }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_errors[0].contains("no declared instance"),
+            "{}",
+            nl.intent_errors[0]
         );
     }
 

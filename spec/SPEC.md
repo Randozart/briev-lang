@@ -290,6 +290,18 @@ prove postcondition currents, summed direction-agnostically at the net.
 A net with no derived draw passes vacuously (nothing provable flows).
 An exceeded budget is a hard compile error.
 
+**Node-body intents (2026-09-21, first slice).** Inside a `node`, two
+body fact forms participate in the netlist: `a = b;` where both sides
+resolve to pins is a wiring fact, and `inst = true;` is a drive intent —
+the instance participates and its wiring must complete. Completion is
+deliberately narrow: exactly one open pin on the instance plus exactly
+one unconnected drive-capable pin (`spec CanDrive`, declared on the
+`Out`/`Io`/`IoOd` fundamentals) wires them with a recorded proof; zero
+candidates, several candidates (each named), or several open pins are
+hard compile errors — the compiler never chooses silently. Every
+intent-established connection carries its provenance (which node, which
+intent) in the verification output.
+
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive
