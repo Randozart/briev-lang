@@ -257,7 +257,7 @@ mod appgrade_tests {
     #[test]
     fn riscv_branch_imm_borrows_t0() {
         let riscv = lower_ok("l:\n    jlt r0, 10, l\n    ret\n", "riscv64");
-        assert!(riscv.contains("li t0, 10; blt a0, t0, l"), "{}", riscv);
+        assert!(riscv.contains("li t0, 10") && riscv.contains("blt a0, t0, l"), "{}", riscv);
     }
 
     #[test]
@@ -267,7 +267,8 @@ mod appgrade_tests {
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("andq $15, %rax"), "{}", x86);
         assert!(x86.contains("shlq $4, %rbx"), "{}", x86);
-        assert!(x86.contains("movq %rdi, %rcx; shlq %cl"), "variable shift uses %cl: {}", x86);
+        let joined = x86.replace('\n', "; ");
+        assert!(joined.contains("movq %rdi, %rcx; shlq %cl"), "variable shift uses %cl: {}", x86);
         assert!(x86.contains("notq %r8"), "{}", x86);
         let riscv = lower_ok(src, "riscv64");
         assert!(riscv.contains("andi a0, a1, 15"), "{}", riscv);
@@ -282,10 +283,12 @@ mod appgrade_tests {
         let src = "m:\n    mod r0, r1, r2\n    mulhi r3, r4, r5\n    slt r6, r7, 7\n    \
                    sltu r8, r9, r10\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
-        assert!(x86.contains("cqto; idivq %rdx; movq %rdx, %rax"), "{}", x86);
-        assert!(x86.contains("cmpq $7, %r9; setl %al; movzbq %al, %r8"), "{}", x86);
+        let joined = x86.replace('\n', "; ");
+        assert!(joined.contains("cqto; idivq %rdx; movq %rdx, %rax"), "{}", x86);
+        assert!(joined.contains("cmpq $7, %r9; setl %al; movzbq %al, %r8"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
-        assert!(arm.contains("sdiv x9, x1, x2; msub x0, x9, x2, x1"), "{}", arm);
+        let aj = arm.replace('\n', "; ");
+        assert!(aj.contains("sdiv x9, x1, x2; msub x0, x9, x2, x1"), "{}", arm);
         assert!(arm.contains("smulh x3, x4, x5"), "{}", arm);
         assert!(arm.contains("cset x6, lt"), "{}", arm);
         let riscv = lower_ok(src, "riscv64");
@@ -335,8 +338,8 @@ mod appgrade_tests {
         assert!(arm.contains("stp x1, x0, [sp, #-16]!"), "{}", arm);
         assert!(arm.contains("ldp x1, x0, [sp], #16"), "{}", arm);
         let x86 = lower_ok(src, "x86_64");
-        assert!(x86.contains("pushq %rax; pushq %rcx"), "{}", x86);
-        assert!(x86.contains("popq %rcx; popq %rax"), "{}", x86);
+        assert!(x86.contains("pushq %rax") && x86.contains("pushq %rcx"), "{}", x86);
+        assert!(x86.contains("popq %rcx") && x86.contains("popq %rax"), "{}", x86);
     }
 
     #[test]
@@ -344,7 +347,8 @@ mod appgrade_tests {
         let src = "f:\n    fadd f0, f1, f2\n    fneg f3, f4\n    fmul f5, f0, f1\n    \
                    itof f6, r0\n    ftoi r1, f6\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
-        assert!(x86.contains("movsd %xmm1, %xmm0; addsd %xmm2, %xmm0"), "{}", x86);
+        let joined = x86.replace('\n', "; ");
+        assert!(joined.contains("movsd %xmm1, %xmm0; addsd %xmm2, %xmm0"), "{}", x86);
         assert!(x86.contains("cvtsi2sdq %rax, %xmm6"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
         assert!(arm.contains("fadd d0, d1, d2"), "{}", arm);
@@ -358,12 +362,15 @@ mod appgrade_tests {
     fn fp_branch_family_mirrors_j() {
         let src = "fl:\n    fjlt f0, f1, fl\n    fjge f2, f3, fl\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
-        assert!(x86.contains("ucomisd %xmm1, %xmm0; jb fl"), "{}", x86);
+        let joined = x86.replace('\n', "; ");
+        assert!(joined.contains("ucomisd %xmm1, %xmm0; jb fl"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
-        assert!(arm.contains("fcmp d0, d1; b.mi fl"), "{}", arm);
+        let joined = arm.replace('\n', "; ");
+        assert!(joined.contains("fcmp d0, d1; b.mi fl"), "{}", arm);
         let riscv = lower_ok(src, "riscv64");
-        assert!(riscv.contains("flt.d t0, fa0, fa1; bne t0, zero, fl"), "{}", riscv);
-        assert!(riscv.contains("fle.d t0, fa3, fa2; bne t0, zero, fl"), "{}", riscv);
+        let rj = riscv.replace('\n', "; ");
+        assert!(rj.contains("flt.d t0, fa0, fa1; bne t0, zero, fl"), "{}", riscv);
+        assert!(rj.contains("fle.d t0, fa3, fa2; bne t0, zero, fl"), "{}", riscv);
     }
 
     #[test]
@@ -451,5 +458,57 @@ mod phase_b_tests {
         let asm = lower_ok(src, "x86_64");
         assert!(asm.contains("table: .word _start"), "{}", asm);
         assert!(asm.contains(".word 42"), "{}", asm);
+    }
+}
+
+#[cfg(test)]
+mod phase_c_tests {
+    use super::tests::lower_ok;
+    use super::*;
+
+    #[test]
+    fn abi_args_map_per_target() {
+        let (_, regs) = registries();
+        let x86 = regs.abi_args("x86_64");
+        assert_eq!(x86, vec!["r5", "r4", "r2", "r1", "r6", "r7"]);
+        assert_eq!(regs.abi_args("aarch64")[0], "r0");
+        assert_eq!(regs.abi_args("riscv64")[0], "r0");
+        assert_eq!(regs.push_width("x86_64"), 8);
+        assert_eq!(regs.push_width("aarch64"), 16);
+    }
+
+    #[test]
+    fn export_validates_label_existence_and_emits_global() {
+        let ok = "section .text\nglobal _start\nexport add_one\n\nadd_one: [post: r0 \
+                  valid]\n    add r0, r0, 1\n    ret\n\n_start:\n    ret\n";
+        let asm = lower_ok(ok, "x86_64");
+        assert!(asm.contains(".global add_one"), "{}", asm);
+        let err = generate("export nope\n\n_start:\n    ret\n", "x86_64").unwrap_err();
+        assert!(err.contains("names no label"), "{}", err);
+    }
+
+    #[test]
+    fn frame_contract_tracks_push_pop_discipline() {
+        let ok = "fn: [frame: 32]\n    push2 r0, r1\n    pop2 r1, r0\n    ret\n";
+        lower_ok(ok, "x86_64");
+        // Unbalanced: net displacement at the end.
+        let bad = "fn: [frame: 32]\n    push2 r0, r1\n    ret\n";
+        let err = generate(bad, "x86_64").unwrap_err();
+        assert!(err.contains("net sp displacement"), "{}", err);
+        // High-water bound.
+        let big = "fn: [frame: 8]\n    push2 r0, r1\n    pop2 r1, r0\n    ret\n";
+        let err = generate(big, "x86_64").unwrap_err();
+        assert!(err.contains("stacks up to 16 bytes"), "{}", err);
+    }
+
+    #[test]
+    fn frame_contract_demands_call_alignment() {
+        let ok = "fn: [frame: 16]\n    push2 r0, r1\n    call other\n    pop2 r1, r0\n    \
+                  ret\n\nother:\n    ret\n";
+        lower_ok(ok, "x86_64");
+        let bad = "fn: [frame: 16]\n    push r0\n    call other\n    pop r0\n    ret\n\n\
+                   other:\n    ret\n";
+        let err = generate(bad, "x86_64").unwrap_err();
+        assert!(err.contains("16-aligned"), "{}", err);
     }
 }

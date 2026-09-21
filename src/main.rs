@@ -493,9 +493,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
 /// 2026-09-21 (bad-dialect plan): .bad is a separate dialect — it never
 /// enters the .bv pipeline.
 fn run_bad(args: &[String]) -> Result<(), String> {
-    let file_path = args
-        .first()
-        .ok_or("usage: brievc bad <file.bad> [--target <triple>] [--emit-asm]")?;
+    let file_path = args.first().ok_or(
+        "usage: brievc bad <file.bad> [--target <triple>] [--emit-asm] [--with-libc]",
+    )?;
     if !file_path.ends_with(".bad") {
         return Err(format!(
             "bad: `{file_path}` is not a .bad file - the dialect compiles .bad sources only"
@@ -503,6 +503,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     }
     let mut triple: Option<String> = None;
     let mut emit_asm = false;
+    let mut with_libc = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -511,6 +512,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
                 triple = Some(args.get(i).cloned().ok_or("bad: --target needs a triple")?);
             }
             "--emit-asm" => emit_asm = true,
+            "--with-libc" => with_libc = true,
             other => return Err(format!("bad: unknown option `{other}`")),
         }
         i += 1;
@@ -541,10 +543,23 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     println!("wrote {}", o_path.display());
 
     let bin_path = std::path::PathBuf::from(&stem);
-    let status = std::process::Command::new("ld")
-        .arg(&o_path)
-        .arg("-o")
-        .arg(&bin_path)
+    let (_, regs) = briev_compiler::backend::bad::registries();
+    let mut link = std::process::Command::new("ld");
+    link.arg(&o_path).arg("-o").arg(&bin_path);
+    if with_libc {
+        match regs.dynamic_linker(&family) {
+            Some(dl) => {
+                link.arg("-lc").arg("--dynamic-linker").arg(dl);
+            }
+            None => {
+                return Err(format!(
+                    "bad: no dynamic-linker row for `{family}` in bad-registers.dbvl - \
+                     add one to use --with-libc"
+                ));
+            }
+        }
+    }
+    let status = link
         .status()
         .map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
     if !status.success() {

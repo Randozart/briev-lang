@@ -39,6 +39,8 @@ pub struct Lowerer<'a> {
     current_struct: Option<String>,
     /// Enclosing global label — scopes local labels (`.loop:`).
     current_label: Option<String>,
+    /// Global label names — `.export` targets must exist.
+    label_names: std::collections::HashSet<String>,
     out: String,
     errors: Vec<String>,
 }
@@ -71,6 +73,7 @@ impl<'a> Lowerer<'a> {
             structs: Vec::new(),
             current_struct: None,
             current_label: None,
+            label_names: std::collections::HashSet::new(),
             out: String::new(),
             errors: Vec::new(),
         }
@@ -98,6 +101,9 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 BadTopLevel::Directive(d) => self.collect_directive(d),
+                BadTopLevel::Label(l) if !l.local => {
+                    self.label_names.insert(l.name.clone());
+                }
                 _ => {}
             }
         }
@@ -127,7 +133,17 @@ impl<'a> Lowerer<'a> {
             // Consumed in pass 1 — never emitted.
             ".const" | ".struct" | ".field" | ".end" => {}
             "section" => self.push_line(&format!(".section {}", d.args)),
-            "global" => self.push_line(&format!(".global {}", d.args)),
+            "global" | "export" => {
+                let name = d.args.trim();
+                if !self.label_names.contains(name) {
+                    self.errors.push(format!(
+                        "`{} {}` (line {}) names no label - an export must point at a \
+                         label declared in this file",
+                        d.name, name, d.span.line
+                    ));
+                }
+                self.push_line(&format!(".global {name}"));
+            }
             _ => self.push_line(&format!("{} {}", d.name, d.args)),
         }
     }
@@ -653,7 +669,14 @@ impl<'a> Lowerer<'a> {
     /// re-map to r8's own token). Raw-operand text is resolved earlier,
     /// per operand, in emit_raw_instr.
     fn emit_mapped(&mut self, text: &str, _env: &HashMap<String, Bound>) {
-        self.push_line(text);
+        // `;` inside a template splits into separate emitted lines
+        // (documented row semantics — riscv push/pop, x86 push2, ...).
+        for part in text.split(';') {
+            let part = part.trim();
+            if !part.is_empty() {
+                self.push_line(part);
+            }
+        }
     }
 
     /// Identifier-boundary replacement of aliases, params, and portable

@@ -170,6 +170,9 @@ pub enum BadContractPred {
         lhs: String,
         ops: Vec<(BadCmpOp, i64)>,
     },
+    /// `[frame: 32]` — the body keeps sp within 32 bytes, restores it
+    /// exactly, and holds 16-alignment at every call. Label-level only.
+    Frame(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -190,7 +190,10 @@ impl BadRegisters {
         let mut scalars = HashMap::new();
         for key in db.keys() {
             let (entries, pairs) = parse_register_row(&db, &key);
-            if key == "imm" || key == "comment" {
+            if matches!(
+                key.as_str(),
+                "imm" | "comment" | "abi_args" | "push_width" | "dynamic_linker"
+            ) {
                 scalars.insert(key, pairs);
             } else {
                 regs.insert(key, entries);
@@ -239,6 +242,23 @@ impl BadRegisters {
         self.scalars.get(key)?.iter()
             .find(|(t, _)| family.starts_with(t.as_str()))
             .map(|(_, v)| v.as_str())
+    }
+
+    /// C-ABI argument-register order (portable names) per target.
+    pub fn abi_args(&self, family: &str) -> Vec<String> {
+        self.scalar("abi_args", family)
+            .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The portable `push` stack decrement per target.
+    pub fn push_width(&self, family: &str) -> i64 {
+        self.scalar("push_width", family).and_then(|s| s.parse().ok()).unwrap_or(16)
+    }
+
+    /// The dynamic-linker path for --with-libc runs.
+    pub fn dynamic_linker(&self, family: &str) -> Option<&'static str> {
+        self.scalar("dynamic_linker", family).map(leak_static)
     }
 
     /// Immediate-literal prefix per target (`$` / `#` / empty).

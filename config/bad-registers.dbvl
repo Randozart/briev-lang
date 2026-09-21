@@ -106,3 +106,14 @@ f12: "x86_64:%xmm12:caller"; "aarch64:d12:callee"; "riscv64:fs4:callee";
 f13: "x86_64:%xmm13:caller"; "aarch64:d13:callee"; "riscv64:fs5:callee";
 f14: "x86_64:%xmm14:caller"; "aarch64:d14:callee"; "riscv64:fs6:callee";
 f15: "x86_64:%xmm15:caller"; "aarch64:d15:callee"; "riscv64:fs7:callee";
+
+// ── ABI rows (application-grade plan Phase C) ─────────────────────────
+// abi_args: the C-ABI argument-register order per target (SysV). `.export`
+// labels are called through this map: x86_64 rdi,rsi,rdx,rcx,r8,r9 =
+// r5,r4,r2,r1,r6,r7; aarch64/riscv64 are already r0-r5.
+abi_args: "x86_64:r5,r4,r2,r1,r6,r7"; "aarch64:r0,r1,r2,r3,r4,r5"; "riscv64:r0,r1,r2,r3,r4,r5";
+// push_width: the portable `push` decrement (x86 = 8, arm/riscv keep sp
+// 16-aligned at 16). Feeds the [frame: N] sp-tracking proof.
+push_width: "x86_64:8"; "aarch64:16"; "riscv64:16";
+// dynamic_linker: the ld flag value for --with-libc runs.
+dynamic_linker: "x86_64:/lib64/ld-linux-x86-64.so.2"; "aarch64:/lib/ld-linux-aarch64.so.1"; "riscv64:/lib/ld-linux-riscv64-lp64d.so.1";

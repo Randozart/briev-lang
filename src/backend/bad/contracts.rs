@@ -93,6 +93,9 @@ fn check_pred(
                 proven.push(format!("[{} valid] proven: register is mapped on {}", reg, family));
             }
         }
+        BadContractPred::Frame(bound) => {
+            check_frame(*bound, body, ctx, errors);
+        }
         BadContractPred::Compare { lhs, ops } => {
             if !regs.exists(lhs, family) {
                 errors.push(format!(
@@ -164,6 +167,54 @@ fn check_preserved(
     }
 }
 
+/// Static sp discipline for `[frame: N]`: track push/pop/push2/pop2
+/// displacement (per-target push width), require every `call` at
+/// 16-alignment, require exact restoration, and cap the high-water mark
+/// at N bytes.
+fn check_frame(bound: i64, body: &[&BadInstr], ctx: &Ctx, errors: &mut Vec<String>) {
+    let w = ctx.regs.push_width(ctx.family);
+    let mut sp: i64 = 0;
+    let mut high: i64 = 0;
+    for instr in body {
+        match instr.mnemonic.as_str() {
+            "push" => {
+                sp -= w;
+                high = high.max(-sp);
+            }
+            "pop" => sp += w,
+            "push2" => {
+                sp -= 2 * w;
+                high = high.max(-sp);
+            }
+            "pop2" => sp += 2 * w,
+            "call" if (-sp) % 16 != 0 => {
+                errors.push(format!(
+                    "[frame: {bound}] on `{}` violated: `call` at line {} runs with a \
+                     non-16-aligned sp - pad with an even push/pop or use push2/pop2",
+                    where_str(ctx.label),
+                    instr.span.line
+                ));
+            }
+            _ => {}
+        }
+    }
+    if high > bound {
+        errors.push(format!(
+            "[frame: {bound}] on `{}` violated: the body stacks up to {high} bytes - \
+             raise the bound or shrink the locals",
+            where_str(ctx.label)
+        ));
+    }
+    if sp != 0 {
+        errors.push(format!(
+            "[frame: {bound}] on `{}` violated: net sp displacement {sp} at the end - \
+             every push needs its pop before returning",
+            where_str(ctx.label)
+        ));
+    }
+}
+
+/// The raw body instruction list (local labels are layout, not ops).
 /// Count `push reg` / `pop reg` instruction pairs in a body (raw operands,
 /// resolved through the portable name only — exceptions are per-target and
 /// counted by their textual `reg` too, since a raw body's registers still

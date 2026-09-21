@@ -288,9 +288,10 @@ impl<'s> Parser<'s> {
         if let Some(rest) = content.strip_prefix("alias ") {
             return Ok(Some(self.parse_alias(rest, line, span)?));
         }
-        // `section X` / `global X`
+        // `section X` / `global X` / `export name`
         if let Some(rest) = content.strip_prefix("section ")
             .or_else(|| content.strip_prefix("global "))
+            .or_else(|| content.strip_prefix("export "))
         {
             let name = content.split_whitespace().next().unwrap_or("").to_string();
             return Ok(Some(BadTopLevel::Directive(BadDirective {
@@ -781,6 +782,15 @@ fn parse_pred_group(
         parse_preds(body.trim(), line, span)
     } else if let Some(body) = inner.strip_prefix("post:") {
         parse_preds(body.trim(), line, span)
+    } else if let Some(body) = inner.strip_prefix("frame:") {
+        let n: i64 = body.trim().parse().map_err(|_| BadParseError {
+            message: format!(
+                "frame contract needs a byte bound: `[frame: 32]` ('{inner}')"
+            ),
+            line,
+            span,
+        })?;
+        Ok(vec![BadContractPred::Frame(n)])
     } else {
         parse_preds(inner, line, span)
     }
