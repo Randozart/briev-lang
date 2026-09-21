@@ -474,6 +474,92 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// The `Arg d, n` routine — uniform across targets, driven entirely
+    /// by the abi_* config rows.
+    fn emit_arg(&mut self, instr: &BadInstr, env: &HashMap<String, Bound>) -> Result<(), String> {
+        if instr.operands.len() != 2 {
+            return Err(format!(
+                "`arg` takes 2 operands (dst, n), got {} at line {}",
+                instr.operands.len(),
+                instr.span.line
+            ));
+        }
+        let n = match instr.operands[1].clone() {
+            BadOperand::Int(n) => n,
+            BadOperand::Name(name) => match self.eval_operand_expr(&name, env, instr) {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(format!(
+                        "`arg` index (line {}) must be a constant - the ABI position is \
+                         compile-time data",
+                        instr.span.line
+                    ));
+                }
+            },
+            BadOperand::Float(_) => {
+                return Err(self.bad_arg_index(instr));
+            }
+            BadOperand::Expr(e) => self.eval_operand_expr(&e, env, instr)?,
+        };
+        if n < 1 {
+            return Err(format!(
+                "`arg` index {} (line {}) is out of range - arguments number from 1",
+                n, instr.span.line
+            ));
+        }
+        let reg_args = self.regs.abi_reg_args(&self.family);
+        let route = if (n as usize) <= reg_args {
+            // Register window: a move from the mapped arg register.
+            let src = self.regs.abi_args(&self.family).get(n as usize - 1).cloned();
+            match src {
+                Some(src) => BadInstr {
+                    mnemonic: "mov".to_string(),
+                    operands: vec![instr.operands[0].clone(), BadOperand::Name(src)],
+                    contract: None,
+                    exceptions: Vec::new(),
+                    span: instr.span,
+                },
+                None => {
+                    return Err(self.bad_arg_index(instr));
+                }
+            }
+        } else {
+            // Stack window: base + (n - reg_args - 1) * 8.
+            let off = self.regs.abi_stack_arg_base(&self.family)
+                + (n as i64 - reg_args as i64 - 1) * 8;
+            BadInstr {
+                mnemonic: "loadoff".to_string(),
+                operands: vec![
+                    instr.operands[0].clone(),
+                    BadOperand::Name("sp".to_string()),
+                    BadOperand::Int(off),
+                ],
+                contract: None,
+                exceptions: Vec::new(),
+                span: instr.span,
+            }
+        };
+        self.emit_instr(&route, env, 0)
+    }
+
+    fn bad_arg_index(&self, instr: &BadInstr) -> String {
+        format!(
+            "`arg` index (line {}) must be an integer constant",
+            instr.span.line
+        )
+    }
+
+    /// Step 1 of the dispatch: non-core mnemonics are defn calls.
+    fn route_non_core(
+        &mut self, instr: &BadInstr, env: &HashMap<String, Bound>, depth: usize,
+    ) -> Result<(), String> {
+        if self.defns.contains_key(&instr.mnemonic) {
+            let d = self.defns.get(&instr.mnemonic).cloned().unwrap();
+            return self.expand_defn(&d, instr, env, depth);
+        }
+        Err(self.unknown_mnemonic(instr))
+    }
+
     fn unknown_mnemonic(&self, instr: &BadInstr) -> String {
         format!(
             "instruction `{}` is unknown at line {} - it is not a core op ({}) \
@@ -492,11 +578,15 @@ impl<'a> Lowerer<'a> {
         contracts::check_inline_contract(instr, self.regs, &self.family, &mut self.errors);
         // 1. Defn call → inline expansion.
         if !self.isa.is_core(&instr.mnemonic) {
-            if self.defns.contains_key(&instr.mnemonic) {
-                let d = self.defns.get(&instr.mnemonic).cloned().unwrap();
-                return self.expand_defn(&d, instr, env, depth);
-            }
-            return Err(self.unknown_mnemonic(instr));
+            return self.route_non_core(instr, env, depth);
+        }
+
+        // 1b. `Arg d, n` — ABI argument materialization. A general
+        // routine over the config rows: within the register window it is
+        // a move from the mapped arg register; beyond it, a stack
+        // loadoff at abi_stack_arg_base + (n - reg_args - 1) * 8.
+        if instr.mnemonic == "arg" {
+            return self.emit_arg(instr, env);
         }
 
         // 2. Attached exception matching this target → raw emission.

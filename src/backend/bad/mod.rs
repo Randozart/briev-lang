@@ -842,3 +842,41 @@ mod phase4_hardening_tests {
         assert!(err.contains("frobnicate") && err.contains("known:"), "{}", err);
     }
 }
+
+#[cfg(test)]
+mod arg_tests {
+    use super::tests::lower_ok;
+    use super::*;
+
+    #[test]
+    fn arg_routes_register_window_per_target() {
+        // Arg 1-6 on x86_64 = r5,r4,r2,r1,r6,r7; arg 1-8 on arm/riscv.
+        let src = "f:\n    arg r9, 1\n    arg r8, 6\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        let joined = x86.replace('\n', "; ");
+        assert!(joined.contains("movq %rdi, %r11") && joined.contains("movq %r9, %r10"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        let joined = arm.replace('\n', "; ");
+        assert!(joined.contains("mov x9, x0") && joined.contains("mov x8, x5"), "{}", arm);
+    }
+
+    #[test]
+    fn arg_routes_stack_window_beyond_reg_args() {
+        // Arg 7 on x86_64 = stack (base 8); arg 7 on aarch64 = still a
+        // register (8 reg args); arg 9 on aarch64 = stack (base 0).
+        let src = "f:\n    arg r9, 7\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq 8(%rsp), %r11"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("mov x9, x6"), "{}", arm);
+        let src9 = "f:\n    arg r9, 9\n    ret\n";
+        let arm = lower_ok(src9, "aarch64");
+        assert!(arm.contains("ldr x9, [sp, #0]"), "{}", arm);
+    }
+
+    #[test]
+    fn arg_index_must_be_constant() {
+        let err = generate("_start:\n    arg r0, r1\n    ret\n", "x86_64").unwrap_err();
+        assert!(err.contains("must be a constant"), "{}", err);
+    }
+}

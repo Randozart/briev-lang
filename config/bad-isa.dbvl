@@ -26,6 +26,13 @@
 // Targets: x86_64 (GAS AT&T — register tokens carry %), aarch64 (GAS —
 // # immediates), riscv64 (GAS — ABI names, pseudo-ops allowed).
 
+// ── ABI materialization ──────────────────────────────────────────────
+// Arg d, n — the Nth C-ABI argument into register d. Lowering is the
+// general ABI routine (config rows abi_args / abi_reg_args /
+// abi_stack_arg_base): register move within the register window, stack
+// loadoff beyond it. No per-target template — the routine is uniform.
+arg: "2";
+
 // ── Data movement ────────────────────────────────────────────────────
 mov: "2"; "x86_64:movq $2, $1"; "aarch64:mov $1, $2"; "riscv64:mv $1, $2|li $1, $2";
 // addr d, sym — address-of a data label, the portable way. Symbols in
