@@ -137,6 +137,14 @@ fn parse_isa_row(db: &crate::dbriev::config_db::ConfigDb, key: &str) -> (Vec<Bad
 fn parse_register_row(
     db: &crate::dbriev::config_db::ConfigDb, key: &str,
 ) -> (Vec<BadRegEntry>, Vec<(String, String)>) {
+    parse_row(db, key, false)
+}
+
+/// Scalar rows (`imm`, `comment`, ...) carry `"target:value"` fields;
+/// register rows carry `"target:token[:prop]"`.
+fn parse_row(
+    db: &crate::dbriev::config_db::ConfigDb, key: &str, is_scalar: bool,
+) -> (Vec<BadRegEntry>, Vec<(String, String)>) {
     let mut entries = Vec::new();
     let mut pairs = Vec::new();
     let mut idx = 0;
@@ -149,7 +157,13 @@ fn parse_register_row(
                     token: token.to_string(),
                     prop: parse_prop(prop.trim()),
                 }),
-                None => pairs.push((target, rest.to_string())),
+                None if is_scalar => pairs.push((target, rest.to_string())),
+                // Register rows may omit the property (`sp: "x86_64:%rsp"`).
+                None => entries.push(BadRegEntry {
+                    target,
+                    token: rest.to_string(),
+                    prop: RegProp::None,
+                }),
             }
         }
         idx += 1;
@@ -189,14 +203,16 @@ impl BadRegisters {
         let mut regs = HashMap::new();
         let mut scalars = HashMap::new();
         for key in db.keys() {
-            let (entries, pairs) = parse_register_row(&db, &key);
             // Rows whose fields are "target:value" scalars (not
             // "target:token:prop" register entries).
-            if matches!(
+            let is_scalar = matches!(
                 key.as_str(),
                 "imm" | "comment" | "abi_args" | "push_width" | "dynamic_linker"
                     | "cross_as" | "cross_ld" | "syscall_nums" | "float_literal"
-            ) {
+                    | "abi_stack_arg_base"
+            );
+            let (entries, pairs) = parse_row(&db, &key, is_scalar);
+            if is_scalar {
                 scalars.insert(key, pairs);
             } else {
                 regs.insert(key, entries);
@@ -282,6 +298,13 @@ impl BadRegisters {
             Some(m) => leak_static(m),
             None => "pool",
         }
+    }
+
+    /// Byte offset of the first stack-passed argument at entry.
+    pub fn abi_stack_arg_base(&self, family: &str) -> i64 {
+        self.scalar("abi_stack_arg_base", family)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
     }
 
     /// Kernel-call number for a NAME on `family` (`write` → 1 on x86_64,

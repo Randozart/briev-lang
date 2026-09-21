@@ -167,6 +167,21 @@ fn check_preserved(
     }
 }
 
+/// `op sp, sp, imm` shape test for frame tracking.
+fn sp_adjust(instr: &BadInstr) -> bool {
+    instr.operands.len() == 3
+        && matches!(&instr.operands[0], BadOperand::Name(n) if n == "sp")
+        && matches!(&instr.operands[1], BadOperand::Name(n) if n == "sp")
+        && matches!(instr.operands[2], BadOperand::Int(_))
+}
+
+fn last_imm(instr: &BadInstr) -> i64 {
+    match instr.operands.last() {
+        Some(BadOperand::Int(n)) => *n,
+        _ => 0,
+    }
+}
+
 /// Static sp discipline for `[frame: N]`: track push/pop/push2/pop2
 /// displacement (per-target push width), require every `call` at
 /// 16-alignment, require exact restoration, and cap the high-water mark
@@ -187,6 +202,14 @@ fn check_frame(bound: i64, body: &[&BadInstr], ctx: &Ctx, errors: &mut Vec<Strin
                 high = high.max(-sp);
             }
             "pop2" => sp += 2 * w,
+            // Direct sp arithmetic: `sub sp, sp, 32` / `add sp, sp, 32`
+            // (the operand is the portable `sp` in position 1, the
+            // displacement in the last position).
+            "sub" if sp_adjust(instr) => {
+                sp -= last_imm(instr);
+                high = high.max(-sp);
+            }
+            "add" if sp_adjust(instr) => sp += last_imm(instr),
             "call" if (-sp) % 16 != 0 => {
                 errors.push(format!(
                     "[frame: {bound}] on `{}` violated: `call` at line {} runs with a \

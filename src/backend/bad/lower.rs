@@ -256,13 +256,14 @@ impl<'a> Lowerer<'a> {
             // Consumed in pass 1 — never emitted.
             ".const" | ".struct" | ".field" | ".end" => {}
             "section" => self.push_line(&format!(".section {}", d.args)),
-            "global" | "export" => {
+            "global" => self.push_line(&format!(".global {}", d.args.trim())),
+            "export" => {
                 let name = d.args.trim();
                 if !self.label_names.contains(name) {
                     self.errors.push(format!(
-                        "`{} {}` (line {}) names no label - an export must point at a \
-                         label declared in this file",
-                        d.name, name, d.span.line
+                        "`export {name}` (line {}) names no label - an export must point \
+                         at a label declared in this file",
+                        d.span.line
                     ));
                 }
                 self.push_line(&format!(".global {name}"));

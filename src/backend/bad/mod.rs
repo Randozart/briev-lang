@@ -792,3 +792,48 @@ mod phase3_hardening_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod phase4_hardening_tests {
+    use super::tests::lower_ok;
+    use super::*;
+
+    #[test]
+    fn frame_tracks_direct_sp_arithmetic() {
+        let ok = "fn: [frame: 48]\n    sub sp, sp, 32\n    add sp, sp, 32\n    ret\n";
+        lower_ok(ok, "x86_64");
+        let unbalanced = "fn: [frame: 48]\n    sub sp, sp, 32\n    ret\n";
+        let err = generate(unbalanced, "x86_64").unwrap_err();
+        assert!(err.contains("net sp displacement -32"), "{}", err);
+        let over = "fn: [frame: 16]\n    sub sp, sp, 32\n    add sp, sp, 32\n    ret\n";
+        let err = generate(over, "x86_64").unwrap_err();
+        assert!(err.contains("stacks up to 32 bytes"), "{}", err);
+    }
+
+    #[test]
+    fn stack_arg_base_row_per_target() {
+        let (_, regs) = registries();
+        assert_eq!(regs.abi_stack_arg_base("x86_64"), 8);
+        assert_eq!(regs.abi_stack_arg_base("aarch64"), 0);
+        assert_eq!(regs.abi_stack_arg_base("riscv64"), 0);
+    }
+
+    #[test]
+    fn syscall_number_lookup_per_target() {
+        let (_, regs) = registries();
+        assert_eq!(regs.syscall_number("x86_64", "write"), Some(1));
+        assert_eq!(regs.syscall_number("aarch64", "write"), Some(64));
+        assert_eq!(regs.syscall_number("riscv64", "write"), Some(64));
+        assert_eq!(regs.syscall_number("x86_64", "nope"), None);
+    }
+
+    #[test]
+    fn unknown_syscall_name_is_loud_with_known_list() {
+        let err = generate(
+            "_start:\n    mov r5, 1\n    syscall frobnicate, r5, r5, r5\n    ret\n",
+            "x86_64",
+        )
+        .unwrap_err();
+        assert!(err.contains("frobnicate") && err.contains("known:"), "{}", err);
+    }
+}

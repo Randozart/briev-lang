@@ -124,6 +124,10 @@ syscall_nums: "x86_64:read=0,write=1,open=2,close=3,brk=12,mmap=9,exit=60,exit_g
 // emits a `.rodata` block of `.double` entries (all three targets; GAS
 // aarch64 dropped the arm32 `=literal` form for FP registers).
 float_literal: "x86_64:pool"; "aarch64:pool"; "riscv64:pool";
+// abi_stack_arg_base: byte offset of the FIRST stack-passed argument
+// (arg 7+) at function entry — the return address occupies [sp, 0) on
+// x86_64 (base 8), while arm/riscv leave [sp, 0) for arg 7 (base 0).
+abi_stack_arg_base: "x86_64:8"; "aarch64:0"; "riscv64:0";
 // dynamic_linker: the ld flag value for --with-libc runs.
 dynamic_linker: "x86_64:/lib64/ld-linux-x86-64.so.2"; "aarch64:/lib/ld-linux-aarch64.so.1"; "riscv64:/lib/ld-linux-riscv64-lp64d.so.1";
 // cross_as / cross_ld: prefixed toolchains for hardware-verification of
