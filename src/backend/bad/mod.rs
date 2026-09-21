@@ -643,3 +643,13 @@ mod phase_d_tests {
         assert_eq!(g2, g3, "aarch64 vs riscv branch graph");
     }
 }
+
+#[test]
+fn sym_op_with_immediate_last_operand_is_rejected() {
+    let err = generate(
+        "section .text\nglobal _start\n_start:\n    addr r5, 1\n    ret\n",
+        "x86_64",
+    )
+    .unwrap_err();
+    assert!(err.contains("label or symbol") && err.contains("mov` for values"), "{}", err);
+}

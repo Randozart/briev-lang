@@ -486,7 +486,20 @@ impl<'a> Lowerer<'a> {
             ));
         }
 
-        // 3. Universal core lowering.
+        // 3. Universal core lowering. A sym op's LAST operand is the
+        // label/symbol — an immediate there is always a mistake
+        // (`addr r5, 1` wants `mov r5, 1`).
+        if self.isa.is_sym(&instr.mnemonic)
+            && instr.operands.last().is_some_and(|o| matches!(o, BadOperand::Int(_)))
+        {
+            return Err(format!(
+                "`{mn}` (line {ln}) takes a label or symbol as its last operand - an \
+                 immediate was supplied; use `mov` for values, `addr d, label` for \
+                 addresses",
+                mn = instr.mnemonic,
+                ln = instr.span.line
+            ));
+        }
         let arity = self.isa.arity(&instr.mnemonic).unwrap_or(0);
         if instr.operands.len() != arity {
             return Err(format!(
