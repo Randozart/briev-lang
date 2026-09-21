@@ -30,8 +30,10 @@ type Kelvin { spec Bits: 32; };
 // No `spec Bits` here: classes are valueless markers — nothing ever holds
 // a `Power` or an `Nc`, so no storage width exists to declare. Bits stays
 // on the value quantities above (they enter proven arithmetic).
-type Power { spec KicadType: "power_in"; };
-type Ground { spec KicadType: "power_in"; };
+// Rail roles (E13): the decoupling convention attaches across a supply
+// pin and a return pin — property-driven, no class names in the compiler.
+type Power { spec KicadType: "power_in"; spec Supply: true; };
+type Ground { spec KicadType: "power_in"; spec Return: true; };
 type In { spec KicadType: "input"; };
 type Out { spec KicadType: "output"; };
 type Io { spec KicadType: "bidirectional"; };
@@ -56,6 +58,7 @@ type Capacitor {
     pin p;
     pin n;
     reference "C";
+    spec Decoupler: true;   // E13: satisfies `spec Decouple` conventions
 };
 
 type Led {

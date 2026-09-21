@@ -2994,7 +2994,7 @@ impl<'a> Parser<'a> {
             Some(k) => k,
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Cols, Depth, Endian, Format, KicadType, MaxBits, NoConnect, Rows",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Cols, Decouple, Decoupler, Depth, Endian, Format, KicadType, MaxBits, NoConnect, Return, Rows, Supply",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -3023,9 +3023,9 @@ impl<'a> Parser<'a> {
                 let s = self.expect_string()?;
                 metadata.insert(key.into(), PropertyValue::String(s));
             }
-            "no_connect" => {
-                // `true`/`false` lex as dedicated Bool tokens, not
-                // identifiers — accept the tokens directly.
+            // 2026-09-21 (E12/E13): boolean spec keys — `true`/`false`
+            // lex as dedicated Bool tokens, not identifiers.
+            "no_connect" | "supply" | "return" | "decoupler" => {
                 let v = match self.peek() {
                     Some(Token::BoolTrue) => Some(true),
                     Some(Token::BoolFalse) => Some(false),
@@ -3037,11 +3037,18 @@ impl<'a> Parser<'a> {
                         metadata.insert(key.into(), PropertyValue::Bool(b));
                     }
                     None => {
-                        return self.error_at_current(
-                            "spec NoConnect must be `true` or `false`",
-                        );
+                        return self.error_at_current(&format!(
+                            "spec {} must be `true` or `false`",
+                            name
+                        ));
                     }
                 }
+            }
+            // 2026-09-21 (E13): the stated convention value — a string
+            // today (presence check); value matching is a later slice.
+            "decouple" => {
+                let s = self.expect_string()?;
+                metadata.insert(key.into(), PropertyValue::String(s));
             }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
@@ -3762,6 +3769,14 @@ fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // `Power` or `Nc` in Rust.
         "KicadType" => Some("kicad_type"),
         "NoConnect" => Some("no_connect"),
+        // 2026-09-21 (E13, design record D5): decoupling-convention keys.
+        // `Supply`/`Return` mark the rail pins of a class; `Decouple`
+        // states the convention on a component type; `Decoupler` marks a
+        // part that satisfies it. All consumed generically by analysis.
+        "Supply" => Some("supply"),
+        "Return" => Some("return"),
+        "Decouple" => Some("decouple"),
+        "Decoupler" => Some("decoupler"),
         _ => None,
     }
 }

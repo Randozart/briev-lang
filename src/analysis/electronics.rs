@@ -89,6 +89,10 @@ pub struct ElectronicsNetlist {
     /// class type that is not in scope. Hard diagnostics: the backend
     /// refuses to emit.
     pub class_errors: Vec<String>,
+    /// 2026-09-21 (E13): decoupling-convention violations — an instance of
+    /// a `spec Decouple` type without a bridging `spec Decoupler` part.
+    /// Hard diagnostics: the backend refuses to emit.
+    pub convention_errors: Vec<String>,
     /// 2026-09-11 (electrical proving): net voltage classes + violations.
     pub voltage: VoltageCheck,
 }
@@ -106,6 +110,11 @@ pub struct PinClassProps {
     /// `spec NoConnect: true;` — the pin is intentionally unconnected and
     /// is exempt from the dangling-pin error.
     pub no_connect: bool,
+    /// 2026-09-21 (E13): `spec Supply: true;` — a rail pin that the
+    /// decoupling convention attaches across (with a return pin).
+    pub supply: bool,
+    /// 2026-09-21 (E13): `spec Return: true;` — the return-side rail pin.
+    pub return_pin: bool,
 }
 
 impl Default for PinClassProps {
@@ -113,6 +122,8 @@ impl Default for PinClassProps {
         PinClassProps {
             kicad_type: "passive".to_string(),
             no_connect: false,
+            supply: false,
+            return_pin: false,
         }
     }
 }
@@ -188,6 +199,20 @@ fn pin_key(component: &str, pin: &str) -> String {
     format!("{}\u{1F}{}", component, pin)
 }
 
+/// Type name → its metadata property bag (`spec Key: value;` clauses land
+/// there). One lookup path for every property-driven consumer.
+fn collect_type_metadata(
+    items: &[TopLevel],
+) -> BTreeMap<String, &std::collections::HashMap<String, crate::ast::PropertyValue>> {
+    items
+        .iter()
+        .filter_map(|it| match it {
+            TopLevel::TypeDef(td) => Some((td.name.clone(), &td.body.metadata)),
+            _ => None,
+        })
+        .collect()
+}
+
 /// 2026-09-21 (E12): metadata property readers — `spec` values arrive as
 /// `PropertyValue` variants; these tolerate the identifier spellings too.
 fn property_string(pv: &crate::ast::PropertyValue) -> Option<String> {
@@ -223,16 +248,7 @@ fn collect_type_pins(
     // E12: every declared type is a candidate class fundamental — the
     // resolution reads its metadata property bag (spec KicadType /
     // spec NoConnect), nothing else.
-    let class_defs: BTreeMap<
-        String,
-        &std::collections::HashMap<String, crate::ast::PropertyValue>,
-    > = items
-        .iter()
-        .filter_map(|it| match it {
-            TopLevel::TypeDef(td) => Some((td.name.clone(), &td.body.metadata)),
-            _ => None,
-        })
-        .collect();
+    let class_defs = collect_type_metadata(items);
     let mut class_errors: Vec<String> = Vec::new();
     for item in items {
         if let TopLevel::TypeDef(td) = item {
@@ -286,6 +302,11 @@ fn collect_type_pins(
                                     .unwrap_or_else(|| "passive".to_string()),
                                 no_connect: md
                                     .get("no_connect")
+                                    .and_then(property_bool)
+                                    .unwrap_or(false),
+                                supply: md.get("supply").and_then(property_bool).unwrap_or(false),
+                                return_pin: md
+                                    .get("return")
                                     .and_then(property_bool)
                                     .unwrap_or(false),
                             },
@@ -1061,6 +1082,156 @@ fn resolve_net_names(
     (net_names, raw_conflicts)
 }
 
+/// Rail pins of one class kind from a resolved TypeInfo (E13).
+fn rail_pins<'a>(ti: &'a TypeInfo, which_return: bool) -> Vec<&'a (String, u64)> {
+    ti.pins
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            if which_return {
+                ti.pin_classes[*i].return_pin
+            } else {
+                ti.pin_classes[*i].supply
+            }
+        })
+        .map(|(_, p)| p)
+        .collect()
+}
+
+/// Netlist lookups for the convention checks (E13) — one context parameter
+/// instead of a table bundle on every helper.
+struct NetlistContext<'a> {
+    ds: &'a mut DisjointSet,
+    type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
+    type_info: &'a BTreeMap<String, TypeInfo>,
+    /// Type metadata bags (`spec` clauses) — the decoupling convention
+    /// reads `decouple` / `decoupler` from them.
+    type_props: BTreeMap<String, &'a std::collections::HashMap<String, crate::ast::PropertyValue>>,
+}
+
+impl<'a> NetlistContext<'a> {
+    fn new(
+        items: &'a [TopLevel],
+        ds: &'a mut DisjointSet,
+        type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
+        type_info: &'a BTreeMap<String, TypeInfo>,
+    ) -> Self {
+        NetlistContext {
+            ds,
+            type_pins,
+            type_info,
+            type_props: collect_type_metadata(items),
+        }
+    }
+}
+
+/// True when `cap` has two terminals bridging the supply net to the return
+/// net (one terminal each; the return-side terminal must not be no_connect).
+fn bridges_rail(
+    ctx: &mut NetlistContext,
+    cap: &ComponentInstance,
+    s_root: &String,
+    r_root: &String,
+) -> bool {
+    let Some(cp) = ctx.type_pins.get(&cap.type_name) else {
+        return false;
+    };
+    let Some(cti) = ctx.type_info.get(&cap.type_name) else {
+        return false;
+    };
+    cp.iter().enumerate().any(|(i1, (n1, _))| {
+        ctx.ds.find(&pin_key(&cap.name, n1)) == *s_root
+            && cp.iter().enumerate().any(|(i2, (n2, _))| {
+                i1 != i2
+                    && !cti.pin_classes[i2].no_connect
+                    && ctx.ds.find(&pin_key(&cap.name, n2)) == *r_root
+            })
+    })
+}
+
+/// 2026-09-21 (E13, design record D5): the decoupling convention — a
+/// component type declaring `spec Decouple` must, per instance, have a
+/// part whose type declares `spec Decoupler` bridging each supply-class
+/// pin to a return-class pin of the same instance. Property-driven
+/// throughout: the compiler knows no type or class names, only the
+/// property interface (Rules 14/15).
+fn check_decoupling(
+    ctx: &mut NetlistContext,
+    instances: &BTreeMap<String, &ComponentInstance>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let decouplers: Vec<&ComponentInstance> = instances
+        .values()
+        .filter(|c| {
+            ctx.type_props
+                .get(&c.type_name)
+                .and_then(|m| m.get("decoupler"))
+                .and_then(property_bool)
+                .unwrap_or(false)
+        })
+        .map(|c| *c)
+        .collect();
+    for inst in instances.values() {
+        let declares = ctx
+            .type_props
+            .get(&inst.type_name)
+            .map(|m| m.contains_key("decouple"))
+            .unwrap_or(false);
+        if !declares {
+            continue;
+        }
+        let Some(ti) = ctx.type_info.get(&inst.type_name) else {
+            continue;
+        };
+        let supplies = rail_pins(ti, false);
+        if supplies.is_empty() {
+            errors.push(format!(
+                "instance '{}' ({}) declares spec Decouple but its type has no supply-class pin — decoupling attaches across a supply (spec Supply) and a return (spec Return) pin",
+                inst.name, inst.type_name
+            ));
+            continue;
+        }
+        for (pname, _) in &supplies {
+            let s_root = ctx.ds.find(&pin_key(&inst.name, pname));
+            let r_roots: Vec<String> = returns_of(ctx, inst);
+            let bridged = decouplers.iter().any(|cap| {
+                r_roots
+                    .iter()
+                    .any(|r_root| bridges_rail(ctx, cap, &s_root, r_root))
+            });
+            if !bridged {
+                errors.push(format!(
+                    "instance '{}' ({}) declares spec Decouple but no decoupling part bridges supply pin '{}' to a return-class pin — add a capacitor (its type declares spec Decoupler) across the rail",
+                    inst.name, inst.type_name, pname
+                ));
+            }
+        }
+    }
+    errors
+}
+
+/// Return-net roots of one instance: the union-find root of each
+/// return-class pin (E13).
+fn returns_of(
+    ctx: &mut NetlistContext,
+    inst: &ComponentInstance,
+) -> Vec<String> {
+    let Some(ti) = ctx.type_info.get(&inst.type_name) else {
+        return Vec::new();
+    };
+    let Some(pins) = ctx.type_pins.get(&inst.type_name) else {
+        return Vec::new();
+    };
+    rail_pins(ti, true)
+        .iter()
+        .filter_map(|(rname, _)| {
+            pins.iter()
+                .find(|(n, _)| n == rname)
+                .map(|_| ctx.ds.find(&pin_key(&inst.name, rname)))
+        })
+        .collect()
+}
+
 /// 2026-09-21 (E12): pin keys ascribed a no_connect class — intentionally
 /// unconnected, exempt from the dangling-pin error. Property-driven from
 /// the class fundamentals; the compiler knows no class names (D6).
@@ -1082,6 +1253,25 @@ fn collect_no_connect_pins(
     nc
 }
 
+/// Every declared pin of every instance, ready for union-find grouping
+/// (E13 extraction: keeps derive_netlist a coordinator, not a worker).
+fn collect_all_pins(
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> Vec<PinRef> {
+    let mut all_pins: Vec<PinRef> = Vec::new();
+    for inst in instances.values() {
+        for (pname, number) in &type_pins[&inst.type_name] {
+            all_pins.push(PinRef {
+                component: inst.name.clone(),
+                pin: pname.clone(),
+                number: *number,
+            });
+        }
+    }
+    all_pins
+}
+
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let (type_pins, type_info, class_errors) = collect_type_pins(items);
     if type_pins.is_empty() {
@@ -1099,16 +1289,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
 
     // Group members by root; sort everything for determinism (HashMap rule).
     let mut groups: BTreeMap<String, Vec<PinRef>> = BTreeMap::new();
-    let mut all_pins: Vec<PinRef> = Vec::new();
-    for inst in instances.values() {
-        for (pname, number) in &type_pins[&inst.type_name] {
-            all_pins.push(PinRef {
-                component: inst.name.clone(),
-                pin: pname.clone(),
-                number: *number,
-            });
-        }
-    }
+    let mut all_pins = collect_all_pins(&instances, &type_pins);
     all_pins.sort();
     // 2026-09-21 (E12): pins ascribed a no_connect class are intentionally
     // unconnected — exempt from the dangling-pin error below.
@@ -1165,6 +1346,11 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     // result struct.
     let voltage = derive_voltage(items, &nets, &instances, &type_pins, &type_info);
 
+    // 2026-09-21 (E13): the decoupling convention runs on the finished
+    // netlist — every union is final when it fires.
+    let mut ctx = NetlistContext::new(items, &mut ds, &type_pins, &type_info);
+    let convention_errors = check_decoupling(&mut ctx, &instances);
+
     ElectronicsNetlist {
         components: instance_list,
         nets,
@@ -1172,6 +1358,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         net_conflicts,
         is_electronics: true,
         class_errors,
+        convention_errors,
         voltage,
         type_info,
     }
@@ -1292,6 +1479,98 @@ mod tests {
         assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
         assert_eq!(nl.nets.len(), 4, "four indexed equalities → four nets");
         assert!(nl.nets.iter().all(|n| n.pins.len() == 2));
+    }
+
+    // ── 2026-09-21 (E13): decoupling convention ───────────────────────────
+
+    const DECOUPLED_BOARD: &str = r#"
+        type Power { spec KicadType: "power_in"; spec Supply: true; };
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: "100n"; };
+        type Cap { pin p; pin n; reference "C"; spec Decoupler: true; };
+
+        let u1: Chip = Chip { value: "mcu" };
+        let c1: Cap = Cap { value: "100n" };
+
+        txn on
+            [u1.vdd.voltage == c1.p.voltage && u1.vss.voltage == c1.n.voltage]
+            [u1.vdd.current >= 0.0]
+        { }
+    "#;
+
+    #[test]
+    fn conventional_board_passes_decoupling() {
+        let nl = analyze(DECOUPLED_BOARD);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(
+            nl.convention_errors.is_empty(),
+            "cap across the rail satisfies the convention: {:?}",
+            nl.convention_errors
+        );
+        let ti = &nl.type_info["Chip"];
+        assert!(ti.pin_classes[0].supply);
+        assert!(ti.pin_classes[1].return_pin);
+    }
+
+    #[test]
+    fn missing_decoupling_is_a_convention_error() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: "100n"; };
+
+            let u1: Chip = Chip { value: "mcu" };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(
+            nl.convention_errors.len(),
+            1,
+            "{:?}",
+            nl.convention_errors
+        );
+        assert!(
+            nl.convention_errors[0].contains("u1") && nl.convention_errors[0].contains("vdd"),
+            "{}",
+            nl.convention_errors[0]
+        );
+    }
+
+    #[test]
+    fn non_decoupler_part_does_not_satisfy_convention() {
+        // A resistor across the rail is not a decoupling part: the
+        // property interface (spec Decoupler) decides, never the type name.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: "100n"; };
+            type Res { pin a; pin b; reference "R"; };
+
+            let u1: Chip = Chip { value: "mcu" };
+            let r1: Res = Res { value: "10k" };
+
+            txn on
+                [u1.vdd.voltage == r1.a.voltage && u1.vss.voltage == r1.b.voltage]
+                [u1.vdd.current >= 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.convention_errors.len(), 1, "{:?}", nl.convention_errors);
+    }
+
+    #[test]
+    fn decouple_without_supply_pin_is_an_error() {
+        let src = r#"
+            type Chip { pin a; pin b; reference "U"; spec Decouple: "100n"; };
+
+            let u1: Chip = Chip { value: "mcu" };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.convention_errors.len(), 1, "{:?}", nl.convention_errors);
+        assert!(
+            nl.convention_errors[0].contains("supply-class"),
+            "{}",
+            nl.convention_errors[0]
+        );
     }
 
     #[test]

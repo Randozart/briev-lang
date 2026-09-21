@@ -274,6 +274,15 @@ element. Contracts address an element as `inst.gpio[3].voltage`; every
 element is an ordinary pin to the netlist, the serialization, and the
 emitter (arrays are declaration sugar, expanded by the parser).
 
+**The decoupling convention (2026-09-21).** A component type stating
+`spec Decouple: "100n";` requires, per instance, a part whose type
+declares `spec Decoupler: true;` bridging each supply pin (`spec
+Supply: true;` — on the `Power` fundamental) to a return pin (`spec
+Return: true;` — on `Ground`). The rail roles and the decoupler
+property live on stdlib declarations; the checker consumes the property
+interface generically. An un-bridged instance is a hard compile error —
+the backend refuses any board whose decoupling convention is violated.
+
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive

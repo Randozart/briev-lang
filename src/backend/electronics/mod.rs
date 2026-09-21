@@ -148,6 +148,16 @@ impl ElectronicsBackend {
             errs.extend(netlist.class_errors.iter().map(|e| format!("  {}", e)));
             return Err(errs);
         }
+        // 2026-09-21 (E13): decoupling-convention violations — an instance
+        // of a `spec Decouple` type without a bridging `spec Decoupler`
+        // part on its rail. Refuse before anything else emits.
+        if !netlist.convention_errors.is_empty() {
+            let mut errs = vec![
+                "cannot emit schematic: the decoupling convention is violated".to_string(),
+            ];
+            errs.extend(netlist.convention_errors.iter().map(|e| format!("  {}", e)));
+            return Err(errs);
+        }
         // 2026-09-11 (B4): voltage/current proving — shorted supplies,
         // over-voltage into rated pins, undeclared unrated pins, and
         // postcondition current bounds violated by derived physics.
@@ -504,6 +514,28 @@ mod tests {
         assert!(sch.contains("name \"gpio[0]\""), "{sch}");
         assert!(sch.contains("name \"gpio[1]\""));
         assert_eq!(sch.matches("(wire ").count(), 6, "2 nets × 3 segments");
+    }
+
+    #[test]
+    fn refuses_decoupling_violations() {
+        // 2026-09-21 (E13): an un-decoupled `spec Decouple` instance never
+        // leaves the compiler.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: "100n"; };
+
+            let u1: Chip = Chip { value: "mcu" };
+
+            txn on
+                [u1.vdd.voltage == u1.vss.voltage]
+                [true]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        let err = ElectronicsBackend::generate(&nl).unwrap_err();
+        assert!(err[0].contains("decoupling convention"), "{:?}", err);
     }
 
     #[test]

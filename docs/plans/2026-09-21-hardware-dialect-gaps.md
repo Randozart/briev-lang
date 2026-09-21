@@ -454,3 +454,15 @@ sugar (`j1.data == mcu.data` expanding to per-element equalities)
 remains OPEN under E11 until the gate fixture demands it; the E11 gate
 ("64-bit bus netlist ≡ manual per-pin clauses") is already satisfiable
 via indexed equalities.
+
+### Amendment 2026-09-21 (evening, III): E13 landed — decoupling convention
+
+IMPLEMENTED: `spec Decouple: "100n";` on a component type requires, per
+instance, a part whose type declares `spec Decoupler: true;` bridging each
+`spec Supply: true;` pin to a `spec Return: true;` pin (rail roles live on
+the class fundamentals `Power`/`Ground` in std/electronics.bv; the catalog
+`Capacitor` declares `Decoupler`). The checker reads the property
+interface generically — the compiler knows no type or class names
+(Rules 14/15). Violations are hard `convention_errors` that refuse
+emission. Value matching (cap value vs. the stated "100n") remains OPEN
+under E13 — presence check only in this slice.
