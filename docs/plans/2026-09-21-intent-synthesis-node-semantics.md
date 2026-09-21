@@ -295,3 +295,40 @@ SPEC §3.5 gains a non-normative "Planned: intent synthesis" pointer (done
 in the same commit batch as this record); syntax-highlighter rules,
 learn-briev tutorial, and `docs/architecture/electronics-frontend.md`
 refresh land with the E14a commits per the docs-same-commit rule.
+
+---
+
+## Amendment 2026-09-21 — D6 reworked: pin classes are fundamentals, not keywords
+
+The first implementation slice (E12) began with pin classes as a compiler
+keyword set (`pin vbus: power;` — lowercase clause vocabulary). Review
+flagged the casing inconsistency, and underneath it the wrong ontology.
+D6 is restated:
+
+- The initial `PinClass` enum and parser keyword set are **retracted**
+  (never shipped past a worktree).
+- Seven parentless fundamentals join `std/electronics.bv` beside
+  `Volt`/`Amp`, prelude-injected: **`Power`, `Ground`, `In`, `Out`,
+  `Io`, `IoOd`, `Nc`**.
+- Grammar: `pin <name> [: <TypeName>] [= <int>];` — the parser stores a
+  type reference and nothing more; resolution happens in analysis against
+  the imported fundamentals.
+- Emitter and ERC behavior are **property-driven**: each fundamental
+  declares its facts as `spec` clauses on the type —
+  `spec KicadType: "power_in";` (`input`, `output`, `bidirectional`,
+  `open_collector`, `no_connect`, `passive`), and `Nc` adds
+  `spec NoConnect: "true";` (dangling-pin exemption).
+- The compiler learns **zero class names** (Rules 14/15): the emitter asks
+  the resolved type for properties, generically. Authors may declare new
+  pin-class fundamentals with properties later — no compiler release.
+- D6's behavioral semantics land as spec properties **with their consumer
+  slices**: `IoOd` gains `spec wired_and: true;` when contention
+  classification consumes it; `io` exclusivity likewise. Properties-only
+  now; semantics ship with the machinery that enforces them.
+- Effort re-rate: E12 S→M (type-universe resolution plumbing in analysis
+  + emitter).
+
+Rationale: `pin vbus: Power;` reads as a type ascription, exactly as §3.5
+promises for fundamentals ("the fundamentals are physical quantities").
+A closed keyword set would be compiler vocabulary the language cannot
+extend — the precise failure Rule 14 exists to prevent.

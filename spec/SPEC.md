@@ -298,10 +298,13 @@ that is incomplete or electrically violated.
 > declares behaviors and invariants over `volatile` component pins
 > (`node name [guard] { drive-maps }`), and the compiler infers both the
 > wiring (net membership) and the physics. Planned constructs — pin
-> electrical classes (`power`/`ground`/`in`/`out`/`io`/`io_od`/`nc`),
-> `spec` datasheet-fact clauses, pin arrays, population facts
-> (`populated = false`), `chain`/`await` sequencing sugar, and
-> ambiguity-lifting modifiers — are inventoried with full semantics in
+> electrical classes declared as **fundamentals in
+> `std/electronics.bv`** (`Power`/`Ground`/`In`/`Out`/`Io`/`IoOd`/`Nc`,
+> PascalCase — they are types, carrying `spec KicadType`/`spec NoConnect`
+> properties the compiler consumes generically), `spec` datasheet-fact
+> clauses, pin arrays, population facts (`populated = false`),
+> `chain`/`await` sequencing sugar, and ambiguity-lifting modifiers — are
+> inventoried with full semantics in
 > `docs/plans/2026-09-21-intent-synthesis-node-semantics.md`. Grammar is
 > unfrozen pending implementation; this section documents the current
 > surface only.

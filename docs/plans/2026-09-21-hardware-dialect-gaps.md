@@ -431,3 +431,15 @@ S8 decision) is untouched by this amendment.
 - **Ambiguity-lifting keywords are SLOTS** (persist-tighten,
   commit-select), names provisional until implementation — no gate
   depends on a spelling.
+
+### Amendment 2026-09-21 (evening): E12 realization note
+
+E12 is realized as **stdlib-declared fundamentals with property-driven
+behavior** (design record D6 amendment): `Power`/`Ground`/`In`/`Out`/
+`Io`/`IoOd`/`Nc` are parentless types in `std/electronics.bv` carrying
+`spec KicadType` / `spec NoConnect` properties; the compiler resolves pin
+class references against imported types and consumes properties
+generically — no class names in Rust. Gate unchanged in substance
+(`nc` pin compiles clean from the dangling error; class-keyed violations
+compile errors once ERC consumes the properties in later slices).
+Effort S→M (type-universe resolution plumbing in analysis + emitter).
