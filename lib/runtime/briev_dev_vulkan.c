@@ -17,6 +17,8 @@
 // Loaded via dlopen("libvulkan.so.1"); when absent, available() returns 0
 // and the chain falls back to OpenCL then CPU.
 
+#include "briev_accel_rt.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>

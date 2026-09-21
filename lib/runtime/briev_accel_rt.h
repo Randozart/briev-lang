@@ -237,6 +237,11 @@ extern BrievDeviceDriver briev_dev_cuda;
 extern BrievDeviceDriver briev_dev_vulkan;
 extern BrievDeviceDriver briev_dev_opencl;
 
+// Shared runtime diagnostics state — defined by the orchestration host
+// (src/accel_rt.rs since Family K), read by the drivers.
+extern int g_verbose;        // BRIEV_ACCEL_VERBOSE
+extern int g_async_launch;   // BRIEV_ACCEL_ASYNC
+
 // ────────────────────────────────────────────────────────────────────────────
 // Public orchestration ABI (implemented by the Rust host, src/accel_rt)
 // ────────────────────────────────────────────────────────────────────────────

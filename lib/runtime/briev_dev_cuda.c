@@ -19,6 +19,8 @@
 // Vulkan then OpenCL then CPU. The SPIR-V path stays byte-identical when the
 // probe selects Vulkan.
 
+#include "briev_accel_rt.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>

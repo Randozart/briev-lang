@@ -20,7 +20,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
-#include "briev_accel_rt.c"
+#include "briev_accel_rt.h"
 
 #define WGS 4096
 #define DEPTH 64

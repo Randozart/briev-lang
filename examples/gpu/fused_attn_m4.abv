@@ -1,0 +1,55 @@
+// M4 fused decode attention — online softmax, single kernel.
+// Fuses qk + softmax + pv into one node per head.
+// Online softmax avoids materializing the full S[NKV] array.
+// Layout: Q[H*D], K[NKV*D], V[NKV*D], O[H*D].
+import "std/types/float.bv";
+
+const D: Int = 128;
+const H: Int = 20;
+const HKV: Int = 5;
+const G: Int = 4;
+const NKV: Int = 4096;
+const SCALE: Float = 0.08838834764831845;
+
+let w: Int = 0;
+let q: Float[2560];
+let k: Float[2621440];
+let v: Float[2621440];
+let o: Float[2560];
+
+async node fused [w < H][w == H] {
+    let kh: Int = w / G;
+    let m: Float = -3.40282347e+38;
+    let d: Float = 0;
+    let acc0: Float = 0;
+    let acc1: Float = 0;
+    let acc2: Float = 0;
+    let acc3: Float = 0;
+    foreach j in 0..NKV {
+        let p: Float = 0;
+        foreach di in 0..D {
+            p = p + q[w * D + di] * (k[kh * (D * NKV) + j * D + di] as Float);
+        }
+        let s: Float = p * SCALE;
+        let m_new: Float = Max#(m, s);
+        let em: Float = Exp#(m - m_new);
+        let es: Float = Exp#(s - m_new);
+        d = d * em + es;
+        let w0: Float = em * acc0 + es * (v[kh * (D * NKV) + j * D + 0] as Float);
+        let w1: Float = em * acc1 + es * (v[kh * (D * NKV) + j * D + 1] as Float);
+        let w2: Float = em * acc2 + es * (v[kh * (D * NKV) + j * D + 2] as Float);
+        let w3: Float = em * acc3 + es * (v[kh * (D * NKV) + j * D + 3] as Float);
+        acc0 = w0;
+        acc1 = w1;
+        acc2 = w2;
+        acc3 = w3;
+        m = m_new;
+    }
+    let inv_d: Float = 1.0 / d;
+    o[w * D + 0] = acc0 * inv_d;
+    o[w * D + 1] = acc1 * inv_d;
+    o[w * D + 2] = acc2 * inv_d;
+    o[w * D + 3] = acc3 * inv_d;
+    w = w + 1;
+    term;
+};

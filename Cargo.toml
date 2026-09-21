@@ -6,6 +6,7 @@ edition = "2024"
 [lib]
 name = "briev_compiler"
 path = "src/lib.rs"
+crate-type = ["lib", "staticlib"]
 
 [features]
 kani = []

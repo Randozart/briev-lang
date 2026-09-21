@@ -1,0 +1,50 @@
+// attention_decode_flash.abv — FlashDecode shape (plan
+// 2026-09-19-flashdecode-emitter): ONE node, head-per-work-item, fused
+// online-softmax decode attention. Same math as the qk→softmax→pv
+// composition; the compiler lowers it to the gate-proven warp-sliced
+// kernel (benchmarks/flash-decode-gate/) when the FlashDecode shape
+// matches, and to the general per-head kernel otherwise.
+//
+// Layouts mirror ggml's flash-attn decode tensors (N=1 token):
+//   Q[h*D+d] · K[kh*NKV*D + j*D + d] · V like K · A[h*D+d]
+// acc[h*D+d] is per-head scratch (zeroed state; the fused lowering keeps
+// it in registers and never materializes it).
+const D: Int = 128;
+const H: Int = 32;
+const HKV: Int = 8;
+const G: Int = 4;
+const NKV: Int = 256;
+const SCALE: Float = 0.08838834764831845;
+
+let h: Int = 0;
+let q: Float[4096];
+let k: Float[262144];
+let v: Float[262144];
+let acc: Float[4096];
+let a_out: Float[4096];
+
+async node fattn [h < H][h == H] {
+    let kh: Int = h / G;
+    let m: Float = -1e30;
+    let l: Float = 0;
+    foreach j in 0..NKV {
+        let sc: Float = 0;
+        foreach d in 0..D {
+            sc = sc + q[h * D + d] * (k[kh * (D * NKV) + j * D + d] as Float);
+        }
+        sc = sc * SCALE;
+        let mn: Float = Max#(m, sc);
+        let p: Float = Exp#(sc - mn);
+        let cf: Float = Exp#(m - mn);
+        l = l * cf + p;
+        foreach d in 0..D {
+            acc[h * D + d] = acc[h * D + d] * cf + p * (v[kh * (D * NKV) + j * D + d] as Float);
+        }
+        m = mn;
+    }
+    foreach d in 0..D {
+        a_out[h * D + d] = acc[h * D + d] / l;
+    }
+    h = h + 1;
+    term;
+};

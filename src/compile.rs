@@ -794,13 +794,22 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // .c source (e.g., briev_rt.c), producing identical cached .o paths.
             let mut all_objects = opts.extra_objects.clone();
             all_objects.extend(extra_objects);
-            // 2026-08-06 (accel plan): always link the device-agnostic accel
-            // runtime (briev_accel_rt.c). It is LTO + --gc-sections'd away when
-            // the program has no accel kernels, so the cost is a cached .o.
-            let accel_rt = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("lib/runtime/briev_accel_rt.c");
-            let accel_obj = compile_source_to_object(&accel_rt, &get_ffi_cache_dir())?;
-            all_objects.push(accel_obj);
+            // 2026-09-21 (Family K): the accel orchestration is the Rust
+            // staticlib (src/accel_rt.rs, built by build.rs alongside the
+            // driver archive); --gc-sections drops it when the program has
+            // no accel kernels.
+            let accel_lib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/compiler-in-briv/libbriev_accel_rt.a");
+            let driver_lib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/compiler-in-briv/libbriev_gpu_rt.a");
+            if accel_lib.exists() && driver_lib.exists() {
+                all_objects.push(accel_lib.clone());
+                all_objects.push(driver_lib.clone());
+            } else {
+                // Headless bootstrap (no cc/rustc for the drivers): the
+                // program still links; accel launches no-op to CPU.
+                eprintln!("[briev] accel runtime archives not built — CPU lane only");
+            }
             all_objects.sort();
             all_objects.dedup();
             compile_ll_to_binary(&out_path, &binary_path, &all_objects, &protocol_libs, opts.shared)?;
@@ -1657,9 +1666,19 @@ fn codegen(
                 .parent()
                 .map(|d| d.to_path_buf())
                 .unwrap_or_else(std::path::PathBuf::new);
-            for rt_file in ["briev_accel_rt.c", "briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+            // 2026-09-21 (Family K): the header + the Rust-built
+            // orchestration archive + the driver archive. Runner cc line:
+            //   cc ... runner.c -I. -L. -lbriev_accel_rt -lbriev_gpu_rt -ldl -lpthread -lm
+            let briv_out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/compiler-in-briv");
+            let rt_files = [
+                ("briev_accel_rt.h", rt_dir.as_path()),
+                ("libbriev_accel_rt.a", briv_out.as_path()),
+                ("libbriev_gpu_rt.a", briv_out.as_path()),
+            ];
+            for (rt_file, src_dir) in rt_files {
                 let dest = rt_dir_out.join(rt_file);
-                std::fs::copy(rt_dir.join(rt_file), &dest).map_err(|e| {
+                std::fs::copy(src_dir.join(rt_file), &dest).map_err(|e| {
                     format!("cannot copy runtime '{}' to '{}': {}", rt_file, dest.display(), e)
                 })?;
             }
@@ -1711,9 +1730,19 @@ fn codegen(
                 .parent()
                 .map(|d| d.to_path_buf())
                 .unwrap_or_else(std::path::PathBuf::new);
-            for rt_file in ["briev_accel_rt.c", "briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+            // 2026-09-21 (Family K): the header + the Rust-built
+            // orchestration archive + the driver archive. Runner cc line:
+            //   cc ... runner.c -I. -L. -lbriev_accel_rt -lbriev_gpu_rt -ldl -lpthread -lm
+            let briv_out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/compiler-in-briv");
+            let rt_files = [
+                ("briev_accel_rt.h", rt_dir.as_path()),
+                ("libbriev_accel_rt.a", briv_out.as_path()),
+                ("libbriev_gpu_rt.a", briv_out.as_path()),
+            ];
+            for (rt_file, src_dir) in rt_files {
                 let dest = rt_dir_out.join(rt_file);
-                std::fs::copy(rt_dir.join(rt_file), &dest).map_err(|e| {
+                std::fs::copy(src_dir.join(rt_file), &dest).map_err(|e| {
                     format!("cannot copy runtime '{}' to '{}': {}", rt_file, dest.display(), e)
                 })?;
             }

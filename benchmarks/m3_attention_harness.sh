@@ -207,7 +207,8 @@ print("harness injected", file=sys.stderr)
 PYEOF
 
 # 4. Compile + run both lanes.
-cc -O2 -I"$OUT" -o "$OUT/harness" "$OUT/harness.c" -lvulkan -lOpenCL -lcuda -lpthread -lm
+# 2026-09-21 (Family K): orchestration + driver archives (Rust-built).
+cc -O2 -I"$OUT" -L"$OUT" -o "$OUT/harness" "$OUT/harness.c" -lbriev_accel_rt -lbriev_gpu_rt -lvulkan -lOpenCL -lcuda -lpthread -lm
 echo "== CUDA lane =="
 BRIEV_ACCEL_DEVICE=cuda "$OUT/harness" 2>/dev/null | grep -E "M3" || true
 echo "== VULKAN lane =="

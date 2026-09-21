@@ -91,7 +91,8 @@ open(runner_path, 'w').write(src)
 print("gate harness injected", file=sys.stderr)
 PYEOF
 
-cc -O2 -I"$OUT" -o "$OUT/gate" "$RUNNER" -lvulkan -lOpenCL -lcuda -lpthread -lm || {
+# 2026-09-21 (Family K): orchestration + driver archives (Rust-built).
+cc -O2 -I"$OUT" -L"$OUT" -o "$OUT/gate" "$RUNNER" -lbriev_accel_rt -lbriev_gpu_rt -lvulkan -lOpenCL -lcuda -lpthread -lm || {
     echo "gate compile failed"; exit 1;
 }
 

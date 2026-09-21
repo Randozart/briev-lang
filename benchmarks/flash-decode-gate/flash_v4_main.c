@@ -4,7 +4,7 @@
 #include <time.h>
 #include <math.h>
 #define NKV 4096
-#include "briev_accel_rt.c"
+#include "briev_accel_rt.h"
 
 static const uint8_t blobV2[] = {
     46,118,101,114,115,105,111,110,32,56,46,48,10,46,116,97,114,103,101,116,

@@ -67,7 +67,9 @@ build_and_run() {
     rm -f "$tmp_src"
     local runner
     runner=$(ls "$OUT/$tag"/*_runner.c | head -1)
-    cc -O2 -I"$OUT/$tag" -o "$OUT/$tag/bin" "$runner" \
+    # 2026-09-21 (Family K): orchestration + driver archives (Rust-built).
+    cc -O2 -I"$OUT/$tag" -L"$OUT/$tag" -o "$OUT/$tag/bin" "$runner" \
+        -lbriev_accel_rt -lbriev_gpu_rt \
         -lvulkan -lOpenCL -lcuda -lpthread -lm
     # first run: capture stdout for the equality check
     BRIEV_ACCEL_DEVICE=cuda "$OUT/$tag/bin" > "$stdout_f"

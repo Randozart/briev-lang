@@ -10,7 +10,7 @@
 #define V_OFF 1069072
 #define OUT_OFF 2117696
 #define E 2
-#include "briev_accel_rt.c"
+#include "briev_accel_rt.h"
 static const uint8_t blobV2[] = {
     46,118,101,114,115,105,111,110,32,56,46,48,10,46,116,97,114,103,101,116,
     32,115,109,95,56,54,10,46,97,100,100,114,101,115,115,95,115,105,122,101,
