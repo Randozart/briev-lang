@@ -332,3 +332,44 @@ Rationale: `pin vbus: Power;` reads as a type ascription, exactly as §3.5
 promises for fundamentals ("the fundamentals are physical quantities").
 A closed keyword set would be compiler vocabulary the language cannot
 extend — the precise failure Rule 14 exists to prevent.
+
+---
+
+## Amendment 2026-09-21 — D16: conditional wiring (`when` in node bodies)
+
+Body facts are wiring; a `when` around them asks for CONDITIONAL wiring.
+Two honest readings, one trap:
+
+**The trap.** Copper cannot vary. A `when x = high { a = b; }` that
+silently produced an unconditional union would lie — always-connected
+copper emitted for a conditional request. The gate: conditional wiring
+facts whose condition is SIGNAL-LEVEL (references a pin — pins are
+volatile reality) require a MECHANISM; without one, hard error naming
+the missing capability (D7 made constructive). Region-level conditions
+(state facts, no pin reference) carve a sub-region: the facts are
+ordinary wiring, unconditional in that region — exactly the nested-node
+decomposition `node N [G] { when H { f } } ≡ node N_H [G ∧ H] { f }`.
+
+**Reading 1 — region assertion.** The when carves the node's firing
+region; facts inside apply to it. Where nothing requires disconnection
+elsewhere, always-connected copper is a valid implementation.
+
+**Reading 2 — mechanism synthesis (the prize).** The condition drives a
+declared switching part: control pin ← the condition's net, path
+terminals ← the wired pins. This is the enable-chain semantics
+(`when x = high { chip.POWER_ON = high; }`) made constructive. Needs
+switch-part vocabulary: `spec Control: true;` on gate-class pins,
+switchable path pins — a later property slice.
+
+**Plan.** Phase 1: guarded facts seen and classified (closing the
+silent-skip hole in body_facts); pin-referencing conditions demand a
+mechanism (D7 error); region-level conditions (`true`, pin-free) apply
+as ordinary facts. Phase 2: mechanism synthesis with the switch-part
+property vocabulary. Phase 3: the cross-region complement check
+formalized (connected in region A + required-disconnected in region B →
+mechanism demand). Condition vocabulary: level-comparisons first
+(`x == high`, `rail.ok`); arithmetic conditions later.
+
+Guarded statements are `Statement::Guarded` — already parsed by the
+core; this slice is analysis-only. Nested whens compound their
+conditions (`when a { when b { f } }` ≡ conditioned on `a && b`).
