@@ -135,3 +135,7 @@ dynamic_linker: "x86_64:/lib64/ld-linux-x86-64.so.2"; "aarch64:/lib/ld-linux-aar
 // absent toolchains degrade to documented skips, never silent passes.
 cross_as: "x86_64:as"; "aarch64:aarch64-linux-gnu-as"; "riscv64:riscv64-linux-gnu-as";
 cross_ld: "x86_64:ld"; "aarch64:aarch64-linux-gnu-ld"; "riscv64:riscv64-linux-gnu-ld";
+// cross_ld_flags: riscv64 ld RELAXES pc-relative `lla` into gp-relative
+// addressing — freestanding .bad programs have no crt to initialize gp,
+// so relaxation produces faulting code. `--no-relax` keeps it literal.
+cross_ld_flags: "riscv64:--no-relax";

@@ -33,7 +33,7 @@ mov: "2"; "x86_64:movq $2, $1"; "aarch64:mov $1, $2"; "riscv64:mv $1, $2|li $1, 
 // MEMORY, not the address — the classic footgun this op exists to close).
 // aarch64 rides adrp+add (page-based, full range, PIC-safe) — `adr`
 // would cap at ±1MB.
-addr: "2"; "x86_64:leaq $2(%rip), $1"; "aarch64:adrp $1, $2; add $1, $1, :lo12:$2"; "riscv64:la $1, $2"; "sym";
+addr: "2"; "x86_64:leaq $2(%rip), $1"; "aarch64:adrp $1, $2; add $1, $1, :lo12:$2"; "riscv64:lla $1, $2"; "sym";
 
 // ── Arithmetic ───────────────────────────────────────────────────────
 // x86_64 add reg-form rides lea (no flags touched, no intermediate copy);
@@ -80,7 +80,7 @@ nop: "0"; "x86_64:nop"; "aarch64:nop"; "riscv64:nop";
 // route them into each target's syscall ABI (x86_64 rax+rdi/rsi/rdx,
 // aarch64 x8+x0-x2, riscv64 a7+a0-a2). Register operands only (`|-`
 // illegal): immediates load into a register first.
-syscall: "4"; "x86_64:movq $1#, %rax; movq $2, %rdi; movq $3, %rsi; movq $4, %rdx; syscall|-"; "aarch64:mov x8, $1#; mov x0, $2; mov x1, $3; mov x2, $4; svc #0|-"; "riscv64:mv a7, $1#; mv a0, $2; mv a1, $3; mv a2, $4; ecall|-";
+syscall: "4"; "x86_64:movq $1#, %rax; movq $2, %rdi; movq $3, %rsi; movq $4, %rdx; syscall|-"; "aarch64:mov x8, $1#; mov x0, $2; mov x1, $3; mov x2, $4; svc #0|-"; "riscv64:li a7, $1#; mv a0, $2; mv a1, $3; mv a2, $4; ecall|-";
 halt: "0"; "x86_64:hlt"; "aarch64:wfi"; "riscv64:wfi";
 
 // ── Application-grade ISA (2026-09-21, application-grade plan) ───────
@@ -153,7 +153,7 @@ fstore: "2"; "x86_64:movsd $1, ($2)"; "aarch64:str $1, [$2]"; "riscv64:fsd $1, 0
 // fmov imm: pool label on every target — x86_64 rip-relative, aarch64
 // adrp+ldr through x9 (caller-saved, disclosed), riscv64 la+fld through
 // t0 (caller-saved, disclosed).
-fmov: "2"; "x86_64:movsd $2, $1|movsd $2!(%rip), $1"; "aarch64:mov $1, $2|adrp x9, $2; add x9, x9, :lo12:$2; ldr $1, [x9]"; "riscv64:fmv.d $1, $2|la t0, $2; fld $1, 0(t0)";
+fmov: "2"; "x86_64:movsd $2, $1|movsd $2!(%rip), $1"; "aarch64:mov $1, $2|adrp x9, $2; add x9, x9, :lo12:$2; ldr $1, [x9]"; "riscv64:fmv.d $1, $2|lla t0, $2; fld $1, 0(t0)";
 fadd: "3"; "x86_64:movsd $2, $1; addsd $3, $1|-"; "aarch64:fadd $1, $2, $3|-"; "riscv64:fadd.d $1, $2, $3|-";
 fsub: "3"; "x86_64:movsd $2, $1; subsd $3, $1|-"; "aarch64:fsub $1, $2, $3|-"; "riscv64:fsub.d $1, $2, $3|-";
 fmul: "3"; "x86_64:movsd $2, $1; mulsd $3, $1|-"; "aarch64:fmul $1, $2, $3|-"; "riscv64:fmul.d $1, $2, $3|-";

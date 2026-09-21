@@ -202,15 +202,23 @@ impl BadRegisters {
             .unwrap_or_else(|e| panic!("config/bad-registers.dbvl parse error: {}", e));
         let mut regs = HashMap::new();
         let mut scalars = HashMap::new();
+        // Every scalar-shaped row must be listed here — an unlisted row
+        // silently empties its accessor (the sp/classification bug class).
+        const SCALAR_ROWS: &[&str] = &[
+            "imm",
+            "comment",
+            "abi_args",
+            "push_width",
+            "dynamic_linker",
+            "cross_as",
+            "cross_ld",
+            "cross_ld_flags",
+            "syscall_nums",
+            "float_literal",
+            "abi_stack_arg_base",
+        ];
         for key in db.keys() {
-            // Rows whose fields are "target:value" scalars (not
-            // "target:token:prop" register entries).
-            let is_scalar = matches!(
-                key.as_str(),
-                "imm" | "comment" | "abi_args" | "push_width" | "dynamic_linker"
-                    | "cross_as" | "cross_ld" | "syscall_nums" | "float_literal"
-                    | "abi_stack_arg_base"
-            );
+            let is_scalar = SCALAR_ROWS.contains(&key.as_str());
             let (entries, pairs) = parse_row(&db, &key, is_scalar);
             if is_scalar {
                 scalars.insert(key, pairs);
@@ -289,6 +297,14 @@ impl BadRegisters {
     /// The linker binary for `family`.
     pub fn cross_ld(&self, family: &str) -> Option<&'static str> {
         self.scalar("cross_ld", family).map(leak_static)
+    }
+
+    /// Extra linker flags for `family` (riscv64: --no-relax — relaxation
+    /// produces gp-relative addressing no freestanding crt initializes).
+    pub fn cross_ld_flags(&self, family: &str) -> Vec<&'static str> {
+        self.scalar("cross_ld_flags", family)
+            .map(|s| s.split(',').map(leak_static).collect())
+            .unwrap_or_default()
     }
 
     /// How float literals materialize: `pool` (a `.rodata` block of

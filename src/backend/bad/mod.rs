@@ -775,12 +775,11 @@ mod phase3_hardening_tests {
             assemble(&asm, family, &o).unwrap_or_else(|e| panic!("{family} assemble: {e}"));
             let (_, regs) = registries();
             let bin = dir.join("fp");
-            let st = std::process::Command::new(regs.cross_ld(family).unwrap())
-                .arg(&o)
-                .arg("-o")
-                .arg(&bin)
-                .status()
-                .expect("ld");
+            let mut ld_cmd = std::process::Command::new(regs.cross_ld(family).unwrap());
+            for flag in regs.cross_ld_flags(family) {
+                ld_cmd.arg(flag);
+            }
+            let st = ld_cmd.arg(&o).arg("-o").arg(&bin).status().expect("ld");
             assert!(st.success(), "{family} link failed");
             let stdout = std::process::Command::new(format!("qemu-{family}"))
                 .arg(&bin)

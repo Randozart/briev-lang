@@ -560,6 +560,9 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let (_, regs) = briev_compiler::backend::bad::registries();
     let ld_bin = regs.cross_ld(&family).unwrap_or("ld").to_string();
     let mut link = std::process::Command::new(&ld_bin);
+    for flag in regs.cross_ld_flags(&family) {
+        link.arg(flag);
+    }
     link.arg(&o_path).arg("-o").arg(&bin_path);
     if with_libc {
         match regs.dynamic_linker(&family) {
@@ -591,7 +594,10 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     // (when present) feeds -L so dynamic loaders resolve.
     let host = "x86_64"; // MVP: the compiler's own host family
     if family == host {
-        let status = std::process::Command::new(&bin_path)
+        let abs = bin_path.canonicalize().map_err(|e| {
+            format!("bad: cannot resolve '{}': {e}", bin_path.display())
+        })?;
+        let status = std::process::Command::new(abs)
             .status()
             .map_err(|e| format!("bad: cannot run '{}': {e}", bin_path.display()))?;
         std::process::exit(status.code().unwrap_or(1));
