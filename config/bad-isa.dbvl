@@ -28,6 +28,10 @@
 
 // ── Data movement ────────────────────────────────────────────────────
 mov: "2"; "x86_64:movq $2, $1"; "aarch64:mov $1, $2"; "riscv64:mv $1, $2|li $1, $2";
+// addr d, sym — address-of a data label, the portable way. Symbols in
+// other non-branch ops are a loud error (x86 `movq msg, %rdi` would load
+// MEMORY, not the address — the classic footgun this op exists to close).
+addr: "2"; "x86_64:leaq $2(%rip), $1"; "aarch64:adr $1, $2"; "riscv64:la $1, $2"; "sym";
 
 // ── Arithmetic ───────────────────────────────────────────────────────
 // x86_64 add reg-form rides lea (no flags touched, no intermediate copy);
@@ -38,8 +42,8 @@ sub: "3"; "x86_64:movq $2, $1; subq $3, $1"; "aarch64:sub $1, $2, $3"; "riscv64:
 // mul/div are register-only on aarch64 and riscv64 (no immediate forms in
 // the hardware) — an immediate operand there is a loud capability error.
 // x86_64 div clobbers %rax/%rdx (caller-saved); the imm form borrows %rcx.
-mul: "3"; "x86_64:imulq $3, $2; movq $2, $1"; "aarch64:mul $1, $2, $3"; "riscv64:mul $1, $2, $3";
-div: "3"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rax, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rax, $1"; "aarch64:sdiv $1, $2, $3"; "riscv64:div $1, $2, $3";
+mul: "3"; "x86_64:imulq $3, $2; movq $2, $1"; "aarch64:mul $1, $2, $3|-"; "riscv64:mul $1, $2, $3|-";
+div: "3"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rax, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rax, $1"; "aarch64:sdiv $1, $2, $3|-"; "riscv64:div $1, $2, $3|-";
 
 // ── Memory ───────────────────────────────────────────────────────────
 load: "2"; "x86_64:movq ($2), $1"; "aarch64:ldr $1, [$2]"; "riscv64:ld $1, 0($2)";
@@ -49,13 +53,13 @@ store: "2"; "x86_64:movq $1, ($2)"; "aarch64:str $1, [$2]"; "riscv64:sd $1, 0($2
 // Branches are compare-and-branch (3 operands) so they port to riscv64,
 // which has no flags. riscv beq/bne take registers only — the imm form
 // borrows t0 (caller-saved, disclosed).
-jmp: "1"; "x86_64:jmp $1"; "aarch64:b $1"; "riscv64:j $1";
-jz: "3"; "x86_64:cmpq $2, $1; je $3"; "aarch64:cmp $1, $2; b.eq $3"; "riscv64:beq $1, $2, $3|li t0, $2; beq $1, t0, $3";
-jnz: "3"; "x86_64:cmpq $2, $1; jne $3"; "aarch64:cmp $1, $2; b.ne $3"; "riscv64:bne $1, $2, $3|li t0, $2; bne $1, t0, $3";
+jmp: "1"; "x86_64:jmp $1"; "aarch64:b $1"; "riscv64:j $1"; "sym";
+jz: "3"; "x86_64:cmpq $2, $1; je $3"; "aarch64:cmp $1, $2; b.eq $3"; "riscv64:beq $1, $2, $3|li t0, $2; beq $1, t0, $3"; "sym";
+jnz: "3"; "x86_64:cmpq $2, $1; jne $3"; "aarch64:cmp $1, $2; b.ne $3"; "riscv64:bne $1, $2, $3|li t0, $2; bne $1, t0, $3"; "sym";
 // cmp is flag-based; riscv64 has no flags, so it has NO riscv64 row —
 // using cmp under a riscv64 target is a loud capability error. Use jz/jnz.
 cmp: "2"; "x86_64:cmpq $2, $1"; "aarch64:cmp $1, $2";
-call: "1"; "x86_64:call $1"; "aarch64:bl $1"; "riscv64:call $1";
+call: "1"; "x86_64:call $1"; "aarch64:bl $1"; "riscv64:call $1"; "sym";
 ret: "0"; "x86_64:ret"; "aarch64:ret"; "riscv64:ret";
 
 // ── Stack ────────────────────────────────────────────────────────────

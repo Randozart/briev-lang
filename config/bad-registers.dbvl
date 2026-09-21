@@ -36,3 +36,6 @@ sp: "x86_64:%rsp"; "aarch64:sp"; "riscv64:sp";
 pc: "x86_64:%rip:ro"; "aarch64:pc:ro"; "riscv64:pc:ro";
 
 imm: "x86_64:$"; "aarch64:#"; "riscv64:";
+
+// GAS comment prefix per target — emitted contract annotations use it.
+comment: "x86_64:#"; "aarch64://"; "riscv64:#";

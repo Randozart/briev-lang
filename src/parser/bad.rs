@@ -52,6 +52,14 @@ struct Parser<'s> {
     pending_contract: Option<BadContract>,
 }
 
+/// Identification of the line being pushed — bundles the diagnostic
+/// triple so the push helpers stay at ≤4 params.
+struct LineCtx<'a> {
+    content: &'a str,
+    line: usize,
+    span: Span,
+}
+
 /// Who currently owns instruction lines.
 enum Owner {
     Label(usize),
@@ -80,7 +88,19 @@ impl<'s> Parser<'s> {
 
             // Top-level shapes always close the current owner.
             if let Some(item) = self.try_top_level(content, line, span)? {
-                owner = None;
+                match &item {
+                    BadTopLevel::Label(_) => {
+                        owner = Some(Owner::Label(self.items.len()));
+                    }
+                    BadTopLevel::Defn(_) => {
+                        owner = Some(Owner::Defn {
+                            idx: self.items.len(),
+                            branch_rows: false,
+                            seq_body: false,
+                        });
+                    }
+                    _ => owner = None,
+                }
                 self.items.push(item);
                 self.pos += 1;
                 continue;
@@ -88,62 +108,17 @@ impl<'s> Parser<'s> {
 
             // `target => ...` / `default => ...`
             if let Some(branch) = self.try_branch_row(content, line, span)? {
-                match owner.as_mut() {
-                    Some(Owner::Defn { branch_rows, seq_body, .. }) => {
-                        if *seq_body {
-                            return Err(BadParseError {
-                                message: format!(
-                                    "defn mixes sequence body lines with branch rows - \
-                                     pick one shape: instruction lines are the default body, \
-                                     `target => ...` rows are the target table ('{content}')"
-                                ),
-                                line,
-                                span,
-                            });
-                        }
-                        *branch_rows = true;
-                        if let BadTopLevel::Defn(d) = &mut self.items.last_mut().unwrap() {
-                            if let BadDefnShape::Branch(rows) = &mut d.shape {
-                                rows.push(branch);
-                            }
-                        }
-                    }
-                    Some(Owner::Label(i)) => {
-                        let attached = if let Some(BadTopLevel::Label(l)) = self.items.get_mut(*i)
-                        {
-                            match l.body.last_mut() {
-                                Some(last) => {
-                                    last.exceptions.push(branch);
-                                    true
-                                }
-                                None => false,
-                            }
-                        } else {
-                            false
-                        };
-                        if !attached {
-                            return Err(BadParseError {
-                                message: format!(
-                                    "`{content}` follows a label with no instruction - \
-                                     exceptions replace the nearest preceding instruction"
-                                ),
-                                line,
-                                span,
-                            });
-                        }
-                    }
-                    None => {
-                        return Err(BadParseError {
-                            message: format!(
-                                "`{content}` is a target exception row but no instruction \
-                                 precedes it - exceptions replace the nearest preceding \
-                                 instruction, or form a defn's branch table"
-                            ),
-                            line,
-                            span,
-                        });
-                    }
-                }
+                let owner = owner.as_mut().ok_or_else(|| BadParseError {
+                    message: format!(
+                        "`{content}` is a target exception row but no instruction \
+                         precedes it - exceptions replace the nearest preceding \
+                         instruction, or form a defn's branch table"
+                    ),
+                    line,
+                    span,
+                })?;
+                let lctx = LineCtx { content, line, span };
+                self.push_branch_row(owner, branch, &lctx)?;
                 self.pos += 1;
                 continue;
             }
@@ -158,55 +133,111 @@ impl<'s> Parser<'s> {
 
             // Instruction line — must have an owner.
             let instr = self.parse_instr_line(content, line, span)?;
-            match owner.as_mut() {
-                Some(Owner::Label(i)) => {
-                    if let BadTopLevel::Label(l) = &mut self.items[*i] {
-                        let mut instr = instr;
-                        instr.contract = self.pending_contract.take();
-                        l.body.push(instr);
-                    }
-                }
-                Some(Owner::Defn { seq_body, branch_rows, .. }) => {
-                    if *branch_rows {
-                        return Err(BadParseError {
-                            message: format!(
-                                "defn mixes branch rows with sequence body lines - \
-                                 a branch defn contains only `default => ...` / \
-                                 `target => ...` rows ('{content}')"
-                            ),
-                            line,
-                            span,
-                        });
-                    }
-                    *seq_body = true;
-                    if let BadTopLevel::Defn(d) = &mut self.items.last_mut().unwrap() {
-                        // First sequence line converts the provisional
-                        // Branch shape (see parse_defn) to Sequence.
-                        if matches!(d.shape, BadDefnShape::Branch(_)) {
-                            d.shape = BadDefnShape::Sequence(Vec::new());
-                        }
-                        if let BadDefnShape::Sequence(body) = &mut d.shape {
-                            let mut instr = instr;
-                            instr.contract = self.pending_contract.take();
-                            body.push(instr);
-                        }
-                    }
-                }
-                None => {
+            let owner = owner.as_mut().ok_or_else(|| BadParseError {
+                message: format!(
+                    "instruction `{content}` has no owner - every instruction \
+                     belongs to a label or defn declared above it"
+                ),
+                line,
+                span,
+            })?;
+                let lctx = LineCtx { content, line, span };
+                self.push_instruction(owner, instr, &lctx)?;
+            self.pos += 1;
+        }
+        let end = self.lines.last().map(|(o, c, _)| o + c.len()).unwrap_or(0);
+        Ok(BadProgram { items: self.items, span: Span::new(0, end, 0, 0) })
+    }
+
+
+    /// Route a `target => ...` row to its owner (defn table or last
+    /// instruction of a label).
+    fn push_branch_row(
+        &mut self, owner: &mut Owner, branch: BadBranch, lc: &LineCtx,
+    ) -> Result<(), BadParseError> {
+        let (content, line, span) = (lc.content, lc.line, lc.span);
+        match owner {
+            Owner::Defn { branch_rows, seq_body, .. } => {
+                if *seq_body {
                     return Err(BadParseError {
                         message: format!(
-                            "instruction `{content}` has no owner - every instruction \
-                             belongs to a label or defn declared above it"
+                            "defn mixes sequence body lines with branch rows - \
+                             pick one shape: instruction lines are the default body, \
+                             `target => ...` rows are the target table ('{content}')"
+                        ),
+                        line,
+                        span,
+                    });
+                }
+                *branch_rows = true;
+                if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {
+                    if let BadDefnShape::Branch(rows) = &mut d.shape {
+                        rows.push(branch);
+                    }
+                }
+            }
+            Owner::Label(i) => {
+                let attached = match self.items.get_mut(*i) {
+                    Some(BadTopLevel::Label(l)) => l.body.last_mut().map(|last| {
+                        last.exceptions.push(branch);
+                    }),
+                    _ => None,
+                };
+                if attached.is_none() {
+                    return Err(BadParseError {
+                        message: format!(
+                            "`{content}` follows a label with no instruction - \
+                             exceptions replace the nearest preceding instruction"
                         ),
                         line,
                         span,
                     });
                 }
             }
-            self.pos += 1;
         }
-        let end = self.lines.last().map(|(o, c, _)| o + c.len()).unwrap_or(0);
-        Ok(BadProgram { items: self.items, span: Span::new(0, end, 0, 0) })
+        Ok(())
+    }
+
+    /// Route an instruction line to its owner (label body or defn
+    /// sequence body).
+    fn push_instruction(
+        &mut self, owner: &mut Owner, mut instr: BadInstr, lc: &LineCtx,
+    ) -> Result<(), BadParseError> {
+        let (content, line, span) = (lc.content, lc.line, lc.span);
+        match owner {
+            Owner::Label(i) => {
+                if let Some(BadTopLevel::Label(l)) = self.items.get_mut(*i) {
+                    instr.contract = self.pending_contract.take();
+                    l.body.push(instr);
+                }
+            }
+            Owner::Defn { seq_body, branch_rows, .. } => {
+                if *branch_rows {
+                    return Err(BadParseError {
+                        message: format!(
+                            "defn mixes branch rows with sequence body lines - \
+                             a branch defn contains only `default => ...` / \
+                             `target => ...` rows ('{content}')"
+                        ),
+                        line,
+                        span,
+                    });
+                }
+                *seq_body = true;
+                if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {
+                    // First sequence line converts the provisional
+                    // Branch shape (see parse_defn) to Sequence.
+                    if matches!(d.shape, BadDefnShape::Branch(_)) {
+                        d.shape = BadDefnShape::Sequence(Vec::new());
+                    }
+                    if let BadDefnShape::Sequence(body) = &mut d.shape {
+                        instr.contract = self.pending_contract.take();
+                        body.push(instr);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Try the top-level shapes; `Ok(None)` = not top-level.
@@ -219,14 +250,7 @@ impl<'s> Parser<'s> {
         }
         // `alias x = r0`
         if let Some(rest) = content.strip_prefix("alias ") {
-            let (name, reg) = rest.split_once('=').ok_or_else(|| BadParseError {
-                message: format!("alias needs `alias name = register` form ('{content}')"),
-                line,
-                span,
-            })?;
-            let (name, reg) = (name.trim().to_string(), reg.trim().to_string());
-            validate_ident(&name, line, span)?;
-            return Ok(Some(BadTopLevel::Alias(BadAlias { name, register: reg, span })));
+            return Ok(Some(self.parse_alias(rest, line, span)?));
         }
         // `section X` / `global X`
         if let Some(rest) = content.strip_prefix("section ")
@@ -250,38 +274,51 @@ impl<'s> Parser<'s> {
         }
         // `name: ...` — data line or code label.
         if let Some((name, rest)) = split_label(content) {
-            let name = name.trim();
-            validate_ident(name, line, span)?;
-            let rest = rest.trim();
-            if rest.starts_with('.') || rest.starts_with("section ")
-                || rest.starts_with("global ")
-            {
-                // Data: `msg: .asciz "hi"` — label + directive pair.
-                let (dname, dargs) = split_ws(rest);
-                return Ok(Some(BadTopLevel::Data(BadDataLabel {
-                    name: name.to_string(),
-                    directive: BadDirective {
-                        name: dname.to_string(),
-                        args: dargs.to_string(),
-                        span,
-                    },
-                    span,
-                })));
-            }
-            // Code label with optional trailing contracts: `_start: [post: ...]`
-            let contracts = if rest.starts_with('[') {
-                self.parse_contract_list(rest, line, span)?
-            } else {
-                Vec::new()
-            };
-            return Ok(Some(BadTopLevel::Label(BadLabel {
-                name: name.to_string(),
-                contracts,
-                body: Vec::new(),
-                span,
-            })));
+            return self.parse_name_colon(name.trim(), rest.trim(), line, span);
         }
         Ok(None)
+    }
+
+    /// The `name: ...` tail: data line (`.dir` follows) or code label
+    /// with optional trailing contracts (`_start: [post: ...]`).
+    fn parse_name_colon(
+        &mut self, name: &str, rest: &str, line: usize, span: Span,
+    ) -> Result<Option<BadTopLevel>, BadParseError> {
+        validate_ident(name, line, span)?;
+        if rest.starts_with('.') || rest.starts_with("section ") || rest.starts_with("global ") {
+            return Ok(Some(self.parse_data_label(name, rest, span)?));
+        }
+        let contracts = if rest.starts_with('[') {
+            self.parse_contract_list(rest, line, span)?
+        } else {
+            Vec::new()
+        };
+        Ok(Some(BadTopLevel::Label(BadLabel { name: name.to_string(), contracts, body: Vec::new(), span })))
+    }
+
+    fn parse_alias(
+        &mut self, rest: &str, line: usize, span: Span,
+    ) -> Result<BadTopLevel, BadParseError> {
+        let (name, reg) = rest.split_once('=').ok_or_else(|| BadParseError {
+            message: format!("alias needs `alias name = register` form ('alias {rest}')"),
+            line,
+            span,
+        })?;
+        let (name, reg) = (name.trim().to_string(), reg.trim().to_string());
+        validate_ident(&name, line, span)?;
+        Ok(BadTopLevel::Alias(BadAlias { name, register: reg, span }))
+    }
+
+    fn parse_data_label(
+        &mut self, name: &str, rest: &str, span: Span,
+    ) -> Result<BadTopLevel, BadParseError> {
+        // Data: `msg: .asciz "hi"` — label + directive pair.
+        let (dname, dargs) = split_ws(rest);
+        Ok(BadTopLevel::Data(BadDataLabel {
+            name: name.to_string(),
+            directive: BadDirective { name: dname.to_string(), args: dargs.to_string(), span },
+            span,
+        }))
     }
 
     fn parse_defn(
@@ -390,28 +427,10 @@ impl<'s> Parser<'s> {
     ) -> Result<Vec<BadContract>, BadParseError> {
         let mut out = Vec::new();
         let mut rest = content.trim();
-        while let Some(start) = rest.find('[') {
-            let Some(end_rel) = rest[start + 1..].find(']') else {
-                return Err(BadParseError {
-                    message: format!("contract group is missing its closing `]` ('{rest}')"),
-                    line,
-                    span,
-                });
-            };
-            let inner = &rest[start + 1..start + 1 + end_rel];
-            let inner = inner.trim();
-            let preds = if let Some(body) = inner.strip_prefix("pre:") {
-                parse_preds(body.trim(), line, span)?
-            } else if let Some(body) = inner.strip_prefix("post:") {
-                parse_preds(body.trim(), line, span)?
-            } else {
-                parse_preds(inner, line, span)?
-            };
-            out.push(BadContract { preds, span });
+        while let Some((start, end_rel)) = next_group(rest) {
+            let inner = rest[start + 1..start + 1 + end_rel].trim();
+            out.push(BadContract { preds: parse_pred_group(inner, line, span)?, span });
             rest = rest[start + 1 + end_rel + 1..].trim();
-            if rest.is_empty() {
-                break;
-            }
         }
         Ok(out)
     }
@@ -593,4 +612,128 @@ fn take_cmp_op(s: &str) -> Option<(BadCmpOp, &str)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_ok(src: &str) -> BadProgram {
+        parse_bad(src).unwrap_or_else(|e| panic!("parse failed: {}", e))
+    }
+
+    #[test]
+    fn parses_label_instructions_and_data() {
+        let p = parse_ok(
+            "section .text\nglobal _start\n\n_start:\n    mov r0, 1\n    syscall\n\n\
+             section .data\nmsg: .asciz \"hi\\n\"\n",
+        );
+        assert_eq!(p.items.len(), 5);
+        assert!(matches!(&p.items[0], BadTopLevel::Directive(d) if d.name == "section"));
+        assert!(matches!(&p.items[1], BadTopLevel::Directive(d) if d.name == "global"));
+        let BadTopLevel::Label(l) = &p.items[2] else { panic!("expected label") };
+        assert_eq!(l.name, "_start");
+        assert_eq!(l.body.len(), 2);
+        assert_eq!(l.body[0].mnemonic, "mov");
+        assert_eq!(l.body[0].operands, vec![BadOperand::Name("r0".into()), BadOperand::Int(1)]);
+        let BadTopLevel::Data(d) = &p.items[4] else { panic!("expected data") };
+        assert_eq!(d.name, "msg");
+        assert_eq!(d.directive.name, ".asciz");
+    }
+
+    #[test]
+    fn parses_sequence_defn_and_branch_defn() {
+        let p = parse_ok(
+            "defn push2 a, b\n    push a\n    push b\n\ndefn store_pair x, addr\n    \
+             default => store x, addr; store x, addr + 8\n    \
+             x86_64 => movq [addr], x\n",
+        );
+        let BadTopLevel::Defn(d1) = &p.items[0] else { panic!("expected defn") };
+        assert_eq!(d1.name, "push2");
+        assert_eq!(d1.params, vec!["a", "b"]);
+        assert!(matches!(&d1.shape, BadDefnShape::Sequence(b) if b.len() == 2));
+        let BadTopLevel::Defn(d2) = &p.items[1] else { panic!("expected defn") };
+        let BadDefnShape::Branch(rows) = &d2.shape else { panic!("expected branch shape") };
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].is_default);
+        assert_eq!(rows[0].body.len(), 2, "semicolons split into two instructions");
+        assert_eq!(rows[1].target, "x86_64");
+    }
+
+    #[test]
+    fn parses_inline_exception_and_contract() {
+        let p = parse_ok(
+            "_start:\n    [sp % 16 == 0]\n    add r0, r0, 1\n    \
+             x86_64 => lea r0, [r1 + 1]\n    ret\n",
+        );
+        let BadTopLevel::Label(l) = &p.items[0] else { panic!("expected label") };
+        assert_eq!(l.body.len(), 2);
+        let add = &l.body[0];
+        assert!(add.contract.is_some(), "inline contract attaches to next instruction");
+        assert_eq!(add.exceptions.len(), 1);
+        assert_eq!(add.exceptions[0].target, "x86_64");
+        assert_eq!(add.exceptions[0].body[0].mnemonic, "lea");
+        assert_eq!(l.body[1].mnemonic, "ret");
+        assert!(l.body[1].exceptions.is_empty(), "exception binds to the add, not ret");
+    }
+
+    #[test]
+    fn parses_label_contracts() {
+        let p = parse_ok("_start: [pre: r0 valid] [post: r10 preserved]\n    ret\n");
+        let BadTopLevel::Label(l) = &p.items[0] else { panic!("expected label") };
+        assert_eq!(l.contracts.len(), 2);
+        assert!(matches!(&l.contracts[0].preds[0], BadContractPred::Valid(r) if r == "r0"));
+        assert!(matches!(&l.contracts[1].preds[0], BadContractPred::Preserved(r) if r == "r10"));
+    }
+
+    #[test]
+    fn comment_respects_strings() {
+        let p = parse_ok("d: .asciz \"a//b\" // trailing\n");
+        let BadTopLevel::Data(d) = &p.items[0] else { panic!("expected data") };
+        assert_eq!(d.directive.args, "\"a//b\"");
+    }
+
+    #[test]
+    fn errors_on_orphan_exception() {
+        let err = parse_bad("x86_64 => lea r0, [r1]\n").unwrap_err();
+        assert!(err.message.contains("no instruction precedes it"), "{}", err.message);
+    }
+
+    #[test]
+    fn errors_on_ownerless_instruction() {
+        let err = parse_bad("mov r0, 1\n").unwrap_err();
+        assert!(err.message.contains("no owner"), "{}", err.message);
+    }
+
+    #[test]
+    fn errors_on_defn_shape_mix() {
+        let err = parse_bad("defn f a\n    push a\n    x86_64 => pop a\n").unwrap_err();
+        assert!(err.message.contains("mixes sequence body"), "{}", err.message);
+    }
+
+    #[test]
+    fn errors_on_exception_after_empty_label() {
+        let err = parse_bad("l:\n    x86_64 => nop\n").unwrap_err();
+        assert!(err.message.contains("no instruction"), "{}", err.message);
+    }
+}
+
+/// `..[...]..` → (start of `[`, relative end of `]`).
+fn next_group(s: &str) -> Option<(usize, usize)> {
+    let start = s.find('[')?;
+    let end_rel = s[start + 1..].find(']')?;
+    Some((start, end_rel))
+}
+
+/// `pre: r0 valid` / `post: ...` / bare preds → one contract's preds.
+fn parse_pred_group(
+    inner: &str, line: usize, span: Span,
+) -> Result<Vec<BadContractPred>, BadParseError> {
+    if let Some(body) = inner.strip_prefix("pre:") {
+        parse_preds(body.trim(), line, span)
+    } else if let Some(body) = inner.strip_prefix("post:") {
+        parse_preds(body.trim(), line, span)
+    } else {
+        parse_preds(inner, line, span)
+    }
 }
