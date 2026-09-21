@@ -255,23 +255,39 @@ fn fold_stmt_list(
             } => {
                 // Single-binder let (the parser also lists the name in
                 // `names`) with a comptime init folds in place; multi-lets
-                // never enter the env.
+                // never enter the env. An init that is ALREADY a literal is
+                // recorded but never rewritten — the tree must keep its
+                // shape (downstream matchers pattern-match Neg/Float etc.).
                 let single = names.is_empty() || (names.len() == 1 && &names[0] == &name);
                 let folded = if single {
                     expr.as_ref().and_then(|e| eval_const(e, env))
                 } else {
                     None
                 };
+                let already_literal = matches!(
+                    expr.as_ref(),
+                    Some(Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_))
+                );
                 match folded {
                     Some(v) => {
                         env.insert(name.clone(), v.clone());
-                        out.push(Statement::Let {
-                            name,
-                            names,
-                            ty,
-                            expr: Some(literal_expr(&v)),
-                            modifiers,
-                        });
+                        if already_literal {
+                            out.push(Statement::Let {
+                                name,
+                                names,
+                                ty,
+                                expr,
+                                modifiers,
+                            });
+                        } else {
+                            out.push(Statement::Let {
+                                name,
+                                names,
+                                ty,
+                                expr: Some(literal_expr(&v)),
+                                modifiers,
+                            });
+                        }
                     }
                     None => {
                         env.remove(&name);
@@ -479,11 +495,22 @@ pub fn expand_composites(
     if registry.is_empty() {
         return Ok(0);
     }
-    let comptime: HashMap<String, ComptimeVal> = pm
+    let mut comptime: HashMap<String, ComptimeVal> = pm
         .comptime_vars
         .iter()
         .filter_map(|(n, (v, _))| nav_comptime(v).map(|c| (n.clone(), c)))
         .collect();
+    // Top-level `const` declarations are comptime by definition — their
+    // values seed the fold env in declaration order (a const init may
+    // reference an earlier const). A non-foldable init simply contributes
+    // nothing (fail-open: dependent spans degrade to runtime).
+    for item in items.iter() {
+        if let TopLevel::Constant(k) = item {
+            if let Some(v) = eval_const(&k.expr, &comptime) {
+                comptime.insert(k.name.clone(), v);
+            }
+        }
+    }
     let mut total = 0;
     for depth in 0..8 {
         let mut n = 0;
@@ -1159,6 +1186,36 @@ mod comptime_fold {
         .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("\"l\"") && !dump.contains("\"s\""), "{dump}");
+    }
+
+    #[test]
+    fn top_level_const_seeds_the_driver_fold() {
+        let src = "\
+$defn f(n: expr) { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };
+const D: Int = 128;
+let i: Int = 0;
+let buf: Float[64];
+async node k [i < 1][i == 1] {
+    f!(D);
+    i = i + 1;
+    term;
+};";
+        let mut items = parse_program(src);
+        let mut pm = PluginManager::new();
+        crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
+        expand_composites(&mut items, &pm).expect("expansion runs");
+        let TopLevel::Transaction(t) = items
+            .iter()
+            .find(|it| matches!(it, TopLevel::Transaction(tx) if tx.name == "k"))
+            .unwrap()
+        else {
+            panic!("node k");
+        };
+        let dump = format!("{:?}", t.body);
+        assert!(
+            dump.contains("\"l\"") && !dump.contains("\"s\"") && !dump.contains("Match"),
+            "const D=128 folds to the large arm: {dump}"
+        );
     }
 
     #[test]

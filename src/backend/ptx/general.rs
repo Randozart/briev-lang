@@ -2533,6 +2533,19 @@ fn detect_deferred_region(
                         continue;
                     }
                 }
+                // 2026-09-21 (comptime fold): the fold may splice the init
+                // as a direct negative literal — same value, same meaning
+                // (m_init always carries the positive magnitude; the
+                // emitter negates it).
+                if let Expr::Float(f) = e {
+                    if *f < 0.0 && m_name.is_none() {
+                        m_name = Some(name.clone());
+                        m_init = Some(Expr::Float(-f));
+                        region_start = region_start.min(i);
+                        region_end = i + 1;
+                        continue;
+                    }
+                }
                 if matches!(e, Expr::Decimal(0) | Expr::Float(0.0)) && l_name.is_none() && m_name.is_some() {
                     l_name = Some(name.clone());
                     l_init = Some(e.clone());

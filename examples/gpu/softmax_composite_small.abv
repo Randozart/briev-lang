@@ -1,0 +1,31 @@
+// softmax_composite_small.abv — comptime-fold gate, SMALL-SPAN arm (plan
+// 2026-09-21-comptime-fold-expansion). Same program as
+// softmax_composite.abv but D=16: the `match dlen <= 32` scrutinee in
+// softmax_fused! folds at expansion (D is a top-level const) and splices
+// the ONLINE arm — one sweep, running max + rescale, accumulator
+// register-resident. The numeric contract is identical to the deferred
+// arm's; only the structure differs.
+import "std/numeric.bv";
+
+const D: Int = 16;
+const H: Int = 8;
+const NKV: Int = 64;
+
+let h: Int = 0;
+let q: Float[128];
+let k: Float[8192];
+let v: Float[8192];
+let acc: Float[128];
+let a_out: Float[128];
+
+async node sfused [h < H][h == H] {
+    softmax_fused!(
+        q[h * D + d] * k[h * (D * NKV) + j * D + d],
+        v[h * (D * NKV) + j * D + d],
+        NKV, D,
+        acc, a_out,
+        h * D, h * D
+    );
+    h = h + 1;
+    term;
+};

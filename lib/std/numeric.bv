@@ -8,11 +8,20 @@
 // instantiated body needs (contracts, single-reader intermediates, the
 // M2 deferral); its lowerings map the proven body to hardware.
 
-// softmax_fused! — the deferred-softmax structure: a running max of the
-// scaled scores, then unnormalized weights accumulated DIRECTLY into the
-// consumer's slice (the deferral — one division at the end, algebra: a
-// division by a loop-completed scalar may move past a linear consumer),
-// then the normalize tail.
+// softmax_fused! — the SHAPE-ADAPTIVE deferred softmax (plan
+// 2026-09-21-comptime-fold-expansion): one declaration covers every dim
+// span. The branch below is ordinary Briev — expansion comptime-folds the
+// scrutinee when the caller passes a comptime span (every real program
+// does) and splices only the taken structure; a runtime span keeps both
+// structures as a runtime match (correct, just not specialized).
+//
+//   small span (dlen <= 32):  ONLINE softmax — running max + rescale in a
+//     single sweep; acc stays register/smem-resident (32 floats), no
+//     separate max pass, one fewer sweep over the score.
+//   large span (dlen > 32):   the deferred 2-pass — running max pass,
+//     unnormalized weights accumulated DIRECTLY into the consumer's slice
+//     (one division at the end; algebra: a division by a loop-completed
+//     scalar may move past a linear consumer), then the normalize tail.
 //
 // `expr` parameters (substituted at the call site):
 //   score   — one score summand; may reference the binders `j` and `d`
@@ -38,31 +47,59 @@ $defn softmax_fused(
     accbase: expr, outbase: expr,
     j: expr_item, d: expr_item
 ) {
-    // Pass 1: the running max of the scores (the Max# identity init).
-    let m_: Float = -1e30;
-    foreach j in 0..jlen {
-        let sc: Float = 0;
-        foreach d in 0..dlen {
-            sc = sc + score;
-        }
-        m_ = Max#(m_, sc);
-    }
-    // Pass 2: unnormalized weights, the exp-sum, and the raw accumulation.
-    let s_: Float = 0;
-    foreach j in 0..jlen {
-        let sc: Float = 0;
-        foreach d in 0..dlen {
-            sc = sc + score;
-        }
-        let p_: Float = Exp#(sc - m_);
-        s_ = s_ + p_;
-        foreach d in 0..dlen {
-            accbuf[accbase + d] = accbuf[accbase + d] + p_ * value;
-        }
-    }
-    // The deferred normalize tail (one division per element).
-    foreach d in 0..dlen {
-        outbuf[outbase + d] = accbuf[accbase + d] / s_;
+    match dlen <= 32 {
+        true => {
+            // Online: at each position, rescale the running sum AND the
+            // accumulator by Exp#(old_max - new_max) — the algebra that
+            // lets one sweep maintain exact softmax state.
+            let m_: Float = -1e30;
+            let s_: Float = 0;
+            foreach j in 0..jlen {
+                let sc: Float = 0;
+                foreach d in 0..dlen {
+                    sc = sc + score;
+                }
+                let mn_: Float = Max#(m_, sc);
+                let r_: Float = Exp#(m_ - mn_);
+                let p_: Float = Exp#(sc - mn_);
+                s_ = s_ * r_ + p_;
+                foreach d in 0..dlen {
+                    accbuf[accbase + d] = accbuf[accbase + d] * r_ + p_ * value;
+                }
+                m_ = mn_;
+            }
+            foreach d in 0..dlen {
+                outbuf[outbase + d] = accbuf[accbase + d] / s_;
+            }
+        },
+        false => {
+            // Deferred: pass 1 runs the max; pass 2 accumulates
+            // unnormalized weights straight into the consumer's slice;
+            // the tail divides once per element.
+            let m_: Float = -1e30;
+            foreach j in 0..jlen {
+                let sc: Float = 0;
+                foreach d in 0..dlen {
+                    sc = sc + score;
+                }
+                m_ = Max#(m_, sc);
+            }
+            let s_: Float = 0;
+            foreach j in 0..jlen {
+                let sc: Float = 0;
+                foreach d in 0..dlen {
+                    sc = sc + score;
+                }
+                let p_: Float = Exp#(sc - m_);
+                s_ = s_ + p_;
+                foreach d in 0..dlen {
+                    accbuf[accbase + d] = accbuf[accbase + d] + p_ * value;
+                }
+            }
+            foreach d in 0..dlen {
+                outbuf[outbase + d] = accbuf[accbase + d] / s_;
+            }
+        },
     }
 };
 
