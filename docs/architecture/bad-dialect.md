@@ -71,7 +71,16 @@ pop2 nop syscall halt addr`
 
 Floating point (double precision, `f0`-`f15`): `fmov fadd fsub fmul
 fdiv fneg fabs fcmp fload fstore fjz fjnz fjlt fjle fjgt fjge itof
-ftoi` — the fj family mirrors the integer j-family.
+ftoi` — the fj family mirrors the integer j-family. Float literals
+(`fmov f0, 1.5`) ride a deduped `.rodata` literal pool (x86_64
+rip-relative, aarch64 adrp+ldr via x9, riscv64 la+fld via t0 —
+clobbers disclosed).
+
+`syscall num, a1, a2, a3` is portable end to end: the kernel call is
+named (`syscall write, r5, r4, r2`) — numbers differ per target
+(x86_64 write=1, aarch64/riscv64 write=64) and resolve through the
+`syscall_nums` rows; the templates route the number and args into each
+target's syscall ABI. Register operands only.
 
 Universal lowerings live in `config/bad-isa.dbvl` — one row per op,
 per-target `"target:reg-form|imm-form"` fields:
@@ -129,6 +138,8 @@ properties (`caller` / `callee` / `ro`):
   restore sp exactly, and must hold 16-alignment at every `call`.
 - `[sp % 16 == 0]`-style compare chains — the lhs register's existence is
   checked; constant folding lands with the comptime pass.
+- `[frame: N]` also tracks direct `sub sp, sp, imm` / `add sp, sp, imm`
+  displacement, not only push/pop discipline.
 - Label-level (`name: [pre: ...] [post: ...]`) and inline (`[expr]`
   before an instruction) forms.
 
@@ -148,10 +159,23 @@ Params bind positionally; recursion is cycle-guarded (depth 64).
 validates the label exists). Argument registers come from the
 `abi_args` row per target (SysV: x86_64 `r5,r4,r2,r1,r6,r7`; aarch64
 and riscv64 are `r0..r5`) — the same `.bad` function body serves every
-target because the ABI map is data. `brievc bad --with-libc` links
-`-lc` via the per-target `dynamic_linker` row so `call malloc` and
-friends resolve. The stdlib (`std/bad/string.bad`) uses the documented
-internal convention (args `r0`-`r2`, result `r0`, `r3`-`r5` scratch).
+target because the ABI map is data. Args 7+ pass on the stack: the
+first stack arg sits at `abi_stack_arg_base` bytes above `sp` at entry
+(x86_64 = 8 past the return address; arm/riscv = 0) with 8-byte stride
+— read them with `loadoff r?, sp, <off>`. `brievc bad --with-libc`
+links `-lc` via the per-target `dynamic_linker` row so `call malloc`
+and friends resolve. The stdlib (`std/bad/string.bad`) uses the
+documented internal convention (args `r0`-`r2`, result `r0`,
+`r3`-`r5` scratch).
+
+## Cross-target verification
+
+`brievc bad --run` executes the linked binary — natively on the host
+family, under `qemu-<family>` (with the gnu sysroot when present)
+otherwise. The cross toolchains come from the `cross_as`/`cross_ld`
+rows; tests probe availability and skip with a printed note when a
+toolchain is absent — never a silent pass. aarch64 `addr` rides
+`adrp + add :lo12:` (full range, PIC-safe).
 
 ## Error doctrine
 

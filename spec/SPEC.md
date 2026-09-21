@@ -2630,9 +2630,14 @@ other .bad files at the import line. Contracts (`[pre: ...]`,
 time from the register properties (e.g. `[post: r10 preserved]` via
 callee-saved status or balanced push/pop pairing; `[frame: N]` via
 static sp tracking with 16-alignment at calls); proven proofs are
-emitted as comments into the assembly. `.export` names a C-ABI entry
-point (argument registers per the `abi_args` map); `--with-libc`
-links libc. A pure-.bad stdlib lives in `std/bad/`. The grammar is
+emitted as comments into the assembly. Float literals ride a deduped `.rodata`
+literal pool; `syscall` takes a NAMED kernel call (`syscall write, ...`)
+whose per-target numbers live in config, routing the call through each
+target's syscall ABI. `.export` names a C-ABI entry
+point (argument registers per the `abi_args` map; args 7+ on the stack
+at the `abi_stack_arg_base` offset); `--with-libc`
+links libc; `--run` executes natively or under qemu per target with
+cross toolchains from config. A pure-.bad stdlib lives in `std/bad/`. The grammar is
 strictly line-oriented with no braces; the full dialect reference is
 `docs/architecture/bad-dialect.md`.
 
