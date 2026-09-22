@@ -1,0 +1,119 @@
+// ── std/bad/arch.bad — per-architecture boot primitives (2026-09-22) ──
+// NAMED raw blocks, one per target, sharing a callable name. The portable
+// core does `call uart_init` (or `jmp uart_init` for a prologue that never
+// returns) and the matching family's block emits. Family gating is data,
+// not compiler knowledge (Rule 14).
+//
+// The name is registered as a label ONLY on the matching family, so the
+// same name across `raw x86_64`, `raw riscv64`, `raw thumbv7m` never
+// collides (one build = one target).
+//
+// `uart_init` is the machine-entry prologue: it sets up the UART/console
+// base and (for prologues that change execution mode) rejoins the portable
+// core at its `core:` label via a verbatim `jmp`/`j`/`b`.
+
+// x86_64 — multiboot2 entry: 32-bit protected mode → long mode. The
+// header rides .text (objcopy -O binary flattens only the first LOAD
+// segment), then the prologue sets rdx-family = COM1 0x3f8 and
+// long-jumps to the portable `core` label.
+raw x86_64 uart_init
+    .code32
+    cli
+    // multiboot2 header (magic, arch, length, checksum, end-of-tags)
+    .align 8
+mh_start:
+    .long 0xE85250D6
+    .long 0
+    .long mh_end - mh_start
+    .set mh_checksum, -(0xE85250D6 + 0 + (mh_end - mh_start))
+    .long mh_checksum
+    .long 0
+    .long 8
+mh_end:
+    // minimal GDT + long-mode switch
+    .align 8
+gdt32:
+    .quad 0
+    .quad 0x00AF9A000000FFFF
+    .quad 0x00CF92000000FFFF
+gdt32_end:
+    movl $(gdt32_end - gdt32 - 1), %eax
+    lgdt gdt32
+    xorl %eax, %eax
+    movl %eax, %cr3
+    movl %cr4, %eax
+    orl $0x20, %eax
+    movl %eax, %cr4
+    movl $0xC0000080, %ecx
+    rdmsr
+    orl $0x100, %eax
+    wrmsr
+    movl %cr0, %eax
+    orl $0x80000001, %eax
+    movl %eax, %cr0
+    ljmp $0x08, $_start64
+    .code64
+    .align 8
+_start64:
+    movq $0x3f8, %rdx
+    jmp core
+end
+
+// riscv64 — QEMU virt: PMP grant (needed for U-mode) + UART base a2.
+// Falls through to the portable core (M-mode, no mode change needed).
+raw riscv64 uart_init
+    .section .text.start, "ax", @progbits
+    li a0, -1
+    csrw pmpaddr0, a0
+    li a0, 15
+    csrw pmpcfg0, a0
+    li a2, 0x10000000
+    j core
+end
+
+// thumbv7m — MPS2-AN385: vector table + reset entry. The table's reset
+// vector points at `core` (portable), r2 = UART0 DATA 0x40004000, and
+// the CTRL enable (0x40004008 = 1) is set first (the CMSDK UART needs
+// TXEN before writes).
+raw thumbv7m uart_init
+    .section .isr_vector, "a", %progbits
+    .align 2
+    .global __isr_vector
+__isr_vector:
+    .word _stack_top
+    .word uart_init + 1
+    .section .text
+    .thumb
+    ldr r1, =0x40004008
+    movs r0, 1
+    strb r0, [r1]
+    ldr r2, =0x40004000
+    b core
+end
+
+// ── putc: per-arch console character write ─────────────────────────────
+// The portable core CALLS putc with the char in r0 and the console base
+// in r2. The STORE WIDTH is per-arch: the MPS2 UART accepts only byte
+// stores; the QEMU virt 16550 wants a full-width store. That width is
+// exactly the kind of per-arch knowledge a stdlib entry should carry.
+
+// x86_64 (long mode): COM1 via outb — a byte store to rdx.
+raw x86_64 putc
+    pushq %rax
+    movq %rdx, %rdx
+    outb %al, %dx
+    popq %rax
+    ret
+end
+
+// riscv64: full-width store to the 16550 DATA (a2 = base).
+raw riscv64 putc
+    sd a0, 0(a2)
+    ret
+end
+
+// thumbv7m: byte store to the CMSDK UART DATA (r2 = base).
+raw thumbv7m putc
+    strb r0, [r2]
+    bx lr
+end

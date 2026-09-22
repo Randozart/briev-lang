@@ -786,7 +786,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             .lookup(&get_extension(&opts.file_path))
             .and_then(|e| e.target_triple.clone()))
         .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
-    let bad_fn_objects = compile_bad_fn_objects(&items, &bad_triple)?;
+    let bad_fn_objects = compile_bad_fn_objects(&items, &bad_triple, &resolver.bad_imports, std::path::Path::new(file_path).parent().map(|p| p.to_path_buf()))?;
     // 2026-09-22 (bootstrap-bad plan): bad fn .o files must link in the
     // FREESTANDING path too (a `bootstrap bad` entry lives there) — they
     // are kept separate from the frgn extra_objects (briev_rt etc.), which
@@ -844,11 +844,19 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             }
             all_objects.sort();
             all_objects.dedup();
-            compile_ll_to_binary(&out_path, &binary_path, &all_objects, &protocol_libs, opts.shared, &bad_fn_objects, bootstrap_entry.as_deref())?;
+            // 2026-09-22 (universal-bootstrapper plan): --no-link with
+            // --raw-bin skips the link entirely — the flat image is
+            // objcopy'd from the bootstrap bad .o directly (an MBR-style
+            // .code16/.org 510 body cannot link in a 64-bit ELF).
+            if !opts.no_link {
+                compile_ll_to_binary(&out_path, &binary_path, &all_objects, &protocol_libs, opts.shared, &bad_fn_objects, bootstrap_entry.as_deref())?;
+            }
         }
         // 2026-09-22 (bootstrap-bad plan): --raw-bin extracts the flat
         // loadable image (objcopy -O binary) — the boot-sector / firmware
-        // blob a bootloader would load from the linked ELF.
+        // blob a bootloader would load from the linked ELF. With
+        // --no-link, the source is the bootstrap bad .o (not a linked
+        // binary).
         if opts.raw_bin && opts.backend == BackendKind::Llvm {
             let bin_img = format!("{binary_base}.bin");
             // llvm-objcopy is target-agnostic (handles thumb/riscv/aarch64
@@ -856,13 +864,24 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             let oc = if std::process::Command::new("llvm-objcopy").arg("--version").output().ok().map(|o| o.status.success()).unwrap_or(false) {
                 "llvm-objcopy"
             } else { "objcopy" };
+            // --no-link: flatten the bootstrap bad .o (the only code a
+            // flat boot sector can carry). Else flatten the linked ELF.
+            let src = if opts.no_link {
+                bad_fn_objects.first().ok_or_else(|| {
+                    "no-link raw-bin needs a bootstrap bad .o - add a `bootstrap bad` to the \
+                     program".to_string()
+                })?
+                .as_os_str()
+            } else {
+                std::ffi::OsStr::new(&binary_path)
+            };
             let status = std::process::Command::new(oc)
                 .arg("-O").arg("binary")
-                .arg(&binary_path).arg(&bin_img)
+                .arg(src).arg(&bin_img)
                 .status()
                 .map_err(|e| format!("cannot run `{oc}`: {e} - is binutils installed?"))?;
             if !status.success() {
-                return Err(format!("objcopy failed to extract the flat image from `{binary_path}`"));
+                return Err(format!("objcopy failed to extract the flat image from `{}`", src.to_string_lossy()));
             }
             println!("wrote {bin_img}");
         }
@@ -1913,6 +1932,8 @@ fn has_bootstrap_entry(items: &[briev_compiler::ast::TopLevel]) -> bool {
 fn compile_bad_fn_objects(
     items: &[briev_compiler::ast::TopLevel],
     target_triple: &str,
+    bad_imports: &[std::path::PathBuf],
+    base_dir: Option<std::path::PathBuf>,
 ) -> Result<Vec<PathBuf>, String> {
     use briev_compiler::ast::top::TopLevel;
     let mut objects = Vec::new();
@@ -1957,16 +1978,34 @@ fn compile_bad_fn_objects(
             );
         }
         // Parse + lower the .bad body.
+        // 2026-09-22 (per-arch stdlib boot entries): prepend the .bv-top-level
+        // `.bad` imports so the body's `call uart_init` resolves the imported
+        // named raw blocks; base_dir lets relative import paths resolve.
+        let mut body = String::new();
+        for import in bad_imports {
+            body.push_str(&format!("import \"{}\"\n", import.display()));
+        }
+        body.push_str(&bf.body);
         let asm = briev_compiler::backend::bad::generate_bad_fn(
-            &bf.body,
+            &body,
             target_triple,
             param_env,
             bf.bootstrap,
             &bf.name,
+            base_dir.clone(),
         )
         .map_err(|e| format!("bad fn `{}`: {}", bf.name, e))?;
         // Assemble to .o.
-        let o_path = cache_dir.join(format!("{}_{}.o", bf.name, family));
+        // 2026-09-22: the cache key includes a content hash — two
+        // programs with the same bootstrap entry name must not collide
+        // (Reset_Handler from boot_mps2 vs bootloader are different code).
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            bf.body.hash(&mut h);
+            format!("{:016x}", h.finish())
+        };
+        let o_path = cache_dir.join(format!("{}_{}_{}.o", bf.name, family, &hash[..8]));
         briev_compiler::backend::bad::assemble(&asm, target_triple, &o_path)
             .map_err(|e| format!("bad fn `{}` assemble: {}", bf.name, e))?;
         objects.push(o_path);

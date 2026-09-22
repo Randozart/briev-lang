@@ -271,6 +271,10 @@ pub struct BuildOptions {
     /// (objcopy -O binary) after linking — the boot-sector / firmware blob
     /// a bootloader would load.
     pub raw_bin: bool,
+    /// 2026-09-22 (universal-bootstrapper plan): with `raw_bin`, skip the
+    /// link and objcopy the flat image from the object directly (an
+    /// MBR-style `.code16`/`.org 510` body cannot link in a 64-bit ELF).
+    pub no_link: bool,
 }
 
 pub struct PreprocessedSource {
@@ -735,6 +739,7 @@ pub fn check_source_for(
         triple_override: triple_override.map(|t| t.to_string()),
         linker_script_override: None,
         raw_bin: false,
+        no_link: false,
     };
     let (_items, _universe) = parse_and_check(file_path, source, &default_opts)?;
     println!("OK");

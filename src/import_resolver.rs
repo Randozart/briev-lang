@@ -60,6 +60,11 @@ pub struct ImportResolver {
     /// §7.1 requires resolution to be deterministic AND to record the resolved
     /// path; this is the audit trail (reproducible builds, diagnostics).
     pub resolved_paths: Vec<(String, String)>,
+    /// 2026-09-22 (per-arch stdlib boot entries): resolved absolute paths
+    /// of `.bad` imports at the `.bv` top level. The resolver records them
+    /// (a `.bad` file is never parsed as Briev); the bad backend inlines
+    /// them when compiling `bootstrap bad` bodies.
+    pub bad_imports: Vec<PathBuf>,
 }
 
 /// The name of a top-level item, if it carries one.
@@ -319,6 +324,7 @@ impl ImportResolver {
             in_progress: HashSet::new(),
             registry: load_module_registry(),
             resolved_paths: Vec::new(),
+            bad_imports: Vec::new(),
         }
     }
 
@@ -795,6 +801,67 @@ impl ImportResolver {
             );
 
             return Ok(dbriev_items);
+        }
+
+        // 2026-09-22 (per-arch stdlib boot entries): `import "*.bad"` —
+        // a .bad source is NOT Briev; record its resolved path and hand it
+        // to the bad backend. Returns no Briev items (the bootstrap body
+        // references the imported named raw blocks by symbol).
+        if import.path().ends_with(".bad") {
+            let bad_src_dir = source_file
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            // `import "std/bad/arch.bad"`: the stdlib root is `lib/`, so
+            // strip the leading `std/` and join — `std/bad/x.bad` →
+            // `lib/bad/x.bad`. The `.bv` stdlib lives at `lib/std/`; the
+            // `.bad` stdlib at `std/bad/` is the repo-root sibling of the
+            // stdlib root's parent. Search local paths AND the stdlib root.
+            let bad_path = self
+                .search_paths
+                .iter()
+                .map(|p| bad_src_dir.join(p).join(&import.path()))
+                .chain(std::iter::once(bad_src_dir.join(&import.path())))
+                .chain(
+                    std::env::current_dir()
+                        .ok()
+                        .into_iter()
+                        .map(|cwd| cwd.join(&import.path())),
+                )
+                .chain(
+                    self.resolve_stdlib_root()
+                        .into_iter()
+                        .flat_map(|root| {
+                            // `.bad` stdlib lives at <repo>/std/bad/ — the
+                            // repo root is one level up from the .bv stdlib
+                            // root (`lib/`). Also try `lib/bad/`.
+                            let repo = root.parent().map(|p| p.to_path_buf());
+                            let mut candidates = Vec::new();
+                            if let Some(r) = repo {
+                                candidates.push(r.join(&import.path()));
+                            }
+                            let rel = import.path().strip_prefix("std/").unwrap_or(&import.path());
+                            candidates.push(root.join("bad").join(rel));
+                            candidates.into_iter()
+                        }),
+                )
+                .find(|p| p.exists())
+                .ok_or_else(|| {
+                    format!(
+                        "bad file not found: {} (searched in lib/, imports/, ./ and source dir)",
+                        import.path()
+                    )
+                })?;
+            self.resolved_paths
+                .push((import.path().to_string(), bad_path.to_string_lossy().to_string()));
+            if !self.bad_imports.contains(&bad_path) {
+                self.bad_imports.push(bad_path);
+            }
+            self.loaded_modules.insert(
+                import.path().to_string(),
+                (vec![], vec![]),
+            );
+            return Ok(vec![]);
         }
 
         // Default: Briev module (.bv)

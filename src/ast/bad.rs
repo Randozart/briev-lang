@@ -42,9 +42,14 @@ pub enum BadTopLevel {
 }
 
 /// `raw x86_64` ... `end` — verbatim assembly for one target.
+/// `name` (optional) makes it callable: `raw riscv64 uart_init` emits a
+/// `uart_init:` label on the matching family, so portable code can
+/// `call`/`jmp` it (2026-09-22, per-arch stdlib boot entries).
 #[derive(Debug, Clone)]
 pub struct BadRawBlock {
     pub target: String,
+    /// Callable name emitted as a label on the matching family.
+    pub name: Option<String>,
     /// Verbatim line text (trimmed), excluding the `raw` head and `end`.
     pub lines: Vec<String>,
     pub span: Span,

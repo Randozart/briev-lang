@@ -81,6 +81,7 @@ pub fn generate_bad_fn(
     param_env: std::collections::HashMap<String, lower::Bound>,
     bootstrap: bool,
     bootstrap_name: &str,
+    base_dir: Option<std::path::PathBuf>,
 ) -> Result<String, String> {
     let program: BadProgram = if bootstrap {
         // The authored machine entry: parsed VERBATIM, the entry label
@@ -108,6 +109,7 @@ pub fn generate_bad_fn(
     let (isa, regs) = registries();
     let family = target_triple.split('-').next().unwrap_or(target_triple);
     lower::Lowerer::new(&isa, &regs, family)
+        .with_base_dir(base_dir)
         .with_param_env(param_env)
         .run(&program)
 }
@@ -1227,7 +1229,7 @@ mod bootstrap_bad_tests {
         let body = "section .isr_vector\nsp_slot: .word 0x2007C000\n\
                     reset_v: .word Reset_Handler + 1\n\
                     section .text.start\nReset_Handler:\n    mov r0, 1\n    halt\n";
-        let asm = generate_bad_fn(body, "thumbv7m-none-eabi", std::collections::HashMap::new(), true, "Reset_Handler").unwrap();
+        let asm = generate_bad_fn(body, "thumbv7m-none-eabi", std::collections::HashMap::new(), true, "Reset_Handler", None).unwrap();
         assert!(asm.contains(".global Reset_Handler"), "{asm}");
         assert!(asm.contains(".isr_vector"), "{asm}");
         assert!(asm.contains("Reset_Handler:"), "{asm}");
@@ -1237,7 +1239,7 @@ mod bootstrap_bad_tests {
 
     #[test]
     fn regular_bad_fn_still_wraps_and_appends_ret() {
-        let asm = generate_bad_fn("add r0, r1, r2\n", "x86_64", std::collections::HashMap::new(), false, "add").unwrap();
+        let asm = generate_bad_fn("add r0, r1, r2\n", "x86_64", std::collections::HashMap::new(), false, "add", None).unwrap();
         assert!(asm.contains("_entry:"), "{asm}");
         assert!(asm.contains("ret"), "{asm}");
     }
@@ -1339,5 +1341,43 @@ mod raw_block_tests {
         assert!(asm.contains("int $16"), "{asm}");
         let err = generate("t:\n    int 0x10\n    ret\n", "aarch64-unknown-linux-gnu").unwrap_err();
         assert!(err.contains("no `aarch64` lowering"), "{err}");
+    }
+}
+
+// ── named raw blocks (2026-09-22, per-arch stdlib boot entries) ───────
+mod named_raw_block_tests {
+    use super::*;
+
+    #[test]
+    fn named_raw_block_emits_label_and_is_callable() {
+        let src = "raw riscv64 uart_init\n    li a2, 0x10000000\nend\n\
+                   _start:\n    call uart_init\n    halt\n";
+        let asm = generate(src, "riscv64-unknown-none").unwrap();
+        assert!(asm.contains("uart_init:"), "{asm}");
+        assert!(asm.contains("li a2, 0x10000000"), "{asm}");
+        assert!(asm.contains("call uart_init"), "{asm}");
+    }
+
+    #[test]
+    fn two_families_one_name_no_collision() {
+        let src = "raw riscv64 uart_init\n    li a2, 1\nend\n\
+                   raw thumbv7m uart_init\n    ldr r2, =2\nend\n\
+                   _start:\n    call uart_init\n    halt\n";
+        let rv = generate(src, "riscv64-unknown-none").unwrap();
+        assert!(rv.contains("li a2, 1"), "riscv block only: {rv}");
+        assert!(!rv.contains("ldr r2, =2"), "{rv}");
+        let th = generate(src, "thumbv7m-none-eabi").unwrap();
+        assert!(th.contains("ldr r2, =2"), "thumb block only: {th}");
+        assert!(!th.contains("li a2, 1"), "{th}");
+    }
+
+    #[test]
+    fn anonymous_raw_block_still_works() {
+        let asm = generate(
+            "raw x86_64\n    .code32\n    cli\nend\n",
+            "x86_64-unknown-linux-gnu",
+        )
+        .unwrap();
+        assert!(asm.contains(".code32"), "{asm}");
     }
 }

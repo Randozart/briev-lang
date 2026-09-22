@@ -60,6 +60,7 @@ msg: .asciz "hello from .bad\n"
 | `[expr]` | inline contract for the next instruction |
 | `^` / `^^` / `^^^` + instruction | acknowledge prefix — silences W-tier warnings for its scope; `^^^` overrides predicted errors (see the acknowledge tier) |
 | `raw <target>` ... `end` | verbatim assembly block for ONE target — lines pass through unparsed; emitted only when the active family matches (see Raw blocks) |
+| `raw <target> <name>` ... `end` | NAMED raw block — also emits a callable `<name>:` label on the matching family (per-arch stdlib entries) |
 | `alias x = r0` | register, mnemonic, or label alias — resolved in that order |
 
 Friendly mnemonic aliases (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load
@@ -271,6 +272,48 @@ Used by the x86 real-mode MBR body (`examples/bad/boot_mbr.bad`, with
 the `int` core op for BIOS software interrupts) and the multiboot2 32-bit
 prologue (`examples/bad/boot_multiboot.bad`). A bare `raw` with no target
 or an unterminated block before EOF is a loud error.
+
+## Per-arch stdlib boot entries (named raw blocks)
+
+A NAMED raw block — `raw <target> <name>` ... `end` — emits a callable
+`<name>:` label on the matching family (and nothing elsewhere), so the
+portable core can `call uart_init` / `jmp uart_init` and the matching
+family's block runs. Same name across families is fine: one build = one
+target, so the label registers only for the active family (no namespace
+collision). This makes per-arch boot prologues stdlib data:
+
+```bad
+// std/bad/arch.bad
+raw riscv64 uart_init      // PMP grant + li a2, 0x10000000, then j core
+    ...
+end
+raw thumbv7m uart_init     // vector table + ldr r2, =0x40004000, then b core
+    ...
+end
+```
+
+A `.bv` file imports them at TOP LEVEL — `import "std/bad/arch.bad";` —
+the resolver records the `.bad` path (never parsed as Briev) and the bad
+backend inlines it when compiling `bootstrap bad` bodies. The bootstrap
+body is then a portable core that calls the imported primitives:
+
+```briev
+import "std/bad/arch.bad";
+bootstrap bad Reset_Handler() [true] {
+    Reset_Handler:
+    jmp uart_init
+core: [r2 valid]
+    // portable: banner via call putc, handoff to a .bv defn, halt
+}
+```
+
+`examples/bad/bootloader.bv` is this pattern: one source booting riscv64
+(QEMU virt), thumbv7m (MPS2-AN385), and x86_64 (multiboot2) with only the
+prologues in `arch.bad`. A `bootstrap bad` body can also CALL a real `.bv`
+defn (`call kernel_bv`) — `defn_liveness` roots symbols referenced from
+bootstrap bodies, so the handoff target is emitted. The console write
+goes through a per-arch `putc` named raw block (store width differs per
+UART: MPS2 wants byte stores, the virt 16550 a full-width store).
 
 ## Boot sectors (`--raw-bin` + `int`)
 

@@ -199,9 +199,13 @@ impl<'a> Lowerer<'a> {
                 BadTopLevel::Alias(_) | BadTopLevel::Defn(_) => {}
                 BadTopLevel::Label(l) => self.emit_label(l),
                 // 2026-09-22: raw <target> ... end — verbatim for the
-                // active family, skipped otherwise.
+                // active family, skipped otherwise. A named block emits
+                // its callable label first.
                 BadTopLevel::RawBlock(b) => {
                     if self.family.starts_with(&b.target) {
+                        if let Some(name) = &b.name {
+                            self.push_line(&format!("{name}:"));
+                        }
                         for line in &b.lines {
                             self.push_line(line);
                         }
@@ -302,6 +306,22 @@ impl<'a> Lowerer<'a> {
                          namespace; rename one or use a local label (.name:)",
                         l.name
                     ));
+                }
+            }
+            // 2026-09-22 (per-arch stdlib boot entries): a NAMED raw block
+            // registers its callable label only for the matching family —
+            // `raw riscv64 uart_init` + `raw thumbv7m uart_init` share the
+            // name but never both register (one build = one target).
+            BadTopLevel::RawBlock(b) => {
+                if let Some(name) = &b.name {
+                    if self.family.starts_with(&b.target) {
+                        if !self.label_names.insert(name.clone()) {
+                            self.errors.push(format!(
+                                "named raw block `{name}` collides with an existing label - \
+                                 labels share one global namespace"
+                            ));
+                        }
+                    }
                 }
             }
             _ => {}

@@ -147,6 +147,42 @@ impl<'a> Builder<'a> {
         self.type_members.insert(td.name.clone(), members);
     }
 
+    /// 2026-09-22 (universal-bootstrapper plan): a `bootstrap bad` body
+    /// references .bv defns/txns by symbol (`call kernel_bv`,
+    /// `addr r0, msg`). Parse the raw body and root every name that is a
+    /// known .bv defn/txn, so the handoff target is emitted. A parse
+    /// failure is NOT an error here — the bad backend reports it loudly
+    /// at compile; liveness just can't see the references.
+    fn root_bad_body(&mut self, body: &str) {
+        let Ok(program) = crate::parser::bad::parse_bad(body) else {
+            return;
+        };
+        for item in program.items {
+            for i in bad_instructions_of(item) {
+                self.root_sym_operands(&i);
+            }
+        }
+    }
+
+    /// Root any .bv defn/txn a symbol operand of `i` names. Symbol ops are
+    /// `call`/`addr`/`jmp` and the branch family.
+    fn root_sym_operands(&mut self, i: &crate::ast::bad::BadInstr) {
+        use crate::ast::bad::BadOperand;
+        if !matches!(
+            i.mnemonic.as_str(),
+            "call" | "addr" | "jmp" | "jz" | "jnz" | "jlt" | "jle" | "jgt"
+                | "jge" | "jlo" | "jls" | "jhi" | "jhs"
+        ) {
+            return;
+        }
+        for op in &i.operands {
+            let BadOperand::Name(n) = op else { continue };
+            if self.defns.contains_key(n) || self.txns.contains_key(n) {
+                self.roots.insert(n.clone());
+            }
+        }
+    }
+
     fn index_item(&mut self, item: &'a TopLevel) {
         match item {
             TopLevel::Definition(d) => {
@@ -191,6 +227,14 @@ impl<'a> Builder<'a> {
             // 2026-09-21: bad fn — always rooted (body compiled via bad backend).
             TopLevel::BadFn(bf) => {
                 self.roots.insert(bf.name.clone());
+                // 2026-09-22 (universal-bootstrapper plan): a bootstrap
+                // body can CALL a real .bv defn/txn — the loader handoff
+                // (`call kernel_bv`). Liveness cannot see asm-level symbol
+                // references, so parse the body and root every name it
+                // references that is a known .bv defn/txn. Without this,
+                // the defn is judged dead, never emitted, and the link
+                // fails with an unresolved symbol.
+                self.root_bad_body(&bf.body);
             }
             TopLevel::TypeDefOperator(op) => {
                 // A BARE top-level `op Count() { … }` has no type context in
@@ -982,5 +1026,34 @@ mod tests {
         let l = DefnLiveness::build(&items);
         assert!(l.is_live("init_fn"));
         assert!(!l.is_live("orphan"));
+    }
+}
+
+/// The instructions of a .bad top-level item (labels' bodies and sequence
+/// defns carry them; branch defns and directives carry none).
+fn bad_instructions_of(item: crate::ast::bad::BadTopLevel) -> Vec<crate::ast::bad::BadInstr> {
+    use crate::ast::bad::{BadBodyItem, BadDefnShape, BadTopLevel};
+    match item {
+        BadTopLevel::Label(l) => l
+            .body
+            .iter()
+            .filter_map(|i| match i {
+                BadBodyItem::Instr(x) => Some(x.clone()),
+                BadBodyItem::Local(_) => None,
+            })
+            .collect(),
+        BadTopLevel::Defn(d) => {
+            if let BadDefnShape::Sequence(seq) = &d.shape {
+                seq.iter()
+                    .filter_map(|i| match i {
+                        BadBodyItem::Instr(x) => Some(x.clone()),
+                        BadBodyItem::Local(_) => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
     }
 }

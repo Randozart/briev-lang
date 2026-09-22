@@ -500,13 +500,19 @@ impl<'s> Parser<'s> {
         if head != "raw" {
             return Ok(None);
         }
-        let target = rest.trim();
+        // `raw <target> [name]` — the optional name makes the block
+        // callable (a label emitted on the matching family).
+        let mut parts = rest.split_whitespace();
+        let target = parts.next().unwrap_or("");
         validate_ident(target, line, span.clone())?;
+        let name = parts.next().map(|n| {
+            validate_ident(n, line, span.clone())?;
+            Ok(n.to_string())
+        }).transpose()?;
         let mut lines = Vec::new();
-        let start = self.pos;
         self.pos += 1; // consume the `raw` head line
         loop {
-            let Some((_, content, raw_line)) = self.lines.get(self.pos).cloned() else {
+            let Some((_, content, _)) = self.lines.get(self.pos).cloned() else {
                 return Err(BadParseError {
                     message: format!(
                         "raw block `raw {target}` (line {line}) is not terminated - add an \
@@ -523,10 +529,8 @@ impl<'s> Parser<'s> {
             }
             lines.push(trimmed.to_string());
             self.pos += 1;
-            let _ = raw_line;
         }
-        let _ = start;
-        Ok(Some(BadRawBlock { target: target.to_string(), lines, span }))
+        Ok(Some(BadRawBlock { target: target.to_string(), name, lines, span }))
     }
 
     /// `x86_64 => instr; instr` / `default => ...`

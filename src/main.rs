@@ -255,6 +255,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut triple_override: Option<String> = None;
     let mut linker_script_override: Option<String> = None;
     let mut raw_bin = false;
+    let mut no_link = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -383,6 +384,12 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         } else if arg == "--raw-bin" {
             raw_bin = true;
             i += 1;
+        } else if arg == "--no-link" {
+            // 2026-09-22 (universal-bootstrapper plan): with --raw-bin,
+            // skip the link and objcopy the flat image from the object
+            // directly (an MBR-style .code16/.org 510 body cannot link).
+            no_link = true;
+            i += 1;
         } else if arg == "--linker-script" {
             let val = args.get(i + 1).ok_or("--linker-script requires a path argument")?;
             linker_script_override = Some(val.clone());
@@ -487,6 +494,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         triple_override,
         linker_script_override,
         raw_bin,
+        no_link,
     })
 }
 
@@ -776,6 +784,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         triple_override: None,
         linker_script_override: None,
         raw_bin: false,
+        no_link: false,
     };
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;

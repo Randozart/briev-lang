@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 OUT=/tmp/opencode/boot_bad.out
-ELF=/tmp/opencode/boot_mps2.b
+ELF=/tmp/opencode/boot_mps2
 
 command -v qemu-system-arm >/dev/null || { echo "SKIP: qemu-system-arm not installed"; exit 0; }
 command -v clang >/dev/null          || { echo "SKIP: clang not installed"; exit 0; }
