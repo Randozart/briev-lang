@@ -700,3 +700,29 @@ check. D16 p3b remains closed.
 
 D14's persist-tighten / commit-select slots are **deferred until a
 solver exists** — then, and only then, do the keywords have a substrate.
+
+### Amendment 2026-09-22 (IX): unpop/shortcircuit landed; sacrificial deferred
+
+Slice B of plan 2026-09-22-electronics-participation-and-when-law.md:
+
+- `unpop <inst>;` — participation fact: part excluded from the BOM
+  (`in_bom no`) but the board is verified in BOTH present and absent
+  configurations. Absent-state pins are open, Nc-exempt from dangling.
+- `shortcircuit unpop <inst>: <Type>;` — acknowledged intentional short:
+  suppresses the present-state shorted-supply error. `shortcircuit` on a
+  populated part → warning with the suggest-`unpop` hint.
+- `type Wire` in std/electronics.bv — a jumper is an unpop'd Wire.
+
+**DEFERRED — `sacrificial` / melting point (B3/D17):** the future
+suppressor of the `shortcircuit`-on-populated warning. Requires a thermal
+model (proven dissipation exists per part; heat SPREADING and melt ordering
+do not — the compiler claims schematic-level truth only). Trigger: a part
+whose rating passes electrically but fails thermally, or a fuse/convention
+slice. When it lands, a `sacrificial` part with a declared melting point
+below every other part on its net suppresses the populated-short warning
+only if the compiler can PROVE it is first to go — the same
+convention-checker pattern as E13.
+
+Open under the when-law (Slice C): electronics conditional drives and the
+software member-fact law, both at top level / type / obj only (defn/node/
+txn when unchanged).
