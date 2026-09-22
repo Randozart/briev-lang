@@ -141,12 +141,12 @@ sltu: "3"; "x86_64:xorq %rax, %rax; cmpq $3, $2; setb %al; movzbq %al, $1"; "aar
 // Sub-width loads/stores. Load extensions are sign (ldb/ldh) or zero
 // (ldub/lduh). Stores use the .w8/.w16 width token refs (x86 needs
 // %al/%ax, aarch64 needs w-regs; riscv stores the low bits of any reg).
-ldb: "2"; "thumb:ldrsb $1, [$2]"; "x86_64:movsbq ($2), $1"; "aarch64:ldrsb $1, [$2]"; "riscv64:lb $1, 0($2)";
-ldub: "2"; "thumb:ldrb $1, [$2]"; "x86_64:movzbq ($2), $1"; "aarch64:ldrb $1, [$2]"; "riscv64:lbu $1, 0($2)";
-ldh: "2"; "thumb:ldrsh $1, [$2]"; "x86_64:movswq ($2), $1"; "aarch64:ldrsh $1, [$2]"; "riscv64:lh $1, 0($2)";
-lduh: "2"; "thumb:ldrh $1, [$2]"; "x86_64:movzwq ($2), $1"; "aarch64:ldrh $1, [$2]"; "riscv64:lhu $1, 0($2)";
-stb: "2"; "thumb:strb $1, [$2]"; "x86_64:movb $1.w8, ($2)"; "aarch64:strb $1.w8, [$2]"; "riscv64:sb $1, 0($2)";
-sth: "2"; "thumb:strh $1, [$2]"; "x86_64:movw $1.w16, ($2)"; "aarch64:strh $1.w16, [$2]"; "riscv64:sh $1, 0($2)";
+ldb: "2"; "thumb:ldrsb $1, [$2]"; "x86_64:movsbq ($2), $1"; "aarch64:ldrsb $1.w, [$2]"; "riscv64:lb $1, 0($2)";
+ldub: "2"; "thumb:ldrb $1, [$2]"; "x86_64:movzbq ($2), $1"; "aarch64:ldrb $1.w, [$2]"; "riscv64:lbu $1, 0($2)";
+ldh: "2"; "thumb:ldrsh $1, [$2]"; "x86_64:movswq ($2), $1"; "aarch64:ldrsh $1.w, [$2]"; "riscv64:lh $1, 0($2)";
+lduh: "2"; "thumb:ldrh $1, [$2]"; "x86_64:movzwq ($2), $1"; "aarch64:ldrh $1.w, [$2]"; "riscv64:lhu $1, 0($2)";
+stb: "2"; "thumb:strb $1, [$2]"; "x86_64:movb $1.w8, ($2)"; "aarch64:strb $1.w, [$2]"; "riscv64:sb $1, 0($2)";
+sth: "2"; "thumb:strh $1, [$2]"; "x86_64:movw $1.w16, ($2)"; "aarch64:strh $1.w, [$2]"; "riscv64:sh $1, 0($2)";
 
 // Offset memory: base + immediate displacement. x86 displacements are
 // BARE — the `$3!` raw-ref substitutes WITHOUT the target imm prefix

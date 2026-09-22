@@ -71,6 +71,18 @@ raw riscv64 uart_init
     j core
 end
 
+// aarch64 — QEMU virt, EL2/EL1, no firmware: boots at the ELF entry,
+// no PMP, no vector table, no mode switch. PL011 UART at 0x09000000
+// (32-bit DATA register) with CR 0x09000030 (UARTEN|TXE = 0x101). Set
+// x2 = base and rejoin the portable core.
+raw aarch64 uart_init
+    .section .text.start, "ax", @progbits
+    mov x2, 0x09000000
+    mov w0, 0x101
+    str w0, [x2, #0x30]
+    b core
+end
+
 // thumbv7m — MPS2-AN385: vector table + reset entry. The table's reset
 // vector points at `core` (portable), r2 = UART0 DATA 0x40004000, and
 // the CTRL enable (0x40004008 = 1) is set first (the CMSDK UART needs
@@ -109,6 +121,12 @@ end
 // riscv64: full-width store to the 16550 DATA (a2 = base).
 raw riscv64 putc
     sd a0, 0(a2)
+    ret
+end
+
+// aarch64: 32-bit store to the PL011 DATA (x2 = base).
+raw aarch64 putc
+    str w0, [x2]
     ret
 end
 

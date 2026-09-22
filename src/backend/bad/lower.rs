@@ -200,14 +200,45 @@ impl<'a> Lowerer<'a> {
                 BadTopLevel::Label(l) => self.emit_label(l),
                 // 2026-09-22: raw <target> ... end — verbatim for the
                 // active family, skipped otherwise. A named block emits
-                // its callable label first.
+                // its callable label AFTER any leading `.section` lines
+                // (a label before `.section` points at the old section's
+                // address, splitting the symbol from its code — the
+                // aarch64/thumb uart_init blocks open with sections).
                 BadTopLevel::RawBlock(b) => {
                     if self.family.starts_with(&b.target) {
                         if let Some(name) = &b.name {
-                            self.push_line(&format!("{name}:"));
-                        }
-                        for line in &b.lines {
-                            self.push_line(line);
+                            // The label goes AFTER the last leading `.section`
+                            // line (and any data it opens) — a label before a
+                            // section switch points at the wrong address,
+                            // splitting the symbol from its code. The thumb
+                            // uart_init opens `.isr_vector` (data), then
+                            // `.text` (code): the label must land after the
+                            // final `.section .text`.
+                            let last_sec = b
+                                .lines
+                                .iter()
+                                .rposition(|l| l.trim_start().starts_with(".section"));
+                            match last_sec {
+                                Some(i) => {
+                                    for line in b.lines.iter().take(i + 1) {
+                                        self.push_line(line);
+                                    }
+                                    self.push_line(&format!("{name}:"));
+                                    for line in b.lines.iter().skip(i + 1) {
+                                        self.push_line(line);
+                                    }
+                                }
+                                None => {
+                                    self.push_line(&format!("{name}:"));
+                                    for line in &b.lines {
+                                        self.push_line(line);
+                                    }
+                                }
+                            }
+                        } else {
+                            for line in &b.lines {
+                                self.push_line(line);
+                            }
                         }
                     }
                 }
@@ -1371,7 +1402,9 @@ fn take_operand_ref(s: &str, i: usize) -> Option<(Ref, usize)> {
     Some((r, j))
 }
 
-/// `.w8` / `.w16` / `.w32` suffix scan.
+/// `.w8` / `.w16` / `.w32` / `.w` suffix scan. `.w` is the target's
+/// 32-bit-NAME register (aarch64 `w1`, distinct from `.w32`'s `x1` —
+/// AArch64 byte/half loads must write a W-register).
 fn take_width_suffix(s: &str, j: usize, r: Ref) -> (Ref, usize) {
     let bytes = s.as_bytes();
     if bytes.get(j) != Some(&b'.') || bytes.get(j + 1) != Some(&b'w') {
@@ -1380,6 +1413,10 @@ fn take_width_suffix(s: &str, j: usize, r: Ref) -> (Ref, usize) {
     let mut k = j + 2;
     while k < bytes.len() && bytes[k].is_ascii_digit() {
         k += 1;
+    }
+    // A bare `.w` (no digits) = the target's 32-bit-name register.
+    if k == j + 2 {
+        return (Ref { width: Some(255), ..r }, k);
     }
     match s[j + 2..k].parse::<u8>() {
         Ok(w) if matches!(w, 8 | 16 | 32) => (Ref { width: Some(w), ..r }, k),

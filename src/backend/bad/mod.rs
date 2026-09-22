@@ -480,7 +480,7 @@ mod appgrade_tests {
         assert!(x86.contains("movb %sil, (%rcx)"), "stb uses r4.w8=%sil: {}", x86);
         assert!(x86.contains("movw %di, (%rcx)"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
-        assert!(arm.contains("ldrsb x0, [x1]"), "{}", arm);
+        assert!(arm.contains("ldrsb w0, [x1]"), "aarch64 byte loads write a w-register: {}", arm);
         assert!(arm.contains("strb w4, [x1]"), "{}", arm);
         assert!(arm.contains("strh w5, [x1]"), "{}", arm);
         let riscv = lower_ok(src, "riscv64");

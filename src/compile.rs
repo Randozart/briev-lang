@@ -2179,6 +2179,14 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
             if triple.starts_with("riscv64") {
                 cmd.arg("-mcmodel=medany");
             }
+            // 2026-09-22 (aarch64 universal target): clang's aarch64 driver
+            // falls through to the host gcc (collect2) which cannot link
+            // aarch64 objects. Pin lld's machine emulation + static output
+            // so the driver stays on lld.
+            if triple.starts_with("aarch64") {
+                cmd.arg("-Wl,-m,aarch64elf");
+                cmd.arg("-static");
+            }
         }
         // 2026-09-13 (rv64 capability kernel): linker script passthrough.
         // Read the linker script path from the IR (the backend emits a module
