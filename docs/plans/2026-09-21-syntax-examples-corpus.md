@@ -50,13 +50,16 @@ corpus (each was confirmed dead/aspirational by the cleanup audit):
 | `op ... [commutative]` lemma | REMOVED — dead field, no consumer, redundant with `-ffast-math` |
 | `Enum::Variant` | REMOVED — member access `Enum.Variant(...)` is canonical |
 
-## Landed corpus (examples/syntax/, 19 files)
+## Landed corpus (examples/syntax/, 28 files)
 
 - `decl/`: trait, proto-axiom, impl-ops, coll, coll-obj, enum, equation,
-  external (frgn), import, sync-group, bootstrap
+  external (frgn), import, import-forms, sync-group, bootstrap, directives,
+  reflect
 - `stmt/`: mutex, seq-modifier, match-when, comptime-block ($(Stage)),
-  trap
+  trap, vol-let, watchdog
 - `flow/`: ranges-slices
+- `meta/`: defn-composite ($defn + !), stage-block, quotation-derivation
+- `render/`: block
 
 ## Build order — the discovered gaps first
 
@@ -67,10 +70,15 @@ directives, quotation / derivation / `Error#`, critical sections, op
 declarations. The syntax-cleanup audit (2026-09-22) retired the
 aspirational subset (see table above); the rest remain open:
 
-Remaining gaps: `$defn` composites + stages `$()`, `.^^` reflection,
-`watchdog`, `axiom` on op bindings, `atomic`/`vol`/`seq` field+let
-directives, quotation / derivation / `Error#`, critical sections, op
-declarations, `import` selective/aliased forms, `render`.
+Remaining gaps (2026-09-22 audit, after corpus completion): the corpus now
+covers every IMPLEMENTED form. Two SPEC claims remain DEAD (parser
+rejects them; reported, not forced into the corpus):
+- `axiom defn` / `axiom op` (SPEC §8.8, §9.7) — the `axiom` contextual
+  keyword parses only inside `proto` bodies (cast edges); callable/op
+  prefixes are unimplemented (hardcoded `trusted_axiom: false`).
+- `Error#` (SPEC §18.6) — a compile-time failure intrinsic; a REACHABLE
+  use stops compilation, so it has no passing corpus example (usage in
+  unreachable guards: `lib/std/collections.bv`).
 
 THIN (1-3 trivial instances): contracts beyond `[true]`, enum + match
 patterns, tuples, ranges `..`, slices, `beginprogram`/`endprogram`,
