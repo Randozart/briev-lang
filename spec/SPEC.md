@@ -315,6 +315,10 @@ conditional edge (closed when the control net's region holds) with full
 provenance; the schematic shows the switch as ordinary copper. Copper
 cannot be conditional: a non-mechanizable signal-level condition (e.g. a
 compound one) is a hard error, never a silent always-connected wire.
+A bridge whose pins are already unconditionally connected (same
+union-find root before synthesis) is redundant — the switch can never
+open them. The compiler emits a hard error naming the unconditional
+wiring that defeats the mechanism.
 
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses

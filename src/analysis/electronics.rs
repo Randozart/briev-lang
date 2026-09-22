@@ -1774,8 +1774,21 @@ fn synthesize_bridges(
     bridges: &[BridgeRequest],
     proofs: &mut Vec<String>,
     errors: &mut Vec<String>,
-) {
+) -> Vec<String> {
+    let mut synthesized = Vec::new();
     for br in bridges {
+        let a_key = pin_key(&br.a.component, &br.a.pin);
+        let b_key = pin_key(&br.b.component, &br.b.pin);
+        let a_root = ctx.ds.find(&a_key);
+        let b_root = ctx.ds.find(&b_key);
+        if a_root == b_root {
+            errors.push(format!(
+                "bridge {}.{} <-> {}.{} under {}.{} (node '{}') is redundant: the pins are already unconditionally connected — the switch can never open them. Remove the unconditional wiring or the mechanism",
+                br.a.component, br.a.pin, br.b.component, br.b.pin,
+                br.control.component, br.control.pin, br.node
+            ));
+            continue;
+        }
         let mut candidates = mechanism_candidates(ctx, &br.via, &br.control);
         candidates.sort();
         match candidates.len() {
@@ -1794,7 +1807,15 @@ fn synthesize_bridges(
                     br.control.component, br.control.pin, br.node, via_hint
                 ));
             }
-            1 => synthesize_one(ctx, &candidates[0], br, proofs),
+            1 => {
+                synthesize_one(ctx, &candidates[0], br, proofs);
+                let via = br.via.as_deref().unwrap_or("-");
+                synthesized.push(format!(
+                    "{}.{} <-> {}.{} under {}.{} via {} (node '{}')",
+                    br.a.component, br.a.pin, br.b.component, br.b.pin,
+                    br.control.component, br.control.pin, via, br.node
+                ));
+            }
             n => {
                 errors.push(format!(
                     "bridge {}.{} <-> {}.{} under {}.{} (node '{}') is ambiguous: {} mechanisms could synthesize it ({}). Disambiguate with the strategy clause: `when ... via <Type>;` or pre-wire one mechanism's control pin",
@@ -1804,6 +1825,7 @@ fn synthesize_bridges(
             }
         }
     }
+    synthesized
 }
 
 /// Complete one drive intent (E14a): the instance must have exactly one
@@ -1926,15 +1948,14 @@ fn collect_intents(
         };
         body_facts(t, ctx, &mut sink);
     }
-    synthesize_bridges(ctx, &bridges, &mut proofs, &mut errors);
-    let bridge_strings = conditional_bridge_strings(&bridges);
+    let synthesized = synthesize_bridges(ctx, &bridges, &mut proofs, &mut errors);
     for (node, inst_name) in &intents {
         match complete_intent(inst_name, node, ctx) {
             Ok(proof) => proofs.push(proof),
             Err(e) => errors.push(e),
         }
     }
-    (errors, proofs, bridge_strings)
+    (errors, proofs, synthesized)
 }
 
 /// Every declared pin of every instance, ready for union-find grouping
@@ -2692,6 +2713,29 @@ mod tests {
             nl.intent_errors[0].contains("no qualifying mechanism") && nl.intent_errors[0].contains("Relay"),
             "{}",
             nl.intent_errors[0]
+        );
+    }
+
+    #[test]
+    fn mechanism_redundant_when_unconditionally_wired() {
+        // d1.a = u1.gnd also stated unconditionally in the body — the
+        // mechanism bridge is redundant; the switch can never open them.
+        let src = MECH_BOARD.replace(
+            "            };\n        }",
+            "            };\n            d1.a = u1.gnd;\n        }",
+        );
+        let nl = analyze(&src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        let e = &nl.intent_errors[0];
+        assert!(
+            e.contains("redundant") && e.contains("d1.a") && e.contains("u1.gnd"),
+            "{}",
+            e
+        );
+        assert!(
+            nl.conditional_bridges.is_empty(),
+            "redundant bridge must not be synthesized: {:?}",
+            nl.conditional_bridges
         );
     }
 

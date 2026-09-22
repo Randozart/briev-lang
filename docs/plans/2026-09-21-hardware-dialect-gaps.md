@@ -547,3 +547,23 @@ this slice (walker/synthesizer parameter gates held).
 Open under D16: phase 3 (cross-region complement check), `spec
 default_level` for the `x = high` abstraction, asymmetric path
 assignment (relays with coil/contact distinction).
+
+### Amendment 2026-09-22 (D16 phase 3): redundancy gate
+
+A bridge whose pins are already unconditionally connected (same
+union-find root before synthesis) is redundant — the switch can never
+open them. The compiler emits a hard error naming the unconditional
+wiring that defeats the mechanism. `conditional_bridges` now reports only
+successfully synthesized bridges (previously it included errored requests
+too — fixed in this slice).
+
+Phase-3 scope clarification: this is the "connected in region A +
+required-disconnected in region B → mechanism demand" rule in its
+implementable first form: unconditional copper (region A = always) makes
+a mechanism (region B = conditional) meaningless. The complementary
+form — author asserts disconnection via syntax — requires a disconnection
+syntax (phase-3b, deferred).
+
+Open under D16: phase-3b (author-expressed disconnection), `spec
+default_level`, asymmetric switch parts, keep/store syntax, ERC class
+semantics, chain/await, whole-bus equality.
