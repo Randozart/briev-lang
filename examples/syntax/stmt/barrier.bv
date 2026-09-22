@@ -1,0 +1,16 @@
+// SPEC §11.6 — `barrier<group> { ... }`: a group-barrier body. All
+// members in the named group block inside the body until every
+// member reaches the barrier; then all resume together.
+
+let i: Int = 0;
+let workers: Int[4];
+async node barrier_user [i < 1][i == 1] {
+    barrier<workers> {
+        workers[0] = 0;
+        workers[1] = 1;
+        workers[2] = 2;
+        workers[3] = 3;
+    };
+    i = i + 1;
+    term;
+};

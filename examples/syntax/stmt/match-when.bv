@@ -1,0 +1,18 @@
+// SPEC §10.2 — `match` (exhaustive) and `when` (one-sided guard):
+// the only conditional forms in Briev. No if/else.
+
+let i: Int = 0;
+let tag: Int = 2;
+let result: Int = 0;
+async node match_user [i < 1][i == 1] {
+    match tag {
+        1 => result = 10;
+        2 => result = 20;
+        _ => result = 0;
+    };
+    when result > 15 {
+        result = result * 2;
+    };
+    i = i + 1;
+    term;
+};

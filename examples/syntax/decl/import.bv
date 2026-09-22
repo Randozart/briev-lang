@@ -1,0 +1,14 @@
+// SPEC §12.2 — `import`: library imports. String paths
+// (`"std/io"`), registry angle-bracket paths (`<collections>`),
+// and selective imports (`{ name }`) are all supported.
+// The import keyword is `import` (SPEC §12.2's `use` is not
+// the implemented spelling).
+
+import "std/types";
+import <collections>;
+
+let i: Int = 0;
+async node import_user [i < 1][i == 1] {
+    i = i + 1;
+    term;
+};

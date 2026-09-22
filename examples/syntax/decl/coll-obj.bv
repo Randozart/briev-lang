@@ -1,0 +1,17 @@
+// SPEC §8.10 — `coll obj`: compiler-owned collection with named
+// fields. Length and capacity are hidden compiler-managed slots;
+// the author never declares them. A coll wraps a backing store
+// (`Ptr<T>` or a buffer struct). Construction uses the empty
+// collection literal `[]`; grow-on-full doubles by default.
+
+coll obj DynVec<T> {
+    data: Ptr<T>
+};
+
+let i: Int = 0;
+let v: DynVec<Int>;
+async node collobj_user [i < 1][i == 1] {
+    v = [];
+    i = i + 1;
+    term;
+};

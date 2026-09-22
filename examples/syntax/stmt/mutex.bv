@@ -1,0 +1,14 @@
+// SPEC §11.6 — `mutex { ... }`: a critical section. The body is
+// mutually exclusive with all other `mutex` bodies that share a
+// data-dependency edge. The compiler derives the lock set from
+// aliasing proofs; the author writes the block.
+
+let i: Int = 0;
+let shared: Int = 0;
+async node mutex_user [i < 1][i == 1] {
+    mutex {
+        shared = shared + 1;
+    };
+    i = i + 1;
+    term;
+};

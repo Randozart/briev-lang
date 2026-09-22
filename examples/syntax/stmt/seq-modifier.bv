@@ -1,0 +1,15 @@
+// SPEC §15.3 — `seq node` / `seq txn`: declares sequential dispatch
+// (no parallel emit) and/or non-vectorized array access. Not a speed
+// hack — the author declares intended behaviour that aggressive
+// parallelism would break. The `seq` prefix comes directly before
+// `node` or `txn`; `async` is not permitted between them.
+
+let i: Int = 0;
+seq node seq_user [i < 1][i == 1] {
+    let acc: Int = 0;
+    foreach k in 0..8 {
+        acc = acc + k;
+    };
+    i = i + 1;
+    term;
+};

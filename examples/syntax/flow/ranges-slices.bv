@@ -1,0 +1,15 @@
+// SPEC §16 — literals, ranges, and slicing: `..` ranges, Python-style
+// slices with omitted bounds, negative indices, and `Int[N]` fixed
+// containment arrays.
+
+let i: Int = 0;
+let data: Int[8];
+let window: Int;
+async node slice_user [i < 1][i == 1] {
+    foreach k in 0..8 {
+        data[k] = k * k;
+    };
+    window = data[2..5];
+    i = i + 1;
+    term;
+};

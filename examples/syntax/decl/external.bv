@@ -1,0 +1,12 @@
+// SPEC §11.10 / §19.1 — `frgn` declarations: foreign function imports
+// at the ABI boundary. `from <source>` is required — every foreign
+// binding declares provenance. `-> T: ext_name` binds a different
+// external symbol after the return type; absent means the local name
+// IS the external symbol.
+
+frgn strlen(s: String) -> Int from "libc.so.6";
+frgn my_alloc(size: Int) -> Ptr: custom_alloc from "custom.so";
+
+defn wrapper(x: Int) -> Int {
+    term x;
+};

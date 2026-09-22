@@ -1,0 +1,27 @@
+// SPEC §8.7 — `proto`: a compiler-visible semantic category and
+// cast-coherence domain. Variants exist only when they change semantic
+// interpretation. Cross-category casts need declared edges; `axiom`
+// prefixes a trusted edge (the proof is taken on authority, the route
+// must still exist) and enters the verification ledger.
+
+proto Posit: Float {
+    axiom CastTo(Float)  = posit_to_ieee(#Lh);
+    axiom CastFrom(Float) = ieee_to_posit(#Lh);
+};
+
+defn posit_to_ieee(p: Float) -> Float {
+    term p;
+};
+
+defn ieee_to_posit(f: Float) -> Float {
+    term f;
+};
+
+let i: Int = 0;
+let x: Float = 1.0;
+async node proto_user [i < 1][i == 1] {
+    // The written cast traverses the declared cross-protocol edge.
+    x = x as Float;
+    i = i + 1;
+    term;
+};

@@ -2255,6 +2255,7 @@ impl<'a> Parser<'a> {
                     functions.push(self.parse_definition()?);
                     self.eat(&Token::Semicolon);
                 } else if self.check(&Token::Op) {
+                    self.pos += 1; // consume 'op' — same keyword-as-name trap
                     self.parse_op_definition(&mut op_bindings, None)?;
                 } else {
                     let fname = self.expect_identifier()?;
@@ -2291,6 +2292,8 @@ impl<'a> Parser<'a> {
                     functions.push(self.parse_definition()?);
                     self.eat(&Token::Semicolon);
                 } else if self.check(&Token::Op) {
+                    self.pos += 1; // consume 'op' — expect_identifier would
+                    // otherwise accept the keyword itself as the name
                     self.parse_op_definition(&mut op_bindings, None)?;
                 } else {
                     return self.error_at_current("expected 'defn' or 'op' in impl block");
