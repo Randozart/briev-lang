@@ -594,8 +594,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     emit_beast_snapshot(file_path, BeastStage::Provenance, BeastPosition::After, &items, &universe, opts)?;
 
     // 2026-07-16: P4 — Collect extra objects from ForeignBinding FromSpec paths
-    // for linking into the final binary.
-    let mut extra_objects = collect_extra_objects(&items, &resolver, briev_compiler::conformance::is_bare(std::path::Path::new(file_path)))?;
+    // for linking into the final binary. 2026-09-22: a `bootstrap node`/
+    // `bootstrap bad` on bare-metal is an authored entry — skip briev_rt
+    // there too (the freestanding path drops it, but don't even compile it).
+    let skip_briev_rt = briev_compiler::conformance::is_bare(std::path::Path::new(file_path))
+        || has_bootstrap_entry(&items);
+    let mut extra_objects = collect_extra_objects(&items, &resolver, skip_briev_rt)?;
 
     // ── Frgn dispatch resolution ──────────────────────────────────────
     // 2026-07-22: Resolve each frgn declaration's dispatch strategy before
@@ -1869,6 +1873,18 @@ fn determine_out_path(file_path: &str, out_dir: Option<&str>) -> Result<String, 
     };
 
     Ok(format!("{}/{}.ll", parent, base))
+}
+
+/// 2026-09-22: whether any top-level item is an authored machine entry —
+/// a `bootstrap node` (Transaction with the bootstrap modifier) or a
+/// `bootstrap bad` (BadFn with the bootstrap flag).
+fn has_bootstrap_entry(items: &[briev_compiler::ast::TopLevel]) -> bool {
+    use briev_compiler::ast::top::TopLevel;
+    items.iter().any(|i| match i {
+        TopLevel::BadFn(bf) => bf.bootstrap,
+        TopLevel::Transaction(t) => t.modifiers.iter().any(|m| m.name == "bootstrap"),
+        _ => false,
+    })
 }
 
 /// 2026-09-21: Compile `bad fn` bodies through the bad backend.

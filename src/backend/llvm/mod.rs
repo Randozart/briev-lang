@@ -2405,6 +2405,17 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         })
     }
 
+    /// 2026-09-22: a `bootstrap node`/`bootstrap bad` on a BARE-METAL
+    /// (non-linux) triple IS the embedded entry — imply embedded mode so
+    /// the `_start` emitter fires without requiring the `.b` suffix. On a
+    /// hosted (linux) triple the linux `_start` path is independent of
+    /// embedded mode, so nothing changes there.
+    fn implied_embedded(&mut self) {
+        if !self.ctx.target_triple.contains("linux") {
+            self.ctx.is_embedded = true;
+        }
+    }
+
     /// 2026-09-14 (machine-entry plan): fail loudly when a bootstrap program
     /// takes a dispatch path that cannot place its body at main's head. The
     /// direct-SSA path is the supported one; the rest reject with the fix.
@@ -2813,6 +2824,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     if t.modifiers.iter().any(|m| m.name == "bootstrap") {
                         self.bootstrap_txn = Some(t.name.clone());
                         self.program_txns.push(t.name.clone());
+                        // 2026-09-22: a `bootstrap node` on a bare-metal
+                        // triple IS the embedded entry — imply embedded
+                        // mode (the `_start` emitter + static heap + no
+                        // argv capture) without requiring the `.b` suffix.
+                        self.implied_embedded();
                         continue;
                     }
                     // 2026-09-22 (bootstrap-bad plan): a `bootstrap bad`
@@ -2916,6 +2932,10 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 TopLevel::BadFn(bf) => {
                     if bf.bootstrap {
                         self.bootstrap_bad = Some(bf.name.clone());
+                        // 2026-09-22: a `bootstrap bad` on a bare-metal
+                        // triple is the authored entry — imply embedded
+                        // mode like `bootstrap node`.
+                        self.implied_embedded();
                     }
                     let tys: Vec<Type> = bf.params.iter().map(|(_, t)| t.clone()).collect();
                     self.ctx.defn_params.insert(bf.name.clone(), tys);

@@ -217,7 +217,7 @@ backward compatibility and deprecated).
 
 ## `bootstrap bad` — the authored machine entry
 
-`bootstrap bad name() [post] { body }` (`.b.bv` bare profile) is the
+`bootstrap bad name() [post] { body }` (a plain `.bv` file) is the
 **authored machine entry**: the body IS the reset vector / `.text.start`
 routine. The compiler emits NO owned `_start` when one is present — the
 author owns sp setup, `.bss` zeroing, the vector table, and the handoff
@@ -242,7 +242,7 @@ bootstrap bad Reset_Handler() [true] {
 }
 ```
 
-QEMU-verified: `examples/bad/boot_mps2.b.bv` boots the MPS2-AN385
+QEMU-verified: `examples/bad/boot_mps2.bv` boots the MPS2-AN385
 (Cortex-M3) with no `startup.S` and no compiler `_start`, printing through
 the CMSDK APB UART. thumb/arm assembly uses clang's integrated assembler
 and ld.lld when the `arm-none-eabi` binutils are absent (documented

@@ -4,6 +4,10 @@
 // script's ENTRY(Reset_Handler) and the reset vector both name
 // Reset_Handler (thumb bit set for Cortex-M).
 //
+// Note: this is a PLAIN .bv file — the `bootstrap` entry implies embedded
+// mode on a bare-metal triple; the `.b` suffix modifier is not needed
+// (2026-09-22).
+//
 // CMSDK APB UART: CTRL 0x40004008 (bit 0 = TX enable), DATA 0x40004000.
 bootstrap bad Reset_Handler() [true] {
     section .isr_vector

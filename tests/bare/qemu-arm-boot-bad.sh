@@ -17,7 +17,7 @@ command -v qemu-system-arm >/dev/null || { echo "SKIP: qemu-system-arm not insta
 command -v clang >/dev/null          || { echo "SKIP: clang not installed"; exit 0; }
 command -v ld.lld >/dev/null         || { echo "SKIP: ld.lld not installed"; exit 0; }
 
-./target/release/brievc build examples/bad/boot_mps2.b.bv \
+./target/release/brievc build examples/bad/boot_mps2.bv \
     --triple thumbv7m-none-eabi \
     --linker-script lib/targets/qemu-mps2-an385.ld \
     --out /tmp/opencode >/dev/null

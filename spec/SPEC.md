@@ -178,6 +178,16 @@ The compiler learns nothing hardcoded about individual axioms; the vocabulary of
 - The layout frontend is token-aware and preserves original source spans.
 - `.f` produces the same AST as canonical brace syntax.
 
+#### `.b` — bare profile (legacy, optional)
+
+`.b` was historically the marker for bare-metal (embedded) compilation. Since
+2026-09-22 it is **optional**: a `bootstrap node` or `bootstrap bad` entry on
+a freestanding (non-linux) target triple implies embedded mode automatically
+(see §20, machine-entry). `.b` remains an explicit way to request the
+embedded codegen profile (static bump heap, no argv capture, bare-metal
+`_start`) for a program that is freestanding but has no authored `bootstrap`
+entry.
+
 ### 3.3 Target capability profiles
 
 Target restrictions are declared in configuration and validated once in the frontend. A backend does not independently invent a source-language subset.
@@ -2632,14 +2642,14 @@ full Briev expression over the params and `result` (matching `.defn`
 contract semantics); a leading group is the precondition. Call-site
 contracts are checked by the ordinary contract machinery.
 
-`bootstrap bad name() [post] { body }` (`.b.bv` bare profile) is the
+`bootstrap bad name() [post] { body }` (a plain `.bv` file) is the
 **authored machine entry**: the body IS the reset vector / `.text.start`
 routine. The compiler emits no owned `_start`; the author owns sp setup,
 `.bss`, the vector table, and the handoff (`call main` / park / jump).
 The body is parsed verbatim and its entry symbol auto-exported for the
 linker; the postcondition is taken on authority (raw `.bad` stores
 cannot carry typed-store proofs). QEMU-verified on the MPS2-AN385
-Cortex-M3 (`examples/bad/boot_mps2.b.bv`).
+Cortex-M3 (`examples/bad/boot_mps2.bv`).
 
 `bad` replaces the earlier `asm<target>` declaration (see §20.1 note);
 `asm<Target>` is retained for backward compatibility and deprecated.

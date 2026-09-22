@@ -27,7 +27,13 @@ dispatches them and which ABI the compiler wraps around the body.
 program entries, but the `bad` body is compiled through the bad backend
 and the compiler emits NO owned `_start` — the `.bad` body IS the entry
 (see `docs/architecture/bad-dialect.md`). QEMU-verified on the
-MPS2-AN385 via `examples/bad/boot_mps2.b.bv`.
+MPS2-AN385 via `examples/bad/boot_mps2.bv`.
+
+**Both entry forms imply embedded mode on a freestanding (non-linux)
+triple** (2026-09-22): the `_start` emitter, static bump heap, and no-argv
+capture activate automatically — the `.b` suffix modifier is NOT needed
+for a program with a `bootstrap` entry (it remains an explicit way to
+request the embedded profile without one).
 
 ## `@` wiring — one pattern, two dispatch classes
 
