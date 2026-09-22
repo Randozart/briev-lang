@@ -1299,6 +1299,10 @@ pub struct LlvmBackend {
     /// init stores, before the dispatch loop) and it never joins the
     /// reactor's dispatch list. Set during the item scan.
     bootstrap_txn: Option<String>,
+    /// 2026-09-22 (bootstrap-bad plan): a `bootstrap bad` name — the body
+    /// is the authored machine entry; the backend emits NO owned `_start`
+    /// when one is present (the bad .o owns the entry).
+    bootstrap_bad: Option<String>,
     /// 2026-09-14 (machine-entry plan): `@__briev_trap_frame` emitted once
     /// per module when a `full_context` handler exists.
     trap_frame_emitted: bool,
@@ -1400,6 +1404,7 @@ impl LlvmBackend {
             resolved_frgns: None,
             precomputed_analysis: None,
             bootstrap_txn: None,
+            bootstrap_bad: None,
             trap_frame_emitted: false,
         }
     }
@@ -2810,6 +2815,10 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                         self.program_txns.push(t.name.clone());
                         continue;
                     }
+                    // 2026-09-22 (bootstrap-bad plan): a `bootstrap bad`
+                    // is a BadFn item (handled in its own match arm below);
+                    // record it here as the authored machine entry.
+                    let _ = t;
                     txns.push((t.name.clone(), t));
                     self.program_txns.push(t.name.clone());
                     // Register callable txn param types for Expr::Call marshaling.
@@ -2905,6 +2914,9 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 // resolution; the actual assembly is compiled through the bad
                 // backend and linked as an .o (see compile_bad_fn_objects).
                 TopLevel::BadFn(bf) => {
+                    if bf.bootstrap {
+                        self.bootstrap_bad = Some(bf.name.clone());
+                    }
                     let tys: Vec<Type> = bf.params.iter().map(|(_, t)| t.clone()).collect();
                     self.ctx.defn_params.insert(bf.name.clone(), tys);
                     let ret_tys = vec![bf.ret_type.clone()];
@@ -5172,7 +5184,9 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // family, calls @main, and exits via syscall. compile.rs sees the
         // `module asm` marker and links -nostdlib. Kept-C programs keep the
         // crt path (libc owns the entry there) and the C getenv pair.
-        if self.ctx.target_triple.contains("linux")
+        // 2026-09-22 (bootstrap-bad plan): a `bootstrap bad` is the authored
+        // entry — the bad .o owns it; skip the owned `_start` entirely.
+        if self.bootstrap_bad.is_none() && self.ctx.target_triple.contains("linux")
             && out.lines().any(|l| {
                 l.contains("call ") && Self::kept_runtime_symbol(l)
             })
@@ -5207,7 +5221,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 writeln!(out, "  unreachable").ok();
                 writeln!(out, "}}").ok();
             }
-        } else if self.ctx.is_embedded {
+        } else if self.ctx.is_embedded && self.bootstrap_bad.is_none() {
             // 2026-09-13 (rv64 capability kernel): bare-metal freestanding
             // entry for non-linux targets (riscv64-unknown-none, thumbv7em-...).
             // The linker script must provide: _stack_top, _bss_start, _bss_end,

@@ -783,7 +783,17 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             .and_then(|e| e.target_triple.clone()))
         .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
     let bad_fn_objects = compile_bad_fn_objects(&items, &bad_triple)?;
-    extra_objects.extend(bad_fn_objects);
+    // 2026-09-22 (bootstrap-bad plan): bad fn .o files must link in the
+    // FREESTANDING path too (a `bootstrap bad` entry lives there) — they
+    // are kept separate from the frgn extra_objects (briev_rt etc.), which
+    // the bare path correctly drops.
+    extra_objects.extend(bad_fn_objects.clone());
+    // The bootstrap entry symbol, if a `bootstrap bad` is declared — the
+    // linker needs it as the process entry (no owned _start exists).
+    let bootstrap_entry = items.iter().find_map(|i| match i {
+        briev_compiler::ast::TopLevel::BadFn(bf) if bf.bootstrap => Some(bf.name.clone()),
+        _ => None,
+    });
 
     if !opts.emit_ir_only {
         let binary_base = out_path.strip_suffix(ext).unwrap_or(&out_path);
@@ -830,7 +840,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             }
             all_objects.sort();
             all_objects.dedup();
-            compile_ll_to_binary(&out_path, &binary_path, &all_objects, &protocol_libs, opts.shared)?;
+            compile_ll_to_binary(&out_path, &binary_path, &all_objects, &protocol_libs, opts.shared, &bad_fn_objects, bootstrap_entry.as_deref())?;
         }
         // 2026-07-26: Phase 5 — Compile LLVM IR to WASM binary for webstack backend.
         // Uses llc to compile the .ll (emitted with wasm32 target triple) to .wasm.
@@ -1883,6 +1893,8 @@ fn compile_bad_fn_objects(
             _ => continue,
         };
         // Build param_env: each .bv param name → Bound::Token(register).
+        // A bootstrap entry is a machine entry, not an ABI function — no
+        // params bind (it owns sp/vector-table/handoff itself).
         let mut param_env = std::collections::HashMap::new();
         let mut r_idx = 0usize;
         let mut f_idx = 0usize;
@@ -1913,6 +1925,8 @@ fn compile_bad_fn_objects(
             &bf.body,
             target_triple,
             param_env,
+            bf.bootstrap,
+            &bf.name,
         )
         .map_err(|e| format!("bad fn `{}`: {}", bf.name, e))?;
         // Assemble to .o.
@@ -2024,7 +2038,7 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
 ///
 /// 2026-07-26: Added `protocol_libs` parameter — library names from
 /// `from #System` frgns are passed as `-l<lib>` flags to clang.
-fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathBuf], protocol_libs: &[String], shared: bool) -> Result<(), String> {
+fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathBuf], protocol_libs: &[String], shared: bool, bad_objects: &[PathBuf], bootstrap_entry: Option<&str>) -> Result<(), String> {
     let ll_text = std::fs::read_to_string(ll_path)
         .map_err(|e| format!("cannot read '{}': {}", ll_path, e))?;
     // Extract target triple from the IR (first line: target triple = "..."`)
@@ -2065,6 +2079,9 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
     // `_start` (module asm) and references no runtime objects is FREESTANDING
     // — link -nostdlib (no crt1, no libc) and skip the runtime objects. The
     // owned _start captures argc/argv/environ itself and exits via syscall.
+    // 2026-09-22 (bootstrap-bad plan): a `bootstrap bad` entry is equally
+    // freestanding — the authored machine entry replaces the owned _start
+    // and needs no crt1/libc either (bad_objects links it in bare-metal).
     let freestanding = if shared {
         false
     } else {
@@ -2072,7 +2089,8 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
         // briev_rt.c/libc symbols (the backend gate proved it), so the
         // runtime objects — including briev_rt.o, which the env.bv frgns
         // pull unconditionally — are droppable.
-        ll_text.contains("define void @_start() naked") && protocol_libs.is_empty()
+        (ll_text.contains("define void @_start() naked") || !bad_objects.is_empty())
+            && protocol_libs.is_empty()
     };
     if freestanding {
         cmd.args(["-nostdlib", "-no-pie", "-ffreestanding"]);
@@ -2126,6 +2144,16 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
                     cmd.arg(crt_path);
                 }
             }
+        }
+        // 2026-09-22 (bootstrap-bad plan): bad fn / `bootstrap bad` objects
+        // link in the freestanding path too — a bootstrap entry lives there.
+        for obj in bad_objects {
+            cmd.arg(obj.as_os_str());
+        }
+        // A `bootstrap bad` is the authored entry — the linker must enter at
+        // its symbol (no owned _start exists).
+        if let Some(entry) = bootstrap_entry {
+            cmd.arg(format!("-Wl,-e,{entry}"));
         }
     } else {
         for obj in extra_objects {

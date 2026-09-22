@@ -281,6 +281,14 @@ impl<'a> Parser<'a> {
             .map_or(false, |t| matches!(t, Token::Identifier(s) if s == name))
     }
 
+    /// Check if the token AFTER the current one is an identifier with a
+    /// specific name (the `bootstrap bad` disambiguation).
+    pub fn lookahead_is_identifier(&self, name: &str) -> bool {
+        self.tokens
+            .get(self.pos + 1)
+            .map_or(false, |(t, _)| matches!(t, Token::Identifier(s) if s == name))
+    }
+
     /// Consume a specific identifier if present.
     pub fn eat_identifier(&mut self, name: &str) -> bool {
         if self.check_identifier(name) {

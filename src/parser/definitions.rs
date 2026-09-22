@@ -95,7 +95,18 @@ impl<'a> Parser<'a> {
             // — the authored program entry (pre-reactor; SPEC §11.5, §13.2).
             // Recorded as a modifier annotation; single-bracket (handoff
             // postcondition) form is checked by the typechecker.
-            Some(Token::Bootstrap) => self.parse_bootstrap_node(),
+            // 2026-09-22 (bootstrap-bad plan): `bootstrap bad name() {...}`
+            // — the same authored entry, but the body is real .bad grammar
+            // compiled through the bad backend; the author owns the machine
+            // entry (sp/.bss/vector table/handoff).
+            Some(Token::Bootstrap) => {
+                if self.lookahead_is_identifier("bad") {
+                    self.advance(); // consume 'bootstrap'
+                    self.parse_bad_fn(true).map(TopLevel::BadFn)
+                } else {
+                    self.parse_bootstrap_node()
+                }
+            }
             // 2026-08-01 (Phase E): `seq node name` / `seq txn name` — the seq
             // modifier requests sequential dispatch (no emit_parallel_reactor)
             // and/or non-vectorized array access. Recorded as a modifier
@@ -401,7 +412,7 @@ impl<'a> Parser<'a> {
                 }
                 // 2026-09-21: bad name(params) -> Ret [groups] { body };
                 if self.check_identifier("bad") {
-                    return self.parse_bad_fn().map(TopLevel::BadFn);
+                    return self.parse_bad_fn(false).map(TopLevel::BadFn);
                 }
                 // 2026-09-06 (ISR plan): isr[<mech>] handler @ vec: name() { };
                 // Contextual keyword like asm/proto — top-level form only.
@@ -2081,15 +2092,22 @@ impl<'a> Parser<'a> {
 
     /// 2026-09-21: Parse `bad name(params) -> Ret [groups] { body }`.
     /// Body is raw `.bad` source text (between the outermost braces).
-    fn parse_bad_fn(&mut self) -> Result<BadFn, SyntaxError> {
+    /// `bootstrap` marks the authored machine entry (`bootstrap bad`).
+    fn parse_bad_fn(&mut self, bootstrap: bool) -> Result<BadFn, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'bad'
         let name = self.expect_identifier()?;
         self.expect(Token::LParen)?;
         let params = self.parse_parameter_list()?;
         self.expect(Token::RParen)?;
-        self.expect(Token::Arrow)?;
-        let ret_type = self.parse_type()?;
+        // A machine entry (`bootstrap bad`) has no ABI return; the arrow
+        // and return type are optional there.
+        let ret_type = if bootstrap && !self.check(&Token::Arrow) {
+            Type::void()
+        } else {
+            self.expect(Token::Arrow)?;
+            self.parse_type()?
+        };
         let contract = self.parse_contract()?;
         // Capture raw body text between { and } — preserve whitespace
         // exactly as written (the .bad body is hand-scheduled asm).
@@ -2127,7 +2145,7 @@ impl<'a> Parser<'a> {
             .and_then(|(_, s1)| self.tokens.get(self.pos - 1).map(|(_, s2)| (s1, s2)))
             .map(|(s1, s2)| Span::new(s1.start, s2.end, 0, 0))
             .unwrap_or(Span::new(0, 0, 0, 0));
-        Ok(BadFn { name, params, ret_type, contract, body, span })
+        Ok(BadFn { name, params, ret_type, contract, body, bootstrap, span })
     }
 
     fn parse_derivation_block(&mut self) -> Result<Option<DerivationBlock>, SyntaxError> {
@@ -5812,6 +5830,26 @@ fn bootstrap_node_rejects_pre_post_double_form() {
     let msg = format!("{}", err);
     assert!(
         msg.contains("single handoff postcondition"),
-        "expected the single-bracket error, got: {msg}"
+        "{msg}"
     );
+}
+
+#[test]
+fn bootstrap_bad_parses_as_machine_entry() {
+    // 2026-09-22 (bootstrap-bad plan): `bootstrap bad` is the authored
+    // machine entry — a BadFn with the bootstrap flag, raw .bad body.
+    let src = "bootstrap bad Reset_Handler() [true] {\n\
+               section .isr_vector\n\
+               reset_v: .word Reset_Handler + 1\n\
+               }\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let crate::ast::TopLevel::BadFn(bf) = &items[0] else {
+        panic!("expected a BadFn, got {:?}", items[0]);
+    };
+    assert_eq!(bf.name, "Reset_Handler");
+    assert!(bf.bootstrap, "bootstrap flag set");
+    assert!(bf.body.contains(".word Reset_Handler + 1"), "{}", bf.body);
+    assert!(bf.params.is_empty());
 }

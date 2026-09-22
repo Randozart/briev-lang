@@ -70,23 +70,41 @@ pub fn generate_with_notices(
 /// 2026-09-21: Compile a `bad fn` body from `.bv` — wrap the body
 /// in an entry label, append `ret`, parse as a .bad program, and lower
 /// with pre-bound parameter registers.
+///
+/// `bootstrap` (2026-09-22): the body is the authored machine entry —
+/// parsed VERBATIM (no `_entry:` wrap, no auto-`ret`). The author owns
+/// the vector table, `.text.start`, sp/.bss setup, and the handoff
+/// (`call main` / park / jump).
 pub fn generate_bad_fn(
     body: &str,
     target_triple: &str,
     param_env: std::collections::HashMap<String, lower::Bound>,
+    bootstrap: bool,
+    bootstrap_name: &str,
 ) -> Result<String, String> {
-    // Wrap body in an entry label and ensure it ends with `ret`.
-    let trimmed = body.trim();
-    let mut wrapped = String::from("_entry:\n");
-    wrapped.push_str(trimmed);
-    // Auto-append `ret` if the body doesn't already end with one.
-    let last_line = trimmed.lines().last().unwrap_or("").trim();
-    if last_line != "ret" && !last_line.ends_with("ret") {
-        wrapped.push_str("\nret");
-    }
-    wrapped.push('\n');
-    let program: BadProgram =
-        parse_bad(&wrapped).map_err(|e| format!("bad fn body: line {}: {}", e.line, e.message))?;
+    let program: BadProgram = if bootstrap {
+        // The authored machine entry: parsed VERBATIM, the entry label
+        // auto-exported (the linker script's ENTRY names it). The body
+        // MUST declare a label with the bootstrap fn name — it IS the
+        // machine entry symbol.
+        let trimmed = body.trim();
+        let mut with_export = format!(".global {bootstrap_name}\n");
+        with_export.push_str(trimmed);
+        with_export.push('\n');
+        parse_bad(&with_export).map_err(|e| format!("bootstrap bad body: line {}: {}", e.line, e.message))?
+    } else {
+        // Wrap body in an entry label and ensure it ends with `ret`.
+        let trimmed = body.trim();
+        let mut wrapped = String::from("_entry:\n");
+        wrapped.push_str(trimmed);
+        // Auto-append `ret` if the body doesn't already end with one.
+        let last_line = trimmed.lines().last().unwrap_or("").trim();
+        if last_line != "ret" && !last_line.ends_with("ret") {
+            wrapped.push_str("\nret");
+        }
+        wrapped.push('\n');
+        parse_bad(&wrapped).map_err(|e| format!("bad fn body: line {}: {}", e.line, e.message))?
+    };
     let (isa, regs) = registries();
     let family = target_triple.split('-').next().unwrap_or(target_triple);
     lower::Lowerer::new(&isa, &regs, family)
@@ -720,7 +738,7 @@ mod phase_d_tests {
                    add r1, r0, r0\n    jz r1, r0, .done\n    mov r2, 99\n    \
                    .done:\n    halt\n";
         let asm = generate(src, "thumbv7m-none-eabi").unwrap();
-        assert!(asm.contains("movw r0, #1"), "{asm}");
+        assert!(asm.contains("ldr r0, =1"), "{asm}");
         assert!(asm.contains("adds r1, r0, r0"), "{asm}");
         assert!(asm.contains("beq"), "{asm}");
         assert!(asm.contains("wfi"), "{asm}");
@@ -1188,5 +1206,32 @@ mod notices_tests {
 t:\n    call f
 ", "x86_64");
         assert!(c.contains(&"W2".to_string()), "{c:?}");
+    }
+}
+
+// ── bootstrap bad (2026-09-22) ────────────────────────────────────────
+mod bootstrap_bad_tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_parses_verbatim_and_exports_entry() {
+        // The body is the authored entry — no _entry: wrap, no auto-ret,
+        // and the bootstrap name is auto-exported for the linker.
+        let body = "section .isr_vector\nsp_slot: .word 0x2007C000\n\
+                    reset_v: .word Reset_Handler + 1\n\
+                    section .text.start\nReset_Handler:\n    mov r0, 1\n    halt\n";
+        let asm = generate_bad_fn(body, "thumbv7m-none-eabi", std::collections::HashMap::new(), true, "Reset_Handler").unwrap();
+        assert!(asm.contains(".global Reset_Handler"), "{asm}");
+        assert!(asm.contains(".isr_vector"), "{asm}");
+        assert!(asm.contains("Reset_Handler:"), "{asm}");
+        // The author's halt is NOT rewritten to ret — verbatim.
+        assert!(asm.contains("wfi"), "{asm}");
+    }
+
+    #[test]
+    fn regular_bad_fn_still_wraps_and_appends_ret() {
+        let asm = generate_bad_fn("add r0, r1, r2\n", "x86_64", std::collections::HashMap::new(), false, "add").unwrap();
+        assert!(asm.contains("_entry:"), "{asm}");
+        assert!(asm.contains("ret"), "{asm}");
     }
 }

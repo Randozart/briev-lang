@@ -833,7 +833,13 @@ impl<'a> Lowerer<'a> {
             // Const names resolve to immediates at substitution — they
             // must pick the imm form too (aarch64 mul takes no #imm).
             BadOperand::Name(name) => self.consts.contains_key(name),
-            BadOperand::Expr(_) => false,
+            // An Expr that EVALUATES to a constant (a bare hex literal
+            // `0x40004008`) is an immediate; one that resolves to a label
+            // (`addr + 8`) is not.
+            BadOperand::Expr(e) => self
+                .eval_operand_expr(e, env, instr)
+                .map(|_| true)
+                .unwrap_or(false),
         });
         let template = match (&lowering.imm, has_imm) {
             (ImmHandling::Form(t), true) => t,
