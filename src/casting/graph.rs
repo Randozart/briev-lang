@@ -1819,8 +1819,7 @@ mod cross_op_tests {
                 ])),
                 impl_name: String::new(),
                 span: None,
-                trusted_axiom: false,
-            trusted_lemmas: vec![]}],
+                trusted_axiom: false}],
             span: None,
         });
         assert_eq!(graph.get_variant_op("String", "C_String", "Concat"), Some("cstring_concat"));

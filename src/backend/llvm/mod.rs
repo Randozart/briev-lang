@@ -3188,8 +3188,6 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                                     crate::ast::PropertyValue::Identifier(impl_name.to_string()),
                                 ),
                                 impl_name: op.to_string(),
-                                // 2026-08-27 (axiom WIP completion): no lemmas.
-                                trusted_lemmas: vec![],
                                 trusted_axiom: false,
                                 span: None,
                             });

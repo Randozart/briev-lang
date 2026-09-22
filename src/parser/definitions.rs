@@ -2805,7 +2805,6 @@ impl<'a> Parser<'a> {
             suf: None,
             reg: None,
             expr,
-            trusted_lemmas: vec![],
             trusted_axiom: false,
             span: None,
         });
@@ -2879,7 +2878,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::RParen)?;
         self.expect(Token::Semicolon)?;
         let expr = Expr::Call(fn_name, args, None);
-        op_bindings.push(OperatorBinding { name, protocol_variant, pre, suf, reg, expr, trusted_lemmas: vec![], trusted_axiom: false, span: None });
+        op_bindings.push(OperatorBinding { name, protocol_variant, pre, suf, reg, expr, trusted_axiom: false, span: None });
         Ok(())
     }
 
@@ -3630,7 +3629,6 @@ impl<'a> Parser<'a> {
                         suf: None,
                         impl_args,
                         impl_name: String::new(),
-                        trusted_lemmas: vec![],
                         trusted_axiom: is_axiom,
                         span: None,
                     });

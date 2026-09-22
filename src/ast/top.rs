@@ -1194,10 +1194,6 @@ pub struct OperatorDef {
     /// Old-style implementation name string (from `op Add ~> "string"`).
     pub impl_name: String,
     pub span: Option<Span>,
-    /// 2026-08-27: Optimizer lemmas declared on this op (SPEC §8.8).
-    /// Each string is a validated member of the configured lemma_properties
-    /// vocabulary (config/axioms.dbv). Empty = no lemmas declared.
-    pub trusted_lemmas: Vec<String>,
     /// 2026-08-27: Authority marker (SPEC §8.8). When true, the op binding is
     /// taken on authority instead of derived — its semantics are not
     /// discharged against a default; recorded in the verification ledger.
@@ -1219,8 +1215,6 @@ pub struct OperatorBinding {
     pub reg: Option<String>,
     pub expr: Expr,
     pub span: Option<Span>,
-    /// 2026-08-27: Optimizer lemmas declared on this binding (SPEC §8.8).
-    pub trusted_lemmas: Vec<String>,
     /// 2026-08-27: Authority marker — binding taken on trust, not derived.
     pub trusted_axiom: bool,
 }

@@ -165,7 +165,9 @@ Every `axiom`-declared site is counted. The strict report renders the full autho
 - `warn` — accepted; a prominent warning naming every site rides alongside.
 - `deny` — any axiom site is a hard error: prove it or remove the shortcut.
 
-The compiler learns nothing hardcoded about individual axioms; the vocabulary of optimizer-exploitable lemma properties is configuration (`lemma_properties`).
+The compiler learns nothing hardcoded about individual axioms. (2026-09-22:
+the `lemma_properties` vocabulary is removed with the op-lemma feature — see
+§8.8; the axiom facility itself stays.)
 
 #### `.f` — formatted source
 
@@ -929,13 +931,17 @@ impl Point<Float> {
 };
 ```
 
-Op bindings may carry optimizer lemmas as a bracketed property list. Each identifier must be a member of the configured lemma-property vocabulary; unknown properties are rejected at parse validation.
+The `axiom` prefix before an `op` binding marks the binding itself as
+authoritative — taken on authority instead of derived — and enters the ledger
+like every other declared trust site.
 
-```briev
-op Add: func(#Lh, #Rh) [commutative];
-```
-
-A lemma grants the optimizer exactly the declared right (e.g. operand reordering) and nothing else; it never substitutes for a proof of the operation's semantics. The `axiom` prefix before an `op` binding marks the binding itself as authoritative — taken on authority instead of derived — and enters the ledger like every other declared trust site.
+> **Lemma property lists are removed (2026-09-22).** SPEC previously allowed
+> `op Add: func(#Lh, #Rh) [commutative];`. No parser accepted the grammar, no
+> pass consumed the granted rights, and the float reassociation right was
+> already available program-wide via `-ffast-math` and the `!> associative` /
+> `!> fp_math: fast` function metadata. A user op's handler has a Briev body —
+> commutativity can be *proven* rather than trusted; the axiom facility stays
+> for the FFI-boundary cases where no body exists to discharge.
 
 Inherent implementations may appear only in the target declaration's module. Explicit trait implementations obey ownership coherence: either the trait or target must be locally owned.
 
