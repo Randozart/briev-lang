@@ -279,6 +279,13 @@ impl BadRegisters {
             .unwrap_or_default()
     }
 
+    /// 2026-09-21: The portable float-arg registers in C-ABI order.
+    pub fn abi_args_fp(&self, family: &str) -> Vec<String> {
+        self.scalar("abi_args_fp", family)
+            .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+            .unwrap_or_default()
+    }
+
     /// The portable `push` stack decrement per target.
     pub fn push_width(&self, family: &str) -> i64 {
         self.scalar("push_width", family).and_then(|s| s.parse().ok()).unwrap_or(16)

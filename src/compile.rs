@@ -595,7 +595,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 
     // 2026-07-16: P4 — Collect extra objects from ForeignBinding FromSpec paths
     // for linking into the final binary.
-    let extra_objects = collect_extra_objects(&items, &resolver, briev_compiler::conformance::is_bare(std::path::Path::new(file_path)))?;
+    let mut extra_objects = collect_extra_objects(&items, &resolver, briev_compiler::conformance::is_bare(std::path::Path::new(file_path)))?;
 
     // ── Frgn dispatch resolution ──────────────────────────────────────
     // 2026-07-22: Resolve each frgn declaration's dispatch strategy before
@@ -772,6 +772,18 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // ── Optimized stage: final IR validation ──────────────────────────
     pm.run_ir(StageKind::Optimized, &mut output)?;
     emit_beast_snapshot(file_path, BeastStage::Optimize, BeastPosition::After, &items, &universe, opts)?;
+
+    // 2026-09-21: Compile `bad fn` bodies through the bad backend and
+    // collect their .o files for linking. Each bad fn body is a standalone
+    // .bad program compiled per-target; the LLVM IR references the symbols
+    // via `declare`.
+    let bad_triple = opts.triple_override.clone()
+        .or_else(|| load_target_config(opts)
+            .lookup(&get_extension(&opts.file_path))
+            .and_then(|e| e.target_triple.clone()))
+        .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
+    let bad_fn_objects = compile_bad_fn_objects(&items, &bad_triple)?;
+    extra_objects.extend(bad_fn_objects);
 
     if !opts.emit_ir_only {
         let binary_base = out_path.strip_suffix(ext).unwrap_or(&out_path);
@@ -1818,6 +1830,69 @@ fn determine_out_path(file_path: &str, out_dir: Option<&str>) -> Result<String, 
     };
 
     Ok(format!("{}/{}.ll", parent, base))
+}
+
+/// 2026-09-21: Compile `bad fn` bodies through the bad backend.
+/// Each BadFn's body is a standalone .bad program compiled for the
+/// target triple; the resulting .o files are linked into the binary.
+fn compile_bad_fn_objects(
+    items: &[briev_compiler::ast::TopLevel],
+    target_triple: &str,
+) -> Result<Vec<PathBuf>, String> {
+    use briev_compiler::ast::top::TopLevel;
+    let mut objects = Vec::new();
+    let family = target_triple.split('-').next().unwrap_or(target_triple);
+    let cache_dir = get_ffi_cache_dir();
+    // Register parameter bindings per target family.
+    let (_, regs) = briev_compiler::backend::bad::registries();
+    let abi_args = regs.abi_args(family);
+    let abi_args_fp = regs.abi_args_fp(family);
+
+    for item in items {
+        let bf = match item {
+            TopLevel::BadFn(bf) => bf,
+            _ => continue,
+        };
+        // Build param_env: each .bv param name → Bound::Token(register).
+        let mut param_env = std::collections::HashMap::new();
+        let mut r_idx = 0usize;
+        let mut f_idx = 0usize;
+        for (_pname, pty) in &bf.params {
+            let type_name = pty.to_string();
+            let is_float = type_name.starts_with("Float") || type_name.starts_with("F32")
+                || type_name.starts_with("F64") || type_name == "Double";
+            let reg = if is_float {
+                let r = abi_args_fp.get(f_idx).cloned().unwrap_or_else(|| {
+                    format!("f{f_idx}")
+                });
+                f_idx += 1;
+                r
+            } else {
+                let r = abi_args.get(r_idx).cloned().unwrap_or_else(|| {
+                    format!("r{r_idx}")
+                });
+                r_idx += 1;
+                r
+            };
+            param_env.insert(
+                _pname.clone(),
+                briev_compiler::backend::bad::lower::Bound::Token(reg),
+            );
+        }
+        // Parse + lower the .bad body.
+        let asm = briev_compiler::backend::bad::generate_bad_fn(
+            &bf.body,
+            target_triple,
+            param_env,
+        )
+        .map_err(|e| format!("bad fn `{}`: {}", bf.name, e))?;
+        // Assemble to .o.
+        let o_path = cache_dir.join(format!("{}_{}.o", bf.name, family));
+        briev_compiler::backend::bad::assemble(&asm, family, &o_path)
+            .map_err(|e| format!("bad fn `{}` assemble: {}", bf.name, e))?;
+        objects.push(o_path);
+    }
+    Ok(objects)
 }
 
 /// 2026-07-16: P4 — Collect extra object files from ForeignBinding FromSpec paths.

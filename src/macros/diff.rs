@@ -48,6 +48,7 @@ fn item_key(tl: &TopLevel) -> String {
             format!("{:?}", tl)
         }
         AsmFn(a) => format!("asm:<{}> {}", a.target, a.name),
+        BadFn(bf) => format!("bad {}", bf.name),
         IsrHandler(h) => format!("isr:{}", h.name),
         CompileTimeDefn(d) => format!("$defn:{}", d.name),
         CompileTimeTxn(t) => format!("$txn:{}", t.name),
@@ -98,6 +99,7 @@ pub fn item_summary(tl: &TopLevel) -> String {
         CompileTimeLet(name, _) => format!("$let {}", name),
         CompileTimeConst(name, _) => format!("$const {}", name),
         AsmFn(a) => format!("asm:<{}> {}", a.target, a.name),
+        BadFn(bf) => format!("bad {}", bf.name),
         IsrHandler(h) => format!("isr:{}", h.name),
         ProtocolDef(p) => format!("proto {}: #{}", p.name, p.category),
         ModuleMetadata(meta) => format!("module metadata ({} keys)", meta.len()),

@@ -180,6 +180,18 @@ impl<'a> Parser<'a> {
         tok
     }
 
+    /// 2026-09-21: Return the source text of the current token and advance.
+    /// Used by raw-body parsers (bad fn) to accumulate verbatim text.
+    pub fn token_text(&mut self) -> String {
+        if let Some((tok, range)) = self.tokens.get(self.pos) {
+            let text = self.source[range.clone()].to_string();
+            self.pos += 1;
+            text
+        } else {
+            String::new()
+        }
+    }
+
     /// Get the current token as an identifier string, or error.
     /// 2026-07-14: Also accepts keyword tokens that are commonly used as
     /// identifiers (reg, op, bank, asm, stage, cell, etc.).

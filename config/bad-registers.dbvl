@@ -132,6 +132,8 @@ abi_reg_args: "x86_64:6"; "aarch64:8"; "riscv64:8";
 // (arg 7+) at function entry — the return address occupies [sp, 0) on
 // x86_64 (base 8), while arm/riscv leave [sp, 0) for arg 7 (base 0).
 abi_stack_arg_base: "x86_64:8"; "aarch64:0"; "riscv64:0";
+// abi_args_fp: portable float-arg registers in C-ABI order (first N float args).
+abi_args_fp: "x86_64:f0,f1,f2,f3,f4,f5,f6,f7"; "aarch64:f0,f1,f2,f3,f4,f5,f6,f7"; "riscv64:f0,f1,f2,f3,f4,f5,f6,f7";
 // dynamic_linker: the ld flag value for --with-libc runs.
 dynamic_linker: "x86_64:/lib64/ld-linux-x86-64.so.2"; "aarch64:/lib/ld-linux-aarch64.so.1"; "riscv64:/lib/ld-linux-riscv64-lp64d.so.1";
 // cross_as / cross_ld: prefixed toolchains for hardware-verification of

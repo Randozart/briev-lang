@@ -87,7 +87,9 @@ nop: "0"; "x86_64:nop"; "aarch64:nop"; "riscv64:nop";
 // route them into each target's syscall ABI (x86_64 rax+rdi/rsi/rdx,
 // aarch64 x8+x0-x2, riscv64 a7+a0-a2). Register operands only (`|-`
 // illegal): immediates load into a register first.
-syscall: "4"; "x86_64:movq $1#, %rax; movq $2, %rdi; movq $3, %rsi; movq $4, %rdx; syscall|-"; "aarch64:mov x8, $1#; mov x0, $2; mov x1, $3; mov x2, $4; svc #0|-"; "riscv64:li a7, $1#; mv a0, $2; mv a1, $3; mv a2, $4; ecall|-";
+// The number loads LAST — when an arg register IS the number source
+// (syscall exit, r0, r0, r0), arg routing must read it pre-clobber.
+syscall: "4"; "x86_64:movq $2, %rdi; movq $3, %rsi; movq $4, %rdx; movq $1#, %rax; syscall|-"; "aarch64:mov x0, $2; mov x1, $3; mov x2, $4; mov x8, $1#; svc #0|-"; "riscv64:mv a0, $2; mv a1, $3; mv a2, $4; li a7, $1#; ecall|-";
 halt: "0"; "x86_64:hlt"; "aarch64:wfi"; "riscv64:wfi";
 
 // ── Application-grade ISA (2026-09-21, application-grade plan) ───────

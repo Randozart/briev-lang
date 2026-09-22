@@ -84,6 +84,9 @@ pub struct Lowerer<'a> {
     /// Names the sheet provided — user redeclarations overwrite these
     /// silently (the sheet is a default), user-vs-user dups still error.
     sheet_aliases: std::collections::HashSet<String>,
+    /// 2026-09-21: When compiling a `bad fn` body from `.bv`, param names
+    /// are pre-bound to physical registers. Merged into every env lookup.
+    param_env: HashMap<String, Bound>,
 }
 
 /// One `.field name, size[, align]` inside a `.struct` block.
@@ -97,7 +100,7 @@ struct StructField {
 /// A resolved operand inside a defn expansion: either a final token
 /// (register/label text) or an immediate value (gets the target prefix).
 #[derive(Debug, Clone)]
-enum Bound {
+pub enum Bound {
     Token(String),
     Imm(i64),
 }
@@ -126,6 +129,7 @@ impl<'a> Lowerer<'a> {
             trace: false,
             friendly: true,
             sheet_aliases: std::collections::HashSet::new(),
+            param_env: HashMap::new(),
         }
     }
 
@@ -144,6 +148,13 @@ impl<'a> Lowerer<'a> {
     /// Root directory for resolving `import` paths.
     pub fn with_base_dir(mut self, dir: Option<std::path::PathBuf>) -> Self {
         self.base_dir = dir;
+        self
+    }
+
+    /// 2026-09-21: Inject parameter bindings for `bad fn` bodies compiled
+    /// from `.bv`. The map is param-name → Bound::Token(register).
+    pub fn with_param_env(mut self, env: HashMap<String, Bound>) -> Self {
+        self.param_env = env;
         self
     }
 
@@ -999,10 +1010,11 @@ impl<'a> Lowerer<'a> {
                 if r.named {
                     return self.syscall_number_token(name, instr);
                 }
-                if let Some(Bound::Imm(v)) = env.get(name) {
+                // Check local env first, then fn-level param_env.
+                if let Some(Bound::Imm(v)) = env.get(name).or_else(|| self.param_env.get(name)) {
                     return Ok(format!("{imm}{v}"));
                 }
-                let (bound_name, param) = match env.get(name) {
+                let (bound_name, param) = match env.get(name).or_else(|| self.param_env.get(name)) {
                     Some(Bound::Token(t)) => (t.as_str(), Some(name.as_str())),
                     _ => (name.as_str(), None),
                 };
@@ -1133,7 +1145,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn resolve_word(&self, word: &str, env: &HashMap<String, Bound>) -> String {
-        match env.get(word) {
+        match env.get(word).or_else(|| self.param_env.get(word)) {
             Some(Bound::Imm(v)) => return format!("{}{}", self.regs.imm_prefix(&self.family), v),
             Some(Bound::Token(t)) => {
                 if let Some(tok) = self.resolve_register(t) {

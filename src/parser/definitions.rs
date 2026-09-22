@@ -399,6 +399,10 @@ impl<'a> Parser<'a> {
                 if self.check_identifier("asm") {
                     return self.parse_asm_fn().map(TopLevel::AsmFn);
                 }
+                // 2026-09-21: bad name(params) -> Ret [groups] { body };
+                if self.check_identifier("bad") {
+                    return self.parse_bad_fn().map(TopLevel::BadFn);
+                }
                 // 2026-09-06 (ISR plan): isr[<mech>] handler @ vec: name() { };
                 // Contextual keyword like asm/proto — top-level form only.
                 if self.check_identifier("isr") {
@@ -2073,6 +2077,57 @@ impl<'a> Parser<'a> {
             self.eat(&Token::Semicolon);
         }
         Ok(strings)
+    }
+
+    /// 2026-09-21: Parse `bad name(params) -> Ret [groups] { body }`.
+    /// Body is raw `.bad` source text (between the outermost braces).
+    fn parse_bad_fn(&mut self) -> Result<BadFn, SyntaxError> {
+        let start = self.pos;
+        self.advance(); // consume 'bad'
+        let name = self.expect_identifier()?;
+        self.expect(Token::LParen)?;
+        let params = self.parse_parameter_list()?;
+        self.expect(Token::RParen)?;
+        self.expect(Token::Arrow)?;
+        let ret_type = self.parse_type()?;
+        let contract = self.parse_contract()?;
+        // Capture raw body text between { and } — preserve whitespace
+        // exactly as written (the .bad body is hand-scheduled asm).
+        self.expect(Token::LBrace)?;
+        let brace_start = self.tokens.get(self.pos - 1)
+            .map(|(_, r)| r.end)
+            .unwrap_or(0);
+        let mut depth = 1u32;
+        while depth > 0 {
+            match self.peek() {
+                Some(Token::LBrace) => { self.advance(); depth += 1; }
+                Some(Token::RBrace) => {
+                    depth -= 1;
+                    if depth > 0 { self.advance(); }
+                }
+                None => {
+                    return Err(SyntaxError::UnexpectedToken {
+                        expected: "}".to_string(),
+                        found: "end of file".to_string(),
+                        span: self.make_span(self.tokens.get(self.pos)
+                            .map(|(_, s)| s.clone()).unwrap_or(0..0)),
+                    });
+                }
+                _ => { self.advance(); }
+            }
+        }
+        // The matching } is at self.pos now; its start is the end of the body.
+        let body_end = self.tokens.get(self.pos)
+            .map(|(_, r)| r.start)
+            .unwrap_or(brace_start);
+        let body = self.source[brace_start..body_end].to_string();
+        self.advance(); // consume closing }
+        self.eat(&Token::Semicolon);
+        let span = self.tokens.get(start)
+            .and_then(|(_, s1)| self.tokens.get(self.pos - 1).map(|(_, s2)| (s1, s2)))
+            .map(|(s1, s2)| Span::new(s1.start, s2.end, 0, 0))
+            .unwrap_or(Span::new(0, 0, 0, 0));
+        Ok(BadFn { name, params, ret_type, contract, body, span })
     }
 
     fn parse_derivation_block(&mut self) -> Result<Option<DerivationBlock>, SyntaxError> {

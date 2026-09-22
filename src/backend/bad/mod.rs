@@ -53,6 +53,33 @@ pub fn generate_with(
         .run(&program)
 }
 
+/// 2026-09-21: Compile a `bad fn` body from `.bv` — wrap the body
+/// in an entry label, append `ret`, parse as a .bad program, and lower
+/// with pre-bound parameter registers.
+pub fn generate_bad_fn(
+    body: &str,
+    target_triple: &str,
+    param_env: std::collections::HashMap<String, lower::Bound>,
+) -> Result<String, String> {
+    // Wrap body in an entry label and ensure it ends with `ret`.
+    let trimmed = body.trim();
+    let mut wrapped = String::from("_entry:\n");
+    wrapped.push_str(trimmed);
+    // Auto-append `ret` if the body doesn't already end with one.
+    let last_line = trimmed.lines().last().unwrap_or("").trim();
+    if last_line != "ret" && !last_line.ends_with("ret") {
+        wrapped.push_str("\nret");
+    }
+    wrapped.push('\n');
+    let program: BadProgram =
+        parse_bad(&wrapped).map_err(|e| format!("bad fn body: line {}: {}", e.line, e.message))?;
+    let (isa, regs) = registries();
+    let family = target_triple.split('-').next().unwrap_or(target_triple);
+    lower::Lowerer::new(&isa, &regs, family)
+        .with_param_env(param_env)
+        .run(&program)
+}
+
 /// Whether the cross toolchain for `family` is installed.
 pub fn toolchain_available(family: &str) -> bool {
     let (isa, regs) = registries();
