@@ -1159,6 +1159,10 @@ struct NetlistContext<'a> {
     /// up through them (consolidated so the walkers stay under the
     /// parameter gate).
     instances: &'a BTreeMap<String, &'a ComponentInstance>,
+    /// 2026-09-22 (D14): net names committed via `store net(pin) =
+    /// "name";` — (union-find root, name). Merged into net resolution so a
+    /// `store`-named net behaves like a `net <name>:` annotation.
+    stored_net_names: Vec<(String, String)>,
 }
 
 impl<'a> NetlistContext<'a> {
@@ -1175,6 +1179,7 @@ impl<'a> NetlistContext<'a> {
             type_info,
             type_props: collect_type_metadata(items),
             instances,
+            stored_net_names: Vec::new(),
         }
     }
 }
@@ -1455,6 +1460,14 @@ struct FactSink<'a> {
     errors: &'a mut Vec<String>,
     intents: &'a mut Vec<(String, String)>,
     bridges: &'a mut Vec<BridgeRequest>,
+    /// 2026-09-22 (D14): committed BOM values from `store inst.field =
+    /// value;` — (instance, field, value-expr).
+    stored: &'a mut Vec<(String, String, Expr)>,
+    /// 2026-09-22 (D14): named nets from `store net(pin) = "name";` —
+    /// (pin-expr, name).
+    stored_nets: &'a mut Vec<(Expr, String)>,
+    /// 2026-09-22 (D16 p3b): disconnections from `open a.pin, b.pin;`.
+    opens: &'a mut Vec<(Expr, Expr)>,
 }
 
 /// The region context threading through a guarded-fact walk (D16):
@@ -1615,8 +1628,53 @@ impl FactSink<'_> {
                         ));
                     }
                 }
+                // 2026-09-22 (D14/D16 p3b): bind/store/open intent modifiers
+                // (extracted so `walk` stays under the function-length gate).
+                Statement::Bind(..) | Statement::StoreValue { .. }
+                | Statement::StoreNet { .. } | Statement::Open(..) => {
+                    self.lift_stmt(stmt, ctx);
+                }
                 _ => {}
             }
+        }
+    }
+
+    /// Handle the D14/D16 p3b intent modifiers — `bind` (persist-tighten),
+    /// `store` (commit-select: BOM value or net name), `open`
+    /// (author-expressed disconnection).
+    fn lift_stmt(&mut self, stmt: &Statement, ctx: &mut NetlistContext) {
+        match stmt {
+            Statement::Bind(target, value) => {
+                if let (Some(lp), Some(rp)) = (
+                    resolve_pin(target, ctx.instances, ctx.type_pins),
+                    resolve_pin(value, ctx.instances, ctx.type_pins),
+                ) {
+                    let lk = pin_key(&lp.component, &lp.pin);
+                    let rk = pin_key(&rp.component, &rp.pin);
+                    ctx.ds.make(lk.clone());
+                    ctx.ds.make(rk.clone());
+                    ctx.ds.union(&lk, &rk);
+                    self.proofs.push(format!(
+                        "bound in node '{}' (persist-tighten): {}.{} <-> {}.{}",
+                        self.node, lp.component, lp.pin, rp.component, rp.pin
+                    ));
+                } else {
+                    self.errors.push(format!(
+                        "bind in node '{}' must name two pins ({}.<pin> = {}.<pin>)",
+                        self.node, target, value
+                    ));
+                }
+            }
+            Statement::StoreValue { instance, field, value } => {
+                self.stored.push((instance.clone(), field.clone(), value.clone()));
+            }
+            Statement::StoreNet { pin, name } => {
+                self.stored_nets.push((pin.clone(), name.clone()));
+            }
+            Statement::Open(a, b) => {
+                self.opens.push(((**a).clone(), (**b).clone()));
+            }
+            _ => {}
         }
     }
 }
@@ -1974,11 +2032,14 @@ fn complete_intent(
 fn collect_intents(
     ctx: &mut NetlistContext,
     items: &[TopLevel],
-) -> (Vec<String>, Vec<String>, Vec<String>) {
+) -> (Vec<String>, Vec<String>, Vec<String>, Vec<(String, String)>) {
     let mut errors = Vec::new();
     let mut proofs = Vec::new();
     let mut intents: Vec<(String, String)> = Vec::new();
     let mut bridges: Vec<BridgeRequest> = Vec::new();
+    let mut stored: Vec<(String, String, Expr)> = Vec::new();
+    let mut stored_nets: Vec<(Expr, String)> = Vec::new();
+    let mut opens: Vec<(Expr, Expr)> = Vec::new();
     for item in items {
         let TopLevel::Transaction(t) = item else {
             continue;
@@ -1989,6 +2050,9 @@ fn collect_intents(
             errors: &mut errors,
             intents: &mut intents,
             bridges: &mut bridges,
+            stored: &mut stored,
+            stored_nets: &mut stored_nets,
+            opens: &mut opens,
         };
         body_facts(t, ctx, &mut sink);
     }
@@ -1999,7 +2063,59 @@ fn collect_intents(
             Err(e) => errors.push(e),
         }
     }
-    (errors, proofs, synthesized)
+    // 2026-09-22 (D14): commit-selects resolve against the netlist AFTER all
+    // unions — a net name attaches to the pin's final union-find root.
+    for (pin, name) in &stored_nets {
+        match resolve_pin(pin, ctx.instances, ctx.type_pins) {
+            Some(p) => {
+                let root = ctx.ds.find(&pin_key(&p.component, &p.pin));
+                proofs.push(format!("named net (store): {}.{} is on '{}'", p.component, p.pin, name));
+                ctx.stored_net_names.push((root, name.clone()));
+            }
+            None => errors.push(format!(
+                "store net(...) names no declared pin: {}",
+                pin
+            )),
+        }
+    }
+    for (inst_name, field, value) in &stored {
+        proofs.push(format!(
+            "stored value (commit-select): {}.{} = {}",
+            inst_name, field, value
+        ));
+    }
+    // 2026-09-22 (D16 p3b): disconnections — two pins that must NOT be
+    // connected. A wiring fact, bind, or mechanism bridge that would connect
+    // them is a hard error (the complement of the phase-3 redundancy gate).
+    for (a, b) in &opens {
+        let (Some(ap), Some(bp)) = (
+            resolve_pin(a, ctx.instances, ctx.type_pins),
+            resolve_pin(b, ctx.instances, ctx.type_pins),
+        ) else {
+            errors.push(format!(
+                "open must name two pins, got '{}' and '{}'",
+                a, b
+            ));
+            continue;
+        };
+        let ak = pin_key(&ap.component, &ap.pin);
+        let bk = pin_key(&bp.component, &bp.pin);
+        if ctx.ds.find(&ak) == ctx.ds.find(&bk) {
+            errors.push(format!(
+                "open {}.{}, {}.{} — the pins are already connected (same net). The wire is declared open but copper ties them; remove the connection or the open",
+                ap.component, ap.pin, bp.component, bp.pin
+            ));
+        } else {
+            proofs.push(format!(
+                "open (disconnected): {}.{} and {}.{} are on separate nets",
+                ap.component, ap.pin, bp.component, bp.pin
+            ));
+        }
+    }
+    // 2026-09-22 (D14): disconnections verified above; net names come back
+    // so derive_netlist can merge them into the named-net resolution.
+    let stored_nets = std::mem::take(&mut ctx.stored_net_names);
+    (errors, proofs, synthesized, stored_nets)
 }
 
 /// Every declared pin of every instance, ready for union-find grouping
@@ -2068,6 +2184,51 @@ fn partition_nets(
     (nets, dangling)
 }
 
+/// 2026-09-22 (D14): fold `store net(pin) = "name";` names into net
+/// resolution. Stored names are keyed to the pin's FINAL union-find root
+/// (all body unions + intents already applied), with the same
+/// one-net-one-name conflict rule as `net <name>:` annotations.
+fn fold_stored_net_names(
+    net_names: &mut BTreeMap<String, String>,
+    raw_conflicts: &mut Vec<(String, String, String)>,
+    stored: Vec<(String, String)>,
+) {
+    for (root, name) in stored {
+        match net_names.get(&root) {
+            Some(existing) if *existing != name => {
+                raw_conflicts.push((root, existing.clone(), name));
+            }
+            Some(_) => {}
+            None => {
+                net_names.insert(root, name);
+            }
+        }
+    }
+}
+
+/// Group every declared pin by its final union-find root (deterministic —
+/// sorted members, HashMap rule). Pins ascribed a no_connect class are
+/// returned separately: they are intentionally unconnected and exempt from
+/// the dangling-pin error.
+fn group_pins(
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    ds: &mut DisjointSet,
+) -> (BTreeMap<String, Vec<PinRef>>, std::collections::HashSet<String>) {
+    let mut groups: BTreeMap<String, Vec<PinRef>> = BTreeMap::new();
+    let mut all_pins = collect_all_pins(instances, type_pins);
+    all_pins.sort();
+    let nc_pins = collect_no_connect_pins(instances, type_info);
+    for p in &all_pins {
+        let key = pin_key(&p.component, &p.pin);
+        ds.make(key.clone());
+        let root = ds.find(&key.clone());
+        groups.entry(root).or_default().push(p.clone());
+    }
+    (groups, nc_pins)
+}
+
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let (type_pins, type_info, class_errors) = collect_type_pins(items);
     if type_pins.is_empty() {
@@ -2081,27 +2242,17 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
 
     let mut ds = DisjointSet::new();
     let named = collect_pin_unions(items, &instances, &type_pins, &mut ds);
-    let (mut net_names, raw_conflicts) = resolve_net_names(&mut ds, named);
+    let (mut net_names, mut raw_conflicts) = resolve_net_names(&mut ds, named);
     // 2026-09-21 (E14a): node-body intents — body wiring facts union
     // first; drive intents then complete the last open pin.
-    let (intent_errors, intent_proofs, conditional_bridges) = {
+    let (intent_errors, intent_proofs, conditional_bridges, stored_net_names) = {
         let mut ictx = NetlistContext::new(items, &mut ds, &type_pins, &type_info, &instances);
         collect_intents(&mut ictx, items)
     };
+    fold_stored_net_names(&mut net_names, &mut raw_conflicts, stored_net_names);
 
     // Group members by root; sort everything for determinism (HashMap rule).
-    let mut groups: BTreeMap<String, Vec<PinRef>> = BTreeMap::new();
-    let mut all_pins = collect_all_pins(&instances, &type_pins);
-    all_pins.sort();
-    // 2026-09-21 (E12): pins ascribed a no_connect class are intentionally
-    // unconnected — exempt from the dangling-pin error below.
-    let nc_pins = collect_no_connect_pins(&instances, &type_info);
-    for p in &all_pins {
-        let key = pin_key(&p.component, &p.pin);
-        ds.make(key.clone());
-        let root = ds.find(&key.clone());
-        groups.entry(root).or_default().push(p.clone());
-    }
+    let (groups, nc_pins) = group_pins(&instances, &type_pins, &type_info, &mut ds);
 
     let (nets, dangling) = partition_nets(&groups, &mut net_names, &nc_pins);
 
@@ -2748,6 +2899,116 @@ mod tests {
         let e = &nl.intent_errors[0];
         assert!(e.contains("ambiguous") && e.contains("q1") && e.contains("q2"), "{}", e);
         assert!(e.contains("via <Type>"), "{}", e);
+    }
+
+    #[test]
+    fn bind_is_persist_tighten_union() {
+        // bind forces the net membership with provenance — the pins land on
+        // one net and the proof says "bound".
+        let src = r#"
+            type Conn { pin a; pin b; reference "J"; };
+            type Chip { pin p; pin q; reference "U"; };
+            let j1: Conn = Conn { value: "x" };
+            let u1: Chip = Chip { value: "y" };
+            node n [j1.a.voltage == u1.p.voltage && j1.b.voltage == u1.q.voltage] {
+                bind j1.a = j1.b;
+            };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("bound") && p.contains("j1.a")),
+            "bind must be proven: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn store_value_records_commit_select() {
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; };
+            type Chip { pin p; pin q; reference "U"; };
+            let r1: Resistor = Resistor { value: "TBD" };
+            let u1: Chip = Chip { value: "y" };
+            node n [u1.p.voltage == r1.a.voltage && u1.q.voltage == r1.b.voltage] {
+                store r1.value = "330R";
+            };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("stored value") && p.contains("r1.value") && p.contains("330R")),
+            "the commit-select must be proven: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn store_net_names_the_derived_net() {
+        let src = r#"
+            type Conn { pin a; pin b; reference "J"; };
+            type Chip { pin p; pin q; reference "U"; };
+            let j1: Conn = Conn { value: "x" };
+            let u1: Chip = Chip { value: "y" };
+            node n [j1.a.voltage == u1.p.voltage && j1.b.voltage == u1.q.voltage] {
+                store net(j1.a) = "v3v3";
+            };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            nl.nets.iter().any(|net| net.name == "v3v3"),
+            "the store-named net must carry the name: {:?}",
+            nl.nets
+        );
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("named net") && p.contains("v3v3")),
+            "net naming must be proven: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn open_separate_pins_is_recorded() {
+        let src = r#"
+            type Conn { pin a; pin b; pin c; pin d; reference "J"; };
+            let j1: Conn = Conn { value: "x" };
+            node n [j1.a.voltage == j1.b.voltage && j1.c.voltage == j1.d.voltage] {
+                open j1.a, j1.c;
+            };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("open (disconnected)") && p.contains("j1.a") && p.contains("j1.c")),
+            "open on separate nets must be proven: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn open_connected_pins_is_an_error() {
+        // The complement gate (D16 p3b): the pins share a net but the author
+        // declares the wire open — copper ties them. Hard error.
+        let src = r#"
+            type Conn { pin a; pin b; reference "J"; };
+            let j1: Conn = Conn { value: "x" };
+            node n [j1.a.voltage == j1.b.voltage] {
+                open j1.a, j1.b;
+            };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_errors[0].contains("already connected") && nl.intent_errors[0].contains("open"),
+            "{}",
+            nl.intent_errors[0]
+        );
     }
 
     #[test]

@@ -715,6 +715,18 @@ fn collect_strings_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<S
             for s in body { collect_strings_stmt(s, seen, out); }
         }
         Statement::InlineAsm { .. } | Statement::TrgBinding { .. } | Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => {}
+        // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — collect
+        // strings from their expressions (the net name is a String literal).
+        Statement::Bind(lhs, rhs) => {
+            collect_strings_expr(lhs, seen, out);
+            collect_strings_expr(rhs, seen, out);
+        }
+        Statement::StoreValue { value, .. } => { collect_strings_expr(value, seen, out); }
+        Statement::StoreNet { pin, .. } => { collect_strings_expr(pin, seen, out); }
+        Statement::Open(lhs, rhs) => {
+            collect_strings_expr(lhs, seen, out);
+            collect_strings_expr(rhs, seen, out);
+        }
     }
 }
 

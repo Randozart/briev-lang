@@ -464,6 +464,11 @@ pub fn stmt_tag(stmt: &Statement) -> &str {
         Statement::Defer(_) => "defer",
         Statement::Mutex(_) => "mutex",
         Statement::Barrier { .. } => "barrier",
+        // 2026-09-22 (D14/D16 p3b): electronics intent modifiers.
+        Statement::Bind(_, _) => "bind",
+        Statement::StoreValue { .. } => "store-value",
+        Statement::StoreNet { .. } => "store-net",
+        Statement::Open(_, _) => "open",
     }
 }
 

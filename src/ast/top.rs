@@ -424,6 +424,29 @@ pub enum Statement {
         expr: Box<Expr>,
         arms: Vec<StmtMatchArm>,
     },
+    /// 2026-09-22 (D14, plan 2026-09-22-core-chain-into + lifting slots):
+    /// electronics intent modifiers. Contextual keywords in node bodies.
+    /// `bind a.pin = b.pin;` — persist-tighten: the net membership must hold
+    /// in every solution. Consumed by the netlist analysis (union + proof).
+    Bind(Box<Expr>, Box<Expr>),
+    /// `store inst.field = "value";` — commit-select: pick one BOM value for
+    /// an instance property from the enumerated candidates. Consumed by the
+    /// netlist analysis (records the committed value with provenance).
+    StoreValue {
+        instance: String,
+        field: String,
+        value: Expr,
+    },
+    /// `store net(pin) = "name";` — name a derived equivalence class. The
+    /// pin resolves to a net; the name attaches to that net (emitter
+    /// concern, provenance kept).
+    StoreNet { pin: Expr, name: String },
+    /// `open a.pin, b.pin;` — author-expressed disconnection (D16 p3b):
+    /// these two pins would interact if connected, but the wire is open;
+    /// analyse as such. Never-union; a wiring fact or mechanism that would
+    /// connect them is a hard error (the complement gate to the phase-3
+    /// redundancy check).
+    Open(Box<Expr>, Box<Expr>),
 }
 
 /// 2026-07-24: A single arm in a statement-level match. 2026-08-22
@@ -474,6 +497,14 @@ impl PartialEq for Statement {
             (Statement::SyncBlock(b1), Statement::SyncBlock(b2)) => b1 == b2,
             (Statement::Match { expr: e1, arms: a1 }, Statement::Match { expr: e2, arms: a2 }) => e1 == e2 && a1 == a2,
             (Statement::Match { .. }, _) | (_, Statement::Match { .. }) => false,
+            // 2026-09-22 (D14/D16 p3b): electronics intent modifiers.
+            (Statement::Bind(l1, r1), Statement::Bind(l2, r2)) => l1 == l2 && r1 == r2,
+            (Statement::StoreValue { instance: i1, field: f1, value: v1 },
+             Statement::StoreValue { instance: i2, field: f2, value: v2 }) =>
+                i1 == i2 && f1 == f2 && v1 == v2,
+            (Statement::StoreNet { pin: p1, name: n1 },
+             Statement::StoreNet { pin: p2, name: n2 }) => p1 == p2 && n1 == n2,
+            (Statement::Open(l1, r1), Statement::Open(l2, r2)) => l1 == l2 && r1 == r2,
             _ => false,
         }
     }

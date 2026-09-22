@@ -6180,7 +6180,7 @@ fn chain_step_actions_may_be_guarded_statements() {
     let src = "chain on [armed] {\n\
                \x20   when door_open { unlock(); };\n\
                \x20   into unlatched;\n\
-               \x20   open();\n\
+               \x20   release();\n\
                };\n";
     let items = parse_prog(src);
     assert_eq!(items.len(), 2);
@@ -6216,4 +6216,99 @@ fn chain_rejects_empty_body() {
         "expected the empty-chain error, got: {msg}"
     );
 }
+}
+
+// ── 2026-09-22 (D14/D16 p3b): bind/store/open lifting slots ──────────────
+
+#[cfg(test)]
+mod lifting_slot_tests {
+    use crate::lexer::tokenize;
+    use crate::parser::Parser;
+
+    fn parse_prog(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_program().expect("parse failed")
+    }
+
+    #[test]
+    fn bind_parses_as_persist_tighten() {
+        let src = "node n [true] { bind led1.a = u2.gpio[0]; };\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::Transaction(t) = &items[0] else {
+            panic!("expected a node");
+        };
+        assert!(
+            matches!(
+                &t.body[0],
+                crate::ast::Statement::Bind(l, r)
+                    if matches!(l.as_ref(), crate::ast::Expr::Field(..))
+            ),
+            "bind must parse to Statement::Bind with a pin LHS, got {:?}",
+            t.body[0]
+        );
+    }
+
+    #[test]
+    fn store_value_parses() {
+        let src = "node n [true] { store r_led.value = \"330R\"; };\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::Transaction(t) = &items[0] else {
+            panic!("expected a node");
+        };
+        let crate::ast::Statement::StoreValue { instance, field, value } = &t.body[0] else {
+            panic!("expected StoreValue, got {:?}", t.body[0]);
+        };
+        assert_eq!(instance, "r_led");
+        assert_eq!(field, "value");
+        assert!(matches!(value, crate::ast::Expr::Quoted(_)));
+    }
+
+    #[test]
+    fn store_net_parses() {
+        let src = "node n [true] { store net(u1.vbus) = \"v3v3\"; };\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::Transaction(t) = &items[0] else {
+            panic!("expected a node");
+        };
+        let crate::ast::Statement::StoreNet { pin, name } = &t.body[0] else {
+            panic!("expected StoreNet, got {:?}", t.body[0]);
+        };
+        assert_eq!(name, "v3v3");
+        assert!(matches!(pin, crate::ast::Expr::Field(..)), "pin must be a field");
+    }
+
+    #[test]
+    fn open_parses() {
+        let src = "node n [true] { open u1.a, u2.b; };\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::Transaction(t) = &items[0] else {
+            panic!("expected a node");
+        };
+        assert!(
+            matches!(
+                &t.body[0],
+                crate::ast::Statement::Open(l, r)
+                    if matches!(l.as_ref(), crate::ast::Expr::Field(..))
+                        && matches!(r.as_ref(), crate::ast::Expr::Field(..))
+            ),
+            "open must parse to Statement::Open with two pins, got {:?}",
+            t.body[0]
+        );
+    }
+
+    #[test]
+    fn store_value_rejects_non_field_target() {
+        // `store net(...)` is the only non-field form; a bare identifier
+        // target is an error.
+        let src = "node n [true] { store foo = \"x\"; };\n";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_program().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("`store` targets an instance property") || msg.contains("net"),
+            "expected the store-target error, got: {msg}"
+        );
+    }
 }

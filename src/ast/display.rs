@@ -398,6 +398,13 @@ impl fmt::Display for Statement {
                 }
                 write!(f, "}}")
             }
+            // 2026-09-22 (D14/D16 p3b): electronics intent modifiers.
+            Statement::Bind(lhs, rhs) => write!(f, "bind {} = {};", lhs, rhs),
+            Statement::StoreValue { instance, field, value } => {
+                write!(f, "store {}.{} = {};", instance, field, value)
+            }
+            Statement::StoreNet { pin, name } => write!(f, "store net({}) = \"{}\";", pin, name),
+            Statement::Open(lhs, rhs) => write!(f, "open {}, {};", lhs, rhs),
             Statement::MetadataAssignment(key, val) => {
                 write!(f, "!> {}: {};", key, val)
             }

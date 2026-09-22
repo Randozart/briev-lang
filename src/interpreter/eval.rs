@@ -2124,6 +2124,9 @@ pub fn eval_statement(
         Statement::Rollback(_) => Ok(Value::Void),
         Statement::MetadataAssignment(_, _) => Ok(Value::Void),
         Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) => Ok(Value::Void),
+        // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — netlist
+        // analysis consumes them, not the runtime. No-op here.
+        Statement::Bind(..) | Statement::StoreValue { .. } | Statement::StoreNet { .. } | Statement::Open(..) => Ok(Value::Void),
         Statement::SyncBlock(body) => {
             let mut result = Value::Void;
             for stmt in body {

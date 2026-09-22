@@ -3567,6 +3567,27 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => Ok(()),
+        // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — the
+        // netlist analysis consumes them; the typechecker verifies their
+        // expressions type-check.
+        Statement::Bind(lhs, rhs) => {
+            infer_type_only(lhs, ctx)?;
+            infer_type_only(rhs, ctx)?;
+            Ok(())
+        }
+        Statement::StoreValue { value, .. } => {
+            infer_type_only(value, ctx)?;
+            Ok(())
+        }
+        Statement::StoreNet { pin, .. } => {
+            infer_type_only(pin, ctx)?;
+            Ok(())
+        }
+        Statement::Open(lhs, rhs) => {
+            infer_type_only(lhs, ctx)?;
+            infer_type_only(rhs, ctx)?;
+            Ok(())
+        }
         Statement::SyncBlock(body) => {
             for stmt in body {
                 infer_statement(stmt, ctx)?;

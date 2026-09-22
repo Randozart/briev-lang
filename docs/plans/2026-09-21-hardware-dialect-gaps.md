@@ -641,3 +641,33 @@ future slices (the keywords are settled here, not implemented).
 Open under D16: phase-3b (author-expressed disconnection via `open`),
 `bind`/`store` lifting slots, asymmetric switch parts, ERC class
 semantics, whole-bus equality.
+
+### Amendment 2026-09-22 (VII): `bind`/`store`/`open` IMPLEMENTED
+
+The settled keywords are now live in the electronics dialect (node bodies):
+
+- `bind a.pin = b.pin;` — persist-tighten: the net membership must hold in
+  every solution. Unions the pins with `bound` provenance (D14 slot 1).
+- `store inst.field = value;` — commit-select: picks one BOM value,
+  recorded with provenance (D14 slot 2).
+- `store net(pin) = "name";` — names the derived equivalence class; the
+  name folds into net resolution with the same one-net-one-name conflict
+  rule as `net <name>:` annotations.
+- `open a.pin, b.pin;` — author-expressed disconnection (D16 p3b): the
+  pins are NOT connected. If a wiring fact, bind, or mechanism bridge
+  would tie them, it is a hard error — the complement gate to the
+  phase-3 redundancy check (which catches unconditional copper defeating
+  a mechanism; `open` catches a declared disconnection defeated by copper).
+
+All are contextual keywords in node-body statement position (like
+`yield`/`check`). `bind`/`store`/`open` now SHADOW function/identifier
+names in node bodies — an `open()` action inside a chain must be renamed
+(use `release()`, etc.). This is the intended cost of the unified
+vocabulary; the design record's fixture uses the new spellings.
+
+D16 p3b is now closed: the cross-region complement check has both halves —
+mechanism redundancy (unconditional copper defeating a switch) and
+author-expressed disconnection (`open`).
+
+Open under D16: asymmetric switch parts (relay coil/contact), ERC class
+semantics, whole-bus equality.

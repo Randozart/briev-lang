@@ -107,6 +107,22 @@ impl Annotator {
                 | Statement::InlineDefn(_)
                 | Statement::InlineTxn(_)
                 | Statement::Match { .. } => {}
+                // 2026-09-22 (D14/D16 p3b): electronics intent modifiers —
+                // collect any calls inside their expressions.
+                Statement::Bind(lhs, rhs) => {
+                    self.collect_calls_from_expr(lhs, calls);
+                    self.collect_calls_from_expr(rhs, calls);
+                }
+                Statement::StoreValue { value, .. } => {
+                    self.collect_calls_from_expr(value, calls);
+                }
+                Statement::StoreNet { pin, .. } => {
+                    self.collect_calls_from_expr(pin, calls);
+                }
+                Statement::Open(lhs, rhs) => {
+                    self.collect_calls_from_expr(lhs, calls);
+                    self.collect_calls_from_expr(rhs, calls);
+                }
                 // 2026-08-09 (Phase 10): defer/mutex/barrier bodies may call
                 // functions — collect them.
                 Statement::Defer(body) | Statement::Mutex(body) => {
@@ -540,6 +556,32 @@ impl Annotator {
             Statement::Match { .. } => {
                 format!("{}// compile-time match\n", spaces)
             }
+            // 2026-09-22 (D14/D16 p3b): electronics intent modifiers.
+            Statement::Bind(lhs, rhs) => format!(
+                "{}bind {} = {};\n",
+                spaces,
+                self.format_expr(lhs),
+                self.format_expr(rhs),
+            ),
+            Statement::StoreValue { instance, field, value } => format!(
+                "{}store {}.{} = {};\n",
+                spaces,
+                instance,
+                field,
+                self.format_expr(value),
+            ),
+            Statement::StoreNet { pin, name } => format!(
+                "{}store net({}) = \"{}\";\n",
+                spaces,
+                self.format_expr(pin),
+                name,
+            ),
+            Statement::Open(lhs, rhs) => format!(
+                "{}open {}, {};\n",
+                spaces,
+                self.format_expr(lhs),
+                self.format_expr(rhs),
+            ),
         }
     }
 

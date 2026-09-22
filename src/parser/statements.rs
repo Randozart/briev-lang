@@ -5,7 +5,7 @@
 
 use super::helpers::Parser;
 use crate::ast::{Expr, PropertyValue, Statement};
-use crate::errors::SyntaxError;
+use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
 impl<'a> Parser<'a> {
@@ -175,6 +175,39 @@ impl<'a> Parser<'a> {
                     self.parse_lifetime_hint(true)
                 } else if self.check_identifier("keep") {
                     self.parse_lifetime_hint(false)
+                } else if self.check_identifier("bind") {
+                    // 2026-09-22 (D14): `bind a.pin = b.pin;` — persist-tighten.
+                    // The expression parser treats `=` as BinaryOpKind::Eq at
+                    // the lowest precedence, so parse the full expr and split
+                    // the equality (mirrors the statement-level Assign split).
+                    self.pos += 1; // consume 'bind'
+                    let expr = self.parse_expression()?;
+                    self.expect(Token::Semicolon)?;
+                    match expr {
+                        Expr::BinaryOp(
+                            crate::ast::BinaryOpKind::Eq,
+                            l,
+                            r,
+                        ) => Ok(Statement::Bind(l, r)),
+                        other => Err(SyntaxError::InvalidStatement {
+                            reason: format!(
+                                "`bind` must state a pin equality (`bind a.pin = b.pin;`), got `{}`",
+                                other
+                            ),
+                            span: Span::dummy(),
+                        }),
+                    }
+                } else if self.check_identifier("store") {
+                    self.parse_store_statement()
+                } else if self.check_identifier("open") {
+                    // 2026-09-22 (D16 p3b): `open a.pin, b.pin;` — disconnection.
+                    // Comma separates the two pins; parse_expression stops at `,`.
+                    self.pos += 1; // consume 'open'
+                    let lhs = self.parse_expression()?;
+                    self.expect(Token::Comma)?;
+                    let rhs = self.parse_expression()?;
+                    self.expect(Token::Semicolon)?;
+                    Ok(Statement::Open(Box::new(lhs), Box::new(rhs)))
                 } else {
                     // 2026-08-22 (spec-conformance plan Phase 2): a
                     // declaration-shaped misspelled keyword (`nod ready { … }`)
@@ -193,6 +226,69 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+
+    /// 2026-09-22 (D14): `store` — commit-select. Two forms:
+    /// `store inst.field = <value>;` picks a BOM value for an instance
+    /// property; `store net(<pin>) = "<name>";` names a derived net.
+    /// Both use `=` as the separator, which the expression parser treats as
+    /// `BinaryOpKind::Eq` — parse the full expression and split the equality.
+    fn parse_store_statement(&mut self) -> Result<Statement, SyntaxError> {
+        self.pos += 1; // consume 'store'
+        let expr = self.parse_expression()?;
+        self.expect(Token::Semicolon)?;
+        let Expr::BinaryOp(crate::ast::BinaryOpKind::Eq, lhs, rhs) = expr else {
+            return Err(SyntaxError::InvalidStatement {
+                reason: format!(
+                    "`store` must assign a value (`store inst.field = value;` or \
+                     `store net(pin) = \"name\";`), got `{}`",
+                    expr
+                ),
+                span: Span::dummy(),
+            });
+        };
+        // `store net(<pin>) = "<name>";` — a net(...) call target.
+        if let Expr::Call(name, args, _) = lhs.as_ref() {
+            if name == "net" {
+                if args.len() != 1 {
+                    return Err(SyntaxError::InvalidStatement {
+                        reason: "`store net(...)` takes exactly one pin".to_string(),
+                        span: Span::dummy(),
+                    });
+                }
+                let Expr::Quoted(bytes) = rhs.as_ref() else {
+                    return Err(SyntaxError::InvalidStatement {
+                        reason: "`store net(pin) = \"name\";` — the name must be a string literal"
+                            .to_string(),
+                        span: Span::dummy(),
+                    });
+                };
+                let name = String::from_utf8_lossy(bytes).into_owned();
+                return Ok(Statement::StoreNet {
+                    pin: args[0].clone(),
+                    name,
+                });
+            }
+        }
+        // `store inst.field = value;` — a field access target.
+        let Expr::Field(base, field) = lhs.as_ref() else {
+            return Err(SyntaxError::InvalidStatement {
+                reason: "`store` targets an instance property (`store inst.field = value;`) or a \
+                         net (`store net(pin) = \"name\";`)".to_string(),
+                span: Span::dummy(),
+            });
+        };
+        let Expr::Identifier(instance) = base.as_ref() else {
+            return Err(SyntaxError::InvalidStatement {
+                reason: "`store` instance must be a plain identifier".to_string(),
+                span: Span::dummy(),
+            });
+        };
+        Ok(Statement::StoreValue {
+            instance: instance.clone(),
+            field: field.clone(),
+            value: (*rhs).clone(),
+        })
     }
 
     /// let name: Type = expr;

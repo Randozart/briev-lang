@@ -258,6 +258,22 @@ impl<'a> DataflowAnalyzer<'a> {
             Statement::InlineAsm { .. } | Statement::TrgBinding { .. }
             | Statement::MetadataAssignment(..) | Statement::InlineDefn(_)
             | Statement::InlineTxn(_) | Statement::Match { .. } => {}
+            // 2026-09-22 (D14/D16 p3b): electronics intent modifiers —
+            // collect ids from their expressions.
+            Statement::Bind(lhs, rhs) => {
+                self.extract_ids_recursive(lhs, ids);
+                self.extract_ids_recursive(rhs, ids);
+            }
+            Statement::StoreValue { value, .. } => {
+                self.extract_ids_recursive(value, ids);
+            }
+            Statement::StoreNet { pin, .. } => {
+                self.extract_ids_recursive(pin, ids);
+            }
+            Statement::Open(lhs, rhs) => {
+                self.extract_ids_recursive(lhs, ids);
+                self.extract_ids_recursive(rhs, ids);
+            }
         }
     }
 

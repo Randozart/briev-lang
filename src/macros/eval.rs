@@ -2140,6 +2140,18 @@ fn resolve_dollar_refs_in_stmt(stmt: &mut Statement, scope: &Scope) -> Result<()
         }
         Statement::InlineAsm { .. } | Statement::MetadataAssignment(..)
         | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => Ok(()),
+        // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — resolve
+        // $refs in their expressions.
+        Statement::Bind(lhs, rhs) => {
+            resolve_dollar_refs_in_expr(lhs, scope)?;
+            resolve_dollar_refs_in_expr(rhs, scope)
+        }
+        Statement::StoreValue { value, .. } => resolve_dollar_refs_in_expr(value, scope),
+        Statement::StoreNet { pin, .. } => resolve_dollar_refs_in_expr(pin, scope),
+        Statement::Open(lhs, rhs) => {
+            resolve_dollar_refs_in_expr(lhs, scope)?;
+            resolve_dollar_refs_in_expr(rhs, scope)
+        }
     }
 }
 

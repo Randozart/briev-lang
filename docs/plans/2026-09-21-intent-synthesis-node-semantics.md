@@ -148,7 +148,7 @@ one candidate iff no contract distinguishes them (under-enumerate = false
 proofs; over-enumerate = noise that makes users ignore diagnostics). Two
 standing guards: **the solver never invents components** (it wires declared
 instances only; adding parts is author work), and the **well-posedness
-gate** — every pin must be constrained by ≥1 behavior/invariant/keep/
+gate** — every pin must be constrained by ≥1 behavior/invariant/bind/
 store/population-fact, else error listing the unconstrained pins (copper
 the spec doesn't cover must not ship).
 
@@ -157,7 +157,7 @@ the spec doesn't cover must not ship).
 | # | Site | Resolution stage |
 |---|---|---|
 | 1 | Structure existence (is an element forced) | physics proofs — free |
-| 2 | Net membership (which pins connect) | `keep` narrows |
+| 2 | Net membership (which pins connect) | `bind` narrows |
 | 3 | Value choice (which R; free variable with bounds) | `store`, or declared E-series domain; unresolved at BOM = error with bounds. No silent defaults (Rule 3) |
 | 4 | Participation vs DNP (unconnected instance) | population fact required for exemption; else error listing *populate-or-DNP* |
 | 5 | Cross-node drive conflicts | Rule 22 classification, else error |
@@ -165,14 +165,21 @@ the spec doesn't cover must not ship).
 | 7 | Over-constraint (keeps that kill all solutions) | UNSAT error naming the **minimal conflicting set** |
 | 8 | Equivalent variants (series order, symmetric pins) | canonicalize silently, deterministically |
 
-**D14 — Lifting slots.** *persist-tighten* — declares a fact that must
-hold in every solution (narrows before the solve); *commit-select* — picks
-one solution from enumerated candidates (visible in the emitted proof
-string). Modifier-family keywords (intent, never speed — Rule 2; if the
-compiler could have inferred it, using the keyword is a bug report).
-Names provisional (`keep`/`store` are the working examples); derived facts
+**D14 — Lifting slots.** *persist-tighten* (`bind a.pin = b.pin;`) —
+declares a wiring fact that must hold in every solution (narrows before
+the solve); *commit-select* (`store inst.field = "value";` /
+`store net(pin) = "name";`) — picks one solution from enumerated
+candidates, visible in the emitted proof string. Modifier-family keywords
+(intent, never speed — Rule 2; if the compiler could have inferred it,
+using the keyword is a bug report). Derived facts
 (`derive on: a.current >= 2mA;`) are a separate construct — proven
-properties, not intents.
+properties, not intents. **2026-09-22 (plan 2026-09-22-core-chain-into):
+IMPLEMENTED.** The keyword unification settled `bind`/`store` (not the
+provisional `keep` — that is main-language ownership-transfer; `fix` was
+rejected as a false friend). `bind` unions with provenance; `store`
+records the committed value or names the derived net. **D16 p3b** —
+`open a.pin, b.pin;` is the author-expressed disconnection: never-union,
+the complement gate to the phase-3 redundancy check.
 
 **D15 — Firmware = extern boundary.** Chip-internal logic (EC firmware)
 is outside the proof surface: the EC appears as a component whose pins
@@ -253,8 +260,8 @@ trg usb_attached;
 node usb_powered [usb_attached && j1.vbus.voltage == 5.0V] {
     u1.enabled = true;          // en wiring inferred (candidates exist)
     led1 = true;                // physics derives the series resistor;
-                                // io-class pruning + keep pick the driver
-    keep led1.a = u2.gpio[0];
+                                // io-class pruning + bind pick the driver
+    bind led1.a = u2.gpio[0];
     store r_led.value = "330R";
     store net(u1.out) = "v3v3"; // even naming is a store on a derived class
 }
@@ -269,7 +276,7 @@ node button_pressed [usb_powered.up && sw1.closed] {
 ```
 
 **Gate:** compiles with the stated intents; each stated omission is a hard
-error with enumerated candidates (drop `keep` → 8-candidate GPIO error;
+error with enumerated candidates (drop `bind` → 8-candidate GPIO error;
 drop `store r_led.value` → unresolvable BOM value error with bounds;
 remove a decoupling cap → convention error; undeclared driver for `led1`
 → membership candidates; `sw1` path without `store r_btn.via(...)` →

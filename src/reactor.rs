@@ -396,6 +396,11 @@ impl Reactor {
             Statement::MetadataAssignment(_, _) => {
                 Ok(StmtResult::Continue)
             }
+            // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — the
+            // netlist analysis consumes them; the reactor does not.
+            Statement::Bind(..) | Statement::StoreValue { .. } | Statement::StoreNet { .. } | Statement::Open(..) => {
+                Ok(StmtResult::Continue)
+            }
         }
     }
 }
