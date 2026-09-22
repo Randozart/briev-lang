@@ -58,6 +58,7 @@ msg: .asciz "hello from .bad\n"
 | `section .x` / `global n` / `.dir args` | top-level directives |
 | `msg: .asciz "..."` | data label + directive |
 | `[expr]` | inline contract for the next instruction |
+| `^` / `^^` / `^^^` + instruction | acknowledge prefix — silences W-tier warnings for its scope; `^^^` overrides predicted errors (see the acknowledge tier) |
 | `alias x = r0` | register, mnemonic, or label alias — resolved in that order |
 
 Friendly mnemonic aliases (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load
@@ -213,6 +214,71 @@ assembles to `.o`, and links it into the binary; the LLVM IR references
 the symbol via `declare` (call-site contracts are checked by the normal
 Briev machinery). `bad fn` replaces `asm<Target>` (AsmFn is retained for
 backward compatibility and deprecated).
+
+## `bootstrap bad` — the authored machine entry
+
+`bootstrap bad name() [post] { body }` (`.b.bv` bare profile) is the
+**authored machine entry**: the body IS the reset vector / `.text.start`
+routine. The compiler emits NO owned `_start` when one is present — the
+author owns sp setup, `.bss` zeroing, the vector table, and the handoff
+(`call main` / park / jump). The body is parsed VERBATIM (no `_entry:`
+wrap, no auto-`ret`); the entry symbol is auto-exported so the linker's
+`ENTRY(...)` resolves. The postcondition is **positional and taken on
+authority** — raw `.bad` stores cannot carry typed-store proofs (matches
+`post_authority`); reactor-side consumers still get the guarantee.
+
+```briev
+bootstrap bad Reset_Handler() [true] {
+    section .isr_vector
+    sp_slot:  .word 0x2007C000
+    reset_v:  .word Reset_Handler + 1   // thumb bit set for Cortex-M
+    section .text.start
+    Reset_Handler:
+    addr r0, msg
+    ...                                   // MMIO, loops, handoff
+    halt
+    section .rodata
+    msg: .asciz "Briev boot\n"
+}
+```
+
+QEMU-verified: `examples/bad/boot_mps2.b.bv` boots the MPS2-AN385
+(Cortex-M3) with no `startup.S` and no compiler `_start`, printing through
+the CMSDK APB UART. thumb/arm assembly uses clang's integrated assembler
+and ld.lld when the `arm-none-eabi` binutils are absent (documented
+fallback, never a silent pass).
+
+## The acknowledge tier — predicting, not blocking
+
+`.bad` **predicts** probable errors and lets the author **veto loudly**.
+A `^` / `^^` / `^^^` prefix on an instruction line silences W-tier
+warnings for its scope; `^^^` also overrides predicted errors. Nothing
+blocks — a prediction is always surfaced, acknowledged ones print as info
+under `--trace-lowering` (never silent).
+
+```
+^ mov r5, 1               // ack probable warnings on this instruction
+^^ mov r5, 1; call f      // ack the whole `;`-separated line
+^^^ mov r5, 1             // full authority: predicted errors too
+^ W1 mov r5, 1            // ack only W1 (explicit name)
+^ack W1 mov r5, 1         // keyword tail — future: ^seq, ^vol, ...
+```
+
+- Caret count = scope: 1 Instr, 2 Line, 3 Override. The keyword tail is
+  the future-expansion slot — the grammar is open after `^`.
+- **Three tiers**: hardware capability (no imm form, unmapped register)
+  and author-declared contracts (`[rN preserved]`, `[frame: N]`) are
+  NEVER ack-able — `^^^` overrides only what the *compiler concluded*,
+  never what the *hardware forbids* and never what the *author declared*.
+- **W1** caller-saved live across `call` · **W2** branch-path push/pop
+  imbalance · **W3** `ret` with sp delta · **W4** FP-pool scratch
+  collision (r9/r8) · **W5** defn-inlined `ret` · **W6** unresolved local
+  label.
+- **Stale markers can't rot**: an ack naming a warning that never fired
+  is a loud error.
+- Recorded, never silent: `--trace-lowering` prints acknowledged warnings
+  as info with the line noted — the author's conscious disagreement is
+  auditable and greppable.
 
 ## Cross-target verification
 

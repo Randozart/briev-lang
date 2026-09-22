@@ -2632,6 +2632,15 @@ full Briev expression over the params and `result` (matching `.defn`
 contract semantics); a leading group is the precondition. Call-site
 contracts are checked by the ordinary contract machinery.
 
+`bootstrap bad name() [post] { body }` (`.b.bv` bare profile) is the
+**authored machine entry**: the body IS the reset vector / `.text.start`
+routine. The compiler emits no owned `_start`; the author owns sp setup,
+`.bss`, the vector table, and the handoff (`call main` / park / jump).
+The body is parsed verbatim and its entry symbol auto-exported for the
+linker; the postcondition is taken on authority (raw `.bad` stores
+cannot carry typed-store proofs). QEMU-verified on the MPS2-AN385
+Cortex-M3 (`examples/bad/boot_mps2.b.bv`).
+
 `bad` replaces the earlier `asm<target>` declaration (see §20.1 note);
 `asm<Target>` is retained for backward compatibility and deprecated.
 
@@ -2664,7 +2673,15 @@ emitted as comments into the assembly. Friendly mnemonic aliases
 (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load by default from
 `std/bad/friendly.bad`; `brievc bad --raw` opts out (`_start` has no
 alias — it is the universal entry). `;` separates instructions on one
-line in every body context. Float literals ride a deduped `.rodata`
+line in every body context. **The acknowledge tier**: a `^` / `^^` /
+`^^^` prefix on an instruction line silences probable-error warnings
+(W1 caller-saved across `call`, W2 branch-path push/pop imbalance, W3
+`ret` with sp delta, W4 FP-pool scratch collision, W5 defn-inlined
+`ret`, W6 unresolved local label) for its scope — 1 caret this
+instruction, 2 the whole line, 3 full override of predicted errors.
+Hardware-capability and author-declared-contract failures are NEVER
+ack-able; acknowledged warnings are recorded (never silent) and a named
+warning that never fired is a loud error. Float literals ride a deduped `.rodata`
 literal pool; `syscall` takes a NAMED kernel call (`syscall write, ...`)
 whose per-target numbers live in config, routing the call through each
 target's syscall ABI. `.export` names a C-ABI entry

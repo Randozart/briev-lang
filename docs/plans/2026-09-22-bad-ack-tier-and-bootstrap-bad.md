@@ -136,8 +136,23 @@ bootstrap bad reset() {
 
 ### Deferred (next phase)
 
-Pure bootloader (no reactor) + raw-binary/objcopy output + boot headers
-(multiboot/UEFI/DTB).
+- **Pure bootloader (no reactor) + raw-binary/objcopy output + boot headers
+  (multiboot/UEFI/DTB)**.
+- **CSR ops for the rv64 kernel port**: `kernel_rv64.b.bv`'s bootstrap
+  uses `Asm#("raw", ...)` for `csrw mscratch/mtvec`, `csrs mie/mstatus`,
+  and CLINT MMIO reads. Expressing it as `bootstrap bad` needs csrr/csrw/
+  csrs/csrc in the `.bad` core ISA (a data-driven config addition like any
+  other op). The MPS2 port is DONE; the rv64 kernel bootstrap port is the
+  remaining showcase.
+
+## Status (2026-09-22)
+
+- Part A: shipped — `^`/`^^`/`^^^` + W1-W6, recorded never silent,
+  stale-ack loud errors.
+- Part B: thumb/arm config rows + `bootstrap bad` shipped, QEMU-verified
+  on MPS2-AN385 (`examples/bad/boot_mps2.b.bv` prints "Briev boot" with
+  no startup.S and no compiler `_start`). rv64 kernel bootstrap port +
+  CSR ops deferred.
 
 ## Work order
 

@@ -18,9 +18,16 @@ dispatches them and which ABI the compiler wraps around the body.
 | Form | Fired by | Scaffold (compiler-owned) | Contracts |
 |---|---|---|---|
 | `bootstrap node <n> [<post>] { … }` | the reset vector | `sp ← _stack_top`, `.bss` zero, body, hand off to the reactor | handoff postcondition, proven from body stores |
+| `bootstrap bad <n> [<post>] { … }` | the reset vector | NONE — the author owns sp/.bss/vector-table/handoff; body is real `.bad` grammar (2026-09-22) | postcondition, taken on authority |
 | `node <n> @ <vector> [pre][post] { … }` | the machine event (mtvec) | convention scaffold — see below | ordinary state obligations |
 | `node <n> @ <address> [post]? { … }` | the reactor's pass | none (existing trigger machinery) | postcondition; the wiring is the eligibility |
 | `node <n> [pre][post] { … }` | the reactor | none | ordinary state obligations |
+
+`bootstrap bad` is `bootstrap node`'s assembly sibling: both are authored
+program entries, but the `bad` body is compiled through the bad backend
+and the compiler emits NO owned `_start` — the `.bad` body IS the entry
+(see `docs/architecture/bad-dialect.md`). QEMU-verified on the
+MPS2-AN385 via `examples/bad/boot_mps2.b.bv`.
 
 ## `@` wiring — one pattern, two dispatch classes
 
