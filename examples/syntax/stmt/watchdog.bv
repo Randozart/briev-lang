@@ -1,0 +1,11 @@
+defn log_fire(last: Int) -> Void {
+    term;
+};
+
+let count: Int = 0;
+txn increment [count < 100][true]
+    ?[count >= 0] within 10 ms -> log_fire(count)
+{
+    count = count + 1;
+    term;
+};

@@ -568,6 +568,22 @@ section(".init") defn startup() -> Int { ... };
 section(".rodata") const TABLE: Int = 5;
 ```
 
+**Modifier order is free (2026-09-22).** Modifier/strategy keywords compose
+in any order before a structural identifier: `<keywords>* <identifier>
+<name>`. `vol out let x` and `out vol let x` are the same declaration;
+`seq accel node`, `accel seq node`, and `sync<g> async node` all parse.
+The identifier always sits after the keywords — a modifier never follows
+it (`node async` is a node *named* `async`, not a postfix modifier). Two
+exceptions:
+
+- `bootstrap` is a fixed compound: `bootstrap node name` only.
+- Duplicate modifiers are an error (`seq seq node` does not compile).
+
+Restrictions: `async`/`sync<group>`/`accel` apply to a node or txn;
+`vol`/`mem`/`reg` apply to `let` only; `out` applies to a defn, node,
+txn, or let; `seq`/`pack`/`coll` before a struct/obj are layout flags the
+struct parser owns (`pack seq struct`, `seq pack struct`).
+
 - Applies to `defn` and `const`. State fields live in `%State` (one
   allocation) and have no per-field linker section — a `section` prefix on
   anything else is a parse error.

@@ -2,10 +2,22 @@
 // 2026-07-12: Phase 1.6 — expect, advance, peek, error reporting, span tracking.
 // Flat code: each function is max 2 levels of nesting.
 
-use crate::ast::TopLevel;
+use crate::ast::{Annotation, TopLevel};
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 use std::collections::HashSet;
+
+/// 2026-09-22 (order-free-modifiers plan): `<keywords>* <identifier> <name>`.
+/// Modifier/strategy keywords compose in any order, then exactly one
+/// structural identifier, then the name. This struct carries what
+/// `consume_modifier_prefix` collected; the dispatch validates the
+/// identifier against the modifier set.
+#[derive(Debug, Clone, Default)]
+pub struct ModifierPrefix {
+    pub annotations: Vec<Annotation>,
+    pub is_async: bool,
+    pub sync_groups: Option<Vec<String>>,
+}
 
 pub struct Parser<'a> {
     pub tokens: Vec<(Token, std::ops::Range<usize>)>,
@@ -81,6 +93,176 @@ impl<'a> Parser<'a> {
     /// Peek at the current token without consuming it.
     pub fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.pos).map(|(t, _)| t)
+    }
+
+    /// Consume a run of modifier/strategy keywords in ANY order and return
+    /// what was seen. Stops at the first non-modifier token (the structural
+    /// identifier). Duplicate modifiers are a hard error. `bootstrap` is a
+    /// FIXED compound (`bootstrap node`) and is NOT consumed here.
+    pub fn consume_modifier_prefix(&mut self) -> Result<ModifierPrefix, SyntaxError> {
+        let mut prefix = ModifierPrefix::default();
+        loop {
+            // Data-driven: the annotation-name flavor of each keyword token.
+            // `seq`/`pack`/`coll` before a struct/obj are LAYOUT flags the
+            // struct/obj parser owns (`seq struct`, `pack seq struct`), so the
+            // scanner skips them when the run heads for a struct.
+            match self.peek() {
+                Some(Token::Seq) if !self.peek_targets_struct_like() => {
+                    self.record_annotation(&mut prefix, "seq")?;
+                }
+                Some(Token::Pack) if !self.peek_targets_struct_like() => {
+                    self.record_annotation(&mut prefix, "pack")?;
+                }
+                Some(Token::Coll) if !self.peek_targets_struct_like() => {
+                    self.record_annotation(&mut prefix, "coll")?;
+                }
+                Some(Token::Accel) => self.record_annotation(&mut prefix, "accel")?,
+                Some(Token::Out) => self.record_annotation(&mut prefix, "out")?,
+                Some(Token::Mem) => self.record_annotation(&mut prefix, "mem")?,
+                Some(Token::Reg) => self.record_annotation(&mut prefix, "reg")?,
+                Some(Token::Vol) => self.record_annotation(&mut prefix, "vol")?,
+                Some(Token::Async) => {
+                    if prefix.is_async {
+                        return Err(self.dup_modifier("async"));
+                    }
+                    self.pos += 1;
+                    prefix.is_async = true;
+                }
+                Some(Token::Sync) => {
+                    // `sync<group>` — the group barrier classifier.
+                    // Parameterized (SPEC §12.1); validated by the dispatcher.
+                    if prefix.sync_groups.is_some() {
+                        return Err(self.dup_modifier("sync"));
+                    }
+                    self.pos += 1;
+                    prefix.sync_groups = Some(self.parse_sync_groups()?);
+                }
+                _ => break,
+            }
+        }
+        Ok(prefix)
+    }
+
+    /// Consume the current modifier token and record its annotation, or error
+    /// on a duplicate.
+    fn record_annotation(
+        &mut self,
+        prefix: &mut ModifierPrefix,
+        name: &str,
+    ) -> Result<(), SyntaxError> {
+        self.pos += 1;
+        if prefix.annotations.iter().any(|a| a.name == name) {
+            return Err(self.dup_modifier(name));
+        }
+        prefix.annotations.push(Annotation {
+            name: name.to_string(),
+            value: None,
+        });
+        Ok(())
+    }
+
+    /// `sync<group>` — parse the comma-separated domain list (SPEC §12.1).
+    fn parse_sync_groups(&mut self) -> Result<Vec<String>, SyntaxError> {
+        if self.eat(&Token::Lt) {
+            let mut names = Vec::new();
+            loop {
+                names.push(self.expect_identifier()?);
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
+            self.expect(Token::Gt)?;
+            Ok(names)
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    /// True when the current `seq`/`pack`/`coll` modifier is heading for a
+    /// struct/obj (a layout flag the struct parser owns) rather than a
+    /// node/txn/let/defn. Lookahead over the modifier run to the first
+    /// structural identifier.
+    fn peek_targets_struct_like(&self) -> bool {
+        let mut i = self.pos;
+        while let Some((t, _)) = self.tokens.get(i) {
+            if Self::is_modifier_token_after(t) {
+                i += 1;
+            } else if matches!(t, Token::Sync) {
+                i = Self::skip_sync_groups(i, &self.tokens);
+            } else {
+                return matches!(
+                    t,
+                    Token::Struct | Token::Obj | Token::Union | Token::Type
+                );
+            }
+        }
+        false
+    }
+
+    /// True when the token is a bare modifier keyword (no parameter). `sync`
+    /// is parameterized (`sync<g>`) and handled separately.
+    fn is_modifier_token_after(t: &Token) -> bool {
+        matches!(
+            t,
+            Token::Seq
+                | Token::Pack
+                | Token::Coll
+                | Token::Accel
+                | Token::Async
+                | Token::Out
+                | Token::Mem
+                | Token::Reg
+                | Token::Vol
+        )
+    }
+
+    /// Skip a `sync<g>` parameter list, returning the index after the `>`.
+    fn skip_sync_groups(
+        mut i: usize,
+        tokens: &[(Token, std::ops::Range<usize>)],
+    ) -> usize {
+        i += 1; // sync
+        if tokens.get(i).is_some_and(|(t, _)| matches!(t, Token::Lt)) {
+            i += 1;
+            while let Some((t, _)) = tokens.get(i) {
+                if matches!(t, Token::Identifier(_) | Token::Comma) {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            if tokens.get(i).is_some_and(|(t, _)| matches!(t, Token::Gt)) {
+                i += 1;
+            }
+        }
+        i
+    }
+
+    /// 2026-09-22 (order-free-modifiers plan): true when the modifier run at
+    /// the current position is heading for a `let` (the statement-level let
+    /// modifiers). The statement parser only routes vol/out/mem/reg here when
+    /// the run terminates at `let`.
+    pub(crate) fn peek_targets_let(&self) -> bool {
+        let mut i = self.pos;
+        while let Some((t, _)) = self.tokens.get(i) {
+            match t {
+                Token::Mem | Token::Reg | Token::Vol | Token::Out => i += 1,
+                _ => return matches!(t, Token::Let),
+            }
+        }
+        false
+    }
+
+    fn dup_modifier(&self, name: &str) -> SyntaxError {
+        SyntaxError::UnexpectedToken {
+            expected: format!("a structural identifier after modifiers (duplicate '{name}')"),
+            found: format!("{}", self.peek().map(|t| format!("{t}")).unwrap_or_else(|| "EOF".into())),
+            span: self
+                .tokens
+                .get(self.pos)
+                .map(|(_, s)| self.make_span(s.clone()))
+                .unwrap_or_else(crate::errors::Span::dummy),
+        }
     }
 
     /// Peek at the token after the current one without consuming anything.

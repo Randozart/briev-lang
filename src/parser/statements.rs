@@ -13,54 +13,17 @@ impl<'a> Parser<'a> {
     pub fn parse_statement(&mut self) -> Result<Statement, SyntaxError> {
         match self.peek() {
             Some(Token::Let) => self.parse_let_statement(),
-            // 2026-08-25 (seq-firmem plan): `mem let` / `reg let` inside
-            // bodies — same lowering pins as the top-level form.
-            Some(Token::Mem) | Some(Token::Reg)
-                if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Let)) =>
+            // 2026-09-22 (order-free-modifiers plan): `vol`/`out`/`mem`/
+            // `reg` compose in any order before `let` (`vol let`,
+            // `out vol let`, `mem reg let`). The shared scanner consumes the
+            // run; the let is required and the annotations are recorded.
+            Some(Token::Mem) | Some(Token::Reg) | Some(Token::Vol) | Some(Token::Out)
+                if self.peek_targets_let() =>
             {
-                let hint = if self.check(&Token::Mem) { "mem" } else { "reg" };
-                self.pos += 1; // consume mem/reg
+                let prefix = self.consume_modifier_prefix()?;
                 let mut stmt = self.parse_let_statement()?;
                 if let Statement::Let { modifiers, .. } = &mut stmt {
-                    modifiers.push(crate::ast::Annotation {
-                        name: hint.to_string(),
-                        value: None,
-                    });
-                }
-                Ok(stmt)
-            }
-            // 2026-08-01 (Phase E): `vol let x` — memory-visibility modifier
-            // (prefix). The let statement records the vol annotation; the
-            // backend emits volatile load/store (reusing the mmio machinery).
-            Some(Token::Vol) if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Let)) => {
-                self.pos += 1; // consume vol
-                let mut stmt = self.parse_let_statement()?;
-                if let Statement::Let { modifiers, .. } = &mut stmt {
-                    modifiers.push(crate::ast::Annotation {
-                        name: "vol".to_string(),
-                        value: None,
-                    });
-                }
-                Ok(stmt)
-            }
-            // 2026-08-04 (out-observability plan): `out let x` — the variable's
-            // reads/writes are liveness roots (never eliminated). Unlike `vol`,
-            // it does NOT force volatile memory semantics. `out vol let x` is
-            // legal (vol implies out, but both pins are recorded independently);
-            // `out vol` is handled by recursing into the vol arm below.
-            Some(Token::Out)
-                if matches!(
-                    self.tokens.get(self.pos + 1).map(|(t, _)| t),
-                    Some(Token::Let) | Some(Token::Vol)
-                ) =>
-            {
-                self.pos += 1; // consume out
-                let mut stmt = self.parse_statement()?;
-                if let Statement::Let { modifiers, .. } = &mut stmt {
-                    modifiers.push(crate::ast::Annotation {
-                        name: "out".to_string(),
-                        value: None,
-                    });
+                    modifiers.extend(prefix.annotations);
                 }
                 Ok(stmt)
             }
