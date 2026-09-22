@@ -561,7 +561,22 @@ fn run_bad(args: &[String]) -> Result<(), String> {
 
     let bin_path = std::path::PathBuf::from(&stem);
     let (_, regs) = briev_compiler::backend::bad::registries();
-    let ld_bin = regs.cross_ld(&family).unwrap_or("ld").to_string();
+    // Preferred linker: the cross_ld row. For thumb/arm bare-metal (no
+    // arm-none-eabi-ld installed), ld.lld links the object directly.
+    let ld_row = regs.cross_ld(&family).unwrap_or("ld").to_string();
+    let ld_bin = if std::process::Command::new(&ld_row)
+        .arg("--version").output().ok()
+        .map(|o| o.status.success()).unwrap_or(false)
+    {
+        ld_row.clone()
+    } else if (family.starts_with("thumb") || family.starts_with("arm"))
+        && std::process::Command::new("ld.lld").arg("--version").output().ok()
+            .map(|o| o.status.success()).unwrap_or(false)
+    {
+        "ld.lld".to_string()
+    } else {
+        ld_row
+    };
     let mut link = std::process::Command::new(&ld_bin);
     for flag in regs.cross_ld_flags(&family) {
         link.arg(flag);

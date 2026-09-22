@@ -94,11 +94,13 @@ pub fn generate_bad_fn(
         .run(&program)
 }
 
-/// Whether the cross toolchain for `family` is installed.
+/// Whether the cross toolchain for `family` is installed — the cross_as
+/// bin, or (thumb/arm) clang's integrated assembler fallback.
 pub fn toolchain_available(family: &str) -> bool {
     let (isa, regs) = registries();
     let _ = isa;
-    regs.cross_as(family)
+    let via_bin = regs
+        .cross_as(family)
         .and_then(|as_bin| {
             std::process::Command::new(as_bin)
                 .arg("--version")
@@ -106,11 +108,21 @@ pub fn toolchain_available(family: &str) -> bool {
                 .ok()
                 .map(|o| o.status.success())
         })
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if via_bin {
+        return true;
+    }
+    if family.starts_with("thumb") || family.starts_with("arm") {
+        return clang_available();
+    }
+    false
 }
 
 /// Assemble emitted text to an object file via the platform assembler.
-/// The toolchain comes from the `cross_as` row per family.
+/// The toolchain comes from the `cross_as` row per family. For thumb/arm
+/// bare-metal targets, clang's integrated assembler is the fallback when
+/// the prefixed binutils (`arm-none-eabi-as`) is not installed — the
+/// dialect degrades to a documented clang path, never a silent pass.
 pub fn assemble(text: &str, family: &str, out_path: &std::path::Path) -> Result<(), String> {
     let (_, regs) = registries();
     let as_bin = regs.cross_as(family).ok_or_else(|| {
@@ -125,18 +137,65 @@ pub fn assemble(text: &str, family: &str, out_path: &std::path::Path) -> Result<
     let s_path = out_path.with_extension("s");
     std::fs::write(&s_path, text)
         .map_err(|e| format!("cannot write '{}': {}", s_path.display(), e))?;
-    let status = std::process::Command::new(as_bin)
+    // Preferred toolchain: the cross_as bin. If it is not installed, a
+    // thumb/arm family falls back to clang's integrated assembler.
+    let preferred = std::process::Command::new(as_bin).arg("--version").output().ok();
+    let bin: &str = if preferred.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+        as_bin
+    } else if (family.starts_with("thumb") || family.starts_with("arm")) && clang_available() {
+        return clang_assemble(family, &s_path, out_path);
+    } else {
+        return Err(format!(
+            "cannot run `{as_bin}` for `{family}` - install the cross binutils, or \
+             (thumb/arm) clang's integrated assembler"
+        ));
+    };
+    let status = std::process::Command::new(bin)
         .args(&flags)
         .arg(&s_path)
         .arg("-o")
         .arg(out_path)
         .status()
-        .map_err(|e| format!("cannot run `{as_bin}`: {e} - is binutils installed?"))?;
+        .map_err(|e| format!("cannot run `{bin}`: {e} - is binutils installed?"))?;
     if status.success() {
         Ok(())
     } else {
         Err(format!(
             "assembler rejected the emitted code for `{family}` - inspect {} for the \
+             exact instruction",
+            s_path.display()
+        ))
+    }
+}
+
+fn clang_available() -> bool {
+    std::process::Command::new("clang")
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Assemble bare-metal thumb/arm with clang's integrated assembler.
+fn clang_assemble(
+    family: &str, s_path: &std::path::Path, out_path: &std::path::Path,
+) -> Result<(), String> {
+    let triple = format!("{family}-none-eabi");
+    let status = std::process::Command::new("clang")
+        .arg(format!("--target={triple}"))
+        .arg("-mcpu=cortex-m3")
+        .arg("-c")
+        .arg(s_path)
+        .arg("-o")
+        .arg(out_path)
+        .status()
+        .map_err(|e| format!("cannot run clang for `{family}`: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "clang rejected the emitted code for `{family}` - inspect {} for the \
              exact instruction",
             s_path.display()
         ))
@@ -649,6 +708,37 @@ mod phase_d_tests {
                 .unwrap_or_else(|e| panic!("stdlib failed on {triple}: {e}"));
             assert_all_syms(&asm, triple, &["memcpy:", "memset:", "strlen:", "strcmp:"]);
         }
+    }
+
+    #[test]
+    fn thumb_lowers_to_cortex_m_and_assembles_via_clang() {
+        // 2026-09-22 (bootstrap-bad plan): thumb/arm rows in the ISA +
+        // register configs. If clang is installed, the emitted thumb-2
+        // text must actually assemble — the dialect's hardware-verification
+        // doctrine, degraded to a documented skip when clang is absent.
+        let src = "section .text\nglobal _start\n_start:\n    mov r0, 1\n    \
+                   add r1, r0, r0\n    jz r1, r0, .done\n    mov r2, 99\n    \
+                   .done:\n    halt\n";
+        let asm = generate(src, "thumbv7m-none-eabi").unwrap();
+        assert!(asm.contains("movw r0, #1"), "{asm}");
+        assert!(asm.contains("adds r1, r0, r0"), "{asm}");
+        assert!(asm.contains("beq"), "{asm}");
+        assert!(asm.contains("wfi"), "{asm}");
+        if toolchain_available("thumbv7m") {
+            let out = test_dir("thumb").join("t.o");
+            assemble(&asm, "thumbv7m", &out).expect("thumb assemble failed");
+            std::fs::remove_file(&out).ok();
+        }
+    }
+
+    #[test]
+    fn thumb_missing_fpu_and_syscall_are_loud_errors() {
+        // Cortex-M3 has no FPU and no OS — the FP class and syscall have
+        // NO thumb row. A loud capability error, never a silent pass.
+        let err = generate("t:\n    fmov f0, 1.5\n    ret\n", "thumbv7m").unwrap_err();
+        assert!(err.contains("no `thumbv7m` lowering"), "{err}");
+        let err = generate("t:\n    syscall write, r0, r1, r2\n", "thumbv7m").unwrap_err();
+        assert!(err.contains("no `thumbv7m` lowering"), "{err}");
     }
 
     #[test]
