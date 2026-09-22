@@ -1932,9 +1932,11 @@ fn body_facts(
 }
 
 /// Eligibility of one declared instance as a bridge mechanism (D16): a
-/// type with exactly one Control pin and at least two Switchable pins,
-/// whose control pin is unconnected or already on the condition's net
-/// (pre-wired disambiguation).
+/// type with one Control pin (a gate/FET) or TWO Control pins (a relay
+/// coil — the coil is one element across both pins) and at least two
+/// Switchable pins, whose control pin(s) are unconnected or already on the
+/// condition's net (pre-wired disambiguation). 2026-09-22 (asymmetric
+/// switch parts): 1 or 2 control pins accepted — relays.
 fn is_mechanism(
     ctx: &mut NetlistContext,
     inst: &ComponentInstance,
@@ -1954,11 +1956,15 @@ fn is_mechanism(
         .enumerate()
         .filter(|(i, _)| ti.pin_classes[*i].switchable)
         .count();
-    if controls.len() != 1 || switchables < 2 {
+    if !(controls.len() == 1 || controls.len() == 2) || switchables < 2 {
         return false;
     }
-    let ckey = pin_key(&inst.name, &controls[0].0);
-    !(ctx.ds.contains(&ckey) && ctx.ds.find(&ckey) != *ctrl_root)
+    // Every control pin must be unconnected or already on the condition's
+    // net (a relay coil's other pin may be on the condition net too).
+    controls.iter().all(|(cname, _)| {
+        let ckey = pin_key(&inst.name, cname);
+        !(ctx.ds.contains(&ckey) && ctx.ds.find(&ckey) != *ctrl_root)
+    })
 }
 
 /// Candidate mechanisms for a bridge request (D16 phase 2): declared
@@ -2002,13 +2008,13 @@ fn synthesize_one(
         return;
     };
     let ti = &ctx.type_info[&mech.type_name];
-    let cpin = ti
+    let controls: Vec<&(String, u64)> = ti
         .pins
         .iter()
         .enumerate()
-        .find(|(i, _)| ti.pin_classes[*i].control)
+        .filter(|(i, _)| ti.pin_classes[*i].control)
         .map(|(_, p)| p)
-        .expect("candidate guarantees one control pin");
+        .collect();
     let mut paths: Vec<&(String, u64)> = ti
         .pins
         .iter()
@@ -2029,19 +2035,21 @@ fn synthesize_one(
             ctx.ds.union(&k[0], &k[1]);
         }
     };
-    let mut members = vec![
-        (mech.name.clone(), cpin.0.clone()),
-        (br.control.component.clone(), br.control.pin.clone()),
-    ];
+    // Control side: the condition net drives every control pin — one gate
+    // pin (FET) or the relay's two-pin coil.
+    let mut members = vec![(br.control.component.clone(), br.control.pin.clone())];
+    for cpin in &controls {
+        members.push((mech.name.clone(), cpin.0.clone()));
+    }
     members.push((mech.name.clone(), paths[0].0.clone()));
     members.push((br.a.component.clone(), br.a.pin.clone()));
     members.push((mech.name.clone(), paths[1].0.clone()));
     members.push((br.b.component.clone(), br.b.pin.clone()));
     union_all(ctx, members);
     proofs.push(format!(
-        "mechanism '{}' bridges {}.{} <-> {}.{} under {}.{} (node '{}')",
+        "mechanism '{}' bridges {}.{} <-> {}.{} under {}.{} (node '{}') with {} control pin(s)",
         mech.name, br.a.component, br.a.pin, br.b.component, br.b.pin,
-        br.control.component, br.control.pin, br.node
+        br.control.component, br.control.pin, br.node, controls.len()
     ));
 }
 
@@ -2075,10 +2083,10 @@ fn synthesize_bridges(
             0 => {
                 let via_hint = match &br.via {
                     Some(t) => format!(
-                        "strategy names '{}' but no qualifying mechanism of that type is declared — declare one with exactly one Control pin and at least two Path pins",
-                        t
-                    ),
-                    None => "no qualifying mechanism is declared — declare one with exactly one Control pin and at least two Path pins, or narrow with `when ... via Type;`"
+                        "strategy names '{}' but no qualifying mechanism of that type is declared — declare one with one Control pin (or a two-pin coil) and at least two Path pins",
+                    t
+                ),
+                    None => "no qualifying mechanism is declared — declare one with one Control pin (or a two-pin coil) and at least two Path pins, or narrow with `when ... via Type;`"
                         .to_string(),
                 };
                 errors.push(format!(
@@ -3096,6 +3104,40 @@ mod tests {
         let e = &nl.intent_errors[0];
         assert!(e.contains("ambiguous") && e.contains("q1") && e.contains("q2"), "{}", e);
         assert!(e.contains("via <Type>"), "{}", e);
+    }
+
+    #[test]
+    fn relay_with_coil_pair_synthesizes_bridge() {
+        // 2026-09-22 (asymmetric switch parts): a relay has a two-pin coil
+        // (2 Control pins) + 2 path contacts. Both coil pins must land on
+        // the condition net; the contacts bridge the wired pins.
+        let src = r#"
+            type Control { spec KicadType: "input"; spec Control: true; };
+            type Path { spec KicadType: "passive"; spec Switchable: true; };
+            type Relay { pin coil1: Control; pin coil2: Control;
+                         pin c1: Path; pin c2: Path; reference "K"; tolerance any; };
+            type Supply { pin vout; reference "S"; spec KicadType: "power_in"; spec Supply: true; };
+            type Lamp { pin a; pin k; reference "L"; };
+            type Jack { pin p1; pin p2; reference "J"; };
+            let rly: Relay = Relay { value: "5v-coil" };
+            let u1: Supply = Supply { value: "ctl" };
+            let d1: Lamp = Lamp { value: "lamp" };
+            let j1: Jack = Jack { value: "j" };
+            let j2: Jack = Jack { value: "j2" };
+            node n [d1.k.voltage == j1.p2.voltage && j2.p1.voltage == j1.p1.voltage
+                && j2.p2.voltage == j1.p2.voltage] {
+                when u1.vout.voltage == 5.0V { d1.a = rly.c1; } via Relay;
+            };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        assert_eq!(nl.conditional_bridges.len(), 1, "{:?}", nl.conditional_bridges);
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("2 control pin(s)")),
+            "the relay must wire BOTH coil pins: {:?}",
+            nl.intent_proofs
+        );
     }
 
     #[test]
