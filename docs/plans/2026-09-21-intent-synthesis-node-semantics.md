@@ -102,9 +102,11 @@ negative costs a false proof. Analog of Rule 22: NO IMPLICIT BISTABILITY.
 
 **D9 — Chains.** `chain name [base-guard] { ... };` desugars to plain
 nodes; two statement kinds: *actions* (`u.en = high;` → auto-node with
-accumulated guard) and *sign-offs* (`await u.pgood;` / bare `trg` name →
-ANDed into all subsequent guards). Sign-offs name **real pins** (`out`-
-class), never invented pseudo-facts. Steps are ordinary nodes post-desugar:
+accumulated guard) and *sign-offs* (`into u.pgood;` → ANDed into all
+subsequent guards; the bare-`trg` shorthand `pwr_btn;` is REMOVED —
+electronics authors write `into pwr_btn;`). Sign-offs name **real pins**
+(`out`-class), never invented pseudo-facts. Steps are ordinary nodes
+post-desugar:
 
 - outcomes **broadcast wakes** to every subscriber (wake sets) — a fact
   guards the next step, a fan-controller node, and a different chain with
@@ -115,6 +117,14 @@ class), never invented pseudo-facts. Steps are ordinary nodes post-desugar:
   accumulated guard
 - chains carry **zero private semantics** — pure grouping ergonomics;
   general across dialects (core desugarer pass, additive)
+- **2026-09-22 (plan 2026-09-22-core-chain-into): IMPLEMENTED in the
+  core.** `chain`/`into` are core keywords, not electronics-specific.
+  Parse-time desugar (pipe-chaining precedent): `chain` never reaches the
+  AST; each step becomes a reactive node `name_1, name_2, …`, step N's
+  pre = `base ∧ s₁ ∧ … ∧ s_{N-1}`, post `[true]`. `await`/`keep` are NOT
+  reused — they already mean task-await and ownership-transfer in the
+  core (one keyword, one meaning). A trailing `into ...;` is an error (a
+  sign-off gates a later step; a final one gates nothing).
 
 **D10 — Cells are hierarchy and catalog.** `cell` = reusable composite:
 ports, internal instances, internal relations/nodes. The component catalog
@@ -179,14 +189,14 @@ trg dc_present;
 trg pwr_btn;
 
 chain power_up [dc_present] {
-    u_buck5.en = high;          // action  → node power_up.1
-    await u_buck5.pgood;        // sign-off → guard term for all later steps
+    u_buck5.en = high;          // action  → node power_up_1
+    into u_buck5.pgood;         // sign-off → guard term for all later steps
     u_buck3.en = high;
-    await u_buck3.pgood;
-    pwr_btn;                    // external trg joins the guard
-    u_core.en = high;
+    into u_buck3.pgood;
+    into pwr_btn;               // external trg joins the guard (no bare form)
+    u_core.en = high;           // final step → node power_up_3
 };
-// power_up.3 (pgood fact) is a wake source for a fan chain, a charger
+// power_up_3 (pgood fact) is a wake source for a fan chain, a charger
 // chain, and the next step — equal standing, no fan-out syntax.
 ```
 

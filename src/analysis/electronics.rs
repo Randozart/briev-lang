@@ -2700,6 +2700,43 @@ mod tests {
     }
 
     #[test]
+    fn chain_desugars_through_derive_netlist() {
+        // A chain's steps desugar to ordinary reactive nodes; derive_netlist
+        // sees them exactly as hand-written nodes and derives the wiring from
+        // every step's body. Sign-offs (into ...) only accumulate guards —
+        // they add no wiring of their own.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type In { spec KicadType: "input"; };
+            type Chip { pin vout: Power; pin en: In; pin gnd: Ground; reference "U"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Conn { pin gnd: Ground; pin vbus: Power; reference "J"; };
+
+            let u1: Chip = Chip { value: "x" };
+            let d1: Led = Led { value: "red" };
+            let j1: Conn = Conn { value: "y" };
+
+            chain power_up [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage && u1.en.voltage == j1.vbus.voltage] {
+                u1.en = true;
+                into u1.vout.voltage == 3.3V;
+                d1.a = u1.vout;
+            };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        // The final step wires d1.a = u1.out → d1.a and u1.out share a net,
+        // and that net is driven (u1.out is Supply-class, CanDrive free).
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("d1.a")),
+            "the chain's wiring facts must be proven: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
     fn ambiguous_mechanism_requests_strategy() {
         let src = MECH_BOARD.replace(
             "let q1: Fet = Fet { value: \"bs170\" };",

@@ -682,35 +682,23 @@ impl<'a> Parser<'a> {
             // On failure, record the error and skip to the next plausible
             // top-level boundary (closing `}` at col 0 or EOF) so ALL
             // issues are reported in one pass instead of cascading.
-            match self.parse_top_level() {
-                Ok(item) => items.push(item),
-                Err(e) => {
-                    let offset = self
-                        .tokens
-                        .get(self.pos.min(self.tokens.len() - 1))
-                        .map(|(_, s)| s.start)
-                        .unwrap_or(0);
-                    // Convert byte offset to line number
-                    let src_text = &self.source[..offset.min(self.source.len())];
-                    let line = src_text.as_bytes().iter().filter(|&&b| b == b'\n').count() + 1;
-                    errors.push(format!("line {line}: {e}"));
-                    // Skip to next `}` at column 0 or EOF
-                    while !self.is_at_end() {
-                        if self.check(&Token::RBrace) {
-                            // Check if this RBrace starts at column 0 (top-level boundary)
-                            if let Some((_, span)) = self.tokens.get(self.pos) {
-                                let span_start = span.start;
-                                // Find the start of this line in source
-                                let line_start = self.source[..span_start.min(self.source.len())]
-                                    .rfind("\n").map(|p| p + 1).unwrap_or(0);
-                                if span_start - line_start == 0 {
-                                    break;
-                                }
-                            }
-                        }
-                        self.advance();
+            // 2026-09-22 (plan 2026-09-22-core-chain-into): `chain` is a
+            // top-level block that desugars to MULTIPLE reactor nodes — it
+            // cannot flow through the single-item parse_top_level. Handle it
+            // here so the desugared nodes splice into the program directly
+            // (the chain never reaches the AST as a variant).
+            if self.check_identifier("chain") {
+                match self.parse_chain() {
+                    Ok(nodes) => items.extend(nodes),
+                    Err(e) => {
+                        self.recover_top_level_error(&e, &mut errors);
                     }
                 }
+                continue;
+            }
+            match self.parse_top_level() {
+                Ok(item) => items.push(item),
+                Err(e) => self.recover_top_level_error(&e, &mut errors),
             }
         }
         if !errors.is_empty() {
@@ -719,6 +707,173 @@ impl<'a> Parser<'a> {
         // 2026-08-01 (Phase 4): implicit entry wrapping is owned by the script
         // plugin (script_plugin.rs) — it synthesizes the one-shot opening node.
         Ok(items)
+    }
+
+    /// Record a top-level parse error and skip to the next plausible
+    /// top-level boundary (closing `}` at col 0 or EOF) so ALL issues are
+    /// reported in one pass instead of cascading (2026-08-23 F3 recovery;
+    /// extracted 2026-09-22 for reuse by the `chain` splice path).
+    fn recover_top_level_error(&mut self, e: &SyntaxError, errors: &mut Vec<String>) {
+        let offset = self
+            .tokens
+            .get(self.pos.min(self.tokens.len() - 1))
+            .map(|(_, s)| s.start)
+            .unwrap_or(0);
+        // Convert byte offset to line number
+        let src_text = &self.source[..offset.min(self.source.len())];
+        let line = src_text.as_bytes().iter().filter(|&&b| b == b'\n').count() + 1;
+        errors.push(format!("line {line}: {e}"));
+        // Skip to next `}` at column 0 or EOF
+        while !self.is_at_end() {
+            if self.check(&Token::RBrace) {
+                // Check if this RBrace starts at column 0 (top-level boundary)
+                if let Some((_, span)) = self.tokens.get(self.pos) {
+                    let span_start = span.start;
+                    // Find the start of this line in source
+                    let line_start = self.source[..span_start.min(self.source.len())]
+                        .rfind("\n").map(|p| p + 1).unwrap_or(0);
+                    if span_start - line_start == 0 {
+                        break;
+                    }
+                }
+            }
+            self.advance();
+        }
+    }
+
+    /// Parse: `chain name [base-guard] { ... };` — a top-level sequencing
+    /// block (D9, plan 2026-09-22-core-chain-into). Desugars at parse time
+    /// to ONE reactor node per step: each step's actions become a node body,
+    /// each `into <cond>;` sign-off is ANDed into every LATER step's guard.
+    ///
+    /// The chain never reaches the AST as a variant — `parse_program` splices
+    /// the returned nodes directly. Zero new semantics: the nodes are exactly
+    /// what an author would write by hand, so the reactor, typechecker, and
+    /// (for `.ebv`) the netlist analysis all consume them unchanged.
+    fn parse_chain(&mut self) -> Result<Vec<TopLevel>, SyntaxError> {
+        // 2026-09-22: contextual keyword — consumed here, not a lexer token.
+        self.pos += 1; // consume 'chain'
+        let name = self.expect_identifier()?;
+        // 2026-09-22 (guard discipline): the chain's base guard becomes step
+        // 1's precondition. Optional — omitted → `[true]`, matching node
+        // defaults. Only a single `[pre]` is accepted: chains have no
+        // postcondition of their own (each step node's post is `[true]`, the
+        // body does the work).
+        let base_guard = self.chain_base_guard()?;
+        self.expect(Token::LBrace)?;
+        // Split the body into steps. A step is a run of ordinary node-body
+        // statements terminated by an `into <cond>;` sign-off (or the end of
+        // the chain). Consecutive actions accumulate in the current step.
+        let steps = self.chain_steps(&name)?;
+        Self::chain_check(&name, &steps)?;
+        Ok(Self::chain_nodes(&name, base_guard, &steps))
+    }
+
+    /// The chain's optional base guard: `[pre]` or `[true]` when omitted.
+    fn chain_base_guard(&mut self) -> Result<Expr, SyntaxError> {
+        if self.check(&Token::LBracket) {
+            self.parse_single_contract_condition()
+        } else {
+            Ok(Expr::Bool(true))
+        }
+    }
+
+    /// Split a chain body into steps at `into <cond>;` sign-offs. Returns
+    /// (actions, optional sign-off) per step; the trailing action run (no
+    /// sign-off) is the final step.
+    fn chain_steps(&mut self, name: &str) -> Result<Vec<(Vec<Statement>, Option<Expr>)>, SyntaxError> {
+        let mut steps: Vec<(Vec<Statement>, Option<Expr>)> = Vec::new();
+        let mut current: Vec<Statement> = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            if self.check_identifier("into") {
+                // Sign-off: `into <cond>;` — end the current step and record
+                // the condition that gates all later steps.
+                self.pos += 1; // consume 'into'
+                let cond = self.parse_expression()?;
+                self.expect(Token::Semicolon)?;
+                steps.push((std::mem::take(&mut current), Some(cond)));
+            } else {
+                current.push(self.parse_statement()?);
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.eat(&Token::Semicolon);
+        // The final action run (no trailing sign-off) is the last step.
+        if !current.is_empty() {
+            steps.push((current, None));
+        }
+        if steps.is_empty() {
+            return Err(SyntaxError::InvalidStatement {
+                reason: format!(
+                    "chain '{}' has no actions — a chain must contain at least one action step",
+                    name
+                ),
+                span: Span::dummy(),
+            });
+        }
+        Ok(steps)
+    }
+
+    /// Chain well-formedness: the last statement must be an action, not a
+    /// sign-off — a trailing `into ...;` gates a later step that does not
+    /// exist.
+    fn chain_check(
+        name: &str,
+        steps: &[(Vec<Statement>, Option<Expr>)],
+    ) -> Result<(), SyntaxError> {
+        if steps.last().map(|(_, so)| so.is_some()).unwrap_or(false) {
+            return Err(SyntaxError::InvalidStatement {
+                reason: format!(
+                    "chain '{}' ends in `into ...;` — a sign-off gates a LATER step, and a final one gates nothing. Add a final action step after it",
+                    name
+                ),
+                span: Span::dummy(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Build one reactor node per step with the accumulated guard: step N's
+    /// pre = base ∧ s₁ ∧ … ∧ s_{N-1}, post `[true]`.
+    fn chain_nodes(
+        name: &str,
+        base_guard: Expr,
+        steps: &[(Vec<Statement>, Option<Expr>)],
+    ) -> Vec<TopLevel> {
+        let mut nodes = Vec::with_capacity(steps.len());
+        let mut acc = base_guard;
+        for (i, (body, signoff)) in steps.iter().enumerate() {
+            let mut contract = Contract::new(acc.clone(), Expr::Bool(true));
+            // 2026-09-22 (chain): each step's contract is WRITTEN (the chain
+            // author's base guard and sign-offs are real preconditions) — the
+            // typechecker must prove and classify each step node. The post is
+            // `[true]` (the body does the work), matching node defaults.
+            contract.explicit = true;
+            nodes.push(TopLevel::Transaction(Transaction {
+                name: format!("{}_{}", name, i + 1),
+                is_reactive: true,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: Vec::new(),
+                contract,
+                body: body.clone(),
+                metadata: std::collections::HashMap::new(),
+                derivation: None,
+                modifiers: vec![],
+                span: None,
+                doc: None,
+            }));
+            if let Some(s) = signoff {
+                acc = Expr::BinaryOp(
+                    crate::ast::BinaryOpKind::And,
+                    Box::new(acc),
+                    Box::new(s.clone()),
+                );
+            }
+        }
+        nodes
     }
 
     /// Parse: defn name<T>(params) -> RetType [pre][post] { body } [:= { ... }]
@@ -5936,4 +6091,129 @@ fn bootstrap_node_rejects_pre_post_double_form() {
         msg.contains("single handoff postcondition"),
         "expected the single-bracket error, got: {msg}"
     );
+}
+
+// ── 2026-09-22 (plan 2026-09-22-core-chain-into): chain/into ─────────────
+
+#[cfg(test)]
+mod chain_tests {
+    use crate::lexer::tokenize;
+    use crate::parser::Parser;
+
+    fn parse_prog(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_program().expect("parse failed")
+    }
+
+    #[test]
+    fn chain_desugars_to_nodes_with_accumulated_guards() {
+    // The D9 fixture, software-shaped: two sign-offs → three nodes, each
+    // later node guarded by the base AND all prior sign-offs.
+    let src = "chain power_up [dc_present] {\n\
+               \x20   u_buck5.en = high;\n\
+               \x20   into u_buck5.pgood;\n\
+               \x20   u_buck3.en = high;\n\
+               \x20   into u_buck3.pgood;\n\
+               \x20   u_core.en = high;\n\
+               };\n";
+    let items = parse_prog(src);
+    assert_eq!(items.len(), 3, "3 steps → 3 nodes, got {:?}", items);
+    let crate::ast::TopLevel::Transaction(t1) = &items[0] else {
+        panic!("step 1 must be a transaction");
+    };
+    assert_eq!(t1.name, "power_up_1");
+    assert!(t1.is_reactive, "chain steps are reactive nodes");
+    // pre = base guard; post = true
+    let crate::ast::Expr::Identifier(b) = &t1.contract.pre_condition else {
+        panic!("step 1 pre should be the base guard, got {:?}", t1.contract.pre_condition);
+    };
+    assert_eq!(b, "dc_present");
+    assert!(matches!(t1.contract.post_condition, crate::ast::Expr::Bool(true)));
+    assert_eq!(t1.body.len(), 1, "one action per step");
+
+    let crate::ast::TopLevel::Transaction(t2) = &items[1] else { panic!("step 2") };
+    assert_eq!(t2.name, "power_up_2");
+    // pre = dc_present && u_buck5.pgood
+    let crate::ast::Expr::BinaryOp(kind, l, r) = &t2.contract.pre_condition else {
+        panic!("step 2 pre should be a conjunction, got {:?}", t2.contract.pre_condition);
+    };
+    assert_eq!(*kind, crate::ast::BinaryOpKind::And);
+    let crate::ast::Expr::Identifier(b2) = l.as_ref() else { panic!("step2 pre lhs") };
+    assert_eq!(b2, "dc_present");
+    let crate::ast::Expr::Field(base2, f2) = r.as_ref() else { panic!("step2 pre rhs") };
+    let crate::ast::Expr::Identifier(i2) = base2.as_ref() else { panic!("step2 pre rhs base") };
+    assert_eq!(i2, "u_buck5");
+    assert_eq!(f2, "pgood");
+
+    let crate::ast::TopLevel::Transaction(t3) = &items[2] else { panic!("step 3") };
+    assert_eq!(t3.name, "power_up_3");
+    let crate::ast::Expr::BinaryOp(_, l3, r3) = &t3.contract.pre_condition else {
+        panic!("step 3 pre should be a conjunction");
+    };
+    let crate::ast::Expr::BinaryOp(_, _, _) = l3.as_ref() else {
+        panic!("step 3 pre lhs should be the nested conjunction");
+    };
+    let crate::ast::Expr::Field(base3, f3) = r3.as_ref() else { panic!("step3 pre rhs") };
+    let crate::ast::Expr::Identifier(i3) = base3.as_ref() else { panic!("step3 pre rhs base") };
+    assert_eq!(i3, "u_buck3");
+    assert_eq!(f3, "pgood");
+}
+
+#[test]
+fn chain_base_guard_is_optional() {
+    let src = "chain boot { start(); into ready; run(); };\n";
+    let items = parse_prog(src);
+    assert_eq!(items.len(), 2);
+    let crate::ast::TopLevel::Transaction(t1) = &items[0] else { panic!("step 1") };
+    assert!(
+        matches!(t1.contract.pre_condition, crate::ast::Expr::Bool(true)),
+        "omitted base guard defaults to true, got {:?}",
+        t1.contract.pre_condition
+    );
+}
+
+#[test]
+fn chain_step_actions_may_be_guarded_statements() {
+    // A `when` action inside a step desugars naturally — it is just a
+    // statement in the step's node body.
+    let src = "chain on [armed] {\n\
+               \x20   when door_open { unlock(); };\n\
+               \x20   into unlatched;\n\
+               \x20   open();\n\
+               };\n";
+    let items = parse_prog(src);
+    assert_eq!(items.len(), 2);
+    let crate::ast::TopLevel::Transaction(t1) = &items[0] else { panic!("step 1") };
+    assert!(
+        matches!(&t1.body[0], crate::ast::Statement::Guarded(_, _)),
+        "a when-guarded action stays a guarded statement in the node body"
+    );
+}
+
+#[test]
+fn chain_rejects_trailing_signoff() {
+    let src = "chain bad [g] { a(); into done; };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = Parser::new(tokens, src);
+    let err = p.parse_program().unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("ends in `into ...;`"),
+        "expected the trailing-sign-off error, got: {msg}"
+    );
+}
+
+#[test]
+fn chain_rejects_empty_body() {
+    let src = "chain empty [g] { };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = Parser::new(tokens, src);
+    let err = p.parse_program().unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("no actions"),
+        "expected the empty-chain error, got: {msg}"
+    );
+}
 }

@@ -186,3 +186,56 @@ fn emit_export_wrapper(defn: &crate::ast::Definition, out: &mut String) -> Resul
     writeln!(out, "}}").unwrap();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_and_check;
+
+    /// 2026-09-22 (plan 2026-09-22-core-chain-into): a software chain is
+    /// pure reactor sugar — it typechecks exactly as its desugared nodes
+    /// would. This proves the construct is core-language, not electronics.
+    #[test]
+    fn software_chain_typechecks_as_reactor_nodes() {
+        let src = r#"
+            let cfg_loaded: Bool = false;
+            let port_open: Bool = false;
+            let serving: Bool = false;
+
+            chain init [cfg_loaded == false] {
+                cfg_loaded = true;
+                into cfg_loaded == true;
+                port_open = true;
+                into port_open == true;
+                serving = true;
+            };
+        "#;
+        let (items, _) = parse_and_check("chain_test.bv", src).expect("chain must parse and typecheck");
+        // 3 steps → 3 reactive nodes, named init_1 .. init_3.
+        let steps: Vec<&crate::ast::TopLevel> = items
+            .iter()
+            .filter(|i| matches!(i, crate::ast::TopLevel::Transaction(t) if t.is_reactive))
+            .collect();
+        assert_eq!(steps.len(), 3, "chain must desugar to 3 reactive nodes");
+        let names: Vec<&str> = steps
+            .iter()
+            .filter_map(|i| match i {
+                crate::ast::TopLevel::Transaction(t) => Some(t.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["init_1", "init_2", "init_3"]);
+    }
+
+    /// A chain ending in a sign-off is rejected at parse time (the sign-off
+    /// gates a later step that does not exist).
+    #[test]
+    fn software_chain_rejects_trailing_signoff() {
+        let src = "let done: Bool = false;\n\
+                   chain bad { done = true; into done == true; };\n";
+        let err = parse_and_check("chain_test.bv", src).unwrap_err();
+        assert!(
+            err.contains("ends in `into ...;`"),
+            "expected the trailing-sign-off error, got: {err}"
+        );
+    }
+}

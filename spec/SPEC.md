@@ -375,12 +375,13 @@ that is incomplete or electrically violated.
 > (`node name [guard] { drive-maps }`), and the compiler infers both the
 > wiring (net membership) and the physics. Planned constructs — `spec`
 > datasheet-fact clauses on component types, pin arrays, population facts
-> (`populated = false`), `chain`/`await` sequencing sugar, and
+> (`populated = false`), `chain`/`into` sequencing sugar, and
 > ambiguity-lifting modifiers — are inventoried with full semantics in
 > `docs/plans/2026-09-21-intent-synthesis-node-semantics.md`. Grammar is
 > unfrozen pending implementation; this section documents the current
 > surface only. (Pin electrical classes left this list 2026-09-21: they
-> are implemented — see above.)
+> are implemented — see above. `chain`/`into` left this list 2026-09-22:
+> implemented in the core — see §11.4.2.)
 
 ## 4. Lexical conventions
 
@@ -1248,6 +1249,40 @@ the contracts (who enables whom) and refuses any reactive cycle whose
 nodes declare no completion — a cycle that cannot be shown to quiesce
 carries no liveness obligation and does not compile. `--explain-causality`
 prints the derived wiring ("what fires into what") for inspection.
+
+#### 9.4.1 Chains (`chain` / `into`, 2026-09-22)
+
+A chain is a top-level sequencing block that desugars at parse time to
+ordinary nodes (one per step). It is core-language sugar — identical in
+`.bv` (software) and `.ebv` (hardware) programs.
+
+```briev
+chain power_up [dc_present] {
+    u_buck5.en = high;          // action → node power_up_1
+    into u_buck5.pgood;         // sign-off → ANDed into all later guards
+    u_buck3.en = high;          // action → node power_up_2
+    into u_buck3.pgood;
+    u_core.en = high;           // final step → node power_up_3
+};
+```
+
+Desugar rule:
+
+- Every maximal run of actions between `into` markers is one step.
+- Step `N` becomes `node <chain>_N [base ∧ s₁ ∧ … ∧ s_{N-1}] { body }`,
+  post `[true]` (the body does the work). The base guard is optional
+  (omitted → `[true]`).
+- `into <cond>;` is the sign-off: `<cond>` is ANDed into every LATER
+  step's precondition. It is a *condition* — a real boolean (a pin
+  comparison in `.ebv`, a state expression in `.bv`) — never an invented
+  pseudo-fact.
+- A chain must contain at least one action, and must not end in a
+  sign-off (a trailing `into ...;` gates a later step that does not
+  exist — a parse error).
+
+`await` is unrelated: it consumes a `Task<R>` handle (§12.2). `keep` is
+unrelated: it transfers ownership. `chain`/`into` are new keywords; a
+bare `trg` name as a chain sign-off is not a form — write `into <trg>;`.
 
 ### 9.5 Objects
 

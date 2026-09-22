@@ -614,3 +614,30 @@ condition a *voltage* claim.
 `x = high` / `x = low` level sugar remains deferred (Decision above):
 `high`/`low` are identifiers, so they fail this gate with the shape error —
 the fix is general and needs no level vocabulary.
+
+### Amendment 2026-09-22 (VI): `chain`/`into` landed in the CORE
+
+The electronics `chain`/`await` sequencing sugar is now a core-language
+construct (plan 2026-09-22-core-chain-into). `chain name [base-guard] {
+action; into cond; action; ... };` desugars at parse time to ordinary
+reactor nodes — one per step, step N's pre = base ∧ all prior `into`
+conditions, post `[true]`. Works in `.bv` (software) and `.ebv`
+(hardware); `derive_netlist` consumes the desugared nodes unchanged.
+
+**Keyword unification (one keyword, one meaning, language-wide):**
+
+| Concept | Keyword | Decision |
+|---|---|---|
+| Chain block | `chain` | core keyword (new) |
+| Chain sign-off | `into` | core keyword (new) — NOT `await` (task-await stays main-only) |
+| Persist-tighten | `bind` | settled — NOT `keep` (ownership stays main-only); `fix` rejected as a false friend ("repair") |
+| Commit-select | `store` | settled |
+| Disconnection (D16 p3b) | `open` | settled — "these two would interact if connected, but the wire is open; analyse as such" |
+
+The D9 bare-`trg` sign-off shorthand is removed: authors write
+`into pwr_btn;`, never bare `pwr_btn;`. `bind`/`store`/`open` remain
+future slices (the keywords are settled here, not implemented).
+
+Open under D16: phase-3b (author-expressed disconnection via `open`),
+`bind`/`store` lifting slots, asymmetric switch parts, ERC class
+semantics, whole-bus equality.
