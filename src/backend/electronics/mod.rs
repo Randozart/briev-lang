@@ -142,14 +142,6 @@ impl ElectronicsBackend {
             errs.extend(netlist.dangling.iter().map(|d| format!("  {}", d)));
             return Err(errs);
         }
-        // 2026-09-12 (named nets): one node cannot carry two names.
-        if !netlist.net_conflicts.is_empty() {
-            let mut errs = vec![
-                "cannot emit schematic: a net carries conflicting names".to_string(),
-            ];
-            errs.extend(netlist.net_conflicts.iter().map(|c| format!("  {}", c)));
-            return Err(errs);
-        }
         // 2026-09-21 (E12): unresolved pin-class ascriptions — the class
         // type is not in scope. Refuse before anything else emits.
         if !netlist.class_errors.is_empty() {
@@ -278,8 +270,46 @@ impl ElectronicsBackend {
                     pts.push((x, y));
                 }
             }
-            Self::emit_net(out, net, &pts);
+            let label = Self::net_label(netlist, net);
+            Self::emit_net(out, net, &pts, &label);
         }
+    }
+
+    /// The readable schematic label for a net — derived from WHAT the net
+    /// is, never an author name (2026-09-22): a net touching a return-class
+    /// pin is `GND`; a net with a derived drive voltage is `V{volts}` (e.g.
+    /// `V3.3`); anything else keeps its structural `N#` identity. The
+    /// physics (pin classes + derived voltage) is the source of truth.
+    fn net_label(netlist: &ElectronicsNetlist, net: &crate::analysis::electronics::Net) -> String {
+        let inst_to_type: std::collections::BTreeMap<&str, &str> = netlist
+            .components
+            .iter()
+            .map(|c| (c.name.as_str(), c.type_name.as_str()))
+            .collect();
+        for p in &net.pins {
+            let return_class = inst_to_type
+                .get(p.component.as_str())
+                .and_then(|ty| netlist.type_info.get(*ty))
+                .map(|ti| {
+                    ti.pins
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (pn, _))| *pn == p.pin)
+                        .map(|(i, _)| ti.pin_classes[i].return_pin)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if return_class {
+                return "GND".to_string();
+            }
+        }
+        if let Some(v) = netlist.voltage.net_voltage.get(&net.name) {
+            if v.abs() > f64::EPSILON {
+                let volts = format!("{:.1}", v).trim_end_matches(".0").to_string();
+                return format!("V{}", volts);
+            }
+        }
+        net.name.clone()
     }
 
     // ── geometry ──────────────────────────────────────────────────────
@@ -408,7 +438,7 @@ impl ElectronicsBackend {
         out.push_str("  )\n");
     }
 
-    fn emit_net(out: &mut String, net: &crate::analysis::electronics::Net, pts: &[(f64, f64)]) {
+    fn emit_net(out: &mut String, net: &crate::analysis::electronics::Net, pts: &[(f64, f64)], label: &str) {
         if pts.len() < 2 {
             return;
         }
@@ -437,7 +467,7 @@ impl ElectronicsBackend {
                     coord(seg.0), coord(seg.1), coord(seg.2), coord(seg.3),
                     Self::uuid(&format!(
                         "wire:{}:{}:{}:{}:{}",
-                        net.name, coord(seg.0), coord(seg.1), coord(seg.2), coord(seg.3)
+                        label, coord(seg.0), coord(seg.1), coord(seg.2), coord(seg.3)
                     ))
                 ));
             }
@@ -446,10 +476,10 @@ impl ElectronicsBackend {
         let (x, y) = ordered[0];
         out.push_str(&format!(
             "  (label \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) (justify (left bottom))) (uuid \"{}\"))\n",
-            net.name,
+            label,
             coord(x + 1.27),
             coord(y),
-            Self::uuid(&format!("label:{}:{}:{}", net.name, coord(x), coord(y)))
+            Self::uuid(&format!("label:{}:{}:{}", label, coord(x), coord(y)))
         ));
     }
 }
@@ -685,5 +715,36 @@ mod tests {
         let a = ElectronicsBackend::generate(&netlist_of(LED_CIRCUIT)).unwrap();
         let b = ElectronicsBackend::generate(&netlist_of(LED_CIRCUIT)).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn net_labels_derive_from_physics_not_author_names() {
+        // 2026-09-22 (retract plan): nets are labelled by WHAT they are —
+        // a return-class net is GND, a driven supply net is V{volts}, the
+        // rest stay structural N#. No author net names exist anymore.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; tolerance any; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; tolerance any; };
+            type Led { pin a; pin k; reference "D"; tolerance any; };
+            type Conn { pin vbus: Power; pin gnd: Ground; reference "J"; tolerance any; };
+            type Mcu { pin vdd: Power; pin gnd: Ground; reference "U"; tolerance any; };
+
+            let j1: Conn = Conn { value: "j" };
+            let u1: Mcu = Mcu { value: "u" };
+            let d1: Led = Led { value: "red" };
+
+            txn powered
+                [j1.vbus.voltage == u1.vdd.voltage && j1.gnd.voltage == u1.gnd.voltage
+                 && d1.a.voltage == u1.vdd.voltage && d1.k.voltage == u1.gnd.voltage
+                 && j1.vbus.voltage == 3.3]
+                [d1.a.current > 0.0 && d1.a.current <= 0.02]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        let sch = ElectronicsBackend::generate(&nl).unwrap();
+        assert!(sch.contains("\"GND\""), "a return-class net must label GND: {sch}");
+        assert!(sch.contains("\"V3.3\""), "a 3.3V driven supply net must label V3.3: {sch}");
     }
 }

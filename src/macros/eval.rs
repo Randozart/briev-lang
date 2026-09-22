@@ -457,10 +457,6 @@ pub fn eval_nav_chain(
         Expr::Quoted(bytes) => String::from_utf8(bytes.clone())
             .map(NavValue::Str)
             .map_err(|_| "invalid UTF-8 string literal".into()),
-        // Named is transparent — unwrap and recurse.
-        Expr::Named { inner, .. } => {
-            eval_nav_chain(inner, program, universe, stage, scope, sandbox, pm)
-        }
         // UnitLiteral: treat as Float value.
         Expr::UnitLiteral { value, .. } => Ok(NavValue::Int(*value as i64)),
         // 2026-07-23: Binary operators — arithmetic and comparison.
@@ -1757,7 +1753,6 @@ fn expect_prop_arg(args: &[Expr], idx: usize, intrinsic: &str) -> Result<Propert
 fn extract_str_lit(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Quoted(bytes) => String::from_utf8(bytes.clone()).ok(),
-        Expr::Named { inner, .. } => extract_str_lit(inner),
         Expr::UnitLiteral { .. } => None,
         _ => None,
     }
@@ -2059,7 +2054,6 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
             Ok(())
         }
         Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-        Expr::Named { inner, .. } => resolve_dollar_refs_in_expr(inner, scope),
         Expr::Capture { expr, .. } => resolve_dollar_refs_in_expr(expr, scope),
         Expr::PluginIntercept { receiver, args, .. } => {
             if let Some(recv) = receiver {
@@ -2140,14 +2134,7 @@ fn resolve_dollar_refs_in_stmt(stmt: &mut Statement, scope: &Scope) -> Result<()
         }
         Statement::InlineAsm { .. } | Statement::MetadataAssignment(..)
         | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => Ok(()),
-        // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — resolve
-        // $refs in their expressions.
-        Statement::Bind(lhs, rhs) => {
-            resolve_dollar_refs_in_expr(lhs, scope)?;
-            resolve_dollar_refs_in_expr(rhs, scope)
-        }
-        Statement::StoreValue { value, .. } => resolve_dollar_refs_in_expr(value, scope),
-        Statement::StoreNet { pin, .. } => resolve_dollar_refs_in_expr(pin, scope),
+        // 2026-09-22 (D16 p3b): `open` — resolve $refs in its expressions.
         Statement::Open(lhs, rhs) => {
             resolve_dollar_refs_in_expr(lhs, scope)?;
             resolve_dollar_refs_in_expr(rhs, scope)

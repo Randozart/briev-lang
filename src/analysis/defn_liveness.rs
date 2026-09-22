@@ -532,8 +532,7 @@ impl<'a> Builder<'a> {
             Expr::Deref(inner)
             | Expr::AddrOf(inner)
             | Expr::Consume(inner)
-            | Expr::Await(inner)
-            | Expr::Named { inner, .. } => self.walk_expr(inner, queue),
+            | Expr::Await(inner) => self.walk_expr(inner, queue),
             Expr::PluginIntercept { args, .. } => {
                 for a in args {
                     self.walk_expr(a, queue);
@@ -711,7 +710,7 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::UnaryOp(_, i) => collect_call_names_expr(i, out),
         Expr::Field(o, _) | Expr::Deref(o) | Expr::AddrOf(o) | Expr::Consume(o)
         | Expr::Await(o) | Expr::IsType(o, _) | Expr::Cast(o, _)
-        | Expr::Named { inner: o, .. } => collect_call_names_expr(o, out),
+        => collect_call_names_expr(o, out),
         Expr::Index(o, i) => {
             collect_call_names_expr(o, out);
             collect_call_names_expr(i, out);

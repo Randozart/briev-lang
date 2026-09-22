@@ -75,7 +75,6 @@ fn collect_called_names_expr(e: &Expr, out: &mut std::collections::HashSet<Strin
                 collect_pattern_calls(&arm.pattern, out);
             }
         }
-        Expr::Named { inner, .. } => collect_called_names_expr(inner, out),
         Expr::UnitLiteral { .. } => {}
         _ => {}
     }
@@ -289,7 +288,6 @@ fn try_eval_cfloat(
                 None
             }
         }
-        Expr::Named { inner, .. } => try_eval_cfloat(inner, constants, is_float),
         Expr::UnitLiteral { value, .. } => {
             Some(*value)
         }
@@ -492,7 +490,6 @@ fn collect_bytes_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>
                 collect_bytes_expr(&arm.body, seen, out);
             }
         }
-        Expr::Named { inner, .. } => { collect_bytes_expr(inner, seen, out); }
         Expr::UnitLiteral { .. } => {}
         _ => {}
     }
@@ -603,7 +600,6 @@ fn collect_masks_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>
                 collect_masks_expr(&arm.body, seen, out);
             }
         }
-        Expr::Named { inner, .. } => { collect_masks_expr(inner, seen, out); }
         Expr::UnitLiteral { .. } => {}
         _ => {}
     }
@@ -715,14 +711,8 @@ fn collect_strings_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<S
             for s in body { collect_strings_stmt(s, seen, out); }
         }
         Statement::InlineAsm { .. } | Statement::TrgBinding { .. } | Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => {}
-        // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — collect
-        // strings from their expressions (the net name is a String literal).
-        Statement::Bind(lhs, rhs) => {
-            collect_strings_expr(lhs, seen, out);
-            collect_strings_expr(rhs, seen, out);
-        }
-        Statement::StoreValue { value, .. } => { collect_strings_expr(value, seen, out); }
-        Statement::StoreNet { pin, .. } => { collect_strings_expr(pin, seen, out); }
+        // 2026-09-22 (D16 p3b): `open` — collect strings from its
+        // expressions.
         Statement::Open(lhs, rhs) => {
             collect_strings_expr(lhs, seen, out);
             collect_strings_expr(rhs, seen, out);
@@ -832,7 +822,6 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
                 collect_strings_expr(start, seen, out);
                 collect_strings_expr(end, seen, out);
             }
-            Expr::Named { inner, .. } => { collect_strings_expr(inner, seen, out); }
             Expr::UnitLiteral { .. } => {}
             Expr::Capture { expr, .. } => { collect_strings_expr(expr, seen, out); }
 
@@ -2391,9 +2380,6 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     }
                     self.check_expr_embedded(&ex.output, ctx_name, threading_intrinsics);
                 }
-            }
-            Expr::Named { inner, .. } => {
-                self.check_expr_embedded(inner, ctx_name, threading_intrinsics);
             }
             Expr::UnitLiteral { .. } => {}
             _ => {}

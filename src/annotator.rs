@@ -107,18 +107,8 @@ impl Annotator {
                 | Statement::InlineDefn(_)
                 | Statement::InlineTxn(_)
                 | Statement::Match { .. } => {}
-                // 2026-09-22 (D14/D16 p3b): electronics intent modifiers —
-                // collect any calls inside their expressions.
-                Statement::Bind(lhs, rhs) => {
-                    self.collect_calls_from_expr(lhs, calls);
-                    self.collect_calls_from_expr(rhs, calls);
-                }
-                Statement::StoreValue { value, .. } => {
-                    self.collect_calls_from_expr(value, calls);
-                }
-                Statement::StoreNet { pin, .. } => {
-                    self.collect_calls_from_expr(pin, calls);
-                }
+                // 2026-09-22 (D16 p3b): `open` — collect any calls inside
+                // its expressions.
                 Statement::Open(lhs, rhs) => {
                     self.collect_calls_from_expr(lhs, calls);
                     self.collect_calls_from_expr(rhs, calls);
@@ -237,9 +227,6 @@ impl Annotator {
                 for a in args {
                     self.collect_calls_from_expr(a, calls);
                 }
-            }
-            Expr::Named { inner, .. } => {
-                self.collect_calls_from_expr(inner, calls);
             }
             Expr::UnitLiteral { .. } => {}
             Expr::Capture { expr, .. } => {
@@ -556,26 +543,7 @@ impl Annotator {
             Statement::Match { .. } => {
                 format!("{}// compile-time match\n", spaces)
             }
-            // 2026-09-22 (D14/D16 p3b): electronics intent modifiers.
-            Statement::Bind(lhs, rhs) => format!(
-                "{}bind {} = {};\n",
-                spaces,
-                self.format_expr(lhs),
-                self.format_expr(rhs),
-            ),
-            Statement::StoreValue { instance, field, value } => format!(
-                "{}store {}.{} = {};\n",
-                spaces,
-                instance,
-                field,
-                self.format_expr(value),
-            ),
-            Statement::StoreNet { pin, name } => format!(
-                "{}store net({}) = \"{}\";\n",
-                spaces,
-                self.format_expr(pin),
-                name,
-            ),
+            // 2026-09-22 (D16 p3b): author-expressed disconnection.
             Statement::Open(lhs, rhs) => format!(
                 "{}open {}, {};\n",
                 spaces,
@@ -728,9 +696,6 @@ impl Annotator {
                 if *inclusive { "=" } else { "" },
                 self.format_expr(end)
             ),
-            Expr::Named { name, inner } => {
-                format!("net {}: {}", name, self.format_expr(inner))
-            }
             Expr::UnitLiteral { value, unit } => {
                 format!("{}{}", value, unit)
             }

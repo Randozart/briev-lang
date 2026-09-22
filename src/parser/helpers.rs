@@ -279,15 +279,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// True when the CURRENT token is an identifier and the NEXT is a `(`
-    /// — used to distinguish `store net(...)` from `store net.field`.
-    pub fn check_next_lparen(&self) -> bool {
-        matches!(
-            self.tokens.get(self.pos + 1).map(|(t, _)| t),
-            Some(Token::LParen)
-        )
-    }
-
     /// Consume a token if it matches, without error.
     pub fn eat(&mut self, kind: &Token) -> bool {
         // 2026-07-25: Check for pending `>` from `>>` splitting in nested generics.

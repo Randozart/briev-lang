@@ -230,7 +230,6 @@ fn expr_ids(e: &Expr, out: &mut BTreeSet<String>) {
                 expr_ids(&arm.body, out);
             }
         }
-        Expr::Named { inner, .. } => expr_ids(inner, out),
         _ => {}
     }
 }

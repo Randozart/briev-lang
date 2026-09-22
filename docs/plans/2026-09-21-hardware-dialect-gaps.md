@@ -671,3 +671,32 @@ author-expressed disconnection (`open`).
 
 Open under D16: asymmetric switch parts (relay coil/contact), ERC class
 semantics, whole-bus equality.
+
+### Amendment 2026-09-22 (VIII): RETRACT the lifting slots — honest subtraction
+
+`bind`, `store` (both forms), and the `net <name>:` annotation were
+rejected on review (plan 2026-09-22-retract-lifting-slots.md). The
+engine is deterministic — single solution, no value solver, no candidate
+enumeration — so "persist-tighten" and "commit-select" presume machinery
+that does not exist. Rule 2: if the compiler could have inferred it, the
+keyword is a bug report — here the keywords themselves were the bug.
+
+| Construct | Why removed |
+|---|---|
+| `bind a.pin = b.pin` | A plain body wiring fact `a = b` (both pins) does the identical union. `bind` only changed proof wording. |
+| `store inst.field = value` | Inert: physics (series Ohm's law) and the emitter read the `let` literal, never the store. |
+| `store net(pin) = "name"` | Duplicated `net <name>:`, which was itself redundant. |
+| `net <name>:` annotation | Nets are identified by physics — derived voltage (`net_voltage`) and `Supply`/`Return` pin classes. A name asserts what the compiler derives; a name contradicting physics would be a lie we'd trust. |
+
+Nets are now named by WHAT they are: the emitter labels a return-class net
+`GND`, a driven supply net `V{volts}`, everything else `N#`. The
+`net_conflicts` check is gone (physics cannot conflict with itself).
+
+**Kept: `open a.pin, b.pin;`** — the sole genuinely non-inferable
+construct: a NEGATIVE constraint. The netlist is the transitive closure
+of positive wiring facts; "these two must NOT connect" can never be
+inferred from absence. The complement gate to the phase-3 redundancy
+check. D16 p3b remains closed.
+
+D14's persist-tighten / commit-select slots are **deferred until a
+solver exists** — then, and only then, do the keywords have a substrate.

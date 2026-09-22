@@ -368,7 +368,6 @@ pub fn eval_expr(
                     })?;
                 Ok(Value::Range { start: s, end: e, inclusive: *inclusive })
             }
-            Expr::Named { inner, .. } => eval_expr(inner, heap, bindings, functions),
             Expr::UnitLiteral { value, .. } => Ok(f64_to_bits(*value)),
             Expr::Capture { expr, name } => {
                 let val = eval_expr(expr, heap, bindings, functions)?;
@@ -2124,9 +2123,9 @@ pub fn eval_statement(
         Statement::Rollback(_) => Ok(Value::Void),
         Statement::MetadataAssignment(_, _) => Ok(Value::Void),
         Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) => Ok(Value::Void),
-        // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — netlist
-        // analysis consumes them, not the runtime. No-op here.
-        Statement::Bind(..) | Statement::StoreValue { .. } | Statement::StoreNet { .. } | Statement::Open(..) => Ok(Value::Void),
+        // 2026-09-22 (D16 p3b): `open` — the netlist analysis consumes it,
+        // not the runtime. No-op here.
+        Statement::Open(..) => Ok(Value::Void),
         Statement::SyncBlock(body) => {
             let mut result = Value::Void;
             for stmt in body {

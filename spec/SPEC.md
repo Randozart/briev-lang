@@ -331,38 +331,35 @@ is a hard error naming the expected shape. The `.voltage` access is what
 makes a condition a *voltage* claim; level-name sugar (`x = high`, `spec
 DefaultLevel`) is deferred — see the hardware-dialect-gaps ledger.
 
-**Lifting slots (2026-09-22, D14).** Inside a node body, three intent
-modifiers resolve the ambiguity surface (never a silent pick — Rule 3):
+**Nets are named by what they are (2026-09-22).** There is no net-naming
+syntax — the compiler derives labels from physics. A net touching a
+`Return`-class pin is `GND`; a net with a derived drive voltage is
+`V{volts}`; everything else is a structural `N#`. Values come from the
+`let` literal (never a store statement). `bind`/`store`/`net <name>:`
+were retracted on review: they asserted facts the compiler already
+derives — see the hardware-dialect-gaps ledger.
 
-- `bind a.pin = b.pin;` — persist-tighten: the net membership must hold
-  in every solution. A committed union with `bound` provenance.
-- `store inst.field = <value>;` — commit-select: pick one BOM value for
-  an instance property, recorded with provenance.
-- `store net(pin) = "<name>";` — name a derived equivalence class; the
-  name attaches to the net with the same one-net-one-name conflict rule
-  as `net <name>:` annotations.
-- `open a.pin, b.pin;` — author-expressed disconnection (D16 p3b): the
-  two pins would interact if connected, but the wire is open; analyse
-  them as separate nets. If any wiring fact, `bind`, or mechanism bridge
-  would tie them, the compiler emits a hard error naming both the `open`
-  fact and the connecting fact — the complement of the mechanism
-  redundancy gate.
-
-`bind`/`store`/`open` are contextual keywords in node-body position;
-they shadow same-named functions or identifiers there (rename such an
-`open()` action, e.g. to `release()`).
+**`open` — author-expressed disconnection (2026-09-22, D16 p3b).** Inside
+a node body, `open a.pin, b.pin;` declares that the two pins must NOT be
+connected: they would interact if connected, but the wire is open; analyse
+them as separate nets. This is a negative constraint the netlist (the
+transitive closure of positive wiring facts) can never infer. If any
+wiring fact or mechanism bridge would tie them, the compiler emits a hard
+error naming both the `open` fact and the connecting fact — the
+complement of the mechanism redundancy gate. `open` is a contextual
+keyword in node-body position; it shadows same-named functions there
+(rename such an `open()` action, e.g. to `release()`).
 
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive
 closure (union-find). A `==` against a literal drives the net at that
-level; disagreeing drives on one net are a shorted supply. A conjunct may
-be prefixed `net <name>:` to NAME the equivalence class — inference is
-unchanged; the name replaces the auto-generated `N1, N2…` in diagnostics
-and KiCad output (net names are contextual: keywords like `out` are valid
-names). Postconditions state physics — and the compiler PROVES them:
-through a two-pin part with a numeric value, I = V / R is derived at
-compile time and the derived current is checked against the stated bound.
+level; disagreeing drives on one net are a shorted supply. Nets have no
+author names — the emitter labels them from physics (a `Return`-class net
+is `GND`, a driven supply net `V{volts}`, else `N#`). Postconditions
+state physics — and the compiler PROVES them: through a two-pin part with
+a numeric value, I = V / R is derived at compile time and the derived
+current is checked against the stated bound.
 
 Physics literals carry unit suffixes: `3.3V` (volts), `20mA` (→ 0.02 A),
 `330R` (ohms), plus `A`, `Ω`, `F`, `H`, `Hz`, `W`, `K`. A suffixed literal
@@ -371,7 +368,7 @@ Bare numerics stay valid everywhere a suffixed form is.
 
 ```briev
 txn powered
-    [net vcc: j1.p1.voltage == r1.a.voltage && net out: r1.b.voltage == d1.a.voltage && net gnd: d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3V]
+    [j1.p1.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3V]
     [d1.a.current > 0.0 && d1.a.current <= 20mA]
 { }
 ```

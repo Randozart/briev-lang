@@ -173,10 +173,6 @@ pub enum Expr {
     Exists(String),
 
     // ── Electronics ─────────────────────────────────────────────
-    /// `net <name>: <expr>` — named net annotation on a precondition
-    /// equality. The name is metadata attached to the equivalence class;
-    /// inference is unchanged. Only meaningful in contract preconditions.
-    Named { name: String, inner: Box<Expr> },
     /// `<number><unit>` — a numeric literal with a physics unit suffix.
     /// `3.3V` (volts), `10mA` (milliamps), `330R` (ohms), etc.
     /// Parsed from adjacent numeric + identifier tokens; the analysis

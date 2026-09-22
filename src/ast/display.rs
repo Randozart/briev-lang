@@ -163,7 +163,6 @@ impl fmt::Display for Expr {
             }
             Expr::FormattingAnnotation(fmt_) => write!(f, "formatting <~ {}", fmt_.name()),
             Expr::StructLiteral { type_name, .. } => write!(f, "{} {{ ... }}", type_name),
-            Expr::Named { name, inner } => write!(f, "net {}: {}", name, inner),
             Expr::UnitLiteral { value, unit } => write!(f, "{}{}", value, unit),
             Expr::Capture { expr, name } => write!(f, "({}) >> {}", expr, name),
         }
@@ -398,12 +397,7 @@ impl fmt::Display for Statement {
                 }
                 write!(f, "}}")
             }
-            // 2026-09-22 (D14/D16 p3b): electronics intent modifiers.
-            Statement::Bind(lhs, rhs) => write!(f, "bind {} = {};", lhs, rhs),
-            Statement::StoreValue { instance, field, value } => {
-                write!(f, "store {}.{} = {};", instance, field, value)
-            }
-            Statement::StoreNet { pin, name } => write!(f, "store net({}) = \"{}\";", pin, name),
+            // 2026-09-22 (D16 p3b): author-expressed disconnection.
             Statement::Open(lhs, rhs) => write!(f, "open {}, {};", lhs, rhs),
             Statement::MetadataAssignment(key, val) => {
                 write!(f, "!> {}: {};", key, val)

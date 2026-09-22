@@ -176,7 +176,6 @@ fn walk_expr(expr: &mut Expr) {
         Expr::Slice { .. } => {},
 Expr::Slice { .. } => {},
         Expr::Range { .. } => {},
-        Expr::Named { inner, .. } => walk_expr(inner),
         Expr::Capture { expr, .. } => walk_expr(expr),
 
     }

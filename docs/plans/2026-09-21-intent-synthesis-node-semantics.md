@@ -36,11 +36,13 @@ cells      reusable composites (ports + internal instances/relations/nodes)
 instances  mass arrays + singles + population facts
 trg        board inputs (external reality; wake sources)
 nodes      guards + drive maps  (chain sugar available)
-lifting    two ambiguity slots: persist-tighten, commit-select (names TBD)
+lift       RETRACTED (2026-09-22): persist-tighten/commit-select had no
+           solver substrate; bind/store were the keywords, now gone
 ```
 
-**Nets are never declared. Never written. Fully inferred.** Net names are
-`store`-able labels on derived equivalence classes (emitter concern only).
+**Nets are never declared. Never written. Fully inferred.** Net labels are
+derived from physics (return-class → `GND`, driven → `V{volts}`, else
+`N#`) — emitter concern only.
 
 ### What this kills (recorded so it stays dead)
 
@@ -157,29 +159,28 @@ the spec doesn't cover must not ship).
 | # | Site | Resolution stage |
 |---|---|---|
 | 1 | Structure existence (is an element forced) | physics proofs — free |
-| 2 | Net membership (which pins connect) | `bind` narrows |
-| 3 | Value choice (which R; free variable with bounds) | `store`, or declared E-series domain; unresolved at BOM = error with bounds. No silent defaults (Rule 3) |
+| 2 | Net membership (which pins connect) | a body wiring fact (`a = b;`) states it; `bind` retracted 2026-09-22 (duplicated the wiring fact) |
+| 3 | Value choice (which R; free variable with bounds) | the `let` literal carries it; `store` retracted 2026-09-22 (inert until a value solver exists) |
 | 4 | Participation vs DNP (unconnected instance) | population fact required for exemption; else error listing *populate-or-DNP* |
 | 5 | Cross-node drive conflicts | Rule 22 classification, else error |
 | 6 | Polarity/orientation | usually derived from intent (led "on" ⇒ forward bias); under-constrained parts surface candidates |
 | 7 | Over-constraint (keeps that kill all solutions) | UNSAT error naming the **minimal conflicting set** |
 | 8 | Equivalent variants (series order, symmetric pins) | canonicalize silently, deterministically |
 
-**D14 — Lifting slots.** *persist-tighten* (`bind a.pin = b.pin;`) —
-declares a wiring fact that must hold in every solution (narrows before
-the solve); *commit-select* (`store inst.field = "value";` /
-`store net(pin) = "name";`) — picks one solution from enumerated
-candidates, visible in the emitted proof string. Modifier-family keywords
-(intent, never speed — Rule 2; if the compiler could have inferred it,
-using the keyword is a bug report). Derived facts
-(`derive on: a.current >= 2mA;`) are a separate construct — proven
-properties, not intents. **2026-09-22 (plan 2026-09-22-core-chain-into):
-IMPLEMENTED.** The keyword unification settled `bind`/`store` (not the
-provisional `keep` — that is main-language ownership-transfer; `fix` was
-rejected as a false friend). `bind` unions with provenance; `store`
-records the committed value or names the derived net. **D16 p3b** —
-`open a.pin, b.pin;` is the author-expressed disconnection: never-union,
-the complement gate to the phase-3 redundancy check.
+**D14 — Lifting slots.** *persist-tighten* and *commit-select* were
+proposed to resolve the ambiguity surface (which pins connect; which
+value). **2026-09-22 (plan 2026-09-22-retract-lifting-slots): RETRACTED.
+** The engine is deterministic — single solution, no value solver, no
+candidate enumeration — so the slots presume machinery that does not
+exist. `bind` duplicated a plain body wiring fact; `store` was inert
+(the `let` literal carries values and physics reads them); `store
+net(...)` and `net <name>:` asserted names the compiler derives from
+physics. Per Rule 2, the keywords themselves were the bug. **Deferred
+until a solver exists.** The one survivor is the D16 p3b disconnection:
+`open a.pin, b.pin;` — a NEGATIVE constraint, never inferable from the
+positive wiring closure; the complement gate to the phase-3 redundancy
+check. Derived facts (`derive on: a.current >= 2mA;`) remain a separate
+construct — proven properties, not intents.
 
 **D15 — Firmware = extern boundary.** Chip-internal logic (EC firmware)
 is outside the proof surface: the EC appears as a component whose pins
@@ -260,10 +261,7 @@ trg usb_attached;
 node usb_powered [usb_attached && j1.vbus.voltage == 5.0V] {
     u1.enabled = true;          // en wiring inferred (candidates exist)
     led1 = true;                // physics derives the series resistor;
-                                // io-class pruning + bind pick the driver
-    bind led1.a = u2.gpio[0];
-    store r_led.value = "330R";
-    store net(u1.out) = "v3v3"; // even naming is a store on a derived class
+                                // io-class pruning picks the driver
 }
 node i2c_idle [usb_powered.up && u2.sda.released] {
     u2.sda.voltage >= 2.7V;  u3.scl.voltage >= 2.7V;
@@ -271,16 +269,15 @@ node i2c_idle [usb_powered.up && u2.sda.released] {
     // FORCED; solver wires r_pu[*] to u1.out. No resolution keywords exist.
 }
 node button_pressed [usb_powered.up && sw1.closed] {
-    u2.gpio[3].voltage <= 0.3V; // forces a gnd path → store r_btn.via(...)
+    u2.gpio[3].voltage <= 0.3V; // forces a gnd path
 }
 ```
 
 **Gate:** compiles with the stated intents; each stated omission is a hard
-error with enumerated candidates (drop `bind` → 8-candidate GPIO error;
-drop `store r_led.value` → unresolvable BOM value error with bounds;
-remove a decoupling cap → convention error; undeclared driver for `led1`
-→ membership candidates; `sw1` path without `store r_btn.via(...)` →
-membership candidates).
+error with enumerated candidates (undeclared driver for `led1` →
+membership candidates; `sw1` path without an explicit gnd wiring →
+membership candidates; remove a decoupling cap → convention error; an
+`open` naming two wired pins → disconnection error).
 
 ### 3.3 IdeaPad power tree (motherboard-class fixture — STUB)
 
@@ -297,7 +294,7 @@ motherboard-class gate.
 
 | Stage | Scope | Gate |
 |---|---|---|
-| **E14a** | intent-*completion*: explicit equalities still allowed; drive-map intents (`led1 = true`) infer the remaining memberships; ambiguity = enumerated-candidate errors; pin classes, vol, spec, population, chain desugar, lifting slots | §3.2 fixture compiles + its error matrix; netlist/KiCad deterministic |
+| **E14a** | intent-*completion*: explicit equalities still allowed; drive-map intents (`led1 = true`) infer the remaining memberships; ambiguity = enumerated-candidate errors; pin classes, vol, spec, population, chain desugar; lifting slots RETRACTED (2026-09-22) — no solver substrate | §3.2 fixture compiles + its error matrix; netlist/KiCad deterministic |
 | **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized |
 
 Both stages: `L`. E14a ships useful even if E14b stalls (strict

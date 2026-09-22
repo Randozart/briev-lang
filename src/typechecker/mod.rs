@@ -1490,7 +1490,6 @@ pub fn infer_expression(
                     Ok((Type::Custom(type_name.clone()), Provenance::Unknown))
                 }
             }
-            Expr::Named { inner, .. } => infer_expression(inner, ctx),
             Expr::UnitLiteral { .. } => Ok((Type::float(), Provenance::Unknown)),
             Expr::Capture { expr, name } => {
                 // 2026-09-16: `expr >> name` — register the captured value's
@@ -1660,9 +1659,6 @@ fn try_coerce_via_parse(
                 Expr::Float(_) | Expr::Decimal(_) | Expr::TaggedLiteral(_, _) => ("Decimal", None),
                 _ => return false,
             }
-        }
-        Expr::Named { inner, .. } => {
-            return try_coerce_via_parse(inner, target_ty, arg_ty, ctx);
         }
         Expr::UnitLiteral { value, .. } => {
             return try_coerce_via_parse(&Expr::Float(*value), target_ty, arg_ty, ctx);
@@ -2490,7 +2486,6 @@ fn elaborate_expr(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<
                 elaborate_expr(a, ctx, errors);
             }
         }
-        Expr::Named { inner, .. } => elaborate_expr(inner, ctx, errors),
         Expr::UnitLiteral { .. } => {}
         _ => {}
     }
@@ -3567,22 +3562,8 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => Ok(()),
-        // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — the
-        // netlist analysis consumes them; the typechecker verifies their
-        // expressions type-check.
-        Statement::Bind(lhs, rhs) => {
-            infer_type_only(lhs, ctx)?;
-            infer_type_only(rhs, ctx)?;
-            Ok(())
-        }
-        Statement::StoreValue { value, .. } => {
-            infer_type_only(value, ctx)?;
-            Ok(())
-        }
-        Statement::StoreNet { pin, .. } => {
-            infer_type_only(pin, ctx)?;
-            Ok(())
-        }
+        // 2026-09-22 (D16 p3b): `open` — the netlist analysis consumes it; the
+        // typechecker verifies its expressions type-check.
         Statement::Open(lhs, rhs) => {
             infer_type_only(lhs, ctx)?;
             infer_type_only(rhs, ctx)?;

@@ -175,10 +175,6 @@ impl LlvmBackend {
                 let new_end = Box::new(Self::rewrite_cell_identifiers(end, cell_name));
                 Expr::Range { start: new_start, end: new_end, inclusive: *inclusive }
             }
-            Expr::Named { name, inner } => Expr::Named {
-                name: name.clone(),
-                inner: Box::new(Self::rewrite_cell_identifiers(inner, cell_name)),
-            },
             Expr::UnitLiteral { value, unit } => Expr::UnitLiteral { value: *value, unit: unit.clone() },
             Expr::Capture { expr, name } => Expr::Capture {
                 expr: Box::new(Self::rewrite_cell_identifiers(expr, cell_name)),
@@ -307,39 +303,12 @@ impl LlvmBackend {
                 body: Self::rewrite_cell_stmt_body(body, cell_name),
             },
             Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => stmt.clone(),
-            // 2026-09-22 (D14/D16 p3b): electronics intent modifiers — rewrite
-            // identifiers in their expressions, else keep intact.
-            Statement::Bind(..) | Statement::StoreValue { .. }
-            | Statement::StoreNet { .. } | Statement::Open(..) => {
-                Self::rewrite_cell_lift_identifiers(stmt, cell_name)
-            }
-        }
-    }
-
-    /// 2026-09-22 (D14/D16 p3b): rewrite identifiers inside the electronics
-    /// intent modifiers (`bind`/`store`/`open`), keeping the rest intact.
-    /// Extracted so `rewrite_cell_stmt_identifiers` stays under the
-    /// function-length gate.
-    fn rewrite_cell_lift_identifiers(stmt: &Statement, cell_name: &str) -> Statement {
-        match stmt {
-            Statement::Bind(lhs, rhs) => Statement::Bind(
-                Box::new(Self::rewrite_cell_identifiers(lhs, cell_name)),
-                Box::new(Self::rewrite_cell_identifiers(rhs, cell_name)),
-            ),
-            Statement::StoreValue { instance, field, value } => Statement::StoreValue {
-                instance: instance.clone(),
-                field: field.clone(),
-                value: Self::rewrite_cell_identifiers(value, cell_name),
-            },
-            Statement::StoreNet { pin, name } => Statement::StoreNet {
-                pin: Self::rewrite_cell_identifiers(pin, cell_name),
-                name: name.clone(),
-            },
+            // 2026-09-22 (D16 p3b): `open` — rewrite identifiers in its
+            // expressions, else keep intact.
             Statement::Open(lhs, rhs) => Statement::Open(
                 Box::new(Self::rewrite_cell_identifiers(lhs, cell_name)),
                 Box::new(Self::rewrite_cell_identifiers(rhs, cell_name)),
             ),
-            _ => stmt.clone(),
         }
     }
 
