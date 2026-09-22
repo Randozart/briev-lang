@@ -94,7 +94,12 @@ documented memory-copy path. Primary deliverable: the abstraction shape
   (params start at a1/x1); a `.bv` caller needs sp set (bootstrap owns
   the entry); tail-call (`jmp`) instead of `call` so the frameless bad
   fn doesn't clobber ra.
-- **#3 --all-targets — pending.**
+- **#3 --all-targets — DONE**: `--all-targets` builds every briev.toml
+  `[target.*]` profile in one invocation. Profiles may carry `triple`,
+  `linker_script`, and `entry` (the bootstrap bad symbol) — applied
+  per-target in the build loop. One command produced all three binaries
+  (aarch64/arm/rv64) from bootloader.bv, each QEMU-verified printing
+  "universal boot".
 - **#4 load_sectors — pending.**
 
 ## Doc updates

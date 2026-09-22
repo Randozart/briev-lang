@@ -248,6 +248,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut dump_traces = false;
     let mut diff_mode = false;
     let mut target_name: Option<String> = None;
+    let mut all_targets = false;
     let mut sysquery_pairs: Vec<(String, String)> = Vec::new();
     let mut sysquery_files: Vec<String> = Vec::new();
     let mut int_bits = 64u64;
@@ -377,6 +378,12 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             let val = args.get(i + 1).ok_or("--target requires a target name argument")?;
             target_name = Some(val.clone());
             i += 2;
+        } else if arg == "--all-targets" {
+            // 2026-09-22 (universal completion): build every target profile
+            // in briev.toml in one invocation — the universal bootstrapper
+            // produces all binaries from one source.
+            all_targets = true;
+            i += 1;
         } else if arg == "--triple" {
             let val = args.get(i + 1).ok_or("--triple requires a triple argument (e.g., riscv64-unknown-none)")?;
             triple_override = Some(val.clone());
@@ -482,6 +489,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         diff_mode,
         sysquery_overrides: HashMap::new(),
         target: target_name,
+        all_targets,
         sysquery_pairs,
         sysquery_files,
         style_css: None,
@@ -493,6 +501,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         isr_mechanism: None,
         triple_override,
         linker_script_override,
+        entry_override: None,
         raw_bin,
         no_link,
     })
@@ -772,6 +781,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         diff_mode: false,
         sysquery_overrides: std::collections::HashMap::new(),
         target: None,
+        all_targets: false,
         sysquery_pairs: vec![],
         sysquery_files: vec![],
         style_css: None,
@@ -783,6 +793,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         isr_mechanism: None,
         triple_override: None,
         linker_script_override: None,
+        entry_override: None,
         raw_bin: false,
         no_link: false,
     };
@@ -936,13 +947,28 @@ fn run_build(args: &[String]) -> Result<(), String> {
 
     // ── Determine what to build ──────────────────────────────────────
     // Each entry: (target_name, base_overrides_from_profile, isr_mechanism)
-    let target_profiles: Vec<(String, HashMap<String, String>, Option<String>)> = if let Some(ref target_name) = opts.target {
+    let project_dir = std::path::Path::new(&opts.file_path)
+        .parent().map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let manifest = briev_compiler::manifest::find_manifest(&project_dir)
+        .and_then(|p| briev_compiler::manifest::Manifest::load(&p).ok());
+    let target_profiles: Vec<(String, HashMap<String, String>, Option<String>)> = if opts.all_targets {
+        // --all-targets: build EVERY profile in briev.toml — one command,
+        // all binaries, from one universal source.
+        let manifest = manifest.as_ref().ok_or_else(|| {
+            "--all-targets requires a briev.toml with target profiles".to_string()
+        })?;
+        if manifest.target.is_empty() {
+            return Err("--all-targets: briev.toml has no [target.*] profiles".to_string());
+        }
+        let mut names: Vec<_> = manifest.target.keys().cloned().collect();
+        names.sort();
+        names.iter().map(|n| {
+            let p = &manifest.target[n];
+            (n.clone(), p.sysquery_overrides(), p.isr_mechanism.clone())
+        }).collect()
+    } else if let Some(ref target_name) = opts.target {
         // --target <name>: single target from briev.toml
-        let project_dir = std::path::Path::new(&opts.file_path)
-            .parent().map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        let manifest = briev_compiler::manifest::find_manifest(&project_dir)
-            .and_then(|p| briev_compiler::manifest::Manifest::load(&p).ok());
         let manifest = manifest.as_ref().ok_or_else(|| {
             format!("--target '{}' requires a briev.toml with target profiles", target_name)
         })?;
@@ -981,6 +1007,17 @@ fn run_build(args: &[String]) -> Result<(), String> {
         // 2026-09-06 (ISR plan): the profile's ISR mechanism is the configured
         // default for mechanism-less `isr` declarations.
         target_opts.isr_mechanism = profile_isr_mechanism.clone();
+        // 2026-09-22 (--all-targets): a [target.*] profile may carry the
+        // triple, linker script, and bootstrap entry for its build.
+        if let Some(t) = profile_overrides.get("triple") {
+            target_opts.triple_override = Some(t.clone());
+        }
+        if let Some(l) = profile_overrides.get("linker_script") {
+            target_opts.linker_script_override = Some(l.clone());
+        }
+        if let Some(e) = profile_overrides.get("entry") {
+            target_opts.entry_override = Some(e.clone());
+        }
 
         // Per-target output directory
         if *target_name != "default" {

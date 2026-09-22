@@ -794,9 +794,11 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     extra_objects.extend(bad_fn_objects.clone());
     // The bootstrap entry symbol, if a `bootstrap bad` is declared — the
     // linker needs it as the process entry (no owned _start exists).
-    let bootstrap_entry = items.iter().find_map(|i| match i {
-        briev_compiler::ast::TopLevel::BadFn(bf) if bf.bootstrap => Some(bf.name.clone()),
-        _ => None,
+    let bootstrap_entry = opts.entry_override.clone().or_else(|| {
+        items.iter().find_map(|i| match i {
+            briev_compiler::ast::TopLevel::BadFn(bf) if bf.bootstrap => Some(bf.name.clone()),
+            _ => None,
+        })
     });
 
     if !opts.emit_ir_only {
