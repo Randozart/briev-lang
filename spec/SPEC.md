@@ -350,6 +350,57 @@ complement of the mechanism redundancy gate. `open` is a contextual
 keyword in node-body position; it shadows same-named functions there
 (rename such an `open()` action, e.g. to `release()`).
 
+**Unpopulated parts and intentional shorts (2026-09-22, plan
+2026-09-22-electronics-participation-and-when-law).** A declared instance
+is populated by default (it lands on the board and in the BOM). Two
+top-level facts express participation choices:
+
+- `unpop <inst>;` — the part is absent from the BOM (`in_bom no`), but the
+  design is verified in BOTH configurations: present (the part conducts as
+  its type declares) and absent (its pins are open, exempt from the
+  dangling-pin error). This is a *hypothesis*: the only reason to declare
+  absence is to pin the claim that the board holds either way. The compiler
+  enumerates the 2ⁿ state space up to a bound (default ≤ 4 unpop parts);
+  beyond it, the compile refuses with "split or document" rather than
+  silently checking a subset. `unpop` cannot exempt a part the design
+  requires (e.g. a `spec Decouple` obligation): the absent state fails.
+  A jumper is an unpop'd `Wire` — `type Wire { pin a; pin b; reference
+  "W"; };` in `std/electronics.bv` — whose present state shorts `a<->b`.
+- `shortcircuit unpop <inst>: <Type>;` — the author acknowledges that
+  populating this part shorts its net: the shorted-supply error for that
+  part's present state is suppressed and recorded as proven-and-acknowledged.
+  `shortcircuit` on a populated part emits a warning with a suggest-`unpop`
+  hint. (A future `sacrificial` + melting-point declaration will suppress
+  that warning for a part proven to fail first — deferred, thermal model
+  pending, see the hardware-dialect-gaps ledger.)
+
+**The static `when` law (2026-09-22).** `when G { F₁; …; Fₙ }` declares
+`G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must make it so. Its meaning is decided
+by position:
+
+- Inside a `defn` / `node` / `txn`, `when` is guarded/reactive behavior —
+  unchanged.
+- At top level, or in an `obj`/`type` body, `when` is a **static forced
+  fact**: the compiler propagates the consequence (derives it downstream —
+  into the netlist's voltage/current/power proofs for electronics, into
+  proof obligations for software) and verifies consistency — anything that
+  contradicts an in-force fact under a satisfiable guard is a compile error.
+  If even one satisfiable state escapes, the compiler refuses; it never
+  silently passes a state it cannot enumerate. "Make it so" is propagate +
+  verify, never synthesis — the solver adds no parts to honor the law.
+  Top-level facts are program-global; obj/type facts are scoped to the
+  declaration and inherited per instance.
+
+```briev
+// electronics — a conditional drive (type-body law)
+type Regulator { pin in: Power; pin out: Power; pin gnd: Ground;
+    when in.voltage >= 5V { out.voltage = 3.3V; } }
+// software — a conditional member fact (obj-body law)
+obj Sensor { when temperature > 100 { thermal_alarm = true; } }
+// top-level — a free-standing forced fact
+when usb_attached { j1.vbus.voltage = 5.0V; }
+```
+
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive
