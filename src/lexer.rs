@@ -472,9 +472,6 @@ ExclaimArrow,
     #[token(":")]
     Colon,
 
-    #[token("::")]
-    ColonColon,
-
     #[token("{")]
     LBrace,
 
@@ -709,7 +706,6 @@ impl std::fmt::Display for Token {
             Token::DotCaret => write!(f, ".^"),
             Token::ColonEq => write!(f, ":="),
             Token::Colon => write!(f, ":"),
-            Token::ColonColon => write!(f, "::"),
             Token::LBrace => write!(f, "{{"),
             Token::RBrace => write!(f, "}}"),
             Token::LParen => write!(f, "("),

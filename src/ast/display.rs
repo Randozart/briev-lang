@@ -28,7 +28,10 @@ impl fmt::Display for Expr {
             Expr::Float(n) => write!(f, "{}", n),
             Expr::Identifier(name) => write!(f, "{}", name),
             Expr::Call(name, args, _) => {
-                write!(f, "{}(", name)?;
+                // 2026-09-22 (syntax-cleanup plan): the internal callee string
+                // carries `Enum::Variant` (a stable registry contract); the
+                // canonical spelling is member access `Enum.Variant`.
+                write!(f, "{}(", name.replace("::", "."))?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -615,7 +618,8 @@ impl fmt::Display for Pattern {
             // 2026-08-22 (Phase 3): typed binding of a structural sum member.
             Pattern::TypedBinding(name, ty) => write!(f, "{}: {}", name, ty),
             Pattern::EnumVariant(name, fields) => {
-                write!(f, "{}", name)?;
+                // 2026-09-22: canonical `.` spelling for qualified variants.
+                write!(f, "{}", name.replace("::", "."))?;
                 if !fields.is_empty() {
                     write!(f, "(")?;
                     for (i, field) in fields.iter().enumerate() {

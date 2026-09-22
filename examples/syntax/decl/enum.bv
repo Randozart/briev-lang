@@ -1,8 +1,3 @@
-// SPEC §8.9 — `enum`: tagged sum types. Each variant carries a
-// distinct payload; the compiler derives the discriminant tag and
-// the cast graph. Variants are comma-separated. Construction uses
-// bare variant calls `RGB(r, g, b)` or qualified `Color::RGB(...)`.
-
 enum Color {
     Red,
     Green,
@@ -12,8 +7,15 @@ enum Color {
 
 let i: Int = 0;
 let c: Color;
+let m: Color;
 async node enum_user [i < 1][i == 1] {
-    c = Color::RGB(255, 128, 0);
+    c = Color.RGB(255, 128, 0);
+    m = match c {
+        Color.RGB(r, g, b) => Color.Red,
+        Color.Red => Color.Green,
+        Color.Green => Color.Blue,
+        Color.Blue => Color.Red,
+    };
     i = i + 1;
     term;
 };

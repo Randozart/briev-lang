@@ -11,7 +11,7 @@ defn c_string_to_briev(c_str: CString) -> String [c_str.is_valid() && c_str.not_
 // Precondition: Briev String is valid
 // Postcondition: Returns CString (caller must free)
 defn briev_string_to_c(s: String) -> CString [true][term.not_null()] {
-  term CString::new(s);
+  term CString.new(s);
 };
 
 // Convert C int to Briev Int

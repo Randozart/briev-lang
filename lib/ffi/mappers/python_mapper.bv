@@ -63,7 +63,7 @@ defn py_int_to_briev(py_int: PyInt) -> Int [true][term == py_int.value] {
 
 // Convert Briev Int to Python int
 defn briev_int_to_py(n: Int) -> PyInt [true][term.value == n] {
-    term PyInt::from_int(n);
+    term PyInt.from_int(n);
 };
 
 // Convert Python float to Briev Float
@@ -73,7 +73,7 @@ defn py_float_to_briev(py_float: PyFloat) -> Float [true][term == py_float.value
 
 // Convert Briev Float to Python float
 defn briev_float_to_py(f: Float) -> PyFloat [true][term.value == f] {
-    term PyFloat::from_float(f);
+    term PyFloat.from_float(f);
 };
 
 // ============================================================
