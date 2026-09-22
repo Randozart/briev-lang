@@ -267,6 +267,10 @@ boot-sector / firmware blob a bootloader would load. `boot_rv64.bin`
 loads directly in QEMU `-kernel` and boots standalone. riscv64 bare-metal
 objects assemble `-mabi=lp64` soft-float to match the `.bv` side's ABI.
 
+The two-stage pattern (`examples/bad/boot_stage1.bv`) shows a bootloader
+that does machine setup then CALLS a `kernel` routine in the same image
+— the load-and-handoff bootstrapper, verified from the flat `.bin`.
+
 ## The acknowledge tier — predicting, not blocking
 
 `.bad` **predicts** probable errors and lets the author **veto loudly**.

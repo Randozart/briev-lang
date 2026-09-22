@@ -147,6 +147,10 @@ bootstrap bad reset() {
   x86_64 multiboot 32-bit prologue is NOT expressible in `.bad`'s 64-bit
   GAS dialect — the honest path is flat-image ELF loading (qemu -kernel),
   which both verified examples use.
+- **Two-stage bootloader — DONE**: `examples/bad/boot_stage1.bv` is a
+  `bootstrap bad` that does machine setup, prints "stage1", and CALLS a
+  `kernel` routine in the same image — the load-and-handoff bootstrapper
+  pattern, verified from the flat `.bin` in QEMU.
 - Boot-sector (x86 real-mode, 512-byte MBR) remains out of reach — `.bad`
   emits 64-bit GAS only.
 
