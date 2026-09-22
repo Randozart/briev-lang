@@ -726,3 +726,24 @@ convention-checker pattern as E13.
 Open under the when-law (Slice C): electronics conditional drives and the
 software member-fact law, both at top level / type / obj only (defn/node/
 txn when unchanged).
+
+### Amendment 2026-09-22 (X): the static when law LANDED (Slice C)
+
+The `when` law is live in BOTH worlds at top level / obj / type — X implies
+Y, the compiler makes it so (position decides semantics; defn/node/txn when
+unchanged). Electronics facts are conditional drives (guard-aware
+shorted-supply, per-instance type-body inheritance); software facts force
+members (`analysis/when_law.rs`), contradicted by any node assignment or
+other law under a jointly-satisfiable guard → refusal. The shared
+satisfiability probe now understands unit literals, pin-access chains, and
+opposite numeric comparisons on the same lhs (the Rule-22 precision slice).
+
+The when-law is the conditional twin of `spec` (static property vs.
+conditional fact) and of the D14 lifting slots (which were retracted for
+lacking a solver substrate — the when-law HAS one: contradiction
+detection, which is a proof, not a solver). D15 boundary holds: a law must
+be algebraic/conditional, never a sequential firmware model.
+
+Open under D18: whole-bus equality (ranges over pin arrays), asymmetric
+switch parts (relay coil/contact), ERC class semantics — all unchanged from
+the pre-when-law ledger.

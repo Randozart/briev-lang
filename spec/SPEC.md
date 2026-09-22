@@ -1353,6 +1353,40 @@ Desugar rule:
 unrelated: it transfers ownership. `chain`/`into` are new keywords; a
 bare `trg` name as a chain sign-off is not a form — write `into <trg>;`.
 
+#### 9.4.2 The static `when` law (2026-09-22)
+
+`when G { F₁; …; Fₙ }` declares `G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must
+make it so. Its meaning is decided by **position**:
+
+- Inside a `defn` / `node` / `txn`, `when` is guarded/reactive behavior —
+  unchanged.
+- At **top level**, or in an **`obj`/`type` body**, `when` is a **static
+  forced fact**: the compiler propagates the consequence and verifies
+  consistency — anything that contradicts an in-force fact under a
+  satisfiable guard is a compile error. If even one satisfiable state
+  escapes, the compile refuses. "Make it so" is propagate + verify, never
+  synthesis (the solver adds no parts to honor the law).
+
+```briev
+// software — an obj-body law forcing a member
+obj Sensor { when temperature > 100 { thermal_alarm = true; } }
+// top-level — a free-standing forced fact
+when usb_attached { j1.vbus.voltage = 5.0V; }
+// electronics — a type-body law (a regulator's behavior)
+type Regulator { pin in: Power; pin out: Power; pin gnd: Ground;
+    when in.voltage >= 5V { out.voltage = 3.3V; } }
+```
+
+Electronics law facts are conditional drives: a drive forcing the same net
+to a different voltage under a jointly-satisfiable guard is a shorted
+supply. Software law facts force members: a node/txn body assignment (or
+another law) forcing the same member differently under a jointly-
+satisfiable guard is a refusal. Top-level facts are program-global;
+obj/type facts are scoped to the declaration (type-body laws are inherited
+per instance). Mutually-exclusive guards never conflict — the
+satisfiability probe understands unit literals, pin-access chains, and
+opposite comparisons on the same lhs.
+
 ### 9.5 Objects
 
 An object owns identity, lifecycle, logical state, ports, and reactive behavior in its parent reactor.

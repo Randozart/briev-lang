@@ -188,6 +188,34 @@ obey declared per-state pin contracts — a volatile black box, the board
 language's `extern`. Non-goals, recorded: PCB layout, length matching,
 impedance/signal integrity, transient/time-domain simulation.
 
+**D18 — The static `when` law (2026-09-22, plan 2026-09-22-electronics-
+participation-and-when-law).** `when G { F₁; …; Fₙ }` declares
+`G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must make it so. Meaning is decided by
+**position**:
+
+- Inside a `defn`/`node`/`txn` → guarded/reactive behavior (unchanged).
+- At top level / in an `obj` / in a `type` → a **static forced fact**: the
+  compiler propagates the consequence and verifies consistency — anything
+  that contradicts an in-force fact under a satisfiable guard is a refusal.
+  If even one satisfiable state escapes, the compile refuses.
+
+"Make it so" = propagate + verify, never synthesis (the solver adds no
+parts — D13). Two consumers, same law:
+
+- **Electronics** (C1): law facts are conditional drives joined into
+  `classify_drives` — two in-force drives at different voltages under
+  jointly-satisfiable guards are a shorted supply; mutually-exclusive
+  guards never conflict. Type-body laws are inherited per instance
+  (bare pin refs qualified to `inst.pin`).
+- **Software** (C2): a law fact forces a member; a node/txn body assignment
+  or another law that forces it differently under a jointly-satisfiable
+  guard is a refusal (`analysis/when_law.rs`).
+
+The guard-satisfiability probe (`check_satisfiable`) understands unit
+literals, pin-access chains, and opposite numeric comparisons on the same
+lhs (`x > 100` vs `x <= 100` disjoint) — this is the Slice-A Rule-22
+precision work, shared by the concurrency gate and the when-law gate.
+
 ## 3. Fixtures (gate evidence)
 
 ### 3.1 Chain example (sequencing, D9)
