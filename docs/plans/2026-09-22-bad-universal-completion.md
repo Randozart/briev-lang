@@ -80,9 +80,22 @@ primitive where one exists (x86 INT 13h). For targets with no disk
 documented memory-copy path. Primary deliverable: the abstraction shape
 + docs; a real AHCI/NVMe driver is explicitly out of scope.
 
-## Work order
+## Status
 
-#1 → #2 → #3 → #4. Each committed when green (cargo test --lib + gates).
+- **#1 aarch64 universal target — DONE** (`e9a87ca8`): `arch.bad` aarch64
+  uart_init + putc, PL011 UART, `-Wl,-m,aarch64elf -static`, aarch64
+  `w`-register width token, named-raw-block label-after-section fix.
+  `bootloader.bv` boots 4/4.
+- **#2 Interpretation B — DONE**: `.bv` defn → `bad` fn (typed, contract-
+  checked) → `.bad` named raw block. `examples/bad/typed_boot.bv` boots
+  and prints "BAD" via the typed chain. Enablers: `bad fn` label is the
+  global FN NAME (not `_entry`); prepended `.bad` imports land before the
+  label; non-bootstrap param binding skips the %state ABI register
+  (params start at a1/x1); a `.bv` caller needs sp set (bootstrap owns
+  the entry); tail-call (`jmp`) instead of `call` so the frameless bad
+  fn doesn't clobber ra.
+- **#3 --all-targets — pending.**
+- **#4 load_sectors — pending.**
 
 ## Doc updates
 

@@ -118,20 +118,24 @@ raw x86_64 putc
     ret
 end
 
-// riscv64: full-width store to the 16550 DATA (a2 = base).
+// riscv64: full-width store to the 16550 DATA. Self-contained — loads
+// its own base (a2 is caller-saved and a .bv caller may clobber it).
 raw riscv64 putc
+    li a2, 0x10000000
     sd a0, 0(a2)
     ret
 end
 
-// aarch64: 32-bit store to the PL011 DATA (x2 = base).
+// aarch64: 32-bit store to the PL011 DATA. Self-contained base.
 raw aarch64 putc
+    mov x2, 0x09000000
     str w0, [x2]
     ret
 end
 
-// thumbv7m: byte store to the CMSDK UART DATA (r2 = base).
+// thumbv7m: byte store to the CMSDK UART DATA. Self-contained base.
 raw thumbv7m putc
+    ldr r2, =0x40004000
     strb r0, [r2]
     bx lr
 end

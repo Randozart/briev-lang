@@ -95,11 +95,33 @@ pub fn generate_bad_fn(
         parse_bad(&with_export).map_err(|e| format!("bootstrap bad body: line {}: {}", e.line, e.message))?
     } else {
         // Wrap body in an entry label and ensure it ends with `ret`.
+        // Leading `import` lines (prepended .bv-top-level .bad imports)
+        // must come BEFORE the `_entry:` label — an import directive
+        // closes the current owner, so a label after it would orphan the
+        // following instructions.
+        let mut imports = String::new();
         let trimmed = body.trim();
-        let mut wrapped = String::from("_entry:\n");
-        wrapped.push_str(trimmed);
+        let rest: Vec<&str> = trimmed
+            .lines()
+            .skip_while(|l| {
+                let t = l.trim();
+                if t.starts_with("import ") {
+                    imports.push_str(l);
+                    imports.push('\n');
+                    true
+                } else {
+                    false
+                }
+            })
+            .collect();
+        let mut wrapped = imports;
+        // The entry label is the FN NAME (not a generic `_entry`) so the
+        // LLVM-side `declare @<name>` resolves the symbol at link — and it
+        // must be GLOBAL (the .bv caller lives in another translation unit).
+        wrapped.push_str(&format!(".global {bootstrap_name}\n{bootstrap_name}:\n"));
+        wrapped.push_str(&rest.join("\n"));
         // Auto-append `ret` if the body doesn't already end with one.
-        let last_line = trimmed.lines().last().unwrap_or("").trim();
+        let last_line = rest.last().unwrap_or(&"").trim();
         if last_line != "ret" && !last_line.ends_with("ret") {
             wrapped.push_str("\nret");
         }
@@ -1239,8 +1261,11 @@ mod bootstrap_bad_tests {
 
     #[test]
     fn regular_bad_fn_still_wraps_and_appends_ret() {
+        // The wrap uses the FN NAME (global) so the LLVM declare @add
+        // resolves; the auto-ret appends for the return path.
         let asm = generate_bad_fn("add r0, r1, r2\n", "x86_64", std::collections::HashMap::new(), false, "add", None).unwrap();
-        assert!(asm.contains("_entry:"), "{asm}");
+        assert!(asm.contains(".global add"), "{asm}");
+        assert!(asm.contains("add:"), "{asm}");
         assert!(asm.contains("ret"), "{asm}");
     }
 }
@@ -1379,5 +1404,35 @@ mod named_raw_block_tests {
         )
         .unwrap();
         assert!(asm.contains(".code32"), "{asm}");
+    }
+}
+
+// ── Interpretation B (2026-09-22): .bv typed calls to .bad primitives ─
+mod interpretation_b_tests {
+    use super::*;
+
+    #[test]
+    fn bad_fn_label_is_global_fn_name() {
+        // The wrap uses the fn NAME (global) so the LLVM declare @name
+        // resolves across translation units.
+        let asm = generate_bad_fn("call putc\n", "riscv64", std::collections::HashMap::new(), false, "boot_putc", None).unwrap();
+        assert!(asm.contains(".global boot_putc"), "{asm}");
+        assert!(asm.contains("boot_putc:"), "{asm}");
+    }
+
+    #[test]
+    fn imports_land_before_entry_label() {
+        // A prepended .bad import must come BEFORE the fn label — an
+        // import directive closes the current owner, orphaning the body.
+        // Use a real empty import file so resolution succeeds.
+        let dir = test_dir("ib");
+        std::fs::write(dir.join("arch.bad"), "\n").ok();
+        let body = "import \"arch.bad\"\ncall putc\n";
+        let asm = generate_bad_fn(body, "riscv64", std::collections::HashMap::new(), false, "boot_putc", Some(dir.clone())).unwrap();
+        let label_idx = asm.find("boot_putc:").unwrap_or(usize::MAX);
+        assert!(asm.contains(".global boot_putc"), "{asm}");
+        assert!(asm.contains("call putc"), "{asm}");
+        assert!(label_idx < asm.find("call putc").unwrap_or(usize::MAX), "{asm}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

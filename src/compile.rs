@@ -1953,8 +1953,13 @@ fn compile_bad_fn_objects(
         // A bootstrap entry is a machine entry, not an ABI function — no
         // params bind (it owns sp/vector-table/handoff itself).
         let mut param_env = std::collections::HashMap::new();
-        let mut r_idx = 0usize;
-        let mut f_idx = 0usize;
+        // A bootstrap entry is a machine entry, not an ABI function — no
+        // params bind (it owns sp/vector-table/handoff itself).
+        // A NON-bootstrap bad fn is CALLED FROM .bv code, where the LLVM
+        // call passes the implicit %state pointer as the FIRST ABI arg —
+        // so the real params start at register index 1 (a1/x1), not 0.
+        let mut r_idx = if bf.bootstrap { 0usize } else { 1usize };
+        let mut f_idx = if bf.bootstrap { 0usize } else { 0usize };
         for (_pname, pty) in &bf.params {
             let type_name = pty.to_string();
             let is_float = type_name.starts_with("Float") || type_name.starts_with("F32")

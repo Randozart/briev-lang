@@ -223,13 +223,16 @@ impl<'a> Lowerer<'a> {
                                     for line in b.lines.iter().take(i + 1) {
                                         self.push_line(line);
                                     }
-                                    self.push_line(&format!("{name}:"));
+                                    // Named raw blocks are callable across
+                                    // objects (a .bv `bad fn` or another
+                                    // .bad body may `call` them) — global.
+                                    self.push_line(&format!(".global {name}\n{name}:"));
                                     for line in b.lines.iter().skip(i + 1) {
                                         self.push_line(line);
                                     }
                                 }
                                 None => {
-                                    self.push_line(&format!("{name}:"));
+                                    self.push_line(&format!(".global {name}\n{name}:"));
                                     for line in &b.lines {
                                         self.push_line(line);
                                     }
