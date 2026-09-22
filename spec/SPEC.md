@@ -2691,7 +2691,13 @@ line in every body context. **The acknowledge tier**: a `^` / `^^` /
 instruction, 2 the whole line, 3 full override of predicted errors.
 Hardware-capability and author-declared-contract failures are NEVER
 ack-able; acknowledged warnings are recorded (never silent) and a named
-warning that never fired is a loud error. Float literals ride a deduped `.rodata`
+warning that never fired is a loud error. **Raw blocks** —
+`raw <target>` ... `end` — emit their lines verbatim (directives like
+`.code32` included, unlike per-line exception rows) for the matching
+family and skip them otherwise; the escape hatch for text the portable
+core ISA cannot express (x86 real-mode MBR bodies, 32-bit multiboot
+prologues). `int N` is the BIOS software-interrupt op (`int $N` on
+x86_64; a loud error elsewhere). Float literals ride a deduped `.rodata`
 literal pool; `syscall` takes a NAMED kernel call (`syscall write, ...`)
 whose per-target numbers live in config, routing the call through each
 target's syscall ABI. `.export` names a C-ABI entry

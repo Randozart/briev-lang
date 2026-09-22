@@ -1304,3 +1304,40 @@ mod raw_bin_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+// ── raw blocks + int (2026-09-22, raw-blocks plan) ────────────────────
+mod raw_block_tests {
+    use super::*;
+
+    #[test]
+    fn raw_block_emits_on_matching_family_and_skips_otherwise() {
+        let src = "raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend\n";
+        let asm = generate(src, "x86_64-unknown-linux-gnu").unwrap();
+        assert!(asm.contains(".code32"), "{asm}");
+        assert!(asm.contains("movl $0x1000, %eax"), "{asm}");
+        // Not emitted for another family.
+        let asm = generate(src, "aarch64-unknown-linux-gnu").unwrap();
+        assert!(!asm.contains(".code32"), "{asm}");
+    }
+
+    #[test]
+    fn raw_block_allows_directives_that_exception_rows_reject() {
+        // The multiboot failure mode: .code32 in an exception row was an
+        // unknown-mnemonic error. A raw block passes it verbatim.
+        let asm = generate(
+            "raw x86_64\n    .code32\n    cli\n    .code64\nend\n",
+            "x86_64-unknown-linux-gnu",
+        )
+        .unwrap();
+        assert!(asm.contains(".code32"), "{asm}");
+        assert!(asm.contains(".code64"), "{asm}");
+    }
+
+    #[test]
+    fn int_op_lowers_on_x86_and_errors_elsewhere() {
+        let asm = generate("t:\n    int 0x10\n    ret\n", "x86_64-unknown-linux-gnu").unwrap();
+        assert!(asm.contains("int $16"), "{asm}");
+        let err = generate("t:\n    int 0x10\n    ret\n", "aarch64-unknown-linux-gnu").unwrap_err();
+        assert!(err.contains("no `aarch64` lowering"), "{err}");
+    }
+}

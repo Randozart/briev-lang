@@ -35,6 +35,19 @@ pub enum BadTopLevel {
     Defn(BadDefn),
     /// `alias result = r0` — source-level register sugar.
     Alias(BadAlias),
+    /// `raw x86_64 ... end` — target-verbatim assembly block (2026-09-22).
+    /// Lines pass through UNPARSED, emitted only when the active family
+    /// matches the target; skipped otherwise.
+    RawBlock(BadRawBlock),
+}
+
+/// `raw x86_64` ... `end` — verbatim assembly for one target.
+#[derive(Debug, Clone)]
+pub struct BadRawBlock {
+    pub target: String,
+    /// Verbatim line text (trimmed), excluding the `raw` head and `end`.
+    pub lines: Vec<String>,
+    pub span: Span,
 }
 
 /// `section .text` / `global _start`.

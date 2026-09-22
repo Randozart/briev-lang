@@ -59,6 +59,7 @@ msg: .asciz "hello from .bad\n"
 | `msg: .asciz "..."` | data label + directive |
 | `[expr]` | inline contract for the next instruction |
 | `^` / `^^` / `^^^` + instruction | acknowledge prefix — silences W-tier warnings for its scope; `^^^` overrides predicted errors (see the acknowledge tier) |
+| `raw <target>` ... `end` | verbatim assembly block for ONE target — lines pass through unparsed; emitted only when the active family matches (see Raw blocks) |
 | `alias x = r0` | register, mnemonic, or label alias — resolved in that order |
 
 Friendly mnemonic aliases (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load
@@ -241,6 +242,45 @@ bootstrap bad Reset_Handler() [true] {
     msg: .asciz "Briev boot\n"
 }
 ```
+
+## Raw blocks — verbatim assembly for one target
+
+`raw <target>` ... `end` emits its lines VERBATIM (no mnemonic
+classification — directives like `.code32` work) for the target whose
+family prefix matches, and skips them for every other target. The
+ergonomic escape hatch for text the portable core ISA cannot express:
+
+```bad
+raw x86_64
+    .code32
+    cli
+    movl $(gdt_end - gdt - 1), %eax
+    lgdt gdt
+    ...
+    ljmp $0x08, $_start64
+    .code64
+end
+_start64:
+    // portable 64-bit core ops
+```
+
+The alternative — one `x86_64 => <line>` exception per line — cannot
+carry directives (`.code32` in an exception row is an unknown-mnemonic
+error) and is unergonomic for whole preambles. Raw blocks fix both.
+Used by the x86 real-mode MBR body (`examples/bad/boot_mbr.bad`, with
+the `int` core op for BIOS software interrupts) and the multiboot2 32-bit
+prologue (`examples/bad/boot_multiboot.bad`). A bare `raw` with no target
+or an unterminated block before EOF is a loud error.
+
+## Boot sectors (`--raw-bin` + `int`)
+
+`int N` is the portable BIOS software-interrupt op (`int $N` on x86_64;
+other targets get the loud capability error). A flat boot image is
+`brievc bad file.bad --target x86_64 --raw-bin --no-link`: objcopy flattens
+the object (no link — 16-bit relocs cannot link in a 64-bit ELF). A
+512-byte MBR with the 0x55AA signature boots under SeaBIOS. For images
+that need section merging (a multiboot header in `.text`), plain
+`--raw-bin` links first then flattens.
 
 QEMU-verified: `examples/bad/boot_mps2.bv` boots the MPS2-AN385
 (Cortex-M3) with no `startup.S` and no compiler `_start`, printing through

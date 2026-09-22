@@ -151,8 +151,12 @@ bootstrap bad reset() {
   `bootstrap bad` that does machine setup, prints "stage1", and CALLS a
   `kernel` routine in the same image — the load-and-handoff bootstrapper
   pattern, verified from the flat `.bin` in QEMU.
-- Boot-sector (x86 real-mode, 512-byte MBR) remains out of reach — `.bad`
-  emits 64-bit GAS only.
+- **Boot-sector (x86 real-mode, 512-byte MBR) — DONE (2026-09-22,
+  raw-blocks plan)**: `raw x86_64` blocks express the 16-bit GAS body and
+  the `int` op drives BIOS interrupts; `examples/bad/boot_mbr.bad` boots
+  under SeaBIOS from a flat `--raw-bin --no-link` image. Multiboot2
+  x86_64 also works (`examples/bad/boot_multiboot.bad`, raw-block 32-bit
+  prologue).
 
 ## Status (2026-09-22)
 

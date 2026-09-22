@@ -79,6 +79,10 @@ pop: "1"; "thumb:pop { $1 }"; "x86_64:popq $1"; "aarch64:ldr $1, [sp], #16"; "ri
 
 // ── System ───────────────────────────────────────────────────────────
 nop: "0"; "thumb:nop"; "x86_64:nop"; "aarch64:nop"; "riscv64:nop";
+// int N — BIOS software interrupt (x86 real-mode: int $0x10 video,
+// int $0x13 disk). Immediate-only; other targets have no BIOS int → the
+// loud capability error. Used by boot sectors / MBR bodies.
+int: "1"; "x86_64:int $1";
 // syscall num, a1, a2, a3 — PORTABLE end to end. Kernel-call NUMBERS
 // differ per target (x86_64 write=1, aarch64/riscv64 write=64), so the
 // number operand is a NAME (`syscall write, ...`) substituted through

@@ -514,6 +514,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let mut run = false;
     let mut raw = false;
     let mut raw_bin = false;
+    let mut no_link = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -529,6 +530,9 @@ fn run_bad(args: &[String]) -> Result<(), String> {
             // 2026-09-22: extract the flat loadable image (boot sector /
             // firmware blob) from the linked ELF via objcopy -O binary.
             "--raw-bin" => raw_bin = true,
+            // 2026-09-22: with --raw-bin, skip the link (flat boot sectors
+            // with 16-bit relocs cannot link); objcopy the object directly.
+            "--no-link" => no_link = true,
             other => return Err(format!("bad: unknown option `{other}`")),
         }
         i += 1;
@@ -587,54 +591,97 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     } else {
         ld_row
     };
-    let mut link = std::process::Command::new(&ld_bin);
-    for flag in regs.cross_ld_flags(&family) {
-        link.arg(flag);
-    }
-    link.arg(&o_path).arg("-o").arg(&bin_path);
-    if with_libc {
-        match regs.dynamic_linker(&family) {
-            Some(dl) => {
-                link.arg("-lc").arg("--dynamic-linker").arg(dl);
-            }
-            None => {
-                return Err(format!(
-                    "bad: no dynamic-linker row for `{family}` in bad-registers.dbvl - \
-                     add one to use --with-libc"
-                ));
+    // 2026-09-22: --raw-bin extracts the flat image. Link first (merges
+// sections — a multiboot header in its own section lands in the flat
+// image); --no-link skips the link for flat boot sectors whose 16-bit
+// relocs a 64-bit link cannot handle (objcopy flattens the .o instead).
+    if raw_bin && !no_link {
+        let mut link = std::process::Command::new(&ld_bin);
+        for flag in regs.cross_ld_flags(&family) {
+            link.arg(flag);
+        }
+        link.arg(&o_path).arg("-o").arg(&bin_path);
+        if with_libc {
+            match regs.dynamic_linker(&family) {
+                Some(dl) => {
+                    link.arg("-lc").arg("--dynamic-linker").arg(dl);
+                }
+                None => {
+                    return Err(format!(
+                        "bad: no dynamic-linker row for `{family}` in bad-registers.dbvl - \
+                         add one to use --with-libc"
+                    ));
+                }
             }
         }
-    }
-    let status = link
-        .status()
-        .map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
-    if !status.success() {
-        return Err(format!(
-            "bad: linking failed for `{family}` - the program needs an entry label \
-             (e.g. `_start:`) or external symbols the freestanding link cannot resolve"
-        ));
-    }
-    println!("wrote {}", bin_path.display());
-    // 2026-09-22: --raw-bin extracts the flat loadable image from the
-    // linked ELF (boot sector / firmware blob). Cross families use
-    // llvm-objcopy (target-agnostic); host uses plain objcopy.
-    if raw_bin {
+        let status = link
+            .status()
+            .map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
+        if !status.success() {
+            return Err(format!(
+                "bad: linking failed for `{family}` - the program needs an entry label \
+                 (e.g. `_start:`) or external symbols the freestanding link cannot resolve"
+            ));
+        }
+        println!("wrote {}", bin_path.display());
+        let src = &bin_path;
         let bin_img = std::path::PathBuf::from(format!("{stem}.bin"));
         let oc = if family == "x86_64" { "objcopy" } else { "llvm-objcopy" };
         let status = std::process::Command::new(oc)
-            .arg("-O")
-            .arg("binary")
-            .arg(&bin_path)
-            .arg(&bin_img)
+            .arg("-O").arg("binary").arg(src).arg(&bin_img)
             .status()
             .map_err(|e| format!("bad: cannot run `{oc}`: {e} - is binutils installed?"))?;
         if !status.success() {
             return Err(format!(
                 "bad: objcopy failed to extract the flat image from {}",
-                bin_path.display()
+                src.display()
             ));
         }
         println!("wrote {}", bin_img.display());
+    } else if raw_bin && no_link {
+        // Flat boot sector: objcopy the object directly (no link).
+        let bin_img = std::path::PathBuf::from(format!("{stem}.bin"));
+        let oc = if family == "x86_64" { "objcopy" } else { "llvm-objcopy" };
+        let status = std::process::Command::new(oc)
+            .arg("-O").arg("binary").arg(&o_path).arg(&bin_img)
+            .status()
+            .map_err(|e| format!("bad: cannot run `{oc}`: {e} - is binutils installed?"))?;
+        if !status.success() {
+            return Err(format!(
+                "bad: objcopy failed to extract the flat image from {}",
+                o_path.display()
+            ));
+        }
+        println!("wrote {}", bin_img.display());
+    } else {
+        let mut link = std::process::Command::new(&ld_bin);
+        for flag in regs.cross_ld_flags(&family) {
+            link.arg(flag);
+        }
+        link.arg(&o_path).arg("-o").arg(&bin_path);
+        if with_libc {
+            match regs.dynamic_linker(&family) {
+                Some(dl) => {
+                    link.arg("-lc").arg("--dynamic-linker").arg(dl);
+                }
+                None => {
+                    return Err(format!(
+                        "bad: no dynamic-linker row for `{family}` in bad-registers.dbvl - \
+                         add one to use --with-libc"
+                    ));
+                }
+            }
+        }
+        let status = link
+            .status()
+            .map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
+        if !status.success() {
+            return Err(format!(
+                "bad: linking failed for `{family}` - the program needs an entry label \
+                 (e.g. `_start:`) or external symbols the freestanding link cannot resolve"
+            ));
+        }
+        println!("wrote {}", bin_path.display());
     }
     if !run {
         return Ok(());

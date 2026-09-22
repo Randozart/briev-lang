@@ -198,6 +198,15 @@ impl<'a> Lowerer<'a> {
                 }
                 BadTopLevel::Alias(_) | BadTopLevel::Defn(_) => {}
                 BadTopLevel::Label(l) => self.emit_label(l),
+                // 2026-09-22: raw <target> ... end — verbatim for the
+                // active family, skipped otherwise.
+                BadTopLevel::RawBlock(b) => {
+                    if self.family.starts_with(&b.target) {
+                        for line in &b.lines {
+                            self.push_line(line);
+                        }
+                    }
+                }
             }
         }
 

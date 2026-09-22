@@ -113,6 +113,16 @@ impl<'s> Parser<'s> {
                 continue;
             }
 
+            // `raw <target>` ... `end` — verbatim assembly for one target.
+            // Captured BEFORE the top-level dispatch (the head line `raw
+            // x86_64` is not a directive or label shape). A block closes
+            // the current owner like any top-level item.
+            if let Some(block) = self.try_raw_block(content, line, span.clone())? {
+                owner = None;
+                self.items.push(BadTopLevel::RawBlock(block));
+                continue;
+            }
+
             // Top-level shapes always close the current owner.
             if let Some(item) = self.try_top_level(content, line, span)? {
                 match &item {
@@ -467,6 +477,56 @@ impl<'s> Parser<'s> {
             shape: BadDefnShape::Branch(Vec::new()),
             span,
         }))
+    }
+
+    /// `raw x86_64` ... `end` — verbatim assembly for one target. Returns
+    /// `None` when the line is not a raw-block head. The block is captured
+    /// as-is (no mnemonic classification); `.end` terminates it, and an
+    /// unterminated block before EOF is a loud error.
+    fn try_raw_block(
+        &mut self, content: &str, line: usize, span: Span,
+    ) -> Result<Option<BadRawBlock>, BadParseError> {
+        // A bare `raw` with no target is a clear error, not an instruction.
+        if content.trim() == "raw" {
+            return Err(BadParseError {
+                message: "`raw` needs a target - write `raw x86_64` ... `end`".to_string(),
+                line,
+                span,
+            });
+        }
+        let Some((head, rest)) = content.split_once(char::is_whitespace) else {
+            return Ok(None);
+        };
+        if head != "raw" {
+            return Ok(None);
+        }
+        let target = rest.trim();
+        validate_ident(target, line, span.clone())?;
+        let mut lines = Vec::new();
+        let start = self.pos;
+        self.pos += 1; // consume the `raw` head line
+        loop {
+            let Some((_, content, raw_line)) = self.lines.get(self.pos).cloned() else {
+                return Err(BadParseError {
+                    message: format!(
+                        "raw block `raw {target}` (line {line}) is not terminated - add an \
+                         `end` line before the end of the file"
+                    ),
+                    line,
+                    span,
+                });
+            };
+            let trimmed = content.trim();
+            if trimmed == "end" {
+                self.pos += 1;
+                break;
+            }
+            lines.push(trimmed.to_string());
+            self.pos += 1;
+            let _ = raw_line;
+        }
+        let _ = start;
+        Ok(Some(BadRawBlock { target: target.to_string(), lines, span }))
     }
 
     /// `x86_64 => instr; instr` / `default => ...`
@@ -1198,5 +1258,27 @@ mod semicolon_tests {
         assert!(err.message.contains("carets"), "{}", err.message);
         let err = parse_bad("t:\n    ^\n").unwrap_err();
         assert!(err.message.contains("not followed by an instruction"), "{}", err.message);
+    }
+
+    #[test]
+    fn raw_block_captures_verbatim_and_terminates() {
+        let p = parse_ok(
+            "raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend\n",
+        );
+        let BadTopLevel::RawBlock(b) = &p.items[0] else { panic!("raw block") };
+        assert_eq!(b.target, "x86_64");
+        assert_eq!(b.lines, vec![".code32", "cli", "movl $0x1000, %eax"]);
+    }
+
+    #[test]
+    fn raw_block_unterminated_is_a_loud_error() {
+        let err = parse_bad("raw x86_64\n    cli\n").unwrap_err();
+        assert!(err.message.contains("not terminated"), "{}", err.message);
+    }
+
+    #[test]
+    fn raw_block_head_needs_a_target() {
+        let err = parse_bad("raw\n    cli\nend\n").unwrap_err();
+        assert!(err.message.contains("needs a target"), "{}", err.message);
     }
 }
