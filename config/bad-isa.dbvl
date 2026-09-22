@@ -186,3 +186,15 @@ fjge: "3"; "x86_64:ucomisd $2, $1; jae $3"; "aarch64:fcmp $1, $2; b.pl $3"; "ris
 // match cvttsd2si/fcvtzs truncation).
 itof: "2"; "x86_64:cvtsi2sdq $2, $1|-"; "aarch64:scvtf $1, $2|-"; "riscv64:fcvt.d.l $1, $2|-";
 ftoi: "2"; "x86_64:cvttsd2si $2, $1|-"; "aarch64:fcvtzs $1, $2|-"; "riscv64:fcvt.l.d $1, $2, rtz|-";
+
+// ── CSR access (riscv64; M-mode bare-metal) ───────────────────────────
+// The CSRR/CSRW/CSRS/CSRC family reads/writes/sets/clears a named CSR
+// (mcause, mepc, mtvec, mscratch, mie, mstatus, pmpaddr0, pmpcfg0, ...).
+// The CSR NAME is a symbol operand (`"sym"`) — it substitutes literally.
+// `mret` returns from M-mode trap. Only riscv64 has rows: other targets
+// get a loud capability error (no such registers), never a silent pass.
+csrr: "2"; "riscv64:csrr $1, $2"; "sym";
+csrw: "2"; "riscv64:csrw $1, $2"; "sym";
+csrs: "2"; "riscv64:csrs $1, $2"; "sym";
+csrc: "2"; "riscv64:csrc $1, $2"; "sym";
+mret: "0"; "riscv64:mret";

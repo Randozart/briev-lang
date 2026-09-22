@@ -1,0 +1,32 @@
+// bootstrap bad on riscv64 (QEMU virt) — the authored machine entry in
+// .bad. The body owns the reset sequence: PMP grant, mscratch → trap
+// frame, mie/mstatus enable, then a UART banner through MMIO. No
+// compiler-owned _start, no `.b` suffix (bootstrap implies embedded).
+//
+// QEMU virt: RAM at 0x80000000, UART 0x10000000 (16550, TX = DATA).
+// The `bootstrap` entry means the linker enters at Reset_Handler.
+bootstrap bad Reset_Handler() [true] {
+    section .text.start
+    Reset_Handler:
+    // PMP: grant U-mode fetch/load/store (li -1; csrw pmpaddr0; li 15;
+    // csrw pmpcfg0) — without a matching PMP entry, U-mode access faults.
+    mov r0, -1
+    csrw pmpaddr0, r0
+    mov r0, 15
+    csrw pmpcfg0, r0
+    // UART banner: 16550 DATA at 0x10000000. Full-width store — the
+    // qemu virt UART ignores byte stores (matches VolatileStore#).
+    addr r1, banner
+    mov r2, 0x10000000
+    mov r3, 0
+    .loop:
+    ldub r4, r1
+    jz r4, r3, .done
+    store r4, r2
+    add r1, r1, 1
+    jmp .loop
+    .done:
+    halt
+    section .rodata
+    banner: .asciz "Briev rv64 boot\n"
+}

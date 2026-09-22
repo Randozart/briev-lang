@@ -1947,7 +1947,7 @@ fn compile_bad_fn_objects(
         .map_err(|e| format!("bad fn `{}`: {}", bf.name, e))?;
         // Assemble to .o.
         let o_path = cache_dir.join(format!("{}_{}.o", bf.name, family));
-        briev_compiler::backend::bad::assemble(&asm, family, &o_path)
+        briev_compiler::backend::bad::assemble(&asm, target_triple, &o_path)
             .map_err(|e| format!("bad fn `{}` assemble: {}", bf.name, e))?;
         objects.push(o_path);
     }

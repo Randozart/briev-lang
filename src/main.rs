@@ -555,7 +555,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let o_path = std::path::Path::new(file_path)
         .with_extension("o")
         .to_path_buf();
-    briev_compiler::backend::bad::assemble(&asm, &family, &o_path)
+    briev_compiler::backend::bad::assemble(&asm, &triple, &o_path)
         .map_err(|e| format!("bad: {e}"))?;
     println!("wrote {}", o_path.display());
 

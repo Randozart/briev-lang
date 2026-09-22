@@ -141,7 +141,11 @@ pub fn toolchain_available(family: &str) -> bool {
 /// bare-metal targets, clang's integrated assembler is the fallback when
 /// the prefixed binutils (`arm-none-eabi-as`) is not installed — the
 /// dialect degrades to a documented clang path, never a silent pass.
-pub fn assemble(text: &str, family: &str, out_path: &std::path::Path) -> Result<(), String> {
+/// `triple` is the FULL target triple (not just the family): riscv64
+/// bare-metal (`-none`) needs `-mabi=lp64` soft-float to match the .bv
+/// side's default, while hosted (`-linux`) stays lp64d.
+pub fn assemble(text: &str, triple: &str, out_path: &std::path::Path) -> Result<(), String> {
+    let family = triple.split('-').next().unwrap_or(triple);
     let (_, regs) = registries();
     let as_bin = regs.cross_as(family).ok_or_else(|| {
         format!(
@@ -150,6 +154,9 @@ pub fn assemble(text: &str, family: &str, out_path: &std::path::Path) -> Result<
     })?;
     let flags: Vec<&str> = match family {
         "x86_64" => vec!["--64"],
+        // riscv64 bare-metal: soft-float (matches clang's `-none` default
+        // and the .bv object); hosted linux keeps the lp64d default.
+        "riscv64" if !triple.contains("linux") => vec!["-mabi=lp64"],
         _ => vec![],
     };
     let s_path = out_path.with_extension("s");
@@ -161,7 +168,7 @@ pub fn assemble(text: &str, family: &str, out_path: &std::path::Path) -> Result<
     let bin: &str = if preferred.as_ref().map(|o| o.status.success()).unwrap_or(false) {
         as_bin
     } else if (family.starts_with("thumb") || family.starts_with("arm")) && clang_available() {
-        return clang_assemble(family, &s_path, out_path);
+        return clang_assemble(triple, &s_path, out_path);
     } else {
         return Err(format!(
             "cannot run `{as_bin}` for `{family}` - install the cross binutils, or \
@@ -197,9 +204,9 @@ fn clang_available() -> bool {
 
 /// Assemble bare-metal thumb/arm with clang's integrated assembler.
 fn clang_assemble(
-    family: &str, s_path: &std::path::Path, out_path: &std::path::Path,
+    triple: &str, s_path: &std::path::Path, out_path: &std::path::Path,
 ) -> Result<(), String> {
-    let triple = format!("{family}-none-eabi");
+    let family = triple.split('-').next().unwrap_or(triple);
     let status = std::process::Command::new("clang")
         .arg(format!("--target={triple}"))
         .arg("-mcpu=cortex-m3")
@@ -1233,5 +1240,36 @@ mod bootstrap_bad_tests {
         let asm = generate_bad_fn("add r0, r1, r2\n", "x86_64", std::collections::HashMap::new(), false, "add").unwrap();
         assert!(asm.contains("_entry:"), "{asm}");
         assert!(asm.contains("ret"), "{asm}");
+    }
+}
+
+// ── CSR ops + rv64 bootstrap (2026-09-22) ─────────────────────────────
+mod csr_tests {
+    use super::*;
+
+    #[test]
+    fn csr_ops_lower_on_riscv64_and_error_elsewhere() {
+        let asm = generate("t:\n    csrw mtvec, r0\n    csrr r1, mcause\n    mret\n", "riscv64-unknown-none").unwrap();
+        assert!(asm.contains("csrw mtvec, a0"), "{asm}");
+        assert!(asm.contains("csrr a1, mcause"), "{asm}");
+        assert!(asm.contains("mret"), "{asm}");
+        // No CSR on x86_64 — loud capability error, never silent.
+        let err = generate("t:\n    csrw mtvec, r0\n", "x86_64").unwrap_err();
+        assert!(err.contains("no `x86_64` lowering"), "{err}");
+    }
+
+    #[test]
+    fn riscv64_bare_assembles_soft_float() {
+        // The bad .o must match the .bv side's soft-float ABI (clang's
+        // riscv64-unknown-none default); hosted linux keeps lp64d.
+        if toolchain_available("riscv64") {
+            let src = "t:\n    mov r0, -1\n    csrw pmpaddr0, r0\n    halt\n";
+            let asm = generate(src, "riscv64-unknown-none").unwrap();
+            let out = test_dir("csr").join("t.o");
+            assemble(&asm, "riscv64-unknown-none", &out).expect("assemble failed");
+            let obj = std::fs::read(&out).unwrap();
+            std::fs::remove_file(&out).ok();
+            assert!(obj.windows(4).any(|w| w == &[0x7f, b'E', b'L', b'F']), "ELF magic");
+        }
     }
 }
