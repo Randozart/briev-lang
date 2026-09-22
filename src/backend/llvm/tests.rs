@@ -949,6 +949,7 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
                 doc: None,
             })],
             span: None,
+            when_laws: vec![],
         },
         span: None,
     }));
@@ -1070,6 +1071,7 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
                 doc: None,
             })],
             span: None,
+            when_laws: vec![],
         },
         span: None,
     }));
@@ -1271,6 +1273,7 @@ fn spawn_pool_countdown_program_storage(
                 doc: None,
             })],
             span: None,
+            when_laws: vec![],
         },
         span: None,
     }));
@@ -1509,6 +1512,7 @@ fn test_spawn_only_base_registers_pool() {
                 doc: None,
             })],
             span: None,
+            when_laws: vec![],
         },
         span: None,
     }));
@@ -2597,6 +2601,7 @@ fn test_type_with_slots_populates_struct_types() {
                 operators: vec![], op_bindings: vec![],
                 constraints: vec![],
                 members: vec![],
+                when_laws: vec![],
                 span: None,
             },
             span: None,

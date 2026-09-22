@@ -870,6 +870,8 @@ mod tests {
                     op_bindings: vec![],
                     constraints: vec![],
                     members: vec![],
+                    when_laws: vec![],
+
                     span: None,
                 }
             },
@@ -1056,6 +1058,8 @@ mod tests {
                     op_bindings: vec![],
                     constraints: vec![],
                     members: vec![],
+                    when_laws: vec![],
+
                     span: None,
                 }
             },

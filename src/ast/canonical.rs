@@ -174,6 +174,17 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             indent(out, level);
             let _ = write!(out, "shortcircuit unpop {};", d.instance);
         }
+        // 2026-09-22 (Slice C): the static when law.
+        TopLevel::WhenLaw(w) => {
+            indent(out, level);
+            let _ = write!(out, "when {}", w.guard);
+            for fact in &w.facts {
+                indent(out, level + 1);
+                let _ = write!(out, "{}", fact);
+            }
+            indent(out, level);
+            out.push('}');
+        }
         TopLevel::TriggerBinding { name, instance, .. } => {
             indent(out, level);
             let _ = write!(out, "trg {} @ {};", name, instance);

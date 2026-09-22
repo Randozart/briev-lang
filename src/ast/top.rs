@@ -45,6 +45,16 @@ pub enum TopLevel {
     /// for that part's present state. On a populated part it is a warning
     /// with a suggest-`unpop` hint.
     ShortCircuit(ParticipationDecl),
+    /// 2026-09-22 (Slice C, plan 2026-09-22-electronics-participation-and-
+    /// when-law.md): the static `when` law at TOP LEVEL — `when G { F₁;
+    /// …; Fₙ }` declares `G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must make it
+    /// so. The meaning is decided by position: in a defn/node/txn, `when`
+    /// stays guarded/reactive behavior (Statement::Guarded); at top level,
+    /// in an obj, or in a type, it is a static forced fact — the compiler
+    /// propagates the consequence and errors if anything contradicts an
+    /// in-force fact under a satisfiable guard. "Make it so" is propagate +
+    /// verify, never synthesis (the solver adds no parts).
+    WhenLaw(WhenLawDecl),
     Cell(CellDef),
     Import(Import),
     Export(Export),
@@ -1168,6 +1178,10 @@ pub struct TypeDefBody {
     /// 2026-07-31: obj member declarations (txn/defn) — self-parameterized
     /// methods on the obj. Populated by parse_obj_like.
     pub members: Vec<TopLevel>,
+    /// 2026-09-22 (Slice C): static `when` laws declared in the type/obj
+    /// body — `when G { F₁; …; }`. Each instance of this type inherits the
+    /// law; the compiler obliges it (propagate + verify).
+    pub when_laws: Vec<WhenLawDecl>,
     pub span: Option<Span>,
 }
 
@@ -1211,6 +1225,17 @@ pub struct BudgetDecl {
 pub struct ParticipationDecl {
     pub instance: String,
     pub ty: Option<Type>,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-22 (Slice C): the static `when` law — `when G { F₁; …; Fₙ }`.
+/// The guard and the forced facts it implies. Position decides semantics:
+/// top level / obj / type → static forced fact (this struct); defn/node/txn
+/// → reactive guarded behavior (Statement::Guarded, unchanged).
+#[derive(Debug, Clone)]
+pub struct WhenLawDecl {
+    pub guard: Expr,
+    pub facts: Vec<Statement>,
     pub span: Option<Span>,
 }
 

@@ -575,7 +575,10 @@ fn derive_voltage(
 ) -> VoltageCheck {
     let pin_to_net = pin_net_index(inputs.nets);
     let drives = collect_drives(items, &pin_to_net, instances, type_pins);
-    let mut check = classify_drives(drives, inputs.nets, inputs.shortcircuit);
+    // 2026-09-22 (Slice C): conditional drives from the static when laws —
+    // guard-aware, joined with the unconditional contract drives.
+    let when_drives = collect_when_drives(items, &pin_to_net, instances, type_pins);
+    let mut check = classify_drives(drives, when_drives, inputs.nets, inputs.shortcircuit);
     check_tolerance(inputs.nets, instances, type_info, &check.net_voltage, &mut check.violations);
     // B4 flagship: I = V / R through series parts, dividers, and KCL sums;
     // then the postcondition current bounds are proven against the result.
@@ -628,47 +631,236 @@ fn collect_drives(
     drives
 }
 
+/// A conditional voltage drive from a static `when` law (Slice C): when the
+/// guard holds, the net is driven at the value. The law says `G ⟹ (net at
+/// volts)`; the compiler must make it so — propagate the consequence and
+/// error if anything contradicts it under a jointly-satisfiable guard.
+struct ConditionalDrive {
+    net: String,
+    volts: f64,
+    guard: Expr,
+    source: String,
+}
+
+/// 2026-09-22 (Slice C): collect conditional drives from the static when
+/// laws — top-level (`TopLevel::WhenLaw`) and type-body (`TypeDefBody.
+/// when_laws`, instantiated per instance so `out` becomes `inst.out`).
+/// A law fact that is a pin-voltage assignment (`out.voltage = 3.3V`) or a
+/// pin-voltage equality (`out.voltage == 3.3V`) becomes a conditional drive.
+fn collect_when_drives(
+    items: &[TopLevel],
+    pin_to_net: &BTreeMap<(String, String), String>,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> Vec<ConditionalDrive> {
+    let ctx = DriveCtx { pin_to_net, instances, type_pins };
+    let mut out = Vec::new();
+    // Top-level laws reference instance pins directly.
+    for item in items {
+        let TopLevel::WhenLaw(w) = item else { continue };
+        collect_when_fact_drives(&w.guard, &w.facts, &ctx, "top-level", &mut out);
+    }
+    // Type-body laws are inherited per instance: qualify bare pin names with
+    // the instance so `out.voltage` reads `inst.out.voltage`.
+    for item in items {
+        let TopLevel::TypeDef(td) = item else { continue };
+        if td.body.when_laws.is_empty() {
+            continue;
+        }
+        for (inst_name, inst) in instances {
+            if inst.type_name != td.name {
+                continue;
+            }
+            for law in &td.body.when_laws {
+                let guard = qualify_pin_refs(&law.guard, inst_name, &td.body.pins);
+                let facts = law
+                    .facts
+                    .iter()
+                    .map(|s| qualify_pin_refs_stmt(s, inst_name, &td.body.pins))
+                    .collect::<Vec<_>>();
+                collect_when_fact_drives(
+                    &guard, &facts, &ctx,
+                    &format!("type '{}' instance '{}'", td.name, inst_name), &mut out,
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Extract conditional drives from one law's facts. A fact is a pin-voltage
+/// assignment or equality; the law's guard gates it.
+/// Lookup tables for drive extraction (pin→net, instance, pin table).
+/// Bundled so the when-law drive collectors stay under the parameter gate.
+struct DriveCtx<'a> {
+    pin_to_net: &'a BTreeMap<(String, String), String>,
+    instances: &'a BTreeMap<String, &'a ComponentInstance>,
+    type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
+}
+
+fn collect_when_fact_drives(
+    guard: &Expr,
+    facts: &[Statement],
+    ctx: &DriveCtx<'_>,
+    source: &str,
+    out: &mut Vec<ConditionalDrive>,
+) {
+    for fact in facts {
+        let pair: Option<(&Expr, &Expr)> = match fact {
+            Statement::Assign(l, r) => Some((l, r)),
+            Statement::Expression(e) => match e {
+                Expr::BinaryOp(crate::ast::BinaryOpKind::Eq, l, r) => Some((l, r)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((l, r)) = pair else { continue };
+        let Some((pin, v)) = voltage_drive(l, r, ctx.instances, ctx.type_pins) else { continue };
+        let Some(net) = ctx.pin_to_net.get(&(pin.component.clone(), pin.pin.clone())) else { continue };
+        out.push(ConditionalDrive {
+            net: net.clone(),
+            volts: v,
+            guard: guard.clone(),
+            source: format!("when-law ({}) '{}.{}'", source, pin.component, pin.pin),
+        });
+    }
+}
+
+/// Rewrite bare pin identifiers (`out`) in an expression to instance-qualified
+/// form (`inst.out`) for a type-body law inherited per instance.
+fn qualify_pin_refs(
+    expr: &Expr,
+    instance: &str,
+    pins: &[crate::ast::top::PinDecl],
+) -> Expr {
+    let is_pin = |name: &str| pins.iter().any(|p| p.name == name);
+    match expr {
+        Expr::Identifier(name) if is_pin(name) => {
+            Expr::Field(Box::new(Expr::Identifier(instance.to_string())), name.clone())
+        }
+        Expr::Field(base, name) => Expr::Field(
+            Box::new(qualify_pin_refs(base, instance, pins)),
+            name.clone(),
+        ),
+        Expr::BinaryOp(k, l, r) => Expr::BinaryOp(
+            *k,
+            Box::new(qualify_pin_refs(l, instance, pins)),
+            Box::new(qualify_pin_refs(r, instance, pins)),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+/// Rewrite pin refs inside a statement (the law facts).
+fn qualify_pin_refs_stmt(
+    stmt: &Statement,
+    instance: &str,
+    pins: &[crate::ast::top::PinDecl],
+) -> Statement {
+    match stmt {
+        Statement::Assign(l, r) => Statement::Assign(
+            qualify_pin_refs(l, instance, pins),
+            qualify_pin_refs(r, instance, pins),
+        ),
+        Statement::Expression(e) => {
+            Statement::Expression(qualify_pin_refs(e, instance, pins))
+        }
+        _ => stmt.clone(),
+    }
+}
+
 /// Group drives by net: the class is the max — disagreeing drives are a
 /// shorted supply, hard error. 2026-09-22 (Slice B): a net whose pins touch
 /// a `shortcircuit`-acknowledged instance is EXEMPT — the author stated the
-/// intentional short.
+/// intentional short. 2026-09-22 (Slice C): conditional drives from when
+/// laws join the same net — two in-force drives at different voltages are a
+/// contradiction UNLESS the guards are mutually exclusive.
 fn classify_drives(
     drives: Vec<(String, f64, String)>,
+    conditional: Vec<ConditionalDrive>,
     nets: &[Net],
     shortcircuit: &std::collections::HashSet<String>,
 ) -> VoltageCheck {
     let mut check = VoltageCheck::default();
-    let mut by_net: BTreeMap<String, Vec<(f64, String)>> = BTreeMap::new();
+    // (volts, source). Conditional drives carry their guard for the
+    // joint-satisfiability check; unconditional drives (guard None) always
+    // apply.
+    let mut by_net: BTreeMap<String, Vec<(f64, Option<Expr>, String)>> = BTreeMap::new();
     for (net, v, src) in drives {
-        by_net.entry(net).or_default().push((v, src));
+        by_net.entry(net).or_default().push((v, None, src));
+    }
+    for cd in conditional {
+        by_net.entry(cd.net.clone()).or_default().push((cd.volts, Some(cd.guard), cd.source));
     }
     for (net_name, ds) in by_net {
-        let mut vals = ds.iter().map(|(v, _)| *v).collect::<Vec<_>>();
-        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let min = *vals.first().unwrap();
-        let max = *vals.last().unwrap();
-        if (min - max).abs() > f64::EPSILON {
+        let (in_force, contradictions) = drive_conflicts(&ds);
+        if !contradictions.is_empty() {
             // 2026-09-22 (Slice B): an acknowledged short suppresses the
-            // shorted-supply error — the author stated the intentional short
-            // with `shortcircuit unpop <inst>: <Type>;`.
+            // shorted-supply error — the author stated the intentional short.
             let acknowledged = nets
                 .iter()
                 .filter(|n| n.name == net_name)
                 .flat_map(|n| n.pins.iter())
                 .any(|p| shortcircuit.contains(&p.component));
             if !acknowledged {
-                let sources = ds.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join(" and ");
+                let min = in_force.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max = in_force.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                 check.violations.push(format!(
                     "net '{}' is driven at two different voltages ({} and {}) — that is a shorted supply. \
                      why: {} both drive it. fix: drive the net at one voltage, or separate the levels \
-                     with a regulator or switch component.",
-                    net_name, format_volts(min), format_volts(max), sources
+                     with a regulator or switch component, or make the conflicting guards mutually exclusive.",
+                    net_name, format_volts(min), format_volts(max), contradictions.join("; ")
                 ));
             }
         }
-        check.net_voltage.insert(net_name.clone(), max);
+        // The net class is the max in-force drive (agreeing drives collapse).
+        check.net_voltage.insert(
+            net_name.clone(),
+            in_force.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+        );
     }
     check
+}
+
+/// Classify one net's drives: which are in force, and which pairs
+/// contradict (both could hold simultaneously at different voltages).
+/// Extracted so `classify_drives` stays under the cognitive-complexity gate.
+fn drive_conflicts(
+    ds: &[(f64, Option<Expr>, String)],
+) -> (Vec<f64>, Vec<String>) {
+    let mut in_force: Vec<f64> = Vec::new();
+    let mut contradictions: Vec<String> = Vec::new();
+    for i in 0..ds.len() {
+        let (vi, guard_i, si) = &ds[i];
+        // A drive is in force if unconditional or its guard is satisfiable.
+        let applies = match guard_i {
+            Some(g) => crate::proof_engine::check_satisfiable(g, &Expr::Bool(true)),
+            None => true,
+        };
+        if applies {
+            in_force.push(*vi);
+        }
+        for j in (i + 1)..ds.len() {
+            let (vj, guard_j, sj) = &ds[j];
+            if (vi - vj).abs() <= f64::EPSILON {
+                continue;
+            }
+            let sat = match (guard_i, guard_j) {
+                (None, None) => true,
+                (None, Some(gj)) => {
+                    crate::proof_engine::check_satisfiable(gj, &Expr::Bool(true))
+                }
+                (Some(gi), None) => {
+                    crate::proof_engine::check_satisfiable(gi, &Expr::Bool(true))
+                }
+                (Some(gi), Some(gj)) => crate::proof_engine::check_satisfiable(gi, gj),
+            };
+            if sat {
+                contradictions.push(format!("'{}' vs '{}'", si, sj));
+            }
+        }
+    }
+    (in_force, contradictions)
 }
 
 /// Every pin on a driven net must tolerate its class. `tolerance any` is a
@@ -2980,6 +3172,83 @@ mod tests {
             nl.participation_warnings.iter().any(|w| w.contains("undeclared instance") && w.contains("ghost")),
             "undeclared participation name must warn: {:?}",
             nl.participation_warnings
+        );
+    }
+
+    // ── 2026-09-22 (Slice C): the static when law — X implies Y ────────
+
+    #[test]
+    fn type_when_law_propagates_conditional_drive() {
+        // A regulator's type-body law: when the input is >= 5V, the output
+        // is driven at 3.3V. The law is inherited per instance and the
+        // conditional drive joins the net's class.
+        let src = r#"
+            type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; tolerance any; };
+            type Conn { pin p; pin g; reference "J"; tolerance any; };
+            type Regulator { pin vin: Power; pin vout: Power; pin gnd: Power; reference "U"; tolerance any;
+                when vin.voltage >= 5V { vout.voltage = 3.3V; }
+            }
+            let u1: Regulator = Regulator { value: "LM1117" };
+            let j1: Conn = Conn { value: "j" };
+            let j2: Conn = Conn { value: "j" };
+            node n [u1.vin.voltage == j2.p.voltage && u1.gnd.voltage == j1.g.voltage
+                    && u1.vout.voltage == j1.p.voltage && u1.vin.voltage == 9.0V
+                    && j2.g.voltage == j1.g.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        // The law drives vout at 3.3V under vin >= 5V — no contradiction
+        // with the (9V, vin) drive, so no shorted-supply violation.
+        assert!(
+            !nl.voltage.violations.iter().any(|v| v.contains("shorted supply")),
+            "the when-law must not conflict: {:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn when_law_contradiction_is_a_violation() {
+        // The law says when the input is >= 5V, the output is 3.3V. Another
+        // contract drives the output net at 5V unconditionally — while the
+        // law's guard can hold, that is a contradiction.
+        let src = r#"
+            type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; tolerance any; };
+            type Conn { pin p; reference "J"; tolerance any; };
+            type Regulator { pin vin: Power; pin vout: Power; pin gnd: Power; reference "U"; tolerance any;
+                when vin.voltage >= 5V { vout.voltage = 3.3V; }
+            }
+            let u1: Regulator = Regulator { value: "LM1117" };
+            let j1: Conn = Conn { value: "j" };
+            node n [u1.vin.voltage == 9.0V && u1.vout.voltage == j1.p.voltage && u1.vout.voltage == 5.0V] { };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.voltage.violations.iter().any(|v| v.contains("shorted supply")),
+            "a when-law contradicted by an unconditional drive must violate: {:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn mutually_exclusive_when_law_guards_do_not_conflict() {
+        // Two laws with mutually-exclusive guards on the same pin drive it
+        // at different voltages — but the guards can never both hold, so no
+        // contradiction.
+        let src = r#"
+            type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; tolerance any; };
+            type Switch { pin sel: Power; pin vout: Power; pin gnd: Power; reference "U"; tolerance any;
+                when sel.voltage == 3.3V { vout.voltage = 1.8V; }
+                when sel.voltage == 1.8V { vout.voltage = 3.3V; }
+            }
+            let u1: Switch = Switch { value: "x" };
+            node n [u1.sel.voltage == 3.3V && u1.vout.voltage == 1.8V] { };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            !nl.voltage.violations.iter().any(|v| v.contains("shorted supply")),
+            "mutually-exclusive when-law guards must not conflict: {:?}",
+            nl.voltage.violations
         );
     }
 

@@ -3006,7 +3006,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             rating: None, metadata: Default::default(),
                                     projections: vec![], bindings: vec![],
                                     operators: vec![], op_bindings: vec![],
-                                    constraints: vec![], members: vec![], span: None,
+                                    constraints: vec![], members: vec![], when_laws: vec![], span: None,
                                 },
                             };
                             let synth = crate::backend::llvm::coll_scaffold::synthesize_members(

@@ -2196,6 +2196,15 @@ fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(
         TopLevel::Budget(_) => Ok(()),
         // 2026-09-22 (Slice B): participation facts — no $-refs to resolve.
         TopLevel::Unpop(_) | TopLevel::ShortCircuit(_) => Ok(()),
+        // 2026-09-22 (Slice C): the static when law — resolve $-refs in its
+        // guard and facts.
+        TopLevel::WhenLaw(w) => {
+            resolve_dollar_refs_in_expr(&mut w.guard, scope)?;
+            for fact in &mut w.facts {
+                resolve_dollar_refs_in_stmt(fact, scope)?;
+            }
+            Ok(())
+        }
         TopLevel::Definition(def) => {
             for stmt in &mut def.body {
                 resolve_dollar_refs_in_stmt(stmt, scope)?;

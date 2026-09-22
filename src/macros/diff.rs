@@ -29,6 +29,8 @@ fn item_key(tl: &TopLevel) -> String {
         // 2026-09-22 (Slice B): participation facts.
         Unpop(d) => format!("unpop:{}", d.instance),
         ShortCircuit(d) => format!("shortcircuit:{}", d.instance),
+        // 2026-09-22 (Slice C): the static when law — keyed by the guard.
+        WhenLaw(w) => format!("when-law@{}", w.guard),
         Cell(c) => format!("cell:{}", c.name),
         ForeignBinding(f) => format!("frgn:{}", f.effective_briev_name()),
         Export(e) => format!("export:{}", e.export_name.as_deref().unwrap_or("_")),
@@ -75,6 +77,8 @@ pub fn item_summary(tl: &TopLevel) -> String {
         // 2026-09-22 (Slice B): participation facts.
         Unpop(d) => format!("unpop {}", d.instance),
         ShortCircuit(d) => format!("shortcircuit {}", d.instance),
+        // 2026-09-22 (Slice C): the static when law.
+        WhenLaw(_) => "when <forced-fact law>".to_string(),
         Cell(c) => format!("cell {}", c.name),
         ForeignBinding(f) => format!("frgn {}", f.foreign_name),
         Export(e) => format!("export {}", e.export_name.as_deref().unwrap_or("_")),

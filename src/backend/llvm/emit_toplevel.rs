@@ -2207,7 +2207,7 @@ impl LlvmBackend {
             rating: None, projections: vec![],
                             bindings: vec![], operators: vec![],
                             op_bindings: vec![], constraints: vec![],
-                            members: vec![], span: None,
+                            members: vec![], when_laws: vec![], span: None,
                         },
                     };
                     if let Some((seq_expr, elem_ty)) = crate::backend::llvm::coll_scaffold::derive_sequence_member(

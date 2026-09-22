@@ -101,6 +101,10 @@ impl<'a> Parser<'a> {
         }
         match self.peek() {
             Some(Token::Defn) => self.parse_definition().map(TopLevel::Definition),
+            // 2026-09-22 (Slice C): top-level `when G { … }` is the static
+            // when law — `G ⟹ facts`, the compiler obliges. (Inside a
+            // defn/node/txn body, `when` stays reactive — unchanged.)
+            Some(Token::When) => self.parse_top_level_when_law(),
             Some(Token::Txn) => self
                 .parse_transaction(false, false)
                 .map(TopLevel::Transaction),
@@ -1827,7 +1831,6 @@ impl<'a> Parser<'a> {
     /// an instance excluded from the BOM. Also consumed for the shared
     /// `shortcircuit unpop …` prefix via the same parse shape.
     fn parse_top_level_participation(&mut self, consumed_shortcircuit: bool) -> Result<TopLevel, SyntaxError> {
-        // `shortcircuit unpop …` consumed its own keyword already.
         if !consumed_shortcircuit {
             self.pos += 1; // consume `unpop`
         }
@@ -1868,6 +1871,37 @@ impl<'a> Parser<'a> {
             ty,
             span: None,
         }))
+    }
+
+    /// 2026-09-22 (Slice C): top-level `when <guard> { <facts> };` — the
+    /// static when law. Parses the same shape as a guarded statement but
+    /// yields a TopLevel so the analysis treats it as a forced fact, not
+    /// reactive behavior.
+    fn parse_top_level_when_law(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume 'when'
+        let guard = self.parse_expression()?;
+        let facts = self.parse_block()?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::WhenLaw(crate::ast::top::WhenLawDecl {
+            guard,
+            facts,
+            span: None,
+        }))
+    }
+
+    /// 2026-09-22 (Slice C): `when <guard> { <facts> };` — shared by the
+    /// top-level and type/obj-body parse sites. The guard is an expression;
+    /// the facts are ordinary body statements (assignments, pin drives).
+    fn parse_when_law(&mut self) -> Result<crate::ast::top::WhenLawDecl, SyntaxError> {
+        self.pos += 1; // consume 'when'
+        let guard = self.parse_expression()?;
+        let facts = self.parse_block()?;
+        self.eat(&Token::Semicolon);
+        Ok(crate::ast::top::WhenLawDecl {
+            guard,
+            facts,
+            span: None,
+        })
     }
 
     fn parse_top_level_trg(&mut self) -> Result<Trigger, SyntaxError> {
@@ -2858,8 +2892,16 @@ impl<'a> Parser<'a> {
         let mut atomic_slots: Vec<String> = Vec::new();
         let mut op_bindings: Vec<OperatorBinding> = Vec::new();
         let mut members: Vec<crate::ast::TopLevel> = Vec::new();
+        // 2026-09-22 (Slice C): static when laws declared in the type body.
+        let mut when_laws: Vec<crate::ast::top::WhenLawDecl> = Vec::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
+                // 2026-09-22 (Slice C): `when G { … }` in a type body — a
+                // static forced fact each instance inherits.
+                if self.check(&Token::When) {
+                    when_laws.push(self.parse_when_law()?);
+                    continue;
+                }
                 // 2026-09-11 (B3): shared Electronics clauses — uniform on
                 // every declaration form.
                 if self.check(&Token::Pin) {
@@ -2929,6 +2971,7 @@ impl<'a> Parser<'a> {
                 op_bindings,
                 constraints: vec![],
                 members,
+                when_laws,
                 span: None,
             },
             span: None,
@@ -3369,8 +3412,16 @@ impl<'a> Parser<'a> {
         let mut atomic_slots: Vec<String> = Vec::new();
         let mut operators: Vec<OperatorDef> = Vec::new();
         let mut op_bindings: Vec<OperatorBinding> = Vec::new();
+        // 2026-09-22 (Slice C): static when laws in the obj body.
+        let mut when_laws: Vec<crate::ast::top::WhenLawDecl> = Vec::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
+                // 2026-09-22 (Slice C): `when G { … }` in an obj body — a
+                // static forced fact on the obj's members.
+                if self.check(&Token::When) {
+                    when_laws.push(self.parse_when_law()?);
+                    continue;
+                }
                 // !> key: value; or spec PascalCase: value; — metadata.
                 if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
                     self.parse_metadata_clause(&mut metadata)?;
@@ -3422,7 +3473,7 @@ impl<'a> Parser<'a> {
             ports_in, ports_out,
             bit_range: None, span: None, coll, seq,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, tolerance: None, rating: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, span: None,
+                slots, pins: vec![], reference: None, tolerance: None, rating: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, when_laws, span: None,
             },
         }))
     }
@@ -3696,7 +3747,7 @@ impl<'a> Parser<'a> {
             body: TypeDefBody {
                 slots, pins: vec![], reference: None, tolerance: None, rating: None,
                 metadata: std::collections::HashMap::new(),
-                projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], span: None,
+                projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], when_laws: vec![], span: None,
             },
         }))
     }
