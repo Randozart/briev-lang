@@ -122,6 +122,9 @@ pub struct ElectronicsNetlist {
     /// 2026-09-22 (ERC contention, D6/D12): a net with two drive-capable
     /// pins that are not open-drain — contention. Hard diagnostics.
     pub contention_errors: Vec<String>,
+    /// 2026-09-22 (whole-bus equality, Slice 3): a range-indexed equality
+    /// with mismatched or reversed bus lengths — a hard error.
+    pub bus_errors: Vec<String>,
 }
 
 /// 2026-09-21 (E12, design record D6): resolved property set for a pin's
@@ -1283,13 +1286,34 @@ fn collect_pin_unions(
     instances: &BTreeMap<String, &ComponentInstance>,
     type_pins: &BTreeMap<String, Vec<(String, u64)>>,
     ds: &mut DisjointSet,
-) {
+) -> Vec<String> {
+    let mut errors = Vec::new();
     for item in items {
         let TopLevel::Transaction(t) = item else { continue };
         // PREconditions are topology. Postconditions are physics — skipped.
         let mut pairs = Vec::new();
         collect_eq_triples(&t.contract.pre_condition, &mut pairs);
         for (l, r) in pairs {
+            // 2026-09-22 (whole-bus equality, Slice 3): a range-indexed pair
+            // (`u2.gpio[0..7] == u3.data[0..7]`) expands to N element unions.
+            // A length mismatch is a hard error naming both lengths.
+            match expand_bus_pair(&l, &r, instances, type_pins) {
+                BusPair::Pairs(expanded) => {
+                    for (lp, rp) in expanded {
+                        let lk = pin_key(&lp.component, &lp.pin);
+                        let rk = pin_key(&rp.component, &rp.pin);
+                        ds.make(lk.clone());
+                        ds.make(rk.clone());
+                        ds.union(&lk, &rk);
+                    }
+                    continue;
+                }
+                BusPair::LengthMismatch(e) => {
+                    errors.push(e);
+                    continue;
+                }
+                BusPair::NotBus => {}
+            }
             let (Some(lp), Some(rp)) = (
                 resolve_pin(&l, instances, type_pins),
                 resolve_pin(&r, instances, type_pins),
@@ -1303,6 +1327,106 @@ fn collect_pin_unions(
             ds.union(&lk, &rk);
         }
     }
+    errors
+}
+
+/// 2026-09-22 (whole-bus equality, Slice 3): if both sides of an equality
+/// are RANGE-indexed pin accesses (`u2.gpio[0..7] == u3.data[0..7]`),
+/// expand to the element pairs. `Ok` = the element pairs (both sides are
+/// range-indexed buses); `Err` = a bus comparison with mismatched lengths;
+/// `NotBus` = at least one side is not a range-indexed pin access (the
+/// caller falls back to single-pin resolution).
+enum BusPair {
+    NotBus,
+    Pairs(Vec<(PinRef, PinRef)>),
+    LengthMismatch(String),
+}
+
+fn expand_bus_pair(
+    l: &Expr,
+    r: &Expr,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> BusPair {
+    let (Some((li, la, lo, hi, lincl)), Some((ri, ra, ro, rh, rincl))) =
+        (range_index_pin(l), range_index_pin(r))
+    else {
+        return BusPair::NotBus;
+    };
+    // Length match: half-open [lo..hi) has hi-lo elements; inclusive has
+    // hi-lo+1.
+    let llen = if lincl { hi - lo + 1 } else { hi - lo };
+    let rlen = if rincl { rh - ro + 1 } else { rh - ro };
+    if llen != rlen {
+        return BusPair::LengthMismatch(format!(
+            "whole-bus equality '{}' ({} elements) vs '{}' ({} elements) — the buses must be the \
+             same length. fix: use matching ranges (e.g. `[0..7]` on both sides).",
+            l, llen, r, rlen
+        ));
+    }
+    if lo > hi || ro > rh {
+        return BusPair::LengthMismatch(format!(
+            "whole-bus equality '{}' vs '{}' — an empty or reversed range",
+            l, r
+        ));
+    }
+    let mut out = Vec::with_capacity(llen as usize);
+    for k in 0..llen {
+        let (Some(lp), Some(rp)) = (
+            range_pin_ref(&li, &la, lo + k, instances, type_pins),
+            range_pin_ref(&ri, &ra, ro + k, instances, type_pins),
+        ) else {
+            return BusPair::NotBus;
+        };
+        out.push((lp, rp));
+    }
+    BusPair::Pairs(out)
+}
+
+/// `Expr::Field(Index(Field(Identifier(inst), arr), Range(lo, hi)), "voltage")`
+/// — a range-indexed pin access `u2.gpio[0..7].voltage` → (inst, arr, lo,
+/// hi, inclusive). Any other shape → None.
+fn range_index_pin(expr: &Expr) -> Option<(String, String, u64, u64, bool)> {
+    let Expr::Field(inner, prop) = expr else { return None };
+    if prop != "voltage" {
+        return None;
+    }
+    let Expr::Index(base, idx) = inner.as_ref() else { return None };
+    let Expr::Range { start, end, inclusive } = idx.as_ref() else { return None };
+    let Expr::Field(inst, arr) = base.as_ref() else { return None };
+    let Expr::Identifier(inst_name) = inst.as_ref() else { return None };
+    let (Expr::Decimal(lo), Expr::Decimal(hi)) = (start.as_ref(), end.as_ref()) else {
+        return None;
+    };
+    Some((
+        inst_name.clone(),
+        arr.clone(),
+        *lo as u64,
+        *hi as u64,
+        *inclusive,
+    ))
+}
+
+/// Resolve a single element `inst.arr[k].voltage` of a range-indexed pin
+/// access — the same shape `resolve_pin` handles for a decimal index.
+fn range_pin_ref(
+    inst_name: &str,
+    arr_name: &str,
+    k: u64,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> Option<PinRef> {
+    let expr = Expr::Field(
+        Box::new(Expr::Index(
+            Box::new(Expr::Field(
+                Box::new(Expr::Identifier(inst_name.to_string())),
+                arr_name.to_string(),
+            )),
+            Box::new(Expr::Decimal(k as i64)),
+        )),
+        "voltage".to_string(),
+    );
+    resolve_pin(&expr, instances, type_pins)
 }
 
 /// Resolve named-net annotations onto FINAL union-find roots (a name keyed
@@ -2448,7 +2572,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         .collect();
 
     let mut ds = DisjointSet::new();
-    collect_pin_unions(items, &instances, &type_pins, &mut ds);
+    let bus_errors = collect_pin_unions(items, &instances, &type_pins, &mut ds);
     // 2026-09-21 (E14a): node-body intents — body wiring facts union
     // first; drive intents then complete the last open pin.
     let (intent_errors, intent_proofs, conditional_bridges) = {
@@ -2508,6 +2632,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         participation_notes,
         participation_warnings,
         contention_errors,
+        bus_errors,
     }
 }
 
@@ -3416,6 +3541,57 @@ mod tests {
             "an acknowledged short must be exempt from contention: {:?}",
             nl.contention_errors
         );
+    }
+
+    // ── 2026-09-22 (Slice 3): whole-bus equality ────────────────────────
+
+    #[test]
+    fn whole_bus_equality_unions_each_element() {
+        // u2.gpio[0..=3] == u3.data[0..=3] expands to 4 element unions —
+        // each element pair shares a net (inclusive range = 4 elements).
+        let src = r#"
+            type Chip { pin gpio[4]; pin gnd; reference "U"; tolerance any; };
+            type Sensor { pin data[4]; pin gnd; reference "S"; tolerance any; };
+            let u2: Chip = Chip { value: "u2" };
+            let u3: Sensor = Sensor { value: "u3" };
+            node n [u2.gpio[0..=3].voltage == u3.data[0..=3].voltage && u2.gnd.voltage == u3.gnd.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.bus_errors.is_empty(), "{:?}", nl.bus_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        // 4 element nets + 1 gnd net.
+        assert_eq!(nl.nets.len(), 5, "4 element pairs + gnd: {:?}", nl.nets);
+        // Each element pair shares one net.
+        for k in 0..4 {
+            assert!(
+                nl.nets.iter().any(|n| {
+                    n.pins.iter().any(|p| p.component == "u2" && p.pin == format!("gpio[{}]", k))
+                        && n.pins.iter().any(|p| p.component == "u3" && p.pin == format!("data[{}]", k))
+                }),
+                "element {} must share a net: {:?}",
+                k,
+                nl.nets
+            );
+        }
+    }
+
+    #[test]
+    fn whole_bus_length_mismatch_is_an_error() {
+        // Half-open [0..3] = 3 elements vs [0..7] = 7 — a hard error.
+        let src = r#"
+            type Chip { pin gpio[4]; pin gnd; reference "U"; tolerance any; };
+            type Sensor { pin data[8]; pin gnd; reference "S"; tolerance any; };
+            let u2: Chip = Chip { value: "u2" };
+            let u3: Sensor = Sensor { value: "u3" };
+            node n [u2.gpio[0..3].voltage == u3.data[0..7].voltage && u2.gnd.voltage == u3.gnd.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            !nl.bus_errors.is_empty(),
+            "a 3-vs-7 bus equality must error: {:?}",
+            nl.bus_errors
+        );
+        assert!(nl.bus_errors[0].contains("3 elements") && nl.bus_errors[0].contains("7 elements"), "{}", nl.bus_errors[0]);
     }
 
     #[test]

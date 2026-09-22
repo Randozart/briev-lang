@@ -186,6 +186,14 @@ impl ElectronicsBackend {
             errs.extend(netlist.contention_errors.iter().map(|e| format!("  {}", e)));
             return Err(errs);
         }
+        // 2026-09-22 (whole-bus equality): a mismatched bus length is a hard
+        // error — the buses must agree element-wise.
+        if !netlist.bus_errors.is_empty() {
+            let mut errs =
+                vec!["cannot emit schematic: a whole-bus equality is malformed".to_string()];
+            errs.extend(netlist.bus_errors.iter().map(|e| format!("  {}", e)));
+            return Err(errs);
+        }
         // 2026-09-11 (B4): voltage/current proving — shorted supplies,
         // over-voltage into rated pins, undeclared unrated pins, and
         // postcondition current bounds violated by derived physics.
