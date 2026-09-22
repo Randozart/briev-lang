@@ -19,7 +19,7 @@ brievc bad <file.bad> [--target <triple>] [--emit-asm]
 section .text
 global _start
 
-_start: [post: r10 preserved]
+_start: [r10 preserved]
     addr r4, msg               // rsi = buffer address (universal op)
     mov r5, 1                  // rdi = fd
     mov r2, 16                 // rdx = len
@@ -30,7 +30,7 @@ _start: [post: r10 preserved]
     syscall
 
 // Inline exception: the add below is replaced on x86_64 only.
-opt_add: [pre: r0 valid]
+opt_add: [r0 valid]
     add r0, r0, r1
     x86_64 => lea r0, [r1 + 1]
     ret
@@ -50,14 +50,21 @@ msg: .asciz "hello from .bad\n"
 | Line shape | Meaning |
 |---|---|
 | `mnemonic operands` | instruction — belongs to nearest preceding label/defn |
+| `mnemonic a, b; mnemonic c` | `;` is the universal instruction separator — any instruction line is a sequence (label bodies, defn bodies, branch rows, exception rows, `.bv` bad bodies alike) |
 | `target => instr; instr` | exception — attaches to nearest preceding instruction (or whole defn in branch-defn) |
 | `default => ...` | branch-defn default row (universal core syntax) |
-| `name: [pre: c] [post: c]` | code label (colon form keeps token-shape disambiguation deterministic) |
+| `name: [c] [c]` | code label — contract groups are POSITIONAL: one group = postcondition, two groups = pre then post. No `pre:`/`post:` keywords (see Contracts) |
 | `defn name params` | defn head — owns following lines until next top-level line |
 | `section .x` / `global n` / `.dir args` | top-level directives |
 | `msg: .asciz "..."` | data label + directive |
 | `[expr]` | inline contract for the next instruction |
-| `alias x = r0` | register alias |
+| `alias x = r0` | register, mnemonic, or label alias — resolved in that order |
+
+Friendly mnemonic aliases (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load
+by default from `std/bad/friendly.bad` (the prelude); `brievc bad --raw`
+opts out. Raw core names always work — aliases are additive and
+self-describing. `_start` is the one genuinely universal name and has NO
+alias.
 
 Disambiguation is pure token shape — no indentation sensitivity, no block
 tracking. Blank lines are inert. `//` comments (respecting string literals).
@@ -126,13 +133,18 @@ properties (`caller` / `callee` / `ro`):
 
 ## Contracts
 
-- `[post: rN preserved]` — **proven** when `rN` is callee-saved on the
+- `[rN preserved]` — **proven** when `rN` is callee-saved on the
   target (config property), or when the body carries balanced
   `push rN`/`pop rN` pairs. Caller-saved without pairing is a loud error
   stating the fix. Proven contracts are emitted as comments into the `.s`
   — the proof trail rides the artifact.
-- `[pre: rN valid]` — proven when `rN` maps on the target. (Full pointer
+- `[rN valid]` — proven when `rN` maps on the target. (Full pointer
   validity proofs deferred.)
+- **Positional groups**: a single bracket group is the postcondition
+  (implied — matching `.bv` function contracts); two groups are pre then
+  post: `name: [r0 valid] [r10 preserved]`. The `pre:`/`post:` keywords
+  are gone — using them is a loud error that names the positional rule.
+  `[frame: N]` keeps its keyword (a different proof kind).
 - `[frame: N]` — static sp tracking at the target's `push_width`
   (8 on x86_64, 16 elsewhere): the body may stack at most N bytes, must
   restore sp exactly, and must hold 16-alignment at every `call`.
@@ -140,8 +152,9 @@ properties (`caller` / `callee` / `ro`):
   checked; constant folding lands with the comptime pass.
 - `[frame: N]` also tracks direct `sub sp, sp, imm` / `add sp, sp, imm`
   displacement, not only push/pop discipline.
-- Label-level (`name: [pre: ...] [post: ...]`) and inline (`[expr]`
-  before an instruction) forms.
+- Label-level (`name: [c] [c]`) and inline (`[expr]`
+  before an instruction) forms. Inline contracts reject `frame:`/
+  `pre:`/`post:` keywords — they are plain expressions.
 
 ## defn — two shapes, inlined as-is
 
@@ -151,7 +164,12 @@ properties (`caller` / `callee` / `ro`):
    `default` row re-enters the core pipeline (validates like ordinary
    code), a target row emits raw on match.
 
-Params bind positionally; recursion is cycle-guarded (depth 64).
+Params bind positionally; recursion is cycle-guarded (depth 64). Local
+labels (`.name:`) are legal inside defn bodies with **hygienic per-call-
+site gensym** (`L<defn>__<local>__<n>`) — double invocation never
+collides. Invocation is at the instruction position (`ChargeGuest r1`);
+a `Return` inside an inlined defn exits the ENCLOSING function (a
+documented footgun — keep returns at top level).
 
 ## ABI boundary
 
@@ -167,6 +185,34 @@ links `-lc` via the per-target `dynamic_linker` row so `call malloc`
 and friends resolve. The stdlib (`std/bad/string.bad`) uses the
 documented internal convention (args `r0`-`r2`, result `r0`,
 `r3`-`r5` scratch).
+
+`Arg dst, n` materializes the Nth C-ABI argument per target — register
+move when `n <= abi_reg_args`, stack `loadoff` at `abi_stack_arg_base +
+(n - reg_args - 1) * 8` beyond. Fully config-driven; no target knowledge
+in the compiler.
+
+## `bad` fns in .bv
+
+`.bv` programs can declare a portable assembly function inline:
+
+```briev
+bad add(a: Int, b: Int) -> Int [result == a + b] {
+    Add r0, r5, r4
+}
+```
+
+Body is real `.bad` grammar (aliases active, `;` universal, contracts
+positional). The trailing bracket is an implied **postcondition** — a
+full Briev expression over the params and `result`; a leading group (if
+present) is the precondition. Params bind PER TARGET through `abi_args`
+(Int → r-regs) and `abi_args_fp` (Float → f-regs); the body references
+the LOGICAL param names (`a`, `b`), which the pipeline resolves to the
+target's C-ABI registers. The pipeline wraps the body in an entry label,
+appends `ret` if absent, compiles it through the bad backend to `.s`,
+assembles to `.o`, and links it into the binary; the LLVM IR references
+the symbol via `declare` (call-site contracts are checked by the normal
+Briev machinery). `bad fn` replaces `asm<Target>` (AsmFn is retained for
+backward compatibility and deprecated).
 
 ## Cross-target verification
 
