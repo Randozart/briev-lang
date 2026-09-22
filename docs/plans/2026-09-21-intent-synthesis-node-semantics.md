@@ -76,9 +76,8 @@ machinery unchanged from E7's original design; only the attachment point
 moved).
 
 **D5 — `spec` clauses are the datasheet channel.** Catalog types carry
-solver-consumable facts: `spec fb_ref: 0.8V;`, `spec decouple: 100n;`,
-`spec default_level: low;`. The compiler knows "an `in` pin wants its spec
-level", never a part name (Rule 15).
+solver-consumable facts: `spec fb_ref: 0.8V;`, `spec decouple: 100n;`.
+The compiler consumes these generically — never a part name (Rule 15).
 
 **D6 — Pin classes are the physics vocabulary.**
 `power` / `ground` / `in` / `out` / `io` / `io_od` / `nc`. Class semantics:
@@ -340,7 +339,7 @@ extend — the precise failure Rule 14 exists to prevent.
 Body facts are wiring; a `when` around them asks for CONDITIONAL wiring.
 Two honest readings, one trap:
 
-**The trap.** Copper cannot vary. A `when x = high { a = b; }` that
+**The trap.** Copper cannot vary. A `when x.voltage == 3.3V { a = b; }` that
 silently produced an unconditional union would lie — always-connected
 copper emitted for a conditional request. The gate: conditional wiring
 facts whose condition is SIGNAL-LEVEL (references a pin — pins are
@@ -357,9 +356,9 @@ elsewhere, always-connected copper is a valid implementation.
 **Reading 2 — mechanism synthesis (the prize).** The condition drives a
 declared switching part: control pin ← the condition's net, path
 terminals ← the wired pins. This is the enable-chain semantics
-(`when x = high { chip.POWER_ON = high; }`) made constructive. Needs
-switch-part vocabulary: `spec Control: true;` on gate-class pins,
-switchable path pins — a later property slice.
+(`when u_en.voltage == 3.3V { chip.POWER_ON = u1.gnd; }`) made
+constructive. Needs switch-part vocabulary: `spec Control: true;` on
+gate-class pins, switchable path pins — a later property slice.
 
 **Plan.** Phase 1: guarded facts seen and classified (closing the
 silent-skip hole in body_facts); pin-referencing conditions demand a
@@ -367,8 +366,8 @@ mechanism (D7 error); region-level conditions (`true`, pin-free) apply
 as ordinary facts. Phase 2: mechanism synthesis with the switch-part
 property vocabulary. Phase 3: the cross-region complement check
 formalized (connected in region A + required-disconnected in region B →
-mechanism demand). Condition vocabulary: level-comparisons first
-(`x == high`, `rail.ok`); arithmetic conditions later.
+mechanism demand). Condition vocabulary: single pin voltage-comparisons
+(`x.voltage == 3.3V`, `rail.ok`); level-name sugar deferred.
 
 Guarded statements are `Statement::Guarded` — already parsed by the
 core; this slice is analysis-only. Nested whens compound their
@@ -400,14 +399,16 @@ a marker statement the analysis reads — zero new Statement variants.
 - A switch type: exactly one Control pin, ≥2 Path pins. Property interface
   decides — the compiler never knows "MOSFET" (Rules 14/15).
 
-**Synthesis**: condition = single pin voltage-comparison (the `x = high`
-abstraction comes later via `spec default_level`); condition pin's net
-feeds control; bridge request (A, B, control) → three unions + a
-`conditional_bridges` record (the phase-3 complement check and eventual
-per-region physics consume it) + proof provenance. Path-side assignment
-canonical for symmetric parts. Emitter untouched — the mechanism is
-ordinary copper. Conduction physics stays black-box (D15): the compiler
-proves the wiring; the part's datasheet owns the conduction.
+**Synthesis**: condition = single pin voltage-comparison (a
+`u1.gpio0.voltage == 3.3V` shape — the non-pin operand must be a voltage
+literal; `x = high`-style level sugar is deferred, see the ledger);
+condition pin's net feeds control; bridge request (A, B, control) →
+three unions + a `conditional_bridges` record (the phase-3 complement
+check and eventual per-region physics consume it) + proof provenance.
+Path-side assignment canonical for symmetric parts. Emitter untouched —
+the mechanism is ordinary copper. Conduction physics stays black-box
+(D15): the compiler proves the wiring; the part's datasheet owns the
+conduction.
 
 **General rule now in force (D14 realization):** ambiguity diagnostics
 REQUEST the strategy selection and name the candidates — the compiler

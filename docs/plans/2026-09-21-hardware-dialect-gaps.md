@@ -544,9 +544,9 @@ phase-3 cross-region complement check and per-region physics consume
 them). The broad `instances` consolidation into NetlistContext landed in
 this slice (walker/synthesizer parameter gates held).
 
-Open under D16: phase 3 (cross-region complement check), `spec
-default_level` for the `x = high` abstraction, asymmetric path
-assignment (relays with coil/contact distinction).
+Open under D16: phase 3 (cross-region complement check), asymmetric
+path assignment (relays with coil/contact distinction), mechanism
+condition validation (non-pin operand must be a voltage literal).
 
 ### Amendment 2026-09-22 (D16 phase 3): redundancy gate
 
@@ -564,6 +564,53 @@ a mechanism (region B = conditional) meaningless. The complementary
 form — author asserts disconnection via syntax — requires a disconnection
 syntax (phase-3b, deferred).
 
-Open under D16: phase-3b (author-expressed disconnection), `spec
-default_level`, asymmetric switch parts, keep/store syntax, ERC class
-semantics, chain/await, whole-bus equality.
+Open under D16: phase-3b (author-expressed disconnection), mechanism
+condition validation (non-pin operand must be a voltage literal),
+asymmetric switch parts, keep/store syntax, ERC class semantics,
+chain/await, whole-bus equality.
+
+### Convention note 2026-09-22: spec keys are PascalCase
+
+All `spec` keys in the electronics dialect are PascalCase (`KicadType`,
+`NoConnect`, `Supply`, `Return`, `CanDrive`, `Control`, `Switchable`,
+`Decouple`, `Decoupler`, `Budget`). Any future spec name must follow.
+
+### Decision 2026-09-22: `DefaultLevel` / `x = high` deferred — no consumer
+
+The `spec default_level` / `x = high` abstraction (design-record D5,
+line 404) is **deferred indefinitely**, not renamed. Rationale:
+
+- Mechanism synthesis needs exactly one thing from a `when` condition:
+  the **control pin**. The voltage/level value is never read downstream —
+  D15 keeps conduction physics black-box; the compiler proves wiring only.
+- `x = high` would therefore carry a level the compiler consumes nowhere —
+  pure readability sugar, not intent-synthesis substance.
+- Rule 15/23: a level vocabulary (even stdlib-taught, e.g. `spec
+  DefaultLevel: "high"`) is domain knowledge the compiler must not carry
+  unless a pass reads it. None does.
+- The real defect it was supposed to fix — `condition_control` accepting
+  `u1.gpio0 = banana` — has a smaller, general fix: **the non-pin operand
+  of a mechanism condition must be a voltage literal**. See the
+  validation slice below.
+
+Revisit only if ERC drive-level checks land and need a resting-level
+concept; then the level vocabulary grows from stdlib declarations, never
+hardcoded in Rust.
+
+### Amendment 2026-09-22 (D16 mechanism condition validation)
+
+`condition_control` previously pulled a pin from either side of a `when`
+condition's `BinaryOp` and ignored the other operand — so
+`u1.gpio0 = banana` was indistinguishable from a voltage comparison and
+silently synthesized a bridge. The gate: the non-pin operand must be a
+voltage literal (`UnitLiteral`, e.g. `u1.gpio0.voltage == 3.3V`).
+Anything else — an identifier (`banana`, `high`, `low`), a plain number
+(`= 3.3` without `.voltage`), an expression — is a hard error naming the
+expected shape: *"mechanism condition must be a single pin voltage
+comparison (`u1.gpio0.voltage == 3.3V`), or a mechanism-bodied
+`when … via Type;`"*. The `.voltage` field access is what makes a
+condition a *voltage* claim.
+
+`x = high` / `x = low` level sugar remains deferred (Decision above):
+`high`/`low` are identifiers, so they fail this gate with the shape error —
+the fix is general and needs no level vocabulary.

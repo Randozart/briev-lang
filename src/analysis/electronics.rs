@@ -1484,16 +1484,53 @@ fn mentions_pin(expr: &Expr, ctx: &NetlistContext) -> bool {
     }
 }
 
-/// The control pin of a mechanizable condition (D16 phase 2): a single
-/// comparison `Expr::BinaryOp` whose one operand resolves to a pin — the
-/// condition's net feeds the mechanism control. Anything else → None
-/// (region-level or non-mechanizable signal-level).
-fn condition_control(expr: &Expr, ctx: &NetlistContext) -> Option<PinRef> {
+/// The control pin of a mechanizable condition (D16 phase 2), plus an
+/// optional validation error. A single comparison `Expr::BinaryOp` whose
+/// one operand resolves to a pin — the condition's net feeds the
+/// mechanism control. The exact shape is validated: the pin operand must
+/// be a `.voltage` access and the other operand a voltage literal
+/// (`UnitLiteral`). A mechanism-SHAPED condition with the wrong detail
+/// (e.g. `x = banana`, `x = 3.3V`, `x.voltage == banana`, or level-name
+/// sugar `x = high` — deferred, see ledger Decision 2026-09-22) yields
+/// `(None, Some(err))`; the caller records the error and skips the region
+/// body (no cascade). `(None, None)` = region-level or non-mechanizable.
+fn condition_control(expr: &Expr, ctx: &NetlistContext) -> (Option<PinRef>, Option<String>) {
     let Expr::BinaryOp(_, l, r) = expr else {
+        return (None, None);
+    };
+    let lpin = resolve_pin(l, ctx.instances, ctx.type_pins);
+    let rpin = resolve_pin(r, ctx.instances, ctx.type_pins);
+    let (pin_side, other, ctrl) = match (lpin, rpin) {
+        (Some(p), None) => (l, r, p),
+        (None, Some(p)) => (r, l, p),
+        _ => return (None, None),
+    };
+    if voltage_operand(pin_side, ctx).is_some()
+        && matches!(other.as_ref(), Expr::UnitLiteral { .. })
+    {
+        return (Some(ctrl), None);
+    }
+    let shape = format!("{}.{}", ctrl.component, ctrl.pin);
+    (
+        None,
+        Some(format!(
+            "mechanism condition must be a single pin voltage comparison (e.g. `{shape}.voltage == 3.3V`), or a mechanism-bodied `when ... via Type;` — got `{shape} = {}`, where the pin side must be a `.voltage` access and the non-pin side a voltage literal",
+            other
+        )),
+    )
+}
+
+/// `expr` is a `.voltage` access on a declared pin (`u1.gpio0.voltage`),
+/// resolved to the underlying pin. Anything else — bare `u1.gpio0`, a
+/// non-voltage field, a non-pin operand — → None.
+fn voltage_operand(expr: &Expr, ctx: &NetlistContext) -> Option<PinRef> {
+    let Expr::Field(base, field) = expr else {
         return None;
     };
-    resolve_pin(l, ctx.instances, ctx.type_pins)
-        .or_else(|| resolve_pin(r, ctx.instances, ctx.type_pins))
+    if field != "voltage" {
+        return None;
+    }
+    resolve_pin(base, ctx.instances, ctx.type_pins)
 }
 
 /// Pull a trailing `via <Name>` marker out of a guarded body (D16 phase
@@ -1617,7 +1654,14 @@ fn walk_guarded(
     sink: &mut FactSink,
 ) {
         let (via, inner_rest) = take_via_strategy(inner);
-        let control = condition_control(c, ctx);
+        let (control, cond_err) = condition_control(c, ctx);
+        if let Some(e) = cond_err {
+            // A malformed mechanism condition: record the shape error and
+            // SKIP the region body — recursing would only cascade the
+            // "copper cannot be conditional" wiring error beneath it.
+            sink.errors.push(e);
+            return;
+        }
         let child_control = if control.is_some() {
             control.clone()
         } else if reg.control.is_some() {
@@ -2736,6 +2780,65 @@ mod tests {
             nl.conditional_bridges.is_empty(),
             "redundant bridge must not be synthesized: {:?}",
             nl.conditional_bridges
+        );
+    }
+
+    #[test]
+    fn mechanism_condition_requires_voltage_literal() {
+        // `x = banana` — the RHS must be a voltage literal. This is the
+        // validation gate that closed the silent-acceptance hole: before
+        // the 2026-09-22 slice, condition_control ignored the non-pin
+        // operand and synthesized a bridge anyway.
+        let src = MECH_BOARD.replace(
+            "u1.gpio0.voltage == 3.3V",
+            "u1.gpio0 = banana",
+        );
+        let nl = analyze(&src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        let e = &nl.intent_errors[0];
+        assert!(
+            e.contains("voltage comparison") && e.contains("banana"),
+            "{}",
+            e
+        );
+        assert!(
+            nl.conditional_bridges.is_empty(),
+            "invalid condition must not synthesize: {:?}",
+            nl.conditional_bridges
+        );
+    }
+
+    #[test]
+    fn mechanism_condition_voltage_field_requires_literal() {
+        // `x.voltage == banana` — the voltage FORM but a non-literal RHS
+        // is still rejected.
+        let src = MECH_BOARD.replace(
+            "u1.gpio0.voltage == 3.3V",
+            "u1.gpio0.voltage == banana",
+        );
+        let nl = analyze(&src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_errors[0].contains("banana"),
+            "{}",
+            nl.intent_errors[0]
+        );
+    }
+
+    #[test]
+    fn mechanism_condition_pin_needs_voltage_field() {
+        // `x = 3.3V` — a literal, but the pin side has no `.voltage`
+        // field, so it is not a voltage comparison. Rejected.
+        let src = MECH_BOARD.replace(
+            "u1.gpio0.voltage == 3.3V",
+            "u1.gpio0 = 3.3V",
+        );
+        let nl = analyze(&src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_errors[0].contains("voltage comparison"),
+            "{}",
+            nl.intent_errors[0]
         );
     }
 

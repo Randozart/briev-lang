@@ -320,6 +320,17 @@ union-find root before synthesis) is redundant — the switch can never
 open them. The compiler emits a hard error naming the unconditional
 wiring that defeats the mechanism.
 
+**Mechanism conditions are exact (2026-09-22).** The condition must be a
+single pin voltage comparison in the precise shape
+`<pin>.voltage == <voltage literal>` (e.g. `u1.gpio0.voltage == 3.3V`).
+The pin side must be a `.voltage` access and the non-pin side a voltage
+literal. Anything else that resembles a mechanism condition — a bare pin
+against a literal (`u1.gpio0 == 3.3V`), a non-literal operand
+(`u1.gpio0.voltage == banana`), or a level-name (`u1.gpio0 = high`) —
+is a hard error naming the expected shape. The `.voltage` access is what
+makes a condition a *voltage* claim; level-name sugar (`x = high`, `spec
+DefaultLevel`) is deferred — see the hardware-dialect-gaps ledger.
+
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive
