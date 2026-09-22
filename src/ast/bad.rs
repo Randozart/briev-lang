@@ -126,6 +126,33 @@ pub struct BadInstr {
     /// `x86_64 => lea ...` lines attached to this instruction. Empty =
     /// universal only.
     pub exceptions: Vec<BadBranch>,
+    /// The `^` / `^^` / `^^^` acknowledge prefix, if written. Silences the
+    /// W-tier probable-error warnings for this line; `^^^` also overrides
+    /// predicted errors. Recorded, never silent.
+    pub ack: Option<Ack>,
+    pub span: Span,
+}
+
+/// The acknowledge modifier — a `^` / `^^` / `^^^` prefix on an
+/// instruction line. Scope by caret count; the keyword tail (`^ack`,
+/// future `^seq`, `^vol`, …) is the future-expansion slot — the grammar
+/// is open after `^`, never a naive one-character lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckScope {
+    /// `^` — this instruction.
+    Instr,
+    /// `^^` — the whole `;`-separated line.
+    Line,
+    /// `^^^` — full authority: overrides predicted errors too.
+    Override,
+}
+
+/// A parsed ack prefix: scope + optional named warnings (`W1`, `W2`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ack {
+    pub scope: AckScope,
+    /// Explicit warning names (`W1`). Empty = acknowledge all.
+    pub warnings: Vec<String>,
     pub span: Span,
 }
 

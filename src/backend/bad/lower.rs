@@ -87,6 +87,9 @@ pub struct Lowerer<'a> {
     /// 2026-09-21: When compiling a `bad fn` body from `.bv`, param names
     /// are pre-bound to physical registers. Merged into every env lookup.
     param_env: HashMap<String, Bound>,
+    /// 2026-09-22: W-tier probable-error notices (never restrictive —
+    /// acknowledged with `^`/`^^`/`^^^`, recorded, never silent).
+    notices: Vec<crate::backend::bad::notices::Notice>,
 }
 
 /// One `.field name, size[, align]` inside a `.struct` block.
@@ -130,6 +133,7 @@ impl<'a> Lowerer<'a> {
             friendly: true,
             sheet_aliases: std::collections::HashSet::new(),
             param_env: HashMap::new(),
+            notices: Vec::new(),
         }
     }
 
@@ -160,7 +164,7 @@ impl<'a> Lowerer<'a> {
 
     /// Lower the whole program. First pass collects defns + aliases
     /// (forward references allowed); second pass emits.
-    pub fn run(mut self, program: &'a BadProgram) -> Result<String, String> {
+    pub fn run(&mut self, program: &'a BadProgram) -> Result<String, String> {
         // Depth-first import expansion: imported files clone in at their
         // `import` line, so both passes see source order. Root items are
         // cloned once — a one-shot compile can afford it.
@@ -180,6 +184,10 @@ impl<'a> Lowerer<'a> {
 
         // Pass 2: emission (take the vec — borrow split vs self.errors).
         let emit_items = std::mem::take(&mut self.emit_items);
+        // 2026-09-22: W-tier analysis — predicted probable errors,
+        // acknowledged with `^`/`^^`/`^^^`. Recorded, never silent; they
+        // do not block emission.
+        self.collect_notices(&emit_items);
         for item in &emit_items {
             match item {
                 BadTopLevel::Directive(d) => self.emit_directive(d),
@@ -195,11 +203,63 @@ impl<'a> Lowerer<'a> {
 
         self.flush_float_pool();
 
+        // 2026-09-22: Surface the W-tier notices — warnings are
+        // informative, never restrictive. Unacknowledged probable errors
+        // print to stderr; acknowledged ones are recorded as info under
+        // --trace-lowering (never silent).
+        self.surface_notices();
+        // A stale ack — a named warning that never fired — is a loud
+        // error so markers can't rot.
+        self.errors.extend(self.stale_acks(program));
+
         if self.errors.is_empty() {
-            Ok(self.out)
+            Ok(std::mem::take(&mut self.out))
         } else {
             Err(self.errors.join("\n"))
         }
+    }
+
+    /// 2026-09-22: Run the W-tier analysis over every label and defn.
+    fn collect_notices(&mut self, items: &[BadTopLevel]) {
+        for item in items {
+            match item {
+                BadTopLevel::Label(l) => {
+                    let n = crate::backend::bad::notices::check_label(l, self.regs, &self.family);
+                    self.notices.extend(n);
+                }
+                BadTopLevel::Defn(d) => {
+                    let n = crate::backend::bad::notices::check_defn(d);
+                    self.notices.extend(n);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 2026-09-22: Print the W-tier notices. Never silent: acknowledged
+    /// ones still surface under --trace-lowering.
+    fn surface_notices(&self) {
+        for n in &self.notices {
+            if n.acknowledged {
+                if self.trace {
+                    eprintln!("{}", crate::backend::bad::notices::format_acknowledged(n));
+                }
+            } else {
+                eprintln!("{}", crate::backend::bad::notices::format(n));
+            }
+        }
+    }
+
+    /// 2026-09-22: The W-tier notices collected during lowering — the
+    /// predicted probable errors, acknowledged and unacknowledged.
+    pub fn notices(&self) -> &[crate::backend::bad::notices::Notice] {
+        &self.notices
+    }
+
+    /// 2026-09-22: Stale acknowledge markers — a named warning that never
+    /// fired is a loud error, so markers can't rot. Returns the errors.
+    pub fn stale_acks(&self, program: &BadProgram) -> Vec<String> {
+        crate::backend::bad::notices::stale_acks(program, &self.notices)
     }
 
     /// Pass 1 name collection for one item.
@@ -625,6 +685,7 @@ impl<'a> Lowerer<'a> {
                     operands: vec![instr.operands[0].clone(), BadOperand::Name(src)],
                     contract: None,
                     exceptions: Vec::new(),
+                    ack: None,
                     span: instr.span,
                 },
                 None => {
@@ -644,6 +705,7 @@ impl<'a> Lowerer<'a> {
                 ],
                 contract: None,
                 exceptions: Vec::new(),
+                ack: None,
                 span: instr.span,
             }
         };

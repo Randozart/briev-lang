@@ -17,6 +17,7 @@
 pub mod contracts;
 pub mod comptime;
 pub mod lower;
+pub mod notices;
 pub mod registry;
 
 use crate::ast::bad::BadProgram;
@@ -42,15 +43,28 @@ pub fn generate_with(
     source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
     friendly: bool,
 ) -> Result<String, String> {
+    let (asm, _) = generate_with_notices(source, target_triple, trace, base_dir, friendly)?;
+    Ok(asm)
+}
+
+/// `generate_with` plus the W-tier notices collected during lowering
+/// (the predicted probable errors, acknowledged and unacknowledged).
+/// Callers that want the notices — the CLI, the tests — use this.
+pub fn generate_with_notices(
+    source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
+    friendly: bool,
+) -> Result<(String, Vec<notices::Notice>), String> {
     let program: BadProgram =
         parse_bad(source).map_err(|e| format!("bad: line {}: {}", e.line, e.message))?;
     let (isa, regs) = registries();
     let family = target_triple.split('-').next().unwrap_or(target_triple);
-    lower::Lowerer::new(&isa, &regs, family)
+    let mut lowerer = lower::Lowerer::new(&isa, &regs, family)
         .with_trace(trace)
         .with_friendly(friendly)
-        .with_base_dir(base_dir.map(|p| p.to_path_buf()))
-        .run(&program)
+        .with_base_dir(base_dir.map(|p| p.to_path_buf()));
+    let asm = lowerer.run(&program)?;
+    let notices = lowerer.notices().to_vec();
+    Ok((asm, notices))
 }
 
 /// 2026-09-21: Compile a `bad fn` body from `.bv` — wrap the body
@@ -997,5 +1011,92 @@ _start:
         assert!(x86.contains("xor %rbx, %rbx, %rbx"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
         assert!(arm.contains("mov x3, #0"), "{}", arm);
+    }
+}
+
+// ── W-tier notices (2026-09-22, acknowledge tier) ────────────────────
+mod notices_tests {
+    use super::*;
+    use crate::backend::bad::notices::Notice;
+
+    fn notices(src: &str, triple: &str) -> Vec<Notice> {
+        generate_with_notices(src, triple, false, None, true).unwrap().1
+    }
+
+    fn codes(src: &str, triple: &str) -> Vec<String> {
+        notices(src, triple).iter().map(|n| n.code.to_string()).collect()
+    }
+
+    #[test]
+    fn w1_fires_on_caller_saved_live_across_call() {
+        let c = codes("t:\n    mov r5, 1\n    call f\n    ret\n", "x86_64");
+        assert!(c.contains(&"W1".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn w1_silent_for_callee_saved() {
+        let c = codes("t:\n    mov r10, 1\n    call f\n    ret\n", "x86_64");
+        assert!(!c.contains(&"W1".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn w3_fires_on_ret_with_sp_delta() {
+        let c = codes("t:\n    push r0\n    ret\n", "x86_64");
+        assert!(c.contains(&"W3".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn w5_fires_on_defn_inlined_ret() {
+        let c = codes("defn f x\n    ret\n\nt:\n    call f\n", "x86_64");
+        assert!(c.contains(&"W5".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn ack_suppresses_and_records() {
+        let n = notices("t:\n    mov r5, 1\n    ^ W1 call f\n    ret\n", "x86_64");
+        let w1 = n.iter().find(|x| x.code == "W1").expect("W1 recorded (never silent)");
+        assert!(w1.acknowledged, "{w1:?}");
+        let n = notices("t:\n    mov r5, 1\n    ^ call f\n    ret\n", "x86_64");
+        let w1 = n.iter().find(|x| x.code == "W1").expect("bare ^ acks");
+        assert!(w1.acknowledged, "{w1:?}");
+    }
+
+    #[test]
+    fn ack_on_wrong_line_does_not_suppress() {
+        // `^` (Instr scope) on the mov line does NOT cover the call's W1.
+        let n = notices("t:\n    ^ mov r5, 1\n    call f\n    ret\n", "x86_64");
+        let w1 = n.iter().find(|x| x.code == "W1").expect("W1 still fires");
+        assert!(!w1.acknowledged, "{w1:?}");
+    }
+
+    #[test]
+    fn line_ack_propagates_across_segments() {
+        let n = notices("t:\n    ^^ mov r5, 1; call f\n    ret\n", "x86_64");
+        let w1 = n.iter().find(|x| x.code == "W1").expect("W1 recorded");
+        assert!(w1.acknowledged, "{w1:?}");
+    }
+
+    #[test]
+    fn stale_named_ack_is_a_loud_error() {
+        let err = generate("t:\n    ^ W9 mov r5, 1\n    ret\n", "x86_64").unwrap_err();
+        assert!(err.contains("stale"), "{err}");
+    }
+
+    #[test]
+    fn stale_ack_not_for_unfired_bare_ack() {
+        // Bare `^` (no names) never goes stale — it acknowledges whatever fires.
+        let n = notices("t:\n    ^ mov r5, 1\n    ret\n", "x86_64");
+        assert!(n.is_empty(), "{n:?}");
+    }
+
+    #[test]
+    fn w2_fires_on_branch_path_imbalance() {
+        let c = codes("defn f x
+    default => push r0
+    x86_64 => pop r0
+
+t:\n    call f
+", "x86_64");
+        assert!(c.contains(&"W2".to_string()), "{c:?}");
     }
 }
