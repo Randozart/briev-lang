@@ -14,6 +14,7 @@ mod display;
 mod canonical;
 mod expr;
 pub mod top;
+pub mod bad;
 mod types;
 
 pub use canonical::*;

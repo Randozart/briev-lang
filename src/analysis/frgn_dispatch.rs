@@ -229,6 +229,7 @@ pub fn resolve_single_frgn(
             BackendKind::Spirv => "SPIR-V",
             BackendKind::Vm => "VM",
             BackendKind::Ptx => "PTX",
+            BackendKind::Bad => "Briev Assembly Dialect",
         }
     )))
 }

@@ -2901,6 +2901,15 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     let ret_tys = vec![asm_fn.ret_type.clone()];
                     self.ctx.defn_return_types.insert(asm_fn.name.clone(), ret_tys);
                 }
+                // 2026-09-21: bad fn — register param/ret types for call-site
+                // resolution; the actual assembly is compiled through the bad
+                // backend and linked as an .o (see compile_bad_fn_objects).
+                TopLevel::BadFn(bf) => {
+                    let tys: Vec<Type> = bf.params.iter().map(|(_, t)| t.clone()).collect();
+                    self.ctx.defn_params.insert(bf.name.clone(), tys);
+                    let ret_tys = vec![bf.ret_type.clone()];
+                    self.ctx.defn_return_types.insert(bf.name.clone(), ret_tys);
+                }
                 // 2026-09-06 (ISR plan): pre-register handler signatures so
                 // body emission sees the param types.
                 TopLevel::IsrHandler(isr) => {
@@ -3246,6 +3255,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                             let tys: Vec<Type> = af.params.iter().map(|(_, t)| t.clone()).collect();
                             self.ctx.defn_params.insert(af.name.clone(), tys);
                             self.ctx.defn_return_types.insert(af.name.clone(), vec![af.ret_type.clone()]);
+                        }
+                        TopLevel::BadFn(bf) => {
+                            let tys: Vec<Type> = bf.params.iter().map(|(_, t)| t.clone()).collect();
+                            self.ctx.defn_params.insert(bf.name.clone(), tys);
+                            self.ctx.defn_return_types.insert(bf.name.clone(), vec![bf.ret_type.clone()]);
                         }
                         _ => {}
                     }
@@ -3939,6 +3953,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 // call asm sideeffect body.
                 TopLevel::AsmFn(asm_fn) => {
                     self.emit_asm_fn(&mut out, asm_fn);
+                    writeln!(out).ok();
+                }
+                // 2026-09-21: bad fn — emit `declare` (body compiled via bad backend).
+                TopLevel::BadFn(bf) => {
+                    self.emit_bad_fn_declare(&mut out, bf);
                     writeln!(out).ok();
                 }
                 // 2026-09-06 (ISR plan): emit ISR handler bodies (calling

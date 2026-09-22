@@ -67,6 +67,7 @@ pub fn trusted_axioms(items: &[TopLevel]) -> Vec<String> {
                 out.push(format!("frgn {}", shown));
             }
             TopLevel::AsmFn(a) => out.push(format!("asm {}", a.name)),
+            TopLevel::BadFn(bf) => out.push(format!("bad {}", bf.name)),
             _ => {}
         }
     }
