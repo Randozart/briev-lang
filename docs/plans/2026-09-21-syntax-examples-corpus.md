@@ -1,9 +1,9 @@
 # Syntax examples corpus — one example per SPEC form
 
-**2026-09-21.** QUEUED — next in queue (authoring, parallel-friendly,
-zero compiler risk). Implements the user requirement: "some example files
-for each bit of syntax from the SPEC — this language is kinda newish, we
-need all the examples we can get."
+**2026-09-21.** ACTIVE — 19 files landed (`956a4bf4`), each verified
+`briev check` + enforced by the conformance sweep. Amendment 2026-09-22
+(syntax-cleanup plan): the corpus covers ONLY implemented forms; the
+aspirational forms below were audited and removed/never written.
 
 ## The enforcement is already built
 
@@ -34,20 +34,47 @@ every `cargo test --lib`: every file is parsed + elaborated + typechecked
   If a corpus example surfaces syntax the tmLanguage grammars miss,
   update the grammar in the same commit.
 
+## Audit note (2026-09-22, syntax-cleanup plan)
+
+Forms in SPEC that are NOT implemented and are therefore NOT in the
+corpus (each was confirmed dead/aspirational by the cleanup audit):
+
+| Form | Status |
+|------|--------|
+| `barrier<group>` | REMOVED — contract-only no-op, group name never read; `[expr];` gate is the real convergence point |
+| `machine { }` block | never existed; prose-only (machine-entry = `bootstrap node`) |
+| `guard` keyword | never existed; guards are shapes (`[cond] stmt`, `[cond];`, `when`) |
+| `vol node` | never existed; volatility is a variable-level pin (`vol let`) |
+| `atomic` on node/let | never existed; atomic is a FIELD modifier only |
+| `use` keyword | `import` is the keyword |
+| `op ... [commutative]` lemma | REMOVED — dead field, no consumer, redundant with `-ffast-math` |
+| `Enum::Variant` | REMOVED — member access `Enum.Variant(...)` is canonical |
+
+## Landed corpus (examples/syntax/, 19 files)
+
+- `decl/`: trait, proto-axiom, impl-ops, coll, coll-obj, enum, equation,
+  external (frgn), import, sync-group, bootstrap
+- `stmt/`: mutex, seq-modifier, match-when, comptime-block ($(Stage)),
+  trap
+- `flow/`: ranges-slices
+
 ## Build order — the discovered gaps first
 
-Spot-check results (2026-09-21): ZERO examples exist today for:
-`trait` / `proto` / `impl`, `coll`, `$defn` composites + stages `$()`,
-`.^^` reflection, `barrier`, `mutex`, `watchdog`, `axiom`,
-`atomic` / `vol` / `seq` directives, quotation / derivation / `Error#`,
-critical sections, op declarations.
+Original gap list (2026-09-21), kept for history. Zero examples existed
+for: `trait` / `proto` / `impl`, `coll`, `$defn` composites + stages `$()`,
+`.^^` reflection, `mutex`, `watchdog`, `axiom`, `atomic` / `vol` / `seq`
+directives, quotation / derivation / `Error#`, critical sections, op
+declarations. The syntax-cleanup audit (2026-09-22) retired the
+aspirational subset (see table above); the rest remain open:
+
+Remaining gaps: `$defn` composites + stages `$()`, `.^^` reflection,
+`watchdog`, `axiom` on op bindings, `atomic`/`vol`/`seq` field+let
+directives, quotation / derivation / `Error#`, critical sections, op
+declarations, `import` selective/aliased forms, `render`.
 
 THIN (1-3 trivial instances): contracts beyond `[true]`, enum + match
 patterns, tuples, ranges `..`, slices, `beginprogram`/`endprogram`,
 reflection `.^`, images (gpu-only today).
-
-Covered OK: `let`, `node`, `port`, `export`, `spawn`, `when`, `match`,
-`struct`, `each`.
 
 Then a per-section sweep of SPEC §3-§22 (~170-190 distinct forms):
 §3 files/profiles (`.s` strict, `.f` formatted, `.b` bare, `// target:`),

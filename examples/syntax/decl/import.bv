@@ -1,8 +1,7 @@
-// SPEC §12.2 — `import`: library imports. String paths
+// SPEC §7 — `import`: library imports. String paths
 // (`"std/io"`), registry angle-bracket paths (`<collections>`),
 // and selective imports (`{ name }`) are all supported.
-// The import keyword is `import` (SPEC §12.2's `use` is not
-// the implemented spelling).
+// `import` is the keyword (there is no `use` in Briev).
 
 import "std/types";
 import <collections>;
