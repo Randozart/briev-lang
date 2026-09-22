@@ -705,9 +705,6 @@ fn collect_strings_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<S
         | Statement::Defer(body) | Statement::Mutex(body) => {
             for s in body { collect_strings_stmt(s, seen, out); }
         }
-        Statement::Barrier { body, .. } => {
-            for s in body { collect_strings_stmt(s, seen, out); }
-        }
         Statement::Rollback(Some(e)) => { collect_strings_expr(e, seen, out); }
         Statement::Rollback(None) => {}
         Statement::Foreach { list, body, .. } => {
@@ -6670,7 +6667,6 @@ fn collect_written_fields_inner(body: &[Statement], out: &mut std::collections::
             | Statement::Defer(body) | Statement::Mutex(body) | Statement::SyncBlock(body) => {
                 collect_written_fields_inner(body, out);
             }
-            Statement::Barrier { body, .. } => collect_written_fields_inner(body, out),
             Statement::Foreach { body, .. } => collect_written_fields_inner(body, out),
             _ => {}
         }

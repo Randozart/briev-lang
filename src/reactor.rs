@@ -348,7 +348,7 @@ impl Reactor {
                 interp.exec_stmt(stmt)?;
                 Ok(StmtResult::Continue)
             }
-            Statement::Defer(_) | Statement::Mutex(_) | Statement::Barrier { .. } => {
+            Statement::Defer(_) | Statement::Mutex(_) => {
                 interp.exec_stmt(stmt)?;
                 Ok(StmtResult::Continue)
             }

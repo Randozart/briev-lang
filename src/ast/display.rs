@@ -445,17 +445,6 @@ impl fmt::Display for Statement {
                 }
                 write!(f, "}}")
             }
-            Statement::Barrier { groups, body } => {
-                if groups.is_empty() {
-                    write!(f, "barrier {{ ")?;
-                } else {
-                    write!(f, "barrier<{}> {{ ", groups.join(","))?;
-                }
-                for stmt in body {
-                    write!(f, "{} ", stmt)?;
-                }
-                write!(f, "}}")
-            }
             Statement::InlineDefn(d) => write!(f, "$defn {}", d.name),
             Statement::InlineTxn(t) => write!(f, "$txn {}", t.name),
             Statement::Match { .. } => write!(f, "match {{ ... }}"),

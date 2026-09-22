@@ -652,10 +652,6 @@ fn check_stmt_body(s: &Statement, caps: &BackendCapabilities, out: &mut Vec<Stri
             require(caps.concurrency_sections, "sync/mutex sections", caps, out);
             walk_body(body, caps, out);
         }
-        Statement::Barrier { body, .. } => {
-            require(caps.concurrency_sections, "barrier sections", caps, out);
-            walk_body(body, caps, out);
-        }
         Statement::Defer(body) => {
             require(caps.defer_stmt, "defer blocks", caps, out);
             walk_body(body, caps, out);

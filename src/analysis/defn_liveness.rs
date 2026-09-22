@@ -336,7 +336,6 @@ impl<'a> Builder<'a> {
             Statement::Defer(body) | Statement::Mutex(body) | Statement::SyncBlock(body) => {
                 self.walk_stmts(body, queue);
             }
-            Statement::Barrier { body, .. } => self.walk_stmts(body, queue),
             Statement::Match { expr, arms } => {
                 self.walk_expr(expr, queue);
                 self.walk_match_arms(arms, queue);
@@ -669,7 +668,6 @@ fn collect_call_names_stmt(stmt: &Statement, out: &mut Vec<String>) {
         | Statement::Defer(body)
         | Statement::Mutex(body)
         | Statement::SyncBlock(body) => substmts.extend(body.iter()),
-        Statement::Barrier { body, .. } => substmts.extend(body.iter()),
         Statement::Match { expr, arms } => {
             exprs.push(expr);
             arms.iter().flat_map(|arm| arm.body.iter()).for_each(|s| substmts.push(s));

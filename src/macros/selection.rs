@@ -463,7 +463,6 @@ pub fn stmt_tag(stmt: &Statement) -> &str {
         Statement::SyncBlock(_) => "sync",
         Statement::Defer(_) => "defer",
         Statement::Mutex(_) => "mutex",
-        Statement::Barrier { .. } => "barrier",
     }
 }
 

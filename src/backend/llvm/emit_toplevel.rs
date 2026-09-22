@@ -70,9 +70,6 @@ impl LlvmBackend {
                 Statement::Foreach { body, .. } => {
                     for st in body { walk(st, lets, assigned); }
                 }
-                Statement::Barrier { body, .. } => {
-                    for st in body { walk(st, lets, assigned); }
-                }
                 Statement::Match { arms, .. } => {
                     for arm in arms {
                         for st in &arm.body { walk(st, lets, assigned); }

@@ -430,7 +430,6 @@ impl<'a> Parser<'a> {
             Token::Rollback => "rollback".into(),
             Token::Defer => "defer".into(),
             Token::Mutex => "mutex".into(),
-            Token::Barrier => "barrier".into(),
             Token::Import => "import".into(),
             Token::From => "from".into(), Token::As => "as".into(),
             Token::Frgn => "frgn".into(),

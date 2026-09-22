@@ -1773,18 +1773,19 @@ programs with an authored bootstrap (§13.2) the handoff state usually makes
 the marker redundant — the bootstrap seeds state such that the next logical
 node's precondition already holds — and it may be omitted.
 
-### 11.6 Critical sections and barriers
+### 11.6 Critical sections
 
 ```briev
 mutex {
     update_shared_state();
 };
-
-barrier<workers>;
 ```
 
 - `mutex { ... }` is a critical section.
-- `barrier<group>` is an explicit runtime synchronization point.
+- The `barrier` statement is removed (2026-09-22): it was a no-op wrapper that
+  emitted its body inline everywhere and its group name was never consulted.
+  Real convergence is expressed by the `[condition];` gate (§10.2) and group
+  classification by `sync<group>` (§12.1).
 - `sync<group>` is reserved for node classification.
 
 ## 12. Concurrency and task lifecycle

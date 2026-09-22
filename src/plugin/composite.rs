@@ -536,8 +536,7 @@ fn unroll_static(
             | Statement::Block(body)
             | Statement::SyncBlock(body)
             | Statement::Mutex(body)
-            | Statement::Defer(body)
-            | Statement::Barrier { body, .. } => {
+            | Statement::Defer(body) => {
                 let mut st = s.clone();
                 let inner = match &mut st {
                     Statement::Guarded(_, b)
@@ -545,7 +544,6 @@ fn unroll_static(
                     | Statement::SyncBlock(b)
                     | Statement::Mutex(b)
                     | Statement::Defer(b) => b,
-                    Statement::Barrier { body, .. } => body,
                     _ => unreachable!("matched above"),
                 };
                 *inner = unroll_static(body, consts);
@@ -584,8 +582,7 @@ fn env_kill_tree(body: &[Statement], env: &mut HashMap<String, ComptimeVal>) {
             | Statement::Block(body)
             | Statement::SyncBlock(body)
             | Statement::Mutex(body)
-            | Statement::Defer(body)
-            | Statement::Barrier { body, .. } => env_kill_tree(body, env),
+            | Statement::Defer(body) => env_kill_tree(body, env),
             _ => {}
         }
     }
@@ -728,13 +725,6 @@ fn fold_stmt_list(
                     &mut clone,
                     composite,
                 )?));
-            }
-            Statement::Barrier { groups, body } => {
-                let mut clone = env.clone();
-                out.push(Statement::Barrier {
-                    groups,
-                    body: fold_stmt_list(body, &mut clone, composite)?,
-                });
             }
             other => out.push(other),
         }
@@ -927,9 +917,6 @@ fn expand_nested(
         | Statement::Mutex(body) => {
             expand_stmt_list(body, registry, comptime)?;
         }
-        Statement::Barrier { body, .. } => {
-            expand_stmt_list(body, registry, comptime)?;
-        }
         _ => {}
     }
     Ok(())
@@ -965,8 +952,7 @@ fn substitute_param(s: &mut Statement, param: &str, arg: &Expr) {
         Statement::Block(body)
         | Statement::SyncBlock(body)
         | Statement::Defer(body)
-        | Statement::Mutex(body)
-        | Statement::Barrier { body, .. } => {
+        | Statement::Mutex(body) => {
             for b in body.iter_mut() {
                 substitute_param(b, param, arg);
             }
@@ -1106,8 +1092,7 @@ fn collect_binders(s: &Statement, out: &mut HashSet<String>) {
         | Statement::Block(body)
         | Statement::SyncBlock(body)
         | Statement::Defer(body)
-        | Statement::Mutex(body)
-        | Statement::Barrier { body, .. } => {
+        | Statement::Mutex(body) => {
             for b in body {
                 collect_binders(b, out);
             }

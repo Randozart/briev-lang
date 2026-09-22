@@ -186,7 +186,6 @@ impl LanguageVocab {
                 kw("defer", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("rollback", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("mutex", VocabStatus::Canonical, KeywordContext::Statement),
-                kw("barrier", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("match", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("when", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("foreach", VocabStatus::Canonical, KeywordContext::Statement),
@@ -309,7 +308,7 @@ impl LanguageVocab {
             ]),
             staged_features: ss(&[
                 "dyn Trait", "const generics", "spawn/await handles",
-                "rollback", "endprogram", "defer", "mutex", "barrier",
+                "rollback", "endprogram", "defer", "mutex",
                 ".f strict indentation", "generic semantic Value",
             ]),
             casing: vec![
