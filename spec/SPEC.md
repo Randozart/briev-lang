@@ -401,6 +401,25 @@ obj Sensor { when temperature > 100 { thermal_alarm = true; } }
 when usb_attached { j1.vbus.voltage = 5.0V; }
 ```
 
+**ERC: contention and wired-AND (2026-09-22, D6/D12).** A net with TWO
+drive-capable pins is contention — a short — UNLESS every drive-capable
+member declares `spec WiredAnd: true` (open-drain wired-AND: released =
+high-Z, so multiple `IoOd` pins may share a net; `Io`/`Out` may not). An
+acknowledged `shortcircuit unpop …` net is exempt. Property-driven: the
+compiler reads `spec WiredAnd`, never a class name.
+
+**Mechanisms may be relays (2026-09-22).** A bridge mechanism has one
+Control pin (a gate/FET) OR TWO (a relay coil — one element across both
+coil pins). `when cond { … } via Type;` synthesizes: the condition net
+drives every control pin; the Path pins bridge the wired pins. A relay is
+just a type with two `Control` + two `Path` pins.
+
+**Whole-bus equality (2026-09-22).** A range-indexed pin equality in a
+precondition expands element-wise: `u2.gpio[0..=3].voltage ==
+u3.data[0..=3].voltage` unions each element pair. Half-open `[0..3]` is
+three elements; inclusive `[0..=3]` is four. A length mismatch or an
+empty/reversed range is a hard error — the buses must agree element-wise.
+
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive

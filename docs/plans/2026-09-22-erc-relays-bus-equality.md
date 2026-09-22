@@ -1,6 +1,6 @@
 # Plan 2026-09-22: ERC contention, asymmetric switch parts, whole-bus equality
 
-**Status:** building
+**Status:** COMPLETE — three commits landed (`e8151a72`, `446191a2`, `a063d54f`)
 **Branch:** `feat/e14a-intent-synthesis`
 
 ## Context

@@ -747,3 +747,31 @@ be algebraic/conditional, never a sequential firmware model.
 Open under D18: whole-bus equality (ranges over pin arrays), asymmetric
 switch parts (relay coil/contact), ERC class semantics — all unchanged from
 the pre-when-law ledger.
+
+### Amendment 2026-09-22 (XI): the three remaining gaps LANDED
+
+Plan 2026-09-22-erc-relays-bus-equality.md. The last electronics-dialect
+open items are closed:
+
+1. **ERC contention (D6/D12).** `IoOd` gains `spec WiredAnd: true;`
+   (open-drain wired-AND — released = high-Z, so multiple IoOd pins may
+   SHARE a driven net). `check_contention` refuses a net with two
+   drive-capable pins where at least one is not WiredAnd — a short, the
+   machinery D6 promised. A `shortcircuit unpop`-acknowledged net is
+   exempt. Property-driven: no class names in the compiler.
+2. **Asymmetric switch parts.** The mechanism rule accepts 1 or 2 Control
+   pins: a gate/FET uses one; a relay's two-pin coil is one element across
+   both coil pins — `synthesize_one` unions the condition net to every
+   control pin. `is_mechanism` requires every control pin unconnected or on
+   the condition net. A relay is just a type with 2 Control + 2 Path pins;
+   no new vocabulary.
+3. **Whole-bus equality.** `u2.gpio[0..=3].voltage == u3.data[0..=3].
+   voltage` in a precondition expands to N element unions. Half-open
+   `[0..3]` = 3 elements; inclusive `[0..=3]` = 4. A length mismatch or
+   empty/reversed range is a hard `bus_error`.
+
+Ledger fully closed: the electronics dialect's intent-synthesis surface
+(node/chain/into/when-law/unpop/shortcircuit/open/Wire, classes,
+contention, relays, buses) is implemented. D18 remains open only for
+ERC-property breadth (more class behaviors when a consumer needs them) —
+the machinery is generic.
