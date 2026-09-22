@@ -39,7 +39,10 @@ type In { spec KicadType: "input"; };
 // machinery enumerates candidates through this property.
 type Out { spec KicadType: "output"; spec CanDrive: true; };
 type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
-type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; };
+// 2026-09-22 (ERC contention, D6/D12): open-drain = wired-AND by
+// definition — released = high-Z, so multiple IoOd pins may SHARE a driven
+// net. `Io`/`Out` may not (two drive-capable pins on one net = contention).
+type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
 
 // Mechanism vocabulary (D16 phase 2): a switch type declares exactly one
 // Control pin and >=2 Path pins; `when cond { ... } via Type;` synthesizes

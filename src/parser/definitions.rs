@@ -3302,7 +3302,7 @@ impl<'a> Parser<'a> {
             // 2026-09-21 (E12/E13): boolean spec keys — `true`/`false`
             // lex as dedicated Bool tokens, not identifiers.
             "no_connect" | "supply" | "return" | "decoupler" | "can_drive"
-            | "control" | "switchable" => {
+            | "control" | "switchable" | "wired_and" => {
                 let v = match self.peek() {
                     Some(Token::BoolTrue) => Some(true),
                     Some(Token::BoolFalse) => Some(false),
@@ -4063,6 +4063,7 @@ fn spec_name_to_key(name: &str) -> Option<&'static str> {
         "CanDrive" => Some("can_drive"),
         "Control" => Some("control"),
         "Switchable" => Some("switchable"),
+        "WiredAnd" => Some("wired_and"),
         "Decouple" => Some("decouple"),
         "Decoupler" => Some("decoupler"),
         _ => None,

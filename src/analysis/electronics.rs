@@ -119,6 +119,9 @@ pub struct ElectronicsNetlist {
     /// populated part (a definite short) with the suggest-`unpop` hint; a
     /// participation fact naming an undeclared instance.
     pub participation_warnings: Vec<String>,
+    /// 2026-09-22 (ERC contention, D6/D12): a net with two drive-capable
+    /// pins that are not open-drain — contention. Hard diagnostics.
+    pub contention_errors: Vec<String>,
 }
 
 /// 2026-09-21 (E12, design record D6): resolved property set for a pin's
@@ -148,6 +151,12 @@ pub struct PinClassProps {
     /// 2026-09-21 (D16 phase 2): `spec Switchable: true;` — a mechanism's
     /// path pin; bridge requests land on it.
     pub switchable: bool,
+    /// 2026-09-22 (ERC contention, D6/D12): `spec WiredAnd: true;` — the
+    /// class may SHARE a driven net (open-drain = wired-AND by definition,
+    /// `IoOd`). A net with two drive-capable pins where at least one is NOT
+    /// WiredAnd is contention — a hard error. Read generically; the
+    /// compiler knows no class names.
+    pub wired_and: bool,
 }
 
 impl Default for PinClassProps {
@@ -160,6 +169,7 @@ impl Default for PinClassProps {
             can_drive: false,
             control: false,
             switchable: false,
+            wired_and: false,
         }
     }
 }
@@ -300,6 +310,7 @@ fn resolve_pin_class_props(
             can_drive: md.get("can_drive").and_then(property_bool).unwrap_or(false),
             control: md.get("control").and_then(property_bool).unwrap_or(false),
             switchable: md.get("switchable").and_then(property_bool).unwrap_or(false),
+            wired_and: md.get("wired_and").and_then(property_bool).unwrap_or(false),
         },
         None => {
             class_errors.push(format!(
@@ -1429,6 +1440,58 @@ fn check_decoupling(ctx: &mut NetlistContext) -> Vec<String> {
     errors
 }
 
+/// 2026-09-22 (ERC contention, D6/D12): a net with TWO drive-capable pins
+/// is contention UNLESS every drive-capable member is WiredAnd (open-drain
+/// wired-AND — `IoOd` may share; `Io`/`Out` may not). Property-driven: the
+/// compiler reads `spec WiredAnd`, never a class name. An acknowledged
+/// short (`shortcircuit unpop …`) on the net is the author's stated intent
+/// and is exempt.
+fn check_contention(
+    nets: &[Net],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    shortcircuit: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for net in nets {
+        let mut can_drive: Vec<(&str, &str, bool)> = Vec::new();
+        for p in &net.pins {
+            if shortcircuit.contains(&p.component) {
+                continue;
+            }
+            let Some(inst) = instances.get(&p.component) else { continue };
+            let Some(ti) = type_info.get(&inst.type_name) else { continue };
+            let Some((i, _)) = ti.pins.iter().enumerate().find(|(_, (pn, _))| *pn == p.pin)
+            else {
+                continue;
+            };
+            let cls = &ti.pin_classes[i];
+            if cls.can_drive {
+                can_drive.push((&p.component, &p.pin, cls.wired_and));
+            }
+        }
+        if can_drive.len() < 2 {
+            continue;
+        }
+        let any_contending = can_drive.iter().any(|(_, _, wired)| !wired);
+        if any_contending {
+            let names = can_drive
+                .iter()
+                .map(|(c, p, w)| format!("{}.{}", c, p))
+                .collect::<Vec<_>>()
+                .join(", ");
+            errors.push(format!(
+                "net '{}' is driven by {} pins that are not open-drain ({}). Two drive-capable \
+                 pins on one net is contention — a short unless the class declares `spec \
+                 WiredAnd: true` (open-drain wired-AND). fix: make the extra drivers open-drain, \
+                 or declare the short intentional with `shortcircuit unpop …;`",
+                net.name, can_drive.len(), names
+            ));
+        }
+    }
+    errors
+}
+
 /// Return-net roots of one instance: the union-find root of each
 /// return-class pin (E13).
 fn returns_of(
@@ -2414,6 +2477,10 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     // derived per-net currents the voltage fixpoint just produced.
     let budget_errors =
         check_budgets(items, &instances, &type_info, &nets, &voltage.net_voltage);
+    // 2026-09-22 (ERC contention): two drive-capable non-open-drain pins on
+    // one net is a short — checked on the finished netlist.
+    let contention_errors =
+        check_contention(&nets, &instances, &type_info, &shortcircuit);
 
     ElectronicsNetlist {
         components: instance_list,
@@ -2432,6 +2499,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         shortcircuit,
         participation_notes,
         participation_warnings,
+        contention_errors,
     }
 }
 
@@ -3249,6 +3317,62 @@ mod tests {
             !nl.voltage.violations.iter().any(|v| v.contains("shorted supply")),
             "mutually-exclusive when-law guards must not conflict: {:?}",
             nl.voltage.violations
+        );
+    }
+
+    // ── 2026-09-22 (ERC contention, D6/D12): two drive-capable pins ─────
+
+    #[test]
+    fn two_io_pins_on_one_net_is_contention() {
+        // Two bidirectional (non-open-drain) drive-capable pins sharing a
+        // net is contention — a short unless one is wired-AND.
+        let src = r#"
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Mcu { pin p1: Io; pin p2: Io; reference "U"; tolerance any; };
+            let u1: Mcu = Mcu { value: "u" };
+            node n [u1.p1.voltage == u1.p2.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            !nl.contention_errors.is_empty(),
+            "two Io pins on one net must be contention: {:?}",
+            nl.contention_errors
+        );
+    }
+
+    #[test]
+    fn two_open_drain_pins_may_share_a_net() {
+        // IoOd declares WiredAnd — open-drain wired-AND permits sharing.
+        let src = r#"
+            type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+            type Mcu { pin p1: IoOd; pin p2: IoOd; reference "U"; tolerance any; };
+            let u1: Mcu = Mcu { value: "u" };
+            node n [u1.p1.voltage == u1.p2.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.contention_errors.is_empty(),
+            "open-drain wired-AND must not contend: {:?}",
+            nl.contention_errors
+        );
+    }
+
+    #[test]
+    fn shortcircuit_acknowledged_pair_is_exempt_from_contention() {
+        // An acknowledged intentional short is the author's stated intent —
+        // exempt from contention, like the shorted-supply check.
+        let src = r#"
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Wire { pin a: Io; pin b: Io; reference "W"; tolerance any; };
+            let w1: Wire = Wire { value: "0R" };
+            shortcircuit unpop w1: Wire;
+            node n [w1.a.voltage == w1.b.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.contention_errors.is_empty(),
+            "an acknowledged short must be exempt from contention: {:?}",
+            nl.contention_errors
         );
     }
 

@@ -178,6 +178,14 @@ impl ElectronicsBackend {
             errs.extend(netlist.budget_errors.iter().map(|e| format!("  {}", e)));
             return Err(errs);
         }
+        // 2026-09-22 (ERC contention): two drive-capable non-open-drain pins
+        // on one net is a short — refused like any other electrical violation.
+        if !netlist.contention_errors.is_empty() {
+            let mut errs =
+                vec!["cannot emit schematic: a net is driven by contending pins".to_string()];
+            errs.extend(netlist.contention_errors.iter().map(|e| format!("  {}", e)));
+            return Err(errs);
+        }
         // 2026-09-11 (B4): voltage/current proving — shorted supplies,
         // over-voltage into rated pins, undeclared unrated pins, and
         // postcondition current bounds violated by derived physics.
