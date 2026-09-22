@@ -321,6 +321,15 @@ fn const_ne(a: &Expr, b: &Expr) -> bool {
     if let (Expr::Quoted(x), Expr::Quoted(y)) = (a, b) {
         return x != y;
     }
+    // 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+    // Slice A): unit literals compare by their numeric value regardless of
+    // suffix — `3.3V` vs `1.8V` are unequal, `3.3V` vs `3.3V` equal. This
+    // is what lets the concurrency gate see two voltage-comparison guards
+    // on the same pin as mutually exclusive (no false async/sync demand on
+    // clock-sensitive electronics boards).
+    if let (Expr::UnitLiteral { value: va, .. }, Expr::UnitLiteral { value: vb, .. }) = (a, b) {
+        return (va - vb).abs() > f64::EPSILON;
+    }
     match (const_value(a), const_value(b)) {
         (Some(x), Some(y)) => x != y,
         _ => false,
@@ -381,6 +390,15 @@ fn expr_eq(l: &Expr, r: &Expr) -> bool {
         (Expr::Decimal(a), Expr::Decimal(b)) => a == b,
         (Expr::Bool(a), Expr::Bool(b)) => a == b,
         (Expr::Quoted(a), Expr::Quoted(b)) => a == b,
+        // 2026-09-22 (Slice A, plan 2026-09-22-...-when-law): field-access
+        // chains compare structurally — `u1.sclk.voltage` equals itself, so
+        // the concurrency gate can match the SAME pin-access lhs across two
+        // guards and (via const_ne) see `== 3.3V` vs `== 1.8V` as mutually
+        // exclusive. This is what makes clock-sensitive electronics nodes
+        // free of false async/sync classification demands.
+        (Expr::Field(la, fa), Expr::Field(lb, fb)) => {
+            fa == fb && expr_eq(la, lb)
+        }
         // 2026-08-01 (Phase 3c): Call equality — `entry_cmd()` == `entry_cmd()`.
         // Needed so `entry_cmd() == "a"` vs `entry_cmd() == "b"` shares a lhs.
         (Expr::Call(na, aa, ta), Expr::Call(nb, ab, tb)) => {

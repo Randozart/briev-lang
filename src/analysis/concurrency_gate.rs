@@ -259,6 +259,51 @@ mod tests {
             "both async must be classified; got: {errors:?}"
         );
     }
+
+    // 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+    // Slice A): the gate's SAT probe understands unit literals and pin
+    // accesses, so mutually-exclusive voltage guards on the SAME pin are
+    // seen as unsatisfiable together — no false async/sync demand on
+    // clock-sensitive electronics nodes.
+
+    #[test]
+    fn test_mutually_exclusive_voltage_guards_need_no_classification() {
+        // Two electronics nodes gated on the same pin at different voltages
+        // can never both fire — the gate must NOT demand classification.
+        let a = txn("clk_hi", "u1.sclk.voltage == 3.3V", &["d1.a = u1.vout;", "term;"]);
+        let b = txn("clk_lo", "u1.sclk.voltage == 1.8V", &["d2.a = u1.vout;", "term;"]);
+        let errors = run_concurrency_gate(&[a, b]);
+        assert!(
+            errors.is_empty(),
+            "mutually-exclusive voltage guards must be free of classification; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_co_satisfiable_pin_writes_demand_classification() {
+        // Same pin, SAME voltage, overlapping writes → eligible to fire
+        // together → must classify.
+        let a = txn("a", "u1.sclk.voltage == 3.3V", &["d1.a = u1.vout;", "term;"]);
+        let b = txn("b", "u1.sclk.voltage == 3.3V", &["d2.a = u1.vout;", "term;"]);
+        let errors = run_concurrency_gate(&[a, b]);
+        assert!(
+            errors.len() == 1,
+            "co-satisfiable overlapping pin writes must demand classification; got: {errors:?}"
+        );
+        assert!(errors[0].contains("can fire together"), "{errors:?}");
+    }
+
+    #[test]
+    fn test_software_const_eq_unsat_preserved() {
+        // The original command-dispatch pattern still detects UNSAT.
+        let a = txn("cmd_a", "entry_cmd() == \"a\"", &["x = 1;", "term;"]);
+        let b = txn("cmd_b", "entry_cmd() == \"b\"", &["y = 1;", "term;"]);
+        let errors = run_concurrency_gate(&[a, b]);
+        assert!(
+            errors.is_empty(),
+            "entry_cmd() == \"a\" vs \"b\" must remain UNSAT; got: {errors:?}"
+        );
+    }
 }
 
 /// 2026-08-09 (Phase 10, Slice D): Kani proof of the concurrency gate's
