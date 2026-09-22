@@ -415,6 +415,19 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         ));
     }
 
+    // ── Static when-law gate (2026-09-22, Slice C2) ──────────────────────
+    // Software `when G { F }` at top level / in obj / in type bodies is a
+    // forced fact the compiler must make hold everywhere. A member fact that
+    // any node/txn body or another law contradicts under a jointly-
+    // satisfiable guard is a refusal.
+    let when_errors = briev_compiler::analysis::when_law::run_when_law_check(&items);
+    if !when_errors.is_empty() {
+        return Err(format!(
+            "when-law gate:\n  {}",
+            when_errors.join("\n  ")
+        ));
+    }
+
     // ── Typed stage: AST transformation (after type check) ────────────
     emit_beast_snapshot(file_path, BeastStage::TypeCheck, BeastPosition::Before, &items, &universe, opts)?;
     pm.run_ast(StageKind::Typed, &mut items, &mut universe)?;
