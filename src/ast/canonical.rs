@@ -165,6 +165,15 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             indent(out, level);
             let _ = write!(out, "budget {};", b.contract);
         }
+        // 2026-09-22 (Slice B): participation facts.
+        TopLevel::Unpop(d) => {
+            indent(out, level);
+            let _ = write!(out, "unpop {};", d.instance);
+        }
+        TopLevel::ShortCircuit(d) => {
+            indent(out, level);
+            let _ = write!(out, "shortcircuit unpop {};", d.instance);
+        }
         TopLevel::TriggerBinding { name, instance, .. } => {
             indent(out, level);
             let _ = write!(out, "trg {} @ {};", name, instance);

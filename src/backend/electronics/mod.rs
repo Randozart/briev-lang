@@ -117,6 +117,9 @@ struct Placement<'a> {
     reference: &'a str,
     value: &'a str,
     footprint: &'a str,
+    /// 2026-09-22 (Slice B): an `unpop` part is excluded from the BOM
+    /// (`in_bom no`) but its pads remain on the board.
+    unpop: bool,
 }
 
 pub struct ElectronicsBackend;
@@ -126,6 +129,12 @@ impl ElectronicsBackend {
     /// violations — an incomplete or electrically-unsound board never leaves
     /// the compiler.
     pub fn generate(netlist: &ElectronicsNetlist) -> Result<String, Vec<String>> {
+        // 2026-09-22 (Slice B): participation warnings are NOT errors — a
+        // populated short or an undeclared participation name is surfaced
+        // as a note; the board still emits.
+        for w in &netlist.participation_warnings {
+            eprintln!("note: {}", w);
+        }
         // 2026-09-21 (E14a): drive-intent failures — an intent that could
         // not complete, or completed ambiguously. Refuse FIRST: intent
         // diagnostics outrank downstream diagnostics on an incomplete
@@ -244,6 +253,7 @@ impl ElectronicsBackend {
                 reference: &reference,
                 value: &value,
                 footprint: &footprint,
+                unpop: netlist.unpop.contains(&comp.name),
             };
             Self::emit_instance(out, &placement);
             for (x_off, y_off, pin_name, _) in Self::pin_offsets(netlist, &comp.type_name) {
@@ -410,7 +420,13 @@ impl ElectronicsBackend {
             "  (symbol (lib_id \"{}\") (at {} {} 0) (unit 1)\n",
             p.comp.type_name, coord(x), coord(y)
         ));
-        out.push_str("    (in_bom yes) (on_board yes)\n");
+        // 2026-09-22 (Slice B): an `unpop` part keeps its pads on the board
+        // but is excluded from the BOM.
+        if p.unpop {
+            out.push_str("    (in_bom no) (on_board yes)\n");
+        } else {
+            out.push_str("    (in_bom yes) (on_board yes)\n");
+        }
         out.push_str(&format!("    (uuid \"{}\")\n", Self::uuid(&format!("inst:{}", p.comp.name))));
         out.push_str(&format!(
             "    (property \"Reference\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27))))\n",
@@ -746,5 +762,36 @@ mod tests {
         let sch = ElectronicsBackend::generate(&nl).unwrap();
         assert!(sch.contains("\"GND\""), "a return-class net must label GND: {sch}");
         assert!(sch.contains("\"V3.3\""), "a 3.3V driven supply net must label V3.3: {sch}");
+    }
+
+    #[test]
+    fn unpop_part_is_excluded_from_bom() {
+        // 2026-09-22 (Slice B): an unpop part keeps its pads (on_board yes)
+        // but is excluded from the BOM (in_bom no).
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let r1: Resistor = Resistor { value: "10k" };
+            let j1: Conn = Conn { value: "x" };
+            unpop r1;
+            txn on [j1.p1.voltage == r1.a.voltage && j1.p2.voltage == r1.b.voltage] { }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        let sch = ElectronicsBackend::generate(&nl).unwrap();
+        let r1_inst = sch
+            .lines()
+            .filter(|l| l.contains("lib_id \"Resistor\""))
+            .collect::<Vec<_>>();
+        assert!(!r1_inst.is_empty(), "the resistor instance must emit: {sch}");
+        assert!(
+            sch.contains("(in_bom no) (on_board yes)"),
+            "unpop part must be in_bom no: {sch}"
+        );
+        assert!(
+            sch.contains("(in_bom yes) (on_board yes)"),
+            "populated parts stay in_bom yes: {sch}"
+        );
     }
 }

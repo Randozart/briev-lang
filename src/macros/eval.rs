@@ -2194,6 +2194,8 @@ fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(
         // 2026-09-21 (E7): electronics-surface statement — no $-refs to
         // resolve (same conservative skip as Trigger).
         TopLevel::Budget(_) => Ok(()),
+        // 2026-09-22 (Slice B): participation facts — no $-refs to resolve.
+        TopLevel::Unpop(_) | TopLevel::ShortCircuit(_) => Ok(()),
         TopLevel::Definition(def) => {
             for stmt in &mut def.body {
                 resolve_dollar_refs_in_stmt(stmt, scope)?;

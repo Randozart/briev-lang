@@ -49,6 +49,18 @@ impl<'a> Parser<'a> {
         if self.check_identifier("budget") {
             return self.parse_top_level_budget();
         }
+        // 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+        // Slice B): `unpop <inst>;` — a part excluded from the BOM but
+        // verified in both present/absent states. Contextual keyword.
+        if self.check_identifier("unpop") {
+            return self.parse_top_level_participation(false);
+        }
+        // `shortcircuit unpop <inst>: <Type>;` — an acknowledged intentional
+        // short (suppresses the present-state shorted-supply error).
+        // `shortcircuit <inst>;` on a populated part is a warning + hint.
+        if self.check_identifier("shortcircuit") {
+            return self.parse_top_level_shortcircuit();
+        }
         // 2026-09-06 (Phase 8, plan 2026-09-06-cpp-expressiveness.md):
         // `section(".name")` placement prefix — contextual keyword (the
         // asm/isr pattern). A PLACEMENT declaration (where the bytes live),
@@ -1807,6 +1819,53 @@ impl<'a> Parser<'a> {
         self.eat(&Token::Semicolon);
         Ok(TopLevel::Budget(crate::ast::top::BudgetDecl {
             contract,
+            span: None,
+        }))
+    }
+
+    /// 2026-09-22 (Slice B): `unpop <inst>;` — a participation fact naming
+    /// an instance excluded from the BOM. Also consumed for the shared
+    /// `shortcircuit unpop …` prefix via the same parse shape.
+    fn parse_top_level_participation(&mut self, consumed_shortcircuit: bool) -> Result<TopLevel, SyntaxError> {
+        // `shortcircuit unpop …` consumed its own keyword already.
+        if !consumed_shortcircuit {
+            self.pos += 1; // consume `unpop`
+        }
+        let instance = self.expect_identifier()?;
+        let mut ty = None;
+        if self.eat(&Token::Colon) {
+            ty = Some(self.parse_type()?);
+        }
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::Unpop(crate::ast::top::ParticipationDecl {
+            instance,
+            ty,
+            span: None,
+        }))
+    }
+
+    /// `shortcircuit unpop <inst>: <Type>;` — acknowledges an intentional
+    /// short. Also accepts `shortcircuit <inst>;` (a populated part — the
+    /// analysis warns with a suggest-`unpop` hint). The `unpop` prefix picks
+    /// the acknowledgment form; otherwise it is a populated-part short.
+    fn parse_top_level_shortcircuit(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume `shortcircuit`
+        if self.eat_identifier("unpop") {
+            let p = self.parse_top_level_participation(true)?;
+            if let TopLevel::Unpop(d) = p {
+                return Ok(TopLevel::ShortCircuit(d));
+            }
+            unreachable!("parse_top_level_participation(true) returns Unpop");
+        }
+        let instance = self.expect_identifier()?;
+        let mut ty = None;
+        if self.eat(&Token::Colon) {
+            ty = Some(self.parse_type()?);
+        }
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::ShortCircuit(crate::ast::top::ParticipationDecl {
+            instance,
+            ty,
             span: None,
         }))
     }
@@ -6248,5 +6307,62 @@ mod open_tests {
             "open must parse to Statement::Open with two pins, got {:?}",
             t.body[0]
         );
+    }
+}
+
+// ── 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+// Slice B): unpop / shortcircuit participation facts ─────────────────────
+
+#[cfg(test)]
+mod participation_tests {
+    use crate::lexer::tokenize;
+    use crate::parser::Parser;
+
+    fn parse_prog(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_program().expect("parse failed")
+    }
+
+    #[test]
+    fn unpop_parses() {
+        let src = "unpop c_dnp;\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::Unpop(d) = &items[0] else {
+            panic!("expected Unpop, got {:?}", items[0]);
+        };
+        assert_eq!(d.instance, "c_dnp");
+        assert!(d.ty.is_none());
+    }
+
+    #[test]
+    fn unpop_with_type_parses() {
+        let src = "unpop wire: Wire;\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::Unpop(d) = &items[0] else {
+            panic!("expected Unpop");
+        };
+        assert_eq!(d.instance, "wire");
+        assert!(d.ty.is_some());
+    }
+
+    #[test]
+    fn shortcircuit_unpop_parses() {
+        let src = "shortcircuit unpop wire: Wire;\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::ShortCircuit(d) = &items[0] else {
+            panic!("expected ShortCircuit, got {:?}", items[0]);
+        };
+        assert_eq!(d.instance, "wire");
+    }
+
+    #[test]
+    fn shortcircuit_populated_parses() {
+        let src = "shortcircuit r1;\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::ShortCircuit(d) = &items[0] else {
+            panic!("expected ShortCircuit");
+        };
+        assert_eq!(d.instance, "r1");
     }
 }

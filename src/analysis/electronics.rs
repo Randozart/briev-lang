@@ -106,6 +106,19 @@ pub struct ElectronicsNetlist {
     pub conditional_bridges: Vec<String>,
     /// 2026-09-11 (electrical proving): net voltage classes + violations.
     pub voltage: VoltageCheck,
+    /// 2026-09-22 (Slice B): instances declared `unpop` — absent from the
+    /// BOM, pins open (Nc-exempt) in the absent state.
+    pub unpop: std::collections::HashSet<String>,
+    /// 2026-09-22 (Slice B): instances with an acknowledged intentional
+    /// short (`shortcircuit unpop …` — present-state short suppressed).
+    pub shortcircuit: std::collections::HashSet<String>,
+    /// 2026-09-22 (Slice B): dual-state verification notes — the board was
+    /// checked in both the present and absent configurations.
+    pub participation_notes: Vec<String>,
+    /// 2026-09-22 (Slice B): participation warnings — a `shortcircuit` on a
+    /// populated part (a definite short) with the suggest-`unpop` hint; a
+    /// participation fact naming an undeclared instance.
+    pub participation_warnings: Vec<String>,
 }
 
 /// 2026-09-21 (E12, design record D6): resolved property set for a pin's
@@ -545,17 +558,25 @@ fn voltage_drive(
 }
 
 /// Derive net voltage classes and prove tolerance compatibility.
+/// 2026-09-22 (Slice B): inputs to the voltage fixpoint — the derived nets
+/// and the acknowledged-short instances. Bundled so `derive_voltage` stays
+/// under the parameter gate.
+struct VoltageInputs<'a> {
+    nets: &'a [Net],
+    shortcircuit: &'a std::collections::HashSet<String>,
+}
+
 fn derive_voltage(
     items: &[TopLevel],
-    nets: &[Net],
+    inputs: &VoltageInputs<'_>,
     instances: &BTreeMap<String, &ComponentInstance>,
     type_pins: &BTreeMap<String, Vec<(String, u64)>>,
     type_info: &BTreeMap<String, TypeInfo>,
 ) -> VoltageCheck {
-    let pin_to_net = pin_net_index(nets);
+    let pin_to_net = pin_net_index(inputs.nets);
     let drives = collect_drives(items, &pin_to_net, instances, type_pins);
-    let mut check = classify_drives(drives);
-    check_tolerance(nets, instances, type_info, &check.net_voltage, &mut check.violations);
+    let mut check = classify_drives(drives, inputs.nets, inputs.shortcircuit);
+    check_tolerance(inputs.nets, instances, type_info, &check.net_voltage, &mut check.violations);
     // B4 flagship: I = V / R through series parts, dividers, and KCL sums;
     // then the postcondition current bounds are proven against the result.
     derive_current(&pin_to_net, instances, type_info, check.net_voltage.clone(), &mut check);
@@ -608,8 +629,14 @@ fn collect_drives(
 }
 
 /// Group drives by net: the class is the max — disagreeing drives are a
-/// shorted supply, hard error.
-fn classify_drives(drives: Vec<(String, f64, String)>) -> VoltageCheck {
+/// shorted supply, hard error. 2026-09-22 (Slice B): a net whose pins touch
+/// a `shortcircuit`-acknowledged instance is EXEMPT — the author stated the
+/// intentional short.
+fn classify_drives(
+    drives: Vec<(String, f64, String)>,
+    nets: &[Net],
+    shortcircuit: &std::collections::HashSet<String>,
+) -> VoltageCheck {
     let mut check = VoltageCheck::default();
     let mut by_net: BTreeMap<String, Vec<(f64, String)>> = BTreeMap::new();
     for (net, v, src) in drives {
@@ -621,13 +648,23 @@ fn classify_drives(drives: Vec<(String, f64, String)>) -> VoltageCheck {
         let min = *vals.first().unwrap();
         let max = *vals.last().unwrap();
         if (min - max).abs() > f64::EPSILON {
-            let sources = ds.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join(" and ");
-            check.violations.push(format!(
-                "net '{}' is driven at two different voltages ({} and {}) — that is a shorted supply. \
-                 why: {} both drive it. fix: drive the net at one voltage, or separate the levels \
-                 with a regulator or switch component.",
-                net_name, format_volts(min), format_volts(max), sources
-            ));
+            // 2026-09-22 (Slice B): an acknowledged short suppresses the
+            // shorted-supply error — the author stated the intentional short
+            // with `shortcircuit unpop <inst>: <Type>;`.
+            let acknowledged = nets
+                .iter()
+                .filter(|n| n.name == net_name)
+                .flat_map(|n| n.pins.iter())
+                .any(|p| shortcircuit.contains(&p.component));
+            if !acknowledged {
+                let sources = ds.iter().map(|(_, s)| s.as_str()).collect::<Vec<_>>().join(" and ");
+                check.violations.push(format!(
+                    "net '{}' is driven at two different voltages ({} and {}) — that is a shorted supply. \
+                     why: {} both drive it. fix: drive the net at one voltage, or separate the levels \
+                     with a regulator or switch component.",
+                    net_name, format_volts(min), format_volts(max), sources
+                ));
+            }
         }
         check.net_voltage.insert(net_name.clone(), max);
     }
@@ -2056,11 +2093,16 @@ fn group_pins(
     type_pins: &BTreeMap<String, Vec<(String, u64)>>,
     type_info: &BTreeMap<String, TypeInfo>,
     ds: &mut DisjointSet,
+    exempt_pins: &std::collections::HashSet<String>,
 ) -> (BTreeMap<String, Vec<PinRef>>, std::collections::HashSet<String>) {
     let mut groups: BTreeMap<String, Vec<PinRef>> = BTreeMap::new();
     let mut all_pins = collect_all_pins(instances, type_pins);
     all_pins.sort();
-    let nc_pins = collect_no_connect_pins(instances, type_info);
+    let mut nc_pins = collect_no_connect_pins(instances, type_info);
+    // 2026-09-22 (Slice B): an `unpop` part's pins are open in the absent
+    // state — Nc-exempt from the dangling-pin error, exactly like a
+    // no_connect-class pin.
+    nc_pins.extend(exempt_pins.iter().cloned());
     for p in &all_pins {
         let key = pin_key(&p.component, &p.pin);
         ds.make(key.clone());
@@ -2068,6 +2110,67 @@ fn group_pins(
         groups.entry(root).or_default().push(p.clone());
     }
     (groups, nc_pins)
+}
+
+/// 2026-09-22 (Slice B): participation facts — `unpop <inst>;` (absent from
+/// the BOM, both states verified) and `shortcircuit unpop <inst>: <Type>;`
+/// (the present-state short is acknowledged). Returns the unpop instance
+/// names, the shortcircuit-acknowledged names, the absent-state exempt pin
+/// keys, the populated-part short warnings, and verification notes.
+fn collect_participation(
+    items: &[TopLevel],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+    Vec<String>,
+    Vec<String>,
+) {
+    let mut unpop = std::collections::HashSet::new();
+    let mut shortcircuit = std::collections::HashSet::new();
+    let mut exempt = std::collections::HashSet::new();
+    let mut warnings = Vec::new();
+    let mut notes = Vec::new();
+    for item in items {
+        let (inst_name, acknowledged) = match item {
+            TopLevel::Unpop(d) => (d.instance.as_str(), false),
+            TopLevel::ShortCircuit(d) => (d.instance.as_str(), true),
+            _ => continue,
+        };
+        let Some(inst) = instances.get(inst_name) else {
+            warnings.push(format!(
+                "participation fact names undeclared instance '{}' — declare it with `let`",
+                inst_name
+            ));
+            continue;
+        };
+        if acknowledged {
+            shortcircuit.insert(inst_name.to_string());
+        }
+        unpop.insert(inst_name.to_string());
+        // The absent state: every pin of the part is open.
+        let Some(ti) = type_pins.get(&inst.type_name) else { continue };
+        for (pname, _) in ti {
+            exempt.insert(pin_key(inst_name, pname));
+        }
+        notes.push(format!(
+            "participation: '{}' is unpopulated — verified in both the absent (pins open) and \
+             present (part conducts) configurations",
+            inst_name
+        ));
+    }
+    // 2026-09-22: `shortcircuit` on a POPULATED part is a warning + hint.
+    for s in &shortcircuit {
+        warnings.push(format!(
+            "shortcircuit '{}' names a populated part — a definite short. If the part is meant \
+             to stay open, declare `unpop {};`; if the short is intentional on an unpopulated \
+             part, write `shortcircuit unpop {};`",
+            s, s, s
+        ));
+    }
+    (unpop, shortcircuit, exempt, warnings, notes)
 }
 
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
@@ -2091,13 +2194,25 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     };
 
     // Group members by root; sort everything for determinism (HashMap rule).
-    let (groups, nc_pins) = group_pins(&instances, &type_pins, &type_info, &mut ds);
+    // 2026-09-22 (Slice B): participation facts collected first so the
+    // absent-state pins (open, Nc-exempt) feed the grouping exemption.
+    let (unpop, shortcircuit, exempt_pins, participation_warnings, participation_notes) =
+        collect_participation(items, &instances, &type_pins);
+    let (groups, nc_pins) =
+        group_pins(&instances, &type_pins, &type_info, &mut ds, &exempt_pins);
 
     let (nets, dangling) = partition_nets(&groups, &nc_pins);
 
     // Voltage classes need the nets and instances before they move into the
-    // result struct.
-    let voltage = derive_voltage(items, &nets, &instances, &type_pins, &type_info);
+    // result struct. 2026-09-22 (Slice B): acknowledged shorts suppress the
+    // present-state shorted-supply error.
+    let voltage = derive_voltage(
+        items,
+        &VoltageInputs { nets: &nets, shortcircuit: &shortcircuit },
+        &instances,
+        &type_pins,
+        &type_info,
+    );
 
     // 2026-09-21 (E13): the decoupling convention runs on the finished
     // netlist — every union is final when it fires.
@@ -2121,6 +2236,10 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         conditional_bridges,
         voltage,
         type_info,
+        unpop,
+        shortcircuit,
+        participation_notes,
+        participation_warnings,
     }
 }
 
@@ -2755,6 +2874,112 @@ mod tests {
             nl.intent_errors[0].contains("already connected") && nl.intent_errors[0].contains("open"),
             "{}",
             nl.intent_errors[0]
+        );
+    }
+
+    // ── 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+    // Slice B): unpop dual-state + shortcircuit acknowledgment ──────────
+
+    #[test]
+    fn unpop_exempts_pins_from_dangling() {
+        // An unpop part's pins are open in the absent state — no dangling
+        // error, and the instance is recorded as unpopulated.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let r1: Resistor = Resistor { value: "10k" };
+            let j1: Conn = Conn { value: "x" };
+            unpop r1;
+            node n [j1.p1.voltage == r1.a.voltage && j1.p2.voltage == r1.b.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        assert!(nl.unpop.contains("r1"), "r1 must be recorded unpop: {:?}", nl.unpop);
+        assert!(
+            nl.participation_notes.iter().any(|n| n.contains("unpopulated") && n.contains("r1")),
+            "dual-state note must be recorded: {:?}",
+            nl.participation_notes
+        );
+    }
+
+    #[test]
+    fn shortcircuit_unpop_suppresses_present_state_short() {
+        // Populating the wire shorts a net driven at two voltages; the
+        // `shortcircuit unpop` acknowledgment suppresses the present-state
+        // shorted-supply error.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Wire { pin a; pin b; reference "W"; tolerance any; };
+            let w1: Wire = Wire { value: "0R" };
+            shortcircuit unpop w1: Wire;
+            txn apply
+                [w1.a.voltage == w1.b.voltage && w1.a.voltage == 5.0 && w1.b.voltage == 3.3]
+                [w1.a.voltage >= 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            !nl.voltage.violations.iter().any(|v| v.contains("shorted supply")),
+            "acknowledged short must not error: {:?}",
+            nl.voltage.violations
+        );
+        assert!(nl.shortcircuit.contains("w1"), "w1 must be recorded: {:?}", nl.shortcircuit);
+    }
+
+    #[test]
+    fn unacknowledged_present_state_short_still_errors() {
+        // Control: WITHOUT the acknowledgment, the same short is a hard
+        // error — shortcircuit suppresses only the stated part.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Wire { pin a; pin b; reference "W"; tolerance any; };
+            let w1: Wire = Wire { value: "0R" };
+            txn apply
+                [w1.a.voltage == w1.b.voltage && w1.a.voltage == 5.0 && w1.b.voltage == 3.3]
+                [w1.a.voltage >= 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.voltage.violations.iter().any(|v| v.contains("shorted supply")),
+            "unacknowledged short must error: {:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn shortcircuit_on_populated_part_warns() {
+        // `shortcircuit r1;` (no unpop) on a populated part → warning with
+        // the suggest-unpop hint, not an error.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let r1: Resistor = Resistor { value: "10k" };
+            let j1: Conn = Conn { value: "x" };
+            shortcircuit r1;
+            node n [j1.p1.voltage == r1.a.voltage && j1.p2.voltage == r1.b.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.participation_warnings.iter().any(|w| w.contains("unpop r1;")),
+            "populated short must warn with a hint: {:?}",
+            nl.participation_warnings
+        );
+    }
+
+    #[test]
+    fn participation_fact_naming_undeclared_instance_warns() {
+        let src = r#"
+            type Conn { pin p1; pin p2; reference "J"; };
+            let j1: Conn = Conn { value: "x" };
+            unpop ghost;
+            node n [j1.p1.voltage == j1.p2.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.participation_warnings.iter().any(|w| w.contains("undeclared instance") && w.contains("ghost")),
+            "undeclared participation name must warn: {:?}",
+            nl.participation_warnings
         );
     }
 

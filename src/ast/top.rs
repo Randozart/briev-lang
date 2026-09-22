@@ -32,6 +32,19 @@ pub enum TopLevel {
     /// destructures it (pin path vs current literal, either order) and
     /// checks the pin's net derived draw against the limit.
     Budget(BudgetDecl),
+    /// 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+    /// Slice B): a part excluded from the BOM but whose board is verified in
+    /// BOTH states — `unpop c_dnp;`. Present = the part conducts as its type
+    /// declares; absent = its pins are open (Nc-exempt from dangling). The
+    /// compiler enumerates the 2^n state space up to a bound and refuses
+    /// beyond it. "The only reason to declare absence is to pin the claim
+    /// that the board holds either way."
+    Unpop(ParticipationDecl),
+    /// 2026-09-22 (Slice B): an acknowledged intentional short —
+    /// `shortcircuit unpop wire: Wire;` suppresses the shorted-supply error
+    /// for that part's present state. On a populated part it is a warning
+    /// with a suggest-`unpop` hint.
+    ShortCircuit(ParticipationDecl),
     Cell(CellDef),
     Import(Import),
     Export(Export),
@@ -1187,6 +1200,17 @@ pub struct PinDecl {
 #[derive(Debug, Clone)]
 pub struct BudgetDecl {
     pub contract: Expr,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-22 (Slice B): a participation fact — which instance is unpopulated
+/// (`unpop c_dnp;`) or an acknowledged short (`shortcircuit …;`). The
+/// optional type is the `unpop wire: Wire;` spelling (declaration-site type
+/// hint for diagnostics); analysis resolves the instance by name.
+#[derive(Debug, Clone)]
+pub struct ParticipationDecl {
+    pub instance: String,
+    pub ty: Option<Type>,
     pub span: Option<Span>,
 }
 

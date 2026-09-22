@@ -82,3 +82,13 @@ type Connector {
     pin p2 = 2;
     reference "J";
 };
+
+// 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+// Slice B): a solder-bridge / zero-ohm link. Populated, it shorts its two
+// pins; `unpop wire: Wire;` leaves the pad pair open while the board is
+// still verified in both states. A jumper is an unpop'd Wire.
+type Wire {
+    pin a;
+    pin b;
+    reference "W";
+};

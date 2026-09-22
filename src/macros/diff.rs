@@ -26,6 +26,9 @@ fn item_key(tl: &TopLevel) -> String {
         TypeDefOperator(d) => format!("op:{}", d.name),
         Transaction(t) => format!("txn:{}", t.name),
         Budget(b) => format!("budget@{:?}", b.span),
+        // 2026-09-22 (Slice B): participation facts.
+        Unpop(d) => format!("unpop:{}", d.instance),
+        ShortCircuit(d) => format!("shortcircuit:{}", d.instance),
         Cell(c) => format!("cell:{}", c.name),
         ForeignBinding(f) => format!("frgn:{}", f.effective_briev_name()),
         Export(e) => format!("export:{}", e.export_name.as_deref().unwrap_or("_")),
@@ -69,6 +72,9 @@ pub fn item_summary(tl: &TopLevel) -> String {
         TypeDefOperator(d) => format!("op {}", d.name),
         Transaction(t) => format!("txn {}", t.name),
         Budget(_) => "budget <source-pin limit>".to_string(),
+        // 2026-09-22 (Slice B): participation facts.
+        Unpop(d) => format!("unpop {}", d.instance),
+        ShortCircuit(d) => format!("shortcircuit {}", d.instance),
         Cell(c) => format!("cell {}", c.name),
         ForeignBinding(f) => format!("frgn {}", f.foreign_name),
         Export(e) => format!("export {}", e.export_name.as_deref().unwrap_or("_")),
