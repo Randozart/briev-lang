@@ -421,7 +421,19 @@ impl<'a> Parser<'a> {
     fn parse_guard_statement_when(&mut self) -> Result<Statement, SyntaxError> {
         self.pos += 1; // consume 'when'
         let cond = self.parse_expression()?;
-        let body = self.parse_block()?;
+        let mut body = self.parse_block()?;
+        // 2026-09-21 (D16 phase 2): trailing strategy clause —
+        // `when cond { ... } via <Name>;`. The selection desugars into a
+        // marker statement the analysis reads; zero new Statement
+        // variants. `via` is a contextual identifier.
+        if self.check_identifier("via") {
+            self.pos += 1;
+            let name = self.expect_identifier()?;
+            body.push(Statement::MetadataAssignment(
+                "via".to_string(),
+                crate::ast::PropertyValue::Identifier(name),
+            ));
+        }
         // 2026-07-17: Same trailing semicolon fix as bracket guard.
         self.expect(Token::Semicolon)?;
         Ok(Statement::Guarded(cond, body))

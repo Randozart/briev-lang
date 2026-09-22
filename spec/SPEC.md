@@ -302,6 +302,20 @@ hard compile errors — the compiler never chooses silently. Every
 intent-established connection carries its provenance (which node, which
 intent) in the verification output.
 
+**Conditional wiring through mechanisms (2026-09-21).** `when cond { …
+} via <Name>;` — a single pin voltage-comparison condition plus a
+declared switching part synthesizes a conditional connection: the
+condition's net drives the part's `Control`-class pin, and its
+`Path`-class pins bridge the wired pins. `Control` and `Path` are class
+fundamentals in `std/electronics.bv`; any declared type with exactly one
+`Control` pin and at least two `Path` pins is a mechanism. `via <Name>`
+narrows by type (or instance); no `via` and several qualifying mechanisms
+is a hard error naming the candidates. The bridge is recorded as a
+conditional edge (closed when the control net's region holds) with full
+provenance; the schematic shows the switch as ordinary copper. Copper
+cannot be conditional: a non-mechanizable signal-level condition (e.g. a
+compound one) is a hard error, never a silent always-connected wire.
+
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive

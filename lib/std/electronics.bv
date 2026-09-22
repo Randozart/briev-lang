@@ -40,6 +40,13 @@ type In { spec KicadType: "input"; };
 type Out { spec KicadType: "output"; spec CanDrive: true; };
 type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
 type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; };
+
+// Mechanism vocabulary (D16 phase 2): a switch type declares exactly one
+// Control pin and >=2 Path pins; `when cond { ... } via Type;` synthesizes
+// control<-condition, path<-A, path<-B. Property interface decides — the
+// compiler never knows part names (Rules 14/15).
+type Control { spec KicadType: "input"; spec Control: true; };
+type Path { spec KicadType: "passive"; spec Switchable: true; };
 type Nc { spec KicadType: "no_connect"; spec NoConnect: true; };
 
 // A pin: two electrical quantities. Contracts reference them directly —

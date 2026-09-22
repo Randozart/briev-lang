@@ -527,3 +527,23 @@ provisions (B5), layout reality (B6). Each named with its trigger and
 eventual home; the compiler claims schematic-level truth only. D17 is a
 standing obligation: any slice approaching a boundary re-states it in
 that slice's output rather than silently crossing.
+
+### Amendment 2026-09-21 (night, VI): D16 phase 2 — mechanism synthesis LANDED
+
+`when <cond> { … } via <Name>;` synthesizes conditional connections
+through a declared switching part: the condition pin's net drives the
+`Control`-class pin; `Path`-class pins bridge the wired pins. The D7
+gate is now constructive for single pin voltage-comparison conditions —
+compound signal-level conditions still hard-error ("copper cannot be
+conditional"). Control/Path are class fundamentals; any type with one
+Control + two Path pins is a mechanism (property interface, no part-name
+knowledge). `via` narrows by type/instance; ambiguity enumerates and
+requests the strategy; zero candidates names the missing declaration.
+Bridges are recorded on the netlist as `conditional_bridges` (the
+phase-3 cross-region complement check and per-region physics consume
+them). The broad `instances` consolidation into NetlistContext landed in
+this slice (walker/synthesizer parameter gates held).
+
+Open under D16: phase 3 (cross-region complement check), `spec
+default_level` for the `x = high` abstraction, asymmetric path
+assignment (relays with coil/contact distinction).

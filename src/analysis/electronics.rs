@@ -103,6 +103,10 @@ pub struct ElectronicsNetlist {
     /// 2026-09-21 (E14a): wiring facts the intents established, reported
     /// so synthesized connections carry provenance (design record D3).
     pub intent_proofs: Vec<String>,
+    /// 2026-09-21 (D16 phase 2): mechanism bridges — conditional edges
+    /// closed when the control net's region holds. The phase-3 complement
+    /// check and eventual per-region physics consume these.
+    pub conditional_bridges: Vec<String>,
     /// 2026-09-11 (electrical proving): net voltage classes + violations.
     pub voltage: VoltageCheck,
 }
@@ -128,6 +132,12 @@ pub struct PinClassProps {
     /// 2026-09-21 (E14a): `spec CanDrive: true;` — the class may hold a
     /// drive; drive intents enumerate candidates through this property.
     pub can_drive: bool,
+    /// 2026-09-21 (D16 phase 2): `spec Control: true;` — a mechanism's
+    /// control (gate-class) pin; the when-condition net drives it.
+    pub control: bool,
+    /// 2026-09-21 (D16 phase 2): `spec Switchable: true;` — a mechanism's
+    /// path pin; bridge requests land on it.
+    pub switchable: bool,
 }
 
 impl Default for PinClassProps {
@@ -138,6 +148,8 @@ impl Default for PinClassProps {
             supply: false,
             return_pin: false,
             can_drive: false,
+            control: false,
+            switchable: false,
         }
     }
 }
@@ -250,6 +262,45 @@ fn property_bool(pv: &crate::ast::PropertyValue) -> Option<bool> {
     }
 }
 
+/// Resolve one pin's class ascription into its property set (E12/D16).
+/// Unknown class type → hard class error + default props (the analysis
+/// still proceeds so every ascription failure is reported).
+fn resolve_pin_class_props(
+    pname: &str,
+    declared_class: &std::collections::HashMap<&str, &str>,
+    class_defs: &BTreeMap<
+        String,
+        &std::collections::HashMap<String, crate::ast::PropertyValue>,
+    >,
+    td: &crate::ast::top::TypeDef,
+    class_errors: &mut Vec<String>,
+) -> PinClassProps {
+    let Some(cname) = declared_class.get(pname) else {
+        return PinClassProps::default();
+    };
+    match class_defs.get(*cname) {
+        Some(md) => PinClassProps {
+            kicad_type: md
+                .get("kicad_type")
+                .and_then(property_string)
+                .unwrap_or_else(|| "passive".to_string()),
+            no_connect: md.get("no_connect").and_then(property_bool).unwrap_or(false),
+            supply: md.get("supply").and_then(property_bool).unwrap_or(false),
+            return_pin: md.get("return").and_then(property_bool).unwrap_or(false),
+            can_drive: md.get("can_drive").and_then(property_bool).unwrap_or(false),
+            control: md.get("control").and_then(property_bool).unwrap_or(false),
+            switchable: md.get("switchable").and_then(property_bool).unwrap_or(false),
+        },
+        None => {
+            class_errors.push(format!(
+                "pin '{}.{}' ascribes class '{}' — no such type is in scope. Declare it (see std/electronics.bv: Power, Ground, In, Out, Io, IoOd, Nc) or drop the ascription",
+                td.name, pname, cname
+            ));
+            PinClassProps::default()
+        }
+    }
+}
+
 /// Extract declared pins per component type from TypeDef bodies, plus the
 /// schematic facts (`!> Reference` prefix) each type carries. Also resolves
 /// pin-class ascriptions (E12) against the program's declared types —
@@ -310,38 +361,13 @@ fn collect_type_pins(
                     .collect();
                 let mut pin_classes = Vec::with_capacity(pins.len());
                 for (pname, _) in &pins {
-                    let props = match declared_class.get(pname.as_str()) {
-                        None => PinClassProps::default(),
-                        Some(cname) => match class_defs.get(*cname) {
-                            Some(md) => PinClassProps {
-                                kicad_type: md
-                                    .get("kicad_type")
-                                    .and_then(property_string)
-                                    .unwrap_or_else(|| "passive".to_string()),
-                                no_connect: md
-                                    .get("no_connect")
-                                    .and_then(property_bool)
-                                    .unwrap_or(false),
-                                supply: md.get("supply").and_then(property_bool).unwrap_or(false),
-                                return_pin: md
-                                    .get("return")
-                                    .and_then(property_bool)
-                                    .unwrap_or(false),
-                                can_drive: md
-                                    .get("can_drive")
-                                    .and_then(property_bool)
-                                    .unwrap_or(false),
-                            },
-                            None => {
-                                class_errors.push(format!(
-                                    "pin '{}.{}' ascribes class '{}' — no such type is in scope. Declare it (see std/electronics.bv: Power, Ground, In, Out, Io, IoOd, Nc) or drop the ascription",
-                                    td.name, pname, cname
-                                ));
-                                PinClassProps::default()
-                            }
-                        },
-                    };
-                    pin_classes.push(props);
+                    pin_classes.push(resolve_pin_class_props(
+                        pname,
+                        &declared_class,
+                        &class_defs,
+                        td,
+                        &mut class_errors,
+                    ));
                 }
                 info.insert(
                     td.name.clone(),
@@ -1129,6 +1155,10 @@ struct NetlistContext<'a> {
     /// Type metadata bags (`spec` clauses) — the decoupling convention
     /// reads `decouple` / `decoupler` from them.
     type_props: BTreeMap<String, &'a std::collections::HashMap<String, crate::ast::PropertyValue>>,
+    /// Declared instances — the intent and mechanism machinery look pins
+    /// up through them (consolidated so the walkers stay under the
+    /// parameter gate).
+    instances: &'a BTreeMap<String, &'a ComponentInstance>,
 }
 
 impl<'a> NetlistContext<'a> {
@@ -1137,12 +1167,14 @@ impl<'a> NetlistContext<'a> {
         ds: &'a mut DisjointSet,
         type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
         type_info: &'a BTreeMap<String, TypeInfo>,
+        instances: &'a BTreeMap<String, &'a ComponentInstance>,
     ) -> Self {
         NetlistContext {
             ds,
             type_pins,
             type_info,
             type_props: collect_type_metadata(items),
+            instances,
         }
     }
 }
@@ -1177,12 +1209,10 @@ fn bridges_rail(
 /// pin to a return-class pin of the same instance. Property-driven
 /// throughout: the compiler knows no type or class names, only the
 /// property interface (Rules 14/15).
-fn check_decoupling(
-    ctx: &mut NetlistContext,
-    instances: &BTreeMap<String, &ComponentInstance>,
-) -> Vec<String> {
+fn check_decoupling(ctx: &mut NetlistContext) -> Vec<String> {
     let mut errors = Vec::new();
-    let decouplers: Vec<&ComponentInstance> = instances
+    let decouplers: Vec<&ComponentInstance> = ctx
+        .instances
         .values()
         .filter(|c| {
             ctx.type_props
@@ -1193,7 +1223,7 @@ fn check_decoupling(
         })
         .map(|c| *c)
         .collect();
-    for inst in instances.values() {
+    for inst in ctx.instances.values() {
         let declares = ctx
             .type_props
             .get(&inst.type_name)
@@ -1407,69 +1437,124 @@ fn pin_connected(ds: &DisjointSet, key: &str) -> bool {
     ds.contains(key)
 }
 
-/// Diagnostic sink for body-fact collection (E14a) — keeps the walker's
-/// parameter list flat.
+/// A mechanism bridge request (D16 phase 2): a conditional connection
+/// A-B, closed when the control pin's region holds.
+struct BridgeRequest {
+    node: String,
+    a: PinRef,
+    b: PinRef,
+    control: PinRef,
+    via: Option<String>,
+}
+
+/// Diagnostic sink for body-fact collection (E14a/D16) — keeps the
+/// walker's parameter list flat.
 struct FactSink<'a> {
     node: &'a str,
     proofs: &'a mut Vec<String>,
     errors: &'a mut Vec<String>,
     intents: &'a mut Vec<(String, String)>,
+    bridges: &'a mut Vec<BridgeRequest>,
+}
+
+/// The region context threading through a guarded-fact walk (D16):
+/// `control` Some means mechanizable — wiring facts become bridge
+/// requests under it. `cond` Some (no control) means signal-level but
+/// not mechanizable — the D7 gate. `via` is this region's strategy
+/// selection.
+#[derive(Clone, Copy)]
+struct RegionCtx<'a> {
+    cond: Option<&'a str>,
+    control: Option<&'a PinRef>,
+    via: Option<&'a str>,
 }
 
 /// Does this expression mention a pin of a declared instance? (E14a/D16:
 /// pin-mentioning conditions are SIGNAL-LEVEL — the conditional-mechanism
 /// trigger. Conditions referencing no pin are region-level facts.)
-fn mentions_pin(
-    expr: &Expr,
-    ctx: &NetlistContext,
-    instances: &BTreeMap<String, &ComponentInstance>,
-) -> bool {
-    if resolve_pin(expr, instances, ctx.type_pins).is_some() {
+fn mentions_pin(expr: &Expr, ctx: &NetlistContext) -> bool {
+    if resolve_pin(expr, ctx.instances, ctx.type_pins).is_some() {
         return true;
     }
     match expr {
-        Expr::BinaryOp(_, l, r) => {
-            mentions_pin(l, ctx, instances) || mentions_pin(r, ctx, instances)
-        }
-        Expr::Field(base, _) => mentions_pin(base, ctx, instances),
-        Expr::Index(l, r) => mentions_pin(l, ctx, instances) || mentions_pin(r, ctx, instances),
+        Expr::BinaryOp(_, l, r) => mentions_pin(l, ctx) || mentions_pin(r, ctx),
+        Expr::Field(base, _) => mentions_pin(base, ctx),
+        Expr::Index(l, r) => mentions_pin(l, ctx) || mentions_pin(r, ctx),
         _ => false,
     }
 }
 
+/// The control pin of a mechanizable condition (D16 phase 2): a single
+/// comparison `Expr::BinaryOp` whose one operand resolves to a pin — the
+/// condition's net feeds the mechanism control. Anything else → None
+/// (region-level or non-mechanizable signal-level).
+fn condition_control(expr: &Expr, ctx: &NetlistContext) -> Option<PinRef> {
+    let Expr::BinaryOp(_, l, r) = expr else {
+        return None;
+    };
+    resolve_pin(l, ctx.instances, ctx.type_pins)
+        .or_else(|| resolve_pin(r, ctx.instances, ctx.type_pins))
+}
+
+/// Pull a trailing `via <Name>` marker out of a guarded body (D16 phase
+/// 2): returns the strategy and the body without it.
+fn take_via_strategy(body: &[Statement]) -> (Option<String>, Vec<Statement>) {
+    let mut strategy = None;
+    let mut rest = Vec::with_capacity(body.len());
+    for stmt in body {
+        if let Statement::MetadataAssignment(k, crate::ast::PropertyValue::Identifier(name)) = stmt
+        {
+            if k == "via" {
+                strategy = Some(name.clone());
+                continue;
+            }
+        }
+        rest.push(stmt.clone());
+    }
+    (strategy, rest)
+}
+
 impl FactSink<'_> {
-    /// Walk statements, threading the enclosing condition (E14a/D16).
-    /// `cond` is None while region-level; Some(description) once a
-    /// pin-mentioning condition has been seen — facts under it demand a
-    /// mechanism (D7): copper cannot be conditional.
+    /// Walk statements, threading the region context (E14a/D16).
     fn walk(
         &mut self,
         stmts: &[Statement],
-        cond: Option<&str>,
+        reg: RegionCtx,
         ctx: &mut NetlistContext,
-        instances: &BTreeMap<String, &ComponentInstance>,
     ) {
         for stmt in stmts {
             match stmt {
                 Statement::Guarded(c, inner) => {
-                    let joined = match cond {
-                        Some(outer) => format!("{outer} && {c}"),
-                        None => format!("{c}"),
-                    };
-                    let child = if cond.is_none() && !mentions_pin(c, ctx, instances) {
-                        None
-                    } else {
-                        Some(joined)
-                    };
-                    self.walk(inner, child.as_deref(), ctx, instances);
+                    walk_guarded(c, inner, reg, ctx, self);
                 }
                 Statement::Assign(target, value) => {
-                    if let Some(desc) = cond {
+                    if let Some(ctrl) = reg.control {
+                        // Mechanism mode: wiring facts become bridges.
+                        let (Some(a), Some(b)) = (
+                            resolve_pin(target, ctx.instances, ctx.type_pins),
+                            resolve_pin(value, ctx.instances, ctx.type_pins),
+                        ) else {
+                            self.errors.push(format!(
+                                "wiring under a mechanism (node '{}') must be a pin-to-pin bridge",
+                                self.node
+                            ));
+                            continue;
+                        };
+                        self.bridges.push(BridgeRequest {
+                            node: self.node.to_string(),
+                            a,
+                            b,
+                            control: ctrl.clone(),
+                            via: reg.via.map(|s| s.to_string()),
+                        });
+                        continue;
+                    }
+                    if let Some(desc) = reg.cond {
                         self.errors.push(format!(
                             "wiring inside `when {desc}` (node '{}') is conditional — copper cannot be. \
                              State the condition in the node guard (making the wiring unconditional in \
-                             that region), or declare a switching part driven by the condition \
-                             (mechanism synthesis, design record D16 phase 2)",
+                             that region), or make it a single pin comparison and declare a switching \
+                             part (`when ... via Type;`, mechanism synthesis)",
                             self.node
                         ));
                         continue;
@@ -1479,8 +1564,8 @@ impl FactSink<'_> {
                         continue;
                     }
                     if let (Some(lp), Some(rp)) = (
-                        resolve_pin(target, instances, ctx.type_pins),
-                        resolve_pin(value, instances, ctx.type_pins),
+                        resolve_pin(target, ctx.instances, ctx.type_pins),
+                        resolve_pin(value, ctx.instances, ctx.type_pins),
                     ) {
                         let lk = pin_key(&lp.component, &lp.pin);
                         let rk = pin_key(&rp.component, &rp.pin);
@@ -1499,14 +1584,226 @@ impl FactSink<'_> {
     }
 }
 
-/// Body facts of one reactive transaction (E14a).
+/// The child condition description for a guarded region (D16): None
+/// when the region is mechanizable or a plain carve; a compound
+/// description when signal-level (D7 propagates through nested carves).
+fn child_cond_str(
+    control: &Option<PinRef>,
+    reg_cond: Option<&str>,
+    inner_mentions_pin: bool,
+    c: &Expr,
+) -> Option<String> {
+    if control.is_some() {
+        return None;
+    }
+    if reg_cond.is_none() && !inner_mentions_pin {
+        return None;
+    }
+    Some(match reg_cond {
+        Some(outer) => format!("{outer} && {c}"),
+        None => format!("{c}"),
+    })
+}
+
+/// The Guarded arm of the walk (E14a/D16): classify the condition —
+/// mechanizable (single pin comparison → bridges), signal-level but
+/// not mechanizable (D7 error), or region-level carve. The signal
+/// description propagates through nested region carves.
+fn walk_guarded(
+    c: &Expr,
+    inner: &[Statement],
+    reg: RegionCtx,
+    ctx: &mut NetlistContext,
+    sink: &mut FactSink,
+) {
+        let (via, inner_rest) = take_via_strategy(inner);
+        let control = condition_control(c, ctx);
+        let child_control = if control.is_some() {
+            control.clone()
+        } else if reg.control.is_some() {
+            reg.control.cloned()
+        } else {
+            None
+        };
+        let child_cond = child_cond_str(
+            &child_control,
+            reg.cond,
+            mentions_pin(c, ctx),
+            c,
+        );
+        sink.walk(
+            &inner_rest,
+            RegionCtx {
+                cond: child_cond.as_deref(),
+                control: child_control.as_ref(),
+                via: via.as_deref().or(reg.via),
+            },
+            ctx,
+        );
+    }
+
+/// Body facts of one reactive transaction (E14a/D16).
 fn body_facts(
     t: &crate::ast::top::Transaction,
     ctx: &mut NetlistContext,
-    instances: &BTreeMap<String, &ComponentInstance>,
     sink: &mut FactSink,
 ) {
-    sink.walk(&t.body, None, ctx, instances);
+    sink.walk(&t.body, RegionCtx { cond: None, control: None, via: None }, ctx);
+}
+
+/// Eligibility of one declared instance as a bridge mechanism (D16): a
+/// type with exactly one Control pin and at least two Switchable pins,
+/// whose control pin is unconnected or already on the condition's net
+/// (pre-wired disambiguation).
+fn is_mechanism(
+    ctx: &mut NetlistContext,
+    inst: &ComponentInstance,
+    ti: &TypeInfo,
+    ctrl_root: &String,
+) -> bool {
+    let controls: Vec<&(String, u64)> = ti
+        .pins
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ti.pin_classes[*i].control)
+        .map(|(_, p)| p)
+        .collect();
+    let switchables = ti
+        .pins
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ti.pin_classes[*i].switchable)
+        .count();
+    if controls.len() != 1 || switchables < 2 {
+        return false;
+    }
+    let ckey = pin_key(&inst.name, &controls[0].0);
+    !(ctx.ds.contains(&ckey) && ctx.ds.find(&ckey) != *ctrl_root)
+}
+
+/// Candidate mechanisms for a bridge request (D16 phase 2): declared
+/// instances whose type has exactly one Control-class pin and at least
+/// two Switchable-class pins, whose control pin is unconnected or
+/// already on the condition's net (pre-wired disambiguation), narrowed
+/// by the `via` strategy when given (type name).
+fn mechanism_candidates(
+    ctx: &mut NetlistContext,
+    via: &Option<String>,
+    control: &PinRef,
+) -> Vec<String> {
+    let ctrl_root = ctx.ds.find(&pin_key(&control.component, &control.pin));
+    let mut out: Vec<String> = Vec::new();
+    for inst in ctx.instances.values() {
+        let Some(ti) = ctx.type_info.get(&inst.type_name) else {
+            continue;
+        };
+        if let Some(t) = via {
+            if inst.type_name != *t {
+                continue;
+            }
+        }
+        if is_mechanism(ctx, inst, ti, &ctrl_root) {
+            out.push(inst.name.clone());
+        }
+    }
+    out
+}
+
+/// Wire one mechanism (D16 phase 2): control <- condition net, the two
+/// path pins <- the bridged pins. Records the conditional bridge with
+/// provenance; the schematic emits the switch as ordinary copper.
+fn synthesize_one(
+    ctx: &mut NetlistContext,
+    mech_name: &str,
+    br: &BridgeRequest,
+    proofs: &mut Vec<String>,
+) {
+    let Some(mech) = ctx.instances.get(mech_name) else {
+        return;
+    };
+    let ti = &ctx.type_info[&mech.type_name];
+    let cpin = ti
+        .pins
+        .iter()
+        .enumerate()
+        .find(|(i, _)| ti.pin_classes[*i].control)
+        .map(|(_, p)| p)
+        .expect("candidate guarantees one control pin");
+    let mut paths: Vec<&(String, u64)> = ti
+        .pins
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| ti.pin_classes[*i].switchable)
+        .map(|(_, p)| p)
+        .collect();
+    paths.sort_by_key(|(_, n)| *n);
+    let union_all = |ctx: &mut NetlistContext, names: Vec<(String, String)>| {
+        let keys: Vec<String> = names
+            .iter()
+            .map(|(c, p)| pin_key(c, p))
+            .collect();
+        for k in &keys {
+            ctx.ds.make(k.clone());
+        }
+        for k in keys.windows(2) {
+            ctx.ds.union(&k[0], &k[1]);
+        }
+    };
+    let mut members = vec![
+        (mech.name.clone(), cpin.0.clone()),
+        (br.control.component.clone(), br.control.pin.clone()),
+    ];
+    members.push((mech.name.clone(), paths[0].0.clone()));
+    members.push((br.a.component.clone(), br.a.pin.clone()));
+    members.push((mech.name.clone(), paths[1].0.clone()));
+    members.push((br.b.component.clone(), br.b.pin.clone()));
+    union_all(ctx, members);
+    proofs.push(format!(
+        "mechanism '{}' bridges {}.{} <-> {}.{} under {}.{} (node '{}')",
+        mech.name, br.a.component, br.a.pin, br.b.component, br.b.pin,
+        br.control.component, br.control.pin, br.node
+    ));
+}
+
+/// Resolve every bridge request (D16 phase 2): exactly one candidate
+/// mechanism after narrowing — synthesize; none, or several — hard
+/// error naming the candidates and the strategy form (D13, never a
+/// silent pick).
+fn synthesize_bridges(
+    ctx: &mut NetlistContext,
+    bridges: &[BridgeRequest],
+    proofs: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    for br in bridges {
+        let mut candidates = mechanism_candidates(ctx, &br.via, &br.control);
+        candidates.sort();
+        match candidates.len() {
+            0 => {
+                let via_hint = match &br.via {
+                    Some(t) => format!(
+                        "strategy names '{}' but no qualifying mechanism of that type is declared — declare one with exactly one Control pin and at least two Path pins",
+                        t
+                    ),
+                    None => "no qualifying mechanism is declared — declare one with exactly one Control pin and at least two Path pins, or narrow with `when ... via Type;`"
+                        .to_string(),
+                };
+                errors.push(format!(
+                    "bridge {}.{} <-> {}.{} under {}.{} (node '{}') cannot be synthesized: {}",
+                    br.a.component, br.a.pin, br.b.component, br.b.pin,
+                    br.control.component, br.control.pin, br.node, via_hint
+                ));
+            }
+            1 => synthesize_one(ctx, &candidates[0], br, proofs),
+            n => {
+                errors.push(format!(
+                    "bridge {}.{} <-> {}.{} under {}.{} (node '{}') is ambiguous: {} mechanisms could synthesize it ({}). Disambiguate with the strategy clause: `when ... via <Type>;` or pre-wire one mechanism's control pin",
+                    br.a.component, br.a.pin, br.b.component, br.b.pin,
+                    br.control.component, br.control.pin, br.node, n, candidates.join(", ")
+                ));
+            }
+        }
+    }
 }
 
 /// Complete one drive intent (E14a): the instance must have exactly one
@@ -1518,9 +1815,8 @@ fn complete_intent(
     inst_name: &str,
     node: &str,
     ctx: &mut NetlistContext,
-    instances: &BTreeMap<String, &ComponentInstance>,
 ) -> Result<String, String> {
-    let Some(inst) = instances.get(inst_name) else {
+    let Some(inst) = ctx.instances.get(inst_name) else {
         return Err(format!(
             "drive intent '{} = true' (node '{}') names no declared instance",
             inst_name, node
@@ -1561,7 +1857,7 @@ fn complete_intent(
         ));
     }
     let mut candidates: Vec<String> = Vec::new();
-    for (other, oi) in instances {
+    for (other, oi) in ctx.instances {
         if other == inst_name {
             continue;
         }
@@ -1612,11 +1908,11 @@ fn complete_intent(
 fn collect_intents(
     ctx: &mut NetlistContext,
     items: &[TopLevel],
-    instances: &BTreeMap<String, &ComponentInstance>,
-) -> (Vec<String>, Vec<String>) {
+) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut errors = Vec::new();
     let mut proofs = Vec::new();
     let mut intents: Vec<(String, String)> = Vec::new();
+    let mut bridges: Vec<BridgeRequest> = Vec::new();
     for item in items {
         let TopLevel::Transaction(t) = item else {
             continue;
@@ -1626,16 +1922,19 @@ fn collect_intents(
             proofs: &mut proofs,
             errors: &mut errors,
             intents: &mut intents,
+            bridges: &mut bridges,
         };
-        body_facts(t, ctx, instances, &mut sink);
+        body_facts(t, ctx, &mut sink);
     }
+    synthesize_bridges(ctx, &bridges, &mut proofs, &mut errors);
+    let bridge_strings = conditional_bridge_strings(&bridges);
     for (node, inst_name) in &intents {
-        match complete_intent(inst_name, node, ctx, instances) {
+        match complete_intent(inst_name, node, ctx) {
             Ok(proof) => proofs.push(proof),
             Err(e) => errors.push(e),
         }
     }
-    (errors, proofs)
+    (errors, proofs, bridge_strings)
 }
 
 /// Every declared pin of every instance, ready for union-find grouping
@@ -1655,6 +1954,22 @@ fn collect_all_pins(
         }
     }
     all_pins
+}
+
+/// The conditional bridges as display strings (D16 phase 2) — the
+/// record the phase-3 complement check and per-region physics consume.
+fn conditional_bridge_strings(bridges: &[BridgeRequest]) -> Vec<String> {
+    bridges
+        .iter()
+        .map(|br| {
+            let via = br.via.as_deref().unwrap_or("-");
+            format!(
+                "{}.{} <-> {}.{} under {}.{} via {} (node '{}')",
+                br.a.component, br.a.pin, br.b.component, br.b.pin,
+                br.control.component, br.control.pin, via, br.node
+            )
+        })
+        .collect()
 }
 
 /// Group the union-find roots into named nets and report unconnected
@@ -1704,9 +2019,9 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let (mut net_names, raw_conflicts) = resolve_net_names(&mut ds, named);
     // 2026-09-21 (E14a): node-body intents — body wiring facts union
     // first; drive intents then complete the last open pin.
-    let (intent_errors, intent_proofs) = {
-        let mut ictx = NetlistContext::new(items, &mut ds, &type_pins, &type_info);
-        collect_intents(&mut ictx, items, &instances)
+    let (intent_errors, intent_proofs, conditional_bridges) = {
+        let mut ictx = NetlistContext::new(items, &mut ds, &type_pins, &type_info, &instances);
+        collect_intents(&mut ictx, items)
     };
 
     // Group members by root; sort everything for determinism (HashMap rule).
@@ -1751,8 +2066,8 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
 
     // 2026-09-21 (E13): the decoupling convention runs on the finished
     // netlist — every union is final when it fires.
-    let mut ctx = NetlistContext::new(items, &mut ds, &type_pins, &type_info);
-    let convention_errors = check_decoupling(&mut ctx, &instances);
+    let mut ctx = NetlistContext::new(items, &mut ds, &type_pins, &type_info, &instances);
+    let convention_errors = check_decoupling(&mut ctx);
     // 2026-09-21 (E7): source-pin budgets run last — they read the
     // derived per-net currents the voltage fixpoint just produced.
     let budget_errors =
@@ -1769,6 +2084,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         budget_errors,
         intent_errors,
         intent_proofs,
+        conditional_bridges,
         voltage,
         type_info,
     }
@@ -2226,7 +2542,7 @@ mod tests {
                 [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
                 [true]
             {
-                when j1.p1.voltage == 3.3V {
+                when j1.p1.voltage > 3.0V && j1.p1.voltage < 3.6V {
                     d1.a = u1.gpio0;
                 };
             }
@@ -2235,7 +2551,7 @@ mod tests {
         assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
         let e = &nl.intent_errors[0];
         assert!(e.contains("copper cannot be"), "{}", e);
-        assert!(e.contains("j1.p1.voltage == 3.3V"), "{}", e);
+        assert!(e.contains("&&"), "{}", e);
     }
 
     #[test]
@@ -2257,7 +2573,7 @@ mod tests {
                 [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
                 [true]
             {
-                when j1.p1.voltage == 3.3V {
+                when j1.p1.voltage > 3.0V && j1.p1.voltage < 3.6V {
                     when true {
                         d1.a = u1.gpio0;
                     };
@@ -2271,6 +2587,111 @@ mod tests {
             e.contains("&&") && e.contains("true"),
             "compound condition named: {}",
             e
+        );
+    }
+
+    // ── 2026-09-21 (D16 phase 2): mechanism synthesis ─────────────────────
+
+    const MECH_BOARD: &str = r#"
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type Control { spec KicadType: "input"; spec Control: true; };
+        type Path { spec KicadType: "passive"; spec Switchable: true; };
+        type Fet { pin gate: Control; pin d: Path; pin s: Path; reference "Q"; };
+        type Chip { pin gpio0; pin gnd: Ground; reference "U"; };
+        type Led { pin a; pin k; reference "D"; };
+        type Conn { pin gnd: Ground; reference "J"; };
+
+        let q1: Fet = Fet { value: "bs170" };
+        let u1: Chip = Chip { value: "x" };
+        let d1: Led = Led { value: "red" };
+        let j1: Conn = Conn { value: "y" };
+
+        node on
+            [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+            [true]
+        {
+            when u1.gpio0.voltage == 3.3V {
+                d1.a = u1.gnd;
+            };
+        }
+    "#;
+
+    #[test]
+    fn mechanism_synthesis_wires_bridge() {
+        // A single switch: the when-clause synthesizes control <- gpio0,
+        // path1 <- d1.a, path2 <- u1.gnd, with provenance.
+        let nl = analyze(MECH_BOARD);
+        assert!(nl.class_errors.is_empty(), "{:?}", nl.class_errors);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        assert_eq!(nl.conditional_bridges.len(), 1, "{:?}", nl.conditional_bridges);
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("mechanism 'q1'") && p.contains("d1.a")),
+            "provenance: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn ambiguous_mechanism_requests_strategy() {
+        let src = MECH_BOARD.replace(
+            "let q1: Fet = Fet { value: \"bs170\" };",
+            "let q1: Fet = Fet { value: \"bs170\" };
+        let q2: Fet = Fet { value: \"bs170\" };",
+        );
+        let nl = analyze(&src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        let e = &nl.intent_errors[0];
+        assert!(e.contains("ambiguous") && e.contains("q1") && e.contains("q2"), "{}", e);
+        assert!(e.contains("via <Type>"), "{}", e);
+    }
+
+    #[test]
+    fn via_strategy_narrows_to_type() {
+        // Two switches, different types: `via Fet` selects q1.
+        let src = MECH_BOARD.replace(
+            "let q1: Fet = Fet { value: \"bs170\" };",
+            "let q1: Fet = Fet { value: \"bs170\" };
+        type Relay { pin coil: Control; pin c1: Path; pin c2: Path; reference \"K\"; };
+        let k1: Relay = Relay { value: \"g5le\" };",
+        );
+        let src = src.replace(
+            "            };\n        }",
+            "            } via Fet;\n        }",
+        );
+        let nl = analyze(&src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("mechanism 'q1'")),
+            "{:?}",
+            nl.intent_proofs
+        );
+        assert!(
+            !nl.intent_proofs.iter().any(|p| p.contains("k1")),
+            "via Fet must not pick the relay: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn via_with_no_declared_instance_is_an_error() {
+        let src = MECH_BOARD.replace(
+            "            };\n        }",
+            "            } via Relay;\n        }",
+        );
+        let src = src.replace(
+            "let q1: Fet = Fet { value: \"bs170\" };",
+            "type Relay { pin coil: Control; pin c1: Path; pin c2: Path; reference \"K\"; };
+        let q1: Fet = Fet { value: \"bs170\" };",
+        );
+        let nl = analyze(&src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_errors[0].contains("no qualifying mechanism") && nl.intent_errors[0].contains("Relay"),
+            "{}",
+            nl.intent_errors[0]
         );
     }
 

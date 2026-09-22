@@ -3013,7 +3013,7 @@ impl<'a> Parser<'a> {
             Some(k) => k,
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, CanDrive, Cols, Decouple, Decoupler, Depth, Endian, Format, KicadType, MaxBits, NoConnect, Return, Rows, Supply",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadType, MaxBits, NoConnect, Return, Rows, Supply, Switchable",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -3044,7 +3044,8 @@ impl<'a> Parser<'a> {
             }
             // 2026-09-21 (E12/E13): boolean spec keys — `true`/`false`
             // lex as dedicated Bool tokens, not identifiers.
-            "no_connect" | "supply" | "return" | "decoupler" | "can_drive" => {
+            "no_connect" | "supply" | "return" | "decoupler" | "can_drive"
+            | "control" | "switchable" => {
                 let v = match self.peek() {
                     Some(Token::BoolTrue) => Some(true),
                     Some(Token::BoolFalse) => Some(false),
@@ -3795,6 +3796,8 @@ fn spec_name_to_key(name: &str) -> Option<&'static str> {
         "Supply" => Some("supply"),
         "Return" => Some("return"),
         "CanDrive" => Some("can_drive"),
+        "Control" => Some("control"),
+        "Switchable" => Some("switchable"),
         "Decouple" => Some("decouple"),
         "Decoupler" => Some("decoupler"),
         _ => None,
