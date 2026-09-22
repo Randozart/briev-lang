@@ -1273,3 +1273,34 @@ mod csr_tests {
         }
     }
 }
+
+// ── raw binary extraction (2026-09-22, --raw-bin) ─────────────────────
+mod raw_bin_tests {
+    use super::*;
+
+    #[test]
+    fn objcopy_extracts_flat_image_from_linked_elf() {
+        // The raw image must start with the code (mov $42, %rax; hlt),
+        // not the ELF header — the boot-sector contract.
+        let src = "section .text\nglobal _start\n_start:\n    mov r0, 42\n    halt\n";
+        let asm = generate(src, "x86_64").unwrap();
+        let dir = test_dir("rawbin");
+        let o = dir.join("t.o");
+        assemble(&asm, "x86_64", &o).expect("assemble");
+        let bin = dir.join("t");
+        let status = std::process::Command::new("ld")
+            .arg(&o).arg("-o").arg(&bin).status().expect("ld");
+        assert!(status.success());
+        let raw = dir.join("t.bin");
+        let oc = if std::process::Command::new("llvm-objcopy").arg("--version").output().ok().map(|o| o.status.success()).unwrap_or(false) {
+            "llvm-objcopy"
+        } else { "objcopy" };
+        let status = std::process::Command::new(oc)
+            .arg("-O").arg("binary").arg(&bin).arg(&raw).status().expect("objcopy");
+        assert!(status.success());
+        let img = std::fs::read(&raw).unwrap();
+        // movl $42, %eax = 48 c7 c0 2a 00 00 00; hlt = f4
+        assert!(img.starts_with(&[0x48, 0xc7, 0xc0, 0x2a]), "{:02x?}", &img[..8]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

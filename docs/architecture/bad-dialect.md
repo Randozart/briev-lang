@@ -244,9 +244,28 @@ bootstrap bad Reset_Handler() [true] {
 
 QEMU-verified: `examples/bad/boot_mps2.bv` boots the MPS2-AN385
 (Cortex-M3) with no `startup.S` and no compiler `_start`, printing through
-the CMSDK APB UART. thumb/arm assembly uses clang's integrated assembler
-and ld.lld when the `arm-none-eabi` binutils are absent (documented
-fallback, never a silent pass).
+the CMSDK APB UART. `examples/bad/boot_rv64.bv` boots QEMU virt the same
+way on riscv64 (PMP grant + UART). thumb/arm assembly uses clang's
+integrated assembler and ld.lld when the `arm-none-eabi` binutils are
+absent (documented fallback, never a silent pass).
+
+## CSR access (riscv64 M-mode)
+
+`csrr d, csr` / `csrw csr, s` / `csrs csr, s` / `csrc csr, s` read/write/
+set/clear a named CSR (`mcause`, `mepc`, `mtvec`, `mscratch`, `mie`,
+`mstatus`, `pmpaddr0`, `pmpcfg0`, …); `mret` returns from M-mode trap.
+The CSR name is a symbol operand — it substitutes literally. riscv64-only
+rows: other targets get a loud capability error (no such registers),
+never a silent pass. These are the ops the rv64 kernel bootstrap's `Asm#`
+one-liners lower to.
+
+## Raw binary output (`--raw-bin`)
+
+`brievc bad file.bad --raw-bin` and `brievc build ... --raw-bin` extract
+the flat loadable image (`objcopy -O binary`) from the linked ELF — the
+boot-sector / firmware blob a bootloader would load. `boot_rv64.bin`
+loads directly in QEMU `-kernel` and boots standalone. riscv64 bare-metal
+objects assemble `-mabi=lp64` soft-float to match the `.bv` side's ABI.
 
 ## The acknowledge tier — predicting, not blocking
 

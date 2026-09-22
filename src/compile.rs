@@ -846,6 +846,26 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             all_objects.dedup();
             compile_ll_to_binary(&out_path, &binary_path, &all_objects, &protocol_libs, opts.shared, &bad_fn_objects, bootstrap_entry.as_deref())?;
         }
+        // 2026-09-22 (bootstrap-bad plan): --raw-bin extracts the flat
+        // loadable image (objcopy -O binary) — the boot-sector / firmware
+        // blob a bootloader would load from the linked ELF.
+        if opts.raw_bin && opts.backend == BackendKind::Llvm {
+            let bin_img = format!("{binary_base}.bin");
+            // llvm-objcopy is target-agnostic (handles thumb/riscv/aarch64
+            // ELF); plain objcopy handles the host x86_64.
+            let oc = if std::process::Command::new("llvm-objcopy").arg("--version").output().ok().map(|o| o.status.success()).unwrap_or(false) {
+                "llvm-objcopy"
+            } else { "objcopy" };
+            let status = std::process::Command::new(oc)
+                .arg("-O").arg("binary")
+                .arg(&binary_path).arg(&bin_img)
+                .status()
+                .map_err(|e| format!("cannot run `{oc}`: {e} - is binutils installed?"))?;
+            if !status.success() {
+                return Err(format!("objcopy failed to extract the flat image from `{binary_path}`"));
+            }
+            println!("wrote {bin_img}");
+        }
         // 2026-07-26: Phase 5 — Compile LLVM IR to WASM binary for webstack backend.
         // Uses llc to compile the .ll (emitted with wasm32 target triple) to .wasm.
         // Skips C runtime linking — WASM modules are self-contained pure logic.

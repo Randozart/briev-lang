@@ -136,14 +136,19 @@ bootstrap bad reset() {
 
 ### Deferred (next phase)
 
-- **Pure bootloader (no reactor) + raw-binary/objcopy output + boot headers
-  (multiboot/UEFI/DTB)**.
-- **CSR ops for the rv64 kernel port**: `kernel_rv64.b.bv`'s bootstrap
-  uses `Asm#("raw", ...)` for `csrw mscratch/mtvec`, `csrs mie/mstatus`,
-  and CLINT MMIO reads. Expressing it as `bootstrap bad` needs csrr/csrw/
-  csrs/csrc in the `.bad` core ISA (a data-driven config addition like any
-  other op). The MPS2 port is DONE; the rv64 kernel bootstrap port is the
-  remaining showcase.
+- **CSR ops + rv64 kernel bootstrap port — DONE (2026-09-22)**: csrr/csrw/
+  csrs/csrc/mret added to the ISA (riscv64-only rows, loud errors
+  elsewhere); `examples/bad/boot_rv64.bv` boots QEMU virt with a
+  `bootstrap bad` doing the PMP grant + UART banner.
+- **Pure bootloader (no reactor) + raw-binary/objcopy output — DONE**:
+  `--raw-bin` on `brievc bad` and `brievc build` extracts the flat loadable
+  image (objcopy -O binary); `boot_rv64.bin` boots QEMU standalone. Boot
+  headers are data (multiboot2 header = `.word` block, stdlib-documented);
+  x86_64 multiboot 32-bit prologue is NOT expressible in `.bad`'s 64-bit
+  GAS dialect — the honest path is flat-image ELF loading (qemu -kernel),
+  which both verified examples use.
+- Boot-sector (x86 real-mode, 512-byte MBR) remains out of reach — `.bad`
+  emits 64-bit GAS only.
 
 ## Status (2026-09-22)
 

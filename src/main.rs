@@ -254,6 +254,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut accel_cpu_fallback: Option<u64> = None;
     let mut triple_override: Option<String> = None;
     let mut linker_script_override: Option<String> = None;
+    let mut raw_bin = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -379,6 +380,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             let val = args.get(i + 1).ok_or("--triple requires a triple argument (e.g., riscv64-unknown-none)")?;
             triple_override = Some(val.clone());
             i += 2;
+        } else if arg == "--raw-bin" {
+            raw_bin = true;
+            i += 1;
         } else if arg == "--linker-script" {
             let val = args.get(i + 1).ok_or("--linker-script requires a path argument")?;
             linker_script_override = Some(val.clone());
@@ -482,6 +486,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         isr_mechanism: None,
         triple_override,
         linker_script_override,
+        raw_bin,
     })
 }
 
@@ -494,7 +499,8 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
 /// enters the .bv pipeline.
 fn run_bad(args: &[String]) -> Result<(), String> {
     let file_path = args.first().ok_or(
-        "usage: brievc bad <file.bad> [--target <triple>] [--emit-asm] [--with-libc]",
+        "usage: brievc bad <file.bad> [--target <triple>] [--emit-asm] [--with-libc] \
+         [--raw-bin] [--run]",
     )?;
     if !file_path.ends_with(".bad") {
         return Err(format!(
@@ -507,6 +513,7 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let mut trace = false;
     let mut run = false;
     let mut raw = false;
+    let mut raw_bin = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -519,6 +526,9 @@ fn run_bad(args: &[String]) -> Result<(), String> {
             "--trace-lowering" => trace = true,
             "--run" => run = true,
             "--raw" => raw = true,
+            // 2026-09-22: extract the flat loadable image (boot sector /
+            // firmware blob) from the linked ELF via objcopy -O binary.
+            "--raw-bin" => raw_bin = true,
             other => return Err(format!("bad: unknown option `{other}`")),
         }
         i += 1;
@@ -605,6 +615,27 @@ fn run_bad(args: &[String]) -> Result<(), String> {
         ));
     }
     println!("wrote {}", bin_path.display());
+    // 2026-09-22: --raw-bin extracts the flat loadable image from the
+    // linked ELF (boot sector / firmware blob). Cross families use
+    // llvm-objcopy (target-agnostic); host uses plain objcopy.
+    if raw_bin {
+        let bin_img = std::path::PathBuf::from(format!("{stem}.bin"));
+        let oc = if family == "x86_64" { "objcopy" } else { "llvm-objcopy" };
+        let status = std::process::Command::new(oc)
+            .arg("-O")
+            .arg("binary")
+            .arg(&bin_path)
+            .arg(&bin_img)
+            .status()
+            .map_err(|e| format!("bad: cannot run `{oc}`: {e} - is binutils installed?"))?;
+        if !status.success() {
+            return Err(format!(
+                "bad: objcopy failed to extract the flat image from {}",
+                bin_path.display()
+            ));
+        }
+        println!("wrote {}", bin_img.display());
+    }
     if !run {
         return Ok(());
     }
@@ -697,6 +728,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         isr_mechanism: None,
         triple_override: None,
         linker_script_override: None,
+        raw_bin: false,
     };
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;

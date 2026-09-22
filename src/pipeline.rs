@@ -267,6 +267,10 @@ pub struct BuildOptions {
     /// 2026-09-13 (rv64 capability kernel): explicit linker script path override.
     /// Set via --linker-script CLI flag. Takes precedence over dbvl linker_script.
     pub linker_script_override: Option<String>,
+    /// 2026-09-22 (bootstrap-bad plan): extract the flat loadable image
+    /// (objcopy -O binary) after linking — the boot-sector / firmware blob
+    /// a bootloader would load.
+    pub raw_bin: bool,
 }
 
 pub struct PreprocessedSource {
@@ -730,6 +734,7 @@ pub fn check_source_for(
         isr_mechanism: None,
         triple_override: triple_override.map(|t| t.to_string()),
         linker_script_override: None,
+        raw_bin: false,
     };
     let (_items, _universe) = parse_and_check(file_path, source, &default_opts)?;
     println!("OK");
