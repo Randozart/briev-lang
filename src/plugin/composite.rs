@@ -1065,15 +1065,7 @@ pub fn expand_composites(
     for depth in 0..8 {
         let mut n = 0;
         for item in items.iter_mut() {
-            match item {
-                TopLevel::Transaction(t) => {
-                    n += expand_stmt_list(&mut t.body, &registry, &comptime, &state_types)?;
-                }
-                TopLevel::CompileTimeDefn(d) => {
-                    n += expand_stmt_list(&mut d.body, &registry, &comptime, &state_types)?;
-                }
-                _ => {}
-            }
+            n += expand_top_level(item, &registry, &comptime, &state_types)?;
         }
         total += n;
         if n == 0 {
@@ -1113,6 +1105,55 @@ fn nav_comptime(v: &crate::macros::eval::NavValue) -> Option<ComptimeVal> {
             Some(ComptimeVal::List(out))
         }
         _ => None,
+    }
+}
+
+/// Expand composite invocations in one top-level item (2026-09-22
+/// unified-metaprogramming plan, C4): the uniform walker covers EVERY
+/// statement-bearing TopLevel — reactive txns, compile-time defns, runtime
+/// defns, operator members, cells (their member txns/defns), top-level
+/// statements, and triggers. Replaces the old Transaction-only walk so a
+/// composite call is expanded in any body it appears in.
+fn expand_top_level(
+    item: &mut TopLevel,
+    registry: &HashMap<&String, &Definition>,
+    comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) -> Result<usize, String> {
+    match item {
+        TopLevel::Definition(d) | TopLevel::TypeDefOperator(d) => {
+            expand_stmt_list(&mut d.body, registry, comptime, state_types)
+        }
+        TopLevel::Transaction(t) => {
+            expand_stmt_list(&mut t.body, registry, comptime, state_types)
+        }
+        TopLevel::CompileTimeDefn(d) => {
+            expand_stmt_list(&mut d.body, registry, comptime, state_types)
+        }
+        TopLevel::Statement(stmt) => {
+            let mut one = vec![(**stmt).clone()];
+            let n = expand_stmt_list(&mut one, registry, comptime, state_types)?;
+            if n > 0 {
+                // The expansion may have spliced multiple statements in place
+                // of one; a single-statement slot can hold at most one. Keep
+                // the first spliced statement (composite calls in top-level
+                // statement position are statement composites — their splice
+                // is one statement).
+                *stmt = Box::new(one.into_iter().next().unwrap_or(Statement::Break));
+            }
+            Ok(n)
+        }
+        TopLevel::Cell(cell) => {
+            let mut n = 0;
+            for t in cell.transactions.iter_mut() {
+                n += expand_stmt_list(&mut t.body, registry, comptime, state_types)?;
+            }
+            for d in cell.definitions.iter_mut() {
+                n += expand_stmt_list(&mut d.body, registry, comptime, state_types)?;
+            }
+            Ok(n)
+        }
+        _ => Ok(0),
     }
 }
 
@@ -2601,6 +2642,81 @@ async node k [i < 1][i == 1] {
             panic!("expected a call, got {:?}", out[0]);
         };
         assert_eq!(name, "f");
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan, C4) ───────────────────
+    // Uniform walker: composite calls expand in EVERY statement-bearing
+    // TopLevel, not just reactive txns — runtime defn bodies, operator
+    // members, cell members.
+
+    #[test]
+    fn composite_expands_in_runtime_defn_body() -> Result<(), String> {
+        let items = parse_program(
+            "$defn twice(x: Expr) { let r2: Int = x * 2; }; \
+             \x20defn compute(v: Int) -> Int { twice!(v); term r2; };",
+        );
+        // Build a registry from the $defn, then walk the runtime defn.
+        let comp = defn_of(&items, "twice");
+        let mut registry: HashMap<&String, &Definition> = HashMap::new();
+        registry.insert(&comp.name, &comp);
+        let mut items = items;
+        let n = if let Some(TopLevel::Definition(d)) = items.iter_mut().find(|it| {
+            matches!(it, TopLevel::Definition(def) if def.name == "compute")
+        }) {
+            expand_stmt_list(&mut d.body, &registry, &HashMap::new(), &HashMap::new())?
+        } else {
+            panic!("compute defn not found");
+        };
+        assert_eq!(n, 1, "one composite call expanded in the defn body");
+        let TopLevel::Definition(d) = &items[1] else {
+            panic!("compute defn");
+        };
+        let dump = format!("{:?}", d.body);
+        assert!(!dump.contains("twice!"), "call spliced: {dump}");
+        assert!(dump.contains("Mul"), "twice body spliced: {dump}");
+        Ok(())
+    }
+
+    #[test]
+    fn composite_expands_in_operator_member_body() -> Result<(), String> {
+        // TypeDefOperator is Defn-shaped — the walker covers it. (In a real
+        // parse the op member nests inside `TopLevel::TypeDef`; the driver
+        // walk covers it once surfaced, and expand_top_level has the arm.)
+        let comp = defn_of(
+            &parse_program("$defn twice(x: Expr) { let r2: Int = x * 2; };"),
+            "twice",
+        );
+        let mut registry: HashMap<&String, &Definition> = HashMap::new();
+        registry.insert(&comp.name, &comp);
+        let mut op_member = crate::ast::top::Definition {
+            name: "Count".to_string(),
+            type_params: vec![],
+            parameters: vec![],
+            outputs: vec![],
+            output_type: None,
+            contract: crate::ast::top::Contract::new(Expr::Bool(true), Expr::Bool(true)),
+            body: vec![
+                Statement::Expression(Expr::PluginIntercept {
+                    name: "twice".into(),
+                    args: vec![Expr::Decimal(3)],
+                    type_args: vec![],
+                    receiver: None,
+                    chain_refs: vec![],
+                }),
+                Statement::Term(Some(Expr::Identifier("r2".into()))),
+            ],
+            metadata: Default::default(),
+            derivation: None,
+            modifiers: vec![],
+            annotations: vec![],
+            variadic_param: None,
+            span: None,
+            doc: None,
+        };
+        let mut item = TopLevel::TypeDefOperator(op_member);
+        let n = expand_top_level(&mut item, &registry, &HashMap::new(), &HashMap::new())?;
+        assert_eq!(n, 1, "one composite call expanded in the operator member");
+        Ok(())
     }
 
     // ── 2026-09-22 (unified-metaprogramming plan, C3) ───────────────────

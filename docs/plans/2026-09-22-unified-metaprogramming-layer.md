@@ -120,9 +120,14 @@ $defn execute_many(...calls: Expr) {
   string the same way it gates on an Int — `match s { "abc" => … }` splices
   only the taken arm. `literal_expr` round-trips Str. 3 tests; the
   softmax/execute_many/val composites unchanged.
-- **C4 — uniform AST walker**: one visitor over every statement-bearing
-  `TopLevel` + nested/expression positions (replaces the hand-rolled
-  `expand_stmt_list`/`expand_nested` pair).
+- **C4 — uniform AST walker — DONE 2026-09-22**: `expand_top_level` walks
+  EVERY statement-bearing `TopLevel` — runtime `defn` bodies (previously a
+  dead end), `TypeDefOperator` members, `Cell` member txns/defns, top-level
+  `Statement` slots, reactive txns, and compile-time defns — replacing the
+  Transaction-only walk. A composite call now expands in any body it
+  appears in (`defn f() { comp!(x); … }` works). 2 tests (runtime defn body,
+  operator member); the value-position `expand_expr_values` recursion from
+  C2 already covers nested expressions.
 - **C5 — topology emission**: composites may emit `async node`/`sync<g>
   node` — the schedule-generation purpose, Rule-22 classification carried in
   the language, not the compiler.
