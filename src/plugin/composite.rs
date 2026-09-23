@@ -117,6 +117,56 @@ pub fn expand_composite_invocation(
     comptime: &HashMap<String, ComptimeVal>,
     state_types: &HashMap<String, Type>,
 ) -> Result<Vec<Statement>, String> {
+    let (body, _) = expand_composite_body(def, args, comptime, state_types)?;
+    Ok(body)
+}
+
+/// Expand a composite in EXPRESSION position to a value (2026-09-22
+/// unified-metaprogramming plan, C2): the folded body becomes an
+/// `Expr::Block` whose value is the composite's `-> Type` return. The
+/// trailing `term v` (or a trailing value `Expression(v)`) becomes the
+/// block's value statement; the block types as `v`'s type (the typechecker
+/// types a block ending in `Expression(e)` as `e`'s type — matching the
+/// interpreter's `eval_block` and the backend's last-register return). A
+/// value-position call of a composite WITHOUT a value term is an error.
+pub fn expand_composite_value(
+    def: &Definition,
+    args: &[Expr],
+    comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) -> Result<Expr, String> {
+    let (mut body, value) = expand_composite_body(def, args, comptime, state_types)?;
+    let value = value.ok_or_else(|| {
+        format!(
+            "composite '{}' is used in value position but its body yields no \
+             value — a value composite must end in `term v;` or a trailing \
+             value expression",
+            def.name
+        )
+    })?;
+    // Convert the trailing value statement into the block's value. If it's a
+    // `term v`, drop the term marker — the block ends in `Expression(v)` so
+    // eval/emit produce v as the block value (never a function return).
+    if let Some(last) = body.last_mut() {
+        if matches!(last, Statement::Term(Some(_))) {
+            *last = Statement::Expression(value);
+        }
+    }
+    Ok(Expr::Block(body))
+}
+
+/// The shared core of composite expansion (2026-09-22 unified-metaprogramming
+/// plan): validate signature/arity/hygiene, generate, substitute, splice the
+/// rest-foreach, fold. Returns the folded statement body and, when the
+/// composite declares a `-> Type`, the value expression the body yields (the
+/// trailing `term v`'s value) — statement-position expansion ignores it,
+/// expression-position expansion wraps it in an `Expr::Block`.
+fn expand_composite_body(
+    def: &Definition,
+    args: &[Expr],
+    comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) -> Result<(Vec<Statement>, Option<Expr>), String> {
     let name = &def.name;
     let Some((params, exposed, rest)) = composite_signature(def) else {
         return Err(format!(
@@ -160,7 +210,19 @@ pub fn expand_composite_invocation(
     if def.contract.post_condition != trivial {
         out.push(Statement::Gate(def.contract.post_condition.clone()));
     }
-    Ok(out)
+    let value = composite_value_expr(&out);
+    Ok((out, value))
+}
+
+/// The value a composite's folded body yields: the expression of its trailing
+/// `term v` statement, when the composite declares a `-> Type` (2026-09-22).
+/// A body without a value term yields `None` — statement-position expansion
+/// only. Expression-position expansion requires a value and errors if absent.
+fn composite_value_expr(body: &[Statement]) -> Option<Expr> {
+    match body.last() {
+        Some(Statement::Term(Some(e))) | Some(Statement::Expression(e)) => Some(e.clone()),
+        _ => None,
+    }
 }
 
 // ── Comptime fold (plan 2026-09-21-comptime-fold-expansion) ────────────
@@ -1072,7 +1134,8 @@ fn expand_stmt_list(
     Ok(n)
 }
 
-/// Recurse into the statement kinds that carry nested statement lists.
+/// Recurse into the statement kinds that carry nested statement lists, and
+/// expand value-position composite calls inside expressions.
 fn expand_nested(
     s: &mut Statement,
     registry: &HashMap<&String, &Definition>,
@@ -1087,6 +1150,108 @@ fn expand_nested(
         | Statement::Defer(body)
         | Statement::Mutex(body) => {
             expand_stmt_list(body, registry, comptime, state_types)?;
+        }
+        // 2026-09-22 (unified-metaprogramming plan, C2): expression-position
+        // composites (`let r = f!(x)`, `r = f!(x)`, `f!(x);`) expand to a
+        // value block. Nested value calls are resolved depth-first by the
+        // expression walker's recursion.
+        Statement::Let { expr: Some(e), .. } => {
+            expand_expr_values(e, registry, comptime, state_types)?;
+        }
+        Statement::Assign(_, r) => {
+            expand_expr_values(r, registry, comptime, state_types)?;
+        }
+        Statement::Expression(e) => {
+            // A bare `name!(...)` statement is the statement-position path —
+            // expand_stmt_list splices it. Only walk NESTED value calls
+            // (e.g. `f!(x).field`, `g(f!(x))`).
+            if !matches!(&*e, Expr::PluginIntercept { receiver: None, .. }) {
+                expand_expr_values(e, registry, comptime, state_types)?;
+            }
+        }
+        Statement::Term(Some(e)) => {
+            expand_expr_values(e, registry, comptime, state_types)?;
+        }
+        Statement::Check(e) | Statement::Gate(e) => {
+            expand_expr_values(e, registry, comptime, state_types)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Expand value-position composite invocations throughout an expression
+/// (2026-09-22 unified-metaprogramming plan, C2). A `name!(args...)` whose
+/// name resolves to a value composite becomes `Expr::Block` of the expanded
+/// body; the walk recurses into the expansion result so a composite body's
+/// nested calls also resolve (the fixpoint loop re-walks statements, this
+/// recursion covers nested expressions inside one call).
+fn expand_expr_values(
+    e: &mut Expr,
+    registry: &HashMap<&String, &Definition>,
+    comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) -> Result<(), String> {
+    match e {
+        Expr::PluginIntercept {
+            name,
+            args,
+            receiver: None,
+            ..
+        } => {
+            if let Some(def) = registry.get(name) {
+                let block = expand_composite_value(def, args, comptime, state_types)?;
+                // Recurse into the expanded block so nested value calls in
+                // the composite body resolve before the block is spliced.
+                let mut inner = block;
+                expand_expr_values(&mut inner, registry, comptime, state_types)?;
+                *e = inner;
+            }
+        }
+        Expr::Call(_, a, _) => {
+            for x in a.iter_mut() {
+                expand_expr_values(x, registry, comptime, state_types)?;
+            }
+        }
+        Expr::MethodCall(r, _, a, _, _) => {
+            expand_expr_values(r, registry, comptime, state_types)?;
+            for x in a.iter_mut() {
+                expand_expr_values(x, registry, comptime, state_types)?;
+            }
+        }
+        Expr::BinaryOp(_, l, r) => {
+            expand_expr_values(l, registry, comptime, state_types)?;
+            expand_expr_values(r, registry, comptime, state_types)?;
+        }
+        Expr::UnaryOp(_, x) => expand_expr_values(x, registry, comptime, state_types)?,
+        Expr::Index(o, i) => {
+            expand_expr_values(o, registry, comptime, state_types)?;
+            expand_expr_values(i, registry, comptime, state_types)?;
+        }
+        Expr::Cast(x, _) | Expr::Deref(x) | Expr::AddrOf(x) | Expr::Consume(x)
+        | Expr::Await(x) => expand_expr_values(x, registry, comptime, state_types)?,
+        Expr::Range { start, end, .. } => {
+            expand_expr_values(start, registry, comptime, state_types)?;
+            expand_expr_values(end, registry, comptime, state_types)?;
+        }
+        Expr::Tuple(xs) | Expr::List(xs) => {
+            for x in xs.iter_mut() {
+                expand_expr_values(x, registry, comptime, state_types)?;
+            }
+        }
+        Expr::Match(scrut, arms) => {
+            expand_expr_values(scrut, registry, comptime, state_types)?;
+            for a in arms.iter_mut() {
+                if let Some(g) = a.guard.as_mut() {
+                    expand_expr_values(g, registry, comptime, state_types)?;
+                }
+                expand_expr_values(a.body.as_mut(), registry, comptime, state_types)?;
+            }
+        }
+        Expr::Block(stmts) => {
+            for s in stmts.iter_mut() {
+                expand_nested(s, registry, comptime, state_types)?;
+            }
         }
         _ => {}
     }
@@ -2341,6 +2506,77 @@ async node k [i < 1][i == 1] {
         .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("Foreach"), "runtime loop kept: {dump}");
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan, C2) ───────────────────
+    // Value-returning composites: `$defn f(...) -> T { ...; term v; }` used
+    // in EXPRESSION position expands to an `Expr::Block` whose value is the
+    // composite's return. The trailing `term` becomes the block's value
+    // statement (never a function return).
+
+    #[test]
+    fn value_composite_expands_to_value_block() {
+        let items = parse_program(
+            "$defn aligned_size(n: expr) -> Int { term (n + 15) & ~15; };",
+        );
+        let d = defn_of(&items, "aligned_size");
+        let block = expand_composite_value(
+            &d,
+            &[Expr::Decimal(4)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands to value");
+        let Expr::Block(stmts) = block else {
+            panic!("expected Expr::Block, got {block:?}");
+        };
+        assert!(!stmts.is_empty());
+        // The trailing term became a value expression — the block yields it.
+        assert!(
+            matches!(stmts.last(), Some(Statement::Expression(_))),
+            "trailing value statement: {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn value_composite_without_term_is_an_error() {
+        let items = parse_program(
+            "$defn no_value(x: expr) { let y: Int = x; };",
+        );
+        let d = defn_of(&items, "no_value");
+        let err = expand_composite_value(
+            &d,
+            &[Expr::Decimal(1)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("value position"),
+            "expected value-position diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn statement_composite_still_expands_to_statements() {
+        // A statement composite (no -> Type) keeps statement expansion;
+        // its body's trailing term is NOT converted to a value statement.
+        let items = parse_program(
+            "$defn execute_many(...calls: expr) { foreach c in calls { c; } };",
+        );
+        let d = defn_of(&items, "execute_many");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Call("f".into(), vec![Expr::Decimal(1)], None)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        assert_eq!(out.len(), 1);
+        let Statement::Expression(Expr::Call(name, _, _)) = &out[0] else {
+            panic!("expected a call, got {:?}", out[0]);
+        };
+        assert_eq!(name, "f");
     }
 }
 

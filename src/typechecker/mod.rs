@@ -971,7 +971,18 @@ pub fn infer_expression(
             for stmt in stmts {
                 infer_statement(stmt, ctx)?;
             }
-            Ok((Type::void(), Provenance::Unknown))
+            // 2026-09-22 (unified-metaprogramming plan, C2): a block ending
+            // in a trailing value expression types as that value — matching
+            // the interpreter's eval_block (last statement's result) and the
+            // backend's Expr::Block (last register). A value-returning
+            // composite expands to such a block; an ordinary statement block
+            // ends in a non-value statement and stays void.
+            match stmts.last() {
+                Some(Statement::Expression(e)) => {
+                    infer_type_only(e, ctx).map(|t| (t, Provenance::Unknown))
+                }
+                _ => Ok((Type::void(), Provenance::Unknown)),
+            }
         }
         Expr::If(cond, then, else_) => {
             infer_if(cond, then, else_, ctx).map(|ty| (ty, Provenance::Unknown))

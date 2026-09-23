@@ -310,7 +310,11 @@ impl<'a> Builder<'a> {
             Statement::FreeHint(_) => {
                 // Scheduler auto-free lowers to `__briev_free` for heap
                 // fields; the explicit hint is the AST-visible form.
+                // 2026-09-22 (soundness-net catch): a freed TASK HANDLE
+                // additionally lowers to `briev_task_cancel_impl` — root
+                // both so async programs pass the IR scan.
                 self.mark("__briev_free", queue);
+                self.mark("briev_task_cancel_impl", queue);
             }
             other => self.walk_stmt_rest(other, queue),
         }
@@ -418,7 +422,11 @@ impl<'a> Builder<'a> {
             Expr::Spawn { type_name, args, .. } => {
                 // `spawn defn(args)` = task spawn of the defn; `spawn Obj(…)`
                 // constructs the obj base — either way its members join.
+                // 2026-09-22 (soundness-net catch): a task spawn lowers to
+                // `briev_task_spawn_impl` in the backend — root it here so
+                // async-tasks-style programs pass the IR scan.
                 self.mark(type_name, queue);
+                self.mark("briev_task_spawn_impl", queue);
                 self.on_construction(type_name, queue);
                 for a in args {
                     self.walk_expr(a, queue);
@@ -535,8 +543,13 @@ impl<'a> Builder<'a> {
             Expr::Deref(inner)
             | Expr::AddrOf(inner)
             | Expr::Consume(inner)
-            | Expr::Await(inner)
             | Expr::Named { inner, .. } => self.walk_expr(inner, queue),
+            Expr::Await(inner) => {
+                // 2026-09-22 (soundness-net catch): `await` lowers to
+                // `briev_await_impl` in the backend — root it here.
+                self.mark("briev_await_impl", queue);
+                self.walk_expr(inner, queue);
+            }
             Expr::PluginIntercept { args, .. } => {
                 for a in args {
                     self.walk_expr(a, queue);
@@ -583,6 +596,16 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
             "__print_char",
             "__stdout_byte",
             "__stdout_flush",
+            // 2026-09-22 (soundness-net catch): the print/string lowering may
+            // emit these even in a trivial `Print#(r)` program — the cast
+            // lanes route String↔Int through str_to_int/int_to_str, the
+            // scheduler auto-free lowers to __briev_free, and Slice# on a
+            // String routes through briev_str_substr. Root them with the
+            // family so a minimal print program does not trip the net.
+            "str_to_int",
+            "int_to_str",
+            "__briev_free",
+            "briev_str_substr",
         ],
         // Slice# on `#String` values routes through the substring helper.
         "Slice#" => &["briev_str_substr"],

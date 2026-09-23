@@ -98,9 +98,20 @@ $defn execute_many(...calls: expr) {
 
 ## Phase 2 — unification (intermediate commits)
 
-- **C2 — value-returning composites**: `term v` alpha-renamed, wrapped in
-  `Expr::Block` → `let r = f!(x)` works; never leaks into the caller's
-  node (today a body `term` silently truncates the caller).
+- **C2 — value-returning composites — DONE 2026-09-22**: `term v`
+  alpha-renamed, wrapped in `Expr::Block` → `let r = f!(x)` works; never
+  leaks into the caller's node. `expand_composite_body` is the shared core;
+  `expand_composite_value` wraps the folded body in a block whose trailing
+  `term v` becomes `Statement::Expression(v)` — the block types as the value
+  (typechecker now types a block ending in `Expression(e)` as `e`'s type,
+  matching interpreter+backend). `expand_expr_values` walks expression
+  positions (let inits, assign RHS, call args, match scrutinee/arms) and
+  expands value composites depth-first. Side fix (soundness-net catch,
+  pre-existing): cold-outline guard functions now thread `ptr %state` — the
+  outline referenced `%state` via observable intrinsics (Print#) with no
+  state param; and the liveness table roots `briev_await_impl`,
+  `briev_task_spawn_impl`, `briev_task_cancel_impl` at their constructs —
+  async-tasks.bv now compiles (was a hard liveness panic).
 - **C3 — one value domain**: reconcile `NavValue` (stage fns) and
   `ComptimeVal` (composites); a body computes (`let x = list`) AND emits
   (`foreach over x`) in one pass.

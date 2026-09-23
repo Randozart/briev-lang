@@ -2489,6 +2489,24 @@ Rules:
 - Composites expand BEFORE typecheck: typecheck, contracts, and both
   backends see the emitted calls as if hand-written.
 
+**Value-returning composites (2026-09-22).** A composite declaring `-> Type`
+may be invoked in EXPRESSION position (`let r = f!(x)`, `r = f!(x)`,
+`g(f!(x))`, a match scrutinee or arm). The expansion produces an
+`Expr::Block` whose value is the composite's return: the body's trailing
+`term v` becomes the block's value statement, never a function return, so
+the caller's node is not truncated. A value-position call of a composite
+whose body yields no value is an error naming the composite. Statement
+position (the body as a splice) remains the default for body-only
+composites; the two are distinguished by whether the call site needs a
+value.
+
+```briev
+$defn aligned_size(n: expr) -> Int {
+    term (n + 15) & ~15;
+};
+let r: Int = aligned_size!(4);   // r = 20 — computed at the call site
+```
+
 ### 18.3 Stages
 
 ```briev

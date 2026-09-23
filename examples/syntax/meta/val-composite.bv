@@ -1,0 +1,18 @@
+// SPEC §18.2 — value-returning composite (unified-metaprogramming C2). A
+// composite with `-> Type` used in EXPRESSION position expands to an
+// `Expr::Block` whose value is the composite's return. The trailing `term`
+// becomes the block's value statement (never a function return) — so
+// `let r = aligned!(4)` computes the value at the call site, and the block
+// types as the composite's return type.
+
+$defn aligned_size(n: expr) -> Int {
+    term (n + 15) & ~15;
+};
+
+let i: Int = 0;
+let r: Int;
+async node val_user [i < 1][i == 1] {
+    r = aligned_size!(4);
+    i = i + 1;
+    term;
+};
