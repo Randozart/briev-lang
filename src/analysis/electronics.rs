@@ -479,6 +479,23 @@ fn resolve_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInstance>, ty
             break;
         }
     }
+    // 2026-09-23 (E14a gate): a BARE indexed pin — `u1.en = u2.gpio[0]`,
+    // `j2.sig[0] = u2.swdio` — has shape Index(Field(inst, arr), i) with no
+    // outer Field to carry the property strip. Normalize it to the
+    // bracketed element name against the same tables.
+    if let Expr::Index(inner, idx) = cur {
+        let Expr::Field(inst_base, arr_name) = inner.as_ref() else {
+            return None;
+        };
+        let Expr::Identifier(inst_name) = inst_base.as_ref() else {
+            return None;
+        };
+        let Expr::Decimal(d) = idx.as_ref() else {
+            return None;
+        };
+        let pin_name = format!("{}[{}]", arr_name, d);
+        return lookup_pin(inst_name, &pin_name, instances, type_pins);
+    }
     let Expr::Field(base, pin_name) = cur else { return None };
     // 2026-09-21 (E11): `u2.gpio[3]` — indexed element of a pin array.
     // The parser expanded the array into elements named `gpio[0]…`, so
@@ -504,12 +521,22 @@ fn resolve_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInstance>, ty
         },
         _ => return None,
     };
-    let inst = instances.get(&inst_name)?;
+    lookup_pin(&inst_name, &pin_name, instances, type_pins)
+}
+
+/// Shared pin-table lookup: instance name + expanded pin name → PinRef.
+fn lookup_pin(
+    inst_name: &str,
+    pin_name: &str,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> Option<PinRef> {
+    let inst = instances.get(inst_name)?;
     let pins = type_pins.get(&inst.type_name)?;
-    let (_, number) = pins.iter().find(|(n, _)| n == &pin_name)?;
+    let (_, number) = pins.iter().find(|(n, _)| n == pin_name)?;
     Some(PinRef {
         component: inst.name.clone(),
-        pin: pin_name,
+        pin: pin_name.to_string(),
         number: *number,
     })
 }
@@ -1540,17 +1567,26 @@ fn bridges_rail(
 /// pin to a return-class pin of the same instance. Property-driven
 /// throughout: the compiler knows no type or class names, only the
 /// property interface (Rules 14/15).
-fn check_decoupling(ctx: &mut NetlistContext) -> Vec<String> {
+/// 2026-09-23 (E14a gate): an `unpop` decoupler does NOT bridge — the
+/// convention is a PRESENT-state obligation (the populated board must
+/// have the capacitor); its pads stay on the sheet, but an absent part
+/// carries no capacitance.
+fn check_decoupling(
+    ctx: &mut NetlistContext,
+    unpop: &std::collections::HashSet<String>,
+) -> Vec<String> {
     let mut errors = Vec::new();
     let decouplers: Vec<&ComponentInstance> = ctx
         .instances
         .values()
         .filter(|c| {
-            ctx.type_props
-                .get(&c.type_name)
-                .and_then(|m| m.get("decoupler"))
-                .and_then(property_bool)
-                .unwrap_or(false)
+            !unpop.contains(&c.name)
+                && ctx
+                    .type_props
+                    .get(&c.type_name)
+                    .and_then(|m| m.get("decoupler"))
+                    .and_then(property_bool)
+                    .unwrap_or(false)
         })
         .map(|c| *c)
         .collect();
@@ -1837,6 +1873,8 @@ struct FactSink<'a> {
     proofs: &'a mut Vec<String>,
     errors: &'a mut Vec<String>,
     intents: &'a mut Vec<(String, String)>,
+    /// 2026-09-23 (E14a gate): pin-level drive intents `u1.en = true;`.
+    pin_intents: &'a mut Vec<(String, PinRef)>,
     bridges: &'a mut Vec<BridgeRequest>,
     /// 2026-09-22 (D16 p3b): disconnections from `open a.pin, b.pin;`.
     opens: &'a mut Vec<(Expr, Expr)>,
@@ -1937,6 +1975,130 @@ fn take_via_strategy(body: &[Statement]) -> (Option<String>, Vec<Statement>) {
 }
 
 impl FactSink<'_> {
+    /// One body assignment (E14a/D16): mechanism bridge, conditional-carve
+    /// error, drive intent (instance or pin form), or pin-to-pin wire fact —
+    /// every form contributes to the netlist or errors; nothing drops
+    /// silently.
+    fn fact_assign(
+        &mut self,
+        target: &Expr,
+        value: &Expr,
+        reg: RegionCtx,
+        ctx: &mut NetlistContext,
+    ) {
+        if reg.control.is_some() {
+            self.mechanism_bridge(target, value, reg, ctx);
+            return;
+        }
+        if let Some(desc) = reg.cond {
+            self.errors.push(format!(
+                "wiring inside `when {desc}` (node '{}') is conditional — copper cannot be. \
+                 State the condition in the node guard (making the wiring unconditional in \
+                 that region), or make it a single pin comparison and declare a switching \
+                 part (`when ... via Type;`, mechanism synthesis)",
+                self.node
+            ));
+            return;
+        }
+        if let (Expr::Identifier(name), Expr::Bool(true)) = (target, value) {
+            self.intents.push((self.node.to_string(), name.clone()));
+            return;
+        }
+        if let Expr::Bool(b) = value {
+            self.pin_drive_intent(target, *b, ctx);
+            return;
+        }
+        self.wire_fact(target, value, ctx);
+    }
+
+    /// A wiring fact under a mechanizable condition becomes a bridge
+    /// request (D16) — both sides must resolve to pins. The region carries
+    /// the control pin and the optional strategy (bundled, not passed as
+    /// loose parameters).
+    fn mechanism_bridge(
+        &mut self,
+        target: &Expr,
+        value: &Expr,
+        reg: RegionCtx,
+        ctx: &mut NetlistContext,
+    ) {
+        let Some(ctrl) = reg.control else {
+            self.errors.push(format!(
+                "wiring under a mechanism (node '{}') must be a pin-to-pin bridge",
+                self.node
+            ));
+            return;
+        };
+        let (Some(a), Some(b)) = (
+            resolve_pin(target, ctx.instances, ctx.type_pins),
+            resolve_pin(value, ctx.instances, ctx.type_pins),
+        ) else {
+            self.errors.push(format!(
+                "wiring under a mechanism (node '{}') must be a pin-to-pin bridge",
+                self.node
+            ));
+            return;
+        };
+        self.bridges.push(BridgeRequest {
+            node: self.node.to_string(),
+            a,
+            b,
+            control: ctrl.clone(),
+            via: reg.via.map(|s| s.to_string()),
+        });
+    }
+
+    /// 2026-09-23 (E14a gate): pin-level drive intent `u1.en = true;` —
+    /// the same completion rules (D13) as the instance form, addressed at
+    /// one pin. A Bool RHS is ALWAYS an intent form: a target that is not
+    /// a pin errors instead of falling through silently.
+    fn pin_drive_intent(&mut self, target: &Expr, on: bool, ctx: &NetlistContext) {
+        let Some(lp) = resolve_pin(target, ctx.instances, ctx.type_pins) else {
+            self.errors.push(format!(
+                "Bool assignment to '{}' (node '{}') is not an electronics fact — write a \
+                 drive intent (`inst = true;` or `inst.pin = true;`) or a pin-to-pin wire \
+                 (`a = b;`)",
+                target, self.node
+            ));
+            return;
+        };
+        if !on {
+            self.errors.push(format!(
+                "drive intent '{}.{} = false' (node '{}') has no form — the drive intent is \
+                 `= true` (participation); to state a connection, write the wire itself \
+                 (`a = b;`)",
+                lp.component, lp.pin, self.node
+            ));
+            return;
+        }
+        self.pin_intents.push((self.node.to_string(), lp));
+    }
+
+    /// A wiring fact: both sides resolve to declared pins and union.
+    fn wire_fact(&mut self, target: &Expr, value: &Expr, ctx: &mut NetlistContext) {
+        let (Some(lp), Some(rp)) = (
+            resolve_pin(target, ctx.instances, ctx.type_pins),
+            resolve_pin(value, ctx.instances, ctx.type_pins),
+        ) else {
+            self.errors.push(format!(
+                "assignment '{}' = '{}' (node '{}') is not an electronics fact — both sides \
+                 must resolve to declared pins (`u1.vout = r1.a;`), or use a drive intent \
+                 (`inst = true;` / `inst.pin = true;`)",
+                target, value, self.node
+            ));
+            return;
+        };
+        let lk = pin_key(&lp.component, &lp.pin);
+        let rk = pin_key(&rp.component, &rp.pin);
+        ctx.ds.make(lk.clone());
+        ctx.ds.make(rk.clone());
+        ctx.ds.union(&lk, &rk);
+        self.proofs.push(format!(
+            "wired in node '{}': {}.{} <-> {}.{}",
+            self.node, lp.component, lp.pin, rp.component, rp.pin
+        ));
+    }
+
     /// Walk statements, threading the region context (E14a/D16).
     fn walk(
         &mut self,
@@ -1950,55 +2112,7 @@ impl FactSink<'_> {
                     walk_guarded(c, inner, reg, ctx, self);
                 }
                 Statement::Assign(target, value) => {
-                    if let Some(ctrl) = reg.control {
-                        // Mechanism mode: wiring facts become bridges.
-                        let (Some(a), Some(b)) = (
-                            resolve_pin(target, ctx.instances, ctx.type_pins),
-                            resolve_pin(value, ctx.instances, ctx.type_pins),
-                        ) else {
-                            self.errors.push(format!(
-                                "wiring under a mechanism (node '{}') must be a pin-to-pin bridge",
-                                self.node
-                            ));
-                            continue;
-                        };
-                        self.bridges.push(BridgeRequest {
-                            node: self.node.to_string(),
-                            a,
-                            b,
-                            control: ctrl.clone(),
-                            via: reg.via.map(|s| s.to_string()),
-                        });
-                        continue;
-                    }
-                    if let Some(desc) = reg.cond {
-                        self.errors.push(format!(
-                            "wiring inside `when {desc}` (node '{}') is conditional — copper cannot be. \
-                             State the condition in the node guard (making the wiring unconditional in \
-                             that region), or make it a single pin comparison and declare a switching \
-                             part (`when ... via Type;`, mechanism synthesis)",
-                            self.node
-                        ));
-                        continue;
-                    }
-                    if let (Expr::Identifier(name), Expr::Bool(true)) = (target, value) {
-                        self.intents.push((self.node.to_string(), name.clone()));
-                        continue;
-                    }
-                    if let (Some(lp), Some(rp)) = (
-                        resolve_pin(target, ctx.instances, ctx.type_pins),
-                        resolve_pin(value, ctx.instances, ctx.type_pins),
-                    ) {
-                        let lk = pin_key(&lp.component, &lp.pin);
-                        let rk = pin_key(&rp.component, &rp.pin);
-                        ctx.ds.make(lk.clone());
-                        ctx.ds.make(rk.clone());
-                        ctx.ds.union(&lk, &rk);
-                        self.proofs.push(format!(
-                            "wired in node '{}': {}.{} <-> {}.{}",
-                            self.node, lp.component, lp.pin, rp.component, rp.pin
-                        ));
-                    }
+                    self.fact_assign(target, value, reg, ctx);
                 }
                 // 2026-09-22 (D16 p3b): author-expressed disconnection.
                 Statement::Open(a, b) => {
@@ -2274,6 +2388,70 @@ fn synthesize_bridges(
 /// CanDrive) may exist elsewhere. One of each — the intent wires them.
 /// Anything else is an Err naming the facts (candidates included, sorted
 /// — never a silent choice, D13).
+/// 2026-09-23 (E14a gate, D13): free drive-capable candidate pins for an
+/// intent completion — unconnected `spec CanDrive` pins of every OTHER
+/// instance, sorted so diagnostics are deterministic.
+fn free_can_drive_candidates(ctx: &NetlistContext, exclude_inst: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    for (other, oi) in ctx.instances {
+        if other == exclude_inst {
+            continue;
+        }
+        let Some(oti) = ctx.type_info.get(&oi.type_name) else {
+            continue;
+        };
+        for (i, (n, _)) in oti.pins.iter().enumerate() {
+            let key = pin_key(other, n);
+            if oti.pin_classes[i].can_drive && !pin_connected(ctx.ds, &key) {
+                candidates.push(format!("{}.{}", other, n));
+            }
+        }
+    }
+    candidates.sort();
+    candidates
+}
+
+/// 2026-09-23 (E14a gate): pin-level drive intent `u1.en = true;` — the
+/// pin completes against the sole unconnected drive-capable pin elsewhere
+/// (same D13 rules as the instance form). An already-connected pin
+/// records — the intent states participation, not a new edge.
+fn complete_pin_intent(
+    pin: &PinRef,
+    node: &str,
+    ctx: &mut NetlistContext,
+) -> Result<String, String> {
+    let key = pin_key(&pin.component, &pin.pin);
+    if pin_connected(ctx.ds, &key) {
+        return Ok(format!(
+            "pin intent '{}.{} = true' (node '{}'): already connected — recorded",
+            pin.component, pin.pin, node
+        ));
+    }
+    let candidates = free_can_drive_candidates(ctx, &pin.component);
+    match candidates.len() {
+        0 => Err(format!(
+            "pin intent '{}.{} = true' (node '{}') has no completion: no unconnected drive-capable pin (spec CanDrive) remains in scope",
+            pin.component, pin.pin, node
+        )),
+        1 => {
+            let mut parts = candidates[0].splitn(2, '.');
+            let (co, cp) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            let rk = pin_key(co, cp);
+            ctx.ds.make(key.clone());
+            ctx.ds.make(rk.clone());
+            ctx.ds.union(&key, &rk);
+            Ok(format!(
+                "wired by pin intent '{}.{} = true' (node '{}'): {}.{} <-> {} — single drive-capable candidate",
+                pin.component, pin.pin, node, pin.component, pin.pin, candidates[0]
+            ))
+        }
+        n => Err(format!(
+            "pin intent '{}.{} = true' (node '{}') is ambiguous: {} drive-capable pins could complete it ({}). State the connection explicitly in the node guard",
+            pin.component, pin.pin, node, n, candidates.join(", ")
+        )),
+    }
+}
+
 fn complete_intent(
     inst_name: &str,
     node: &str,
@@ -2319,22 +2497,7 @@ fn complete_intent(
             names.join(", ")
         ));
     }
-    let mut candidates: Vec<String> = Vec::new();
-    for (other, oi) in ctx.instances {
-        if other == inst_name {
-            continue;
-        }
-        let Some(oti) = ctx.type_info.get(&oi.type_name) else {
-            continue;
-        };
-        for (i, (n, _)) in oti.pins.iter().enumerate() {
-            let key = pin_key(other, n);
-            if oti.pin_classes[i].can_drive && !pin_connected(ctx.ds, &key) {
-                candidates.push(format!("{}.{}", other, n));
-            }
-        }
-    }
-    candidates.sort();
+    let candidates = free_can_drive_candidates(ctx, inst_name);
     match candidates.len() {
         0 => Err(format!(
             "drive intent '{} = true' (node '{}') has no completion: no unconnected drive-capable pin (spec CanDrive) remains in scope",
@@ -2375,6 +2538,7 @@ fn collect_intents(
     let mut errors = Vec::new();
     let mut proofs = Vec::new();
     let mut intents: Vec<(String, String)> = Vec::new();
+    let mut pin_intents: Vec<(String, PinRef)> = Vec::new();
     let mut bridges: Vec<BridgeRequest> = Vec::new();
     let mut opens: Vec<(Expr, Expr)> = Vec::new();
     for item in items {
@@ -2386,6 +2550,7 @@ fn collect_intents(
             proofs: &mut proofs,
             errors: &mut errors,
             intents: &mut intents,
+            pin_intents: &mut pin_intents,
             bridges: &mut bridges,
             opens: &mut opens,
         };
@@ -2394,6 +2559,15 @@ fn collect_intents(
     let synthesized = synthesize_bridges(ctx, &bridges, &mut proofs, &mut errors);
     for (node, inst_name) in &intents {
         match complete_intent(inst_name, node, ctx) {
+            Ok(proof) => proofs.push(proof),
+            Err(e) => errors.push(e),
+        }
+    }
+    // 2026-09-23 (E14a gate): pin-level intents run after the instance
+    // forms — facts and instance completions have claimed their copper,
+    // so a pin intent records or completes against what remains.
+    for (node, pin) in &pin_intents {
+        match complete_pin_intent(pin, node, ctx) {
             Ok(proof) => proofs.push(proof),
             Err(e) => errors.push(e),
         }
@@ -2633,7 +2807,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     // 2026-09-21 (E13): the decoupling convention runs on the finished
     // netlist — every union is final when it fires.
     let mut ctx = NetlistContext::new(items, &mut ds, &type_pins, &type_info, &instances);
-    let convention_errors = check_decoupling(&mut ctx);
+    let convention_errors = check_decoupling(&mut ctx, &unpop);
     // 2026-09-21 (E7): source-pin budgets run last — they read the
     // derived per-net currents the voltage fixpoint just produced.
     let budget_errors =

@@ -64,6 +64,11 @@ discrete resistors is physically impossible; 27B belongs to the silicon
 track below.
 
 ### E1 — Mass instantiation absent (flat `let` instances only)
+- **Status:** CLOSED 2026-09-23 (Slice 1 + E14a gate; commits `3de75d26`,
+  Slice 2–5). Landed surface: `let r_pu[2]: Resistor = …;` and
+  `let c[i:5]: Capacitor = …;` (optional index name), multi-dim
+  (`[i:16][j:8]`) chained, desugared at parse to per-element
+  `ComponentInstance`s; the netlist/emitter/BOM run per element unchanged.
 - **Evidence:** instances are single top-level `let`s
   (`examples/electronics/led_blinker.ebv:46-48`); `ComponentInstance`
   (`src/analysis/electronics.rs:31`) carries no index dimensions;
@@ -75,7 +80,9 @@ track below.
   index; union-find netlist derivation runs per element unchanged.
 - **Gate:** emitted netlist + KiCad for `i×j` instances identical
   (modulo designator suffixes) to a hand-unrolled reference file; byte-
-  deterministic emission.
+  deterministic emission. Proven by
+  `instance_array_emission_matches_hand_unrolled` and the
+  `usb_sensor_emission_is_deterministic` gate test.
 - **Effort:** M
 
 ### E2 — No data tables feeding instance values
@@ -176,6 +183,10 @@ track below.
 - **Effort:** S
 
 ### E10 — Stale electronics docs + committed artifact drift
+- **Status:** CLOSED 2026-09-23 (E14a gate Slice 5): deferred list
+  refreshed in `docs/architecture/electronics-frontend.md`;
+  `examples/electronics/led_blinker.kicad_sch` regenerated from the
+  current emitter.
 - **Evidence:** `docs/architecture/electronics-frontend.md` "Deferred"
   section claims named nets and unit suffixes are unbuilt — both landed
   (`src/parser/expressions.rs` `at_net_prefix :88`, `is_unit_suffix :14`,
@@ -481,6 +492,53 @@ With this, every E-track prerequisite for the usb_sensor gate fixture is
 in place: classes (E12), arrays (E11), decoupling (E13), budgets (E7).
 E14a — intent completion: node guards, drive maps, keep/store ambiguity
 machinery — is the next and final slice before the fixture can compile.
+
+### Amendment 2026-09-23: E14a GATE PASSED — usb_sensor fixture compiles
+
+The §3.2 gate fixture (`examples/electronics/usb_sensor.ebv`) compiles
+end-to-end to a `.kicad_sch` (plan `2026-09-23-ebv-gate-fixture.md`).
+**E14a is CLOSED** by its gate: fixture compiles, error matrix passes
+(four negatives — ambiguous intent enumerates candidates, dropped gnd
+path dangles, removed decap breaks the E13 convention, `open` on wired
+pins refuses), netlist + emission byte-deterministic. General fixes the
+fixture surfaced (none fixture-shaped, Rules 14/15/24):
+
+- **prelude-electronics** now injects `std/electronics.bv` into
+  import-less sources (anchored on the first type declaration). Without
+  it every class ascription resolved to a not-in-scope class error and
+  defaulted to `can_drive: false` — a real fixture with no imports never
+  saw the class fundamentals.
+- **resolve_pin** handles a BARE indexed pin (`u2.gpio[0]`, `j2.sig[0]` —
+  shape `Index(Field(inst, arr), i)` without an outer property access);
+  extracted a shared `lookup_pin` tail.
+- **Pin-level drive intents** `u1.en = true;` landed (previously the
+  field form was silently dropped by `body_facts`): `FactSink` now
+  routes every body assignment through a form check — mechanism bridge,
+  conditional error, instance intent, pin intent, or pin-to-pin wire —
+  and anything unrecognized is a hard error, never a silent no-op. The
+  pin intent completes against the sole free drive-capable pin elsewhere
+  (same D13 ambiguity enumeration as the instance form); an
+  already-connected pin records.
+- **Typechecker** admits declarative electronics intents (`inst = true;`,
+  `inst.pin = true;` assign Bool to a pin/instance target) and registers
+  instance-array base names (`r_pu` from `r_pu[0]`) as vectors so
+  `r_pu[0].a` typechecks at the top level.
+- **Reference designators** number per PREFIX across the sheet (two
+  types sharing `reference "U"` must read U1, U2, U3 — three U1s are
+  invalid KiCad); the old per-type counters were a latent bug.
+- **E13 convention** is a PRESENT-state obligation: an `unpop` decoupler
+  no longer satisfies it (its pads remain on the sheet; an absent part
+  carries no capacitance).
+
+NEW open gap — **`derive` on types** (`type Led { derive on: a.current
+>= 2mA; }`): §3.2's type-level per-instance obligation still has no
+landed clause; the fixture states it as a use-site txn postcondition.
+Owner: fixture; triggers when a second class wants a per-instance
+obligation — property-driven, `spec` form, per D6.
+
+E14b (pure intent — no explicit equalities) remains OPEN; every
+explicit equality the fixture needed beyond the drive map is marked
+`// E14b:` in the file and recorded in the design record's gate delta.
 
 ### Amendment 2026-09-21 (night, II): E14a slice 1 — node-body intents
 

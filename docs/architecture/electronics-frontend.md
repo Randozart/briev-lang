@@ -58,10 +58,21 @@ wrong tree for conjoined obligations. `==` sits at equality level, ABOVE
 
 ## Deferred (recorded, not built)
 
-Named nets (opt-in binding for contract/metadata use), electrical pin roles
-(`[power_in]`), unit suffixes (`2A`, `3.3V`) as literal syntax, footprint
-validation against KiCad libraries, serializer support for `PinDecl`
-(deserialize defaults to empty — beast round-trip of pins is a follow-on).
+Electrical pin roles (`[power_in]`), footprint validation against KiCad
+libraries, serializer support for `PinDecl` (deserialize defaults to empty
+— beast round-trip of pins is a follow-on), per-pin tolerances, LLVM/GPU
+representation (awaits simulation), PinDecl in cell bodies' beast
+serialization, `derive` clauses on types (2026-09-23 — recorded in the
+hardware-dialect ledger as OPEN after the E14a gate; the fixture states
+the obligation as a use-site txn postcondition).
+
+Landed since the list was written: named nets (`net <name>:` — 2026-09-12),
+unit suffixes (`3.3V`/`20mA`/`330R` — 2026-09-12), instance arrays
+(`let r[i:16][j:8]` — 2026-09-23, E1, Slice 1), pin-level drive intents
+(`inst.pin = true;` — 2026-09-23, E14a gate), the E13 decoupling
+convention, the E14a intent-completion machinery, and per-prefix
+reference designators. The §3.2 USB-sensor gate fixture
+(`examples/electronics/usb_sensor.ebv`) compiles to a `.kicad_sch`.
 
 ## Tests
 
@@ -135,4 +146,16 @@ clause is an undeclared decision; within-rating records a proof fact.
 One-sided parts (no proven ΔV) and zero-drop straps force nothing.
 
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
-simulation), PinDecl in cell bodies' beast serialization, pin roles.
+simulation), PinDecl in cell bodies' beast serialization, pin roles,
+`derive` on types.
+
+**2026-09-23 (E14a gate, plan `2026-09-23-ebv-gate-fixture.md`):** the
+§3.2 USB-sensor fixture compiles to a `.kicad_sch` and its four-case
+error matrix passes. The gate surfaced general fixes — see the hardware-
+dialect ledger Amendment 2026-09-23: the prelude-electronics class
+injection into import-less sources, bare indexed-pin resolution
+(`u2.gpio[0]`), pin-level drive intents (previously a silent drop),
+declarative-intent admission + instance-array base names in the
+typechecker, per-prefix reference designators (duplicate references are
+invalid KiCad), and the present-state (unpop-excluded) decoupling check.
+The demo artifact is `examples/electronics/usb_sensor.ebv`.

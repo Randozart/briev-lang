@@ -322,13 +322,45 @@ motherboard-class gate.
 
 | Stage | Scope | Gate |
 |---|---|---|
-| **E14a** | intent-*completion*: explicit equalities still allowed; drive-map intents (`led1 = true`) infer the remaining memberships; ambiguity = enumerated-candidate errors; pin classes, vol, spec, population, chain desugar; lifting slots RETRACTED (2026-09-22) — no solver substrate | §3.2 fixture compiles + its error matrix; netlist/KiCad deterministic |
+| **E14a** | intent-*completion*: explicit equalities still allowed; drive-map intents (`led1 = true`) infer the remaining memberships; ambiguity = enumerated-candidate errors; pin classes, vol, spec, population, chain desugar; lifting slots RETRACTED (2026-09-22) — no solver substrate | §3.2 fixture compiles + its error matrix; netlist/KiCad deterministic — **GATE PASSED 2026-09-23** (see gate delta below) |
 | **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized |
 
 Both stages: `L`. E14a ships useful even if E14b stalls (strict
 generalization order). Prerequisite gap work (E11 pin arrays, E12 pin
 classes, E13 spec-clause convention checks, E7 budgets-on-pins) lands as
 separate additive passes per the gap registry.
+
+### E14a gate delta (2026-09-23) — what the fixture needed beyond pure intent
+
+The §3.2 fixture (`examples/electronics/usb_sensor.ebv`) compiled with the
+translation table of plan `2026-09-23-ebv-gate-fixture.md`. Every site
+where E14a had to state MORE than §3.2's pure-intent form is an E14b
+backlog item, each marked `// E14b:` in the fixture file:
+
+1. **Rails and returns** (VBUS, 3v3, gnd) stated as guard equalities —
+   E14b deletes them (pure intent states behavior only).
+2. **io_od pull-up placement** (`r_pu[*]` to `u1.vout`) stated explicitly —
+   §3.2 relied on solver-side forcing of the released (high-Z) net; E14b
+   wires `r_pu[*]` from the pull-up physics alone.
+3. **`u1.en` wiring** — stated as an explicit fact so the `u1.en = true;`
+   pin intent records "already connected". §3.2's `u1.enabled = true;`
+   intended the en line to infer; with the LDO input driven, E14b's
+   solver is the honest home for that inference (pin-level drive intents
+   DO complete when the pin is open — the fixture pre-wires to keep the
+   completion unambiguous).
+4. **Button gnd path** (`u2.gpio[3] → sw1.p1 → u2.gnd`) stated explicitly —
+   §3.2 relied on `u2.gpio[3].voltage <= 0.3V` forcing the gnd path.
+5. **LED series resistor placement** (`r_led` between 3v3 and led1.a)
+   explicit — §3.2's derive-on-type obligation would place it.
+6. **SWD header (j2)** ADDED: §3.2 declares `swdio`/`swclk` but no
+   connector — as written they would dangle. The header is the fixture's
+   one structural addition.
+7. **`derive on:` (type-level) has no landed clause** — the fixture states
+   the obligation as a use-site txn postcondition; recorded as an open
+   gap in the hardware-dialect ledger.
+
+Behavior members §3.2 wanted (`.up`, `.closed`, `.released`) stayed
+retracted — guards restate them as voltage facts (locked 2026-09-22).
 
 ## 5. Documentation chain (at implementation time)
 

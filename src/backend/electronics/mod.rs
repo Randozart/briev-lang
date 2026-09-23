@@ -21,11 +21,18 @@ pub const CAPABILITIES: BackendCapabilities = BackendCapabilities {
     // 2026-09-11: contract expressions are PROVEN at compile time, never
     // executed — so comparisons/arithmetic/float literals inside [pre][post]
     // obligations are part of the electronics surface. What electronics
-    // forbids is executable surface: bodies, calls, runtime, concurrency.
+    // forbids is executable surface: calls, runtime, concurrency.
+    // 2026-09-23 (E14a gate): the declarative surface caught up —
+    // `bool_char_literals` (proven Bool values; the `inst = true` intent),
+    // `index` (pin-array/instance-array element access — E11/E1 analysis
+    // surface, never executed), `assign_stmt` (node-body wiring/intent
+    // FACTS consumed by netlist derivation), `guarded_stmt` (in-body `when`
+    // mechanism conditions, D16). None of these lower to runnable code —
+    // the backend emits from the derived netlist only.
     int_literals: true,
     floats: true,
     strings: true,
-    bool_char_literals: false,
+    bool_char_literals: true,
     int_ops: true,
     unary_ops: true,
     calls: false,
@@ -34,7 +41,7 @@ pub const CAPABILITIES: BackendCapabilities = BackendCapabilities {
     match_expr: false,
     block_expr: false,
     field_access: true,
-    index: false,
+    index: true,
     slices_ranges: false,
     tuple_list_literals: false,
     struct_literal: true,
@@ -53,9 +60,9 @@ pub const CAPABILITIES: BackendCapabilities = BackendCapabilities {
     derivation_blocks: false,
     within: false,
     let_stmt: true,
-    assign_stmt: false,
+    assign_stmt: true,
     arrow_assign: false,
-    guarded_stmt: false,
+    guarded_stmt: true,
     term_endprogram: false,
     break_stmt: false,
     trap_stmt: false,
@@ -243,23 +250,26 @@ impl ElectronicsBackend {
     }
 
     /// Emit instances on the two placement columns; returns the global pin
-    /// coordinates for routing. Reference designators run PER TYPE
-    /// (R1, R2… D1… J1…), KiCad style.
+    /// coordinates for routing. Reference designators run PER PREFIX
+    /// across the whole sheet (U1, U2… R1, R2… J1, J2…) — two types
+    /// sharing `reference "U"` (Ldo, Mcu, Sensor) must number U1, U2, U3,
+    /// never three U1s: duplicate references are invalid KiCad.
     fn emit_instances(
         netlist: &ElectronicsNetlist,
         components: &[ComponentInstance],
         out: &mut String,
     ) -> Vec<(String, String, f64, f64)> {
         let mut pin_xy = Vec::new();
-        let mut type_counters: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut prefix_counters: std::collections::BTreeMap<String, usize> = Default::default();
         for (idx, comp) in components.iter().enumerate() {
-            let counter = type_counters.entry(comp.type_name.clone()).or_insert(0);
+            let prefix = Self::prefix_of(netlist, &comp.type_name);
+            let counter = prefix_counters.entry(prefix.clone()).or_insert(0);
             *counter += 1;
             let (x, y) = (
                 if idx % 2 == 0 { PLACE_X_LEFT } else { PLACE_X_RIGHT },
                 PLACE_Y0 + idx as f64 * PLACE_PITCH,
             );
-            let reference = Self::reference_of(netlist, &comp.type_name, *counter);
+            let reference = format!("{}{}", prefix, *counter);
             let value = Self::property_of(comp, "value").unwrap_or_else(|| comp.type_name.clone());
             let footprint = Self::property_of(comp, "package").unwrap_or_default();
             let placement = Placement {
@@ -352,13 +362,12 @@ impl ElectronicsBackend {
 
     // ── helpers ───────────────────────────────────────────────────────
 
-    fn reference_of(netlist: &ElectronicsNetlist, type_name: &str, counter: usize) -> String {
-        let prefix = netlist
+    fn prefix_of(netlist: &ElectronicsNetlist, type_name: &str) -> String {
+        netlist
             .type_info
             .get(type_name)
-            .map(|t| t.reference_prefix.as_str())
-            .unwrap_or("U");
-        format!("{}{}", prefix, counter)
+            .map(|t| t.reference_prefix.clone())
+            .unwrap_or_else(|| "U".to_string())
     }
 
     fn property_of(comp: &ComponentInstance, key: &str) -> Option<String> {
@@ -867,5 +876,179 @@ mod tests {
         // And the array emission is deterministic across runs.
         let arr_sch2 = ElectronicsBackend::generate(&netlist_of(array_src)).unwrap();
         assert_eq!(arr_sch, arr_sch2, "emission must be deterministic");
+    }
+
+    // ── E14a gate (plan 2026-09-23-ebv-gate-fixture.md) ────────────────
+
+    /// Parse one source into program items.
+    fn items_of(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_program().unwrap()
+    }
+
+    /// The gate fixture with the electronics stdlib prepended — the order
+    /// the prelude plugin produces (stdlib first, fixture later so its
+    /// declarations win the metadata tables).
+    fn fixture_items(fixture: &str) -> Vec<crate::ast::TopLevel> {
+        let mut items = items_of(include_str!("../../../lib/std/electronics.bv"));
+        items.extend(items_of(fixture));
+        items
+    }
+
+    fn gate_fixture() -> &'static str {
+        include_str!("../../../examples/electronics/usb_sensor.ebv")
+    }
+
+    /// Fixture text with one replacement — asserts the anchor existed so a
+    /// drifted fixture fails loudly instead of silently testing nothing.
+    fn mutate(fixture: &str, from: &str, to: &str) -> String {
+        assert!(
+            fixture.contains(from),
+            "fixture drift: missing mutation anchor {from:?}"
+        );
+        fixture.replacen(from, to, 1)
+    }
+
+    /// Every hard error vector empty — the Slice 2 gate's zero-error rule.
+    fn assert_clean(nl: &ElectronicsNetlist, label: &str) {
+        assert!(nl.intent_errors.is_empty(), "{label} intent: {:?}", nl.intent_errors);
+        assert!(nl.class_errors.is_empty(), "{label} class: {:?}", nl.class_errors);
+        assert!(
+            nl.convention_errors.is_empty(),
+            "{label} convention: {:?}",
+            nl.convention_errors
+        );
+        assert!(nl.budget_errors.is_empty(), "{label} budget: {:?}", nl.budget_errors);
+        assert!(nl.dangling.is_empty(), "{label} dangling: {:?}", nl.dangling);
+        assert!(
+            nl.contention_errors.is_empty(),
+            "{label} contention: {:?}",
+            nl.contention_errors
+        );
+        assert!(nl.bus_errors.is_empty(), "{label} bus: {:?}", nl.bus_errors);
+    }
+
+    fn net_names(nl: &ElectronicsNetlist) -> Vec<String> {
+        nl.nets.iter().map(|n| n.name.clone()).collect()
+    }
+
+    #[test]
+    fn usb_sensor_gate_fixture_derives_and_emits() {
+        // Slice 2 gate: derive_netlist on the real fixture reports zero
+        // errors across every vector, and the emitter produces a sheet
+        // with unique per-prefix designators (U1-U3, J1-J2, C1-C6, R1-R4).
+        let nl = derive_netlist(&fixture_items(gate_fixture()));
+        assert_clean(&nl, "usb_sensor");
+        assert!(
+            nl.nets.len() >= 4,
+            "rails + gnd + signals expected, got {} nets",
+            nl.nets.len()
+        );
+        let sch = ElectronicsBackend::generate(&nl).unwrap();
+        for want in ["U1", "U2", "U3", "J1", "J2", "C6", "R4", "D1", "SW1"] {
+            let needle = format!("\"{want}\"");
+            assert!(sch.contains(&needle), "{want} designator missing: {needle}");
+        }
+        // Instance designators are digit-suffixed (C1…); bare letters (C, U)
+        // are lib_symbols template defaults and legitimately repeat per type.
+        let refs: Vec<String> = sch
+            .lines()
+            .filter(|l| l.contains("property \"Reference\" \"") && l.contains("(at "))
+            .filter_map(|l| l.split('"').nth(3).map(String::from))
+            .filter(|r| r.ends_with(|c: char| c.is_ascii_digit()))
+            .collect();
+        let mut unique = refs.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            refs.len(),
+            unique.len(),
+            "duplicate instance references: {refs:?}"
+        );
+        assert_eq!(refs.len(), 17, "one ref per part: {refs:?}");
+    }
+
+    #[test]
+    fn usb_sensor_emission_is_deterministic() {
+        // Slice 4: two independent derivations (fresh HashMaps, fresh
+        // SipHash seeds) produce byte-identical sheets and net names.
+        let (sch1, names1) = {
+            let nl = derive_netlist(&fixture_items(gate_fixture()));
+            (ElectronicsBackend::generate(&nl).unwrap(), net_names(&nl))
+        };
+        let (sch2, names2) = {
+            let nl = derive_netlist(&fixture_items(gate_fixture()));
+            (ElectronicsBackend::generate(&nl).unwrap(), net_names(&nl))
+        };
+        assert_eq!(names1, names2, "net names must be stable");
+        assert_eq!(sch1, sch2, "emission must be byte-identical across runs");
+    }
+
+    #[test]
+    fn error_matrix_missing_led_driver_lists_candidates() {
+        // Case 1: free a second drive-capable pin (drop the en pre-wire) —
+        // the led1 drive intent now has two candidates; D13 demands the
+        // error enumerate them, never a silent pick.
+        let fx = mutate(gate_fixture(), "u1.en = u2.gpio[0];", "");
+        let nl = derive_netlist(&fixture_items(&fx));
+        let joined = nl.intent_errors.join("\n");
+        assert!(
+            nl.intent_errors.iter().any(|e| e.contains("led1") && e.contains("ambiguous")),
+            "ambiguous led1 intent expected: {:?}",
+            nl.intent_errors
+        );
+        assert!(joined.contains("u2.gpio[0]"), "candidates enumerated: {joined}");
+        assert!(joined.contains("u2.gpio[1]"), "candidates enumerated: {joined}");
+    }
+
+    #[test]
+    fn error_matrix_dropped_button_gnd_path_dangles() {
+        // Case 2: remove both statements of the button's ground path (the
+        // guard equality AND the body wire) — sw1.p2 joins no net.
+        let fx = mutate(gate_fixture(), "\n    && sw1.p2.voltage == j1.gnd.voltage", "");
+        let fx = mutate(&fx, "    sw1.p2 = u2.gnd;\n", "");
+        let nl = derive_netlist(&fixture_items(&fx));
+        assert!(
+            nl.dangling.iter().any(|d| d.contains("sw1.p2")),
+            "sw1.p2 must dangle: {:?}",
+            nl.dangling
+        );
+    }
+
+    #[test]
+    fn error_matrix_removed_decap_breaks_convention() {
+        // Case 3: remove c[0]'s rail bridge — u1's `in` supply pin is left
+        // with only the unpopulated bulk cap, which does not bridge in the
+        // present state. The E13 convention must refuse.
+        let fx = mutate(gate_fixture(), "\n    && c[0].a.voltage == u1.in.voltage", "");
+        let fx = mutate(&fx, "\n    && j1.gnd.voltage == c[0].b.voltage", "");
+        let nl = derive_netlist(&fixture_items(&fx));
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("u1") && e.contains("supply pin 'in'")),
+            "u1.in decoupling convention must fail: {:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn error_matrix_open_on_wired_pins_refuses() {
+        // Case 4: `open` naming two pins already tied by the rail facts —
+        // the disconnection is impossible; hard error (D16 p3b).
+        let fx = mutate(
+            gate_fixture(),
+            "u1.en = u2.gpio[0];",
+            "u1.en = u2.gpio[0];\n    open u1.vout, u2.vdd;",
+        );
+        let nl = derive_netlist(&fixture_items(&fx));
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("open") && e.contains("already connected")),
+            "open-on-wired must refuse: {:?}",
+            nl.intent_errors
+        );
     }
 }
