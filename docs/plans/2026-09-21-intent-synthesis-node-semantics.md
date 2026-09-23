@@ -360,7 +360,8 @@ backlog item, each marked `// E14b:` in the fixture file:
    (Phase 4 of plan `2026-09-23-quantities-and-annotation-doctrine.md`);
    the fixture states it as a use-site txn postcondition today. The
    series-resistor PLACEMENT (choosing r_led so the current lands in
-   range) is a separate synthesis concern — see the ledger closure note.
+   range) is a separate synthesis concern — gap **E15** in the
+   hardware-dialect ledger (deferred 2026-09-23 with a trigger).
 
 Behavior members §3.2 wanted (`.up`, `.closed`, `.released`) stayed
 retracted — guards restate them as voltage facts (locked 2026-09-22).

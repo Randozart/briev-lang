@@ -199,6 +199,48 @@ track below.
   artifact from the current emitter.
 - **Effort:** S
 
+### E15 — No series-part placement synthesis (the residue of §3.2's `derive on:`)
+- **Status:** OPEN — deferred 2026-09-23, documented (cannot defer without
+  documentation). Not built; recorded with a trigger.
+- **What it is:** from a component's current obligation plus its intrinsic
+  forward-voltage physics, the compiler should PLACE a current-limiting
+  series part (topology) and SIZE it (value) so the current lands in range —
+  §3.2's `led1 = true; // physics derives the series resistor`. Two
+  separable features: **topology** (where the part goes — the anode needs a
+  path to a driven rail through a free part) and **value synthesis /
+  sizing** (solve `R = (Vrail − Vf) / I`, pick an E-series step).
+- **Evidence:** the fixture wires `r_led` explicitly
+  (`examples/electronics/usb_sensor.ebv:125`) with value `"TBD"`;
+  `collect_series_parts` (`src/analysis/electronics.rs:1053`) reads the
+  instance `value` and `parse_ohms`es it, so `"TBD"` drops the part and no
+  current is derived; the LED is non-ohmic (no resistance), so even with a
+  value the anode net stays unclassed and the part is one-sided
+  (`derive_power` note, `:1225`); `check_current_bounds` (`:1284`) proves
+  UPPER bounds only. Net effect: the fixture's LED bound
+  `[led1.a.current >= 2mA && <= 20mA]` is VACUOUSLY proven.
+- **Blocks:** nothing today (the board compiles); blocks the LED bound
+  being actually proven, and any second component that needs
+  current-limiting placement.
+- **Prerequisites (all deferred):** per-instance `spec Resistance`
+  (quantities plan Phase 3); a current-obligation form `spec MinCurrent`/
+  `MaxCurrent` (Phase 4); a forward-voltage physics spec (`spec
+  ForwardVoltage: 2.0V`); a non-ohmic clamp model in `derive_current`;
+  lower-bound proofs in `check_current_bounds`; E-series value selection
+  (config/stdlib, not compiler-hardcoded — Rules 14/15).
+- **Surface analysis (2026-09-23):** `when` and `via` are BOTH the
+  conditional-mechanism family — `via` selects a Control-bearing mechanism
+  (`is_mechanism`, `:2283`), `when` either desugars to a mechanism or
+  hard-errors "copper cannot be conditional" (`:2009`). The LED's series
+  path is UNCONDITIONAL (the drive intent handles the on/off; the anode
+  path is permanent copper), so both are the wrong family. The honest
+  surface is the **obligation + forcing** family (slices 1–2: obligation
+  on a net → place a free part), extended to a current obligation and a
+  series part — no new keyword. `when`/`Conducts` remain candidates only if
+  a future need is to express a part's INTRINSIC conduction.
+- **Trigger:** a second component needs current-limiting placement, or the
+  LED bound must be actually proven rather than vacuous.
+- **Effort:** L
+
 ### T1 — GGUF → instance-table emitter tool (tooling, not compiler)
 - **Evidence:** Bachi's `repack` crate
   (`../Bachi/repack/src/{gguf,tq1_0,ptq1_0,repack}.rs`, commit `8c58453`)

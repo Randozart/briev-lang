@@ -100,7 +100,8 @@ libraries, serializer support for `PinDecl` (deserialize defaults to empty
 representation (awaits simulation), PinDecl in cell bodies' beast
 serialization, series-resistor placement synthesis (choosing r_led so the
 LED current lands in range — the residue of §3.2's `derive on:`, which
-was superseded by the `spec MinCurrent`/`MaxCurrent` obligation form).
+was superseded by the `spec MinCurrent`/`MaxCurrent` obligation form;
+recorded as gap **E15** in the hardware-dialect ledger).
 
 Landed since the list was written: named nets (`net <name>:` — 2026-09-12),
 unit suffixes (`3.3V`/`20mA`/`330R` — 2026-09-12), instance arrays
