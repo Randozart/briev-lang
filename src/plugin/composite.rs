@@ -13,7 +13,7 @@
 //! specific composite. Hygiene fails closed: a caller identifier that a
 //! body binder would capture is an error, not a silent capture.
 
-use crate::ast::top::{Definition, Statement, StmtMatchArm, TopLevel};
+use crate::ast::top::{Annotation, Contract, Definition, Statement, StmtMatchArm, TopLevel, Transaction};
 use crate::ast::{BinaryOpKind, Expr, MatchArm, Pattern, UnaryOpKind};
 use crate::ast::{Dimension, ReflectKind, Type};
 use crate::plugin::{FnDef, PluginManager};
@@ -26,6 +26,25 @@ use std::collections::{HashMap, HashSet};
 /// evaluator, never expanded.
 pub fn is_composite(def: &Definition) -> bool {
     def.parameters.iter().any(|(_, t)| is_expr_param(t))
+        // C5 (topology emission): a parameterless `$defn` that emits nodes
+        // (`EmitNode$` in its body) is a topology composite — expanded at the
+        // call site, hoisted as top-level nodes. Without a param marker this
+        // would otherwise be mistaken for an ordinary `$defn` stage function.
+        || def.body.iter().any(|s| stmt_emits_node(s))
+}
+
+/// True when a statement (or a nested one) carries an `EmitNode$` call.
+fn stmt_emits_node(s: &Statement) -> bool {
+    match s {
+        Statement::Expression(Expr::Call(name, _, _)) => name == "EmitNode$",
+        Statement::Guarded(_, body)
+        | Statement::Block(body)
+        | Statement::SyncBlock(body)
+        | Statement::Defer(body)
+        | Statement::Mutex(body)
+        | Statement::Foreach { body, .. } => body.iter().any(stmt_emits_node),
+        _ => false,
+    }
 }
 
 fn is_expr_param(t: &crate::ast::Type) -> bool {
@@ -1064,8 +1083,38 @@ pub fn expand_composites(
     let mut total = 0;
     for depth in 0..8 {
         let mut n = 0;
+        let mut hoisted: Vec<Transaction> = Vec::new();
         for item in items.iter_mut() {
-            n += expand_top_level(item, &registry, &comptime, &state_types)?;
+            let (ni, nodes) = expand_top_level(item, &registry, &comptime, &state_types)?;
+            n += ni;
+            hoisted.extend(nodes);
+        }
+        // C5 (topology emission): hoisted EmitNode$ results join the program
+        // as top-level reactive nodes (a `sync` modifier wraps in a
+        // SyncGroup). They are walked on the next fixpoint round so nested
+        // composite calls inside the emitted node bodies also expand.
+        for txn in hoisted {
+            let sync = txn
+                .modifiers
+                .iter()
+                .find(|m| m.name == "sync")
+                .and_then(|m| m.value.clone())
+                .and_then(|v| match v {
+                    Expr::Quoted(b) => {
+                        Some(String::from_utf8_lossy(&b).into_owned())
+                    }
+                    _ => None,
+                });
+            let mut txn = txn;
+            txn.modifiers.retain(|m| m.name != "sync");
+            if let Some(g) = sync {
+                items.push(TopLevel::SyncGroup {
+                    domains: vec![g],
+                    item: Box::new(TopLevel::Transaction(txn)),
+                });
+            } else {
+                items.push(TopLevel::Transaction(txn));
+            }
         }
         total += n;
         if n == 0 {
@@ -1114,47 +1163,138 @@ fn nav_comptime(v: &crate::macros::eval::NavValue) -> Option<ComptimeVal> {
 /// defns, operator members, cells (their member txns/defns), top-level
 /// statements, and triggers. Replaces the old Transaction-only walk so a
 /// composite call is expanded in any body it appears in.
+///
+/// C5 (topology emission): the walk ALSO hoists `EmitNode$` calls out of
+/// expanded bodies into the program as top-level reactive nodes. Returns
+/// `(expansions, hoisted_nodes)` — the driver pushes the nodes into `items`.
 fn expand_top_level(
     item: &mut TopLevel,
     registry: &HashMap<&String, &Definition>,
     comptime: &HashMap<String, ComptimeVal>,
     state_types: &HashMap<String, Type>,
-) -> Result<usize, String> {
+) -> Result<(usize, Vec<Transaction>), String> {
     match item {
         TopLevel::Definition(d) | TopLevel::TypeDefOperator(d) => {
-            expand_stmt_list(&mut d.body, registry, comptime, state_types)
+            let n = expand_stmt_list(&mut d.body, registry, comptime, state_types)?;
+            let nodes = hoist_emit_nodes(&mut d.body)?;
+            Ok((n, nodes))
         }
         TopLevel::Transaction(t) => {
-            expand_stmt_list(&mut t.body, registry, comptime, state_types)
+            let n = expand_stmt_list(&mut t.body, registry, comptime, state_types)?;
+            let nodes = hoist_emit_nodes(&mut t.body)?;
+            Ok((n, nodes))
         }
         TopLevel::CompileTimeDefn(d) => {
-            expand_stmt_list(&mut d.body, registry, comptime, state_types)
+            let n = expand_stmt_list(&mut d.body, registry, comptime, state_types)?;
+            let nodes = hoist_emit_nodes(&mut d.body)?;
+            Ok((n, nodes))
         }
         TopLevel::Statement(stmt) => {
             let mut one = vec![(**stmt).clone()];
             let n = expand_stmt_list(&mut one, registry, comptime, state_types)?;
             if n > 0 {
-                // The expansion may have spliced multiple statements in place
-                // of one; a single-statement slot can hold at most one. Keep
-                // the first spliced statement (composite calls in top-level
-                // statement position are statement composites — their splice
-                // is one statement).
                 *stmt = Box::new(one.into_iter().next().unwrap_or(Statement::Break));
             }
-            Ok(n)
+            Ok((n, vec![]))
         }
         TopLevel::Cell(cell) => {
             let mut n = 0;
+            let mut nodes = Vec::new();
             for t in cell.transactions.iter_mut() {
                 n += expand_stmt_list(&mut t.body, registry, comptime, state_types)?;
+                nodes.extend(hoist_emit_nodes(&mut t.body)?);
             }
             for d in cell.definitions.iter_mut() {
                 n += expand_stmt_list(&mut d.body, registry, comptime, state_types)?;
+                nodes.extend(hoist_emit_nodes(&mut d.body)?);
             }
-            Ok(n)
+            Ok((n, nodes))
         }
-        _ => Ok(0),
+        _ => Ok((0, vec![])),
     }
+}
+
+/// C5 (topology emission): remove `EmitNode$(name, pre, post, { body })`
+/// calls from a body and return them as top-level reactive Transactions.
+/// The intrinsic is an ordinary `Expr::Call` (no new Statement variant);
+/// expansion substitutes params into its args, then this hoists the finished
+/// node. The optional 5th argument is a `sync<group>` domain string —
+/// wrapping the node in a SyncGroup at the driver.
+fn hoist_emit_nodes(body: &mut Vec<Statement>) -> Result<Vec<Transaction>, String> {
+    let mut out = Vec::new();
+    let mut kept: Vec<Statement> = Vec::with_capacity(body.len());
+    for s in body.drain(..) {
+        if let Statement::Expression(Expr::Call(name, args, _)) = &s {
+            if name == "EmitNode$" {
+                out.push(build_emit_node(args)?);
+                continue;
+            }
+        }
+        kept.push(s);
+    }
+    *body = kept;
+    Ok(out)
+}
+
+/// Build the reactive Transaction for one `EmitNode$(name, pre, post,
+/// { body })` call. `name` must be a comptime string; pre/post are
+/// expressions (defaulting to `true`); the body is an `Expr::Block` of
+/// statements. An optional 5th string arg is the `sync<group>` domain —
+/// encoded as a `sync` modifier annotation for the driver to wrap.
+fn build_emit_node(args: &[Expr]) -> Result<Transaction, String> {
+    if args.is_empty() {
+        return Err("EmitNode$: expected (name, pre, post, { body })".into());
+    }
+    let name = match &args[0] {
+        Expr::Quoted(b) => String::from_utf8_lossy(b).into_owned(),
+        _ => return Err("EmitNode$: the node name must be a string literal".into()),
+    };
+    let pre = args.get(1).cloned().unwrap_or(Expr::Bool(true));
+    let post = args.get(2).cloned().unwrap_or(Expr::Bool(true));
+    // `EmitNode$(name, true, true, …)` is an omitted contract — not a
+    // trivial explicit one (the proof engine rejects explicit `[true][true]`
+    // as recording no obligation).
+    let explicit = !matches!(&pre, Expr::Bool(true)) || !matches!(&post, Expr::Bool(true));
+    let body = match args.get(3) {
+        Some(Expr::Block(stmts)) => stmts.clone(),
+        _ => Vec::new(),
+    };
+    let sync_group = match args.get(4) {
+        Some(Expr::Quoted(b)) => {
+            Some(String::from_utf8_lossy(b).into_owned())
+        }
+        _ => None,
+    };
+    let mut modifiers = Vec::new();
+    if let Some(g) = sync_group {
+        modifiers.push(Annotation {
+            name: "sync".to_string(),
+            value: Some(Expr::Quoted(g.as_bytes().to_vec())),
+        });
+    }
+    Ok(Transaction {
+        name,
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: Contract {
+            pre_condition: pre,
+            post_condition: post,
+            watchdog: None,
+            span: None,
+            explicit,
+            post_authority: false,
+        },
+        body,
+        metadata: Default::default(),
+        derivation: None,
+        modifiers,
+        span: None,
+        doc: None,
+    })
 }
 
 /// Expand statement-position composite invocations in one statement list.
@@ -2714,8 +2854,86 @@ async node k [i < 1][i == 1] {
             doc: None,
         };
         let mut item = TopLevel::TypeDefOperator(op_member);
-        let n = expand_top_level(&mut item, &registry, &HashMap::new(), &HashMap::new())?;
+        let (n, _nodes) = expand_top_level(&mut item, &registry, &HashMap::new(), &HashMap::new())?;
         assert_eq!(n, 1, "one composite call expanded in the operator member");
+        Ok(())
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan, C5) ───────────────────
+    // Topology emission: the EmitNode$ intrinsic inside a composite expands
+    // to top-level reactive nodes — hoisted by the driver, no new Statement
+    // variant.
+
+    #[test]
+    fn emit_node_hoists_a_top_level_transaction() -> Result<(), String> {
+        // A parameterless topology composite: is_composite is true via the
+        // EmitNode$ marker; expansion hoists one node.
+        let items = parse_program(
+            "$defn emit_one() { EmitNode$(\"extra\", true, true, { term; }); };",
+        );
+        let comp = defn_of(&items, "emit_one");
+        assert!(is_composite(&comp), "EmitNode marks a topology composite");
+        let mut registry: HashMap<&String, &Definition> = HashMap::new();
+        registry.insert(&comp.name, &comp);
+        let mut driver = parse_program(
+            "let i: Int = 0; async node d [i < 1][i == 1] { emit_one!(); i = i + 1; term; };",
+        );
+        // Expand the whole program: the driver's body call expands, and the
+        // EmitNode$ inside is hoisted.
+        let mut all = items;
+        all.extend(driver.drain(..));
+        let mut expanded = all.clone();
+        let mut hoisted: Vec<Transaction> = Vec::new();
+        let mut count = 0;
+        for it in expanded.iter_mut() {
+            let (ni, nodes) =
+                expand_top_level(it, &registry, &HashMap::new(), &HashMap::new())?;
+            count += ni;
+            hoisted.extend(nodes);
+        }
+        assert!(
+            count + hoisted.len() >= 2,
+            "expansion + hoist happened: {count} expansions, {} nodes",
+            hoisted.len()
+        );
+        assert!(
+            hoisted.iter().any(|t| t.name == "extra"),
+            "hoisted 'extra' node present: {:?}",
+            hoisted.iter().map(|t| t.name.clone()).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn emit_node_body_and_contract_are_carried() -> Result<(), String> {
+        let items = parse_program(
+            "$defn emit_w() { EmitNode$(\"w\", total < 4, total == 4, { total = total + 1; term; }); };",
+        );
+        let comp = defn_of(&items, "emit_w");
+        let mut registry: HashMap<&String, &Definition> = HashMap::new();
+        registry.insert(&comp.name, &comp);
+        let mut driver = parse_program(
+            "let i: Int = 0; let total: Int = 0; \
+             \x20async node d [i < 1][i == 1] { emit_w!(); i = i + 1; term; };",
+        );
+        let mut expanded = items;
+        expanded.extend(driver.drain(..));
+        let mut hoisted: Vec<Transaction> = Vec::new();
+        for it in expanded.iter_mut() {
+            let (_ni, nodes) =
+                expand_top_level(it, &registry, &HashMap::new(), &HashMap::new())?;
+            hoisted.extend(nodes);
+        }
+        let txn = hoisted
+            .iter()
+            .find(|t| t.name == "w")
+            .expect("hoisted w node");
+        assert_eq!(txn.body.len(), 2, "body: assign + term: {:?}", txn.body);
+        assert!(
+            matches!(txn.contract.pre_condition, Expr::BinaryOp(_, _, _)),
+            "pre carried: {:?}",
+            txn.contract.pre_condition
+        );
         Ok(())
     }
 

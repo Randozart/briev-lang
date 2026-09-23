@@ -128,9 +128,15 @@ $defn execute_many(...calls: Expr) {
   appears in (`defn f() { comp!(x); … }` works). 2 tests (runtime defn body,
   operator member); the value-position `expand_expr_values` recursion from
   C2 already covers nested expressions.
-- **C5 — topology emission**: composites may emit `async node`/`sync<g>
-  node` — the schedule-generation purpose, Rule-22 classification carried in
-  the language, not the compiler.
+- **C5 — topology emission — IN PROGRESS (2026-09-22)**: composites emit
+  top-level reactive nodes via the `EmitNode$` compile-time intrinsic —
+  `EmitNode$(name, pre, post, { body })` (optional 5th `sync<group>` arg).
+  NO new `Statement` variant: the intrinsic is an ordinary `Expr::Call` the
+  composite fold passes through; `expand_top_level` detects the call after
+  expansion and hoists it into `items` as `TopLevel::Transaction` (or
+  `SyncGroup`). The node name/contract/body substitute params like any
+  composite statement. Blast radius: composite.rs only (the ~37-file
+  `Statement` match churn is avoided entirely).
 - **C6 — `$txn` resolution**: adopt `$txn` as the convergent-loop flavor
   (repeat-until-postcondition — the ONE semantic `$defn` lacks), fix its
   parse-broken inline form, add real tests; OR delete it. Decided once
