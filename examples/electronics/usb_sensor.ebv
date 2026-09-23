@@ -148,7 +148,6 @@ async node i2c_idle [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
 
 // Button pulls gpio[3] to gnd; r_btn is the pull-up to the rail.
 async node button_pressed [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
-    r_btn.a = u1.vout;          // pull-up stays explicit (E14b backlog:
-    r_btn.b = u2.gpio[3];       // value-aware resistor matching)
-    u2.gpio[3].voltage <= 0.3V; // E14b-2: forces the low path through
-}                               // the free switchable part (sw1)
+    u2.gpio[3].voltage >= 2.7V; // E14b-5: pull-up inferred — any value
+    u2.gpio[3].voltage <= 0.3V; // holds a released net; low path via sw1
+}

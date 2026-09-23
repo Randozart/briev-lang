@@ -2789,13 +2789,12 @@ impl<'a, 'b> ObligationForcing<'a, 'b> {
             return;
         }
         let parts = self.free_parts();
-        if parts.len() > 1 && self.values_distinct(&parts) {
-            self.errors.push(format!(
-                "voltage obligation '>= {}V' (node '{}') is ambiguous: {} pull-up parts of differing value are free ({}). Wire the pull-up explicitly, or unpop the extras",
-                vmin, nodes.join(", "), parts.len(), parts.join(", ")
-            ));
-            return;
-        }
+        // 2026-09-23 (E14b slice 5): a MIN obligation is satisfied by ANY
+        // pull-up resistance — a released (high-Z) net sits at the rail
+        // regardless of the resistor value — so distinct values are still
+        // interchangeable for satisfaction and the pick is deterministic
+        // (D13: the choice never matters). Switches keep the distinct-value
+        // ambiguity (a multi-pole switch has different capacity).
         let Some(part) = parts.first() else {
             self.errors.push(format!(
                 "voltage obligation '>= {}V' (node '{}') has no pull-up part: no free `spec PullUp: true` two-pin part remains. Add one (e.g. a resistor) or wire the net to a drive explicitly",

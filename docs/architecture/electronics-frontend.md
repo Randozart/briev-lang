@@ -147,15 +147,13 @@ One-sided parts (no proven ΔV) and zero-drop straps force nothing.
 
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
 simulation), PinDecl in cell bodies' beast serialization, pin roles,
-`derive` on types, rail inference, value-aware resistor matching
-(E14b slices 5+).
+`derive` on types, rail inference (E14b slices 6+).
 
-**2026-09-23 (E14b slice 4, plan `2026-09-23-ebv-e14b-drive-assignment.md`):**
-drive assignment. Several open drive intents over interchangeable free
-drive-capable pins are a perfect matching, wired deterministically;
-single intents, shortages, and mixed-class supply fall through to the
-per-intent D13 completions. The usb node of `usb_sensor.ebv` now infers
-`u1.en` and `led1` drives — no explicit en wire.
+**2026-09-23 (E14b slice 5, plan `2026-09-23-ebv-e14b-value-aware-pullup.md`):**
+value-aware pull-up matching. A MIN obligation is satisfied by any
+pull-up resistance, so distinct-value free parts assign deterministically
+instead of erroring (switches keep the ambiguity — multi-pole capacity).
+The button node of `usb_sensor.ebv` is now fully pure-intent.
 
 **2026-09-23 (E14b slice 3, plan `2026-09-23-ebv-e14b-bus-assembly.md`):**
 open-drain bus assembly. MIN obligations on same-name WiredAnd-class pins

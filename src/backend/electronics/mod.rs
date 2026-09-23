@@ -1150,9 +1150,11 @@ mod tests {
     }
 
     #[test]
-    fn e14b_distinct_value_pull_ups_are_ambiguous() {
-        // One obligation, two free pull-ups of DIFFERENT value → the pick
-        // matters (pull-up strength); D13 demands explicit wiring.
+    fn e14b_distinct_value_pull_ups_assign_deterministically() {
+        // One obligation, two free pull-ups of different value — a MIN
+        // obligation is satisfied by any pull-up resistance, so the pick
+        // is deterministic (D13: the choice never matters). The unused
+        // part stays free (dangles).
         let src = r#"
             type Power { spec KicadType: "power_in"; spec Supply: true; };
             type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
@@ -1166,13 +1168,50 @@ mod tests {
             }
         "#;
         let nl = netlist_of(src);
-        assert!(
-            nl.intent_errors
-                .iter()
-                .any(|e| e.contains("ambiguous") && e.contains("r1") && e.contains("r2")),
-            "{:?}",
-            nl.intent_errors
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert_eq!(
+            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            1,
+            "one obligation → one deterministic pull-up: {:?}",
+            nl.intent_proofs
         );
+        assert!(
+            nl.dangling.iter().any(|d| d.contains("r2")),
+            "the unused part dangles: {:?}",
+            nl.dangling
+        );
+    }
+
+    #[test]
+    fn e14b_value_aware_matching_assigns_all_buses() {
+        // Three obligations (two i2c buses + a button pull-up) × three
+        // free pull-ups of differing value (4k7, 4k7, 10k) — every net
+        // gets one, no ambiguity, nothing dangles.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+            type Mcu { pin vdd: Power; pin sda: IoOd; pin scl: IoOd; pin gpio: Io; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let r_pu0: Resistor = Resistor { value: "4k7" };
+            let r_pu1: Resistor = Resistor { value: "4k7" };
+            let r_btn: Resistor = Resistor { value: "10k" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                u1.sda.voltage >= 2.7V;
+                u1.scl.voltage >= 2.7V;
+                u1.gpio.voltage >= 2.7V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert_eq!(
+            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            3,
+            "every obligation gets a pull-up: {:?}",
+            nl.intent_proofs
+        );
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
     }
 
     /// A pulled-up IO pin plus a switch — the low-hold forcing target.

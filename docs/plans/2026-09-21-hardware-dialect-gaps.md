@@ -615,6 +615,22 @@ gpio[2..7] were already claimed by the j2 facts and the button low-hold.
 E14b remaining (backlog, each marked in the fixture): rail inference,
 value-aware resistor matching, `derive on:` type clauses.
 
+### Amendment 2026-09-23 (VI): E14b slice 5 landed — value-aware pull-up matching
+
+Pull-up forcing no longer errors on distinct-value free parts. A MIN
+obligation is satisfied by ANY pull-up resistance — a released (high-Z)
+net sits at the rail regardless of the resistor value — so the value
+choice never matters for satisfaction and the pick is deterministic
+(same doctrine as the slice-4 drive assignment). Switches keep the
+distinct-value ambiguity: a multi-pole switch has different capacity, so
+the pick can matter. The button node of usb_sensor is now fully
+pure-intent (`u2.gpio[3].voltage >= 2.7V;` + `<= 0.3V;`) — the r_btn
+pull-up is inferred. The compiler may place a 4k7 on the button net and
+the 10k on an i2c bus; the choice is immaterial, the netlist equivalent.
+
+E14b remaining (backlog, each marked in the fixture): rail inference,
+`derive on:` type clauses.
+
 E14b (pure intent — no explicit equalities) remains OPEN; every
 explicit equality the fixture needed beyond the drive map is marked
 `// E14b:` in the file and recorded in the design record's gate delta.
