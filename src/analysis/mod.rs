@@ -4,6 +4,7 @@ pub mod desugar;
 pub mod defn_liveness;
 pub mod electronics;
 pub mod footprints;
+pub mod placement;
 pub mod strict;
 pub mod task_linear;
 pub mod task_segments;
