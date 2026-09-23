@@ -239,6 +239,11 @@ pub enum Token {
     #[token("render")]
     Render,
 
+    /// 2026-09-23 (fab plan): the physical-layout section —
+    /// `fab { board 30mm x 20mm; place u1 @ (20mm, 10mm); }`.
+    #[token("fab")]
+    Fab,
+
     #[token("enum")]
     Enum,
 
@@ -638,6 +643,7 @@ impl std::fmt::Display for Token {
             Token::Obj => write!(f, "obj"),
             Token::Struct => write!(f, "struct"),
             Token::Render => write!(f, "render"),
+            Token::Fab => write!(f, "fab"),
             Token::Enum => write!(f, "enum"),
             Token::Trg => write!(f, "trg"),
             Token::Within => write!(f, "within"),

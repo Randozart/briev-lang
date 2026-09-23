@@ -282,6 +282,20 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             indent(out, level);
             let _ = write!(out, "render {} {{ {} }};", r.struct_name, r.view_html);
         }
+        TopLevel::FabBlock(f) => {
+            indent(out, level);
+            let _ = write!(
+                out,
+                "fab {{ board {}mm x {}mm; {} }};",
+                f.board.0,
+                f.board.1,
+                f.placements
+                    .iter()
+                    .map(|p| format!("place {} @ ({}mm, {}mm) rot {};", p.inst, p.x, p.y, p.rot))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
         TopLevel::ProtocolDef(p) => {
             indent(out, level);
             let _ = write!(out, "proto {}: {} {{ ... }};", p.name, p.category);

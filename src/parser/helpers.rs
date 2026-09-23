@@ -619,6 +619,7 @@ impl<'a> Parser<'a> {
             Token::Trait => "trait".into(), Token::Impl => "impl".into(),
             Token::Cell => "cell".into(),             Token::Struct => "struct".into(),
             Token::Render => "render".into(),
+            Token::Fab => "fab".into(),
             Token::Enum => "enum".into(), Token::Trg => "trg".into(),
             Token::Within => "within".into(),
             Token::Match => "match".into(),

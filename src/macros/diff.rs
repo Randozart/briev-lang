@@ -50,7 +50,7 @@ fn item_key(tl: &TopLevel) -> String {
         Codec(c) => format!("codec:{}", c.name),
         Assertion { .. } => "assertion".into(),
         Fuzzed { .. } => "fuzzed".into(),
-        Statement(_) | Stylesheet(_) | SvgComponent { .. } | SyncGroup { .. } | StageBlock(_) | RenderBlock(_) | Cfg(_) => {
+        Statement(_) | Stylesheet(_) | SvgComponent { .. } | SyncGroup { .. } | StageBlock(_) | RenderBlock(_) | FabBlock(_) | Cfg(_) => {
             format!("{:?}", tl)
         }
         AsmFn(a) => format!("asm:<{}> {}", a.target, a.name),
@@ -102,6 +102,7 @@ pub fn item_summary(tl: &TopLevel) -> String {
         Statement(_) => "statement".into(),
         StageBlock(sb) => format!("$({:?})", sb.stage),
         RenderBlock(_) => "render".into(),
+        FabBlock(_) => "fab".into(),
         Stylesheet(_) => "stylesheet".into(),
         SvgComponent { name, .. } => format!("svg {}", name),
         SyncGroup { .. } => "sync-group".into(),

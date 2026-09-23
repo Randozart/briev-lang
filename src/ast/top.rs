@@ -110,6 +110,10 @@ pub enum TopLevel {
     /// the table from the declared handler set.
     IsrHandler(IsrHandler),
     RenderBlock(RenderBlock),
+    /// 2026-09-23 (fab plan): the physical-layout section — board outline
+    /// + pinned part placements; everything unplaced flows to the
+    /// auto-placer.
+    FabBlock(FabBlock),
     Stylesheet(String),
     SvgComponent {
         name: String,
@@ -1361,6 +1365,26 @@ pub struct FuzzCase {
 pub struct RenderBlock {
     pub struct_name: String,
     pub view_html: String,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-23 (fab plan): a part's pinned board placement.
+#[derive(Debug, Clone)]
+pub struct FabPlacement {
+    pub inst: String,
+    /// mm, relative to the board origin (centre).
+    pub x: f64,
+    pub y: f64,
+    /// degrees; default 0.
+    pub rot: f64,
+}
+
+/// The physical-layout section: the board outline + pinned placements.
+#[derive(Debug, Clone)]
+pub struct FabBlock {
+    /// Board outline, mm (W, H).
+    pub board: (f64, f64),
+    pub placements: Vec<FabPlacement>,
     pub span: Option<Span>,
 }
 

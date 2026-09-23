@@ -233,6 +233,7 @@ fn quantity_str(si: f64, dim: crate::ast::QuantityDim) -> String {
         crate::ast::QuantityDim::Hertz => "Hz",
         crate::ast::QuantityDim::Watt => "W",
         crate::ast::QuantityDim::Kelvin => "K",
+        crate::ast::QuantityDim::Length => "m",
     };
     let prefixes: [(f64, &str); 8] = [
         (1e-12, "p"),

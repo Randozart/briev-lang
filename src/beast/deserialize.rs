@@ -695,6 +695,7 @@ fn quantity_dim_of_name(name: &str) -> Option<crate::ast::QuantityDim> {
         "hertz" => crate::ast::QuantityDim::Hertz,
         "watt" => crate::ast::QuantityDim::Watt,
         "kelvin" => crate::ast::QuantityDim::Kelvin,
+        "length" => crate::ast::QuantityDim::Length,
         _ => return None,
     })
 }

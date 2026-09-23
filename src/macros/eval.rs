@@ -2267,6 +2267,7 @@ fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(
         | TopLevel::TypeDef(_) | TopLevel::Codec(_)
         | TopLevel::Assertion { .. } | TopLevel::Fuzzed { .. }
         | TopLevel::RenderBlock(_) | TopLevel::Stylesheet(_)
+        | TopLevel::FabBlock(_)
         | TopLevel::SvgComponent { .. } | TopLevel::SyncGroup { .. }
         | TopLevel::Cfg(_) | TopLevel::ProtocolDef(_)
         | TopLevel::AsmFn(_)

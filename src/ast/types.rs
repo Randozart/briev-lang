@@ -230,6 +230,9 @@ pub enum QuantityDim {
     Hertz,
     Watt,
     Kelvin,
+    /// 2026-09-23 (fab plan): physical length — board coordinates, pad
+    /// offsets. Base is the metre; `mm`/`cm` are the working suffixes.
+    Length,
 }
 
 impl QuantityDim {
@@ -245,6 +248,7 @@ impl QuantityDim {
             QuantityDim::Hertz => "hertz",
             QuantityDim::Watt => "watt",
             QuantityDim::Kelvin => "kelvin",
+            QuantityDim::Length => "length",
         }
     }
 }

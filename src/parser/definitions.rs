@@ -204,6 +204,8 @@ impl<'a> Parser<'a> {
             Some(Token::Struct) => self.parse_struct_def(false, false).map(TopLevel::StaticStruct),
             // 2026-07-26: Handle `render struct Name { <html> }` and `render obj Name { <html> }`
             Some(Token::Render) => self.parse_render_block(),
+            // 2026-09-23 (fab plan): the physical-layout section.
+            Some(Token::Fab) => self.parse_fab_block(),
             // 2026-07-14: Handle `enum Name { variants }` as TypeDef (converted by normalizer)
             Some(Token::Enum) => self.parse_enum_like().map(TopLevel::TypeDef),
             // 2026-07-14: Top-level let — state variable declaration
@@ -346,6 +348,114 @@ impl<'a> Parser<'a> {
             view_html,
             span: Some(start_span),
         }))
+    }
+
+    /// 2026-09-23 (fab plan): `fab { board 30mm x 20mm; place u1 @ (20mm,
+    /// 10mm) [rot 90]; }` — the physical-layout section. `board`/`place`/
+    /// `rot`/`x` are contextual identifiers scoped to the block; only
+    /// `fab` is a token. Lengths parse through the quantity grammar (bare
+    /// = the SI base, metres; `mm`/`cm` are the working suffixes), stored
+    /// in mm.
+    pub fn parse_fab_block(&mut self) -> Result<TopLevel, SyntaxError> {
+        let start_span = self
+            .peek_with_span()
+            .map(|(_, s)| self.make_span(s.clone()))
+            .unwrap_or(Span::dummy());
+        self.pos += 1; // consume `fab`
+        self.expect(Token::LBrace)?;
+        let (w, h, placements) = self.parse_fab_body()?;
+        self.expect(Token::RBrace)?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::FabBlock(crate::ast::FabBlock {
+            board: (w, h),
+            placements,
+            span: Some(start_span),
+        }))
+    }
+
+    /// The `board`/`place` statements between the braces.
+    fn parse_fab_body(&mut self) -> Result<(f64, f64, Vec<crate::ast::FabPlacement>), SyntaxError> {
+        let mut board: Option<(f64, f64)> = None;
+        let mut placements = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            match self.parse_fab_item()? {
+                FabItem::Board(b) => board = Some(b),
+                FabItem::Place(p) => placements.push(p),
+            }
+        }
+        let Some(board) = board else {
+            return self.error_at_current(
+                "a fab block needs a `board <W> x <H>;` line — the outline feeds the containment check",
+            );
+        };
+        Ok((board.0, board.1, placements))
+    }
+
+    /// One statement inside a fab block.
+    fn parse_fab_item(&mut self) -> Result<FabItem, SyntaxError> {
+        if self.eat_identifier("board") {
+            return Ok(FabItem::Board(self.parse_fab_board()?));
+        }
+        if self.eat_identifier("place") {
+            return Ok(FabItem::Place(self.parse_fab_placement()?));
+        }
+        self.error_at_current(
+            "expected `board <W> x <H>;` or `place <inst> @ (<x>, <y>) [rot <deg>];` in a fab block",
+        )
+    }
+
+    /// A fab length quantity in mm — `20mm`, `2cm`; a bare number is the
+    /// SI base (metres).
+    fn parse_fab_length(&mut self) -> Result<f64, SyntaxError> {
+        let (si, _dim) = self.parse_spec_quantity(crate::ast::QuantityDim::Length)?;
+        Ok(si * 1000.0)
+    }
+
+    /// One `board <W> x <H>;` line (the `board` identifier is consumed).
+    fn parse_fab_board(&mut self) -> Result<(f64, f64), SyntaxError> {
+        let w = self.parse_fab_length()?;
+        if !self.eat_identifier("x") {
+            return self.error_at_current(
+                "expected 'x' between board dimensions (`board 30mm x 20mm;`)",
+            );
+        }
+        let h = self.parse_fab_length()?;
+        self.expect(Token::Semicolon)?;
+        Ok((w, h))
+    }
+
+    /// One `place <inst> @ (<x>, <y>) [rot <deg>];` line (the `place`
+    /// identifier is consumed).
+    fn parse_fab_placement(&mut self) -> Result<crate::ast::FabPlacement, SyntaxError> {
+        let inst = self.expect_identifier()?;
+        self.expect(Token::At)?;
+        self.expect(Token::LParen)?;
+        let x = self.parse_fab_length()?;
+        self.expect(Token::Comma)?;
+        let y = self.parse_fab_length()?;
+        self.expect(Token::RParen)?;
+        let mut rot = 0.0;
+        if self.eat_identifier("rot") {
+            rot = match self.peek() {
+                Some(Token::Float(f)) => {
+                    let v = *f;
+                    self.pos += 1;
+                    v
+                }
+                Some(Token::Integer(n)) => {
+                    let v = *n as f64;
+                    self.pos += 1;
+                    v
+                }
+                _ => {
+                    return self.error_at_current(
+                        "expected a rotation in degrees (`rot 90;`)",
+                    )
+                }
+            };
+        }
+        self.expect(Token::Semicolon)?;
+        Ok(crate::ast::FabPlacement { inst, x, y, rot })
     }
 
     /// 2026-07-22: Parse `frgn` declaration (import model).
@@ -4203,6 +4313,7 @@ fn spec_name_to_key(name: &str) -> Option<&'static str> {
 /// A parsed unit suffix for a quantity spec value (2026-09-23 quantities
 /// plan): `[prefix][base]`, a bare `[prefix]` (dimension from the key),
 /// or the E-series `[prefix][digits]` fraction.
+#[derive(Debug)]
 enum UnitSuffix {
     /// `[prefix][base]` — explicit dimension (`2mA`, `3.3V`, `4.7kΩ`).
     Explicit { scale: f64, dim: crate::ast::QuantityDim },
@@ -4213,7 +4324,15 @@ enum UnitSuffix {
     Fraction { scale: f64, frac: f64 },
 }
 
+/// One statement inside a fab block (2026-09-23 fab plan).
+enum FabItem {
+    Board((f64, f64)),
+    Place(crate::ast::FabPlacement),
+}
+
 /// The base dimension of a base-unit letter (`V` → Volt, `R`/`Ω` → Ohm).
+/// `m` is NOT here — it is the milli prefix; bare `m` (metre) is handled
+/// in `parse_unit_suffix` so `mA` still resolves via the prefix path.
 fn base_dim(c: char) -> Option<crate::ast::QuantityDim> {
     match c {
         'V' => Some(crate::ast::QuantityDim::Volt),
@@ -4251,6 +4370,27 @@ fn parse_unit_suffix(s: &str) -> Option<UnitSuffix> {
         return Some(UnitSuffix::Explicit {
             scale: 1.0,
             dim: crate::ast::QuantityDim::Hertz,
+        });
+    }
+    // 2026-09-23 (fab plan): length forms — bare `m` (metre), `mm`/`cm`
+    // (milli/centi metre) can't flow through the single-letter dispatch
+    // (`m` is both the milli prefix and the metre base).
+    if s == "m" {
+        return Some(UnitSuffix::Explicit {
+            scale: 1.0,
+            dim: crate::ast::QuantityDim::Length,
+        });
+    }
+    if s == "mm" {
+        return Some(UnitSuffix::Explicit {
+            scale: 1e-3,
+            dim: crate::ast::QuantityDim::Length,
+        });
+    }
+    if s == "cm" {
+        return Some(UnitSuffix::Explicit {
+            scale: 1e-2,
+            dim: crate::ast::QuantityDim::Length,
         });
     }
     let first = s.chars().next()?;
@@ -4297,6 +4437,7 @@ fn dim_name(d: crate::ast::QuantityDim) -> &'static str {
         crate::ast::QuantityDim::Hertz => "hertz",
         crate::ast::QuantityDim::Watt => "watts",
         crate::ast::QuantityDim::Kelvin => "kelvin",
+        crate::ast::QuantityDim::Length => "length",
     }
 }
 
@@ -4415,6 +4556,35 @@ mod tests {
     }
 
     #[test]
+    fn test_fab_block_parses() {
+        // 2026-09-23 (fab plan): the physical-layout section — board
+        // outline + pinned placements; lengths in mm, rotation optional.
+        let src = "fab { board 30mm x 20mm; place u1 @ (20mm, 10mm); \
+                    place j1 @ (2mm, 10mm) rot 90; }";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let items = p.parse_program().unwrap();
+        assert_eq!(items.len(), 1, "one fab block");
+        let crate::ast::TopLevel::FabBlock(f) = &items[0] else {
+            panic!("expected FabBlock, got {:?}", items[0]);
+        };
+        assert_eq!(f.board, (30.0, 20.0));
+        assert_eq!(f.placements.len(), 2);
+        assert_eq!(f.placements[0].inst, "u1");
+        assert!((f.placements[0].x - 20.0).abs() < 1e-9);
+        assert!((f.placements[0].y - 10.0).abs() < 1e-9);
+        assert_eq!(f.placements[0].rot, 0.0);
+        assert_eq!(f.placements[1].inst, "j1");
+        assert_eq!(f.placements[1].rot, 90.0);
+    }
+
+    #[test]
+    fn test_fab_block_requires_board() {
+        let err = parse_top("fab { place u1 @ (1mm, 2mm); }").unwrap_err();
+        assert!(format!("{}", err).contains("board"), "{}", err);
+    }
+
+    #[test]
     fn test_spec_in_type_body() {
         // 2026-08-13 (layout-keywords plan): `spec Bits: 4` maps to the
         // lowercase metadata key `bits` (same read path as `!> bits`).
@@ -4493,6 +4663,28 @@ mod tests {
     fn test_spec_quantity_bad_suffix_rejected() {
         let err = parse_top("type C { spec Decouple: 100banana; };").unwrap_err();
         assert!(format!("{}", err).contains("unit suffix"), "{}", err);
+    }
+
+    #[test]
+    fn test_spec_quantity_length_units() {
+        // 2026-09-23 (fab plan): bare `m` (metre), `mm`, `cm` resolve to
+        // the Length dimension in SI (metres); `mA` must still resolve via
+        // the prefix path (the `m` length addition must not break it).
+        use crate::parser::definitions::{parse_unit_suffix, UnitSuffix};
+        let expect = |suffix: &str, si: f64, dim: crate::ast::QuantityDim| {
+            match parse_unit_suffix(suffix) {
+                Some(UnitSuffix::Explicit { scale, dim: got }) => {
+                    assert_eq!(got, dim, "suffix {suffix}");
+                    assert!((scale - si).abs() < 1e-12, "suffix {suffix}: {scale} vs {si}");
+                }
+                other => panic!("suffix {suffix}: expected Explicit, got {other:?}"),
+            }
+        };
+        expect("m", 1.0, crate::ast::QuantityDim::Length);
+        expect("mm", 1e-3, crate::ast::QuantityDim::Length);
+        expect("cm", 1e-2, crate::ast::QuantityDim::Length);
+        expect("mA", 1e-3, crate::ast::QuantityDim::Amp);
+        assert!(parse_unit_suffix("mmA").is_none(), "double prefix is invalid");
     }
 
     #[test]
