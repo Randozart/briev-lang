@@ -244,6 +244,13 @@ pub enum ComptimeVal {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// 2026-09-22 (unified-metaprogramming plan, C3): a compile-time string
+    /// (from `Expr::Quoted("...")` or a bridged `NavValue::Str`). Closes the
+    /// one-value-domain gap: a composite body may gate a `match`/`when` on a
+    /// string literal the same way it gates on an Int — `match s { "abc" => … }`
+    /// folds when `s` substitutes to a literal. String comparisons in
+    /// comptime conditions fold too.
+    Str(String),
     /// Comptime-generated sequence (plan 2026-09-21 §B2): the target of a
     /// comptime `foreach`. Scalars only — the fold never guesses at
     /// nested structures.
@@ -266,6 +273,13 @@ fn eval_const(
         Expr::Decimal(n) => Some(ComptimeVal::Int(*n)),
         Expr::Float(f) => Some(ComptimeVal::Float(*f)),
         Expr::Bool(b) => Some(ComptimeVal::Bool(*b)),
+        // 2026-09-22 (C3): a string literal folds to ComptimeVal::Str — the
+        // one-value-domain closure. Tagged literals fold only for the plain
+        // string tag; any other tagged literal declines.
+        Expr::Quoted(bytes) => Some(ComptimeVal::Str(String::from_utf8_lossy(bytes).into_owned())),
+        Expr::TaggedQuotedLiteral(bytes, tag) if tag == "str" || tag == "String" => {
+            Some(ComptimeVal::Str(String::from_utf8_lossy(bytes).into_owned()))
+        }
         Expr::Identifier(n) => env.get(n).cloned(),
         Expr::UnaryOp(kind, a) => {
             let v = eval_const(a, env, state_types)?;
@@ -395,6 +409,7 @@ fn as_f(v: &ComptimeVal) -> f64 {
         ComptimeVal::Int(i) => *i as f64,
         ComptimeVal::Float(f) => *f,
         ComptimeVal::Bool(_) => f64::NAN,
+        ComptimeVal::Str(_) => f64::NAN,
         ComptimeVal::List(_) => f64::NAN,
     }
 }
@@ -427,6 +442,9 @@ fn apply_binop_const(kind: BinaryOpKind, l: ComptimeVal, r: ComptimeVal) -> Opti
             let eq = match (&l, &r) {
                 (Int(a), Int(b)) => a == b,
                 (Bool(a), Bool(b)) => a == b,
+                // 2026-09-22 (C3): string equality folds — a comptime
+                // `match s { "abc" => … }` decides when `s` is a literal.
+                (ComptimeVal::Str(a), ComptimeVal::Str(b)) => a == b,
                 _ => as_f(&l) == as_f(&r),
             };
             Some(Bool(if kind == BinaryOpKind::Eq { eq } else { !eq }))
@@ -464,6 +482,7 @@ fn literal_expr(v: &ComptimeVal) -> Expr {
         ComptimeVal::Int(i) => Expr::Decimal(*i),
         ComptimeVal::Float(f) => Expr::Float(*f),
         ComptimeVal::Bool(b) => Expr::Bool(*b),
+        ComptimeVal::Str(s) => Expr::Quoted(s.as_bytes().to_vec()),
         // Lists never reach this — fold_let_stmt keeps the source literal.
         ComptimeVal::List(_) => Expr::List(vec![]),
     }
@@ -477,6 +496,10 @@ fn pattern_const_match(p: &Pattern, v: &ComptimeVal) -> Option<bool> {
         (Pattern::Literal(Expr::Bool(b)), ComptimeVal::Bool(x)) => Some(b == x),
         (Pattern::Literal(Expr::Decimal(n)), ComptimeVal::Int(x)) => Some(n == x),
         (Pattern::Literal(Expr::Float(f)), ComptimeVal::Float(x)) => Some(f == x),
+        // 2026-09-22 (C3): a string-literal pattern matches a folded string.
+        (Pattern::Literal(Expr::Quoted(b)), ComptimeVal::Str(x)) => {
+            Some(String::from_utf8_lossy(b) == x.as_str())
+        }
         _ => None,
     }
 }
@@ -1081,6 +1104,7 @@ fn nav_comptime(v: &crate::macros::eval::NavValue) -> Option<ComptimeVal> {
         crate::macros::eval::NavValue::Int(i) => Some(ComptimeVal::Int(*i)),
         crate::macros::eval::NavValue::Bool(b) => Some(ComptimeVal::Bool(*b)),
         crate::macros::eval::NavValue::Count(c) => Some(ComptimeVal::Int(*c as i64)),
+        crate::macros::eval::NavValue::Str(s) => Some(ComptimeVal::Str(s.clone())),
         crate::macros::eval::NavValue::List(xs) => {
             let mut out = Vec::with_capacity(xs.len());
             for x in xs {
@@ -2577,6 +2601,71 @@ async node k [i < 1][i == 1] {
             panic!("expected a call, got {:?}", out[0]);
         };
         assert_eq!(name, "f");
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan, C3) ───────────────────
+    // One value domain: ComptimeVal gains Str, so a composite body may gate
+    // a match/when on a string literal (`match s { "abc" => … }`) and string
+    // equality folds. NavValue::Str bridges into the fold env.
+
+    #[test]
+    fn string_literal_match_folds_to_taken_arm() {
+        let items = parse_program(
+            "$defn pick(s: Expr) { match s { \"abc\" => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "pick");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Quoted("abc".into())],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(1)"), "taken arm spliced: {dump}");
+        assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
+    }
+
+    #[test]
+    fn string_neq_folds_to_other_arm() {
+        let items = parse_program(
+            "$defn pick(s: Expr) { match s { \"abc\" => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "pick");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Quoted("xyz".into())],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(0)"), "other arm spliced: {dump}");
+        assert!(!dump.contains("Decimal(1)"), "abc arm pruned: {dump}");
+    }
+
+    #[test]
+    fn nav_str_bridges_into_fold_env() {
+        // A NavValue::Str (from a $let) seeds the fold env and gates a match.
+        let items = parse_program(
+            "$let mode = \"fast\";\n\
+             $defn pick(s: Expr) { match s { \"fast\" => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "pick");
+        let mut comptime: HashMap<String, ComptimeVal> = HashMap::new();
+        comptime.insert(
+            "mode".to_string(),
+            ComptimeVal::Str("fast".to_string()),
+        );
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Identifier("mode".into())],
+            &comptime,
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(1)"), "fast arm spliced: {dump}");
     }
 }
 

@@ -112,9 +112,14 @@ $defn execute_many(...calls: Expr) {
   state param; and the liveness table roots `briev_await_impl`,
   `briev_task_spawn_impl`, `briev_task_cancel_impl` at their constructs —
   async-tasks.bv now compiles (was a hard liveness panic).
-- **C3 — one value domain**: reconcile `NavValue` (stage fns) and
-  `ComptimeVal` (composites); a body computes (`let x = list`) AND emits
-  (`foreach over x`) in one pass.
+- **C3 — one value domain — DONE 2026-09-22**: `ComptimeVal` gains `Str` —
+  a string literal (`Expr::Quoted`) folds, string `match`/`when` conditions
+  decide at expansion, string `==`/`!=` folds in `apply_binop_const`, and a
+  `$let`/`$const` string bridges into the fold env via `nav_comptime`
+  (`NavValue::Str` → `ComptimeVal::Str`). A composite body now gates on a
+  string the same way it gates on an Int — `match s { "abc" => … }` splices
+  only the taken arm. `literal_expr` round-trips Str. 3 tests; the
+  softmax/execute_many/val composites unchanged.
 - **C4 — uniform AST walker**: one visitor over every statement-bearing
   `TopLevel` + nested/expression positions (replaces the hand-rolled
   `expand_stmt_list`/`expand_nested` pair).
