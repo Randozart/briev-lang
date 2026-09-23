@@ -26,8 +26,10 @@ pub struct BoardPlacement {
     pub parts: BTreeMap<String, PlacedPart>,
 }
 
-/// Grid pitch (mm): clearance between adjacent auto-placed parts.
-const PITCH: f64 = 6.0;
+/// Grid pitch (mm): the candidate lattice for auto-placement. The
+/// collision check (MIN_CLEARANCE) does the real spacing, so the lattice
+/// can be finer than a part's footprint.
+const PITCH: f64 = 3.0;
 /// Margin from the board edge to the first part centre (mm).
 const EDGE_MARGIN: f64 = 4.0;
 /// Ring radius for decouplers placed near their decoupled part (mm).
@@ -151,28 +153,35 @@ pub fn place_board(
     let decouplers = collect_decouplers(instances, type_props);
     let decoupled = first_decoupled(instances, type_props);
 
-    // Grid-place every unplaced part first (board-aware) — decouplers
-    // included, so nothing is ever off-board.
+    // Collision-aware grid: every unplaced part flows to the first cell
+    // whose footprint box fits the board AND overlaps no already-placed
+    // part (pinned or earlier grid) — the auto-placer never manufactures
+    // a clearance warning it could have avoided. Decouplers included, so
+    // nothing is ever off-board.
+    let mut placed_boxes = placed_boxes(&placed, instances);
     let mut grid_names: Vec<String> = instances
         .keys()
         .filter(|n| !placed.contains_key(*n))
         .cloned()
         .collect();
     grid_names.sort();
-    let grid = grid_positions(&grid_names, w, h)?;
-    for (name, (x, y)) in grid_names.iter().zip(grid) {
-        placed.insert(name.clone(), PlacedPart { x, y, rot: 0.0 });
-    }
+    grid_place_all(
+        &mut placed,
+        &mut placed_boxes,
+        &grid_names,
+        instances,
+        fab.board,
+    )?;
 
-    // Decouplers near the decoupled part — but only where the footprint
-    // box still fits the board (the ring overflows near an edge; the
-    // part then keeps its on-board grid slot). Deterministic first-fit.
+    // Decouplers near the decoupled part — a ring point is used only when
+    // its footprint box fits the board AND overlaps no other placed part.
     if let Some((cx, cy)) = decoupled
         .as_ref()
         .and_then(|d| placed.get(d).map(|p| (p.x, p.y)))
     {
         decoupler_relocate(
             &mut placed,
+            &mut placed_boxes,
             &decouplers,
             instances,
             RingTarget { cx, cy, w, h },
@@ -185,10 +194,118 @@ pub fn place_board(
     }))
 }
 
+/// Place every unplaced part on the first collision-free grid cell —
+/// one pass over the names consuming cells in order (deterministic).
+fn grid_place_all(
+    placed: &mut BTreeMap<String, PlacedPart>,
+    placed_boxes: &mut BTreeMap<String, (f64, f64, f64, f64)>,
+    grid_names: &[String],
+    instances: &BTreeMap<String, crate::analysis::electronics::ComponentInstance>,
+    board: (f64, f64),
+) -> Result<(), String> {
+    let cols = grid_cells(board.0);
+    let max_cells = cols * grid_cells(board.1);
+    let mut cell = 0usize;
+    let mut placed_count = 0usize;
+    while placed_count < grid_names.len() {
+        if cell >= max_cells {
+            return Err(format!(
+                "the board {}mm x {}mm is too small for {} auto-placed parts at {}mm pitch — \
+                 enlarge the board or pin positions with `place <inst> @ (...)`",
+                board.0,
+                board.1,
+                grid_names.len(),
+                PITCH
+            ));
+        }
+        let name = &grid_names[placed_count];
+        let (x, y) = cell_pos(cell, cols, board);
+        let bb = part_box_at(instances, name, x, y);
+        // Unknown footprint → place best-effort (the layout check reports
+        // it as an error later); known footprint → must fit and clear.
+        let free = match bb {
+            None => true,
+            Some(b) => fits_board(&b, board) && !overlaps_any(&b, placed_boxes, name),
+        };
+        if free {
+            placed.insert(name.clone(), PlacedPart { x, y, rot: 0.0 });
+            if let Some(b) = bb {
+                placed_boxes.insert(name.clone(), b);
+            }
+            placed_count += 1;
+        }
+        cell += 1;
+    }
+    Ok(())
+}
+
+/// The number of cells along one board axis at the grid pitch.
+fn grid_cells(axis: f64) -> usize {
+    ((axis - 2.0 * EDGE_MARGIN) / PITCH).floor().max(1.0) as usize
+}
+
+/// The position of grid cell `cell` (row-major, from the top-left margin).
+fn cell_pos(cell: usize, cols: usize, _board: (f64, f64)) -> (f64, f64) {
+    let row = cell / cols;
+    let col = cell % cols;
+    (
+        EDGE_MARGIN + col as f64 * PITCH,
+        EDGE_MARGIN + row as f64 * PITCH,
+    )
+}
+
+/// The axis-aligned bounding box of `name` centred at `(x, y)`, when its
+/// footprint is known.
+fn part_box_at(
+    instances: &BTreeMap<String, crate::analysis::electronics::ComponentInstance>,
+    name: &str,
+    x: f64,
+    y: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let inst = instances.get(name)?;
+    let package = inst
+        .properties
+        .iter()
+        .find(|(k, _)| k == "package")
+        .map(|(_, v)| v.as_str())?;
+    let fp = crate::analysis::footprints::lookup(package)?;
+    let (fw, fh) = fp.outline;
+    Some((x - fw / 2.0, y - fh / 2.0, x + fw / 2.0, y + fh / 2.0))
+}
+
+/// The bounding boxes of every placed part (unknown footprints skipped —
+/// the layout check reports them later).
+fn placed_boxes(
+    placed: &BTreeMap<String, PlacedPart>,
+    instances: &BTreeMap<String, crate::analysis::electronics::ComponentInstance>,
+) -> BTreeMap<String, (f64, f64, f64, f64)> {
+    let mut out = BTreeMap::new();
+    for (name, part) in placed {
+        if let Some(bb) = part_box_at(instances, name, part.x, part.y) {
+            out.insert(name.clone(), bb);
+        }
+    }
+    out
+}
+
+/// Whether `bb` overlaps any box in `boxes` (excluding `self_name`), with
+/// at least MIN_CLEARANCE separation.
+fn overlaps_any(
+    bb: &(f64, f64, f64, f64),
+    boxes: &BTreeMap<String, (f64, f64, f64, f64)>,
+    self_name: &str,
+) -> bool {
+    boxes
+        .iter()
+        .any(|(name, other)| name != self_name && !aabb_clear(bb, other, MIN_CLEARANCE))
+}
+
 /// Move each decoupler to a ring point around the decoupled part, keeping
-/// its grid slot when no ring point fits the board.
+/// its grid slot when no ring point fits the board AND clears every other
+/// placed part (the ring must never manufacture a clearance warning).
 fn decoupler_relocate(
     placed: &mut BTreeMap<String, PlacedPart>,
+    placed_boxes: &mut BTreeMap<String, (f64, f64, f64, f64)>,
     decouplers: &std::collections::BTreeSet<String>,
     instances: &BTreeMap<String, crate::analysis::electronics::ComponentInstance>,
     target: RingTarget,
@@ -197,13 +314,15 @@ fn decoupler_relocate(
         let Some((fw, fh)) = footprint_box(instances, name) else {
             continue;
         };
-        let Some((x, y)) = ring_fit_point(&target, fw, fh) else {
+        let Some((x, y)) = ring_fit_point(&target, fw, fh, placed_boxes, name) else {
             continue;
         };
         if let Some(part) = placed.get_mut(name) {
             part.x = x;
             part.y = y;
         }
+        let bb = (x - fw / 2.0, y - fh / 2.0, x + fw / 2.0, y + fh / 2.0);
+        placed_boxes.insert(name.clone(), bb);
     }
 }
 
@@ -218,13 +337,21 @@ struct RingTarget {
 }
 
 /// The first ring point around the target whose footprint box fits the
-/// board — deterministic (8 points, first fit wins).
-fn ring_fit_point(target: &RingTarget, fw: f64, fh: f64) -> Option<(f64, f64)> {
+/// board AND overlaps no placed part (except the decoupler itself) —
+/// deterministic (8 points, first fit wins).
+fn ring_fit_point(
+    target: &RingTarget,
+    fw: f64,
+    fh: f64,
+    placed_boxes: &BTreeMap<String, (f64, f64, f64, f64)>,
+    self_name: &str,
+) -> Option<(f64, f64)> {
     for k in 0..8 {
         let ang = k as f64 * (std::f64::consts::TAU / 8.0);
         let x = target.cx + DECOUPLER_RING * ang.cos();
         let y = target.cy + DECOUPLER_RING * ang.sin();
-        if x - fw / 2.0 >= 0.0 && x + fw / 2.0 <= target.w && y - fh / 2.0 >= 0.0 && y + fh / 2.0 <= target.h {
+        let bb = (x - fw / 2.0, y - fh / 2.0, x + fw / 2.0, y + fh / 2.0);
+        if fits_board(&bb, (target.w, target.h)) && !overlaps_any(&bb, placed_boxes, self_name) {
             return Some((x, y));
         }
     }
@@ -314,36 +441,6 @@ fn property_true(
             _ => None,
         })
         .unwrap_or(false)
-}
-
-/// Row-major grid positions for `names` inside the board outline (mm).
-fn grid_positions(names: &[String], board_w: f64, board_h: f64) -> Result<Vec<(f64, f64)>, String> {
-    let cols = ((board_w - 2.0 * EDGE_MARGIN) / PITCH).floor().max(1.0) as usize;
-    let rows = (names.len() + cols - 1) / cols;
-    let needed_h = EDGE_MARGIN + rows as f64 * PITCH;
-    if needed_h > board_h + f64::EPSILON {
-        return Err(format!(
-            "the board {}mm x {}mm is too small for {} auto-placed parts at {}mm pitch (needs ~{}mm) — \
-             enlarge the board or pin positions with `place <inst> @ (...)`",
-            board_w,
-            board_h,
-            names.len(),
-            PITCH,
-            needed_h as i64
-        ));
-    }
-    Ok(names
-        .iter()
-        .enumerate()
-        .map(|(i, _)| {
-            let row = i / cols;
-            let col = i % cols;
-            (
-                EDGE_MARGIN + col as f64 * PITCH,
-                EDGE_MARGIN + row as f64 * PITCH,
-            )
-        })
-        .collect())
 }
 
 #[cfg(test)]
