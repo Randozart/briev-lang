@@ -1875,9 +1875,22 @@ struct FactSink<'a> {
     intents: &'a mut Vec<(String, String)>,
     /// 2026-09-23 (E14a gate): pin-level drive intents `u1.en = true;`.
     pin_intents: &'a mut Vec<(String, PinRef)>,
+    /// 2026-09-23 (E14b slice 1): min-voltage obligations
+    /// `inst.pin.voltage >= <literal>V;` — the pull-up forcing consumes
+    /// them after the wiring facts settle.
+    obligations: &'a mut Vec<VoltageObligation>,
     bridges: &'a mut Vec<BridgeRequest>,
     /// 2026-09-22 (D16 p3b): disconnections from `open a.pin, b.pin;`.
     opens: &'a mut Vec<(Expr, Expr)>,
+}
+
+/// 2026-09-23 (E14b slice 1): a min-voltage obligation from a node body —
+/// `inst.pin.voltage >= <literal>V;`. The pin's net must be held at least
+/// `volts`; a released (WiredAnd) net forces an external pull-up.
+struct VoltageObligation {
+    node: String,
+    pin: PinRef,
+    volts: f64,
 }
 
 /// The region context threading through a guarded-fact walk (D16):
@@ -2099,6 +2112,48 @@ impl FactSink<'_> {
         ));
     }
 
+    /// 2026-09-23 (E14b slice 1): a body voltage obligation. A MIN bound
+    /// (`pin.voltage >= V`) forces a pull-up (E14b-1). A MAX bound
+    /// (`<=`/`<`, gnd-path forcing) is not landed — hard error naming the
+    /// explicit wire. Any other bare expression is not an electronics fact.
+    fn obligation_fact(&mut self, expr: &Expr, ctx: &NetlistContext) {
+        let Expr::BinaryOp(kind, l, r) = expr else {
+            self.not_a_fact(expr);
+            return;
+        };
+        if matches!(kind, BinaryOpKind::Le | BinaryOpKind::Lt) {
+            self.errors.push(format!(
+                "voltage obligation '{}' (node '{}') bounds the net ABOVE — gnd-path forcing \
+                 is not landed (E14b-2); state the wire explicitly (`u2.gpio[3] = sw1.p1;`), \
+                 or use a MIN obligation (`inst.pin.voltage >= 2.7V;`)",
+                expr, self.node
+            ));
+            return;
+        }
+        if !matches!(kind, BinaryOpKind::Ge | BinaryOpKind::Gt) {
+            self.not_a_fact(expr);
+            return;
+        }
+        let Some((pin, volts)) = voltage_obligation_pair(l, r, ctx) else {
+            self.not_a_fact(expr);
+            return;
+        };
+        self.obligations.push(VoltageObligation {
+            node: self.node.to_string(),
+            pin,
+            volts,
+        });
+    }
+
+    fn not_a_fact(&mut self, expr: &Expr) {
+        self.errors.push(format!(
+            "expression '{}' (node '{}') is not an electronics fact — write a drive intent \
+             (`inst = true;` / `inst.pin = true;`), a pin-to-pin wire (`a = b;`), or a \
+             voltage obligation (`inst.pin.voltage >= 3.3V;`)",
+            expr, self.node
+        ));
+    }
+
     /// Walk statements, threading the region context (E14a/D16).
     fn walk(
         &mut self,
@@ -2117,6 +2172,10 @@ impl FactSink<'_> {
                 // 2026-09-22 (D16 p3b): author-expressed disconnection.
                 Statement::Open(a, b) => {
                     self.opens.push(((**a).clone(), (**b).clone()));
+                }
+                // 2026-09-23 (E14b slice 1): a body voltage obligation.
+                Statement::Expression(expr) => {
+                    self.obligation_fact(expr, ctx);
                 }
                 _ => {}
             }
@@ -2411,6 +2470,312 @@ fn free_can_drive_candidates(ctx: &NetlistContext, exclude_inst: &str) -> Vec<St
     candidates
 }
 
+/// 2026-09-23 (E14b slice 1): the pin+volts of a voltage obligation pair —
+/// one side is a `.voltage` pin access, the other a voltage literal,
+/// either orientation.
+fn voltage_obligation_pair(
+    l: &Expr,
+    r: &Expr,
+    ctx: &NetlistContext,
+) -> Option<(PinRef, f64)> {
+    if let (Some(p), Some(v)) = (
+        resolve_voltage_pin(l, ctx.instances, ctx.type_pins),
+        extract_voltage(r),
+    ) {
+        return Some((p, v));
+    }
+    if let (Some(p), Some(v)) = (
+        resolve_voltage_pin(r, ctx.instances, ctx.type_pins),
+        extract_voltage(l),
+    ) {
+        return Some((p, v));
+    }
+    None
+}
+
+/// 2026-09-23 (E14b slice 1): the pull-up forcing pass — bundles the
+/// working set (nets context, driven rails, diagnostic sinks) so the
+/// per-obligation methods stay under the parameter gate (FactSink pattern).
+/// For each min-voltage obligation on an undriven net, wire a free
+/// `spec PullUp: true` part between that net and the lowest qualifying
+/// driven rail. Same-root obligations dedup to one pull-up. D13: no part
+/// or no rail → hard error; distinct-value parts (or rails tied at the
+/// minimal volts) → enumerated ambiguous error.
+struct PullUpForcing<'a, 'b> {
+    ctx: &'a mut NetlistContext<'b>,
+    rails: BTreeMap<String, f64>,
+    errors: &'a mut Vec<String>,
+    proofs: &'a mut Vec<String>,
+}
+
+impl<'a, 'b> PullUpForcing<'a, 'b> {
+    fn new(
+        ctx: &'a mut NetlistContext<'b>,
+        rails: BTreeMap<String, f64>,
+        errors: &'a mut Vec<String>,
+        proofs: &'a mut Vec<String>,
+    ) -> Self {
+        PullUpForcing { ctx, rails, errors, proofs }
+    }
+
+    fn run(&mut self, obligations: &[VoltageObligation]) {
+        if obligations.is_empty() {
+            return;
+        }
+        let mut by_net: BTreeMap<String, (f64, Vec<String>)> = BTreeMap::new();
+        for ob in obligations {
+            let root = self.ctx.ds.find(&pin_key(&ob.pin.component, &ob.pin.pin));
+            let entry = by_net.entry(root).or_insert((0.0, Vec::new()));
+            if ob.volts > entry.0 {
+                entry.0 = ob.volts;
+            }
+            entry.1.push(ob.node.clone());
+        }
+        for (root, (vmin, nodes)) in by_net {
+            self.force_one(&root, vmin, &nodes);
+        }
+    }
+
+    fn force_one(&mut self, root: &str, vmin: f64, nodes: &[String]) {
+        if self.rails.get(root).map_or(false, |v| *v >= vmin) {
+            self.proofs.push(format!(
+                "voltage obligation '>= {}V' (node '{}'): net already driven at {}V — satisfied",
+                vmin, nodes.join(", "), self.rails[root]
+            ));
+            return;
+        }
+        if net_has_pull_up(self.ctx, root) {
+            self.proofs.push(format!(
+                "voltage obligation '>= {}V' (node '{}'): net already pulled up — satisfied",
+                vmin, nodes.join(", ")
+            ));
+            return;
+        }
+        let parts = self.free_parts();
+        if parts.len() > 1 && self.values_distinct(&parts) {
+            self.errors.push(format!(
+                "voltage obligation '>= {}V' (node '{}') is ambiguous: {} pull-up parts of differing value are free ({}). Wire the pull-up explicitly, or unpop the extras",
+                vmin, nodes.join(", "), parts.len(), parts.join(", ")
+            ));
+            return;
+        }
+        let Some(part) = parts.first() else {
+            self.errors.push(format!(
+                "voltage obligation '>= {}V' (node '{}') has no pull-up part: no free `spec PullUp: true` two-pin part remains. Add one (e.g. a resistor) or wire the net to a drive explicitly",
+                vmin, nodes.join(", ")
+            ));
+            return;
+        };
+        match self.qualifying_rail(vmin) {
+            Some((rail, v)) => self.wire(PullUpWire {
+                part: part.clone(),
+                root: root.to_string(),
+                rail,
+                rail_volts: v,
+                vmin,
+                nodes: nodes.to_vec(),
+            }),
+            None => self.errors.push(format!(
+                "voltage obligation '>= {}V' (node '{}') has no qualifying rail: no driven supply net reaches {}V (driven: {}). Add a drive or lower the obligation",
+                vmin,
+                nodes.join(", "),
+                vmin,
+                self.rails
+                    .iter()
+                    .map(|(r, v)| format!("{}V@{}", v, r))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    /// Free `spec PullUp` parts, sorted — the pick among interchangeable
+    /// parts is deterministic.
+    fn free_parts(&self) -> Vec<String> {
+        let mut parts: Vec<String> = self
+            .ctx
+            .instances
+            .values()
+            .filter(|c| {
+                self.ctx
+                    .type_props
+                    .get(&c.type_name)
+                    .and_then(|m| m.get("pull_up"))
+                    .and_then(property_bool)
+                    .unwrap_or(false)
+            })
+            .filter(|c| pins_free(self.ctx, c))
+            .map(|c| c.name.clone())
+            .collect();
+        parts.sort();
+        parts
+    }
+
+    /// Whether the free parts carry more than one distinct value — the
+    /// pick then MATTERS (pull-up strength) and D13 demands explicit wiring.
+    fn values_distinct(&self, parts: &[String]) -> bool {
+        let distinct: std::collections::BTreeSet<&str> = parts
+            .iter()
+            .filter_map(|p| {
+                self.ctx.instances[p]
+                    .properties
+                    .iter()
+                    .find(|(k, _)| k == "value")
+                    .map(|(_, v)| v.as_str())
+            })
+            .collect();
+        distinct.len() > 1
+    }
+
+    /// Lowest driven rail at or above `vmin`, with its volts. None when no
+    /// rail qualifies OR when multiple rails tie at the minimal volts —
+    /// both are hard errors, surfaced by the caller's message.
+    fn qualifying_rail(&mut self, vmin: f64) -> Option<(String, f64)> {
+        let mut cands: Vec<(f64, String)> = self
+            .rails
+            .iter()
+            .filter(|(_, v)| **v >= vmin)
+            .map(|(r, v)| (*v, r.clone()))
+            .collect();
+        cands.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let best = cands.first()?;
+        let ties: Vec<&String> = cands
+            .iter()
+            .filter(|(v, _)| (v - best.0).abs() < f64::EPSILON)
+            .map(|(_, r)| r)
+            .collect();
+        if ties.len() > 1 {
+            self.errors.push(format!(
+                "voltage obligation '>= {}V' is ambiguous: multiple rails tie at the minimal {}V ({}). Tie the net to one rail explicitly (`inst.pin = rail.pin;` in a node guard) or raise the obligation",
+                vmin, best.0, ties.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+            return None;
+        }
+        Some((ties[0].clone(), best.0))
+    }
+
+    /// Wire the chosen part between the obligation net and the rail.
+    fn wire(&mut self, w: PullUpWire) {
+        let Some(pi) = self.ctx.type_pins.get(&self.ctx.instances[w.part.as_str()].type_name) else {
+            return;
+        };
+        let Some(pa) = pi.first() else {
+            return;
+        };
+        let Some(pb) = pi.get(1) else {
+            return;
+        };
+        let pa_key = pin_key(&w.part, &pa.0);
+        let pb_key = pin_key(&w.part, &pb.0);
+        self.ctx.ds.make(w.root.clone());
+        self.ctx.ds.make(pa_key.clone());
+        self.ctx.ds.make(w.rail.clone());
+        self.ctx.ds.make(pb_key.clone());
+        self.ctx.ds.union(&w.root, &pa_key);
+        self.ctx.ds.union(&w.rail, &pb_key);
+        self.proofs.push(format!(
+            "pull-up forced by '>= {}V' (node '{}'): {}.{} <-> obligation net, {}.{} <-> rail ({}V) — obligation satisfied",
+            w.vmin, w.nodes.join(", "), w.part, pa.0, w.part, pb.0, w.rail_volts
+        ));
+    }
+}
+
+/// The resolved pull-up decision handed to `PullUpForcing::wire` — bundled
+/// so the method stays under the parameter gate.
+struct PullUpWire {
+    part: String,
+    root: String,
+    rail: String,
+    rail_volts: f64,
+    vmin: f64,
+    nodes: Vec<String>,
+}
+
+/// Driven supply rails: `[x.voltage == <literal>]` drives across all
+/// contracts, resolved to union-find roots; only Supply-class pins count
+/// as rails (a rail must be a real source, not an arbitrary driven net).
+fn collect_driven_rails(items: &[TopLevel], ctx: &mut NetlistContext) -> BTreeMap<String, f64> {
+    let mut rails: BTreeMap<String, f64> = BTreeMap::new();
+    let mut eqs: Vec<(Expr, Expr)> = Vec::new();
+    for item in items {
+        let TopLevel::Transaction(t) = item else {
+            continue;
+        };
+        collect_eq_triples(&t.contract.pre_condition, &mut eqs);
+        collect_eq_triples(&t.contract.post_condition, &mut eqs);
+    }
+    for (l, r) in eqs {
+        let Some((pin, volts)) = voltage_drive(&l, &r, ctx.instances, ctx.type_pins) else {
+            continue;
+        };
+        let Some(classes) = pin_classes_of(ctx, &pin) else {
+            continue;
+        };
+        if !classes.supply {
+            continue;
+        }
+        let root = ctx.ds.find(&pin_key(&pin.component, &pin.pin));
+        let entry = rails.entry(root).or_insert(0.0);
+        if volts > *entry {
+            *entry = volts;
+        }
+    }
+    rails
+}
+
+/// 2026-09-23 (E14b slice 1): entry — guard, collect rails, then force.
+fn force_pull_ups(
+    items: &[TopLevel],
+    ctx: &mut NetlistContext,
+    obligations: &[VoltageObligation],
+    errors: &mut Vec<String>,
+    proofs: &mut Vec<String>,
+) {
+    if obligations.is_empty() {
+        return;
+    }
+    let rails = collect_driven_rails(items, ctx);
+    let mut forcing = PullUpForcing::new(ctx, rails, errors, proofs);
+    forcing.run(obligations);
+}
+
+/// Pin-class properties of a resolved pin (for the rail filter) — the
+/// type_info table is keyed by TYPE name, so the instance is resolved
+/// first.
+fn pin_classes_of<'a>(ctx: &'a NetlistContext, pin: &PinRef) -> Option<&'a PinClassProps> {
+    let inst = ctx.instances.get(&pin.component)?;
+    let oti = ctx.type_info.get(&inst.type_name)?;
+    let idx = oti.pins.iter().position(|(n, _)| n == &pin.pin)?;
+    oti.pin_classes.get(idx)
+}
+
+/// All of the part's pins are unconnected (never made).
+fn pins_free(ctx: &NetlistContext, c: &ComponentInstance) -> bool {
+    let Some(ps) = ctx.type_pins.get(&c.type_name) else {
+        return false;
+    };
+    ps.iter().all(|(n, _)| !pin_connected(ctx.ds, &pin_key(&c.name, n)))
+}
+
+/// The net already has a `spec PullUp` part on it.
+fn net_has_pull_up(ctx: &mut NetlistContext, root: &str) -> bool {
+    let instances = &ctx.instances;
+    let type_props = &ctx.type_props;
+    let type_pins = &ctx.type_pins;
+    let ds = &mut ctx.ds;
+    instances.values().any(|c| {
+        type_props
+            .get(&c.type_name)
+            .and_then(|m| m.get("pull_up"))
+            .and_then(property_bool)
+            .unwrap_or(false)
+            && type_pins.get(&c.type_name).map_or(false, |ps| {
+                ps.iter()
+                    .any(|(n, _)| ds.find(&pin_key(&c.name, n)) == *root)
+            })
+    })
+}
+
 /// 2026-09-23 (E14a gate): pin-level drive intent `u1.en = true;` — the
 /// pin completes against the sole unconnected drive-capable pin elsewhere
 /// (same D13 rules as the instance form). An already-connected pin
@@ -2539,6 +2904,7 @@ fn collect_intents(
     let mut proofs = Vec::new();
     let mut intents: Vec<(String, String)> = Vec::new();
     let mut pin_intents: Vec<(String, PinRef)> = Vec::new();
+    let mut obligations: Vec<VoltageObligation> = Vec::new();
     let mut bridges: Vec<BridgeRequest> = Vec::new();
     let mut opens: Vec<(Expr, Expr)> = Vec::new();
     for item in items {
@@ -2551,6 +2917,7 @@ fn collect_intents(
             errors: &mut errors,
             intents: &mut intents,
             pin_intents: &mut pin_intents,
+            obligations: &mut obligations,
             bridges: &mut bridges,
             opens: &mut opens,
         };
@@ -2572,6 +2939,10 @@ fn collect_intents(
             Err(e) => errors.push(e),
         }
     }
+    // 2026-09-23 (E14b slice 1): min-voltage obligations run last — the
+    // wiring facts, intents, and mechanisms have settled the nets, so the
+    // pull-up forcing sees final roots and the truly-free parts.
+    force_pull_ups(items, ctx, &obligations, &mut errors, &mut proofs);
     // 2026-09-22 (D16 p3b): disconnections — two pins that must NOT be
     // connected. A wiring fact or mechanism bridge that would connect them
     // is a hard error (the complement of the phase-3 redundancy gate).

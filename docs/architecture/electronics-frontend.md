@@ -147,7 +147,17 @@ One-sided parts (no proven ΔV) and zero-drop straps force nothing.
 
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
 simulation), PinDecl in cell bodies' beast serialization, pin roles,
-`derive` on types.
+`derive` on types, bus assembly, gnd-path forcing, en drive solving,
+rail inference (E14b slices 2+).
+
+**2026-09-23 (E14b slice 1, plan `2026-09-23-ebv-e14b-pullup-forcing.md`):**
+min-voltage pull-up forcing. A node body may state
+`inst.pin.voltage >= <literal>V;` — a declarative obligation the analysis
+consumes. The forcing pass wires a free `spec PullUp: true` part between
+the obligation net and the lowest qualifying driven supply rail; D13
+ambiguity rules apply when the pick matters (distinct-value parts, or
+rails tied at the minimal volts). The i2c node of `usb_sensor.ebv` uses
+the pure-intent form.
 
 **2026-09-23 (E14a gate, plan `2026-09-23-ebv-gate-fixture.md`):** the
 §3.2 USB-sensor fixture compiles to a `.kicad_sch` and its four-case

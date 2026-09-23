@@ -1051,4 +1051,125 @@ mod tests {
             nl.intent_errors
         );
     }
+
+    // ── E14b slice 1 (plan 2026-09-23-ebv-e14b-pullup-forcing.md) ──────
+
+    /// A minimal board with an open-drain net that must be pulled up.
+    const PULL_UP_BOARD: &str = r#"
+        type Power { spec KicadType: "power_in"; spec Supply: true; };
+        type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+        type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+        type Mcu { pin vdd: Power; pin sda: IoOd; reference "U"; };
+        let u1: Mcu = Mcu { value: "x" };
+        let r1: Resistor = Resistor { value: "4k7" };
+        async node n [
+            u1.vdd.voltage == 3.3V && u1.sda.voltage == u2_sda
+        ] [u1.vdd.voltage == 3.3V] {
+        }
+    "#;
+
+    #[test]
+    fn e14b_min_obligation_forces_pull_up() {
+        // `u2.sda.voltage >= 2.7V` on an undriven WiredAnd net → the free
+        // PullUp part wires between the net and the lowest qualifying rail
+        // (3.3V, not 5V). The obligation records as a proof, not a wire.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+            type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+            type Mcu { pin vdd: Power; pin sda: IoOd; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let r1: Resistor = Resistor { value: "4k7" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                u1.sda.voltage >= 2.7V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("pull-up forced") && p.contains("2.7V")),
+            "obligation must force a pull-up with provenance: {:?}",
+            nl.intent_proofs
+        );
+        // Both r1 pins are now on nets (no dangling).
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
+
+    #[test]
+    fn e14b_no_pull_up_part_is_a_hard_error() {
+        // Obligation with no free PullUp part → D13 no-completion error.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+            type Mcu { pin vdd: Power; pin sda: IoOd; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                u1.sda.voltage >= 2.7V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains(">= 2.7V") && e.contains("no pull-up part")),
+            "{:?}",
+            nl.intent_errors
+        );
+    }
+
+    #[test]
+    fn e14b_identical_pull_ups_assign_not_ambiguous() {
+        // Two obligations, two identical-value pull-ups → a perfect
+        // matching: the forced assignment is deterministic, NOT ambiguous.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+            type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+            type Mcu { pin vdd: Power; pin sda: IoOd; pin scl: IoOd; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let r1: Resistor = Resistor { value: "4k7" };
+            let r2: Resistor = Resistor { value: "4k7" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                u1.sda.voltage >= 2.7V;
+                u1.scl.voltage >= 2.7V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        let forced = nl
+            .intent_proofs
+            .iter()
+            .filter(|p| p.contains("pull-up forced"))
+            .count();
+        assert_eq!(forced, 2, "one pull-up per obligation: {:?}", nl.intent_proofs);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
+
+    #[test]
+    fn e14b_distinct_value_pull_ups_are_ambiguous() {
+        // One obligation, two free pull-ups of DIFFERENT value → the pick
+        // matters (pull-up strength); D13 demands explicit wiring.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+            type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+            type Mcu { pin vdd: Power; pin sda: IoOd; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let r1: Resistor = Resistor { value: "4k7" };
+            let r2: Resistor = Resistor { value: "10k" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                u1.sda.voltage >= 2.7V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("ambiguous") && e.contains("r1") && e.contains("r2")),
+            "{:?}",
+            nl.intent_errors
+        );
+    }
 }

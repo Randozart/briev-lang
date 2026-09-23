@@ -55,7 +55,7 @@ type Sensor {
     rating any;
     spec Decouple: "100n";
 };
-type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
+type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; spec PullUp: true; };
 type Capacitor { pin a; pin b; reference "C"; tolerance any; rating any; spec Decoupler: true; };
 type Switch { pin p1; pin p2; reference "SW"; tolerance any; rating any; };
 type Led {
@@ -139,17 +139,17 @@ async node usb_powered [
     j2.sig[6] = u2.gpio[7];
 }
 
-// io_od pull-ups: §3.2 relied on solver forcing (released = high-Z ⇒
-// wired to a >=2.7V source). E14a states the topology explicitly.
+// io_od pull-ups (E14b slice 1): min-voltage obligations force the
+// pull-up wiring. The solver wires r_pu[*] to the 3.3V rail (the lowest
+// qualifying driven supply) and completes `u2.sda.voltage >= 2.7V` —
+// no resolution keywords exist.
 async node i2c_idle [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
-    // E14b: delete these equalities — the solver wires r_pu[*] to
-    // u1.vout from the released/high-Z physics alone.
-    r_pu[0].a = u1.vout;
-    r_pu[0].b = u2.sda;
-    u2.sda = u3.sda;
-    r_pu[1].a = u1.vout;
-    r_pu[1].b = u2.scl;
-    u2.scl = u3.scl;
+    u2.sda.voltage >= 2.7V;
+    u3.sda.voltage >= 2.7V;
+    u2.scl.voltage >= 2.7V;
+    u3.scl.voltage >= 2.7V;
+    u2.sda = u3.sda;   // E14b-2: bus assembly (same-name IoOd pins union)
+    u2.scl = u3.scl;   // E14b-2
 }
 
 // Button pulls gpio[3] to gnd; r_btn is the pull-up to the rail.

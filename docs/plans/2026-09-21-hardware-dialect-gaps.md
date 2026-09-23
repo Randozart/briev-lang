@@ -536,6 +536,25 @@ landed clause; the fixture states it as a use-site txn postcondition.
 Owner: fixture; triggers when a second class wants a per-instance
 obligation — property-driven, `spec` form, per D6.
 
+### Amendment 2026-09-23 (II): E14b slice 1 landed — min-voltage pull-up forcing
+
+The first pure-intent slice is IN: a node body may state a MIN-voltage
+obligation — `inst.pin.voltage >= <literal>V;` — and the compiler wires a
+free `spec PullUp: true` part (new spec key + stdlib Resistor) between the
+obligation net and the lowest qualifying driven rail. D13 preserved: no
+part or no rail → hard error; distinct-value free parts (or rails tied at
+the minimal volts) → enumerated ambiguous error; identical parts assign
+deterministically (any bijection is equivalent — the pick is immaterial).
+The typechecker admits the comparison as a declarative physics fact
+(never executed, like `inst = true`). The i2c node of the usb_sensor
+fixture now uses the pure-intent form; the bus unions (`u2.sda = u3.sda`)
+stay explicit — E14b-2.
+
+E14b remaining (backlog, each marked in the fixture): bus assembly,
+gnd-path forcing (`pin.voltage <= V` is a hard error today — "state the
+wire explicitly"), `en` drive assignment solving, rail inference (rails
+stay explicit guard equalities), `derive on:` type clauses.
+
 E14b (pure intent — no explicit equalities) remains OPEN; every
 explicit equality the fixture needed beyond the drive map is marked
 `// E14b:` in the file and recorded in the design record's gate delta.

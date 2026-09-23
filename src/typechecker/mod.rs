@@ -3519,6 +3519,13 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::Expression(expr) => {
+            // 2026-09-23 (E14b slice 1): a declarative voltage obligation —
+            // `inst.pin.voltage >= 3.3V;` in a node body is a physics fact
+            // the pull-up forcing consumes; it never executes (like the
+            // drive intents above).
+            if is_voltage_obligation(expr, ctx) {
+                return Ok(());
+            }
             infer_type_only(expr, ctx)?;
             Ok(())
         }
@@ -3530,6 +3537,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::Gate(cond) => {
+            if is_voltage_obligation(cond, ctx) {
+                return Ok(());
+            }
             infer_type_only(cond, ctx)?;
             Ok(())
         }
@@ -5141,6 +5151,37 @@ fn body_assigns_var(body: &[Statement], var: &str) -> bool {
         }
         _ => false,
     })
+}
+
+/// 2026-09-23 (E14b slice 1): a declarative physics obligation — a
+/// comparison `inst.pin.voltage OP <literal>` (any comparison op) in a
+/// node body. One side is a `.voltage` access resolving through the pin
+/// marker; the other is a voltage literal. The pull-up forcing pass
+/// consumes it; it is never executed.
+fn is_voltage_obligation(expr: &Expr, ctx: &mut TypecheckContext) -> bool {
+    let Expr::BinaryOp(kind, l, r) = expr else {
+        return false;
+    };
+    if !kind.is_comparison() {
+        return false;
+    }
+    let literal = |e: &Expr| {
+        matches!(
+            e,
+            Expr::UnitLiteral { .. } | Expr::Decimal(_) | Expr::Float(_)
+        )
+    };
+    let mut voltage_access = |e: &Expr| -> bool {
+        let Expr::Field(base, field) = e else {
+            return false;
+        };
+        field == "voltage"
+            && matches!(
+                infer_type_only(base, ctx),
+                Ok(Type::Custom(n)) if n == "Pin"
+            )
+    };
+    (voltage_access(l) && literal(r)) || (voltage_access(r) && literal(l))
 }
 
 /// Whether the body stores a truthy literal into the named flag:
