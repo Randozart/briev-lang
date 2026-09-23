@@ -184,7 +184,16 @@ One-sided parts (no proven ΔV) and zero-drop straps force nothing.
 
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
 simulation), PinDecl in cell bodies' beast serialization, pin roles,
-rail inference, series-resistor placement synthesis (E14b slices 6+).
+rail inference, series-resistor placement synthesis, board auto-routing
+(E14b/fab plan follow-ons).
+
+**2026-09-23 (fab layer, plan `2026-09-23-ebv-fab-layer.md`):** the
+physical-layout section. `fab { board 40mm x 20mm; place u1 @ (20mm,
+10mm) rot 90; }` declares the outline + pinned positions; the compiler
+auto-places the rest deterministically, proves containment (error) and
+clearance (warning), and emits a `.kicad_pcb` alongside the schematic
+(physics-derived net labels, footprints from `config/footprints.dbvl`).
+New surface: `Length` dimension + `mm`/`cm` units.
 
 **2026-09-23 (E14b slice 5, plan `2026-09-23-ebv-e14b-value-aware-pullup.md`):**
 value-aware pull-up matching. A MIN obligation is satisfied by any

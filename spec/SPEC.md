@@ -285,11 +285,28 @@ An array of total length 1 expands to the bare name (`let x[1]` → `x`),
 mirroring the pin-array single-element rule; a zero extent is a parse
 error; the initializer must be a component literal. Expansion happens
 in the parser — netlist, contracts, and the emitter see named ordinary
-instances (`r[0]`), never an array type.
+ instances (`r[0]`), never an array type.
 
-**The decoupling convention (2026-09-21).** A component type stating
-`spec Decouple: "100n";` requires, per instance, a part whose type
-declares `spec Decoupler: true;` bridging each supply pin (`spec
+ **Quantities are bare (2026-09-23).** Spec values that are physics carry
+ the unit grammar as notation, never a quoted string: `spec Decouple:
+ 100n;`, `spec MinCurrent: 2mA;` — scaling prefixes `p n u m k M G`
+ (case-sensitive), base units `V A R Ω F H Hz W K m`, the E-series
+ fraction `4k7`, and dimension-checked resolution against the key
+ (`spec Decouple: 3.3V` is an error — a Farad key takes a capacitance).
+ `Length` (`m`/`mm`/`cm`) is the coordinate dimension.
+
+ **The fab section (2026-09-23).** A `.ebv` may attach a physical-layout
+ section — `fab { board 40mm x 20mm; place u1 @ (20mm, 10mm) rot 90; }`
+ — declaring the board outline and pinned part positions; everything
+ unplaced flows to a deterministic auto-placer. The compiler proves
+ containment (off-board = hard error) and clearance (warning) from the
+ outline, the footprints (`config/footprints.dbvl`), and the positions,
+ and emits a `.kicad_pcb` alongside the schematic. Placement is the only
+ author control; routing is compiler machinery (a follow-on).
+
+ **The decoupling convention (2026-09-21).** A component type stating
+ `spec Decouple: 100n;` requires, per instance, a part whose type
+ declares `spec Decoupler: true;` bridging each supply pin (`spec
 Supply: true;` — on the `Power` fundamental) to a return pin (`spec
 Return: true;` — on `Ground`). The rail roles and the decoupler
 property live on stdlib declarations; the checker consumes the property

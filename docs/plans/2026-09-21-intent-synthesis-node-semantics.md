@@ -187,6 +187,11 @@ is outside the proof surface: the EC appears as a component whose pins
 obey declared per-state pin contracts — a volatile black box, the board
 language's `extern`. Non-goals, recorded: PCB layout, length matching,
 impedance/signal integrity, transient/time-domain simulation.
+**REVISED 2026-09-23 (fab plan):** PCB PLACEMENT was picked up — the
+`fab` section declares the board outline + pinned positions and the
+compiler auto-places the rest, proves containment/clearance, and emits a
+`.kicad_pcb` (routing follows as compiler machinery). Length matching,
+impedance, and transient analysis remain non-goals.
 
 **D18 — The static `when` law (2026-09-22, plan 2026-09-22-electronics-
 participation-and-when-law).** `when G { F₁; …; Fₙ }` declares

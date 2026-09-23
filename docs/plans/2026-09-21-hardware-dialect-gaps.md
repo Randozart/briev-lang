@@ -677,6 +677,26 @@ the 10k on an i2c bus; the choice is immaterial, the netlist equivalent.
 
 E14b remaining (backlog, each marked in the fixture): rail inference.
 
+### Amendment 2026-09-23 (VIII): the `fab` layer — board placement landed
+
+The physical-layout section landed (plan `2026-09-23-ebv-fab-layer.md`):
+`fab { board 40mm x 20mm; place u1 @ (20mm, 10mm) rot 90; }` — an in-file
+section mirroring `.rbv`'s render, on the annotation side of the
+annotation-vs-physics doctrine. The compiler carries the placement and
+PROVES what is provable: containment (off-board = hard error) and
+clearance (warning) from the declared outline + `config/footprints.dbvl`
+geometry + positions. Pinned placements win; everything unplaced flows to
+a deterministic, board-aware auto-placer (grid + decoupler proximity).
+Emits a `.kicad_pcb` alongside the schematic with physics-derived net
+labels (GND, V3.3). New surface: `Length` dimension + `mm`/`cm` units;
+`fab`/`board`/`place`/`rot`/`x` (only `fab` is a token). Deliberately
+picks up the D15 placement non-goal; routing (compiler machinery),
+length matching, impedance, and transient remain non-goals.
+
+Remaining (backlog, each marked in the fixture): rail inference,
+**auto-routing** (the fab plan's follow-on slice — the author controls
+placement only).
+
 ### Amendment 2026-09-23 (VII): quantities + annotation doctrine — Phase 1 landed
 
 The compiler-vs-annotation doctrine is locked (plan
