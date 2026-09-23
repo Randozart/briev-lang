@@ -1,0 +1,18 @@
+// SPEC §17 — compile-time reflection with `.^^`: the descriptor is folded
+// at compile time into a constant. `.^^Size` on an iterable folds to its
+// element count (compile-time when the receiver is a declared array);
+// `.^^Element` folds to the element type category code (single-source:
+// the read op's return type, never a second derivation). Runtime
+// reflection (`.^Length`) is the value-flavored sibling — not exercised
+// here.
+
+let i: Int = 0;
+let buf: Float[16];
+let n: Int;
+let elem: Int;
+async node reflect_user [i < 1][i == 1] {
+    n = buf.^^Size;
+    elem = buf.^^Element;
+    i = i + 1;
+    term;
+};

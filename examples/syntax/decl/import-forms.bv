@@ -1,0 +1,17 @@
+// SPEC §7 — `import` forms. Bare path: `import "std/io"` (registry
+// `<collections>` is the angle form). Selective: `import { List } from
+// "std/collections.bv"` binds only the named symbol. Renaming binds a
+// local name to an exported one: `import { H: HashMap } from ...` (local :
+// exported). Globs are invalid (SPEC §7.2) — symbols are explicit.
+
+import "std/types.bv";
+import <collections>;
+import { List } from "std/collections.bv";
+import { H: HashMap } from "std/collections.bv";
+
+let i: Int = 0;
+let items: List<Int>;
+async node import_user [i < 1][i == 1] {
+    i = i + 1;
+    term;
+};

@@ -260,6 +260,7 @@ fn rename_toplevel(item: &TopLevel, map: &HashMap<String, String>) -> TopLevel {
             derivation: d.derivation.clone(),
             modifiers: d.modifiers.clone(),
             annotations: d.annotations.clone(),
+            variadic_param: d.variadic_param.clone(),
             span: d.span,
             doc: d.doc.clone(),
         }),
@@ -477,6 +478,7 @@ mod tests {
     #[test]
     fn test_obfuscate_simple_defn() {
         let items = vec![TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "compute".into(),
             type_params: vec![],
             parameters: vec![

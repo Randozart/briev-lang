@@ -224,7 +224,7 @@ fn parse_definition(parts: &[SExpr]) -> Result<Definition, String> {
     }
     Ok(Definition { name, parameters: params, outputs, body, type_params: vec![],
         output_type: None, contract, metadata, annotations: vec![],
-        derivation: None, modifiers: vec![], span: None, doc: None })
+        derivation: None, modifiers: vec![], variadic_param: None, span: None, doc: None })
 }
 
 fn parse_transaction(parts: &[SExpr]) -> Result<Transaction, String> {

@@ -348,7 +348,7 @@ impl Reactor {
                 interp.exec_stmt(stmt)?;
                 Ok(StmtResult::Continue)
             }
-            Statement::Defer(_) | Statement::Mutex(_) | Statement::Barrier { .. } => {
+            Statement::Defer(_) | Statement::Mutex(_) => {
                 interp.exec_stmt(stmt)?;
                 Ok(StmtResult::Continue)
             }
@@ -524,6 +524,7 @@ mod tests {
     fn test_build_from_program_skips_non_reactive() {
         let prog = simple_program(vec![
             TopLevel::Definition(Definition {
+                variadic_param: None,
                 name: "foo".into(), type_params: vec![], parameters: vec![], outputs: vec![],
                 output_type: None,
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),

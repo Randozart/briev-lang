@@ -107,12 +107,9 @@ impl Annotator {
                 | Statement::InlineDefn(_)
                 | Statement::InlineTxn(_)
                 | Statement::Match { .. } => {}
-                // 2026-08-09 (Phase 10): defer/mutex/barrier bodies may call
+                // 2026-08-09 (Phase 10): defer/mutex bodies may call
                 // functions — collect them.
                 Statement::Defer(body) | Statement::Mutex(body) => {
-                    self.collect_calls_from_body(body, calls);
-                }
-                Statement::Barrier { body, .. } => {
                     self.collect_calls_from_body(body, calls);
                 }
             }
@@ -509,19 +506,6 @@ impl Annotator {
                 output.push_str(&format!("{}}}\n", spaces));
                 output
             }
-            Statement::Barrier { groups, body } => {
-                let group_str = if groups.is_empty() {
-                    String::new()
-                } else {
-                    format!("<{}>", groups.join(","))
-                };
-                let mut output = format!("{}barrier{}{{\n", spaces, group_str);
-                for s in body {
-                    output.push_str(&self.format_statement(s, indent + 2));
-                }
-                output.push_str(&format!("{}}}\n", spaces));
-                output
-            }
             Statement::MetadataAssignment(key, val) => {
                 format!("{}{} <~ {:?};\n", spaces, key, val)
             }
@@ -706,6 +690,7 @@ mod tests {
 
     fn make_defn(name: &str, body: Vec<Statement>) -> TopLevel {
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![],

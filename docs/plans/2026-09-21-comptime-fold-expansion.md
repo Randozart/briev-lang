@@ -126,10 +126,14 @@ additive trajectory via `eval_expr`).
 
 ## Phase 2 (boundary, NOT this plan)
 
-- Early reflection resolution: `buf.^^Size` / `.^^Element` conditions in
-  composite bodies resolved from `ProgramInfo::array_types` (state decls,
-  post-parse) before typecheck. Narrow allowlist served through the
-  existing reflection forms — additive, disclosed.
+- **Early reflection resolution — DONE 2026-09-22** (plan
+  `2026-09-22-reflection-conditions.md`): `buf.^^Size` / `.^^Element`
+  conditions in composite bodies resolve from the declared static types of
+  top-level state `let`s (collected pre-typecheck into a `state_types`
+  map threaded through the fold as `FoldCtx`). `.^^Size` folds to the
+  element count (product of Anonymous dims); `.^^Element` to the element
+  category code — both mirroring the LLVM backend (rule #4 parity). A
+  receiver that is not a state name declines (fail-open).
 - Convergence: `plugin/composite.rs` expansion lowers onto the same
   machinery as `$let` evaluation where duplication appears (Golden Rule 3,
   accidental complexity). Follow-up unless the fold pass makes it

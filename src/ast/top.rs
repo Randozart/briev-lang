@@ -173,6 +173,12 @@ pub struct Definition {
     pub modifiers: Vec<Annotation>,
     pub annotations: Vec<TypeBinding>,
     pub span: Option<Span>,
+    /// 2026-09-22 (unified-metaprogramming plan): the final `...name` rest
+    /// parameter (TypeScript-style) on a compile-time `$defn`/`$txn`. Binds
+    /// ALL trailing call-site arguments as a compile-time list — the
+    /// sanctioned compile-time iteration channel (a `foreach` over it unrolls
+    /// at expansion). `None` = not variadic.
+    pub variadic_param: Option<String>,
     /// 2026-07-24: Doc comment text (/// or /** */), without the /// prefix.
     pub doc: Option<String>,
 }
@@ -405,10 +411,6 @@ pub enum Statement {
     /// 2026-08-09 (Phase 10): `mutex { ... }` — a serial section (replaces
     /// the legacy `sync {}`). Members execute without interleaving.
     Mutex(Vec<Statement>),
-    /// 2026-08-09 (Phase 10): `barrier<group> { ... }` — a group-barrier
-    /// body. Members of the same group hold off finishing until all fired
-    /// members have (SPEC §11).
-    Barrier { groups: Vec<String>, body: Vec<Statement> },
     /// $defn name(params) -> Type { body } — compile-time-only definition.
     /// 2026-07-23: Only valid inside $(Stage) blocks. Body can call $ intrinsics.
     InlineDefn(Definition),
@@ -1198,10 +1200,6 @@ pub struct OperatorDef {
     /// Old-style implementation name string (from `op Add ~> "string"`).
     pub impl_name: String,
     pub span: Option<Span>,
-    /// 2026-08-27: Optimizer lemmas declared on this op (SPEC §8.8).
-    /// Each string is a validated member of the configured lemma_properties
-    /// vocabulary (config/axioms.dbv). Empty = no lemmas declared.
-    pub trusted_lemmas: Vec<String>,
     /// 2026-08-27: Authority marker (SPEC §8.8). When true, the op binding is
     /// taken on authority instead of derived — its semantics are not
     /// discharged against a default; recorded in the verification ledger.
@@ -1223,8 +1221,6 @@ pub struct OperatorBinding {
     pub reg: Option<String>,
     pub expr: Expr,
     pub span: Option<Span>,
-    /// 2026-08-27: Optimizer lemmas declared on this binding (SPEC §8.8).
-    pub trusted_lemmas: Vec<String>,
     /// 2026-08-27: Authority marker — binding taken on trust, not derived.
     pub trusted_axiom: bool,
 }

@@ -163,7 +163,7 @@ fn collect_foreach_assigned(stmts: &[Statement], out: &mut std::collections::Has
             // iteration — assignments inside them must be tracked or the
             // alloca slot is missing and the iteration re-reads the stale
             // pre-loop register.
-            Statement::Mutex(body) | Statement::Barrier { body, .. } => collect_foreach_assigned(body, out),
+            Statement::Mutex(body) => collect_foreach_assigned(body, out),
             Statement::Match { arms, .. } => {
                 for arm in arms {
                     collect_foreach_assigned(&arm.body, out);
@@ -1633,17 +1633,6 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // so the body emits inline with no added synchronization.
             let mut last = TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
             for stmt in stmts {
-                last = emit_statement(backend, out, stmt, indent);
-            }
-            last
-        }
-        Statement::Barrier { body, .. } => {
-            // 2026-08-09 (Phase 10): `barrier<group>` holds members until all
-            // fire — the no-implicit-concurrency gate classifies the pair. In
-            // the single-threaded default the barrier body emits inline (the
-            // barrier is a scheduling contract, not a parallelization hint).
-            let mut last = TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
-            for stmt in body {
                 last = emit_statement(backend, out, stmt, indent);
             }
             last

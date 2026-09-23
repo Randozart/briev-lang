@@ -184,6 +184,7 @@ mod tests {
         derivation: DerivationBlock,
     ) -> TopLevel {
         TopLevel::Definition(crate::ast::Definition {
+            variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![
@@ -299,6 +300,7 @@ mod tests {
         };
         // Use float-aware definition
         let program = vec![TopLevel::Definition(crate::ast::Definition {
+            variadic_param: None,
             name: "f".to_string(),
             type_params: vec![],
             parameters: vec![("x".to_string(), crate::ast::Type::float())],
@@ -338,6 +340,7 @@ mod tests {
             span: dummy_span(),
         };
         let program = vec![TopLevel::Definition(crate::ast::Definition {
+            variadic_param: None,
             name: "f".to_string(),
             type_params: vec![],
             parameters: vec![("x".to_string(), crate::ast::Type::float())],
@@ -375,6 +378,7 @@ mod tests {
             span: dummy_span(),
         };
         let program = vec![TopLevel::Definition(crate::ast::Definition {
+            variadic_param: None,
             name: "add".to_string(),
             type_params: vec![],
             parameters: vec![
@@ -407,6 +411,7 @@ mod tests {
             Box::new(Expr::Identifier("y".to_string())),
         )))];
         let program = vec![TopLevel::Definition(crate::ast::Definition {
+            variadic_param: None,
             name: "add".to_string(),
             type_params: vec![],
             parameters: vec![

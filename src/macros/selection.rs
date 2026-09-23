@@ -463,7 +463,6 @@ pub fn stmt_tag(stmt: &Statement) -> &str {
         Statement::SyncBlock(_) => "sync",
         Statement::Defer(_) => "defer",
         Statement::Mutex(_) => "mutex",
-        Statement::Barrier { .. } => "barrier",
     }
 }
 
@@ -699,6 +698,7 @@ mod tests {
                 span: None,
             }),
             TopLevel::Definition(Definition {
+                variadic_param: None,
                 name: "main".into(),
                 type_params: vec![],
                 parameters: vec![],

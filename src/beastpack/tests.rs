@@ -15,6 +15,7 @@ fn test_universe() -> TypeUniverse {
 /// Build a simple `defn add(a: Int, b: Int) -> Int { term a + b; }`.
 fn test_add_defn() -> TopLevel {
     TopLevel::Definition(Definition {
+        variadic_param: None,
         name: "add".into(),
         type_params: vec![],
         parameters: vec![

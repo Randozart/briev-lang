@@ -1,0 +1,22 @@
+// SPEC §18 — `$defn`: a compile-time composite definition with
+// expression-typed parameters (expr / expr_item). Invoked with the
+// `!` suffix (compile-time disclosure). Expansion completes before
+// analysis: typecheck, contracts, and both backends see the expanded
+// body. This composite is statement-only — it accumulates into a
+// caller-provided slot, the form the accel composites use.
+
+$defn accumulate(x: expr, target: expr, n: expr) {
+    let acc_: Float = 0;
+    foreach k in 0..n {
+        acc_ = acc_ + x;
+    }
+    target = acc_;
+};
+
+let i: Int = 0;
+let r: Float;
+async node composite_user [i < 1][i == 1] {
+    accumulate!(2.0, r, 4);
+    i = i + 1;
+    term;
+};

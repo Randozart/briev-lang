@@ -1065,7 +1065,7 @@ fn eval_nav_call(
                 output_type: None, outputs: vec![],
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
                 body: vec![], metadata: Default::default(),
-                derivation: None, modifiers: vec![], annotations: vec![], span: None,
+                derivation: None, modifiers: vec![], annotations: vec![], variadic_param: None, span: None,
                 doc: None,
             })))
         }
@@ -2122,12 +2122,6 @@ fn resolve_dollar_refs_in_stmt(stmt: &mut Statement, scope: &Scope) -> Result<()
             }
             Ok(())
         }
-        Statement::Barrier { body, .. } => {
-            for s in body.iter_mut() {
-                resolve_dollar_refs_in_stmt(s, scope)?;
-            }
-            Ok(())
-        }
         Statement::Foreach { list, body, .. } => {
             resolve_dollar_refs_in_expr(list, scope)?;
             for s in body.iter_mut() {
@@ -2348,7 +2342,7 @@ mod tests {
                 output_type: None, outputs: vec![Type::Custom("Int".into())],
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
                 body: vec![], metadata: Default::default(),
-                derivation: None, modifiers: vec![], annotations: vec![], span: None,
+                derivation: None, modifiers: vec![], annotations: vec![], variadic_param: None, span: None,
                 doc: None,
             }),
         ];
@@ -2412,7 +2406,7 @@ mod tests {
                 output_type: None, outputs: vec![Type::Custom("Int".into())],
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
                 body: vec![], metadata: Default::default(),
-                derivation: None, modifiers: vec![], annotations: vec![], span: None,
+                derivation: None, modifiers: vec![], annotations: vec![], variadic_param: None, span: None,
                 doc: None,
             }),
         ];
@@ -2924,7 +2918,7 @@ mod tests {
                 output_type: None, outputs: vec![],
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
                 body: vec![], metadata: Default::default(),
-                derivation: None, modifiers: vec![], annotations: vec![], span: None,
+                derivation: None, modifiers: vec![], annotations: vec![], variadic_param: None, span: None,
                 doc: None,
             }),
             TopLevel::Definition(Definition {
@@ -2932,7 +2926,7 @@ mod tests {
                 output_type: None, outputs: vec![],
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
                 body: vec![], metadata: Default::default(),
-                derivation: None, modifiers: vec![], annotations: vec![], span: None,
+                derivation: None, modifiers: vec![], annotations: vec![], variadic_param: None, span: None,
                 doc: None,
             }),
         ];

@@ -3903,6 +3903,7 @@ fn test_struct_param_uses_ptr_in_signature() {
             variants: vec![],
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "process".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Custom("Point".to_string()))],
@@ -3944,6 +3945,7 @@ fn test_struct_param_ptrtoint_at_entry() {
             variants: vec![],
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "process".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Custom("Point".to_string()))],
@@ -3976,6 +3978,7 @@ fn test_call_with_ptr_arg_emits_inttoptr() {
     let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "callee".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Ptr(Box::new(Type::int())))],
@@ -3991,6 +3994,7 @@ fn test_call_with_ptr_arg_emits_inttoptr() {
             doc: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "caller".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Ptr(Box::new(Type::int())))],
@@ -4037,6 +4041,7 @@ fn test_struct_param_field_access_works() {
             variants: vec![],
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "get_x".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Custom("Point".to_string()))],
@@ -4260,6 +4265,7 @@ fn test_struct_literal_field_offsets() {
             span: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "test".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -4343,6 +4349,7 @@ fn test_addr_of_struct_literal() {
             doc: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -4435,6 +4442,7 @@ fn test_frgn_ptr_param_inttoptr() {
             doc: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -4595,6 +4603,7 @@ fn test_struct_array_list_literal() {
             span: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -4694,6 +4703,7 @@ fn test_struct_array_addr_of_and_frgn_call() {
             doc: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -8251,6 +8261,7 @@ fn print_field(recv: &str, field: &str) -> Statement {
 
 fn packed_main_def(body: Vec<Statement>) -> TopLevel {
     TopLevel::Definition(Definition {
+        variadic_param: None,
         name: "main".to_string(),
         type_params: vec![],
         parameters: vec![],
@@ -8436,6 +8447,7 @@ fn test_atomic_field_load_store_rmw() {
             span: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],

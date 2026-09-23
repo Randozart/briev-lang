@@ -165,7 +165,9 @@ Every `axiom`-declared site is counted. The strict report renders the full autho
 - `warn` — accepted; a prominent warning naming every site rides alongside.
 - `deny` — any axiom site is a hard error: prove it or remove the shortcut.
 
-The compiler learns nothing hardcoded about individual axioms; the vocabulary of optimizer-exploitable lemma properties is configuration (`lemma_properties`).
+The compiler learns nothing hardcoded about individual axioms. (2026-09-22:
+the `lemma_properties` vocabulary is removed with the op-lemma feature — see
+§8.8; the axiom facility itself stays.)
 
 #### `.f` — formatted source
 
@@ -576,6 +578,22 @@ section(".init") defn startup() -> Int { ... };
 section(".rodata") const TABLE: Int = 5;
 ```
 
+**Modifier order is free (2026-09-22).** Modifier/strategy keywords compose
+in any order before a structural identifier: `<keywords>* <identifier>
+<name>`. `vol out let x` and `out vol let x` are the same declaration;
+`seq accel node`, `accel seq node`, and `sync<g> async node` all parse.
+The identifier always sits after the keywords — a modifier never follows
+it (`node async` is a node *named* `async`, not a postfix modifier). Two
+exceptions:
+
+- `bootstrap` is a fixed compound: `bootstrap node name` only.
+- Duplicate modifiers are an error (`seq seq node` does not compile).
+
+Restrictions: `async`/`sync<group>`/`accel` apply to a node or txn;
+`vol`/`mem`/`reg` apply to `let` only; `out` applies to a defn, node,
+txn, or let; `seq`/`pack`/`coll` before a struct/obj are layout flags the
+struct parser owns (`pack seq struct`, `seq pack struct`).
+
 - Applies to `defn` and `const`. State fields live in `%State` (one
   allocation) and have no per-field linker section — a `section` prefix on
   anything else is a parse error.
@@ -939,13 +957,17 @@ impl Point<Float> {
 };
 ```
 
-Op bindings may carry optimizer lemmas as a bracketed property list. Each identifier must be a member of the configured lemma-property vocabulary; unknown properties are rejected at parse validation.
+The `axiom` prefix before an `op` binding marks the binding itself as
+authoritative — taken on authority instead of derived — and enters the ledger
+like every other declared trust site.
 
-```briev
-op Add: func(#Lh, #Rh) [commutative];
-```
-
-A lemma grants the optimizer exactly the declared right (e.g. operand reordering) and nothing else; it never substitutes for a proof of the operation's semantics. The `axiom` prefix before an `op` binding marks the binding itself as authoritative — taken on authority instead of derived — and enters the ledger like every other declared trust site.
+> **Lemma property lists are removed (2026-09-22).** SPEC previously allowed
+> `op Add: func(#Lh, #Rh) [commutative];`. No parser accepted the grammar, no
+> pass consumed the granted rights, and the float reassociation right was
+> already available program-wide via `-ffast-math` and the `!> associative` /
+> `!> fp_math: fast` function metadata. A user op's handler has a Briev body —
+> commutativity can be *proven* rather than trusted; the axiom facility stays
+> for the FFI-boundary cases where no body exists to discharge.
 
 Inherent implementations may appear only in the target declaration's module. Explicit trait implementations obey ownership coherence: either the trait or target must be locally owned.
 
@@ -1783,18 +1805,19 @@ programs with an authored bootstrap (§13.2) the handoff state usually makes
 the marker redundant — the bootstrap seeds state such that the next logical
 node's precondition already holds — and it may be omitted.
 
-### 11.6 Critical sections and barriers
+### 11.6 Critical sections
 
 ```briev
 mutex {
     update_shared_state();
 };
-
-barrier<workers>;
 ```
 
 - `mutex { ... }` is a critical section.
-- `barrier<group>` is an explicit runtime synchronization point.
+- The `barrier` statement is removed (2026-09-22): it was a no-op wrapper that
+  emitted its body inline everywhere and its group name was never consulted.
+  Real convergence is expressed by the `[condition];` gate (§10.2) and group
+  classification by `sync<group>` (§12.1).
 - `sync<group>` is reserved for node classification.
 
 ## 12. Concurrency and task lifecycle
@@ -2441,30 +2464,40 @@ regex!(#r"[a-z]+")
 Privileged macros declare capabilities at definition. Calls still use `name!(...)`; `$!name` does not exist.
 
 **`execute_many!`** — repeated application with heterogeneous literal blocks
-(2026-09-18):
+(2026-09-18, **retired 2026-09-22**): superseded by the variadic composite
+form below — the composite reaches the same behavior in the language, so the
+Rust-side macro is removed. The block shape is retained by the composite:
 
 ```briev
 execute_many!(callee, block₁, block₂, …);
 // block := "(" [expr ("," expr)*] ")"
 ```
 
-Expands at the Parsed stage to sequential applications `callee(block₁);
-callee(block₂); …` — order guaranteed. `callee` is a named `defn` or `#`
-intrinsic. The block delimiter is `()` at both levels: the outer `!()`
-invokes the macro, each inner `()` is one application spine written
-without its callee — the application delimiter meaning application,
-at every depth. A parenthesized tuple `(a, b)` is a multi-arg block;
-any other expression `(x)` is a single-arg block; `()` is the empty
-block. At least one block is required (a zero-invocation call site is
-a mistake, not a no-op). Statement-only: in expression position it is
-an error — the construct keeps side effects and discards results; bind
-calls explicitly instead. Each block is checked against the callee in
-order, and block *N*'s mismatch names *N*. Use cases: document-fill
-printing and repeated `Asm#` invocations with per-call compile-time
-immediates — heterogeneous blocks a runtime `foreach` cannot express.
-Braces were rejected as the block delimiter (collides with block
-expressions and struct literals; wrong delimiter load); brackets were
-rejected (list literals imply evaluation).
+**Variadic composites (2026-09-22).** A `$defn`/`$txn` may declare a final
+TypeScript-style rest parameter (`...name: expr`) that binds ALL trailing
+call-site arguments as a compile-time list. It is the sanctioned compile-time
+iteration channel: a `foreach` over the rest name unrolls at expansion, one
+emission per element. A plain `expr` parameter is a RUNTIME quantity and
+never unrolls; only a rest parameter declares compile-time iteration.
+
+```briev
+$defn execute_many(...calls: expr) {
+    foreach c in calls { c; }
+};
+// execute_many!(f(a), f(b), f(c)) → f(a); f(b); f(c);
+```
+
+Rules:
+- `...` must be the FINAL parameter.
+- Compile-time-only: a runtime `defn` declaring `...` is an error.
+- Each call-site argument is emitted in order (sequential calls, order
+  guaranteed).
+- Zero trailing arguments is a mistake, not a no-op — the expansion errors
+  naming the composite.
+- The rest name is an exposed binder (hygiene, §18.4): the loop variable is
+  body-local, not a caller capture.
+- Composites expand BEFORE typecheck: typecheck, contracts, and both
+  backends see the emitted calls as if hand-written.
 
 ### 18.3 Stages
 

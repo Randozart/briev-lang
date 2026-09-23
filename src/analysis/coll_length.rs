@@ -302,7 +302,6 @@ fn collect_writes(
             Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
                 collect_writes(b, state_inits, out)
             }
-            Statement::Barrier { body, .. } => collect_writes(body, state_inits, out),
             _ => {}
         }
     }
@@ -450,7 +449,6 @@ fn stmt_contains_push(stmt: &Statement, coll: &str) -> bool {
         Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
             b.iter().any(|s| stmt_contains_push(s, coll))
         }
-        Statement::Barrier { body, .. } => body.iter().any(|s| stmt_contains_push(s, coll)),
         _ => false,
     }
 }
@@ -549,7 +547,6 @@ fn walk_stmt(stmt: &Statement, tracks: &mut HashMap<String, Track>, coll_obj: &H
         Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
             walk_body(b, tracks, coll_obj);
         }
-        Statement::Barrier { body, .. } => walk_body(body, tracks, coll_obj),
         Statement::Foreach { list, body, .. } => {
             walk_foreach(list, body, tracks, coll_obj);
         }

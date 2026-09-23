@@ -196,6 +196,7 @@ mod tests {
     fn defn(name: &str, body: Vec<Statement>) -> Definition {
         use crate::ast::{Contract, OutputType, TypeParam};
         Definition {
+                variadic_param: None,
             name: name.to_string(),
             type_params: Vec::<TypeParam>::new(),
             parameters: vec![],

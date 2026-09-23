@@ -70,9 +70,6 @@ impl LlvmBackend {
                 Statement::Foreach { body, .. } => {
                     for st in body { walk(st, lets, assigned); }
                 }
-                Statement::Barrier { body, .. } => {
-                    for st in body { walk(st, lets, assigned); }
-                }
                 Statement::Match { arms, .. } => {
                     for arm in arms {
                         for st in &arm.body { walk(st, lets, assigned); }
@@ -5644,6 +5641,7 @@ impl LlvmBackend {
             derivation: None,
             modifiers: vec![],
             annotations: vec![],
+            variadic_param: None,
             span: Some(isr.span.clone()),
             doc: Some(format!("ISR body for {} (plan 2026-09-06-isr-handlers-and-sections.md)", isr.name)),
         };

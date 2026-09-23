@@ -425,7 +425,7 @@ mod tests {
             name: "f".into(), parameters: vec![], output_type: None, outputs: vec![],
             type_params: vec![], contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
             body, derivation: None, metadata: Default::default(),
-            modifiers: vec![], annotations: vec![], span: None,
+            modifiers: vec![], annotations: vec![], variadic_param: None, span: None,
             doc: None,
         })
     }
