@@ -27,7 +27,7 @@ not hidden.
 | `spec decouple: 100n;` | `spec Decouple: "100n";` | E13 convention, string literal |
 | `populated = false: c_dnp;` | `unpop c_dnp;` | Slice B locked the spelling |
 | `let r_pu[2]: Resistor = …` / `let c[i:5]: …` | **E1 lands first** (Slice 1) | instance arrays are gap E1, not yet parsed |
-| `derive on: a.current >= 2mA;` | txn **postcondition** at use site | no type-level `derive` clause landed — record as open gap |
+| `derive on: a.current >= 2mA;` | txn **postcondition** at use site | superseded 2026-09-23 — the bound is the `spec MinCurrent`/`MaxCurrent` obligation form (quantities plan Phase 4); placement synthesis is the residue |
 | `u1.enabled = true;` | `u1.en = true;` | intent addresses the pin (`In`-class, test-proven at electronics.rs:3202) |
 | `node … [usb_powered.up && sw1.closed]` | guard over `trg` + voltage facts | no `.up` / `.closed` members landed |
 | io_od pull-up forcing (solver wires `r_pu[*]`) | **explicit equalities** | E14a allows explicit topology; solver-side forcing is the E14b delta |

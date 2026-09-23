@@ -28,7 +28,7 @@ the shared obligation.
 ## Out of scope (backlog)
 
 - en drive assignment solving, rail inference, value-aware resistor
-  matching, `derive on:` types.
+  matching, series-resistor placement synthesis.
 
 ## Gates (per-commit)
 

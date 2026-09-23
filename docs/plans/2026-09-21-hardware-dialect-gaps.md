@@ -530,11 +530,16 @@ fixture surfaced (none fixture-shaped, Rules 14/15/24):
   no longer satisfies it (its pads remain on the sheet; an absent part
   carries no capacitance).
 
-NEW open gap — **`derive` on types** (`type Led { derive on: a.current
->= 2mA; }`): §3.2's type-level per-instance obligation still has no
-landed clause; the fixture states it as a use-site txn postcondition.
-Owner: fixture; triggers when a second class wants a per-instance
-obligation — property-driven, `spec` form, per D6.
+CLOSED 2026-09-23 — **`derive on:` was superseded, not built.** The per-
+instance obligation §3.2 wrote as `type Led { derive on: a.current >=
+2mA; }` is captured by the property-driven spec form instead: `spec
+MinCurrent: 2mA;` / `spec MaxCurrent: 20mA;` (Phase 4 of plan
+`2026-09-23-quantities-and-annotation-doctrine.md`), PascalCase physics
+per the annotation-vs-physics doctrine. The fixture states the bound as a
+use-site txn postcondition today. The one thing the `derive on:` idea
+left behind is series-resistor PLACEMENT synthesis (choosing r_led so the
+current lands in range) — a synthesis/machinery concern, not a syntax
+clause; tracked separately in the E14b gate delta, to be discussed.
 
 ### Amendment 2026-09-23 (II): E14b slice 1 landed — min-voltage pull-up forcing
 
@@ -553,7 +558,7 @@ stay explicit — E14b-2.
 E14b remaining (backlog, each marked in the fixture): bus assembly,
 gnd-path forcing (`pin.voltage <= V` is a hard error today — "state the
 wire explicitly"), `en` drive assignment solving, rail inference (rails
-stay explicit guard equalities), `derive on:` type clauses.
+stay explicit guard equalities).
 
 ### Amendment 2026-09-23 (III): E14b slice 2 landed — low-hold forcing
 
@@ -574,7 +579,7 @@ pull-up stays explicit — value-aware resistor matching is backlog).
 
 E14b remaining (backlog, each marked in the fixture): bus assembly,
 `en` drive assignment solving, rail inference, value-aware resistor
-matching, `derive on:` type clauses.
+matching.
 
 ### Amendment 2026-09-23 (IV): E14b slice 3 landed — bus assembly
 
@@ -594,7 +599,7 @@ emitted sheet stays byte-identical to the E14a explicit-facts form.
 
 E14b remaining (backlog, each marked in the fixture): `en` drive
 assignment solving, rail inference, value-aware resistor matching,
-`derive on:` type clauses.
+
 
 ### Amendment 2026-09-23 (V): E14b slice 4 landed — drive assignment
 
@@ -613,7 +618,7 @@ fixture's en↔gpio[0] and led1.k↔gpio[1] wires are now fully inferred;
 gpio[2..7] were already claimed by the j2 facts and the button low-hold.
 
 E14b remaining (backlog, each marked in the fixture): rail inference,
-value-aware resistor matching, `derive on:` type clauses.
+value-aware resistor matching.
 
 ### Amendment 2026-09-23 (VI): E14b slice 5 landed — value-aware pull-up matching
 
@@ -628,8 +633,7 @@ pure-intent (`u2.gpio[3].voltage >= 2.7V;` + `<= 0.3V;`) — the r_btn
 pull-up is inferred. The compiler may place a 4k7 on the button net and
 the 10k on an i2c bus; the choice is immaterial, the netlist equivalent.
 
-E14b remaining (backlog, each marked in the fixture): rail inference,
-`derive on:` type clauses.
+E14b remaining (backlog, each marked in the fixture): rail inference.
 
 ### Amendment 2026-09-23 (VII): quantities + annotation doctrine — Phase 1 landed
 

@@ -9,8 +9,8 @@ E14a closed its gate (`974705eb`): the §3.2 fixture compiles with explicit
 equalities; every site marked `// E14b:` is the pure-intent backlog — the
 compiler must infer topology from *behavior* instead of written wires. The
 full §3.2 pure-intent form still depends on retracted/OPEN features
-(`.up`/`.released`/`.closed` members, `derive on:` type clauses, drive
-assignment solving, rail inference), so E14b is sliced. This slice lands the
+(`.up`/`.released`/`.closed` members, series-resistor placement synthesis,
+drive assignment solving, rail inference), so E14b is sliced. This slice lands the
 **one physics-forcing rule that is fully general, needs no new keywords, and
 has a clean D13 surface**: a min-voltage obligation on a released (WiredAnd)
 net forces an external pull-up.
@@ -39,7 +39,8 @@ net forces an external pull-up.
 - Button gnd-path forcing (`u2.gpio[3] <= 0.3V` needs mechanism synthesis).
 - `en` drive assignment solving (en intent is ambiguous across 8 free gpio).
 - Rail inference (rails stay explicit guard equalities).
-- `derive on:` type clauses (open gap in the hardware-dialect ledger).
+- Series-resistor placement synthesis (the residue of §3.2's `derive on:`;
+  the bound itself is the `spec MinCurrent`/`MaxCurrent` form).
 
 ## Fixture change
 

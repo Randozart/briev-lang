@@ -32,8 +32,8 @@ assigned deterministically — the same doctrine as identical pull-up parts
 
 ## Out of scope (backlog)
 
-- Rail inference, value-aware resistor matching, `derive on:` types,
-  mechanism control from guard conditions.
+- Rail inference, value-aware resistor matching, series-resistor
+  placement synthesis, mechanism control from guard conditions.
 
 ## Gates (per-commit)
 

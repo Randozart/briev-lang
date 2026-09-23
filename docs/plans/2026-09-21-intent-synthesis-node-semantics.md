@@ -323,7 +323,7 @@ motherboard-class gate.
 | Stage | Scope | Gate |
 |---|---|---|
 | **E14a** | intent-*completion*: explicit equalities still allowed; drive-map intents (`led1 = true`) infer the remaining memberships; ambiguity = enumerated-candidate errors; pin classes, vol, spec, population, chain desugar; lifting slots RETRACTED (2026-09-22) — no solver substrate | §3.2 fixture compiles + its error matrix; netlist/KiCad deterministic — **GATE PASSED 2026-09-23** (see gate delta below) |
-| **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized — **slices 1–5 landed 2026-09-23** (min pull-up forcing, max low-hold forcing, bus assembly, drive assignment, value-aware pull-up matching); remaining: rail inference, `derive on:` |
+| **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized — **slices 1–5 landed 2026-09-23** (min pull-up forcing, max low-hold forcing, bus assembly, drive assignment, value-aware pull-up matching); remaining: rail inference |
 
 Both stages: `L`. E14a ships useful even if E14b stalls (strict
 generalization order). Prerequisite gap work (E11 pin arrays, E12 pin
@@ -355,9 +355,12 @@ backlog item, each marked `// E14b:` in the fixture file:
 6. **SWD header (j2)** ADDED: §3.2 declares `swdio`/`swclk` but no
    connector — as written they would dangle. The header is the fixture's
    one structural addition.
-7. **`derive on:` (type-level) has no landed clause** — the fixture states
-   the obligation as a use-site txn postcondition; recorded as an open
-   gap in the hardware-dialect ledger.
+7. **The LED bound (§3.2's `derive on:`) is a `spec` obligation** — the
+   per-instance current bound is `spec MinCurrent`/`spec MaxCurrent`
+   (Phase 4 of plan `2026-09-23-quantities-and-annotation-doctrine.md`);
+   the fixture states it as a use-site txn postcondition today. The
+   series-resistor PLACEMENT (choosing r_led so the current lands in
+   range) is a separate synthesis concern — see the ledger closure note.
 
 Behavior members §3.2 wanted (`.up`, `.closed`, `.released`) stayed
 retracted — guards restate them as voltage facts (locked 2026-09-22).

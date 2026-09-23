@@ -35,7 +35,8 @@ be held at or below Vmax, forcing a path to the return rail.
 - Value-aware resistor matching (pull-up choice among distinct values).
 - Mechanism *control* wiring from guard conditions (sw1 is wired as
   always-conducting copper, matching the E14a state model).
-- Bus assembly, en drive solving, rail inference, `derive on:`.
+- Bus assembly, en drive solving, rail inference, series-resistor
+  placement synthesis.
 
 ## Gates (per-commit)
 

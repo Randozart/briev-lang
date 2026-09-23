@@ -10,8 +10,9 @@
 //   - `u1.enabled = true;` → `u1.en = true;` (intent names the pin);
 //   - §3.2 placeholder tolerances (0.33/0.3) predate the locked
 //     max-volts semantics — rated values substituted;
-//   - type-level `derive on:` (Led) not landed — an open gap; state
-//     the obligation as a txn postcondition at the use site instead;
+//   - type-level `derive on:` (Led) superseded — the bound is the
+//     `spec MinCurrent`/`spec MaxCurrent` obligation form (quantities
+//     plan Phase 4); the fixture uses a txn postcondition today;
 //   - `usb_powered.up`, `sw1.closed`, `u2.sda.released` members not
 //     landed — guards restate them as voltage facts;
 //   - a SWD debug header (j2) is added: §3.2 declares `swdio`/`swclk`
@@ -64,8 +65,9 @@ type Led {
     reference "D";
     tolerance 3.6;
     rating any;
-    // derive on: a.current >= 2mA;  — type-level derive is an open gap
-    // (ledger); state the obligation as a txn postcondition at use.
+    // The LED current bound (§3.2's `derive on:`) is the `spec
+    // MinCurrent`/`spec MaxCurrent` obligation form (quantities plan
+    // Phase 4); the fixture states it as a txn postcondition at use.
 };
 type UsbMicro { pin vbus: Power; pin gnd: Ground; reference "J"; tolerance any; rating any; };
 type DebugHdr { pin sig[7]; pin gnd: Ground; pin vcc: Power; reference "J"; tolerance any; rating any; };

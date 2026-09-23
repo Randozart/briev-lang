@@ -98,9 +98,9 @@ Electrical pin roles (`[power_in]`), footprint validation against KiCad
 libraries, serializer support for `PinDecl` (deserialize defaults to empty
 — beast round-trip of pins is a follow-on), per-pin tolerances, LLVM/GPU
 representation (awaits simulation), PinDecl in cell bodies' beast
-serialization, `derive` clauses on types (2026-09-23 — recorded in the
-hardware-dialect ledger as OPEN after the E14a gate; the fixture states
-the obligation as a use-site txn postcondition).
+serialization, series-resistor placement synthesis (choosing r_led so the
+LED current lands in range — the residue of §3.2's `derive on:`, which
+was superseded by the `spec MinCurrent`/`MaxCurrent` obligation form).
 
 Landed since the list was written: named nets (`net <name>:` — 2026-09-12),
 unit suffixes (`3.3V`/`20mA`/`330R` — 2026-09-12), instance arrays
@@ -183,7 +183,7 @@ One-sided parts (no proven ΔV) and zero-drop straps force nothing.
 
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
 simulation), PinDecl in cell bodies' beast serialization, pin roles,
-`derive` on types, rail inference (E14b slices 6+).
+rail inference, series-resistor placement synthesis (E14b slices 6+).
 
 **2026-09-23 (E14b slice 5, plan `2026-09-23-ebv-e14b-value-aware-pullup.md`):**
 value-aware pull-up matching. A MIN obligation is satisfied by any

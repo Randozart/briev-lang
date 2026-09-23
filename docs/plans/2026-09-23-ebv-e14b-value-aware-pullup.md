@@ -33,7 +33,8 @@ parts assign deterministically).
 
 ## Out of scope (backlog)
 
-- Rail inference, `derive on:` types, mechanism control from guards.
+- Rail inference, series-resistor placement synthesis, mechanism control
+  from guards.
 
 ## Gates (per-commit)
 
