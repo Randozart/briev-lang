@@ -2518,6 +2518,7 @@ impl<'a, 'b> ObligationForcing<'a, 'b> {
         if obligations.is_empty() {
             return;
         }
+        self.assemble_buses(obligations);
         let mut mins: BTreeMap<String, (f64, String, Vec<String>)> = BTreeMap::new();
         let mut maxs: BTreeMap<String, (f64, String, Vec<String>)> = BTreeMap::new();
         for ob in obligations {
@@ -2535,6 +2536,59 @@ impl<'a, 'b> ObligationForcing<'a, 'b> {
         }
         for (root, (vmax, inst, nodes)) in maxs {
             self.force_low(&root, &inst, vmax, &nodes);
+        }
+    }
+
+    /// Bus assembly (E14b-3): MIN obligations on same-name WiredAnd-class
+    /// pins at the SAME voltage union into one net — the pin name is the
+    /// author's signal identity, WiredAnd is the class that may share a
+    /// driven net, and the shared obligation is the coupling. Different
+    /// names, voltages, or non-WiredAnd pins never union; each keeps its
+    /// own net and pull-up (honest D13). Runs before the per-root dedup.
+    fn assemble_buses(&mut self, obligations: &[VoltageObligation]) {
+        let mut groups: BTreeMap<(String, i64), Vec<String>> = BTreeMap::new();
+        let mut volts: BTreeMap<(String, i64), f64> = BTreeMap::new();
+        for ob in obligations {
+            if !ob.min {
+                continue;
+            }
+            let Some(classes) = pin_classes_of(self.ctx, &ob.pin) else {
+                continue;
+            };
+            if !classes.wired_and {
+                continue;
+            }
+            let key = (ob.pin.pin.clone(), (ob.volts * 1000.0).round() as i64);
+            volts.entry(key.clone()).or_insert(ob.volts);
+            groups
+                .entry(key)
+                .or_default()
+                .push(pin_key(&ob.pin.component, &ob.pin.pin));
+        }
+        for (key, mut keys) in groups {
+            keys.sort();
+            keys.dedup();
+            if keys.len() < 2 {
+                continue;
+            }
+            self.union_keys(&keys);
+            self.proofs.push(format!(
+                "bus assembled by shared min obligation '>= {}V': {} — same-name WiredAnd pins",
+                volts[&key],
+                keys.join(" <-> ")
+            ));
+        }
+    }
+
+    /// Union a list of pins onto one net (the first key is the root).
+    fn union_keys(&mut self, keys: &[String]) {
+        let Some(first) = keys.first() else {
+            return;
+        };
+        for k in &keys[1..] {
+            self.ctx.ds.make(first.clone());
+            self.ctx.ds.make(k.clone());
+            self.ctx.ds.union(first, k);
         }
     }
 
@@ -3149,6 +3203,13 @@ fn collect_intents(
         body_facts(t, ctx, &mut sink);
     }
     let synthesized = synthesize_bridges(ctx, &bridges, &mut proofs, &mut errors);
+    // 2026-09-23 (E14b): voltage obligations realize BEFORE drive
+    // completions — bus assembly + pull-ups connect the open-drain nets,
+    // so an unassembled sda/scl never appears as a drive candidate for a
+    // later instance intent (led1 saw five "free" IoOd pins and went
+    // ambiguous). The forcing consumes passive parts (pull-up resistors,
+    // switches), never CanDrive pins, so it cannot steal a completion.
+    force_voltage_obligations(items, ctx, &obligations, &mut errors, &mut proofs);
     for (node, inst_name) in &intents {
         match complete_intent(inst_name, node, ctx) {
             Ok(proof) => proofs.push(proof),
@@ -3164,10 +3225,6 @@ fn collect_intents(
             Err(e) => errors.push(e),
         }
     }
-    // 2026-09-23 (E14b): voltage obligations run last — the wiring facts,
-    // intents, and mechanisms have settled the nets, so the forcing sees
-    // final roots and the truly-free parts (min → pull-up, max → low-hold).
-    force_voltage_obligations(items, ctx, &obligations, &mut errors, &mut proofs);
     // 2026-09-22 (D16 p3b): disconnections — two pins that must NOT be
     // connected. A wiring fact or mechanism bridge that would connect them
     // is a hard error (the complement of the phase-3 redundancy gate).

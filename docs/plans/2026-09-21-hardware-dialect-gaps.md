@@ -576,6 +576,26 @@ E14b remaining (backlog, each marked in the fixture): bus assembly,
 `en` drive assignment solving, rail inference, value-aware resistor
 matching, `derive on:` type clauses.
 
+### Amendment 2026-09-23 (IV): E14b slice 3 landed — bus assembly
+
+Open-drain bus assembly: MIN obligations on same-name WiredAnd-class
+pins at the SAME voltage union into one net before pull-up forcing. The
+pin name is the author's signal identity; WiredAnd is the class that may
+share a driven net; the shared obligation is the coupling. Different
+names, different voltages, or non-WiredAnd pins never union (each net
+keeps its own pull-up — honest D13). Voltage obligations now realize
+BEFORE drive completions: an unassembled open-drain pin must never appear
+as a drive candidate for a later instance intent (led1 had seen five
+"free" IoOd pins and gone ambiguous). The forcing consumes passive parts
+(pull-up resistors, switches), never CanDrive pins, so it cannot steal a
+completion. The i2c node of usb_sensor is now obligations ONLY — the
+explicit `u2.sda = u3.sda` / `u2.scl = u3.scl` unions are deleted; the
+emitted sheet stays byte-identical to the E14a explicit-facts form.
+
+E14b remaining (backlog, each marked in the fixture): `en` drive
+assignment solving, rail inference, value-aware resistor matching,
+`derive on:` type clauses.
+
 E14b (pure intent — no explicit equalities) remains OPEN; every
 explicit equality the fixture needed beyond the drive map is marked
 `// E14b:` in the file and recorded in the design record's gate delta.

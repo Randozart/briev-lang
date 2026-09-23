@@ -144,12 +144,10 @@ async node usb_powered [
 // qualifying driven supply) and completes `u2.sda.voltage >= 2.7V` —
 // no resolution keywords exist.
 async node i2c_idle [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
-    u2.sda.voltage >= 2.7V;
-    u3.sda.voltage >= 2.7V;
-    u2.scl.voltage >= 2.7V;
+    u2.sda.voltage >= 2.7V;   // E14b-3: same-name WiredAnd obligations
+    u3.sda.voltage >= 2.7V;   // assemble the sda bus (one pull-up)
+    u2.scl.voltage >= 2.7V;   // and the scl bus (one pull-up)
     u3.scl.voltage >= 2.7V;
-    u2.sda = u3.sda;   // E14b-2: bus assembly (same-name IoOd pins union)
-    u2.scl = u3.scl;   // E14b-2
 }
 
 // Button pulls gpio[3] to gnd; r_btn is the pull-up to the rail.

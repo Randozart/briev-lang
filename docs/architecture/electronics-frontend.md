@@ -147,15 +147,15 @@ One-sided parts (no proven ΔV) and zero-drop straps force nothing.
 
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
 simulation), PinDecl in cell bodies' beast serialization, pin roles,
-`derive` on types, bus assembly, en drive solving, rail inference,
-value-aware resistor matching (E14b slices 3+).
+`derive` on types, en drive solving, rail inference, value-aware
+resistor matching (E14b slices 4+).
 
-**2026-09-23 (E14b slice 2, plan `2026-09-23-ebv-e14b-lowhold-forcing.md`):**
-low-hold forcing. A MAX obligation (`inst.pin.voltage <= V;`) forces a
-path to the return rail: through a free switchable part (Path-class pins;
-the return side may already be wired by a guard equality) or directly for
-an isolated net; a pulled-up net without a switchable part is a hard
-error. The button node of `usb_sensor.ebv` uses the pure-intent form.
+**2026-09-23 (E14b slice 3, plan `2026-09-23-ebv-e14b-bus-assembly.md`):**
+open-drain bus assembly. MIN obligations on same-name WiredAnd-class pins
+at the same voltage union into one net before pull-up forcing; voltage
+obligations realize before drive completions so unassembled open-drain
+pins never appear as drive candidates. The i2c node of `usb_sensor.ebv`
+is now obligations only.
 
 **2026-09-23 (E14b slice 1, plan `2026-09-23-ebv-e14b-pullup-forcing.md`):**
 min-voltage pull-up forcing. A node body may state

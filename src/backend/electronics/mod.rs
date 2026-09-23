@@ -1297,4 +1297,143 @@ mod tests {
             nl.intent_errors
         );
     }
+
+    #[test]
+    fn e14b_same_name_wired_and_obligations_assemble_the_bus() {
+        // u1.od and u2.od both demand >= 2.7V → one bus, one pull-up.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+            type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+            type Mcu { pin vdd: Power; pin od: IoOd; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let u2: Mcu = Mcu { value: "y" };
+            let r1: Resistor = Resistor { value: "4k7" };
+            async node n [
+                u1.vdd.voltage == u2.vdd.voltage && u1.vdd.voltage == 3.3V
+            ] [u1.vdd.voltage == 3.3V] {
+                u1.od.voltage >= 2.7V;
+                u2.od.voltage >= 2.7V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("bus assembled") && p.contains("u1") && p.contains("u2")),
+            "{:?}",
+            nl.intent_proofs
+        );
+        assert_eq!(
+            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            1,
+            "one bus → one pull-up: {:?}",
+            nl.intent_proofs
+        );
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
+
+    #[test]
+    fn e14b_different_names_keep_separate_nets() {
+        // od1 vs od2 — different signal names never union; each bus gets
+        // its own pull-up.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+            type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+            type Mcu { pin vdd: Power; pin od1: IoOd; pin od2: IoOd; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let r1: Resistor = Resistor { value: "4k7" };
+            let r2: Resistor = Resistor { value: "4k7" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                u1.od1.voltage >= 2.7V;
+                u1.od2.voltage >= 2.7V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            !nl.intent_proofs.iter().any(|p| p.contains("bus assembled")),
+            "different names must NOT assemble: {:?}",
+            nl.intent_proofs
+        );
+        assert_eq!(
+            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            2,
+            "{:?}",
+            nl.intent_proofs
+        );
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
+
+    #[test]
+    fn e14b_non_wired_and_pins_never_assemble() {
+        // Same name, same volts, but NOT open-drain → separate nets (two
+        // independent outputs must not short).
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+            type Mcu { pin vdd: Power; pin outp: Io; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let u2: Mcu = Mcu { value: "y" };
+            let r1: Resistor = Resistor { value: "4k7" };
+            let r2: Resistor = Resistor { value: "4k7" };
+            async node n [
+                u1.vdd.voltage == u2.vdd.voltage && u1.vdd.voltage == 3.3V
+            ] [u1.vdd.voltage == 3.3V] {
+                u1.outp.voltage >= 2.7V;
+                u2.outp.voltage >= 2.7V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            !nl.intent_proofs.iter().any(|p| p.contains("bus assembled")),
+            "non-WiredAnd pins must NOT assemble: {:?}",
+            nl.intent_proofs
+        );
+        assert_eq!(
+            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            2,
+            "{:?}",
+            nl.intent_proofs
+        );
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
+
+    #[test]
+    fn e14b_differing_voltages_never_assemble() {
+        // Same name, different obligation voltages → different pull-up
+        // targets; separate nets.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+            type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+            type Mcu { pin vdd: Power; pin od: IoOd; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let u2: Mcu = Mcu { value: "y" };
+            let r1: Resistor = Resistor { value: "4k7" };
+            let r2: Resistor = Resistor { value: "4k7" };
+            async node n [
+                u1.vdd.voltage == u2.vdd.voltage && u1.vdd.voltage == 3.3V
+            ] [u1.vdd.voltage == 3.3V] {
+                u1.od.voltage >= 2.7V;
+                u2.od.voltage >= 3.0V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            !nl.intent_proofs.iter().any(|p| p.contains("bus assembled")),
+            "differing voltages must NOT assemble: {:?}",
+            nl.intent_proofs
+        );
+        assert_eq!(
+            nl.intent_proofs.iter().filter(|p| p.contains("pull-up forced")).count(),
+            2,
+            "{:?}",
+            nl.intent_proofs
+        );
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
 }
