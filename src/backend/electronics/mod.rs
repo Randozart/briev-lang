@@ -12,6 +12,8 @@
 //! beyond the schematic. Dangling pins (already diagnosed by the analysis)
 //! fail the compile here — the backend never emits an incomplete board.
 
+pub mod routing;
+
 use std::collections::BTreeMap;
 use crate::analysis::electronics::{ComponentInstance, ElectronicsNetlist};
 use crate::backend::capabilities::BackendCapabilities;
@@ -641,6 +643,30 @@ impl ElectronicsBackend {
                 ));
             }
             out.push_str("  )\n");
+        }
+        // Auto-routed copper (fab plan follow-on): each net's pads connect
+        // in a sorted chain on F.Cu; detours surface as notes.
+        let (segments, warnings) = routing::route_all(bp, netlist, instances);
+        for w in &warnings {
+            eprintln!("note: {}", w);
+        }
+        let net_names: BTreeMap<usize, String> = netlist
+            .nets
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (i + 1, Self::net_label(netlist, n)))
+            .collect();
+        for seg in segments {
+            out.push_str(&format!(
+                "  (segment (start {} {}) (end {} {}) (width {}) (layer \"F.Cu\") (net {} \"{}\"))\n",
+                coord(seg.x1),
+                coord(seg.y1),
+                coord(seg.x2),
+                coord(seg.y2),
+                coord(routing::TRACK_WIDTH),
+                seg.net,
+                net_names.get(&seg.net).cloned().unwrap_or_default()
+            ));
         }
         out.push_str(")\n");
         out
@@ -1732,7 +1758,12 @@ let nl = netlist_of(src);
             board.contains("(pad \"1\" smd rect"),
             "pads wired: {board}"
         );
-        // Determinism: an independent derivation is byte-identical.
+        assert!(
+            board.contains("(segment (start"),
+            "routed copper: {board}"
+        );
+        // Determinism: an independent derivation is byte-identical (the
+        // routed segments are part of that — routing is deterministic).
         let nl2 = derive_netlist(&fixture_items(gate_fixture()));
         let board2 = ElectronicsBackend::generate_board(&nl2, &fixture_items(gate_fixture()))
             .unwrap()
