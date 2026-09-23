@@ -1,0 +1,20 @@
+// SPEC §8.10 — `coll`: compiler-owned Length semantics. Length and
+// capacity are hidden compiler-managed slots (never declared fields),
+// exposed through `.^Length` / `Count#` / the capacity intrinsics.
+// Grow-on-full doubles by default; storage shape is the compiler's choice.
+
+coll struct Fixed<T, N> {
+    data: T[N];   // fixed T[N] only: length == capacity == N, inline layout
+};
+
+let i: Int = 0;
+let f: Fixed;
+let total: Int = 0;
+async node coll_user [i < 1][i == 1] {
+    // Literal construction stores elements DIRECTLY into the inline
+    // data: T[N] array — no heap header, no cap/len slots.
+    f = [1, 2, 3, 4];
+    total = f.^Length;
+    i = i + 1;
+    term;
+};

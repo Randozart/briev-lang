@@ -1,0 +1,12 @@
+// SPEC §11.5 / §13.2 — `bootstrap node name`: the authored program
+// entry point (pre-reactor). Takes a single handoff postcondition
+// bracket: `[counter >= N]` runs until the counter obligation is met.
+// The body must advance a counter toward the goal. There is no
+// precondition because nothing fires the bootstrap node but the
+// machine itself.
+
+let counter: Int = 0;
+bootstrap node init [counter >= 1] {
+    counter = counter + 1;
+    term;
+};

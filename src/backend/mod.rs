@@ -1,4 +1,5 @@
 pub mod assembler;
+pub mod bad;
 pub mod capabilities;
 pub mod register_types;
 pub mod circt;

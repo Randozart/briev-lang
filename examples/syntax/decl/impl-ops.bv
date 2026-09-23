@@ -1,0 +1,29 @@
+// SPEC §8.8 / §15.1 — `impl`: inherent behavior on data-only nominal
+// declarations. `op Name: handler(#Lh, #Rh);` binds an operator to a
+// handler; the `op Name(ParamType):` spelling binds per protocol
+// variant. Lemma properties (`[commutative]`) grant the optimizer
+// exactly the declared right and never substitute for a semantic proof.
+
+struct Vec2 {
+    x: Float;
+    y: Float;
+};
+
+defn add_vec2(left: Vec2, right: Vec2) -> Vec2 {
+    term Vec2 { x: left.x + right.x, y: left.y + right.y };
+};
+
+impl Vec2 {
+    // Operator binding: `+` on Vec2 dispatches to add_vec2.
+    op Add: add_vec2(#Lh, #Rh);
+};
+
+let i: Int = 0;
+let a: Vec2;
+let b: Vec2;
+async node impl_user [i < 1][i == 1] {
+    a = Vec2 { x: 1.0, y: 2.0 };
+    b = Vec2 { x: 3.0, y: 4.0 };
+    i = i + 1;
+    term;
+};

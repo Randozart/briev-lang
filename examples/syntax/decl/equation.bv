@@ -1,0 +1,11 @@
+// SPEC §3.5 — equation node: a declarative constraint. The compiler
+// derives the solution; the author writes the equation with pre/post
+// contract brackets. The node fires when the equation is satisfiable.
+
+let a: Int = 0;
+let b: Int = 0;
+node equation_user [a + b == 10][a == 1 && b == 9] {
+    a = a + 1;
+    b = 9;
+    term;
+};

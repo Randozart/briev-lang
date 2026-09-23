@@ -420,10 +420,6 @@
           "name": "keyword.operator.comparison.briev"
         },
         {
-          "match": "::",
-          "name": "keyword.operator.path.briev"
-        },
-        {
           "match": "<-",
           "name": "keyword.operator.push.briev"
         },

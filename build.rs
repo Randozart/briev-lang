@@ -31,7 +31,9 @@ fn build_pass(briefc: &Path, bv: &str, out_root: &Path) -> Option<PathBuf> {
 }
 
 fn main() {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let manifest = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default(),
+    );
     let out_root = Path::new(&manifest).join("target").join("compiler-in-briv");
     std::fs::create_dir_all(&out_root).ok(); // fresh worktree bootstrap
 
@@ -87,9 +89,8 @@ fn main() {
 /// available the cfg flag stays off and `brievc run` reports cleanly.
 fn build_gpu_rt(out_root: &Path) {
     let rt_dir = Path::new("lib/runtime");
-    let rt_src = rt_dir.join("briev_accel_rt.c");
-    if !rt_src.exists() {
-        println!("cargo:warning=gpu-rt: {} missing — brievc run unavailable", rt_src.display());
+    if !rt_dir.join("briev_accel_rt.h").exists() {
+        println!("cargo:warning=gpu-rt: ABI header missing — brievc run unavailable");
         return;
     }
     // The RT dlopens libvulkan/OpenCL at init (LOAD macro) — no -lvulkan
@@ -104,24 +105,48 @@ fn build_gpu_rt(out_root: &Path) {
             }
         },
     };
-    let obj = out_root.join("briev_accel_rt.o");
+    // 2026-09-21 (Family K): the orchestration moved to src/accel_rt.rs
+    // (exported from the Rust staticlib with the same briev_accel_* C
+    // symbols); this archive now carries ONLY the C driver bindings,
+    // each its own translation unit (types via briev_accel_rt.h; the
+    // g_verbose / g_async_launch ints resolve to the Rust exports).
     let arc = out_root.join("libbriev_gpu_rt.a");
-    let ok = Command::new(&cc)
-        .args(["-O2", "-fPIC", "-c"])
-        .arg(&rt_src)
-        .arg("-o")
-        .arg(&obj)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if !ok {
-        println!("cargo:warning=gpu-rt: RT compile failed — brievc run unavailable");
-        return;
+    let mut objs = Vec::new();
+    let mut all_ok = true;
+    for drv in ["briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+        let src = rt_dir.join(drv);
+        let obj = out_root.join(format!(
+            "{}.o",
+            drv.trim_end_matches(".c")
+        ));
+        let out = Command::new(&cc)
+            .args(["-O2", "-fPIC", "-c"])
+            .arg("-I")
+            .arg(rt_dir)
+            .arg(&src)
+            .arg("-o")
+            .arg(&obj)
+            .output()
+            .expect("cc spawns");
+        let ok = out.status.success();
+        if !ok {
+            println!("cargo:warning=gpu-rt: {} compile failed — brievc run unavailable", drv);
+            eprintln!("gpu-rt cc stderr: {}", String::from_utf8_lossy(&out.stderr));
+            eprintln!("gpu-rt cc stdout: {}", String::from_utf8_lossy(&out.stdout));
+            all_ok = false;
+            break;
+        }
+        objs.push(obj);
     }
-    let ar_ok = Command::new("ar")
+    // `ar rcs` on an existing archive replaces/adds members but never
+    // deletes them — a pre-Family-K archive would keep its stale
+    // `briev_accel_rt.o` and collide with the Rust exports at link time.
+    // Always start from no archive (2026-09-22, merge with Family K).
+    let _ = std::fs::remove_file(&arc);
+    let ar_ok = all_ok && Command::new("ar")
         .args(["rcs"])
         .arg(&arc)
-        .arg(&obj)
+        .args(&objs)
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -129,12 +154,40 @@ fn build_gpu_rt(out_root: &Path) {
         println!("cargo:warning=gpu-rt: ar failed — brievc run unavailable");
         return;
     }
+    // The Rust orchestration staticlib (same briev_accel_* C ABI, built
+    // from src/accel_rt.rs) — runners and LLVM binaries link this instead
+    // of the former C translation unit.
+    let manifest = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default(),
+    );
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let accel_lib = out_root.join("libbriev_accel_rt.a");
+    let accel_ok = Command::new(&rustc)
+        .args([
+            "--edition=2024",
+            "--crate-type=staticlib",
+            "--crate-name=briev_accel_rt",
+            "-O",
+        ])
+        .arg(manifest.join("src/accel_rt_standalone.rs"))
+        .arg("-o")
+        .arg(&accel_lib)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !accel_ok {
+        println!("cargo:warning=gpu-rt: accel_rt staticlib build failed — brievc run unavailable");
+        return;
+    }
     println!("cargo:rustc-link-search=native={}", out_root.display());
     println!("cargo:rustc-link-lib=static=briev_gpu_rt");
     println!("cargo:rustc-link-lib=dylib=dl");
     println!("cargo:rustc-link-lib=dylib=pthread");
     println!("cargo:rustc-link-lib=dylib=m");
-    println!("cargo:rerun-if-changed={}", rt_src.display());
+    println!("cargo:rerun-if-changed={}", rt_dir.join("briev_accel_rt.h").display());
+    for drv in ["briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+        println!("cargo:rerun-if-changed={}", rt_dir.join(drv).display());
+    }
     println!("cargo:rustc-cfg=gpu_rt");
 }
 // SENTINEL: gpu-rt build script loaded (gpu-backend-hardening Track A)

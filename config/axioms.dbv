@@ -5,7 +5,7 @@
 //
 // Declared-authority enforcement dial. `axiom` marks knowledge taken on
 // authority instead of proof (SPEC §8.7): axiomatic cast edges, authoritative
-// contract posts, op lemmas.
+// contract posts.
 //
 // policy: allow | warn | deny — how declared axiom sites are treated.
 //   allow: accepted; one info line per site in the warnings stream.
@@ -13,15 +13,16 @@
 //   deny:  any axiom site is a hard error — prove it or remove the shortcut.
 // The .s strict report always renders the full ledger regardless of this.
 //
-// lemma_properties: closed vocabulary of optimizer-exploitable properties an
-// op binding may declare; anything else is rejected at parse validation.
+// 2026-09-22 (syntax-cleanup plan): the lemma_properties vocabulary is
+// removed. Op lemmas were dead on arrival — no parser accepted the grammar,
+// no pass consumed the rights, and float reassociation is already granted by
+// -ffast-math + !> associative. axiom on cast edges remains the sole
+// authority mechanism (justified: FFI impls have no Briev body to prove).
 
 schema AxiomSettings {
     policy: String;
-    lemma_properties: Vec[String];
 };
 
 as AxiomSettings {
     policy: allow;
-    lemma_properties: commutative;
 };

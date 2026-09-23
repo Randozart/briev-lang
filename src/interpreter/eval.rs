@@ -2140,13 +2140,6 @@ pub fn eval_statement(
             }
             Ok(result)
         }
-        Statement::Barrier { body, .. } => {
-            let mut result = Value::Void;
-            for stmt in body {
-                result = eval_statement(stmt, heap, bindings, functions)?;
-            }
-            Ok(result)
-        }
         // 2026-08-09 (Phase 10): `defer` is handled by the Interpreter wrapper
         // (exec_stmt pushes the body onto the defer stack, flushed LIFO on
         // term/rollback/endprogram). This standalone arm is a defensive

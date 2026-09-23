@@ -189,6 +189,20 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             indent(out, level);
             let _ = write!(out, "trg {} @ {};", name, instance);
         }
+        TopLevel::BadFn(bf) => {
+            indent(out, level);
+            writeln!(out, "bad {}(", bf.name).ok();
+            // params
+            for (i, (pn, pt)) in bf.params.iter().enumerate() {
+                if i > 0 { write!(out, ", ").ok(); }
+                write!(out, "{}: {}", pn, pt).ok();
+            }
+            writeln!(out, ") -> {} {{", bf.ret_type).ok();
+            for line in bf.body.lines() {
+                writeln!(out, "    {}", line).ok();
+            }
+            writeln!(out, "}}").ok();
+        }
         TopLevel::AsmFn(f) => {
             indent(out, level);
             let _ = write!(out, "asm<{}> {}(", f.target, f.name);

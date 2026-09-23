@@ -500,10 +500,10 @@ defn generate_x86_64(program: Program, cg: CallGraphResult) -> List<u8> {
     
     // Emit acyclicity annotation in comment instrs
     when !cg.has_cycle {
-        all_instrs = all_instrs.append(X64Instr::Comment("Call graph: acyclic -- static dispatch".to_string()));
+        all_instrs = all_instrs.append(X64Instr.Comment("Call graph: acyclic -- static dispatch".to_string()));
     };
     when cg.has_cycle {
-        all_instrs = all_instrs.append(X64Instr::Comment("Call graph: cyclic -- dynamic dispatch".to_string()));
+        all_instrs = all_instrs.append(X64Instr.Comment("Call graph: cyclic -- dynamic dispatch".to_string()));
     };
     
     // Extract transactions

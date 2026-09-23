@@ -70,9 +70,6 @@ impl LlvmBackend {
                 Statement::Foreach { body, .. } => {
                     for st in body { walk(st, lets, assigned); }
                 }
-                Statement::Barrier { body, .. } => {
-                    for st in body { walk(st, lets, assigned); }
-                }
                 Statement::Match { arms, .. } => {
                     for arm in arms {
                         for st in &arm.body { walk(st, lets, assigned); }
@@ -5549,6 +5546,18 @@ impl LlvmBackend {
             writeln!(out, "  ret {} 0", ll_ret).ok();
         }
         writeln!(out, "}}").ok();
+    }
+
+    /// 2026-09-21: Emit an LLVM `declare` for a `bad fn` — the body is
+    /// compiled through the bad backend and linked as an .o file.
+    pub(super) fn emit_bad_fn_declare(&mut self, out: &mut String, bf: &crate::ast::top::BadFn) {
+        let ll_ret = self.llvm_type(&bf.ret_type);
+        write!(out, "declare {} @{}(", ll_ret, bf.name).ok();
+        for (i, (_, t)) in bf.params.iter().enumerate() {
+            if i > 0 { write!(out, ", ").ok(); }
+            write!(out, "{}", self.llvm_type(t)).ok();
+        }
+        writeln!(out, ") #6").ok();
     }
 
     // ── ISR handlers + vector tables (2026-09-06, ISR plan) ────────────

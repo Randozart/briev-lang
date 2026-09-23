@@ -781,8 +781,6 @@ impl<'a> TypecheckContext<'a> {
                 suf: b.suf.clone(),
                 impl_args: None,
                 impl_name: b.name.clone(),
-                // 2026-08-27 (axiom WIP completion): no lemmas.
-                trusted_lemmas: vec![],
                 trusted_axiom: false,
                 span: b.span.clone(),
             })
@@ -2378,7 +2376,6 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
         }
         Statement::Block(body) | Statement::SyncBlock(body)
         | Statement::Defer(body) | Statement::Mutex(body) => elaborate_stmts(body, ctx, errors),
-        Statement::Barrier { body, .. } => elaborate_stmts(body, ctx, errors),
         Statement::Foreach { list, body, .. } => {
             elaborate_expr(list, ctx, errors);
             elaborate_stmts(body, ctx, errors);
@@ -3576,12 +3573,6 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::Defer(body) | Statement::Mutex(body) => {
-            for stmt in body {
-                infer_statement(stmt, ctx)?;
-            }
-            Ok(())
-        }
-        Statement::Barrier { body, .. } => {
             for stmt in body {
                 infer_statement(stmt, ctx)?;
             }
@@ -5663,7 +5654,6 @@ fn collect_body_exprs(stmts: &[Statement]) -> Vec<&Expr> {
                 | Statement::Mutex(body)
                 | Statement::SyncBlock(body) => walk(body, out),
                 Statement::Foreach { list, body, .. } => { out.push(list); walk(body, out); }
-                Statement::Barrier { body, .. } => walk(body, out),
                 Statement::TrgBinding { instance, .. } => out.push(instance),
                 Statement::Match { expr, arms } => {
                     out.push(expr);
@@ -5702,7 +5692,6 @@ fn isr_body_exprs(stmts: &[Statement]) -> Vec<&Expr> {
                 | Statement::Mutex(body)
                 | Statement::SyncBlock(body) => walk(body, out),
                 Statement::Foreach { list, body, .. } => { out.push(list); walk(body, out); }
-                Statement::Barrier { body, .. } => walk(body, out),
                 Statement::TrgBinding { instance, .. } => out.push(instance),
                 Statement::Match { expr, arms } => {
                     out.push(expr);

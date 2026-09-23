@@ -1,0 +1,21 @@
+enum Color {
+    Red,
+    Green,
+    Blue,
+    RGB(Int, Int, Int)
+};
+
+let i: Int = 0;
+let c: Color;
+let m: Color;
+async node enum_user [i < 1][i == 1] {
+    c = Color.RGB(255, 128, 0);
+    m = match c {
+        Color.RGB(r, g, b) => Color.Red,
+        Color.Red => Color.Green,
+        Color.Green => Color.Blue,
+        Color.Blue => Color.Red,
+    };
+    i = i + 1;
+    term;
+};

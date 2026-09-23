@@ -18,6 +18,10 @@
 .sbv: circt; ; prelude-hw;
 .rbv: webstack; --target wasm; prelude;
 .abv: spirv; ; prelude execute-many;
+// 2026-09-21 (bad-dialect plan): .bad — Briev Assembly Dialect. The
+// target triple comes from --target (or host default); the backend lowers
+// the portable core ISA through config/bad-isa.dbvl + bad-registers.dbvl.
+.bad: bad; ; prelude;
 
 // ── Per-target tuning (plan §8.1, frontend-driven-dispatch) ──────────
 // Looked up by matching the compiler's target_triple PREFIX. Absent prefix →

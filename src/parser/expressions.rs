@@ -422,35 +422,6 @@ impl<'a> Parser<'a> {
                         return self.error_at_current("only named functions can be called");
                     }
                 }
-            } else if self.check(&Token::ColonColon) {
-                // 2026-08-26 (qualified enum paths): `Enum::Variant` and
-                // `Enum::Variant(args)` — construction via the qualified
-                // path. Desugars to a Call whose name carries the `::`
-                // (function names never contain `::`, so registries
-                // disambiguate cleanly). Bare `Enum::Variant` (no parens)
-                // is the zero-arg call form — SPEC §8.3 unit variants.
-                let Expr::Identifier(enum_name) = &expr else {
-                    return self.error_at_current("expected enum name before '::'");
-                };
-                let enum_name = enum_name.clone();
-                self.pos += 1; // consume '::'
-                let variant = self.expect_identifier()?;
-                let qualified = format!("{}::{}", enum_name, variant);
-                if self.eat(&Token::LParen) {
-                    let mut args = Vec::new();
-                    if !self.check(&Token::RParen) {
-                        loop {
-                            args.push(self.parse_expression()?);
-                            if !self.eat(&Token::Comma) {
-                                break;
-                            }
-                        }
-                    }
-                    self.expect(Token::RParen)?;
-                    expr = Expr::Call(qualified, args, None);
-                } else {
-                    expr = Expr::Call(qualified, Vec::new(), None);
-                }
             } else if self.eat(&Token::Dot) {
                 // 2026-09-16: cast annotation in a chain — `.(Type)>>func()`.
                 if self.check(&Token::LParen) {
@@ -485,12 +456,53 @@ impl<'a> Parser<'a> {
                 } else {
                     self.expect_identifier()?
                 };
-                // 2026-09-16: back-reference chain — `.N>>f()` / `.name>>f()`.
-                // Must be checked before field access so `.2>>f()` is not read
-                // as tuple element `.2` followed by a shift.
-                if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
-                    let func_name = self.expect_identifier()?;
-                    self.expect(Token::LParen)?;
+                // 2026-09-22 (syntax-cleanup plan): `Color.RGB(...)` — enum
+                // variant construction via member access. When the receiver
+                // is a bare identifier naming a DECLARED type, `.Variant` is
+                // variant construction, desugaring to the same internal
+                // `Enum::Variant` call string the former `::` form produced
+                // (function names never contain `::`, so registries
+                // disambiguate cleanly). Bare `Color.RGB` (no parens) is the
+                // zero-arg call form — SPEC §8.3 unit variants. The `$`
+                // navigation-call check below takes precedence; a numeric
+                // member (`t.0`) is a tuple element read, never a variant.
+                // Caveat (shared with the removed `::` form): a *variable*
+                // whose name matches a declared type is indistinguishable
+                // here — the parser cannot see bindings.
+if let Expr::Identifier(base) = &expr {
+                    // A following `>>` (back-reference chain, `.N>>f()`) or a
+                    // `$` navigation-call suffix takes precedence over enum
+                    // construction — neither is a variant access.
+                    if self.known_types.contains(base)
+                        && !name.ends_with('$')
+                        && !self.check(&Token::Shr)
+                    {
+                         let enum_name = base.clone();
+                         let qualified = format!("{}::{}", enum_name, name);
+                         if self.eat(&Token::LParen) {
+                             let mut args = Vec::new();
+                             if !self.check(&Token::RParen) {
+                                 loop {
+                                     args.push(self.parse_expression()?);
+                                     if !self.eat(&Token::Comma) {
+                                         break;
+                                     }
+                                 }
+                             }
+                             self.expect(Token::RParen)?;
+                             expr = Expr::Call(qualified, args, None);
+                         } else {
+                             expr = Expr::Call(qualified, Vec::new(), None);
+                         }
+                         continue;
+                     }
+                 }
+                 // 2026-09-16: back-reference chain — `.N>>f()` / `.name>>f()`.
+                 // Must be checked before field access so `.2>>f()` is not read
+                 // as tuple element `.2` followed by a shift.
+if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
+                     let func_name = self.expect_identifier()?;
+                     self.expect(Token::LParen)?;
                     let mut args = Vec::new();
                     if !self.check(&Token::RParen) {
                         loop {
@@ -1151,11 +1163,14 @@ impl<'a> Parser<'a> {
                     let ty = self.parse_type()?;
                     return Ok(crate::ast::Pattern::TypedBinding(name, Box::new(ty)));
                 }
-                // 2026-08-26 (qualified enum paths): `Enum::Variant(subs)` —
-                // the pattern name carries the `::` path; matching
-                // normalizes to the bare variant (last segment).
-                if self.check(&Token::ColonColon) {
-                    self.pos += 1;
+                // 2026-09-22 (syntax-cleanup plan): `Color.RGB(subs)` — a
+                // qualified enum pattern via member access. The pattern name
+                // carries the `::` path internally; matching normalizes to
+                // the bare variant (last segment). Fires only when the base
+                // names a DECLARED type (matching construction); a variable
+                // pattern on a non-type name falls through to Binding.
+                if self.known_types.contains(&name) && self.check(&Token::Dot) {
+                    self.pos += 1; // consume '.'
                     let variant = self.expect_identifier()?;
                     let qualified = format!("{}::{}", name, variant);
                     let mut fields = Vec::new();
@@ -1369,6 +1384,72 @@ mod tests {
         let first = p.parse_top_level().expect("type decl");
         assert!(matches!(first, crate::ast::TopLevel::TypeDef(_)));
         assert!(p.known_types.contains("MyNum"));
+    }
+
+    // 2026-09-22 (syntax-cleanup plan): enum variant construction and
+    // matching use member access (`Color.RGB(...)`), desugaring to the
+    // internal `Enum::Variant` call string the former `::` form produced.
+
+    #[test]
+    fn enum_dot_variant_construction_desugars() {
+        let src = "enum Color { Red, RGB(Int, Int, Int) } Color.RGB(1, 2, 3)";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let _ = p.parse_top_level().expect("enum decl");
+        let e = p.parse_expression().expect("variant construction");
+        match e {
+            Expr::Call(name, args, _) => {
+                assert_eq!(name, "Color::RGB", "internal qualified name");
+                assert_eq!(args.len(), 3);
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_dot_bare_variant_is_zero_arg_call() {
+        let src = "enum Color { Red, Green } Color.Red";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let _ = p.parse_top_level().expect("enum decl");
+        let e = p.parse_expression().expect("bare variant");
+        match e {
+            Expr::Call(name, args, _) => {
+                assert_eq!(name, "Color::Red");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_dot_variant_pattern_desugars() {
+        let src = "enum Color { Red, RGB(Int, Int, Int) } match c { Color.RGB(r, g, b) => r, Color.Red => 0 }";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let _ = p.parse_top_level().expect("enum decl");
+        let e = p.parse_expression().expect("match");
+        let Expr::Match(_, arms) = e else {
+            panic!("expected Match, got {e:?}");
+        };
+        assert!(matches!(
+            &arms[0].pattern,
+            crate::ast::Pattern::EnumVariant(n, f) if n == "Color::RGB" && f.len() == 3
+        ));
+        assert!(matches!(
+            &arms[1].pattern,
+            crate::ast::Pattern::EnumVariant(n, f) if n == "Color::Red" && f.is_empty()
+        ));
+    }
+
+    #[test]
+    fn non_type_dot_member_is_not_enum_variant() {
+        // A receiver that is NOT a declared type must stay member access.
+        let e = parse_expr("x.field").unwrap();
+        assert!(
+            matches!(e, Expr::Field(_, ref n) if n == "field"),
+            "expected Field access, got {e:?}"
+        );
     }
 
     #[test]

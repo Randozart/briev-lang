@@ -1,0 +1,14 @@
+// SPEC §18 — `$(StageName)` compile-time metaprogramming block. The
+// stage name selects which pipeline stage processes the body; optional
+// priority inside the parens: `$(Stage @ N)`. The body runs at compile
+// time and is removed before codegen.
+
+$(Typed @ normal) {
+    let compiled: Int = 42;
+};
+
+let i: Int = 0;
+async node stage_user [i < 1][i == 1] {
+    i = i + 1;
+    term;
+};

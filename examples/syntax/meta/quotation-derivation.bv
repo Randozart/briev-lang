@@ -1,0 +1,24 @@
+// SPEC §18 — quotation and derivation. `:=` attaches a derivation block to
+// a definition: example input->output pairs the implementation must
+// satisfy (each arm `2, 3 -> 5;` states a contract the derivation tool
+// checks). Quotation (`'c'`) captures a single Char literal at compile
+// time; `"..."` is the String form.
+//
+// NB: `Error#` is a compile-time failure intrinsic (SPEC §18.6) — a
+// REACHABLE use stops compilation with a helpful message. It is excluded
+// here because this file must pass; see lib/std/collections.bv for its
+// usage in unreachable guards.
+
+defn add(a: Int, b: Int) -> Int { a + b; } := {
+    2, 3 -> 5;
+    0, 0 -> 0;
+    -1, 1 -> 0;
+};
+
+let i: Int = 0;
+let c: Char;
+async node quote_user [i < 1][i == 1] {
+    c = 'h';
+    i = i + 1;
+    term;
+};

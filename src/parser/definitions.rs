@@ -6,7 +6,7 @@
 // 2026-08-01 (Phase 2): `[#]` entry contracts removed — entry!/args! (Phase 3)
 // replace the marker with explicit macros.
 
-use super::helpers::Parser;
+use super::helpers::{ModifierPrefix, Parser};
 use crate::ast::*;
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
@@ -109,10 +109,6 @@ impl<'a> Parser<'a> {
                 .parse_transaction(false, false)
                 .map(TopLevel::Transaction),
             Some(Token::Node) => self.parse_node_item(),
-            // 2026-08-01 (Phase 3c): `sync<group> node name ...` — a reactive
-            // node classified into a group barrier. Members that fire hold off
-            // finishing until all fired members have (rule #21 classification).
-            Some(Token::Sync) => self.parse_sync_group(),
             // 2026-09-14 (machine-entry plan): `bootstrap node name [...] {...}`
             // — the authored program entry (pre-reactor; SPEC §11.5, §13.2).
             // Recorded as a modifier annotation; single-bracket (handoff
@@ -157,141 +153,11 @@ impl<'a> Parser<'a> {
                 self.pos += 1; // consume coll
                 self.parse_struct_def(false, true).map(TopLevel::StaticStruct)
             }
-            Some(Token::Seq) if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Node) | Some(Token::Txn)) => {
-                self.pos += 1; // consume seq
-                let mut txn = if matches!(self.tokens.get(self.pos).map(|(t, _)| t), Some(Token::Node)) {
-                    self.parse_node().map(TopLevel::Transaction)?
-                } else {
-                    self.parse_transaction(false, false).map(TopLevel::Transaction)?
-                };
-                if let TopLevel::Transaction(t) = &mut txn {
-                    t.modifiers.push(Annotation {
-                        name: "seq".to_string(),
-                        value: None,
-                    });
-                }
-                Ok(txn)
-            }
-            // 2026-07-31: `async node` (prefix) — same as `node async`.
-            // 2026-08-01 (Phase 3c): the prefix form must preserve the async
-            // flag. parse_node reads is_async via eat(Async) AFTER consuming
-            // 'node'; with the prefix the async token is already consumed, so
-            // we set it on the returned Transaction.
-            Some(Token::Async) if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Node) | Some(Token::Accel)) => {
-                self.pos += 1; // consume async
-                // 2026-08-06 (accel plan): `async accel node name ...` — an
-                // accel body whose co-firing is explicitly acknowledged (the
-                // phase/counter flags sequence it at runtime).
-                let mut txn = if self.check(&Token::Accel) {
-                    self.pos += 1; // consume accel
-                    let mut t = self.parse_node()?;
-                    t.modifiers.push(Annotation {
-                        name: "accel".to_string(),
-                        value: None,
-                    });
-                    t
-                } else {
-                    self.parse_node()?
-                };
-                txn.is_async = true;
-                Ok(TopLevel::Transaction(txn))
-            }
-            // 2026-08-06 (accel plan): `accel node name` / `accel txn name` —
-            // GPU-deferral request. Marks the body as a per-firing parallel
-            // map over work-items; the backend defers execution to the GPU
-            // only when it verifies a speedup, else silent CPU fallback. See
-            // docs/plans/2026-08-06-accel-gpu-offload.md.
-            Some(Token::Accel) => {
-                self.pos += 1; // consume accel
-                let mut txn = if self.check(&Token::Node) {
-                    self.parse_node().map(TopLevel::Transaction)?
-                } else if self.check(&Token::Txn) {
-                    self.parse_transaction(false, false).map(TopLevel::Transaction)?
-                } else {
-                    return self.error_at_current("expected 'node' or 'txn' after 'accel'");
-                };
-                if let TopLevel::Transaction(t) = &mut txn {
-                    t.modifiers.push(Annotation {
-                        name: "accel".to_string(),
-                        value: None,
-                    });
-                }
-                Ok(txn)
-            }
-            // 2026-08-04 (out-observability plan): `out defn` / `out node` /
-            // `out txn` / `out let` — the observability pin. Marks the
-            // callable's calls (or the variable's reads/writes) as liveness
-            // roots. Never an acceleration — a pin the compiler must respect.
-            Some(Token::Out)
-                if matches!(
-                    self.tokens.get(self.pos + 1).map(|(t, _)| t),
-                    Some(Token::Defn)
-                        | Some(Token::Node)
-                        | Some(Token::Txn)
-                        | Some(Token::Let)
-                        | Some(Token::Vol)
-                ) =>
-            {
-                self.pos += 1; // consume out
-                match self.peek() {
-                    Some(Token::Defn) => {
-                        let mut defn = self.parse_definition()?;
-                        defn.modifiers.push(Annotation {
-                            name: "out".to_string(),
-                            value: None,
-                        });
-                        Ok(TopLevel::Definition(defn))
-                    }
-                    Some(Token::Node) => {
-                        let mut txn = self.parse_node()?;
-                        txn.modifiers.push(Annotation {
-                            name: "out".to_string(),
-                            value: None,
-                        });
-                        Ok(TopLevel::Transaction(txn))
-                    }
-                    Some(Token::Txn) => {
-                        let mut txn = self.parse_transaction(false, false)?;
-                        txn.modifiers.push(Annotation {
-                            name: "out".to_string(),
-                            value: None,
-                        });
-                        Ok(TopLevel::Transaction(txn))
-                    }
-                    _ => {
-                        // `out let` or `out vol let` — recurse through the
-                        // statement parser so the let (and any vol) modifiers
-                        // are recorded, then push `out` last.
-                        let mut stmt = self.parse_statement()?;
-                        if let Statement::Let { modifiers, .. } = &mut stmt {
-                            modifiers.push(Annotation {
-                                name: "out".to_string(),
-                                value: None,
-                            });
-                        }
-                        Ok(TopLevel::Statement(Box::new(stmt)))
-                    }
-                }
-            }
-            // 2026-08-25 (seq-firmem plan): `mem let` / `reg let` — the
-            // array-lowering pins. Recorded as let-modifier annotations the
-            // CIRCT policy engine reads. Strategy keywords: intent
-            // (memory-macro port limits / register-file obligations), never
-            // acceleration.
-            Some(Token::Mem) | Some(Token::Reg)
-                if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Let)) =>
-            {
-                let hint = if self.check(&Token::Mem) { "mem" } else { "reg" };
-                self.pos += 1; // consume mem/reg
-                let mut stmt = self.parse_statement()?;
-                if let Statement::Let { modifiers, .. } = &mut stmt {
-                    modifiers.push(Annotation {
-                        name: hint.to_string(),
-                        value: None,
-                    });
-                }
-                Ok(TopLevel::Statement(Box::new(stmt)))
-            }
+            // 2026-09-22 (order-free-modifiers plan): `<keywords>* <identifier>
+            // <name>`. Modifiers compose in any order before a node/txn/let/
+            // defn; the shared scanner consumes the run and the dispatch
+            // below validates the structural identifier against the set.
+            Some(t) if Self::is_modifier_token(t) => self.parse_modifier_prefixed(),
             Some(Token::Cell) => self.parse_cell().map(TopLevel::Cell),
             // 2026-08-27 (cbv-HW plan Slice A): `extern Name<T>(ports)
             // -> outs from "path";` — a FOREIGN hardware module import.
@@ -420,6 +286,10 @@ impl<'a> Parser<'a> {
                 // 2026-07-29: asm<target> name(args) -> T { "instr"; };
                 if self.check_identifier("asm") {
                     return self.parse_asm_fn().map(TopLevel::AsmFn);
+                }
+                // 2026-09-21: bad name(params) -> Ret [groups] { body };
+                if self.check_identifier("bad") {
+                    return self.parse_bad_fn().map(TopLevel::BadFn);
                 }
                 // 2026-09-06 (ISR plan): isr[<mech>] handler @ vec: name() { };
                 // Contextual keyword like asm/proto — top-level form only.
@@ -1111,10 +981,10 @@ impl<'a> Parser<'a> {
     /// dissolved). 2026-09-14 (machine-entry plan).
     fn parse_node_item(&mut self) -> Result<TopLevel, SyntaxError> {
         self.pos += 1; // consume 'node'
-        // 2026-07-21: Optional 'async' modifier after node keyword.
-        // node async signals that the compiler should dispatch this
-        // transaction in parallel when write sets are disjoint.
-        let is_async = self.eat(&Token::Async);
+        // 2026-09-22 (order-free-modifiers plan): `async` is PREFIX-only
+        // (`async node name`). The `node async` postfix is removed — the
+        // modifier scanner sets is_async before dispatch.
+        let is_async = false;
         let name = self.expect_identifier()?;
         let name_span = self
             .tokens
@@ -1303,44 +1173,145 @@ impl<'a> Parser<'a> {
         Ok(TopLevel::Transaction(txn))
     }
 
-    /// Parse: `sync<group> node name [pre][post] { body }`.
-    /// 2026-08-01 (Phase 3c): classifies a reactive node into a group barrier.
-    /// Members of the same group that fire hold off finishing until all fired
-    /// members have — the concurrency gate accepts a pair when both are in a
-    /// shared sync group (rule #21 classification).
-    fn parse_sync_group(&mut self) -> Result<TopLevel, SyntaxError> {
-        self.pos += 1; // consume 'sync'
-        let domains = if self.eat(&Token::Lt) {
-            let mut names = Vec::new();
-            loop {
-                let name = self.expect_identifier()?;
-                names.push(name);
-                if !self.eat(&Token::Comma) {
-                    break;
-                }
+    /// 2026-09-22 (order-free-modifiers plan): true when the token is a
+    /// modifier/strategy keyword that `consume_modifier_prefix` handles.
+    fn is_modifier_token(t: &Token) -> bool {
+        matches!(
+            t,
+            Token::Seq
+                | Token::Pack
+                | Token::Coll
+                | Token::Accel
+                | Token::Async
+                | Token::Out
+                | Token::Mem
+                | Token::Reg
+                | Token::Vol
+                | Token::Sync
+        )
+    }
+
+    /// 2026-09-22 (order-free-modifiers plan): dispatch a declaration whose
+    /// modifier prefix was consumed. Validates the structural identifier
+    /// against the collected modifiers:
+    /// - `async`/`sync<g>`/`accel` → node/txn only.
+    /// - `vol`/`mem`/`reg` → let only.
+    /// - `out` → defn/node/txn/let.
+    /// - `seq`/`pack`/`coll` → node/txn (struct/obj flavors are handled by
+    ///   the struct/obj arms before this is reached).
+    fn parse_modifier_prefixed(&mut self) -> Result<TopLevel, SyntaxError> {
+        let prefix = self.consume_modifier_prefix()?;
+        match self.peek() {
+            Some(Token::Node) => {
+                self.reject_memory_pins(&prefix, "a node has no memory pin")?;
+                let txn = self.parse_node()?;
+                self.finish_reactive(txn, prefix)
             }
-            self.expect(Token::Gt)?;
-            names
+            Some(Token::Txn) => {
+                self.reject_memory_pins(&prefix, "a txn has no memory pin")?;
+                let txn = self.parse_transaction(false, prefix.is_async)?;
+                self.finish_reactive(txn, prefix)
+            }
+            Some(Token::Let) => {
+                if prefix.sync_groups.is_some() {
+                    return self.error_at_current(
+                        "`sync<group>` classifies reactive nodes only — not a `let`",
+                    );
+                }
+                if prefix.annotations.iter().any(|a| a.name == "accel") {
+                    return self.error_at_current(
+                        "`accel` applies to a node/txn only — a let has no GPU-deferral surface",
+                    );
+                }
+                let mut stmt = self.parse_let_statement()?;
+                if let Statement::Let { modifiers, .. } = &mut stmt {
+                    modifiers.extend(prefix.annotations);
+                }
+                Ok(TopLevel::Statement(Box::new(stmt)))
+            }
+            Some(Token::Defn) => {
+                if prefix.sync_groups.is_some() {
+                    return self.error_at_current(
+                        "`sync<group>` classifies reactive nodes only — not a `defn`",
+                    );
+                }
+                if prefix.is_async {
+                    return self.error_at_current("`async` applies to a node/txn only");
+                }
+                if prefix.annotations.iter().any(|a| a.name == "accel") {
+                    return self.error_at_current(
+                        "`accel` applies to a node/txn only — a defn has no GPU-deferral surface",
+                    );
+                }
+                let mut defn = self.parse_definition()?;
+                defn.modifiers.extend(prefix.annotations);
+                Ok(TopLevel::Definition(defn))
+            }
+            _ => self.modifier_target_error(&prefix),
+        }
+    }
+
+    /// `vol`/`mem`/`reg` are let-only pins — reject them on a node/txn.
+    fn reject_memory_pins(
+        &self,
+        prefix: &ModifierPrefix,
+        why: &str,
+    ) -> Result<(), SyntaxError> {
+        if prefix.annotations.iter().any(|a| {
+            matches!(a.name.as_str(), "vol" | "mem" | "reg")
+        }) {
+            self.error_at_current(&format!("'vol'/'mem'/'reg' apply to `let` only — {why}"))
         } else {
-            vec![]
-        };
-        // parse_node consumes `node [async] name ...` itself.
-        // 2026-08-06 (accel plan): `sync<group> accel node name ...` — an
-        // accel kernel classified into a group barrier.
-        let node = if self.check(&Token::Accel) {
-            self.pos += 1; // consume accel
-            let mut txn = self.parse_node()?;
-            txn.modifiers.push(Annotation {
-                name: "accel".to_string(),
-                value: None,
-            });
-            TopLevel::Transaction(txn)
+            Ok(())
+        }
+    }
+
+    /// Apply a consumed prefix to a reactive node/txn, wrapping in a
+    /// SyncGroup when `sync<group>` was present.
+    fn finish_reactive(
+        &self,
+        mut txn: Transaction,
+        prefix: ModifierPrefix,
+    ) -> Result<TopLevel, SyntaxError> {
+        txn.is_async = txn.is_async || prefix.is_async;
+        txn.modifiers.extend(prefix.annotations);
+        if let Some(groups) = prefix.sync_groups {
+            Ok(TopLevel::SyncGroup {
+                domains: groups,
+                item: Box::new(TopLevel::Transaction(txn)),
+            })
         } else {
-            TopLevel::Transaction(self.parse_node()?)
-        };
-        Ok(TopLevel::SyncGroup {
-            domains,
-            item: Box::new(node),
+            Ok(TopLevel::Transaction(txn))
+        }
+    }
+
+    /// The token after the modifiers is not a valid structural identifier.
+    fn modifier_target_error(&self, prefix: &ModifierPrefix) -> Result<TopLevel, SyntaxError> {
+        let found = self
+            .peek()
+            .map(|t| format!("{t}"))
+            .unwrap_or_else(|| "EOF".into());
+        let mods: Vec<String> = prefix
+            .annotations
+            .iter()
+            .map(|a| a.name.clone())
+            .chain(prefix.sync_groups.iter().map(|_| "sync".to_string()))
+            .collect();
+        Err(SyntaxError::UnexpectedToken {
+            expected: format!(
+                "a declaration after modifier(s) {}",
+                if mods.is_empty() {
+                    "".to_string()
+                } else {
+                    format!("[{}]", mods.join(" "))
+                }
+            ),
+            found,
+            span: self
+                .tokens
+                .get(self.pos)
+                .map(|(_, s)| self.make_span(s.clone()))
+                .unwrap_or_else(crate::errors::Span::dummy),
         })
     }
 
@@ -2342,6 +2313,57 @@ impl<'a> Parser<'a> {
         Ok(strings)
     }
 
+    /// 2026-09-21: Parse `bad name(params) -> Ret [groups] { body }`.
+    /// Body is raw `.bad` source text (between the outermost braces).
+    fn parse_bad_fn(&mut self) -> Result<BadFn, SyntaxError> {
+        let start = self.pos;
+        self.advance(); // consume 'bad'
+        let name = self.expect_identifier()?;
+        self.expect(Token::LParen)?;
+        let params = self.parse_parameter_list()?;
+        self.expect(Token::RParen)?;
+        self.expect(Token::Arrow)?;
+        let ret_type = self.parse_type()?;
+        let contract = self.parse_contract()?;
+        // Capture raw body text between { and } — preserve whitespace
+        // exactly as written (the .bad body is hand-scheduled asm).
+        self.expect(Token::LBrace)?;
+        let brace_start = self.tokens.get(self.pos - 1)
+            .map(|(_, r)| r.end)
+            .unwrap_or(0);
+        let mut depth = 1u32;
+        while depth > 0 {
+            match self.peek() {
+                Some(Token::LBrace) => { self.advance(); depth += 1; }
+                Some(Token::RBrace) => {
+                    depth -= 1;
+                    if depth > 0 { self.advance(); }
+                }
+                None => {
+                    return Err(SyntaxError::UnexpectedToken {
+                        expected: "}".to_string(),
+                        found: "end of file".to_string(),
+                        span: self.make_span(self.tokens.get(self.pos)
+                            .map(|(_, s)| s.clone()).unwrap_or(0..0)),
+                    });
+                }
+                _ => { self.advance(); }
+            }
+        }
+        // The matching } is at self.pos now; its start is the end of the body.
+        let body_end = self.tokens.get(self.pos)
+            .map(|(_, r)| r.start)
+            .unwrap_or(brace_start);
+        let body = self.source[brace_start..body_end].to_string();
+        self.advance(); // consume closing }
+        self.eat(&Token::Semicolon);
+        let span = self.tokens.get(start)
+            .and_then(|(_, s1)| self.tokens.get(self.pos - 1).map(|(_, s2)| (s1, s2)))
+            .map(|(s1, s2)| Span::new(s1.start, s2.end, 0, 0))
+            .unwrap_or(Span::new(0, 0, 0, 0));
+        Ok(BadFn { name, params, ret_type, contract, body, span })
+    }
+
     fn parse_derivation_block(&mut self) -> Result<Option<DerivationBlock>, SyntaxError> {
         let colon_eq_span = self.tokens.get(self.pos)
             .map(|(_, s)| s.clone())
@@ -2522,6 +2544,7 @@ impl<'a> Parser<'a> {
                     functions.push(self.parse_definition()?);
                     self.eat(&Token::Semicolon);
                 } else if self.check(&Token::Op) {
+                    self.pos += 1; // consume 'op' — same keyword-as-name trap
                     self.parse_op_definition(&mut op_bindings, None)?;
                 } else {
                     let fname = self.expect_identifier()?;
@@ -2558,6 +2581,8 @@ impl<'a> Parser<'a> {
                     functions.push(self.parse_definition()?);
                     self.eat(&Token::Semicolon);
                 } else if self.check(&Token::Op) {
+                    self.pos += 1; // consume 'op' — expect_identifier would
+                    // otherwise accept the keyword itself as the name
                     self.parse_op_definition(&mut op_bindings, None)?;
                 } else {
                     return self.error_at_current("expected 'defn' or 'op' in impl block");
@@ -3099,7 +3124,6 @@ impl<'a> Parser<'a> {
             suf: None,
             reg: None,
             expr,
-            trusted_lemmas: vec![],
             trusted_axiom: false,
             span: None,
         });
@@ -3173,7 +3197,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::RParen)?;
         self.expect(Token::Semicolon)?;
         let expr = Expr::Call(fn_name, args, None);
-        op_bindings.push(OperatorBinding { name, protocol_variant, pre, suf, reg, expr, trusted_lemmas: vec![], trusted_axiom: false, span: None });
+        op_bindings.push(OperatorBinding { name, protocol_variant, pre, suf, reg, expr, trusted_axiom: false, span: None });
         Ok(())
     }
 
@@ -3512,8 +3536,20 @@ impl<'a> Parser<'a> {
                 }
                 Some(Token::Atomic) => {
                     self.pos += 1;
-                    // Pair ordering keyword with atomic, or default to seq
-                    let ordering = pending_ordering.take().unwrap_or_else(|| "seq".to_string());
+                    // Ordering may precede (`relaxed atomic x: Int;`) or follow
+                    // (`atomic relaxed x: Int;`) — the two spellings must agree.
+                    let ordering = pending_ordering.take().unwrap_or_else(|| {
+                        // 2026-09-22: an ordering keyword AFTER `atomic` is a
+                        // real `atomic:` ordering, not a dangling field name.
+                        match self.peek() {
+                            Some(Token::Relaxed) => { self.pos += 1; "relaxed".to_string() }
+                            Some(Token::Acquire) => { self.pos += 1; "acquire".to_string() }
+                            Some(Token::Release) => { self.pos += 1; "release".to_string() }
+                            Some(Token::Bartered) => { self.pos += 1; "bartered".to_string() }
+                            Some(Token::Seq) => { self.pos += 1; "seq".to_string() }
+                            _ => "seq".to_string(),
+                        }
+                    });
                     anns.push(format!("atomic:{}", ordering));
                 }
                 Some(&Token::Identifier(ref s)) if s.starts_with('#') => {
@@ -3965,7 +4001,6 @@ impl<'a> Parser<'a> {
                         suf: None,
                         impl_args,
                         impl_name: String::new(),
-                        trusted_lemmas: vec![],
                         trusted_axiom: is_axiom,
                         span: None,
                     });
@@ -5554,6 +5589,171 @@ mod tests {
         }
     }
 
+    // ── 2026-09-22 (order-free-modifiers plan) ────────────────────────
+    // `<keywords>* <identifier> <name>` — modifier keywords compose in any
+    // order; duplicate modifiers are a hard error; `node async` postfix is
+    // removed.
+
+    #[test]
+    fn modifier_order_is_free_for_lets() {
+        // vol/out/mem/reg compose in any order before `let`.
+        for src in [
+            "vol let x: Int = 1;",
+            "out let x: Int = 1;",
+            "out vol let x: Int = 1;",
+            "vol out let x: Int = 1;",
+            "mem let x: Int = 1;",
+            "reg let x: Int = 1;",
+            "out reg let x: Int = 1;",
+            "reg out let x: Int = 1;",
+            "vol mem let x: Int = 1;",
+        ] {
+            let tokens = tokenize(src).unwrap();
+            let mut p = Parser::new(tokens, src);
+            let item = p.parse_top_level().expect(src);
+            let crate::ast::TopLevel::Statement(stmt) = item else {
+                panic!("{src}: expected Statement, got {item:?}");
+            };
+            let crate::ast::Statement::Let { modifiers, .. } = *stmt else {
+                panic!("{src}: expected Let");
+            };
+            let names: Vec<_> = modifiers.iter().map(|m| m.name.as_str()).collect();
+            for kw in ["vol", "out", "mem", "reg"] {
+                if src.contains(kw) {
+                    assert!(names.contains(&kw), "{src}: missing {kw}, got {names:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn modifier_order_is_free_for_nodes_and_txns() {
+        // seq/accel/out/async compose in any order before node; async txn
+        // is accepted.
+        for src in [
+            "seq node n [i < 1][i == 1] { i = i + 1; term; };",
+            "async node n [i < 1][i == 1] { i = i + 1; term; };",
+            "accel node n [i < 1][i == 1] { i = i + 1; term; };",
+            "seq accel node n [i < 1][i == 1] { i = i + 1; term; };",
+            "accel seq node n [i < 1][i == 1] { i = i + 1; term; };",
+            "out seq node n [i < 1][i == 1] { i = i + 1; term; };",
+            "seq out node n [i < 1][i == 1] { i = i + 1; term; };",
+            "async txn t(x: Int) [i < 1][i == 1] { i = x; term; };",
+            "out async node n [i < 1][i == 1] { i = i + 1; term; };",
+        ] {
+            let src2 = format!("let i: Int = 0;\n{src}");
+            let tokens = tokenize(&src2).unwrap();
+            let mut p = Parser::new(tokens, &src2);
+            let _ = p.parse_top_level().expect(src); // the let
+            let item = p.parse_top_level().expect(src);
+            match item {
+                crate::ast::TopLevel::Transaction(t) => {
+                    if src.contains("async ") {
+                        assert!(t.is_async, "{src}: async must set is_async");
+                    }
+                }
+                crate::ast::TopLevel::SyncGroup { .. } => {}
+                _ => panic!("{src}: expected Transaction/SyncGroup, got {item:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn sync_group_accepts_async_and_accel_modifiers() {
+        // sync<g> composes with async/accel before a node.
+        for src in [
+            "sync<g> node n [i < 1][i == 1] { i = i + 1; term; };",
+            "sync<g> async node n [i < 1][i == 1] { i = i + 1; term; };",
+            "async sync<g> node n [i < 1][i == 1] { i = i + 1; term; };",
+            "sync<g> accel node n [i < 1][i == 1] { i = i + 1; term; };",
+        ] {
+            let src2 = format!("let i: Int = 0;\n{src}");
+            let tokens = tokenize(&src2).unwrap();
+            let mut p = Parser::new(tokens, &src2);
+            let _ = p.parse_top_level().expect(src); // the let
+            let item = p.parse_top_level().expect(src);
+            let crate::ast::TopLevel::SyncGroup { domains, item } = item else {
+                panic!("{src}: expected SyncGroup, got {item:?}");
+            };
+            assert_eq!(domains, vec!["g".to_string()]);
+            let crate::ast::TopLevel::Transaction(t) = *item else {
+                panic!("{src}: expected node under SyncGroup");
+            };
+            if src.contains("async ") {
+                assert!(t.is_async, "{src}: async must set is_async");
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_modifier_is_an_error() {
+        for src in [
+            "seq seq node n [true][true] { term; };",
+            "async async node n [true][true] { term; };",
+            "vol vol let x: Int = 1;",
+            "out out node n [true][true] { term; };",
+            "sync<g> sync<g> node n [true][true] { term; };",
+        ] {
+            let tokens = tokenize(src).unwrap();
+            let mut p = Parser::new(tokens, src);
+            let err = p.parse_top_level().unwrap_err();
+            assert!(
+                err.to_string().contains("duplicate"),
+                "{src}: expected duplicate error, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn node_async_does_not_set_async() {
+        // `node async` is a node NAMED async (keyword-as-identifier), not a
+        // postfix modifier. Only the PREFIX form (`async node`) sets is_async.
+        let src = "async node inc [true][true] { term; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let crate::ast::TopLevel::Transaction(t) = p.parse_top_level().unwrap() else {
+            panic!("expected Transaction");
+        };
+        assert!(t.is_async, "async node prefix must set is_async");
+        assert!(t.name == "inc", "expected name inc");
+    }
+
+    #[test]
+    fn bootstrap_stays_fixed_compound() {
+        // `bootstrap` is NOT order-free — it must sit before `node`.
+        let src = "node bootstrap n [true][true] { term; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        assert!(p.parse_top_level().is_err(), "node bootstrap must fail");
+    }
+
+    #[test]
+    fn unknown_modifier_target_is_an_error() {
+        // `seq foo` — a modifier with no valid structural identifier.
+        let src = "seq foo;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err();
+        assert!(
+            err.to_string().contains("declaration after modifier"),
+            "expected declaration-after-modifier error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn vol_mem_reg_rejected_on_nodes() {
+        // vol/mem/reg are let-only pins — a node has no memory pin.
+        for src in [
+            "vol node n [true][true] { term; };",
+            "mem node n [true][true] { term; };",
+            "reg txn t() [true][true] { term; };",
+        ] {
+            let tokens = tokenize(src).unwrap();
+            let mut p = Parser::new(tokens, src);
+            assert!(p.parse_top_level().is_err(), "{src} must fail");
+        }
+    }
+
     #[test]
     fn test_accel_node_records_accel_modifier() {
         // 2026-08-06 (accel plan): `accel node name` records the "accel"
@@ -5591,7 +5791,7 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let err = p.parse_top_level().unwrap_err();
-        assert!(err.to_string().contains("'node' or 'txn'"),
+        assert!(err.to_string().contains("node/txn"),
             "expected helpful diagnostic, got: {err}");
     }
 

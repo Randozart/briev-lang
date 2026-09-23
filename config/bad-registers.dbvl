@@ -1,0 +1,147 @@
+// ── .bad portable register file — per-target physical mapping ─────────
+// 2026-09-21 (bad-dialect plan): the .bad dialect's built-in portable
+// registers (r0-r15, sp, pc). One row per PORTABLE register; fields are
+// per-target: "target:assembler-token:property".
+//
+// - Property tokens: `caller` (caller-saved), `callee` (callee-saved),
+//   `ro` (read-only), empty (no special property). Properties feed the
+//   contract proofs ([post: rN preserved] checks callee status), never
+//   codegen branches.
+// - A target ABSENT from a row = the register does not exist on that
+//   target (x86_64 has 16 GPRs, so r14/r15 have no x86_64 field).
+//   Referencing it there is a loud compile error — never a silent remap.
+// - Assembler tokens are GAS-ready (x86_64 carries %).
+// - `imm` row: the immediate-literal prefix per target, applied by the
+//   backend when substituting immediate operands into ISA templates.
+// - Special-register knowledge (zero register, etc.) belongs in
+//   bad-isa.dbvl templates, never here (Rule 15).
+
+r0: "x86_64:%rax:caller"; "aarch64:x0:caller"; "riscv64:a0:caller";
+r1: "x86_64:%rcx:caller"; "aarch64:x1:caller"; "riscv64:a1:caller";
+r2: "x86_64:%rdx:caller"; "aarch64:x2:caller"; "riscv64:a2:caller";
+r3: "x86_64:%rbx:callee"; "aarch64:x3:caller"; "riscv64:a3:caller";
+r4: "x86_64:%rsi:caller"; "aarch64:x4:caller"; "riscv64:a4:caller";
+r5: "x86_64:%rdi:caller"; "aarch64:x5:caller"; "riscv64:a5:caller";
+r6: "x86_64:%r8:caller"; "aarch64:x6:caller"; "riscv64:a6:caller";
+r7: "x86_64:%r9:caller"; "aarch64:x7:caller"; "riscv64:a7:caller";
+r8: "x86_64:%r10:caller"; "aarch64:x8:caller"; "riscv64:t0:caller";
+r9: "x86_64:%r11:caller"; "aarch64:x9:caller"; "riscv64:t1:caller";
+r10: "x86_64:%r12:callee"; "aarch64:x10:caller"; "riscv64:t2:caller";
+r11: "x86_64:%r13:callee"; "aarch64:x11:caller"; "riscv64:t3:caller";
+r12: "x86_64:%r14:callee"; "aarch64:x12:caller"; "riscv64:t4:caller";
+r13: "x86_64:%r15:callee"; "aarch64:x13:caller"; "riscv64:t5:caller";
+r14: "aarch64:x14:caller"; "riscv64:t6:caller";
+r15: "aarch64:x15:caller"; "riscv64:s1:callee";
+sp: "x86_64:%rsp"; "aarch64:sp"; "riscv64:sp";
+pc: "x86_64:%rip:ro"; "aarch64:pc:ro"; "riscv64:pc:ro";
+
+imm: "x86_64:$"; "aarch64:#"; "riscv64:";
+
+// GAS comment prefix per target — emitted contract annotations use it.
+comment: "x86_64:#"; "aarch64://"; "riscv64:#";
+
+// ── Application-grade additions (2026-09-21) ─────────────────────────
+// Width tokens: `.w8/.w16/.w32` rows back the `$N.w8` template refs
+// (x86 needs %al/%ax/%eax for sub-width ops, aarch64 needs w-regs;
+// riscv stores the low bits of the full reg, so the rows alias it).
+//
+// FP register class f0-f15 (double precision). SysV: ALL xmm are
+// caller-saved; aarch64 d8-d15 and riscv fs0-fs7 are callee-saved.
+r0.w8: "x86_64:%al:caller"; "aarch64:w0:caller"; "riscv64:a0:caller";
+r1.w8: "x86_64:%cl:caller"; "aarch64:w1:caller"; "riscv64:a1:caller";
+r2.w8: "x86_64:%dl:caller"; "aarch64:w2:caller"; "riscv64:a2:caller";
+r3.w8: "x86_64:%bl:callee"; "aarch64:w3:callee"; "riscv64:a3:callee";
+r4.w8: "x86_64:%sil:caller"; "aarch64:w4:caller"; "riscv64:a4:caller";
+r5.w8: "x86_64:%dil:caller"; "aarch64:w5:caller"; "riscv64:a5:caller";
+r6.w8: "x86_64:%r8b:caller"; "aarch64:w6:caller"; "riscv64:a6:caller";
+r7.w8: "x86_64:%r9b:caller"; "aarch64:w7:caller"; "riscv64:a7:caller";
+r8.w8: "x86_64:%r10b:caller"; "aarch64:w8:caller"; "riscv64:at0:caller";
+r9.w8: "x86_64:%r11b:caller"; "aarch64:w9:caller"; "riscv64:at1:caller";
+r10.w8: "x86_64:%r12b:callee"; "aarch64:w10:callee"; "riscv64:at2:callee";
+r11.w8: "x86_64:%r13b:callee"; "aarch64:w11:callee"; "riscv64:at3:callee";
+r12.w8: "x86_64:%r14b:callee"; "aarch64:w12:callee"; "riscv64:at4:callee";
+r13.w8: "x86_64:%r15b:callee"; "aarch64:w13:callee"; "riscv64:at5:callee";
+r0.w16: "x86_64:%ax:caller"; "aarch64:w0:caller"; "riscv64:a0:caller";
+r1.w16: "x86_64:%cx:caller"; "aarch64:w1:caller"; "riscv64:a1:caller";
+r2.w16: "x86_64:%dx:caller"; "aarch64:w2:caller"; "riscv64:a2:caller";
+r3.w16: "x86_64:%bx:callee"; "aarch64:w3:callee"; "riscv64:a3:callee";
+r4.w16: "x86_64:%si:caller"; "aarch64:w4:caller"; "riscv64:a4:caller";
+r5.w16: "x86_64:%di:caller"; "aarch64:w5:caller"; "riscv64:a5:caller";
+r6.w16: "x86_64:%r8w:caller"; "aarch64:w6:caller"; "riscv64:a6:caller";
+r7.w16: "x86_64:%r9w:caller"; "aarch64:w7:caller"; "riscv64:a7:caller";
+r8.w16: "x86_64:%r10w:caller"; "aarch64:w8:caller"; "riscv64:at0:caller";
+r9.w16: "x86_64:%r11w:caller"; "aarch64:w9:caller"; "riscv64:at1:caller";
+r10.w16: "x86_64:%r12w:callee"; "aarch64:w10:callee"; "riscv64:at2:callee";
+r11.w16: "x86_64:%r13w:callee"; "aarch64:w11:callee"; "riscv64:at3:callee";
+r12.w16: "x86_64:%r14w:callee"; "aarch64:w12:callee"; "riscv64:at4:callee";
+r13.w16: "x86_64:%r15w:callee"; "aarch64:w13:callee"; "riscv64:at5:callee";
+r0.w32: "x86_64:%eax:caller"; "aarch64:x0:caller"; "riscv64:a0:caller";
+r1.w32: "x86_64:%ecx:caller"; "aarch64:x1:caller"; "riscv64:a1:caller";
+r2.w32: "x86_64:%edx:caller"; "aarch64:x2:caller"; "riscv64:a2:caller";
+r3.w32: "x86_64:%ebx:callee"; "aarch64:x3:callee"; "riscv64:a3:callee";
+r4.w32: "x86_64:%esi:caller"; "aarch64:x4:caller"; "riscv64:a4:caller";
+r5.w32: "x86_64:%edi:caller"; "aarch64:x5:caller"; "riscv64:a5:caller";
+r6.w32: "x86_64:%r8d:caller"; "aarch64:x6:caller"; "riscv64:a6:caller";
+r7.w32: "x86_64:%r9d:caller"; "aarch64:x7:caller"; "riscv64:a7:caller";
+r8.w32: "x86_64:%r10d:caller"; "aarch64:x8:caller"; "riscv64:at0:caller";
+r9.w32: "x86_64:%r11d:caller"; "aarch64:x9:caller"; "riscv64:at1:caller";
+r10.w32: "x86_64:%r12d:callee"; "aarch64:x10:callee"; "riscv64:at2:callee";
+r11.w32: "x86_64:%r13d:callee"; "aarch64:x11:callee"; "riscv64:at3:callee";
+r12.w32: "x86_64:%r14d:callee"; "aarch64:x12:callee"; "riscv64:at4:callee";
+r13.w32: "x86_64:%r15d:callee"; "aarch64:x13:callee"; "riscv64:at5:callee";
+
+f0: "x86_64:%xmm0:caller"; "aarch64:d0:caller"; "riscv64:fa0:caller";
+f1: "x86_64:%xmm1:caller"; "aarch64:d1:caller"; "riscv64:fa1:caller";
+f2: "x86_64:%xmm2:caller"; "aarch64:d2:caller"; "riscv64:fa2:caller";
+f3: "x86_64:%xmm3:caller"; "aarch64:d3:caller"; "riscv64:fa3:caller";
+f4: "x86_64:%xmm4:caller"; "aarch64:d4:caller"; "riscv64:fa4:caller";
+f5: "x86_64:%xmm5:caller"; "aarch64:d5:caller"; "riscv64:fa5:caller";
+f6: "x86_64:%xmm6:caller"; "aarch64:d6:caller"; "riscv64:fa6:caller";
+f7: "x86_64:%xmm7:caller"; "aarch64:d7:caller"; "riscv64:fa7:caller";
+f8: "x86_64:%xmm8:caller"; "aarch64:d8:callee"; "riscv64:fs0:callee";
+f9: "x86_64:%xmm9:caller"; "aarch64:d9:callee"; "riscv64:fs1:callee";
+f10: "x86_64:%xmm10:caller"; "aarch64:d10:callee"; "riscv64:fs2:callee";
+f11: "x86_64:%xmm11:caller"; "aarch64:d11:callee"; "riscv64:fs3:callee";
+f12: "x86_64:%xmm12:caller"; "aarch64:d12:callee"; "riscv64:fs4:callee";
+f13: "x86_64:%xmm13:caller"; "aarch64:d13:callee"; "riscv64:fs5:callee";
+f14: "x86_64:%xmm14:caller"; "aarch64:d14:callee"; "riscv64:fs6:callee";
+f15: "x86_64:%xmm15:caller"; "aarch64:d15:callee"; "riscv64:fs7:callee";
+
+// ── ABI rows (application-grade plan Phase C) ─────────────────────────
+// abi_args: the C-ABI argument-register order per target (SysV). `.export`
+// labels are called through this map: x86_64 rdi,rsi,rdx,rcx,r8,r9 =
+// r5,r4,r2,r1,r6,r7; aarch64/riscv64 are already r0-r5.
+abi_args: "x86_64:r5,r4,r2,r1,r6,r7"; "aarch64:r0,r1,r2,r3,r4,r5,r6,r7"; "riscv64:r0,r1,r2,r3,r4,r5,r6,r7";
+// push_width: the portable `push` decrement (x86 = 8, arm/riscv keep sp
+// 16-aligned at 16). Feeds the [frame: N] sp-tracking proof.
+push_width: "x86_64:8"; "aarch64:16"; "riscv64:16";
+// syscall_nums: kernel-call numbers by NAME per target — `syscall write,
+// ...` substitutes through the $1# named-number template ref. asm-generic
+// targets (aarch64, riscv64) share one table; x86_64 carries its legacy
+// numbers. Adding a call is a data change.
+syscall_nums: "x86_64:read=0,write=1,open=2,close=3,brk=12,mmap=9,exit=60,exit_group=231"; "aarch64:read=63,write=64,open=56,close=57,brk=214,mmap=222,exit=93,exit_group=94"; "riscv64:read=63,write=64,open=56,close=57,brk=214,mmap=222,exit=93,exit_group=94";
+// float_literal: how FP literals materialize — `pool` = the lowerer
+// emits a `.rodata` block of `.double` entries (all three targets; GAS
+// aarch64 dropped the arm32 `=literal` form for FP registers).
+float_literal: "x86_64:pool"; "aarch64:pool"; "riscv64:pool";
+// abi_reg_args: how many arguments arrive in registers (the abi_args
+// order). Args beyond this count pass on the stack at abi_stack_arg_base
+// + (n - abi_reg_args - 1) * 8 — the `Arg` op materializes either.
+abi_reg_args: "x86_64:6"; "aarch64:8"; "riscv64:8";
+// abi_stack_arg_base: byte offset of the FIRST stack-passed argument
+// (arg 7+) at function entry — the return address occupies [sp, 0) on
+// x86_64 (base 8), while arm/riscv leave [sp, 0) for arg 7 (base 0).
+abi_stack_arg_base: "x86_64:8"; "aarch64:0"; "riscv64:0";
+// abi_args_fp: portable float-arg registers in C-ABI order (first N float args).
+abi_args_fp: "x86_64:f0,f1,f2,f3,f4,f5,f6,f7"; "aarch64:f0,f1,f2,f3,f4,f5,f6,f7"; "riscv64:f0,f1,f2,f3,f4,f5,f6,f7";
+// dynamic_linker: the ld flag value for --with-libc runs.
+dynamic_linker: "x86_64:/lib64/ld-linux-x86-64.so.2"; "aarch64:/lib/ld-linux-aarch64.so.1"; "riscv64:/lib/ld-linux-riscv64-lp64d.so.1";
+// cross_as / cross_ld: prefixed toolchains for hardware-verification of
+// non-host targets. `assemble()` and `brievc bad --run` probe for these;
+// absent toolchains degrade to documented skips, never silent passes.
+cross_as: "x86_64:as"; "aarch64:aarch64-linux-gnu-as"; "riscv64:riscv64-linux-gnu-as";
+cross_ld: "x86_64:ld"; "aarch64:aarch64-linux-gnu-ld"; "riscv64:riscv64-linux-gnu-ld";
+// cross_ld_flags: riscv64 ld RELAXES pc-relative `lla` into gp-relative
+// addressing — freestanding .bad programs have no crt to initialize gp,
+// so relaxation produces faulting code. `--no-relax` keeps it literal.
+cross_ld_flags: "riscv64:--no-relax";

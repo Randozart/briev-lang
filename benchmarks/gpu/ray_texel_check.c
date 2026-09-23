@@ -11,7 +11,7 @@
 #include <math.h>
 #include <time.h>
 #define BRIEV_IMAGE_FORMAT_R32F 1u
-#include "briev_accel_rt.c"
+#include "briev_accel_rt.h"
 
 #define W 1920
 #define H 1080

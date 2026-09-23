@@ -2118,7 +2118,7 @@ impl LlvmBackend {
                     i += 1;
                     continue;
                 }
-                Statement::Mutex(body) | Statement::Barrier { body, .. } => {
+                Statement::Mutex(body) => {
                     self.emit_countable_body(out, body, write_set, hoisted);
                     i += 1;
                     continue;

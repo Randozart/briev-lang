@@ -22,6 +22,7 @@
 // that is itself a compiler, interpreter, or similar tool that incorporates
 // or embeds the Work.
 
+pub mod accel_rt;
 pub mod annotator;
 pub mod address_resolver;
 pub mod casting;

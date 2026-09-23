@@ -36,7 +36,7 @@
 #include <math.h>
 #include <time.h>
 
-#include "briev_accel_rt.c"
+#include "briev_accel_rt.h"
 
 static double now_ms(void) {
     struct timespec ts;

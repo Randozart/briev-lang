@@ -6,7 +6,7 @@
 //   (the <out-dir> holds the runtime copies brievc build places beside the
 //   runner — the same single-TU include the runner uses).
 #define BRIEV_IMAGE_FORMAT_R32F 1u
-#include "briev_accel_rt.c"
+#include "briev_accel_rt.h"
 int main(int argc, char** argv) {
     FILE* f = fopen(argv[1], "rb");
     fseek(f, 0, SEEK_END); long spv_len = ftell(f); fseek(f, 0, SEEK_SET);

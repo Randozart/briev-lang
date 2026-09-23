@@ -194,7 +194,6 @@ fn stmt_bodies(s: &Statement) -> Vec<&[Statement]> {
         | Statement::SyncBlock(b)
         | Statement::Mutex(b)
         | Statement::Defer(b) => vec![b.as_slice()],
-        Statement::Barrier { body, .. } => vec![body.as_slice()],
         Statement::Foreach { body, .. } => vec![body.as_slice()],
         Statement::Match { arms, .. } => arms.iter().map(|a| a.body.as_slice()).collect(),
         _ => Vec::new(),
@@ -257,7 +256,6 @@ pub fn mentions_param_field(stmt: &Statement, params: &[String]) -> bool {
             | Statement::SyncBlock(body)
             | Statement::Mutex(body)
             | Statement::Defer(body) => body.iter().any(|s| stmt_exprs(s, params)),
-            Statement::Barrier { body, .. } => body.iter().any(|s| stmt_exprs(s, params)),
             Statement::Foreach { list, body, .. } => {
                 expr_walk(list, params) || body.iter().any(|s| stmt_exprs(s, params))
             }

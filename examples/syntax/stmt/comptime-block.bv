@@ -1,0 +1,9 @@
+// SPEC §15.2 — `$(StageName)` compile-time metaprogramming block.
+// The stage name selects which compilation pipeline stage processes
+// the body: PreLex, Parsed, Resolved, Typed, Normalized, Verified,
+// Allocated, Provenanced, Generated, Optimized, Linked.
+// Optional priority goes inside the parens: `$(Stage @ N)`.
+
+$(Typed @ normal) {
+    let x: Int = 42;
+};

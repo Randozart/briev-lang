@@ -1,0 +1,82 @@
+// ── std/bad/friendly.bad — the default alias sheet ────────────────────
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Self-describing names for the core ISA, loaded by default (prelude);
+// `brievc bad --raw` skips it. Raw names always work — aliases are
+// additive source sugar, resolved before the ISA table. No `Start`
+// alias: `_start` is the one genuinely universal name.
+
+alias Move = mov
+alias Add = add
+alias Subtract = sub
+alias Multiply = mul
+alias Divide = div
+alias Remainder = mod
+alias Load = load
+alias Store = store
+alias LoadByte = ldb
+alias LoadUnsignedByte = ldub
+alias LoadHalf = ldh
+alias LoadUnsignedHalf = lduh
+alias StoreByte = stb
+alias StoreHalf = sth
+alias LoadOffset = loadoff
+alias StoreOffset = storeoff
+alias AddressOf = addr
+alias Addr = addr
+alias Arg = arg
+
+alias Jump = jmp
+alias JumpIfZero = jz
+alias JumpIfNotZero = jnz
+alias JumpIfLess = jlt
+alias JumpIfLessOrEqual = jle
+alias JumpIfGreater = jgt
+alias JumpIfGreaterOrEqual = jge
+alias JumpBelow = jlo
+alias JumpBelowEqual = jls
+alias JumpAbove = jhi
+alias JumpAboveOrEqual = jhs
+
+alias Compare = cmp
+alias Call = call
+alias Return = ret
+alias Push = push
+alias Pop = pop
+alias Push2 = push2
+alias Pop2 = pop2
+alias NoOp = nop
+alias SystemCall = syscall
+alias Halt = halt
+
+alias And = and
+alias Or = or
+alias Xor = xor
+alias ShiftLeft = shl
+alias ShiftRight = shr
+alias ShiftRightArithmetic = sar
+alias Not = not
+alias Negate = neg
+alias SetIfLess = slt
+alias SetIfLessUnsigned = sltu
+alias MultiplyHigh = mulhi
+alias MultiplyHighUnsigned = mulhiu
+
+alias FloatMove = fmov
+alias FloatLoad = fload
+alias FloatStore = fstore
+alias FloatAdd = fadd
+alias FloatSubtract = fsub
+alias FloatMultiply = fmul
+alias FloatDivide = fdiv
+alias FloatNegate = fneg
+alias FloatAbsolute = fabs
+alias FloatCompare = fcmp
+alias FloatJumpIfZero = fjz
+alias FloatJumpIfNotZero = fjnz
+alias FloatJumpIfLess = fjlt
+alias FloatJumpIfLessOrEqual = fjle
+alias FloatJumpIfGreater = fjgt
+alias FloatJumpIfGreaterOrEqual = fjge
+alias IntToFloat = itof
+alias FloatToInt = ftoi

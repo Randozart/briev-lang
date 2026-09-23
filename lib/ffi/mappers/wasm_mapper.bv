@@ -39,7 +39,7 @@ defn js_value_to_data(js_val: JsValue) -> Data [js_val.is_valid()][term.len() >=
 // Precondition: data is valid
 // Postcondition: Returns JS value
 defn data_to_js_value(data: Data) -> JsValue [true][term.is_valid()] {
-  term JsValue::from_bytes(data);
+  term JsValue.from_bytes(data);
 };
 
 // Check if JS value is null

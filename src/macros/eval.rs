@@ -2116,12 +2116,6 @@ fn resolve_dollar_refs_in_stmt(stmt: &mut Statement, scope: &Scope) -> Result<()
             }
             Ok(())
         }
-        Statement::Barrier { body, .. } => {
-            for s in body.iter_mut() {
-                resolve_dollar_refs_in_stmt(s, scope)?;
-            }
-            Ok(())
-        }
         Statement::Foreach { list, body, .. } => {
             resolve_dollar_refs_in_expr(list, scope)?;
             for s in body.iter_mut() {
@@ -2276,6 +2270,7 @@ fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(
         | TopLevel::SvgComponent { .. } | TopLevel::SyncGroup { .. }
         | TopLevel::Cfg(_) | TopLevel::ProtocolDef(_)
         | TopLevel::AsmFn(_)
+        | TopLevel::BadFn(_)
         | TopLevel::IsrHandler(_)
         | TopLevel::CompileTimeLet(_, _) | TopLevel::CompileTimeConst(_, _)
         | TopLevel::ModuleMetadata(_) => Ok(()),

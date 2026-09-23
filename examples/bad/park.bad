@@ -1,0 +1,138 @@
+// ── park.bad — the .bad showcase ──────────────────────────────────────
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// A tiny park simulator: greets guests, charges wallets, sums sales.
+// Run:  brievc bad park.bad --run
+//
+// On display: friendly mnemonic aliases (default prelude — raw names
+// like mov/jz always work), universal ';' (a line is a sequence of
+// instructions, anywhere), positional contracts (one group = post, two
+// groups = pre then post), comptime constants, struct layouts, local
+// labels, defns with per-target exceptions, portable named syscalls,
+// FP literals, C-ABI exports with stack args, and imports.
+
+import "string.bad"                 // pure-.bad stdlib (strlen, memcpy...)
+
+// ── Compile-time constants and struct layouts ─────────────────────────
+.const TICKET_PRICE 42
+.const GUEST_CAP 3
+
+.struct Guest
+.field happiness, 8
+.field wallet, 8
+.field visits, 2
+.end                                // Guest.happiness=0, Guest.wallet=8,
+                                    // Guest.visits=16, Guest.size=24
+
+section .text
+global _start
+export price_ticket                 // C-ABI visible: callable from .bv/C
+
+// ── Entry ─────────────────────────────────────────────────────────────
+// Positional contracts: one bracket group = post; two = pre then post.
+_start: [frame: 16]
+    Addr r4, banner; Move r5, 1     // universal ';' — packed sequence
+    Move r2, 11
+    Move r0, 1
+    SystemCall write, r5, r4, r2    // portable: write=1/64/64 per target
+
+    Addr r1, guest                  // r1 = &guest
+    Move r0, 0
+    x86_64 => Xor r0, r0        // INLINE EXCEPTION: .bad is WYSIWYG —
+                                    // no hidden peephole pass rewrites
+                                    // your code. On x86_64 xor-self beats
+                                    // mov-imm (3 bytes, no immediate);
+                                    // the AUTHOR expresses it. Other
+                                    // targets have no row — their mov is
+                                    // already optimal. Exceptions are
+                                    // per-target opportunity, never an
+                                    // obligation.
+    StoreOffset r0, r1, Guest.happiness
+    Move r0, TICKET_PRICE
+    StoreOffset r0, r1, Guest.wallet
+    Move r0, 1
+    StoreOffset r0, r1, Guest.visits
+
+    ChargeGuest r1                  // defn invocation: instruction
+                                    // position, inlined as-is — the two
+                                    // .local labels are hygienically
+                                    // renamed per expansion
+    Addr r4, priced
+    Move r2, 8
+    Move r0, 1
+    SystemCall write, r5, r4, r2
+
+    Move r0, GUEST_CAP
+    SumSales r0                     // sequence defn below
+    TripleSales r0                  // branch defn below — ×3 per target
+    Move r3, TICKET_PRICE           // constants load first — mul takes
+    Multiply r0, r0, r3             // register operands on arm/riscv
+    SystemCall exit, r0, r0, r0     // exit code = total sales
+
+// ── defn, sequence shape: universal body lines, inlined as-is ─────────
+// ChargeGuest(g): wallet -= ticket price, floored at zero. Invoked at
+// the instruction position; .local labels rename per expansion; there
+// is NO Return — the defn has no frame of its own, control falls
+// through to the instruction after the invocation.
+defn ChargeGuest g
+    LoadOffset r2, g, Guest.wallet
+    JumpIfGreaterOrEqual r2, TICKET_PRICE, .full
+    Move r0, 0
+    Jump .store
+.full:
+    Subtract r2, r2, TICKET_PRICE
+    Move r0, r2
+.store:
+    StoreOffset r0, g, Guest.wallet
+
+// SumSales(n: r0) -> r0 — 1+2+...+n. Sequence shape with an inline
+// x86_64 exception: xor-self zeroing over mov-imm (shorter encode).
+// No Return: control falls through post-expansion. The .loop/.done
+// labels rename per expansion — call it twice, no collisions.
+defn SumSales n
+    Move r1, 0
+    x86_64 => Xor r1, r1        // same WYSIWYG idiom as the entry
+    Move r3, n
+.loop:
+    JumpIfZero r3, 0, .done
+    Add r1, r1, r3; Subtract r3, r3, 1
+    Jump .loop
+.done:
+    Move r0, r1
+
+// ── defn, branch shape: default = core syntax, rows = whole-defn ──────
+// TripleSales(n): n x= 3. imul has ~3c latency; x86_64 wins with ONE
+// lea (1c), aarch64 with two shifted adds (2c), riscv64 has no win —
+// so it has NO row and rides the default. Rows are raw target-owned
+// text; portable registers inside still map per target.
+defn TripleSales n
+    default => Move r9, GUEST_CAP; Multiply n, n, r9
+    x86_64 => lea (n, n, 2), n
+    aarch64 => add n, n, n, lsl #1; add n, n, n
+
+// ── C-ABI export: six register args + stack args via loadoff ──────────
+// price_ticket(base, discount, guest_fee, tax, a5, a6, extra1, extra2)
+//   = base - discount + guest_fee + tax + extra1 + extra2
+price_ticket: [r0 valid]
+    Subtract r0, r0, r1
+    Add r0, r0, r2
+    Add r0, r0, r3
+    LoadOffset r8, sp, 8            // arg 7 — abi_stack_arg_base (x86_64)
+    Add r0, r0, r8
+    LoadOffset r8, sp, 16           // arg 8
+    Add r0, r0, r8
+    Return
+
+// ── FP: literal pool, no ceremony ─────────────────────────────────────
+// Refund a wallet by 15% of its value, in place.
+refund_rate: [r5 valid]
+    FloatMove f0, 0.15
+    FloatLoad f1, r5
+    FloatMultiply f0, f0, f1
+    FloatStore f0, r5
+    Return
+
+section .data
+banner: .asciz "park open\n"
+priced: .asciz "charged\n"
+guest: .zero Guest.size

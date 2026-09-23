@@ -288,10 +288,6 @@ impl LlvmBackend {
             Statement::Mutex(stmts) => Statement::Mutex(
                 Self::rewrite_cell_stmt_body(stmts, cell_name),
             ),
-            Statement::Barrier { groups, body } => Statement::Barrier {
-                groups: groups.clone(),
-                body: Self::rewrite_cell_stmt_body(body, cell_name),
-            },
             Statement::InlineAsm { .. } => stmt.clone(),
             Statement::TrgBinding { name, instance } => Statement::TrgBinding {
                 name: name.clone(),

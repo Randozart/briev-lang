@@ -1,0 +1,13 @@
+// SPEC §7 — `import`: library imports. String paths
+// (`"std/io"`), registry angle-bracket paths (`<collections>`),
+// and selective imports (`{ name }`) are all supported.
+// `import` is the keyword (there is no `use` in Briev).
+
+import "std/types";
+import <collections>;
+
+let i: Int = 0;
+async node import_user [i < 1][i == 1] {
+    i = i + 1;
+    term;
+};

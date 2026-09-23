@@ -236,11 +236,6 @@ impl<'a> DataflowAnalyzer<'a> {
                     self.extract_ids_from_statement(s, ids);
                 }
             }
-            Statement::Barrier { body, .. } => {
-                for s in body {
-                    self.extract_ids_from_statement(s, ids);
-                }
-            }
             Statement::Foreach { list, body, .. } => {
                 self.extract_ids_recursive(list, ids);
                 for s in body {

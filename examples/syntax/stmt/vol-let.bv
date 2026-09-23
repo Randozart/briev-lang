@@ -1,0 +1,12 @@
+// SPEC §15.3 — `vol let x: Type = v;`: a memory-visibility pin. The
+// binding's reads/writes are volatile — never eliminated by the
+// optimizer (MMIO, shared-memory IPC). Unlike `out`, it forces volatile
+// memory semantics rather than just marking liveness roots.
+
+let i: Int = 0;
+vol let hw_reg: Int = 0;
+async node vol_user [i < 1][i == 1] {
+    hw_reg = hw_reg + 1;
+    i = i + 1;
+    term;
+};

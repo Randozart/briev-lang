@@ -1,0 +1,31 @@
+// SPEC §8.6 — `trait`: reusable behavioral requirements and defaults.
+// Conformance is inferred structurally; defaults do not establish it.
+// Static trait-constrained generics monomorphize by default.
+
+trait Measured {
+    // Required signature: implementing types must prove refinement.
+    defn magnitude(self) -> Int;
+
+    // Default function — provided behavior, overridable.
+    defn describe(self) -> Measured { term 0; }
+};
+
+struct Magnitude {
+    value: Int;
+};
+
+// Structural conformance: Magnitude proves `magnitude` with matching
+// signature, contracts, and effects — no explicit `impl Measured` needed.
+impl Magnitude {
+    defn magnitude(self) -> Int {
+        term self.value;
+    }
+};
+
+let i: Int = 0;
+let m: Magnitude;
+async node trait_user [i < 1][i == 1] {
+    m = Magnitude { value: 3 };
+    i = i + 1;
+    term;
+};

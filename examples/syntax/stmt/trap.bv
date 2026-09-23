@@ -1,0 +1,14 @@
+// SPEC §8.8.1 — `trap;`: a hardware abort and a never-type. Control flow
+// past it is dead; it unifies with any expected type. Valid as a
+// statement, a `when` body, and a `match`-arm body. The reference
+// interpreter raises RuntimeError::Trap; the reactor stops.
+
+let i: Int = 0;
+let tag: Int = 7;
+async node trap_user [i < 1][i == 1] {
+    when tag > 4095 {
+        trap;   // protocol violation — abort the process
+    };
+    i = i + 1;
+    term;
+};

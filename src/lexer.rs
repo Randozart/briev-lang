@@ -197,10 +197,6 @@ pub enum Token {
     #[token("mutex")]
     Mutex,
 
-    /// 2026-08-09 (Phase 10): `barrier<group> { ... }` — a group-barrier body.
-    #[token("barrier")]
-    Barrier,
-
     #[token("import")]
     Import,
 
@@ -472,9 +468,6 @@ ExclaimArrow,
     #[token(":")]
     Colon,
 
-    #[token("::")]
-    ColonColon,
-
     #[token("{")]
     LBrace,
 
@@ -631,7 +624,6 @@ impl std::fmt::Display for Token {
             Token::Rollback => write!(f, "rollback"),
             Token::Defer => write!(f, "defer"),
             Token::Mutex => write!(f, "mutex"),
-            Token::Barrier => write!(f, "barrier"),
             Token::Import => write!(f, "import"),
             Token::From => write!(f, "from"),
             Token::As => write!(f, "as"),
@@ -709,7 +701,6 @@ impl std::fmt::Display for Token {
             Token::DotCaret => write!(f, ".^"),
             Token::ColonEq => write!(f, ":="),
             Token::Colon => write!(f, ":"),
-            Token::ColonColon => write!(f, "::"),
             Token::LBrace => write!(f, "{{"),
             Token::RBrace => write!(f, "}}"),
             Token::LParen => write!(f, "("),

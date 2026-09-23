@@ -463,6 +463,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // uniformly — minimal shared registration, nothing backend-specific.
             briev_compiler::backend::vm::normalizer::normalize(&mut items, &mut universe, int_bits)?;
         }
+        BackendKind::Bad => {
+            // 2026-09-21 (bad-dialect plan): .bad never enters the .bv
+            // pipeline — pure assembly, own parser/backend. Compiled via
+            // `brievc bad <file.bad>`; this arm exists only to keep the
+            // BackendKind match exhaustive.
+        }
     }
 
     emit_beast_snapshot(file_path, BeastStage::Normalize, BeastPosition::Before, &items, &universe, opts)?;
@@ -602,7 +608,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 
     // 2026-07-16: P4 — Collect extra objects from ForeignBinding FromSpec paths
     // for linking into the final binary.
-    let extra_objects = collect_extra_objects(&items, &resolver, briev_compiler::conformance::is_bare(std::path::Path::new(file_path)))?;
+    let mut extra_objects = collect_extra_objects(&items, &resolver, briev_compiler::conformance::is_bare(std::path::Path::new(file_path)))?;
 
     // ── Frgn dispatch resolution ──────────────────────────────────────
     // 2026-07-22: Resolve each frgn declaration's dispatch strategy before
@@ -780,6 +786,18 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     pm.run_ir(StageKind::Optimized, &mut output)?;
     emit_beast_snapshot(file_path, BeastStage::Optimize, BeastPosition::After, &items, &universe, opts)?;
 
+    // 2026-09-21: Compile `bad fn` bodies through the bad backend and
+    // collect their .o files for linking. Each bad fn body is a standalone
+    // .bad program compiled per-target; the LLVM IR references the symbols
+    // via `declare`.
+    let bad_triple = opts.triple_override.clone()
+        .or_else(|| load_target_config(opts)
+            .lookup(&get_extension(&opts.file_path))
+            .and_then(|e| e.target_triple.clone()))
+        .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
+    let bad_fn_objects = compile_bad_fn_objects(&items, &bad_triple)?;
+    extra_objects.extend(bad_fn_objects);
+
     if !opts.emit_ir_only {
         let binary_base = out_path.strip_suffix(ext).unwrap_or(&out_path);
         // 2026-08-03: --library — package a static .a (+ PIC .so) instead of
@@ -807,13 +825,22 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // .c source (e.g., briev_rt.c), producing identical cached .o paths.
             let mut all_objects = opts.extra_objects.clone();
             all_objects.extend(extra_objects);
-            // 2026-08-06 (accel plan): always link the device-agnostic accel
-            // runtime (briev_accel_rt.c). It is LTO + --gc-sections'd away when
-            // the program has no accel kernels, so the cost is a cached .o.
-            let accel_rt = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("lib/runtime/briev_accel_rt.c");
-            let accel_obj = compile_source_to_object(&accel_rt, &get_ffi_cache_dir())?;
-            all_objects.push(accel_obj);
+            // 2026-09-21 (Family K): the accel orchestration is the Rust
+            // staticlib (src/accel_rt.rs, built by build.rs alongside the
+            // driver archive); --gc-sections drops it when the program has
+            // no accel kernels.
+            let accel_lib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/compiler-in-briv/libbriev_accel_rt.a");
+            let driver_lib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/compiler-in-briv/libbriev_gpu_rt.a");
+            if accel_lib.exists() && driver_lib.exists() {
+                all_objects.push(accel_lib.clone());
+                all_objects.push(driver_lib.clone());
+            } else {
+                // Headless bootstrap (no cc/rustc for the drivers): the
+                // program still links; accel launches no-op to CPU.
+                eprintln!("[briev] accel runtime archives not built — CPU lane only");
+            }
             all_objects.sort();
             all_objects.dedup();
             compile_ll_to_binary(&out_path, &binary_path, &all_objects, &protocol_libs, opts.shared)?;
@@ -1137,7 +1164,6 @@ fn codegen(
                             None,
                         ),
                         trusted_axiom: false,
-                        trusted_lemmas: vec![],
                         span: None,
                     });
                 }
@@ -1192,8 +1218,6 @@ fn codegen(
                     suf: b.suf.clone(),
                     impl_args,
                     impl_name: b.name.clone(),
-                    // 2026-08-27 (axiom WIP completion): no lemmas.
-                    trusted_lemmas: vec![],
                     trusted_axiom: false,
                     span: b.span.clone(),
                 });
@@ -1670,9 +1694,19 @@ fn codegen(
                 .parent()
                 .map(|d| d.to_path_buf())
                 .unwrap_or_else(std::path::PathBuf::new);
-            for rt_file in ["briev_accel_rt.c", "briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+            // 2026-09-21 (Family K): the header + the Rust-built
+            // orchestration archive + the driver archive. Runner cc line:
+            //   cc ... runner.c -I. -L. -lbriev_accel_rt -lbriev_gpu_rt -ldl -lpthread -lm
+            let briv_out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/compiler-in-briv");
+            let rt_files = [
+                ("briev_accel_rt.h", rt_dir.as_path()),
+                ("libbriev_accel_rt.a", briv_out.as_path()),
+                ("libbriev_gpu_rt.a", briv_out.as_path()),
+            ];
+            for (rt_file, src_dir) in rt_files {
                 let dest = rt_dir_out.join(rt_file);
-                std::fs::copy(rt_dir.join(rt_file), &dest).map_err(|e| {
+                std::fs::copy(src_dir.join(rt_file), &dest).map_err(|e| {
                     format!("cannot copy runtime '{}' to '{}': {}", rt_file, dest.display(), e)
                 })?;
             }
@@ -1724,15 +1758,36 @@ fn codegen(
                 .parent()
                 .map(|d| d.to_path_buf())
                 .unwrap_or_else(std::path::PathBuf::new);
-            for rt_file in ["briev_accel_rt.c", "briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+            // 2026-09-21 (Family K): the header + the Rust-built
+            // orchestration archive + the driver archive. Runner cc line:
+            //   cc ... runner.c -I. -L. -lbriev_accel_rt -lbriev_gpu_rt -ldl -lpthread -lm
+            let briv_out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/compiler-in-briv");
+            let rt_files = [
+                ("briev_accel_rt.h", rt_dir.as_path()),
+                ("libbriev_accel_rt.a", briv_out.as_path()),
+                ("libbriev_gpu_rt.a", briv_out.as_path()),
+            ];
+            for (rt_file, src_dir) in rt_files {
                 let dest = rt_dir_out.join(rt_file);
-                std::fs::copy(rt_dir.join(rt_file), &dest).map_err(|e| {
+                std::fs::copy(src_dir.join(rt_file), &dest).map_err(|e| {
                     format!("cannot copy runtime '{}' to '{}': {}", rt_file, dest.display(), e)
                 })?;
             }
             println!("wrote {}", runner_path);
             output = String::new();
             ".ptx"
+        }
+        BackendKind::Bad => {
+            // 2026-09-21 (bad-dialect plan): .bad never reaches here — the
+            // `brievc bad <file.bad>` entry short-circuits before the .bv
+            // pipeline (pure assembly, own parser/backend). This arm keeps
+            // the dispatch exhaustive; reaching it is a routing bug.
+            return Err(
+                "bad: route .bad programs through `brievc bad <file.bad>` - they do not \
+                 enter the .bv pipeline"
+                    .to_string(),
+            );
         }
         BackendKind::Vm => {
             // 2026-07-25: VM backend emits .lair bytecode
@@ -1814,6 +1869,69 @@ fn determine_out_path(file_path: &str, out_dir: Option<&str>) -> Result<String, 
     };
 
     Ok(format!("{}/{}.ll", parent, base))
+}
+
+/// 2026-09-21: Compile `bad fn` bodies through the bad backend.
+/// Each BadFn's body is a standalone .bad program compiled for the
+/// target triple; the resulting .o files are linked into the binary.
+fn compile_bad_fn_objects(
+    items: &[briev_compiler::ast::TopLevel],
+    target_triple: &str,
+) -> Result<Vec<PathBuf>, String> {
+    use briev_compiler::ast::top::TopLevel;
+    let mut objects = Vec::new();
+    let family = target_triple.split('-').next().unwrap_or(target_triple);
+    let cache_dir = get_ffi_cache_dir();
+    // Register parameter bindings per target family.
+    let (_, regs) = briev_compiler::backend::bad::registries();
+    let abi_args = regs.abi_args(family);
+    let abi_args_fp = regs.abi_args_fp(family);
+
+    for item in items {
+        let bf = match item {
+            TopLevel::BadFn(bf) => bf,
+            _ => continue,
+        };
+        // Build param_env: each .bv param name → Bound::Token(register).
+        let mut param_env = std::collections::HashMap::new();
+        let mut r_idx = 0usize;
+        let mut f_idx = 0usize;
+        for (_pname, pty) in &bf.params {
+            let type_name = pty.to_string();
+            let is_float = type_name.starts_with("Float") || type_name.starts_with("F32")
+                || type_name.starts_with("F64") || type_name == "Double";
+            let reg = if is_float {
+                let r = abi_args_fp.get(f_idx).cloned().unwrap_or_else(|| {
+                    format!("f{f_idx}")
+                });
+                f_idx += 1;
+                r
+            } else {
+                let r = abi_args.get(r_idx).cloned().unwrap_or_else(|| {
+                    format!("r{r_idx}")
+                });
+                r_idx += 1;
+                r
+            };
+            param_env.insert(
+                _pname.clone(),
+                briev_compiler::backend::bad::lower::Bound::Token(reg),
+            );
+        }
+        // Parse + lower the .bad body.
+        let asm = briev_compiler::backend::bad::generate_bad_fn(
+            &bf.body,
+            target_triple,
+            param_env,
+        )
+        .map_err(|e| format!("bad fn `{}`: {}", bf.name, e))?;
+        // Assemble to .o.
+        let o_path = cache_dir.join(format!("{}_{}.o", bf.name, family));
+        briev_compiler::backend::bad::assemble(&asm, family, &o_path)
+            .map_err(|e| format!("bad fn `{}` assemble: {}", bf.name, e))?;
+        objects.push(o_path);
+    }
+    Ok(objects)
 }
 
 /// 2026-07-16: P4 — Collect extra object files from ForeignBinding FromSpec paths.

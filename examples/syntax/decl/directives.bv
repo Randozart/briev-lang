@@ -1,0 +1,18 @@
+// SPEC §15.3 — field directives. `atomic <ordering>` marks a field whose
+// read-modify-write must be an atomic operation (relaxed, acquire,
+// release, bartered, or seq); the ordering keyword may precede or follow
+// `atomic` — both spellings agree. `vol` is a let-level visibility pin,
+// not a field modifier (see stmt/vol-let.bv).
+
+type Shared {
+    atomic relaxed counter: Int;
+    seq atomic flag: Bool;
+};
+
+let i: Int = 0;
+let s: Shared;
+async node directive_user [i < 1][i == 1] {
+    s = Shared { counter: 0, flag: false };
+    i = i + 1;
+    term;
+};

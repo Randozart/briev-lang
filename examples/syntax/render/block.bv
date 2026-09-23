@@ -1,0 +1,28 @@
+// SPEC §21 — `render Name { <html> }`: attach a view to a declared obj,
+// struct, or cell (SPEC §21.2 — `render struct`/`render obj` prefixes are
+// removed). The `<div>` body binds slots via `b-text` and events via
+// `b-trigger`.
+
+obj Counter {
+    count: Int;
+
+    txn increment [count < 100][true] {
+        count = count + 1;
+        term;
+    };
+};
+
+render Counter {
+    <div class="counter">
+        <span b-text="count">0</span>
+        <button b-trigger:click="increment">+</button>
+    </div>
+};
+
+let i: Int = 0;
+let c: Counter;
+async node render_user [i < 1][i == 1] {
+    c = Counter { count: 0 };
+    i = i + 1;
+    term;
+};

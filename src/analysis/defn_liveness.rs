@@ -188,6 +188,10 @@ impl<'a> Builder<'a> {
                 // Top-level observable asm.
                 self.roots.insert(asm.name.clone());
             }
+            // 2026-09-21: bad fn — always rooted (body compiled via bad backend).
+            TopLevel::BadFn(bf) => {
+                self.roots.insert(bf.name.clone());
+            }
             TopLevel::TypeDefOperator(op) => {
                 // A BARE top-level `op Count() { … }` has no type context in
                 // the AST — conservative root. Type-BODY operators (the
@@ -332,7 +336,6 @@ impl<'a> Builder<'a> {
             Statement::Defer(body) | Statement::Mutex(body) | Statement::SyncBlock(body) => {
                 self.walk_stmts(body, queue);
             }
-            Statement::Barrier { body, .. } => self.walk_stmts(body, queue),
             Statement::Match { expr, arms } => {
                 self.walk_expr(expr, queue);
                 self.walk_match_arms(arms, queue);
@@ -664,7 +667,6 @@ fn collect_call_names_stmt(stmt: &Statement, out: &mut Vec<String>) {
         | Statement::Defer(body)
         | Statement::Mutex(body)
         | Statement::SyncBlock(body) => substmts.extend(body.iter()),
-        Statement::Barrier { body, .. } => substmts.extend(body.iter()),
         Statement::Match { expr, arms } => {
             exprs.push(expr);
             arms.iter().flat_map(|arm| arm.body.iter()).for_each(|s| substmts.push(s));

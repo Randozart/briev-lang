@@ -97,9 +97,11 @@ pub enum TopLevel {
     /// $txn name(params) [pre][post] -> Type { body } — compile-time-only tx.
     /// 2026-07-23: Convergent loop with pre/post, top-level before codegen.
     CompileTimeTxn(Transaction),
-    /// 2026-07-29: Inline assembly function declaration.
-    /// asm<x86_64> name(params) -> ReturnType { "instruction"; };
+    /// 2026-07-29: Inline assembly function declaration (DEPRECATED — use BadFn).
     AsmFn(AsmFn),
+    /// 2026-09-21: bad assembly function — `bad name(params) -> Ret [pre][post] { body }`.
+    /// Body is real .bad grammar compiled per-target through the bad backend.
+    BadFn(BadFn),
     /// 2026-09-06 (plan 2026-09-06-isr-handlers-and-sections.md): interrupt
     /// service routine declaration —
     /// `isr[<mechanism>] handler @ (literal | Name): name(params) { body };`
@@ -431,10 +433,6 @@ pub enum Statement {
     /// 2026-08-09 (Phase 10): `mutex { ... }` — a serial section (replaces
     /// the legacy `sync {}`). Members execute without interleaving.
     Mutex(Vec<Statement>),
-    /// 2026-08-09 (Phase 10): `barrier<group> { ... }` — a group-barrier
-    /// body. Members of the same group hold off finishing until all fired
-    /// members have (SPEC §11).
-    Barrier { groups: Vec<String>, body: Vec<Statement> },
     /// $defn name(params) -> Type { body } — compile-time-only definition.
     /// 2026-07-23: Only valid inside $(Stage) blocks. Body can call $ intrinsics.
     InlineDefn(Definition),
@@ -1277,10 +1275,6 @@ pub struct OperatorDef {
     /// Old-style implementation name string (from `op Add ~> "string"`).
     pub impl_name: String,
     pub span: Option<Span>,
-    /// 2026-08-27: Optimizer lemmas declared on this op (SPEC §8.8).
-    /// Each string is a validated member of the configured lemma_properties
-    /// vocabulary (config/axioms.dbv). Empty = no lemmas declared.
-    pub trusted_lemmas: Vec<String>,
     /// 2026-08-27: Authority marker (SPEC §8.8). When true, the op binding is
     /// taken on authority instead of derived — its semantics are not
     /// discharged against a default; recorded in the verification ledger.
@@ -1302,8 +1296,6 @@ pub struct OperatorBinding {
     pub reg: Option<String>,
     pub expr: Expr,
     pub span: Option<Span>,
-    /// 2026-08-27: Optimizer lemmas declared on this binding (SPEC §8.8).
-    pub trusted_lemmas: Vec<String>,
     /// 2026-08-27: Authority marker — binding taken on trust, not derived.
     pub trusted_axiom: bool,
 }
@@ -1404,6 +1396,31 @@ pub struct AsmFn {
     /// on asm declarations (SPEC §20).
     pub contract: Contract,
     pub body: Vec<String>,
+    pub span: Span,
+}
+
+// ── BadFn ─────────────────────────────────────────────────────────────
+
+/// 2026-09-21: bad assembly function — replaces `asm<Target>` (AsmFn).
+///
+/// ```text
+/// bad add(a: Int, b: Int) -> Int [result == a + b] {
+///     Add r0, r5, r4
+/// }
+/// ```
+///
+/// Body is real `.bad` grammar compiled per-target through the bad backend.
+/// Params bind via `abi_args` (Int → r-regs, Float → f-regs); the trailing
+/// bracket is an implied postcondition (Briev expression over params and
+/// `result`); the leading bracket (if present) is a precondition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BadFn {
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub ret_type: Type,
+    pub contract: Contract,
+    /// Raw `.bad` source text (between the outermost braces).
+    pub body: String,
     pub span: Span,
 }
 

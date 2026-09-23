@@ -262,7 +262,8 @@ open(out_path, 'w').write(prefix + main)
 print("m4 shim injected", file=sys.stderr)
 PYEOF
 
-cc -O2 -I"$OUT" -o "$OUT/m4_briev" "$OUT/m4_briev.c" -lvulkan -lOpenCL -lcuda -lpthread -lm
+# 2026-09-21 (Family K): orchestration + driver archives (Rust-built).
+cc -O2 -I"$OUT" -L"$OUT" -o "$OUT/m4_briev" "$OUT/m4_briev.c" -lbriev_accel_rt -lbriev_gpu_rt -lvulkan -lOpenCL -lcuda -lpthread -lm
 echo "== BRIEV (CUDA lane) =="
 BRIEV_ACCEL_DEVICE=cuda "$OUT/m4_briev"
 

@@ -165,7 +165,9 @@ Every `axiom`-declared site is counted. The strict report renders the full autho
 - `warn` — accepted; a prominent warning naming every site rides alongside.
 - `deny` — any axiom site is a hard error: prove it or remove the shortcut.
 
-The compiler learns nothing hardcoded about individual axioms; the vocabulary of optimizer-exploitable lemma properties is configuration (`lemma_properties`).
+The compiler learns nothing hardcoded about individual axioms. (2026-09-22:
+the `lemma_properties` vocabulary is removed with the op-lemma feature — see
+§8.8; the axiom facility itself stays.)
 
 #### `.f` — formatted source
 
@@ -728,6 +730,22 @@ section(".init") defn startup() -> Int { ... };
 section(".rodata") const TABLE: Int = 5;
 ```
 
+**Modifier order is free (2026-09-22).** Modifier/strategy keywords compose
+in any order before a structural identifier: `<keywords>* <identifier>
+<name>`. `vol out let x` and `out vol let x` are the same declaration;
+`seq accel node`, `accel seq node`, and `sync<g> async node` all parse.
+The identifier always sits after the keywords — a modifier never follows
+it (`node async` is a node *named* `async`, not a postfix modifier). Two
+exceptions:
+
+- `bootstrap` is a fixed compound: `bootstrap node name` only.
+- Duplicate modifiers are an error (`seq seq node` does not compile).
+
+Restrictions: `async`/`sync<group>`/`accel` apply to a node or txn;
+`vol`/`mem`/`reg` apply to `let` only; `out` applies to a defn, node,
+txn, or let; `seq`/`pack`/`coll` before a struct/obj are layout flags the
+struct parser owns (`pack seq struct`, `seq pack struct`).
+
 - Applies to `defn` and `const`. State fields live in `%State` (one
   allocation) and have no per-field linker section — a `section` prefix on
   anything else is a parse error.
@@ -1091,13 +1109,17 @@ impl Point<Float> {
 };
 ```
 
-Op bindings may carry optimizer lemmas as a bracketed property list. Each identifier must be a member of the configured lemma-property vocabulary; unknown properties are rejected at parse validation.
+The `axiom` prefix before an `op` binding marks the binding itself as
+authoritative — taken on authority instead of derived — and enters the ledger
+like every other declared trust site.
 
-```briev
-op Add: func(#Lh, #Rh) [commutative];
-```
-
-A lemma grants the optimizer exactly the declared right (e.g. operand reordering) and nothing else; it never substitutes for a proof of the operation's semantics. The `axiom` prefix before an `op` binding marks the binding itself as authoritative — taken on authority instead of derived — and enters the ledger like every other declared trust site.
+> **Lemma property lists are removed (2026-09-22).** SPEC previously allowed
+> `op Add: func(#Lh, #Rh) [commutative];`. No parser accepted the grammar, no
+> pass consumed the granted rights, and the float reassociation right was
+> already available program-wide via `-ffast-math` and the `!> associative` /
+> `!> fp_math: fast` function metadata. A user op's handler has a Briev body —
+> commutativity can be *proven* rather than trusted; the axiom facility stays
+> for the FFI-boundary cases where no body exists to discharge.
 
 Inherent implementations may appear only in the target declaration's module. Explicit trait implementations obey ownership coherence: either the trait or target must be locally owned.
 
@@ -2003,18 +2025,19 @@ programs with an authored bootstrap (§13.2) the handoff state usually makes
 the marker redundant — the bootstrap seeds state such that the next logical
 node's precondition already holds — and it may be omitted.
 
-### 11.6 Critical sections and barriers
+### 11.6 Critical sections
 
 ```briev
 mutex {
     update_shared_state();
 };
-
-barrier<workers>;
 ```
 
 - `mutex { ... }` is a critical section.
-- `barrier<group>` is an explicit runtime synchronization point.
+- The `barrier` statement is removed (2026-09-22): it was a no-op wrapper that
+  emitted its body inline everywhere and its group name was never consulted.
+  Real convergence is expressed by the `[condition];` gate (§10.2) and group
+  classification by `sync<group>` (§12.1).
 - `sync<group>` is reserved for node classification.
 
 ## 12. Concurrency and task lifecycle
@@ -2661,30 +2684,40 @@ regex!(#r"[a-z]+")
 Privileged macros declare capabilities at definition. Calls still use `name!(...)`; `$!name` does not exist.
 
 **`execute_many!`** — repeated application with heterogeneous literal blocks
-(2026-09-18):
+(2026-09-18, **retired 2026-09-22**): superseded by the variadic composite
+form below — the composite reaches the same behavior in the language, so the
+Rust-side macro is removed. The block shape is retained by the composite:
 
 ```briev
 execute_many!(callee, block₁, block₂, …);
 // block := "(" [expr ("," expr)*] ")"
 ```
 
-Expands at the Parsed stage to sequential applications `callee(block₁);
-callee(block₂); …` — order guaranteed. `callee` is a named `defn` or `#`
-intrinsic. The block delimiter is `()` at both levels: the outer `!()`
-invokes the macro, each inner `()` is one application spine written
-without its callee — the application delimiter meaning application,
-at every depth. A parenthesized tuple `(a, b)` is a multi-arg block;
-any other expression `(x)` is a single-arg block; `()` is the empty
-block. At least one block is required (a zero-invocation call site is
-a mistake, not a no-op). Statement-only: in expression position it is
-an error — the construct keeps side effects and discards results; bind
-calls explicitly instead. Each block is checked against the callee in
-order, and block *N*'s mismatch names *N*. Use cases: document-fill
-printing and repeated `Asm#` invocations with per-call compile-time
-immediates — heterogeneous blocks a runtime `foreach` cannot express.
-Braces were rejected as the block delimiter (collides with block
-expressions and struct literals; wrong delimiter load); brackets were
-rejected (list literals imply evaluation).
+**Variadic composites (2026-09-22).** A `$defn`/`$txn` may declare a final
+TypeScript-style rest parameter (`...name: expr`) that binds ALL trailing
+call-site arguments as a compile-time list. It is the sanctioned compile-time
+iteration channel: a `foreach` over the rest name unrolls at expansion, one
+emission per element. A plain `expr` parameter is a RUNTIME quantity and
+never unrolls; only a rest parameter declares compile-time iteration.
+
+```briev
+$defn execute_many(...calls: expr) {
+    foreach c in calls { c; }
+};
+// execute_many!(f(a), f(b), f(c)) → f(a); f(b); f(c);
+```
+
+Rules:
+- `...` must be the FINAL parameter.
+- Compile-time-only: a runtime `defn` declaring `...` is an error.
+- Each call-site argument is emitted in order (sequential calls, order
+  guaranteed).
+- Zero trailing arguments is a mistake, not a no-op — the expansion errors
+  naming the composite.
+- The rest name is an exposed binder (hygiene, §18.4): the loop variable is
+  body-local, not a caller capture.
+- Composites expand BEFORE typecheck: typecheck, contracts, and both
+  backends see the emitted calls as if hand-written.
 
 ### 18.3 Stages
 
@@ -2841,18 +2874,69 @@ export defn add(left: Int, right: Int) -> Int {
 
 ## 20. Assembly declarations
 
+Inline assembly is declared with the `bad` keyword — a portable
+assembly function whose body is real `.bad` grammar, compiled per-target
+through the bad backend:
+
 ```briev
-asm<x86_64> add_words(left: Int, right: Int) -> Int
-    [true][term == left + right]
-    !> effects: [read, pure]
-{
-    "add ...";
-};
+bad add_words(left: Int, right: Int) -> Int [result == left + right] {
+    Add r0, r5, r4
+}
 ```
 
-`asm<target>` is an ordinary top-level declaration analogous to `defn` with a target-specialized body.
+`bad name(params) -> Ret [pre] [post] { body }` is an ordinary top-level
+declaration. The body is compiled through the bad backend for the build
+target, assembled to an object file, and linked into the binary; the LLVM
+IR references the symbol via `declare`. Params bind per target through
+the `abi_args`/`abi_args_fp` maps (Int → r-regs, Float → f-regs); the
+body references the logical param names, which resolve to the target's
+C-ABI registers. The trailing bracket is an implied postcondition — a
+full Briev expression over the params and `result` (matching `.defn`
+contract semantics); a leading group is the precondition. Call-site
+contracts are checked by the ordinary contract machinery.
 
-The target capability profile validates instruction syntax. Every assembly declaration supplies contracts and an effect profile including read/write sets, clobbers, blocking, FFI, and purity facts as applicable.
+`bad` replaces the earlier `asm<target>` declaration (see §20.1 note);
+`asm<Target>` is retained for backward compatibility and deprecated.
+
+### 20.1 The .bad assembly dialect
+
+`.bad` files are portable assembly programs compiled by their own backend
+(`brievc bad <file.bad>`); they never enter the .bv pipeline. A universal
+core ISA — integer arithmetic/logic/shifts, the signed and unsigned
+compare-and-branch families, sub-width and offset memory ops, stack
+pairs, and a double-precision FP register class with its own branch
+family — is lowered per target through `config/bad-isa.dbvl`; portable
+registers `r0`-`r15`, `sp`, `pc`, `f0`-`f15` map through
+`config/bad-registers.dbvl` with caller/callee/ro proof properties and
+width tokens (`.w8`/`.w16`/`.w32`). Target-specific optimization is
+expressed as bare `target => ...` exception rows — attached to a single
+instruction, or forming a `defn`'s branch table (`default =>` carries
+the universal core syntax). `defn` bodies are inlined as-is.
+Compile-time constants ride `.const NAME expr` and `.struct` layouts
+through the comptime expression evaluator; local labels (`.name:`)
+scope to their enclosing global label; `import "path.bad"` inlines
+other .bad files at the import line. Contracts are **positional** — a
+single bracket group is the postcondition (implied, matching `.bv`
+function contracts), two groups are pre then post (`[r0 valid]
+[r10 preserved]`); `[frame: N]` keeps its keyword (a different proof
+kind) — and are proven at compile time from the register properties
+(e.g. `[r10 preserved]` via
+callee-saved status or balanced push/pop pairing; `[frame: N]` via
+static sp tracking with 16-alignment at calls); proven proofs are
+emitted as comments into the assembly. Friendly mnemonic aliases
+(`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load by default from
+`std/bad/friendly.bad`; `brievc bad --raw` opts out (`_start` has no
+alias — it is the universal entry). `;` separates instructions on one
+line in every body context. Float literals ride a deduped `.rodata`
+literal pool; `syscall` takes a NAMED kernel call (`syscall write, ...`)
+whose per-target numbers live in config, routing the call through each
+target's syscall ABI. `.export` names a C-ABI entry
+point (argument registers per the `abi_args` map; args 7+ on the stack
+at the `abi_stack_arg_base` offset); `--with-libc`
+links libc; `--run` executes natively or under qemu per target with
+cross toolchains from config. A pure-.bad stdlib lives in `std/bad/`. The grammar is
+strictly line-oriented with no braces; the full dialect reference is
+`docs/architecture/bad-dialect.md`.
 
 ## 21. Rendered Briev
 

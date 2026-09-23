@@ -7,6 +7,8 @@
 // Loaded dynamically via dlopen("libOpenCL.so.1"); when absent, available()
 // returns 0 and the fallback chain moves on.
 
+#include "briev_accel_rt.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdlib.h>

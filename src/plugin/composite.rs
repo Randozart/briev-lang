@@ -15,6 +15,7 @@
 
 use crate::ast::top::{Definition, Statement, StmtMatchArm, TopLevel};
 use crate::ast::{BinaryOpKind, Expr, Pattern, UnaryOpKind};
+use crate::ast::{Dimension, ReflectKind, Type};
 use crate::plugin::{FnDef, PluginManager};
 use std::collections::{HashMap, HashSet};
 
@@ -62,6 +63,7 @@ pub fn expand_composite_invocation(
     def: &Definition,
     args: &[Expr],
     comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
 ) -> Result<Vec<Statement>, String> {
     let name = &def.name;
     let Some((params, exposed)) = composite_signature(def) else {
@@ -89,7 +91,7 @@ pub fn expand_composite_invocation(
     }
     let mut env: HashMap<String, ComptimeVal> = comptime.clone();
     // Generation FIRST (static text, consts only), then substitution.
-    let generated = unroll_static(&def.body, comptime);
+    let generated = unroll_static(&def.body, comptime, state_types);
     let mut body_stmts: Vec<Statement> = Vec::new();
     for s in &generated {
         let mut cloned = s.clone();
@@ -98,7 +100,8 @@ pub fn expand_composite_invocation(
         }
         body_stmts.push(cloned);
     }
-    let folded = fold_stmt_list(body_stmts, &mut env, name)?;
+    let ctx = FoldCtx { state_types, composite: name };
+    let folded = fold_stmt_list(body_stmts, &mut env, &ctx)?;
     out.extend(folded);
     if def.contract.post_condition != trivial {
         out.push(Statement::Gate(def.contract.post_condition.clone()));
@@ -135,14 +138,21 @@ pub enum ComptimeVal {
 /// comptime-known (fold declines; the caller keeps the runtime form).
 /// Checked arithmetic: a comptime overflow or division by zero declines
 /// the fold rather than changing semantics or panicking the compiler.
-fn eval_const(e: &Expr, env: &HashMap<String, ComptimeVal>) -> Option<ComptimeVal> {
+/// `state_types` maps declared state-variable names to their static types
+/// (2026-09-22 reflection-conditions plan): `.^^Size` / `.^^Element` on a
+/// declared array/iterable receiver fold from the type at expansion time.
+fn eval_const(
+    e: &Expr,
+    env: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) -> Option<ComptimeVal> {
     match e {
         Expr::Decimal(n) => Some(ComptimeVal::Int(*n)),
         Expr::Float(f) => Some(ComptimeVal::Float(*f)),
         Expr::Bool(b) => Some(ComptimeVal::Bool(*b)),
         Expr::Identifier(n) => env.get(n).cloned(),
         Expr::UnaryOp(kind, a) => {
-            let v = eval_const(a, env)?;
+            let v = eval_const(a, env, state_types)?;
             match (kind, v) {
                 (UnaryOpKind::Neg, ComptimeVal::Int(i)) => Some(ComptimeVal::Int(-i)),
                 (UnaryOpKind::Neg, ComptimeVal::Float(f)) => Some(ComptimeVal::Float(-f)),
@@ -151,19 +161,116 @@ fn eval_const(e: &Expr, env: &HashMap<String, ComptimeVal>) -> Option<ComptimeVa
             }
         }
         Expr::BinaryOp(kind, a, b) => {
-            let l = eval_const(a, env)?;
-            let r = eval_const(b, env)?;
+            let l = eval_const(a, env, state_types)?;
+            let r = eval_const(b, env, state_types)?;
             apply_binop_const(*kind, l, r)
         }
         Expr::List(xs) => {
             let mut out = Vec::with_capacity(xs.len());
             for x in xs {
-                out.push(eval_const(x, env)?);
+                out.push(eval_const(x, env, state_types)?);
             }
             Some(ComptimeVal::List(out))
         }
+        // 2026-09-22 (reflection-conditions plan): `.^^Size` / `.^^Element`
+        // on a declared state variable fold from its static type. The
+        // receiver must be a bare state-decl name; any other receiver
+        // declines (fail-open). Mirrors the LLVM backend's
+        // vector_element_count / type_category_code so the fold and codegen
+        // agree (rule #4 parity).
+        Expr::Reflect(recv, target, kind) => {
+            let Expr::Identifier(name) = recv.as_ref() else {
+                return None;
+            };
+            let ty = state_types.get(name)?;
+            reflect_type_value(ty, target, *kind)
+        }
         _ => None,
     }
+}
+
+/// The folded value of a compile-time reflection target on a static type:
+/// `^^Size` → the element count of a vector (product of Anonymous dims);
+/// `^^Element` → the element category code. Mirrors the LLVM backend
+/// (`vector_element_count`, `type_category_code`) — the fold and codegen
+/// must agree. Any other target/kind/receiver declines (`None`).
+fn reflect_type_value(
+    ty: &Type,
+    target: &str,
+    kind: crate::ast::ReflectKind,
+) -> Option<ComptimeVal> {
+    if !matches!(kind, crate::ast::ReflectKind::CompileTime) {
+        return None;
+    }
+    match target {
+        "Size" => {
+            let count: u64 = match ty {
+                Type::Vector(_, dims) => dims
+                    .iter()
+                    .map(|d| match d {
+                        Dimension::Anonymous(n) => *n as u64,
+                        _ => 1,
+                    })
+                    .product(),
+                _ => 1,
+            };
+            Some(ComptimeVal::Int(count as i64))
+        }
+        "Element" => {
+            let elem = match ty {
+                Type::Vector(inner, _) => (**inner).clone(),
+                Type::Custom(n) if n == "String" => Type::Custom("Char".to_string()),
+                _ => return None,
+            };
+            Some(ComptimeVal::Int(type_category_code(&elem)))
+        }
+        _ => None,
+    }
+}
+
+/// The `.^^Type` / `.^^Element` frozen category code. MUST match
+/// `emit_expr.rs::type_category_code` and the interpreter's
+/// `reflect_type_code` (rule #4 parity).
+fn type_category_code(ty: &Type) -> i64 {
+    match ty {
+        Type::Custom(n)
+            if n == "Float" || n == "Float64" || n == "Double" || n == "Float32" =>
+        {
+            1
+        }
+        Type::Custom(n) if n == "Bool" || n == "UInt8" || n == "Int8" => 2,
+        Type::Custom(n) if n == "Char" || n == "Byte" => 3,
+        Type::Custom(n) if n == "String" || matches!(ty, Type::Bits(_)) => 4,
+        Type::Ptr(_) | Type::PtrConst(_) | Type::LayoutPtr(_) => 7,
+        _ => 0,
+    }
+}
+
+/// Collect the declared static types of top-level state variables
+/// (2026-09-22 reflection-conditions plan): `let x: T` statements and
+/// explicit `StateDecl` items. The map feeds the reflection fold so a
+/// composite can gate on a receiver's shape at expansion time.
+fn collect_state_types(items: &[TopLevel]) -> HashMap<String, Type> {
+    let mut out = HashMap::new();
+    for item in items {
+        match item {
+            TopLevel::Statement(stmt) => {
+                if let Statement::Let {
+                    name,
+                    ty: Some(ty),
+                    ..
+                } = stmt.as_ref()
+                {
+                    out.insert(name.clone(), ty.clone());
+                }
+            }
+            TopLevel::StateDecl(d) => {
+                out.insert(d.name.clone(), d.ty.clone());
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The float projection of a folded value (comparisons promote).
@@ -266,6 +373,7 @@ fn pattern_const_match(p: &Pattern, v: &ComptimeVal) -> Option<bool> {
 fn fold_let_stmt(
     s: Statement,
     env: &mut HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
     out: &mut Vec<Statement>,
 ) {
     let Statement::Let {
@@ -282,7 +390,7 @@ fn fold_let_stmt(
     // comptime init folds in place; multi-lets never enter the env.
     let single = names.is_empty() || (names.len() == 1 && &names[0] == &name);
     let folded = if single {
-        expr.as_ref().and_then(|e| eval_const(e, env))
+        expr.as_ref().and_then(|e| eval_const(e, env, state_types))
     } else {
         None
     };
@@ -327,11 +435,11 @@ fn fold_stmt_form_match(
     expr: Expr,
     arms: Vec<StmtMatchArm>,
     env: &mut HashMap<String, ComptimeVal>,
-    composite: &str,
+    ctx: &FoldCtx,
     out: &mut Vec<Statement>,
 ) -> Result<(), String> {
     let mut arms = arms;
-    let scrut = eval_const(&expr, env);
+    let scrut = eval_const(&expr, env, ctx.state_types);
     let decidable = scrut.is_some()
         && arms.iter().all(|a| {
             a.patterns
@@ -346,7 +454,7 @@ fn fold_stmt_form_match(
         });
         if let Some(idx) = taken_idx {
             let StmtMatchArm { body, .. } = arms.swap_remove(idx);
-            out.extend(fold_stmt_list(body, env, composite)?);
+            out.extend(fold_stmt_list(body, env, ctx)?);
             return Ok(());
         }
         // No arm takes the value: keep verbatim — the typechecker
@@ -355,7 +463,7 @@ fn fold_stmt_form_match(
     let mut folded_arms = Vec::with_capacity(arms.len());
     for mut a in arms {
         let mut clone = env.clone();
-        a.body = fold_stmt_list(a.body, &mut clone, composite)?;
+        a.body = fold_stmt_list(a.body, &mut clone, ctx)?;
         env_kill_tree(&a.body, env);
         folded_arms.push(a);
     }
@@ -372,13 +480,13 @@ fn fold_stmt_form_match(
 fn fold_expr_form_match(
     m: Expr,
     env: &mut HashMap<String, ComptimeVal>,
-    composite: &str,
+    ctx: &FoldCtx,
     out: &mut Vec<Statement>,
 ) -> Result<(), String> {
     let Expr::Match(scrut_e, mut m_arms) = m else {
         unreachable!("caller matched Expr::Match");
     };
-    let scrut = eval_const(&scrut_e, env);
+    let scrut = eval_const(&scrut_e, env, ctx.state_types);
     let decidable = scrut.is_some()
         && m_arms.iter().all(|a| {
             a.guard.is_none()
@@ -392,7 +500,7 @@ fn fold_expr_form_match(
             if matches!(m_arms[idx].body.as_ref(), Expr::Block(_)) {
                 let arm = m_arms.swap_remove(idx);
                 if let Expr::Block(body) = *arm.body {
-                    out.extend(fold_stmt_list(body, env, composite)?);
+                    out.extend(fold_stmt_list(body, env, ctx)?);
                     return Ok(());
                 }
             }
@@ -427,6 +535,7 @@ const COMPTIME_UNROLL_CAP: i64 = 4096;
 fn comptime_iters(
     list: &Expr,
     consts: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
 ) -> Option<Vec<ComptimeVal>> {
     match list {
         Expr::Range {
@@ -442,11 +551,11 @@ fn comptime_iters(
             if !static_end {
                 return None;
             }
-            let a = match eval_const(start, consts)? {
+            let a = match eval_const(start, consts, state_types)? {
                 ComptimeVal::Int(i) => i,
                 _ => return None,
             };
-            let b = match eval_const(end, consts)? {
+            let b = match eval_const(end, consts, state_types)? {
                 ComptimeVal::Int(i) => i,
                 _ => return None,
             };
@@ -474,7 +583,7 @@ fn comptime_iters(
                     Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_) => {}
                     _ => return None,
                 }
-                out.push(eval_const(x, consts)?);
+                out.push(eval_const(x, consts, state_types)?);
             }
             Some(out)
         }
@@ -483,24 +592,6 @@ fn comptime_iters(
             _ => None,
         },
         _ => None,
-    }
-}
-
-/// Splice one static loop's body once per iteration value, substituting
-/// the item's literal (the recursion re-generates nested static loops).
-fn unroll_iterations(
-    item: &str,
-    iters: &[ComptimeVal],
-    body: &[Statement],
-    consts: &HashMap<String, ComptimeVal>,
-    out: &mut Vec<Statement>,
-) {
-    for val in iters {
-        let mut iter_body = unroll_static(body, consts);
-        for b in iter_body.iter_mut() {
-            substitute_param(b, item, &literal_expr(val));
-        }
-        out.extend(iter_body);
     }
 }
 
@@ -514,19 +605,29 @@ fn unroll_iterations(
 fn unroll_static(
     body: &[Statement],
     consts: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
 ) -> Vec<Statement> {
     let mut out = Vec::with_capacity(body.len());
     for s in body {
         match s {
             Statement::Foreach { item, list, body } => {
-                match comptime_iters(list, consts) {
+                match comptime_iters(list, consts, state_types) {
                     Some(iters) => {
-                        unroll_iterations(item, &iters, body, consts, &mut out);
+                        // Splice the body once per iteration value,
+                        // substituting the item's literal (the recursion
+                        // re-generates nested static loops).
+                        for val in &iters {
+                            let mut iter_body = unroll_static(body, consts, state_types);
+                            for b in iter_body.iter_mut() {
+                                substitute_param(b, item, &literal_expr(val));
+                            }
+                            out.extend(iter_body);
+                        }
                     }
                     None => {
                         let mut st = s.clone();
                         if let Statement::Foreach { body, .. } = &mut st {
-                            *body = unroll_static(body, consts);
+                            *body = unroll_static(body, consts, state_types);
                         }
                         out.push(st);
                     }
@@ -536,8 +637,7 @@ fn unroll_static(
             | Statement::Block(body)
             | Statement::SyncBlock(body)
             | Statement::Mutex(body)
-            | Statement::Defer(body)
-            | Statement::Barrier { body, .. } => {
+            | Statement::Defer(body) => {
                 let mut st = s.clone();
                 let inner = match &mut st {
                     Statement::Guarded(_, b)
@@ -545,10 +645,9 @@ fn unroll_static(
                     | Statement::SyncBlock(b)
                     | Statement::Mutex(b)
                     | Statement::Defer(b) => b,
-                    Statement::Barrier { body, .. } => body,
                     _ => unreachable!("matched above"),
                 };
-                *inner = unroll_static(body, consts);
+                *inner = unroll_static(body, consts, state_types);
                 out.push(st);
             }
             other => out.push(other.clone()),
@@ -584,8 +683,7 @@ fn env_kill_tree(body: &[Statement], env: &mut HashMap<String, ComptimeVal>) {
             | Statement::Block(body)
             | Statement::SyncBlock(body)
             | Statement::Mutex(body)
-            | Statement::Defer(body)
-            | Statement::Barrier { body, .. } => env_kill_tree(body, env),
+            | Statement::Defer(body) => env_kill_tree(body, env),
             _ => {}
         }
     }
@@ -595,20 +693,24 @@ fn env_kill_tree(body: &[Statement], env: &mut HashMap<String, ComptimeVal>) {
 /// arithmetic that became known — typically through item substitution in
 /// an unrolled body — is replaced by its literal at every position
 /// (assign sides, kept loop lists). Already-literal nodes are untouched.
-fn fold_expr_in_place(e: &mut Expr, env: &HashMap<String, ComptimeVal>) {
+fn fold_expr_in_place(
+    e: &mut Expr,
+    env: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) {
     match e {
         Expr::BinaryOp(_, a, b) => {
-            fold_expr_in_place(a, env);
-            fold_expr_in_place(b, env);
+            fold_expr_in_place(a, env, state_types);
+            fold_expr_in_place(b, env, state_types);
         }
-        Expr::UnaryOp(_, a) => fold_expr_in_place(a, env),
+        Expr::UnaryOp(_, a) => fold_expr_in_place(a, env, state_types),
         Expr::Index(a, i) => {
-            fold_expr_in_place(a, env);
-            fold_expr_in_place(i, env);
+            fold_expr_in_place(a, env, state_types);
+            fold_expr_in_place(i, env, state_types);
         }
         Expr::Range { start, end, .. } => {
-            fold_expr_in_place(start, env);
-            fold_expr_in_place(end, env);
+            fold_expr_in_place(start, env, state_types);
+            fold_expr_in_place(end, env, state_types);
         }
         _ => {}
     }
@@ -618,7 +720,7 @@ fn fold_expr_in_place(e: &mut Expr, env: &HashMap<String, ComptimeVal>) {
     ) {
         return;
     }
-    if let Some(v) = eval_const(e, env) {
+    if let Some(v) = eval_const(e, env, state_types) {
         if !matches!(v, ComptimeVal::List(_)) {
             *e = literal_expr(&v);
         }
@@ -628,22 +730,22 @@ fn fold_expr_in_place(e: &mut Expr, env: &HashMap<String, ComptimeVal>) {
 fn fold_stmt_list(
     stmts: Vec<Statement>,
     env: &mut HashMap<String, ComptimeVal>,
-    composite: &str,
+    ctx: &FoldCtx,
 ) -> Result<Vec<Statement>, String> {
     let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
     for s in stmts {
         match s {
-            stmt @ Statement::Let { .. } => fold_let_stmt(stmt, env, &mut out),
+            stmt @ Statement::Let { .. } => fold_let_stmt(stmt, env, ctx.state_types, &mut out),
             Statement::Assign(mut l, mut r) => {
                 if let Expr::Identifier(n) = &l {
                     env.remove(n);
                 }
-                fold_expr_in_place(&mut l, env);
-                fold_expr_in_place(&mut r, env);
+                fold_expr_in_place(&mut l, env, ctx.state_types);
+                fold_expr_in_place(&mut r, env, ctx.state_types);
                 out.push(Statement::Assign(l, r));
             }
             Statement::Match { expr, arms } => {
-                fold_stmt_form_match(*expr, arms, env, composite, &mut out)?;
+                fold_stmt_form_match(*expr, arms, env, ctx, &mut out)?;
             }
             // 2026-08-23 (F1 unified dispatch): the parser routes ALL match
             // to the EXPRESSION form — `Statement::Expression(Expr::Match)`.
@@ -651,32 +753,33 @@ fn fold_stmt_list(
             // arm's statements (same env — the arm executes); anything else
             // stays an ordinary runtime match (fail-open).
             Statement::Expression(e @ Expr::Match(_, _)) => {
-                fold_expr_form_match(e, env, composite, &mut out)?;
+                fold_expr_form_match(e, env, ctx, &mut out)?;
             }
             // 2026-09-21 (comptime generation, §B3): a check that folds
             // true is proven — spliced out; false fails the expansion with
             // the composite and expression named; a non-foldable check
             // stays on the ordinary runtime path (fail-open).
-            Statement::Check(e) => match eval_const(&e, env) {
+            Statement::Check(e) => match eval_const(&e, env, ctx.state_types) {
                 Some(ComptimeVal::Bool(true)) => {}
                 Some(ComptimeVal::Bool(false)) => {
                     return Err(format!(
-                        "composite '{composite}': comptime check `{e}` is \
+                        "composite '{}': comptime check `{e}` is \
                          FALSE for this instantiation — the call arguments \
                          violate a requirement the composite declares; \
-                         adjust the arguments or weaken the check"
+                         adjust the arguments or weaken the check",
+                        ctx.composite
                     ));
                 }
                 _ => out.push(Statement::Check(e)),
             },
-            Statement::Guarded(cond, body) => match eval_const(&cond, env) {
+            Statement::Guarded(cond, body) => match eval_const(&cond, env, ctx.state_types) {
                 Some(ComptimeVal::Bool(true)) => {
-                    out.extend(fold_stmt_list(body, env, composite)?);
+                    out.extend(fold_stmt_list(body, env, ctx)?);
                 }
                 Some(ComptimeVal::Bool(false)) => {}
                 _ => {
                     let mut clone = env.clone();
-                    let folded = fold_stmt_list(body.clone(), &mut clone, composite)?;
+                    let folded = fold_stmt_list(body.clone(), &mut clone, ctx)?;
                     env_kill_tree(&body, env);
                     out.push(Statement::Guarded(cond, folded));
                 }
@@ -688,9 +791,9 @@ fn fold_stmt_list(
                 // contract. The loop stays; its body folds under a clone.
                 env.remove(&item);
                 let mut clone = env.clone();
-                let folded = fold_stmt_list(body.clone(), &mut clone, composite)?;
+                let folded = fold_stmt_list(body.clone(), &mut clone, ctx)?;
                 env_kill_tree(&body, env);
-                fold_expr_in_place(&mut list, env);
+                fold_expr_in_place(&mut list, env, ctx.state_types);
                 out.push(Statement::Foreach {
                     item,
                     list,
@@ -699,47 +802,34 @@ fn fold_stmt_list(
             }
             Statement::Block(body) => {
                 let mut clone = env.clone();
-                out.push(Statement::Block(fold_stmt_list(
-                    body,
-                    &mut clone,
-                    composite,
-                )?));
+                out.push(Statement::Block(fold_nested(body, &mut clone, ctx)?));
             }
             Statement::SyncBlock(body) => {
                 let mut clone = env.clone();
-                out.push(Statement::SyncBlock(fold_stmt_list(
-                    body,
-                    &mut clone,
-                    composite,
-                )?));
+                out.push(Statement::SyncBlock(fold_nested(body, &mut clone, ctx)?));
             }
             Statement::Mutex(body) => {
                 let mut clone = env.clone();
-                out.push(Statement::Mutex(fold_stmt_list(
-                    body,
-                    &mut clone,
-                    composite,
-                )?));
+                out.push(Statement::Mutex(fold_nested(body, &mut clone, ctx)?));
             }
             Statement::Defer(body) => {
                 let mut clone = env.clone();
-                out.push(Statement::Defer(fold_stmt_list(
-                    body,
-                    &mut clone,
-                    composite,
-                )?));
-            }
-            Statement::Barrier { groups, body } => {
-                let mut clone = env.clone();
-                out.push(Statement::Barrier {
-                    groups,
-                    body: fold_stmt_list(body, &mut clone, composite)?,
-                });
+                out.push(Statement::Defer(fold_nested(body, &mut clone, ctx)?));
             }
             other => out.push(other),
         }
     }
     Ok(out)
+}
+
+/// Fold a nested statement list under a cloned env (the clone is local to
+/// the enclosing block and discarded — names bound inside do not escape).
+fn fold_nested(
+    body: Vec<Statement>,
+    clone: &mut HashMap<String, ComptimeVal>,
+    ctx: &FoldCtx,
+) -> Result<Vec<Statement>, String> {
+    fold_stmt_list(body, clone, ctx)
 }
 
 /// Hygiene: identifiers the caller's arguments carry must not collide with
@@ -815,13 +905,19 @@ pub fn expand_composites(
         .iter()
         .filter_map(|(n, (v, _))| nav_comptime(v).map(|c| (n.clone(), c)))
         .collect();
+    // 2026-09-22 (reflection-conditions plan): the declared STATIC TYPE of
+    // each top-level state variable seeds the reflection fold. A composite
+    // may gate on `x.^^Size` / `x.^^Element` where `x` is a state decl
+    // (`let buf: Float[4]`); the receiver's type resolves the target.
+    // A receiver that is not a state name declines (fail-open).
+    let state_types: HashMap<String, Type> = collect_state_types(items);
     // Top-level `const` declarations are comptime by definition — their
     // values seed the fold env in declaration order (a const init may
     // reference an earlier const). A non-foldable init simply contributes
     // nothing (fail-open: dependent spans degrade to runtime).
     for item in items.iter() {
         if let TopLevel::Constant(k) = item {
-            if let Some(v) = eval_const(&k.expr, &comptime) {
+            if let Some(v) = eval_const(&k.expr, &comptime, &state_types) {
                 comptime.insert(k.name.clone(), v);
             }
         }
@@ -832,10 +928,10 @@ pub fn expand_composites(
         for item in items.iter_mut() {
             match item {
                 TopLevel::Transaction(t) => {
-                    n += expand_stmt_list(&mut t.body, &registry, &comptime)?;
+                    n += expand_stmt_list(&mut t.body, &registry, &comptime, &state_types)?;
                 }
                 TopLevel::CompileTimeDefn(d) => {
-                    n += expand_stmt_list(&mut d.body, &registry, &comptime)?;
+                    n += expand_stmt_list(&mut d.body, &registry, &comptime, &state_types)?;
                 }
                 _ => {}
             }
@@ -851,6 +947,15 @@ pub fn expand_composites(
          likely invokes itself (directly or through another composite)"
             .to_string(),
     )
+}
+
+/// Read-only context threaded through the fold (2026-09-22
+/// reflection-conditions plan): the declared static types of state vars
+/// and the composite name (error context). Bundled so the fold functions
+/// stay within the param budget as the feature grows.
+struct FoldCtx<'a> {
+    state_types: &'a HashMap<String, Type>,
+    composite: &'a str,
 }
 
 /// The comptime-foldable projection of a stage-evaluator value (plan
@@ -876,13 +981,14 @@ fn expand_stmt_list(
     stmts: &mut Vec<Statement>,
     registry: &HashMap<&String, &Definition>,
     comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
 ) -> Result<usize, String> {
     let mut n = 0;
     let mut i = 0;
     while i < stmts.len() {
         // Depth first — nested bodies expand before their parents, so an
         // enclosing splice never hides an inner call site.
-        expand_nested(&mut stmts[i], registry, comptime)?;
+        expand_nested(&mut stmts[i], registry, comptime, state_types)?;
         let call = match &stmts[i] {
             Statement::Expression(Expr::PluginIntercept {
                 name,
@@ -894,7 +1000,7 @@ fn expand_stmt_list(
         };
         if let Some((name, args)) = call {
             if let Some(def) = registry.get(&name) {
-                let expanded = expand_composite_invocation(def, &args, comptime)?;
+                let expanded = expand_composite_invocation(def, &args, comptime, state_types)?;
                 let tail = stmts.split_off(i + 1);
                 stmts.truncate(i);
                 stmts.extend(expanded);
@@ -917,6 +1023,7 @@ fn expand_nested(
     s: &mut Statement,
     registry: &HashMap<&String, &Definition>,
     comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
 ) -> Result<(), String> {
     match s {
         Statement::Foreach { body, .. }
@@ -925,10 +1032,7 @@ fn expand_nested(
         | Statement::SyncBlock(body)
         | Statement::Defer(body)
         | Statement::Mutex(body) => {
-            expand_stmt_list(body, registry, comptime)?;
-        }
-        Statement::Barrier { body, .. } => {
-            expand_stmt_list(body, registry, comptime)?;
+            expand_stmt_list(body, registry, comptime, state_types)?;
         }
         _ => {}
     }
@@ -965,8 +1069,7 @@ fn substitute_param(s: &mut Statement, param: &str, arg: &Expr) {
         Statement::Block(body)
         | Statement::SyncBlock(body)
         | Statement::Defer(body)
-        | Statement::Mutex(body)
-        | Statement::Barrier { body, .. } => {
+        | Statement::Mutex(body) => {
             for b in body.iter_mut() {
                 substitute_param(b, param, arg);
             }
@@ -1106,8 +1209,7 @@ fn collect_binders(s: &Statement, out: &mut HashSet<String>) {
         | Statement::Block(body)
         | Statement::SyncBlock(body)
         | Statement::Defer(body)
-        | Statement::Mutex(body)
-        | Statement::Barrier { body, .. } => {
+        | Statement::Mutex(body) => {
             for b in body {
                 collect_binders(b, out);
             }
@@ -1244,6 +1346,7 @@ mod tests {
             &d,
             &[fill, Expr::Identifier("N".into())],
             &HashMap::new(),
+            &HashMap::new(),
         )
         .expect("exposed-binder reference is legal");
         assert_eq!(out.len(), 1);
@@ -1264,7 +1367,7 @@ mod tests {
         );
         let arg_q = Expr::Call("Exp#".into(), vec![Expr::Identifier("w".into())], None);
         let out =
-            expand_composite_invocation(&d, &[arg_p, arg_q], &HashMap::new())
+            expand_composite_invocation(&d, &[arg_p, arg_q], &HashMap::new(), &HashMap::new())
                 .expect("expands");
         assert_eq!(out.len(), 2, "no contract gates on a trivial contract");
         // `let t = src[k] * 2;`
@@ -1295,7 +1398,7 @@ mod tests {
             Box::new(Expr::Decimal(1)),
         );
         let err =
-            expand_composite_invocation(&d, &[arg], &HashMap::new()).unwrap_err();
+            expand_composite_invocation(&d, &[arg], &HashMap::new(), &HashMap::new()).unwrap_err();
         assert!(err.contains("captures") || err.contains("capture"), "{err}");
     }
 
@@ -1309,7 +1412,7 @@ mod tests {
             Box::new(Expr::Identifier("p".into())),
             Box::new(Expr::Decimal(2)),
         );
-        let err = expand_composite_invocation(&d, &[arg_p, arg_q], &HashMap::new())
+        let err = expand_composite_invocation(&d, &[arg_p, arg_q], &HashMap::new(), &HashMap::new())
             .unwrap_err();
         assert!(err.contains("parameter 'p'"), "{err}");
     }
@@ -1323,6 +1426,7 @@ mod tests {
         let out = expand_composite_invocation(
             &d,
             &[Expr::Identifier("v".into())],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .expect("expands");
@@ -1371,6 +1475,7 @@ async node k [i < 16][i == 16] {
             &d,
             &[Expr::Decimal(1), Expr::Decimal(2)],
             &HashMap::new(),
+            &HashMap::new(),
         )
         .unwrap_err();
         assert!(err.contains("mixes"), "{err}");
@@ -1383,6 +1488,7 @@ async node k [i < 16][i == 16] {
         let err = expand_composite_invocation(
             &d,
             &[Expr::Decimal(1)],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .unwrap_err();
@@ -1439,7 +1545,7 @@ mod comptime_fold {
              };",
         );
         let d = defn_of(&items, "f");
-        expand_composite_invocation(&d, &[span], &HashMap::new()).expect("expands")
+        expand_composite_invocation(&d, &[span], &HashMap::new(), &HashMap::new()).expect("expands")
     }
 
     #[test]
@@ -1481,7 +1587,7 @@ mod comptime_fold {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(64)], &HashMap::new())
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(64)], &HashMap::new(), &HashMap::new())
             .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("\"wide\""), "64/4=16 > 8: {dump}");
@@ -1504,6 +1610,7 @@ mod comptime_fold {
             &d,
             &[Expr::Identifier("NKV".into())],
             &seed,
+            &HashMap::new(),
         )
         .expect("expands");
         let dump = format!("{out:?}");
@@ -1550,7 +1657,7 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(500)], &HashMap::new())
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(500)], &HashMap::new(), &HashMap::new())
             .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("\"big\""), "{dump}");
@@ -1573,6 +1680,7 @@ async node k [i < 1][i == 1] {
             &d,
             &[Expr::Decimal(1), Expr::Identifier("runtime".into())],
             &HashMap::new(),
+            &HashMap::new(),
         )
         .expect("expands");
         let dump = format!("{out:?}");
@@ -1590,7 +1698,7 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new())
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new(), &HashMap::new())
             .expect("expands");
         let dump = format!("{out:?}");
         let los = dump.matches("\"lo\"").count();
@@ -1613,7 +1721,7 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new())
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
             .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("Foreach"), "param range stays runtime: {dump}");
@@ -1633,6 +1741,7 @@ async node k [i < 1][i == 1] {
             &d,
             &[Expr::Identifier("R".into())],
             &HashMap::new(),
+            &HashMap::new(),
         )
         .expect("expands");
         let dump = format!("{out:?}");
@@ -1650,7 +1759,7 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new())
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(0)], &HashMap::new(), &HashMap::new())
             .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("Decimal(1)") && dump.contains("Decimal(2)")
@@ -1680,7 +1789,7 @@ async node k [i < 1][i == 1] {
             ]),
         );
         let out =
-            expand_composite_invocation(&d, &[], &seed).expect("expands");
+            expand_composite_invocation(&d, &[], &seed, &HashMap::new()).expect("expands");
         let dump = format!("{out:?}");
         assert_eq!(dump.matches("Decimal(8)").count(), 1, "w=8 spliced: {dump}");
         assert!(!dump.contains("Foreach"), "unrolled: {dump}");
@@ -1695,18 +1804,19 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let ok = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new())
+        let ok = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
             .expect("16 <= 32 proven");
         let dump = format!("{ok:?}");
         assert!(!dump.contains("Check"), "proven check spliced out: {dump}");
         assert!(dump.contains("\"mark\""), "body present: {dump}");
-        let err = expand_composite_invocation(&d, &[Expr::Decimal(64)], &HashMap::new())
+        let err = expand_composite_invocation(&d, &[Expr::Decimal(64)], &HashMap::new(), &HashMap::new())
             .unwrap_err();
         assert!(err.contains("comptime check") && err.contains("FALSE"), "{err}");
         // Non-foldable check degrades to the runtime path.
         let rt = expand_composite_invocation(
             &d,
             &[Expr::Identifier("N".into())],
+            &HashMap::new(),
             &HashMap::new(),
         )
         .expect("runtime check kept");
@@ -1723,7 +1833,7 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[], &HashMap::new()).expect("expands");
+        let out = expand_composite_invocation(&d, &[], &HashMap::new(), &HashMap::new()).expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("Decimal(1)") && dump.contains("Decimal(2)")
             && dump.contains("Decimal(4)"), "1<<k folded per iteration: {dump}");
@@ -1741,7 +1851,7 @@ async node k [i < 1][i == 1] {
              };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(4)], &HashMap::new())
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(4)], &HashMap::new(), &HashMap::new())
             .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("\"tiny\""), "{dump}");
@@ -1758,7 +1868,7 @@ async node k [i < 1][i == 1] {
             "$defn f(n: expr) { match n { x => { any = x; }, }; };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(7)], &HashMap::new())
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(7)], &HashMap::new(), &HashMap::new())
             .expect("expands");
         let dump = format!("{out:?}");
         assert!(
@@ -1777,23 +1887,140 @@ async node k [i < 1][i == 1] {
             &d,
             &[Expr::Decimal(i64::MAX)],
             &HashMap::new(),
+            &HashMap::new(),
         )
         .expect("expands");
         let dump = format!("{out:?}");
         assert!(dump.contains("Match"), "overflow declines: {dump}");
     }
 
-    #[test]
+#[test]
     fn contracts_survive_folding() {
         let items = parse_program(
             "$defn f(n: expr) [n < 64] [n > 0] { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };",
         );
         let d = defn_of(&items, "f");
-        let out = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new())
+        let out = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
             .expect("expands");
         assert_eq!(out.len(), 3, "pre gate + spliced arm + post gate");
         assert!(matches!(&out[0], Statement::Gate(_)));
         assert!(matches!(&out[2], Statement::Gate(_)));
+    }
+
+    // ── 2026-09-22 (reflection-conditions plan) ────────────────────────
+    // `.^^Size` / `.^^Element` on a declared state variable fold from its
+    // static type at expansion time.
+
+    fn state_types_of(items: &[TopLevel]) -> HashMap<String, Type> {
+        collect_state_types(items)
+    }
+
+    #[test]
+    fn reflect_size_folds_from_state_decl() {
+        // A composite gates on `x.^^Size`; the arg names a `let buf: Float[4]`.
+        let items = parse_program(
+            "let buf: Float[4]; \n\
+             $defn pick(x: expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "pick");
+        let state_types = state_types_of(&items);
+        assert_eq!(state_types.get("buf"), Some(&Type::Vector(
+            Box::new(Type::Custom("Float".to_string())),
+            vec![crate::ast::Dimension::Anonymous(4)]
+        )));
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Identifier("buf".into())],
+            &HashMap::new(),
+            &state_types,
+        )
+        .expect("expands");
+        // Only the `4` arm splices — the `_` arm is gone.
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(1)"), "taken arm spliced: {dump}");
+        assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
+    }
+
+    #[test]
+    fn reflect_size_mismatch_splices_other_arm() {
+        let items = parse_program(
+            "let buf: Float[8]; \n\
+             $defn pick(x: expr) { match x.^^Size { 4 => { r = 1; }, 8 => { r = 8; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "pick");
+        let state_types = state_types_of(&items);
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Identifier("buf".into())],
+            &HashMap::new(),
+            &state_types,
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(8)"), "size-8 arm spliced: {dump}");
+        assert!(!dump.contains("Decimal(1)"), "size-4 arm pruned: {dump}");
+        assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
+    }
+
+    #[test]
+    fn reflect_element_folds_category_code() {
+        // `.^^Element` on Float[16] folds to category 1 (Float).
+        let items = parse_program(
+            "let buf: Float[16]; \n\
+             $defn kind(x: expr) { match x.^^Element { 1 => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "kind");
+        let state_types = state_types_of(&items);
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Identifier("buf".into())],
+            &HashMap::new(),
+            &state_types,
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(1)"), "Float category arm spliced: {dump}");
+        assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
+    }
+
+    #[test]
+    fn reflect_unknown_receiver_stays_runtime() {
+        // A receiver that is NOT a state decl declines the fold — the match
+        // stays a runtime branch (fail-open).
+        let items = parse_program(
+            "$defn pick(x: expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "pick");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Identifier("runtime_val".into())],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Match"), "runtime match kept: {dump}");
+    }
+
+    #[test]
+    fn reflect_string_element_is_char_category() {
+        // `.^^Element` on a String state var folds to the Char category (3).
+        let items = parse_program(
+            "let s: String; \n\
+             $defn ch(x: expr) { match x.^^Element { 3 => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "ch");
+        let state_types = state_types_of(&items);
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Identifier("s".into())],
+            &HashMap::new(),
+            &state_types,
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(1)"), "Char category arm spliced: {dump}");
+        assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
     }
 }
 

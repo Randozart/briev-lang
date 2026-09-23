@@ -1,0 +1,6 @@
+// SPEC §8.4 / §11.6 — `sync<group> node name`: a node classified
+// into a group barrier. Members that fire hold off finishing until all
+// fired members have (Rule 22 — no implicit concurrency).
+
+sync<workers> node worker_1 [i < 1][i == 1] { i = i + 1; term; };
+sync<workers> node worker_2 [i < 1][i == 1] { i = i + 1; term; };

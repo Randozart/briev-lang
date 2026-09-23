@@ -28,7 +28,10 @@ impl fmt::Display for Expr {
             Expr::Float(n) => write!(f, "{}", n),
             Expr::Identifier(name) => write!(f, "{}", name),
             Expr::Call(name, args, _) => {
-                write!(f, "{}(", name)?;
+                // 2026-09-22 (syntax-cleanup plan): the internal callee string
+                // carries `Enum::Variant` (a stable registry contract); the
+                // canonical spelling is member access `Enum.Variant`.
+                write!(f, "{}(", name.replace("::", "."))?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -443,17 +446,6 @@ impl fmt::Display for Statement {
                 }
                 write!(f, "}}")
             }
-            Statement::Barrier { groups, body } => {
-                if groups.is_empty() {
-                    write!(f, "barrier {{ ")?;
-                } else {
-                    write!(f, "barrier<{}> {{ ", groups.join(","))?;
-                }
-                for stmt in body {
-                    write!(f, "{} ", stmt)?;
-                }
-                write!(f, "}}")
-            }
             Statement::InlineDefn(d) => write!(f, "$defn {}", d.name),
             Statement::InlineTxn(t) => write!(f, "$txn {}", t.name),
             Statement::Match { .. } => write!(f, "match {{ ... }}"),
@@ -616,7 +608,8 @@ impl fmt::Display for Pattern {
             // 2026-08-22 (Phase 3): typed binding of a structural sum member.
             Pattern::TypedBinding(name, ty) => write!(f, "{}: {}", name, ty),
             Pattern::EnumVariant(name, fields) => {
-                write!(f, "{}", name)?;
+                // 2026-09-22: canonical `.` spelling for qualified variants.
+                write!(f, "{}", name.replace("::", "."))?;
                 if !fields.is_empty() {
                     write!(f, "(")?;
                     for (i, field) in fields.iter().enumerate() {
