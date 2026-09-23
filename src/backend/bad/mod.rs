@@ -1436,3 +1436,34 @@ mod interpretation_b_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+// ── load_sectors disk abstraction (2026-09-22, universal completion) ──
+mod disk_tests {
+    use super::*;
+
+    #[test]
+    fn load_image_defn_lowers_with_portable_copy_loop() {
+        // load_image is a defn — invoked at INSTRUCTION POSITION (like
+        // ChargeGuest), not via `call`. It INLINES its copy loop.
+        let src = "import \"std/bad/disk.bad\"\n\
+                   _start:\n    load_image r4, r5, r6\n    halt\n";
+        let asm = generate(src, "riscv64-unknown-none").unwrap();
+        assert!(asm.contains("lbu"), "{asm}");
+        assert!(asm.contains("sb a4, 0(a5)"), "copy store: {asm}");
+        assert!(asm.contains("bge"), "loop branch: {asm}");
+    }
+
+    #[test]
+    fn read_sectors_is_x86_real_mode_raw() {
+        let src = "raw x86_64 read_sectors\n    .code16\n    int $0x13\nend\n\
+                   _start:\n    call read_sectors\n    halt\n";
+        let asm = generate(src, "x86_64-unknown-linux-gnu").unwrap();
+        assert!(asm.contains("read_sectors:"), "{asm}");
+        assert!(asm.contains(".code16"), "{asm}");
+        // Family-gated: no read_sectors label on riscv (the block emits
+        // only for x86_64). Symbol resolution is the linker's job, not
+        // generate()'s.
+        let asm = generate(src, "riscv64-unknown-none").unwrap();
+        assert!(!asm.contains("read_sectors:"), "{asm}");
+    }
+}

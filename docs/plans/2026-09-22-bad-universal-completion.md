@@ -100,7 +100,15 @@ documented memory-copy path. Primary deliverable: the abstraction shape
   per-target in the build loop. One command produced all three binaries
   (aarch64/arm/rv64) from bootloader.bv, each QEMU-verified printing
   "universal boot".
-- **#4 load_sectors — pending.**
+- **#4 load_sectors — DONE**: `std/bad/disk.bad` — a portable `load_image`
+  copy-loop defn (universal ops) + an x86_64 real-mode `read_sectors`
+  raw block (BIOS INT 13h). Targets with no disk (qemu -kernel) use the
+  in-RAM source; the copy loop is the shared primitive. Real AHCI/NVMe
+  drivers remain out of scope (documented).
+
+All four items DONE. The universal bootstrapper: one source, per-arch
+stdlib prologues, typed .bv↔.bad calls, one-command multi-target builds,
+and a portable image-load primitive.
 
 ## Doc updates
 

@@ -332,6 +332,16 @@ way on riscv64 (PMP grant + UART). thumb/arm assembly uses clang's
 integrated assembler and ld.lld when the `arm-none-eabi` binutils are
 absent (documented fallback, never a silent pass).
 
+## Disk loading (`std/bad/disk.bad`)
+
+`std/bad/disk.bad` provides the bootstrapper's "load a kernel" step. The
+portable `load_image src, dst, len` defn is a copy loop (universal ops —
+inlined at invocation); the SOURCE differs per target: x86_64 real-mode
+has a `read_sectors` raw block (BIOS INT 13h), while riscv64/aarch64/
+thumb load an already-in-RAM image (qemu `-kernel`). Real AHCI/NVMe
+drivers are out of scope — the abstraction is the shared copy primitive
+over per-arch raw disk/MMIO sources.
+
 ## CSR access (riscv64 M-mode)
 
 `csrr d, csr` / `csrw csr, s` / `csrs csr, s` / `csrc csr, s` read/write/
