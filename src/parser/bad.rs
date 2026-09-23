@@ -89,27 +89,7 @@ impl<'s> Parser<'s> {
             // Local label `.name:` — nests into the owning label's body
             // (directives never carry a colon, so the colon keeps the
             // token-shape disambiguation honest).
-            if content.starts_with('.') && is_local_label_shape(content) {
-                match owner.as_ref() {
-                    Some(Owner::Label(i)) => {
-                        self.append_local(*i, content, span);
-                    }
-                    Some(Owner::Defn { idx, branch_rows, .. }) => {
-                        self.append_defn_local(*idx, *branch_rows, content, span)?;
-                    }
-                    _ => {
-                        return Err(BadParseError {
-                            message: format!(
-                                "local label `{content}` is outside any label - \
-                                 local labels must follow a global label or sit inside \
-                                 a defn body"
-                            ),
-                            line,
-                            span,
-                        });
-                    }
-                }
-                self.pos += 1;
+            if self.try_local(&mut owner, content, line, span)? {
                 continue;
             }
 
@@ -186,6 +166,38 @@ impl<'s> Parser<'s> {
         Ok(BadProgram { items: self.items, span: Span::new(0, end, 0, 0) })
     }
 
+
+    /// `.name:` local label. Returns true when the line was consumed.
+    fn try_local(
+        &mut self, owner: &mut Option<Owner>, content: &str, line: usize, span: Span,
+    ) -> Result<bool, BadParseError> {
+        if !(content.starts_with('.') && is_local_label_shape(content)) {
+            return Ok(false);
+        }
+        match owner.as_ref() {
+            Some(Owner::Label(i)) => {
+                let i = *i;
+                self.append_local(i, content, span);
+            }
+            Some(Owner::Defn { idx, branch_rows, .. }) => {
+                let (idx, branch_rows) = (*idx, *branch_rows);
+                self.append_defn_local(idx, branch_rows, content, span)?;
+            }
+            _ => {
+                return Err(BadParseError {
+                    message: format!(
+                        "local label `{content}` is outside any label - \
+                         local labels must follow a global label or sit inside \
+                         a defn body"
+                    ),
+                    line,
+                    span,
+                });
+            }
+        }
+        self.pos += 1;
+        Ok(true)
+    }
 
     fn append_local(&mut self, idx: usize, content: &str, span: Span) {
         let name = split_label(content).map(|(n, _)| n[1..].to_string()).unwrap_or_default();

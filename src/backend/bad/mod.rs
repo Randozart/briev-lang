@@ -67,6 +67,17 @@ pub fn generate_with_notices(
     Ok((asm, notices))
 }
 
+/// Request bundle for `generate_bad_fn` — six inputs, one struct (the
+/// analysis tools cap functions at five params).
+pub struct BadFnReq<'a> {
+    pub body: &'a str,
+    pub target_triple: &'a str,
+    pub param_env: std::collections::HashMap<String, lower::Bound>,
+    pub bootstrap: bool,
+    pub name: &'a str,
+    pub base_dir: Option<std::path::PathBuf>,
+}
+
 /// 2026-09-21: Compile a `bad fn` body from `.bv` — wrap the body
 /// in an entry label, append `ret`, parse as a .bad program, and lower
 /// with pre-bound parameter registers.
@@ -75,65 +86,62 @@ pub fn generate_with_notices(
 /// parsed VERBATIM (no `_entry:` wrap, no auto-`ret`). The author owns
 /// the vector table, `.text.start`, sp/.bss setup, and the handoff
 /// (`call main` / park / jump).
-pub fn generate_bad_fn(
-    body: &str,
-    target_triple: &str,
-    param_env: std::collections::HashMap<String, lower::Bound>,
-    bootstrap: bool,
-    bootstrap_name: &str,
-    base_dir: Option<std::path::PathBuf>,
-) -> Result<String, String> {
-    let program: BadProgram = if bootstrap {
-        // The authored machine entry: parsed VERBATIM, the entry label
-        // auto-exported (the linker script's ENTRY names it). The body
-        // MUST declare a label with the bootstrap fn name — it IS the
-        // machine entry symbol.
-        let trimmed = body.trim();
-        let mut with_export = format!(".global {bootstrap_name}\n");
-        with_export.push_str(trimmed);
-        with_export.push('\n');
-        parse_bad(&with_export).map_err(|e| format!("bootstrap bad body: line {}: {}", e.line, e.message))?
-    } else {
-        // Wrap body in an entry label and ensure it ends with `ret`.
-        // Leading `import` lines (prepended .bv-top-level .bad imports)
-        // must come BEFORE the `_entry:` label — an import directive
-        // closes the current owner, so a label after it would orphan the
-        // following instructions.
-        let mut imports = String::new();
-        let trimmed = body.trim();
-        let rest: Vec<&str> = trimmed
-            .lines()
-            .skip_while(|l| {
-                let t = l.trim();
-                if t.starts_with("import ") {
-                    imports.push_str(l);
-                    imports.push('\n');
-                    true
-                } else {
-                    false
-                }
-            })
-            .collect();
-        let mut wrapped = imports;
-        // The entry label is the FN NAME (not a generic `_entry`) so the
-        // LLVM-side `declare @<name>` resolves the symbol at link — and it
-        // must be GLOBAL (the .bv caller lives in another translation unit).
-        wrapped.push_str(&format!(".global {bootstrap_name}\n{bootstrap_name}:\n"));
-        wrapped.push_str(&rest.join("\n"));
-        // Auto-append `ret` if the body doesn't already end with one.
-        let last_line = rest.last().unwrap_or(&"").trim();
-        if last_line != "ret" && !last_line.ends_with("ret") {
-            wrapped.push_str("\nret");
-        }
-        wrapped.push('\n');
-        parse_bad(&wrapped).map_err(|e| format!("bad fn body: line {}: {}", e.line, e.message))?
-    };
+pub fn generate_bad_fn(req: BadFnReq<'_>) -> Result<String, String> {
+    let program = prepare_bad_source(req.body, req.name, req.bootstrap)?;
     let (isa, regs) = registries();
-    let family = target_triple.split('-').next().unwrap_or(target_triple);
+    let family = req.target_triple.split('-').next().unwrap_or(req.target_triple);
     lower::Lowerer::new(&isa, &regs, family)
-        .with_base_dir(base_dir)
-        .with_param_env(param_env)
+        .with_base_dir(req.base_dir)
+        .with_param_env(req.param_env)
         .run(&program)
+}
+
+/// Source wrapping for `generate_bad_fn`: bootstrap bodies parse VERBATIM
+/// (entry label auto-exported); ordinary fn bodies get a global entry
+/// label named after the fn, leading `import` lines hoisted above it, and
+/// an auto-`ret` when the body does not end with one.
+fn prepare_bad_source(body: &str, name: &str, bootstrap: bool) -> Result<BadProgram, String> {
+    if bootstrap {
+        // The authored machine entry: the body MUST declare a label with
+        // the bootstrap fn name — it IS the machine entry symbol.
+        let mut with_export = format!(".global {name}\n");
+        with_export.push_str(body.trim());
+        with_export.push('\n');
+        return parse_bad(&with_export)
+            .map_err(|e| format!("bootstrap bad body: line {}: {}", e.line, e.message));
+    }
+    // Leading `import` lines (prepended .bv-top-level .bad imports) must
+    // come BEFORE the `_entry:` label — an import directive closes the
+    // current owner, so a label after it would orphan the following
+    // instructions.
+    let mut imports = String::new();
+    let rest: Vec<&str> = body
+        .trim()
+        .lines()
+        .skip_while(|l| {
+            let t = l.trim();
+            if t.starts_with("import ") {
+                imports.push_str(l);
+                imports.push('\n');
+                true
+            } else {
+                false
+            }
+        })
+        .collect();
+    let mut wrapped = imports;
+    // The entry label is the FN NAME (not a generic `_entry`) so the
+    // LLVM-side `declare @<name>` resolves the symbol at link — and it
+    // must be GLOBAL (the .bv caller lives in another translation unit).
+    wrapped.push_str(&format!(".global {name}\n{name}:\n"));
+    wrapped.push_str(&rest.join("\n"));
+    // Auto-append `ret` if the body doesn't already end with one.
+    let last_line = rest.last().unwrap_or(&"").trim();
+    if last_line != "ret" && !last_line.ends_with("ret") {
+        wrapped.push_str("\nret");
+    }
+    wrapped.push('\n');
+    parse_bad(&wrapped).map_err(|e| format!("bad fn body: line {}: {}", e.line, e.message))
 }
 
 /// Whether the cross toolchain for `family` is installed — the cross_as
@@ -176,32 +184,53 @@ pub fn assemble(text: &str, triple: &str, out_path: &std::path::Path) -> Result<
             "no cross_as row for target `{family}` - add one to bad-registers.dbvl"
         )
     })?;
-    let flags: Vec<&str> = match family {
-        "x86_64" => vec!["--64"],
-        // riscv64 bare-metal: soft-float (matches clang's `-none` default
-        // and the .bv object); hosted linux keeps the lp64d default.
-        "riscv64" if !triple.contains("linux") => vec!["-mabi=lp64"],
-        _ => vec![],
-    };
+    let flags = as_flags(family, triple);
     let s_path = out_path.with_extension("s");
     std::fs::write(&s_path, text)
         .map_err(|e| format!("cannot write '{}': {}", s_path.display(), e))?;
     // Preferred toolchain: the cross_as bin. If it is not installed, a
     // thumb/arm family falls back to clang's integrated assembler.
-    let preferred = std::process::Command::new(as_bin).arg("--version").output().ok();
-    let bin: &str = if preferred.as_ref().map(|o| o.status.success()).unwrap_or(false) {
-        as_bin
-    } else if (family.starts_with("thumb") || family.starts_with("arm")) && clang_available() {
-        return clang_assemble(triple, &s_path, out_path);
-    } else {
+    if !bin_responsive(&as_bin) {
+        if (family.starts_with("thumb") || family.starts_with("arm")) && clang_available() {
+            return clang_assemble(triple, &s_path, out_path);
+        }
         return Err(format!(
             "cannot run `{as_bin}` for `{family}` - install the cross binutils, or \
              (thumb/arm) clang's integrated assembler"
         ));
-    };
+    }
+    run_as(&as_bin, &flags, &s_path, out_path, family)
+}
+
+/// Assembler flags per family — the full triple only matters for riscv64
+/// bare-metal (`-mabi=lp64` soft-float matches the .bv side's default;
+/// hosted `-linux` stays lp64d).
+fn as_flags(family: &str, triple: &str) -> Vec<&'static str> {
+    match family {
+        "x86_64" => vec!["--64"],
+        "riscv64" if !triple.contains("linux") => vec!["-mabi=lp64"],
+        _ => vec![],
+    }
+}
+
+/// Whether the named tool runs (`--version` probe).
+fn bin_responsive(bin: &str) -> bool {
+    std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run the cross assembler over the emitted `.s`.
+fn run_as(
+    bin: &str, flags: &[&str], s_path: &std::path::Path, out_path: &std::path::Path,
+    family: &str,
+) -> Result<(), String> {
     let status = std::process::Command::new(bin)
-        .args(&flags)
-        .arg(&s_path)
+        .args(flags)
+        .arg(s_path)
         .arg("-o")
         .arg(out_path)
         .status()
@@ -218,12 +247,7 @@ pub fn assemble(text: &str, triple: &str, out_path: &std::path::Path) -> Result<
 }
 
 fn clang_available() -> bool {
-    std::process::Command::new("clang")
-        .arg("--version")
-        .output()
-        .ok()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    bin_responsive("clang")
 }
 
 /// Assemble bare-metal thumb/arm with clang's integrated assembler.
@@ -1251,7 +1275,15 @@ mod bootstrap_bad_tests {
         let body = "section .isr_vector\nsp_slot: .word 0x2007C000\n\
                     reset_v: .word Reset_Handler + 1\n\
                     section .text.start\nReset_Handler:\n    mov r0, 1\n    halt\n";
-        let asm = generate_bad_fn(body, "thumbv7m-none-eabi", std::collections::HashMap::new(), true, "Reset_Handler", None).unwrap();
+        let asm = generate_bad_fn(BadFnReq {
+            body,
+            target_triple: "thumbv7m-none-eabi",
+            param_env: std::collections::HashMap::new(),
+            bootstrap: true,
+            name: "Reset_Handler",
+            base_dir: None,
+        })
+        .unwrap();
         assert!(asm.contains(".global Reset_Handler"), "{asm}");
         assert!(asm.contains(".isr_vector"), "{asm}");
         assert!(asm.contains("Reset_Handler:"), "{asm}");
@@ -1263,7 +1295,15 @@ mod bootstrap_bad_tests {
     fn regular_bad_fn_still_wraps_and_appends_ret() {
         // The wrap uses the FN NAME (global) so the LLVM declare @add
         // resolves; the auto-ret appends for the return path.
-        let asm = generate_bad_fn("add r0, r1, r2\n", "x86_64", std::collections::HashMap::new(), false, "add", None).unwrap();
+        let asm = generate_bad_fn(BadFnReq {
+            body: "add r0, r1, r2\n",
+            target_triple: "x86_64",
+            param_env: std::collections::HashMap::new(),
+            bootstrap: false,
+            name: "add",
+            base_dir: None,
+        })
+        .unwrap();
         assert!(asm.contains(".global add"), "{asm}");
         assert!(asm.contains("add:"), "{asm}");
         assert!(asm.contains("ret"), "{asm}");
@@ -1415,7 +1455,15 @@ mod interpretation_b_tests {
     fn bad_fn_label_is_global_fn_name() {
         // The wrap uses the fn NAME (global) so the LLVM declare @name
         // resolves across translation units.
-        let asm = generate_bad_fn("call putc\n", "riscv64", std::collections::HashMap::new(), false, "boot_putc", None).unwrap();
+        let asm = generate_bad_fn(BadFnReq {
+            body: "call putc\n",
+            target_triple: "riscv64",
+            param_env: std::collections::HashMap::new(),
+            bootstrap: false,
+            name: "boot_putc",
+            base_dir: None,
+        })
+        .unwrap();
         assert!(asm.contains(".global boot_putc"), "{asm}");
         assert!(asm.contains("boot_putc:"), "{asm}");
     }
@@ -1428,7 +1476,15 @@ mod interpretation_b_tests {
         let dir = test_dir("ib");
         std::fs::write(dir.join("arch.bad"), "\n").ok();
         let body = "import \"arch.bad\"\ncall putc\n";
-        let asm = generate_bad_fn(body, "riscv64", std::collections::HashMap::new(), false, "boot_putc", Some(dir.clone())).unwrap();
+        let asm = generate_bad_fn(BadFnReq {
+            body,
+            target_triple: "riscv64",
+            param_env: std::collections::HashMap::new(),
+            bootstrap: false,
+            name: "boot_putc",
+            base_dir: Some(dir.clone()),
+        })
+        .unwrap();
         let label_idx = asm.find("boot_putc:").unwrap_or(usize::MAX);
         assert!(asm.contains(".global boot_putc"), "{asm}");
         assert!(asm.contains("call putc"), "{asm}");

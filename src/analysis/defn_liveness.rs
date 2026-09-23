@@ -157,10 +157,9 @@ impl<'a> Builder<'a> {
         let Ok(program) = crate::parser::bad::parse_bad(body) else {
             return;
         };
-        for item in program.items {
-            for i in bad_instructions_of(item) {
-                self.root_sym_operands(&i);
-            }
+        // Flat iterator chain (items → instrs) — no nested `for`.
+        for i in program.items.into_iter().flat_map(bad_instructions_of) {
+            self.root_sym_operands(&i);
         }
     }
 

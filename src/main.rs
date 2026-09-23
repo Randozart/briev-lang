@@ -514,7 +514,20 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
 ///
 /// 2026-09-21 (bad-dialect plan): .bad is a separate dialect — it never
 /// enters the .bv pipeline.
-fn run_bad(args: &[String]) -> Result<(), String> {
+/// CLI options for `brievc bad` — parsed once, consumed by the pipeline.
+struct BadCli {
+    file_path: String,
+    triple: String,
+    emit_asm: bool,
+    with_libc: bool,
+    trace: bool,
+    run: bool,
+    raw: bool,
+    raw_bin: bool,
+    no_link: bool,
+}
+
+fn parse_bad_cli(args: &[String]) -> Result<BadCli, String> {
     let file_path = args.first().ok_or(
         "usage: brievc bad <file.bad> [--target <triple>] [--emit-asm] [--with-libc] \
          [--raw-bin] [--run]",
@@ -524,192 +537,136 @@ fn run_bad(args: &[String]) -> Result<(), String> {
             "bad: `{file_path}` is not a .bad file - the dialect compiles .bad sources only"
         ));
     }
-    let mut triple: Option<String> = None;
-    let mut emit_asm = false;
-    let mut with_libc = false;
-    let mut trace = false;
-    let mut run = false;
-    let mut raw = false;
-    let mut raw_bin = false;
-    let mut no_link = false;
+    let mut cli = BadCli {
+        file_path: file_path.clone(),
+        triple: "x86_64-unknown-linux-gnu".to_string(),
+        emit_asm: false,
+        with_libc: false,
+        trace: false,
+        run: false,
+        raw: false,
+        raw_bin: false,
+        no_link: false,
+    };
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--target" => {
                 i += 1;
-                triple = Some(args.get(i).cloned().ok_or("bad: --target needs a triple")?);
+                cli.triple = args.get(i).cloned().ok_or("bad: --target needs a triple")?;
             }
-            "--emit-asm" => emit_asm = true,
-            "--with-libc" => with_libc = true,
-            "--trace-lowering" => trace = true,
-            "--run" => run = true,
-            "--raw" => raw = true,
+            "--emit-asm" => cli.emit_asm = true,
+            "--with-libc" => cli.with_libc = true,
+            "--trace-lowering" => cli.trace = true,
+            "--run" => cli.run = true,
+            "--raw" => cli.raw = true,
             // 2026-09-22: extract the flat loadable image (boot sector /
             // firmware blob) from the linked ELF via objcopy -O binary.
-            "--raw-bin" => raw_bin = true,
+            "--raw-bin" => cli.raw_bin = true,
             // 2026-09-22: with --raw-bin, skip the link (flat boot sectors
             // with 16-bit relocs cannot link); objcopy the object directly.
-            "--no-link" => no_link = true,
+            "--no-link" => cli.no_link = true,
             other => return Err(format!("bad: unknown option `{other}`")),
         }
         i += 1;
     }
-    let triple = triple.unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
+    Ok(cli)
+}
 
-    let source = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("bad: cannot read '{}': {}", file_path, e))?;
-    let base_dir = std::path::Path::new(file_path).parent().map(|p| p.to_path_buf());
-    let asm = briev_compiler::backend::bad::generate_with(
-        &source,
-        &triple,
-        trace,
-        base_dir.as_deref(),
-        !raw,
-    )
-    .map_err(|e| format!("bad: {e}"))?;
-
-    let stem = std::path::Path::new(file_path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "program".to_string());
-    let family = triple.split('-').next().unwrap_or(&triple).to_string();
-    let s_path = std::path::Path::new(file_path)
-        .with_extension("s")
-        .to_path_buf();
-    std::fs::write(&s_path, &asm)
-        .map_err(|e| format!("bad: cannot write '{}': {}", s_path.display(), e))?;
-    println!("wrote {}", s_path.display());
-    if emit_asm {
-        return Ok(());
-    }
-
-    let o_path = std::path::Path::new(file_path)
-        .with_extension("o")
-        .to_path_buf();
-    briev_compiler::backend::bad::assemble(&asm, &triple, &o_path)
-        .map_err(|e| format!("bad: {e}"))?;
-    println!("wrote {}", o_path.display());
-
-    let bin_path = std::path::PathBuf::from(&stem);
-    let (_, regs) = briev_compiler::backend::bad::registries();
-    // Preferred linker: the cross_ld row. For thumb/arm bare-metal (no
-    // arm-none-eabi-ld installed), ld.lld links the object directly.
-    let ld_row = regs.cross_ld(&family).unwrap_or("ld").to_string();
-    let ld_bin = if std::process::Command::new(&ld_row)
-        .arg("--version").output().ok()
-        .map(|o| o.status.success()).unwrap_or(false)
-    {
-        ld_row.clone()
-    } else if (family.starts_with("thumb") || family.starts_with("arm"))
-        && std::process::Command::new("ld.lld").arg("--version").output().ok()
-            .map(|o| o.status.success()).unwrap_or(false)
-    {
-        "ld.lld".to_string()
-    } else {
-        ld_row
+/// Preferred linker: the cross_ld row. For thumb/arm bare-metal (no
+/// arm-none-eabi-ld installed), ld.lld links the object directly.
+fn pick_ld_bin(
+    family: &str, regs: &briev_compiler::backend::bad::registry::BadRegisters,
+) -> String {
+    let responsive = |bin: &str| {
+        std::process::Command::new(bin)
+            .arg("--version")
+            .output()
+            .ok()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     };
-    // 2026-09-22: --raw-bin extracts the flat image. Link first (merges
-// sections — a multiboot header in its own section lands in the flat
-// image); --no-link skips the link for flat boot sectors whose 16-bit
-// relocs a 64-bit link cannot handle (objcopy flattens the .o instead).
-    if raw_bin && !no_link {
-        let mut link = std::process::Command::new(&ld_bin);
-        for flag in regs.cross_ld_flags(&family) {
-            link.arg(flag);
-        }
-        link.arg(&o_path).arg("-o").arg(&bin_path);
-        if with_libc {
-            match regs.dynamic_linker(&family) {
-                Some(dl) => {
-                    link.arg("-lc").arg("--dynamic-linker").arg(dl);
-                }
-                None => {
-                    return Err(format!(
-                        "bad: no dynamic-linker row for `{family}` in bad-registers.dbvl - \
-                         add one to use --with-libc"
-                    ));
-                }
-            }
-        }
-        let status = link
-            .status()
-            .map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
-        if !status.success() {
-            return Err(format!(
-                "bad: linking failed for `{family}` - the program needs an entry label \
-                 (e.g. `_start:`) or external symbols the freestanding link cannot resolve"
-            ));
-        }
-        println!("wrote {}", bin_path.display());
-        let src = &bin_path;
-        let bin_img = std::path::PathBuf::from(format!("{stem}.bin"));
-        let oc = if family == "x86_64" { "objcopy" } else { "llvm-objcopy" };
-        let status = std::process::Command::new(oc)
-            .arg("-O").arg("binary").arg(src).arg(&bin_img)
-            .status()
-            .map_err(|e| format!("bad: cannot run `{oc}`: {e} - is binutils installed?"))?;
-        if !status.success() {
-            return Err(format!(
-                "bad: objcopy failed to extract the flat image from {}",
-                src.display()
-            ));
-        }
-        println!("wrote {}", bin_img.display());
-    } else if raw_bin && no_link {
-        // Flat boot sector: objcopy the object directly (no link).
-        let bin_img = std::path::PathBuf::from(format!("{stem}.bin"));
-        let oc = if family == "x86_64" { "objcopy" } else { "llvm-objcopy" };
-        let status = std::process::Command::new(oc)
-            .arg("-O").arg("binary").arg(&o_path).arg(&bin_img)
-            .status()
-            .map_err(|e| format!("bad: cannot run `{oc}`: {e} - is binutils installed?"))?;
-        if !status.success() {
-            return Err(format!(
-                "bad: objcopy failed to extract the flat image from {}",
-                o_path.display()
-            ));
-        }
-        println!("wrote {}", bin_img.display());
-    } else {
-        let mut link = std::process::Command::new(&ld_bin);
-        for flag in regs.cross_ld_flags(&family) {
-            link.arg(flag);
-        }
-        link.arg(&o_path).arg("-o").arg(&bin_path);
-        if with_libc {
-            match regs.dynamic_linker(&family) {
-                Some(dl) => {
-                    link.arg("-lc").arg("--dynamic-linker").arg(dl);
-                }
-                None => {
-                    return Err(format!(
-                        "bad: no dynamic-linker row for `{family}` in bad-registers.dbvl - \
-                         add one to use --with-libc"
-                    ));
-                }
-            }
-        }
-        let status = link
-            .status()
-            .map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
-        if !status.success() {
-            return Err(format!(
-                "bad: linking failed for `{family}` - the program needs an entry label \
-                 (e.g. `_start:`) or external symbols the freestanding link cannot resolve"
-            ));
-        }
-        println!("wrote {}", bin_path.display());
+    let ld_row = regs.cross_ld(family).unwrap_or("ld").to_string();
+    if responsive(&ld_row) {
+        return ld_row;
     }
-    if !run {
-        return Ok(());
+    if (family.starts_with("thumb") || family.starts_with("arm")) && responsive("ld.lld") {
+        return "ld.lld".to_string();
     }
-    // Non-host families run under qemu-<family>; the gnu cross sysroot
-    // (when present) feeds -L so dynamic loaders resolve.
+    ld_row
+}
+
+/// Link the assembled object into an ELF — one path for both the
+/// --raw-bin pre-link and the ordinary output (the two branches were
+/// duplicated verbatim before 2026-09-22's split refactor). The linker
+/// bin comes from `pick_ld_bin` inside so the signature stays within
+/// the five-param analysis bound.
+fn link_bad(
+    o_path: &std::path::Path,
+    bin_path: &std::path::Path,
+    family: &str,
+    with_libc: bool,
+    regs: &briev_compiler::backend::bad::registry::BadRegisters,
+) -> Result<(), String> {
+    let ld_bin = pick_ld_bin(family, regs);
+    let mut link = std::process::Command::new(&ld_bin);
+    for flag in regs.cross_ld_flags(family) {
+        link.arg(flag);
+    }
+    link.arg(o_path).arg("-o").arg(bin_path);
+    if with_libc {
+        let dl = regs.dynamic_linker(family).ok_or_else(|| {
+            format!(
+                "bad: no dynamic-linker row for `{family}` in bad-registers.dbvl - \
+                 add one to use --with-libc"
+            )
+        })?;
+        link.arg("-lc").arg("--dynamic-linker").arg(dl);
+    }
+    let status =
+        link.status().map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
+    if !status.success() {
+        return Err(format!(
+            "bad: linking failed for `{family}` - the program needs an entry label \
+             (e.g. `_start:`) or external symbols the freestanding link cannot resolve"
+        ));
+    }
+    println!("wrote {}", bin_path.display());
+    Ok(())
+}
+
+/// objcopy -O binary: flat image from the linked ELF (or directly from
+/// the object under --no-link).
+fn objcopy_flat(
+    src: &std::path::Path, stem: &str, family: &str,
+) -> Result<(), String> {
+    let bin_img = std::path::PathBuf::from(format!("{stem}.bin"));
+    let oc = if family == "x86_64" { "objcopy" } else { "llvm-objcopy" };
+    let status = std::process::Command::new(oc)
+        .arg("-O")
+        .arg("binary")
+        .arg(src)
+        .arg(&bin_img)
+        .status()
+        .map_err(|e| format!("bad: cannot run `{oc}`: {e} - is binutils installed?"))?;
+    if !status.success() {
+        return Err(format!(
+            "bad: objcopy failed to extract the flat image from {}",
+            src.display()
+        ));
+    }
+    println!("wrote {}", bin_img.display());
+    Ok(())
+}
+
+/// `--run`: host exec, or qemu-<family> with the gnu cross sysroot
+/// (`-L` when present, so dynamic loaders resolve). Always exits.
+fn run_bad_binary(bin_path: &std::path::Path, family: &str) -> Result<(), String> {
     let host = "x86_64"; // MVP: the compiler's own host family
     if family == host {
-        let abs = bin_path.canonicalize().map_err(|e| {
-            format!("bad: cannot resolve '{}': {e}", bin_path.display())
-        })?;
+        let abs = bin_path
+            .canonicalize()
+            .map_err(|e| format!("bad: cannot resolve '{}': {e}", bin_path.display()))?;
         let status = std::process::Command::new(abs)
             .status()
             .map_err(|e| format!("bad: cannot run '{}': {e}", bin_path.display()))?;
@@ -721,16 +678,65 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     if std::path::Path::new(&sysroot).is_dir() {
         cmd.arg("-L").arg(&sysroot);
     }
-    let status = cmd
-        .arg(&bin_path)
-        .status()
-        .map_err(|e| {
-            format!(
-                "bad: cannot run `{qemu}`: {e} - install qemu-user for {family} to \
-                 use --run"
-            )
-        })?;
+    let status = cmd.arg(bin_path).status().map_err(|e| {
+        format!(
+            "bad: cannot run `{qemu}`: {e} - install qemu-user for {family} to \
+             use --run"
+        )
+    })?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+fn run_bad(args: &[String]) -> Result<(), String> {
+    let cli = parse_bad_cli(args)?;
+    let source = std::fs::read_to_string(&cli.file_path)
+        .map_err(|e| format!("bad: cannot read '{}': {}", cli.file_path, e))?;
+    let base_dir = std::path::Path::new(&cli.file_path).parent().map(|p| p.to_path_buf());
+    let asm = briev_compiler::backend::bad::generate_with(
+        &source,
+        &cli.triple,
+        cli.trace,
+        base_dir.as_deref(),
+        !cli.raw,
+    )
+    .map_err(|e| format!("bad: {e}"))?;
+
+    let stem = std::path::Path::new(&cli.file_path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "program".to_string());
+    let family = cli.triple.split('-').next().unwrap_or(&cli.triple).to_string();
+    let s_path = std::path::Path::new(&cli.file_path).with_extension("s").to_path_buf();
+    std::fs::write(&s_path, &asm)
+        .map_err(|e| format!("bad: cannot write '{}': {}", s_path.display(), e))?;
+    println!("wrote {}", s_path.display());
+    if cli.emit_asm {
+        return Ok(());
+    }
+
+    let o_path = std::path::Path::new(&cli.file_path).with_extension("o").to_path_buf();
+    briev_compiler::backend::bad::assemble(&asm, &cli.triple, &o_path)
+        .map_err(|e| format!("bad: {e}"))?;
+    println!("wrote {}", o_path.display());
+
+    let bin_path = std::path::PathBuf::from(&stem);
+    let (_, regs) = briev_compiler::backend::bad::registries();
+    // 2026-09-22: --raw-bin extracts the flat image. Link first (merges
+    // sections — a multiboot header in its own section lands in the flat
+    // image); --no-link skips the link for flat boot sectors whose 16-bit
+    // relocs a 64-bit link cannot handle (objcopy flattens the .o instead).
+    if cli.raw_bin && cli.no_link {
+        objcopy_flat(&o_path, &stem, &family)?;
+    } else {
+        link_bad(&o_path, &bin_path, &family, cli.with_libc, &regs)?;
+        if cli.raw_bin {
+            objcopy_flat(&bin_path, &stem, &family)?;
+        }
+    }
+    if !cli.run {
+        return Ok(());
+    }
+    run_bad_binary(&bin_path, &family)
 }
 
 /// `brievc bounty <file.bv>` — package a .bounty for install-time compilation.

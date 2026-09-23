@@ -1,0 +1,21 @@
+# Target profiles for the universal bootstrapper (examples/bad/*.bv).
+# Used by `brievc build <file> --all-targets` — one source, one command,
+# one binary per profile (gates/tests/bare/qemu-universal-all.sh).
+# Linker-script paths are repo-root-relative: gates run from the repo root.
+# The x86_64 path is exercised through the .bad pipeline (qemu-universal-x86.sh),
+# not this manifest — its prologue is a multiboot2 raw block, a linked-ELF route.
+
+[target.rv64]
+triple = "riscv64-unknown-none"
+linker_script = "lib/targets/qemu-virt-rv64.ld"
+entry = "Reset_Handler"
+
+[target.arm]
+triple = "thumbv7m-none-eabi"
+linker_script = "lib/targets/qemu-mps2-an385.ld"
+entry = "Reset_Handler"
+
+[target.aarch64]
+triple = "aarch64-unknown-none"
+linker_script = "lib/targets/qemu-virt-aarch64.ld"
+entry = "Reset_Handler"

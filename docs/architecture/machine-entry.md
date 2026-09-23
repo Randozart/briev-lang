@@ -29,6 +29,16 @@ and the compiler emits NO owned `_start` — the `.bad` body IS the entry
 (see `docs/architecture/bad-dialect.md`). QEMU-verified on the
 MPS2-AN385 via `examples/bad/boot_mps2.bv`.
 
+**The universal bootstrapper** (2026-09-22): one `.bv` source
+(`examples/bad/bootloader.bv`) with `bootstrap bad Reset_Handler` imports
+the per-arch prologues from `std/bad/arch.bad` (named raw blocks —
+`uart_init`/`putc` per family: riscv64, thumbv7m, x86_64 multiboot2,
+aarch64) and the portable core calls them; one `brievc build
+--all-targets` produces a binary per `[target.*]` profile. The same
+program may hand off to typed `.bv` code (Interpretation B — see
+bad-dialect.md) and set `sp` from `_stack_top` first, because the
+bootstrap owns the machine entry.
+
 **Both entry forms imply embedded mode on a freestanding (non-linux)
 triple** (2026-09-22): the `_start` emitter, static bump heap, and no-argv
 capture activate automatically — the `.b` suffix modifier is NOT needed

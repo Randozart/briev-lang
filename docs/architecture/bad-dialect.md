@@ -308,12 +308,53 @@ core: [r2 valid]
 ```
 
 `examples/bad/bootloader.bv` is this pattern: one source booting riscv64
-(QEMU virt), thumbv7m (MPS2-AN385), and x86_64 (multiboot2) with only the
-prologues in `arch.bad`. A `bootstrap bad` body can also CALL a real `.bv`
-defn (`call kernel_bv`) — `defn_liveness` roots symbols referenced from
-bootstrap bodies, so the handoff target is emitted. The console write
-goes through a per-arch `putc` named raw block (store width differs per
-UART: MPS2 wants byte stores, the virt 16550 a full-width store).
+(QEMU virt), thumbv7m (MPS2-AN385), x86_64 (multiboot2), and aarch64
+(QEMU virt, PL011 UART) with only the prologues in `arch.bad`. A
+`bootstrap bad` body can also CALL a real `.bv` defn (`call kernel_bv`)
+— `defn_liveness` roots symbols referenced from bootstrap bodies, so the
+handoff target is emitted. The console write goes through a per-arch
+`putc` named raw block (store width differs per UART: MPS2 wants byte
+stores, the virt 16550 a full-width store).
+
+`brievc build <file> --all-targets` builds one source for EVERY
+`[target.*]` profile in `briev.toml` in a single invocation — a profile
+may carry `triple`, `linker_script`, and `entry` (the bootstrap bad
+symbol) as per-target overrides of the CLI defaults. One command → all
+binaries (`bin/<profile>/…`), each booting its family's prologue.
+
+## Interpretation B — `.bv` typed calls to `.bad` primitives
+
+The full chain: `.bv` code calls a `.bad` primitive as a typed,
+contract-checked function.
+
+```briev
+bad boot_putc(c: Int) -> Int [result == 1] {
+    mov r0, c
+    jmp putc          // tail-call the per-arch named raw block
+}
+
+defn banner() -> Int { term boot_putc(66); }   // typed .bv call
+```
+
+The `.bv` author declares the typed surface with a `bad fn` (SPEC
+§20 `bad` declaration — compiled through the bad backend, declared in
+LLVM); the `.bad` file provides the per-arch body as a named raw block.
+Contract rules and the ABI are the honest parts:
+
+- **Param binding**: a non-bootstrap `bad` fn's params bind at ABI
+  register index 1 — the `.bv` call passes `%state` first (a1/x1/w1/…).
+- **Tail-call**: a frameless `bad` fn must TAIL-call (`jmp`, never
+  `call`) so it does not clobber the return register — the inner raw
+  block returns directly to the `.bv` caller.
+- **Stack**: a bootstrap bad owns the machine entry; it must set
+  `sp` from `_stack_top` before calling `.bv` code that uses frames.
+- **Symbols**: the `bad` fn references the `.bad` symbol by name; the
+  bootstrap object's import provides it (the label is global). Import
+  the same `.bad` into BOTH objects and you get duplicate symbols — one
+  owner.
+
+`examples/bad/typed_boot.bv` is the end-to-end proof: bootstrap →
+`.bv` defn → `bad` fn → per-arch `putc`, QEMU-verified printing "BAD".
 
 ## Boot sectors (`--raw-bin` + `int`)
 

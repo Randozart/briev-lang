@@ -188,65 +188,7 @@ impl<'a> Lowerer<'a> {
         // acknowledged with `^`/`^^`/`^^^`. Recorded, never silent; they
         // do not block emission.
         self.collect_notices(&emit_items);
-        for item in &emit_items {
-            match item {
-                BadTopLevel::Directive(d) => self.emit_directive(d),
-                BadTopLevel::Data(d) => {
-                    contracts::check_data_label(d, &mut self.errors);
-                    let args = self.resolve_data_args(&d.directive.args);
-                    self.push_line(&format!("{}: {} {}", d.name, d.directive.name, args));
-                }
-                BadTopLevel::Alias(_) | BadTopLevel::Defn(_) => {}
-                BadTopLevel::Label(l) => self.emit_label(l),
-                // 2026-09-22: raw <target> ... end — verbatim for the
-                // active family, skipped otherwise. A named block emits
-                // its callable label AFTER any leading `.section` lines
-                // (a label before `.section` points at the old section's
-                // address, splitting the symbol from its code — the
-                // aarch64/thumb uart_init blocks open with sections).
-                BadTopLevel::RawBlock(b) => {
-                    if self.family.starts_with(&b.target) {
-                        if let Some(name) = &b.name {
-                            // The label goes AFTER the last leading `.section`
-                            // line (and any data it opens) — a label before a
-                            // section switch points at the wrong address,
-                            // splitting the symbol from its code. The thumb
-                            // uart_init opens `.isr_vector` (data), then
-                            // `.text` (code): the label must land after the
-                            // final `.section .text`.
-                            let last_sec = b
-                                .lines
-                                .iter()
-                                .rposition(|l| l.trim_start().starts_with(".section"));
-                            match last_sec {
-                                Some(i) => {
-                                    for line in b.lines.iter().take(i + 1) {
-                                        self.push_line(line);
-                                    }
-                                    // Named raw blocks are callable across
-                                    // objects (a .bv `bad fn` or another
-                                    // .bad body may `call` them) — global.
-                                    self.push_line(&format!(".global {name}\n{name}:"));
-                                    for line in b.lines.iter().skip(i + 1) {
-                                        self.push_line(line);
-                                    }
-                                }
-                                None => {
-                                    self.push_line(&format!(".global {name}\n{name}:"));
-                                    for line in &b.lines {
-                                        self.push_line(line);
-                                    }
-                                }
-                            }
-                        } else {
-                            for line in &b.lines {
-                                self.push_line(line);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        self.emit_pass(&emit_items);
 
         self.flush_float_pool();
 
@@ -263,6 +205,65 @@ impl<'a> Lowerer<'a> {
             Ok(std::mem::take(&mut self.out))
         } else {
             Err(self.errors.join("\n"))
+        }
+    }
+
+    /// Pass 2 emission: one match over the flattened items.
+    fn emit_pass(&mut self, items: &[BadTopLevel]) {
+        for item in items {
+            match item {
+                BadTopLevel::Directive(d) => self.emit_directive(d),
+                BadTopLevel::Data(d) => {
+                    contracts::check_data_label(d, &mut self.errors);
+                    let args = self.resolve_data_args(&d.directive.args);
+                    self.push_line(&format!("{}: {} {}", d.name, d.directive.name, args));
+                }
+                BadTopLevel::Alias(_) | BadTopLevel::Defn(_) => {}
+                BadTopLevel::Label(l) => self.emit_label(l),
+                BadTopLevel::RawBlock(b) => self.emit_raw_block(b),
+            }
+        }
+    }
+
+    /// 2026-09-22: raw <target> ... end — verbatim for the active
+    /// family, skipped otherwise. A named block emits its callable label
+    /// AFTER any leading `.section` lines (a label before `.section`
+    /// points at the old section's address, splitting the symbol from
+    /// its code — the aarch64/thumb uart_init blocks open with sections).
+    fn emit_raw_block(&mut self, b: &BadRawBlock) {
+        if !self.family.starts_with(&b.target) {
+            return;
+        }
+        let Some(name) = &b.name else {
+            for line in &b.lines {
+                self.push_line(line);
+            }
+            return;
+        };
+        // The label goes AFTER the last leading `.section` line (and any
+        // data it opens) — a label before a section switch points at the
+        // wrong address, splitting the symbol from its code. The thumb
+        // uart_init opens `.isr_vector` (data), then `.text` (code): the
+        // label must land after the final `.section .text`.
+        let last_sec = b.lines.iter().rposition(|l| l.trim_start().starts_with(".section"));
+        match last_sec {
+            Some(i) => {
+                for line in b.lines.iter().take(i + 1) {
+                    self.push_line(line);
+                }
+                // Named raw blocks are callable across objects (a .bv
+                // `bad fn` or another .bad body may `call` them) — global.
+                self.push_line(&format!(".global {name}\n{name}:"));
+                for line in b.lines.iter().skip(i + 1) {
+                    self.push_line(line);
+                }
+            }
+            None => {
+                self.push_line(&format!(".global {name}\n{name}:"));
+                for line in &b.lines {
+                    self.push_line(line);
+                }
+            }
         }
     }
 

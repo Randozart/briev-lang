@@ -851,7 +851,13 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // objcopy'd from the bootstrap bad .o directly (an MBR-style
             // .code16/.org 510 body cannot link in a 64-bit ELF).
             if !opts.no_link {
-                compile_ll_to_binary(&out_path, &binary_path, &all_objects, &protocol_libs, opts.shared, &bad_fn_objects, bootstrap_entry.as_deref())?;
+                compile_ll_to_binary(&out_path, &binary_path, LinkInputs {
+                    extra_objects: &all_objects,
+                    protocol_libs: &protocol_libs,
+                    shared: opts.shared,
+                    bad_objects: &bad_fn_objects,
+                    bootstrap_entry: bootstrap_entry.as_deref(),
+                })?;
             }
         }
         // 2026-09-22 (bootstrap-bad plan): --raw-bin extracts the flat
@@ -1931,6 +1937,38 @@ fn has_bootstrap_entry(items: &[briev_compiler::ast::TopLevel]) -> bool {
 /// 2026-09-21: Compile `bad fn` bodies through the bad backend.
 /// Each BadFn's body is a standalone .bad program compiled for the
 /// target triple; the resulting .o files are linked into the binary.
+/// Build param_env for one `bad fn`: each .bv param name →
+/// Bound::Token(register), integer params through abi_args, float params
+/// through abi_args_fp. A bootstrap entry is a machine entry, not an ABI
+/// function — no params bind (it owns sp/vector-table/handoff itself). A
+/// NON-bootstrap bad fn is CALLED FROM .bv code, where the LLVM call
+/// passes the implicit %state pointer as the FIRST ABI arg — so the real
+/// params start at register index 1 (a1/x1), not 0.
+fn bad_param_env(
+    bf: &briev_compiler::ast::top::BadFn, abi_args: &[String], abi_args_fp: &[String],
+) -> std::collections::HashMap<String, briev_compiler::backend::bad::lower::Bound> {
+    use briev_compiler::backend::bad::lower::Bound;
+    let mut param_env = std::collections::HashMap::new();
+    let mut r_idx = if bf.bootstrap { 0usize } else { 1usize };
+    let mut f_idx = 0usize;
+    for (pname, pty) in &bf.params {
+        let type_name = pty.to_string();
+        let is_float = type_name.starts_with("Float") || type_name.starts_with("F32")
+            || type_name.starts_with("F64") || type_name == "Double";
+        let reg = if is_float {
+            let r = abi_args_fp.get(f_idx).cloned().unwrap_or_else(|| format!("f{f_idx}"));
+            f_idx += 1;
+            r
+        } else {
+            let r = abi_args.get(r_idx).cloned().unwrap_or_else(|| format!("r{r_idx}"));
+            r_idx += 1;
+            r
+        };
+        param_env.insert(pname.clone(), Bound::Token(reg));
+    }
+    param_env
+}
+
 fn compile_bad_fn_objects(
     items: &[briev_compiler::ast::TopLevel],
     target_triple: &str,
@@ -1952,38 +1990,10 @@ fn compile_bad_fn_objects(
             _ => continue,
         };
         // Build param_env: each .bv param name → Bound::Token(register).
-        // A bootstrap entry is a machine entry, not an ABI function — no
-        // params bind (it owns sp/vector-table/handoff itself).
-        let mut param_env = std::collections::HashMap::new();
-        // A bootstrap entry is a machine entry, not an ABI function — no
-        // params bind (it owns sp/vector-table/handoff itself).
-        // A NON-bootstrap bad fn is CALLED FROM .bv code, where the LLVM
-        // call passes the implicit %state pointer as the FIRST ABI arg —
-        // so the real params start at register index 1 (a1/x1), not 0.
-        let mut r_idx = if bf.bootstrap { 0usize } else { 1usize };
-        let mut f_idx = if bf.bootstrap { 0usize } else { 0usize };
-        for (_pname, pty) in &bf.params {
-            let type_name = pty.to_string();
-            let is_float = type_name.starts_with("Float") || type_name.starts_with("F32")
-                || type_name.starts_with("F64") || type_name == "Double";
-            let reg = if is_float {
-                let r = abi_args_fp.get(f_idx).cloned().unwrap_or_else(|| {
-                    format!("f{f_idx}")
-                });
-                f_idx += 1;
-                r
-            } else {
-                let r = abi_args.get(r_idx).cloned().unwrap_or_else(|| {
-                    format!("r{r_idx}")
-                });
-                r_idx += 1;
-                r
-            };
-            param_env.insert(
-                _pname.clone(),
-                briev_compiler::backend::bad::lower::Bound::Token(reg),
-            );
-        }
+        // See bad_param_env for the ABI index rules (bootstrap = no
+        // params; .bv-called fns start at register index 1 — the LLVM
+        // call passes the implicit %state pointer as the first ABI arg).
+        let param_env = bad_param_env(bf, &abi_args, &abi_args_fp);
         // Parse + lower the .bad body.
         // 2026-09-22 (per-arch stdlib boot entries): prepend the .bv-top-level
         // `.bad` imports so the body's `call uart_init` resolves the imported
@@ -1994,12 +2004,14 @@ fn compile_bad_fn_objects(
         }
         body.push_str(&bf.body);
         let asm = briev_compiler::backend::bad::generate_bad_fn(
-            &body,
-            target_triple,
-            param_env,
-            bf.bootstrap,
-            &bf.name,
-            base_dir.clone(),
+            briev_compiler::backend::bad::BadFnReq {
+                body: &body,
+                target_triple,
+                param_env,
+                bootstrap: bf.bootstrap,
+                name: &bf.name,
+                base_dir: base_dir.clone(),
+            },
         )
         .map_err(|e| format!("bad fn `{}`: {}", bf.name, e))?;
         // Assemble to .o.
@@ -2120,7 +2132,19 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
 ///
 /// 2026-07-26: Added `protocol_libs` parameter — library names from
 /// `from #System` frgns are passed as `-l<lib>` flags to clang.
-fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathBuf], protocol_libs: &[String], shared: bool, bad_objects: &[PathBuf], bootstrap_entry: Option<&str>) -> Result<(), String> {
+/// Inputs to `compile_ll_to_binary` beyond the two paths — bundled so
+/// the fn stays within the 6-param analysis bound (2026-09-22: the
+/// bad-fn/bootstrap additions grew the list to 7).
+struct LinkInputs<'a> {
+    extra_objects: &'a [PathBuf],
+    protocol_libs: &'a [String],
+    shared: bool,
+    bad_objects: &'a [PathBuf],
+    bootstrap_entry: Option<&'a str>,
+}
+
+fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>) -> Result<(), String> {
+    let LinkInputs { extra_objects, protocol_libs, shared, bad_objects, bootstrap_entry } = inputs;
     let ll_text = std::fs::read_to_string(ll_path)
         .map_err(|e| format!("cannot read '{}': {}", ll_path, e))?;
     // Extract target triple from the IR (first line: target triple = "..."`)
@@ -2175,76 +2199,7 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
             && protocol_libs.is_empty()
     };
     if freestanding {
-        cmd.args(["-nostdlib", "-no-pie", "-ffreestanding"]);
-        // 2026-09-13: for non-linux targets, use lld (GNU ld may not support
-        // the target arch — e.g. riscv64 emulation is missing from binutils ld)
-        // and the medany code model — QEMU virt RAM sits at 0x80000000, which
-        // overflows medlow's signed-32-bit %hi/%lo addressing (the Linux
-        // kernel / OpenSBI need medany for the same reason).
-        if !triple.contains("linux") {
-            cmd.arg("-fuse-ld=lld");
-            if triple.starts_with("riscv64") {
-                cmd.arg("-mcmodel=medany");
-            }
-            // 2026-09-22 (aarch64 universal target): clang's aarch64 driver
-            // falls through to the host gcc (collect2) which cannot link
-            // aarch64 objects. Pin lld's machine emulation + static output
-            // so the driver stays on lld.
-            if triple.starts_with("aarch64") {
-                cmd.arg("-Wl,-m,aarch64elf");
-                cmd.arg("-static");
-            }
-        }
-        // 2026-09-13 (rv64 capability kernel): linker script passthrough.
-        // Read the linker script path from the IR (the backend emits a module
-        // asm comment `; linker: <path>` when configured). If present, pass
-        // -T <path> to the linker.
-        if let Some(ld_path) = ll_text.lines()
-            .find(|l| l.contains("; linker: "))
-            .and_then(|l| {
-                let start = l.find("; linker: ")?.checked_add(10)?;
-                Some(l[start..].trim().to_string())
-            })
-        {
-            cmd.arg(format!("-T{}", ld_path));
-        }
-        // 2026-09-13: for riscv64 bare-metal, link compiler-rt helpers
-        // (unsigned division/modulo intrinsics that LLVM emits).
-        if triple.starts_with("riscv64") {
-            // Resolve relative to the workspace root (Cargo.toml dir).
-            let workspace_root = std::env::var("CARGO_MANIFEST_DIR")
-                .unwrap_or_else(|_| ".".to_string());
-            let crt_path = std::path::PathBuf::from(&workspace_root)
-                .join("lib/runtime/compiler_rt_rv64.c");
-            if crt_path.exists() {
-                cmd.arg(crt_path);
-            }
-        }
-        // 2026-09-14 (rv64-finish plan Phase 5): ARM bare-metal — same
-        // compiler-rt need, AEABI ABI names (no hardware divider on
-        // Cortex-M3; LLVM emits __aeabi_ldivmod/__aeabi_memclr8). The
-        // division entries are assembly (.S): LLVM calls them with the
-        // AEABI register convention, which C cannot express.
-        if triple.starts_with("thumb") || triple.starts_with("arm") {
-            let workspace_root = std::env::var("CARGO_MANIFEST_DIR")
-                .unwrap_or_else(|_| ".".to_string());
-            for shim in ["lib/runtime/compiler_rt_arm.c", "lib/runtime/compiler_rt_arm.S"] {
-                let crt_path = std::path::PathBuf::from(&workspace_root).join(shim);
-                if crt_path.exists() {
-                    cmd.arg(crt_path);
-                }
-            }
-        }
-        // 2026-09-22 (bootstrap-bad plan): bad fn / `bootstrap bad` objects
-        // link in the freestanding path too — a bootstrap entry lives there.
-        for obj in bad_objects {
-            cmd.arg(obj.as_os_str());
-        }
-        // A `bootstrap bad` is the authored entry — the linker must enter at
-        // its symbol (no owned _start exists).
-        if let Some(entry) = bootstrap_entry {
-            cmd.arg(format!("-Wl,-e,{entry}"));
-        }
+        apply_freestanding(&mut cmd, &triple, &ll_text, bad_objects, bootstrap_entry)?;
     } else {
         for obj in extra_objects {
             cmd.arg(obj.as_os_str());
@@ -2274,6 +2229,90 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
 
     println!("wrote {}", binary_path);
     Ok(())
+}
+
+/// Freestanding link flags: -nostdlib family, cross lld selection,
+/// linker-script passthrough, per-arch compiler-rt shims, bad objects,
+/// and the bootstrap entry symbol (2026-09-13/09-14/09-22 rationale
+/// comments preserved with each block).
+fn apply_freestanding(
+    cmd: &mut Command, triple: &str, ll_text: &str, bad_objects: &[PathBuf],
+    bootstrap_entry: Option<&str>,
+) -> Result<(), String> {
+    cmd.args(["-nostdlib", "-no-pie", "-ffreestanding"]);
+    // 2026-09-13: for non-linux targets, use lld (GNU ld may not support
+    // the target arch — e.g. riscv64 emulation is missing from binutils ld)
+    // and the medany code model — QEMU virt RAM sits at 0x80000000, which
+    // overflows medlow's signed-32-bit %hi/%lo addressing (the Linux
+    // kernel / OpenSBI need medany for the same reason).
+    if !triple.contains("linux") {
+        cmd.arg("-fuse-ld=lld");
+        if triple.starts_with("riscv64") {
+            cmd.arg("-mcmodel=medany");
+        }
+        // 2026-09-22 (aarch64 universal target): clang's aarch64 driver
+        // falls through to the host gcc (collect2) which cannot link
+        // aarch64 objects. Pin lld's machine emulation + static output
+        // so the driver stays on lld.
+        if triple.starts_with("aarch64") {
+            cmd.arg("-Wl,-m,aarch64elf");
+            cmd.arg("-static");
+        }
+    }
+    // 2026-09-13 (rv64 capability kernel): linker script passthrough.
+    // Read the linker script path from the IR (the backend emits a module
+    // asm comment `; linker: <path>` when configured). If present, pass
+    // -T <path> to the linker.
+    if let Some(ld_path) = ll_text.lines()
+        .find(|l| l.contains("; linker: "))
+        .and_then(|l| {
+            let start = l.find("; linker: ")?.checked_add(10)?;
+            Some(l[start..].trim().to_string())
+        })
+    {
+        cmd.arg(format!("-T{}", ld_path));
+    }
+    add_compiler_rt(cmd, triple);
+    // 2026-09-22 (bootstrap-bad plan): bad fn / `bootstrap bad` objects
+    // link in the freestanding path too — a bootstrap entry lives there.
+    for obj in bad_objects {
+        cmd.arg(obj.as_os_str());
+    }
+    // A `bootstrap bad` is the authored entry — the linker must enter at
+    // its symbol (no owned _start exists).
+    if let Some(entry) = bootstrap_entry {
+        cmd.arg(format!("-Wl,-e,{entry}"));
+    }
+    Ok(())
+}
+
+/// Per-arch compiler-rt shims (unsigned division/modulo intrinsics LLVM
+/// emits; ARM's division entries are .S under the AEABI convention).
+fn add_compiler_rt(cmd: &mut Command, triple: &str) {
+    let workspace_root =
+        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    let root = std::path::PathBuf::from(&workspace_root);
+    // 2026-09-13: riscv64 bare-metal needs compiler_rt_rv64.c (QEMU virt
+    // medany addressing — see apply_freestanding).
+    if triple.starts_with("riscv64") {
+        let crt_path = root.join("lib/runtime/compiler_rt_rv64.c");
+        if crt_path.exists() {
+            cmd.arg(crt_path);
+        }
+    }
+    // 2026-09-14 (rv64-finish plan Phase 5): ARM bare-metal — same
+    // compiler-rt need, AEABI ABI names (no hardware divider on
+    // Cortex-M3; LLVM emits __aeabi_ldivmod/__aeabi_memclr8). The
+    // division entries are assembly (.S): LLVM calls them with the
+    // AEABI register convention, which C cannot express.
+    if triple.starts_with("thumb") || triple.starts_with("arm") {
+        for shim in ["lib/runtime/compiler_rt_arm.c", "lib/runtime/compiler_rt_arm.S"] {
+            let crt_path = root.join(shim);
+            if crt_path.exists() {
+                cmd.arg(crt_path);
+            }
+        }
+    }
 }
 
 /// Compile LLVM IR to a linkable static library (`ar rcs lib<name>.a`),

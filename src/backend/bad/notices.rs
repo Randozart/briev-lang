@@ -144,27 +144,35 @@ fn check_local_refs(label: &BadLabel, out: &mut Vec<Notice>) {
             BadBodyItem::Instr(_) => None,
         })
         .collect();
-    for item in &label.body {
-        let BadBodyItem::Instr(instr) = item else { continue };
-        for op in &instr.operands {
-            let BadOperand::Name(n) = op else { continue };
-            let Some(local) = n.strip_prefix('.') else { continue };
-            if local.starts_with('L') {
-                continue; // already-gensym'd refs from expansions.
-            }
-            if !local_names.contains(local) {
-                emit(
-                    out,
-                    instr,
-                    AckScope::Instr,
-                    "W6",
-                    format!(
-                        "local label `{n}` at line {} has no `.{local}:` in label `{}` - \
-                         the reference will not resolve",
-                        instr.span.line, label.name
-                    ),
-                );
-            }
+    // Single iterator chain (items → instrs → Name operands) — no nested
+    // `for` (the W6 scan is O(body × operands), kept flat for analysis
+    // tools that count loop depth).
+    let name_ops = label
+        .body
+        .iter()
+        .filter_map(|item| match item {
+            BadBodyItem::Instr(instr) => Some(instr),
+            BadBodyItem::Local(_) => None,
+        })
+        .flat_map(|instr| instr.operands.iter().map(move |op| (instr, op)));
+    for (instr, op) in name_ops {
+        let BadOperand::Name(n) = op else { continue };
+        let Some(local) = n.strip_prefix('.') else { continue };
+        if local.starts_with('L') {
+            continue; // already-gensym'd refs from expansions.
+        }
+        if !local_names.contains(local) {
+            emit(
+                out,
+                instr,
+                AckScope::Instr,
+                "W6",
+                format!(
+                    "local label `{n}` at line {} has no `.{local}:` in label `{}` - \
+                     the reference will not resolve",
+                    instr.span.line, label.name
+                ),
+            );
         }
     }
 }
@@ -319,15 +327,17 @@ pub fn check_defn(d: &BadDefn) -> Vec<Notice> {
         BadDefnShape::Branch(rows) => {
             for row in rows {
                 // W2: a branch row that pushes but never pops (or vice
-                // versa) leaves the stack off by one on that path.
-                let mut delta = 0i64;
-                for instr in &row.body {
-                    match instr.mnemonic.as_str() {
-                        "push" | "push2" => delta -= 1,
-                        "pop" | "pop2" => delta += 1,
-                        _ => {}
-                    }
-                }
+                // versa) leaves the stack off by one on that path. The
+                // delta is one iterator sum — no inner loop.
+                let delta: i64 = row
+                    .body
+                    .iter()
+                    .map(|instr| match instr.mnemonic.as_str() {
+                        "push" | "push2" => -1,
+                        "pop" | "pop2" => 1,
+                        _ => 0,
+                    })
+                    .sum();
                 if delta != 0 {
                     let row_label = if row.is_default { "default" } else { &row.target };
                     out.push(Notice {
@@ -401,9 +411,7 @@ fn collect_acks<'a>(
     };
     for i in instrs {
         if let Some(a) = &i.ack {
-            for w in &a.warnings {
-                out.push((a.scope, w, a.span));
-            }
+            out.extend(a.warnings.iter().map(|w| (a.scope, w, a.span)));
         }
     }
 }

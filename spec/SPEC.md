@@ -2697,7 +2697,23 @@ warning that never fired is a loud error. **Raw blocks** —
 family and skip them otherwise; the escape hatch for text the portable
 core ISA cannot express (x86 real-mode MBR bodies, 32-bit multiboot
 prologues). `int N` is the BIOS software-interrupt op (`int $N` on
-x86_64; a loud error elsewhere). Float literals ride a deduped `.rodata`
+x86_64; a loud error elsewhere). **Named raw blocks** — `raw <target>
+<name>` ... `end` — emit a callable `<name>:` label only on the matching
+family, making per-arch boot prologues stdlib data (`std/bad/arch.bad`:
+`uart_init`/`putc` per target); a `.bv` file imports them at top level
+(`import "std/bad/arch.bad"` — recorded, never parsed as Briev) and the
+bad backend prepends them to `bootstrap bad` bodies. A `.bv` file may
+call a `.bad` primitive as a TYPED function: a `bad fn` declaration
+(SPEC §20) provides the typed, contract-checked surface and its body
+tail-calls (`jmp`) the named raw block; params bind at ABI index 1 (the
+`.bv` call passes `%state` first) and the bootstrap entry sets `sp` from
+`_stack_top` before calling `.bv` code that uses frames. The
+bootstrapper disk primitive (`std/bad/disk.bad`) pairs a portable
+`load_image` copy-loop defn with per-arch raw disk sources (x86_64 INT
+13h `read_sectors`). `brievc build --all-targets` compiles the source
+for EVERY `[target.*]` profile in `briev.toml` in one invocation —
+profiles may carry `triple`, `linker_script`, and `entry` (the bootstrap
+bad symbol) as per-target overrides. Float literals ride a deduped `.rodata`
 literal pool; `syscall` takes a NAMED kernel call (`syscall write, ...`)
 whose per-target numbers live in config, routing the call through each
 target's syscall ABI. `.export` names a C-ABI entry
