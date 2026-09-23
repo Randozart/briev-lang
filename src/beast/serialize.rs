@@ -474,6 +474,7 @@ mod tests {
         };
         let items = vec![
             TopLevel::Definition(Definition {
+                variadic_param: None,
                 name: "main".into(),
                 type_params: vec![],
                 parameters: vec![],

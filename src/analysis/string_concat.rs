@@ -151,6 +151,7 @@ mod tests {
     fn string_defn(name: &str, param_ty: Type, plus_rhs: Expr) -> Definition {
         use crate::ast::{Definition, Statement};
         Definition {
+                variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![("a".to_string(), param_ty.clone())],

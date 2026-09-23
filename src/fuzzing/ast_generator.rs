@@ -119,6 +119,7 @@ pub fn arb_definition(max_depth: usize) -> impl Strategy<Value = TopLevel> {
         arb_expr(max_depth),
     ).prop_map(|(name, return_type, body)| {
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name,
             type_params: Vec::new(),
             parameters: Vec::new(),

@@ -5641,6 +5641,7 @@ impl LlvmBackend {
             derivation: None,
             modifiers: vec![],
             annotations: vec![],
+            variadic_param: None,
             span: Some(isr.span.clone()),
             doc: Some(format!("ISR body for {} (plan 2026-09-06-isr-handlers-and-sections.md)", isr.name)),
         };

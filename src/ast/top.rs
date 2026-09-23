@@ -173,6 +173,12 @@ pub struct Definition {
     pub modifiers: Vec<Annotation>,
     pub annotations: Vec<TypeBinding>,
     pub span: Option<Span>,
+    /// 2026-09-22 (unified-metaprogramming plan): the final `...name` rest
+    /// parameter (TypeScript-style) on a compile-time `$defn`/`$txn`. Binds
+    /// ALL trailing call-site arguments as a compile-time list — the
+    /// sanctioned compile-time iteration channel (a `foreach` over it unrolls
+    /// at expansion). `None` = not variadic.
+    pub variadic_param: Option<String>,
     /// 2026-07-24: Doc comment text (/// or /** */), without the /// prefix.
     pub doc: Option<String>,
 }

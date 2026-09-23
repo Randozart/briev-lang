@@ -596,6 +596,7 @@ impl<'a> Parser<'a> {
         let parameters = if self.eat(&Token::LParen) {
             let p = self.parse_parameter_list()?;
             self.expect(Token::RParen)?;
+            self.reject_runtime_variadic("defn")?;
             p
         } else {
             Vec::new()
@@ -623,6 +624,7 @@ impl<'a> Parser<'a> {
             derivation,
             modifiers: vec![],
             annotations: vec![],
+            variadic_param: self.pending_variadic.take(),
             span: None,
             doc: self.take_doc(),
         })
@@ -748,6 +750,7 @@ impl<'a> Parser<'a> {
         let parameters = if self.eat(&Token::LParen) {
             let p = self.parse_parameter_list()?;
             self.expect(Token::RParen)?;
+            self.reject_runtime_variadic("txn")?;
             p
         } else {
             Vec::new()
@@ -1628,10 +1631,26 @@ impl<'a> Parser<'a> {
     /// Parse parameter list: name: Type, name: Type, ...
     fn parse_parameter_list(&mut self) -> Result<Vec<(String, Type)>, SyntaxError> {
         let mut params = Vec::new();
+        // 2026-09-22 (unified-metaprogramming plan): a `...` rest parameter is
+        // the sanctioned compile-time iteration channel. Recorded on the
+        // parser so the compile-time `$defn`/`$txn` paths can consume it into
+        // `Definition.variadic_param`; runtime paths reject it. `...` must be
+        // FINAL (rest binds all trailing args).
+        self.pending_variadic = None;
         if !self.check(&Token::RParen) {
             loop {
+                let is_rest = self.eat(&Token::Ellipsis);
                 let name = self.expect_identifier()?;
                 let mut ty = self.parse_optional_type()?.unwrap_or(Type::int());
+                if is_rest {
+                    if self.check(&Token::Comma) {
+                        return self.error_at_current(
+                            "a `...` rest parameter must be the FINAL parameter — \
+                             it binds all trailing arguments",
+                        );
+                    }
+                    self.pending_variadic = Some(name.clone());
+                }
                 // 2026-08-14 (generic `defn f<T>` dispatch): a function-typed
                 // parameter — `f: T -> U` or `f: (U, T) -> U` — parses the base
                 // type(s), then a trailing `->` return. A parenthesized param
@@ -1654,6 +1673,46 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(params)
+    }
+
+    /// Consume a `...` rest parameter if the compile-time path allows it,
+    /// returning the rest name; the RUNTIME paths reject it with a directed
+    /// diagnostic.
+    fn take_variadic_param(&mut self, kind: &str) -> Result<Option<String>, SyntaxError> {
+        match self.pending_variadic.take() {
+            Some(name) => Err(SyntaxError::UnexpectedToken {
+                expected: format!("{kind} parameters"),
+                found: format!("a `...` rest parameter ('{name}')"),
+                span: self
+                    .tokens
+                    .get(self.pos.saturating_sub(1))
+                    .map(|(_, s)| self.make_span(s.clone()))
+                    .unwrap_or_else(crate::errors::Span::dummy),
+            }),
+            None => Ok(None),
+        }
+    }
+
+    /// 2026-09-22 (unified-metaprogramming plan): a runtime declaration may
+    /// not declare a `...` rest parameter — rest params are the compile-time
+    /// iteration channel and live on `$defn` composites only.
+    fn reject_runtime_variadic(&mut self, kind: &str) -> Result<(), SyntaxError> {
+        if let Some(name) = self.pending_variadic.take() {
+            Err(SyntaxError::UnexpectedToken {
+                expected: format!("{kind} parameters"),
+                found: format!(
+                    "a `...` rest parameter ('{name}') — rest params are \
+                     compile-time-only; declare a `$defn` composite"
+                ),
+                span: self
+                    .tokens
+                    .get(self.pos.saturating_sub(1))
+                    .map(|(_, s)| self.make_span(s.clone()))
+                    .unwrap_or_else(crate::errors::Span::dummy),
+            })
+        } else {
+            Ok(())
+        }
     }
 
     /// Parse optional output type: -> Type
@@ -1981,6 +2040,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::LParen)?;
         let params = self.parse_parameter_list()?;
         self.expect(Token::RParen)?;
+        self.reject_runtime_variadic("isr")?;
         // Contracts are mandatory on ISR declarations.
         let contract = self.parse_contract()?;
         let body = self.parse_block()?;
@@ -2787,6 +2847,7 @@ impl<'a> Parser<'a> {
         let parameters = if self.eat(&Token::LParen) {
             let p = self.parse_parameter_list()?;
             self.expect(Token::RParen)?;
+            self.reject_runtime_variadic("op member")?;
             p
         } else {
             Vec::new()
@@ -2812,6 +2873,7 @@ impl<'a> Parser<'a> {
             derivation,
             modifiers: vec![],
             annotations: vec![],
+            variadic_param: self.pending_variadic.take(),
             span: None,
             doc: self.take_doc(),
         })
@@ -3423,7 +3485,9 @@ impl<'a> Parser<'a> {
             output_type: output_type.clone(),
             outputs: vec![],
             contract, body, metadata,
-            derivation, modifiers: vec![], annotations: vec![], span: None, doc: self.take_doc(),
+            derivation, modifiers: vec![], annotations: vec![],
+            variadic_param: self.pending_variadic.take(),
+            span: None, doc: self.take_doc(),
         }))
     }
 
@@ -3450,6 +3514,16 @@ impl<'a> Parser<'a> {
         };
         let derivation = self.parse_derivation_block()?;
         let metadata = self.parse_body_metadata()?;
+        // 2026-09-22 (unified-metaprogramming plan): the rest param lands on
+        // `$defn` composites in Phase 1; `$txn`'s convergent-loop flavor is
+        // Phase 2 (C6) — reject `...` here until then with a directed fix.
+        if let Some(name) = self.pending_variadic.take() {
+            return self.error_at_current(&format!(
+                "`$txn '{name}'` declares a `...` rest parameter, which is not \
+                 supported yet — rest params land on `$defn` composites \
+                 (execute_many-style); use a `$defn` or a fixed parameter list"
+            ));
+        }
         Ok(TopLevel::CompileTimeTxn(Transaction {
             name, type_params, parameters,
             output_type: output_type.clone(),

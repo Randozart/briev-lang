@@ -817,6 +817,7 @@ mod tests {
 
     fn defn(name: &str, body: Vec<Statement>) -> TopLevel {
         TopLevel::Definition(crate::ast::Definition {
+            variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![],

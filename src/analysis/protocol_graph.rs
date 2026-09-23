@@ -363,6 +363,7 @@ mod tests {
     fn shift_defn(name: &str, op: crate::ast::BinaryOpKind) -> TopLevel {
         use crate::ast::Definition;
         TopLevel::Definition(Definition {
+                variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![("x".to_string(), crate::ast::Type::int())],

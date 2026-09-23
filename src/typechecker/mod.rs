@@ -1435,7 +1435,13 @@ pub fn infer_expression(
                 }),
                 _ => Err(TypeError::InvalidOperation {
                     operation: format!("plugin-intercept '{}!'", name),
-                    type_name: "unresolved plugin-intercept reached the typechecker".into(),
+                    type_name: format!(
+                        "'{}' is not a compile-time macro/composite — either the \
+                         expansion pass missed this call position (expression \
+                         position or a runtime `defn` body), or '{}' is an \
+                         ordinary function — call it as `{}(...)` without the `!`",
+                        name, name, name
+                    ),
                 }),
             }
         }

@@ -690,6 +690,7 @@ mod tests {
 
     fn make_defn(name: &str, body: Vec<Statement>) -> TopLevel {
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![],

@@ -14,7 +14,7 @@
 //! body binder would capture is an error, not a silent capture.
 
 use crate::ast::top::{Definition, Statement, StmtMatchArm, TopLevel};
-use crate::ast::{BinaryOpKind, Expr, Pattern, UnaryOpKind};
+use crate::ast::{BinaryOpKind, Expr, MatchArm, Pattern, UnaryOpKind};
 use crate::ast::{Dimension, ReflectKind, Type};
 use crate::plugin::{FnDef, PluginManager};
 use std::collections::{HashMap, HashSet};
@@ -35,19 +35,71 @@ fn is_expr_param(t: &crate::ast::Type) -> bool {
 /// The composite's signature: (substitution parameters in declaration
 /// order, exposed binder names). `None` when the composite mixes in value
 /// parameters (v1 restriction — fail closed).
-fn composite_signature(def: &Definition) -> Option<(Vec<String>, HashSet<String>)> {
+fn composite_signature(
+    def: &Definition,
+) -> Option<(Vec<String>, HashSet<String>, Option<String>)> {
     let mut subst = Vec::new();
     let mut exposed: HashSet<String> = HashSet::new();
     for (n, t) in &def.parameters {
         match t {
-            crate::ast::Type::Custom(k) if k == "expr" => subst.push(n.clone()),
+            crate::ast::Type::Custom(k) if k == "expr" => {
+                if Some(n) == def.variadic_param.as_ref() {
+                    // The rest parameter is NOT substituted positionally — it
+                    // binds ALL trailing arguments as a compile-time list.
+                    continue;
+                }
+                subst.push(n.clone());
+            }
             crate::ast::Type::Custom(k) if k == "expr_item" => {
                 exposed.insert(n.clone());
             }
             _ => return None,
         }
     }
-    Some((subst, exposed))
+    Some((subst, exposed, def.variadic_param.clone()))
+}
+
+/// Validate call-site arity against the fixed params and the optional
+/// `...` rest param (2026-09-22 unified-metaprogramming plan). Variadic:
+/// fixed params must all be present; zero rest args is a mistake, not a
+/// no-op. Non-variadic: exact arity.
+fn check_arity(
+    name: &str,
+    params: &[String],
+    rest_name: Option<&str>,
+    args: &[Expr],
+) -> Result<(), String> {
+    if rest_name.is_some() {
+        if args.len() < params.len() {
+            return Err(format!(
+                "composite '{name}' expects at least {} expression argument(s) \
+                 before the `...` rest ({}, got {} — supply one expression per \
+                 fixed `expr` parameter plus zero-or-more rest arguments",
+                params.len(),
+                params.join(", "),
+                args.len()
+            ));
+        }
+        if args.len() == params.len() {
+            return Err(format!(
+                "composite '{name}': a `...` rest call site with zero rest \
+                 arguments is a mistake, not a no-op — drop the call or pass \
+                 one or more trailing arguments to emit per element"
+            ));
+        }
+        Ok(())
+    } else if args.len() != params.len() {
+        Err(format!(
+            "composite '{name}' expects {} expression arguments ({}), got {} — \
+             supply one expression per `expr` parameter (`expr_item` binders \
+             are bound by the body, never passed)",
+            params.len(),
+            params.join(", "),
+            args.len()
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Expand one `name!(args...)` invocation against its declared composite:
@@ -66,23 +118,15 @@ pub fn expand_composite_invocation(
     state_types: &HashMap<String, Type>,
 ) -> Result<Vec<Statement>, String> {
     let name = &def.name;
-    let Some((params, exposed)) = composite_signature(def) else {
+    let Some((params, exposed, rest)) = composite_signature(def) else {
         return Err(format!(
             "composite '{name}' mixes `expr`/`expr_item` and value parameters — \
              declare all parameters as `name: expr` or `name: expr_item` (v1 \
              supports expression parameters only)"
         ));
     };
-    if args.len() != params.len() {
-        return Err(format!(
-            "composite '{name}' expects {} expression arguments ({}), got {} — \
-             supply one expression per `expr` parameter (`expr_item` binders \
-             are bound by the body, never passed)",
-            params.len(),
-            params.join(", "),
-            args.len()
-        ));
-    }
+    let rest_name = rest.as_deref();
+    check_arity(name, &params, rest_name, args)?;
     check_hygiene(def, &params, &exposed, args)?;
     let trivial = Expr::Bool(true);
     let mut out: Vec<Statement> = Vec::new();
@@ -90,7 +134,9 @@ pub fn expand_composite_invocation(
         out.push(Statement::Gate(def.contract.pre_condition.clone()));
     }
     let mut env: HashMap<String, ComptimeVal> = comptime.clone();
-    // Generation FIRST (static text, consts only), then substitution.
+    // Generation FIRST (static text, consts only), then substitution, then
+    // rest-foreach splice (the rest list is the sanctioned compile-time
+    // iteration channel — see splice_rest_foreach).
     let generated = unroll_static(&def.body, comptime, state_types);
     let mut body_stmts: Vec<Statement> = Vec::new();
     for s in &generated {
@@ -99,6 +145,14 @@ pub fn expand_composite_invocation(
             substitute_param(&mut cloned, param, arg);
         }
         body_stmts.push(cloned);
+    }
+    // Rest-foreach splice AFTER fixed-param substitution: a body
+    // `foreach c in calls { … }` where `calls` is the rest param becomes one
+    // body copy per trailing arg, each `c` substituted with the ORIGINAL arg
+    // expression (emission, not folding — `execute_many!(f(a), f(b))` emits
+    // `f(a); f(b);`).
+    if let Some(rest_name) = rest_name {
+        body_stmts = splice_rest_foreach(body_stmts, rest_name, &args[params.len()..]);
     }
     let ctx = FoldCtx { state_types, composite: name };
     let folded = fold_stmt_list(body_stmts, &mut env, &ctx)?;
@@ -1039,6 +1093,105 @@ fn expand_nested(
     Ok(())
 }
 
+/// 2026-09-22 (unified-metaprogramming plan): splice a `foreach item in
+/// <rest>` loop whose list is the composite's `...` rest parameter. The rest
+/// list is the sanctioned compile-time iteration channel: the loop becomes
+/// ONE body copy per trailing argument, each `item` substituted with the
+/// ORIGINAL argument expression (emission — `execute_many!(f(a), f(b))`
+/// emits `f(a); f(b);`). The splice happens AFTER fixed-param substitution,
+/// so the rest name is still a bare identifier in the body. Any other
+/// `foreach` (runtime list) is kept verbatim.
+fn splice_rest_foreach(
+    stmts: Vec<Statement>,
+    rest_name: &str,
+    rest_args: &[Expr],
+) -> Vec<Statement> {
+    let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
+    for s in stmts {
+        match s {
+            Statement::Foreach {
+                item,
+                list,
+                body,
+            } => {
+                let is_rest = match list.as_ref() {
+                    Expr::Identifier(n) => n == rest_name,
+                    _ => false,
+                };
+                if is_rest {
+                    out.extend(splice_rest_iteration(&item, &body, rest_args));
+                } else {
+                    out.push(Statement::Foreach {
+                        item,
+                        list,
+                        body: splice_nested(body, rest_name, rest_args),
+                    });
+                }
+            }
+            Statement::Guarded(cond, body) => {
+                out.push(Statement::Guarded(
+                    cond,
+                    splice_nested(body, rest_name, rest_args),
+                ));
+            }
+            Statement::Block(body) => {
+                out.push(Statement::Block(splice_nested(
+                    body,
+                    rest_name,
+                    rest_args,
+                )));
+            }
+            Statement::SyncBlock(body) => {
+                out.push(Statement::SyncBlock(splice_nested(
+                    body,
+                    rest_name,
+                    rest_args,
+                )));
+            }
+            Statement::Mutex(body) => {
+                out.push(Statement::Mutex(splice_nested(
+                    body,
+                    rest_name,
+                    rest_args,
+                )));
+            }
+            Statement::Defer(body) => {
+                out.push(Statement::Defer(splice_nested(
+                    body,
+                    rest_name,
+                    rest_args,
+                )));
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// One body copy per rest argument, each `item` substituted with the arg
+/// expression. Empty rest is defensive (caller errors first).
+fn splice_rest_iteration(
+    item: &str,
+    body: &[Statement],
+    rest_args: &[Expr],
+) -> Vec<Statement> {
+    let mut out = Vec::new();
+    for arg in rest_args {
+        let mut copy = body.to_vec();
+        for st in copy.iter_mut() {
+            substitute_param(st, item, arg);
+        }
+        out.extend(copy);
+    }
+    out
+}
+
+/// Recurse into a nested statement list so a rest-foreach inside a
+/// guarded/block/defer body also splices.
+fn splice_nested(body: Vec<Statement>, rest_name: &str, rest_args: &[Expr]) -> Vec<Statement> {
+    splice_rest_foreach(body, rest_name, rest_args)
+}
+
 /// Substitute `param` → `arg` throughout one statement (one pass; the
 /// inserted argument expressions are never re-walked).
 fn substitute_param(s: &mut Statement, param: &str, arg: &Expr) {
@@ -1095,7 +1248,17 @@ fn subst_expr(e: &mut Expr, param: &str, arg: &Expr) {
             subst_expr(b, param, arg);
         }
         Expr::UnaryOp(_, a) => subst_expr(a, param, arg),
-        Expr::Call(_, args, _) => {
+        Expr::Call(name, args, _) => {
+            // 2026-09-22 (unified-metaprogramming plan): a parameter used as a
+            // CALLABLE (`tag(c)` where `tag` is a fixed expr param bound to a
+            // callee expression) must substitute the callee too — not just the
+            // argument spine. `Sink#`-style callees flow through fixed params.
+            if name == param {
+                *name = match arg {
+                    Expr::Identifier(n) => n.clone(),
+                    _ => return,
+                };
+            }
             for a in args.iter_mut() {
                 subst_expr(a, param, arg);
             }
@@ -1143,21 +1306,63 @@ fn subst_expr(e: &mut Expr, param: &str, arg: &Expr) {
         // as the EXPRESSION form — its scrutinee, guards, patterns, and
         // block bodies carry parameter references too.
         Expr::Match(scrut, arms) => {
-            subst_expr(scrut, param, arg);
-            for a in arms.iter_mut() {
-                subst_pattern(&mut a.pattern, param, arg);
-                if let Some(g) = a.guard.as_mut() {
-                    subst_expr(g, param, arg);
-                }
-                subst_expr(a.body.as_mut(), param, arg);
-            }
+            subst_match_arms(scrut, arms, param, arg);
         }
         Expr::Block(stmts) => {
             for s in stmts.iter_mut() {
                 substitute_param(s, param, arg);
             }
         }
+        // 2026-09-22 (unified-metaprogramming plan): a nested `name!(...)`
+        // inside a composite body carries parameter references in its args —
+        // substitute them so `execute_many!(f, (x), (x+1))`-style nesting
+        // resolves the parameter through the composite boundary.
+        Expr::PluginIntercept {
+            name: _,
+            args,
+            type_args: _,
+            receiver,
+            chain_refs: _,
+        } => {
+            subst_intercept_args(args, receiver, param, arg);
+        }
         _ => {}
+    }
+}
+
+/// Substitute inside a nested `name!(...)` intercept's args and receiver —
+/// a composite parameter flows through the nested macro boundary
+/// (2026-09-22 unified-metaprogramming plan).
+fn subst_intercept_args(
+    args: &mut [Expr],
+    receiver: &mut Option<Box<Expr>>,
+    param: &str,
+    arg: &Expr,
+) {
+    for a in args.iter_mut() {
+        subst_expr(a, param, arg);
+    }
+    if let Some(r) = receiver.as_mut() {
+        subst_expr(r, param, arg);
+    }
+}
+
+/// Substitute inside a statement-form `match` expression (F1 unified
+/// dispatch): scrutinee, arm patterns, guards, and block bodies all carry
+/// parameter references.
+fn subst_match_arms(
+    scrut: &mut Expr,
+    arms: &mut [MatchArm],
+    param: &str,
+    arg: &Expr,
+) {
+    subst_expr(scrut, param, arg);
+    for a in arms.iter_mut() {
+        subst_pattern(&mut a.pattern, param, arg);
+        if let Some(g) = a.guard.as_mut() {
+            subst_expr(g, param, arg);
+        }
+        subst_expr(a.body.as_mut(), param, arg);
     }
 }
 
@@ -1311,7 +1516,7 @@ mod tests {
         );
         let d = defn_of(&items, "f");
         assert!(is_composite(&d), "`expr` params mark a composite");
-        let (subst, exposed) = composite_signature(&d).unwrap();
+        let (subst, exposed, _rest) = composite_signature(&d).unwrap();
         assert_eq!(subst, vec!["x".to_string(), "y".to_string()]);
         assert!(exposed.is_empty());
         let plain = defn_of(
@@ -1333,7 +1538,7 @@ mod tests {
              };",
         );
         let d = defn_of(&items, "f");
-        let (subst, exposed) = composite_signature(&d).unwrap();
+        let (subst, exposed, _rest) = composite_signature(&d).unwrap();
         assert_eq!(subst, vec!["fill".to_string(), "n".to_string()]);
         assert!(exposed.contains("i"));
         // The argument references the exposed binder `i` — allowed.
@@ -2021,6 +2226,121 @@ async node k [i < 1][i == 1] {
         let dump = format!("{out:?}");
         assert!(dump.contains("Decimal(1)"), "Char category arm spliced: {dump}");
         assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan) ────────────────────────
+    // Variadic composites: `$defn f(...calls: expr)` binds ALL trailing args
+    // as the sanctioned compile-time iteration channel — a `foreach c in
+    // calls` splices one body copy per arg, `c` substituted with the arg.
+
+    #[test]
+    fn rest_param_foreach_splices_one_call_per_arg() {
+        let items = parse_program(
+            "$defn execute_many(...calls: expr) { foreach c in calls { c; } };",
+        );
+        let d = defn_of(&items, "execute_many");
+        let out = expand_composite_invocation(
+            &d,
+            &[
+                Expr::Call("emit".into(), vec![Expr::Decimal(1)], None),
+                Expr::Call("emit".into(), vec![Expr::Decimal(2)], None),
+                Expr::Call("emit".into(), vec![Expr::Decimal(3)], None),
+            ],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        assert_eq!(out.len(), 3, "one emission per arg: {out:?}");
+        for (i, st) in out.iter().enumerate() {
+            let Statement::Expression(Expr::Call(name, args, _)) = st else {
+                panic!("expected a call emission, got {st:?}");
+            };
+            assert_eq!(name, "emit");
+            assert!(matches!(&args[0], Expr::Decimal(n) if *n == (i as i64) + 1));
+        }
+    }
+
+    #[test]
+    fn rest_param_with_fixed_params_binds_trailing() {
+        // A fixed `expr` param plus a `...` rest: the first arg binds the
+        // fixed param, the rest iterate.
+        let items = parse_program(
+            "$defn wrap(tag: expr, ...calls: expr) { foreach c in calls { tag(c); } };",
+        );
+        let d = defn_of(&items, "wrap");
+        let out = expand_composite_invocation(
+            &d,
+            &[
+                Expr::Identifier("Sink#".into()),
+                Expr::Decimal(1),
+                Expr::Decimal(2),
+            ],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert_eq!(out.len(), 2, "two rest args → two emissions: {dump}");
+        assert!(dump.contains("Sink#"), "fixed tag substituted: {dump}");
+    }
+
+    #[test]
+    fn zero_rest_args_is_an_error() {
+        let items = parse_program(
+            "$defn execute_many(...calls: expr) { foreach c in calls { c; } };",
+        );
+        let d = defn_of(&items, "execute_many");
+        let err = expand_composite_invocation(
+            &d,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("zero rest arguments"),
+            "expected zero-rest diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rest_param_stays_unsubstituted_before_splice() {
+        // The rest name is NOT positionally substituted (it is a list, not a
+        // single expr) — the splice consumes the foreach over it.
+        let items = parse_program(
+            "$defn execute_many(...calls: expr) { foreach c in calls { c; } };",
+        );
+        let d = defn_of(&items, "execute_many");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Call("f".into(), vec![Expr::Decimal(7)], None)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        assert_eq!(out.len(), 1);
+        let Statement::Expression(Expr::Call(name, _, _)) = &out[0] else {
+            panic!("expected call, got {:?}", out[0]);
+        };
+        assert_eq!(name, "f");
+    }
+
+    #[test]
+    fn runtime_foreach_inside_composite_is_not_spliced() {
+        // A `foreach` over a NON-rest list stays a runtime loop.
+        let items = parse_program(
+            "$defn f(x: expr) { foreach k in 0..x { emit(k); } };",
+        );
+        let d = defn_of(&items, "f");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Decimal(4)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Foreach"), "runtime loop kept: {dump}");
     }
 }
 

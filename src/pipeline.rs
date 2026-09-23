@@ -784,7 +784,6 @@ pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> PluginManag
 
     // Register built-in Rust plugins
     pm.register(Box::new(crate::plugin::env_plugin::EnvPlugin));
-    pm.register(Box::new(crate::plugin::execute_many_plugin::ExecuteManyPlugin));
     pm.register(Box::new(crate::plugin::print_plugin::PrintPlugin));
     pm.register(Box::new(crate::plugin::entry_plugin::EntryPlugin));
     pm.register(Box::new(crate::plugin::inline_frgn_plugin::InlineFrgnPlugin));
