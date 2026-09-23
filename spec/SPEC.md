@@ -333,13 +333,13 @@ intent-established connection carries its provenance (which node, which
 intent) in the verification output.
 
 **Conditional wiring through mechanisms (2026-09-21).** `when cond { …
-} via <Name>;` — a single pin voltage-comparison condition plus a
+} thru <Name>;` — a single pin voltage-comparison condition plus a
 declared switching part synthesizes a conditional connection: the
 condition's net drives the part's `Control`-class pin, and its
 `Path`-class pins bridge the wired pins. `Control` and `Path` are class
 fundamentals in `std/electronics.bv`; any declared type with exactly one
-`Control` pin and at least two `Path` pins is a mechanism. `via <Name>`
-narrows by type (or instance); no `via` and several qualifying mechanisms
+`Control` pin and at least two `Path` pins is a mechanism. `thru <Name>`
+narrows by type (or instance); no `thru` and several qualifying mechanisms
 is a hard error naming the candidates. The bridge is recorded as a
 conditional edge (closed when the control net's region holds) with full
 provenance; the schematic shows the switch as ordinary copper. Copper
@@ -440,9 +440,11 @@ compiler reads `spec WiredAnd`, never a class name.
 
 **Mechanisms may be relays (2026-09-22).** A bridge mechanism has one
 Control pin (a gate/FET) OR TWO (a relay coil — one element across both
-coil pins). `when cond { … } via Type;` synthesizes: the condition net
+coil pins). `when cond { … } thru Type;` synthesizes: the condition net
 drives every control pin; the Path pins bridge the wired pins. A relay is
-just a type with two `Control` + two `Path` pins.
+just a type with two `Control` + two `Path` pins. (`thru` — since
+2026-09-23, the mechanism-strategy keyword; `via` is the PCB layer-hole
+term and is reserved for that meaning.)
 
 **Whole-bus equality (2026-09-22).** A range-indexed pin equality in a
 precondition expands element-wise: `u2.gpio[0..=3].voltage ==

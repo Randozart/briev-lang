@@ -459,21 +459,27 @@ conditions (`when a { when b { f } }` ≡ conditioned on `a && b`).
 ---
 
 ## Amendment 2026-09-21 — D16 phase 2 finalized: mechanism synthesis via strategy clause
+**REVISED 2026-09-23:** the strategy keyword is **`thru`** (`when <cond> {
+<facts> } thru <Name>;`) — `via` was retired because "via" is the settled
+PCB term for a layer-jumping hole (our own `.kicad_pcb` routing emits
+`(via …)`); `thru` keeps the "passing through the mechanism" meaning with
+no collision. Same grammar, same contextual identifier, same marker
+statement.
 
 **Grammar** (additive, in the shared when-statement parse):
-`when <cond> { <facts> } via <Name>;`
-`via` is a contextual identifier; the selection desugars into the body as
+`when <cond> { <facts> } thru <Name>;`
+`thru` is a contextual identifier; the selection desugars into the body as
 a marker statement the analysis reads — zero new Statement variants.
 
 **Selection semantics** (narrowing filter, never a silent pick — D13):
-- No `via` → enumerate qualifying mechanisms: declared instances with
+- No `thru` → enumerate qualifying mechanisms: declared instances with
   exactly one `Control`-class pin + ≥2 `Path`-class pins, control
   unconnected or already on the condition's net. 1 → synthesize; 0/n →
-  hard error with candidates + the `via Type` fix.
-- `via T` → narrow to instances **of type T**: 1 → synthesize; 0 → error
+  hard error with candidates + the `thru Type` fix.
+- `thru T` → narrow to instances **of type T**: 1 → synthesize; 0 → error
   ("declare `let sw: T = …`"); n → error listing instances (pre-wire a
   control pin to disambiguate).
-- Name resolution: type first, instance second (bare `via sw1;` exact-pick
+- Name resolution: type first, instance second (bare `thru sw1;` exact-pick
   also works). Synthesis wires **declared instances only**.
 
 **Vocabulary** (stdlib + two new spec-gate keys):

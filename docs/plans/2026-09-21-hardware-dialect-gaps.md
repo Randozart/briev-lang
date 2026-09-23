@@ -227,8 +227,8 @@ track below.
   ForwardVoltage: 2.0V`); a non-ohmic clamp model in `derive_current`;
   lower-bound proofs in `check_current_bounds`; E-series value selection
   (config/stdlib, not compiler-hardcoded — Rules 14/15).
-- **Surface analysis (2026-09-23):** `when` and `via` are BOTH the
-  conditional-mechanism family — `via` selects a Control-bearing mechanism
+- **Surface analysis (2026-09-23):** `when` and `thru` are BOTH the
+  conditional-mechanism family — `thru` selects a Control-bearing mechanism
   (`is_mechanism`, `:2283`), `when` either desugars to a mechanism or
   hard-errors "copper cannot be conditional" (`:2009`). The LED's series
   path is UNCONDITIONAL (the drive intent handles the on/off; the anode

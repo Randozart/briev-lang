@@ -1863,7 +1863,7 @@ struct BridgeRequest {
     a: PinRef,
     b: PinRef,
     control: PinRef,
-    via: Option<String>,
+    strategy: Option<String>,
 }
 
 /// Diagnostic sink for body-fact collection (E14a/D16) — keeps the
@@ -1898,13 +1898,13 @@ struct VoltageObligation {
 /// The region context threading through a guarded-fact walk (D16):
 /// `control` Some means mechanizable — wiring facts become bridge
 /// requests under it. `cond` Some (no control) means signal-level but
-/// not mechanizable — the D7 gate. `via` is this region's strategy
+/// not mechanizable — the D7 gate. `thru` is this region's strategy
 /// selection.
 #[derive(Clone, Copy)]
 struct RegionCtx<'a> {
     cond: Option<&'a str>,
     control: Option<&'a PinRef>,
-    via: Option<&'a str>,
+    strategy: Option<&'a str>,
 }
 
 /// Does this expression mention a pin of a declared instance? (E14a/D16:
@@ -1952,7 +1952,7 @@ fn condition_control(expr: &Expr, ctx: &NetlistContext) -> (Option<PinRef>, Opti
     (
         None,
         Some(format!(
-            "mechanism condition must be a single pin voltage comparison (e.g. `{shape}.voltage == 3.3V`), or a mechanism-bodied `when ... via Type;` — got `{shape} = {}`, where the pin side must be a `.voltage` access and the non-pin side a voltage literal",
+            "mechanism condition must be a single pin voltage comparison (e.g. `{shape}.voltage == 3.3V`), or a mechanism-bodied `when ... thru Type;` — got `{shape} = {}`, where the pin side must be a `.voltage` access and the non-pin side a voltage literal",
             other
         )),
     )
@@ -1971,15 +1971,15 @@ fn voltage_operand(expr: &Expr, ctx: &NetlistContext) -> Option<PinRef> {
     resolve_pin(base, ctx.instances, ctx.type_pins)
 }
 
-/// Pull a trailing `via <Name>` marker out of a guarded body (D16 phase
+/// Pull a trailing `thru <Name>` marker out of a guarded body (D16 phase
 /// 2): returns the strategy and the body without it.
-fn take_via_strategy(body: &[Statement]) -> (Option<String>, Vec<Statement>) {
+fn take_thru_strategy(body: &[Statement]) -> (Option<String>, Vec<Statement>) {
     let mut strategy = None;
     let mut rest = Vec::with_capacity(body.len());
     for stmt in body {
         if let Statement::MetadataAssignment(k, crate::ast::PropertyValue::Identifier(name)) = stmt
         {
-            if k == "via" {
+            if k == "thru" {
                 strategy = Some(name.clone());
                 continue;
             }
@@ -2010,7 +2010,7 @@ impl FactSink<'_> {
                 "wiring inside `when {desc}` (node '{}') is conditional — copper cannot be. \
                  State the condition in the node guard (making the wiring unconditional in \
                  that region), or make it a single pin comparison and declare a switching \
-                 part (`when ... via Type;`, mechanism synthesis)",
+                 part (`when ... thru Type;`, mechanism synthesis)",
                 self.node
             ));
             return;
@@ -2059,7 +2059,7 @@ impl FactSink<'_> {
             a,
             b,
             control: ctrl.clone(),
-            via: reg.via.map(|s| s.to_string()),
+            strategy: reg.strategy.map(|s| s.to_string()),
         });
     }
 
@@ -2213,7 +2213,7 @@ fn walk_guarded(
     ctx: &mut NetlistContext,
     sink: &mut FactSink,
 ) {
-        let (via, inner_rest) = take_via_strategy(inner);
+        let (strategy, inner_rest) = take_thru_strategy(inner);
         let (control, cond_err) = condition_control(c, ctx);
         if let Some(e) = cond_err {
             // A malformed mechanism condition: record the shape error and
@@ -2240,7 +2240,7 @@ fn walk_guarded(
             RegionCtx {
                 cond: child_cond.as_deref(),
                 control: child_control.as_ref(),
-                via: via.as_deref().or(reg.via),
+                strategy: strategy.as_deref().or(reg.strategy),
             },
             ctx,
         );
@@ -2252,7 +2252,7 @@ fn body_facts(
     ctx: &mut NetlistContext,
     sink: &mut FactSink,
 ) {
-    sink.walk(&t.body, RegionCtx { cond: None, control: None, via: None }, ctx);
+    sink.walk(&t.body, RegionCtx { cond: None, control: None, strategy: None }, ctx);
 }
 
 /// Eligibility of one declared instance as a bridge mechanism (D16): a
@@ -2298,7 +2298,7 @@ fn is_mechanism(
 /// by the `via` strategy when given (type name).
 fn mechanism_candidates(
     ctx: &mut NetlistContext,
-    via: &Option<String>,
+    strategy: &Option<String>,
     control: &PinRef,
 ) -> Vec<String> {
     let ctrl_root = ctx.ds.find(&pin_key(&control.component, &control.pin));
@@ -2307,7 +2307,7 @@ fn mechanism_candidates(
         let Some(ti) = ctx.type_info.get(&inst.type_name) else {
             continue;
         };
-        if let Some(t) = via {
+        if let Some(t) = strategy {
             if inst.type_name != *t {
                 continue;
             }
@@ -2401,36 +2401,36 @@ fn synthesize_bridges(
             ));
             continue;
         }
-        let mut candidates = mechanism_candidates(ctx, &br.via, &br.control);
+        let mut candidates = mechanism_candidates(ctx, &br.strategy, &br.control);
         candidates.sort();
         match candidates.len() {
             0 => {
-                let via_hint = match &br.via {
+                let strategy_hint = match &br.strategy {
                     Some(t) => format!(
                         "strategy names '{}' but no qualifying mechanism of that type is declared — declare one with one Control pin (or a two-pin coil) and at least two Path pins",
                     t
                 ),
-                    None => "no qualifying mechanism is declared — declare one with one Control pin (or a two-pin coil) and at least two Path pins, or narrow with `when ... via Type;`"
+                    None => "no qualifying mechanism is declared — declare one with one Control pin (or a two-pin coil) and at least two Path pins, or narrow with `when ... thru Type;`"
                         .to_string(),
                 };
                 errors.push(format!(
                     "bridge {}.{} <-> {}.{} under {}.{} (node '{}') cannot be synthesized: {}",
                     br.a.component, br.a.pin, br.b.component, br.b.pin,
-                    br.control.component, br.control.pin, br.node, via_hint
+                    br.control.component, br.control.pin, br.node, strategy_hint
                 ));
             }
             1 => {
                 synthesize_one(ctx, &candidates[0], br, proofs);
-                let via = br.via.as_deref().unwrap_or("-");
+                let strategy = br.strategy.as_deref().unwrap_or("-");
                 synthesized.push(format!(
-                    "{}.{} <-> {}.{} under {}.{} via {} (node '{}')",
+                    "{}.{} <-> {}.{} under {}.{} thru {} (node '{}')",
                     br.a.component, br.a.pin, br.b.component, br.b.pin,
-                    br.control.component, br.control.pin, via, br.node
+                    br.control.component, br.control.pin, strategy, br.node
                 ));
             }
             n => {
                 errors.push(format!(
-                    "bridge {}.{} <-> {}.{} under {}.{} (node '{}') is ambiguous: {} mechanisms could synthesize it ({}). Disambiguate with the strategy clause: `when ... via <Type>;` or pre-wire one mechanism's control pin",
+                    "bridge {}.{} <-> {}.{} under {}.{} (node '{}') is ambiguous: {} mechanisms could synthesize it ({}). Disambiguate with the strategy clause: `when ... thru <Type>;` or pre-wire one mechanism's control pin",
                     br.a.component, br.a.pin, br.b.component, br.b.pin,
                     br.control.component, br.control.pin, br.node, n, candidates.join(", ")
                 ));
@@ -3463,11 +3463,11 @@ fn conditional_bridge_strings(bridges: &[BridgeRequest]) -> Vec<String> {
     bridges
         .iter()
         .map(|br| {
-            let via = br.via.as_deref().unwrap_or("-");
+            let strategy = br.strategy.as_deref().unwrap_or("-");
             format!(
-                "{}.{} <-> {}.{} under {}.{} via {} (node '{}')",
+                "{}.{} <-> {}.{} under {}.{} thru {} (node '{}')",
                 br.a.component, br.a.pin, br.b.component, br.b.pin,
-                br.control.component, br.control.pin, via, br.node
+                br.control.component, br.control.pin, strategy, br.node
             )
         })
         .collect()
@@ -4266,7 +4266,7 @@ mod tests {
         assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
         let e = &nl.intent_errors[0];
         assert!(e.contains("ambiguous") && e.contains("q1") && e.contains("q2"), "{}", e);
-        assert!(e.contains("via <Type>"), "{}", e);
+        assert!(e.contains("thru <Type>"), "{}", e);
     }
 
     #[test]
@@ -4289,7 +4289,7 @@ mod tests {
             let j2: Jack = Jack { value: "j2" };
             node n [d1.k.voltage == j1.p2.voltage && j2.p1.voltage == j1.p1.voltage
                 && j2.p2.voltage == j1.p2.voltage] {
-                when u1.vout.voltage == 5.0V { d1.a = rly.c1; } via Relay;
+                when u1.vout.voltage == 5.0V { d1.a = rly.c1; } thru Relay;
             };
         "#;
         let nl = analyze(src);
@@ -4695,7 +4695,7 @@ mod tests {
     }
 
     #[test]
-    fn via_strategy_narrows_to_type() {
+    fn thru_strategy_narrows_to_type() {
         // Two switches, different types: `via Fet` selects q1.
         let src = MECH_BOARD.replace(
             "let q1: Fet = Fet { value: \"bs170\" };",
@@ -4705,7 +4705,7 @@ mod tests {
         );
         let src = src.replace(
             "            };\n        }",
-            "            } via Fet;\n        }",
+            "            } thru Fet;\n        }",
         );
         let nl = analyze(&src);
         assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
@@ -4716,16 +4716,16 @@ mod tests {
         );
         assert!(
             !nl.intent_proofs.iter().any(|p| p.contains("k1")),
-            "via Fet must not pick the relay: {:?}",
+            "thru Fet must not pick the relay: {:?}",
             nl.intent_proofs
         );
     }
 
     #[test]
-    fn via_with_no_declared_instance_is_an_error() {
+    fn thru_with_no_declared_instance_is_an_error() {
         let src = MECH_BOARD.replace(
             "            };\n        }",
-            "            } via Relay;\n        }",
+            "            } thru Relay;\n        }",
         );
         let src = src.replace(
             "let q1: Fet = Fet { value: \"bs170\" };",

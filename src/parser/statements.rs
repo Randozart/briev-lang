@@ -487,14 +487,18 @@ impl<'a> Parser<'a> {
         let cond = self.parse_expression()?;
         let mut body = self.parse_block()?;
         // 2026-09-21 (D16 phase 2): trailing strategy clause —
-        // `when cond { ... } via <Name>;`. The selection desugars into a
+        // `when cond { ... } thru <Name>;`. The selection desugars into a
         // marker statement the analysis reads; zero new Statement
-        // variants. `via` is a contextual identifier.
-        if self.check_identifier("via") {
+        // variants. `thru` is a contextual identifier.
+        // 2026-09-23 (D16 revision): `via` → `thru` — "via" is the settled
+        // PCB term for a layer-jumping hole (our own .kicad_pcb routing
+        // emits `(via ...)`); `thru` keeps the "passing through the
+        // mechanism" meaning with no collision.
+        if self.check_identifier("thru") {
             self.pos += 1;
             let name = self.expect_identifier()?;
             body.push(Statement::MetadataAssignment(
-                "via".to_string(),
+                "thru".to_string(),
                 crate::ast::PropertyValue::Identifier(name),
             ));
         }
