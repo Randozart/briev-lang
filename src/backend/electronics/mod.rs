@@ -666,7 +666,7 @@ mod tests {
         let src = r#"
             type Power { spec KicadType: "power_in"; spec Supply: true; };
             type Ground { spec KicadType: "power_in"; spec Return: true; };
-            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: "100n"; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: 100n; };
 
             let u1: Chip = Chip { value: "mcu" };
 

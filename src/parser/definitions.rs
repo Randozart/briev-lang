@@ -3375,8 +3375,8 @@ impl<'a> Parser<'a> {
             // 2026-09-21 (E13): the stated convention value — a string
             // today (presence check); value matching is a later slice.
             "decouple" => {
-                let s = self.expect_string()?;
-                metadata.insert(key.into(), PropertyValue::String(s));
+                let (si, dim) = self.parse_spec_quantity(crate::ast::QuantityDim::Farad)?;
+                metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: dim });
             }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
@@ -3409,6 +3409,69 @@ impl<'a> Parser<'a> {
         }
         self.eat(&Token::Semicolon);
         Ok(())
+    }
+
+    /// Parse a bare quantity spec value — a number with an optional unit
+    /// suffix (`2mA`, `3.3V`, `100n`, `4k7`, `330R`). The key's dimension
+    /// supplies the base unit when the suffix omits it (`100n` on a Farad
+    /// key is 100 nF); a suffix whose explicit base conflicts with the
+    /// key's dimension is a hard error (the doctrine: quantities are
+    /// physics, written bare, dimension-checked). Returns SI + the
+    /// resolved dimension.
+    fn parse_spec_quantity(
+        &mut self,
+        dim: crate::ast::QuantityDim,
+    ) -> Result<(f64, crate::ast::QuantityDim), SyntaxError> {
+        let value = match self.peek() {
+            Some(Token::Float(f)) => {
+                let v = *f;
+                self.pos += 1;
+                v
+            }
+            Some(Token::Integer(n)) => {
+                let v = *n as f64;
+                self.pos += 1;
+                v
+            }
+            _ => {
+                return self.error_at_current(
+                    "expected a quantity (a number with an optional unit suffix, e.g. `2mA` or `100n`)",
+                )
+            }
+        };
+        // An identifier after the number MUST be a unit suffix — a typo is
+        // an error, never a silent bare number.
+        let suffix = match self.peek() {
+            Some(Token::Identifier(s)) => match parse_unit_suffix(s) {
+                Some(u) => {
+                    self.pos += 1;
+                    u
+                }
+                None => {
+                    return self.error_at_current(&format!(
+                        "'{}' is not a unit suffix — write a quantity like `2mA`, `3.3V`, `100n`, or `4k7`, or the bare base unit",
+                        s
+                    ))
+                }
+            },
+            _ => return Ok((value, dim)),
+        };
+        let (si, resolved) = match suffix {
+            UnitSuffix::Explicit { scale, dim: sdim } => {
+                if sdim != dim {
+                    return self.error_at_current(&format!(
+                        "spec value is in {} but the key expects {} — write the quantity in {}",
+                        dim_name(sdim),
+                        dim_name(dim),
+                        dim_name(dim)
+                    ));
+                }
+                (value * scale, sdim)
+            }
+            UnitSuffix::BarePrefix { scale } => (value * scale, dim),
+            UnitSuffix::Fraction { scale, frac } => ((value + frac) * scale, dim),
+        };
+        Ok((si, resolved))
     }
 
     /// 2026-07-14: Parse a `struct Name { fields }` declaration as a TypeDef.
@@ -4137,6 +4200,106 @@ fn spec_name_to_key(name: &str) -> Option<&'static str> {
     }
 }
 
+/// A parsed unit suffix for a quantity spec value (2026-09-23 quantities
+/// plan): `[prefix][base]`, a bare `[prefix]` (dimension from the key),
+/// or the E-series `[prefix][digits]` fraction.
+enum UnitSuffix {
+    /// `[prefix][base]` — explicit dimension (`2mA`, `3.3V`, `4.7kΩ`).
+    Explicit { scale: f64, dim: crate::ast::QuantityDim },
+    /// `[prefix]` bare — dimension from the key (`100n` on a Farad key).
+    BarePrefix { scale: f64 },
+    /// `[prefix][digits]` E-series fraction — `4k7` → 4.7k (digits append
+    /// to the mantissa).
+    Fraction { scale: f64, frac: f64 },
+}
+
+/// The base dimension of a base-unit letter (`V` → Volt, `R`/`Ω` → Ohm).
+fn base_dim(c: char) -> Option<crate::ast::QuantityDim> {
+    match c {
+        'V' => Some(crate::ast::QuantityDim::Volt),
+        'A' => Some(crate::ast::QuantityDim::Amp),
+        'R' | 'Ω' => Some(crate::ast::QuantityDim::Ohm),
+        'F' => Some(crate::ast::QuantityDim::Farad),
+        'H' => Some(crate::ast::QuantityDim::Henry),
+        'W' => Some(crate::ast::QuantityDim::Watt),
+        'K' => Some(crate::ast::QuantityDim::Kelvin),
+        _ => None,
+    }
+}
+
+/// The scale of a scaling-prefix letter (case-sensitive: `m` = milli,
+/// `M` = mega, `k` = kilo, `K` is the Kelvin base handled by `base_dim`).
+fn prefix_scale(c: char) -> Option<f64> {
+    match c {
+        'p' => Some(1e-12),
+        'n' => Some(1e-9),
+        'u' => Some(1e-6),
+        'm' => Some(1e-3),
+        'k' => Some(1e3),
+        'M' => Some(1e6),
+        'G' => Some(1e9),
+        _ => None,
+    }
+}
+
+/// Parse a unit suffix string. `mA` → Explicit(1e-3, Amp); `n` →
+/// BarePrefix(1e-9); `k7` → Fraction(1e3, 0.7); `V` → Explicit(1, Volt).
+/// Case-sensitive: `k` = kilo prefix, `K` = Kelvin base; `m` = milli,
+/// `M` = mega. None when the string is not a unit suffix.
+fn parse_unit_suffix(s: &str) -> Option<UnitSuffix> {
+    if s == "Hz" {
+        return Some(UnitSuffix::Explicit {
+            scale: 1.0,
+            dim: crate::ast::QuantityDim::Hertz,
+        });
+    }
+    let first = s.chars().next()?;
+    let rest = &s[1..];
+    if let Some(dim) = base_dim(first) {
+        if !rest.is_empty() {
+            return None;
+        }
+        return Some(UnitSuffix::Explicit { scale: 1.0, dim });
+    }
+    let scale = prefix_scale(first)?;
+    if rest.is_empty() {
+        return Some(UnitSuffix::BarePrefix { scale });
+    }
+    if rest == "Hz" {
+        return Some(UnitSuffix::Explicit {
+            scale,
+            dim: crate::ast::QuantityDim::Hertz,
+        });
+    }
+    let rest_first = rest.chars().next()?;
+    if let Some(dim) = base_dim(rest_first) {
+        if rest.len() != 1 {
+            return None;
+        }
+        return Some(UnitSuffix::Explicit { scale, dim });
+    }
+    if rest.chars().all(|c| c.is_ascii_digit()) {
+        let n = rest.parse::<f64>().ok()?;
+        let frac = n / 10f64.powi(rest.len() as i32);
+        return Some(UnitSuffix::Fraction { scale, frac });
+    }
+    None
+}
+
+/// The display name of a quantity dimension, for diagnostics.
+fn dim_name(d: crate::ast::QuantityDim) -> &'static str {
+    match d {
+        crate::ast::QuantityDim::Volt => "volts",
+        crate::ast::QuantityDim::Amp => "amps",
+        crate::ast::QuantityDim::Ohm => "ohms",
+        crate::ast::QuantityDim::Farad => "farads",
+        crate::ast::QuantityDim::Henry => "henries",
+        crate::ast::QuantityDim::Hertz => "hertz",
+        crate::ast::QuantityDim::Watt => "watts",
+        crate::ast::QuantityDim::Kelvin => "kelvin",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// 2026-08-27 (cbv-HW plan Slice A): extern declarations parse to
@@ -4261,6 +4424,75 @@ mod tests {
             Some(crate::ast::PropertyValue::Int(4)) => {}
             other => panic!("expected bits=4, got {:?}", other),
         }
+    }
+
+    /// Assert the type's `decouple` spec is a Farad quantity near `si`.
+    fn assert_decouple_farad(td: &crate::ast::TypeDef, si: f64) {
+        match td.body.metadata.get("decouple") {
+            Some(crate::ast::PropertyValue::Quantity { si: got, dimension }) => {
+                assert!(
+                    (*got - si).abs() < 1e-9,
+                    "decouple si = {got}, expected {si}"
+                );
+                assert_eq!(*dimension, crate::ast::QuantityDim::Farad);
+            }
+            other => panic!("expected a Farad quantity, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_spec_quantity_bare_prefix_takes_key_dimension() {
+        // `100n` on a Farad key is 100 nF — the bare prefix resolves to
+        // the key's dimension (the quantities doctrine: quantities are
+        // physics, written bare).
+        let tl = parse_top("type C { spec Decouple: 100n; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 100e-9);
+    }
+
+    #[test]
+    fn test_spec_quantity_prefix_and_base() {
+        let tl = parse_top("type C { spec Decouple: 10uF; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 10e-6);
+        let tl = parse_top("type C { spec Decouple: 2.2uF; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 2.2e-6);
+    }
+
+    #[test]
+    fn test_spec_quantity_bare_number_is_base_unit() {
+        // A bare number is the base unit of the key's dimension — 100
+        // farads (valid, if odd).
+        let tl = parse_top("type C { spec Decouple: 100; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 100.0);
+    }
+
+    #[test]
+    fn test_spec_quantity_e_series_fraction() {
+        // `4k7` — the E-series fraction: 4.7 kilo = 4700.
+        let tl = parse_top("type C { spec Decouple: 4k7; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 4700.0);
+    }
+
+    #[test]
+    fn test_spec_quantity_dimension_conflict_rejected() {
+        // `spec Decouple: 3.3V` — a voltage on a Farad key is a hard error,
+        // never a silent reinterpretation.
+        let err = parse_top("type C { spec Decouple: 3.3V; };").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("volts") && msg.contains("farads"),
+            "dimension-conflict message names both: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_spec_quantity_bad_suffix_rejected() {
+        let err = parse_top("type C { spec Decouple: 100banana; };").unwrap_err();
+        assert!(format!("{}", err).contains("unit suffix"), "{}", err);
     }
 
     #[test]

@@ -76,6 +76,8 @@ fn write_metadata(metadata: &HashMap<String, PropertyValue>, out: &mut String) {
                     .collect();
                 format!("[{}]", inner.join(", "))
             }
+            // 2026-09-23 (quantities plan): a quantity is written bare.
+            PropertyValue::Quantity { .. } => format!("{}", val),
             PropertyValue::HashL => "#L".to_string(),
             PropertyValue::HashR => "#R".to_string(),
             PropertyValue::HashT => "#T".to_string(),

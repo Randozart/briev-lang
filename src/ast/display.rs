@@ -208,11 +208,56 @@ impl fmt::Display for PropertyValue {
                 }
                 write!(f, "]")
             }
+            // 2026-09-23 (quantities plan): render back to bare notation.
+            PropertyValue::Quantity { si, dimension } => {
+                write!(f, "{}", quantity_str(*si, *dimension))
+            }
             PropertyValue::HashL => write!(f, "#Lh"),
             PropertyValue::HashR => write!(f, "#Rh"),
             PropertyValue::HashT => write!(f, "#T"),
         }
     }
+}
+
+/// Render a quantity (SI + dimension) back to bare notation for display
+/// and round-trip: pick a scaling prefix that keeps the magnitude in a
+/// readable range (`100nF`, `2mA`, `3.3V`, `4.7kΩ`). The output is
+/// re-parseable by the quantity grammar.
+fn quantity_str(si: f64, dim: crate::ast::QuantityDim) -> String {
+    let base = match dim {
+        crate::ast::QuantityDim::Volt => "V",
+        crate::ast::QuantityDim::Amp => "A",
+        crate::ast::QuantityDim::Ohm => "Ω",
+        crate::ast::QuantityDim::Farad => "F",
+        crate::ast::QuantityDim::Henry => "H",
+        crate::ast::QuantityDim::Hertz => "Hz",
+        crate::ast::QuantityDim::Watt => "W",
+        crate::ast::QuantityDim::Kelvin => "K",
+    };
+    let prefixes: [(f64, &str); 8] = [
+        (1e-12, "p"),
+        (1e-9, "n"),
+        (1e-6, "u"),
+        (1e-3, "m"),
+        (1.0, ""),
+        (1e3, "k"),
+        (1e6, "M"),
+        (1e9, "G"),
+    ];
+    let (scale, pfx) = prefixes
+        .iter()
+        .rev()
+        .find(|(sc, _)| si.abs() >= *sc)
+        .unwrap_or(&(1.0, ""));
+    let v = si / scale;
+    let mut s = format!("{:.4}", v);
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    format!("{}{}{}", s, pfx, base)
 }
 
 impl fmt::Display for BinaryOpKind {

@@ -631,6 +631,22 @@ the 10k on an i2c bus; the choice is immaterial, the netlist equivalent.
 E14b remaining (backlog, each marked in the fixture): rail inference,
 `derive on:` type clauses.
 
+### Amendment 2026-09-23 (VII): quantities + annotation doctrine — Phase 1 landed
+
+The compiler-vs-annotation doctrine is locked (plan
+`2026-09-23-quantities-and-annotation-doctrine.md`): if the compiler must
+READ it to prove the board works → physics → PascalCase spec; if a
+human/manufacturer reads it to build the board → annotation → lowercase,
+opaque. Quantities are bare (`spec Decouple: 100n;`), never quoted
+(quotes imply arbitrary). Phase 1 (quantity foundation) landed:
+`PropertyValue::Quantity { si, dimension }` + `QuantityDim`, the spec
+unit grammar (scaling prefixes p/n/u/m/k/M/G case-sensitive, base units,
+key-dimension resolution, E-series `4k7` fraction, dimension-conflict
+hard errors), and `spec Decouple: 100n;` across stdlib/fixture/tests
+(the old `"100n"` string form is rejected). Phases 2–4 (Tolerance/Rating
+→ specs, Resistance → spec, Min/MaxCurrent envelope) are recorded with
+triggers in the plan.
+
 E14b (pure intent — no explicit equalities) remains OPEN; every
 explicit equality the fixture needed beyond the drive map is marked
 `// E14b:` in the file and recorded in the design record's gate delta.

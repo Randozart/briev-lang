@@ -205,11 +205,48 @@ pub enum PropertyValue {
     String(String),
     Identifier(String),
     List(Vec<PropertyValue>),
+    /// 2026-09-23 (quantities plan): a first-class quantity spec value —
+    /// `spec Decouple: 100n;` — stored in SI with its dimension. Bare
+    /// quantities, never quoted strings (the doctrine: quotes imply
+    /// arbitrary; quantities are physics).
+    Quantity { si: f64, dimension: QuantityDim },
     // 2026-07-18: Compiler-internal hash words for strategy op bindings.
     // #L = left operand, #R = right operand, #T = type parameter.
     HashL,
     HashR,
     HashT,
+}
+
+/// The physics dimensions of a quantity spec value — compiler-intrinsic
+/// (PascalCase doctrine), independent of the stdlib base type names
+/// (Rule 15: no type-name matching in the compiler).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuantityDim {
+    Volt,
+    Amp,
+    Ohm,
+    Farad,
+    Henry,
+    Hertz,
+    Watt,
+    Kelvin,
+}
+
+impl QuantityDim {
+    /// The lowercase canonical name (`volt`, `amp`, …) — used by the
+    /// beast serialization tag and its reverse lookup.
+    pub fn name(&self) -> &'static str {
+        match self {
+            QuantityDim::Volt => "volt",
+            QuantityDim::Amp => "amp",
+            QuantityDim::Ohm => "ohm",
+            QuantityDim::Farad => "farad",
+            QuantityDim::Henry => "henry",
+            QuantityDim::Hertz => "hertz",
+            QuantityDim::Watt => "watt",
+            QuantityDim::Kelvin => "kelvin",
+        }
+    }
 }
 
 /// How an operator binding resolves to an implementation.

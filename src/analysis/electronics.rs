@@ -3796,7 +3796,7 @@ mod tests {
     const DECOUPLED_BOARD: &str = r#"
         type Power { spec KicadType: "power_in"; spec Supply: true; };
         type Ground { spec KicadType: "power_in"; spec Return: true; };
-        type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: "100n"; };
+        type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: 100n; };
         type Cap { pin p; pin n; reference "C"; spec Decoupler: true; };
 
         let u1: Chip = Chip { value: "mcu" };
@@ -3827,7 +3827,7 @@ mod tests {
         let src = r#"
             type Power { spec KicadType: "power_in"; spec Supply: true; };
             type Ground { spec KicadType: "power_in"; spec Return: true; };
-            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: "100n"; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: 100n; };
 
             let u1: Chip = Chip { value: "mcu" };
         "#;
@@ -3852,7 +3852,7 @@ mod tests {
         let src = r#"
             type Power { spec KicadType: "power_in"; spec Supply: true; };
             type Ground { spec KicadType: "power_in"; spec Return: true; };
-            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: "100n"; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: 100n; };
             type Res { pin a; pin b; reference "R"; };
 
             let u1: Chip = Chip { value: "mcu" };
@@ -3870,7 +3870,7 @@ mod tests {
     #[test]
     fn decouple_without_supply_pin_is_an_error() {
         let src = r#"
-            type Chip { pin a; pin b; reference "U"; spec Decouple: "100n"; };
+            type Chip { pin a; pin b; reference "U"; spec Decouple: 100n; };
 
             let u1: Chip = Chip { value: "mcu" };
         "#;

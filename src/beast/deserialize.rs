@@ -683,6 +683,37 @@ fn parse_unop(s: &str) -> Result<UnaryOpKind, String> {
     })
 }
 
+/// The dimension for a quantity tag name (`"volt"` → Volt) — the reverse
+/// of `QuantityDim::name()`.
+fn quantity_dim_of_name(name: &str) -> Option<crate::ast::QuantityDim> {
+    Some(match name {
+        "volt" => crate::ast::QuantityDim::Volt,
+        "amp" => crate::ast::QuantityDim::Amp,
+        "ohm" => crate::ast::QuantityDim::Ohm,
+        "farad" => crate::ast::QuantityDim::Farad,
+        "henry" => crate::ast::QuantityDim::Henry,
+        "hertz" => crate::ast::QuantityDim::Hertz,
+        "watt" => crate::ast::QuantityDim::Watt,
+        "kelvin" => crate::ast::QuantityDim::Kelvin,
+        _ => return None,
+    })
+}
+
+/// The `(quantity <si> <dimension>)` tagged form of a Quantity value.
+fn sexpr_to_quantity(parts: &[SExpr]) -> Result<PropertyValue, String> {
+    if parts.len() < 3 {
+        return Err("quantity property needs a value and a dimension".into());
+    }
+    let si = match &parts[1] {
+        SExpr::Atom(Atom::Float(f)) => *f,
+        _ => return Err("quantity value must be a float".into()),
+    };
+    let dim_name = sexpr_str(&parts[2])?;
+    let dim = quantity_dim_of_name(&dim_name)
+        .ok_or_else(|| format!("unknown quantity dimension '{}'", dim_name))?;
+    Ok(PropertyValue::Quantity { si, dimension: dim })
+}
+
 fn sexpr_to_pv(expr: &SExpr) -> Result<PropertyValue, String> {
     match expr {
         SExpr::Atom(Atom::String(s)) => {
@@ -704,6 +735,9 @@ fn sexpr_to_pv(expr: &SExpr) -> Result<PropertyValue, String> {
                 let mut items = Vec::new();
                 for i in 1..parts.len() { items.push(sexpr_to_pv(&parts[i])?); }
                 Ok(PropertyValue::List(items))
+            } else if tag == "quantity" {
+                // 2026-09-23 (quantities plan): `(quantity <si> <dimension>)`.
+                sexpr_to_quantity(parts)
             } else {
                 Ok(PropertyValue::Identifier(sexpr_str(&parts[0])?.to_string()))
             }

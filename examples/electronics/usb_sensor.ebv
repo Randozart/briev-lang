@@ -4,7 +4,7 @@
 //
 // Translation notes (§3.2 → landed surface):
 //   - pin classes are PascalCase stdlib types (Power/Ground/In/Io/IoOd/Nc);
-//   - `spec decouple: 100n;` → `spec Decouple: "100n";` (E13);
+//   - `spec decouple: 100n;` → `spec Decouple: 100n;` (E13);
 //   - `populated = false: c_dnp;` → `unpop c_dnp;` (Slice B);
 //   - `let r_pu[2]` / `let c[i:5]` — instance arrays landed (E1);
 //   - `u1.enabled = true;` → `u1.en = true;` (intent names the pin);
@@ -28,7 +28,7 @@ type Ldo {
     reference "U";
     tolerance 6;
     rating 0.9;
-    spec Decouple: "100n";
+    spec Decouple: 100n;
 };
 type Mcu {
     pin vdd: Power;
@@ -42,7 +42,7 @@ type Mcu {
     reference "U";
     tolerance 4;
     rating any;
-    spec Decouple: "100n";
+    spec Decouple: 100n;
 };
 type Sensor {
     pin vdd: Power;
@@ -53,7 +53,7 @@ type Sensor {
     reference "U";
     tolerance 5;
     rating any;
-    spec Decouple: "100n";
+    spec Decouple: 100n;
 };
 type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; spec PullUp: true; };
 type Capacitor { pin a; pin b; reference "C"; tolerance any; rating any; spec Decoupler: true; };

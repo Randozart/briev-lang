@@ -357,6 +357,17 @@ fn pv_to_sexpr(pv: &PropertyValue) -> SExpr {
             for item in items { children.push(pv_to_sexpr(item)); }
             SExpr::List(children)
         }
+        // 2026-09-23 (quantities plan): tagged form `(quantity <si>
+        // <dimension>)` so a Quantity round-trips through beast instead of
+        // degrading to a String atom.
+        PropertyValue::Quantity { si, dimension } => {
+            let mut children = vec![
+                atom("quantity"),
+                SExpr::Atom(Atom::Float(*si)),
+                atom(dimension.name()),
+            ];
+            SExpr::List(children)
+        }
         PropertyValue::HashL => atom("#Lh"),
         PropertyValue::HashR => atom("#Rh"),
         PropertyValue::HashT => atom("#T"),
