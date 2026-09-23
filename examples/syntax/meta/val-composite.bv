@@ -5,7 +5,7 @@
 // `let r = aligned!(4)` computes the value at the call site, and the block
 // types as the composite's return type.
 
-$defn aligned_size(n: expr) -> Int {
+$defn aligned_size(n: Expr) -> Int {
     term (n + 15) & ~15;
 };
 

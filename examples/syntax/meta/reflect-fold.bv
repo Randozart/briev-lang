@@ -4,7 +4,7 @@
 // on a receiver's SHAPE, and expansion splices only the taken arm — the
 // composite specializes per-shape at compile time, not at runtime.
 
-$defn classify(buf: expr, target: expr) {
+$defn classify(buf: Expr, target: Expr) {
     match buf.^^Size {
         4 => target = 4;
         8 => target = 8;

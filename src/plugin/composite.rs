@@ -29,7 +29,7 @@ pub fn is_composite(def: &Definition) -> bool {
 }
 
 fn is_expr_param(t: &crate::ast::Type) -> bool {
-    matches!(t, crate::ast::Type::Custom(n) if n == "expr" || n == "expr_item")
+    matches!(t, crate::ast::Type::Custom(n) if n == "Expr" || n == "ExprItem")
 }
 
 /// The composite's signature: (substitution parameters in declaration
@@ -42,7 +42,7 @@ fn composite_signature(
     let mut exposed: HashSet<String> = HashSet::new();
     for (n, t) in &def.parameters {
         match t {
-            crate::ast::Type::Custom(k) if k == "expr" => {
+            crate::ast::Type::Custom(k) if k == "Expr" => {
                 if Some(n) == def.variadic_param.as_ref() {
                     // The rest parameter is NOT substituted positionally — it
                     // binds ALL trailing arguments as a compile-time list.
@@ -50,7 +50,7 @@ fn composite_signature(
                 }
                 subst.push(n.clone());
             }
-            crate::ast::Type::Custom(k) if k == "expr_item" => {
+            crate::ast::Type::Custom(k) if k == "ExprItem" => {
                 exposed.insert(n.clone());
             }
             _ => return None,
@@ -91,7 +91,7 @@ fn check_arity(
     } else if args.len() != params.len() {
         Err(format!(
             "composite '{name}' expects {} expression arguments ({}), got {} — \
-             supply one expression per `expr` parameter (`expr_item` binders \
+             supply one expression per `Expr` parameter (`ExprItem` binders \
              are bound by the body, never passed)",
             params.len(),
             params.join(", "),
@@ -170,8 +170,8 @@ fn expand_composite_body(
     let name = &def.name;
     let Some((params, exposed, rest)) = composite_signature(def) else {
         return Err(format!(
-            "composite '{name}' mixes `expr`/`expr_item` and value parameters — \
-             declare all parameters as `name: expr` or `name: expr_item` (v1 \
+            "composite '{name}' mixes `Expr`/`ExprItem` and value parameters — \
+             declare all parameters as `name: Expr` or `name: ExprItem` (v1 \
              supports expression parameters only)"
         ));
     };
@@ -978,7 +978,7 @@ fn check_hygiene(
                     "composite '{}': argument for '{}' mentions '{}', which the \
                      composite body binds privately — capture would silently \
                      change meaning; rename the caller's '{}' or the composite's \
-                     binder (exposed `expr_item` binders may be referenced)",
+                     binder (exposed `ExprItem` binders may be referenced)",
                     def.name, param, id, id
                 ));
             }
@@ -1677,7 +1677,7 @@ mod tests {
     #[test]
     fn expr_typed_params_are_composites() {
         let items = parse_program(
-            "$defn f(x: expr, y: expr) { \n z = x + y; \n}; \nlet q: Int = 0;",
+            "$defn f(x: Expr, y: Expr) { \n z = x + y; \n}; \nlet q: Int = 0;",
         );
         let d = defn_of(&items, "f");
         assert!(is_composite(&d), "`expr` params mark a composite");
@@ -1696,7 +1696,7 @@ mod tests {
         // `expr_item` names a binder the body binds; arguments may reference
         // it, and it is never passed at the call site.
         let items = parse_program(
-            "$defn f(fill: expr, n: expr, i: expr_item) { \n\
+            "$defn f(fill: Expr, n: Expr, i: ExprItem) { \n\
              \x20 foreach i in 0..n { \n\
              \x20  buf[i] = fill; \n\
              \x20 } \n\
@@ -1725,7 +1725,7 @@ mod tests {
     #[test]
     fn expansion_substitutes_nested_positions() {
         let items = parse_program(
-            "$defn f(p: expr, q: expr) { \n\
+            "$defn f(p: Expr, q: Expr) { \n\
              \x20 let t = p * 2; \n\
              \x20 buf[i] = t + q; \n\
              };",
@@ -1758,7 +1758,7 @@ mod tests {
     #[test]
     fn hygiene_capture_is_rejected() {
         let items = parse_program(
-            "$defn f(p: expr) { let t = p * 2; res = t; };",
+            "$defn f(p: Expr) { let t = p * 2; res = t; };",
         );
         let d = defn_of(&items, "f");
         // The arg mentions `t` — the body binds `t`. Capture => error.
@@ -1774,7 +1774,7 @@ mod tests {
 
     #[test]
     fn arg_referencing_another_param_is_rejected() {
-        let items = parse_program("$defn f(p: expr, q: expr) { res = p + q; };");
+        let items = parse_program("$defn f(p: Expr, q: Expr) { res = p + q; };");
         let d = defn_of(&items, "f");
         let arg_p = Expr::Decimal(1);
         let arg_q = Expr::BinaryOp(
@@ -1790,7 +1790,7 @@ mod tests {
     #[test]
     fn contract_gates_are_spliced() {
         let items = parse_program(
-            "$defn f(p: expr) [i < 8] [i >= 0] { res = p; };",
+            "$defn f(p: Expr) [i < 8] [i >= 0] { res = p; };",
         );
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(
@@ -1808,7 +1808,7 @@ mod tests {
     #[test]
     fn driver_expands_call_sites_in_node_bodies() {
         let src = "\
-$defn scale_into(dst: expr, srcv: expr) { dst = srcv * 2; };
+$defn scale_into(dst: Expr, srcv: Expr) { dst = srcv * 2; };
 let i: Int = 0;
 let buf: Float[16];
 let inp: Float[16];
@@ -1838,7 +1838,7 @@ async node k [i < 16][i == 16] {
     #[test]
     fn mixed_params_fail_closed() {
         let items = parse_program(
-            "$defn f(p: expr, n: Int) { res = p + n; };",
+            "$defn f(p: Expr, n: Int) { res = p + n; };",
         );
         let d = defn_of(&items, "f");
         let err = expand_composite_invocation(
@@ -1853,7 +1853,7 @@ async node k [i < 16][i == 16] {
 
     #[test]
     fn arg_count_mismatch_diagnoses_params() {
-        let items = parse_program("$defn f(p: expr, q: expr) { res = p + q; };");
+        let items = parse_program("$defn f(p: Expr, q: Expr) { res = p + q; };");
         let d = defn_of(&items, "f");
         let err = expand_composite_invocation(
             &d,
@@ -1907,7 +1907,7 @@ mod comptime_fold {
     /// literal small arm / large arm. Returns the spliced statements.
     fn expand_adaptive(span: Expr) -> Vec<Statement> {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 match n <= 32 { \n\
              \x20  true => { small = 1; }, \n\
              \x20  false => { large = 1; }, \n\
@@ -1948,7 +1948,7 @@ mod comptime_fold {
     #[test]
     fn comptime_let_feeds_condition_and_stays_bound() {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 let tile: Int = n / 4; \n\
              \x20 match tile > 8 { \n\
              \x20  true => { wide = tile; }, \n\
@@ -1971,7 +1971,7 @@ mod comptime_fold {
     #[test]
     fn named_comptime_constant_seeds_the_fold() {
         let items = parse_program(
-            "$defn f(n: expr) { match n <= 32 { true => { s = 1; }, false => { l = 1; }, }; };",
+            "$defn f(n: Expr) { match n <= 32 { true => { s = 1; }, false => { l = 1; }, }; };",
         );
         let d = defn_of(&items, "f");
         let mut seed = HashMap::new();
@@ -1990,7 +1990,7 @@ mod comptime_fold {
     #[test]
     fn top_level_const_seeds_the_driver_fold() {
         let src = "\
-$defn f(n: expr) { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };
+$defn f(n: Expr) { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };
 const D: Int = 128;
 let i: Int = 0;
 let buf: Float[64];
@@ -2020,7 +2020,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn when_folds_both_polarities() {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 when n > 100 { big = 1; }; \n\
              \x20 when n > 1000 { huge = 1; }; \n\
              \x20 when n > 0 { pos = 1; }; \n\
@@ -2039,7 +2039,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn runtime_rebind_kills_comptime_value() {
         let items = parse_program(
-            "$defn f(n: expr, w: expr) { \n\
+            "$defn f(n: Expr, w: Expr) { \n\
              \x20 let t: Int = n; \n\
              \x20 t = w; \n\
              \x20 match t > 8 { true => { a = 1; }, false => { b = 1; }, }; \n\
@@ -2061,7 +2061,7 @@ async node k [i < 1][i == 1] {
     fn comptime_range_unrolls_and_prunes_per_iteration() {
         // LITERAL range in the declaration = generation (static text).
         let items = parse_program(
-            "$defn f(p: expr) { \n\
+            "$defn f(p: Expr) { \n\
              \x20 foreach j in 0..16 { \n\
              \x20  match j < 4 { true => { lo = 1; }, false => { hi = 1; }, } \n\
              \x20 } \n\
@@ -2084,7 +2084,7 @@ async node k [i < 1][i == 1] {
         // A range over an expr PARAMETER is a runtime quantity even when
         // this call passes a literal — caller spans never generate.
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 foreach j in 0..n { \n\
              \x20  work = 1; \n\
              \x20 } \n\
@@ -2100,7 +2100,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn runtime_list_keeps_the_runtime_foreach() {
         let items = parse_program(
-            "$defn f(rows: expr) { \n\
+            "$defn f(rows: Expr) { \n\
              \x20 foreach j in rows { \n\
              \x20  match j < 4 { true => { lo = 1; }, false => { hi = 1; }, } \n\
              \x20 } \n\
@@ -2122,7 +2122,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn comptime_list_literal_unrolls_per_element() {
         let items = parse_program(
-            "$defn f(p: expr) { \n\
+            "$defn f(p: Expr) { \n\
              \x20 foreach w in [1, 2, 4] { \n\
              \x20  acc[p + w] = w; \n\
              \x20 } \n\
@@ -2168,7 +2168,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn comptime_check_true_splices_false_errors() {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 check n <= 32; \n\
              \x20 mark = n; \n\
              };",
@@ -2213,7 +2213,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn nested_adaptive_arms_fold_recursively() {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 match n <= 32 { \n\
              \x20  true => { match n <= 8 { true => { tiny = 1; }, false => { small = 1; }, }; }, \n\
              \x20  false => { large = 1; }, \n\
@@ -2235,7 +2235,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn binding_pattern_scrutinee_degrades() {
         let items = parse_program(
-            "$defn f(n: expr) { match n { x => { any = x; }, }; };",
+            "$defn f(n: Expr) { match n { x => { any = x; }, }; };",
         );
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(&d, &[Expr::Decimal(7)], &HashMap::new(), &HashMap::new())
@@ -2250,7 +2250,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn comptime_overflow_declines_fold() {
         let items = parse_program(
-            "$defn f(n: expr) { let t: Int = n * 2; match t > 8 { true => { a = 1; }, false => { b = 1; }, }; };",
+            "$defn f(n: Expr) { let t: Int = n * 2; match t > 8 { true => { a = 1; }, false => { b = 1; }, }; };",
         );
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(
@@ -2267,7 +2267,7 @@ async node k [i < 1][i == 1] {
 #[test]
     fn contracts_survive_folding() {
         let items = parse_program(
-            "$defn f(n: expr) [n < 64] [n > 0] { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };",
+            "$defn f(n: Expr) [n < 64] [n > 0] { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };",
         );
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
@@ -2290,7 +2290,7 @@ async node k [i < 1][i == 1] {
         // A composite gates on `x.^^Size`; the arg names a `let buf: Float[4]`.
         let items = parse_program(
             "let buf: Float[4]; \n\
-             $defn pick(x: expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
+             $defn pick(x: Expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "pick");
         let state_types = state_types_of(&items);
@@ -2315,7 +2315,7 @@ async node k [i < 1][i == 1] {
     fn reflect_size_mismatch_splices_other_arm() {
         let items = parse_program(
             "let buf: Float[8]; \n\
-             $defn pick(x: expr) { match x.^^Size { 4 => { r = 1; }, 8 => { r = 8; }, _ => { r = 0; }, } };",
+             $defn pick(x: Expr) { match x.^^Size { 4 => { r = 1; }, 8 => { r = 8; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "pick");
         let state_types = state_types_of(&items);
@@ -2337,7 +2337,7 @@ async node k [i < 1][i == 1] {
         // `.^^Element` on Float[16] folds to category 1 (Float).
         let items = parse_program(
             "let buf: Float[16]; \n\
-             $defn kind(x: expr) { match x.^^Element { 1 => { r = 1; }, _ => { r = 0; }, } };",
+             $defn kind(x: Expr) { match x.^^Element { 1 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "kind");
         let state_types = state_types_of(&items);
@@ -2358,7 +2358,7 @@ async node k [i < 1][i == 1] {
         // A receiver that is NOT a state decl declines the fold — the match
         // stays a runtime branch (fail-open).
         let items = parse_program(
-            "$defn pick(x: expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
+            "$defn pick(x: Expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "pick");
         let out = expand_composite_invocation(
@@ -2377,7 +2377,7 @@ async node k [i < 1][i == 1] {
         // `.^^Element` on a String state var folds to the Char category (3).
         let items = parse_program(
             "let s: String; \n\
-             $defn ch(x: expr) { match x.^^Element { 3 => { r = 1; }, _ => { r = 0; }, } };",
+             $defn ch(x: Expr) { match x.^^Element { 3 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "ch");
         let state_types = state_types_of(&items);
@@ -2394,14 +2394,14 @@ async node k [i < 1][i == 1] {
     }
 
     // ── 2026-09-22 (unified-metaprogramming plan) ────────────────────────
-    // Variadic composites: `$defn f(...calls: expr)` binds ALL trailing args
+    // Variadic composites: `$defn f(...calls: Expr)` binds ALL trailing args
     // as the sanctioned compile-time iteration channel — a `foreach c in
     // calls` splices one body copy per arg, `c` substituted with the arg.
 
     #[test]
     fn rest_param_foreach_splices_one_call_per_arg() {
         let items = parse_program(
-            "$defn execute_many(...calls: expr) { foreach c in calls { c; } };",
+            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
         );
         let d = defn_of(&items, "execute_many");
         let out = expand_composite_invocation(
@@ -2430,7 +2430,7 @@ async node k [i < 1][i == 1] {
         // A fixed `expr` param plus a `...` rest: the first arg binds the
         // fixed param, the rest iterate.
         let items = parse_program(
-            "$defn wrap(tag: expr, ...calls: expr) { foreach c in calls { tag(c); } };",
+            "$defn wrap(tag: Expr, ...calls: Expr) { foreach c in calls { tag(c); } };",
         );
         let d = defn_of(&items, "wrap");
         let out = expand_composite_invocation(
@@ -2452,7 +2452,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn zero_rest_args_is_an_error() {
         let items = parse_program(
-            "$defn execute_many(...calls: expr) { foreach c in calls { c; } };",
+            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
         );
         let d = defn_of(&items, "execute_many");
         let err = expand_composite_invocation(
@@ -2473,7 +2473,7 @@ async node k [i < 1][i == 1] {
         // The rest name is NOT positionally substituted (it is a list, not a
         // single expr) — the splice consumes the foreach over it.
         let items = parse_program(
-            "$defn execute_many(...calls: expr) { foreach c in calls { c; } };",
+            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
         );
         let d = defn_of(&items, "execute_many");
         let out = expand_composite_invocation(
@@ -2494,7 +2494,7 @@ async node k [i < 1][i == 1] {
     fn runtime_foreach_inside_composite_is_not_spliced() {
         // A `foreach` over a NON-rest list stays a runtime loop.
         let items = parse_program(
-            "$defn f(x: expr) { foreach k in 0..x { emit(k); } };",
+            "$defn f(x: Expr) { foreach k in 0..x { emit(k); } };",
         );
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(
@@ -2517,7 +2517,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn value_composite_expands_to_value_block() {
         let items = parse_program(
-            "$defn aligned_size(n: expr) -> Int { term (n + 15) & ~15; };",
+            "$defn aligned_size(n: Expr) -> Int { term (n + 15) & ~15; };",
         );
         let d = defn_of(&items, "aligned_size");
         let block = expand_composite_value(
@@ -2541,7 +2541,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn value_composite_without_term_is_an_error() {
         let items = parse_program(
-            "$defn no_value(x: expr) { let y: Int = x; };",
+            "$defn no_value(x: Expr) { let y: Int = x; };",
         );
         let d = defn_of(&items, "no_value");
         let err = expand_composite_value(
@@ -2562,7 +2562,7 @@ async node k [i < 1][i == 1] {
         // A statement composite (no -> Type) keeps statement expansion;
         // its body's trailing term is NOT converted to a value statement.
         let items = parse_program(
-            "$defn execute_many(...calls: expr) { foreach c in calls { c; } };",
+            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
         );
         let d = defn_of(&items, "execute_many");
         let out = expand_composite_invocation(

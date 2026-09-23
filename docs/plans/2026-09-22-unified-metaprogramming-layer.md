@@ -21,14 +21,14 @@ The current composite model deliberately refuses to unroll over
 caller-provided lists ("caller spans are POLICY, not structure") — correct
 for VALUE params, wrong for the rest-param case. The principled resolution:
 **rest params are the sanctioned compile-time iteration channel.** A plain
-`expr` param is a runtime quantity (never unrolls); a `...rest` param
+`Expr` param is a runtime quantity (never unrolls); a `...rest` param
 declares "this trailing argument list is meant to be iterated at compile
 time" — a `foreach` over it unrolls, splicing one emission per element.
 
 ## Syntax — TypeScript-style rest param
 
 ```briev
-$defn execute_many(...calls: expr) {
+$defn execute_many(...calls: Expr) {
     foreach c in calls { c; }   // execute_many!(f(a), f(b), f(c)) → f(a); f(b); f(c);
 };
 ```
@@ -66,7 +66,7 @@ $defn execute_many(...calls: expr) {
 
 ### Hygiene
 - The rest param joins the `exposed` set in `check_hygiene` (like
-  `expr_item`) — the body's `c` binder is loop-local, not a capture.
+  `ExprItem`) — the body's `c` binder is loop-local, not a capture.
 
 ### `subst_expr` — PluginIntercept arm
 - `subst_expr` has no `Expr::PluginIntercept` arm today — a composite
@@ -88,7 +88,7 @@ $defn execute_many(...calls: expr) {
   composite; delete the plugin, its registration (pipeline.rs), and its doc
   section. Rule 14: stdlib learns, Rust retires.
 - Stdlib: `lib/std/meta.bv` (or `execute_many.bv`) declares
-  `$defn execute_many(...calls: expr) { foreach c in calls { c; } };`.
+  `$defn execute_many(...calls: Expr) { foreach c in calls { c; } };`.
 
 ### Tests + corpus
 - Arity edges (0 args → reject as a mistake, per the retired plugin's own

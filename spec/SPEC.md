@@ -2464,14 +2464,14 @@ execute_many!(callee, block₁, block₂, …);
 ```
 
 **Variadic composites (2026-09-22).** A `$defn`/`$txn` may declare a final
-TypeScript-style rest parameter (`...name: expr`) that binds ALL trailing
+TypeScript-style rest parameter (`...name: Expr`) that binds ALL trailing
 call-site arguments as a compile-time list. It is the sanctioned compile-time
 iteration channel: a `foreach` over the rest name unrolls at expansion, one
-emission per element. A plain `expr` parameter is a RUNTIME quantity and
+emission per element. A plain `Expr` parameter is a RUNTIME quantity and
 never unrolls; only a rest parameter declares compile-time iteration.
 
 ```briev
-$defn execute_many(...calls: expr) {
+$defn execute_many(...calls: Expr) {
     foreach c in calls { c; }
 };
 // execute_many!(f(a), f(b), f(c)) → f(a); f(b); f(c);
@@ -2501,7 +2501,7 @@ composites; the two are distinguished by whether the call site needs a
 value.
 
 ```briev
-$defn aligned_size(n: expr) -> Int {
+$defn aligned_size(n: Expr) -> Int {
     term (n + 15) & ~15;
 };
 let r: Int = aligned_size!(4);   // r = 20 — computed at the call site
