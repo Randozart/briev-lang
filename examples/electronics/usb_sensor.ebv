@@ -119,13 +119,9 @@ async node usb_powered [
     && j2.gnd.voltage == j1.gnd.voltage
     && j2.vcc.voltage == u1.vout.voltage
 ] [u1.vout.voltage == 3.3V && j1.vbus.voltage == 5.0V] {
-    // E14b: en wiring stated explicitly — pure intent wires it through
-    // `u1.en = true` alone (delete this fact; the intent then records
-    // the completed pin).
-    u1.en = u2.gpio[0];
-    u1.en = true;               // §3.2 intent — fully wired, recorded
-    led1 = true;                // completes led1.k <-> u2.gpio[1], the
-                                // sole free drive-capable pin
+    u1.en = true;               // E14b-4: drive assignment wires en <-> gpio[0]
+    led1 = true;                // E14b-4: led1.k <-> gpio[1] (gpio[2..7] are
+                                // already claimed by j2 and the button)
     r_led.a = u1.vout;           // E14b: series resistor placement is
     r_led.b = led1.a;           //        physics-derived in pure intent
     // SWD/debug header signals (§3.2 declares the MCU pins; j2 is the

@@ -2468,6 +2468,183 @@ fn free_can_drive_candidates(ctx: &NetlistContext, exclude_inst: &str) -> Vec<St
     candidates
 }
 
+/// 2026-09-23 (E14b slice 4): batch drive assignment — several open
+/// drive intents competing for interchangeable free drive-capable pins
+/// are a perfect matching, wired deterministically (sorted intent ↔
+/// sorted pin). When supply < demand, the pins are mixed-class, or fewer
+/// than two intents are completable, the intents fall through to the
+/// per-intent completions unchanged (their D13 errors stand). Returns the
+/// intents the batch did NOT resolve.
+fn solve_drive_assignment(
+    ctx: &mut NetlistContext,
+    intents: &[(String, String)],
+    pin_intents: &[(String, PinRef)],
+    proofs: &mut Vec<String>,
+) -> (Vec<(String, String)>, Vec<(String, PinRef)>) {
+    let mut unmatched_inst: Vec<(String, String)> = Vec::new();
+    let mut unmatched_pin: Vec<(String, PinRef)> = Vec::new();
+    let mut demands: Vec<DriveDemand> = Vec::new();
+    for (node, inst_name) in intents {
+        match instance_single_open(ctx, inst_name) {
+            Some(pin) => demands.push(DriveDemand {
+                node: node.clone(),
+                target: PinRef {
+                    component: inst_name.clone(),
+                    pin,
+                    number: 0,
+                },
+                kind: DriveKind::Instance,
+            }),
+            None => unmatched_inst.push((node.clone(), inst_name.clone())),
+        }
+    }
+    for (node, pin) in pin_intents {
+        if pin_connected(ctx.ds, &pin_key(&pin.component, &pin.pin)) {
+            unmatched_pin.push((node.clone(), pin.clone()));
+        } else {
+            demands.push(DriveDemand {
+                node: node.clone(),
+                target: pin.clone(),
+                kind: DriveKind::Pin,
+            });
+        }
+    }
+    let batchable = demands.len() >= 2;
+    if batchable {
+        let supply = free_can_drive_pins(ctx);
+        if supply.len() < demands.len() || !pins_interchangeable(ctx, &supply) {
+            reclaim_demands(demands, &mut unmatched_inst, &mut unmatched_pin);
+            return (unmatched_inst, unmatched_pin);
+        }
+        wire_drive_matching(ctx, demands, &supply, proofs);
+        return (unmatched_inst, unmatched_pin);
+    }
+    reclaim_demands(demands, &mut unmatched_inst, &mut unmatched_pin);
+    (unmatched_inst, unmatched_pin)
+}
+
+/// Return unresolved demands to the per-intent lists (their D13 errors
+/// stand) — the single-intent and mixed/shortage fall-through paths.
+fn reclaim_demands(
+    demands: Vec<DriveDemand>,
+    unmatched_inst: &mut Vec<(String, String)>,
+    unmatched_pin: &mut Vec<(String, PinRef)>,
+) {
+    for d in demands {
+        match d.kind {
+            DriveKind::Instance => {
+                unmatched_inst.push((d.node, d.target.component));
+            }
+            DriveKind::Pin => unmatched_pin.push((d.node, d.target)),
+        }
+    }
+}
+
+/// Wire the perfect matching — sorted demand ↔ sorted supply.
+fn wire_drive_matching(
+    ctx: &mut NetlistContext,
+    mut demands: Vec<DriveDemand>,
+    supply: &[(String, String)],
+    proofs: &mut Vec<String>,
+) {
+    demands.sort_by(|a, b| {
+        (a.node.as_str(), a.target.component.as_str(), a.target.pin.as_str())
+            .cmp(&(b.node.as_str(), b.target.component.as_str(), b.target.pin.as_str()))
+    });
+    for (i, d) in demands.iter().enumerate() {
+        let (scomp, spin) = &supply[i];
+        let tkey = pin_key(&d.target.component, &d.target.pin);
+        let skey = pin_key(scomp, spin);
+        ctx.ds.make(tkey.clone());
+        ctx.ds.make(skey.clone());
+        ctx.ds.union(&tkey, &skey);
+        proofs.push(format!(
+            "wired by drive assignment (node '{}'): {}.{} <-> {}.{} — matched among interchangeable free drive-capable pins",
+            d.node, d.target.component, d.target.pin, scomp, spin
+        ));
+    }
+}
+
+/// The exactly-one unconnected pin of an instance, if any — the drive
+/// intent completes that pin.
+fn instance_single_open(ctx: &NetlistContext, inst_name: &str) -> Option<String> {
+    let inst = ctx.instances.get(inst_name)?;
+    let pins = ctx.type_pins.get(&inst.type_name)?;
+    let open: Vec<&String> = pins
+        .iter()
+        .filter(|(n, _)| !pin_connected(ctx.ds, &pin_key(inst_name, n)))
+        .map(|(n, _)| n)
+        .collect();
+    if open.len() == 1 {
+        Some(open[0].clone())
+    } else {
+        None
+    }
+}
+
+/// All unconnected drive-capable pins, sorted — the batch's supply.
+fn free_can_drive_pins(ctx: &NetlistContext) -> Vec<(String, String)> {
+    let mut pins: Vec<(String, String)> = Vec::new();
+    for (other, oi) in ctx.instances {
+        collect_free_drive_pins(ctx, other, oi, &mut pins);
+    }
+    pins.sort();
+    pins
+}
+
+/// The free drive-capable pins of one instance, appended to the list.
+fn collect_free_drive_pins(
+    ctx: &NetlistContext,
+    other: &str,
+    oi: &ComponentInstance,
+    out: &mut Vec<(String, String)>,
+) {
+    let Some(oti) = ctx.type_info.get(&oi.type_name) else {
+        return;
+    };
+    for (i, (n, _)) in oti.pins.iter().enumerate() {
+        if oti.pin_classes[i].can_drive && !pin_connected(ctx.ds, &pin_key(other, n)) {
+            out.push((other.to_string(), n.clone()));
+        }
+    }
+}
+
+/// The free pins are all interchangeable — same PinClassProps — so any
+/// matching is electrically equivalent and a deterministic pick is not a
+/// silent choice (D13: the choice never matters).
+fn pins_interchangeable(ctx: &NetlistContext, pins: &[(String, String)]) -> bool {
+    let mut props: Option<&PinClassProps> = None;
+    for (comp, name) in pins {
+        let pin = PinRef {
+            component: comp.clone(),
+            pin: name.clone(),
+            number: 0,
+        };
+        let Some(c) = pin_classes_of(ctx, &pin) else {
+            return false;
+        };
+        match props {
+            Some(p) if p != c => return false,
+            None => props = Some(c),
+            _ => {}
+        }
+    }
+    true
+}
+
+/// One open drive intent awaiting a pin — bundled for the assignment sort.
+struct DriveDemand {
+    node: String,
+    target: PinRef,
+    kind: DriveKind,
+}
+
+/// Whether the demand came from an instance intent or a pin intent.
+enum DriveKind {
+    Instance,
+    Pin,
+}
+
 /// 2026-09-23 (E14b slice 1): the pin+volts of a voltage obligation pair —
 /// one side is a `.voltage` pin access, the other a voltage literal,
 /// either orientation.
@@ -3210,7 +3387,13 @@ fn collect_intents(
     // ambiguous). The forcing consumes passive parts (pull-up resistors,
     // switches), never CanDrive pins, so it cannot steal a completion.
     force_voltage_obligations(items, ctx, &obligations, &mut errors, &mut proofs);
-    for (node, inst_name) in &intents {
+    // 2026-09-23 (E14b slice 4): batch drive assignment first — several
+    // open drive intents over interchangeable free drive-capable pins are
+    // a perfect matching, wired deterministically; intents it cannot
+    // resolve fall through to the per-intent completions (D13).
+    let (unmatched_intents, unmatched_pins) =
+        solve_drive_assignment(ctx, &intents, &pin_intents, &mut proofs);
+    for (node, inst_name) in &unmatched_intents {
         match complete_intent(inst_name, node, ctx) {
             Ok(proof) => proofs.push(proof),
             Err(e) => errors.push(e),
@@ -3219,7 +3402,7 @@ fn collect_intents(
     // 2026-09-23 (E14a gate): pin-level intents run after the instance
     // forms — facts and instance completions have claimed their copper,
     // so a pin intent records or completes against what remains.
-    for (node, pin) in &pin_intents {
+    for (node, pin) in &unmatched_pins {
         match complete_pin_intent(pin, node, ctx) {
             Ok(proof) => proofs.push(proof),
             Err(e) => errors.push(e),

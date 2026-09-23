@@ -596,6 +596,25 @@ E14b remaining (backlog, each marked in the fixture): `en` drive
 assignment solving, rail inference, value-aware resistor matching,
 `derive on:` type clauses.
 
+### Amendment 2026-09-23 (V): E14b slice 4 landed — drive assignment
+
+The usb node no longer pre-wires the en line: `u1.en = true;` and
+`led1 = true;` are resolved by a batch drive assignment. Several open
+drive intents (instance form or pin form, each with exactly one open pin)
+competing for INTERCHANGEABLE free drive-capable pins are a perfect
+matching — same PinClassProps → any bijection is equivalent → assigned
+deterministically (sorted intent ↔ sorted pin), never an ambiguity error.
+Fall-through preserves D13: a single completable intent, supply < demand,
+or mixed-class supply all go to the per-intent completions whose
+no-completion / enumerated-ambiguous errors stand. Voltage obligations
+(which consume passive parts only) still realize before the assignment,
+so a bus-assembled open-drain pin never pollutes the drive supply. The
+fixture's en↔gpio[0] and led1.k↔gpio[1] wires are now fully inferred;
+gpio[2..7] were already claimed by the j2 facts and the button low-hold.
+
+E14b remaining (backlog, each marked in the fixture): rail inference,
+value-aware resistor matching, `derive on:` type clauses.
+
 E14b (pure intent — no explicit equalities) remains OPEN; every
 explicit equality the fixture needed beyond the drive map is marked
 `// E14b:` in the file and recorded in the design record's gate delta.

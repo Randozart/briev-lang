@@ -987,15 +987,16 @@ mod tests {
 
     #[test]
     fn error_matrix_missing_led_driver_lists_candidates() {
-        // Case 1: free a second drive-capable pin (drop the en pre-wire) —
-        // the led1 drive intent now has two candidates; D13 demands the
-        // error enumerate them, never a silent pick.
-        let fx = mutate(gate_fixture(), "u1.en = u2.gpio[0];", "");
+        // Case 1: remove the led1 drive intent — the remaining en intent
+        // now faces TWO free interchangeable pins (batch matching needs
+        // the full demand set) and D13 demands the candidates be
+        // enumerated, never a silent pick.
+        let fx = mutate(gate_fixture(), "led1 = true;", "");
         let nl = derive_netlist(&fixture_items(&fx));
         let joined = nl.intent_errors.join("\n");
         assert!(
-            nl.intent_errors.iter().any(|e| e.contains("led1") && e.contains("ambiguous")),
-            "ambiguous led1 intent expected: {:?}",
+            nl.intent_errors.iter().any(|e| e.contains("en") && e.contains("ambiguous")),
+            "ambiguous en intent expected: {:?}",
             nl.intent_errors
         );
         assert!(joined.contains("u2.gpio[0]"), "candidates enumerated: {joined}");
@@ -1040,8 +1041,8 @@ mod tests {
         // the disconnection is impossible; hard error (D16 p3b).
         let fx = mutate(
             gate_fixture(),
-            "u1.en = u2.gpio[0];",
-            "u1.en = u2.gpio[0];\n    open u1.vout, u2.vdd;",
+            "led1 = true;",
+            "led1 = true;\n    open u1.vout, u2.vdd;",
         );
         let nl = derive_netlist(&fixture_items(&fx));
         assert!(
@@ -1288,12 +1289,102 @@ mod tests {
                 u1.gpio.voltage <= 0.3V;
             }
         "#;
-        let nl = netlist_of(src);
+let nl = netlist_of(src);
         assert!(
             nl.intent_errors
                 .iter()
                 .any(|e| e.contains("ambiguous") && e.contains("sw1") && e.contains("sw2")),
             "{:?}",
+            nl.intent_errors
+        );
+    }
+
+    // ── E14b slice 4 (plan 2026-09-23-ebv-e14b-drive-assignment.md) ────
+
+    #[test]
+    fn e14b_drive_assignment_matches_interchangeable_pins() {
+        // en (pin intent) + led1 (instance intent) both need a drive;
+        // gpio[0], gpio[1] are interchangeable Io pins → a perfect
+        // matching assigns deterministically, no ambiguity error.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type In { spec KicadType: "input"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Mcu { pin vdd: Power; pin gpio[2]: Io; pin en: In; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let led1: Led = Led { value: "green" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                led1.a = u1.vdd;
+                u1.en = true;
+                led1 = true;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert_eq!(
+            nl.intent_proofs.iter().filter(|p| p.contains("drive assignment")).count(),
+            2,
+            "both intents must resolve: {:?}",
+            nl.intent_proofs
+        );
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
+
+    #[test]
+    fn e14b_drive_shortage_is_a_no_completion_error() {
+        // led1 consumes the only free pin; the en intent then has no
+        // completion → D13 error, never a silent drop.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type In { spec KicadType: "input"; };
+            type Led { pin a; pin k; reference "D"; };
+            type Mcu { pin vdd: Power; pin gpio[2]: Io; pin en: In; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let led1: Led = Led { value: "green" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                led1.a = u1.gpio[1];
+                u1.en = true;
+                led1 = true;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("u1.en") && e.contains("no completion")),
+            "{:?}",
+            nl.intent_errors
+        );
+    }
+
+    #[test]
+    fn e14b_mixed_class_supply_is_ambiguous() {
+        // gpio (Io) + an Out pin compete — the class of the completer
+        // matters, so D13 enumerates all candidates instead of picking.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Out { spec KicadType: "output"; spec CanDrive: true; };
+            type Led { pin a; pin k; reference "D"; };
+            type Chip { pin o: Out; reference "U"; };
+            type Mcu { pin vdd: Power; pin gpio[2]: Io; pin en: Io; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let u2: Chip = Chip { value: "y" };
+            let led1: Led = Led { value: "green" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                led1.a = u1.vdd;
+                u1.en = true;
+                led1 = true;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("ambiguous") && e.contains("u2.o")),
+            "mixed-class supply must enumerate: {:?}",
             nl.intent_errors
         );
     }
