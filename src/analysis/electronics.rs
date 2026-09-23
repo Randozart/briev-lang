@@ -443,6 +443,30 @@ fn collect_instances(
 
 /// If `expr` is a pin access on a declared instance (`inst.pin` or
 /// `inst.pin.prop`), return its PinRef; else None.
+/// `r_pu[0]` / `m[0][1]` — flatten an index chain rooted at an identifier
+/// into the expanded element's name (2026-09-23, E1 instance arrays). A
+/// bare identifier or a pin-array access (rooted at a Field, `u.gpio[3]`)
+/// is not an instance array.
+fn instance_array_name(expr: &Expr) -> Option<String> {
+    let mut suffix = String::new();
+    let mut cur = expr;
+    loop {
+        match cur {
+            Expr::Index(inner, idx) => {
+                let Expr::Decimal(d) = idx.as_ref() else {
+                    return None;
+                };
+                suffix = format!("[{}]{}", d, suffix);
+                cur = inner;
+            }
+            Expr::Identifier(name) if !suffix.is_empty() => {
+                return Some(format!("{}{}", name, suffix));
+            }
+            _ => return None,
+        }
+    }
+}
+
 fn resolve_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInstance>, type_pins: &BTreeMap<String, Vec<(String, u64)>>) -> Option<PinRef> {
     // Strip property accesses (`r1.a.voltage` → `r1.a`): walk down while the
     // base is itself a Field — the pin access is the Field whose base is the
@@ -459,23 +483,28 @@ fn resolve_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInstance>, ty
     // 2026-09-21 (E11): `u2.gpio[3]` — indexed element of a pin array.
     // The parser expanded the array into elements named `gpio[0]…`, so
     // the element resolves by its bracketed name against the same table.
+    // 2026-09-23 (E1): `r_pu[0].a` — indexed element of an INSTANCE array;
+    // same expansion, names like `r_pu[0]`.
     let (inst_name, pin_name) = match base.as_ref() {
-        Expr::Identifier(inst_name) => (inst_name, pin_name.clone()),
-        Expr::Index(inner, idx) => {
-            let Expr::Field(inner_base, arr_name) = inner.as_ref() else {
-                return None;
-            };
-            let Expr::Identifier(inst_name) = inner_base.as_ref() else {
-                return None;
-            };
-            let Expr::Decimal(d) = idx.as_ref() else {
-                return None;
-            };
-            (inst_name, format!("{}[{}]", arr_name, d))
-        }
+        Expr::Identifier(inst_name) => (inst_name.clone(), pin_name.clone()),
+        Expr::Index(inner, idx) => match inner.as_ref() {
+            Expr::Field(inner_base, arr_name) => {
+                let Expr::Identifier(inst_name) = inner_base.as_ref() else {
+                    return None;
+                };
+                let Expr::Decimal(d) = idx.as_ref() else {
+                    return None;
+                };
+                (inst_name.clone(), format!("{}[{}]", arr_name, d))
+            }
+            _ => match instance_array_name(base.as_ref()) {
+                Some(name) => (name, pin_name.clone()),
+                None => return None,
+            },
+        },
         _ => return None,
     };
-    let inst = instances.get(inst_name)?;
+    let inst = instances.get(&inst_name)?;
     let pins = type_pins.get(&inst.type_name)?;
     let (_, number) = pins.iter().find(|(n, _)| n == &pin_name)?;
     Some(PinRef {
@@ -3592,6 +3621,68 @@ mod tests {
             nl.bus_errors
         );
         assert!(nl.bus_errors[0].contains("3 elements") && nl.bus_errors[0].contains("7 elements"), "{}", nl.bus_errors[0]);
+    }
+
+    // ── 2026-09-23 (E1): bounded instance arrays ────────────────────────
+
+    #[test]
+    fn instance_array_elements_wire_through_resolve_pin() {
+        // `r[0].a` / `r[1].b` resolve to the expanded element instances;
+        // unions form the same nets the hand-unrolled lets would.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let r[2]: Resistor = Resistor { value: "4k7" };
+            let j1: Conn = Conn { value: "x" };
+            node n [
+                j1.p1.voltage == r[0].a.voltage && r[0].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == r[1].a.voltage && r[1].b.voltage == j1.p2.voltage
+            ] { };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        let names: Vec<&str> = nl.components.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["r[0]", "r[1]", "j1"], "{:?}", names);
+        // Two nets: {j1.p1, r[0].a, r[1].a} and {j1.p2, r[0].b, r[1].b}.
+        assert_eq!(nl.nets.len(), 2, "{:?}", nl.nets);
+        for k in ["r[0]", "r[1]"] {
+            assert!(
+                nl.nets.iter().any(|n| n.pins.iter().any(|p| p.component == k)),
+                "{} missing from nets: {:?}",
+                k,
+                nl.nets
+            );
+        }
+    }
+
+    #[test]
+    fn instance_array_multi_dim_element_resolves() {
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let m[i:2][j:2]: Resistor = Resistor { value: "x" };
+            let j1: Conn = Conn { value: "x" };
+            node n [
+                j1.p1.voltage == m[1][1].a.voltage && m[1][1].b.voltage == j1.p2.voltage
+            ] { };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.components.len(), 5, "{:?}", nl.components);
+        // The wired element's pins must not dangle; the other three
+        // elements are declared but unwired — every one of their pins
+        // MUST dangle (4 elements × 2 pins − 2 wired = 6).
+        assert!(
+            !nl.dangling.iter().any(|d| d.contains("m[1][1]")),
+            "the wired element must not dangle: {:?}",
+            nl.dangling
+        );
+        assert!(
+            nl.dangling.iter().any(|d| d.contains("m[0][0]")),
+            "unwired elements must dangle: {:?}",
+            nl.dangling
+        );
+        assert_eq!(nl.dangling.len(), 6, "{:?}", nl.dangling);
     }
 
     #[test]

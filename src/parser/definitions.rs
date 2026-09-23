@@ -582,6 +582,17 @@ impl<'a> Parser<'a> {
                 }
                 continue;
             }
+            // 2026-09-23 (plan 2026-09-23-ebv-gate-fixture, E1): `let
+            // name[…]…: T = T { … };` expands to one element let per element
+            // — same splice shape as `chain`, same eager-expansion
+            // discipline as E11 pin arrays.
+            if self.at_let_array() {
+                match self.parse_let_array() {
+                    Ok(elements) => items.extend(elements),
+                    Err(e) => self.recover_top_level_error(&e, &mut errors),
+                }
+                continue;
+            }
             match self.parse_top_level() {
                 Ok(item) => items.push(item),
                 Err(e) => self.recover_top_level_error(&e, &mut errors),
@@ -593,6 +604,22 @@ impl<'a> Parser<'a> {
         // 2026-08-01 (Phase 4): implicit entry wrapping is owned by the script
         // plugin (script_plugin.rs) — it synthesizes the one-shot opening node.
         Ok(items)
+    }
+
+    /// 2026-09-23 (E1): true when the current position starts an instance-array
+    /// declaration — `let <ident> [` … distinguishable from a plain `let`
+    /// (whose name is followed by `:`, `=`, or `;`) and from tuple
+    /// destructuring (`let (`) at a three-token lookahead.
+    fn at_let_array(&self) -> bool {
+        self.check(&Token::Let)
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                Some(Token::Identifier(_))
+            )
+            && matches!(
+                self.tokens.get(self.pos + 2).map(|(t, _)| t),
+                Some(Token::LBracket)
+            )
     }
 
     /// Record a top-level parse error and skip to the next plausible

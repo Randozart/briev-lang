@@ -276,6 +276,17 @@ element. Contracts address an element as `inst.gpio[3].voltage`; every
 element is an ordinary pin to the netlist, the serialization, and the
 emitter (arrays are declaration sugar, expanded by the parser).
 
+**Instance arrays (2026-09-23).** `let r[3]: Resistor = Resistor { value: "10k" };`
+declares three instances named `r[0]`…`r[2]`; multi-dimensional forms
+(`let m[i:2][j:3]: T = …`) expand row-major with the last index varying
+fastest, and an index binder (`[i:2]`) is accepted and discarded —
+population decisions belong to generator programs, not declarations.
+An array of total length 1 expands to the bare name (`let x[1]` → `x`),
+mirroring the pin-array single-element rule; a zero extent is a parse
+error; the initializer must be a component literal. Expansion happens
+in the parser — netlist, contracts, and the emitter see named ordinary
+instances (`r[0]`), never an array type.
+
 **The decoupling convention (2026-09-21).** A component type stating
 `spec Decouple: "100n";` requires, per instance, a part whose type
 declares `spec Decoupler: true;` bridging each supply pin (`spec

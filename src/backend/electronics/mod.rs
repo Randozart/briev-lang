@@ -810,4 +810,62 @@ mod tests {
             "populated parts stay in_bom yes: {sch}"
         );
     }
+
+    // ── 2026-09-23 (E1): instance arrays vs hand-unrolled reference ────
+
+    /// E1's gate: the array form and the hand-unrolled form emit
+    /// byte-identical schematics once the standalone UUID lines are
+    /// stripped — instance UUIDs hash the instance NAME (`r[0]` vs `r0`),
+    /// which legitimately differs; wires/labels keep theirs inline and
+    /// must match.
+    fn strip_standalone_uuids(sch: &str) -> String {
+        sch.lines()
+            .filter(|l| !l.trim_start().starts_with("(uuid \""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn instance_array_emission_matches_hand_unrolled() {
+        let array_src = r#"
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let r[3]: Resistor = Resistor { value: "4k7" };
+            let j1: Conn = Conn { value: "x" };
+            node n [
+                j1.p1.voltage == r[0].a.voltage && r[0].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == r[1].a.voltage && r[1].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == r[2].a.voltage && r[2].b.voltage == j1.p2.voltage
+            ] { };
+        "#;
+        let flat_src = r#"
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let r0: Resistor = Resistor { value: "4k7" };
+            let r1: Resistor = Resistor { value: "4k7" };
+            let r2: Resistor = Resistor { value: "4k7" };
+            let j1: Conn = Conn { value: "x" };
+            node n [
+                j1.p1.voltage == r0.a.voltage && r0.b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == r1.a.voltage && r1.b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == r2.a.voltage && r2.b.voltage == j1.p2.voltage
+            ] { };
+        "#;
+        let arr_nl = netlist_of(array_src);
+        assert!(arr_nl.dangling.is_empty(), "{:?}", arr_nl.dangling);
+        let arr_sch = ElectronicsBackend::generate(&arr_nl).unwrap();
+
+        let flat_nl = netlist_of(flat_src);
+        assert!(flat_nl.dangling.is_empty(), "{:?}", flat_nl.dangling);
+        let flat_sch = ElectronicsBackend::generate(&flat_nl).unwrap();
+
+        assert_eq!(
+            strip_standalone_uuids(&arr_sch),
+            strip_standalone_uuids(&flat_sch),
+            "array emission must match the hand-unrolled reference"
+        );
+        // And the array emission is deterministic across runs.
+        let arr_sch2 = ElectronicsBackend::generate(&netlist_of(array_src)).unwrap();
+        assert_eq!(arr_sch, arr_sch2, "emission must be deterministic");
+    }
 }
