@@ -2493,6 +2493,10 @@ mod tests {
             doc: None,
             ports_in: vec![],
             ports_out: vec![],
+            pins: vec![],
+            reference: None,
+            tolerance: None,
+            rating: None,
             extern_source: Some("/tmp/opencode/definitely-missing-uart.v".into()),
         });
         let err = copy_extern_companions(&[cell], "/tmp/opencode/probe-none.bv")
@@ -2674,6 +2678,10 @@ node go [done == false][done == true] {
             isr_mechanism: None,
             triple_override: None,
             linker_script_override: None,
+            all_targets: false,
+            entry_override: None,
+            raw_bin: false,
+            no_link: false,
         }
     }
 
