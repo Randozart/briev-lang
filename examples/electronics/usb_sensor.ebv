@@ -153,3 +153,13 @@ async node button_pressed [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
     u2.gpio[3].voltage >= 2.7V; // E14b-5: pull-up inferred — any value
     u2.gpio[3].voltage <= 0.3V; // holds a released net; low path via sw1
 }
+
+// Physical board (fab plan): outline + pinned placements; everything
+// unplaced flows to the deterministic auto-placer. Connectors sit at the
+// edges; the rest flow.
+fab {
+    board 40mm x 30mm;
+    place j1 @ (5mm, 15mm);        // USB connector, left edge
+    place j2 @ (33mm, 15mm);       // SWD header, right edge
+    place led1 @ (20mm, 25mm);     // indicator where the eye expects it
+}

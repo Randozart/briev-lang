@@ -254,7 +254,7 @@ fn pin_key(component: &str, pin: &str) -> String {
 
 /// Type name → its metadata property bag (`spec Key: value;` clauses land
 /// there). One lookup path for every property-driven consumer.
-fn collect_type_metadata(
+pub(crate) fn collect_type_metadata(
     items: &[TopLevel],
 ) -> BTreeMap<String, &std::collections::HashMap<String, crate::ast::PropertyValue>> {
     items

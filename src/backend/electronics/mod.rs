@@ -12,6 +12,7 @@
 //! beyond the schematic. Dangling pins (already diagnosed by the analysis)
 //! fail the compile here — the backend never emits an incomplete board.
 
+use std::collections::BTreeMap;
 use crate::analysis::electronics::{ComponentInstance, ElectronicsNetlist};
 use crate::backend::capabilities::BackendCapabilities;
 
@@ -260,16 +261,13 @@ impl ElectronicsBackend {
         out: &mut String,
     ) -> Vec<(String, String, f64, f64)> {
         let mut pin_xy = Vec::new();
-        let mut prefix_counters: std::collections::BTreeMap<String, usize> = Default::default();
+        let refs = Self::reference_map(netlist, components);
         for (idx, comp) in components.iter().enumerate() {
-            let prefix = Self::prefix_of(netlist, &comp.type_name);
-            let counter = prefix_counters.entry(prefix.clone()).or_insert(0);
-            *counter += 1;
             let (x, y) = (
                 if idx % 2 == 0 { PLACE_X_LEFT } else { PLACE_X_RIGHT },
                 PLACE_Y0 + idx as f64 * PLACE_PITCH,
             );
-            let reference = format!("{}{}", prefix, *counter);
+            let reference = refs.get(&comp.name).cloned().unwrap_or_default();
             let value = Self::property_of(comp, "value").unwrap_or_else(|| comp.type_name.clone());
             let footprint = Self::property_of(comp, "package").unwrap_or_default();
             let placement = Placement {
@@ -288,6 +286,24 @@ impl ElectronicsBackend {
         }
         out.push('\n');
         pin_xy
+    }
+
+    /// Per-prefix reference designators in DECLARATION order (U1, U2…,
+    /// R1, R2…, J1, J2…) — shared by the schematic and the board so a
+    /// part's reference is the same in both.
+    fn reference_map(
+        netlist: &ElectronicsNetlist,
+        components: &[ComponentInstance],
+    ) -> std::collections::BTreeMap<String, String> {
+        let mut prefix_counters: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut refs = std::collections::BTreeMap::new();
+        for comp in components {
+            let prefix = Self::prefix_of(netlist, &comp.type_name);
+            let counter = prefix_counters.entry(prefix.clone()).or_insert(0);
+            *counter += 1;
+            refs.insert(comp.name.clone(), format!("{}{}", prefix, *counter));
+        }
+        refs
     }
 
     /// Wires + labels: each net is a chain of its member pins in placement
@@ -522,6 +538,128 @@ impl ElectronicsBackend {
             coord(y),
             Self::uuid(&format!("label:{}:{}:{}", label, coord(x), coord(y)))
         ));
+    }
+
+    /// Emit the `.kicad_pcb` board when the program carries a `fab`
+    /// section. None when no board is requested; Err on a layout the
+    /// declared physics/geometry cannot satisfy (off-board parts, unknown
+    /// footprints, a board too small).
+    pub fn generate_board(
+        netlist: &ElectronicsNetlist,
+        items: &[crate::ast::TopLevel],
+    ) -> Result<Option<String>, Vec<String>> {
+        let type_props = crate::analysis::electronics::collect_type_metadata(items);
+        let instances: BTreeMap<String, ComponentInstance> = netlist
+            .components
+            .iter()
+            .map(|c| (c.name.clone(), c.clone()))
+            .collect();
+        let bp = match crate::analysis::placement::place_board(items, &instances, &type_props) {
+            Ok(None) => return Ok(None),
+            Ok(Some(bp)) => bp,
+            Err(e) => return Err(vec![format!("cannot emit board: {}", e)]),
+        };
+        let (errs, warns) = crate::analysis::placement::check_layout(&bp, &instances);
+        for w in &warns {
+            eprintln!("note: {}", w);
+        }
+        if !errs.is_empty() {
+            let mut out = vec!["cannot emit board: the layout is invalid".to_string()];
+            out.extend(errs.iter().map(|e| format!("  {}", e)));
+            return Err(out);
+        }
+        Ok(Some(Self::emit_pcb(&bp, netlist, &instances)))
+    }
+
+    /// The `.kicad_pcb` text (KiCad 7, version 20230121): outline on
+    /// Edge.Cuts, one footprint per placed part with pads wired to their
+    /// nets. No tracks yet — routing is the follow-on slice.
+    fn emit_pcb(
+        bp: &crate::analysis::placement::BoardPlacement,
+        netlist: &ElectronicsNetlist,
+        instances: &BTreeMap<String, ComponentInstance>,
+    ) -> String {
+        let mut out = String::new();
+        out.push_str("(kicad_pcb (version 20230121) (generator \"briev-compiler\")\n");
+        out.push_str("  (general (thickness 1.6))\n");
+        for (i, net) in netlist.nets.iter().enumerate() {
+            let label = Self::net_label(netlist, net);
+            out.push_str(&format!("  (net {} \"{}\")\n", i + 1, label));
+        }
+        out.push_str(&format!(
+            "  (gr_rect (start 0 0) (end {} {}) (stroke (width 0.1) (type solid)) (fill none) (layer \"Edge.Cuts\") (tstamp \"00000000-0000-0000-0000-000000000000\"))\n",
+            coord(bp.board.0),
+            coord(bp.board.1)
+        ));
+        let refs = Self::reference_map(netlist, &netlist.components);
+        let pin_nets = Self::pin_nets(netlist);
+        for (name, part) in &bp.parts {
+            let Some(inst) = instances.get(name) else {
+                continue;
+            };
+            let package = Self::property_of(inst, "package").unwrap_or_default();
+            let Some(fp) = crate::analysis::footprints::lookup(&package) else {
+                continue;
+            };
+            let reference = refs.get(name).cloned().unwrap_or_default();
+            let value = Self::property_of(inst, "value").unwrap_or_else(|| inst.type_name.clone());
+            let ti = netlist.type_info.get(&inst.type_name);
+            let (c, s) = (part.rot.to_radians().cos(), part.rot.to_radians().sin());
+            out.push_str(&format!("  (footprint \"{}\"\n", package));
+            out.push_str("    (layer \"F.Cu\")\n");
+            out.push_str(&format!("    (at {} {} {})\n", coord(part.x), coord(part.y), part.rot));
+            out.push_str(&format!(
+                "    (fp_text reference \"{}\" (at 0 {}) (layer \"F.SilkS\"))\n",
+                reference,
+                coord(-1.6)
+            ));
+            out.push_str(&format!(
+                "    (fp_text value \"{}\" (at 0 {}) (layer \"F.Fab\"))\n",
+                value,
+                coord(1.6)
+            ));
+            for (i, pad) in fp.pads.iter().enumerate() {
+                let px = pad.x * c - pad.y * s;
+                let py = pad.x * s + pad.y * c;
+                let pin_name = ti
+                    .and_then(|t| t.pins.get(i))
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_default();
+                let (netn, netname) = pin_nets
+                    .get(&(name.clone(), pin_name))
+                    .cloned()
+                    .unwrap_or((0, String::new()));
+                out.push_str(&format!(
+                    "    (pad \"{}\" smd rect (at {} {}) (size {} {}) (layers \"F.Cu\" \"F.Paste\" \"F.Mask\") (net {} \"{}\"))\n",
+                    i + 1,
+                    coord(px),
+                    coord(py),
+                    coord(pad.size),
+                    coord(pad.size),
+                    netn,
+                    netname
+                ));
+            }
+            out.push_str("  )\n");
+        }
+        out.push_str(")\n");
+        out
+    }
+
+    /// Pin → (net number, net name), from the derived nets.
+    fn pin_nets(
+        netlist: &ElectronicsNetlist,
+    ) -> BTreeMap<(String, String), (usize, String)> {
+        let mut map = BTreeMap::new();
+        for (i, net) in netlist.nets.iter().enumerate() {
+            for pin in &net.pins {
+                map.insert(
+                    (pin.component.clone(), pin.pin.clone()),
+                    (i + 1, net.name.clone()),
+                );
+            }
+        }
+        map
     }
 }
 
@@ -1565,5 +1703,87 @@ let nl = netlist_of(src);
             nl.intent_proofs
         );
         assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
+
+    // ── fab layer (plan 2026-09-23-ebv-fab-layer.md) ──────────────────
+
+    #[test]
+    fn fab_board_emits_pcb() {
+        // The gate fixture's fab section produces a .kicad_pcb: outline,
+        // physics-derived net labels, one footprint per placed part with
+        // wired pads — and byte-deterministic across runs.
+        let items = fixture_items(gate_fixture());
+        let nl = derive_netlist(&items);
+        let board = ElectronicsBackend::generate_board(&nl, &items)
+            .unwrap()
+            .expect("the fixture carries a fab section");
+        assert!(board.starts_with("(kicad_pcb"), "{board}");
+        assert!(
+            board.contains("(net 1 \"GND\"") && board.contains("V3.3"),
+            "physics-derived nets: {board}"
+        );
+        assert!(
+            board.contains("(gr_rect (start 0 0) (end 40.00 30.00)"),
+            "board outline: {board}"
+        );
+        let footprints = board.matches("(footprint \"").count();
+        assert!(footprints >= 17, "one per part: {footprints}");
+        assert!(
+            board.contains("(pad \"1\" smd rect"),
+            "pads wired: {board}"
+        );
+        // Determinism: an independent derivation is byte-identical.
+        let nl2 = derive_netlist(&fixture_items(gate_fixture()));
+        let board2 = ElectronicsBackend::generate_board(&nl2, &fixture_items(gate_fixture()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(board, board2, "board emission must be deterministic");
+    }
+
+    #[test]
+    fn fab_off_board_is_rejected() {
+        // A pinned part past the outline edge is a hard error, never a
+        // clipped board.
+        let fx = mutate(
+            gate_fixture(),
+            "place j2 @ (33mm, 15mm)",
+            "place j2 @ (45mm, 15mm)",
+        );
+        let items = fixture_items(&fx);
+        let nl = derive_netlist(&items);
+        let err = ElectronicsBackend::generate_board(&nl, &items).unwrap_err();
+        assert!(
+            err.iter().any(|e| e.contains("does not fit")),
+            "{:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn fab_unknown_package_is_rejected() {
+        let fx = mutate(gate_fixture(), "package: \"0603\"", "package: \"not-a-package\"");
+        let items = fixture_items(&fx);
+        let nl = derive_netlist(&items);
+        let err = ElectronicsBackend::generate_board(&nl, &items).unwrap_err();
+        assert!(
+            err.iter().any(|e| e.contains("no footprint")),
+            "{:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn no_fab_means_no_board() {
+        // A program without a fab section asks for no board.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Chip { pin vdd: Power; reference "U"; };
+            let u1: Chip = Chip { value: "x", package: "SMD" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {}
+        "#;
+        let items = items_of(src);
+        let nl = derive_netlist(&items);
+        let board = ElectronicsBackend::generate_board(&nl, &items).unwrap();
+        assert!(board.is_none(), "no fab section → no board");
     }
 }

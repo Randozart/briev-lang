@@ -1510,6 +1510,29 @@ fn codegen(
                 Ok(sch) => output = sch,
                 Err(errs) => return Err(errs.join("\n")),
             }
+            // 2026-09-23 (fab plan): a `fab` section asks for a board — the
+            // .kicad_pcb is written as a companion to the schematic.
+            match briev_compiler::backend::electronics::ElectronicsBackend::generate_board(
+                &analysis.electronics,
+                items,
+            ) {
+                Ok(Some(board)) => {
+                    let pcb_path = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?
+                        .replace(".ll", ".kicad_pcb");
+                    if let Some(parent) = std::path::Path::new(&pcb_path).parent() {
+                        if !parent.as_os_str().is_empty() {
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                format!("cannot create output dir '{}': {}", parent.display(), e)
+                            })?;
+                        }
+                    }
+                    std::fs::write(&pcb_path, &board)
+                        .map_err(|e| format!("cannot write '{}': {}", pcb_path, e))?;
+                    println!("wrote {}", pcb_path);
+                }
+                Ok(None) => {}
+                Err(errs) => return Err(errs.join("\n")),
+            }
             ".kicad_sch"
         }
         BackendKind::Gpu => {
