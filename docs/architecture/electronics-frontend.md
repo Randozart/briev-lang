@@ -56,6 +56,42 @@ wrong tree for conjoined obligations. `==` sits at equality level, ABOVE
 - The `pin` clause is implemented for `type` bodies; obj/struct bodies are a
   follow-on if a need appears.
 
+## Annotation vs physics (2026-09-23 doctrine)
+
+**The one rule:**
+
+> If the compiler must READ it to prove the board works → physics →
+> PascalCase spec key. If a human/manufacturer reads it to build the board
+> → annotation → lowercase, opaque.
+
+The compiler carries annotations; it never interprets them. Examples:
+
+- `value: "4k7"` — read by the person placing the part → **annotation**.
+- `reference "U"` / designator `U8` — read by the person at the PCB →
+  **annotation** (means something only to that specific board).
+- `package: "0603"` — **annotation**.
+- Resistance, tolerance, rating, min/max current — read by the compiler
+  to derive and prove current/voltage → **physics** → PascalCase specs
+  (`Resistance`, `Tolerance`, `Rating`, `MinCurrent`, `MaxCurrent`, …).
+
+Corollaries:
+
+1. **PascalCase** for every compiler-intelligible spec key (`Supply`,
+   `CanDrive`, `WiredAnd`, `Decouple`, `Decoupler`, `Tolerance`, `Rating`,
+   `Resistance`, `MinCurrent`, `MaxCurrent`, `MinVoltage`, `MaxVoltage`).
+   Grammar keywords are not spec keys and stay lowercase.
+2. **Quantities are bare, never quoted.** `spec MinCurrent: 2mA;`, not
+   `"2mA"` — quoted implies arbitrary. Quantity notation is core `.ebv`;
+   spec values use the same unit grammar as expressions
+   (`2mA`, `3.3V`, `100n`, `4k7`; scaling prefixes `p n u m k M G`,
+   key-dimension resolution, dimension-conflict hard error).
+3. **Resistance is physics, not a BOM label** — it moves to a spec; the
+   compiler must never read an annotation to derive current.
+   (Consequence: E14b-5's "values are immaterial for obligation
+   satisfaction" is structurally true.)
+
+Full record: `docs/plans/2026-09-23-quantities-and-annotation-doctrine.md`.
+
 ## Deferred (recorded, not built)
 
 Electrical pin roles (`[power_in]`), footprint validation against KiCad
