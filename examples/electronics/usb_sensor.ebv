@@ -57,7 +57,7 @@ type Sensor {
 };
 type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; spec PullUp: true; };
 type Capacitor { pin a; pin b; reference "C"; tolerance any; rating any; spec Decoupler: true; };
-type Switch { pin p1; pin p2; reference "SW"; tolerance any; rating any; };
+type Switch { pin p1: Path; pin p2: Path; reference "SW"; tolerance any; rating any; };
 type Led {
     pin a;
     pin k;
@@ -154,10 +154,7 @@ async node i2c_idle [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
 
 // Button pulls gpio[3] to gnd; r_btn is the pull-up to the rail.
 async node button_pressed [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
-    // E14b: delete these equalities — `u2.gpio[3].voltage <= 0.3V`
-    // forces the gnd path in the pure-intent form.
-    r_btn.a = u1.vout;
-    r_btn.b = u2.gpio[3];
-    u2.gpio[3] = sw1.p1;
-    sw1.p2 = u2.gnd;
-}
+    r_btn.a = u1.vout;          // pull-up stays explicit (E14b backlog:
+    r_btn.b = u2.gpio[3];       // value-aware resistor matching)
+    u2.gpio[3].voltage <= 0.3V; // E14b-2: forces the low path through
+}                               // the free switchable part (sw1)

@@ -147,8 +147,15 @@ One-sided parts (no proven ΔV) and zero-drop straps force nothing.
 
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
 simulation), PinDecl in cell bodies' beast serialization, pin roles,
-`derive` on types, bus assembly, gnd-path forcing, en drive solving,
-rail inference (E14b slices 2+).
+`derive` on types, bus assembly, en drive solving, rail inference,
+value-aware resistor matching (E14b slices 3+).
+
+**2026-09-23 (E14b slice 2, plan `2026-09-23-ebv-e14b-lowhold-forcing.md`):**
+low-hold forcing. A MAX obligation (`inst.pin.voltage <= V;`) forces a
+path to the return rail: through a free switchable part (Path-class pins;
+the return side may already be wired by a guard equality) or directly for
+an isolated net; a pulled-up net without a switchable part is a hard
+error. The button node of `usb_sensor.ebv` uses the pure-intent form.
 
 **2026-09-23 (E14b slice 1, plan `2026-09-23-ebv-e14b-pullup-forcing.md`):**
 min-voltage pull-up forcing. A node body may state

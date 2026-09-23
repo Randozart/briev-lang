@@ -1004,10 +1004,11 @@ mod tests {
 
     #[test]
     fn error_matrix_dropped_button_gnd_path_dangles() {
-        // Case 2: remove both statements of the button's ground path (the
-        // guard equality AND the body wire) — sw1.p2 joins no net.
+        // Case 2: remove the low-hold obligation AND the guard equality —
+        // sw1.p2 joins no net (the forcing pass is the only wire source
+        // for the button's low path).
         let fx = mutate(gate_fixture(), "\n    && sw1.p2.voltage == j1.gnd.voltage", "");
-        let fx = mutate(&fx, "    sw1.p2 = u2.gnd;\n", "");
+        let fx = mutate(&fx, "u2.gpio[3].voltage <= 0.3V;", "");
         let nl = derive_netlist(&fixture_items(&fx));
         assert!(
             nl.dangling.iter().any(|d| d.contains("sw1.p2")),
@@ -1168,6 +1169,130 @@ mod tests {
             nl.intent_errors
                 .iter()
                 .any(|e| e.contains("ambiguous") && e.contains("r1") && e.contains("r2")),
+            "{:?}",
+            nl.intent_errors
+        );
+    }
+
+    /// A pulled-up IO pin plus a switch — the low-hold forcing target.
+    const LOW_HOLD_BOARD: &str = r#"
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type Power { spec KicadType: "power_in"; spec Supply: true; };
+        type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+        type Path { spec KicadType: "passive"; spec Switchable: true; };
+        type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+        type Mcu { pin vdd: Power; pin gnd: Ground; pin gpio: Io; reference "U"; };
+        type Switch { pin p1: Path; pin p2: Path; reference "SW"; };
+        let u1: Mcu = Mcu { value: "x" };
+        let r1: Resistor = Resistor { value: "10k" };
+        let sw1: Switch = Switch { value: "SPST" };
+        async node n [
+            u1.vdd.voltage == 3.3V && u1.gnd.voltage == sw1.p2.voltage
+        ] [u1.vdd.voltage == 3.3V] {
+            r1.a = u1.vdd;
+            r1.b = u1.gpio;
+            u1.gpio.voltage <= 0.3V;
+        }
+    "#;
+
+    #[test]
+    fn e14b_max_obligation_forces_switch_path() {
+        // `u1.gpio.voltage <= 0.3V` on a pulled-up net → the free switch
+        // wires net→p1; p2 is already on the return rail via the guard.
+        let nl = netlist_of(LOW_HOLD_BOARD);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("low-hold forced") && p.contains("sw1.p1")),
+            "low-hold must wire the switch with provenance: {:?}",
+            nl.intent_proofs
+        );
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
+
+    #[test]
+    fn e14b_pulled_up_net_without_switch_errors() {
+        // Pulled-up net, no switchable part → the net cannot be held low.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Resistor { pin a; pin b; reference "R"; spec PullUp: true; };
+            type Mcu { pin vdd: Power; pin gnd: Ground; pin gpio: Io; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let r1: Resistor = Resistor { value: "10k" };
+            async node n [u1.vdd.voltage == 3.3V] [u1.vdd.voltage == 3.3V] {
+                r1.a = u1.vdd;
+                r1.b = u1.gpio;
+                u1.gpio.voltage <= 0.3V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("<= 0.3V") && e.contains("cannot hold the net low")),
+            "{:?}",
+            nl.intent_errors
+        );
+    }
+
+    #[test]
+    fn e14b_isolated_net_wires_direct_to_return() {
+        // No pull-up, no switch — the net is permanently low; direct wire.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Conn { pin vbus: Power; pin gnd: Ground; reference "J"; };
+            type Mcu { pin vdd: Power; pin gnd: Ground; pin gpio: Io; reference "U"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let j1: Conn = Conn { value: "x" };
+            async node n [
+                j1.vbus.voltage == u1.vdd.voltage
+                && u1.vdd.voltage == 3.3V
+                && j1.gnd.voltage == u1.gnd.voltage
+            ] [u1.vdd.voltage == 3.3V] {
+                u1.gpio.voltage <= 0.3V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("low-hold forced") && p.contains("net <-> return rail")),
+            "{:?}",
+            nl.intent_proofs
+        );
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+    }
+
+    #[test]
+    fn e14b_distinct_switches_are_ambiguous() {
+        // Two free switches of differing value → the pick matters; D13.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+            type Path { spec KicadType: "passive"; spec Switchable: true; };
+            type Mcu { pin vdd: Power; pin gnd: Ground; pin gpio: Io; reference "U"; };
+            type Switch { pin p1: Path; pin p2: Path; reference "SW"; };
+            let u1: Mcu = Mcu { value: "x" };
+            let sw1: Switch = Switch { value: "SPST" };
+            let sw2: Switch = Switch { value: "DPDT" };
+            async node n [
+                u1.vdd.voltage == 3.3V && u1.gnd.voltage == sw1.p2.voltage
+            ] [u1.vdd.voltage == 3.3V] {
+                u1.gpio.voltage <= 0.3V;
+            }
+        "#;
+        let nl = netlist_of(src);
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("ambiguous") && e.contains("sw1") && e.contains("sw2")),
             "{:?}",
             nl.intent_errors
         );

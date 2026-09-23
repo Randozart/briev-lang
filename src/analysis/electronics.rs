@@ -1875,22 +1875,24 @@ struct FactSink<'a> {
     intents: &'a mut Vec<(String, String)>,
     /// 2026-09-23 (E14a gate): pin-level drive intents `u1.en = true;`.
     pin_intents: &'a mut Vec<(String, PinRef)>,
-    /// 2026-09-23 (E14b slice 1): min-voltage obligations
-    /// `inst.pin.voltage >= <literal>V;` — the pull-up forcing consumes
-    /// them after the wiring facts settle.
+    /// 2026-09-23 (E14b): voltage obligations `inst.pin.voltage >= V;`
+    /// (min — pull-up forcing) and `inst.pin.voltage <= V;` (max —
+    /// low-hold forcing); consumed after the wiring facts settle.
     obligations: &'a mut Vec<VoltageObligation>,
     bridges: &'a mut Vec<BridgeRequest>,
     /// 2026-09-22 (D16 p3b): disconnections from `open a.pin, b.pin;`.
     opens: &'a mut Vec<(Expr, Expr)>,
 }
 
-/// 2026-09-23 (E14b slice 1): a min-voltage obligation from a node body —
-/// `inst.pin.voltage >= <literal>V;`. The pin's net must be held at least
-/// `volts`; a released (WiredAnd) net forces an external pull-up.
+/// 2026-09-23 (E14b): a voltage obligation from a node body —
+/// `inst.pin.voltage OP <literal>V;`. `min` obligations (>=) force an
+/// external pull-up on a released net; `max` obligations (<=) force a
+/// low-hold path to the return rail.
 struct VoltageObligation {
     node: String,
     pin: PinRef,
     volts: f64,
+    min: bool,
 }
 
 /// The region context threading through a guarded-fact walk (D16):
@@ -2112,28 +2114,23 @@ impl FactSink<'_> {
         ));
     }
 
-    /// 2026-09-23 (E14b slice 1): a body voltage obligation. A MIN bound
-    /// (`pin.voltage >= V`) forces a pull-up (E14b-1). A MAX bound
-    /// (`<=`/`<`, gnd-path forcing) is not landed — hard error naming the
-    /// explicit wire. Any other bare expression is not an electronics fact.
+    /// 2026-09-23 (E14b): a body voltage obligation. A MIN bound
+    /// (`pin.voltage >= V`) forces a pull-up; a MAX bound (`<=`/`<`)
+    /// forces a low-hold path (both via `force_*`). Any other bare
+    /// expression is not an electronics fact.
     fn obligation_fact(&mut self, expr: &Expr, ctx: &NetlistContext) {
         let Expr::BinaryOp(kind, l, r) = expr else {
             self.not_a_fact(expr);
             return;
         };
-        if matches!(kind, BinaryOpKind::Le | BinaryOpKind::Lt) {
-            self.errors.push(format!(
-                "voltage obligation '{}' (node '{}') bounds the net ABOVE — gnd-path forcing \
-                 is not landed (E14b-2); state the wire explicitly (`u2.gpio[3] = sw1.p1;`), \
-                 or use a MIN obligation (`inst.pin.voltage >= 2.7V;`)",
-                expr, self.node
-            ));
-            return;
-        }
-        if !matches!(kind, BinaryOpKind::Ge | BinaryOpKind::Gt) {
-            self.not_a_fact(expr);
-            return;
-        }
+        let min = match kind {
+            BinaryOpKind::Ge | BinaryOpKind::Gt => true,
+            BinaryOpKind::Le | BinaryOpKind::Lt => false,
+            _ => {
+                self.not_a_fact(expr);
+                return;
+            }
+        };
         let Some((pin, volts)) = voltage_obligation_pair(l, r, ctx) else {
             self.not_a_fact(expr);
             return;
@@ -2142,6 +2139,7 @@ impl FactSink<'_> {
             node: self.node.to_string(),
             pin,
             volts,
+            min,
         });
     }
 
@@ -2493,50 +2491,58 @@ fn voltage_obligation_pair(
     None
 }
 
-/// 2026-09-23 (E14b slice 1): the pull-up forcing pass — bundles the
-/// working set (nets context, driven rails, diagnostic sinks) so the
-/// per-obligation methods stay under the parameter gate (FactSink pattern).
-/// For each min-voltage obligation on an undriven net, wire a free
-/// `spec PullUp: true` part between that net and the lowest qualifying
-/// driven rail. Same-root obligations dedup to one pull-up. D13: no part
-/// or no rail → hard error; distinct-value parts (or rails tied at the
-/// minimal volts) → enumerated ambiguous error.
-struct PullUpForcing<'a, 'b> {
+/// 2026-09-23 (E14b): the voltage-obligation forcing pass — bundles
+/// the working set (nets context, driven rails, diagnostic sinks) so the
+/// per-obligation methods stay under the parameter gate (FactSink
+/// pattern). MIN obligations (`>=`) force a pull-up to the lowest
+/// qualifying driven rail; MAX obligations (`<=`) force a low-hold path
+/// to the return rail. Same-root obligations dedup per side.
+struct ObligationForcing<'a, 'b> {
     ctx: &'a mut NetlistContext<'b>,
     rails: BTreeMap<String, f64>,
     errors: &'a mut Vec<String>,
     proofs: &'a mut Vec<String>,
 }
 
-impl<'a, 'b> PullUpForcing<'a, 'b> {
+impl<'a, 'b> ObligationForcing<'a, 'b> {
     fn new(
         ctx: &'a mut NetlistContext<'b>,
         rails: BTreeMap<String, f64>,
         errors: &'a mut Vec<String>,
         proofs: &'a mut Vec<String>,
     ) -> Self {
-        PullUpForcing { ctx, rails, errors, proofs }
+        ObligationForcing { ctx, rails, errors, proofs }
     }
 
     fn run(&mut self, obligations: &[VoltageObligation]) {
         if obligations.is_empty() {
             return;
         }
-        let mut by_net: BTreeMap<String, (f64, Vec<String>)> = BTreeMap::new();
+        let mut mins: BTreeMap<String, (f64, String, Vec<String>)> = BTreeMap::new();
+        let mut maxs: BTreeMap<String, (f64, String, Vec<String>)> = BTreeMap::new();
         for ob in obligations {
             let root = self.ctx.ds.find(&pin_key(&ob.pin.component, &ob.pin.pin));
-            let entry = by_net.entry(root).or_insert((0.0, Vec::new()));
+            let table = if ob.min { &mut mins } else { &mut maxs };
+            let entry = table.entry(root).or_insert((0.0, String::new(), Vec::new()));
             if ob.volts > entry.0 {
                 entry.0 = ob.volts;
             }
-            entry.1.push(ob.node.clone());
+            entry.1 = ob.pin.component.clone();
+            entry.2.push(ob.node.clone());
         }
-        for (root, (vmin, nodes)) in by_net {
-            self.force_one(&root, vmin, &nodes);
+        for (root, (vmin, _inst, nodes)) in mins {
+            self.force_pull_up(&root, vmin, &nodes);
+        }
+        for (root, (vmax, inst, nodes)) in maxs {
+            self.force_low(&root, &inst, vmax, &nodes);
         }
     }
 
-    fn force_one(&mut self, root: &str, vmin: f64, nodes: &[String]) {
+    /// A MIN obligation: wire a free `spec PullUp` part between the net
+    /// and the lowest qualifying driven rail. D13: no part or no rail →
+    /// hard error; distinct-value parts (or rails tied at the minimal
+    /// volts) → enumerated ambiguous error.
+    fn force_pull_up(&mut self, root: &str, vmin: f64, nodes: &[String]) {
         if self.rails.get(root).map_or(false, |v| *v >= vmin) {
             self.proofs.push(format!(
                 "voltage obligation '>= {}V' (node '{}'): net already driven at {}V — satisfied",
@@ -2589,6 +2595,67 @@ impl<'a, 'b> PullUpForcing<'a, 'b> {
         }
     }
 
+    /// A MAX obligation: hold the net at or below Vmax by forcing a path
+    /// to the instance's return rail. A net that is ALSO pulled up needs a
+    /// switchable part (it cannot be held low while the pull-up holds it
+    /// high — that is a mechanism); an isolated net wires directly.
+    fn force_low(&mut self, root: &str, inst: &str, vmax: f64, nodes: &[String]) {
+        let Some(ret) = self.return_root(inst).or_else(|| self.any_return_root()) else {
+            self.errors.push(format!(
+                "voltage obligation '<= {}V' (node '{}') has no return rail: no Return-class pin is connected anywhere. Wire a ground path explicitly",
+                vmax, nodes.join(", ")
+            ));
+            return;
+        };
+        if *root == ret {
+            self.proofs.push(format!(
+                "voltage obligation '<= {}V' (node '{}'): net is the return rail — satisfied",
+                vmax, nodes.join(", ")
+            ));
+            return;
+        }
+        if self.net_has_switchable_to(root, &ret) {
+            self.proofs.push(format!(
+                "voltage obligation '<= {}V' (node '{}'): net already switchable to return — satisfied",
+                vmax, nodes.join(", ")
+            ));
+            return;
+        }
+        let parts = self.free_switchable_parts();
+        if parts.len() > 1 && self.values_distinct(&parts) {
+            self.errors.push(format!(
+                "voltage obligation '<= {}V' (node '{}') is ambiguous: {} switchable parts of differing value are free ({}). Wire the low path explicitly, or unpop the extras",
+                vmax, nodes.join(", "), parts.len(), parts.join(", ")
+            ));
+            return;
+        }
+        let part = parts.first().cloned();
+        let Some(part) = part else {
+            if net_has_pull_up(self.ctx, root) {
+                self.errors.push(format!(
+                    "voltage obligation '<= {}V' (node '{}') cannot hold the net low: it is pulled up but no free switchable part remains to open it. Add a switch (its pins ascribe `: Path`), or wire the low path explicitly",
+                    vmax, nodes.join(", ")
+                ));
+            } else {
+                self.wire_low(LowHoldWire {
+                    part: None,
+                    root: root.to_string(),
+                    ret,
+                    vmax,
+                    nodes: nodes.to_vec(),
+                });
+            }
+            return;
+        };
+        self.wire_low(LowHoldWire {
+            part: Some(part),
+            root: root.to_string(),
+            ret,
+            vmax,
+            nodes: nodes.to_vec(),
+        });
+    }
+
     /// Free `spec PullUp` parts, sorted — the pick among interchangeable
     /// parts is deterministic.
     fn free_parts(&self) -> Vec<String> {
@@ -2609,6 +2676,99 @@ impl<'a, 'b> PullUpForcing<'a, 'b> {
             .collect();
         parts.sort();
         parts
+    }
+
+    /// Free switchable parts — a type with at least two Switchable-class
+    /// pins where at least one switchable pin is unconnected (the return
+    /// side may already be wired through a guard equality), sorted.
+    fn free_switchable_parts(&self) -> Vec<String> {
+        let mut parts: Vec<String> = self
+            .ctx
+            .instances
+            .values()
+            .filter(|c| {
+                self.switchable_pins(&c.name).len() >= 2
+                    && self
+                        .switchable_pins(&c.name)
+                        .iter()
+                        .any(|(n, _)| !pin_connected(self.ctx.ds, &pin_key(&c.name, n)))
+            })
+            .map(|c| c.name.clone())
+            .collect();
+        parts.sort();
+        parts
+    }
+
+    /// The Switchable-class pins of an instance, sorted (index order).
+    fn switchable_pins(&self, inst: &str) -> Vec<(String, u64)> {
+        let Some(c) = self.ctx.instances.get(inst) else {
+            return Vec::new();
+        };
+        let Some(ti) = self.ctx.type_info.get(&c.type_name) else {
+            return Vec::new();
+        };
+        ti.pins
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| ti.pin_classes[*i].switchable)
+            .map(|(_, p)| p.clone())
+            .collect()
+    }
+
+    /// The instance's own Return-class pin root — the natural return rail
+    /// for its nets.
+    fn return_root(&mut self, inst: &str) -> Option<String> {
+        let c = self.ctx.instances.get(inst)?;
+        let ti = self.ctx.type_info.get(&c.type_name)?;
+        let ret = ti
+            .pins
+            .iter()
+            .enumerate()
+            .find(|(i, _)| ti.pin_classes[*i].return_pin)
+            .map(|(_, p)| p)?;
+        Some(self.ctx.ds.find(&pin_key(inst, &ret.0)))
+    }
+
+    /// Any connected Return-class pin root, deterministically chosen.
+    fn any_return_root(&mut self) -> Option<String> {
+        let mut roots: Vec<String> = self
+            .ctx
+            .instances
+            .values()
+            .filter_map(|c| {
+                let ti = self.ctx.type_info.get(&c.type_name)?;
+                let ret = ti
+                    .pins
+                    .iter()
+                    .enumerate()
+                    .find(|(i, _)| ti.pin_classes[*i].return_pin)
+                    .map(|(_, p)| p)?;
+                let key = pin_key(&c.name, &ret.0);
+                if self.ctx.ds.contains(&key) {
+                    Some(self.ctx.ds.find(&key))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        roots.sort();
+        roots.first().cloned()
+    }
+
+    /// Whether a declared switchable part already spans the two nets.
+    fn net_has_switchable_to(&mut self, root: &str, ret: &str) -> bool {
+        let Some(inst) = self
+            .ctx
+            .instances
+            .values()
+            .find(|c| self.switchable_pins(&c.name).len() >= 2) else {
+            return false;
+        };
+        let pins = self.switchable_pins(&inst.name);
+        pins.iter()
+            .any(|(n, _)| self.ctx.ds.find(&pin_key(&inst.name, n)) == *root)
+            && pins.iter()
+                .any(|(n, _)| self.ctx.ds.find(&pin_key(&inst.name, n)) == *ret)
     }
 
     /// Whether the free parts carry more than one distinct value — the
@@ -2654,7 +2814,7 @@ impl<'a, 'b> PullUpForcing<'a, 'b> {
         Some((ties[0].clone(), best.0))
     }
 
-    /// Wire the chosen part between the obligation net and the rail.
+    /// Wire the chosen pull-up part between the obligation net and the rail.
     fn wire(&mut self, w: PullUpWire) {
         let Some(pi) = self.ctx.type_pins.get(&self.ctx.instances[w.part.as_str()].type_name) else {
             return;
@@ -2678,16 +2838,80 @@ impl<'a, 'b> PullUpForcing<'a, 'b> {
             w.vmin, w.nodes.join(", "), w.part, pa.0, w.part, pb.0, w.rail_volts
         ));
     }
+
+    /// Wire the low-hold path: net → (switchable part) → return rail.
+    /// The part's return side may already be wired (guard equality); only
+    /// the free switchable pins are consumed here.
+    fn wire_low(&mut self, w: LowHoldWire) {
+        let Some(part) = &w.part else {
+            self.ctx.ds.make(w.root.clone());
+            self.ctx.ds.make(w.ret.clone());
+            self.ctx.ds.union(&w.root, &w.ret);
+            self.proofs.push(format!(
+                "low-hold forced by '<= {}V' (node '{}'): net <-> return rail — obligation satisfied",
+                w.vmax, w.nodes.join(", ")
+            ));
+            return;
+        };
+        let pins = self.switchable_pins(part);
+        let mut free: Vec<&(String, u64)> = pins
+            .iter()
+            .filter(|(n, _)| !pin_connected(self.ctx.ds, &pin_key(part, n)))
+            .collect();
+        free.sort_by(|a, b| a.0.cmp(&b.0));
+        let Some(pa) = free.first() else {
+            return;
+        };
+        let pa_key = pin_key(part, &pa.0);
+        self.ctx.ds.make(w.root.clone());
+        self.ctx.ds.make(pa_key.clone());
+        self.ctx.ds.union(&w.root, &pa_key);
+        if pins
+            .iter()
+            .any(|(n, _)| self.ctx.ds.find(&pin_key(part, n)) == *w.ret)
+        {
+            self.proofs.push(format!(
+                "low-hold forced by '<= {}V' (node '{}'): {}.{} <-> net, other path pin on return rail — obligation satisfied",
+                w.vmax, w.nodes.join(", "), part, pa.0
+            ));
+            return;
+        }
+        let Some(pb) = free.get(1) else {
+            self.errors.push(format!(
+                "low-hold obligation '<= {}V' (node '{}'): {}.{} has only one free switchable pin and its other path pin is not on the return rail — it cannot complete the low path. Wire the low path explicitly",
+                w.vmax, w.nodes.join(", "), part, pa.0
+            ));
+            return;
+        };
+        let pb_key = pin_key(part, &pb.0);
+        self.ctx.ds.make(w.ret.clone());
+        self.ctx.ds.make(pb_key.clone());
+        self.ctx.ds.union(&w.ret, &pb_key);
+        self.proofs.push(format!(
+            "low-hold forced by '<= {}V' (node '{}'): {}.{} <-> net, {}.{} <-> return rail — obligation satisfied",
+            w.vmax, w.nodes.join(", "), part, pa.0, part, pb.0
+        ));
+    }
 }
 
-/// The resolved pull-up decision handed to `PullUpForcing::wire` — bundled
-/// so the method stays under the parameter gate.
+/// The resolved pull-up decision handed to `ObligationForcing::wire` —
+/// bundled so the method stays under the parameter gate.
 struct PullUpWire {
     part: String,
     root: String,
     rail: String,
     rail_volts: f64,
     vmin: f64,
+    nodes: Vec<String>,
+}
+
+/// The resolved low-hold decision handed to `ObligationForcing::wire_low`
+/// — `part` None means a direct net-to-return wire.
+struct LowHoldWire {
+    part: Option<String>,
+    root: String,
+    ret: String,
+    vmax: f64,
     nodes: Vec<String>,
 }
 
@@ -2723,8 +2947,9 @@ fn collect_driven_rails(items: &[TopLevel], ctx: &mut NetlistContext) -> BTreeMa
     rails
 }
 
-/// 2026-09-23 (E14b slice 1): entry — guard, collect rails, then force.
-fn force_pull_ups(
+/// 2026-09-23 (E14b): entry — guard, collect driven rails, then force
+/// every voltage obligation (min → pull-up, max → low-hold).
+fn force_voltage_obligations(
     items: &[TopLevel],
     ctx: &mut NetlistContext,
     obligations: &[VoltageObligation],
@@ -2735,7 +2960,7 @@ fn force_pull_ups(
         return;
     }
     let rails = collect_driven_rails(items, ctx);
-    let mut forcing = PullUpForcing::new(ctx, rails, errors, proofs);
+    let mut forcing = ObligationForcing::new(ctx, rails, errors, proofs);
     forcing.run(obligations);
 }
 
@@ -2939,10 +3164,10 @@ fn collect_intents(
             Err(e) => errors.push(e),
         }
     }
-    // 2026-09-23 (E14b slice 1): min-voltage obligations run last — the
-    // wiring facts, intents, and mechanisms have settled the nets, so the
-    // pull-up forcing sees final roots and the truly-free parts.
-    force_pull_ups(items, ctx, &obligations, &mut errors, &mut proofs);
+    // 2026-09-23 (E14b): voltage obligations run last — the wiring facts,
+    // intents, and mechanisms have settled the nets, so the forcing sees
+    // final roots and the truly-free parts (min → pull-up, max → low-hold).
+    force_voltage_obligations(items, ctx, &obligations, &mut errors, &mut proofs);
     // 2026-09-22 (D16 p3b): disconnections — two pins that must NOT be
     // connected. A wiring fact or mechanism bridge that would connect them
     // is a hard error (the complement of the phase-3 redundancy gate).

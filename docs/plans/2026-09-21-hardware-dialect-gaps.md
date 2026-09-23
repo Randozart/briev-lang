@@ -555,6 +555,27 @@ gnd-path forcing (`pin.voltage <= V` is a hard error today — "state the
 wire explicitly"), `en` drive assignment solving, rail inference (rails
 stay explicit guard equalities), `derive on:` type clauses.
 
+### Amendment 2026-09-23 (III): E14b slice 2 landed — low-hold forcing
+
+A MAX obligation (`inst.pin.voltage <= V;`) is no longer an error: the
+net must be held at or below V, forcing a path to the return rail.
+- Net already on the return rail → satisfied.
+- Net already switchable to the return rail → satisfied.
+- Else a free switchable part (type with ≥2 Switchable-class pins, ≥1
+  free) wires net→p1, p2→return (the return side may already be wired by
+  a guard equality). Distinct-value parts → enumerated ambiguous error.
+- No switchable part: a pulled-up net is a hard error (it cannot be held
+  low without a mechanism — that is the error's message); an isolated net
+  wires directly to return.
+The fixture's `Switch` pins ascribe `: Path` (E12 class, passive KiCad
+type — emission unchanged); the button node is now pure-intent
+(`u2.gpio[3].voltage <= 0.3V;` forces the sw1 low path; the r_btn
+pull-up stays explicit — value-aware resistor matching is backlog).
+
+E14b remaining (backlog, each marked in the fixture): bus assembly,
+`en` drive assignment solving, rail inference, value-aware resistor
+matching, `derive on:` type clauses.
+
 E14b (pure intent — no explicit equalities) remains OPEN; every
 explicit equality the fixture needed beyond the drive map is marked
 `// E14b:` in the file and recorded in the design record's gate delta.
