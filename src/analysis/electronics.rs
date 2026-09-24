@@ -671,6 +671,9 @@ fn extract_numeric(expr: &Expr) -> Option<f64> {
 /// full-word units are normalized through the shared suffix parser.
 fn extract_quantity(expr: &Expr, expected: crate::ast::QuantityDim) -> Option<f64> {
     match expr {
+        Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => {
+            extract_quantity(inner, expected).map(|value| -value)
+        }
         Expr::UnitLiteral { value, unit } => {
             crate::parser::quantity::quantity_si(*value, unit, expected).map(|(si, _)| si)
         }
@@ -5209,6 +5212,70 @@ mod tests {
             "{:?}",
             nl.law_errors
         );
+    }
+
+    #[test]
+    fn guarded_diode_law_solves_forward_mode() {
+        let src = r#"
+            type Diode {
+                pin a; pin k;
+                reference "D"; tolerance any;
+                when a.voltage - k.voltage >= 0.7Volt {
+                    a.current ==
+                        (a.voltage - k.voltage - 0.7Volt) / 100Ohm;
+                }
+                when a.voltage - k.voltage < 0.7Volt {
+                    a.current == 0Amp;
+                }
+                when true {
+                    a.current + k.current == 0;
+                }
+            };
+            type Source { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Source = Source { };
+            let d1: Diode = Diode { };
+            txn forward
+                [v1.p.voltage == 3.3V && v1.p.voltage == d1.a.voltage
+                 && d1.k.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                [d1.a.current <= 0.03]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        let current = nl.voltage.pin_current.get(&("d1".into(), "a".into())).copied();
+        assert!(current.map_or(false, |i| (i - 0.026).abs() < 1e-9), "{current:?}");
+    }
+
+    #[test]
+    fn guarded_diode_law_solves_reverse_mode() {
+        let src = r#"
+            type Diode {
+                pin a; pin k;
+                reference "D"; tolerance any;
+                when a.voltage - k.voltage >= 0.7Volt {
+                    a.current ==
+                        (a.voltage - k.voltage - 0.7Volt) / 100Ohm;
+                }
+                when a.voltage - k.voltage < 0.7Volt {
+                    a.current == 0Amp;
+                }
+                when true {
+                    a.current + k.current == 0;
+                }
+            };
+            type Source { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Source = Source { };
+            let d1: Diode = Diode { };
+            txn reverse
+                [v1.p.voltage == -3.3V && d1.a.voltage == v1.p.voltage
+                 && d1.k.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                [d1.a.current <= 0.001]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        let current = nl.voltage.pin_current.get(&("d1".into(), "a".into())).copied();
+        assert!(current.map_or(false, |i| i.abs() < 1e-12), "{current:?}");
     }
 
     #[test]

@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//! Unguarded constitutive-law DC solve (2026-09-24 component-laws plan).
+//! Piecewise-linear constitutive-law DC solve (2026-09-24 component laws).
 //!
-//! Slice 3 solves always-active linear component laws against the contract's
-//! ideal voltage boundaries. Law-bearing components are grouped by connected
-//! nets so one incomplete group cannot make an unrelated group look
-//! underdetermined. The solver reports inconsistency and free variables; it
-//! never chooses an implicit operating point.
+//! Always-active laws solve directly. Guarded laws are solved by deterministic
+//! branch-mode enumeration: every mode supplies its active equations, a
+//! candidate is accepted only if every guard has its selected truth value, and
+//! distinct valid candidates are multiple operating points (never silently
+//! reduced to one). Law-bearing components are grouped by connected nets so an
+//! incomplete group cannot make an unrelated group look underdetermined.
 
 use crate::analysis::electronics::{ComponentInstance, Net, PinRef, TypeInfo};
 use crate::analysis::electronics_laws::{ComponentLaws, LawGuard, LawVariable};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// One solved unguarded DC operating point.
+/// One solved DC operating point.
 #[derive(Debug, Clone, Default)]
 pub struct DcSolution {
     /// Net name → solved or boundary voltage.
@@ -53,15 +54,37 @@ struct ComponentGroup<'a> {
     nets: BTreeSet<String>,
 }
 
-/// Solve every unguarded law group. Returns all successful group solutions
-/// plus hard diagnostics. A failed group has no solution, never a default.
+/// Deterministic branch budget: exponential enumeration must stay explicit.
+const MAX_GUARDED_MODES: usize = 12;
+
+/// One active/inactive assignment of the group's guarded laws.
+struct BranchMode<'a> {
+    laws: Vec<&'a crate::analysis::electronics_laws::ElaboratedLaw>,
+    mask: usize,
+}
+
+impl<'a> BranchMode<'a> {
+    /// Is `law` active in this mode?
+    fn is_active(&self, law: &crate::analysis::electronics_laws::ElaboratedLaw) -> bool {
+        law.guard == LawGuard::Always
+            || self
+                .laws
+                .iter()
+                .position(|guard| std::ptr::eq(*guard, law))
+                .map(|index| self.mask & (1 << index) != 0)
+                .unwrap_or(false)
+    }
+}
+
+/// Solve every law group. Returns successful group solutions plus hard
+/// diagnostics. A failed group has no solution, never a default.
 pub fn solve_dc_laws(ctx: &DcContext<'_>) -> (Vec<DcSolution>, Vec<String>) {
     let groups = component_groups(ctx);
     let mut solutions = Vec::new();
     let mut errors = Vec::new();
     for group in groups {
         match solve_group(&group, ctx) {
-            Ok(solution) => solutions.push(solution),
+            Ok(mut group_solutions) => solutions.append(&mut group_solutions),
             Err(error) => errors.push(error),
         }
     }
@@ -142,16 +165,165 @@ fn component_nets(
     nets
 }
 
-/// Build and solve one connected law group.
+/// Build and solve one connected law group across all guarded branch modes.
 fn solve_group(
     group: &ComponentGroup<'_>,
     ctx: &DcContext<'_>,
+) -> Result<Vec<DcSolution>, String> {
+    let laws = guarded_laws(group);
+    let guards = BranchMode { laws, mask: 0 };
+    if guards.laws.len() > MAX_GUARDED_MODES {
+        return Err(format!(
+            "component-law group {:?} has {} guarded laws — split or simplify it; the DC substrate enumerates at most {} branch modes",
+            group_label(group),
+            guards.laws.len(),
+            MAX_GUARDED_MODES
+        ));
+    }
+    let mask_count = 1usize << guards.laws.len();
+    let mut candidates: Vec<DcSolution> = Vec::new();
+    let mut rejections = Vec::new();
+    let mut seen = BTreeSet::new();
+    for mask in 0..mask_count {
+        let branch = BranchMode { laws: guards.laws.clone(), mask };
+        match solve_branch_mode(group, ctx, &branch) {
+            Ok(solution) => {
+                let key = format!("{solution:?}");
+                if seen.insert(key) {
+                    candidates.push(solution);
+                }
+            }
+            Err(error) => rejections.push(error),
+        }
+    }
+    if candidates.is_empty() {
+        if guards.laws.is_empty() {
+            return Err(rejections.remove(0));
+        }
+        if rejections.iter().any(|error| error.contains("no unique")) {
+            return Err(rejections
+                .iter()
+                .find(|error| error.contains("no unique"))
+                .cloned()
+                .unwrap_or_default());
+        }
+        return Err(format!(
+            "component-law group {:?} has no DC operating point — no guarded branch mode is consistent with its boundaries",
+            group_label(group)
+        ));
+    }
+    if candidates.len() > 1 {
+        let states = candidates.len();
+        return Err(format!(
+            "component-law group {:?} has {states} DC operating points — the solver will not choose one; declare bistability only when multi-state contracts can be proven",
+            group_label(group)
+        ));
+    }
+    Ok(candidates)
+}
+
+/// Guarded laws in deterministic original order.
+fn guarded_laws<'a>(group: &'a ComponentGroup<'a>) -> Vec<&'a crate::analysis::electronics_laws::ElaboratedLaw> {
+    group
+        .components
+        .iter()
+        .flat_map(|component| component.laws.iter())
+        .filter(|law| law.guard != LawGuard::Always)
+        .collect()
+}
+
+/// Solve one active/inactive assignment of every guarded law. `None` means
+/// that this branch mode is not a candidate, not a whole-group failure.
+fn solve_branch_mode(
+    group: &ComponentGroup<'_>,
+    ctx: &DcContext<'_>,
+    branch: &BranchMode<'_>,
 ) -> Result<DcSolution, String> {
     let mut rows = Vec::new();
     let mut variables = VariableTable::default();
-    append_law_equations(group, ctx, &mut variables, &mut rows)?;
+    append_law_equations(group, ctx, &mut variables, &mut rows, branch)?;
     append_kcl(group, ctx, &mut variables, &mut rows);
     let values = solve_linear_system(rows, &variables, group)?;
+    if !mode_guards_hold(group, branch, &values, ctx) {
+        return Err("guard does not hold".to_string());
+    }
+    Ok(values_to_solution(group, ctx, values))
+}
+
+/// Does every law's guard have exactly the truth value selected by `mask`?
+fn mode_guards_hold(
+    group: &ComponentGroup<'_>,
+    branch: &BranchMode<'_>,
+    values: &BTreeMap<SystemVariable, f64>,
+    ctx: &DcContext<'_>,
+) -> bool {
+    branch
+        .laws
+        .iter()
+        .all(|law| {
+            let holds = law_guard_holds(group, law, values, ctx);
+            holds == branch.is_active(law)
+        })
+}
+
+/// Evaluate one guard as a linear comparison.
+fn law_guard_holds(
+    group: &ComponentGroup<'_>,
+    law: &crate::analysis::electronics_laws::ElaboratedLaw,
+    values: &BTreeMap<SystemVariable, f64>,
+    ctx: &DcContext<'_>,
+) -> bool {
+    let LawGuard::Comparison { left, op, right } = &law.guard else { return true };
+    let left = linear_value(left, group, values, ctx);
+    let right = linear_value(right, group, values, ctx);
+    let difference = left - right;
+    match op {
+        crate::ast::BinaryOpKind::Eq => difference.abs() <= f64::EPSILON,
+        crate::ast::BinaryOpKind::Neq => difference.abs() > f64::EPSILON,
+        crate::ast::BinaryOpKind::Lt => difference < -f64::EPSILON,
+        crate::ast::BinaryOpKind::Gt => difference > f64::EPSILON,
+        crate::ast::BinaryOpKind::Le => difference <= f64::EPSILON,
+        crate::ast::BinaryOpKind::Ge => difference >= -f64::EPSILON,
+        _ => false,
+    }
+}
+
+/// Evaluate a linear expression from solved values plus fixed boundaries.
+fn linear_value(
+    expression: &crate::analysis::electronics_laws::LinearExpression,
+    group: &ComponentGroup<'_>,
+    values: &BTreeMap<SystemVariable, f64>,
+    ctx: &DcContext<'_>,
+) -> f64 {
+    let mut total = expression.constant;
+    for (variable, coefficient) in &expression.terms {
+        let Some(system_variable) = system_variable(variable, ctx) else { continue };
+        let value = match &system_variable {
+            SystemVariable::Net(net) => ctx.drives.get(net).copied().unwrap_or_else(|| {
+                values
+                    .get(&system_variable)
+                    .copied()
+                    .unwrap_or_else(|| unknown_boundary(group))
+            }),
+            _ => values.get(&system_variable).copied().unwrap_or(0.0),
+        };
+        total += coefficient * value;
+    }
+    total
+}
+
+/// Deterministic missing-value fallback (should be unreachable after solve).
+fn unknown_boundary(group: &ComponentGroup<'_>) -> f64 {
+    let _ = group_label(group);
+    0.0
+}
+
+/// Convert solved system variables plus fixed boundaries to a solution.
+fn values_to_solution(
+    group: &ComponentGroup<'_>,
+    ctx: &DcContext<'_>,
+    values: BTreeMap<SystemVariable, f64>,
+) -> DcSolution {
     let mut solution = DcSolution::default();
     for net in &group.nets {
         let value = match ctx.drives.get(net) {
@@ -167,7 +339,7 @@ fn solve_group(
         let SystemVariable::Current { component, pin } = variable else { continue };
         solution.pin_current.insert((component, pin), value);
     }
-    Ok(solution)
+    solution
 }
 
 /// Bijective variable table with deterministic indices.
@@ -200,9 +372,10 @@ fn append_law_equations(
     ctx: &DcContext<'_>,
     variables: &mut VariableTable,
     rows: &mut Vec<SystemRow>,
+    branch: &BranchMode<'_>,
 ) -> Result<(), String> {
     for component in &group.components {
-        component_law_rows(component, ctx, variables, rows)?;
+        component_law_rows(component, ctx, variables, rows, branch)?;
     }
     Ok(())
 }
@@ -213,24 +386,24 @@ fn component_law_rows(
     ctx: &DcContext<'_>,
     variables: &mut VariableTable,
     rows: &mut Vec<SystemRow>,
+    branch: &BranchMode<'_>,
 ) -> Result<(), String> {
     for law in &component.laws {
-        law_equation_rows(law, ctx, variables, rows)?;
+        if branch.is_active(law) {
+            law_equation_rows(law, ctx, variables, rows)?;
+        }
     }
     Ok(())
 }
 
-/// Add one law's equations. Guarded modes are Slice 4; they are excluded
-/// here rather than approximated as always active.
+/// Add the equations of one already-selected law. Mode selection (not this
+/// function) decides whether a guarded branch is active.
 fn law_equation_rows(
     law: &crate::analysis::electronics_laws::ElaboratedLaw,
     ctx: &DcContext<'_>,
     variables: &mut VariableTable,
     rows: &mut Vec<SystemRow>,
 ) -> Result<(), String> {
-    if law.guard != LawGuard::Always {
-        return Ok(());
-    }
     for equation in &law.equations {
         let row = law_equation_row(equation, ctx, variables)
             .map_err(|_| format!("{} has a pin on no net", law.source))?;

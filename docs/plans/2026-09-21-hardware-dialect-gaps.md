@@ -1050,3 +1050,12 @@ contradictory and underdetermined groups instead of choosing a point.
 Solved voltages/currents feed tolerance/current checks, and law-bearing
 types are excluded from the legacy series heuristic to prevent double
 counting. Guarded modes remain for Slice 4.
+
+**Slice 4 addendum (same day):** the DC solver now enumerates guarded
+branch modes deterministically (bounded at 12 guarded laws per connected
+group). Each candidate must satisfy every guard at its selected active /
+inactive truth value; zero modes and multiple distinct modes are hard
+diagnostics. Negative unit drives are recognized as boundary conditions.
+A ideal-diode forward/reverse pair solves to the correct branch in tests.
+`spec Bistable` remains future surface until multi-state contract checking
+lands; the solver refuses to choose among distinct states.

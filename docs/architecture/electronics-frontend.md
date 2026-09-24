@@ -129,6 +129,13 @@ bounds; solved net voltages feed tolerance and downstream checks.
 Law-bearing types are excluded from the legacy series-value path, so they
 are never double-counted.
 
+Landed in Slice 4: guarded laws use deterministic branch-mode enumeration
+(bounded at 12 guarded laws per group). A mode supplies its active
+equations; the candidate is accepted only when every guarded law has the
+truth value selected for that mode. Zero valid modes is a hard error;
+multiple distinct valid modes are reported, never silently collapsed.
+Negative quantity drives (`-3.3V`) are boundary conditions.
+
 ## Deferred (recorded, not built)
 
 Electrical pin roles (`[power_in]`), footprint validation against KiCad
