@@ -78,6 +78,10 @@ pub struct TypeInfo {
     /// parameters, keyed by lowercase spec name. Dimension-only declarations
     /// are requirements and intentionally absent.
     pub spec_defaults: BTreeMap<String, crate::ast::PropertyValue>,
+    /// 2026-09-24 (multi-state laws): the type acknowledges multiple valid
+    /// operating states (`spec Bistable: true;`). An ambiguous connected
+    /// group may retain states only when every member declares it.
+    pub bistable: bool,
 }
 
 /// One derived electrical node.
@@ -206,7 +210,7 @@ impl Default for PinClassProps {
 /// driven net whose type declares `!> Tolerance: <max>` must tolerate the
 /// class; a 5 V net into a 3.3 V-only pin is a compile error, never a fried
 /// board. Unrated pins place no constraint.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct VoltageCheck {
     /// Net name → driven voltage class (max of agreeing drives).
     pub net_voltage: BTreeMap<String, f64>,
@@ -435,9 +439,15 @@ fn collect_type_pins(
                         _ => None,
                     })
                     .collect();
+                // 2026-09-24 (multi-state laws): an acknowledged multi-state
+                // component may keep every consistent operating state.
+                let bistable = matches!(
+                    td.body.metadata.get("bistable"),
+                    Some(crate::ast::PropertyValue::Bool(true))
+                );
                 info.insert(
                     td.name.clone(),
-                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty(), spec_defaults },
+                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty(), spec_defaults, bistable },
                 );
             }
         }
@@ -767,6 +777,7 @@ struct ProofInputs<'a> {
     type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
     type_info: &'a BTreeMap<String, TypeInfo>,
     laws: &'a [crate::analysis::electronics_laws::ComponentLaws],
+    states: &'a std::collections::BTreeSet<String>,
 }
 
 /// Everything needed after contract drives are classified: DC solve, proofs,
@@ -787,36 +798,93 @@ fn post_solve_checks(
     ctx: PostSolveContext<'_>,
     voltage: &mut VoltageCheck,
 ) -> (Vec<String>, Vec<String>) {
-    let law_errors = integrate_dc_laws(
-        voltage,
-        DcInput {
-            components: ctx.laws,
-            nets: ctx.nets,
-            instances: ctx.instances,
-            type_pins: ctx.type_pins,
-            unpop: ctx.unpop,
-        },
-    );
-    derive_electrical_proofs(
-        ProofInputs {
-            items: ctx.items,
-            nets: ctx.nets,
-            instances: ctx.instances,
-            type_pins: ctx.type_pins,
-            type_info: ctx.type_info,
-            laws: ctx.laws,
-        },
-        voltage,
-    );
-    let budget_errors = check_budgets(BudgetInputs {
-        items: ctx.items,
-        instances: ctx.instances,
-        type_info: ctx.type_info,
+    let (states, law_errors) = solve_law_states(DcInput {
+        components: ctx.laws,
         nets: ctx.nets,
-        voltage,
-        laws: ctx.laws,
+        instances: ctx.instances,
+        type_pins: ctx.type_pins,
+        type_info: ctx.type_info,
+        unpop: ctx.unpop,
+        drives: &voltage.net_voltage,
     });
-    (law_errors, budget_errors)
+    let mut law_all = law_errors;
+    let mut budget_all = Vec::new();
+    let mut proved_all = voltage.proved.clone();
+    // The first deterministic state is the representative emitter view; all
+    // states are independently proved and their diagnostics aggregated.
+    let mut representative: Option<crate::analysis::electronics_dc::DcSolution> = None;
+    for state in states {
+        // Start clean per state so solved tolerance errors are not confused
+        // with the base drive diagnostics already carried by `voltage`.
+        let mut state_check = voltage.clone();
+        state_check.violations.clear();
+        state_check.net_voltage.extend(state.net_voltage.clone());
+        state_check.pin_current.extend(state.pin_current.clone());
+        check_tolerance(
+            ctx.nets,
+            ctx.instances,
+            ctx.type_info,
+            &state_check.net_voltage,
+            &mut state_check.violations,
+        );
+        derive_electrical_proofs(
+            ProofInputs {
+                items: ctx.items,
+                nets: ctx.nets,
+                instances: ctx.instances,
+                type_pins: ctx.type_pins,
+                type_info: ctx.type_info,
+                laws: ctx.laws,
+                states: &state.states,
+            },
+            &mut state_check,
+        );
+        let state_budget = check_budgets(BudgetInputs {
+            items: ctx.items,
+            instances: ctx.instances,
+            type_info: ctx.type_info,
+            nets: ctx.nets,
+            voltage: &state_check,
+            laws: ctx.laws,
+            states: &state.states,
+        });
+        budget_all.extend(state_budget);
+        voltage.violations.extend(state_check.violations);
+        voltage.net_current.extend(state_check.net_current);
+        // Representative view: first solved value wins. Later states are
+        // still proved, but do not relabel the schematic.
+        for (net, volt) in state_check.net_voltage {
+            voltage.net_voltage.entry(net).or_insert(volt);
+        }
+        proved_all.extend(state_check.proved);
+        representative.get_or_insert(state.clone());
+    }
+    // Record the mandatory absent omission explicitly: an absent state with
+    // no branch quantity is a solved participation state, not a vacuous pass.
+    for law in ctx.laws {
+        if ctx.unpop.contains(&law.instance) {
+            proved_all.push(format!(
+                "[participation=absent] component-law part '{}' omitted — pins open, no law contribution",
+                law.instance
+            ));
+        }
+    }
+    if let Some(state) = representative {
+        // Merge, never replace: nets outside law groups keep their contract
+        // drives, and law groups contribute only their own solved nets.
+        voltage.net_voltage.extend(state.net_voltage);
+        voltage.pin_current.extend(state.pin_current);
+    }
+    voltage.proved = proved_all;
+    (law_all, budget_all)
+}
+
+/// Prefix a diagnostic with its deterministic operating-state labels.
+fn state_prefix(states: &std::collections::BTreeSet<String>) -> String {
+    if states.is_empty() {
+        return String::new();
+    }
+    format!("[{}] ", states.iter().cloned().collect::<Vec<_>>().join("; "))
 }
 
 /// Derive legacy current classes, law-aware power, and prove current bounds.
@@ -839,10 +907,17 @@ fn derive_electrical_proofs(input: ProofInputs<'_>, check: &mut VoltageCheck) {
             nets: input.nets,
             type_info: input.type_info,
             pin_to_net: &pin_to_net,
+            states: input.states,
         },
         check,
     );
-    check_current_bounds(input.items, input.instances, input.type_pins, &pin_to_net, check);
+    check_current_bounds(
+        input.items,
+        input.instances,
+        input.type_pins,
+        &CurrentBoundTables { pin_to_net: &pin_to_net, states: input.states },
+        check,
+    );
 }
 
 /// Pin → net name index.
@@ -1493,6 +1568,7 @@ struct LawPowerContext<'a> {
     nets: &'a [Net],
     type_info: &'a BTreeMap<String, TypeInfo>,
     pin_to_net: &'a BTreeMap<(String, String), String>,
+    states: &'a std::collections::BTreeSet<String>,
 }
 
 /// 2026-09-24 (Slice 6): component-law power proof. A fully solved law part
@@ -1500,26 +1576,26 @@ struct LawPowerContext<'a> {
 /// missing pin quantity means the model proves no complete dissipation —
 /// nothing is forced, never a guessed zero.
 fn derive_law_power(ctx: LawPowerContext<'_>, check: &mut VoltageCheck) {
+    let state = state_prefix(ctx.states);
     for law in ctx.laws {
         let Some(inst) = ctx.instances.get(&law.instance) else { continue };
         let Some(info) = ctx.type_info.get(&inst.type_name) else { continue };
         let Some(pins) = ctx.type_pins.get(&inst.type_name) else { continue };
-        let Some((power, proof)) = law_power(
+        let quantities = law_power(
             &law.instance,
             pins,
             ctx.pin_to_net,
             &check.net_voltage,
             &check.pin_current,
-        ) else {
-            continue;
-        };
+        );
+        let Some((power, proof)) = quantities else { continue; };
         if power <= f64::EPSILON {
             // Zero solved dissipation proves no thermal decision.
             continue;
         }
         match info.rating {
             None => check.violations.push(format!(
-                "component-law part '{}' ({}) dissipates a derived {} but its type declares no power \
+                "{state}component-law part '{}' ({}) dissipates a derived {} but its type declares no power \
                  rating — an unstated rating on a proven-dissipating law part is an undeclared \
                  decision. fix: add `rating <watts>;` rated above the derived dissipation, or \
                  `rating any;` to declare the part unrated on purpose.",
@@ -1528,7 +1604,7 @@ fn derive_law_power(ctx: LawPowerContext<'_>, check: &mut VoltageCheck) {
                 format_watts(power)
             )),
             Some(rated) if power > rated + f64::EPSILON => check.violations.push(format!(
-                "component-law part '{}' ({}) dissipates a derived {} but is rated {} — the solved \
+                "{state}component-law part '{}' ({}) dissipates a derived {} but is rated {} — the solved \
                  operating point exceeds the declared rating. fix: raise the rating to a real part \
                  class, change the law parameters, or lower the boundary drive.",
                 law.instance,
@@ -1537,7 +1613,7 @@ fn derive_law_power(ctx: LawPowerContext<'_>, check: &mut VoltageCheck) {
                 format_watts(rated)
             )),
             Some(rated) => check.proved.push(format!(
-                "{} P({}) = {} <= {} rating — component-law DC",
+                "{state}{} P({}) = {} <= {} rating — component-law DC",
                 proof,
                 law.instance,
                 format_watts(power),
@@ -1568,18 +1644,25 @@ fn law_power(
     Some((power.abs(), "component-law DC:"))
 }
 
+/// Shared tables for current-bound proofs; keeps the walker under the
+/// parameter gate now that state provenance is required.
+struct CurrentBoundTables<'a> {
+    pin_to_net: &'a BTreeMap<(String, String), String>,
+    states: &'a std::collections::BTreeSet<String>,
+}
+
 /// Prove (or violate) the postcondition current bounds against the derived
 /// current classes.
 fn check_current_bounds(
     items: &[TopLevel],
     instances: &BTreeMap<String, &ComponentInstance>,
     type_pins: &BTreeMap<String, Vec<(String, u64)>>,
-    pin_to_net: &BTreeMap<(String, String), String>,
+    tables: &CurrentBoundTables<'_>,
     check: &mut VoltageCheck,
 ) {
     for (pin, bound, is_upper) in collect_current_bounds(items, instances, type_pins) {
         let key = (pin.component.clone(), pin.pin.clone());
-        let Some(net_name) = pin_to_net.get(&key) else {
+        let Some(net_name) = tables.pin_to_net.get(&key) else {
             continue;
         };
         // A law solve is pin-exact; the legacy net-current class is fallback
@@ -1596,6 +1679,7 @@ fn check_current_bounds(
             law_current: law_current.is_some(),
             bound,
             is_upper,
+            states: tables.states,
         };
         record_current_bound(site, check);
     }
@@ -1609,6 +1693,7 @@ struct CurrentBoundSite<'a> {
     law_current: bool,
     bound: f64,
     is_upper: bool,
+    states: &'a std::collections::BTreeSet<String>,
 }
 
 /// Record one proved/violated signed current bound.
@@ -1624,9 +1709,10 @@ fn record_current_bound(site: CurrentBoundSite<'_>, check: &mut VoltageCheck) {
     } else {
         "series-current fixpoint"
     };
+    let state = state_prefix(site.states);
     if holds {
         check.proved.push(format!(
-            "I({}.{}) = {} {} {} — {}",
+            "{state}I({}.{}) = {} {} {} — {}",
             site.pin.component,
             site.pin.pin,
             format_amps(site.derived),
@@ -1637,8 +1723,9 @@ fn record_current_bound(site: CurrentBoundSite<'_>, check: &mut VoltageCheck) {
         return;
     }
     let direction = if site.is_upper { "upper" } else { "lower" };
+    let state = state_prefix(site.states);
     check.violations.push(format!(
-        "pin '{}.{}' on net '{}' carries a derived current of {} but its postcondition {} \
+        "{state}pin '{}.{}' on net '{}' carries a derived current of {} but its postcondition {} \
          bound is {} — the bound is violated by the derived physics. fix: adjust the series \
          resistance/law parameters or the boundary voltage so the solved current satisfies it.",
         site.pin.component,
@@ -2132,6 +2219,7 @@ struct BudgetInputs<'a> {
     nets: &'a [Net],
     voltage: &'a VoltageCheck,
     laws: &'a [crate::analysis::electronics_laws::ComponentLaws],
+    states: &'a std::collections::BTreeSet<String>,
 }
 
 /// 2026-09-21 (E7, design record D4): source-pin budgets — `budget
@@ -2217,8 +2305,9 @@ fn check_budgets(input: BudgetInputs<'_>) -> Vec<String> {
         };
         if drawn > limit {
             errors.push(format!(
-                "budget exceeded: '{}.{}' allows {} but its net draws {} — the derived sum over \
+                "{}budget exceeded: '{}.{}' allows {} but its net draws {} — the derived sum over \
                  the net ({provenance}) is past the stated limit. Raise the budget or reduce the draw",
+                state_prefix(input.states),
                 pin.component,
                 pin.pin,
                 format_amps(limit),
@@ -4010,45 +4099,55 @@ struct DcInput<'a> {
     nets: &'a [Net],
     instances: &'a BTreeMap<String, &'a ComponentInstance>,
     type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
+    type_info: &'a BTreeMap<String, TypeInfo>,
     unpop: &'a std::collections::HashSet<String>,
+    drives: &'a BTreeMap<String, f64>,
 }
 
-/// Solve component-law DC groups and merge solved operating points into the
-/// voltage check. Solve failures become hard law errors (2026-09-24).
-fn integrate_dc_laws(voltage: &mut VoltageCheck, input: DcInput<'_>) -> Vec<String> {
-    // 2026-09-24 (Slice 6): participation must be explicit. The solver
-    // currently derives the populated state only; an unpop law-bearing part
-    // needs dual-state solution rather than a silent absent-state pass.
-    let mut errors: Vec<String> = input
-        .components
-        .iter()
-        .filter(|law| input.unpop.contains(&law.instance))
-        .map(|law| {
-            format!(
-                "component-law part '{}' is marked unpopulated — dual-state law verification is not \
-                 supported yet. fix: populate the part for this design, or remove its component laws \
-                 until present/absent operating points are solved.",
-                law.instance
-            )
-        })
-        .collect();
-    let drives = voltage.net_voltage.clone();
-    let (solutions, solve_errors) = crate::analysis::electronics_dc::solve_dc_laws(
-        &crate::analysis::electronics_dc::DcContext {
-            nets: input.nets,
-            components: input.components,
-            instances: input.instances,
-            type_pins: input.type_pins,
-            unpop: input.unpop,
-            drives: &drives,
-        },
-    );
-    errors.extend(solve_errors);
-    for solution in solutions {
-        voltage.net_voltage.extend(solution.net_voltage);
-        voltage.pin_current.extend(solution.pin_current);
+/// Solve mandatory law participation states. Present always runs; absent
+/// runs only when at least one law-bearing component is unpopulated.
+fn solve_law_states(input: DcInput<'_>) -> (Vec<crate::analysis::electronics_dc::DcSolution>, Vec<String>) {
+    let mut states = Vec::new();
+    let mut errors = Vec::new();
+    let mut solve_participation = |label: &str, components: &[crate::analysis::electronics_laws::ComponentLaws], unpop: &std::collections::HashSet<String>| {
+        let (mut solved, mut solve_errors) = crate::analysis::electronics_dc::solve_dc_laws(
+            &crate::analysis::electronics_dc::DcContext {
+                nets: input.nets,
+                components,
+                instances: input.instances,
+                type_pins: input.type_pins,
+                type_info: input.type_info,
+                unpop,
+                drives: input.drives,
+            },
+        );
+        for state in &mut solved {
+            state.states.insert(format!("participation={label}"));
+        }
+        for error in &mut solve_errors {
+            *error = format!("[participation={label}] {error}");
+        }
+        states.append(&mut solved);
+        errors.append(&mut solve_errors);
+    };
+    solve_participation("present", input.components, &std::collections::HashSet::new());
+    let absent_components: Vec<crate::analysis::electronics_laws::ComponentLaws> = if input
+        .unpop
+        .is_empty()
+    {
+        Vec::new()
+    } else {
+        input
+            .components
+            .iter()
+            .filter(|law| !input.unpop.contains(&law.instance))
+            .cloned()
+            .collect()
+    };
+    if !input.unpop.is_empty() {
+        solve_participation("absent", &absent_components, input.unpop);
     }
-    errors
+    (states, errors)
 }
 
 /// Elaborate component constitutive laws with the same instance/type tables
@@ -5407,7 +5506,7 @@ mod tests {
         let resistor = r#"
             type Resistor {
                 pin a; pin b;
-                reference "R"; tolerance any;
+                reference "R"; tolerance any; rating 0.05;
                 spec Resistance: Ohm;
                 when true {
                     a.voltage - b.voltage == Resistance * a.current;
@@ -5620,7 +5719,7 @@ mod tests {
     }
 
     #[test]
-    fn unpop_law_part_is_an_explicit_dual_state_error() {
+    fn unpop_law_part_solves_both_participation_states() {
         let src = r#"
             type Resistor {
                 pin a; pin b;
@@ -5637,15 +5736,184 @@ mod tests {
             unpop r1;
             txn open
                 [v1.p.voltage == 3.3V && v1.p.voltage == r1.a.voltage
-                 && r1.b.voltage == v1.n.voltage]
+                 && r1.b.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
                 [true]
             { }
         "#;
         let nl = analyze(src);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        // Both mandatory participation states solve. The present state has
+        // the full law operating point; the absent state omits its current.
         assert!(
-            nl.law_errors.iter().any(|e| e.contains("dual-state law verification")),
+            nl.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("participation=present") && p.contains("P(r1)")),
             "{:?}",
-            nl.law_errors
+            nl.voltage.proved
+        );
+        assert!(
+            nl.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("participation=absent")),
+            "{:?}",
+            nl.voltage.proved
+        );
+    }
+
+    #[test]
+    fn unpop_present_state_enforces_current_bound() {
+        // The absent state has no branch current, but a bound must hold in
+        // every state: the populated 3.3V / 1kR state violates 2mAmp.
+        let src = r#"
+            type Resistor {
+                pin a; pin b;
+                reference "R"; tolerance any; rating any;
+                spec Resistance: Ohm;
+                when true {
+                    a.voltage - b.voltage == Resistance * a.current;
+                    a.current + b.current == 0;
+                }
+            };
+            type Source { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Source = Source { };
+            let r1: Resistor = Resistor { spec Resistance: 1kR; };
+            unpop r1;
+            txn open
+                [v1.p.voltage == 3.3V && v1.p.voltage == r1.a.voltage
+                 && r1.b.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                [r1.a.current >= 5mAmp]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        assert!(
+            nl.voltage
+                .violations
+                .iter()
+                .any(|e| e.contains("participation=present") && e.contains("lower")),
+            "{:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn ambiguous_bistable_group_without_authority_is_an_error() {
+        let src = r#"
+            type Flip {
+                pin a; pin k;
+                reference "F"; tolerance any; rating any;
+                when a.current >= 0Amp { a.current == 1Amp; }
+                when a.current < 0Amp { a.current == -1Amp; }
+                when true { a.current + k.current == 0; }
+            };
+            type Source { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Source = Source { };
+            let f1: Flip = Flip { };
+            txn drive
+                [v1.p.voltage == 1.0V && v1.p.voltage == f1.a.voltage
+                 && f1.k.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                [true]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.law_errors.len(), 1, "{:?}", nl.law_errors);
+        assert!(
+            nl.law_errors[0].contains("2 DC operating points")
+                && nl.law_errors[0].contains("spec Bistable: true"),
+            "{}",
+            nl.law_errors[0]
+        );
+    }
+
+    #[test]
+    fn acknowledged_bistable_law_proves_all_states() {
+        let body = |bound: &str| format!(
+            r#"
+                type Flip {{
+                    pin a; pin k;
+                    reference "F"; tolerance any; rating any;
+                    spec Bistable: true;
+                    when a.current >= 0Amp {{ a.current == 1Amp; }}
+                    when a.current < 0Amp {{ a.current == -1Amp; }}
+                    when true {{ a.current + k.current == 0; }}
+                }};
+                type Source {{ pin p; pin n; reference "V"; tolerance any; }};
+                let v1: Source = Source {{ }};
+                let f1: Flip = Flip {{ }};
+                txn drive
+                    [v1.p.voltage == 1.0V && v1.p.voltage == f1.a.voltage
+                     && f1.k.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                    [f1.a.current {bound}]
+                {{ }}
+            "#
+        );
+        let pass = analyze(&body("<= 2Amp"));
+        assert!(pass.law_errors.is_empty(), "{:?}", pass.law_errors);
+        assert!(pass.voltage.violations.is_empty(), "{:?}", pass.voltage.violations);
+        assert!(pass
+            .voltage
+            .proved
+            .iter()
+            .any(|p| p.contains("mode=01") && p.contains("I(f1.a)")));
+        assert!(pass
+            .voltage
+            .proved
+            .iter()
+            .any(|p| p.contains("mode=02") && p.contains("I(f1.a)")));
+
+        // The negative state violates a non-negative lower bound even though
+        // the positive state satisfies it: contracts hold in every state.
+        let mixed = analyze(&body(">= 0Amp"));
+        assert!(
+            mixed
+                .voltage
+                .violations
+                .iter()
+                .any(|e| e.contains("mode=02") && e.contains("lower bound")),
+            "{:?}",
+            mixed.voltage.violations
+        );
+    }
+
+    #[test]
+    fn operating_state_ebv_fixtures_are_checked_in_all_states() {
+        // 2026-09-24 (multi-state laws): these sources are the durable
+        // language-facing tests, not just inline strings in Rust.
+        let valid = analyze(include_str!(
+            "../../tests/electronics/operating_states.ebv"
+        ));
+        assert!(valid.law_errors.is_empty(), "{:?}", valid.law_errors);
+        assert!(valid.voltage.violations.is_empty(), "{:?}", valid.voltage.violations);
+        assert!(valid
+            .voltage
+            .proved
+            .iter()
+            .any(|p| p.contains("mode=01") && p.contains("participation=present")));
+        assert!(valid
+            .voltage
+            .proved
+            .iter()
+            .any(|p| p.contains("mode=02") && p.contains("participation=present")));
+        assert!(valid
+            .voltage
+            .proved
+            .iter()
+            .any(|p| p.contains("participation=absent") && p.contains("'r1' omitted")));
+
+        let mixed = analyze(include_str!(
+            "../../tests/electronics/operating_states_bound.ebv"
+        ));
+        assert!(mixed.law_errors.is_empty(), "{:?}", mixed.law_errors);
+        assert!(
+            mixed
+                .voltage
+                .violations
+                .iter()
+                .any(|e| e.contains("mode=02") && e.contains("lower bound")),
+            "{:?}",
+            mixed.voltage.violations
         );
     }
 
@@ -5654,7 +5922,7 @@ mod tests {
         let src = r#"
             type Diode {
                 pin a; pin k;
-                reference "D"; tolerance any;
+                reference "D"; tolerance any; rating any;
                 when a.voltage - k.voltage >= 0.7Volt {
                     a.current ==
                         (a.voltage - k.voltage - 0.7Volt) / 100Ohm;
@@ -5686,7 +5954,7 @@ mod tests {
         let src = r#"
             type Diode {
                 pin a; pin k;
-                reference "D"; tolerance any;
+                reference "D"; tolerance any; rating any;
                 when a.voltage - k.voltage >= 0.7Volt {
                     a.current ==
                         (a.voltage - k.voltage - 0.7Volt) / 100Ohm;

@@ -1,0 +1,60 @@
+// ── operating_states.ebv — component-law multi-state integration fixture ─
+// 2026-09-24 (plan 2026-09-24-multi-state-law-solving.md).
+//
+// This fixture is consumed directly by the Rust analysis tests. It checks
+// three independent state concerns in one board:
+//   1. `Flip` declares `spec Bistable: true`, so both ±1 A modes remain.
+//   2. `r1` is `unpop`, so present and absent participation states both solve.
+//   3. Every postcondition must hold in every retained operating state.
+//
+// The source pin is 1 V and the return is 0 V. The bistable element may
+// carry +1 A or −1 A. The unpopulated 1 kR resistor would carry 1 mA in its
+// present state and no current when absent. Both facts satisfy the bounds.
+
+type Source {
+    pin p;
+    pin n;
+    reference "V";
+    tolerance any;
+    rating any;
+};
+
+type Flip {
+    pin a;
+    pin k;
+    reference "F";
+    tolerance any;
+    rating any;
+    spec Bistable: true;
+    // Two stable branch modes: positive or negative current. The signs are
+    // complementary at zero current, so exactly the two one-amp modes solve.
+    when a.current >= 0Amp { a.current == 1Amp; }
+    when a.current < 0Amp { a.current == -1Amp; }
+    when true { a.current + k.current == 0; }
+};
+
+type Resistor {
+    pin a;
+    pin b;
+    reference "R";
+    tolerance any;
+    rating any;
+    spec Resistance: Ohm;
+    when true {
+        a.voltage - b.voltage == Resistance * a.current;
+        a.current + b.current == 0;
+    }
+};
+
+let v1: Source = Source { };
+let f1: Flip = Flip { };
+let r1: Resistor = Resistor { spec Resistance: 1kR; };
+unpop r1;
+
+txn operating_states
+    [v1.p.voltage == 1.0V && v1.p.voltage == f1.a.voltage
+     && f1.k.voltage == v1.n.voltage && v1.n.voltage == 0.0V
+     && v1.p.voltage == r1.a.voltage && r1.b.voltage == v1.n.voltage]
+    [f1.a.current <= 2Amp && r1.a.current >= 0Amp]
+{
+}

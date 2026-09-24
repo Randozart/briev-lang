@@ -52,7 +52,9 @@ Rules:
 
 1. The parser stores `Bistable` like other boolean component specs.
 2. A connected law group may keep multiple candidates only when **every**
-   law-bearing component in that group declares `spec Bistable: true;`.
+   component that contributes a guarded law declares
+   `spec Bistable: true;`. Always-active components (for example a simple
+   resistor) may share the group without blocking state retention.
 3. If any component in the ambiguous group is not declared bistable, multiple
    valid modes remain a hard error.
 4. Zero valid modes is still a hard error.

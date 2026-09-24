@@ -1094,3 +1094,15 @@ consume solved branch-current magnitudes; lower current bounds are checked
 against signed pin current. Proof facts record component-law provenance.
 An unpopulated law-bearing part is rejected until dual-state DC solving
 exists — never passed by silently solving only its absent state.
+
+### Amendment 2026-09-24 (XIV): multi-state law solving
+
+The DC substrate now models explicit operating states. Guarded group
+candidates combine into a bounded Cartesian product of global states;
+`spec Bistable: true` is the authority required on every guarded-law
+contributor in an ambiguous group. Tolerance, current-bound, law-power,
+and budget proofs run per state, and diagnostics carry deterministic
+state labels. A law-bearing `unpop` component is solved in mandatory
+present and absent participation states; the absent state removes its
+laws and records the omission. The compiler never selects among states
+and never certifies a contract from one state while another violates it.

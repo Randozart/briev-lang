@@ -19,6 +19,8 @@ pub struct DcSolution {
     pub net_voltage: BTreeMap<String, f64>,
     /// Instance + expanded pin → solved branch current.
     pub pin_current: BTreeMap<(String, String), f64>,
+    /// Deterministic participation/branch labels for proof provenance.
+    pub states: BTreeSet<String>,
 }
 
 /// Inputs for one solve pass. Bundled to keep the public entry under the
@@ -28,6 +30,7 @@ pub struct DcContext<'a> {
     pub components: &'a [ComponentLaws],
     pub instances: &'a BTreeMap<String, &'a ComponentInstance>,
     pub type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
+    pub type_info: &'a BTreeMap<String, TypeInfo>,
     pub unpop: &'a std::collections::HashSet<String>,
     /// Contract voltage drives: ideal boundary conditions.
     pub drives: &'a BTreeMap<String, f64>,
@@ -57,6 +60,10 @@ struct ComponentGroup<'a> {
 /// Deterministic branch budget: exponential enumeration must stay explicit.
 const MAX_GUARDED_MODES: usize = 12;
 
+/// Deterministic whole-board state budget: independent group modes multiply,
+/// so the total must be bounded too.
+const MAX_OPERATING_STATES: usize = 64;
+
 /// One active/inactive assignment of the group's guarded laws.
 struct BranchMode<'a> {
     laws: Vec<&'a crate::analysis::electronics_laws::ElaboratedLaw>,
@@ -76,19 +83,63 @@ impl<'a> BranchMode<'a> {
     }
 }
 
-/// Solve every law group. Returns successful group solutions plus hard
-/// diagnostics. A failed group has no solution, never a default.
+/// Solve every law group and combine group candidates into global operating
+/// states. Any group failure suppresses all states: a partial board state is
+/// never presented as a proof.
 pub fn solve_dc_laws(ctx: &DcContext<'_>) -> (Vec<DcSolution>, Vec<String>) {
     let groups = component_groups(ctx);
-    let mut solutions = Vec::new();
+    let mut group_candidates: Vec<Vec<DcSolution>> = Vec::new();
     let mut errors = Vec::new();
     for group in groups {
         match solve_group(&group, ctx) {
-            Ok(mut group_solutions) => solutions.append(&mut group_solutions),
+            Ok(candidates) => group_candidates.push(candidates),
             Err(error) => errors.push(error),
         }
     }
-    (solutions, errors)
+    if !errors.is_empty() {
+        return (Vec::new(), errors);
+    }
+    match global_states(group_candidates) {
+        Ok(states) => (states, Vec::new()),
+        Err(error) => (Vec::new(), vec![error]),
+    }
+}
+
+/// Combine independent group candidates into deterministic global states.
+fn global_states(group_candidates: Vec<Vec<DcSolution>>) -> Result<Vec<DcSolution>, String> {
+    group_candidates.into_iter().try_fold(
+        vec![DcSolution::default()],
+        |states, candidates| {
+            let product = states.len().saturating_mul(candidates.len());
+            if product > MAX_OPERATING_STATES {
+                return Err(format!(
+                    "component-law solve has {product} operating states — the deterministic state \
+                     budget is {MAX_OPERATING_STATES}. Split independent law groups, simplify \
+                     guarded laws, or remove unused branch modes"
+                ));
+            }
+            let mut combined = Vec::with_capacity(product);
+            for state in &states {
+                combine_state_candidates(state, &candidates, &mut combined);
+            }
+            Ok(combined)
+        },
+    )
+}
+
+/// Cross one existing global state with every candidate for the next group.
+fn combine_state_candidates(
+    state: &DcSolution,
+    candidates: &[DcSolution],
+    combined: &mut Vec<DcSolution>,
+) {
+    for candidate in candidates {
+        let mut merged = state.clone();
+        merged.net_voltage.extend(candidate.net_voltage.clone());
+        merged.pin_current.extend(candidate.pin_current.clone());
+        merged.states.extend(candidate.states.clone());
+        combined.push(merged);
+    }
 }
 
 /// Absorb every existing group already touching one of the component's nets.
@@ -187,7 +238,10 @@ fn solve_group(
     for mask in 0..mask_count {
         let branch = BranchMode { laws: guards.laws.clone(), mask };
         match solve_branch_mode(group, ctx, &branch) {
-            Ok(solution) => {
+            Ok(mut solution) => {
+                // Mode `00` in an unguarded group is the ordinary direct law
+                // path; numbered labels stay uniform for state provenance.
+                solution.states.insert(format!("mode={mask:02x}"));
                 let key = format!("{solution:?}");
                 if seen.insert(key) {
                     candidates.push(solution);
@@ -212,14 +266,29 @@ fn solve_group(
             group_label(group)
         ));
     }
-    if candidates.len() > 1 {
+    if candidates.len() > 1 && !group_bistable(group, ctx) {
         let states = candidates.len();
         return Err(format!(
-            "component-law group {:?} has {states} DC operating points — the solver will not choose one; declare bistability only when multi-state contracts can be proven",
+            "component-law group {:?} has {states} DC operating points — every guarded-law contributor must declare `spec Bistable: true;` before the board is checked in all states",
             group_label(group)
         ));
     }
     Ok(candidates)
+}
+
+/// Authority check for retaining multiple group modes. Every component that
+/// contributes a guarded law must acknowledge bistability; always-active
+/// components may share the connected group without making it ambiguous.
+fn group_bistable(group: &ComponentGroup<'_>, ctx: &DcContext<'_>) -> bool {
+    group.components.iter().all(|component| {
+        let has_guarded = component.laws.iter().any(|law| law.guard != LawGuard::Always);
+        !has_guarded
+            || ctx
+                .instances
+                .get(&component.instance)
+                .and_then(|inst| ctx.type_info.get(&inst.type_name))
+                .is_some_and(|info| info.bistable)
+    })
 }
 
 /// Guarded laws in deterministic original order.

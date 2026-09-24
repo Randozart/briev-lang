@@ -251,6 +251,17 @@ clearance (warning), and emits a `.kicad_pcb` alongside the schematic
 (physics-derived net labels, footprints from `config/footprints.dbvl`).
 New surface: `Length` dimension + `mm`/`cm` units.
 
+**2026-09-24 (multi-state law solving, plan
+`2026-09-24-multi-state-law-solving.md`):** the DC solver now returns
+labeled global operating states. Guarded group candidates are combined
+deterministically (64-state board budget). `spec Bistable: true` is
+authority for a component's guarded laws; an ambiguous group retains its
+states only when every guarded-law contributor declares it. Tolerance,
+current, power, and budget proofs run per state and name their state.
+`unpop` law parts solve present and absent participation states; the
+absent state omits their laws and records the omission explicitly. The
+first deterministic state remains the representative emitter view.
+
 **2026-09-24 (Slice 6, plan `2026-09-24-ascii-units-and-law-proof-closure.md`):**
 law-proof closure. Current/power checks run after the DC solve, so solved
 pin quantities participate in every proof. Law-bearing parts get

@@ -3526,7 +3526,7 @@ impl<'a> Parser<'a> {
             }
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadType, MaxBits, NoConnect, PullUp, Resistance, Return, Rows, Supply, Switchable",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadType, MaxBits, NoConnect, PullUp, Resistance, Return, Rows, Supply, Switchable",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -3558,7 +3558,7 @@ impl<'a> Parser<'a> {
             // 2026-09-21 (E12/E13): boolean spec keys — `true`/`false`
             // lex as dedicated Bool tokens, not identifiers.
             "no_connect" | "supply" | "return" | "decoupler" | "can_drive"
-            | "control" | "switchable" | "wired_and" | "pull_up" => {
+            | "control" | "switchable" | "wired_and" | "pull_up" | "bistable" => {
                 return self.parse_boolean_spec(name, key, metadata);
             }
             // 2026-09-21 (E13): the stated convention value — a string
@@ -4536,6 +4536,9 @@ pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // 2026-09-24 (component laws): the generic ohmic parameter. The name
         // is a physics dimension channel, not a component catalog entry.
         "Resistance" => Some("resistance"),
+        // 2026-09-24 (multi-state laws): authority for a component to keep
+        // multiple consistent DC operating states.
+        "Bistable" => Some("bistable"),
         _ => None,
     }
 }

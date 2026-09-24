@@ -329,10 +329,20 @@ in the parser — netlist, contracts, and the emitter see named ordinary
  quantity normalization, law elaboration, guard enumeration, KCL, and
  deterministic DC solving. A component owns its own constitutive
  equations. Linear DC laws are solved against contract voltage
- boundaries; guarded linear branches enumerate deterministically, and
- zero or multiple operating points are hard errors. The stdlib resistor,
+ boundaries. Guarded linear branches enumerate deterministically; zero
+ valid states is an error. Multiple valid states are retained only when
+ every guarded-law component in the ambiguous group declares
+ `spec Bistable: true;`; otherwise the ambiguity is an error. Every
+ contract is checked in every retained state — a bound must never be
+ certified by one state while another violates it. The stdlib resistor,
  wire, diode, and LED types are ordinary declarations of this mechanism —
  the compiler knows no component catalog names.
+
+ **Law participation states (2026-09-24).** A law-bearing component marked
+ `unpop` is solved twice: present, with its laws participating; and absent,
+ with its laws and KCL contributions removed and its pins open. Tolerances,
+ current bounds, power ratings, and budgets are checked in both states.
+ The absent state is not a substitute for the present state.
 
  **The fab section (2026-09-23).** A `.ebv` may attach a physical-layout
  section — `fab { board 40mm x 20mm; place u1 @ (20mm, 10mm) rot 90; }`
