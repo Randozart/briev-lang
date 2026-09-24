@@ -735,10 +735,19 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
             } else if self.check(&Token::Shr)
                 && self.peek_next_is_identifier()
                 && self.peek_is_capture_terminator()
+                && matches!(expr, Expr::MethodCall(..) | Expr::Capture { .. })
             {
                 // 2026-09-16: chain capture — `expr >> name`. Binds the current
                 // result to `name` and keeps the chain alive so a following
                 // `.next()` continues on the same value.
+                // 2026-09-24: receiver must be a chain value (MethodCall or a
+                // prior Capture). `let d = m >> b;` / `term a >> b;` /
+                // `f() >> n;` have non-chain receivers and must stay bitwise
+                // shift — the ident+terminator check alone misparsed every
+                // statement-position `lhs >> rhs` as capture, rebinding rhs to
+                // lhs (broke float_fmt frac_digit_loop → pow2b overflow).
+                // Undo: widen this matches! only for a documented capture form
+                // whose receiver is not also a common shift LHS.
                 self.advance(); // consume >>
                 let name = self.expect_identifier()?;
                 expr = Expr::Capture { expr: Box::new(expr), name };
@@ -1765,6 +1774,47 @@ mod tests {
                     "x >> y must stay a shift, got {:?}", args[0]);
             }
             other => panic!("expected call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_ident_receiver_stays_shift() {
+        // 2026-09-24: `m >> b` (ident + EOF/`;` terminator) must be bitwise
+        // shift — the float_fmt frac_digit_loop form. Receiver is not a chain.
+        let expr = parse_expr("m >> b").unwrap();
+        assert!(
+            matches!(expr, Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, ..)),
+            "m >> b must be a shift, got {expr:?}"
+        );
+    }
+
+    #[test]
+    fn shift_call_receiver_stays_shift() {
+        // `f() >> n` — a bare call is not a chain position; stays shift.
+        let expr = parse_expr("f() >> n").unwrap();
+        assert!(
+            matches!(expr, Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, ..)),
+            "f() >> n must be a shift, got {expr:?}"
+        );
+    }
+
+    #[test]
+    fn chained_captures_still_parse() {
+        // `a.b() >> s1.c() >> s2` — capture, continue chain, capture again.
+        // Each SHR sees a MethodCall receiver; `.` after s1 is a terminator.
+        let expr = parse_expr("a.b() >> s1.c() >> s2").unwrap();
+        match expr {
+            Expr::Capture { expr, name } => {
+                assert_eq!(name, "s2");
+                match expr.as_ref() {
+                    Expr::MethodCall(recv, m, ..) => {
+                        assert_eq!(m, "c");
+                        assert!(matches!(recv.as_ref(), Expr::Capture { name: n, .. } if n == "s1"));
+                    }
+                    other => panic!("expected MethodCall mid-chain, got {other:?}"),
+                }
+            }
+            other => panic!("expected capture, got {other:?}"),
         }
     }
 

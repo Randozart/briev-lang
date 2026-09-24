@@ -1705,10 +1705,12 @@ variable
   (UFCS), the resolved references precede the written args. `.1` is the
   immediately previous result (the implicit receiver); `.2` is two back.
 - `.(Type)>>func()` casts the previous result to `Type` before the call.
-- `>>` is a capture only at a chain position (followed by `.`, `;`, `}`, or
-  expression end); inside `f(x >> y)` it remains the shift operator. `.N>>`/
-  `.name>>` are back-references only when followed by a call head
-  (`identifier (`).
+- `>>` is a capture only at a chain position: the receiver is a chain value
+  (method call or a prior capture) AND it is followed by `.`, `;`, `}`, or
+  expression end. Everything else is the shift operator: inside `f(x >> y)`,
+  and statement/let/term forms with non-chain receivers — `m >> b`,
+  `f() >> n`, `term a >> b` are all bitwise shift. `.N>>`/`.name>>` are
+  back-references only when followed by a call head (`identifier (`).
 - A literal receiver directly before `.N>>` (e.g. `5.1>>f()`) lexes as a
   float; parenthesize (`(5).1>>f()`) or use a named expression.
 
