@@ -65,6 +65,9 @@ type Resistor {
     pin b;
     reference "R";
     tolerance any;
+    // The generic library part is abstract: no package size/rating is
+    // selected here. A board chooses a concrete rated part at instantiation.
+    rating any;
     // 2026-09-24 (component laws): the structured physics parameter. A
     // dimension-only declaration requires instances to supply a value;
     // the opaque BOM `value` is never a second truth.
@@ -92,6 +95,9 @@ type Led {
     pin k;
     reference "D";
     tolerance 3.6;
+    // The generic LED is abstract; a concrete package chooses its rated
+    // dissipation at the board-library layer.
+    rating any;
     spec ForwardVoltage: Volt;
     spec DynamicResistance: Ohm;
     // 2026-09-24 (component laws): a LED is a directional light-emitting
@@ -137,6 +143,9 @@ type Diode {
     pin k;
     reference "D";
     tolerance any;
+    // The generic junction is abstract; a concrete package chooses its
+    // rated dissipation at the board-library layer.
+    rating any;
     spec ForwardVoltage: Volt;
     spec DynamicResistance: Ohm;
     when a.voltage - k.voltage >= ForwardVoltage {

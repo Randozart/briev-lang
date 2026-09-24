@@ -1084,3 +1084,13 @@ Unit spelling is ASCII-first, not verbose-first. `V`, `mA`, `R`, `kR`,
 `Ω` and other non-ASCII/Greek-like unit symbols are rejected; the ASCII
 metre prefix `u` replaces `µ`. This supersedes the temporary spelled-
 `Ohm`-only rule from the first component-law slice.
+
+### Amendment 2026-09-24 (XIII): law-proof closure
+
+The component-law DC solve is now upstream of all current/power proof
+passes. Law-bearing components derive `P = Σ V·I` from their solved
+operating point and are subject to rating decisions; source budgets
+consume solved branch-current magnitudes; lower current bounds are checked
+against signed pin current. Proof facts record component-law provenance.
+An unpopulated law-bearing part is rejected until dual-state DC solving
+exists — never passed by silently solving only its absent state.

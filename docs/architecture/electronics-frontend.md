@@ -251,6 +251,15 @@ clearance (warning), and emits a `.kicad_pcb` alongside the schematic
 (physics-derived net labels, footprints from `config/footprints.dbvl`).
 New surface: `Length` dimension + `mm`/`cm` units.
 
+**2026-09-24 (Slice 6, plan `2026-09-24-ascii-units-and-law-proof-closure.md`):**
+law-proof closure. Current/power checks run after the DC solve, so solved
+pin quantities participate in every proof. Law-bearing parts get
+`P = Σ pin_voltage × pin_current` rating proofs; budgets consume solved
+branch-current magnitudes; lower current bounds are checked against the
+signed pin current; proofs name `component-law DC` provenance. A law
+component marked `unpop` is an explicit dual-state unsupported diagnostic
+rather than an absent-state vacuous pass.
+
 **2026-09-24 (ASCII units and physics layer split, plan
 `2026-09-24-ascii-units-and-law-proof-closure.md`):** unit ergonomics is
 ASCII, not verbosity. Compact `V`, `mA`, `R`, `kR`, and E-series `4k7`

@@ -524,6 +524,9 @@ with both endpoints voltage-classed has a PROVEN dissipation P = V × I:
 above the rating is a violation; a proven-dissipating part with no rating
 clause is an undeclared decision; within the rating records a proof fact.
 A part with an unclassed endpoint has no proven drop — nothing is forced.
+A component-law part with a complete operating point is power-proven from
+`P = Σ pin_voltage × pin_current`; a missing pin quantity proves no total
+dissipation and forces nothing.
 Precedence: conjoined obligations use `==` (single `=` binds loosest, §4).
 A dangling pin — declared but on no net — is a compile error naming the
 pin. Compilation emits a KiCad 7 schematic; the backend refuses any board
