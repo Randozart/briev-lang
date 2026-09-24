@@ -1270,17 +1270,16 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
         let value_pos = self.pos;
         let value = self.parse_expression()?;
         if name == "Resistance" {
-            self.require_canonical_resistance(value_pos, &value)?;
+            self.require_ascii_resistance(value_pos, &value)?;
         }
         specs.push((name, value));
         Ok(())
     }
 
-    /// Component resistance has one canonical spelling: a numeric unit
-    /// literal with a full-word `Ohm` base (`330Ohm`, `4.7kOhm`). Legacy
-    /// `R`/`Ω` are annotations, never law physics (2026-09-24 component
-    /// laws).
-    fn require_canonical_resistance(&self, pos: usize, expr: &Expr) -> Result<(), SyntaxError> {
+    /// Component resistance must state an explicit ASCII ohm unit: `330R`,
+    /// `4k7`, or `4.7kOhm` are valid. `Ω` is never accepted (2026-09-24
+    /// unit ergonomics).
+    fn require_ascii_resistance(&self, pos: usize, expr: &Expr) -> Result<(), SyntaxError> {
         let span = self
             .tokens
             .get(pos)
@@ -1288,18 +1287,18 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
             .unwrap_or_else(|| self.make_span(0..0));
         let Expr::UnitLiteral { unit, .. } = expr else {
             return Err(SyntaxError::InvalidExpression {
-                reason: "spec Resistance must be a quantity with an Ohm unit (e.g. `330Ohm`)"
+                reason: "spec Resistance must be a quantity with an ASCII ohm unit (e.g. `330R`)"
                     .into(),
                 span,
             });
         };
-        let canonical = matches!(unit.as_str(), "Ohm" | "mOhm" | "kOhm" | "MOhm" | "GOhm");
-        if canonical {
+        let resistance = crate::parser::quantity::is_resistance_suffix(unit);
+        if resistance {
             return Ok(());
         }
         Err(SyntaxError::InvalidExpression {
             reason: format!(
-                "spec Resistance uses canonical Ohm units — write `{unit}` as e.g. `330Ohm` or `4.7kOhm`"
+                "spec Resistance needs an ASCII ohm unit — write `{unit}` as e.g. `330R`, `4k7`, or `4.7kOhm`"
             ),
             span,
         })

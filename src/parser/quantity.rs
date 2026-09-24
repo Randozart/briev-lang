@@ -2,9 +2,9 @@
 //! Physical-quantity suffix parsing (2026-09-24 component-laws plan).
 //!
 //! One parser serves spec values and expression literals so the two surfaces
-//! cannot drift. Compact legacy suffixes remain for existing programs; new
-//! component-law physics uses the canonical full-word forms (`330Ohm`,
-//! `4.7kOhm`, `0.7Volt`), never the resistance symbols `R`/`Ω`.
+//! cannot drift. The physics surface is ASCII-only: compact forms (`330R`,
+//! `20mA`, `3.3V`) and full-word aliases (`330Ohm`, `20mAmp`, `3.3Volt`) are
+//! both valid. Non-ASCII symbols such as `Ω` are rejected.
 
 /// A parsed unit suffix: an explicit dimension, a bare SI prefix whose
 /// dimension comes from the spec key, or an E-series fraction.
@@ -19,13 +19,13 @@ pub(crate) enum UnitSuffix {
 }
 
 /// The base dimension behind a compact base-unit letter (`V` → Volt,
-/// `R`/`Ω` → Ohm). `m` is absent: it is the milli prefix; bare metre is
+/// `R` → Ohm). `m` is absent: it is the milli prefix; bare metre is
 /// handled by the full-word dispatcher.
 fn compact_base_dim(c: char) -> Option<crate::ast::QuantityDim> {
     match c {
         'V' => Some(crate::ast::QuantityDim::Volt),
         'A' => Some(crate::ast::QuantityDim::Amp),
-        'R' | 'Ω' => Some(crate::ast::QuantityDim::Ohm),
+        'R' => Some(crate::ast::QuantityDim::Ohm),
         'F' => Some(crate::ast::QuantityDim::Farad),
         'H' => Some(crate::ast::QuantityDim::Henry),
         'W' => Some(crate::ast::QuantityDim::Watt),
@@ -82,8 +82,8 @@ pub(crate) fn dimension_name(d: crate::ast::QuantityDim) -> &'static str {
 
 /// Parse a unit-suffix identifier. `mA` → Explicit(1e-3, Amp); `n` →
 /// BarePrefix(1e-9); `k7` → Fraction(1e3, 0.7); `Ohm`/`kOhm` →
-/// Explicit(1e0/1e3, Ohm). `R`/`Ω` remain legacy-only, not canonical new
-/// physics. None when the string is not a unit suffix.
+/// Explicit(1e0/1e3, Ohm). `Ω` is intentionally absent: the language keeps
+/// unit spelling ASCII. None when the string is not a unit suffix.
 pub(crate) fn parse_unit_suffix(s: &str) -> Option<UnitSuffix> {
     if s == "Hz" {
         return Some(UnitSuffix::Explicit {
@@ -173,14 +173,26 @@ pub(crate) fn quantity_si(
     }
 }
 
+/// Does this suffix denote ohms in either surface spelling? `R`/`kR` and
+/// full-word `Ohm`/`kOhm` are explicit; `k7` is the E-series fraction whose
+/// dimension comes from the resistance key.
+pub(crate) fn is_resistance_suffix(s: &str) -> bool {
+    match parse_unit_suffix(s) {
+        Some(UnitSuffix::Explicit { dim, .. }) => dim == crate::ast::QuantityDim::Ohm,
+        Some(UnitSuffix::Fraction { .. }) => true,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_unit_suffix, UnitSuffix};
 
     /// Canonical full-word units parse to SI with the correct dimension —
-    /// the component-law surface spells resistance as `Ohm`, never `Ω`.
+    /// compact and full-word forms are equally valid; the rule is ASCII,
+    /// not verbosity.
     #[test]
-    fn canonical_full_word_units_resolve_to_si() {
+    fn ascii_unit_forms_resolve_to_si() {
         let expect = |suffix: &str, scale: f64, dim| {
             match parse_unit_suffix(suffix) {
                 Some(UnitSuffix::Explicit { scale: got, dim: got_dim }) => {
@@ -192,16 +204,22 @@ mod tests {
         };
         expect("Ohm", 1.0, crate::ast::QuantityDim::Ohm);
         expect("kOhm", 1e3, crate::ast::QuantityDim::Ohm);
+        expect("R", 1.0, crate::ast::QuantityDim::Ohm);
+        expect("kR", 1e3, crate::ast::QuantityDim::Ohm);
+        expect("MR", 1e6, crate::ast::QuantityDim::Ohm);
         expect("Volt", 1.0, crate::ast::QuantityDim::Volt);
         expect("mVolt", 1e-3, crate::ast::QuantityDim::Volt);
         expect("mAmp", 1e-3, crate::ast::QuantityDim::Amp);
         expect("nFarad", 1e-9, crate::ast::QuantityDim::Farad);
     }
 
-    /// A non-unit identifier is not silently accepted as physics.
+    /// A non-unit identifier is not silently accepted as physics. Non-ASCII
+    /// symbol spellings are rejected by policy, not merely unparsed here.
     #[test]
     fn non_unit_rejected() {
         assert!(parse_unit_suffix("Banana").is_none());
         assert!(parse_unit_suffix("kBanana").is_none());
+        assert!(parse_unit_suffix("Ω").is_none());
+        assert!(parse_unit_suffix("kΩ").is_none());
     }
 }

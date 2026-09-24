@@ -251,17 +251,28 @@ clearance (warning), and emits a `.kicad_pcb` alongside the schematic
 (physics-derived net labels, footprints from `config/footprints.dbvl`).
 New surface: `Length` dimension + `mm`/`cm` units.
 
+**2026-09-24 (ASCII units and physics layer split, plan
+`2026-09-24-ascii-units-and-law-proof-closure.md`):** unit ergonomics is
+ASCII, not verbosity. Compact `V`, `mA`, `R`, `kR`, and E-series `4k7`
+forms are first-class alongside full-word aliases (`Volt`, `mAmp`,
+`Ohm`, `kOhm`). `Ω` and other non-ASCII/Greek-like symbols are rejected.
+The compiler-native substrate is dimensional algebra — including
+`Ohm == Volt / Amp` — quantity normalization, law IR, guards, KCL, and
+DC solving. Component-specific constitutive equations live in component
+declarations; the compiler has no component catalog.
+
 **2026-09-24 (component laws, Slice 1, plan
 `2026-09-24-electronics-component-laws.md`):** the physics parameter
 foundation. Unit parsing is centralized for spec values and expression
-literals, with canonical full-word quantities (`4.7kOhm`, `20mAmp`).
-`spec Resistance: Ohm;` declares a dimensioned component parameter and
-`spec Resistance: 330Ohm;` states its value; instance literals carry that
-value as structured SI + dimension (`ComponentInstance.specs`), separate
-from opaque `value` annotation. Structured resistance is preferred over
-the legacy numeric-`value` heuristic. The approved destination is
-type-body `when` laws as constitutive equations plus a piecewise-linear DC
-solver; later slices elaborate and solve them.
+literals, with both compact and full-word ASCII quantities (`4.7kR`,
+`4.7kOhm`, `20mA`, `20mAmp`). `spec Resistance: R;` (or `Ohm;`) declares a
+dimensioned component parameter and `spec Resistance: 330R;` states its
+value; instance literals carry that value as structured SI + dimension
+(`ComponentInstance.specs`), separate from opaque `value` annotation.
+Structured resistance is preferred over the legacy numeric-`value`
+heuristic. The approved destination is type-body `when` laws as
+constitutive equations plus a piecewise-linear DC solver; later slices
+elaborate and solve them.
 
 **2026-09-23 (E14b slice 5, plan `2026-09-23-ebv-e14b-value-aware-pullup.md`):**
 value-aware pull-up matching. A MIN obligation is satisfied by any

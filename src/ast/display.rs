@@ -221,13 +221,14 @@ impl fmt::Display for PropertyValue {
 
 /// Render a quantity (SI + dimension) back to bare notation for display
 /// and round-trip: pick a scaling prefix that keeps the magnitude in a
-/// readable range (`100nF`, `2mA`, `3.3V`, `4.7kΩ`). The output is
-/// re-parseable by the quantity grammar.
+/// readable range (`100nF`, `2mA`, `3.3V`, `4.7kR`). The output is
+/// re-parseable by the quantity grammar and stays ASCII (2026-09-24 unit
+/// ergonomics: `Ω` is not accepted).
 fn quantity_str(si: f64, dim: crate::ast::QuantityDim) -> String {
     let base = match dim {
         crate::ast::QuantityDim::Volt => "V",
         crate::ast::QuantityDim::Amp => "A",
-        crate::ast::QuantityDim::Ohm => "Ω",
+        crate::ast::QuantityDim::Ohm => "R",
         crate::ast::QuantityDim::Farad => "F",
         crate::ast::QuantityDim::Henry => "H",
         crate::ast::QuantityDim::Hertz => "Hz",

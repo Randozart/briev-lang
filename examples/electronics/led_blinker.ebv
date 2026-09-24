@@ -14,7 +14,7 @@
 //
 // Compile:  brievc build led_blinker.ebv   → led_blinker.kicad_sch
 //
-// Circuit (JST connector → 330 Ω series resistor → red LED):
+// Circuit (JST connector → 330R series resistor → red LED):
 //   J1.p1 ──── R1.a  R1.b ──── D1.a (anode)
 //   J1.p2 ──── D1.k (cathode)
 

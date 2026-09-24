@@ -300,36 +300,39 @@ in the parser — netlist, contracts, and the emitter see named ordinary
  **Quantities are bare (2026-09-23).** Spec values that are physics carry
  the unit grammar as notation, never a quoted string: `spec Decouple:
  100n;`, `spec MinCurrent: 2mA;` — scaling prefixes `p n u m k M G`
- (case-sensitive), base units `V A R Ω F H Hz W K m`, the E-series
+ (case-sensitive), ASCII base units `V A R F H Hz W K m`, the E-series
  fraction `4k7`, and dimension-checked resolution against the key
  (`spec Decouple: 3.3V` is an error — a Farad key takes a capacitance).
- `Length` (`m`/`mm`/`cm`) is the coordinate dimension. Canonical
- full-word forms are also quantities — `Volt`, `Amp`, `Ohm`, `Farad`,
- `Henry`, `Hertz`, `Watt`, `Kelvin`, `Metre`/`Meter` — combined with the
- same prefixes (`4.7kOhm`, `20mAmp`). New component physics uses the
- full-word form.
+ `Length` (`m`/`mm`/`cm`) is the coordinate dimension. Full-word aliases
+ are also quantities — `Volt`, `Amp`, `Ohm`, `Farad`, `Henry`, `Hertz`,
+ `Watt`, `Kelvin`, `Metre`/`Meter` — combined with the same prefixes
+ (`4.7kOhm`, `20mAmp`). Compact and full-word ASCII forms are equally
+ valid (`330R` and `330Ohm`; `20mA` and `20mAmp`). Non-ASCII symbols such
+ as `Ω` are not part of the language surface.
 
  **Component physics parameters (2026-09-24).** A component type declares
  the datasheet channel separately from its BOM label:
- `spec Resistance: Ohm;` is a dimensioned parameter declaration; a
- type-level `spec Resistance: 4.7kOhm;` is a default value. An instance
+ `spec Resistance: R;` (or `Ohm;`) is a dimensioned parameter declaration;
+ a type-level `spec Resistance: 4.7kR;` is a default value. An instance
  supplies or overrides it with `let r1: Resistor = Resistor { value:
- "4k7"; spec Resistance: 4.7kOhm; };`. The `Resistance` key requires the
- explicit full-word unit — `330R`, `330Ω`, and a bare number are errors.
- Component bodies may declare additional PascalCase law parameters in the
- same way (`spec ForwardVoltage: Volt;`,
- `spec DynamicResistance: Ohm;`); elsewhere unknown specs remain errors.
- `value` is opaque annotation and is never a second physics channel when
- a structured spec parameter is present.
+ "4k7"; spec Resistance: 4.7kR; };`. The `Resistance` key requires an
+ explicit ASCII ohm unit — `Ω` and a bare number are errors. Component
+ bodies may declare additional PascalCase law parameters in the same way
+ (`spec ForwardVoltage: Volt;`, `spec DynamicResistance: R;`); elsewhere
+ unknown specs remain errors. `value` is opaque annotation and is never a
+ second physics channel when a structured spec parameter is present.
 
  **Component laws (2026-09-24).** A pin-bearing component type states its
  behavior as type-body `when` laws over `.voltage`, `.current`, and its
- spec parameters. Pin current is positive into the pin. Linear DC laws
- are solved against contract voltage boundaries with KCL; guarded linear
- branches enumerate deterministically, and zero or multiple operating
- points are hard errors. The stdlib resistor, wire, diode, and LED types
- are ordinary declarations of this mechanism — the compiler knows no
- component catalog names.
+ spec parameters. Pin current is positive into the pin. The compiler owns
+ the fundamental substrate: dimensional algebra (`Ohm == Volt / Amp`),
+ quantity normalization, law elaboration, guard enumeration, KCL, and
+ deterministic DC solving. A component owns its own constitutive
+ equations. Linear DC laws are solved against contract voltage
+ boundaries; guarded linear branches enumerate deterministically, and
+ zero or multiple operating points are hard errors. The stdlib resistor,
+ wire, diode, and LED types are ordinary declarations of this mechanism —
+ the compiler knows no component catalog names.
 
  **The fab section (2026-09-23).** A `.ebv` may attach a physical-layout
  section — `fab { board 40mm x 20mm; place u1 @ (20mm, 10mm) rot 90; }`
@@ -499,10 +502,11 @@ state physics — and the compiler PROVES them: through a two-pin part with
 a numeric value, I = V / R is derived at compile time and the derived
 current is checked against the stated bound.
 
-Physics literals carry unit suffixes: `3.3V` (volts), `20mA` (→ 0.02 A),
-`330R` (ohms), plus `A`, `Ω`, `F`, `H`, `Hz`, `W`, `K`. A suffixed literal
-is the value; the suffix selects the conversion (`mA` divides by 1000).
-Bare numerics stay valid everywhere a suffixed form is.
+Physics literals carry ASCII unit suffixes: `3.3V` (volts), `20mA`
+(→ 0.02 A), `330R` (ohms), plus `A`, `F`, `H`, `Hz`, `W`, `K`. Full-word
+aliases (`3.3Volt`, `20mAmp`, `330Ohm`) are equally valid. A suffixed
+literal is the value; the suffix selects the conversion (`mA` divides by
+1000). Bare numerics stay valid everywhere a suffixed form is.
 
 ```briev
 txn powered
@@ -512,7 +516,7 @@ txn powered
 ```
 
 Here 3.3 V is proven within the LED's 3.6 V tolerance, and the 20 mA bound
-is proven from 3.3 V / 330 Ω = 10 mA — by derivation, not assertion.
+is proven from 3.3 V / 330 R = 10 mA — by derivation, not assertion.
 
 **Power ratings.** `rating 0.25;` declares the watts a part may dissipate
 (`rating any;` declares it unrated on purpose). Every valued two-pin part

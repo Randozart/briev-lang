@@ -1069,3 +1069,18 @@ current. `usb_sensor.ebv` uses structured resistance but deliberately
 keeps its local Resistor law-free until an SPST button can express
 conditional-topology state; therefore the legacy series-value fallback is
 still present, now narrowly as that migration path.
+
+### Doctrine note 2026-09-24: ASCII units + physics layer split
+
+The electronics physics split is two-layer. The compiler owns the eternal
+substrate: dimensions, quantity normalization, dimensional algebra
+(including `Ohm == Volt / Amp`), law elaboration, guards, KCL, and the
+deterministic DC solve. Component declarations own their own constitutive
+equations; stdlib defines `Resistor`, `Wire`, `Diode`, and `Led`, and the
+compiler has no catalog match arms for component names.
+
+Unit spelling is ASCII-first, not verbose-first. `V`, `mA`, `R`, `kR`,
+`4k7`, and full-word aliases such as `mAmp` and `kOhm` are all valid.
+`Ω` and other non-ASCII/Greek-like unit symbols are rejected; the ASCII
+metre prefix `u` replaces `µ`. This supersedes the temporary spelled-
+`Ohm`-only rule from the first component-law slice.

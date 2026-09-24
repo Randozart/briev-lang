@@ -3567,10 +3567,9 @@ impl<'a> Parser<'a> {
                 let (si, dim) = self.parse_spec_quantity(crate::ast::QuantityDim::Farad)?;
                 metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: dim });
             }
-            // 2026-09-24 (component laws): `spec Resistance: Ohm;` declares a
-            // required parameter's dimension; `spec Resistance: 330Ohm;`
-            // states a value/default. Canonical full-word units only — the
-            // resistance symbols are not accepted as new physics.
+            // 2026-09-24 (component laws): `spec Resistance: R;`/`Ohm;`
+            // declares a required parameter's dimension; a quantity such as
+            // `330R`/`4.7kOhm` states a value/default. ASCII unit forms only.
             "resistance" => {
                 return self.parse_resistance_spec(key, metadata);
             }
@@ -3637,14 +3636,14 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             let Some(Token::Identifier(unit)) = self.peek() else {
                 return self.error_at_current(&format!(
-                    "spec {name} needs an explicit full-word unit (e.g. `330Ohm` or `0.7Volt`)"
+                    "spec {name} needs an explicit ASCII unit (e.g. `330R` or `0.7V`)"
                 ));
             };
             let Some(crate::parser::quantity::UnitSuffix::Explicit { scale, dim }) =
                 crate::parser::quantity::parse_unit_suffix(unit)
             else {
                 return self.error_at_current(&format!(
-                    "'{unit}' is not a canonical full-word unit for spec {name}"
+                    "'{unit}' is not an ASCII unit for spec {name}"
                 ));
             };
             self.pos += 1;
@@ -3655,7 +3654,7 @@ impl<'a> Parser<'a> {
         }
         self.pos = start;
         self.error_at_current(&format!(
-            "spec {name} must declare a dimension (`Volt`, `Amp`, `Ohm`) or state a quantity (e.g. `0.7Volt`)"
+            "spec {name} must declare a dimension (`V`, `A`, `R`, `Ohm`, or a full-word alias) or state a quantity (e.g. `0.7V`)"
         ))
     }
 
@@ -3681,41 +3680,45 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// Parse the component-law resistance parameter: `Ohm` declares the
-    /// required dimension; a canonical prefixed quantity states a value.
-    /// Helper keeps `parse_spec_value` flat and the law channel's spelling
-    /// rules in one place (2026-09-24 component laws).
+    /// Parse the component-law resistance parameter: `R` or `Ohm` declares
+    /// the required dimension; an ASCII quantity (`330R`, `4.7kR`, `4k7`,
+    /// `4.7kOhm`) states a value. Helper keeps `parse_spec_value` flat and
+    /// the law channel's spelling rules in one place.
     fn parse_resistance_spec(
         &mut self,
         key: &str,
         metadata: &mut std::collections::HashMap<String, PropertyValue>,
     ) -> Result<(), SyntaxError> {
-        if matches!(self.peek(), Some(Token::Identifier(s)) if s == "Ohm") {
+        let dimension = match self.peek() {
+            Some(Token::Identifier(unit)) if matches!(unit.as_str(), "R" | "Ohm") => {
+                Some(unit.clone())
+            }
+            _ => None,
+        };
+        if let Some(dim) = dimension {
             self.pos += 1;
-            metadata.insert(key.into(), PropertyValue::Identifier("Ohm".into()));
+            metadata.insert(key.into(), PropertyValue::Identifier(dim));
             self.eat(&Token::Semicolon);
             return Ok(());
         }
         let number_pos = self.pos;
         // The cursor is on the number; the unit identifier is adjacent.
-        // Reject legacy symbol spellings before quantity parsing.
+        // Diagnose a non-ASCII/wrong suffix before the generic quantity path.
         if let Some((Token::Identifier(suffix), _)) = self.tokens.get(number_pos + 1) {
-            let canonical = matches!(
-                suffix.as_str(),
-                "Ohm" | "mOhm" | "kOhm" | "MOhm" | "GOhm"
-            );
-            if !canonical {
+            let resistance =
+                crate::parser::quantity::is_resistance_suffix(suffix);
+            if !resistance {
                 return self.error_at_current(&format!(
-                    "spec Resistance uses canonical Ohm units — write `{suffix}` as e.g. `330Ohm` or `4.7kOhm`"
+                    "spec Resistance needs an ASCII ohm unit — write `{suffix}` as e.g. `330R`, `4k7`, or `4.7kOhm`"
                 ));
             }
         }
         let (si, dim) = self.parse_spec_quantity(crate::ast::QuantityDim::Ohm)?;
         if self.pos <= number_pos + 1 {
-            // The number is one token; a canonical unit adds a second. A
+            // The number is one token; an explicit unit adds a second. A
             // bare number is ambiguous component physics.
             return self.error_at_current(
-                "spec Resistance needs an explicit Ohm unit (e.g. `330Ohm` or `4.7kOhm`)",
+                "spec Resistance needs an explicit ASCII ohm unit (e.g. `330R`, `4k7`, or `4.7kOhm`)",
             );
         }
         metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: dim });
@@ -4791,54 +4794,55 @@ mod tests {
 
     #[test]
     fn test_spec_resistance_dimension_and_value() {
-        // 2026-09-24 (component laws): the parameter declaration states the
-        // dimension; a value/default is a canonical full-word quantity.
-        let tl = parse_top(
-            "type R { pin a; pin b; reference \"R\"; spec Resistance: Ohm; };",
-        )
-        .unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
-        assert_eq!(
-            td.body.metadata.get("resistance"),
-            Some(&crate::ast::PropertyValue::Identifier("Ohm".into()))
-        );
+        // 2026-09-24 (ASCII units): compact and full-word forms are equally
+        // valid; the dimension declaration may use `R` or `Ohm`.
+        for dimension in ["R", "Ohm"] {
+            let src = format!(
+                "type R {{ pin a; pin b; reference \"R\"; spec Resistance: {dimension}; }};"
+            );
+            let tl = parse_top(&src).unwrap();
+            let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+            assert_eq!(
+                td.body.metadata.get("resistance"),
+                Some(&crate::ast::PropertyValue::Identifier(dimension.into()))
+            );
+        }
 
-        let tl = parse_top(
-            "type R { pin a; pin b; reference \"R\"; spec Resistance: 4.7kOhm; };",
-        )
-        .unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
-        match td.body.metadata.get("resistance") {
-            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
-                assert_eq!(*dimension, crate::ast::QuantityDim::Ohm);
-                assert!((si - 4700.0).abs() < 1e-9);
+        for (value, expected) in [("330R", 330.0), ("4.7kR", 4700.0), ("4k7", 4700.0), ("4.7kOhm", 4700.0)] {
+            let src = format!(
+                "type R {{ pin a; pin b; reference \"R\"; spec Resistance: {value}; }};"
+            );
+            let tl = parse_top(&src).unwrap();
+            let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+            match td.body.metadata.get("resistance") {
+                Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                    assert_eq!(*dimension, crate::ast::QuantityDim::Ohm);
+                    assert!((si - expected).abs() < 1e-9, "{value}: {si}");
+                }
+                other => panic!("expected a {value} quantity, got {other:?}"),
             }
-            other => panic!("expected a 4.7kOhm quantity, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_spec_resistance_requires_explicit_full_word_ohm() {
-        // Component physics is not dimensionless: the symbol spellings and
-        // bare numbers are rejected so the law channel has one honest form.
+    fn test_spec_resistance_requires_explicit_ascii_unit() {
+        // Component physics is not dimensionless. ASCII compact units are
+        // valid; non-ASCII symbols are not.
         let err = parse_top(
             "type R { pin a; pin b; reference \"R\"; spec Resistance: 330; };",
         )
         .unwrap_err();
         assert!(
-            format!("{err}").contains("explicit Ohm unit"),
+            format!("{err}").contains("explicit ASCII ohm unit"),
             "bare number: {err}"
         );
-        // The legacy resistance symbol is rejected before it can become
-        // physics. (The non-ASCII Ω symbol is rejected even earlier by the
-        // lexer, so it cannot reenter through this grammar either.)
         let err = parse_top(
-            "type R { pin a; pin b; reference \"R\"; spec Resistance: 330R; };",
+            "type R { pin a; pin b; reference \"R\"; spec Resistance: 330Ω; };",
         )
         .unwrap_err();
         assert!(
-            format!("{err}").contains("canonical Ohm units"),
-            "legacy R: {err}"
+            !format!("{err}").contains("internal"),
+            "Ω must be rejected at the quantity surface: {err}"
         );
     }
 
@@ -4868,19 +4872,26 @@ mod tests {
     }
 
     #[test]
-    fn test_component_resistance_spec_rejects_legacy_symbol() {
-        // The BOM label may stay `330R`; the law channel may not.
+    fn test_component_resistance_spec_accepts_compact_ascii() {
+        // The BOM label and the physics channel may both use `R`; only
+        // non-ASCII symbols are excluded.
         let src = r#"
-            type R { pin a; pin b; reference "R"; spec Resistance: Ohm; };
+            type R { pin a; pin b; reference "R"; spec Resistance: R; };
             let r1: R = R { value: "330R"; spec Resistance: 330R; };
         "#;
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
-        let err = p.parse_program().unwrap_err();
-        assert!(
-            format!("{err}").contains("canonical Ohm units"),
-            "legacy instance spec: {err}"
-        );
+        let items = p.parse_program().unwrap();
+        let crate::ast::TopLevel::Statement(stmt) = &items[1] else {
+            panic!("expected instance let")
+        };
+        let crate::ast::Statement::Let { expr, .. } = stmt.as_ref() else {
+            panic!("expected let")
+        };
+        let Some(crate::ast::Expr::StructLiteral { specs, .. }) = expr else {
+            panic!("expected struct literal")
+        };
+        assert!(matches!(specs[0].1, crate::ast::Expr::UnitLiteral { .. }));
     }
 
     #[test]
