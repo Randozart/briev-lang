@@ -6693,3 +6693,102 @@ dispatches `@free`. Emission law added to backend-contracts.md §3; IR test
 **Class:** analysis-vs-emission decision split — program-wide arena-fields
 decision and per-body stateless decision must both be honored; never infer
 one from the other.
+
+## 2026-09-24: pooled-instance name resolution was global-first — local params shadowed by top-level instances (clang %state + wrong call arguments) [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep, hash_ops_idio)
+**Symptom:** `benchmarks/hash_ops_idio.ll:2131: error: use of undefined value
+'%state'` — `%State` GEP inside stateless `define i64 @frac_all_digits(i64,
+i64, i64)`. Deeper: the defn received a heap box of the GLOBAL HashMap `m`
+as its first argument wherever source passed its local param `m`.
+**Root cause:** three name-resolution sites checked
+`unpacked_instance_prefix(name)` (top-level pooled instances) BEFORE local
+bindings: (1) `emit_user_call`'s argument boxing, (2)
+`instance_prefix_for` (method-call receivers), (3) the foreach-iterable
+guard. float_fmt's `frac_all_digits(m: Int, ...)` collides with
+hash_ops_idio's global `let m: HashMap = N` — emission resolved `m` to the
+pooled columns (state loads in a stateless body + box_pooled at the call
+boundary) while the analysis fixpoint (scope-aware) correctly marked the
+defn stateless and passed the local. The stateless-defn ABI (2026-09-23)
+exposed the latent semantic bug as a clang error; pre-merge every defn had
+`%state`, so the state loads were valid IR carrying the WRONG value.
+**Fix:** local-first at all three sites — `instance_prefix_for` resolves a
+local register first and only falls to `unpacked_instance_prefix` when no
+local exists; call-arg boxing and the foreach guard skip the global path
+when `get_local(name)` is present. `get_local` promoted to `pub(crate)`.
+**Tests:** `test_local_param_shadows_pooled_instance_in_call_args`,
+`test_local_param_shadows_pooled_instance_receiver`,
+`test_local_let_shadows_vector_field_in_foreach` (the pre-existing pooled
+boxing test still passes — no-local names keep boxing the global).
+**Class:** resolution order must match scoping rules — locals shadow
+globals at EVERY name-resolution site, not just the generic identifier arm.
+
+## 2026-09-24: explicit [true][true] tautology boilerplate in tests and docs [RESOLVED]
+
+**Date:** 2026-09-24 (user report: "double true contracts")
+**Symptom:** 19 source-form `node ... [true][true]` sites in
+backend/llvm/tests.rs plus fixtures in memcheck/loop_shape/strict/circt,
+and learn-briev/top-level-init examples presenting the form as valid —
+explicit `[true][true]` is `TypeError::TautologicalContract`
+(typechecker rejects it everywhere; nodes/txns also REQUIRE a
+non-trivial contract). The fixtures survived only because parse/analysis
+tests skip the typechecker.
+**Fix:** all boilerplate migrated to the house done-flag pattern
+(`let done: Bool = false; node go [done == false][done == true] { done =
+true; ... }`); sites with an existing `done` field use an honest invariant
+post (`[true][done >= 0]`); the strict.rs asm fixture uses
+`[true][blink_state == 0]` (nop preserves state); learn-briev examples
+presented as GOOD got real contracts (`[true][todos.^Len <= todos.^Len]`,
+invariant-preserving log_state, `[[counter >= 0 && balance >= 0]` sugar);
+top-level-init's "conventional boilerplate" example now mirrors the
+compiler's own synthesized `__booted` form. Negative/teaching sites
+kept (typechecker/parser rejection fixtures, canonicalization
+representation tests, ❌BAD doc illustrations, SPEC/error messages).
+**Class:** test fixtures must be programs the typechecker would accept —
+parse-only survival hides rule violations until the rule matters.
+
+## 2026-09-24: cur_block save/restore made loop-boundary phis cite non-predecessors (hash_ops_idio clang) [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep — surfaced only after the stateless-
+defn `%state` fix cleared the earlier clang error)
+**Symptom:** `hash_ops_idio.ll`: (a) header phi `%cdc115 = phi [ %t112,
+%entry ], [ %cdn116, %.cdl_108 ]` — verifier: actual preds of `.cd_108` are
+`entry` via `.match_end_69` and `.cdl_108` (`PHI node entries do not match
+predecessors` + cascade `Instruction does not dominate all uses`); (b) latch
+phi `%cdl118 = phi [ %cdm495, %.cdb_108 ], [ %cdz497, %.cdg_108 ]` — actual
+preds `.cdb_108` never branches to `.cdl_108` directly; the fire-check `br`
+physically sat in `foreach.end437`.
+**Root cause:** `emit_member_body`'s `cur_block` save/restore (re-added
+2026-09-08 in 0342f8bd after being correctly removed 2026-09-07) restored
+the PRE-call block while the append-only output buffer stayed open on the
+member body's END block (a `match_end`/`foreach.end` left unterminated for
+the caller's continuation). Every loop-boundary phi then cited the restored
+(stale) block as predecessor: countdown `init_pred` (counter.rs:1057 →
+`entry` instead of `.match_end_69`) and latch `body_final`
+(counter.rs:1210 → `.cdb_108` instead of `foreach.end437`). The
+2026-09-08 fix's actual leak targets — `let_binding_allocas` and
+`foreach_break_labels` leaking across member bodies (Tier-1 cursor foreach)
+— were separate restores that remain. The `init_context` /
+`emit_init_member_body` wrapper existed only to skip the harmful restore.
+**Fix:** removed the `cur_block` save/restore from `emit_member_body`
+(block-tracking truth: `cur_block` must always name the live output region);
+removed the now-dead `init_context` field + `emit_init_member_body` wrapper
+(5 call sites inline to `emit_member_body`); kept alloca/break-label/
+let-binding restores. Instrumented diagnosis (BRIVEV_DEBUG_INITPRED) showed
+`post-inline-init cur_block=None` while `.match_end_69` was open — the
+restore clobber with `init_context=false`.
+**Verified:** hash_ops_idio compiles, links, BOUND=10000000 output MATCHES
+C reference at both print boundaries (24999995000000 / 99999990000000);
+arena_churn BOUND=20000000 matches C; series_converge with BOUND set prints
+0.500050008; `cargo test --lib` 2489/0 (twice — pre- and post-removal).
+**Class:** save/restore of block-tracking state across inlined bodies is
+only sound when the inner emission CLOSED its region; Briev emission leaves
+the final region open for the caller (append-only continuation), so the
+pre-call block is never the text-open block after a block-emitting member.
+**Found alongside (not fixed here):** benchmark `.bv` files default
+`get_env_int!("BOUND")` → 0 when unset while their C references default
+50000000 (`env ? atol(env) : 50000000L`) — harness always exports BOUND at
+build (build_and_bench.sh:228) so gates unaffected; interpreter reference
+also yields 0 (eval.rs:1478) so language semantics are consistent; the
+asymmetry is benchmark-source-level (needs `get_env_int_or`-style default
+in stdlib + migration of the 50M-default pairs).

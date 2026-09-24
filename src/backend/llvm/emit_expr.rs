@@ -2645,54 +2645,62 @@ impl LlvmBackend {
     /// (base, pool row) — a static instance name (`b` → ("Box", "0")) or a
     /// spawned handle local (`h` → ("Counter", <row reg>)).
     pub(crate) fn instance_prefix_for(&self, name: &str) -> Option<(String, String)> {
-        if let Some(p) = self.unpacked_instance_prefix(name) {
-            return Some(p);
-        }
-        let reg = self.get_local(name)?;
-        let base = self.fun.let_binding_types.get(name).and_then(|t| match t {
-            Type::Custom(b)
-                if self.ctx.obj_members.contains_key(b)
-                    || self.ctx.obj_port_wiring.contains_key(b) =>
-            {
-                // 2026-08-15 (coll plan): a GROWABLE `coll obj` (`Ptr<T>`
-                // sequence) is a BOXED heap handle — never a pooled instance.
-                // Its members are the scaffolded op surface, resolved through
-                // the boxed self, not unpacked top-level columns. A FIXED
-                // `T[N]` coll may pool (the Stack shape), and the packed
-                // `T[N]` coll struct may pool too. This mirrors the
-                // List-vs-Stack split (mod.rs build_field_index).
-                if matches!(
-                    self.ctx.coll_storage.get(b),
-                    Some(crate::backend::llvm::coll_scaffold::CollStorage::HeapGrowable)
-                ) {
-                    return None;
-                }
-                // 2026-08-16 (Phase 3a): a pool-classifiable base is only a
-                // POOLED instance when it actually unpacked into top-level
-                // `{base}.{member}` columns. A LOCAL `let f: Fixed = [..]`
-                // constructs a BOXED handle (construct_local_fixed_collection
-                // mallocs + ptrtoint); treating it as a pooled row makes the
-                // member body resolve `data` against a nonexistent `f.data`
-                // column and emit an undefined `@data` global. The unpacked
-                // case is already handled above (obj_instance_inits / spawn
-                // rows); this get_local fallback requires evidence of the
-                // columns.
-                // 2026-08-18 (BUGS.md defn-param mutation): only a SPAWN-POOL
-                // base binds its handles as pool ROWS. A defn param or boxed
-                // local of a pooled-typed obj (`defn poke(x: P) { term x.data }`
-                // — the caller boxes the value) must resolve the BOXED self,
-                // never the pooled columns; the caller passes a heap handle,
-                // not a row id. Restrict the fallback to spawn_pools bases.
-                if !self.ctx.spawn_pools.contains_key(b)
-                    || !self.ctx.instance_slots.iter().any(|slot| slot.starts_with(&format!("{}.", b)))
+        // 2026-09-24 (name shadowing): a LOCAL binding (defn/txn param or
+        // let register) shadows a top-level pooled instance of the same name
+        // — resolve the local FIRST; only a name with NO local register falls
+        // through to the global pooled columns. The old global-first order
+        // made `defn f(m: Int)` in a program with `let m: HashMap = N`
+        // resolve `m` to the pooled columns: the call boundary boxed the
+        // global instead of passing the parameter, and the state-column
+        // loads landed inside a stateless body (hash_ops_idio/float_fmt
+        // frac_all_digits — BUGS.md 2026-09-24).
+        if let Some(reg) = self.get_local(name) {
+            let base = self.fun.let_binding_types.get(name).and_then(|t| match t {
+                Type::Custom(b)
+                    if self.ctx.obj_members.contains_key(b)
+                        || self.ctx.obj_port_wiring.contains_key(b) =>
                 {
-                    return None;
+                    // 2026-08-15 (coll plan): a GROWABLE `coll obj` (`Ptr<T>`
+                    // sequence) is a BOXED heap handle — never a pooled instance.
+                    // Its members are the scaffolded op surface, resolved through
+                    // the boxed self, not unpacked top-level columns. A FIXED
+                    // `T[N]` coll may pool (the Stack shape), and the packed
+                    // `T[N]` coll struct may pool too. This mirrors the
+                    // List-vs-Stack split (mod.rs build_field_index).
+                    if matches!(
+                        self.ctx.coll_storage.get(b),
+                        Some(crate::backend::llvm::coll_scaffold::CollStorage::HeapGrowable)
+                    ) {
+                        return None;
+                    }
+                    // 2026-08-16 (Phase 3a): a pool-classifiable base is only a
+                    // POOLED instance when it actually unpacked into top-level
+                    // `{base}.{member}` columns. A LOCAL `let f: Fixed = [..]`
+                    // constructs a BOXED handle (construct_local_fixed_collection
+                    // mallocs + ptrtoint); treating it as a pooled row makes the
+                    // member body resolve `data` against a nonexistent `f.data`
+                    // column and emit an undefined `@data` global. The unpacked
+                    // case resolves AFTER the local check (no-local names fall
+                    // to unpacked_instance_prefix below); this local fallback
+                    // requires evidence of the columns.
+                    // 2026-08-18 (BUGS.md defn-param mutation): only a SPAWN-POOL
+                    // base binds its handles as pool ROWS. A defn param or boxed
+                    // local of a pooled-typed obj (`defn poke(x: P) { term x.data }`
+                    // — the caller boxes the value) must resolve the BOXED self,
+                    // never the pooled columns; the caller passes a heap handle,
+                    // not a row id. Restrict the fallback to spawn_pools bases.
+                    if !self.ctx.spawn_pools.contains_key(b)
+                        || !self.ctx.instance_slots.iter().any(|slot| slot.starts_with(&format!("{}.", b)))
+                    {
+                        return None;
+                    }
+                    Some(b.clone())
                 }
-                Some(b.clone())
-            }
-            _ => None,
-        })?;
-        Some((base, reg))
+                _ => None,
+            })?;
+            return Some((base, reg));
+        }
+        self.unpacked_instance_prefix(name)
     }
 
     pub(crate) fn emit_method_call(
@@ -3053,13 +3061,20 @@ impl LlvmBackend {
         // the same node body — the reactor emits a body more than once, and a
         // stale self-slot temp from the first pass would make the second
         // pass's reads resolve to the wrong register.
-        // 2026-09-08: cur_block is saved/restored to prevent inner foreach
-        // blocks from leaking into the outer scope. The init path
-        // (emit_init_op_construction) sets init_context=true to skip the
-        // restore — the init's match blocks must update cur_block for the
-        // countdown header's init_pred capture. Cross-function leaks are
-        // handled by cur_block = None at every function start.
-        let saved_cur_block = self.fun.cur_block.clone();
+        // 2026-09-24 (block-tracking truth): cur_block save/restore REMOVED
+        // (third time the pendulum swung — see counter.rs init_pred latch
+        // history). cur_block must always name the region the append-only
+        // output buffer is actually open on; restoring the pre-call block
+        // made every loop-boundary phi cite a block that never branched
+        // (hash_ops_idio: latch phi [%cdm, %.cdb] while the fire-check `br`
+        // physically sat in foreach.end437 → clang "PHI entries do not match
+        // predecessors"). The 2026-09-08 cursor-foreach register leak it was
+        // re-added for is fixed by the let_binding_allocas +
+        // foreach_break_labels restores below (0342f8bd Phase 1) — those
+        // stay. Cross-function leaks: cur_block = None at every function
+        // start. Undo: reintroduce saved_cur_block + restore gate ONLY if a
+        // new intra-function citation bug is traced to an inner end block —
+        // never re-add without a failing IR test naming the bad pred.
         // 2026-09-08: save alloca tracking + break labels to prevent inner
         // foreach in cursor ops from leaking stale entries into outer scope.
         let saved_allocas = self.fun.let_binding_allocas.clone();
@@ -3178,15 +3193,11 @@ impl LlvmBackend {
         self.fun.let_original_types = saved_orig;
         self.fun.last_val_temps = saved_lvt;
         self.fun.last_val_types = saved_lvt_types;
-        // 2026-09-08: restore cur_block unless we're in an init context.
-        // The init path (emit_init_op_construction) needs the match's end
-        // block to persist as cur_block for the countdown header's
-        // init_pred capture. The general case (cursor ops, mid-function
-        // member calls) needs the pre-call block restored to prevent inner
-        // foreach blocks from leaking into the outer scope.
-        if !self.fun.init_context {
-            self.fun.cur_block = saved_cur_block;
-        }
+        // 2026-09-24: cur_block intentionally NOT restored — see the removal
+        // rationale above (block-tracking truth). The member body's end block
+        // IS the live region; subsequent statements append there and every
+        // phi pred citation (latch body_final, init_pred, match arm preds)
+        // stays valid.
         self.fun.let_binding_allocas = saved_allocas;
         self.fun.foreach_break_labels = saved_break_labels;
         // 2026-08-13 (member term inside a callable txn): the member body's
@@ -4775,8 +4786,15 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     // and the identifier arm would emit an undefined `@name`
                     // global. BOX it (malloc + copy the columns) so the callee
                     // receives a real handle and its member mutations persist.
+                    // 2026-09-24 (name shadowing): only a name with NO local
+                    // register takes this path — a defn param/let of the same
+                    // name shadows the top-level instance (box_pooled in a
+                    // stateless body emitted %state GEPs; and the callee got
+                    // the global instead of the argument — BUGS.md 2026-09-24).
                     if let crate::ast::Expr::Identifier(arg_name) = a {
-                        if self.unpacked_instance_prefix(arg_name).is_some() {
+                        if self.get_local(arg_name).is_none()
+                            && self.unpacked_instance_prefix(arg_name).is_some()
+                        {
                             if let Some(reg) = self.box_pooled_instance_value(out, indent, arg_name) {
                                 return reg;
                             }
@@ -6141,7 +6159,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         None
     }
 
-    fn get_local(&self, name: &str) -> Option<String> {
+    pub(crate) fn get_local(&self, name: &str) -> Option<String> {
         self.fun.let_bindings.get(name).cloned()
     }
 

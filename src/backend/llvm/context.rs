@@ -1039,10 +1039,7 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     // becomes the live block — the latch edge (br .cdl_) and the latch phis'
     // guard predecessor must use it, not `.cdg_`.
     pub cur_block: Option<String>,
-    /// 2026-09-08: when true, emit_member_body skips cur_block save/restore.
-    /// Set by emit_init_op_construction so the init's match blocks update
-    /// cur_block for the countdown header's init_pred capture.
-    pub init_context: bool,
+
     /// 2026-08-01 (E): inside a `vol let`'s RHS — state-field / Ptr loads
     /// emit `load volatile` so an MMIO address read is never cached or
     /// eliminated. Reset after the let.
@@ -1199,7 +1196,6 @@ impl FunctionContext {
             done_needs_fields: HashSet::new(),
             last_val_temps: HashMap::new(),
             cur_block: None,
-            init_context: false,
             volatile_read: false,
             volatile_locals: std::collections::HashSet::new(),
             member_result: None,

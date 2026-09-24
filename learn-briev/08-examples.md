@@ -194,7 +194,7 @@ txn remove_todo(id: Int) [id >= 0 && id < todos.^Len][todos.^Len == todos.^Len -
     term;
 };
 
-txn clear_completed [true][true] {
+txn clear_completed [true][todos.^Len <= todos.^Len] {
     let filtered: List<Todo> = [];
     let i: Int = 0;
     [i < todos.^Len] {

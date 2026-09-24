@@ -195,7 +195,8 @@ mod tests {
         let items = parse_program(
             "init PoolCap: Int = 64;\n\
              let pool: Blob = Malloc#(PoolCap);\n\
-             node go [true][true] { term; };\n",
+             let done: Bool = false;\n\
+             node go [done == false][done == true] { done = true; term; };\n",
         );
         let report = run_memcheck(&items);
         assert!(
@@ -212,7 +213,8 @@ mod tests {
     fn non_init_heap_field_is_not_sealed() {
         let items = parse_program(
             "let pool: Blob = Malloc#(100);\n\
-             node go [true][true] { term; };\n",
+             let done: Bool = false;\n\
+             node go [done == false][done == true] { done = true; term; };\n",
         );
         let report = run_memcheck(&items);
         assert!(

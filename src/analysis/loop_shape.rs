@@ -589,7 +589,9 @@ mod tests {
         // A reactive txn without a bounded counter blocks natural exit.
         let (graph, items) = graph_and_items(
             "let count: Int = 0;\n\
-             node ping [true][true] {\n\
+             let done: Bool = false;\n\
+             node ping [done == false][done == true] {\n\
+               done = true;\n\
                count = count + 1;\n\
                term;\n\
              };\n",
