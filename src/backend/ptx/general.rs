@@ -27,7 +27,7 @@
 //! `kernel_stmts` — the offloadable, pure, affine body — to a flat 1D PTX
 //! kernel:
 //!
-//! ```
+//! ```text
 //! gid = ctaid.x * BLOCK + tid.x;   // the index_var binds to gid
 //! if (gid >= N) ret;
 //! <body with index_var := gid>

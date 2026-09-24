@@ -1157,8 +1157,9 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // runtime cancellation. Ordinary frees keep the Phase 5 path.
             if backend.fun.task_handle_names.contains(name) {
                 if let Some(h) = backend.fun.let_bindings.get(name).cloned() {
+                    let st = if backend.ctx.defn_takes_state("briev_task_cancel_impl") { "ptr %state, " } else { "" };
                     writeln!(out,
-                        "{indent}call i64 @briev_task_cancel_impl(ptr %state, i64 {h})").ok();
+                        "{indent}call i64 @briev_task_cancel_impl({st}i64 {h})").ok();
                     let _ = backend.fun.gen_reg();
                     return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
                 }
@@ -1199,7 +1200,8 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         let boxed = backend.adapt_to_i64(out, indent, &val);
                         let events_i = backend.fun.gen_reg();
                         writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
-                        writeln!(out, "{indent}call i64 @briev_event_fire_impl(ptr %state, i64 {events_i}, i64 {id_reg}, i64 {boxed})").ok();
+                        let st = if backend.ctx.defn_takes_state("briev_event_fire_impl") { "ptr %state, " } else { "" };
+                        writeln!(out, "{indent}call i64 @briev_event_fire_impl({st}i64 {events_i}, i64 {id_reg}, i64 {boxed})").ok();
                         return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
                     }
                 }
@@ -1231,7 +1233,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             let sym = backend.ctx.frgn_map.get("frgn__eprint_str")
                                 .map(|sig| sig.name.clone())
                                 .unwrap_or_else(|| "__eprint_str".to_string());
-                            let st = if backend.ctx.defn_params.contains_key(&sym) { "ptr %state, " } else { "" };
+                            let st = if backend.ctx.defn_takes_state(&sym) { "ptr %state, " } else { "" };
                             writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, reg, sym, st, v.name).ok();
                         }
                         return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
@@ -1914,8 +1916,12 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     let slot_i64 = backend.fun.gen_reg();
                     if backend.ctx.defn_params.contains_key("briev_str_next_char") {
                         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, slot_i64, slot).ok();
-                        writeln!(out, "{}{} = call i64 @briev_str_next_char(ptr %state, ptr {}, i64 {})",
-                            indent, cp, ptr, slot_i64).ok();
+                        // 2026-09-23 (stateless-defn mechanism): briev_str_next_char
+                        // is stateless (Load#/byte_raw) — pass %state only when the
+                        // defn takes it.
+                        let st = if backend.ctx.defn_takes_state("briev_str_next_char") { "ptr %state, " } else { "" };
+                        writeln!(out, "{}{} = call i64 @briev_str_next_char({}ptr {}, i64 {})",
+                            indent, cp, st, ptr, slot_i64).ok();
                     } else {
                         writeln!(out, "{}{} = call i64 @briev_str_next_char(ptr {}, ptr {})",
                             indent, cp, ptr, slot).ok();

@@ -77,8 +77,19 @@ task/event machine (~170 lines, frgn-called; flatten the task table to
 Int arrays + `CallPtr#` segment dispatch), process/spawn + `ShellCmd`
 (popen → fork/pipe/execve), `__briev_setenv` (libc env-block mutation —
 environ ownership), `briev_symbol_available` (dlsym), Tamer HCALL, and
-the GLUE C-ABI doors (`briev_str_to_c`, `briev_cstr_to_briev`,
-`briev_bits_to_str` — the Data→String door).
+`briev_bits_to_str` (the Data→String door).
+
+**FIXED (2026-09-23, frgn-elimination round 2):** the GLUE C-ABI doors
+`briev_str_to_c` / `briev_cstr_to_briev` / `briev_cstring_concat` became
+pure-Briev defns in `lib/glue/c.bv` (str_to_c is a zero-copy view; the
+other two build `[len][bytes][NUL]` via Alloc#/Copy#) — their C twins are
+deleted from briev_rt.c. `briev_bits_to_str` stays C-backed (a Briev defn
+would recurse through the `as Data as String` door it lowers to). The env
+adapter (`__getenv_int`/`__getenv_briev`) was replaced by the `Environ#()`
+intrinsic (reads `@__briev_environ`) + the pure-Briev environ walkers;
+the ghost `frgn__getenv_*` declarations and their backend adapter are gone.
+The `__read_file__`/`__write_file__` C functions stay deleted — file I/O
+is `SysCall#`-expressible (node_bridge does it directly).
 
 **FIXED (2026-09-10): async convergence never exits.** The diagnosis
 moved twice: `program_convergence` was fine — the loop SHAPE was wrong.

@@ -2436,9 +2436,10 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // gate: "emitted code calls unreached defns"). Print# roots the
         // whole stdout family via intrinsic_helpers, so the tail fires
         // exactly when output actually happened.
-        self.has_stdout_flush = items.iter().any(|i| {
-            matches!(i, TopLevel::Definition(d) if d.name == "__stdout_flush")
-        }) && self.ctx.live_defns.contains("__stdout_flush");
+        // NOTE: the assignment lives AFTER live_defns is populated (below
+        // the analysis block) — reading it up here always saw the empty
+        // default and suppressed the tail flush (async-events printed into a
+        // never-flushed buffer).
         // 2026-07-31: Phase 3 (§8.1) — warn once when the target triple's prefix
         // is unknown to config/targets.dbvl, so the x86_64 tuning fallback is
         // never applied silently to a foreign target.
@@ -2485,9 +2486,18 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // compile error instead of a silent linker failure. Library mode
         // overrides: the shim exports plain txns/defns as ABI symbols, so
         // every callable is live there.
-        self.ctx.live_defns = analysis.defn_liveness.live.clone();
-        self.ctx.emit_all_defns =
-            analysis.defn_liveness.keep_all || self.ctx.library_mode || self.ctx.force_emit_all;
+self.ctx.live_defns = analysis.defn_liveness.live.clone();
+         self.ctx.emit_all_defns =
+             analysis.defn_liveness.keep_all || self.ctx.library_mode || self.ctx.force_emit_all;
+        // 2026-09-23 (async-events empty-output fix): the epilogue-flush gate
+        // must read the NOW-populated live set. Previously computed at the
+        // top of generate() it always saw the default-empty live_defns and
+        // suppressed the main-tail __stdout_flush — a program printing via
+        // the buffered lane (buffered stdout) wrote into a buffer that was
+        // never flushed (acc computed correctly, no output).
+        self.has_stdout_flush = items.iter().any(|i| {
+            matches!(i, TopLevel::Definition(d) if d.name == "__stdout_flush")
+        }) && self.ctx.live_defns.contains("__stdout_flush");
         // 2026-08-31 (plan abv-gpu-by-default): pre-register the accel kernel
         // index BEFORE host emission. The dispatch wrapper is decided at
         // txn-emission time via accel_kernel_idx — with kernel collection at
@@ -2557,6 +2567,12 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // otherwise the Rust reference runs.
         self.ctx.export_needs_state =
             crate::glue::briev_pass::compute_export_needs_state(items);
+        // 2026-09-23 (stateless-defn mechanism): the per-defn needs-state map
+        // (ALL defns, not just exports) drives regular-defn emission — pure
+        // helpers emit without `%state`, keeping GLUE exports on a clean C
+        // ABI. Computed here once; the backend only consumes the decision.
+        self.ctx.defn_needs_state =
+            crate::analysis::export_abi::compute_defn_needs_state(items);
         // 2026-08-01 (Phase 5): a `keep x;` on a field the scheduler would not
         // auto-free anyway is redundant — surface it as a warning.
         for k in &analysis.global_lifetime.redundant_keeps {
@@ -3442,33 +3458,13 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             if trigger_linked_symbols.contains(name.as_str()) { continue; }
             // Dedup: skip if we already emitted a define for this foreign_name
             if !declared.insert(&sig.name) { continue; }
-            // 2026-09-10 (Family F): the captured-environ adapters take over
-            // the two env symbols — a C-ABI DEFINE (loading the environ the
-            // owned _start captured) replaces the declare. The impl bodies
-            // live in cast_lanes.bv; the strategy (KEY= walk, digit parse)
-            // is Briev, the global is compiler-owned.
-            if sig.name == "__getenv_int" || sig.name == "__getenv_briev" {
-                let impl_name = if sig.name == "__getenv_int" {
-                    "briev_getenv_int_impl"
-                } else {
-                    "briev_getenv_briev_impl"
-                };
-                // 2026-09-13 (defn-liveness): the adapter is runtime support
-                // for GetEnv#/GetEnvInt# — emit it only when the pure-Briev
-                // impl is live. Otherwise fall through to the plain declare
-                // (unused declares are dropped by LLVM; no C symbol needed).
-                if self.ctx.defn_params.contains_key(impl_name)
-                    && (self.ctx.emit_all_defns || self.ctx.live_defns.contains(impl_name))
-                {
-                    let ret = if sig.name == "__getenv_int" { "i64" } else { "ptr" };
-                    writeln!(out, "define {} @{}(ptr %key) local_unnamed_addr #8 {{", ret, sig.name).ok();
-                    writeln!(out, "  %env = load ptr, ptr @__briev_environ").ok();
-                    writeln!(out, "  %r = call {} @{}(ptr null, ptr %key, ptr %env)", ret, impl_name).ok();
-                    writeln!(out, "  ret {} %r", ret).ok();
-                    writeln!(out, "}}").ok();
-                    continue;
-                }
-            }
+            // 2026-09-23 (frgn-elimination round 2): the captured-environ
+            // adapter block was DELETED — env.bv now calls the pure-Briev
+            // briev_getenv_{briev,int}_impl walkers directly with the
+            // `Environ#()` pointer (no frgn, no adapter). The frgns it
+            // served (frgn__getenv_* → __getenv_int/__getenv_briev) were
+            // removed with lib/std/ffi/env.bv, so no frgn_map entry reaches
+            // this loop with those symbols anymore.
             let ret_ty: String = match sig.result_type {
                 crate::ast::ResultType::VoidType | crate::ast::ResultType::TrueAssertion => "void".into(),
                 crate::ast::ResultType::Projection(ref ts) => {
@@ -3665,20 +3661,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // length — not a null-terminated C string). Sub-protocols override via
         // CastFrom(Bit).
         writeln!(out, "declare ptr @briev_bits_to_str(ptr) #1").ok();
-        // 2026-08-28 (Bug #5, frgn String-return): a `frgn f(...) -> String`
-        // boundary contract is "returns a NUL-terminated C string" — the
-        // compiler converts it to the Briev [len][bytes][\0] form at the
-        // call site via briev_cstr_to_briev. Skipped when a frgn import
-        // already declares the symbol (duplicate declare = redefinition).
-        if !self.ctx.frgn_map.contains_key("briev_cstr_to_briev") {
-            writeln!(out, "declare ptr @briev_cstr_to_briev(ptr) #1").ok();
-        }
-        // 2026-08-28 (Bug #5, frgn String ABI): block → C data pointer for
-        // plain-C frgn params (zero-copy +8; the NUL invariant is guaranteed
-        // by every Briev String allocation).
-        if !self.ctx.frgn_map.contains_key("briev_str_to_c") {
-            writeln!(out, "declare ptr @briev_str_to_c(ptr) nounwind").ok();
-        }
+        // 2026-09-23 (frgn-elimination round 2): the briev_cstr_to_briev /
+        // briev_str_to_c declares were DELETED with the C functions. The cstr
+        // doors are now PURE-BRIEV defns named cstr_to_briev / str_to_c
+        // (glue/c.bv) — the casting graph calls those names directly. The C
+        // symbols no longer exist, so no declare may reference them.
         // 2026-08-01 (B3): UTF8 character count for the String `Size` prop
         // default (the O(1) byte-length header read is the `Bytes` prop).
         if !defined.contains("briev_char_len") {
@@ -3960,7 +3947,15 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(&d.name) {
                         continue;
                     }
-                    self.emit_definition(&mut out, d, true);
+                    // 2026-09-23 (stateless-defn mechanism): a regular defn
+                    // carries `%state` ONLY when it transitively needs it.
+                    // Pure helpers (cstr doors over Load#/Alloc#, arithmetic
+                    // lanes) emit WITHOUT the state param, keeping GLUE
+                    // exports on a clean C ABI. Previously ALL regular defns
+                    // were emitted with state (the blanket rule), which forced
+                    // every export calling one to carry %state too.
+                    let needs_state = self.ctx.defn_needs_state.get(&d.name).copied().unwrap_or(true);
+                    self.emit_definition(&mut out, d, needs_state);
                     writeln!(out).ok();
                 }
                 TopLevel::Export(e) => {
@@ -4871,6 +4866,15 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         writeln!(out, "attributes #13 = {{").ok();
         writeln!(out, "    mustprogress nofree nosync nounwind willreturn memory(readwrite)").ok();
         writeln!(out, "}}").ok();
+        // 2026-09-23 (term_guard_value -O3 collapse): #14 = noreturn for
+        // __exit — its SysCall#(231 exit_group) never returns, but #13's
+        // willreturn made LLVM assume it could, so the `unreachable` after
+        // the EndProgram call site became UB and -O3 LTO collapsed the whole
+        // main (empty output, exit 232). noreturn tells LLVM the call never
+        // returns; the reachable-unreachable terminator is then consistent.
+        writeln!(out, "attributes #14 = {{").ok();
+        writeln!(out, "    mustprogress nofree nosync nounwind noreturn memory(readwrite)").ok();
+        writeln!(out, "}}").ok();
         // Range metadata
         if !range_meta.is_empty() {
             writeln!(out).ok();
@@ -5309,11 +5313,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
     fn kept_runtime_symbol(line: &str) -> bool {
         const KEPT: &[&str] = &[
             // briev_rt.c kept families
-            "briev_str_to_c", "briev_cstr_to_briev", "briev_free_briev_str",
+            "briev_free_briev_str",
             "briev_bits_to_str", "briev_str_band", "briev_str_bor",
             "briev_str_bxor", "briev_str_bnot", "briev_symbol_available",
             "briev_syscall", "briev_sysconf", "ShellCmd", "__briev_setenv",
-            "__print_float64", "briev_cstring_concat",
+            "__print_float64",
             "briev_host_print_int", "briev_host_fail", "briev_host_table_set",
             "briev_host_arity_of", "briev_task_spawn", "briev_task_cancel",
             "briev_await", "briev_event_alloc", "briev_event_read",

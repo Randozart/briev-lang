@@ -2,21 +2,22 @@
 // 2026-08-03 (plan 2026-08-03-glue-folders-node-bridge): Python and Node have
 // no mature native binding between them. Briev's composite is their only
 // common interface: both call save/read/bump (live, in-process) and exchange
-// the composite String across process boundaries via the runtime's file I/O
+// the composite String across process boundaries via file I/O
 // (persist/load) — the only transport both languages share is Briev itself.
 //
 // The CStr <-> String adaptation uses EXPLICIT protocol casts
 // (cstr_to_briev / str_to_c from lib/glue/c.bv) — the meld implicit admission
 // was removed (SPEC 19.6): foreign shapes adapt through explicit cast edges.
+//
+// 2026-09-23 (frgn-elimination round 2): the file I/O frgns
+// (briev_read_file_raw/briev_write_file → deleted C __read_file__/
+// __write_file__) are GONE. persist/load use SysCall# DIRECTLY (SYS_open/
+// write/read/close/lseek on Linux x86_64) — no C runtime, no posix/io.bv
+// import (its transitive `import "syscall.bv"` does not resolve from an
+// example's root). The runtime file I/O was always SysCall#-expressible
+// (56ef1893); never re-restore the C functions.
 
 import "glue/c.bv";
-
-// Runtime file I/O — the cross-process transport. `__read_file__` returns a
-// bare nul-terminated buffer; `load` wraps it with cstr_to_briev (correctness
-// first — never the fragile str_to_c heuristic). Note the frgn convention:
-// `frgn <briev_name>(...) : <C_symbol>` — the first is the Briev name, `:` binds the C/runtime symbol.
-frgn briev_read_file_raw(path: String) -> Int  : __read_file__ from "lib/runtime/briev_rt.c";
-frgn briev_write_file(path: String, data: String) -> Int  : __write_file__ from "lib/runtime/briev_rt.c";
 
 let saved: String = "";
 let count: Int = 0;
@@ -35,14 +36,33 @@ export defn bump(delta: Int) -> Int {
     term count;
 };
 
+// persist — write `saved` to the file at `path` (truncate+create). `path`
+// is a CStr — its ABI value IS the NUL-terminated path pointer, so open()
+// takes it directly. `saved` is a [len][bytes][NUL] Briev String: the data
+// pointer (str_to_c) + byte count (.^Length) are the write payload.
 export defn persist(path: CStr) -> CStr {
-    let w: Int = briev_write_file(cstr_to_briev(path as Int), saved);
+    // Literal syscall numbers: SysCall#'s first arg is resolved either as a
+    // literal or an ABSTRACT op name (Read/Write/Open/...) — a named `const`
+    // like SYS_OPEN is NOT resolved (falls to 0, an open-elsewhere syscall).
+    let fd: Int = SysCall#(2, path as Int, 577, 420, 0, 0, 0);
+    let data: Int = str_to_c(saved);
+    let n: Int = SysCall#(1, fd, data, saved .^Length, 0, 0, 0);
+    SysCall#(3, fd, 0, 0, 0, 0, 0);
     term str_to_c(saved) as CStr;
 };
 
+// load — read the file at `path` into `saved`. open O_RDONLY, lseek to end
+// for the size, seek back, Alloc# a [len][bytes][NUL] buffer, read the
+// payload, wrap as a String.
 export defn load(path: CStr) -> CStr {
-    let raw: Int = briev_read_file_raw(cstr_to_briev(path as Int));
-    let s: String = cstr_to_briev(raw);
-    saved = s;
+    let fd: Int = SysCall#(2, path as Int, 0, 0, 0, 0, 0);
+    let size: Int = SysCall#(8, fd, 0, 2, 0, 0, 0);
+    SysCall#(8, fd, 0, 0, 0, 0, 0);
+    let buf: Int = Alloc#(8 + size + 1) as Int;
+    Store#(buf, size, 8);
+    let n: Int = SysCall#(0, fd, buf + 8, size, 0, 0, 0);
+    Store#(buf + 8 + size, 0, 1);
+    SysCall#(3, fd, 0, 0, 0, 0, 0);
+    saved = (buf as Data) as String;
     term str_to_c(saved) as CStr;
 };

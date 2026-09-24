@@ -205,11 +205,25 @@ impl<'a> Builder<'a> {
             }
             TopLevel::Export(e) => {
                 // ABI surface: the exported defn/txn is always emitted.
+                // 2026-09-23 (soundness-net catch, pp_roundtrip/cancel): the
+                // export BODY must join the worklist too — its callees are
+                // emitted code and must be live. Rooting only the name left
+                // the body unwalked: exports calling imported defns (e.g.
+                // pp_type_bits) or txns (e.g. sum_loop) tripped the net with
+                // "unreached defn". Index the inner defn/txn like any other.
                 if let TopLevel::Definition(d) = e.inner.as_ref() {
+                    self.defns.entry(d.name.clone()).or_insert(&d.body);
                     self.roots.insert(d.name.clone());
                 }
                 if let TopLevel::Transaction(t) = e.inner.as_ref() {
+                    self.txns.entry(t.name.clone()).or_insert(&t.body);
                     self.roots.insert(t.name.clone());
+                    if t.is_reactive {
+                        self.roots.insert(t.name.clone());
+                    }
+                    if t.is_async {
+                        self.roots.insert("__wait_for_trigger__".into());
+                    }
                 }
             }
             TopLevel::IsrHandler(isr) => {
@@ -309,6 +323,28 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// 2026-09-23 (async Phase D soundness-net catch): a `spawn`/`await` in
+    /// live code lowers to briev_task_spawn_impl / briev_await_impl, and the
+    /// spawned tasks' port fire/read/ready lower to the event family
+    /// (briev_event_*_impl, __briev_event_strict_trap). Root the whole family
+    /// — type-agnostic over-approx; `mark` is a no-op for helpers absent from
+    /// the unit. The event helpers' own callees (write_all/__print etc.) join
+    /// the closure when their bodies are walked from the worklist.
+    fn root_task_event_family(&self, queue: &mut Vec<String>) {
+        for h in [
+            "briev_task_spawn_impl",
+            "briev_task_cancel_impl",
+            "briev_await_impl",
+            "briev_event_alloc_impl",
+            "briev_event_ready_impl",
+            "briev_event_read_impl",
+            "briev_event_fire_impl",
+            "__briev_event_strict_trap",
+        ] {
+            self.mark(h, queue);
+        }
+    }
+
     fn walk_stmts(&mut self, stmts: &'a [Statement], queue: &mut Vec<String>) {
         for s in stmts {
             self.walk_stmt(s, queue);
@@ -335,6 +371,12 @@ impl<'a> Builder<'a> {
                     }
                     self.walk_expr(t, queue);
                 }
+                // 2026-09-23 (async Phase D soundness-net catch): `w <- v;`
+                // on an Event<_> wire lowers to briev_event_fire_impl. The
+                // pass is type-agnostic — root the task/event family whenever
+                // an arrow is assigned (mark is a no-op when the helpers are
+                // absent; a spawn/await program roots them anyway).
+                self.root_task_event_family(queue);
                 self.walk_expr(value, queue);
             }
             Statement::EndProgram(Some(e)) => {
@@ -463,6 +505,12 @@ impl<'a> Builder<'a> {
                 // constructs the obj base — either way its members join.
                 self.mark(type_name, queue);
                 self.on_construction(type_name, queue);
+                // 2026-09-23 (soundness-net catch, async Phase D): `spawn`
+                // lowers to briev_task_spawn_impl, and the spawned tasks'
+                // await/fire/read lower to the event family. Root the whole
+                // task/event helper family — type-agnostic over-approx (mark
+                // is a no-op for helpers absent from the unit).
+                self.root_task_event_family(queue);
                 for a in args {
                     self.walk_expr(a, queue);
                 }
@@ -480,6 +528,12 @@ impl<'a> Builder<'a> {
                 // Coarse-sound: root on every binary op (only fires when
                 // the defn exists; hello-style programs have no `==`).
                 self.mark("briev_str_eq", queue);
+                // 2026-09-23 (soundness-net catch, pp_roundtrip): `+` on a
+                // String lowers to inline concat, which frees its temporaries
+                // via `__briev_free` at the end of the enclosing statement.
+                // Type-agnostic — any Add may be a String concat. Same
+                // coarse-sound over-approx as briev_str_eq above.
+                self.mark("__briev_free", queue);
                 self.walk_expr(l, queue);
                 self.walk_expr(r, queue);
             }
@@ -578,8 +632,15 @@ impl<'a> Builder<'a> {
             Expr::Deref(inner)
             | Expr::AddrOf(inner)
             | Expr::Consume(inner)
-            | Expr::Await(inner)
             | Expr::Named { inner, .. } => self.walk_expr(inner, queue),
+            Expr::Await(inner) => {
+                // 2026-09-23 (soundness-net catch, async Phase C/D): `await`
+                // lowers to briev_await_impl; root the task/event family the
+                // same way Spawn does (the awaited task's fire/read helpers
+                // are emitted from the same lowering surface).
+                self.root_task_event_family(queue);
+                self.walk_expr(inner, queue);
+            }
             Expr::PluginIntercept { args, .. } => {
                 for a in args {
                     self.walk_expr(a, queue);
@@ -626,6 +687,17 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
             "__print_char",
             "__stdout_byte",
             "__stdout_flush",
+            // 2026-09-23 (soundness-net catch, term fixtures/async): the
+            // print/string lowering may emit these even in a trivial
+            // `Print#(r)` program — the cast lanes route String↔Int through
+            // str_to_int/int_to_str, the scheduler auto-free lowers to
+            // __briev_free, and Slice# on a String routes through
+            // briev_str_substr. Root them with the family so a minimal print
+            // program does not trip the net.
+            "str_to_int",
+            "int_to_str",
+            "__briev_free",
+            "briev_str_substr",
         ],
         // Slice# on `#String` values routes through the substring helper.
         "Slice#" => &["briev_str_substr"],
@@ -639,6 +711,13 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
         "GetCwd#" => &["cstr_len", "__briev_getcwd"],
         "ChDir#" => &["__briev_chdir"],
         "GetEnv#" | "GetEnvInt#" => &["__briev_getcwd"],
+        // 2026-09-23 (frgn-elimination round 2): get_env!/get_env_int!
+        // expand to stdlib defns (env.bv) whose bodies call the pure-Briev
+        // environ walkers briev_getenv_{briev,int}_impl (cast_lanes.bv),
+        // threading the compiler-owned @__briev_environ via `Environ#()`.
+        // The deleted C __getenv_int must NOT come back. Root the impls so
+        // a runtime get_env!() keeps them emitted.
+        "Environ#" => &["briev_getenv_briev_impl", "briev_getenv_int_impl"],
         // Lifetime + time (the backend's free/now emissions prefer the
         // pure-Briev defns when present).
         "Free#" => &["__briev_free"],

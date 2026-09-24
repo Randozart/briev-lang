@@ -2198,6 +2198,30 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>
     if freestanding {
         apply_freestanding(&mut cmd, &triple, &ll_text, bad_objects, bootstrap_entry)?;
     } else {
+        // 2026-09-23 (frgn-elimination round 2): briev_rt.c is pulled by
+        // frgn `from` declarations — the env frgns were its last non-tamer
+        // referencers. The C-backed Data→String door (briev_bits_to_str) and
+        // the bitop lanes (briev_str_band/bor/bxor/bnot) still live there
+        // and are emitted via hardcoded declares, so a program that uses
+        // them must link the runtime even with no frgn pulling it.
+        let runtime_c = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("lib/runtime/briev_rt.c");
+        let needs_runtime = [
+            "@briev_bits_to_str(",
+            "@briev_str_band(",
+            "@briev_str_bor(",
+            "@briev_str_bxor(",
+            "@briev_str_bnot(",
+            "@briev_free_briev_str(",
+        ].iter().any(|sym| ll_text.contains(sym));
+        let has_runtime = extra_objects.iter().any(|o| {
+            o.to_string_lossy().contains("briev_rt")
+        });
+        if needs_runtime && !has_runtime {
+            let cache_dir = get_ffi_cache_dir();
+            let obj = compile_source_to_object(&runtime_c, &cache_dir)?;
+            cmd.arg(obj.as_os_str());
+        }
         for obj in extra_objects {
             cmd.arg(obj.as_os_str());
         }

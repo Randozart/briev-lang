@@ -155,7 +155,8 @@ impl LlvmBackend {
                 let r = self.fun.gen_reg();
                 let sched_i = self.fun.gen_reg();
                 writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
-                writeln!(out, "{indent}{r} = call i64 @briev_await_impl(ptr %state, i64 {sched_i}, i64 {hi})").ok();
+                let st = if self.ctx.defn_takes_state("briev_await_impl") { "ptr %state, " } else { "" };
+                writeln!(out, "{indent}{r} = call i64 @briev_await_impl({st}i64 {sched_i}, i64 {hi})").ok();
                 TypedRegister { name: r, ty: Type::int() }
             }
             Expr::Decimal(n) => {
@@ -1736,7 +1737,7 @@ impl LlvmBackend {
                     let sub = self.fun.gen_reg();
                     // 2026-09-09 (Family C): state prefix when the symbol is
                     // a pure-Briev defn (all defns carry %state).
-                    let st_sub = if self.ctx.defn_params.contains_key("briev_str_substr") { "ptr %state, " } else { "" };
+                    let st_sub = if self.ctx.defn_takes_state("briev_str_substr") { "ptr %state, " } else { "" };
                     writeln!(out, "{}{} = call ptr @briev_str_substr({}ptr {}, i64 {}, i64 {})",
                         indent, sub, st_sub, sp, lo.name, hi.name).ok();
                     return TypedRegister { name: sub, ty: crate::ast::Type::Custom("String".to_string()) };
@@ -1806,7 +1807,7 @@ impl LlvmBackend {
                         "@briev_slice_range64"
                     };
                     // 2026-09-10 (Family D): state prefix for pure-Briev gathers.
-                    let gp = if self.ctx.defn_params.contains_key(&helper[1..]) { "ptr %state, " } else { "" };
+                    let gp = if self.ctx.defn_takes_state(&helper[1..]) { "ptr %state, " } else { "" };
                     let buf = self.fun.gen_reg();
                     writeln!(
                         out,
@@ -1990,7 +1991,7 @@ impl LlvmBackend {
                 out,
                 "{}{} = call ptr @briev_mask_select({}ptr {}, ptr {}, i64 {})",
                 indent, r,
-                if self.ctx.defn_params.contains_key("briev_mask_select") { "ptr %state, " } else { "" },
+                if self.ctx.defn_takes_state("briev_mask_select") { "ptr %state, " } else { "" },
                 data_ptr, mask_ptr, mask_len
             )
             .ok();
@@ -2052,7 +2053,7 @@ impl LlvmBackend {
                 out,
                 "{}{} = call ptr @briev_mask_select64({}ptr {}, i64 {}, ptr {}, i64 {})",
                 indent, buf,
-                if self.ctx.defn_params.contains_key("briev_mask_select64") { "ptr %state, " } else { "" },
+                if self.ctx.defn_takes_state("briev_mask_select64") { "ptr %state, " } else { "" },
                 data_p, len, mask_ptr, mask_len
             )
             .ok();
@@ -2104,7 +2105,7 @@ impl LlvmBackend {
                 out,
                 "{}{} = call ptr @briev_mask_select_f32{}({}ptr {}, i64 {}, ptr {}, i64 {})",
                 indent, buf, if i8_mask { "_i8mask" } else { "" },
-                if self.ctx.defn_params.contains_key(f32sym) { "ptr %state, " } else { "" },
+                if self.ctx.defn_takes_state(f32sym) { "ptr %state, " } else { "" },
                 data_ptr, n, mask_ptr, mask_len
             )
             .ok();
@@ -2129,7 +2130,7 @@ impl LlvmBackend {
         } else {
             "@briev_mask_select64"
         };
-        let gp = if self.ctx.defn_params.contains_key(&helper[1..]) { "ptr %state, " } else { "" };
+        let gp = if self.ctx.defn_takes_state(&helper[1..]) { "ptr %state, " } else { "" };
         let buf = self.fun.gen_reg();
         writeln!(
             out,
@@ -3234,7 +3235,8 @@ impl LlvmBackend {
                         let r = self.fun.gen_reg();
                         let events_i = self.fun.gen_reg();
                         writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
-                        writeln!(out, "{indent}{r} = call i64 @briev_event_ready_impl(ptr %state, i64 {events_i}, i64 {id_reg})").ok();
+                        let st = if self.ctx.defn_takes_state("briev_event_ready_impl") { "ptr %state, " } else { "" };
+                        writeln!(out, "{indent}{r} = call i64 @briev_event_ready_impl({st}i64 {events_i}, i64 {id_reg})").ok();
                         let b = self.fun.gen_reg();
                         writeln!(out, "{indent}{b} = trunc i64 {r} to i8").ok();
                         return TypedRegister { name: b, ty: Type::Custom("Bool".to_string()) };
@@ -4424,11 +4426,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         let id = self.fun.gen_reg();
                         let events_i = self.fun.gen_reg();
                         writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
-                        writeln!(out, "{indent}{id} = call i64 @briev_event_alloc_impl(ptr %state, i64 {events_i})").ok();
+                        let st = if self.ctx.defn_takes_state("briev_event_alloc_impl") { "ptr %state, " } else { "" };
+                        writeln!(out, "{indent}{id} = call i64 @briev_event_alloc_impl({st}i64 {events_i})").ok();
                         let vr = self.emit_expr(out, a, indent);
                         let payload = self.adapt_to_i64(out, indent, &vr);
+                        let st = if self.ctx.defn_takes_state("briev_event_fire_impl") { "ptr %state, " } else { "" };
                         writeln!(out,
-                            "{indent}call i64 @briev_event_fire_impl(ptr %state, i64 {events_i}, i64 {id}, i64 {payload})")
+                            "{indent}call i64 @briev_event_fire_impl({st}i64 {events_i}, i64 {id}, i64 {payload})")
                         .ok();
                         id
                     }
@@ -4454,8 +4458,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let h = self.fun.gen_reg();
         let sched_i = self.fun.gen_reg();
         writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
+        // 2026-09-23 (stateless-defn mechanism): briev_task_spawn_impl is a
+        // pure scheduler defn (Alloc# over @__briev_sched — a global, not
+        // %state); gate the %state arg on defn_takes_state like every other
+        // defn call.
+        let st = if self.ctx.defn_takes_state("briev_task_spawn_impl") { "ptr %state, " } else { "" };
         writeln!(out,
-            "{indent}{h} = call i64 @briev_task_spawn_impl(ptr %state, i64 {sched_i}, ptr {table}, i64 {nseg}, i64 {nargs}, ptr {argv})")
+            "{indent}{h} = call i64 @briev_task_spawn_impl({st}i64 {sched_i}, ptr {table}, i64 {nseg}, i64 {nargs}, ptr {argv})")
         .ok();
         self.fun.task_handle_regs.insert(h.clone());
         TypedRegister { name: h, ty: Type::int() }
@@ -4790,7 +4799,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let defn_param_tys = self.ctx.defn_params.get(name).cloned();
         let is_defn = defn_param_tys.is_some();
         let mut call_args: Vec<String> = Vec::new();
-        if is_defn {
+        // 2026-09-23 (stateless-defn mechanism): a defn is called with the
+        // hidden `%state` ONLY when it transitively needs state. Stateless
+        // helpers (cstr doors over Load#/Alloc#, arithmetic lanes) are
+        // emitted without the state param and called without it — gating on
+        // defn_takes_state instead of bare defn_params membership keeps the
+        // ABI consistent (previously every defn call passed %state).
+        if is_defn && self.ctx.defn_takes_state(name) {
             call_args.push("ptr %state".to_string());
             let param_tys = defn_param_tys.as_ref().unwrap();
             for (i, reg) in arg_regs.iter().enumerate() {
@@ -5783,7 +5798,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     let lp = self.string_ptr(out, indent, l);
                     let rp = self.string_ptr(out, indent, r);
                     writeln!(out, "{}{} = call i64 @briev_str_eq({}ptr {}, ptr {})", indent, eq,
-                        if self.ctx.defn_params.contains_key("briev_str_eq") { "ptr %state, " } else { "" }, lp, rp).ok();
+                        if self.ctx.defn_takes_state("briev_str_eq") { "ptr %state, " } else { "" }, lp, rp).ok();
                     let icmp = self.fun.gen_reg();
                     writeln!(out, "{}{} = icmp ne i64 {}, 0", indent, icmp, eq).ok();
                     writeln!(out, "{}{} = zext i1 {} to i8", indent, v, icmp).ok();
@@ -5822,7 +5837,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     let lp = self.string_ptr(out, indent, l);
                     let rp = self.string_ptr(out, indent, r);
                     writeln!(out, "{}{} = call i64 @briev_str_eq({}ptr {}, ptr {})", indent, eq,
-                        if self.ctx.defn_params.contains_key("briev_str_eq") { "ptr %state, " } else { "" }, lp, rp).ok();
+                        if self.ctx.defn_takes_state("briev_str_eq") { "ptr %state, " } else { "" }, lp, rp).ok();
                     let icmp = self.fun.gen_reg();
                     writeln!(out, "{}{} = icmp eq i64 {}, 0", indent, icmp, eq).ok();
                     writeln!(out, "{}{} = zext i1 {} to i8", indent, v, icmp).ok();
@@ -6422,11 +6437,15 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     };
                     // 2026-09-09 (Family A, briev-native runtime): when the
                     // lane symbol is a pure-Briev defn, the call must pass the
-                    // enclosing function's %state — every definition is
-                    // emitted with the state pointer (emit_definition,
-                    // needs_state) and Briev-level calls pass it.
+                    // enclosing function's %state — every STATE-TAKING
+                    // definition is emitted with the state pointer
+                    // (emit_definition, needs_state) and Briev-level calls
+                    // pass it. 2026-09-23 (stateless-defn mechanism): pure
+                    // helpers (cstr doors) are emitted WITHOUT state and must
+                    // be called without it — gate on defn_takes_state, not
+                    // mere defn_params membership.
                     let fname: &str = fn_name;
-                    let st = if self.ctx.defn_params.contains_key(fname) {
+                    let st = if self.ctx.defn_takes_state(fname) {
                         "ptr %state, "
                     } else {
                         ""
@@ -6445,8 +6464,19 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     let symbol = self.ctx.frgn_map.get(fn_name.as_str())
                         .map(|sig| sig.name.clone())
                         .unwrap_or_else(|| fn_name.clone());
-                    writeln!(out, "{}{} = call {} @{}({} {})",
-                        indent, dst, dst_ll, symbol, cur_ll, cur).ok();
+                    // 2026-09-23 (frgn-elimination round 2): the cstr doors
+                    // are now PURE-BRIEV defns (glue/c.bv). State-TAKING
+                    // defns take the hidden %state first param; STATELESS
+                    // doors (str_to_c +8, cstr_to_briev over Alloc#) take no
+                    // state. Gate on defn_takes_state so the ABI matches the
+                    // emitted signature.
+                    let st = if self.ctx.defn_takes_state(fn_name.as_str()) {
+                        "ptr %state, "
+                    } else {
+                        ""
+                    };
+                    writeln!(out, "{}{} = call {} @{}({}{} {})",
+                        indent, dst, dst_ll, symbol, st, cur_ll, cur).ok();
                 }
                 crate::casting::graph::LaneKind::ExtractData => {
                     writeln!(out, "{}{} = extractvalue {} {}, 0",
@@ -6577,8 +6607,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             }
             // For Chain-internal ExtCall — emit the call with conservative i64 return
             crate::casting::graph::LaneKind::ExtCall(fn_name) => {
-                writeln!(out, "{}{} = call i64 @{}({} {})",
-                    indent, dst, fn_name, src_ll, src_name).ok();
+                // 2026-09-23 (stateless-defn mechanism): a lane binding to a
+                // pure-Briev defn (str_to_int, cstr doors) is emitted WITHOUT
+                // %state; pass it only when the defn takes state. Mirrors the
+                // ExtCall arm in emit_cast_steps.
+                let st = if self.ctx.defn_takes_state(fn_name) { "ptr %state, " } else { "" };
+                writeln!(out, "{}{} = call i64 @{}({}{} {})",
+                    indent, dst, fn_name, st, src_ll, src_name).ok();
             }
             _ => {
                 writeln!(out, "{}{} = bitcast {} {} to i64",
@@ -6663,7 +6698,8 @@ impl crate::backend::llvm::LlvmBackend {
             let sched_i = self.fun.gen_reg();
             writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
             writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
-            writeln!(out, "{indent}{r} = call i64 @briev_event_read_impl(ptr %state, i64 {events_i}, i64 {sched_i}, i64 {id_reg}, i64 {slot_i})").ok();
+            let st = if self.ctx.defn_takes_state("briev_event_read_impl") { "ptr %state, " } else { "" };
+            writeln!(out, "{indent}{r} = call i64 @briev_event_read_impl({st}i64 {events_i}, i64 {sched_i}, i64 {id_reg}, i64 {slot_i})").ok();
 
         // Payload type from the wire's declared Event<P>.
         let wire_name = match recv {
@@ -6710,7 +6746,7 @@ impl crate::backend::llvm::LlvmBackend {
             )
             .ok();
             writeln!(out, "evr.trap{uid}:").ok();
-            writeln!(out, "  call i64 @__briev_event_strict_trap(ptr %state)").ok();
+            writeln!(out, "  call i64 @__briev_event_strict_trap()").ok();
             writeln!(out, "  unreachable").ok();
             writeln!(out, "{blk_lbl}:").ok();
             // BLOCKED: cursor untouched, waiter registered. The migrated
@@ -6719,7 +6755,7 @@ impl crate::backend::llvm::LlvmBackend {
         } else {
             writeln!(out, "{indent}br i1 {is_ready}, label %{ready_lbl}, label %evr.trap{uid}").ok();
             writeln!(out, "evr.trap{uid}:").ok();
-            writeln!(out, "  call i64 @__briev_event_strict_trap(ptr %state)").ok();
+            writeln!(out, "  call i64 @__briev_event_strict_trap()").ok();
             writeln!(out, "  unreachable").ok();
         }
         writeln!(out, "{ready_lbl}:").ok();

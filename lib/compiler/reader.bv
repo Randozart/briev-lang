@@ -10,12 +10,17 @@
 
 import "glue/c.bv";
 
-frgn briev_str_substr(handle: String, a: Int, b: Int) -> String : briev_str_substr from "lib/runtime/briev_rt.c";
-frgn briev_str_char_at(handle: String, i: Int) -> Int : briev_str_char_at from "lib/runtime/briev_rt.c";
+// 2026-09-23: the frgn briev_str_substr was removed — cast_lanes.bv (prelude)
+// provides the pure-Briev `out defn briev_str_substr` (Alloc#/Copy# with C
+// clamping), and the import-name conflict (reader.bv frgn vs cast_lanes out
+// defn) broke needs_state/soa_reorder builds. Whole substrings resolve to the
+// pure-Briev defn.
+// char_at also resolved through cast_lanes' `byte_at` (the frgn briev_str_char_at
+// was retired with Families A+B — pure-Briev Load# takes its place).
 
 // char_at(s, i): the i-th byte as an Int (no allocation).
 defn char_at(s: String, i: Int) -> Int {
-    term briev_str_char_at(s, i);
+    term byte_at(s, i);
 };
 
 // str_substr(a, b): byte-wise substring [a, b) of a Briev String.
@@ -65,6 +70,12 @@ defn has_token_scan(line: String, i: Int, n: Int, name: String, start: Int) -> B
 // in_section(proj, key, name): is `name` listed in the `key` section line?
 defn in_section(proj: String, key: String, name: String) -> Bool {
     term scan_sections(proj, 0, proj .^Length, key, name);
+};
+// 2026-09-23 (stateless-defn mechanism): the inverse — a name NOT listed in
+// the `key` section. `when not` has no syntax, so callers test this.
+defn not_in_section(proj: String, key: String, name: String) -> Bool {
+    when in_section(proj, key, name) { term false; };
+    term true;
 };
 defn scan_sections(proj: String, i: Int, n: Int, key: String, name: String) -> Bool {
     when i >= n { term false; };

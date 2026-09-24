@@ -1,5 +1,0 @@
-// Standard HTTP Library
-// Foreign function declarations for WASM target
-
-frgn frgn__http_get(url: String) -> Result<String, String> from "lib/runtime/briev_rt.c";
-frgn frgn__http_post(url: String, body: String) -> Result<String, String> from "lib/runtime/briev_rt.c";
