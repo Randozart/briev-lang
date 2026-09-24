@@ -693,15 +693,7 @@ impl<'a> Builder<'a> {
             Expr::Deref(inner)
             | Expr::AddrOf(inner)
             | Expr::Consume(inner)
-            Expr::Named { inner, .. } => self.walk_expr(inner, queue),
-            Expr::Await(inner) => {
-                // 2026-09-23 (soundness-net catch, async Phase C/D): `await`
-                // lowers to briev_await_impl; root the task/event family the
-                // same way Spawn does (the awaited task's fire/read helpers
-                // are emitted from the same lowering surface).
-                self.root_task_event_family(queue);
-                self.walk_expr(inner, queue);
-            }
+            | Expr::Await(inner) => self.walk_expr(inner, queue),
             Expr::PluginIntercept { args, .. } => {
                 for a in args {
                     self.walk_expr(a, queue);
