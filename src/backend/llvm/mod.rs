@@ -711,7 +711,7 @@ fn collect_strings_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<S
             collect_strings_expr(list, seen, out);
             for s in body { collect_strings_stmt(s, seen, out); }
         }
-        Statement::InlineAsm { .. } | Statement::TrgBinding { .. } | Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => {}
+        Statement::InlineAsm { .. } | Statement::TrgBinding { .. } | Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::Match { .. } => {}
     }
 }
 

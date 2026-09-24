@@ -326,14 +326,32 @@ fn eval_compile_time_fn(
             Ok(NavValue::Void)
         }
         crate::plugin::FnDef::Txn(t) => {
-            // Convergent loop: precondition → body → postcondition → repeat
+            // Convergent loop: precondition → body → postcondition → repeat.
+            // 2026-09-22 (C6): a `...` rest parameter (recorded as a
+            // `variadic` modifier by parse_compile_time_txn) binds ALL
+            // trailing arguments as a NavValue::List — the sanctioned
+            // compile-time iteration channel for unknown-size sets.
             let mut fn_scope = Scope::new();
+            let rest_name = t.modifiers.iter().find(|m| m.name == "variadic")
+                .and_then(|m| m.value.clone())
+                .and_then(|v| match v {
+                    Expr::Quoted(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+                    _ => None,
+                });
+            let fixed = t.parameters.len();
             for (i, (param_name, _param_type)) in t.parameters.iter().enumerate() {
                 let arg_expr = args.get(i).ok_or_else(|| {
                     format!("{}: missing argument {}", t.name, i)
                 })?;
                 let arg_val = eval_nav_chain(arg_expr, program, universe, stage, scope, sandbox, pm)?;
                 fn_scope.insert(param_name.clone(), arg_val);
+            }
+            if let Some(rest_name) = rest_name {
+                let mut rest = Vec::new();
+                for arg_expr in &args[fixed..] {
+                    rest.push(eval_nav_chain(arg_expr, program, universe, stage, scope, sandbox, pm)?);
+                }
+                fn_scope.insert(rest_name, NavValue::List(rest));
             }
             let max_iter = 1000;
             let mut term_val = NavValue::Void;
@@ -355,12 +373,21 @@ fn eval_compile_time_fn(
                         Err(e) => return Err(format!("{}: {}", t.name, e)),
                     }
                 }
+                // 2026-09-22 (C6): a `term` in the body is an EARLY RETURN —
+                // like `$defn`, `term v` produces the loop's value immediately
+                // (the doc example `{ when x >= 50 { x = 100; term x; }; }`
+                // returns x before the post is re-checked). Without this, a
+                // body that terms on iteration 1 spins to max_iterations when
+                // the post is reached only LATER (or the term IS the return).
+                if term_hit {
+                    return Ok(term_val);
+                }
                 // Evaluate postcondition — if true, converged
                 let post_result = eval_nav_chain(
                     &t.contract.post_condition, program, universe, stage, &fn_scope, sandbox, pm
                 )?;
                 if nav_is_truthy(&post_result) {
-                    return if term_hit { Ok(term_val) } else { Ok(NavValue::Void) };
+                    return Ok(NavValue::Void);
                 }
                 // Postcondition not met — continue loop
             }
@@ -2133,7 +2160,7 @@ fn resolve_dollar_refs_in_stmt(stmt: &mut Statement, scope: &Scope) -> Result<()
             resolve_dollar_refs_in_expr(instance, scope)
         }
         Statement::InlineAsm { .. } | Statement::MetadataAssignment(..)
-        | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => Ok(()),
+        | Statement::InlineDefn(_) | Statement::Match { .. } => Ok(()),
     }
 }
 
@@ -3399,6 +3426,161 @@ mod tests {
         let desc = &pm.expansion_traces[&0];
         assert!(desc.starts_with("ReplaceWith$ -> defn"),
             "trace should describe the replacement, got: {}", desc);
+    }
+
+    // ── 2026-09-22 (C6, docs/plans/2026-09-22-txn-convergent-flavor.md) ──
+    // `$txn` convergent loop: repeat until [post] holds. The iteration
+    // count is UNKNOWN at the call site — the one case foreach-over-rest
+    // cannot express (no comptime `while` exists).
+
+    fn scale_txn() -> Transaction {
+        Transaction {
+            name: "scale".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![("x".into(), Type::int())],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract::new(
+                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(16))),
+                Expr::BinaryOp(BinaryOpKind::Ge, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(16))),
+            ),
+            body: vec![
+                Statement::Assign(
+                    Expr::Identifier("x".into()),
+                    Expr::BinaryOp(BinaryOpKind::Mul, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(2))),
+                ),
+                Statement::Term(Some(Expr::Identifier("x".into()))),
+            ],
+            metadata: Default::default(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
+        }
+    }
+
+    #[test]
+    fn txn_converges_when_postcondition_met() {
+        // x doubles each pass; the post (x >= 16) holds after 4 passes.
+        // A convergent loop WITHOUT a `term` returns Void — convergence is
+        // the outcome; the final state lives in the caller's scope bindings.
+        let txn = Transaction {
+            body: vec![Statement::Assign(
+                Expr::Identifier("x".into()),
+                Expr::BinaryOp(BinaryOpKind::Mul, Box::new(Expr::Identifier("x".into())), Box::new(Expr::Decimal(2))),
+            )],
+            ..scale_txn()
+        };
+        let mut program = vec![];
+        let mut universe = TypeUniverse::new();
+        let result = eval_compile_time_fn(
+            &crate::plugin::FnDef::Txn(txn),
+            &[Expr::Decimal(1)],
+            &mut program,
+            &mut universe,
+            StageKind::Typed,
+            &empty_scope(),
+            &mut test_sandbox(),
+            &mut None,
+        )
+        .expect("converges");
+        assert!(matches!(result, NavValue::Void), "converged without a term");
+    }
+
+    #[test]
+    fn txn_term_is_an_early_return() {
+        // `term v` in the body returns v immediately (like $defn) — the
+        // guarded-return shape from the macro-system doc.
+        let txn = Transaction {
+            body: vec![Statement::Term(Some(Expr::Identifier("x".into())))],
+            ..scale_txn()
+        };
+        let mut program = vec![];
+        let mut universe = TypeUniverse::new();
+        let result = eval_compile_time_fn(
+            &crate::plugin::FnDef::Txn(txn),
+            &[Expr::Decimal(5)],
+            &mut program,
+            &mut universe,
+            StageKind::Typed,
+            &empty_scope(),
+            &mut test_sandbox(),
+            &mut None,
+        )
+        .expect("terms immediately");
+        match result {
+            NavValue::Int(v) => assert_eq!(v, 5, "term returns the value"),
+            other => panic!("expected Int, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn txn_exceeds_max_iterations_without_convergence() {
+        // Precondition always true, postcondition never met → timeout. The
+        // body does NOT mutate x (no overflow — it just never converges).
+        let txn = Transaction {
+            contract: Contract::new(Expr::Bool(true), Expr::Bool(false)),
+            body: vec![Statement::Expression(Expr::Decimal(1))],
+            ..scale_txn()
+        };
+        let mut program = vec![];
+        let mut universe = TypeUniverse::new();
+        let err = eval_compile_time_fn(
+            &crate::plugin::FnDef::Txn(txn),
+            &[Expr::Decimal(1)],
+            &mut program,
+            &mut universe,
+            StageKind::Typed,
+            &empty_scope(),
+            &mut test_sandbox(),
+            &mut None,
+        )
+        .unwrap_err();
+        assert!(err.contains("max iterations"), "timeout message: {err}");
+    }
+
+    #[test]
+    fn txn_rest_param_binds_trailing_args() {
+        // A `...` rest param (recorded as a `variadic` modifier) binds ALL
+        // trailing arguments as a NavValue::List — the sanctioned
+        // compile-time iteration channel for unknown-size sets. The binding
+        // is the test: trailing args are accepted (not "too many"), and the
+        // rest name resolves in the body scope. (The stage evaluator's
+        // NavValue::List consumption is via nav intrinsics like
+        // InjectTypeLayout$; foreach over a List is a composite-side path —
+        // see composite.rs comptime_iters.)
+        let txn = Transaction {
+            name: "accept_rest".into(),
+            parameters: vec![("acc".into(), Type::int())],
+            modifiers: vec![Annotation {
+                name: "variadic".into(),
+                value: Some(Expr::Quoted("xs".into())),
+            }],
+            contract: Contract::new(Expr::Bool(true), Expr::Bool(false)),
+            // Term the fixed param — proves trailing args were accepted and
+            // the rest bound without "too many arguments".
+            body: vec![Statement::Term(Some(Expr::Identifier("acc".into())))],
+            ..scale_txn()
+        };
+        let mut program = vec![];
+        let mut universe = TypeUniverse::new();
+        let result = eval_compile_time_fn(
+            &crate::plugin::FnDef::Txn(txn),
+            &[Expr::Decimal(7), Expr::Decimal(1), Expr::Decimal(2), Expr::Decimal(3)],
+            &mut program,
+            &mut universe,
+            StageKind::Typed,
+            &empty_scope(),
+            &mut test_sandbox(),
+            &mut None,
+        )
+        .expect("trailing rest args accepted");
+        match result {
+            NavValue::Int(v) => assert_eq!(v, 7, "fixed param value returned"),
+            other => panic!("expected Int, got {other:?}"),
+        }
     }
 }
 

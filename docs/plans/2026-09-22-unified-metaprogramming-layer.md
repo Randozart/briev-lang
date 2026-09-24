@@ -137,10 +137,15 @@ $defn execute_many(...calls: Expr) {
   `SyncGroup`). The node name/contract/body substitute params like any
   composite statement. Blast radius: composite.rs only (the ~37-file
   `Statement` match churn is avoided entirely).
-- **C6 — `$txn` resolution**: adopt `$txn` as the convergent-loop flavor
-  (repeat-until-postcondition — the ONE semantic `$defn` lacks), fix its
-  parse-broken inline form, add real tests; OR delete it. Decided once
-  `foreach`-over-rest is proven.
+- **C6 — `$txn` resolution — DONE 2026-09-22 (keep, as the convergent
+  flavor)**: the decisive case is *unknown* iteration counts — `foreach`
+  needs a known list, but convergence repeats until `[post]` holds,
+  decided by the computation. `$txn` is the ONLY compile-time loop for
+  unknown counts (no comptime `while` exists). KEPT as a top-level-only
+  declaration; inline INVOCATION stays (`$txn name(args)` from a
+  `$(Stage)` block). The broken inline DECLARATION form
+  (`Statement::InlineTxn`) is removed. Plan:
+  `docs/plans/2026-09-22-txn-convergent-flavor.md`.
 
 ## Verification
 - `cargo test --lib` green per commit; conformance sweep; Praetor on changed

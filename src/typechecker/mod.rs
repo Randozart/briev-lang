@@ -3580,7 +3580,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             infer_type_only(instance, ctx)?;
             Ok(())
         }
-        Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => Ok(()),
+        Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::Match { .. } => Ok(()),
         Statement::SyncBlock(body) => {
             for stmt in body {
                 infer_statement(stmt, ctx)?;
@@ -5677,11 +5677,6 @@ fn collect_body_exprs(stmts: &[Statement]) -> Vec<&Expr> {
                     }
                 }
                 Statement::InlineDefn(d) => walk(&d.body, out),
-                Statement::InlineTxn(t) => {
-                    walk(&t.body, out);
-                    out.push(&t.contract.pre_condition);
-                    out.push(&t.contract.post_condition);
-                }
                 _ => {}
             }
         }
@@ -5715,11 +5710,6 @@ fn isr_body_exprs(stmts: &[Statement]) -> Vec<&Expr> {
                     }
                 }
                 Statement::InlineDefn(d) => walk(&d.body, out),
-                Statement::InlineTxn(t) => {
-                    walk(&t.body, out);
-                    out.push(&t.contract.pre_condition);
-                    out.push(&t.contract.post_condition);
-                }
                 // Yield / InlineAsm / break carry no expressions.
                 _ => {}
             }
