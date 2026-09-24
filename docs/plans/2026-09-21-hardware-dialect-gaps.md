@@ -1034,3 +1034,11 @@ Next slices: law IR/linear elaboration, unguarded DC solve, guarded
 piecewise modes, stdlib/fixture migration, then retirement of the
 `value`-as-ohms path. This is the substrate rail inference should build
 on, not a new keyword family.
+
+**Slice 2 addendum (same day):** `analysis/electronics_laws.rs` now turns
+pin-bearing type-body laws into validated per-instance linear IR. It
+supports linear +,-,*,/ over pin voltage/current and Volt/Amp/Ohm spec
+constants, single linear comparison guards, and polymorphic literal zero.
+It rejects nonlinear terms, dimension conflicts, missing parameters, empty
+laws, and duplicate equations as hard law errors. The netlist carries the
+IR; the emitter refuses invalid laws. The DC solver is not yet attached.

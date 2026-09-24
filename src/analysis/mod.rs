@@ -3,6 +3,7 @@ pub mod casing;
 pub mod desugar;
 pub mod defn_liveness;
 pub mod electronics;
+pub mod electronics_laws;
 pub mod footprints;
 pub mod placement;
 pub mod strict;

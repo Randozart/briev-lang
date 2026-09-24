@@ -132,6 +132,12 @@ pub struct ElectronicsNetlist {
     /// 2026-09-22 (whole-bus equality, Slice 3): a range-indexed equality
     /// with mismatched or reversed bus lengths — a hard error.
     pub bus_errors: Vec<String>,
+    /// 2026-09-24 (component laws, Slice 2): constitutive-law elaboration
+    /// errors. Hard diagnostics: an invalid law cannot prove physics.
+    pub law_errors: Vec<String>,
+    /// 2026-09-24 (component laws, Slice 2): validated per-instance
+    /// constitutive laws. Slice 3's DC solver consumes this IR.
+    pub component_laws: Vec<crate::analysis::electronics_laws::ComponentLaws>,
 }
 
 /// 2026-09-21 (E12, design record D6): resolved property set for a pin's
@@ -415,6 +421,27 @@ fn collect_type_pins(
         }
     }
     (out, info, class_errors)
+}
+
+/// Law-pass adapter: expose the already-shared type/pin collector without
+/// making the whole electronics module's helpers public (2026-09-24).
+pub(crate) fn collect_type_pins_for_laws(
+    items: &[TopLevel],
+) -> (
+    BTreeMap<String, Vec<(String, u64)>>,
+    BTreeMap<String, TypeInfo>,
+    Vec<String>,
+) {
+    collect_type_pins(items)
+}
+
+/// Law-pass adapter: collect component instances on the same definitions the
+/// netlist uses, so law instances cannot diverge from topology instances.
+pub(crate) fn collect_instances_for_laws(
+    items: &[TopLevel],
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> Vec<ComponentInstance> {
+    collect_instances(items, type_pins)
 }
 
 /// Collect component instances: top-level `let name: T = T { fields };` where
@@ -3700,6 +3727,19 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         .map(|c| (c.name.clone(), c))
         .collect();
 
+    // 2026-09-24 (component laws, Slice 2): elaborate constitutive laws
+    // before topology-dependent checks. The IR is validated now and consumed
+    // by the DC solver in a later slice.
+    let law_ir = crate::analysis::electronics_laws::elaborate_component_laws(
+        items,
+        &crate::analysis::electronics_laws::LawContext {
+            instances: &instances,
+            type_info: &type_info,
+            type_pins: &type_pins,
+        },
+    );
+    let (law_errors, component_laws) = (law_ir.errors, law_ir.components);
+
     let mut ds = DisjointSet::new();
     let bus_errors = collect_pin_unions(items, &instances, &type_pins, &mut ds);
     // 2026-09-21 (E14a): node-body intents — body wiring facts union
@@ -3762,6 +3802,8 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         participation_warnings,
         contention_errors,
         bus_errors,
+        law_errors,
+        component_laws,
     }
 }
 

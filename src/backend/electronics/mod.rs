@@ -196,6 +196,14 @@ impl ElectronicsBackend {
             errs.extend(netlist.contention_errors.iter().map(|e| format!("  {}", e)));
             return Err(errs);
         }
+        // 2026-09-24 (component laws): an invalid constitutive law cannot
+        // prove physics — refuse before any schematic is emitted.
+        if !netlist.law_errors.is_empty() {
+            let mut errs =
+                vec!["cannot emit schematic: a component law is invalid".to_string()];
+            errs.extend(netlist.law_errors.iter().map(|e| format!("  {}", e)));
+            return Err(errs);
+        }
         // 2026-09-22 (whole-bus equality): a mismatched bus length is a hard
         // error — the buses must agree element-wise.
         if !netlist.bus_errors.is_empty() {

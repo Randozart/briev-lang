@@ -1326,7 +1326,9 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
         // component constructions, zero-value placeholders). An identifier
         // immediately followed by `{}` is a construction, never a block:
         // blocks never attach directly to identifiers in Briev.
-        if matches!(next_tok, Token::RBrace) { return true; }
+        // 2026-09-24 (component laws): `T { spec Name: …; }` is a component
+        // literal with structured physics, never a block.
+        if matches!(next_tok, Token::RBrace | Token::Spec) { return true; }
         let next_is_ident = matches!(next_tok, Token::Identifier(_));
         if !next_is_ident { return false; }
         // Check the token after the identifier — must be ':' or ',' for a

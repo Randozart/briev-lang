@@ -108,9 +108,16 @@ choosing silently. Full decisions and slice gates:
 
 Landed in Slice 1: centralized quantity parsing, canonical full-word units,
 `ComponentInstance.specs` as structured SI + dimension, structured
-`Resistance` preferred over the legacy numeric-`value` heuristic, and a
-type-level resistance default. Law elaboration and the solver are the next
-slices.
+resistance preferred over the legacy numeric-`value` heuristic, and a
+type-level resistance default.
+
+Landed in Slice 2: `analysis/electronics_laws.rs` elaborates pin-bearing
+type-body laws per instance into linear guard/equation IR. It resolves bare
+pins and spec constants, dimension-checks expressions (`Ohm = Volt / Amp`),
+treats literal zero as polymorphic notation, and rejects nonlinear terms,
+unknown/missing parameters, dimension conflicts, empty laws, and duplicate
+equations. The netlist carries `component_laws` and hard `law_errors`; the
+KiCad gate refuses invalid laws. DC consumption is Slice 3.
 
 ## Deferred (recorded, not built)
 
