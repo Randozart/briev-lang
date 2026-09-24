@@ -5225,6 +5225,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // crt path (libc owns the entry there) and the C getenv pair.
         // 2026-09-22 (bootstrap-bad plan): a `bootstrap bad` is the authored
         // entry — the bad .o owns it; skip the owned `_start` entirely.
+        // 2026-09-24 (BUGS.md shared-entry): a `--shared` library is loaded
+        // by a host — it owns no process entry and never defines `@main`
+        // (main emission is skipped via is_shared_lib, emit_toplevel.rs:4616
+        // region). Emitting the owned `_start` + `@llvm.used [ptr @main, …]`
+        // produced a dangling `@main` reference (clang "use of undefined
+        // value '@main'", export_add.so). Shared builds skip both branches.
+        // To undo: drop the `!self.ctx.is_shared_lib` conjuncts below.
         if self.bootstrap_bad.is_none() && self.ctx.target_triple.contains("linux")
             && out.lines().any(|l| {
                 l.contains("call ") && Self::kept_runtime_symbol(l)
@@ -5234,7 +5241,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // reading it ONLY when a _start captured it — skipped here, the
             // frgn path (ffi/env.bv -> C getenv) serves the program.
             // (The global itself is emitted with the _start below.)
-        } else if self.ctx.target_triple.contains("linux") {
+        } else if !self.ctx.is_shared_lib && self.ctx.target_triple.contains("linux") {
             // (The environ global + the two getenv adapters emit from the
             // frgn loop above — they take over ffi/env.bv's frgn names.)
             let triple = self.ctx.target_triple.clone();
@@ -5260,7 +5267,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 writeln!(out, "  unreachable").ok();
                 writeln!(out, "}}").ok();
             }
-        } else if self.ctx.is_embedded && self.bootstrap_bad.is_none() {
+        } else if !self.ctx.is_shared_lib && self.ctx.is_embedded && self.bootstrap_bad.is_none() {
             // 2026-09-13 (rv64 capability kernel): bare-metal freestanding
             // entry for non-linux targets (riscv64-unknown-none, thumbv7em-...).
             // The linker script must provide: _stack_top, _bss_start, _bss_end,

@@ -9008,6 +9008,47 @@ node tick [n < 10][n == 10] {
     );
 }
 
+/// 2026-09-24 (BUGS.md shared-entry, export_add.so): a `--shared` library
+/// defines no `@main` (main emission is skipped via is_shared_lib) and is
+/// loaded by a host — it must never emit the owned `_start` or the
+/// `@llvm.used` entry pin (both referenced the undefined `@main`; clang
+/// "use of undefined value '@main'"). The executable lane of the SAME
+/// libc-free program keeps the owned entry (Family F).
+#[test]
+fn test_shared_lib_emits_no_owned_entry() {
+    let src = r#"
+defn add(a: Int, b: Int) -> Int {
+    term a + b;
+};
+"#;
+    let build = |shared: bool| {
+        let mut items = parse_bv_source(src);
+        let mut universe = crate::type_universe::TypeUniverse::new();
+        let mut pm = crate::plugin::PluginManager::new();
+        pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+            .expect("plugin stage failed");
+        LlvmBackend::new()
+            .with_type_universe(universe)
+            .with_force_emit_all(true)
+            .with_shared_lib(shared)
+            .generate(&items, None)
+    };
+    let shared_ir = build(true);
+    assert!(
+        !shared_ir.contains("define void @_start"),
+        "a shared library owns no process entry:\n{shared_ir}"
+    );
+    assert!(
+        !shared_ir.contains("ptr @main"),
+        "@llvm.used / entry asm must not reference the undefined @main in a shared lib:\n{shared_ir}"
+    );
+    let exe_ir = build(false);
+    assert!(
+        exe_ir.contains("define void @_start"),
+        "the executable lane of the same libc-free program keeps the owned entry:\n{exe_ir}"
+    );
+}
+
 
 #[test]
 fn test_enum_handle_abi_no_struct_decl() {

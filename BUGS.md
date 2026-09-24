@@ -6837,3 +6837,51 @@ match (both `Expr::Match` inside `Statement::Expression` and direct
 either emits value-path IR for valueless arms or drops the statement
 entirely. When adding a statement walker: Match routes to `emit_statement`;
 `term`/`endprogram`/let-value positions stay on `emit_expr`.
+
+## 2026-09-24: shared-library builds emitted the owned `_start` + `@llvm.used` referencing undefined `@main` (export_add.so) [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep — build phase died at `bridge_multi`,
+the custom multi_lang build, after all 74 `.bv` benchmarks compiled)
+**Symptom:** `target/multi_lang/export_add.ll:374`: `@llvm.used = appending
+global [2 x ptr] [ptr @main, ptr @__briev_environ]` — clang: "use of
+undefined value '@main'" → export_add.so failed to link → make Error 1.
+The same module also defined `@_start` with `call main` in its entry asm.
+**Root cause:** the Family F owned-entry emission (mod.rs, `_start` +
+`@llvm.used`) gated on `bootstrap_bad.is_none() && linux && libc-free`
+but never on `is_shared_lib`. A `--shared` build never defines `@main`
+(main emission is skipped for `is_shared_lib`, emit_toplevel.rs:2773
+region) — the entry pin referenced a symbol the module does not define.
+The embedded branch had the same hole (`@llvm.used [ptr @main]` for
+riscv64/thumb without a `@main`).
+**Fix:** gate both owned-entry branches on `!ctx.is_shared_lib` — a
+shared library is loaded by a host, owns no process entry. Executable
+and embedded lanes unchanged. Dated provenance + undo at the condition.
+**Verified:** export_add.so builds (`brievc build --shared`); multi_lang
+`make all` exit 0; `cargo test --lib` 2492/0 (+1 regression test
+`test_shared_lib_emits_no_owned_entry` — shared lane has no `_start`/
+`ptr @main`, executable lane of the same libc-free program keeps both).
+**Class:** entry/ABI emission must be gated on the OUTPUT SHAPE
+(`is_shared_lib`, embedded, bootstrap) — every "this module is the
+process" construct (`_start`, `@llvm.used` entry pins, `@main` refs)
+is invalid in a module that is loaded, not executed.
+
+## 2026-09-24: accel self-tests raced on the process-global `rt()` (known-flaky pack_math_and_launch_roundtrip) [RESOLVED — root cause]
+
+**Date:** 2026-09-24 (surfaced during baseline-sweep session: the
+"known-flaky" exclusion started failing ~every full run under load)
+**Symptom:** `accel_rt::self_test::pack_math_and_launch_roundtrip` panicked
+`assertion left == right failed: fake launch returns ok (left: 0, right: 1)`
+— intermittently, only in full/parallel runs; passed when run alone.
+**Root cause:** both self_tests mutate the SAME process-global `rt()`
+(`r.driver = &fake; r.init_done = true;` … cleanup `driver = null;
+init_done = false`). Default test threads run them concurrently: test A's
+cleanup landed between test B's setup and `briev_accel_launch` → null
+driver → return 0. Reproduced deterministically-ish by running only
+`cargo test --lib -- accel_rt::` (2 tests): 2 fail / 3 pass over 5 runs
+(machine load widens the window).
+**Fix:** one `static Mutex` in `mod self_test`, both tests take the guard
+first; `into_inner()` on poison so a failing test never cascades into the
+next. Verified 12/12 module runs green, full suite 2492/0.
+**Class:** tests sharing process-global mutable state MUST serialize on a
+lock (or isolate state) — "known flaky" is a diagnosis, not an exemption;
+parallel test runners widen any race window until it fails consistently.
