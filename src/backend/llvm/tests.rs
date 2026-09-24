@@ -8932,6 +8932,82 @@ fn test_statement_match_emits_arm_blocks_in_callable_txn() {
     assert!(arm_stores >= 3, "all three arms must store their result:\n{output}");
 }
 
+/// 2026-09-24 (BUGS.md void-match phi, enemy_swarm): a statement-position
+/// match with valueless arms inside a bounded node must route through the
+/// statement path (.smt_* blocks) from EVERY emitter — including the loop
+/// engine's hand-rolled body walk, which previously fell into emit_match's
+/// expression path and emitted an invalid `phi void` ("void type only
+/// allowed for function results"). Behavioral contract: no `phi void`, arms
+/// present as blocks.
+#[test]
+fn test_statement_match_valueless_arms_emits_no_void_phi() {
+    let src = r#"
+let N: Int = 10;
+let hp: Int[4];
+let i: Int = 0;
+let sum: Int = 0;
+node tick [i < N][i == N] {
+    match hp[i % 4] {
+        0 => { hp[i % 4] = 3; };
+        _ => { hp[i % 4] = hp[i % 4] - 1; };
+    };
+    sum = sum + hp[i % 4];
+    i = i + 1;
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let output = backend.generate(&items, None);
+    assert!(
+        !output.contains("phi void"),
+        "valueless match arms must not produce `phi void` (invalid LLVM):\n{output}"
+    );
+    assert!(
+        output.contains(".smt_end_"),
+        "the statement-position match must merge through the .smt_* path:\n{output}"
+    );
+}
+
+/// 2026-09-24 (BUGS.md void-match phi): the expression path itself must
+/// never emit `phi void` either — a let-bound match with valueless arms
+/// (result type Void) skips the merge phi entirely; the arms already branch
+/// to the end label. The bound name is never read (the typechecker rejects
+/// using a Void value), mirroring the empty-arms early return.
+#[test]
+fn test_void_match_value_emits_no_phi() {
+    let src = r#"
+let n: Int = 0;
+node tick [n < 10][n == 10] {
+    let x = match n {
+        0 => { n = 1; };
+        _ => { n = 2; };
+    };
+    n = n + 1;
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let output = backend.generate(&items, None);
+    assert!(
+        !output.contains("phi void"),
+        "a Void-typed match result must skip the merge phi:\n{output}"
+    );
+    assert!(
+        output.contains(".match_end_"),
+        "the match end label must still exist for the arm branches:\n{output}"
+    );
+}
+
 
 #[test]
 fn test_enum_handle_abi_no_struct_decl() {

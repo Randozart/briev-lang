@@ -6792,3 +6792,48 @@ build (build_and_bench.sh:228) so gates unaffected; interpreter reference
 also yields 0 (eval.rs:1478) so language semantics are consistent; the
 asymmetry is benchmark-source-level (needs `get_env_int_or`-style default
 in stdlib + migration of the 50M-default pairs).
+
+## 2026-09-24: statement-position match emitted `phi void` from the loop engine + composite Statement::Match silently dropped [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep — next benchmark after hash_ops_idio)
+**Symptom:** `enemy_swarm.ll:4915`: `%t339 = phi void [ 0, %.match_next_353_1
+], [ %t392, %.match_arm_353_0 ], [ %t402, %.match_arm_353_1 ]` — clang:
+"void type only allowed for function results". The same source match
+(`match hp[i % 64] { 0 => {hp[i%64] = 3;}; _ => {hp[i%64] = hp[i%64] - 1;};};`)
+correctly emitted `.smt_*` blocks in `@txn_tick` but the expression path
+(`.match_arm_353`) inside `@main`'s `.cm_*` countable engine.
+**Root cause (two independent holes):**
+1. Parser F1 unified match dispatch (statements.rs:53) wraps statement-
+   position `match` in `Statement::Expression(Expr::Match)`. The standard
+   emitter routes this to the statement path (emit_stmt.rs:1128, 2026-09-14
+   void-match fix), but the loop engine's hand-rolled body walk
+   (`emit_countable_body`) has no Match handling — its `Statement::Expression`
+   arm called `emit_expr` → `emit_match`'s EXPRESSION path. Valueless arms
+   probe as Void → `llvm_type(Void) = "void"` → `phi void`, invalid IR.
+2. `plugin/composite.rs:628` produces `Statement::Match` DIRECTLY (never
+   routed through the expression wrap) — the engine's `_ => {}` catch-all
+   **silently dropped** it (same silent-drop class as BUGS.md 2026-08-23
+   "callable-txn bodies silently drop match"). Same gap in
+   `emit_guard_body_stmt` and `emit_guard_block`.
+**Fix:** (a) `emit_match` never emits `phi void` — when the merge type is
+Void the arms already branch to the end label, so the label alone is the
+merge (register name mirrors the empty-arms early return; the typechecker
+rejects reading a Void value, fencing the undefined-name edge — verified:
+`n = n + x` on a void match = type error). (b) engine routing: countable
+body, guard body, and guard block delegate `Expr::Match` in statement
+position (and direct `Statement::Match`) to `emit_statement` — the same
+2026-09-14 standard-emitter path (`term`/`endprogram` arms stay on
+`emit_expr`: value positions). All three sites carry dated provenance
+comments with undo instructions.
+**Verified:** enemy_swarm compiles/links; BOUND=10000000 output MATCHES
+enemy_swarm_c.c at both print boundaries (7499904 / 15000000);
+`cargo test --lib` 2491/0 (+2 regression tests:
+`test_statement_match_valueless_arms_emits_no_void_phi`,
+`test_void_match_value_emits_no_phi`); Praetor 116=116 (metric drift on
+already-flagged fns only).
+**Class:** every hand-rolled statement walk must route statement-position
+match (both `Expr::Match` inside `Statement::Expression` and direct
+`Statement::Match`) — a walk's `_ => {}`/generic `emit_expr` fallback
+either emits value-path IR for valueless arms or drops the statement
+entirely. When adding a statement walker: Match routes to `emit_statement`;
+`term`/`endprogram`/let-value positions stay on `emit_expr`.

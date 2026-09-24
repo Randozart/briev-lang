@@ -5161,6 +5161,19 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             result_ty = synth_ty;
         }
         let llvm_ty = self.llvm_type(&result_ty);
+        // 2026-09-24 (BUGS.md void-match phi): a statement-position match
+        // whose arms are all valueless (`match x { 0 => {hp[i]=3;}; _ => {};};`)
+        // probes as Void — emitting `phi void` is invalid LLVM ("void type
+        // only allowed for function results", enemy_swarm.ll). Arms already
+        // branch to the end label, so the merge needs NO phi — the register
+        // name is never defined (mirrors the empty-arms early return above;
+        // statement callers discard it). To undo: delete this block (restores
+        // the invalid phi for all-void arms).
+        if llvm_ty == "void" {
+            writeln!(out, "{}:", end_label).ok();
+            self.fun.cur_block = Some(end_label);
+            return TypedRegister { name: v.to_string(), ty: result_ty };
+        }
         let default_val = if llvm_ty == "ptr" {
             "null".to_string()
         } else if llvm_ty.starts_with("float") || llvm_ty.starts_with("double") {

@@ -2217,9 +2217,28 @@ impl LlvmBackend {
                             }
                         }
                         let _ = self.fun.gen_reg();
+                    } else if matches!(e, Expr::Match(..)) {
+                        // 2026-09-24 (BUGS.md statement-match routing): the
+                        // engine's hand-rolled body walk has no Match arm — it
+                        // fell into emit_expr → emit_match's EXPRESSION path,
+                        // which the standard emitter bypasses for statement
+                        // matches (emit_stmt.rs 2026-09-14 void-match routing).
+                        // Delegate so the arm bodies run as statements via the
+                        // .smt_* path (valueless arms, no result phi). To undo:
+                        // delete this arm (restores expression-path emission).
+                        super::emit_stmt::emit_statement(self, out, stmt, "  ");
                     } else {
                         self.emit_expr(out, e, "  ");
                     }
+                }
+                Statement::Match { .. } => {
+                    // 2026-09-24 (BUGS.md statement-match routing): composite
+                    // expansion (plugin/composite.rs) produces Statement::Match
+                    // directly — the old `_ => {}` catch-all SILENTLY DROPPED
+                    // it inside countable bodies. Delegate to the standard
+                    // statement-match handler (.smt_* blocks). To undo: delete
+                    // this arm (restores the silent drop).
+                    super::emit_stmt::emit_statement(self, out, stmt, "  ");
                 }
                 Statement::ArrowAssign { .. } => {
                     // 2026-08-01 (Phase 4): the arrow (stream write, collection
@@ -2252,10 +2271,27 @@ impl LlvmBackend {
                 writeln!(out, "{}br label %{}", indent, next_label).ok();
                 writeln!(out, "{}:", next_label).ok();
             }
-            Statement::Term(Some(e)) | Statement::Expression(e) | Statement::EndProgram(Some(e)) => {
+            Statement::Expression(e) => {
+                // 2026-09-24 (BUGS.md statement-match routing): statement-
+                // position match uses the standard .smt_* path, not the
+                // expression path (same rationale as the countable-body arm).
+                // Term/EndProgram stay on emit_expr — they are VALUE positions.
+                if matches!(e, Expr::Match(..)) {
+                    super::emit_stmt::emit_statement(self, out, stmt, indent);
+                } else {
+                    self.emit_expr(out, e, indent);
+                }
+            }
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => {
                 self.emit_expr(out, e, indent);
             }
             Statement::ArrowAssign { .. } => {
+                super::emit_stmt::emit_statement(self, out, stmt, indent);
+            }
+            Statement::Match { .. } => {
+                // 2026-09-24 (BUGS.md statement-match routing): composite-
+                // produced Statement::Match — delegate instead of the silent
+                // `_ => {}` drop. To undo: delete this arm.
                 super::emit_stmt::emit_statement(self, out, stmt, indent);
             }
             _ => {}
@@ -2279,7 +2315,22 @@ impl LlvmBackend {
                 self.fun.let_original_types.insert(name.clone(), reg.ty.clone());
             }
             Statement::Expression(e) => {
-                self.emit_expr(out, e, indent);
+                // 2026-09-24 (BUGS.md statement-match routing): a statement-
+                // position match in a guard body must use the standard .smt_*
+                // statement path (mirrors emit_stmt.rs 2026-09-14 and the
+                // countable-body arm above) — the expression path would probe
+                // valueless arms as Void. To undo: delegate back to emit_expr.
+                if matches!(e, Expr::Match(..)) {
+                    super::emit_stmt::emit_statement(self, out, stmt, indent);
+                } else {
+                    self.emit_expr(out, e, indent);
+                }
+            }
+            Statement::Match { .. } => {
+                // 2026-09-24 (BUGS.md statement-match routing): composite-
+                // produced Statement::Match in a guard body — delegate instead
+                // of the silent `_ => {}` drop. To undo: delete this arm.
+                super::emit_stmt::emit_statement(self, out, stmt, indent);
             }
             Statement::Guarded(cond, body) => {
                 self.emit_guard_block(out, stmt, indent);

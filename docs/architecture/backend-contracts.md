@@ -107,6 +107,23 @@ Hard-won in this effort; each one corresponds to a real defect class.
 > function start. Undo path: any reintroduced restore needs a failing IR
 > test naming the bad predecessor (BUGS.md 2026-09-24).
 >
+> **2026-09-24 (statement-match routing).** Every hand-rolled statement
+> walk (loop engine `emit_countable_body`, `emit_guard_body_stmt`,
+> `emit_guard_block`, and any new walker) MUST route statement-position
+> match — both `Expr::Match` inside `Statement::Expression` and direct
+> `Statement::Match` (composite-produced, `plugin/composite.rs`) — to
+> `emit_statement` (the `.smt_*` statement path; `emit_stmt.rs` 2026-09-14
+> conversion). A generic `emit_expr` fallback probes valueless arms as
+> Void and emits invalid `phi void`; a `_ => {}` catch-all silently drops
+> the match (the 2026-08-23 callable-txn class). `term`/`endprogram`/
+> let-value positions stay on `emit_expr` — they are VALUE positions.
+> `emit_match` additionally never emits `phi void` (Void merge = label
+> only; the typechecker rejects reading the Void result). Failure:
+> clang "void type only allowed for function results" (enemy_swarm,
+> BUGS.md 2026-09-24). Undo path: failing tests
+> `test_statement_match_valueless_arms_emits_no_void_phi` +
+> `test_void_match_value_emits_no_phi`.
+>
 > **2026-09-06 (plan 2026-09-06-cpp-expressiveness.md).** New emission laws
 > for the C++-expressiveness surface:
 >
