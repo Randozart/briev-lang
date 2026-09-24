@@ -70,6 +70,10 @@ pub struct TypeInfo {
     /// 2026-09-24 (component laws): type-level `spec Resistance` default in
     /// ohms. `None` when the type declares only the dimension or no value.
     pub resistance: Option<f64>,
+    /// 2026-09-24 (component laws): the type declares constitutive laws.
+    /// Such parts are solved from their law IR, never double-counted by the
+    /// legacy series-value heuristic.
+    pub has_laws: bool,
 }
 
 /// One derived electrical node.
@@ -204,6 +208,9 @@ pub struct VoltageCheck {
     pub net_voltage: BTreeMap<String, f64>,
     /// Net name → derived current class (B4: V/R through series parts).
     pub net_current: BTreeMap<String, f64>,
+    /// 2026-09-24 (component laws): branch current per pin from the DC law
+    /// solve. Preferred over the net-level heuristic when present.
+    pub pin_current: BTreeMap<(String, String), f64>,
     /// Physics facts the compiler PROVED (V=IR derivations) — reported in
     /// verification output so a proven bound is distinguishable from an
     /// unchecked one.
@@ -415,7 +422,7 @@ fn collect_type_pins(
                 }
                 info.insert(
                     td.name.clone(),
-                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance },
+                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty() },
                 );
             }
         }
@@ -1151,7 +1158,7 @@ fn collect_series_parts(
     let mut parts = Vec::new();
     for inst in instances.values() {
         let Some(info) = type_info.get(&inst.type_name) else { continue };
-        if info.pins.len() != 2 {
+        if info.pins.len() != 2 || info.has_laws {
             continue;
         };
         // Structured spec physics wins; the legacy `value` heuristic is a
@@ -1386,10 +1393,18 @@ fn check_current_bounds(
     check: &mut VoltageCheck,
 ) {
     for (pin, bound, is_upper) in collect_current_bounds(items, instances, type_pins) {
-        let Some(net_name) = pin_to_net.get(&(pin.component.clone(), pin.pin.clone())) else {
+        let key = (pin.component.clone(), pin.pin.clone());
+        let Some(net_name) = pin_to_net.get(&key) else {
             continue;
         };
-        let Some(derived) = check.net_current.get(net_name).copied() else {
+        // A law solve is pin-exact; the legacy net-current class is fallback
+        // only for programs that have not migrated to component laws.
+        let derived = check
+            .pin_current
+            .get(&key)
+            .copied()
+            .or_else(|| check.net_current.get(net_name).copied());
+        let Some(derived) = derived else {
             continue;
         };
         if is_upper && derived > bound + f64::EPSILON {
@@ -3716,6 +3731,55 @@ fn collect_participation(
     (unpop, shortcircuit, exempt, warnings, notes)
 }
 
+/// Solve-input bundle for the DC pass; `voltage` is separate because it is
+/// both the boundary source and the merge destination.
+struct DcInput<'a> {
+    components: &'a [crate::analysis::electronics_laws::ComponentLaws],
+    nets: &'a [Net],
+    instances: &'a BTreeMap<String, &'a ComponentInstance>,
+    type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
+    unpop: &'a std::collections::HashSet<String>,
+}
+
+/// Solve component-law DC groups and merge solved operating points into the
+/// voltage check. Solve failures become hard law errors (2026-09-24).
+fn integrate_dc_laws(voltage: &mut VoltageCheck, input: DcInput<'_>) -> Vec<String> {
+    let drives = voltage.net_voltage.clone();
+    let (solutions, errors) = crate::analysis::electronics_dc::solve_dc_laws(
+        &crate::analysis::electronics_dc::DcContext {
+            nets: input.nets,
+            components: input.components,
+            instances: input.instances,
+            type_pins: input.type_pins,
+            unpop: input.unpop,
+            drives: &drives,
+        },
+    );
+    for solution in solutions {
+        voltage.net_voltage.extend(solution.net_voltage);
+        voltage.pin_current.extend(solution.pin_current);
+    }
+    errors
+}
+
+/// Elaborate component constitutive laws with the same instance/type tables
+/// the netlist uses (2026-09-24 component laws).
+fn elaborate_law_ir(
+    items: &[TopLevel],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> crate::analysis::electronics_laws::LawIr {
+    crate::analysis::electronics_laws::elaborate_component_laws(
+        items,
+        &crate::analysis::electronics_laws::LawContext {
+            instances,
+            type_info,
+            type_pins,
+        },
+    )
+}
+
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let (type_pins, type_info, class_errors) = collect_type_pins(items);
     if type_pins.is_empty() {
@@ -3728,17 +3792,9 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         .collect();
 
     // 2026-09-24 (component laws, Slice 2): elaborate constitutive laws
-    // before topology-dependent checks. The IR is validated now and consumed
-    // by the DC solver in a later slice.
-    let law_ir = crate::analysis::electronics_laws::elaborate_component_laws(
-        items,
-        &crate::analysis::electronics_laws::LawContext {
-            instances: &instances,
-            type_info: &type_info,
-            type_pins: &type_pins,
-        },
-    );
-    let (law_errors, component_laws) = (law_ir.errors, law_ir.components);
+    // before topology-dependent checks; Slice 3 consumes the IR.
+    let law_ir = elaborate_law_ir(items, &instances, &type_info, &type_pins);
+    let (mut law_errors, component_laws) = (law_ir.errors, law_ir.components);
 
     let mut ds = DisjointSet::new();
     let bus_errors = collect_pin_unions(items, &instances, &type_pins, &mut ds);
@@ -3762,13 +3818,27 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     // Voltage classes need the nets and instances before they move into the
     // result struct. 2026-09-22 (Slice B): acknowledged shorts suppress the
     // present-state shorted-supply error.
-    let voltage = derive_voltage(
+    let mut voltage = derive_voltage(
         items,
         &VoltageInputs { nets: &nets, shortcircuit: &shortcircuit },
         &instances,
         &type_pins,
         &type_info,
     );
+
+    // 2026-09-24 (component laws, Slice 3): solve unguarded law groups after
+    // boundary drives are known and before tolerance/current checks. Solved
+    // quantities replace only law-derived unknowns; law failures are hard.
+    law_errors.extend(integrate_dc_laws(
+        &mut voltage,
+        DcInput {
+            components: &component_laws,
+            nets: &nets,
+            instances: &instances,
+            type_pins: &type_pins,
+            unpop: &unpop,
+        },
+    ));
 
     // 2026-09-21 (E13): the decoupling convention runs on the finished
     // netlist — every union is final when it fires.
@@ -5012,6 +5082,132 @@ mod tests {
                 .any(|i| (i - 0.0033).abs() < 1e-12),
             "spec Resistance 1kOhm should derive 3.3mA, got {:?}",
             nl.voltage.net_current
+        );
+    }
+
+    #[test]
+    fn dc_law_solve_derives_resistor_branch_current() {
+        let src = r#"
+            type Resistor {
+                pin a; pin b;
+                reference "R"; tolerance any;
+                spec Resistance: Ohm;
+                when true {
+                    a.voltage - b.voltage == Resistance * a.current;
+                    a.current + b.current == 0;
+                }
+            };
+            type Supply { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Supply = Supply { };
+            let r1: Resistor = Resistor { spec Resistance: 330Ohm; };
+            txn drive
+                [v1.p.voltage == 3.3V && v1.p.voltage == r1.a.voltage
+                 && r1.b.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                [r1.b.current <= 0.011]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        let into_a = nl.voltage.pin_current.get(&("r1".into(), "a".into())).copied();
+        let into_b = nl.voltage.pin_current.get(&("r1".into(), "b".into())).copied();
+        assert!(into_a.map_or(false, |i| (i - 0.01).abs() < 1e-9), "{into_a:?}");
+        assert!(into_b.map_or(false, |i| (i + 0.01).abs() < 1e-9), "{into_b:?}");
+        assert!(nl.voltage.violations.is_empty(), "{:?}", nl.voltage.violations);
+    }
+
+    #[test]
+    fn dc_law_solve_classes_divider_mid_net() {
+        let resistor = r#"
+            type Resistor {
+                pin a; pin b;
+                reference "R"; tolerance any;
+                spec Resistance: Ohm;
+                when true {
+                    a.voltage - b.voltage == Resistance * a.current;
+                    a.current + b.current == 0;
+                }
+            };
+            type Supply { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Supply = Supply { };
+            let top: Resistor = Resistor { spec Resistance: 1kOhm; };
+            let bottom: Resistor = Resistor { spec Resistance: 1kOhm; };
+            txn drive
+                [v1.p.voltage == 5.0V && v1.p.voltage == top.a.voltage
+                 && top.b.voltage == bottom.a.voltage
+                 && bottom.b.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                [top.b.voltage >= 2.0V && top.b.voltage <= 3.0V]
+            { }
+        "#;
+        let nl = analyze(resistor);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        let mid = nl
+            .voltage
+            .net_voltage
+            .values()
+            .find(|v| (**v - 2.5).abs() < 1e-9)
+            .copied();
+        assert!(mid.is_some(), "mid net classes to 2.5 V: {:?}", nl.voltage.net_voltage);
+        let top_current = nl.voltage.pin_current.get(&("top".into(), "a".into())).copied();
+        assert!(top_current.map_or(false, |i| (i - 0.0025).abs() < 1e-9), "{top_current:?}");
+    }
+
+    #[test]
+    fn underdetermined_dc_law_group_is_a_hard_error() {
+        let src = r#"
+            type Resistor {
+                pin a; pin b;
+                reference "R"; tolerance any;
+                spec Resistance: Ohm;
+                when true {
+                    a.current + b.current == 0;
+                }
+            };
+            type Source { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Source = Source { };
+            let r1: Resistor = Resistor { spec Resistance: 1kOhm; };
+            txn open_load
+                [v1.p.voltage == 3.3V && v1.p.voltage == r1.a.voltage
+                 && r1.b.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                [true]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.law_errors
+                .iter()
+                .any(|e| e.contains("no unique DC operating point") && e.contains("free variable")),
+            "{:?}",
+            nl.law_errors
+        );
+    }
+
+    #[test]
+    fn contradictory_dc_law_boundaries_are_a_hard_error() {
+        let src = r#"
+            type Wire {
+                pin a; pin b;
+                reference "W"; tolerance any;
+                when true {
+                    a.voltage == b.voltage;
+                    a.current + b.current == 0;
+                }
+            };
+            type Source { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Source = Source { };
+            let w1: Wire = Wire { };
+            txn contradiction
+                [v1.p.voltage == 3.3V && v1.p.voltage == w1.a.voltage
+                 && w1.b.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                [true]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.law_errors
+                .iter()
+                .any(|e| e.contains("no DC operating point")),
+            "{:?}",
+            nl.law_errors
         );
     }
 

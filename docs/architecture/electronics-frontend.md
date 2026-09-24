@@ -117,7 +117,17 @@ pins and spec constants, dimension-checks expressions (`Ohm = Volt / Amp`),
 treats literal zero as polymorphic notation, and rejects nonlinear terms,
 unknown/missing parameters, dimension conflicts, empty laws, and duplicate
 equations. The netlist carries `component_laws` and hard `law_errors`; the
-KiCad gate refuses invalid laws. DC consumption is Slice 3.
+KiCad gate refuses invalid laws.
+
+Landed in Slice 3: `analysis/electronics_dc.rs` solves unguarded law groups.
+Components are grouped by connected nets, fixed contract drives become
+boundary constants, unknown net voltages and branch currents become matrix
+variables, and KCL is added on non-boundary nets. Deterministic Gaussian
+elimination proves one operating point or names the group as contradictory /
+underdetermined with its free variables. Solved pin currents feed current
+bounds; solved net voltages feed tolerance and downstream checks.
+Law-bearing types are excluded from the legacy series-value path, so they
+are never double-counted.
 
 ## Deferred (recorded, not built)
 

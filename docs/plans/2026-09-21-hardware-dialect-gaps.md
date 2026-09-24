@@ -1042,3 +1042,11 @@ constants, single linear comparison guards, and polymorphic literal zero.
 It rejects nonlinear terms, dimension conflicts, missing parameters, empty
 laws, and duplicate equations as hard law errors. The netlist carries the
 IR; the emitter refuses invalid laws. The DC solver is not yet attached.
+
+**Slice 3 addendum (same day):** `analysis/electronics_dc.rs` now solves
+always-active law groups deterministically. Contract drives are boundary
+constants; non-boundary nets get KCL; Gaussian elimination reports
+contradictory and underdetermined groups instead of choosing a point.
+Solved voltages/currents feed tolerance/current checks, and law-bearing
+types are excluded from the legacy series heuristic to prevent double
+counting. Guarded modes remain for Slice 4.
