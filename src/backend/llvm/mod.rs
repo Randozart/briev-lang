@@ -1941,9 +1941,34 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
     }
 }
 
+    /// 2026-09-24: the shared malloc fallback for emit_arena_alloc's three
+    /// non-arena exits (stateless body, budget below arena_min_budget, no
+    /// arena fields in %State). Emits `@malloc` then ptrtoints the result —
+    /// returns the i64 form emit_arena_alloc callers expect. One helper for
+    /// all three (was two inline copies + the new stateless guard).
+    fn emit_malloc_fallback(&mut self, out: &mut String, indent: &str, size_reg: &str) -> String {
+        let r = self.fun.next_reg_with_prefix("aam");
+        writeln!(out, "{}{} = call noalias ptr @malloc(i64 {})", indent, r, size_reg).ok();
+        let ri = self.fun.next_reg_with_prefix("aami");
+        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ri, r).ok();
+        ri
+    }
+
     pub(crate) fn emit_arena_alloc(&mut self, out: &mut String, indent: &str, size_reg: &str) -> String {
-        // 2026-07-19: Bump-pointer arena allocation via %State fields.
-        // Uses next_reg_with_prefix (no closures — avoids borrow conflicts).
+        // 2026-09-24 (stateless-defn × arena): a stateless body has no
+        // %state parameter — arena fields live in %State, so referencing
+        // them emits `ptr %state` inside `define @f(i64 ...)` and clang
+        // rejects the module ("use of undefined value '%state'" —
+        // arena_churn/digits_of_int, 2026-09-24). The AST needs_state
+        // fixpoint ran before lowering; the backend consumes its verdict
+        // here: stateless ⇒ @malloc, same as the no-arena-fields path.
+        // Callers that bookkeep AllocStrategy::Arena must gate on
+        // !stateless_body BEFORE calling (see emit_alloc) so Free# still
+        // dispatches correctly; this guard is the backstop for paths
+        // without strategy bookkeeping (inline concat).
+        if self.fun.stateless_body {
+            return self.emit_malloc_fallback(out, indent, size_reg);
+        }
 
         // 2026-07-22: Low budget → direct malloc (simpler IR, faster compile).
         // The --optimize-budget flag (default 256) controls simulation depth;
@@ -1951,20 +1976,15 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // use heap allocation.
         // 2026-07-31: Phase 3 (§8.2) — threshold from config/ir-lowering.toml.
         if (self.ctx.optimize_budget as u32) < crate::config_tuning::ir_lowering().arena_min_budget {
-            let r = self.fun.next_reg_with_prefix("aam");
-            writeln!(out, "{}{} = call noalias ptr @malloc(i64 {})", indent, r, size_reg).ok();
-            let ri = self.fun.next_reg_with_prefix("aami");
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ri, r).ok();
-            return ri;
+            return self.emit_malloc_fallback(out, indent, size_reg);
         }
 
         let Some(aptr_idx) = self.arena_ptr_idx else {
-            let r = self.fun.next_reg_with_prefix("aam");
-            writeln!(out, "{}{} = call noalias ptr @malloc(i64 {})", indent, r, size_reg).ok();
-            let ri = self.fun.next_reg_with_prefix("aami");
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ri, r).ok();
-            return ri;
+            return self.emit_malloc_fallback(out, indent, size_reg);
         };
+
+        // 2026-07-19: Bump-pointer arena allocation via %State fields.
+        // Uses next_reg_with_prefix (no closures — avoids borrow conflicts).
         let aend_idx = self.arena_end_idx.unwrap();
         let abase_idx = self.arena_base_idx.unwrap();
 

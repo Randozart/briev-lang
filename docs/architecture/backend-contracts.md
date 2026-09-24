@@ -73,6 +73,15 @@ Hard-won in this effort; each one corresponds to a real defect class.
 | LLVM IR float literals always carry a decimal point (`{:?}`, never `{:e}`) | `1e-4` parses as an integer token — clang/opt reject the module |
 | `%briev.field` constant order = C `BrievField` order (name, kind, host, elem, count, is_write, proj) | proj_offset at the wrong index misaligns runtime reads; opt type error |
 
+> **2026-09-24 (stateless-defn × arena).** Stateless-body emission laws
+> (stateless-defn ABI, plan 2026-09-23-frgn-elimination-round-2.md):
+>
+> | Law | Failure it prevents |
+> |-----|---------------------|
+> | A defn emitted WITHOUT `%state` (needs_state fixpoint = false) never references `%State` — `emit_arena_alloc` falls back to `@malloc` while `fun.stateless_body` is set (set/cleared by `emit_definition`) | clang "use of undefined value '%state'" — arena lowering (string concat, Alloc#) inside `define @f(i64 …)` (arena_churn/digits_of_int) |
+> | Alloc# strategy gates that choose Arena (`arena_ptr_idx`, analysis strategy, explicit `Arena`) require `!stateless_body`; stateless falls back to malloc/alloca and bookkeeps **Malloc** | Arena bookkeeping on a malloc'd pointer → Free# skips `@free` → leak |
+> | The arena-fields-in-%State decision (`needs_arena`/`arena_ptr_idx`) is program-wide; the stateless-vs-stateful decision is per-body — emission must honor BOTH, never infer one from the other | The AST fixpoint runs before arena lowering exists; inferring "arena fields ⇒ has %state" reintroduces %state into stateless signatures |
+>
 > **2026-09-06 (plan 2026-09-06-cpp-expressiveness.md).** New emission laws
 > for the C++-expressiveness surface:
 >

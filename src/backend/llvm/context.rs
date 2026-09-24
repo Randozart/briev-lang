@@ -968,6 +968,20 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     // correctness for benchmarks that print at convergence.
     pub needs_state_stores_in_body: bool,
 
+    /// 2026-09-24 (stateless-defn × arena): true while emitting the body of a
+    /// defn whose `needs_state` verdict is false. A stateless body has NO
+    /// `%state` parameter, so any codegen that would reach into `%State`
+    /// (arena bump via emit_arena_alloc — concat, Alloc#/pool buffers) must
+    /// fall back to @malloc/alloca instead. Set by emit_definition from its
+    /// `needs_state` argument and reset to false when the body closes; every
+    /// other function kind (txns, reactor_tick, main, probes) is stateful and
+    /// leaves the flag false. Without this flag, emit_arena_alloc emitted
+    /// `getelementptr %State, ptr %state` inside `define ... @digits_of_int(i64)`
+    /// — clang: "use of undefined value '%state'" (arena_churn, 2026-09-24;
+    /// root cause: stateless-defn ABI merged 2026-09-23 ignored that arena
+    /// lowering introduces %state after the AST fixpoint already ran).
+    pub stateless_body: bool,
+
     // 2026-07-04: Whether the current loop body is parallel-safe.
     // When true, emit_memory_field_store does NOT update ssa_old_*_regs
     // after & assignments — all reads continue to use the phi register
@@ -1178,6 +1192,7 @@ impl FunctionContext {
             // Set to true by dispatch when phi-capped fields need %State stores,
             // or by emit_countable_main when post-loop hoisted prints exist.
             needs_state_stores_in_body: false,
+            stateless_body: false,
             parallel_safe_body: true,
             counter_field_name: None,
             parallel_safe_exempt_fields: HashSet::new(),

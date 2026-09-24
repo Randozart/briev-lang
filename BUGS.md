@@ -6634,3 +6634,62 @@ cleanup, not correctness.
 
 **Found by:** the Front B Lane 2 gate (plan
 2026-09-20-metaprogrammed-composites).
+
+## 2026-09-24: liveness soundness net missed contract obligations + watchdog on-fire handlers — build panic on series_converge [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep, followup-stages Stage 1)
+**Symptom:** `build_and_bench.sh --runtime` aborted: `defn liveness: emitted
+code calls unreached defn(s) ["print_best"]` on `benchmarks/series_converge.bv`.
+**Root cause:** `compute_referenced_fields`/liveness rooting walked defn bodies
+but never walked contract obligations (pre/post conditions, watchdog condition
+and fallback) nor the watchdog `on_fire` handler — the latter is a bare
+`String` field, invisible to `walk_expr`. The handler legitimately roots
+`print_best`; without the walk the soundness net flagged valid emission.
+**Fix (commit eece4a69):** `Builder.contracts` index + shared
+`index_defn`/`index_txn` + `walk_contract` over all eight obligation sites;
+3 regression tests (watchdog on-fire, condition/fallback, pre/post).
+**Found by:** CPU baseline sweep — the CPU suite had been blocked behind this
+class of panic since the 2026-09-13 soundness net landed (cf. str_to_int).
+
+## 2026-09-24: `>>` capture misparsed statement-position shifts — every non-zero Float print segfaulted [RESOLVED]
+
+**Date:** 2026-09-24 (series_converge runtime segfault after the liveness fix)
+**Symptom:** series_converge and a 7-line `println!("{}", x)` repro exited 139;
+backtrace = pure `pow2b` recursion (stack overflow). Only `0.0` printed
+(early-return path); `1e10` printed (sscale path); every other Float crashed.
+**Root cause:** the 2026-09-16 chain-capture predicate checked only
+`>> + ident + terminator`, so `let digit: Int = m >> b;` (float_fmt.bv:140 —
+the frac_digit_loop) parsed as CAPTURE: emit_expr rebound `b` to `m`'s
+register, `pow2b(b)` received 8388608, contract `b <= 60` unenforced at
+runtime → infinite recursion. Design intent (all doc examples, backend
+chain_stack) was chain receivers only; spec text underspecified.
+**Fix (commit 1e4a9a63):** capture requires `MethodCall|Capture` receiver;
+`m >> b`, `f() >> n`, `term a >> b`, `f(x >> y)` all shift. SPEC §11.4.1 +
+universal-chaining.md disambiguation updated same commit; 4 parser tests.
+**Moral:** `>> name` capture is statement/chain syntax — bare `lhs >> rhs`
+at statement end is the commonest shift shape in existence; the receiver
+must carry the chain evidence.
+
+## 2026-09-24: stateless-defn ABI × arena lowering — clang "use of undefined value '%state'" on arena_churn [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep reached arena_churn after the two fixes above)
+**Symptom:** `benchmarks/arena_churn.ll:2092: error: use of undefined value
+'%state'` — `getelementptr %State, ptr %state` inside
+`define ptr @digits_of_int(i64 %arg0)`.
+**Root cause:** the 2026-09-23 stateless-defn mechanism (frgn-elim merge
+b78a03e7/f5c1d842) computes needs_state on the AST (least fixpoint) — string
+concat and Alloc# are stateless leaves. Arena lowering
+(`emit_inline_concat` → `emit_arena_alloc`) runs AFTER and chooses arena from
+the program-wide `arena_ptr_idx` (set because the node calls Alloc#),
+introducing `%state` into a signature that has no such parameter. Pre-merge
+every defn took `%state`, so the combination never fired; cargo tests never
+build benchmarks, so the merge gate missed it.
+**Fix:** `fun.stateless_body` set/cleared by `emit_definition`; the three
+arena-strategy gates (`arena_ptr_idx`, analysis strategy, explicit `Arena`)
+require `!stateless_body`; `emit_arena_alloc` guards with a shared
+`emit_malloc_fallback`; stateless Arena bookkeeps **Malloc** so Free#
+dispatches `@free`. Emission law added to backend-contracts.md §3; IR test
+`test_stateless_defn_concat_uses_malloc_when_arena_program`.
+**Class:** analysis-vs-emission decision split — program-wide arena-fields
+decision and per-body stateless decision must both be honored; never infer
+one from the other.

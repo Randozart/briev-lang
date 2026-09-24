@@ -8841,6 +8841,60 @@ defn make() -> Option {
     assert!(ir.contains("call ptr @malloc(i64 16)"), "boxed image missing");
 }
 
+/// 2026-09-24 (stateless-defn × arena): in a program whose %State carries
+/// arena fields (some txn calls Alloc#), a STATELESS defn that concatenates
+/// strings must still emit WITHOUT `%state` and must lower the concat to
+/// @malloc — never `getelementptr %State, ptr %state` inside
+/// `define ... @shout(i64 ...)`. The stateless-defn ABI fixpoint (2026-09-23)
+/// runs on the AST before arena lowering; without the stateless_body guard
+/// the backend reintroduced %state and clang rejected the module
+/// (arena_churn/digits_of_int — BUGS.md 2026-09-24).
+#[test]
+fn test_stateless_defn_concat_uses_malloc_when_arena_program() {
+    let src = "let n: Int = 0;\n\
+               defn shout(s: String) -> String {\n\
+                   term s + \"!\";\n\
+               };\n\
+               node go [n < 2][n == 2] {\n\
+                   let p: Int = Alloc#(64) as Int;\n\
+                   Store#(p, n);\n\
+                   let q: String = shout(\"a\");\n\
+                   n = n + 1;\n\
+                   term;\n\
+               };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = crate::parser::Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    // shout's signature: String param, no %state.
+    assert!(
+        ir.contains("define ptr @shout(ptr %arg0"),
+        "stateless concat defn must not take %state:\n{ir}"
+    );
+    // Isolate shout's body: from its define to the closing brace.
+    let start = ir
+        .find("define ptr @shout")
+        .expect("shout must be emitted (rooted by the node call)");
+    let body_end = ir[start..].find("\n}").expect("shout body closes") + start;
+    let shout_body = &ir[start..body_end];
+    assert!(
+        !shout_body.contains("%State"),
+        "stateless body must not reach into %State:\n{shout_body}"
+    );
+    assert!(
+        shout_body.contains("@malloc"),
+        "stateless concat must fall back to @malloc:\n{shout_body}"
+    );
+    // The program still has an arena somewhere (the node's Alloc#).
+    assert!(
+        ir.contains("getelementptr inbounds %State"),
+        "arena fields must exist program-wide for the node's Alloc#:\n{ir}"
+    );
+}
+
 /// 2026-08-27 (Slice B): an @-addressed trigger VALUE read lowers to a
 /// volatile load at the static address (boxed-pointer ABI inttoptr), and
 /// the pin is EXCLUDED from event dispatch (no dangling @txn_<pin> call).

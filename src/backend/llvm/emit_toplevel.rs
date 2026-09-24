@@ -2749,6 +2749,9 @@ impl LlvmBackend {
     pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
+        // 2026-09-24: a stateless body must never reference %state — arena
+        // lowering (emit_arena_alloc) consults this and falls back to malloc.
+        self.fun.stateless_body = !needs_state;
         self.fun.reassigned_lets.clear();
         self.fun.expr_dedup_cache.clear();
         self.fun.is_static_bound = false;
@@ -2982,6 +2985,9 @@ impl LlvmBackend {
             }
         }
         writeln!(out, "}}").ok();
+        // Body closed — restore stateful default for whatever emits next
+        // (txns, reactor_tick, main, probes all take %state).
+        self.fun.stateless_body = false;
         // Phase 4.5: Emit dso_local export wrapper if #export modifier present
         if let Some(export_name) = Self::get_export_name(&d.modifiers) {
             writeln!(out, "define dso_local {} @{}(", ll_ret_ty, export_name).ok();

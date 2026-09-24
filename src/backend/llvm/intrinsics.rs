@@ -591,11 +591,20 @@ fn emit_alloc(
                         // Full escape analysis will assign Arena/Alloca when safe.
                         emit_malloc_inline(backend, out, v, &size, indent)
                     }
-                    AllocStrategy::Arena => {
+                    AllocStrategy::Arena if !backend.fun.stateless_body => {
                         let result = backend.emit_arena_alloc(out, indent, &size);
                         writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
                         backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Arena);
                         BTypedRegister { name: v.to_string(), ty: Type::int() }
+                    }
+                    // 2026-09-24 (stateless-defn × arena): analysis chose Arena
+                    // but the body is stateless — arena fields live in %State
+                    // and this defn has no %state param. Malloc instead, and
+                    // bookkeep Malloc so Free# dispatches @free (an Arena
+                    // bookkeeping here would leak: arena results are never
+                    // explicitly freed).
+                    AllocStrategy::Arena => {
+                        emit_malloc_inline(backend, out, v, &size, indent)
                     }
                     AllocStrategy::Alloca => {
                         let a = format!("%alloc_{}", backend.fun.txn_counter);
@@ -636,7 +645,9 @@ fn emit_alloc(
     // Strategy 1: Arena scope active → bump allocate.
     // 2026-07-19: Arena is in %State fields — available in any function that
     // has %state (all txns, callable txns, and their helpers by inheritance).
-    if backend.arena_ptr_idx.is_some() {
+    // 2026-09-24: stateless bodies are NOT in that set — fall through to the
+    // alloca/malloc strategies below (no %state to reach into).
+    if backend.arena_ptr_idx.is_some() && !backend.fun.stateless_body {
         // 2026-07-19: emit_arena_alloc returns the old bump pointer as i64.
         // The caller receives it directly — no ptrtoint needed.
         let result = backend.emit_arena_alloc(out, indent, &size);
@@ -673,11 +684,17 @@ fn emit_alloc_with_strategy(
     match strategy_expr {
         Expr::Identifier(name) => {
             match name.as_str() {
-                "Arena" => {
+                "Arena" if !backend.fun.stateless_body => {
                     let result = backend.emit_arena_alloc(out, indent, size);
                     // 2026-07-19: emit_arena_alloc returns i64 — route to v.
                     writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
                     backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Arena);
+                }
+                // 2026-09-24: explicit Arena in a stateless body — %state is
+                // unavailable, so honor the intent (heap, not stack) with
+                // malloc and bookkeep Malloc for Free# (see emit_alloc).
+                "Arena" => {
+                    emit_malloc_inline(backend, out, v, size, indent);
                 }
                 "Malloc" => {
                     emit_malloc_inline(backend, out, v, size, indent);
