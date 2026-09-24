@@ -74,6 +74,10 @@ pub struct TypeInfo {
     /// Such parts are solved from their law IR, never double-counted by the
     /// legacy series-value heuristic.
     pub has_laws: bool,
+    /// 2026-09-24 (component laws): type-level quantity defaults for law
+    /// parameters, keyed by lowercase spec name. Dimension-only declarations
+    /// are requirements and intentionally absent.
+    pub spec_defaults: BTreeMap<String, crate::ast::PropertyValue>,
 }
 
 /// One derived electrical node.
@@ -420,9 +424,20 @@ fn collect_type_pins(
                         &mut class_errors,
                     ));
                 }
+                let spec_defaults = td
+                    .body
+                    .metadata
+                    .iter()
+                    .filter_map(|(key, value)| match value {
+                        crate::ast::PropertyValue::Quantity { .. } => {
+                            Some((key.clone(), value.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
                 info.insert(
                     td.name.clone(),
-                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty() },
+                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty(), spec_defaults },
                 );
             }
         }

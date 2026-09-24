@@ -213,12 +213,20 @@ struct ExpressionSite<'a> {
 /// constitutive component behavior.
 pub fn elaborate_component_laws(items: &[TopLevel], ctx: &LawContext<'_>) -> LawIr {
     let mut ir = LawIr::default();
+    // Later declarations of the same component name shadow earlier prelude
+    // declarations, exactly like the type tables.
+    let mut type_defs: BTreeMap<&str, &crate::ast::TypeDef> = BTreeMap::new();
     for item in items {
-        let TopLevel::TypeDef(td) = item else { continue };
-        if td.body.when_laws.is_empty() || td.body.pins.is_empty() {
-            continue;
+        if let TopLevel::TypeDef(td) = item {
+            if !td.body.pins.is_empty() {
+                type_defs.insert(td.name.as_str(), td);
+            }
         }
-        elaborate_type_laws(td, ctx, &mut ir);
+    }
+    for td in type_defs.into_values() {
+        if !td.body.when_laws.is_empty() {
+            elaborate_type_laws(td, ctx, &mut ir);
+        }
     }
     ir
 }
@@ -393,9 +401,15 @@ fn spec_constant(name: &str, site: &ExpressionSite<'_>) -> Result<BuiltExpressio
     let Some(inst) = ctx.instances.get(instance) else {
         return Err(format!("{source} names missing instance '{instance}'"));
     };
-    let Some(crate::ast::PropertyValue::Quantity { si, dimension }) =
-        inst.specs.get(storage_key.as_str())
-    else {
+    let quantity = inst
+        .specs
+        .get(storage_key.as_str())
+        .or_else(|| {
+            ctx.type_info
+                .get(&inst.type_name)
+                .and_then(|info| info.spec_defaults.get(storage_key.as_str()))
+        });
+    let Some(crate::ast::PropertyValue::Quantity { si, dimension }) = quantity else {
         return Err(format!(
             "{source} references spec '{name}', but instance '{instance}' supplies no value — add `spec {name}: <quantity>;`"
         ));

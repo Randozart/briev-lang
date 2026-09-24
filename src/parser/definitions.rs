@@ -3085,7 +3085,7 @@ impl<'a> Parser<'a> {
                 }
                 // !> key: value; or spec PascalCase: value; — metadata assignment
                 if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
-                    self.parse_metadata_clause(&mut metadata)?;
+                    self.parse_metadata_clause_scoped(&mut metadata, !pins.is_empty())?;
                     continue;
                 }
                 let prefixes = self.parse_field_prefixes();
@@ -3384,12 +3384,22 @@ impl<'a> Parser<'a> {
         &mut self,
         metadata: &mut std::collections::HashMap<String, PropertyValue>,
     ) -> Result<(), SyntaxError> {
+        self.parse_metadata_clause_scoped(metadata, false)
+    }
+
+    /// Component bodies accept unknown PascalCase `spec` names as declared,
+    /// dimensioned law parameters. Other declaration forms stay closed.
+    fn parse_metadata_clause_scoped(
+        &mut self,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+        allow_law_parameter: bool,
+    ) -> Result<(), SyntaxError> {
         let is_spec = self.check(&Token::Spec);
         self.advance();
         let key = self.expect_identifier()?;
         self.expect(Token::Colon)?;
         if is_spec {
-            return self.parse_spec_value(&key, metadata);
+            return self.parse_spec_value(&key, metadata, allow_law_parameter);
         }
         match key.as_str() {
             "ctd" => {
@@ -3427,9 +3437,13 @@ impl<'a> Parser<'a> {
         &mut self,
         name: &str,
         metadata: &mut std::collections::HashMap<String, PropertyValue>,
+        allow_law_parameter: bool,
     ) -> Result<(), SyntaxError> {
         let key = match spec_name_to_key(name) {
             Some(k) => k,
+            None if allow_law_parameter => {
+                return self.parse_law_parameter_spec(name, metadata);
+            }
             None => {
                 let msg = format!(
                     "unknown spec '{}' — known specs: Alignment, Bits, Bytes, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadType, MaxBits, NoConnect, PullUp, Resistance, Return, Rows, Supply, Switchable",
@@ -3511,6 +3525,58 @@ impl<'a> Parser<'a> {
         }
         self.eat(&Token::Semicolon);
         Ok(())
+    }
+
+    /// Parse a component-law parameter: `spec Name: Dimension;` declares a
+    /// required parameter; `spec Name: quantity;` states a default. Unknown
+    /// names are allowed only in component bodies (2026-09-24 laws).
+    fn parse_law_parameter_spec(
+        &mut self,
+        name: &str,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<(), SyntaxError> {
+        let dimension = match self.peek() {
+            Some(Token::Identifier(dim)) if crate::parser::quantity::parse_unit_suffix(dim).is_some() => {
+                Some(dim.clone())
+            }
+            _ => None,
+        };
+        if let Some(dim) = dimension {
+            self.pos += 1;
+            let key = name.to_lowercase();
+            metadata.insert(key, PropertyValue::Identifier(dim.clone()));
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        let start = self.pos;
+        if let Some(value) = match self.peek() {
+            Some(Token::Float(value)) => Some(*value),
+            Some(Token::Integer(value)) => Some(*value as f64),
+            _ => None,
+        } {
+            self.pos += 1;
+            let Some(Token::Identifier(unit)) = self.peek() else {
+                return self.error_at_current(&format!(
+                    "spec {name} needs an explicit full-word unit (e.g. `330Ohm` or `0.7Volt`)"
+                ));
+            };
+            let Some(crate::parser::quantity::UnitSuffix::Explicit { scale, dim }) =
+                crate::parser::quantity::parse_unit_suffix(unit)
+            else {
+                return self.error_at_current(&format!(
+                    "'{unit}' is not a canonical full-word unit for spec {name}"
+                ));
+            };
+            self.pos += 1;
+            let key = name.to_lowercase();
+            metadata.insert(key, PropertyValue::Quantity { si: value * scale, dimension: dim });
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        self.pos = start;
+        self.error_at_current(&format!(
+            "spec {name} must declare a dimension (`Volt`, `Amp`, `Ohm`) or state a quantity (e.g. `0.7Volt`)"
+        ))
     }
 
     /// Parse a boolean spec key (`true`/`false` lex as dedicated tokens).
@@ -4713,6 +4779,40 @@ mod tests {
             format!("{err}").contains("canonical Ohm units"),
             "legacy instance spec: {err}"
         );
+    }
+
+    #[test]
+    fn test_component_law_parameters_accept_generic_names() {
+        // Law parameters are not compiler catalog keys: any PascalCase name
+        // is legal once a component declares its dimension.
+        let tl = parse_top(
+            "type Led { pin a; pin k; reference \"D\"; tolerance any; \
+             spec ForwardVoltage: Volt; spec DynamicResistance: Ohm; };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_eq!(
+            td.body.metadata.get("forwardvoltage"),
+            Some(&crate::ast::PropertyValue::Identifier("Volt".into()))
+        );
+        assert_eq!(
+            td.body.metadata.get("dynamicresistance"),
+            Some(&crate::ast::PropertyValue::Identifier("Ohm".into()))
+        );
+
+        let tl = parse_top(
+            "type Led { pin a; pin k; reference \"D\"; tolerance any; \
+             spec ForwardVoltage: 1.8Volt; };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        match td.body.metadata.get("forwardvoltage") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                assert_eq!(*dimension, crate::ast::QuantityDim::Volt);
+                assert!((si - 1.8).abs() < 1e-12);
+            }
+            other => panic!("expected 1.8Volt default, got {other:?}"),
+        }
     }
 
     #[test]

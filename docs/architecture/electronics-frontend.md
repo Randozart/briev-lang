@@ -136,6 +136,16 @@ truth value selected for that mode. Zero valid modes is a hard error;
 multiple distinct valid modes are reported, never silently collapsed.
 Negative quantity drives (`-3.3V`) are boundary conditions.
 
+Landed in Slice 5: component bodies accept generic dimensioned law
+parameters (`spec ForwardVoltage: Volt;`), including quantity defaults.
+Later component declarations shadow prelude declarations, so a user's
+same-named local type cannot inherit stdlib laws accidentally.
+`lib/std/electronics.bv` now declares resistor, wire, diode, and LED laws.
+`led_blinker.ebv` uses the stdlib laws with structured datasheet physics
+and proves its LED current. `usb_sensor.ebv` uses structured resistance
+values; its local non-law Resistor remains intentional until the SPST
+button has conditional-topology state.
+
 ## Deferred (recorded, not built)
 
 Electrical pin roles (`[power_in]`), footprint validation against KiCad

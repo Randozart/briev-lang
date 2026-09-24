@@ -306,8 +306,20 @@ in the parser — netlist, contracts, and the emitter see named ordinary
  supplies or overrides it with `let r1: Resistor = Resistor { value:
  "4k7"; spec Resistance: 4.7kOhm; };`. The `Resistance` key requires the
  explicit full-word unit — `330R`, `330Ω`, and a bare number are errors.
+ Component bodies may declare additional PascalCase law parameters in the
+ same way (`spec ForwardVoltage: Volt;`,
+ `spec DynamicResistance: Ohm;`); elsewhere unknown specs remain errors.
  `value` is opaque annotation and is never a second physics channel when
- `spec Resistance` is present.
+ a structured spec parameter is present.
+
+ **Component laws (2026-09-24).** A pin-bearing component type states its
+ behavior as type-body `when` laws over `.voltage`, `.current`, and its
+ spec parameters. Pin current is positive into the pin. Linear DC laws
+ are solved against contract voltage boundaries with KCL; guarded linear
+ branches enumerate deterministically, and zero or multiple operating
+ points are hard errors. The stdlib resistor, wire, diode, and LED types
+ are ordinary declarations of this mechanism — the compiler knows no
+ component catalog names.
 
  **The fab section (2026-09-23).** A `.ebv` may attach a physical-layout
  section — `fab { board 40mm x 20mm; place u1 @ (20mm, 10mm) rot 90; }`

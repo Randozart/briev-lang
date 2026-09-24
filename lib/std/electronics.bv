@@ -64,10 +64,17 @@ type Resistor {
     pin a;
     pin b;
     reference "R";
+    tolerance any;
     // 2026-09-24 (component laws): the structured physics parameter. A
     // dimension-only declaration requires instances to supply a value;
     // the opaque BOM `value` is never a second truth.
     spec Resistance: Ohm;
+    // Ohm's law plus branch-current conservation. Positive current enters
+    // each pin; the analyzer maps the two pin voltages to their nets.
+    when true {
+        a.voltage - b.voltage == Resistance * a.current;
+        a.current + b.current == 0;
+    }
     // 2026-09-23 (E14b slice 1): pull-up eligible — the min-voltage
     // forcing pass consumes this part for a released (WiredAnd) net.
     spec PullUp: true;
@@ -85,6 +92,20 @@ type Led {
     pin k;
     reference "D";
     tolerance 3.6;
+    spec ForwardVoltage: Volt;
+    spec DynamicResistance: Ohm;
+    // 2026-09-24 (component laws): a LED is a directional light-emitting
+    // junction; parameters belong to the chosen part, not the type name.
+    when a.voltage - k.voltage >= ForwardVoltage {
+        a.current ==
+            (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+    }
+    when a.voltage - k.voltage < ForwardVoltage {
+        a.current == 0Amp;
+    }
+    when true {
+        a.current + k.current == 0;
+    }
 };
 
 type Connector {
@@ -101,4 +122,31 @@ type Wire {
     pin a;
     pin b;
     reference "W";
+    // 2026-09-24 (component laws): a populated wire is an ideal link; an
+    // unpop wire remains the participation model's open pad pair.
+    when true {
+        a.voltage == b.voltage;
+        a.current + b.current == 0;
+    }
+};
+
+// 2026-09-24 (component laws): a piecewise-linear diode. Forward current is
+// (V - ForwardVoltage) / DynamicResistance; reverse current is zero.
+type Diode {
+    pin a;
+    pin k;
+    reference "D";
+    tolerance any;
+    spec ForwardVoltage: Volt;
+    spec DynamicResistance: Ohm;
+    when a.voltage - k.voltage >= ForwardVoltage {
+        a.current ==
+            (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+    }
+    when a.voltage - k.voltage < ForwardVoltage {
+        a.current == 0Amp;
+    }
+    when true {
+        a.current + k.current == 0;
+    }
 };

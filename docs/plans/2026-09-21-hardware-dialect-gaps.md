@@ -1059,3 +1059,13 @@ diagnostics. Negative unit drives are recognized as boundary conditions.
 A ideal-diode forward/reverse pair solves to the correct branch in tests.
 `spec Bistable` remains future surface until multi-state contract checking
 lands; the solver refuses to choose among distinct states.
+
+**Slice 5 addendum (same day):** generic component law parameters landed
+(`spec ForwardVoltage: Volt;`, `spec DynamicResistance: Ohm;`, quantity
+defaults) with component-body scoping and declaration-shadowing semantics.
+Stdlib Resistor, Wire, Diode, and Led are now law-bearing declarations.
+`led_blinker.ebv` runs the law solver end-to-end and proves its LED
+current. `usb_sensor.ebv` uses structured resistance but deliberately
+keeps its local Resistor law-free until an SPST button can express
+conditional-topology state; therefore the legacy series-value fallback is
+still present, now narrowly as that migration path.

@@ -1,17 +1,16 @@
 // ── Electronics Briev demo: power indicator LED ─────────────────────────
-// 2026-09-11 (fundamentals doctrine, Phase B).
+// 2026-09-24 (component laws). Component behavior is declared, not
+// compiler-recognized: Resistor and Led laws live in std/electronics.bv;
+// instances supply their datasheet physics through `spec`.
 //
 // There is no wiring syntax. Nets are INFERRED from the contract:
 // precondition pin equalities state that two pins sit on the same
 // electrical node; the compiler derives the netlist as the transitive
-// closure. The drive states the supply level; the postcondition bounds
-// the LED current — the tolerance clause (3.6 V) proves the level safe.
+// closure, solves the component laws, and proves the current bound.
 //
-// Named nets (`net vcc:`) are opt-in readability annotations on the
-// inferred equivalence classes. Unit suffixes (3.3V, 20mA, 330R) are
-// convenience syntax for physics literals. The rating clause declares
-// the power decision per type (0.25 W 0805-class resistor; the LED's
-// dissipation is non-ohmic, so `any` declares it unrated on purpose).
+// `value` is a BOM annotation. Resistance, forward voltage, and dynamic
+// resistance are physics. Unit suffixes (3.3Volt, 20mAmp, 330Ohm) are
+// quantity notation; the rating clause remains the power decision.
 //
 // Compile:  brievc build led_blinker.ebv   → led_blinker.kicad_sch
 //
@@ -27,28 +26,21 @@ type Connector {
     rating any;
 };
 
-type Resistor {
-    pin a;
-    pin b;
-    reference "R";
-    tolerance any;
-    rating 0.25;
-};
-
-type Led {
-    pin a;
-    pin k;
-    reference "D";
-    tolerance 3.6;
-    rating any;
-};
-
 let j1: Connector = Connector { value: "JST-PH-2"; package: "JST-PH" };
-let r1: Resistor  = Resistor  { value: "330R"; package: "0805" };
-let d1: Led       = Led       { value: "red"; package: "0805" };
+let r1: Resistor  = Resistor {
+    value: "330R";
+    package: "0805";
+    spec Resistance: 330Ohm;
+};
+let d1: Led       = Led {
+    value: "red";
+    package: "0805";
+    spec ForwardVoltage: 1.8Volt;
+    spec DynamicResistance: 10Ohm;
+};
 
 txn powered
-    [j1.p1.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3V]
-    [d1.a.current > 0.0 && d1.a.current <= 20mA]
+    [j1.p1.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3Volt && j1.p2.voltage == 0.0Volt]
+    [d1.a.current > 0.0 && d1.a.current <= 20mAmp]
 {
 }

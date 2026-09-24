@@ -20,6 +20,11 @@
 //
 // `// E14b:` marks every explicit equality the pure-intent form will
 // delete (solver-side io_od pull-up forcing, gnd-path forcing).
+//
+// 2026-09-24: resistor magnitudes now use structured `spec Resistance`;
+// `value` is only the BOM label. This fixture's local Resistor does not yet
+// declare component laws because the SPST button needs conditional-topology
+// state, not ordinary DC conduction.
 
 type Ldo {
     pin in: Power;
@@ -56,7 +61,7 @@ type Sensor {
     rating any;
     spec Decouple: 100n;
 };
-type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; spec PullUp: true; };
+type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; spec Resistance: Ohm; spec PullUp: true; };
 type Capacitor { pin a; pin b; reference "C"; tolerance any; rating any; spec Decoupler: true; };
 type Switch { pin p1: Path; pin p2: Path; reference "SW"; tolerance any; rating any; };
 type Led {
@@ -78,9 +83,9 @@ let u1: Ldo      = Ldo      { value: "AP2112K-3.3", package: "SOT-25" };
 let u2: Mcu      = Mcu      { value: "STM32F042",   package: "QFN-32" };
 let u3: Sensor   = Sensor   { value: "SHT40",       package: "DFN-4"  };
 let led1: Led    = Led      { value: "green",       package: "0603"   };
-let r_led: Resistor = Resistor { value: "TBD",      package: "0603"   };
-let r_pu[2]: Resistor = Resistor { value: "4k7",    package: "0603"   };
-let r_btn: Resistor = Resistor { value: "10k",      package: "0603"   };
+let r_led: Resistor = Resistor { value: "330R",      package: "0603", spec Resistance: 330Ohm };
+let r_pu[2]: Resistor = Resistor { value: "4k7",     package: "0603", spec Resistance: 4.7kOhm };
+let r_btn: Resistor = Resistor { value: "10k",       package: "0603", spec Resistance: 10kOhm };
 let sw1: Switch  = Switch   { value: "SPST",        package: "SMD"    };
 let c[i:5]: Capacitor = Capacitor { value: "100n",  package: "0402"   };
 let c_dnp: Capacitor  = Capacitor { value: "10u",   package: "0805"   };
@@ -125,7 +130,8 @@ async node usb_powered [
     led1 = true;                // E14b-4: led1.k <-> gpio[1] (gpio[2..7] are
                                 // already claimed by j2 and the button)
     r_led.a = u1.vout;           // E14b: series resistor placement is
-    r_led.b = led1.a;           //        physics-derived in pure intent
+    r_led.b = led1.a;           //        physics-derived in pure intent;
+                                //        330Ohm is the provisional datasheet pick
     // SWD/debug header signals (§3.2 declares the MCU pins; j2 is the
     // connector their dangling would otherwise demand).
     j2.sig[0] = u2.swdio;
