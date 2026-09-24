@@ -180,6 +180,16 @@ the `lemma_properties` vocabulary is removed with the op-lemma feature — see
 - The layout frontend is token-aware and preserves original source spans.
 - `.f` produces the same AST as canonical brace syntax.
 
+#### `.b` — bare profile (legacy, optional)
+
+`.b` was historically the marker for bare-metal (embedded) compilation. Since
+2026-09-22 it is **optional**: a `bootstrap node` or `bootstrap bad` entry on
+a freestanding (non-linux) target triple implies embedded mode automatically
+(see §20, machine-entry). `.b` remains an explicit way to request the
+embedded codegen profile (static bump heap, no argv capture, bare-metal
+`_start`) for a program that is freestanding but has no authored `bootstrap`
+entry.
+
 ### 3.3 Target capability profiles
 
 Target restrictions are declared in configuration and validated once in the frontend. A backend does not independently invent a source-language subset.
@@ -1981,10 +1991,12 @@ variable
   (UFCS), the resolved references precede the written args. `.1` is the
   immediately previous result (the implicit receiver); `.2` is two back.
 - `.(Type)>>func()` casts the previous result to `Type` before the call.
-- `>>` is a capture only at a chain position (followed by `.`, `;`, `}`, or
-  expression end); inside `f(x >> y)` it remains the shift operator. `.N>>`/
-  `.name>>` are back-references only when followed by a call head
-  (`identifier (`).
+- `>>` is a capture only at a chain position: the receiver is a chain value
+  (method call or a prior capture) AND it is followed by `.`, `;`, `}`, or
+  expression end. Everything else is the shift operator: inside `f(x >> y)`,
+  and statement/let/term forms with non-chain receivers — `m >> b`,
+  `f() >> n`, `term a >> b` are all bitwise shift. `.N>>`/`.name>>` are
+  back-references only when followed by a call head (`identifier (`).
 - A literal receiver directly before `.N>>` (e.g. `5.1>>f()`) lexes as a
   float; parenthesize (`(5).1>>f()`) or use a named expression.
 
@@ -2750,14 +2762,14 @@ execute_many!(callee, block₁, block₂, …);
 ```
 
 **Variadic composites (2026-09-22).** A `$defn`/`$txn` may declare a final
-TypeScript-style rest parameter (`...name: expr`) that binds ALL trailing
+TypeScript-style rest parameter (`...name: Expr`) that binds ALL trailing
 call-site arguments as a compile-time list. It is the sanctioned compile-time
 iteration channel: a `foreach` over the rest name unrolls at expansion, one
-emission per element. A plain `expr` parameter is a RUNTIME quantity and
+emission per element. A plain `Expr` parameter is a RUNTIME quantity and
 never unrolls; only a rest parameter declares compile-time iteration.
 
 ```briev
-$defn execute_many(...calls: expr) {
+$defn execute_many(...calls: Expr) {
     foreach c in calls { c; }
 };
 // execute_many!(f(a), f(b), f(c)) → f(a); f(b); f(c);
@@ -2770,10 +2782,28 @@ Rules:
   guaranteed).
 - Zero trailing arguments is a mistake, not a no-op — the expansion errors
   naming the composite.
-- The rest name is an exposed binder (hygiene, §18.4): the loop variable is
+- The rest name is an exposed binder (hygiene, §18.7): the loop variable is
   body-local, not a caller capture.
 - Composites expand BEFORE typecheck: typecheck, contracts, and both
   backends see the emitted calls as if hand-written.
+
+**Value-returning composites (2026-09-22).** A composite declaring `-> Type`
+may be invoked in EXPRESSION position (`let r = f!(x)`, `r = f!(x)`,
+`g(f!(x))`, a match scrutinee or arm). The expansion produces an
+`Expr::Block` whose value is the composite's return: the body's trailing
+`term v` becomes the block's value statement, never a function return, so
+the caller's node is not truncated. A value-position call of a composite
+whose body yields no value is an error naming the composite. Statement
+position (the body as a splice) remains the default for body-only
+composites; the two are distinguished by whether the call site needs a
+value.
+
+```briev
+$defn aligned_size(n: Expr) -> Int {
+    term (n + 15) & ~15;
+};
+let r: Int = aligned_size!(4);   // r = 20 — computed at the call site
+```
 
 ### 18.3 Stages
 
@@ -2784,11 +2814,42 @@ $(Allocated) { ... }
 
 Stage blocks state when compile-time work executes. Stage vocabulary is compiler-known and exact.
 
-### 18.4 Quotation
+### 18.4 `$txn` — the convergent loop (2026-09-22)
+
+`$txn name(params) [pre][post] -> Type { body }` declares a compile-time
+CONVERGENT loop: the body runs repeatedly until `[post]` holds, at most a
+compiler-bound iteration limit. The iteration count is UNKNOWN at the call
+site — decided by the computation — the one compile-time loop `foreach`
+cannot express (a `foreach` needs a finite list; there is no comptime
+`while`).
+
+Rules:
+- `$txn` declares at TOP LEVEL only. There is no inline `$txn`
+  declaration. Inline INVOCATION (`$txn name(args)` from a `$(Stage)`
+  block) is the call path.
+- `[pre]` false → the loop is skipped (converged trivially). `[post]`
+  true after a pass → converged.
+- `term v` in the body is an EARLY RETURN (like `$defn`): the loop's value
+  is `v` immediately — the guarded-return shape (`{ when x >= 50 { x =
+  100; term x; }; }`).
+- A body without `term` converges to `Void` when `[post]` holds; the final
+  state lives in the caller's `$let` scope.
+- Exceeding the iteration bound without convergence is a compile error
+  naming the limit.
+- `$txn` may declare a `...` rest parameter (SPEC §18.2 rules apply); the
+  trailing arguments bind as the compile-time list.
+
+```briev
+$txn scale(x: Int) [x < 16][x >= 16] {
+    x = x * 2;
+};
+```
+
+### 18.5 Quotation
 
 Quotation and interpolation operate on AST values during compile time. They must preserve hygiene unless an explicit compiler capability requests generated names.
 
-### 18.5 Derivation
+### 18.6 Derivation
 
 `:=` introduces compile-time derivation/synthesis examples or a reference implementation.
 
@@ -2800,7 +2861,7 @@ defn parity(x: Int) -> Bool
 
 Generated behavior must satisfy the declared contracts and reference obligations. Derivation never weakens a contract.
 
-### 18.6 `Error#` — compile-time failure (2026-08-17)
+### 18.7 `Error#` — compile-time failure (2026-08-17)
 
 `Error#("message")` is a COMPILE-TIME failure, not a runtime value. Its
 semantics follow reachability:
@@ -2951,6 +3012,15 @@ full Briev expression over the params and `result` (matching `.defn`
 contract semantics); a leading group is the precondition. Call-site
 contracts are checked by the ordinary contract machinery.
 
+`bootstrap bad name() [post] { body }` (a plain `.bv` file) is the
+**authored machine entry**: the body IS the reset vector / `.text.start`
+routine. The compiler emits no owned `_start`; the author owns sp setup,
+`.bss`, the vector table, and the handoff (`call main` / park / jump).
+The body is parsed verbatim and its entry symbol auto-exported for the
+linker; the postcondition is taken on authority (raw `.bad` stores
+cannot carry typed-store proofs). QEMU-verified on the MPS2-AN385
+Cortex-M3 (`examples/bad/boot_mps2.bv`).
+
 `bad` replaces the earlier `asm<target>` declaration (see §20.1 note);
 `asm<Target>` is retained for backward compatibility and deprecated.
 
@@ -2983,7 +3053,37 @@ emitted as comments into the assembly. Friendly mnemonic aliases
 (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load by default from
 `std/bad/friendly.bad`; `brievc bad --raw` opts out (`_start` has no
 alias — it is the universal entry). `;` separates instructions on one
-line in every body context. Float literals ride a deduped `.rodata`
+line in every body context. **The acknowledge tier**: a `^` / `^^` /
+`^^^` prefix on an instruction line silences probable-error warnings
+(W1 caller-saved across `call`, W2 branch-path push/pop imbalance, W3
+`ret` with sp delta, W4 FP-pool scratch collision, W5 defn-inlined
+`ret`, W6 unresolved local label) for its scope — 1 caret this
+instruction, 2 the whole line, 3 full override of predicted errors.
+Hardware-capability and author-declared-contract failures are NEVER
+ack-able; acknowledged warnings are recorded (never silent) and a named
+warning that never fired is a loud error. **Raw blocks** —
+`raw <target>` ... `end` — emit their lines verbatim (directives like
+`.code32` included, unlike per-line exception rows) for the matching
+family and skip them otherwise; the escape hatch for text the portable
+core ISA cannot express (x86 real-mode MBR bodies, 32-bit multiboot
+prologues). `int N` is the BIOS software-interrupt op (`int $N` on
+x86_64; a loud error elsewhere). **Named raw blocks** — `raw <target>
+<name>` ... `end` — emit a callable `<name>:` label only on the matching
+family, making per-arch boot prologues stdlib data (`std/bad/arch.bad`:
+`uart_init`/`putc` per target); a `.bv` file imports them at top level
+(`import "std/bad/arch.bad"` — recorded, never parsed as Briev) and the
+bad backend prepends them to `bootstrap bad` bodies. A `.bv` file may
+call a `.bad` primitive as a TYPED function: a `bad fn` declaration
+(SPEC §20) provides the typed, contract-checked surface and its body
+tail-calls (`jmp`) the named raw block; params bind at ABI index 1 (the
+`.bv` call passes `%state` first) and the bootstrap entry sets `sp` from
+`_stack_top` before calling `.bv` code that uses frames. The
+bootstrapper disk primitive (`std/bad/disk.bad`) pairs a portable
+`load_image` copy-loop defn with per-arch raw disk sources (x86_64 INT
+13h `read_sectors`). `brievc build --all-targets` compiles the source
+for EVERY `[target.*]` profile in `briev.toml` in one invocation —
+profiles may carry `triple`, `linker_script`, and `entry` (the bootstrap
+bad symbol) as per-target overrides. Float literals ride a deduped `.rodata`
 literal pool; `syscall` takes a NAMED kernel call (`syscall write, ...`)
 whose per-target numbers live in config, routing the call through each
 target's syscall ABI. `.export` names a C-ABI entry

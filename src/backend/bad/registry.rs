@@ -241,7 +241,15 @@ impl BadRegisters {
     /// up the `.wN` row first (x86 %al, aarch64 w0, ...), falling back to
     /// the base row (riscv stores low bits of the full register).
     pub fn resolve_w(&self, reg: &str, family: &str, width: u8) -> Option<&str> {
-        let wide = self.regs.get(&format!("{reg}.w{width}"))?.iter()
+        // Width 255 = the bare `.w` token (aarch64 `w1` — the 32-bit NAME
+        // register AArch64 byte/half loads require, distinct from `.w32`'s
+        // `x1`).
+        let key = if width == 255 {
+            format!("{reg}.w")
+        } else {
+            format!("{reg}.w{width}")
+        };
+        let wide = self.regs.get(&key)?.iter()
             .find(|e| family.starts_with(e.target.as_str()))
             .map(|e| e.token.as_str());
         wide.or_else(|| self.resolve(reg, family))

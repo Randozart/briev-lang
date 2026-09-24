@@ -2494,6 +2494,7 @@ mod resident_gate_tests {
             })
             .collect();
         TopLevel::Definition(crate::ast::Definition {
+                variadic_param: None,
             name: name.into(),
             type_params: vec![],
             parameters: vec![],

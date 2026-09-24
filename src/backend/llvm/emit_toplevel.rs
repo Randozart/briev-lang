@@ -2749,6 +2749,9 @@ impl LlvmBackend {
     pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
+        // 2026-09-24: a stateless body must never reference %state — arena
+        // lowering (emit_arena_alloc) consults this and falls back to malloc.
+        self.fun.stateless_body = !needs_state;
         self.fun.reassigned_lets.clear();
         self.fun.expr_dedup_cache.clear();
         self.fun.is_static_bound = false;
@@ -2826,6 +2829,11 @@ impl LlvmBackend {
         } else {
             "#8"
         };
+        // 2026-09-23 (term_guard_value -O3 collapse): __exit calls
+        // exit_group — it never returns. #13's willreturn lied to LLVM and
+        // -O3 LTO collapsed the whole main (the EndProgram call site's
+        // `unreachable` became UB). Emit it noreturn (#14).
+        let attr_idx = if d.name == "__exit" { "#14" } else { attr_idx };
         writeln!(out, ") local_unnamed_addr {}{} {{", attr_idx, section_attr).ok();
         writeln!(out, "  entry:").ok();
         self.fun.ssa_old_int_regs.clear();
@@ -2977,18 +2985,31 @@ impl LlvmBackend {
             }
         }
         writeln!(out, "}}").ok();
+        // Body closed — restore stateful default for whatever emits next
+        // (txns, reactor_tick, main, probes all take %state).
+        self.fun.stateless_body = false;
         // Phase 4.5: Emit dso_local export wrapper if #export modifier present
         if let Some(export_name) = Self::get_export_name(&d.modifiers) {
-            writeln!(out, "define dso_local {} @{}(" , ll_ret_ty, export_name).ok();
-            write!(out, "{}", self.ctx.state_ptr_param).ok();
+            writeln!(out, "define dso_local {} @{}(", ll_ret_ty, export_name).ok();
+            if needs_state {
+                write!(out, "{}", self.ctx.state_ptr_param).ok();
+            }
             for (i, (n, t)) in d.parameters.iter().enumerate() {
-                write!(out, ", {} %arg{}", self.llvm_type(t), i).ok();
+                if needs_state || i > 0 {
+                    write!(out, ", ").ok();
+                }
+                write!(out, "{} %arg{}", self.llvm_type(t), i).ok();
             }
             writeln!(out, ") local_unnamed_addr #0 {{").ok();
             write!(out, "  %res = call {} @{}(", ll_ret_ty, ll_name).ok();
-            write!(out, "ptr %state").ok();
+            if needs_state {
+                write!(out, "ptr %state").ok();
+            }
             for (i, (n, t)) in d.parameters.iter().enumerate() {
-                write!(out, ", {} %arg{}", self.llvm_type(t), i).ok();
+                if needs_state || i > 0 {
+                    write!(out, ", ").ok();
+                }
+                write!(out, "{} %arg{}", self.llvm_type(t), i).ok();
             }
             writeln!(out, ") local_unnamed_addr #0").ok();
             writeln!(out, "  ret {} %res", ll_ret_ty).ok();
@@ -3968,6 +3989,11 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                             }
                         }
                         let mut typed_args: Vec<String> = Vec::new();
+                        // 2026-09-22 (soundness-net catch): the cold function
+                        // references `%state` (observable intrinsics like Print#
+                        // emit `@__print_int(ptr %state, …)`), so the hidden
+                        // state pointer must be threaded as the first arg.
+                        typed_args.push("ptr %state".to_string());
                         for (fi, (_, llvm_ty, _)) in params.iter().enumerate() {
                             typed_args.push(format!("{} {}", llvm_ty, param_regs[fi]));
                         }
@@ -4037,7 +4063,13 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                     self.fun.let_binding_types.insert(cp_names[fi].clone(), briev_ty.clone());
                     self.fun.let_original_types.insert(cp_names[fi].clone(), briev_ty);
                 }
-                writeln!(out, "define void @{}({}) local_unnamed_addr #0 {{", cold_name, param_sig.join(", ")).ok();
+                let cold_sig = if param_sig.is_empty() {
+                    self.ctx.state_ptr_param.clone()
+                } else {
+                    format!("{}, {}", self.ctx.state_ptr_param, param_sig.join(", "))
+                };
+                writeln!(out, "define void @{}({}) local_unnamed_addr #0 {{",
+                    cold_name, cold_sig).ok();
 
                 // Rewrite guard body: replace ident references with param names
                 self.fun.terminated = false;
@@ -5553,9 +5585,25 @@ impl LlvmBackend {
     pub(super) fn emit_bad_fn_declare(&mut self, out: &mut String, bf: &crate::ast::top::BadFn) {
         let ll_ret = self.llvm_type(&bf.ret_type);
         write!(out, "declare {} @{}(", ll_ret, bf.name).ok();
-        for (i, (_, t)) in bf.params.iter().enumerate() {
-            if i > 0 { write!(out, ", ").ok(); }
-            write!(out, "{}", self.llvm_type(t)).ok();
+        // 2026-09-23 (stateless-defn mechanism): the bad ABI passes the
+        // implicit `%state` pointer as the FIRST ABI arg (bad_param_env
+        // starts .bv-called fns at register index 1). The declare must match
+        // the .o the bad backend emits — a stateless caller passing %state
+        // to a `declare @boot_putc(i64)` was a param-count mismatch
+        // (opt: "use of undefined value '%state'"). Gate on defn_takes_state
+        // so a genuinely stateless bad fn (no state) stays 1-arg.
+        let st = if self.ctx.defn_takes_state(&bf.name) { "ptr" } else { "" };
+        let mut first = st.is_empty();
+        if !st.is_empty() {
+            write!(out, "ptr").ok();
+        }
+        for (_, t) in bf.params.iter() {
+            if first {
+                first = false;
+                write!(out, "{}", self.llvm_type(t)).ok();
+            } else {
+                write!(out, ", {}", self.llvm_type(t)).ok();
+            }
         }
         writeln!(out, ") #6").ok();
     }
@@ -5641,6 +5689,7 @@ impl LlvmBackend {
             derivation: None,
             modifiers: vec![],
             annotations: vec![],
+            variadic_param: None,
             span: Some(isr.span.clone()),
             doc: Some(format!("ISR body for {} (plan 2026-09-06-isr-handlers-and-sections.md)", isr.name)),
         };

@@ -237,6 +237,7 @@ mod tests {
                 span: None,
             }),
             TopLevel::Definition(Definition {
+                variadic_param: None,
                 name: "main".into(),
                 type_params: vec![],
                 parameters: vec![],

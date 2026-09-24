@@ -1,0 +1,27 @@
+// ── std/bad/boot.bad — boot-protocol headers (2026-09-22) ─────────────
+// Data-driven boot-header emission (Rule 14: stdlib is the extension
+// mechanism — no compiler knowledge of boot protocols). Import the header
+// you need; the linker/loader contract is data.
+//
+// Multiboot2 (GRUB/QEMU -kernel): the header must sit within the first
+// 32768 bytes of the image, 8-byte aligned, and is a sequence of tags.
+//   magic = 0xE85250D6, arch = 0 (i386, 32-bit protected mode),
+//   header_length, checksum = -(magic + arch + length).
+//
+// A multiboot2 kernel runs in 32-bit protected mode with paging off —
+// the entry stub must be `.code32`. The .bad x86_64 rows emit 64-bit
+// GAS text; a multiboot entry needs a 32-bit prologue. For a pure-32-bit
+// entry write the body in raw `x86_64 => ...` exception rows with .code32.
+
+// The multiboot2 header as a data block. Emit it with:
+//   import "boot.bad"
+//   section .multiboot
+//   multiboot2_header:
+//     .long 0xE85250D6      // magic
+//     .long 0               // architecture: i386
+//     .long header_end - header_start  // header length (filled by .set)
+//     .long -0xE85250D6     // checksum placeholder (fix with .const)
+// The checksum must be -(magic + arch + length) — compute it at link
+// time with a .set (GAS absolute expression) rather than a literal:
+//     .set mh_checksum, -(0xE85250D6 + 0 + (mh_end - mh_start))
+//     .long mh_checksum

@@ -27,7 +27,7 @@
 //! validation targets (bare-metal hello) contain none of the coarse
 //! triggers, so their binaries stay minimal.
 
-use crate::ast::{Expr, PropertyValue, Statement, TopLevel};
+use crate::ast::{Contract, Expr, PropertyValue, Statement, TopLevel};
 use std::collections::{HashMap, HashSet};
 
 /// The liveness verdict for one compilation unit. Consumed by the backend's
@@ -54,6 +54,7 @@ impl DefnLiveness {
         let mut pass = Builder {
             defns: HashMap::new(),
             txns: HashMap::new(),
+            contracts: HashMap::new(),
             type_members: HashMap::new(),
             roots: HashSet::new(),
             live: HashSet::new(),
@@ -66,7 +67,9 @@ impl DefnLiveness {
         }
 
         // Worklist closure. Roots seed the queue; every live callable's
-        // body contributes explicit calls + intrinsic-implied helpers.
+        // body AND contract contribute explicit calls + intrinsic-implied
+        // helpers (2026-09-24: contracts are emitted code — pre/post,
+        // watchdog condition/fallback, on-fire handler name).
         let mut queue: Vec<String> = pass.roots.iter().cloned().collect();
         debug_dump("roots", &queue);
         while let Some(name) = queue.pop() {
@@ -78,6 +81,9 @@ impl DefnLiveness {
             }
             if let Some(body) = pass.txns.get(&name) {
                 pass.walk_stmts(body, &mut queue);
+            }
+            if let Some(c) = pass.contracts.get(&name) {
+                pass.walk_contract(c, &mut queue);
             }
         }
 
@@ -102,6 +108,14 @@ struct Builder<'a> {
     /// txn name → body (top-level Transactions, reactive and callable —
     /// the closure walks both; reactive ones are roots regardless).
     txns: HashMap<String, &'a [Statement]>,
+    /// 2026-09-24 (contract-liveness gap, found by the series_converge
+    /// soundness-net panic): contract EXPRESSIONS of a live callable are
+    /// emitted code too — pre/post conditions, watchdog condition/fallback,
+    /// and the `-> handler(v)` on-fire callback (a bare handler NAME, not
+    /// an Expr — invisible to walk_expr). Index every contract beside its
+    /// body and walk it when the callable enters the queue; without this,
+    /// `?[...] -> print_best(x)` emits a call to a judged-dead defn.
+    contracts: HashMap<String, &'a Contract>,
     /// 2026-09-13 (usage-triggered member rooting): type/obj base name →
     /// member defn/txn/op names. Members are rooted when live code
     /// CONSTRUCTS the type (`HashMap { … }`, `spawn Enemy(…)`, ctor-style
@@ -115,6 +129,20 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
+    /// Index a defn: body for the call closure, contract for the emitted
+    /// pre/post/watchdog expressions (2026-09-24, contract-liveness gap).
+    fn index_defn(&mut self, d: &'a crate::ast::Definition) {
+        self.defns.entry(d.name.clone()).or_insert(&d.body);
+        self.contracts.entry(d.name.clone()).or_insert(&d.contract);
+    }
+
+    /// Index a txn: body + contract (same gap; the on-fire handler NAME
+    /// lives only in the contract — walk_expr can never see it).
+    fn index_txn(&mut self, t: &'a crate::ast::Transaction) {
+        self.txns.entry(t.name.clone()).or_insert(&t.body);
+        self.contracts.entry(t.name.clone()).or_insert(&t.contract);
+    }
+
     /// obj-like type bodies carry member txns/defns (`parse_obj_like`).
     /// Members are USAGE-ROOTED: registered under the type name and
     /// enqueued when live code constructs the type — prelude collection
@@ -126,11 +154,11 @@ impl<'a> Builder<'a> {
         for m in &td.body.members {
             match m {
                 TopLevel::Definition(d) => {
-                    self.defns.entry(d.name.clone()).or_insert(&d.body);
+                    self.index_defn(d);
                     members.push(d.name.clone());
                 }
                 TopLevel::Transaction(t) => {
-                    self.txns.entry(t.name.clone()).or_insert(&t.body);
+                    self.index_txn(t);
                     members.push(t.name.clone());
                 }
                 TopLevel::TypeDefOperator(op) => {
@@ -147,13 +175,52 @@ impl<'a> Builder<'a> {
         self.type_members.insert(td.name.clone(), members);
     }
 
+    /// 2026-09-22 (universal-bootstrapper plan): a `bootstrap bad` body
+    /// references .bv defns/txns by symbol (`call kernel_bv`,
+    /// `addr r0, msg`). Parse the raw body and root every name that is a
+    /// known .bv defn/txn, so the handoff target is emitted. A parse
+    /// failure is NOT an error here — the bad backend reports it loudly
+    /// at compile; liveness just can't see the references.
+    fn root_bad_body(&mut self, body: &str) {
+        let Ok(program) = crate::parser::bad::parse_bad(body) else {
+            return;
+        };
+        // Flat iterator chain (items → instrs) — no nested `for`.
+        for i in program.items.into_iter().flat_map(bad_instructions_of) {
+            self.root_sym_operands(&i);
+        }
+    }
+
+    /// Root any .bv defn/txn a symbol operand of `i` names. Symbol ops are
+    /// `call`/`addr`/`jmp` and the branch family.
+    fn root_sym_operands(&mut self, i: &crate::ast::bad::BadInstr) {
+        use crate::ast::bad::BadOperand;
+        if !matches!(
+            i.mnemonic.as_str(),
+            "call" | "addr" | "jmp" | "jz" | "jnz" | "jlt" | "jle" | "jgt"
+                | "jge" | "jlo" | "jls" | "jhi" | "jhs"
+        ) {
+            return;
+        }
+        for op in &i.operands {
+            let BadOperand::Name(n) = op else { continue };
+            if self.defns.contains_key(n) || self.txns.contains_key(n) {
+                self.roots.insert(n.clone());
+            }
+        }
+    }
+
     fn index_item(&mut self, item: &'a TopLevel) {
         match item {
             TopLevel::Definition(d) => {
+                // Top-level: plain insert is the established last-wins
+                // semantics — preserve it; the contract rides alongside.
                 self.defns.insert(d.name.clone(), &d.body);
+                self.contracts.entry(d.name.clone()).or_insert(&d.contract);
             }
             TopLevel::Transaction(t) => {
                 self.txns.insert(t.name.clone(), &t.body);
+                self.contracts.entry(t.name.clone()).or_insert(&t.contract);
                 // Reactive txns are reactor-dispatched by name — roots.
                 // Callable txns enter via closure from live callers.
                 if t.is_reactive {
@@ -170,11 +237,25 @@ impl<'a> Builder<'a> {
             }
             TopLevel::Export(e) => {
                 // ABI surface: the exported defn/txn is always emitted.
+                // 2026-09-23 (soundness-net catch, pp_roundtrip/cancel): the
+                // export BODY must join the worklist too — its callees are
+                // emitted code and must be live. Rooting only the name left
+                // the body unwalked: exports calling imported defns (e.g.
+                // pp_type_bits) or txns (e.g. sum_loop) tripped the net with
+                // "unreached defn". Index the inner defn/txn like any other.
                 if let TopLevel::Definition(d) = e.inner.as_ref() {
+                    self.index_defn(d);
                     self.roots.insert(d.name.clone());
                 }
                 if let TopLevel::Transaction(t) = e.inner.as_ref() {
+                    self.index_txn(t);
                     self.roots.insert(t.name.clone());
+                    if t.is_reactive {
+                        self.roots.insert(t.name.clone());
+                    }
+                    if t.is_async {
+                        self.roots.insert("__wait_for_trigger__".into());
+                    }
                 }
             }
             TopLevel::IsrHandler(isr) => {
@@ -183,6 +264,7 @@ impl<'a> Builder<'a> {
                 // wrapper AND walk the body so its callees join the closure.
                 self.roots.insert(isr.name.clone());
                 self.txns.entry(isr.name.clone()).or_insert(&isr.body);
+                self.contracts.entry(isr.name.clone()).or_insert(&isr.contract);
             }
             TopLevel::AsmFn(asm) => {
                 // Top-level observable asm.
@@ -191,6 +273,14 @@ impl<'a> Builder<'a> {
             // 2026-09-21: bad fn — always rooted (body compiled via bad backend).
             TopLevel::BadFn(bf) => {
                 self.roots.insert(bf.name.clone());
+                // 2026-09-22 (universal-bootstrapper plan): a bootstrap
+                // body can CALL a real .bv defn/txn — the loader handoff
+                // (`call kernel_bv`). Liveness cannot see asm-level symbol
+                // references, so parse the body and root every name it
+                // references that is a known .bv defn/txn. Without this,
+                // the defn is judged dead, never emitted, and the link
+                // fails with an unresolved symbol.
+                self.root_bad_body(&bf.body);
             }
             TopLevel::TypeDefOperator(op) => {
                 // A BARE top-level `op Count() { … }` has no type context in
@@ -203,7 +293,7 @@ impl<'a> Builder<'a> {
                 // Obj member txns (`node apply_damage()…` inside
                 // `obj Enemy { … }`) — usage-rooted via construction.
                 let members = s.transactions.iter().map(|t| {
-                    self.txns.entry(t.name.clone()).or_insert(&t.body);
+                    self.index_txn(t);
                     t.name.clone()
                 }).collect();
                 self.type_members.insert(s.name.clone(), members);
@@ -266,6 +356,48 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// 2026-09-23 (async Phase D soundness-net catch): a `spawn`/`await` in
+    /// live code lowers to briev_task_spawn_impl / briev_await_impl, and the
+    /// spawned tasks' port fire/read/ready lower to the event family
+    /// (briev_event_*_impl, __briev_event_strict_trap). Root the whole family
+    /// — type-agnostic over-approx; `mark` is a no-op for helpers absent from
+    /// the unit. The event helpers' own callees (write_all/__print etc.) join
+    /// the closure when their bodies are walked from the worklist.
+    fn root_task_event_family(&self, queue: &mut Vec<String>) {
+        for h in [
+            "briev_task_spawn_impl",
+            "briev_task_cancel_impl",
+            "briev_await_impl",
+            "briev_event_alloc_impl",
+            "briev_event_ready_impl",
+            "briev_event_read_impl",
+            "briev_event_fire_impl",
+            "__briev_event_strict_trap",
+        ] {
+            self.mark(h, queue);
+        }
+    }
+
+    /// Walk a live callable's CONTRACT into the closure. Every expression
+    /// here is emitted code the backend runs for this callable: pre/post
+    /// conditions, the watchdog condition and its fallback, and — the name
+    /// that started this (series_converge soundness-net panic) — the
+    /// on-fire callback handler, a bare String identifier walk_expr can
+    /// never reach. Dead callables' contracts are never emitted, so only
+    /// live entries arrive here.
+    fn walk_contract(&mut self, c: &'a Contract, queue: &mut Vec<String>) {
+        self.walk_expr(&c.pre_condition, queue);
+        self.walk_expr(&c.post_condition, queue);
+        let Some(w) = &c.watchdog else { return };
+        self.walk_expr(&w.condition, queue);
+        if let Some(fb) = &w.fallback {
+            self.walk_expr(fb, queue);
+        }
+        if let Some(of) = &w.on_fire {
+            self.mark(&of.handler, queue);
+        }
+    }
+
     fn walk_stmts(&mut self, stmts: &'a [Statement], queue: &mut Vec<String>) {
         for s in stmts {
             self.walk_stmt(s, queue);
@@ -292,6 +424,12 @@ impl<'a> Builder<'a> {
                     }
                     self.walk_expr(t, queue);
                 }
+                // 2026-09-23 (async Phase D soundness-net catch): `w <- v;`
+                // on an Event<_> wire lowers to briev_event_fire_impl. The
+                // pass is type-agnostic — root the task/event family whenever
+                // an arrow is assigned (mark is a no-op when the helpers are
+                // absent; a spawn/await program roots them anyway).
+                self.root_task_event_family(queue);
                 self.walk_expr(value, queue);
             }
             Statement::EndProgram(Some(e)) => {
@@ -310,7 +448,11 @@ impl<'a> Builder<'a> {
             Statement::FreeHint(_) => {
                 // Scheduler auto-free lowers to `__briev_free` for heap
                 // fields; the explicit hint is the AST-visible form.
+                // 2026-09-22 (soundness-net catch): a freed TASK HANDLE
+                // additionally lowers to `briev_task_cancel_impl` — root
+                // both so async programs pass the IR scan.
                 self.mark("__briev_free", queue);
+                self.mark("briev_task_cancel_impl", queue);
             }
             other => self.walk_stmt_rest(other, queue),
         }
@@ -418,8 +560,18 @@ impl<'a> Builder<'a> {
             Expr::Spawn { type_name, args, .. } => {
                 // `spawn defn(args)` = task spawn of the defn; `spawn Obj(…)`
                 // constructs the obj base — either way its members join.
+                // 2026-09-22 (soundness-net catch): a task spawn lowers to
+                // `briev_task_spawn_impl` in the backend — root it here so
+                // async-tasks-style programs pass the IR scan.
                 self.mark(type_name, queue);
+                self.mark("briev_task_spawn_impl", queue);
                 self.on_construction(type_name, queue);
+                // 2026-09-23 (soundness-net catch, async Phase D): `spawn`
+                // lowers to briev_task_spawn_impl, and the spawned tasks'
+                // await/fire/read lower to the event family. Root the whole
+                // task/event helper family — type-agnostic over-approx (mark
+                // is a no-op for helpers absent from the unit).
+                self.root_task_event_family(queue);
                 for a in args {
                     self.walk_expr(a, queue);
                 }
@@ -437,6 +589,12 @@ impl<'a> Builder<'a> {
                 // Coarse-sound: root on every binary op (only fires when
                 // the defn exists; hello-style programs have no `==`).
                 self.mark("briev_str_eq", queue);
+                // 2026-09-23 (soundness-net catch, pp_roundtrip): `+` on a
+                // String lowers to inline concat, which frees its temporaries
+                // via `__briev_free` at the end of the enclosing statement.
+                // Type-agnostic — any Add may be a String concat. Same
+                // coarse-sound over-approx as briev_str_eq above.
+                self.mark("__briev_free", queue);
                 self.walk_expr(l, queue);
                 self.walk_expr(r, queue);
             }
@@ -535,7 +693,15 @@ impl<'a> Builder<'a> {
             Expr::Deref(inner)
             | Expr::AddrOf(inner)
             | Expr::Consume(inner)
-            | Expr::Await(inner) => self.walk_expr(inner, queue),
+            Expr::Named { inner, .. } => self.walk_expr(inner, queue),
+            Expr::Await(inner) => {
+                // 2026-09-23 (soundness-net catch, async Phase C/D): `await`
+                // lowers to briev_await_impl; root the task/event family the
+                // same way Spawn does (the awaited task's fire/read helpers
+                // are emitted from the same lowering surface).
+                self.root_task_event_family(queue);
+                self.walk_expr(inner, queue);
+            }
             Expr::PluginIntercept { args, .. } => {
                 for a in args {
                     self.walk_expr(a, queue);
@@ -582,6 +748,17 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
             "__print_char",
             "__stdout_byte",
             "__stdout_flush",
+            // 2026-09-23 (soundness-net catch, term fixtures/async): the
+            // print/string lowering may emit these even in a trivial
+            // `Print#(r)` program — the cast lanes route String↔Int through
+            // str_to_int/int_to_str, the scheduler auto-free lowers to
+            // __briev_free, and Slice# on a String routes through
+            // briev_str_substr. Root them with the family so a minimal print
+            // program does not trip the net.
+            "str_to_int",
+            "int_to_str",
+            "__briev_free",
+            "briev_str_substr",
         ],
         // Slice# on `#String` values routes through the substring helper.
         "Slice#" => &["briev_str_substr"],
@@ -595,6 +772,13 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
         "GetCwd#" => &["cstr_len", "__briev_getcwd"],
         "ChDir#" => &["__briev_chdir"],
         "GetEnv#" | "GetEnvInt#" => &["__briev_getcwd"],
+        // 2026-09-23 (frgn-elimination round 2): get_env!/get_env_int!
+        // expand to stdlib defns (env.bv) whose bodies call the pure-Briev
+        // environ walkers briev_getenv_{briev,int}_impl (cast_lanes.bv),
+        // threading the compiler-owned @__briev_environ via `Environ#()`.
+        // The deleted C __getenv_int must NOT come back. Root the impls so
+        // a runtime get_env!() keeps them emitted.
+        "Environ#" => &["briev_getenv_briev_impl", "briev_getenv_int_impl"],
         // Lifetime + time (the backend's free/now emissions prefer the
         // pure-Briev defns when present).
         "Free#" => &["__briev_free"],
@@ -796,6 +980,16 @@ mod tests {
     }
 
     fn txn(name: &str, is_reactive: bool, body: Vec<Statement>) -> TopLevel {
+        txn_with_contract(name, is_reactive, body, contract())
+    }
+
+    /// A txn with a caller-built contract (contract-liveness tests).
+    fn txn_with_contract(
+        name: &str,
+        is_reactive: bool,
+        body: Vec<Statement>,
+        contract: Contract,
+    ) -> TopLevel {
         TopLevel::Transaction(crate::ast::Transaction {
             name: name.to_string(),
             is_reactive,
@@ -804,7 +998,7 @@ mod tests {
             parameters: vec![],
             output_type: None,
             outputs: vec![],
-            contract: contract(),
+            contract,
             body,
             metadata: HashMap::new(),
             derivation: None,
@@ -814,8 +1008,28 @@ mod tests {
         })
     }
 
+    /// WatchdogSpec with the common zeros filled in.
+    fn watchdog(
+        condition: Expr,
+        fallback: Option<Expr>,
+        on_fire: Option<WatchdogOnFire>,
+    ) -> WatchdogSpec {
+        WatchdogSpec {
+            condition,
+            is_required: false,
+            cycles_bound: None,
+            seconds_bound: None,
+            deadline_ns: None,
+            is_proven: false,
+            retries: 0,
+            fallback: fallback.map(Box::new),
+            on_fire,
+        }
+    }
+
     fn defn(name: &str, body: Vec<Statement>) -> TopLevel {
         TopLevel::Definition(crate::ast::Definition {
+            variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -979,5 +1193,92 @@ mod tests {
         let l = DefnLiveness::build(&items);
         assert!(l.is_live("init_fn"));
         assert!(!l.is_live("orphan"));
+    }
+
+    #[test]
+    fn watchdog_on_fire_roots_handler() {
+        // The series_converge shape (2026-09-24 soundness-net panic):
+        // `node converge [pre][post] ?[cond] -> print_best(x) { ... }`.
+        // The handler is a bare NAME in WatchdogOnFire — walk_expr can
+        // never see it — only the contract walk marks it.
+        let mut c = contract();
+        c.watchdog = Some(watchdog(
+            Expr::Bool(true),
+            None,
+            Some(WatchdogOnFire { handler: "print_best".into(), arg: Some("v".into()) }),
+        ));
+        let items = vec![
+            txn_with_contract("converge", true, vec![Statement::Term(None)], c),
+            defn("print_best", vec![Statement::Term(None)]),
+            defn("orphan", vec![Statement::Term(None)]),
+        ];
+        let l = DefnLiveness::build(&items);
+        assert!(l.is_live("converge"));
+        assert!(l.is_live("print_best"), "on-fire handler must join the closure");
+        assert!(!l.is_live("orphan"));
+    }
+
+    #[test]
+    fn watchdog_condition_and_fallback_calls_are_live() {
+        // Contract EXPRESSIONS are emitted code: `?[progress()]` and the
+        // fallback both run for a live callable — their callees must be live.
+        let mut c = contract();
+        c.watchdog = Some(watchdog(
+            Expr::Call("progress".into(), vec![], None),
+            Some(Expr::Call("recover".into(), vec![], None)),
+            None,
+        ));
+        let items = vec![
+            txn_with_contract("guarded", true, vec![Statement::Term(None)], c),
+            defn("progress", vec![Statement::Term(None)]),
+            defn("recover", vec![Statement::Term(None)]),
+        ];
+        let l = DefnLiveness::build(&items);
+        assert!(l.is_live("progress"), "watchdog condition callee must be live");
+        assert!(l.is_live("recover"), "watchdog fallback callee must be live");
+    }
+
+    #[test]
+    fn pre_and_post_condition_calls_are_live() {
+        let mut c = contract();
+        c.pre_condition = Expr::Call("ready".into(), vec![], None);
+        c.post_condition = Expr::Call("settled".into(), vec![], None);
+        let items = vec![
+            txn_with_contract("checked", true, vec![Statement::Term(None)], c),
+            defn("ready", vec![Statement::Term(None)]),
+            defn("settled", vec![Statement::Term(None)]),
+        ];
+        let l = DefnLiveness::build(&items);
+        assert!(l.is_live("ready"), "precondition callee must be live");
+        assert!(l.is_live("settled"), "postcondition callee must be live");
+    }
+}
+
+/// The instructions of a .bad top-level item (labels' bodies and sequence
+/// defns carry them; branch defns and directives carry none).
+fn bad_instructions_of(item: crate::ast::bad::BadTopLevel) -> Vec<crate::ast::bad::BadInstr> {
+    use crate::ast::bad::{BadBodyItem, BadDefnShape, BadTopLevel};
+    match item {
+        BadTopLevel::Label(l) => l
+            .body
+            .iter()
+            .filter_map(|i| match i {
+                BadBodyItem::Instr(x) => Some(x.clone()),
+                BadBodyItem::Local(_) => None,
+            })
+            .collect(),
+        BadTopLevel::Defn(d) => {
+            if let BadDefnShape::Sequence(seq) = &d.shape {
+                seq.iter()
+                    .filter_map(|i| match i {
+                        BadBodyItem::Instr(x) => Some(x.clone()),
+                        BadBodyItem::Local(_) => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
     }
 }

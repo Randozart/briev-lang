@@ -61,9 +61,12 @@ value.rawParse().(Int)>>clamp(0, 255);   // cast then call
 
 ### Disambiguation
 
-- `>>` is a capture only at a chain position: followed by `.`, `;`, `}`, or
-  end of expression. Inside an argument list (`f(x >> y)`) it stays the shift
-  operator.
+- `>>` is a capture only at a chain position: the receiver is a chain value
+  (method call or a prior capture) AND followed by `.`, `;`, `}`, or end of
+  expression. Otherwise it is the shift operator — inside an argument list
+  (`f(x >> y)`) and with non-chain receivers (`let d = m >> b;`, `f() >> n`,
+  `term a >> b` all shift; 2026-09-24: receiver-kind added after
+  ident+terminator alone misparsed statement-position shifts as capture).
 - `.N>>` / `.name>>` are back-references only when followed by a call head
   (`identifier (`). `.name` with any other following token is field access;
   `.N` with any other following token is tuple element access.

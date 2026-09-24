@@ -129,8 +129,6 @@ impl<'a> Parser<'a> {
                     })
                 } else if self.check_identifier("$defn") {
                     self.parse_inline_defn()
-                } else if self.check_identifier("$txn") {
-                    self.parse_inline_txn()
                 } else if self.check(&Token::ExclaimArrow) {
                     self.parse_metadata_statement()
                 } else if self.check_identifier("free") {
@@ -674,14 +672,6 @@ impl<'a> Parser<'a> {
         self.pos += 1;
         let defn = self.parse_definition()?;
         Ok(Statement::InlineDefn(defn))
-    }
-
-    /// $txn name(params) [pre][post] -> Type { body } — compile-time-only tx.
-    /// 2026-07-23: Convergent loop with pre/post conditions.
-    fn parse_inline_txn(&mut self) -> Result<Statement, SyntaxError> {
-        self.pos += 1;
-        let txn = self.parse_transaction(false, false)?;
-        Ok(Statement::InlineTxn(txn))
     }
 
     /// match expr { pattern => body; pattern => body; };

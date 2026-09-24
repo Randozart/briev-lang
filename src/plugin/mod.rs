@@ -23,7 +23,6 @@
 // exposes stage-specific methods that return Result<(), String>.
 
 pub mod entry_plugin;
-pub mod execute_many_plugin;
 pub mod composite;
 pub mod env_plugin;
 pub mod inline_frgn_plugin;

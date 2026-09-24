@@ -205,6 +205,12 @@ pub struct Definition {
     pub modifiers: Vec<Annotation>,
     pub annotations: Vec<TypeBinding>,
     pub span: Option<Span>,
+    /// 2026-09-22 (unified-metaprogramming plan): the final `...name` rest
+    /// parameter (TypeScript-style) on a compile-time `$defn`/`$txn`. Binds
+    /// ALL trailing call-site arguments as a compile-time list — the
+    /// sanctioned compile-time iteration channel (a `foreach` over it unrolls
+    /// at expansion). `None` = not variadic.
+    pub variadic_param: Option<String>,
     /// 2026-07-24: Doc comment text (/// or /** */), without the /// prefix.
     pub doc: Option<String>,
 }
@@ -440,9 +446,6 @@ pub enum Statement {
     /// $defn name(params) -> Type { body } — compile-time-only definition.
     /// 2026-07-23: Only valid inside $(Stage) blocks. Body can call $ intrinsics.
     InlineDefn(Definition),
-    /// $txn name(params) [pre][post] -> Type { body } — compile-time-only tx.
-    /// 2026-07-23: Evaluated as a convergent loop with pre/post checks.
-    InlineTxn(Transaction),
     /// match expr { pattern => body; ... }; — compile-time match.
     /// 2026-07-24: Added for clean $defn branching (replaces when chains).
     Match {
@@ -473,13 +476,12 @@ impl PartialEq for StmtMatchArm {
     }
 }
 
-// 2026-07-23: Manual PartialEq — InlineDefn/InlineTxn wrap Definition/Transaction
-// which don't implement PartialEq. All other variants compare field-by-field.
+// 2026-07-23: Manual PartialEq — InlineDefn wraps a Definition (which doesn't
+// implement PartialEq). All other variants compare field-by-field.
 impl PartialEq for Statement {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Statement::InlineDefn(_), _) | (_, Statement::InlineDefn(_)) => false,
-            (Statement::InlineTxn(_), _) | (_, Statement::InlineTxn(_)) => false,
             (Statement::Let { name: n1, ty: t1, expr: e1, modifiers: m1, .. },
              Statement::Let { name: n2, ty: t2, expr: e2, modifiers: m2, .. }) =>
                 n1 == n2 && t1 == t2 && e1 == e2 && m1 == m2,
@@ -1445,6 +1447,11 @@ pub struct BadFn {
     pub contract: Contract,
     /// Raw `.bad` source text (between the outermost braces).
     pub body: String,
+    /// `bootstrap bad` — the body IS the authored machine entry (reset
+    /// vector / `.text.start`). The compiler emits no owned `_start` when
+    /// one is present; the author owns sp, `.bss`, the vector table, and
+    /// the handoff (`call main` / park / jump). 2026-09-22.
+    pub bootstrap: bool,
     pub span: Span,
 }
 

@@ -1,0 +1,19 @@
+// meta — declared metaprogramming composites (plan
+// 2026-09-22-unified-metaprogramming-layer).
+//
+// Metaprogramming lives HERE, in the language — never hardcoded in the
+// compiler. The compiler carries the EXPANSION MACHINERY
+// (src/plugin/composite.rs); the shapes live in `.bv` files (Golden Rule
+// 24, docs/architecture/proof-vs-shape.md).
+
+// `execute_many!(call1, call2, ...)` — sequential call emission (SPEC
+// §18.2). The `...` rest parameter binds ALL trailing arguments as the
+// sanctioned compile-time iteration channel: a `foreach` over it unrolls
+// at expansion, one emission per argument — N = arg count, known only at
+// compile time. Supersedes the retired Rust-side `execute_many!` macro
+// (2026-09-18): the composite reaches the same behavior in the language.
+$defn execute_many(...calls: Expr) {
+    foreach c in calls {
+        c;
+    }
+};

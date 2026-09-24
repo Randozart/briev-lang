@@ -36,6 +36,12 @@ pub struct Parser<'a> {
     /// Mirrors the C typedef-table approach; includes primitives, hashwords,
     /// and in-file `type`/`struct`/`obj`/`enum`/`meld` declaration names.
     pub known_types: HashSet<String>,
+    /// 2026-09-22 (unified-metaprogramming plan): the most recently parsed
+    /// `...name` rest parameter (TypeScript-style), recorded by
+    /// `parse_parameter_list`. Compile-time `$defn`/`$txn` paths consume it
+    /// into `Definition.variadic_param`; runtime `defn`/`txn`/op paths
+    /// reject it.
+    pub pending_variadic: Option<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -48,6 +54,7 @@ impl<'a> Parser<'a> {
             strict_mode: false,
             pending_doc: None,
             pending_gt: false,
+            pending_variadic: None,
         };
         p.prescan_known_types();
         p
@@ -461,6 +468,14 @@ impl<'a> Parser<'a> {
     pub fn check_identifier(&self, name: &str) -> bool {
         self.peek()
             .map_or(false, |t| matches!(t, Token::Identifier(s) if s == name))
+    }
+
+    /// Check if the token AFTER the current one is an identifier with a
+    /// specific name (the `bootstrap bad` disambiguation).
+    pub fn lookahead_is_identifier(&self, name: &str) -> bool {
+        self.tokens
+            .get(self.pos + 1)
+            .map_or(false, |(t, _)| matches!(t, Token::Identifier(s) if s == name))
     }
 
     /// Consume a specific identifier if present.

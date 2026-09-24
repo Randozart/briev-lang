@@ -298,7 +298,7 @@ impl LlvmBackend {
                 list: Box::new(Self::rewrite_cell_identifiers(list, cell_name)),
                 body: Self::rewrite_cell_stmt_body(body, cell_name),
             },
-            Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => stmt.clone(),
+            Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::Match { .. } => stmt.clone(),
             // 2026-09-22 (D16 p3b): `open` — rewrite identifiers in its
             // expressions, else keep intact.
             Statement::Open(lhs, rhs) => Statement::Open(
@@ -1128,7 +1128,11 @@ impl LlvmBackend {
         // remains the gate: arena pointers are never tagged temp, so this
         // branch is dead at runtime either way.
         if self.ctx.defn_params.contains_key("__briev_free") {
-            writeln!(out, "{}call i64 @__briev_free(ptr %state, ptr {})", indent, free_ptr).ok();
+            // 2026-09-23 (stateless-defn mechanism): __briev_free's body is
+            // `term 0;` — it takes NO state. Gate on defn_takes_state so a
+            // stateless caller does not reference an undefined %state.
+            let st = if self.ctx.defn_takes_state("__briev_free") { "ptr %state, " } else { "" };
+            writeln!(out, "{}call i64 @__briev_free({}ptr {})", indent, st, free_ptr).ok();
         } else {
             writeln!(out, "{}call void @free(ptr {})", indent, free_ptr).ok();
         }

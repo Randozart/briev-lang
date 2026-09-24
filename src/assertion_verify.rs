@@ -169,6 +169,7 @@ mod tests {
         };
 
         let defn = Definition {
+                variadic_param: None,
             name: "always_true_defn".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -203,6 +204,7 @@ mod tests {
         };
 
         let defn = Definition {
+                variadic_param: None,
             name: "always_false_defn".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -237,6 +239,7 @@ mod tests {
         };
 
         let defn = Definition {
+                variadic_param: None,
             name: "check_x_defn".to_string(),
             type_params: vec![],
             parameters: vec![("x".to_string(), Type::bool_())],
@@ -274,6 +277,7 @@ mod tests {
         };
 
         let defn = Definition {
+                variadic_param: None,
             name: "not_bool_defn".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -310,6 +314,7 @@ mod tests {
         };
 
         let defn = Definition {
+                variadic_param: None,
             name: "regular_sig_defn".to_string(),
             type_params: vec![],
             parameters: vec![],

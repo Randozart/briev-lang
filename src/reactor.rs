@@ -286,7 +286,7 @@ impl Reactor {
                 }
                 Ok(StmtResult::Continue)
             }
-            Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => {
+            Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::Match { .. } => {
                 Ok(StmtResult::Continue)
             }
             Statement::Gate(cond) => {
@@ -529,6 +529,7 @@ mod tests {
     fn test_build_from_program_skips_non_reactive() {
         let prog = simple_program(vec![
             TopLevel::Definition(Definition {
+                variadic_param: None,
                 name: "foo".into(), type_params: vec![], parameters: vec![], outputs: vec![],
                 output_type: None,
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),

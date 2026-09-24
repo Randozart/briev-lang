@@ -21,14 +21,14 @@ The current composite model deliberately refuses to unroll over
 caller-provided lists ("caller spans are POLICY, not structure") — correct
 for VALUE params, wrong for the rest-param case. The principled resolution:
 **rest params are the sanctioned compile-time iteration channel.** A plain
-`expr` param is a runtime quantity (never unrolls); a `...rest` param
+`Expr` param is a runtime quantity (never unrolls); a `...rest` param
 declares "this trailing argument list is meant to be iterated at compile
 time" — a `foreach` over it unrolls, splicing one emission per element.
 
 ## Syntax — TypeScript-style rest param
 
 ```briev
-$defn execute_many(...calls: expr) {
+$defn execute_many(...calls: Expr) {
     foreach c in calls { c; }   // execute_many!(f(a), f(b), f(c)) → f(a); f(b); f(c);
 };
 ```
@@ -66,7 +66,7 @@ $defn execute_many(...calls: expr) {
 
 ### Hygiene
 - The rest param joins the `exposed` set in `check_hygiene` (like
-  `expr_item`) — the body's `c` binder is loop-local, not a capture.
+  `ExprItem`) — the body's `c` binder is loop-local, not a capture.
 
 ### `subst_expr` — PluginIntercept arm
 - `subst_expr` has no `Expr::PluginIntercept` arm today — a composite
@@ -88,7 +88,7 @@ $defn execute_many(...calls: expr) {
   composite; delete the plugin, its registration (pipeline.rs), and its doc
   section. Rule 14: stdlib learns, Rust retires.
 - Stdlib: `lib/std/meta.bv` (or `execute_many.bv`) declares
-  `$defn execute_many(...calls: expr) { foreach c in calls { c; } };`.
+  `$defn execute_many(...calls: Expr) { foreach c in calls { c; } };`.
 
 ### Tests + corpus
 - Arity edges (0 args → reject as a mistake, per the retired plugin's own
@@ -98,22 +98,54 @@ $defn execute_many(...calls: expr) {
 
 ## Phase 2 — unification (intermediate commits)
 
-- **C2 — value-returning composites**: `term v` alpha-renamed, wrapped in
-  `Expr::Block` → `let r = f!(x)` works; never leaks into the caller's
-  node (today a body `term` silently truncates the caller).
-- **C3 — one value domain**: reconcile `NavValue` (stage fns) and
-  `ComptimeVal` (composites); a body computes (`let x = list`) AND emits
-  (`foreach over x`) in one pass.
-- **C4 — uniform AST walker**: one visitor over every statement-bearing
-  `TopLevel` + nested/expression positions (replaces the hand-rolled
-  `expand_stmt_list`/`expand_nested` pair).
-- **C5 — topology emission**: composites may emit `async node`/`sync<g>
-  node` — the schedule-generation purpose, Rule-22 classification carried in
-  the language, not the compiler.
-- **C6 — `$txn` resolution**: adopt `$txn` as the convergent-loop flavor
-  (repeat-until-postcondition — the ONE semantic `$defn` lacks), fix its
-  parse-broken inline form, add real tests; OR delete it. Decided once
-  `foreach`-over-rest is proven.
+- **C2 — value-returning composites — DONE 2026-09-22**: `term v`
+  alpha-renamed, wrapped in `Expr::Block` → `let r = f!(x)` works; never
+  leaks into the caller's node. `expand_composite_body` is the shared core;
+  `expand_composite_value` wraps the folded body in a block whose trailing
+  `term v` becomes `Statement::Expression(v)` — the block types as the value
+  (typechecker now types a block ending in `Expression(e)` as `e`'s type,
+  matching interpreter+backend). `expand_expr_values` walks expression
+  positions (let inits, assign RHS, call args, match scrutinee/arms) and
+  expands value composites depth-first. Side fix (soundness-net catch,
+  pre-existing): cold-outline guard functions now thread `ptr %state` — the
+  outline referenced `%state` via observable intrinsics (Print#) with no
+  state param; and the liveness table roots `briev_await_impl`,
+  `briev_task_spawn_impl`, `briev_task_cancel_impl` at their constructs —
+  async-tasks.bv now compiles (was a hard liveness panic).
+- **C3 — one value domain — DONE 2026-09-22**: `ComptimeVal` gains `Str` —
+  a string literal (`Expr::Quoted`) folds, string `match`/`when` conditions
+  decide at expansion, string `==`/`!=` folds in `apply_binop_const`, and a
+  `$let`/`$const` string bridges into the fold env via `nav_comptime`
+  (`NavValue::Str` → `ComptimeVal::Str`). A composite body now gates on a
+  string the same way it gates on an Int — `match s { "abc" => … }` splices
+  only the taken arm. `literal_expr` round-trips Str. 3 tests; the
+  softmax/execute_many/val composites unchanged.
+- **C4 — uniform AST walker — DONE 2026-09-22**: `expand_top_level` walks
+  EVERY statement-bearing `TopLevel` — runtime `defn` bodies (previously a
+  dead end), `TypeDefOperator` members, `Cell` member txns/defns, top-level
+  `Statement` slots, reactive txns, and compile-time defns — replacing the
+  Transaction-only walk. A composite call now expands in any body it
+  appears in (`defn f() { comp!(x); … }` works). 2 tests (runtime defn body,
+  operator member); the value-position `expand_expr_values` recursion from
+  C2 already covers nested expressions.
+- **C5 — topology emission — IN PROGRESS (2026-09-22)**: composites emit
+  top-level reactive nodes via the `EmitNode$` compile-time intrinsic —
+  `EmitNode$(name, pre, post, { body })` (optional 5th `sync<group>` arg).
+  NO new `Statement` variant: the intrinsic is an ordinary `Expr::Call` the
+  composite fold passes through; `expand_top_level` detects the call after
+  expansion and hoists it into `items` as `TopLevel::Transaction` (or
+  `SyncGroup`). The node name/contract/body substitute params like any
+  composite statement. Blast radius: composite.rs only (the ~37-file
+  `Statement` match churn is avoided entirely).
+- **C6 — `$txn` resolution — DONE 2026-09-22 (keep, as the convergent
+  flavor)**: the decisive case is *unknown* iteration counts — `foreach`
+  needs a known list, but convergence repeats until `[post]` holds,
+  decided by the computation. `$txn` is the ONLY compile-time loop for
+  unknown counts (no comptime `while` exists). KEPT as a top-level-only
+  declaration; inline INVOCATION stays (`$txn name(args)` from a
+  `$(Stage)` block). The broken inline DECLARATION form
+  (`Statement::InlineTxn`) is removed. Plan:
+  `docs/plans/2026-09-22-txn-convergent-flavor.md`.
 
 ## Verification
 - `cargo test --lib` green per commit; conformance sweep; Praetor on changed

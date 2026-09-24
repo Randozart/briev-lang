@@ -275,6 +275,24 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
             variadic: false,
         }),
 
+        // ── Captured-environ (Family F) ──────────────────────────────
+        // 2026-09-23 (frgn-elimination round 2): `Environ#()` — the
+        // process environ ARRAY pointer (a compiler-owned global the owned
+        // _start captured). A value-returning intrinsic (postpended `#`),
+        // NOT a hashword: hashwords are never value expressions. env.bv
+        // composes it with the pure-Briev briev_getenv_{briev,int}_impl
+        // walkers in cast_lanes.bv. Distinct from the retired GetEnv#/
+        // GetEnvInt# LOOKUP intrinsics: Environ is the array, Env was the
+        // KEY=VALUE walk. Also distinct from a future Args# (argc+argv —
+        // two globals, a different contract; CLI argv retired 2026-09-10).
+        "Environ#" => Some(Signature {
+            name: "Environ#",
+            parameters: vec![],
+            return_kind: ReturnKind::Native("Int"),
+            observable: false,
+            variadic: false,
+        }),
+
         // ── OS SysCall (observable, variadic) ──────────────────────────
         // 2026-07-15: Returns native Int (result or errno).
         // 2026-07-26: variadic — first arg is syscall number, up to 6 more args.

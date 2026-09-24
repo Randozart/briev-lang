@@ -58,6 +58,12 @@ foreach-on-String hello emits **13 defines** (from 252) — `entry` →
 freestanding in QEMU, no LTO. Plan §3a records the implementation
 findings: usage-triggered member rooting, the net's first real catch
 (getenv adapters), and the embedded-main argc-capture gate.
+2026-09-23 (frgn-elimination round 2): the getenv C-ABI adapters were
+DELETED with the ghost env frgns — get_env!/get_env_int! now call the
+pure-Briev briev_getenv_{briev,int}_impl walkers (cast_lanes.bv) directly,
+threading the compiler-owned `@__briev_environ` via the `Environ#()`
+intrinsic. The liveness table's `Environ#` row roots the two impls (a
+runtime get_env!() keeps them emitted).
 
 ## Interplay with `--no-std`
 

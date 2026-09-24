@@ -651,11 +651,17 @@ defn write_all(fd: Int, s: String) [fd >= 0][term >= 0] -> Int {
 };
 
 out defn __print_str(s: String) [true][term >= 0] -> Int {
-    term write_all(1, s);
+    // 2026-09-23 (term_guard_value exit-code parity): return 0, matching
+    // the interpreter's Print# and the retired C __print_* (printf +
+    // return 0). The byte-count return made `endprogram Print#(x)` exit with
+    // the string length instead of 0.
+    let _r: Int = write_all(1, s);
+    term 0;
 };
 
 out defn __print(s: String) [true][term >= 0] -> Int {
-    term write_all(1, s);
+    let _r: Int = write_all(1, s);
+    term 0;
 };
 
 out defn __eprint_str(s: String) [true][term >= 0] -> Int {
@@ -663,23 +669,28 @@ out defn __eprint_str(s: String) [true][term >= 0] -> Int {
 };
 
 out defn __print_int(n: Int) [true][term >= 0] -> Int {
-    term write_all(1, int_to_str(n));
+    let _r: Int = write_all(1, int_to_str(n));
+    term 0;
 };
 
 out defn __print_bool(b: Int) [true][term >= 0] -> Int {
-    term write_all(1, bool_to_str(b));
+    let _r: Int = write_all(1, bool_to_str(b));
+    term 0;
 };
 
 out defn __print_float(f: Float) [true][term >= 0] -> Int {
     // C: printf("%.9g", (double)f) — float_format(f, 9) is byte-parity
-    // (the float_cases corpus pins it).
-    term write_all(1, float_format(f, 9));
+    // (the float_cases corpus pins it). Return 0 like the C printf+0.
+    let _r: Int = write_all(1, float_format(f, 9));
+    term 0;
 };
 
 out defn __print_char(c: Int) [c >= 0][term >= 0] -> Int {
     // C: c==10 → puts("") (writes '\n'), else putchar(c) — one raw byte
     // either way. Buffered: O(1) append, flushed at capacity/main tail.
-    term __stdout_byte(c);
+    // Return 0 like the C putchar+0.
+    let _r: Int = __stdout_byte(c);
+    term 0;
 };
 
 out defn __exit(code: Int) [true][term >= 0] -> Int {

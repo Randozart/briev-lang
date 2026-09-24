@@ -535,6 +535,7 @@ mod tests {
 
     fn defn_typed(name: &str, ret: crate::ast::Type, body: Vec<Statement>) -> Definition {
         Definition {
+                variadic_param: None,
             name: name.to_string(),
             type_params: Vec::<TypeParam>::new(),
             parameters: vec![],
@@ -732,6 +733,7 @@ mod tests {
             span: None,
         }));
         let d = Definition {
+                variadic_param: None,
             name: "echo".to_string(),
             type_params: vec![],
             parameters: vec![("name".to_string(), Type::Custom("CStr".to_string()))],

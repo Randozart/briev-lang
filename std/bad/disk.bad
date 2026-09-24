@@ -1,0 +1,47 @@
+// ── std/bad/disk.bad — portable image-loading helper (2026-09-22) ─────
+// The bootstrapper's "load a kernel" step, expressed portably. The copy
+// loop is universal core ops; the SOURCE differs per target:
+//   - x86_64 MBR: BIOS INT 13h reads disk sectors into RAM (the source
+//     is a raw read_sector primitive below).
+//   - riscv64/aarch64/thumb (qemu -kernel, MPS2): the image is ALREADY in
+//     RAM — the source is an in-image payload address.
+//
+// `load_image src, dst, len` copies `len` bytes from `src` to `dst`
+// (universal ops). The per-arch raw `read_sectors` fills `src` where a
+// real disk exists.
+
+// Portable copy: dst[i] = src[i] for i in [0, len). r0=src, r1=dst,
+// r2=len, r3=0 (index). Returns nothing (used as an inlined tail).
+defn load_image src, dst, len
+    mov r3, 0
+    .loop:
+    jge r3, len, .done
+    ldub r4, src
+    stb r4, dst
+    add src, src, 1
+    add dst, dst, 1
+    add r3, r3, 1
+    jmp .loop
+    .done:
+    ret
+
+// x86_64 real-mode disk read: BIOS INT 13h AH=02h reads sectors into
+// ES:BX. r0 = CHS/address triplet (drive|head|sector), r1 = dest offset,
+// r2 = count. This is a RAW per-arch primitive — the portable core only
+// uses it where a disk actually exists.
+raw x86_64 read_sectors
+    .code16
+    pushw %ax
+    pushw %bx
+    pushw %cx
+    pushw %dx
+    movw %ax, %ax
+    movw $0x0201, %ax       // AH=02 read, AL=1 sector
+    movb %dh, %dl           // drive
+    int $0x13
+    popw %dx
+    popw %cx
+    popw %bx
+    popw %ax
+    ret
+end

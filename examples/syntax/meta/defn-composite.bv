@@ -5,7 +5,7 @@
 // body. This composite is statement-only — it accumulates into a
 // caller-provided slot, the form the accel composites use.
 
-$defn accumulate(x: expr, target: expr, n: expr) {
+$defn accumulate(x: Expr, target: Expr, n: Expr) {
     let acc_: Float = 0;
     foreach k in 0..n {
         acc_ = acc_ + x;

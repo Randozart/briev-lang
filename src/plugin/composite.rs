@@ -13,8 +13,8 @@
 //! specific composite. Hygiene fails closed: a caller identifier that a
 //! body binder would capture is an error, not a silent capture.
 
-use crate::ast::top::{Definition, Statement, StmtMatchArm, TopLevel};
-use crate::ast::{BinaryOpKind, Expr, Pattern, UnaryOpKind};
+use crate::ast::top::{Annotation, Contract, Definition, Statement, StmtMatchArm, TopLevel, Transaction};
+use crate::ast::{BinaryOpKind, Expr, MatchArm, Pattern, UnaryOpKind};
 use crate::ast::{Dimension, ReflectKind, Type};
 use crate::plugin::{FnDef, PluginManager};
 use std::collections::{HashMap, HashSet};
@@ -26,28 +26,99 @@ use std::collections::{HashMap, HashSet};
 /// evaluator, never expanded.
 pub fn is_composite(def: &Definition) -> bool {
     def.parameters.iter().any(|(_, t)| is_expr_param(t))
+        // C5 (topology emission): a parameterless `$defn` that emits nodes
+        // (`EmitNode$` in its body) is a topology composite — expanded at the
+        // call site, hoisted as top-level nodes. Without a param marker this
+        // would otherwise be mistaken for an ordinary `$defn` stage function.
+        || def.body.iter().any(|s| stmt_emits_node(s))
+}
+
+/// True when a statement (or a nested one) carries an `EmitNode$` call.
+fn stmt_emits_node(s: &Statement) -> bool {
+    match s {
+        Statement::Expression(Expr::Call(name, _, _)) => name == "EmitNode$",
+        Statement::Guarded(_, body)
+        | Statement::Block(body)
+        | Statement::SyncBlock(body)
+        | Statement::Defer(body)
+        | Statement::Mutex(body)
+        | Statement::Foreach { body, .. } => body.iter().any(stmt_emits_node),
+        _ => false,
+    }
 }
 
 fn is_expr_param(t: &crate::ast::Type) -> bool {
-    matches!(t, crate::ast::Type::Custom(n) if n == "expr" || n == "expr_item")
+    matches!(t, crate::ast::Type::Custom(n) if n == "Expr" || n == "ExprItem")
 }
 
 /// The composite's signature: (substitution parameters in declaration
 /// order, exposed binder names). `None` when the composite mixes in value
 /// parameters (v1 restriction — fail closed).
-fn composite_signature(def: &Definition) -> Option<(Vec<String>, HashSet<String>)> {
+fn composite_signature(
+    def: &Definition,
+) -> Option<(Vec<String>, HashSet<String>, Option<String>)> {
     let mut subst = Vec::new();
     let mut exposed: HashSet<String> = HashSet::new();
     for (n, t) in &def.parameters {
         match t {
-            crate::ast::Type::Custom(k) if k == "expr" => subst.push(n.clone()),
-            crate::ast::Type::Custom(k) if k == "expr_item" => {
+            crate::ast::Type::Custom(k) if k == "Expr" => {
+                if Some(n) == def.variadic_param.as_ref() {
+                    // The rest parameter is NOT substituted positionally — it
+                    // binds ALL trailing arguments as a compile-time list.
+                    continue;
+                }
+                subst.push(n.clone());
+            }
+            crate::ast::Type::Custom(k) if k == "ExprItem" => {
                 exposed.insert(n.clone());
             }
             _ => return None,
         }
     }
-    Some((subst, exposed))
+    Some((subst, exposed, def.variadic_param.clone()))
+}
+
+/// Validate call-site arity against the fixed params and the optional
+/// `...` rest param (2026-09-22 unified-metaprogramming plan). Variadic:
+/// fixed params must all be present; zero rest args is a mistake, not a
+/// no-op. Non-variadic: exact arity.
+fn check_arity(
+    name: &str,
+    params: &[String],
+    rest_name: Option<&str>,
+    args: &[Expr],
+) -> Result<(), String> {
+    if rest_name.is_some() {
+        if args.len() < params.len() {
+            return Err(format!(
+                "composite '{name}' expects at least {} expression argument(s) \
+                 before the `...` rest ({}, got {} — supply one expression per \
+                 fixed `expr` parameter plus zero-or-more rest arguments",
+                params.len(),
+                params.join(", "),
+                args.len()
+            ));
+        }
+        if args.len() == params.len() {
+            return Err(format!(
+                "composite '{name}': a `...` rest call site with zero rest \
+                 arguments is a mistake, not a no-op — drop the call or pass \
+                 one or more trailing arguments to emit per element"
+            ));
+        }
+        Ok(())
+    } else if args.len() != params.len() {
+        Err(format!(
+            "composite '{name}' expects {} expression arguments ({}), got {} — \
+             supply one expression per `Expr` parameter (`ExprItem` binders \
+             are bound by the body, never passed)",
+            params.len(),
+            params.join(", "),
+            args.len()
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// Expand one `name!(args...)` invocation against its declared composite:
@@ -65,24 +136,66 @@ pub fn expand_composite_invocation(
     comptime: &HashMap<String, ComptimeVal>,
     state_types: &HashMap<String, Type>,
 ) -> Result<Vec<Statement>, String> {
+    let (body, _) = expand_composite_body(def, args, comptime, state_types)?;
+    Ok(body)
+}
+
+/// Expand a composite in EXPRESSION position to a value (2026-09-22
+/// unified-metaprogramming plan, C2): the folded body becomes an
+/// `Expr::Block` whose value is the composite's `-> Type` return. The
+/// trailing `term v` (or a trailing value `Expression(v)`) becomes the
+/// block's value statement; the block types as `v`'s type (the typechecker
+/// types a block ending in `Expression(e)` as `e`'s type — matching the
+/// interpreter's `eval_block` and the backend's last-register return). A
+/// value-position call of a composite WITHOUT a value term is an error.
+pub fn expand_composite_value(
+    def: &Definition,
+    args: &[Expr],
+    comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) -> Result<Expr, String> {
+    let (mut body, value) = expand_composite_body(def, args, comptime, state_types)?;
+    let value = value.ok_or_else(|| {
+        format!(
+            "composite '{}' is used in value position but its body yields no \
+             value — a value composite must end in `term v;` or a trailing \
+             value expression",
+            def.name
+        )
+    })?;
+    // Convert the trailing value statement into the block's value. If it's a
+    // `term v`, drop the term marker — the block ends in `Expression(v)` so
+    // eval/emit produce v as the block value (never a function return).
+    if let Some(last) = body.last_mut() {
+        if matches!(last, Statement::Term(Some(_))) {
+            *last = Statement::Expression(value);
+        }
+    }
+    Ok(Expr::Block(body))
+}
+
+/// The shared core of composite expansion (2026-09-22 unified-metaprogramming
+/// plan): validate signature/arity/hygiene, generate, substitute, splice the
+/// rest-foreach, fold. Returns the folded statement body and, when the
+/// composite declares a `-> Type`, the value expression the body yields (the
+/// trailing `term v`'s value) — statement-position expansion ignores it,
+/// expression-position expansion wraps it in an `Expr::Block`.
+fn expand_composite_body(
+    def: &Definition,
+    args: &[Expr],
+    comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) -> Result<(Vec<Statement>, Option<Expr>), String> {
     let name = &def.name;
-    let Some((params, exposed)) = composite_signature(def) else {
+    let Some((params, exposed, rest)) = composite_signature(def) else {
         return Err(format!(
-            "composite '{name}' mixes `expr`/`expr_item` and value parameters — \
-             declare all parameters as `name: expr` or `name: expr_item` (v1 \
+            "composite '{name}' mixes `Expr`/`ExprItem` and value parameters — \
+             declare all parameters as `name: Expr` or `name: ExprItem` (v1 \
              supports expression parameters only)"
         ));
     };
-    if args.len() != params.len() {
-        return Err(format!(
-            "composite '{name}' expects {} expression arguments ({}), got {} — \
-             supply one expression per `expr` parameter (`expr_item` binders \
-             are bound by the body, never passed)",
-            params.len(),
-            params.join(", "),
-            args.len()
-        ));
-    }
+    let rest_name = rest.as_deref();
+    check_arity(name, &params, rest_name, args)?;
     check_hygiene(def, &params, &exposed, args)?;
     let trivial = Expr::Bool(true);
     let mut out: Vec<Statement> = Vec::new();
@@ -90,7 +203,9 @@ pub fn expand_composite_invocation(
         out.push(Statement::Gate(def.contract.pre_condition.clone()));
     }
     let mut env: HashMap<String, ComptimeVal> = comptime.clone();
-    // Generation FIRST (static text, consts only), then substitution.
+    // Generation FIRST (static text, consts only), then substitution, then
+    // rest-foreach splice (the rest list is the sanctioned compile-time
+    // iteration channel — see splice_rest_foreach).
     let generated = unroll_static(&def.body, comptime, state_types);
     let mut body_stmts: Vec<Statement> = Vec::new();
     for s in &generated {
@@ -100,13 +215,33 @@ pub fn expand_composite_invocation(
         }
         body_stmts.push(cloned);
     }
+    // Rest-foreach splice AFTER fixed-param substitution: a body
+    // `foreach c in calls { … }` where `calls` is the rest param becomes one
+    // body copy per trailing arg, each `c` substituted with the ORIGINAL arg
+    // expression (emission, not folding — `execute_many!(f(a), f(b))` emits
+    // `f(a); f(b);`).
+    if let Some(rest_name) = rest_name {
+        body_stmts = splice_rest_foreach(body_stmts, rest_name, &args[params.len()..]);
+    }
     let ctx = FoldCtx { state_types, composite: name };
     let folded = fold_stmt_list(body_stmts, &mut env, &ctx)?;
     out.extend(folded);
     if def.contract.post_condition != trivial {
         out.push(Statement::Gate(def.contract.post_condition.clone()));
     }
-    Ok(out)
+    let value = composite_value_expr(&out);
+    Ok((out, value))
+}
+
+/// The value a composite's folded body yields: the expression of its trailing
+/// `term v` statement, when the composite declares a `-> Type` (2026-09-22).
+/// A body without a value term yields `None` — statement-position expansion
+/// only. Expression-position expansion requires a value and errors if absent.
+fn composite_value_expr(body: &[Statement]) -> Option<Expr> {
+    match body.last() {
+        Some(Statement::Term(Some(e))) | Some(Statement::Expression(e)) => Some(e.clone()),
+        _ => None,
+    }
 }
 
 // ── Comptime fold (plan 2026-09-21-comptime-fold-expansion) ────────────
@@ -128,6 +263,13 @@ pub enum ComptimeVal {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// 2026-09-22 (unified-metaprogramming plan, C3): a compile-time string
+    /// (from `Expr::Quoted("...")` or a bridged `NavValue::Str`). Closes the
+    /// one-value-domain gap: a composite body may gate a `match`/`when` on a
+    /// string literal the same way it gates on an Int — `match s { "abc" => … }`
+    /// folds when `s` substitutes to a literal. String comparisons in
+    /// comptime conditions fold too.
+    Str(String),
     /// Comptime-generated sequence (plan 2026-09-21 §B2): the target of a
     /// comptime `foreach`. Scalars only — the fold never guesses at
     /// nested structures.
@@ -150,6 +292,13 @@ fn eval_const(
         Expr::Decimal(n) => Some(ComptimeVal::Int(*n)),
         Expr::Float(f) => Some(ComptimeVal::Float(*f)),
         Expr::Bool(b) => Some(ComptimeVal::Bool(*b)),
+        // 2026-09-22 (C3): a string literal folds to ComptimeVal::Str — the
+        // one-value-domain closure. Tagged literals fold only for the plain
+        // string tag; any other tagged literal declines.
+        Expr::Quoted(bytes) => Some(ComptimeVal::Str(String::from_utf8_lossy(bytes).into_owned())),
+        Expr::TaggedQuotedLiteral(bytes, tag) if tag == "str" || tag == "String" => {
+            Some(ComptimeVal::Str(String::from_utf8_lossy(bytes).into_owned()))
+        }
         Expr::Identifier(n) => env.get(n).cloned(),
         Expr::UnaryOp(kind, a) => {
             let v = eval_const(a, env, state_types)?;
@@ -279,6 +428,7 @@ fn as_f(v: &ComptimeVal) -> f64 {
         ComptimeVal::Int(i) => *i as f64,
         ComptimeVal::Float(f) => *f,
         ComptimeVal::Bool(_) => f64::NAN,
+        ComptimeVal::Str(_) => f64::NAN,
         ComptimeVal::List(_) => f64::NAN,
     }
 }
@@ -311,6 +461,9 @@ fn apply_binop_const(kind: BinaryOpKind, l: ComptimeVal, r: ComptimeVal) -> Opti
             let eq = match (&l, &r) {
                 (Int(a), Int(b)) => a == b,
                 (Bool(a), Bool(b)) => a == b,
+                // 2026-09-22 (C3): string equality folds — a comptime
+                // `match s { "abc" => … }` decides when `s` is a literal.
+                (ComptimeVal::Str(a), ComptimeVal::Str(b)) => a == b,
                 _ => as_f(&l) == as_f(&r),
             };
             Some(Bool(if kind == BinaryOpKind::Eq { eq } else { !eq }))
@@ -348,6 +501,7 @@ fn literal_expr(v: &ComptimeVal) -> Expr {
         ComptimeVal::Int(i) => Expr::Decimal(*i),
         ComptimeVal::Float(f) => Expr::Float(*f),
         ComptimeVal::Bool(b) => Expr::Bool(*b),
+        ComptimeVal::Str(s) => Expr::Quoted(s.as_bytes().to_vec()),
         // Lists never reach this — fold_let_stmt keeps the source literal.
         ComptimeVal::List(_) => Expr::List(vec![]),
     }
@@ -361,6 +515,10 @@ fn pattern_const_match(p: &Pattern, v: &ComptimeVal) -> Option<bool> {
         (Pattern::Literal(Expr::Bool(b)), ComptimeVal::Bool(x)) => Some(b == x),
         (Pattern::Literal(Expr::Decimal(n)), ComptimeVal::Int(x)) => Some(n == x),
         (Pattern::Literal(Expr::Float(f)), ComptimeVal::Float(x)) => Some(f == x),
+        // 2026-09-22 (C3): a string-literal pattern matches a folded string.
+        (Pattern::Literal(Expr::Quoted(b)), ComptimeVal::Str(x)) => {
+            Some(String::from_utf8_lossy(b) == x.as_str())
+        }
         _ => None,
     }
 }
@@ -862,7 +1020,7 @@ fn check_hygiene(
                     "composite '{}': argument for '{}' mentions '{}', which the \
                      composite body binds privately — capture would silently \
                      change meaning; rename the caller's '{}' or the composite's \
-                     binder (exposed `expr_item` binders may be referenced)",
+                     binder (exposed `ExprItem` binders may be referenced)",
                     def.name, param, id, id
                 ));
             }
@@ -925,15 +1083,37 @@ pub fn expand_composites(
     let mut total = 0;
     for depth in 0..8 {
         let mut n = 0;
+        let mut hoisted: Vec<Transaction> = Vec::new();
         for item in items.iter_mut() {
-            match item {
-                TopLevel::Transaction(t) => {
-                    n += expand_stmt_list(&mut t.body, &registry, &comptime, &state_types)?;
-                }
-                TopLevel::CompileTimeDefn(d) => {
-                    n += expand_stmt_list(&mut d.body, &registry, &comptime, &state_types)?;
-                }
-                _ => {}
+            let (ni, nodes) = expand_top_level(item, &registry, &comptime, &state_types)?;
+            n += ni;
+            hoisted.extend(nodes);
+        }
+        // C5 (topology emission): hoisted EmitNode$ results join the program
+        // as top-level reactive nodes (a `sync` modifier wraps in a
+        // SyncGroup). They are walked on the next fixpoint round so nested
+        // composite calls inside the emitted node bodies also expand.
+        for txn in hoisted {
+            let sync = txn
+                .modifiers
+                .iter()
+                .find(|m| m.name == "sync")
+                .and_then(|m| m.value.clone())
+                .and_then(|v| match v {
+                    Expr::Quoted(b) => {
+                        Some(String::from_utf8_lossy(&b).into_owned())
+                    }
+                    _ => None,
+                });
+            let mut txn = txn;
+            txn.modifiers.retain(|m| m.name != "sync");
+            if let Some(g) = sync {
+                items.push(TopLevel::SyncGroup {
+                    domains: vec![g],
+                    item: Box::new(TopLevel::Transaction(txn)),
+                });
+            } else {
+                items.push(TopLevel::Transaction(txn));
             }
         }
         total += n;
@@ -965,6 +1145,7 @@ fn nav_comptime(v: &crate::macros::eval::NavValue) -> Option<ComptimeVal> {
         crate::macros::eval::NavValue::Int(i) => Some(ComptimeVal::Int(*i)),
         crate::macros::eval::NavValue::Bool(b) => Some(ComptimeVal::Bool(*b)),
         crate::macros::eval::NavValue::Count(c) => Some(ComptimeVal::Int(*c as i64)),
+        crate::macros::eval::NavValue::Str(s) => Some(ComptimeVal::Str(s.clone())),
         crate::macros::eval::NavValue::List(xs) => {
             let mut out = Vec::with_capacity(xs.len());
             for x in xs {
@@ -974,6 +1155,146 @@ fn nav_comptime(v: &crate::macros::eval::NavValue) -> Option<ComptimeVal> {
         }
         _ => None,
     }
+}
+
+/// Expand composite invocations in one top-level item (2026-09-22
+/// unified-metaprogramming plan, C4): the uniform walker covers EVERY
+/// statement-bearing TopLevel — reactive txns, compile-time defns, runtime
+/// defns, operator members, cells (their member txns/defns), top-level
+/// statements, and triggers. Replaces the old Transaction-only walk so a
+/// composite call is expanded in any body it appears in.
+///
+/// C5 (topology emission): the walk ALSO hoists `EmitNode$` calls out of
+/// expanded bodies into the program as top-level reactive nodes. Returns
+/// `(expansions, hoisted_nodes)` — the driver pushes the nodes into `items`.
+fn expand_top_level(
+    item: &mut TopLevel,
+    registry: &HashMap<&String, &Definition>,
+    comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) -> Result<(usize, Vec<Transaction>), String> {
+    match item {
+        TopLevel::Definition(d) | TopLevel::TypeDefOperator(d) => {
+            let n = expand_stmt_list(&mut d.body, registry, comptime, state_types)?;
+            let nodes = hoist_emit_nodes(&mut d.body)?;
+            Ok((n, nodes))
+        }
+        TopLevel::Transaction(t) => {
+            let n = expand_stmt_list(&mut t.body, registry, comptime, state_types)?;
+            let nodes = hoist_emit_nodes(&mut t.body)?;
+            Ok((n, nodes))
+        }
+        TopLevel::CompileTimeDefn(d) => {
+            let n = expand_stmt_list(&mut d.body, registry, comptime, state_types)?;
+            let nodes = hoist_emit_nodes(&mut d.body)?;
+            Ok((n, nodes))
+        }
+        TopLevel::Statement(stmt) => {
+            let mut one = vec![(**stmt).clone()];
+            let n = expand_stmt_list(&mut one, registry, comptime, state_types)?;
+            if n > 0 {
+                *stmt = Box::new(one.into_iter().next().unwrap_or(Statement::Break));
+            }
+            Ok((n, vec![]))
+        }
+        TopLevel::Cell(cell) => {
+            let mut n = 0;
+            let mut nodes = Vec::new();
+            for t in cell.transactions.iter_mut() {
+                n += expand_stmt_list(&mut t.body, registry, comptime, state_types)?;
+                nodes.extend(hoist_emit_nodes(&mut t.body)?);
+            }
+            for d in cell.definitions.iter_mut() {
+                n += expand_stmt_list(&mut d.body, registry, comptime, state_types)?;
+                nodes.extend(hoist_emit_nodes(&mut d.body)?);
+            }
+            Ok((n, nodes))
+        }
+        _ => Ok((0, vec![])),
+    }
+}
+
+/// C5 (topology emission): remove `EmitNode$(name, pre, post, { body })`
+/// calls from a body and return them as top-level reactive Transactions.
+/// The intrinsic is an ordinary `Expr::Call` (no new Statement variant);
+/// expansion substitutes params into its args, then this hoists the finished
+/// node. The optional 5th argument is a `sync<group>` domain string —
+/// wrapping the node in a SyncGroup at the driver.
+fn hoist_emit_nodes(body: &mut Vec<Statement>) -> Result<Vec<Transaction>, String> {
+    let mut out = Vec::new();
+    let mut kept: Vec<Statement> = Vec::with_capacity(body.len());
+    for s in body.drain(..) {
+        if let Statement::Expression(Expr::Call(name, args, _)) = &s {
+            if name == "EmitNode$" {
+                out.push(build_emit_node(args)?);
+                continue;
+            }
+        }
+        kept.push(s);
+    }
+    *body = kept;
+    Ok(out)
+}
+
+/// Build the reactive Transaction for one `EmitNode$(name, pre, post,
+/// { body })` call. `name` must be a comptime string; pre/post are
+/// expressions (defaulting to `true`); the body is an `Expr::Block` of
+/// statements. An optional 5th string arg is the `sync<group>` domain —
+/// encoded as a `sync` modifier annotation for the driver to wrap.
+fn build_emit_node(args: &[Expr]) -> Result<Transaction, String> {
+    if args.is_empty() {
+        return Err("EmitNode$: expected (name, pre, post, { body })".into());
+    }
+    let name = match &args[0] {
+        Expr::Quoted(b) => String::from_utf8_lossy(b).into_owned(),
+        _ => return Err("EmitNode$: the node name must be a string literal".into()),
+    };
+    let pre = args.get(1).cloned().unwrap_or(Expr::Bool(true));
+    let post = args.get(2).cloned().unwrap_or(Expr::Bool(true));
+    // `EmitNode$(name, true, true, …)` is an omitted contract — not a
+    // trivial explicit one (the proof engine rejects explicit `[true][true]`
+    // as recording no obligation).
+    let explicit = !matches!(&pre, Expr::Bool(true)) || !matches!(&post, Expr::Bool(true));
+    let body = match args.get(3) {
+        Some(Expr::Block(stmts)) => stmts.clone(),
+        _ => Vec::new(),
+    };
+    let sync_group = match args.get(4) {
+        Some(Expr::Quoted(b)) => {
+            Some(String::from_utf8_lossy(b).into_owned())
+        }
+        _ => None,
+    };
+    let mut modifiers = Vec::new();
+    if let Some(g) = sync_group {
+        modifiers.push(Annotation {
+            name: "sync".to_string(),
+            value: Some(Expr::Quoted(g.as_bytes().to_vec())),
+        });
+    }
+    Ok(Transaction {
+        name,
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: Contract {
+            pre_condition: pre,
+            post_condition: post,
+            watchdog: None,
+            span: None,
+            explicit,
+            post_authority: false,
+        },
+        body,
+        metadata: Default::default(),
+        derivation: None,
+        modifiers,
+        span: None,
+        doc: None,
+    })
 }
 
 /// Expand statement-position composite invocations in one statement list.
@@ -1018,7 +1339,8 @@ fn expand_stmt_list(
     Ok(n)
 }
 
-/// Recurse into the statement kinds that carry nested statement lists.
+/// Recurse into the statement kinds that carry nested statement lists, and
+/// expand value-position composite calls inside expressions.
 fn expand_nested(
     s: &mut Statement,
     registry: &HashMap<&String, &Definition>,
@@ -1034,9 +1356,210 @@ fn expand_nested(
         | Statement::Mutex(body) => {
             expand_stmt_list(body, registry, comptime, state_types)?;
         }
+        // 2026-09-22 (unified-metaprogramming plan, C2): expression-position
+        // composites (`let r = f!(x)`, `r = f!(x)`, `f!(x);`) expand to a
+        // value block. Nested value calls are resolved depth-first by the
+        // expression walker's recursion.
+        Statement::Let { expr: Some(e), .. } => {
+            expand_expr_values(e, registry, comptime, state_types)?;
+        }
+        Statement::Assign(_, r) => {
+            expand_expr_values(r, registry, comptime, state_types)?;
+        }
+        Statement::Expression(e) => {
+            // A bare `name!(...)` statement is the statement-position path —
+            // expand_stmt_list splices it. Only walk NESTED value calls
+            // (e.g. `f!(x).field`, `g(f!(x))`).
+            if !matches!(&*e, Expr::PluginIntercept { receiver: None, .. }) {
+                expand_expr_values(e, registry, comptime, state_types)?;
+            }
+        }
+        Statement::Term(Some(e)) => {
+            expand_expr_values(e, registry, comptime, state_types)?;
+        }
+        Statement::Check(e) | Statement::Gate(e) => {
+            expand_expr_values(e, registry, comptime, state_types)?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// Expand value-position composite invocations throughout an expression
+/// (2026-09-22 unified-metaprogramming plan, C2). A `name!(args...)` whose
+/// name resolves to a value composite becomes `Expr::Block` of the expanded
+/// body; the walk recurses into the expansion result so a composite body's
+/// nested calls also resolve (the fixpoint loop re-walks statements, this
+/// recursion covers nested expressions inside one call).
+fn expand_expr_values(
+    e: &mut Expr,
+    registry: &HashMap<&String, &Definition>,
+    comptime: &HashMap<String, ComptimeVal>,
+    state_types: &HashMap<String, Type>,
+) -> Result<(), String> {
+    match e {
+        Expr::PluginIntercept {
+            name,
+            args,
+            receiver: None,
+            ..
+        } => {
+            if let Some(def) = registry.get(name) {
+                let block = expand_composite_value(def, args, comptime, state_types)?;
+                // Recurse into the expanded block so nested value calls in
+                // the composite body resolve before the block is spliced.
+                let mut inner = block;
+                expand_expr_values(&mut inner, registry, comptime, state_types)?;
+                *e = inner;
+            }
+        }
+        Expr::Call(_, a, _) => {
+            for x in a.iter_mut() {
+                expand_expr_values(x, registry, comptime, state_types)?;
+            }
+        }
+        Expr::MethodCall(r, _, a, _, _) => {
+            expand_expr_values(r, registry, comptime, state_types)?;
+            for x in a.iter_mut() {
+                expand_expr_values(x, registry, comptime, state_types)?;
+            }
+        }
+        Expr::BinaryOp(_, l, r) => {
+            expand_expr_values(l, registry, comptime, state_types)?;
+            expand_expr_values(r, registry, comptime, state_types)?;
+        }
+        Expr::UnaryOp(_, x) => expand_expr_values(x, registry, comptime, state_types)?,
+        Expr::Index(o, i) => {
+            expand_expr_values(o, registry, comptime, state_types)?;
+            expand_expr_values(i, registry, comptime, state_types)?;
+        }
+        Expr::Cast(x, _) | Expr::Deref(x) | Expr::AddrOf(x) | Expr::Consume(x)
+        | Expr::Await(x) => expand_expr_values(x, registry, comptime, state_types)?,
+        Expr::Range { start, end, .. } => {
+            expand_expr_values(start, registry, comptime, state_types)?;
+            expand_expr_values(end, registry, comptime, state_types)?;
+        }
+        Expr::Tuple(xs) | Expr::List(xs) => {
+            for x in xs.iter_mut() {
+                expand_expr_values(x, registry, comptime, state_types)?;
+            }
+        }
+        Expr::Match(scrut, arms) => {
+            expand_expr_values(scrut, registry, comptime, state_types)?;
+            for a in arms.iter_mut() {
+                if let Some(g) = a.guard.as_mut() {
+                    expand_expr_values(g, registry, comptime, state_types)?;
+                }
+                expand_expr_values(a.body.as_mut(), registry, comptime, state_types)?;
+            }
+        }
+        Expr::Block(stmts) => {
+            for s in stmts.iter_mut() {
+                expand_nested(s, registry, comptime, state_types)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// 2026-09-22 (unified-metaprogramming plan): splice a `foreach item in
+/// <rest>` loop whose list is the composite's `...` rest parameter. The rest
+/// list is the sanctioned compile-time iteration channel: the loop becomes
+/// ONE body copy per trailing argument, each `item` substituted with the
+/// ORIGINAL argument expression (emission — `execute_many!(f(a), f(b))`
+/// emits `f(a); f(b);`). The splice happens AFTER fixed-param substitution,
+/// so the rest name is still a bare identifier in the body. Any other
+/// `foreach` (runtime list) is kept verbatim.
+fn splice_rest_foreach(
+    stmts: Vec<Statement>,
+    rest_name: &str,
+    rest_args: &[Expr],
+) -> Vec<Statement> {
+    let mut out: Vec<Statement> = Vec::with_capacity(stmts.len());
+    for s in stmts {
+        match s {
+            Statement::Foreach {
+                item,
+                list,
+                body,
+            } => {
+                let is_rest = match list.as_ref() {
+                    Expr::Identifier(n) => n == rest_name,
+                    _ => false,
+                };
+                if is_rest {
+                    out.extend(splice_rest_iteration(&item, &body, rest_args));
+                } else {
+                    out.push(Statement::Foreach {
+                        item,
+                        list,
+                        body: splice_nested(body, rest_name, rest_args),
+                    });
+                }
+            }
+            Statement::Guarded(cond, body) => {
+                out.push(Statement::Guarded(
+                    cond,
+                    splice_nested(body, rest_name, rest_args),
+                ));
+            }
+            Statement::Block(body) => {
+                out.push(Statement::Block(splice_nested(
+                    body,
+                    rest_name,
+                    rest_args,
+                )));
+            }
+            Statement::SyncBlock(body) => {
+                out.push(Statement::SyncBlock(splice_nested(
+                    body,
+                    rest_name,
+                    rest_args,
+                )));
+            }
+            Statement::Mutex(body) => {
+                out.push(Statement::Mutex(splice_nested(
+                    body,
+                    rest_name,
+                    rest_args,
+                )));
+            }
+            Statement::Defer(body) => {
+                out.push(Statement::Defer(splice_nested(
+                    body,
+                    rest_name,
+                    rest_args,
+                )));
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// One body copy per rest argument, each `item` substituted with the arg
+/// expression. Empty rest is defensive (caller errors first).
+fn splice_rest_iteration(
+    item: &str,
+    body: &[Statement],
+    rest_args: &[Expr],
+) -> Vec<Statement> {
+    let mut out = Vec::new();
+    for arg in rest_args {
+        let mut copy = body.to_vec();
+        for st in copy.iter_mut() {
+            substitute_param(st, item, arg);
+        }
+        out.extend(copy);
+    }
+    out
+}
+
+/// Recurse into a nested statement list so a rest-foreach inside a
+/// guarded/block/defer body also splices.
+fn splice_nested(body: Vec<Statement>, rest_name: &str, rest_args: &[Expr]) -> Vec<Statement> {
+    splice_rest_foreach(body, rest_name, rest_args)
 }
 
 /// Substitute `param` → `arg` throughout one statement (one pass; the
@@ -1095,7 +1618,17 @@ fn subst_expr(e: &mut Expr, param: &str, arg: &Expr) {
             subst_expr(b, param, arg);
         }
         Expr::UnaryOp(_, a) => subst_expr(a, param, arg),
-        Expr::Call(_, args, _) => {
+        Expr::Call(name, args, _) => {
+            // 2026-09-22 (unified-metaprogramming plan): a parameter used as a
+            // CALLABLE (`tag(c)` where `tag` is a fixed expr param bound to a
+            // callee expression) must substitute the callee too — not just the
+            // argument spine. `Sink#`-style callees flow through fixed params.
+            if name == param {
+                *name = match arg {
+                    Expr::Identifier(n) => n.clone(),
+                    _ => return,
+                };
+            }
             for a in args.iter_mut() {
                 subst_expr(a, param, arg);
             }
@@ -1143,21 +1676,63 @@ fn subst_expr(e: &mut Expr, param: &str, arg: &Expr) {
         // as the EXPRESSION form — its scrutinee, guards, patterns, and
         // block bodies carry parameter references too.
         Expr::Match(scrut, arms) => {
-            subst_expr(scrut, param, arg);
-            for a in arms.iter_mut() {
-                subst_pattern(&mut a.pattern, param, arg);
-                if let Some(g) = a.guard.as_mut() {
-                    subst_expr(g, param, arg);
-                }
-                subst_expr(a.body.as_mut(), param, arg);
-            }
+            subst_match_arms(scrut, arms, param, arg);
         }
         Expr::Block(stmts) => {
             for s in stmts.iter_mut() {
                 substitute_param(s, param, arg);
             }
         }
+        // 2026-09-22 (unified-metaprogramming plan): a nested `name!(...)`
+        // inside a composite body carries parameter references in its args —
+        // substitute them so `execute_many!(f, (x), (x+1))`-style nesting
+        // resolves the parameter through the composite boundary.
+        Expr::PluginIntercept {
+            name: _,
+            args,
+            type_args: _,
+            receiver,
+            chain_refs: _,
+        } => {
+            subst_intercept_args(args, receiver, param, arg);
+        }
         _ => {}
+    }
+}
+
+/// Substitute inside a nested `name!(...)` intercept's args and receiver —
+/// a composite parameter flows through the nested macro boundary
+/// (2026-09-22 unified-metaprogramming plan).
+fn subst_intercept_args(
+    args: &mut [Expr],
+    receiver: &mut Option<Box<Expr>>,
+    param: &str,
+    arg: &Expr,
+) {
+    for a in args.iter_mut() {
+        subst_expr(a, param, arg);
+    }
+    if let Some(r) = receiver.as_mut() {
+        subst_expr(r, param, arg);
+    }
+}
+
+/// Substitute inside a statement-form `match` expression (F1 unified
+/// dispatch): scrutinee, arm patterns, guards, and block bodies all carry
+/// parameter references.
+fn subst_match_arms(
+    scrut: &mut Expr,
+    arms: &mut [MatchArm],
+    param: &str,
+    arg: &Expr,
+) {
+    subst_expr(scrut, param, arg);
+    for a in arms.iter_mut() {
+        subst_pattern(&mut a.pattern, param, arg);
+        if let Some(g) = a.guard.as_mut() {
+            subst_expr(g, param, arg);
+        }
+        subst_expr(a.body.as_mut(), param, arg);
     }
 }
 
@@ -1307,11 +1882,11 @@ mod tests {
     #[test]
     fn expr_typed_params_are_composites() {
         let items = parse_program(
-            "$defn f(x: expr, y: expr) { \n z = x + y; \n}; \nlet q: Int = 0;",
+            "$defn f(x: Expr, y: Expr) { \n z = x + y; \n}; \nlet q: Int = 0;",
         );
         let d = defn_of(&items, "f");
         assert!(is_composite(&d), "`expr` params mark a composite");
-        let (subst, exposed) = composite_signature(&d).unwrap();
+        let (subst, exposed, _rest) = composite_signature(&d).unwrap();
         assert_eq!(subst, vec!["x".to_string(), "y".to_string()]);
         assert!(exposed.is_empty());
         let plain = defn_of(
@@ -1326,14 +1901,14 @@ mod tests {
         // `expr_item` names a binder the body binds; arguments may reference
         // it, and it is never passed at the call site.
         let items = parse_program(
-            "$defn f(fill: expr, n: expr, i: expr_item) { \n\
+            "$defn f(fill: Expr, n: Expr, i: ExprItem) { \n\
              \x20 foreach i in 0..n { \n\
              \x20  buf[i] = fill; \n\
              \x20 } \n\
              };",
         );
         let d = defn_of(&items, "f");
-        let (subst, exposed) = composite_signature(&d).unwrap();
+        let (subst, exposed, _rest) = composite_signature(&d).unwrap();
         assert_eq!(subst, vec!["fill".to_string(), "n".to_string()]);
         assert!(exposed.contains("i"));
         // The argument references the exposed binder `i` — allowed.
@@ -1355,7 +1930,7 @@ mod tests {
     #[test]
     fn expansion_substitutes_nested_positions() {
         let items = parse_program(
-            "$defn f(p: expr, q: expr) { \n\
+            "$defn f(p: Expr, q: Expr) { \n\
              \x20 let t = p * 2; \n\
              \x20 buf[i] = t + q; \n\
              };",
@@ -1388,7 +1963,7 @@ mod tests {
     #[test]
     fn hygiene_capture_is_rejected() {
         let items = parse_program(
-            "$defn f(p: expr) { let t = p * 2; res = t; };",
+            "$defn f(p: Expr) { let t = p * 2; res = t; };",
         );
         let d = defn_of(&items, "f");
         // The arg mentions `t` — the body binds `t`. Capture => error.
@@ -1404,7 +1979,7 @@ mod tests {
 
     #[test]
     fn arg_referencing_another_param_is_rejected() {
-        let items = parse_program("$defn f(p: expr, q: expr) { res = p + q; };");
+        let items = parse_program("$defn f(p: Expr, q: Expr) { res = p + q; };");
         let d = defn_of(&items, "f");
         let arg_p = Expr::Decimal(1);
         let arg_q = Expr::BinaryOp(
@@ -1420,7 +1995,7 @@ mod tests {
     #[test]
     fn contract_gates_are_spliced() {
         let items = parse_program(
-            "$defn f(p: expr) [i < 8] [i >= 0] { res = p; };",
+            "$defn f(p: Expr) [i < 8] [i >= 0] { res = p; };",
         );
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(
@@ -1438,7 +2013,7 @@ mod tests {
     #[test]
     fn driver_expands_call_sites_in_node_bodies() {
         let src = "\
-$defn scale_into(dst: expr, srcv: expr) { dst = srcv * 2; };
+$defn scale_into(dst: Expr, srcv: Expr) { dst = srcv * 2; };
 let i: Int = 0;
 let buf: Float[16];
 let inp: Float[16];
@@ -1468,7 +2043,7 @@ async node k [i < 16][i == 16] {
     #[test]
     fn mixed_params_fail_closed() {
         let items = parse_program(
-            "$defn f(p: expr, n: Int) { res = p + n; };",
+            "$defn f(p: Expr, n: Int) { res = p + n; };",
         );
         let d = defn_of(&items, "f");
         let err = expand_composite_invocation(
@@ -1483,7 +2058,7 @@ async node k [i < 16][i == 16] {
 
     #[test]
     fn arg_count_mismatch_diagnoses_params() {
-        let items = parse_program("$defn f(p: expr, q: expr) { res = p + q; };");
+        let items = parse_program("$defn f(p: Expr, q: Expr) { res = p + q; };");
         let d = defn_of(&items, "f");
         let err = expand_composite_invocation(
             &d,
@@ -1537,7 +2112,7 @@ mod comptime_fold {
     /// literal small arm / large arm. Returns the spliced statements.
     fn expand_adaptive(span: Expr) -> Vec<Statement> {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 match n <= 32 { \n\
              \x20  true => { small = 1; }, \n\
              \x20  false => { large = 1; }, \n\
@@ -1578,7 +2153,7 @@ mod comptime_fold {
     #[test]
     fn comptime_let_feeds_condition_and_stays_bound() {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 let tile: Int = n / 4; \n\
              \x20 match tile > 8 { \n\
              \x20  true => { wide = tile; }, \n\
@@ -1601,7 +2176,7 @@ mod comptime_fold {
     #[test]
     fn named_comptime_constant_seeds_the_fold() {
         let items = parse_program(
-            "$defn f(n: expr) { match n <= 32 { true => { s = 1; }, false => { l = 1; }, }; };",
+            "$defn f(n: Expr) { match n <= 32 { true => { s = 1; }, false => { l = 1; }, }; };",
         );
         let d = defn_of(&items, "f");
         let mut seed = HashMap::new();
@@ -1620,7 +2195,7 @@ mod comptime_fold {
     #[test]
     fn top_level_const_seeds_the_driver_fold() {
         let src = "\
-$defn f(n: expr) { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };
+$defn f(n: Expr) { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };
 const D: Int = 128;
 let i: Int = 0;
 let buf: Float[64];
@@ -1650,7 +2225,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn when_folds_both_polarities() {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 when n > 100 { big = 1; }; \n\
              \x20 when n > 1000 { huge = 1; }; \n\
              \x20 when n > 0 { pos = 1; }; \n\
@@ -1669,7 +2244,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn runtime_rebind_kills_comptime_value() {
         let items = parse_program(
-            "$defn f(n: expr, w: expr) { \n\
+            "$defn f(n: Expr, w: Expr) { \n\
              \x20 let t: Int = n; \n\
              \x20 t = w; \n\
              \x20 match t > 8 { true => { a = 1; }, false => { b = 1; }, }; \n\
@@ -1691,7 +2266,7 @@ async node k [i < 1][i == 1] {
     fn comptime_range_unrolls_and_prunes_per_iteration() {
         // LITERAL range in the declaration = generation (static text).
         let items = parse_program(
-            "$defn f(p: expr) { \n\
+            "$defn f(p: Expr) { \n\
              \x20 foreach j in 0..16 { \n\
              \x20  match j < 4 { true => { lo = 1; }, false => { hi = 1; }, } \n\
              \x20 } \n\
@@ -1714,7 +2289,7 @@ async node k [i < 1][i == 1] {
         // A range over an expr PARAMETER is a runtime quantity even when
         // this call passes a literal — caller spans never generate.
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 foreach j in 0..n { \n\
              \x20  work = 1; \n\
              \x20 } \n\
@@ -1730,7 +2305,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn runtime_list_keeps_the_runtime_foreach() {
         let items = parse_program(
-            "$defn f(rows: expr) { \n\
+            "$defn f(rows: Expr) { \n\
              \x20 foreach j in rows { \n\
              \x20  match j < 4 { true => { lo = 1; }, false => { hi = 1; }, } \n\
              \x20 } \n\
@@ -1752,7 +2327,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn comptime_list_literal_unrolls_per_element() {
         let items = parse_program(
-            "$defn f(p: expr) { \n\
+            "$defn f(p: Expr) { \n\
              \x20 foreach w in [1, 2, 4] { \n\
              \x20  acc[p + w] = w; \n\
              \x20 } \n\
@@ -1798,7 +2373,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn comptime_check_true_splices_false_errors() {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 check n <= 32; \n\
              \x20 mark = n; \n\
              };",
@@ -1843,7 +2418,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn nested_adaptive_arms_fold_recursively() {
         let items = parse_program(
-            "$defn f(n: expr) { \n\
+            "$defn f(n: Expr) { \n\
              \x20 match n <= 32 { \n\
              \x20  true => { match n <= 8 { true => { tiny = 1; }, false => { small = 1; }, }; }, \n\
              \x20  false => { large = 1; }, \n\
@@ -1865,7 +2440,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn binding_pattern_scrutinee_degrades() {
         let items = parse_program(
-            "$defn f(n: expr) { match n { x => { any = x; }, }; };",
+            "$defn f(n: Expr) { match n { x => { any = x; }, }; };",
         );
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(&d, &[Expr::Decimal(7)], &HashMap::new(), &HashMap::new())
@@ -1880,7 +2455,7 @@ async node k [i < 1][i == 1] {
     #[test]
     fn comptime_overflow_declines_fold() {
         let items = parse_program(
-            "$defn f(n: expr) { let t: Int = n * 2; match t > 8 { true => { a = 1; }, false => { b = 1; }, }; };",
+            "$defn f(n: Expr) { let t: Int = n * 2; match t > 8 { true => { a = 1; }, false => { b = 1; }, }; };",
         );
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(
@@ -1897,7 +2472,7 @@ async node k [i < 1][i == 1] {
 #[test]
     fn contracts_survive_folding() {
         let items = parse_program(
-            "$defn f(n: expr) [n < 64] [n > 0] { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };",
+            "$defn f(n: Expr) [n < 64] [n > 0] { match n <= 32 { true => { s = 1; }, false => { l = 1; }, } };",
         );
         let d = defn_of(&items, "f");
         let out = expand_composite_invocation(&d, &[Expr::Decimal(16)], &HashMap::new(), &HashMap::new())
@@ -1920,7 +2495,7 @@ async node k [i < 1][i == 1] {
         // A composite gates on `x.^^Size`; the arg names a `let buf: Float[4]`.
         let items = parse_program(
             "let buf: Float[4]; \n\
-             $defn pick(x: expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
+             $defn pick(x: Expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "pick");
         let state_types = state_types_of(&items);
@@ -1945,7 +2520,7 @@ async node k [i < 1][i == 1] {
     fn reflect_size_mismatch_splices_other_arm() {
         let items = parse_program(
             "let buf: Float[8]; \n\
-             $defn pick(x: expr) { match x.^^Size { 4 => { r = 1; }, 8 => { r = 8; }, _ => { r = 0; }, } };",
+             $defn pick(x: Expr) { match x.^^Size { 4 => { r = 1; }, 8 => { r = 8; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "pick");
         let state_types = state_types_of(&items);
@@ -1967,7 +2542,7 @@ async node k [i < 1][i == 1] {
         // `.^^Element` on Float[16] folds to category 1 (Float).
         let items = parse_program(
             "let buf: Float[16]; \n\
-             $defn kind(x: expr) { match x.^^Element { 1 => { r = 1; }, _ => { r = 0; }, } };",
+             $defn kind(x: Expr) { match x.^^Element { 1 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "kind");
         let state_types = state_types_of(&items);
@@ -1988,7 +2563,7 @@ async node k [i < 1][i == 1] {
         // A receiver that is NOT a state decl declines the fold — the match
         // stays a runtime branch (fail-open).
         let items = parse_program(
-            "$defn pick(x: expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
+            "$defn pick(x: Expr) { match x.^^Size { 4 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "pick");
         let out = expand_composite_invocation(
@@ -2007,7 +2582,7 @@ async node k [i < 1][i == 1] {
         // `.^^Element` on a String state var folds to the Char category (3).
         let items = parse_program(
             "let s: String; \n\
-             $defn ch(x: expr) { match x.^^Element { 3 => { r = 1; }, _ => { r = 0; }, } };",
+             $defn ch(x: Expr) { match x.^^Element { 3 => { r = 1; }, _ => { r = 0; }, } };",
         );
         let d = defn_of(&items, "ch");
         let state_types = state_types_of(&items);
@@ -2021,6 +2596,410 @@ async node k [i < 1][i == 1] {
         let dump = format!("{out:?}");
         assert!(dump.contains("Decimal(1)"), "Char category arm spliced: {dump}");
         assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan) ────────────────────────
+    // Variadic composites: `$defn f(...calls: Expr)` binds ALL trailing args
+    // as the sanctioned compile-time iteration channel — a `foreach c in
+    // calls` splices one body copy per arg, `c` substituted with the arg.
+
+    #[test]
+    fn rest_param_foreach_splices_one_call_per_arg() {
+        let items = parse_program(
+            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
+        );
+        let d = defn_of(&items, "execute_many");
+        let out = expand_composite_invocation(
+            &d,
+            &[
+                Expr::Call("emit".into(), vec![Expr::Decimal(1)], None),
+                Expr::Call("emit".into(), vec![Expr::Decimal(2)], None),
+                Expr::Call("emit".into(), vec![Expr::Decimal(3)], None),
+            ],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        assert_eq!(out.len(), 3, "one emission per arg: {out:?}");
+        for (i, st) in out.iter().enumerate() {
+            let Statement::Expression(Expr::Call(name, args, _)) = st else {
+                panic!("expected a call emission, got {st:?}");
+            };
+            assert_eq!(name, "emit");
+            assert!(matches!(&args[0], Expr::Decimal(n) if *n == (i as i64) + 1));
+        }
+    }
+
+    #[test]
+    fn rest_param_with_fixed_params_binds_trailing() {
+        // A fixed `expr` param plus a `...` rest: the first arg binds the
+        // fixed param, the rest iterate.
+        let items = parse_program(
+            "$defn wrap(tag: Expr, ...calls: Expr) { foreach c in calls { tag(c); } };",
+        );
+        let d = defn_of(&items, "wrap");
+        let out = expand_composite_invocation(
+            &d,
+            &[
+                Expr::Identifier("Sink#".into()),
+                Expr::Decimal(1),
+                Expr::Decimal(2),
+            ],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert_eq!(out.len(), 2, "two rest args → two emissions: {dump}");
+        assert!(dump.contains("Sink#"), "fixed tag substituted: {dump}");
+    }
+
+    #[test]
+    fn zero_rest_args_is_an_error() {
+        let items = parse_program(
+            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
+        );
+        let d = defn_of(&items, "execute_many");
+        let err = expand_composite_invocation(
+            &d,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("zero rest arguments"),
+            "expected zero-rest diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rest_param_stays_unsubstituted_before_splice() {
+        // The rest name is NOT positionally substituted (it is a list, not a
+        // single expr) — the splice consumes the foreach over it.
+        let items = parse_program(
+            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
+        );
+        let d = defn_of(&items, "execute_many");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Call("f".into(), vec![Expr::Decimal(7)], None)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        assert_eq!(out.len(), 1);
+        let Statement::Expression(Expr::Call(name, _, _)) = &out[0] else {
+            panic!("expected call, got {:?}", out[0]);
+        };
+        assert_eq!(name, "f");
+    }
+
+    #[test]
+    fn runtime_foreach_inside_composite_is_not_spliced() {
+        // A `foreach` over a NON-rest list stays a runtime loop.
+        let items = parse_program(
+            "$defn f(x: Expr) { foreach k in 0..x { emit(k); } };",
+        );
+        let d = defn_of(&items, "f");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Decimal(4)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Foreach"), "runtime loop kept: {dump}");
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan, C2) ───────────────────
+    // Value-returning composites: `$defn f(...) -> T { ...; term v; }` used
+    // in EXPRESSION position expands to an `Expr::Block` whose value is the
+    // composite's return. The trailing `term` becomes the block's value
+    // statement (never a function return).
+
+    #[test]
+    fn value_composite_expands_to_value_block() {
+        let items = parse_program(
+            "$defn aligned_size(n: Expr) -> Int { term (n + 15) & ~15; };",
+        );
+        let d = defn_of(&items, "aligned_size");
+        let block = expand_composite_value(
+            &d,
+            &[Expr::Decimal(4)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands to value");
+        let Expr::Block(stmts) = block else {
+            panic!("expected Expr::Block, got {block:?}");
+        };
+        assert!(!stmts.is_empty());
+        // The trailing term became a value expression — the block yields it.
+        assert!(
+            matches!(stmts.last(), Some(Statement::Expression(_))),
+            "trailing value statement: {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn value_composite_without_term_is_an_error() {
+        let items = parse_program(
+            "$defn no_value(x: Expr) { let y: Int = x; };",
+        );
+        let d = defn_of(&items, "no_value");
+        let err = expand_composite_value(
+            &d,
+            &[Expr::Decimal(1)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("value position"),
+            "expected value-position diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn statement_composite_still_expands_to_statements() {
+        // A statement composite (no -> Type) keeps statement expansion;
+        // its body's trailing term is NOT converted to a value statement.
+        let items = parse_program(
+            "$defn execute_many(...calls: Expr) { foreach c in calls { c; } };",
+        );
+        let d = defn_of(&items, "execute_many");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Call("f".into(), vec![Expr::Decimal(1)], None)],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        assert_eq!(out.len(), 1);
+        let Statement::Expression(Expr::Call(name, _, _)) = &out[0] else {
+            panic!("expected a call, got {:?}", out[0]);
+        };
+        assert_eq!(name, "f");
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan, C4) ───────────────────
+    // Uniform walker: composite calls expand in EVERY statement-bearing
+    // TopLevel, not just reactive txns — runtime defn bodies, operator
+    // members, cell members.
+
+    #[test]
+    fn composite_expands_in_runtime_defn_body() -> Result<(), String> {
+        let items = parse_program(
+            "$defn twice(x: Expr) { let r2: Int = x * 2; }; \
+             \x20defn compute(v: Int) -> Int { twice!(v); term r2; };",
+        );
+        // Build a registry from the $defn, then walk the runtime defn.
+        let comp = defn_of(&items, "twice");
+        let mut registry: HashMap<&String, &Definition> = HashMap::new();
+        registry.insert(&comp.name, &comp);
+        let mut items = items;
+        let n = if let Some(TopLevel::Definition(d)) = items.iter_mut().find(|it| {
+            matches!(it, TopLevel::Definition(def) if def.name == "compute")
+        }) {
+            expand_stmt_list(&mut d.body, &registry, &HashMap::new(), &HashMap::new())?
+        } else {
+            panic!("compute defn not found");
+        };
+        assert_eq!(n, 1, "one composite call expanded in the defn body");
+        let TopLevel::Definition(d) = &items[1] else {
+            panic!("compute defn");
+        };
+        let dump = format!("{:?}", d.body);
+        assert!(!dump.contains("twice!"), "call spliced: {dump}");
+        assert!(dump.contains("Mul"), "twice body spliced: {dump}");
+        Ok(())
+    }
+
+    #[test]
+    fn composite_expands_in_operator_member_body() -> Result<(), String> {
+        // TypeDefOperator is Defn-shaped — the walker covers it. (In a real
+        // parse the op member nests inside `TopLevel::TypeDef`; the driver
+        // walk covers it once surfaced, and expand_top_level has the arm.)
+        let comp = defn_of(
+            &parse_program("$defn twice(x: Expr) { let r2: Int = x * 2; };"),
+            "twice",
+        );
+        let mut registry: HashMap<&String, &Definition> = HashMap::new();
+        registry.insert(&comp.name, &comp);
+        let mut op_member = crate::ast::top::Definition {
+            name: "Count".to_string(),
+            type_params: vec![],
+            parameters: vec![],
+            outputs: vec![],
+            output_type: None,
+            contract: crate::ast::top::Contract::new(Expr::Bool(true), Expr::Bool(true)),
+            body: vec![
+                Statement::Expression(Expr::PluginIntercept {
+                    name: "twice".into(),
+                    args: vec![Expr::Decimal(3)],
+                    type_args: vec![],
+                    receiver: None,
+                    chain_refs: vec![],
+                }),
+                Statement::Term(Some(Expr::Identifier("r2".into()))),
+            ],
+            metadata: Default::default(),
+            derivation: None,
+            modifiers: vec![],
+            annotations: vec![],
+            variadic_param: None,
+            span: None,
+            doc: None,
+        };
+        let mut item = TopLevel::TypeDefOperator(op_member);
+        let (n, _nodes) = expand_top_level(&mut item, &registry, &HashMap::new(), &HashMap::new())?;
+        assert_eq!(n, 1, "one composite call expanded in the operator member");
+        Ok(())
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan, C5) ───────────────────
+    // Topology emission: the EmitNode$ intrinsic inside a composite expands
+    // to top-level reactive nodes — hoisted by the driver, no new Statement
+    // variant.
+
+    #[test]
+    fn emit_node_hoists_a_top_level_transaction() -> Result<(), String> {
+        // A parameterless topology composite: is_composite is true via the
+        // EmitNode$ marker; expansion hoists one node.
+        let items = parse_program(
+            "$defn emit_one() { EmitNode$(\"extra\", true, true, { term; }); };",
+        );
+        let comp = defn_of(&items, "emit_one");
+        assert!(is_composite(&comp), "EmitNode marks a topology composite");
+        let mut registry: HashMap<&String, &Definition> = HashMap::new();
+        registry.insert(&comp.name, &comp);
+        let mut driver = parse_program(
+            "let i: Int = 0; async node d [i < 1][i == 1] { emit_one!(); i = i + 1; term; };",
+        );
+        // Expand the whole program: the driver's body call expands, and the
+        // EmitNode$ inside is hoisted.
+        let mut all = items;
+        all.extend(driver.drain(..));
+        let mut expanded = all.clone();
+        let mut hoisted: Vec<Transaction> = Vec::new();
+        let mut count = 0;
+        for it in expanded.iter_mut() {
+            let (ni, nodes) =
+                expand_top_level(it, &registry, &HashMap::new(), &HashMap::new())?;
+            count += ni;
+            hoisted.extend(nodes);
+        }
+        assert!(
+            count + hoisted.len() >= 2,
+            "expansion + hoist happened: {count} expansions, {} nodes",
+            hoisted.len()
+        );
+        assert!(
+            hoisted.iter().any(|t| t.name == "extra"),
+            "hoisted 'extra' node present: {:?}",
+            hoisted.iter().map(|t| t.name.clone()).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn emit_node_body_and_contract_are_carried() -> Result<(), String> {
+        let items = parse_program(
+            "$defn emit_w() { EmitNode$(\"w\", total < 4, total == 4, { total = total + 1; term; }); };",
+        );
+        let comp = defn_of(&items, "emit_w");
+        let mut registry: HashMap<&String, &Definition> = HashMap::new();
+        registry.insert(&comp.name, &comp);
+        let mut driver = parse_program(
+            "let i: Int = 0; let total: Int = 0; \
+             \x20async node d [i < 1][i == 1] { emit_w!(); i = i + 1; term; };",
+        );
+        let mut expanded = items;
+        expanded.extend(driver.drain(..));
+        let mut hoisted: Vec<Transaction> = Vec::new();
+        for it in expanded.iter_mut() {
+            let (_ni, nodes) =
+                expand_top_level(it, &registry, &HashMap::new(), &HashMap::new())?;
+            hoisted.extend(nodes);
+        }
+        let txn = hoisted
+            .iter()
+            .find(|t| t.name == "w")
+            .expect("hoisted w node");
+        assert_eq!(txn.body.len(), 2, "body: assign + term: {:?}", txn.body);
+        assert!(
+            matches!(txn.contract.pre_condition, Expr::BinaryOp(_, _, _)),
+            "pre carried: {:?}",
+            txn.contract.pre_condition
+        );
+        Ok(())
+    }
+
+    // ── 2026-09-22 (unified-metaprogramming plan, C3) ───────────────────
+    // One value domain: ComptimeVal gains Str, so a composite body may gate
+    // a match/when on a string literal (`match s { "abc" => … }`) and string
+    // equality folds. NavValue::Str bridges into the fold env.
+
+    #[test]
+    fn string_literal_match_folds_to_taken_arm() {
+        let items = parse_program(
+            "$defn pick(s: Expr) { match s { \"abc\" => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "pick");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Quoted("abc".into())],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(1)"), "taken arm spliced: {dump}");
+        assert!(!dump.contains("Decimal(0)"), "_ arm pruned: {dump}");
+    }
+
+    #[test]
+    fn string_neq_folds_to_other_arm() {
+        let items = parse_program(
+            "$defn pick(s: Expr) { match s { \"abc\" => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "pick");
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Quoted("xyz".into())],
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(0)"), "other arm spliced: {dump}");
+        assert!(!dump.contains("Decimal(1)"), "abc arm pruned: {dump}");
+    }
+
+    #[test]
+    fn nav_str_bridges_into_fold_env() {
+        // A NavValue::Str (from a $let) seeds the fold env and gates a match.
+        let items = parse_program(
+            "$let mode = \"fast\";\n\
+             $defn pick(s: Expr) { match s { \"fast\" => { r = 1; }, _ => { r = 0; }, } };",
+        );
+        let d = defn_of(&items, "pick");
+        let mut comptime: HashMap<String, ComptimeVal> = HashMap::new();
+        comptime.insert(
+            "mode".to_string(),
+            ComptimeVal::Str("fast".to_string()),
+        );
+        let out = expand_composite_invocation(
+            &d,
+            &[Expr::Identifier("mode".into())],
+            &comptime,
+            &HashMap::new(),
+        )
+        .expect("expands");
+        let dump = format!("{out:?}");
+        assert!(dump.contains("Decimal(1)"), "fast arm spliced: {dump}");
     }
 }
 

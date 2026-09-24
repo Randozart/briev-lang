@@ -1,0 +1,50 @@
+// ── bootloader.bv — the universal bootstrapper (2026-09-22) ───────────
+// ONE .bv source, three targets. The per-arch machine-entry prologues live
+// in std/bad/arch.bad as NAMED raw blocks (uart_init per target), imported
+// at the .bv top level — a .bad file is recorded by the resolver and
+// inlined by the bad backend, never parsed as Briev. The bootstrap bad
+// body is a portable core: it `jmp uart_init` (the matching family's
+// prologue sets up the console and rejoins `core`), prints a banner, then
+// CALLS a real .bv defn (`kernel_bv` — the .bad↔.bv bridge).
+//
+// Build (one per target):
+//   brievc build examples/bad/bootloader.bv --triple riscv64-unknown-none \
+//       --linker-script lib/targets/qemu-virt-rv64.ld --out bin/rv64
+//   brievc build examples/bad/bootloader.bv --triple thumbv7m-none-eabi \
+//       --linker-script lib/targets/qemu-mps2-an385.ld --out bin/mps2
+//   (x86_64 uses the multiboot path via std/bad/arch.bad's raw x86_64
+//    block; MBR stays examples/bad/boot_mbr.bad — 16-bit cannot host the
+//    64-bit portable core.)
+import "std/bad/arch.bad";
+
+// The contract-checked handoff target: a real .bv defn the loader calls.
+defn kernel_bv() -> Int [result == 1] {
+    let printed: Int = 0;
+    printed + 1;
+}
+
+bootstrap bad Reset_Handler() [true] {
+    Reset_Handler:
+    // Per-arch machine entry: the imported named raw block sets up the
+    // console (r2 = UART base) and rejoins `core` (via jmp/j/b).
+    jmp uart_init
+core: [r2 valid]
+    // Portable core — universal ops only (no csrw/int/syscall). The
+    // console write goes through the per-arch `putc` primitive (from the
+    // arch.bad import): char in r0, console base in r2.
+    addr r4, msg
+    mov r3, 0
+    .loop:
+    ldub r1, r4
+    jz r1, r3, .done
+    mov r0, r1
+    call putc
+    add r4, r4, 1
+    jmp .loop
+    .done:
+    // Handoff to the .bv defn — proves the .bad↔.bv bridge.
+    call kernel_bv
+    halt
+    section .rodata
+    msg: .asciz "universal boot\n"
+}

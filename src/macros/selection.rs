@@ -459,7 +459,7 @@ pub fn stmt_tag(stmt: &Statement) -> &str {
         Statement::Rollback(_) => "escape",
         Statement::Foreach { .. } => "foreach",
         Statement::TrgBinding { .. } => "trg",
-        Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => "inline",
+        Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::Match { .. } => "inline",
         Statement::SyncBlock(_) => "sync",
         Statement::Defer(_) => "defer",
         Statement::Mutex(_) => "mutex",
@@ -700,6 +700,7 @@ mod tests {
                 span: None,
             }),
             TopLevel::Definition(Definition {
+                variadic_param: None,
                 name: "main".into(),
                 type_params: vec![],
                 parameters: vec![],

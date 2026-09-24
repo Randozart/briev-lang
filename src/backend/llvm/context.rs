@@ -109,6 +109,13 @@ pub struct CompilerContext {
     /// (src/analysis/export_abi.rs). Pure exports keep a clean C ABI;
     /// exports calling any Briev defn carry `ptr %state` first.
     pub export_needs_state: HashMap<String, bool>,
+    /// 2026-09-23 (stateless-defn mechanism): per-DEFN `needs_state` (ALL
+    /// defns, not just exports) from src/analysis/export_abi.rs. Drives
+    /// regular-defn emission: pure helpers (cstr doors over Load#/Alloc#,
+    /// arithmetic lanes) emit WITHOUT `ptr %state`, keeping GLUE exports on
+    /// a clean C ABI. Previously every regular defn carried state, forcing
+    /// all callers to too.
+    pub defn_needs_state: HashMap<String, bool>,
     /// 2026-07-27: Reverse index from state field position to field name.
     /// Used by load_field_type() to look up !range metadata by field index.
     pub idx_to_field_name: HashMap<usize, String>,
@@ -386,6 +393,16 @@ pub atomic_fields: std::collections::HashMap<String, String>,
 }
 
 impl CompilerContext {
+    /// 2026-09-23 (stateless-defn mechanism): does calling `name` require
+    /// passing `%state`? A Briev defn takes the state pointer iff it is a
+    /// defn that transitively needs state (compute_defn_needs_state). This
+    /// replaces the blanket `defn_params.contains_key(name)` at every
+    /// call-site gate — pure helpers (cstr doors, arithmetic lanes) are
+    /// emitted WITHOUT `%state` and must be called without it.
+    pub fn defn_takes_state(&self, name: &str) -> bool {
+        self.defn_params.contains_key(name)
+            && self.defn_needs_state.get(name).copied().unwrap_or(true)
+    }
     /// 2026-07-29: Derive target float register count from LLVM target triple.
     /// Returns `usize::MAX` for virtual-register targets (WASM).
     /// See docs/plans/2026-07-29-phi-register-pressure-capping.md.
@@ -459,6 +476,7 @@ impl CompilerContext {
             obj_ports_enabled: true,
             internal_fold_txns: std::collections::HashSet::new(),
             export_needs_state: HashMap::new(),
+            defn_needs_state: HashMap::new(),
             idx_to_field_name: HashMap::new(),
             collection_iterables: std::collections::HashSet::new(),
             has_reactor_tick: false,
@@ -950,6 +968,20 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     // correctness for benchmarks that print at convergence.
     pub needs_state_stores_in_body: bool,
 
+    /// 2026-09-24 (stateless-defn × arena): true while emitting the body of a
+    /// defn whose `needs_state` verdict is false. A stateless body has NO
+    /// `%state` parameter, so any codegen that would reach into `%State`
+    /// (arena bump via emit_arena_alloc — concat, Alloc#/pool buffers) must
+    /// fall back to @malloc/alloca instead. Set by emit_definition from its
+    /// `needs_state` argument and reset to false when the body closes; every
+    /// other function kind (txns, reactor_tick, main, probes) is stateful and
+    /// leaves the flag false. Without this flag, emit_arena_alloc emitted
+    /// `getelementptr %State, ptr %state` inside `define ... @digits_of_int(i64)`
+    /// — clang: "use of undefined value '%state'" (arena_churn, 2026-09-24;
+    /// root cause: stateless-defn ABI merged 2026-09-23 ignored that arena
+    /// lowering introduces %state after the AST fixpoint already ran).
+    pub stateless_body: bool,
+
     // 2026-07-04: Whether the current loop body is parallel-safe.
     // When true, emit_memory_field_store does NOT update ssa_old_*_regs
     // after & assignments — all reads continue to use the phi register
@@ -1160,6 +1192,7 @@ impl FunctionContext {
             // Set to true by dispatch when phi-capped fields need %State stores,
             // or by emit_countable_main when post-loop hoisted prints exist.
             needs_state_stores_in_body: false,
+            stateless_body: false,
             parallel_safe_body: true,
             counter_field_name: None,
             parallel_safe_exempt_fields: HashSet::new(),

@@ -105,7 +105,6 @@ impl Annotator {
                 | Statement::SyncBlock(..)
                 | Statement::TrgBinding { .. }
                 | Statement::InlineDefn(_)
-                | Statement::InlineTxn(_)
                 | Statement::Match { .. } => {}
 // 2026-09-22 (D16 p3b): `open` — collect any calls inside
                 // its expressions.
@@ -521,9 +520,7 @@ impl Annotator {
             Statement::InlineDefn(d) => {
                 format!("{}// compile-time defn {}\n", spaces, d.name)
             }
-            Statement::InlineTxn(t) => {
-                format!("{}// compile-time txn {}\n", spaces, t.name)
-            }
+
             Statement::Match { .. } => {
                 format!("{}// compile-time match\n", spaces)
             }
@@ -697,6 +694,7 @@ mod tests {
 
     fn make_defn(name: &str, body: Vec<Statement>) -> TopLevel {
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![],

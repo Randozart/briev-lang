@@ -249,7 +249,7 @@ impl<'a> DataflowAnalyzer<'a> {
             }
             Statement::InlineAsm { .. } | Statement::TrgBinding { .. }
             | Statement::MetadataAssignment(..) | Statement::InlineDefn(_)
-            | Statement::InlineTxn(_) | Statement::Match { .. } => {}
+            | Statement::Match { .. } => {}
             // 2026-09-22 (D16 p3b): `open` — collect ids from its
             // expressions.
             Statement::Open(lhs, rhs) => {

@@ -67,8 +67,17 @@ defn walk_body_tokens(line: String, idx: Int, proj: String, depth: Int) -> Int {
     let mine: Int = 0;
     when kind == "o" || kind == "D" { mine = 1; };
     when kind == "I" && in_section(proj, "state", nm) { mine = 1; };
-    when kind == "C" && (in_section(proj, "intrinsic", nm) || in_section(proj, "regular", nm) || in_section(proj, "txn", nm)) {
-        mine = 1;
+    // 2026-09-23 (stateless-defn mechanism): a call to a defn forces state
+    // ONLY when the defn is NOT in the stateless section (the Rust fixpoint's
+    // verdict, carried by the projection). Pure helpers (cstr doors over
+    // Load#/Alloc#, arithmetic lanes) stay stateless — previously ANY call to
+    // a regular/txn/intrinsic defn was marked stateful (the blanket rule).
+    // `when not` has no syntax — use the not_in_section helper.
+    when kind == "C" && (in_section(proj, "intrinsic", nm) || in_section(proj, "txn", nm)) {
+        when not_in_section(proj, "stateless", nm) { mine = 1; };
+    };
+    when kind == "C" && in_section(proj, "regular", nm) {
+        when not_in_section(proj, "stateless", nm) { mine = 1; };
     };
     when kind == "C" && in_section(proj, "export", nm) {
         let sub: Int = export_needs(proj, nm, depth + 1);

@@ -58,6 +58,9 @@ msg: .asciz "hello from .bad\n"
 | `section .x` / `global n` / `.dir args` | top-level directives |
 | `msg: .asciz "..."` | data label + directive |
 | `[expr]` | inline contract for the next instruction |
+| `^` / `^^` / `^^^` + instruction | acknowledge prefix — silences W-tier warnings for its scope; `^^^` overrides predicted errors (see the acknowledge tier) |
+| `raw <target>` ... `end` | verbatim assembly block for ONE target — lines pass through unparsed; emitted only when the active family matches (see Raw blocks) |
+| `raw <target> <name>` ... `end` | NAMED raw block — also emits a callable `<name>:` label on the matching family (per-arch stdlib entries) |
 | `alias x = r0` | register, mnemonic, or label alias — resolved in that order |
 
 Friendly mnemonic aliases (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load
@@ -213,6 +216,226 @@ assembles to `.o`, and links it into the binary; the LLVM IR references
 the symbol via `declare` (call-site contracts are checked by the normal
 Briev machinery). `bad fn` replaces `asm<Target>` (AsmFn is retained for
 backward compatibility and deprecated).
+
+## `bootstrap bad` — the authored machine entry
+
+`bootstrap bad name() [post] { body }` (a plain `.bv` file) is the
+**authored machine entry**: the body IS the reset vector / `.text.start`
+routine. The compiler emits NO owned `_start` when one is present — the
+author owns sp setup, `.bss` zeroing, the vector table, and the handoff
+(`call main` / park / jump). The body is parsed VERBATIM (no `_entry:`
+wrap, no auto-`ret`); the entry symbol is auto-exported so the linker's
+`ENTRY(...)` resolves. The postcondition is **positional and taken on
+authority** — raw `.bad` stores cannot carry typed-store proofs (matches
+`post_authority`); reactor-side consumers still get the guarantee.
+
+```briev
+bootstrap bad Reset_Handler() [true] {
+    section .isr_vector
+    sp_slot:  .word 0x2007C000
+    reset_v:  .word Reset_Handler + 1   // thumb bit set for Cortex-M
+    section .text.start
+    Reset_Handler:
+    addr r0, msg
+    ...                                   // MMIO, loops, handoff
+    halt
+    section .rodata
+    msg: .asciz "Briev boot\n"
+}
+```
+
+## Raw blocks — verbatim assembly for one target
+
+`raw <target>` ... `end` emits its lines VERBATIM (no mnemonic
+classification — directives like `.code32` work) for the target whose
+family prefix matches, and skips them for every other target. The
+ergonomic escape hatch for text the portable core ISA cannot express:
+
+```bad
+raw x86_64
+    .code32
+    cli
+    movl $(gdt_end - gdt - 1), %eax
+    lgdt gdt
+    ...
+    ljmp $0x08, $_start64
+    .code64
+end
+_start64:
+    // portable 64-bit core ops
+```
+
+The alternative — one `x86_64 => <line>` exception per line — cannot
+carry directives (`.code32` in an exception row is an unknown-mnemonic
+error) and is unergonomic for whole preambles. Raw blocks fix both.
+Used by the x86 real-mode MBR body (`examples/bad/boot_mbr.bad`, with
+the `int` core op for BIOS software interrupts) and the multiboot2 32-bit
+prologue (`examples/bad/boot_multiboot.bad`). A bare `raw` with no target
+or an unterminated block before EOF is a loud error.
+
+## Per-arch stdlib boot entries (named raw blocks)
+
+A NAMED raw block — `raw <target> <name>` ... `end` — emits a callable
+`<name>:` label on the matching family (and nothing elsewhere), so the
+portable core can `call uart_init` / `jmp uart_init` and the matching
+family's block runs. Same name across families is fine: one build = one
+target, so the label registers only for the active family (no namespace
+collision). This makes per-arch boot prologues stdlib data:
+
+```bad
+// std/bad/arch.bad
+raw riscv64 uart_init      // PMP grant + li a2, 0x10000000, then j core
+    ...
+end
+raw thumbv7m uart_init     // vector table + ldr r2, =0x40004000, then b core
+    ...
+end
+```
+
+A `.bv` file imports them at TOP LEVEL — `import "std/bad/arch.bad";` —
+the resolver records the `.bad` path (never parsed as Briev) and the bad
+backend inlines it when compiling `bootstrap bad` bodies. The bootstrap
+body is then a portable core that calls the imported primitives:
+
+```briev
+import "std/bad/arch.bad";
+bootstrap bad Reset_Handler() [true] {
+    Reset_Handler:
+    jmp uart_init
+core: [r2 valid]
+    // portable: banner via call putc, handoff to a .bv defn, halt
+}
+```
+
+`examples/bad/bootloader.bv` is this pattern: one source booting riscv64
+(QEMU virt), thumbv7m (MPS2-AN385), x86_64 (multiboot2), and aarch64
+(QEMU virt, PL011 UART) with only the prologues in `arch.bad`. A
+`bootstrap bad` body can also CALL a real `.bv` defn (`call kernel_bv`)
+— `defn_liveness` roots symbols referenced from bootstrap bodies, so the
+handoff target is emitted. The console write goes through a per-arch
+`putc` named raw block (store width differs per UART: MPS2 wants byte
+stores, the virt 16550 a full-width store).
+
+`brievc build <file> --all-targets` builds one source for EVERY
+`[target.*]` profile in `briev.toml` in a single invocation — a profile
+may carry `triple`, `linker_script`, and `entry` (the bootstrap bad
+symbol) as per-target overrides of the CLI defaults. One command → all
+binaries (`bin/<profile>/…`), each booting its family's prologue.
+
+## Interpretation B — `.bv` typed calls to `.bad` primitives
+
+The full chain: `.bv` code calls a `.bad` primitive as a typed,
+contract-checked function.
+
+```briev
+bad boot_putc(c: Int) -> Int [result == 1] {
+    mov r0, c
+    jmp putc          // tail-call the per-arch named raw block
+}
+
+defn banner() -> Int { term boot_putc(66); }   // typed .bv call
+```
+
+The `.bv` author declares the typed surface with a `bad fn` (SPEC
+§20 `bad` declaration — compiled through the bad backend, declared in
+LLVM); the `.bad` file provides the per-arch body as a named raw block.
+Contract rules and the ABI are the honest parts:
+
+- **Param binding**: a non-bootstrap `bad` fn's params bind at ABI
+  register index 1 — the `.bv` call passes `%state` first (a1/x1/w1/…).
+- **Tail-call**: a frameless `bad` fn must TAIL-call (`jmp`, never
+  `call`) so it does not clobber the return register — the inner raw
+  block returns directly to the `.bv` caller.
+- **Stack**: a bootstrap bad owns the machine entry; it must set
+  `sp` from `_stack_top` before calling `.bv` code that uses frames.
+- **Symbols**: the `bad` fn references the `.bad` symbol by name; the
+  bootstrap object's import provides it (the label is global). Import
+  the same `.bad` into BOTH objects and you get duplicate symbols — one
+  owner.
+
+`examples/bad/typed_boot.bv` is the end-to-end proof: bootstrap →
+`.bv` defn → `bad` fn → per-arch `putc`, QEMU-verified printing "BAD".
+
+## Boot sectors (`--raw-bin` + `int`)
+
+`int N` is the portable BIOS software-interrupt op (`int $N` on x86_64;
+other targets get the loud capability error). A flat boot image is
+`brievc bad file.bad --target x86_64 --raw-bin --no-link`: objcopy flattens
+the object (no link — 16-bit relocs cannot link in a 64-bit ELF). A
+512-byte MBR with the 0x55AA signature boots under SeaBIOS. For images
+that need section merging (a multiboot header in `.text`), plain
+`--raw-bin` links first then flattens.
+
+QEMU-verified: `examples/bad/boot_mps2.bv` boots the MPS2-AN385
+(Cortex-M3) with no `startup.S` and no compiler `_start`, printing through
+the CMSDK APB UART. `examples/bad/boot_rv64.bv` boots QEMU virt the same
+way on riscv64 (PMP grant + UART). thumb/arm assembly uses clang's
+integrated assembler and ld.lld when the `arm-none-eabi` binutils are
+absent (documented fallback, never a silent pass).
+
+## Disk loading (`std/bad/disk.bad`)
+
+`std/bad/disk.bad` provides the bootstrapper's "load a kernel" step. The
+portable `load_image src, dst, len` defn is a copy loop (universal ops —
+inlined at invocation); the SOURCE differs per target: x86_64 real-mode
+has a `read_sectors` raw block (BIOS INT 13h), while riscv64/aarch64/
+thumb load an already-in-RAM image (qemu `-kernel`). Real AHCI/NVMe
+drivers are out of scope — the abstraction is the shared copy primitive
+over per-arch raw disk/MMIO sources.
+
+## CSR access (riscv64 M-mode)
+
+`csrr d, csr` / `csrw csr, s` / `csrs csr, s` / `csrc csr, s` read/write/
+set/clear a named CSR (`mcause`, `mepc`, `mtvec`, `mscratch`, `mie`,
+`mstatus`, `pmpaddr0`, `pmpcfg0`, …); `mret` returns from M-mode trap.
+The CSR name is a symbol operand — it substitutes literally. riscv64-only
+rows: other targets get a loud capability error (no such registers),
+never a silent pass. These are the ops the rv64 kernel bootstrap's `Asm#`
+one-liners lower to.
+
+## Raw binary output (`--raw-bin`)
+
+`brievc bad file.bad --raw-bin` and `brievc build ... --raw-bin` extract
+the flat loadable image (`objcopy -O binary`) from the linked ELF — the
+boot-sector / firmware blob a bootloader would load. `boot_rv64.bin`
+loads directly in QEMU `-kernel` and boots standalone. riscv64 bare-metal
+objects assemble `-mabi=lp64` soft-float to match the `.bv` side's ABI.
+
+The two-stage pattern (`examples/bad/boot_stage1.bv`) shows a bootloader
+that does machine setup then CALLS a `kernel` routine in the same image
+— the load-and-handoff bootstrapper, verified from the flat `.bin`.
+
+## The acknowledge tier — predicting, not blocking
+
+`.bad` **predicts** probable errors and lets the author **veto loudly**.
+A `^` / `^^` / `^^^` prefix on an instruction line silences W-tier
+warnings for its scope; `^^^` also overrides predicted errors. Nothing
+blocks — a prediction is always surfaced, acknowledged ones print as info
+under `--trace-lowering` (never silent).
+
+```
+^ mov r5, 1               // ack probable warnings on this instruction
+^^ mov r5, 1; call f      // ack the whole `;`-separated line
+^^^ mov r5, 1             // full authority: predicted errors too
+^ W1 mov r5, 1            // ack only W1 (explicit name)
+^ack W1 mov r5, 1         // keyword tail — future: ^seq, ^vol, ...
+```
+
+- Caret count = scope: 1 Instr, 2 Line, 3 Override. The keyword tail is
+  the future-expansion slot — the grammar is open after `^`.
+- **Three tiers**: hardware capability (no imm form, unmapped register)
+  and author-declared contracts (`[rN preserved]`, `[frame: N]`) are
+  NEVER ack-able — `^^^` overrides only what the *compiler concluded*,
+  never what the *hardware forbids* and never what the *author declared*.
+- **W1** caller-saved live across `call` · **W2** branch-path push/pop
+  imbalance · **W3** `ret` with sp delta · **W4** FP-pool scratch
+  collision (r9/r8) · **W5** defn-inlined `ret` · **W6** unresolved local
+  label.
+- **Stale markers can't rot**: an ack naming a warning that never fired
+  is a loud error.
+- Recorded, never silent: `--trace-lowering` prints acknowledged warnings
+  as info with the line noted — the author's conscious disagreement is
+  auditable and greppable.
 
 ## Cross-target verification
 

@@ -618,7 +618,7 @@ fn check_stmt_flow(s: &Statement, caps: &BackendCapabilities, out: &mut Vec<Stri
         Statement::InlineAsm { .. } => {
             require(caps.inline_asm, "inline asm", caps, out);
         }
-        Statement::InlineDefn(_) | Statement::InlineTxn(_) => {
+        Statement::InlineDefn(_) => {
             // 2026-08-23: stage-block internals — stripped before codegen,
             // never a target-surface question.
         }

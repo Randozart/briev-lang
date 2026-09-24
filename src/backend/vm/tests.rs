@@ -27,6 +27,7 @@ fn defn(name: &str, params: Vec<(String, Type)>, body: Vec<Statement>) -> TopLev
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: None,
     })

@@ -484,6 +484,7 @@ mod tests {
             cstr_proto(),
             cstr_type(),
             TopLevel::Definition(Definition {
+                    variadic_param: None,
                 name: "marshall".to_string(),
                 type_params: vec![],
                 parameters: vec![("name".to_string(), Type::Custom("CStr".to_string()))],
@@ -532,6 +533,7 @@ mod tests {
             cstr_proto(),
             cstr_type(),
             TopLevel::Definition(Definition {
+                    variadic_param: None,
                 name: "marshall_out".to_string(),
                 type_params: vec![],
                 parameters: vec![("s".to_string(), Type::Custom("String".to_string()))],

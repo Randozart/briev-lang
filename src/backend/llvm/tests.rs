@@ -3908,6 +3908,7 @@ fn test_struct_param_uses_ptr_in_signature() {
             variants: vec![],
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "process".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Custom("Point".to_string()))],
@@ -3926,7 +3927,7 @@ fn test_struct_param_uses_ptr_in_signature() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("define i64 @process(ptr noundef noalias nocapture align 8 %state, i64 %arg0"),
+    assert!(output.contains("define i64 @process(i64 %arg0"),
         "Struct param should be the boxed i64 handle in the function signature.\nGot:\n{}", output);
 }
 
@@ -3949,6 +3950,7 @@ fn test_struct_param_ptrtoint_at_entry() {
             variants: vec![],
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "process".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Custom("Point".to_string()))],
@@ -3981,6 +3983,7 @@ fn test_call_with_ptr_arg_emits_inttoptr() {
     let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "callee".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Ptr(Box::new(Type::int())))],
@@ -3996,6 +3999,7 @@ fn test_call_with_ptr_arg_emits_inttoptr() {
             doc: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "caller".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Ptr(Box::new(Type::int())))],
@@ -4042,6 +4046,7 @@ fn test_struct_param_field_access_works() {
             variants: vec![],
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "get_x".to_string(),
             type_params: vec![],
             parameters: vec![("p".to_string(), Type::Custom("Point".to_string()))],
@@ -4265,6 +4270,7 @@ fn test_struct_literal_field_offsets() {
             span: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "test".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -4349,6 +4355,7 @@ fn test_addr_of_struct_literal() {
             doc: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -4442,6 +4449,7 @@ fn test_frgn_ptr_param_inttoptr() {
             doc: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -4603,6 +4611,7 @@ fn test_struct_array_list_literal() {
             span: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -4704,6 +4713,7 @@ fn test_struct_array_addr_of_and_frgn_call() {
             doc: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -8263,6 +8273,7 @@ fn print_field(recv: &str, field: &str) -> Statement {
 
 fn packed_main_def(body: Vec<Statement>) -> TopLevel {
     TopLevel::Definition(Definition {
+        variadic_param: None,
         name: "main".to_string(),
         type_params: vec![],
         parameters: vec![],
@@ -8448,6 +8459,7 @@ fn test_atomic_field_load_store_rmw() {
             span: None,
         }),
         TopLevel::Definition(Definition {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -8830,12 +8842,69 @@ defn make() -> Option {
         &ir[..ir.len().min(2000)]
     );
     assert!(
-        ir.contains("define i64 @get(ptr noundef noalias nocapture align 8 %state, i64"),
+        // 2026-09-23 (stateless-defn mechanism): `get`'s body is a pure
+        // match — no state, so it emits WITHOUT the `%state` param (previously
+        // every defn carried `%state`, the blanket rule).
+        ir.contains("define i64 @get(i64"),
         "enum param must be the i64 handle: {}",
         &ir[..ir.len().min(3000)]
     );
     // Construction boxes {tag=0, payload} — the Some arm's malloc image.
     assert!(ir.contains("call ptr @malloc(i64 16)"), "boxed image missing");
+}
+
+/// 2026-09-24 (stateless-defn × arena): in a program whose %State carries
+/// arena fields (some txn calls Alloc#), a STATELESS defn that concatenates
+/// strings must still emit WITHOUT `%state` and must lower the concat to
+/// @malloc — never `getelementptr %State, ptr %state` inside
+/// `define ... @shout(i64 ...)`. The stateless-defn ABI fixpoint (2026-09-23)
+/// runs on the AST before arena lowering; without the stateless_body guard
+/// the backend reintroduced %state and clang rejected the module
+/// (arena_churn/digits_of_int — BUGS.md 2026-09-24).
+#[test]
+fn test_stateless_defn_concat_uses_malloc_when_arena_program() {
+    let src = "let n: Int = 0;\n\
+               defn shout(s: String) -> String {\n\
+                   term s + \"!\";\n\
+               };\n\
+               node go [n < 2][n == 2] {\n\
+                   let p: Int = Alloc#(64) as Int;\n\
+                   Store#(p, n);\n\
+                   let q: String = shout(\"a\");\n\
+                   n = n + 1;\n\
+                   term;\n\
+               };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = crate::parser::Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    // shout's signature: String param, no %state.
+    assert!(
+        ir.contains("define ptr @shout(ptr %arg0"),
+        "stateless concat defn must not take %state:\n{ir}"
+    );
+    // Isolate shout's body: from its define to the closing brace.
+    let start = ir
+        .find("define ptr @shout")
+        .expect("shout must be emitted (rooted by the node call)");
+    let body_end = ir[start..].find("\n}").expect("shout body closes") + start;
+    let shout_body = &ir[start..body_end];
+    assert!(
+        !shout_body.contains("%State"),
+        "stateless body must not reach into %State:\n{shout_body}"
+    );
+    assert!(
+        shout_body.contains("@malloc"),
+        "stateless concat must fall back to @malloc:\n{shout_body}"
+    );
+    // The program still has an arena somewhere (the node's Alloc#).
+    assert!(
+        ir.contains("getelementptr inbounds %State"),
+        "arena fields must exist program-wide for the node's Alloc#:\n{ir}"
+    );
 }
 
 /// 2026-08-27 (Slice B): an @-addressed trigger VALUE read lowers to a

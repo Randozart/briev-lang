@@ -114,7 +114,18 @@ impl<'a> Parser<'a> {
             // — the authored program entry (pre-reactor; SPEC §11.5, §13.2).
             // Recorded as a modifier annotation; single-bracket (handoff
             // postcondition) form is checked by the typechecker.
-            Some(Token::Bootstrap) => self.parse_bootstrap_node(),
+            // 2026-09-22 (bootstrap-bad plan): `bootstrap bad name() {...}`
+            // — the same authored entry, but the body is real .bad grammar
+            // compiled through the bad backend; the author owns the machine
+            // entry (sp/.bss/vector table/handoff).
+            Some(Token::Bootstrap) => {
+                if self.lookahead_is_identifier("bad") {
+                    self.advance(); // consume 'bootstrap'
+                    self.parse_bad_fn(true).map(TopLevel::BadFn)
+                } else {
+                    self.parse_bootstrap_node()
+                }
+            }
             // 2026-08-01 (Phase E): `seq node name` / `seq txn name` — the seq
             // modifier requests sequential dispatch (no emit_parallel_reactor)
             // and/or non-vectorized array access. Recorded as a modifier
@@ -292,7 +303,7 @@ impl<'a> Parser<'a> {
                 }
                 // 2026-09-21: bad name(params) -> Ret [groups] { body };
                 if self.check_identifier("bad") {
-                    return self.parse_bad_fn().map(TopLevel::BadFn);
+                    return self.parse_bad_fn(false).map(TopLevel::BadFn);
                 }
                 // 2026-09-06 (ISR plan): isr[<mech>] handler @ vec: name() { };
                 // Contextual keyword like asm/proto — top-level form only.
@@ -911,6 +922,7 @@ impl<'a> Parser<'a> {
         let parameters = if self.eat(&Token::LParen) {
             let p = self.parse_parameter_list()?;
             self.expect(Token::RParen)?;
+            self.reject_runtime_variadic("defn")?;
             p
         } else {
             Vec::new()
@@ -938,6 +950,7 @@ impl<'a> Parser<'a> {
             derivation,
             modifiers: vec![],
             annotations: vec![],
+            variadic_param: self.pending_variadic.take(),
             span: None,
             doc: self.take_doc(),
         })
@@ -1063,6 +1076,7 @@ impl<'a> Parser<'a> {
         let parameters = if self.eat(&Token::LParen) {
             let p = self.parse_parameter_list()?;
             self.expect(Token::RParen)?;
+            self.reject_runtime_variadic("txn")?;
             p
         } else {
             Vec::new()
@@ -2033,10 +2047,26 @@ impl<'a> Parser<'a> {
     /// Parse parameter list: name: Type, name: Type, ...
     fn parse_parameter_list(&mut self) -> Result<Vec<(String, Type)>, SyntaxError> {
         let mut params = Vec::new();
+        // 2026-09-22 (unified-metaprogramming plan): a `...` rest parameter is
+        // the sanctioned compile-time iteration channel. Recorded on the
+        // parser so the compile-time `$defn`/`$txn` paths can consume it into
+        // `Definition.variadic_param`; runtime paths reject it. `...` must be
+        // FINAL (rest binds all trailing args).
+        self.pending_variadic = None;
         if !self.check(&Token::RParen) {
             loop {
+                let is_rest = self.eat(&Token::Ellipsis);
                 let name = self.expect_identifier()?;
                 let mut ty = self.parse_optional_type()?.unwrap_or(Type::int());
+                if is_rest {
+                    if self.check(&Token::Comma) {
+                        return self.error_at_current(
+                            "a `...` rest parameter must be the FINAL parameter — \
+                             it binds all trailing arguments",
+                        );
+                    }
+                    self.pending_variadic = Some(name.clone());
+                }
                 // 2026-08-14 (generic `defn f<T>` dispatch): a function-typed
                 // parameter — `f: T -> U` or `f: (U, T) -> U` — parses the base
                 // type(s), then a trailing `->` return. A parenthesized param
@@ -2059,6 +2089,46 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(params)
+    }
+
+    /// Consume a `...` rest parameter if the compile-time path allows it,
+    /// returning the rest name; the RUNTIME paths reject it with a directed
+    /// diagnostic.
+    fn take_variadic_param(&mut self, kind: &str) -> Result<Option<String>, SyntaxError> {
+        match self.pending_variadic.take() {
+            Some(name) => Err(SyntaxError::UnexpectedToken {
+                expected: format!("{kind} parameters"),
+                found: format!("a `...` rest parameter ('{name}')"),
+                span: self
+                    .tokens
+                    .get(self.pos.saturating_sub(1))
+                    .map(|(_, s)| self.make_span(s.clone()))
+                    .unwrap_or_else(crate::errors::Span::dummy),
+            }),
+            None => Ok(None),
+        }
+    }
+
+    /// 2026-09-22 (unified-metaprogramming plan): a runtime declaration may
+    /// not declare a `...` rest parameter — rest params are the compile-time
+    /// iteration channel and live on `$defn` composites only.
+    fn reject_runtime_variadic(&mut self, kind: &str) -> Result<(), SyntaxError> {
+        if let Some(name) = self.pending_variadic.take() {
+            Err(SyntaxError::UnexpectedToken {
+                expected: format!("{kind} parameters"),
+                found: format!(
+                    "a `...` rest parameter ('{name}') — rest params are \
+                     compile-time-only; declare a `$defn` composite"
+                ),
+                span: self
+                    .tokens
+                    .get(self.pos.saturating_sub(1))
+                    .map(|(_, s)| self.make_span(s.clone()))
+                    .unwrap_or_else(crate::errors::Span::dummy),
+            })
+        } else {
+            Ok(())
+        }
     }
 
     /// Parse optional output type: -> Type
@@ -2386,6 +2456,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::LParen)?;
         let params = self.parse_parameter_list()?;
         self.expect(Token::RParen)?;
+        self.reject_runtime_variadic("isr")?;
         // Contracts are mandatory on ISR declarations.
         let contract = self.parse_contract()?;
         let body = self.parse_block()?;
@@ -2453,15 +2524,22 @@ impl<'a> Parser<'a> {
 
     /// 2026-09-21: Parse `bad name(params) -> Ret [groups] { body }`.
     /// Body is raw `.bad` source text (between the outermost braces).
-    fn parse_bad_fn(&mut self) -> Result<BadFn, SyntaxError> {
+    /// `bootstrap` marks the authored machine entry (`bootstrap bad`).
+    fn parse_bad_fn(&mut self, bootstrap: bool) -> Result<BadFn, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'bad'
         let name = self.expect_identifier()?;
         self.expect(Token::LParen)?;
         let params = self.parse_parameter_list()?;
         self.expect(Token::RParen)?;
-        self.expect(Token::Arrow)?;
-        let ret_type = self.parse_type()?;
+        // A machine entry (`bootstrap bad`) has no ABI return; the arrow
+        // and return type are optional there.
+        let ret_type = if bootstrap && !self.check(&Token::Arrow) {
+            Type::void()
+        } else {
+            self.expect(Token::Arrow)?;
+            self.parse_type()?
+        };
         let contract = self.parse_contract()?;
         // Capture raw body text between { and } — preserve whitespace
         // exactly as written (the .bad body is hand-scheduled asm).
@@ -2499,7 +2577,7 @@ impl<'a> Parser<'a> {
             .and_then(|(_, s1)| self.tokens.get(self.pos - 1).map(|(_, s2)| (s1, s2)))
             .map(|(s1, s2)| Span::new(s1.start, s2.end, 0, 0))
             .unwrap_or(Span::new(0, 0, 0, 0));
-        Ok(BadFn { name, params, ret_type, contract, body, span })
+        Ok(BadFn { name, params, ret_type, contract, body, bootstrap, span })
     }
 
     fn parse_derivation_block(&mut self) -> Result<Option<DerivationBlock>, SyntaxError> {
@@ -3277,6 +3355,7 @@ impl<'a> Parser<'a> {
         let parameters = if self.eat(&Token::LParen) {
             let p = self.parse_parameter_list()?;
             self.expect(Token::RParen)?;
+            self.reject_runtime_variadic("op member")?;
             p
         } else {
             Vec::new()
@@ -3302,6 +3381,7 @@ impl<'a> Parser<'a> {
             derivation,
             modifiers: vec![],
             annotations: vec![],
+            variadic_param: self.pending_variadic.take(),
             span: None,
             doc: self.take_doc(),
         })
@@ -4138,7 +4218,9 @@ impl<'a> Parser<'a> {
             output_type: output_type.clone(),
             outputs: vec![],
             contract, body, metadata,
-            derivation, modifiers: vec![], annotations: vec![], span: None, doc: self.take_doc(),
+            derivation, modifiers: vec![], annotations: vec![],
+            variadic_param: self.pending_variadic.take(),
+            span: None, doc: self.take_doc(),
         }))
     }
 
@@ -4165,14 +4247,34 @@ impl<'a> Parser<'a> {
         };
         let derivation = self.parse_derivation_block()?;
         let metadata = self.parse_body_metadata()?;
-        Ok(TopLevel::CompileTimeTxn(Transaction {
-            name, type_params, parameters,
-            output_type: output_type.clone(),
-            outputs: vec![],
-            contract, body, metadata,
-            is_reactive: true, is_async: false,
-            derivation, modifiers: vec![], span: None, doc: self.take_doc(),
-        }))
+        // 2026-09-22 (C6): the rest param lands on `$txn` too — a convergent
+        // loop may iterate over an unknown-size set (the sanctioned
+        // compile-time iteration channel). Stored on the Transaction's
+        // modifiers as a `variadic` annotation (the stage evaluator reads it).
+        if let Some(rest_name) = self.pending_variadic.take() {
+            let mut modifiers = Vec::new();
+            modifiers.push(Annotation {
+                name: "variadic".to_string(),
+                value: Some(Expr::Quoted(rest_name.as_bytes().to_vec())),
+            });
+            Ok(TopLevel::CompileTimeTxn(Transaction {
+                name, type_params, parameters,
+                output_type: output_type.clone(),
+                outputs: vec![],
+                contract, body, metadata,
+                is_reactive: true, is_async: false,
+                derivation, modifiers, span: None, doc: self.take_doc(),
+            }))
+        } else {
+            Ok(TopLevel::CompileTimeTxn(Transaction {
+                name, type_params, parameters,
+                output_type: output_type.clone(),
+                outputs: vec![],
+                contract, body, metadata,
+                is_reactive: true, is_async: false,
+                derivation, modifiers: vec![], span: None, doc: self.take_doc(),
+            }))
+        }
     }
 
     /// $let name = expr; / $const name = expr; — compile-time variable.
@@ -6984,7 +7086,7 @@ fn bootstrap_node_rejects_pre_post_double_form() {
     let msg = format!("{}", err);
     assert!(
         msg.contains("single handoff postcondition"),
-        "expected the single-bracket error, got: {msg}"
+        "{msg}"
     );
 }
 
@@ -7201,4 +7303,24 @@ mod participation_tests {
         };
         assert_eq!(d.instance, "r1");
     }
+}
+
+#[test]
+fn bootstrap_bad_parses_as_machine_entry() {
+    // 2026-09-22 (bootstrap-bad plan): `bootstrap bad` is the authored
+    // machine entry — a BadFn with the bootstrap flag, raw .bad body.
+    let src = "bootstrap bad Reset_Handler() [true] {\n\
+               section .isr_vector\n\
+               reset_v: .word Reset_Handler + 1\n\
+               }\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let crate::ast::TopLevel::BadFn(bf) = &items[0] else {
+        panic!("expected a BadFn, got {:?}", items[0]);
+    };
+    assert_eq!(bf.name, "Reset_Handler");
+    assert!(bf.bootstrap, "bootstrap flag set");
+    assert!(bf.body.contains(".word Reset_Handler + 1"), "{}", bf.body);
+    assert!(bf.params.is_empty());
 }

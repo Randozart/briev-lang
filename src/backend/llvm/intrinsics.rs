@@ -98,8 +98,11 @@ pub fn emit_intrinsic_call(
             let len = backend.fun.gen_reg();
             // 2026-09-10 (Family F): cstr_len is a pure-Briev defn (cast_lanes)
             // — removes the last libc strlen reference from GetCwd#.
+            // 2026-09-23 (stateless-defn mechanism): it is stateless (Load#);
+            // pass %state only when the defn takes it.
             if backend.ctx.defn_params.contains_key("cstr_len") {
-                writeln!(out, "{}{} = call i64 @cstr_len(ptr %state, ptr {})", indent, len, safe_ptr).ok();
+                let st = if backend.ctx.defn_takes_state("cstr_len") { "ptr %state, " } else { "" };
+                writeln!(out, "{}{} = call i64 @cstr_len({}ptr {})", indent, len, st, safe_ptr).ok();
             } else {
                 writeln!(out, "{}{} = call i64 @strlen(ptr {})", indent, len, safe_ptr).ok();
             }
@@ -159,7 +162,7 @@ pub fn emit_intrinsic_call(
             let pi = backend.fun.gen_reg();
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, pi, pptr).ok();
             writeln!(out, "{}{} = call i64 @__briev_chdir({}i64 {})", indent, r,
-                if backend.ctx.defn_params.contains_key("__briev_chdir") { "ptr %state, " } else { "" }, pi).ok();
+                if backend.ctx.defn_takes_state("__briev_chdir") { "ptr %state, " } else { "" }, pi).ok();
             return BTypedRegister { name: r, ty: Type::int() };
         }
         // 2026-08-03: call a function-pointer value (host callback).
@@ -189,6 +192,18 @@ pub fn emit_intrinsic_call(
         "ClearCancel#" => {
             writeln!(out, "{}store atomic i32 0, ptr @__briev_cancel_flag seq_cst, align 4", indent).ok();
             return BTypedRegister { name: v.to_string(), ty: Type::void() };
+        }
+        // 2026-09-23 (frgn-elimination round 2): `Environ#()` — load the
+        // compiler-owned @__briev_environ global (captured by the owned
+        // _start) as an Int. Same shape as CancelRequested# reading
+        // @__briev_cancel_flag. The pure-Briev env walkers in cast_lanes.bv
+        // take this pointer; env.bv threads it through.
+        "Environ#" => {
+            let env = backend.fun.gen_reg();
+            writeln!(out, "{}{} = load ptr, ptr @__briev_environ", indent, env).ok();
+            let ptr = backend.fun.gen_reg();
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, env).ok();
+            return BTypedRegister { name: ptr.to_string(), ty: Type::int() };
         }
         "GetGlobalId#" => return emit_get_global_id(backend, out, v, args, indent),
         "GetGlobalSize#" => return emit_external_call(backend, out, v, name, args, indent),
@@ -341,7 +356,7 @@ pub fn emit_intrinsic_call(
             // count of Iterable<Char>), not a declared `op Count`.
             let p = backend.string_ptr(out, indent, &arg_regs[0]);
             writeln!(out, "{}{} = call i64 @briev_char_len({}ptr {})", indent, v,
-            if backend.ctx.defn_params.contains_key("briev_char_len") { "ptr %state, " } else { "" }, p).ok();
+            if backend.ctx.defn_takes_state("briev_char_len") { "ptr %state, " } else { "" }, p).ok();
             return BTypedRegister { name: v.to_string(), ty: Type::int() };
         }
         if !args.is_empty() {
@@ -494,7 +509,7 @@ fn emit_char_count(
     let reg = backend.emit_expr(out, &args[0], indent);
     let p = backend.string_ptr(out, indent, &reg);
     writeln!(out, "{}{} = call i64 @briev_char_len({}ptr {})", indent, v,
-            if backend.ctx.defn_params.contains_key("briev_char_len") { "ptr %state, " } else { "" }, p).ok();
+            if backend.ctx.defn_takes_state("briev_char_len") { "ptr %state, " } else { "" }, p).ok();
     let narrowed = narrow_int_result(backend, out, v, indent);
     BTypedRegister { name: narrowed, ty: Type::int() }
 }
@@ -576,11 +591,20 @@ fn emit_alloc(
                         // Full escape analysis will assign Arena/Alloca when safe.
                         emit_malloc_inline(backend, out, v, &size, indent)
                     }
-                    AllocStrategy::Arena => {
+                    AllocStrategy::Arena if !backend.fun.stateless_body => {
                         let result = backend.emit_arena_alloc(out, indent, &size);
                         writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
                         backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Arena);
                         BTypedRegister { name: v.to_string(), ty: Type::int() }
+                    }
+                    // 2026-09-24 (stateless-defn × arena): analysis chose Arena
+                    // but the body is stateless — arena fields live in %State
+                    // and this defn has no %state param. Malloc instead, and
+                    // bookkeep Malloc so Free# dispatches @free (an Arena
+                    // bookkeeping here would leak: arena results are never
+                    // explicitly freed).
+                    AllocStrategy::Arena => {
+                        emit_malloc_inline(backend, out, v, &size, indent)
                     }
                     AllocStrategy::Alloca => {
                         let a = format!("%alloc_{}", backend.fun.txn_counter);
@@ -621,7 +645,9 @@ fn emit_alloc(
     // Strategy 1: Arena scope active → bump allocate.
     // 2026-07-19: Arena is in %State fields — available in any function that
     // has %state (all txns, callable txns, and their helpers by inheritance).
-    if backend.arena_ptr_idx.is_some() {
+    // 2026-09-24: stateless bodies are NOT in that set — fall through to the
+    // alloca/malloc strategies below (no %state to reach into).
+    if backend.arena_ptr_idx.is_some() && !backend.fun.stateless_body {
         // 2026-07-19: emit_arena_alloc returns the old bump pointer as i64.
         // The caller receives it directly — no ptrtoint needed.
         let result = backend.emit_arena_alloc(out, indent, &size);
@@ -658,11 +684,17 @@ fn emit_alloc_with_strategy(
     match strategy_expr {
         Expr::Identifier(name) => {
             match name.as_str() {
-                "Arena" => {
+                "Arena" if !backend.fun.stateless_body => {
                     let result = backend.emit_arena_alloc(out, indent, size);
                     // 2026-07-19: emit_arena_alloc returns i64 — route to v.
                     writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
                     backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Arena);
+                }
+                // 2026-09-24: explicit Arena in a stateless body — %state is
+                // unavailable, so honor the intent (heap, not stack) with
+                // malloc and bookkeep Malloc for Free# (see emit_alloc).
+                "Arena" => {
+                    emit_malloc_inline(backend, out, v, size, indent);
                 }
                 "Malloc" => {
                     emit_malloc_inline(backend, out, v, size, indent);
@@ -1033,7 +1065,7 @@ fn emit_resize(
     let cap = emit_arg(backend, out, &args[1], indent);
     let call = backend.fun.gen_reg();
     writeln!(out, "{}{} = call i64 @__briev_coll_resize({}i64 {}, i64 {})", indent, call,
-            if backend.ctx.defn_params.contains_key("__briev_coll_resize") { "ptr %state, " } else { "" }, h, cap).ok();
+            if backend.ctx.defn_takes_state("__briev_coll_resize") { "ptr %state, " } else { "" }, h, cap).ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
@@ -1062,7 +1094,7 @@ fn emit_ensure_cap(
     writeln!(out, "{}{} = add i64 0, 0", indent, grow).ok();
     writeln!(out, "{}{} = select i1 {}, i64 {}, i64 {}", indent, after, cmp, n, cur_cap).ok();
     writeln!(out, "{}{} = call i64 @__briev_coll_resize({}i64 {}, i64 {})", indent, target,
-            if backend.ctx.defn_params.contains_key("__briev_coll_resize") { "ptr %state, " } else { "" }, h, after).ok();
+            if backend.ctx.defn_takes_state("__briev_coll_resize") { "ptr %state, " } else { "" }, h, after).ok();
     writeln!(out, "{}{} = add i64 {}, 0", indent, call, target).ok();
     let _ = (grow, call);
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
@@ -1084,7 +1116,7 @@ fn emit_trim_cap(
     writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 16", indent, len_gep, p).ok();
     writeln!(out, "{}{} = load i64, ptr {}", indent, len, len_gep).ok();
     writeln!(out, "{}{} = call i64 @__briev_coll_resize({}i64 {}, i64 {})", indent, call,
-            if backend.ctx.defn_params.contains_key("__briev_coll_resize") { "ptr %state, " } else { "" }, h, len).ok();
+            if backend.ctx.defn_takes_state("__briev_coll_resize") { "ptr %state, " } else { "" }, h, len).ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
@@ -2364,7 +2396,7 @@ fn emit_intrinsic_print(
 /// needs_state) and Briev-level call sites pass it (emit_user_call). The C
 /// symbols take no state. Returns the prefix for the argument list.
 fn defn_state_prefix(backend: &LlvmBackend, sym: &str) -> &'static str {
-    if backend.ctx.defn_params.contains_key(sym) { "ptr %state, " } else { "" }
+    if backend.ctx.defn_takes_state(sym) { "ptr %state, " } else { "" }
 }
 
 fn frgn_symbol(backend: &LlvmBackend, briev_name: &str, fallback_c: &str) -> String {

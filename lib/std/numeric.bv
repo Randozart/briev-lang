@@ -41,11 +41,11 @@
 // Across work items, slices [accbase .. accbase+dlen) must be disjoint —
 // each head owns its own slice.
 $defn softmax_fused(
-    score: expr, value: expr,
-    jlen: expr, dlen: expr,
-    accbuf: expr, outbuf: expr,
-    accbase: expr, outbase: expr,
-    j: expr_item, d: expr_item
+    score: Expr, value: Expr,
+    jlen: Expr, dlen: Expr,
+    accbuf: Expr, outbuf: Expr,
+    accbase: Expr, outbase: Expr,
+    j: ExprItem, d: ExprItem
 ) {
     match dlen <= 32 {
         true => {
@@ -116,11 +116,11 @@ $defn softmax_fused(
 //   (jlen, dlen, accbuf, outbuf, accbase, outbase — as in softmax_fused!)
 // `expr_item` binders: `j` (position), `d` (dim).
 $defn softmax_fused_row(
-    score: expr, value: expr,
-    jlen: expr, dlen: expr,
-    accbuf: expr, outbuf: expr,
-    accbase: expr, outbase: expr,
-    j: expr_item, d: expr_item
+    score: Expr, value: Expr,
+    jlen: Expr, dlen: Expr,
+    accbuf: Expr, outbuf: Expr,
+    accbase: Expr, outbase: Expr,
+    j: ExprItem, d: ExprItem
 ) {
     let m_: Float = -1e30;
     foreach j in 0..jlen {

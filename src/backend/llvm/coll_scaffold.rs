@@ -89,6 +89,7 @@ fn synth_op_count() -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (compiler-owned Length)".to_string()),
     }
@@ -113,6 +114,7 @@ fn synth_op_at(seq_expr: &str, elem_ty: crate::ast::Type) -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (indexed element read)".to_string()),
     }
@@ -156,6 +158,7 @@ fn synth_init_empty(
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (empty construction)".to_string()),
     }
@@ -255,6 +258,7 @@ fn synth_push(seq_expr: &str, elem_ty: crate::ast::Type, grow_action: Option<Exp
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (InsertAt)".to_string()),
     }
@@ -277,6 +281,7 @@ fn synth_get(seq_expr: &str, elem_ty: crate::ast::Type) -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (CopyFrom)".to_string()),
     }
@@ -320,6 +325,7 @@ fn synth_init(seq_expr: &str, elem_ty: crate::ast::Type) -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (one-element construction)".to_string()),
     }
@@ -349,6 +355,7 @@ fn synth_pop(seq_expr: &str, elem_ty: crate::ast::Type) -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (ExtractFrom)".to_string()),
     }
@@ -503,6 +510,7 @@ fn synth_op_count_fixed(n: i64) -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (fixed-length Count = N)".to_string()),
     }
@@ -601,6 +609,7 @@ fn synth_insert_at_op(elem_ty: Type) -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (InsertAt)".to_string()),
     }
@@ -619,6 +628,7 @@ fn synth_extract_from_op(elem_ty: Type) -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (ExtractFrom)".to_string()),
     }
@@ -637,6 +647,7 @@ fn synth_copy_from_op(elem_ty: Type) -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (CopyFrom)".to_string()),
     }
@@ -655,6 +666,7 @@ fn synth_init_op(elem_ty: Type) -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (Init)".to_string()),
     }
@@ -673,6 +685,7 @@ fn synth_init_empty_op() -> Definition {
         derivation: None,
         modifiers: vec![],
         annotations: vec![],
+        variadic_param: None,
         span: None,
         doc: Some("scaffolded by `coll` (InitEmpty)".to_string()),
     }

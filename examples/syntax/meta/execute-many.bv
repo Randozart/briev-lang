@@ -1,0 +1,19 @@
+// SPEC §18.2 — variadic composite (TypeScript-style rest param). The `...`
+// rest parameter binds ALL trailing call-site arguments as a compile-time
+// list — the sanctioned compile-time iteration channel. A `foreach` over it
+// unrolls at expansion: one emission per element, N = arg count, known only
+// at compile time. execute_many!(f(a), f(b), f(c)) → f(a); f(b); f(c);.
+
+import "std/meta.bv";
+
+defn emit(v: Int) -> Int {
+    term v * 2;
+};
+
+let i: Int = 0;
+let result: Int;
+async node execute_many_user [i < 1][i == 1] {
+    execute_many!(result = emit(1), result = emit(2), result = emit(3));
+    i = i + 1;
+    term;
+};

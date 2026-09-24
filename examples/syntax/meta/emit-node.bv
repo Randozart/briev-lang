@@ -1,0 +1,27 @@
+// SPEC §18.2 — C5 topology emission. A composite emits TOP-LEVEL reactive
+// nodes via the EmitNode$ compile-time intrinsic:
+//   EmitNode$(name, pre, post, { body });
+// The 5th optional arg is a sync<group> domain string (Rule-22
+// classification carried in the language, not the compiler). Expansion
+// substitutes params into the node's name/contracts/body, then the driver
+// hoists it into the program as a top-level reactive node — no manual node
+// declaration, no new statement form.
+
+$defn emit_workers() {
+    EmitNode$("w1", total < 4, total == 4, {
+        total = total + 1;
+        term;
+    });
+    EmitNode$("w2", total < 4, total == 4, {
+        total = total + 2;
+        term;
+    });
+};
+
+let i: Int = 0;
+let total: Int = 0;
+bootstrap node init [i == 1] {
+    emit_workers!();
+    i = i + 1;
+    term;
+};

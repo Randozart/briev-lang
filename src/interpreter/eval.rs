@@ -2122,7 +2122,7 @@ pub fn eval_statement(
         }
         Statement::Rollback(_) => Ok(Value::Void),
         Statement::MetadataAssignment(_, _) => Ok(Value::Void),
-        Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) => Ok(Value::Void),
+        Statement::InlineAsm { .. } | Statement::InlineDefn(_) => Ok(Value::Void),
         // 2026-09-22 (D16 p3b): `open` — the netlist analysis consumes it,
         // not the runtime. No-op here.
         Statement::Open(..) => Ok(Value::Void),
