@@ -61,9 +61,17 @@ type Sensor {
     rating any;
     spec Decouple: 100n;
 };
-type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; spec Resistance: Ohm; spec PullUp: true; };
+type Resistor {
+    pin a; pin b; reference "R"; tolerance any; rating 0.25;
+    spec Resistance: Ohm; spec PullUp: true;
+    // 2026-09-24 (component laws): structured physics. `value` remains the
+    // BOM label only.
+    when true {
+        a.voltage - b.voltage == Resistance * a.current;
+        a.current + b.current == 0;
+    }
+};
 type Capacitor { pin a; pin b; reference "C"; tolerance any; rating any; spec Decoupler: true; };
-type Switch { pin p1: Path; pin p2: Path; reference "SW"; tolerance any; rating any; };
 type Led {
     pin a;
     pin k;
@@ -86,7 +94,7 @@ let led1: Led    = Led      { value: "green",       package: "0603"   };
 let r_led: Resistor = Resistor { value: "330R",      package: "0603", spec Resistance: 330Ohm };
 let r_pu[2]: Resistor = Resistor { value: "4k7",     package: "0603", spec Resistance: 4.7kOhm };
 let r_btn: Resistor = Resistor { value: "10k",       package: "0603", spec Resistance: 10kOhm };
-let sw1: Switch  = Switch   { value: "SPST",        package: "SMD"    };
+let sw1: Spst    = Spst     { value: "SPST",        package: "SMD"    };
 let c[i:5]: Capacitor = Capacitor { value: "100n",  package: "0402"   };
 let c_dnp: Capacitor  = Capacitor { value: "10u",   package: "0805"   };
 unpop c_dnp;                       // pad exists, part absent
@@ -121,7 +129,10 @@ async node usb_powered [
     && j1.gnd.voltage == c[3].b.voltage
     && j1.gnd.voltage == c[4].b.voltage
     && j1.gnd.voltage == c_dnp.b.voltage
-    && sw1.p2.voltage == j1.gnd.voltage
+    && sw1.b.voltage == j1.gnd.voltage
+    && u2.gpio[3].voltage == sw1.a.voltage
+    && u1.vout.voltage == r_btn.a.voltage
+    && r_btn.b.voltage == u2.gpio[3].voltage
     && u3.addr.voltage == j1.gnd.voltage
     && j2.gnd.voltage == j1.gnd.voltage
     && j2.vcc.voltage == u1.vout.voltage
@@ -154,11 +165,17 @@ async node i2c_idle [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
     u3.scl.voltage >= 2.7V;
 }
 
-// Button pulls gpio[3] to gnd; r_btn is the pull-up to the rail.
-async node button_pressed [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
-    u2.gpio[3].voltage >= 2.7V; // E14b-5: pull-up inferred — any value
-    u2.gpio[3].voltage <= 0.3V; // holds a released net; low path via sw1
-}
+// Button modes: r_btn is the pull-up to the rail; sw1 is the low path.
+// 2026-09-24 (SPST modes): node state sugar selects the applicable law mode.
+async node button_pressed
+    [u1.vout.voltage == 3.3V && sw1.closed]
+    [u2.gpio[3].voltage <= 0.3V]
+{ }
+
+async node button_released
+    [u1.vout.voltage == 3.3V && !sw1.closed]
+    [u2.gpio[3].voltage >= 2.7V]
+{ }
 
 // Physical board (fab plan): outline + pinned placements; everything
 // unplaced flows to the deterministic auto-placer. Connectors sit at the

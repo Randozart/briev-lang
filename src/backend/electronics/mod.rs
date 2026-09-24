@@ -1177,15 +1177,18 @@ mod tests {
 
     #[test]
     fn error_matrix_dropped_button_gnd_path_dangles() {
-        // Case 2: remove the low-hold obligation AND the guard equality —
-        // sw1.p2 joins no net (the forcing pass is the only wire source
-        // for the button's low path).
-        let fx = mutate(gate_fixture(), "\n    && sw1.p2.voltage == j1.gnd.voltage", "");
-        let fx = mutate(&fx, "u2.gpio[3].voltage <= 0.3V;", "");
+        // Case 2: detach the switch return while retaining the closed-state
+        // low obligation. The pin must dangle; the law mode cannot invent
+        // topology.
+        let fx = mutate(
+            gate_fixture(),
+            "sw1.b.voltage == j1.gnd.voltage",
+            "sw1.b.voltage == sw1.b.voltage",
+        );
         let nl = derive_netlist(&fixture_items(&fx));
         assert!(
-            nl.dangling.iter().any(|d| d.contains("sw1.p2")),
-            "sw1.p2 must dangle: {:?}",
+            nl.dangling.iter().any(|d| d.contains("sw1.b")),
+            "sw1.b must dangle: {:?}",
             nl.dangling
         );
     }
@@ -1399,7 +1402,7 @@ mod tests {
         let r1: Resistor = Resistor { value: "10k" };
         let sw1: Switch = Switch { value: "SPST" };
         async node n [
-            u1.vdd.voltage == 3.3V && u1.gnd.voltage == sw1.p2.voltage
+            u1.vdd.voltage == 3.3V && u1.gnd.voltage == sw1.b.voltage
         ] [u1.vdd.voltage == 3.3V] {
             r1.a = u1.vdd;
             r1.b = u1.gpio;
@@ -1495,7 +1498,7 @@ mod tests {
             let sw1: Switch = Switch { value: "SPST" };
             let sw2: Switch = Switch { value: "DPDT" };
             async node n [
-                u1.vdd.voltage == 3.3V && u1.gnd.voltage == sw1.p2.voltage
+                u1.vdd.voltage == 3.3V && u1.gnd.voltage == sw1.b.voltage
             ] [u1.vdd.voltage == 3.3V] {
                 u1.gpio.voltage <= 0.3V;
             }

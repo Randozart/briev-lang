@@ -21,6 +21,8 @@ pub struct DcSolution {
     pub pin_current: BTreeMap<(String, String), f64>,
     /// Deterministic participation/branch labels for proof provenance.
     pub states: BTreeSet<String>,
+    /// 2026-09-24 (component modes): explicit named-mode assignment.
+    pub modes: BTreeMap<String, String>,
 }
 
 /// Inputs for one solve pass. Bundled to keep the public entry under the
@@ -68,6 +70,12 @@ const MAX_OPERATING_STATES: usize = 64;
 struct BranchMode<'a> {
     laws: Vec<&'a crate::analysis::electronics_laws::ElaboratedLaw>,
     mask: usize,
+}
+
+/// The active branch assignment plus explicitly selected named modes.
+struct LawSelection<'a> {
+    branch: &'a BranchMode<'a>,
+    modes: &'a BTreeMap<String, String>,
 }
 
 impl<'a> BranchMode<'a> {
@@ -138,6 +146,7 @@ fn combine_state_candidates(
         merged.net_voltage.extend(candidate.net_voltage.clone());
         merged.pin_current.extend(candidate.pin_current.clone());
         merged.states.extend(candidate.states.clone());
+        merged.modes.extend(candidate.modes.clone());
         combined.push(merged);
     }
 }
@@ -222,26 +231,20 @@ fn solve_group(
     ctx: &DcContext<'_>,
 ) -> Result<Vec<DcSolution>, String> {
     let laws = guarded_laws(group);
-    let guards = BranchMode { laws, mask: 0 };
-    if guards.laws.len() > MAX_GUARDED_MODES {
-        return Err(format!(
-            "component-law group {:?} has {} guarded laws — split or simplify it; the DC substrate enumerates at most {} branch modes",
-            group_label(group),
-            guards.laws.len(),
-            MAX_GUARDED_MODES
-        ));
+    if laws.len() > MAX_GUARDED_MODES {
+        return Err(group_guard_budget_error(group, laws.len()));
     }
-    let mask_count = 1usize << guards.laws.len();
-    let mut candidates: Vec<DcSolution> = Vec::new();
+    let guards = BranchMode { laws, mask: 0 };
+    let mode_choices = component_mode_choices(group, ctx)?;
+    let explicit_mode_count = mode_choices.len();
+    let work = solve_work(&guards, &mode_choices);
+    let mut candidates = Vec::new();
     let mut rejections = Vec::new();
     let mut seen = BTreeSet::new();
-    for mask in 0..mask_count {
-        let branch = BranchMode { laws: guards.laws.clone(), mask };
-        match solve_branch_mode(group, ctx, &branch) {
+    for selection in &work {
+        match solve_branch_mode(group, ctx, &selection.branch, &selection.modes) {
             Ok(mut solution) => {
-                // Mode `00` in an unguarded group is the ordinary direct law
-                // path; numbered labels stay uniform for state provenance.
-                solution.states.insert(format!("mode={mask:02x}"));
+                label_solution(&mut solution, &selection.modes, selection.mask);
                 let key = format!("{solution:?}");
                 if seen.insert(key) {
                     candidates.push(solution);
@@ -250,9 +253,73 @@ fn solve_group(
             Err(error) => rejections.push(error),
         }
     }
+    summarize_group_candidates(
+        group,
+        candidates,
+        rejections,
+        GroupSummary { unguarded: guards.laws.is_empty(), no_explicit_modes: explicit_mode_count <= 1, ctx },
+    )
+}
+
+/// Deterministic guard × mode work items for one connected group.
+struct SolveWork<'a> {
+    branch: BranchMode<'a>,
+    mask: usize,
+    modes: BTreeMap<String, String>,
+}
+
+/// Create every guard-mask/named-mode combination without nested scan loops.
+fn solve_work<'a>(
+    guards: &'a BranchMode<'a>,
+    mode_choices: &'a [Vec<(&'a str, &'a crate::analysis::electronics_laws::ElaboratedMode)>],
+) -> Vec<SolveWork<'a>> {
+    let mask_count = 1usize << guards.laws.len();
+    mode_choices
+        .iter()
+        .flat_map(|selection| {
+            let selected: BTreeMap<String, String> = selection
+                .iter()
+                .map(|(instance, mode)| ((*instance).to_string(), mode.name.clone()))
+                .collect();
+            (0..mask_count).map(move |mask| SolveWork {
+                branch: BranchMode { laws: guards.laws.clone(), mask },
+                mask,
+                modes: selected.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Label a valid solution with its guard mask and named-mode assignments.
+fn label_solution(
+    solution: &mut DcSolution,
+    selected: &BTreeMap<String, String>,
+    mask: usize,
+) {
+    solution.states.insert(format!("mode={mask:02x}"));
+    solution.modes.extend(selected.clone());
+    for (instance, mode) in selected {
+        solution.states.insert(format!("{instance}={mode}"));
+    }
+}
+
+/// Authority/boundary facts needed to classify group candidates.
+struct GroupSummary<'a> {
+    unguarded: bool,
+    no_explicit_modes: bool,
+    ctx: &'a DcContext<'a>,
+}
+
+/// Explain no-solution versus unique/multiple candidates.
+fn summarize_group_candidates(
+    group: &ComponentGroup<'_>,
+    candidates: Vec<DcSolution>,
+    rejections: Vec<String>,
+    summary: GroupSummary<'_>,
+) -> Result<Vec<DcSolution>, String> {
     if candidates.is_empty() {
-        if guards.laws.is_empty() {
-            return Err(rejections.remove(0));
+        if summary.unguarded {
+            return Err(rejections.first().cloned().unwrap_or_default());
         }
         if rejections.iter().any(|error| error.contains("no unique")) {
             return Err(rejections
@@ -262,11 +329,11 @@ fn solve_group(
                 .unwrap_or_default());
         }
         return Err(format!(
-            "component-law group {:?} has no DC operating point — no guarded branch mode is consistent with its boundaries",
+            "component-law group {:?} has no DC operating point — no branch/mode combination is consistent with its boundaries",
             group_label(group)
         ));
     }
-    if candidates.len() > 1 && !group_bistable(group, ctx) {
+    if candidates.len() > 1 && summary.no_explicit_modes && !group_bistable(group, summary.ctx) {
         let states = candidates.len();
         return Err(format!(
             "component-law group {:?} has {states} DC operating points — every guarded-law contributor must declare `spec Bistable: true;` before the board is checked in all states",
@@ -276,9 +343,65 @@ fn solve_group(
     Ok(candidates)
 }
 
-/// Authority check for retaining multiple group modes. Every component that
-/// contributes a guarded law must acknowledge bistability; always-active
-/// components may share the connected group without making it ambiguous.
+fn group_guard_budget_error(group: &ComponentGroup<'_>, count: usize) -> String {
+    format!(
+        "component-law group {:?} has {count} guarded laws — split or simplify it; the DC substrate enumerates at most {MAX_GUARDED_MODES} branch modes",
+        group_label(group)
+    )
+}
+
+/// One declared mode choice for every mode-bearing component.
+type ModeCombination<'a> = Vec<(&'a str, &'a crate::analysis::electronics_laws::ElaboratedMode)>;
+
+/// Enumerate one choice from each component's named modes. Empty when no
+/// component uses named modes (one implicit combination remains).
+fn component_mode_choices<'a>(
+    group: &ComponentGroup<'a>,
+    ctx: &DcContext<'a>,
+) -> Result<Vec<Vec<(&'a str, &'a crate::analysis::electronics_laws::ElaboratedMode)>>, String> {
+    let choices: Vec<(&str, &crate::analysis::electronics_laws::ElaboratedMode)> = group
+        .components
+        .iter()
+        .filter(|component| !component.modes.is_empty())
+        .flat_map(|component| {
+            component
+                .modes
+                .iter()
+                .map(move |mode| (component.instance.as_str(), mode))
+        })
+        .collect();
+    // Group choices by component deterministically.
+    let mut by_component: BTreeMap<&str, Vec<&crate::analysis::electronics_laws::ElaboratedMode>> =
+        BTreeMap::new();
+    for (instance, mode) in choices {
+        by_component.entry(instance).or_default().push(mode);
+    }
+    let mut combinations: Vec<Vec<(&str, &crate::analysis::electronics_laws::ElaboratedMode)>> =
+        vec![Vec::new()];
+    for (instance, modes) in by_component {
+        let product = combinations.len().saturating_mul(modes.len());
+        if product > MAX_OPERATING_STATES {
+            return Err(format!(
+                "component modes have {product} combinations in group {:?} — the deterministic state budget is {MAX_OPERATING_STATES}",
+                group_label(group)
+            ));
+        }
+        combinations = combinations
+            .into_iter()
+            .flat_map(|prefix| {
+                modes.iter().map(move |mode| {
+                    let mut choice = prefix.clone();
+                    choice.push((instance, mode));
+                    choice
+                })
+            })
+            .collect();
+    }
+    Ok(combinations)
+}
+
+/// Authority check for ambiguous guarded modes when a group has no explicit
+/// named-mode candidates.
 fn group_bistable(group: &ComponentGroup<'_>, ctx: &DcContext<'_>) -> bool {
     group.components.iter().all(|component| {
         let has_guarded = component.laws.iter().any(|law| law.guard != LawGuard::Always);
@@ -307,10 +430,12 @@ fn solve_branch_mode(
     group: &ComponentGroup<'_>,
     ctx: &DcContext<'_>,
     branch: &BranchMode<'_>,
+    selected_modes: &BTreeMap<String, String>,
 ) -> Result<DcSolution, String> {
+    let selection = LawSelection { branch, modes: selected_modes };
     let mut rows = Vec::new();
     let mut variables = VariableTable::default();
-    append_law_equations(group, ctx, &mut variables, &mut rows, branch)?;
+    append_law_equations(group, ctx, &mut variables, &mut rows, &selection)?;
     append_kcl(group, ctx, &mut variables, &mut rows);
     let values = solve_linear_system(rows, &variables, group)?;
     if !mode_guards_hold(group, branch, &values, ctx) {
@@ -441,10 +566,10 @@ fn append_law_equations(
     ctx: &DcContext<'_>,
     variables: &mut VariableTable,
     rows: &mut Vec<SystemRow>,
-    branch: &BranchMode<'_>,
+    selection: &LawSelection<'_>,
 ) -> Result<(), String> {
     for component in &group.components {
-        component_law_rows(component, ctx, variables, rows, branch)?;
+        component_law_rows(component, ctx, variables, rows, selection)?;
     }
     Ok(())
 }
@@ -455,12 +580,37 @@ fn component_law_rows(
     ctx: &DcContext<'_>,
     variables: &mut VariableTable,
     rows: &mut Vec<SystemRow>,
-    branch: &BranchMode<'_>,
+    selection: &LawSelection<'_>,
 ) -> Result<(), String> {
     for law in &component.laws {
-        if branch.is_active(law) {
+        if selection.branch.is_active(law) {
             law_equation_rows(law, ctx, variables, rows)?;
         }
+    }
+    if let Some(mode) = selection.modes.get(&component.instance) {
+        let Some(selected) = component.modes.iter().find(|candidate| &candidate.name == mode)
+        else {
+            return Err(format!(
+                "component '{}' selects undeclared mode '{mode}'",
+                component.instance
+            ));
+        };
+        law_equations_from_mode(selected, ctx, variables, rows)?;
+    }
+    Ok(())
+}
+
+/// Add one named mode's equations to the current system.
+fn law_equations_from_mode(
+    mode: &crate::analysis::electronics_laws::ElaboratedMode,
+    ctx: &DcContext<'_>,
+    variables: &mut VariableTable,
+    rows: &mut Vec<SystemRow>,
+) -> Result<(), String> {
+    for equation in &mode.equations {
+        let row = law_equation_row(equation, ctx, variables)
+            .map_err(|_| format!("{} has a pin on no net", mode.source))?;
+        rows.push(row);
     }
     Ok(())
 }

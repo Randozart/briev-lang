@@ -195,7 +195,7 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
         body: TypeDefBody { slots, pins, reference: None, tolerance: None,
             rating: None, metadata, projections: vec![], bindings: vec![],
             operators: vec![], op_bindings: vec![],
-            constraints: vec![], members: vec![], when_laws: vec![], span: None },
+            constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None },
     }))
 }
 

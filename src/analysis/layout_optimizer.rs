@@ -424,6 +424,7 @@ mod tests {
                 constraints: vec![],
                 members: vec![],
                 when_laws: vec![],
+                modes: vec![],
                 span: None,
             },
             span: None,

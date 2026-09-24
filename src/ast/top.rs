@@ -1186,6 +1186,21 @@ pub struct TypeDefBody {
     /// body — `when G { F₁; …; }`. Each instance of this type inherits the
     /// law; the compiler obliges it (propagate + verify).
     pub when_laws: Vec<WhenLawDecl>,
+    /// 2026-09-24 (SPST component modes): explicitly named, mutually
+    /// exclusive operating states. Each instance is solved once per mode.
+    /// Component behavior remains stdlib/user vocabulary — the compiler knows
+    /// mode machinery, never `closed` or `open`.
+    pub modes: Vec<ModeDecl>,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-24 (SPST component modes): one named operating state. The body
+/// uses ordinary constitutive-law equation facts; elaboration shares the
+/// `when`-law path. Mode exclusivity is structural, not guarded ambiguity.
+#[derive(Debug, Clone)]
+pub struct ModeDecl {
+    pub name: String,
+    pub facts: Vec<Statement>,
     pub span: Option<Span>,
 }
 

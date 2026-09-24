@@ -3080,7 +3080,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             rating: None, metadata: Default::default(),
                                     projections: vec![], bindings: vec![],
                                     operators: vec![], op_bindings: vec![],
-                                    constraints: vec![], members: vec![], when_laws: vec![], span: None,
+                                    constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
                                 },
                             };
                             let synth = crate::backend::llvm::coll_scaffold::synthesize_members(

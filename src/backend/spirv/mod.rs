@@ -872,6 +872,7 @@ mod tests {
                     members: vec![],
                     when_laws: vec![],
 
+                    modes: vec![],
                     span: None,
                 }
             },
@@ -1060,6 +1061,7 @@ mod tests {
                     members: vec![],
                     when_laws: vec![],
 
+                    modes: vec![],
                     span: None,
                 }
             },

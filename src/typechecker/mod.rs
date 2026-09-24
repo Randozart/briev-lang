@@ -4618,7 +4618,7 @@ pub fn check_program_with_target(
             rating: None, metadata: Default::default(),
                         projections: vec![], bindings: vec![],
                         operators: vec![], op_bindings: vec![],
-                        constraints: vec![], members: vec![], when_laws: vec![], span: None,
+                        constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
                     },
                 };
                 let slot_map: std::collections::HashMap<String, Vec<(String, crate::ast::Type)>> =

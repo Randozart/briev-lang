@@ -83,6 +83,27 @@ type Resistor {
     spec PullUp: true;
 };
 
+// 2026-09-24 (SPST component modes): an ideal single-pole single-throw
+// mechanical switch. `closed` is an equipotential link; `open` carries no
+// branch current. Mode names are component vocabulary, not compiler keys.
+type Spst {
+    pin a;
+    pin b;
+    reference "SW";
+    tolerance any;
+    rating any;
+
+    mode closed {
+        a.voltage == b.voltage;
+        a.current + b.current == 0;
+    }
+
+    mode open {
+        a.current == 0Amp;
+        b.current == 0Amp;
+    }
+};
+
 type Capacitor {
     pin p;
     pin n;

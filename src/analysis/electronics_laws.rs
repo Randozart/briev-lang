@@ -146,6 +146,16 @@ pub struct ComponentLaws {
     pub instance: String,
     pub type_name: String,
     pub laws: Vec<ElaboratedLaw>,
+    /// 2026-09-24 (SPST modes): explicitly named, mutually exclusive states.
+    pub modes: Vec<ElaboratedMode>,
+}
+
+/// One elaborated named mode on one component instance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElaboratedMode {
+    pub name: String,
+    pub equations: Vec<LawEquation>,
+    pub source: String,
 }
 
 /// The law IR plus hard elaboration diagnostics.
@@ -224,7 +234,7 @@ pub fn elaborate_component_laws(items: &[TopLevel], ctx: &LawContext<'_>) -> Law
         }
     }
     for td in type_defs.into_values() {
-        if !td.body.when_laws.is_empty() {
+        if !td.body.when_laws.is_empty() || !td.body.modes.is_empty() {
             elaborate_type_laws(td, ctx, &mut ir);
         }
     }
@@ -241,13 +251,14 @@ fn elaborate_type_laws(
         if inst.type_name != td.name {
             continue;
         }
-        let (laws, errors) = instance_type_laws(td, inst_name, ctx);
+        let (laws, modes, errors) = instance_type_laws(td, inst_name, ctx);
         ir.errors.extend(errors);
-        if !laws.is_empty() {
+        if !laws.is_empty() || !modes.is_empty() {
             ir.components.push(ComponentLaws {
                 instance: inst_name.clone(),
                 type_name: td.name.clone(),
                 laws,
+                modes,
             });
         }
     }
@@ -258,9 +269,32 @@ fn instance_type_laws(
     td: &crate::ast::TypeDef,
     inst_name: &str,
     ctx: &LawContext<'_>,
-) -> (Vec<ElaboratedLaw>, Vec<String>) {
+) -> (Vec<ElaboratedLaw>, Vec<ElaboratedMode>, Vec<String>) {
     let mut laws = Vec::new();
+    let mut modes = Vec::new();
     let mut errors = Vec::new();
+    // Named modes and guarded branches are separate authority mechanisms.
+    // Always-active laws are ordinary facts shared by every mode.
+    let has_guarded_law = td.body.when_laws.iter().any(|law| !matches!(law.guard, crate::ast::Expr::Bool(true)));
+    if !td.body.modes.is_empty() && has_guarded_law {
+        errors.push(format!(
+            "component type '{}' declares both named modes and guarded `when` laws — pick one \
+             state authority. fix: express the branches as `mode <name> {{ … }}`, or keep guarded \
+             laws and remove the named modes",
+            td.name
+        ));
+    }
+    {
+        let mut seen = std::collections::BTreeSet::new();
+        for mode in &td.body.modes {
+            if !seen.insert(mode.name.as_str()) {
+                errors.push(format!(
+                    "component type '{}' declares mode '{}' more than once — remove or rename the duplicate",
+                    td.name, mode.name
+                ));
+            }
+        }
+    }
     for raw in &td.body.when_laws {
         let source = format!("component law on '{}' (type '{}')", inst_name, td.name);
         match elaborate_law(&raw.guard, &raw.facts, inst_name, ctx, &source) {
@@ -268,7 +302,21 @@ fn instance_type_laws(
             Err(error) => errors.push(error),
         }
     }
-    (laws, errors)
+    for raw in &td.body.modes {
+        let source = format!(
+            "component mode '{}' on '{}' (type '{}')",
+            raw.name, inst_name, td.name
+        );
+        match elaborate_mode(raw, inst_name, ctx, &source) {
+            Ok(mode) => modes.push(mode),
+            Err(error) => errors.push(error),
+        }
+    }
+    if td.body.modes.is_empty() && td.body.when_laws.iter().any(|law| matches!(law.guard, crate::ast::Expr::Identifier(_))) {
+        // Reserved for future named guards; ordinary identifiers are rejected
+        // by the expression elaborator below, so no silent behavior exists.
+    }
+    (laws, modes, errors)
 }
 
 /// Elaborate one raw law for one instance: guard, then equation facts.
@@ -295,6 +343,31 @@ fn elaborate_law(
     }
     reject_duplicate_equations(&mut equations)?;
     Ok(ElaboratedLaw { guard, equations, source: source.to_string() })
+}
+
+/// Elaborate one named mode. Its facts are exactly law equations; there is
+/// no per-mode guard because mode membership is the guard.
+fn elaborate_mode(
+    raw: &crate::ast::top::ModeDecl,
+    instance: &str,
+    ctx: &LawContext<'_>,
+    source: &str,
+) -> Result<ElaboratedMode, String> {
+    let site = ExpressionSite { instance, ctx, source };
+    let mut equations = Vec::new();
+    for fact in &raw.facts {
+        let Some((lhs, rhs)) = equation_sides(fact) else { continue };
+        let left = build_expression(lhs, &site)?;
+        let right = build_expression(rhs, &site)?;
+        equations.push(linear_equation(left, right, source)?);
+    }
+    if equations.is_empty() {
+        return Err(format!(
+            "{source} states no electrical equation — every component mode must constrain voltage or current"
+        ));
+    }
+    reject_duplicate_equations(&equations)?;
+    Ok(ElaboratedMode { name: raw.name.clone(), equations, source: source.to_string() })
 }
 
 /// Accept `lhs = rhs` fact syntax and `lhs == rhs` expression syntax.

@@ -1106,3 +1106,20 @@ state labels. A law-bearing `unpop` component is solved in mandatory
 present and absent participation states; the absent state removes its
 laws and records the omission. The compiler never selects among states
 and never certifies a contract from one state while another violates it.
+
+### Amendment 2026-09-24 (XV): named component modes and node state selection
+
+Components can declare explicit finite operating states with
+`mode <name> { <law equations> }`. Modes are mutually exclusive, elaborated
+by the same law machinery as `when` laws, and enumerated as first-class
+global operating states. A node selects its applicable modes with Boolean
+member sugar (`sw1.closed`, `!sw1.closed`). Node postconditions are proved
+only in states satisfying the node precondition; board-wide tolerance,
+rating, and budget checks remain all-state. Unknown modes and mode
+predicates matching zero solved states are hard errors.
+
+The generic stdlib `Spst` has `closed` and `open` modes. The USB fixture
+now separates `button_pressed` (`sw1.closed`, prove low) from
+`button_released` (`!sw1.closed`, prove high), declares its pull-up
+resistor with component laws, and no longer relies on the old numeric-
+`value` heuristic for that path.

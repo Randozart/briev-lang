@@ -82,6 +82,9 @@ pub struct TypeInfo {
     /// operating states (`spec Bistable: true;`). An ambiguous connected
     /// group may retain states only when every member declares it.
     pub bistable: bool,
+    /// 2026-09-24 (SPST modes): declared named modes, sorted by declaration.
+    /// Empty for purely guarded-law components.
+    pub modes: Vec<String>,
 }
 
 /// One derived electrical node.
@@ -447,7 +450,7 @@ fn collect_type_pins(
                 );
                 info.insert(
                     td.name.clone(),
-                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty(), spec_defaults, bistable },
+                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty() || !td.body.modes.is_empty(), spec_defaults, bistable, modes: td.body.modes.iter().map(|m| m.name.clone()).collect() },
                 );
             }
         }
@@ -778,6 +781,8 @@ struct ProofInputs<'a> {
     type_info: &'a BTreeMap<String, TypeInfo>,
     laws: &'a [crate::analysis::electronics_laws::ComponentLaws],
     states: &'a std::collections::BTreeSet<String>,
+    modes: &'a BTreeMap<String, Vec<String>>,
+    assigned_modes: &'a BTreeMap<String, String>,
 }
 
 /// Everything needed after contract drives are classified: DC solve, proofs,
@@ -789,6 +794,7 @@ struct PostSolveContext<'a> {
     type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
     type_info: &'a BTreeMap<String, TypeInfo>,
     laws: &'a [crate::analysis::electronics_laws::ComponentLaws],
+    modes: &'a BTreeMap<String, Vec<String>>,
     unpop: &'a std::collections::HashSet<String>,
 }
 
@@ -804,10 +810,12 @@ fn post_solve_checks(
         instances: ctx.instances,
         type_pins: ctx.type_pins,
         type_info: ctx.type_info,
+        modes: ctx.modes,
         unpop: ctx.unpop,
         drives: &voltage.net_voltage,
     });
     let mut law_all = law_errors;
+    law_all.extend(validate_node_mode_states(&ctx, &states));
     let mut budget_all = Vec::new();
     let mut proved_all = voltage.proved.clone();
     // The first deterministic state is the representative emitter view; all
@@ -836,6 +844,8 @@ fn post_solve_checks(
                 type_info: ctx.type_info,
                 laws: ctx.laws,
                 states: &state.states,
+                modes: ctx.modes,
+                assigned_modes: &state.modes,
             },
             &mut state_check,
         );
@@ -879,6 +889,50 @@ fn post_solve_checks(
     (law_all, budget_all)
 }
 
+/// Every node with a mode-selection precondition must match at least one
+/// solved global state. Unknown modes/instances are errors even if another
+/// predicate would have made the node inapplicable.
+fn validate_node_mode_states(
+    ctx: &PostSolveContext<'_>,
+    states: &[crate::analysis::electronics_dc::DcSolution],
+) -> Vec<String> {
+    ctx.items
+        .iter()
+        .filter_map(|item| match item {
+            TopLevel::Transaction(t) => validate_one_mode_node(t, states, ctx.modes),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Evaluate one node across all states and explain zero-match failures.
+fn validate_one_mode_node(
+    transaction: &crate::ast::Transaction,
+    states: &[crate::analysis::electronics_dc::DcSolution],
+    modes: &BTreeMap<String, Vec<String>>,
+) -> Option<String> {
+    let mut saw_mode = false;
+    let mut matched = false;
+    for state in states {
+        let evaluated = match eval_mode_predicate(&transaction.contract.pre_condition, modes, &state.modes) {
+            Ok(evaluated) => evaluated,
+            Err(error) => return Some(format!("[node '{}'] {error}", transaction.name)),
+        };
+        saw_mode |= evaluated.referenced;
+        matched |= evaluated.value;
+    }
+    if saw_mode && !matched {
+        return Some(format!(
+            "[node '{}'] its mode precondition matches none of the {} solved operating states — \
+             the node is physically unsatisfiable. fix: select a declared mode that the law \
+             solver can reach",
+            transaction.name,
+            states.len()
+        ));
+    }
+    None
+}
+
 /// Prefix a diagnostic with its deterministic operating-state labels.
 fn state_prefix(states: &std::collections::BTreeSet<String>) -> String {
     if states.is_empty() {
@@ -915,7 +969,12 @@ fn derive_electrical_proofs(input: ProofInputs<'_>, check: &mut VoltageCheck) {
         input.items,
         input.instances,
         input.type_pins,
-        &CurrentBoundTables { pin_to_net: &pin_to_net, states: input.states },
+        &CurrentBoundTables {
+            pin_to_net: &pin_to_net,
+            states: input.states,
+            modes: input.modes,
+            assigned: input.assigned_modes,
+        },
         check,
     );
 }
@@ -1265,7 +1324,15 @@ fn parse_ohms(raw: &str) -> Option<f64> {
 
 /// Collect current-bound obligations from POSTconditions:
 /// `[x.pin.current <= B]` (upper) / `[x.pin.current >= B]` (lower).
-fn collect_current_bounds(items: &[TopLevel], instances: &BTreeMap<String, &ComponentInstance>, type_pins: &BTreeMap<String, Vec<(String, u64)>>) -> Vec<(PinRef, f64, bool)> {
+struct CurrentBound {
+    transaction: String,
+    precondition: Expr,
+    pin: PinRef,
+    bound: f64,
+    is_upper: bool,
+}
+
+fn collect_current_bounds(items: &[TopLevel], instances: &BTreeMap<String, &ComponentInstance>, type_pins: &BTreeMap<String, Vec<(String, u64)>>) -> Vec<CurrentBound> {
     let mut out = Vec::new();
     let resolve_current = |expr: &Expr| -> Option<PinRef> {
         let Expr::Field(base, prop) = expr else { return None };
@@ -1288,7 +1355,13 @@ fn collect_current_bounds(items: &[TopLevel], instances: &BTreeMap<String, &Comp
             };
             let is_upper = matches!(op, BinaryOpKind::Le | BinaryOpKind::Lt);
             if let Some(pin) = resolve_current(pin_expr) {
-                out.push((pin, lit, is_upper));
+                out.push(CurrentBound {
+                    transaction: t.name.clone(),
+                    precondition: t.contract.pre_condition.clone(),
+                    pin,
+                    bound: lit,
+                    is_upper,
+                });
             }
         }
     }
@@ -1644,11 +1717,118 @@ fn law_power(
     Some((power.abs(), "component-law DC:"))
 }
 
+/// Catalog of declared named modes per component instance.
+fn mode_catalog(
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+) -> BTreeMap<String, Vec<String>> {
+    instances
+        .iter()
+        .filter_map(|(instance, inst)| {
+            type_info.get(&inst.type_name).and_then(|info| {
+                (!info.modes.is_empty()).then(|| (instance.clone(), info.modes.clone()))
+            })
+        })
+        .collect()
+}
+
+/// Evaluate a node precondition against one named-mode assignment. Leaves
+/// with no mode reference are treated as true for state selection: checking
+/// the bound in an extra state is conservative. Non-mode operands under OR
+/// cannot be decided here and are rejected rather than widened silently.
+fn mode_predicate_holds(
+    expr: &Expr,
+    transaction: &str,
+    modes: &BTreeMap<String, Vec<String>>,
+    assigned: &BTreeMap<String, String>,
+) -> Result<bool, String> {
+    let evaluated = eval_mode_predicate(expr, modes, assigned).map_err(|error| {
+        format!("[node '{transaction}'] {error}")
+    })?;
+    Ok(evaluated.value)
+}
+
+/// Boolean value plus whether the predicate referenced a component mode.
+#[derive(Debug, Clone, Copy)]
+struct ModeEvaluation {
+    value: bool,
+    referenced: bool,
+}
+
+fn eval_mode_predicate(
+    expr: &Expr,
+    modes: &BTreeMap<String, Vec<String>>,
+    assigned: &BTreeMap<String, String>,
+) -> Result<ModeEvaluation, String> {
+    match expr {
+        Expr::Bool(value) => Ok(ModeEvaluation { value: *value, referenced: false }),
+        Expr::Identifier(name) => {
+            if name == "true" {
+                Ok(ModeEvaluation { value: true, referenced: false })
+            } else if name == "false" {
+                Ok(ModeEvaluation { value: false, referenced: false })
+            } else {
+                Ok(ModeEvaluation { value: true, referenced: false })
+            }
+        }
+        Expr::Field(base, mode) => {
+            let Expr::Identifier(instance) = base.as_ref() else {
+                return Ok(ModeEvaluation { value: true, referenced: false });
+            };
+            let Some(declared) = modes.get(instance) else {
+                // Ordinary non-electronics member guards do not select modes.
+                return Ok(ModeEvaluation { value: true, referenced: false });
+            };
+            if !declared.contains(mode) {
+                return Err(format!(
+                    "state assertion '{instance}.{mode}' names an undeclared mode — declared modes: {}",
+                    declared.join(", ")
+                ));
+            }
+            Ok(ModeEvaluation {
+                value: assigned.get(instance).is_some_and(|selected| selected == mode),
+                referenced: true,
+            })
+        }
+        Expr::UnaryOp(crate::ast::UnaryOpKind::Not, inner) => {
+            let value = eval_mode_predicate(inner, modes, assigned)?;
+            Ok(ModeEvaluation { value: !value.value, referenced: value.referenced })
+        }
+        Expr::BinaryOp(crate::ast::BinaryOpKind::And, left, right) => {
+            combine_mode_predicates(eval_mode_predicate(left, modes, assigned)?, eval_mode_predicate(right, modes, assigned)?, false)
+        }
+        Expr::BinaryOp(crate::ast::BinaryOpKind::Or, left, right) => {
+            combine_mode_predicates(eval_mode_predicate(left, modes, assigned)?, eval_mode_predicate(right, modes, assigned)?, true)
+        }
+        _ => Ok(ModeEvaluation { value: true, referenced: false }),
+    }
+}
+
+/// Combine two evaluated predicates and reject an OR whose non-mode side
+/// cannot be decided for state filtering.
+fn combine_mode_predicates(
+    left: ModeEvaluation,
+    right: ModeEvaluation,
+    is_or: bool,
+) -> Result<ModeEvaluation, String> {
+    if is_or && (left.referenced ^ right.referenced) {
+        return Err(
+            "an OR state selector mixes a component mode with a non-mode guard — state applicability is not decidable. fix: put the non-mode guard in a separate condition or use AND".to_string()
+        );
+    }
+    Ok(ModeEvaluation {
+        value: if is_or { left.value || right.value } else { left.value && right.value },
+        referenced: left.referenced || right.referenced,
+    })
+}
+
 /// Shared tables for current-bound proofs; keeps the walker under the
 /// parameter gate now that state provenance is required.
 struct CurrentBoundTables<'a> {
     pin_to_net: &'a BTreeMap<(String, String), String>,
     states: &'a std::collections::BTreeSet<String>,
+    modes: &'a BTreeMap<String, Vec<String>>,
+    assigned: &'a BTreeMap<String, String>,
 }
 
 /// Prove (or violate) the postcondition current bounds against the derived
@@ -1660,8 +1840,8 @@ fn check_current_bounds(
     tables: &CurrentBoundTables<'_>,
     check: &mut VoltageCheck,
 ) {
-    for (pin, bound, is_upper) in collect_current_bounds(items, instances, type_pins) {
-        let key = (pin.component.clone(), pin.pin.clone());
+    for bound in collect_current_bounds(items, instances, type_pins) {
+        let key = (bound.pin.component.clone(), bound.pin.pin.clone());
         let Some(net_name) = tables.pin_to_net.get(&key) else {
             continue;
         };
@@ -1673,15 +1853,26 @@ fn check_current_bounds(
             continue;
         };
         let site = CurrentBoundSite {
-            pin: &pin,
+            pin: &bound.pin,
             net_name,
             derived,
             law_current: law_current.is_some(),
-            bound,
-            is_upper,
+            bound: bound.bound,
+            is_upper: bound.is_upper,
             states: tables.states,
         };
-        record_current_bound(site, check);
+        // A node precondition selects its applicable operating states. If it
+        // does not hold here, the bound is not evidence in this state.
+        match mode_predicate_holds(
+            &bound.precondition,
+            &bound.transaction,
+            tables.modes,
+            tables.assigned,
+        ) {
+            Ok(true) => record_current_bound(site, check),
+            Ok(false) => {}
+            Err(error) => check.violations.push(error),
+        }
     }
 }
 
@@ -4100,6 +4291,7 @@ struct DcInput<'a> {
     instances: &'a BTreeMap<String, &'a ComponentInstance>,
     type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
     type_info: &'a BTreeMap<String, TypeInfo>,
+    modes: &'a BTreeMap<String, Vec<String>>,
     unpop: &'a std::collections::HashSet<String>,
     drives: &'a BTreeMap<String, f64>,
 }
@@ -4224,6 +4416,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
             type_pins: &type_pins,
             type_info: &type_info,
             laws: &component_laws,
+            modes: &mode_catalog(&instances, &type_info),
             unpop: &unpop,
         },
         &mut voltage,
@@ -5914,6 +6107,73 @@ mod tests {
                 .any(|e| e.contains("mode=02") && e.contains("lower bound")),
             "{:?}",
             mixed.voltage.violations
+        );
+    }
+
+    #[test]
+    fn spst_mode_ebv_fixture_selects_operating_states() {
+        // 2026-09-24 (SPST modes): the checked-in language fixture proves
+        // pressed behavior only in closed and released behavior only in open.
+        let nl = analyze(include_str!("../../tests/electronics/spst_modes.ebv"));
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        assert!(nl.voltage.violations.is_empty(), "{:?}", nl.voltage.violations);
+        assert!(nl
+            .voltage
+            .proved
+            .iter()
+            .any(|p| p.contains("sw1=closed") && p.contains("I(r1.a)")));
+        assert!(nl
+            .voltage
+            .proved
+            .iter()
+            .any(|p| p.contains("sw1=open") && p.contains("I(r1.a)")));
+
+        let typo = analyze(include_str!(
+            "../../tests/electronics/spst_unknown_mode.ebv"
+        ));
+        assert!(
+            typo.law_errors
+                .iter()
+                .chain(typo.voltage.violations.iter())
+                .any(|e| e.contains("undeclared mode") && e.contains("closedd")),
+            "law={:?} violations={:?}",
+            typo.law_errors,
+            typo.voltage.violations
+        );
+    }
+
+    #[test]
+    fn contradictory_mode_precondition_has_no_operating_state() {
+        let src = r#"
+            type Spst {
+                pin a; pin b;
+                reference "SW"; tolerance any; rating any;
+                mode closed {
+                    a.voltage == b.voltage;
+                    a.current + b.current == 0;
+                }
+                mode open {
+                    a.current == 0Amp;
+                    b.current == 0Amp;
+                }
+            };
+            type Source { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Source = Source { };
+            let sw1: Spst = Spst { };
+            async node impossible
+                [v1.p.voltage == 1.0V && v1.p.voltage == sw1.a.voltage
+                 && sw1.b.voltage == v1.n.voltage && v1.n.voltage == 0.0V
+                 && sw1.closed && !sw1.closed]
+                [true]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.law_errors
+                .iter()
+                .any(|e| e.contains("matches none") && e.contains("'impossible'")),
+            "{:?}",
+            nl.law_errors
         );
     }
 

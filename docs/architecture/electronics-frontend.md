@@ -251,6 +251,15 @@ clearance (warning), and emits a `.kicad_pcb` alongside the schematic
 (physics-derived net labels, footprints from `config/footprints.dbvl`).
 New surface: `Length` dimension + `mm`/`cm` units.
 
+**2026-09-24 (SPST component modes, plan
+`2026-09-24-spst-component-modes.md`):** named finite-state components.
+A type declares `mode closed { … }` / `mode open { … }`; mode bodies share
+the law elaborator and solver. `sw1.closed` / `!sw1.closed` in a node
+precondition filters the states in which that node's postconditions are
+proved. Board-wide tolerance/rating/budget checks still cover all modes.
+`usb_sensor.ebv` now uses stdlib `Spst` for pressed/released behavior and
+declares its pull-up resistor as a law-bearing component.
+
 **2026-09-24 (multi-state law solving, plan
 `2026-09-24-multi-state-law-solving.md`):** the DC solver now returns
 labeled global operating states. Guarded group candidates are combined

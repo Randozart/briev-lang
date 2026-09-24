@@ -396,6 +396,7 @@ mod tests {
                 members: vec![],
                 when_laws: vec![],
 
+                modes: vec![],
                 span: None,
             },
             span: None,

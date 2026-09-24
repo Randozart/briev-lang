@@ -1,0 +1,39 @@
+// ── spst_unknown_mode.ebv — negative state-assertion fixture ────────────
+// 2026-09-24 (plan 2026-09-24-spst-component-modes.md).
+//
+// `closedd` is not declared by Spst. A typo in a mode selector must be a
+// hard diagnostic, never an all-states pass.
+
+type Spst {
+    pin a;
+    pin b;
+    reference "SW";
+    tolerance any;
+    rating any;
+    mode closed {
+        a.voltage == b.voltage;
+        a.current + b.current == 0;
+    }
+    mode open {
+        a.current == 0Amp;
+        b.current == 0Amp;
+    }
+};
+
+type Source {
+    pin p;
+    pin n;
+    reference "V";
+    tolerance any;
+    rating any;
+};
+
+let v1: Source = Source { };
+let sw1: Spst = Spst { };
+
+async node typo
+    [v1.p.voltage == 1.0V && v1.p.voltage == sw1.a.voltage
+     && sw1.b.voltage == v1.n.voltage && v1.n.voltage == 0.0V
+     && sw1.closedd]
+    [true]
+{ }

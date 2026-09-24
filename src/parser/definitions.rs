@@ -12,6 +12,17 @@ use crate::ast::*;
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
+/// Mutable targets for the shared component-header body scanner.
+struct TypeBodyTargets<'a> {
+    when_laws: &'a mut Vec<crate::ast::top::WhenLawDecl>,
+    modes: &'a mut Vec<crate::ast::top::ModeDecl>,
+    pins: &'a mut Vec<crate::ast::top::PinDecl>,
+    pin_high_water: &'a mut u64,
+    reference: &'a mut Option<String>,
+    tolerance: &'a mut Option<crate::ast::top::Tolerance>,
+    rating: &'a mut Option<crate::ast::top::Rating>,
+}
+
 impl<'a> Parser<'a> {
     /// 2026-09-06 (Phase 8): parse the `section(".name")` prefix — consume
     /// the keyword, the parenthesized quoted section name. Returns the
@@ -2012,6 +2023,90 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// Parse `!> key: value;` / `spec Name: value;` within a component body.
+    /// Component-local law parameters are allowed once pins are declared.
+    fn parse_component_metadata_clause(
+        &mut self,
+        targets: &mut TypeBodyTargets<'_>,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<bool, SyntaxError> {
+        let at_metadata = self.check(&Token::ExclaimArrow) || self.check(&Token::Spec);
+        if !at_metadata {
+            return Ok(false);
+        }
+        self.parse_metadata_clause_scoped(metadata, !targets.pins.is_empty())?;
+        Ok(true)
+    }
+
+    /// Parse component pins, scalar electronics properties, when laws, and
+    /// named modes in one place. Returns true when a clause was consumed.
+    fn parse_component_header_clause(
+        &mut self,
+        targets: &mut TypeBodyTargets<'_>,
+    ) -> Result<bool, SyntaxError> {
+        if self.parse_component_law_clause(targets.when_laws, targets.modes)? {
+            return Ok(true);
+        }
+        if self.check(&Token::Pin) {
+            self.parse_pin_clause(targets.pins, targets.pin_high_water)?;
+            return Ok(true);
+        }
+        if self.parse_electronics_property_clause(
+            targets.reference,
+            targets.tolerance,
+            targets.rating,
+        )? {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Parse type-body component-law clauses. Returns true when a clause was
+    /// consumed. Combining `when` and named modes keeps body scanners flat.
+    fn parse_component_law_clause(
+        &mut self,
+        when_laws: &mut Vec<crate::ast::top::WhenLawDecl>,
+        modes: &mut Vec<crate::ast::top::ModeDecl>,
+    ) -> Result<bool, SyntaxError> {
+        if self.check(&Token::When) {
+            when_laws.push(self.parse_when_law()?);
+            return Ok(true);
+        }
+        let at_mode = self.check_identifier("mode")
+            && matches!(
+                self.tokens.get(self.pos + 2).map(|(t, _)| t),
+                Some(Token::LBrace)
+            );
+        if at_mode {
+            modes.push(self.parse_mode_decl()?);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Parse the shared electronics scalar-property clauses. Returns true
+    /// when one was consumed.
+    fn parse_electronics_property_clause(
+        &mut self,
+        reference: &mut Option<String>,
+        tolerance: &mut Option<crate::ast::top::Tolerance>,
+        rating: &mut Option<crate::ast::top::Rating>,
+    ) -> Result<bool, SyntaxError> {
+        if self.at_reference_clause() {
+            *reference = Some(self.parse_reference_clause()?);
+            return Ok(true);
+        }
+        if self.at_tolerance_clause() {
+            *tolerance = Some(self.parse_tolerance_clause()?);
+            return Ok(true);
+        }
+        if self.at_rating_clause() {
+            *rating = Some(self.parse_rating_clause()?);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// 2026-09-22 (Slice C): `when <guard> { <facts> };` — shared by the
     /// top-level and type/obj-body parse sites. The guard is an expression;
     /// the facts are ordinary body statements (assignments, pin drives).
@@ -2025,6 +2120,23 @@ impl<'a> Parser<'a> {
             facts,
             span: None,
         })
+    }
+
+    /// Parse a named component operating mode (2026-09-24 SPST modes):
+    /// `mode name { <law facts> }`. `mode` is contextual so ordinary fields
+    /// and methods named `mode` remain legal.
+    fn parse_mode_decl(&mut self) -> Result<crate::ast::top::ModeDecl, SyntaxError> {
+        let start = self.pos;
+        self.pos += 1; // consume contextual 'mode'
+        let name = self.expect_identifier()?;
+        let facts = self.parse_block()?;
+        self.eat(&Token::Semicolon);
+        let span = self
+            .tokens
+            .get(start)
+            .map(|(_, range)| self.make_span(range.clone()))
+            .unwrap_or_else(crate::errors::Span::dummy);
+        Ok(crate::ast::top::ModeDecl { name, facts, span: Some(span) })
     }
 
     fn parse_top_level_trg(&mut self) -> Result<Trigger, SyntaxError> {
@@ -3135,35 +3247,26 @@ impl<'a> Parser<'a> {
         let mut members: Vec<crate::ast::TopLevel> = Vec::new();
         // 2026-09-22 (Slice C): static when laws declared in the type body.
         let mut when_laws: Vec<crate::ast::top::WhenLawDecl> = Vec::new();
+        let mut modes: Vec<crate::ast::top::ModeDecl> = Vec::new();
         if self.eat(&Token::LBrace) {
+            // 2026-09-24 (SPST modes): component header clauses share one
+            // dispatch so the type-body scanner does not grow branchy again.
+        let mut targets = TypeBodyTargets {
+                when_laws: &mut when_laws,
+                modes: &mut modes,
+                pins: &mut pins,
+                pin_high_water: &mut pin_high_water,
+                reference: &mut reference,
+                tolerance: &mut tolerance,
+                rating: &mut rating,
+            };
             while !self.check(&Token::RBrace) && !self.is_at_end() {
-                // 2026-09-22 (Slice C): `when G { … }` in a type body — a
-                // static forced fact each instance inherits.
-                if self.check(&Token::When) {
-                    when_laws.push(self.parse_when_law()?);
+                if self.parse_component_header_clause(&mut targets)? {
                     continue;
                 }
-                // 2026-09-11 (B3): shared Electronics clauses — uniform on
-                // every declaration form.
-                if self.check(&Token::Pin) {
-                    self.parse_pin_clause(&mut pins, &mut pin_high_water)?;
-                    continue;
-                }
-                if self.at_reference_clause() {
-                    reference = Some(self.parse_reference_clause()?);
-                    continue;
-                }
-                if self.at_tolerance_clause() {
-                    tolerance = Some(self.parse_tolerance_clause()?);
-                    continue;
-                }
-                if self.at_rating_clause() {
-                    rating = Some(self.parse_rating_clause()?);
-                    continue;
-                }
-                // !> key: value; or spec PascalCase: value; — metadata assignment
-                if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
-                    self.parse_metadata_clause_scoped(&mut metadata, !pins.is_empty())?;
+                // !> key/value and spec metadata share the component-header
+                // dispatch so component-local law parameters keep their scope.
+                if self.parse_component_metadata_clause(&mut targets, &mut metadata)? {
                     continue;
                 }
                 let prefixes = self.parse_field_prefixes();
@@ -3213,6 +3316,7 @@ impl<'a> Parser<'a> {
                 constraints: vec![],
                 members,
                 when_laws,
+                modes,
                 span: None,
             },
             span: None,
@@ -3843,12 +3947,12 @@ impl<'a> Parser<'a> {
         let mut op_bindings: Vec<OperatorBinding> = Vec::new();
         // 2026-09-22 (Slice C): static when laws in the obj body.
         let mut when_laws: Vec<crate::ast::top::WhenLawDecl> = Vec::new();
+        let mut modes: Vec<crate::ast::top::ModeDecl> = Vec::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
-                // 2026-09-22 (Slice C): `when G { … }` in an obj body — a
-                // static forced fact on the obj's members.
-                if self.check(&Token::When) {
-                    when_laws.push(self.parse_when_law()?);
+                // 2026-09-24 (SPST modes): when laws and named modes share
+                // one component-law dispatch here too.
+                if self.parse_component_law_clause(&mut when_laws, &mut modes)? {
                     continue;
                 }
                 // !> key: value; or spec PascalCase: value; — metadata.
@@ -3902,7 +4006,7 @@ impl<'a> Parser<'a> {
             ports_in, ports_out,
             bit_range: None, span: None, coll, seq,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, tolerance: None, rating: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, when_laws, span: None,
+                slots, pins: vec![], reference: None, tolerance: None, rating: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, when_laws, modes, span: None,
             },
         }))
     }
@@ -4188,7 +4292,7 @@ impl<'a> Parser<'a> {
             body: TypeDefBody {
                 slots, pins: vec![], reference: None, tolerance: None, rating: None,
                 metadata: std::collections::HashMap::new(),
-                projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], when_laws: vec![], span: None,
+                projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
             },
         }))
     }
@@ -4929,6 +5033,23 @@ mod tests {
             }
             other => panic!("expected 1.8Volt default, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_component_modes_parse_contextually() {
+        // 2026-09-24 (SPST modes): `mode` is contextual and its block is a
+        // named finite-state authority, not a slot declaration.
+        let tl = parse_top(
+            "type Spst { pin a; pin b; reference \"SW\"; tolerance any; rating any; \
+             mode closed { a.voltage == b.voltage; a.current + b.current == 0; } \
+             mode open { a.current == 0Amp; b.current == 0Amp; } };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let names: Vec<_> = td.body.modes.iter().map(|mode| mode.name.as_str()).collect();
+        assert_eq!(names, ["closed", "open"]);
+        assert_eq!(td.body.modes[0].facts.len(), 2);
+        assert_eq!(td.body.modes[1].facts.len(), 2);
     }
 
     #[test]

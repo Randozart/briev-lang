@@ -338,6 +338,17 @@ in the parser — netlist, contracts, and the emitter see named ordinary
  wire, diode, and LED types are ordinary declarations of this mechanism —
  the compiler knows no component catalog names.
 
+ **Named component modes (2026-09-24).** A component may declare mutually
+ exclusive operating states directly — `mode closed { … } mode open { … }`.
+ Mode bodies use ordinary component-law equations. Each declared mode is an
+ explicit state candidate; `spec Bistable` is not required because there is
+ no solver-selected ambiguity. A node precondition selects modes with
+ Boolean member sugar — `sw1.closed` or `!sw1.closed`. Node postconditions
+ are proved only in states satisfying that node's precondition; tolerance,
+ power-rating, and budget checks still apply in every state. An unknown
+ mode or a node whose mode predicate matches no solved state is a hard
+ error.
+
  **Law participation states (2026-09-24).** A law-bearing component marked
  `unpop` is solved twice: present, with its laws participating; and absent,
  with its laws and KCL contributions removed and its pins open. Tolerances,
