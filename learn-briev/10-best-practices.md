@@ -200,7 +200,7 @@ defn test_reactive_chain() -> Bool {
 ### 1. Add Logging Transactions
 
 ```briev
-node log_state() [true][true] {
+node log_state() [counter >= 0 && balance >= 0][counter >= 0 && balance >= 0] {
     println("Counter: " + String(counter));
     println("Balance: " + String(balance));
     println("Active: " + String(active));
@@ -211,7 +211,7 @@ node log_state() [true][true] {
 ### 2. Use Invariants
 
 ```briev
-node check_invariants() [true][true] {
+node check_invariants [[counter >= 0 && balance >= 0] {
     [counter >= 0] {
         // Invariant holds
     };

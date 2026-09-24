@@ -2129,7 +2129,9 @@ mod tests {
         let src = "let p: Int = 0;\n\
                    trg dyn_pin @ *p;\n\
                    trg sym_pin @ SERIAL;\n\
-                   txn tick [true][true] {\n\
+                   let done: Bool = false;\n\
+                   txn tick [done == false][done == true] {\n\
+                     done = true;\n\
                    }\n";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let mut parser = crate::parser::Parser::new(tokens, src);

@@ -1162,6 +1162,22 @@ mod self_test {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    // 2026-09-24 (BUGS.md accel self-test race): both tests swap the SAME
+    // process-global `rt()` driver/init_done around their scenario — run in
+    // parallel (default test threads), one test's cleanup
+    // (`driver = null; init_done = false`) landed between the other's setup
+    // and launch → `briev_accel_launch` returned 0 ("fake launch returns
+    // ok"). The scenario state is process-global; serialize the tests on one
+    // lock. `into_inner` so a failing test's poisoned guard never cascades.
+    // To undo: drop the guards (restores the scheduling-dependent flake).
+    static SELF_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn self_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        SELF_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[repr(C)]
     struct FakeDriver {
         inner: BrievDeviceDriver,
@@ -1206,6 +1222,7 @@ mod self_test {
     fn probe_gate_rejecting_gpu_ok_forces_cpu() {
         // The probe returns GPU(1) only when gpu_ok confirms output
         // equality; a rejecting gate forces CPU regardless of timing.
+        let _guard = self_test_guard();
         let fake = BrievDeviceDriver {
             name: c"fake".as_ptr(),
             capabilities: 0,
@@ -1250,6 +1267,7 @@ mod self_test {
 
     #[test]
     fn pack_math_and_launch_roundtrip() {
+        let _guard = self_test_guard();
         // Field projection order + offsets (declared): array a (Float[4],
         // 4B) is vec4-eligible and 16B-aligned at proj 0; scalar s packed
         // at proj 16 (8B). Host struct has count first (8B) so a's

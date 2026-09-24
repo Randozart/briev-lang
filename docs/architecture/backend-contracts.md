@@ -82,6 +82,48 @@ Hard-won in this effort; each one corresponds to a real defect class.
 > | Alloc# strategy gates that choose Arena (`arena_ptr_idx`, analysis strategy, explicit `Arena`) require `!stateless_body`; stateless falls back to malloc/alloca and bookkeeps **Malloc** | Arena bookkeeping on a malloc'd pointer → Free# skips `@free` → leak |
 > | The arena-fields-in-%State decision (`needs_arena`/`arena_ptr_idx`) is program-wide; the stateless-vs-stateful decision is per-body — emission must honor BOTH, never infer one from the other | The AST fixpoint runs before arena lowering exists; inferring "arena fields ⇒ has %state" reintroduces %state into stateless signatures |
 >
+> **2026-09-24 (name shadowing).** Name-resolution law: a LOCAL binding
+> (defn/txn param or `let` register — `fun.let_bindings`) SHADOWS a
+> top-level pooled instance or field of the same name at EVERY resolution
+> site. `instance_prefix_for` resolves local-first; call-argument
+> `box_pooled` and the foreach-iterable guard skip the global path when
+> `get_local(name)` is present. Only the generic identifier arm was
+> local-first before; the three global-first sites boxed the pooled
+> columns into a stateless body (clang `%state` error) and passed the
+> global instance where the source passed a local param
+> (hash_ops_idio/float_fmt — BUGS.md 2026-09-24).
+>
+> **2026-09-24 (block-tracking truth).** `FunctionContext.cur_block` MUST
+> always name the block the append-only output buffer is actually open on.
+> Inlined member bodies leave their final `match_end`/`foreach.end` region
+> open (unterminated, for the caller's continuation) — restoring the
+> pre-call block after `emit_member_body` makes every loop-boundary phi cite
+> a block that never branched: countdown `init_pred` (`%entry` vs
+> `.match_end_N`) and latch `body_final` (`.cdb_` vs `foreach.endN`) → clang
+> "PHI node entries do not match predecessors". Rule: NO cur_block
+> save/restore across inlined bodies; the 2026-09-08 cursor-foreach leak
+> class is covered by the `let_binding_allocas` + `foreach_break_labels`
+> restores (keep those). Cross-function: `cur_block = None` at every
+> function start. Undo path: any reintroduced restore needs a failing IR
+> test naming the bad predecessor (BUGS.md 2026-09-24).
+>
+> **2026-09-24 (statement-match routing).** Every hand-rolled statement
+> walk (loop engine `emit_countable_body`, `emit_guard_body_stmt`,
+> `emit_guard_block`, and any new walker) MUST route statement-position
+> match — both `Expr::Match` inside `Statement::Expression` and direct
+> `Statement::Match` (composite-produced, `plugin/composite.rs`) — to
+> `emit_statement` (the `.smt_*` statement path; `emit_stmt.rs` 2026-09-14
+> conversion). A generic `emit_expr` fallback probes valueless arms as
+> Void and emits invalid `phi void`; a `_ => {}` catch-all silently drops
+> the match (the 2026-08-23 callable-txn class). `term`/`endprogram`/
+> let-value positions stay on `emit_expr` — they are VALUE positions.
+> `emit_match` additionally never emits `phi void` (Void merge = label
+> only; the typechecker rejects reading the Void result). Failure:
+> clang "void type only allowed for function results" (enemy_swarm,
+> BUGS.md 2026-09-24). Undo path: failing tests
+> `test_statement_match_valueless_arms_emits_no_void_phi` +
+> `test_void_match_value_emits_no_phi`.
+>
 > **2026-09-06 (plan 2026-09-06-cpp-expressiveness.md).** New emission laws
 > for the C++-expressiveness surface:
 >

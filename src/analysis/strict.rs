@@ -127,7 +127,9 @@ mod tests {
     #[test]
     fn manually_freed_field_passes_strict() {
         let items = parse(
-            "let buf: Ptr<Int> = Malloc#(64);\ntxn drop [true][true] { Free#(buf); term; };",
+            "let buf: Ptr<Int> = Malloc#(64);\n\
+             let done: Bool = false;\n\
+             txn drop [done == false][done == true] { done = true; Free#(buf); term; };",
         );
         let mc = crate::macros::memcheck::run_memcheck(&items);
         assert!(enforce(&items, &mc).is_ok(), "manual free = user-managed");
@@ -143,7 +145,9 @@ mod tests {
     #[test]
     fn trust_report_lists_frgn_and_asm() {
         let items = parse(
-            "frgn puts(x: Int) -> Int from #System;\nasm <x86_64> blink() -> Void [true][true] {\"nop\"};",
+            "frgn puts(x: Int) -> Int from #System;\n\
+             let blink_state: Int = 0;\n\
+             asm <x86_64> blink() -> Void [true][blink_state == 0] {\"nop\"};",
         );
         let axioms = trusted_axioms(&items);
         assert_eq!(axioms.len(), 2, "{axioms:?}");

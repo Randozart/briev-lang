@@ -6693,3 +6693,195 @@ dispatches `@free`. Emission law added to backend-contracts.md §3; IR test
 **Class:** analysis-vs-emission decision split — program-wide arena-fields
 decision and per-body stateless decision must both be honored; never infer
 one from the other.
+
+## 2026-09-24: pooled-instance name resolution was global-first — local params shadowed by top-level instances (clang %state + wrong call arguments) [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep, hash_ops_idio)
+**Symptom:** `benchmarks/hash_ops_idio.ll:2131: error: use of undefined value
+'%state'` — `%State` GEP inside stateless `define i64 @frac_all_digits(i64,
+i64, i64)`. Deeper: the defn received a heap box of the GLOBAL HashMap `m`
+as its first argument wherever source passed its local param `m`.
+**Root cause:** three name-resolution sites checked
+`unpacked_instance_prefix(name)` (top-level pooled instances) BEFORE local
+bindings: (1) `emit_user_call`'s argument boxing, (2)
+`instance_prefix_for` (method-call receivers), (3) the foreach-iterable
+guard. float_fmt's `frac_all_digits(m: Int, ...)` collides with
+hash_ops_idio's global `let m: HashMap = N` — emission resolved `m` to the
+pooled columns (state loads in a stateless body + box_pooled at the call
+boundary) while the analysis fixpoint (scope-aware) correctly marked the
+defn stateless and passed the local. The stateless-defn ABI (2026-09-23)
+exposed the latent semantic bug as a clang error; pre-merge every defn had
+`%state`, so the state loads were valid IR carrying the WRONG value.
+**Fix:** local-first at all three sites — `instance_prefix_for` resolves a
+local register first and only falls to `unpacked_instance_prefix` when no
+local exists; call-arg boxing and the foreach guard skip the global path
+when `get_local(name)` is present. `get_local` promoted to `pub(crate)`.
+**Tests:** `test_local_param_shadows_pooled_instance_in_call_args`,
+`test_local_param_shadows_pooled_instance_receiver`,
+`test_local_let_shadows_vector_field_in_foreach` (the pre-existing pooled
+boxing test still passes — no-local names keep boxing the global).
+**Class:** resolution order must match scoping rules — locals shadow
+globals at EVERY name-resolution site, not just the generic identifier arm.
+
+## 2026-09-24: explicit [true][true] tautology boilerplate in tests and docs [RESOLVED]
+
+**Date:** 2026-09-24 (user report: "double true contracts")
+**Symptom:** 19 source-form `node ... [true][true]` sites in
+backend/llvm/tests.rs plus fixtures in memcheck/loop_shape/strict/circt,
+and learn-briev/top-level-init examples presenting the form as valid —
+explicit `[true][true]` is `TypeError::TautologicalContract`
+(typechecker rejects it everywhere; nodes/txns also REQUIRE a
+non-trivial contract). The fixtures survived only because parse/analysis
+tests skip the typechecker.
+**Fix:** all boilerplate migrated to the house done-flag pattern
+(`let done: Bool = false; node go [done == false][done == true] { done =
+true; ... }`); sites with an existing `done` field use an honest invariant
+post (`[true][done >= 0]`); the strict.rs asm fixture uses
+`[true][blink_state == 0]` (nop preserves state); learn-briev examples
+presented as GOOD got real contracts (`[true][todos.^Len <= todos.^Len]`,
+invariant-preserving log_state, `[[counter >= 0 && balance >= 0]` sugar);
+top-level-init's "conventional boilerplate" example now mirrors the
+compiler's own synthesized `__booted` form. Negative/teaching sites
+kept (typechecker/parser rejection fixtures, canonicalization
+representation tests, ❌BAD doc illustrations, SPEC/error messages).
+**Class:** test fixtures must be programs the typechecker would accept —
+parse-only survival hides rule violations until the rule matters.
+
+## 2026-09-24: cur_block save/restore made loop-boundary phis cite non-predecessors (hash_ops_idio clang) [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep — surfaced only after the stateless-
+defn `%state` fix cleared the earlier clang error)
+**Symptom:** `hash_ops_idio.ll`: (a) header phi `%cdc115 = phi [ %t112,
+%entry ], [ %cdn116, %.cdl_108 ]` — verifier: actual preds of `.cd_108` are
+`entry` via `.match_end_69` and `.cdl_108` (`PHI node entries do not match
+predecessors` + cascade `Instruction does not dominate all uses`); (b) latch
+phi `%cdl118 = phi [ %cdm495, %.cdb_108 ], [ %cdz497, %.cdg_108 ]` — actual
+preds `.cdb_108` never branches to `.cdl_108` directly; the fire-check `br`
+physically sat in `foreach.end437`.
+**Root cause:** `emit_member_body`'s `cur_block` save/restore (re-added
+2026-09-08 in 0342f8bd after being correctly removed 2026-09-07) restored
+the PRE-call block while the append-only output buffer stayed open on the
+member body's END block (a `match_end`/`foreach.end` left unterminated for
+the caller's continuation). Every loop-boundary phi then cited the restored
+(stale) block as predecessor: countdown `init_pred` (counter.rs:1057 →
+`entry` instead of `.match_end_69`) and latch `body_final`
+(counter.rs:1210 → `.cdb_108` instead of `foreach.end437`). The
+2026-09-08 fix's actual leak targets — `let_binding_allocas` and
+`foreach_break_labels` leaking across member bodies (Tier-1 cursor foreach)
+— were separate restores that remain. The `init_context` /
+`emit_init_member_body` wrapper existed only to skip the harmful restore.
+**Fix:** removed the `cur_block` save/restore from `emit_member_body`
+(block-tracking truth: `cur_block` must always name the live output region);
+removed the now-dead `init_context` field + `emit_init_member_body` wrapper
+(5 call sites inline to `emit_member_body`); kept alloca/break-label/
+let-binding restores. Instrumented diagnosis (BRIVEV_DEBUG_INITPRED) showed
+`post-inline-init cur_block=None` while `.match_end_69` was open — the
+restore clobber with `init_context=false`.
+**Verified:** hash_ops_idio compiles, links, BOUND=10000000 output MATCHES
+C reference at both print boundaries (24999995000000 / 99999990000000);
+arena_churn BOUND=20000000 matches C; series_converge with BOUND set prints
+0.500050008; `cargo test --lib` 2489/0 (twice — pre- and post-removal).
+**Class:** save/restore of block-tracking state across inlined bodies is
+only sound when the inner emission CLOSED its region; Briev emission leaves
+the final region open for the caller (append-only continuation), so the
+pre-call block is never the text-open block after a block-emitting member.
+**Found alongside (not fixed here):** benchmark `.bv` files default
+`get_env_int!("BOUND")` → 0 when unset while their C references default
+50000000 (`env ? atol(env) : 50000000L`) — harness always exports BOUND at
+build (build_and_bench.sh:228) so gates unaffected; interpreter reference
+also yields 0 (eval.rs:1478) so language semantics are consistent; the
+asymmetry is benchmark-source-level (needs `get_env_int_or`-style default
+in stdlib + migration of the 50M-default pairs).
+
+## 2026-09-24: statement-position match emitted `phi void` from the loop engine + composite Statement::Match silently dropped [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep — next benchmark after hash_ops_idio)
+**Symptom:** `enemy_swarm.ll:4915`: `%t339 = phi void [ 0, %.match_next_353_1
+], [ %t392, %.match_arm_353_0 ], [ %t402, %.match_arm_353_1 ]` — clang:
+"void type only allowed for function results". The same source match
+(`match hp[i % 64] { 0 => {hp[i%64] = 3;}; _ => {hp[i%64] = hp[i%64] - 1;};};`)
+correctly emitted `.smt_*` blocks in `@txn_tick` but the expression path
+(`.match_arm_353`) inside `@main`'s `.cm_*` countable engine.
+**Root cause (two independent holes):**
+1. Parser F1 unified match dispatch (statements.rs:53) wraps statement-
+   position `match` in `Statement::Expression(Expr::Match)`. The standard
+   emitter routes this to the statement path (emit_stmt.rs:1128, 2026-09-14
+   void-match fix), but the loop engine's hand-rolled body walk
+   (`emit_countable_body`) has no Match handling — its `Statement::Expression`
+   arm called `emit_expr` → `emit_match`'s EXPRESSION path. Valueless arms
+   probe as Void → `llvm_type(Void) = "void"` → `phi void`, invalid IR.
+2. `plugin/composite.rs:628` produces `Statement::Match` DIRECTLY (never
+   routed through the expression wrap) — the engine's `_ => {}` catch-all
+   **silently dropped** it (same silent-drop class as BUGS.md 2026-08-23
+   "callable-txn bodies silently drop match"). Same gap in
+   `emit_guard_body_stmt` and `emit_guard_block`.
+**Fix:** (a) `emit_match` never emits `phi void` — when the merge type is
+Void the arms already branch to the end label, so the label alone is the
+merge (register name mirrors the empty-arms early return; the typechecker
+rejects reading a Void value, fencing the undefined-name edge — verified:
+`n = n + x` on a void match = type error). (b) engine routing: countable
+body, guard body, and guard block delegate `Expr::Match` in statement
+position (and direct `Statement::Match`) to `emit_statement` — the same
+2026-09-14 standard-emitter path (`term`/`endprogram` arms stay on
+`emit_expr`: value positions). All three sites carry dated provenance
+comments with undo instructions.
+**Verified:** enemy_swarm compiles/links; BOUND=10000000 output MATCHES
+enemy_swarm_c.c at both print boundaries (7499904 / 15000000);
+`cargo test --lib` 2491/0 (+2 regression tests:
+`test_statement_match_valueless_arms_emits_no_void_phi`,
+`test_void_match_value_emits_no_phi`); Praetor 116=116 (metric drift on
+already-flagged fns only).
+**Class:** every hand-rolled statement walk must route statement-position
+match (both `Expr::Match` inside `Statement::Expression` and direct
+`Statement::Match`) — a walk's `_ => {}`/generic `emit_expr` fallback
+either emits value-path IR for valueless arms or drops the statement
+entirely. When adding a statement walker: Match routes to `emit_statement`;
+`term`/`endprogram`/let-value positions stay on `emit_expr`.
+
+## 2026-09-24: shared-library builds emitted the owned `_start` + `@llvm.used` referencing undefined `@main` (export_add.so) [RESOLVED]
+
+**Date:** 2026-09-24 (baseline sweep — build phase died at `bridge_multi`,
+the custom multi_lang build, after all 74 `.bv` benchmarks compiled)
+**Symptom:** `target/multi_lang/export_add.ll:374`: `@llvm.used = appending
+global [2 x ptr] [ptr @main, ptr @__briev_environ]` — clang: "use of
+undefined value '@main'" → export_add.so failed to link → make Error 1.
+The same module also defined `@_start` with `call main` in its entry asm.
+**Root cause:** the Family F owned-entry emission (mod.rs, `_start` +
+`@llvm.used`) gated on `bootstrap_bad.is_none() && linux && libc-free`
+but never on `is_shared_lib`. A `--shared` build never defines `@main`
+(main emission is skipped for `is_shared_lib`, emit_toplevel.rs:2773
+region) — the entry pin referenced a symbol the module does not define.
+The embedded branch had the same hole (`@llvm.used [ptr @main]` for
+riscv64/thumb without a `@main`).
+**Fix:** gate both owned-entry branches on `!ctx.is_shared_lib` — a
+shared library is loaded by a host, owns no process entry. Executable
+and embedded lanes unchanged. Dated provenance + undo at the condition.
+**Verified:** export_add.so builds (`brievc build --shared`); multi_lang
+`make all` exit 0; `cargo test --lib` 2492/0 (+1 regression test
+`test_shared_lib_emits_no_owned_entry` — shared lane has no `_start`/
+`ptr @main`, executable lane of the same libc-free program keeps both).
+**Class:** entry/ABI emission must be gated on the OUTPUT SHAPE
+(`is_shared_lib`, embedded, bootstrap) — every "this module is the
+process" construct (`_start`, `@llvm.used` entry pins, `@main` refs)
+is invalid in a module that is loaded, not executed.
+
+## 2026-09-24: accel self-tests raced on the process-global `rt()` (known-flaky pack_math_and_launch_roundtrip) [RESOLVED — root cause]
+
+**Date:** 2026-09-24 (surfaced during baseline-sweep session: the
+"known-flaky" exclusion started failing ~every full run under load)
+**Symptom:** `accel_rt::self_test::pack_math_and_launch_roundtrip` panicked
+`assertion left == right failed: fake launch returns ok (left: 0, right: 1)`
+— intermittently, only in full/parallel runs; passed when run alone.
+**Root cause:** both self_tests mutate the SAME process-global `rt()`
+(`r.driver = &fake; r.init_done = true;` … cleanup `driver = null;
+init_done = false`). Default test threads run them concurrently: test A's
+cleanup landed between test B's setup and `briev_accel_launch` → null
+driver → return 0. Reproduced deterministically-ish by running only
+`cargo test --lib -- accel_rt::` (2 tests): 2 fail / 3 pass over 5 runs
+(machine load widens the window).
+**Fix:** one `static Mutex` in `mod self_test`, both tests take the guard
+first; `into_inner()` on poison so a failing test never cascades into the
+next. Verified 12/12 module runs green, full suite 2492/0.
+**Class:** tests sharing process-global mutable state MUST serialize on a
+lock (or isolate state) — "known flaky" is a diagnosis, not an exemption;
+parallel test runners widen any race window until it fails consistently.

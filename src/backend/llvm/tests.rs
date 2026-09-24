@@ -758,7 +758,9 @@ node s [done == 0][done == 1] {
 fn test_foreach_string_emits_char_decode_lane() {
     let src = r#"
         let s: String = "hé";
-        node report [true][true] {
+        let done: Bool = false;
+        node report [done == false][done == true] {
+            done = true;
             foreach c in s {
                 term;
             };
@@ -5258,7 +5260,8 @@ fn test_print_plugin_emits_direct_ffi_calls() {
             term v;
         };
     
-        node __test_go [true][true] { show(0); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; show(0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5322,7 +5325,9 @@ fn test_out_let_computation_survives() {
         defn expensive() -> Int {
             term 99;
         };
-        node work [true][true] {
+        let done: Bool = false;
+        node work [done == false][done == true] {
+            done = true;
             out let x: Int = expensive();
             term;
         };
@@ -5417,7 +5422,8 @@ fn test_println_format_string_emits_direct_ffi_calls() {
             term 0;
         };
     
-        node __test_go [true][true] { show(); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; show(); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5466,7 +5472,8 @@ fn test_print_dispatch_by_protocol_category() {
             term 0;
         };
     
-        node __test_go [true][true] { show(0, 0); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; show(0, 0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5596,7 +5603,8 @@ fn test_string_content_eq_emits_briev_str_eq() {
             term a == b;
         };
     
-        node __test_go [true][true] { run(); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; run(); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5627,7 +5635,8 @@ fn test_int_eq_still_emits_icmp() {
             term x == 6;
         };
     
-        node __test_go [true][true] { run(); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; run(); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5662,7 +5671,8 @@ fn test_string_bitwise_emits_content_ops() {
             term r4;
         };
     
-        node __test_go [true][true] { run(); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; run(); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5881,7 +5891,8 @@ fn test_consumptive_ops_emit_normal_arithmetic() {
             term a ~+ 1;
         };
     
-        node __test_go [true][true] { f(0, 0); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; f(0, 0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5912,7 +5923,8 @@ fn test_arrow_statements_emit_without_broken_globals() {
             term a;
         };
     
-        node __test_go [true][true] { f(0, 0); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; f(0, 0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -5944,7 +5956,8 @@ fn test_stream_writes_emit_print_family() {
             term count;
         };
     
-        node __test_go [true][true] { f(0); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; f(0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -6129,7 +6142,7 @@ node go [done == 0][done == 1] {
     term;
 };
 
-        node __test_go [true][true] { triple(0); };
+        node __test_go [true][done >= 0] { triple(0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -6982,7 +6995,9 @@ obj P {
 };
 let p: P = 0;
 defn poke(x: P) -> Int { term x.data; };
-node go [true][true] {
+let done: Bool = false;
+node go [done == false][done == true] {
+    done = true;
     let r: Int = poke(p);
     println!(r);
     term;
@@ -7003,6 +7018,129 @@ node go [true][true] {
     assert!(
         ir.contains("call ptr @malloc"),
         "the pooled-instance defn arg must be boxed with a malloc; got:\n{ir}"
+    );
+}
+
+/// 2026-09-24 (name shadowing): a defn PARAM whose name collides with a
+/// top-level pooled instance resolves the LOCAL binding at the call-argument
+/// site — never box_pooled. The old global-first order copied the pooled
+/// columns (state loads) into a stateless body (clang: use of undefined value
+/// '%state' — hash_ops_idio/float_fmt frac_all_digits) and passed the global
+/// instead of the argument.
+#[test]
+fn test_local_param_shadows_pooled_instance_in_call_args() {
+    let src = r#"
+obj Bag {
+    data: Int;
+    defn get() -> Int { term data; }
+};
+let m: Bag = 0;
+defn helper(v: Int) -> Int { term v + 1; };
+defn outer(m: Int) -> Int { term helper(m); };
+let done: Bool = false;
+node go [done == false][done == true] {
+    done = true;
+    let r: Int = outer(5);
+    term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let start = ir
+        .find("define i64 @outer")
+        .expect("outer must be emitted (rooted by the node call)");
+    let end = ir[start..].find("\n}").expect("outer body closes") + start;
+    let body = &ir[start..end];
+    assert!(
+        !body.contains("%State"),
+        "a shadowed param must resolve locally, never the pooled columns:\n{body}"
+    );
+    assert!(
+        !body.contains("@malloc"),
+        "a shadowed param must not be box_pooled at the call boundary:\n{body}"
+    );
+    assert!(body.contains("@helper"), "outer must call helper:\n{body}");
+}
+
+/// 2026-09-24 (name shadowing): a method receiver that names a defn PARAM
+/// resolves the boxed local self (instance_prefix_for local-first), never the
+/// global pooled columns of a same-named top-level instance.
+#[test]
+fn test_local_param_shadows_pooled_instance_receiver() {
+    let src = r#"
+obj Bag {
+    data: Int;
+    defn get() -> Int { term data; }
+};
+let m: Bag = 0;
+defn peek(m: Bag) -> Int { term m.get(); };
+let done: Bool = false;
+node go [done == false][done == true] {
+    done = true;
+    let r: Int = peek(m);
+    term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let start = ir
+        .find("define i64 @peek")
+        .expect("peek must be emitted (rooted by the node call)");
+    let end = ir[start..].find("\n}").expect("peek body closes") + start;
+    let body = &ir[start..end];
+    assert!(
+        !body.contains("%State"),
+        "a shadowed receiver must use the boxed param self, not pooled columns:\n{body}"
+    );
+}
+
+/// 2026-09-24 (name shadowing): `foreach x in xs` with a node-local `xs`
+/// shadowing a top-level Vector field `xs: Int[4]` iterates the LOCAL list
+/// (tier-2 Count/At ops) — the old name-first field_index_map guard took the
+/// is_vector branch and iterated the global field's four elements.
+#[test]
+fn test_local_let_shadows_vector_field_in_foreach() {
+    let src = r#"
+coll obj ShadowList { data: Ptr<Int>; };
+let xs: Int[4] = [1, 2, 3, 4];
+let done: Bool = false;
+let acc: Int = 0;
+node go [done == false][done == true] {
+    done = true;
+    let xs: ShadowList = [7, 8];
+    foreach x in xs {
+        acc = acc + x;
+    };
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.register(Box::new(crate::plugin::print_plugin::PrintPlugin));
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let start = ir
+        .find("define void @txn_go")
+        .expect("node go must emit txn_go");
+    let end = ir[start..].find("\n}").expect("txn_go closes") + start;
+    let body = &ir[start..end];
+    assert!(
+        body.contains("icmp slt"),
+        "the shadowed foreach must still emit its counted loop:\n{body}"
+    );
+    assert!(
+        !body.contains("i32 0, i32 0"),
+        "the shadowed foreach must iterate the local list (tier-2 ops), \
+         never GEP the global vector field xs (State index 0):\n{body}"
     );
 }
 
@@ -7370,7 +7508,8 @@ fn test_cast_int_to_string_lane_emits_ptr_call() {
             term (n as String);
         };
     
-        node __test_go [true][true] { f(0); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; f(0); };
     "#;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
@@ -7566,7 +7705,9 @@ fn test_reflect_type_emits_category_constant() {
 fn test_reflect_element_on_string_folds_char_code() {
     let src = r#"
         let s: String = "hello";
-        node report [true][true] {
+        let done: Bool = false;
+        node report [done == false][done == true] {
+            done = true;
             let e: Int = s.^^Element;
             term;
         };
@@ -8803,6 +8944,123 @@ fn test_statement_match_emits_arm_blocks_in_callable_txn() {
     assert!(arm_stores >= 3, "all three arms must store their result:\n{output}");
 }
 
+/// 2026-09-24 (BUGS.md void-match phi, enemy_swarm): a statement-position
+/// match with valueless arms inside a bounded node must route through the
+/// statement path (.smt_* blocks) from EVERY emitter — including the loop
+/// engine's hand-rolled body walk, which previously fell into emit_match's
+/// expression path and emitted an invalid `phi void` ("void type only
+/// allowed for function results"). Behavioral contract: no `phi void`, arms
+/// present as blocks.
+#[test]
+fn test_statement_match_valueless_arms_emits_no_void_phi() {
+    let src = r#"
+let N: Int = 10;
+let hp: Int[4];
+let i: Int = 0;
+let sum: Int = 0;
+node tick [i < N][i == N] {
+    match hp[i % 4] {
+        0 => { hp[i % 4] = 3; };
+        _ => { hp[i % 4] = hp[i % 4] - 1; };
+    };
+    sum = sum + hp[i % 4];
+    i = i + 1;
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let output = backend.generate(&items, None);
+    assert!(
+        !output.contains("phi void"),
+        "valueless match arms must not produce `phi void` (invalid LLVM):\n{output}"
+    );
+    assert!(
+        output.contains(".smt_end_"),
+        "the statement-position match must merge through the .smt_* path:\n{output}"
+    );
+}
+
+/// 2026-09-24 (BUGS.md void-match phi): the expression path itself must
+/// never emit `phi void` either — a let-bound match with valueless arms
+/// (result type Void) skips the merge phi entirely; the arms already branch
+/// to the end label. The bound name is never read (the typechecker rejects
+/// using a Void value), mirroring the empty-arms early return.
+#[test]
+fn test_void_match_value_emits_no_phi() {
+    let src = r#"
+let n: Int = 0;
+node tick [n < 10][n == 10] {
+    let x = match n {
+        0 => { n = 1; };
+        _ => { n = 2; };
+    };
+    n = n + 1;
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let output = backend.generate(&items, None);
+    assert!(
+        !output.contains("phi void"),
+        "a Void-typed match result must skip the merge phi:\n{output}"
+    );
+    assert!(
+        output.contains(".match_end_"),
+        "the match end label must still exist for the arm branches:\n{output}"
+    );
+}
+
+/// 2026-09-24 (BUGS.md shared-entry, export_add.so): a `--shared` library
+/// defines no `@main` (main emission is skipped via is_shared_lib) and is
+/// loaded by a host — it must never emit the owned `_start` or the
+/// `@llvm.used` entry pin (both referenced the undefined `@main`; clang
+/// "use of undefined value '@main'"). The executable lane of the SAME
+/// libc-free program keeps the owned entry (Family F).
+#[test]
+fn test_shared_lib_emits_no_owned_entry() {
+    let src = r#"
+defn add(a: Int, b: Int) -> Int {
+    term a + b;
+};
+"#;
+    let build = |shared: bool| {
+        let mut items = parse_bv_source(src);
+        let mut universe = crate::type_universe::TypeUniverse::new();
+        let mut pm = crate::plugin::PluginManager::new();
+        pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+            .expect("plugin stage failed");
+        LlvmBackend::new()
+            .with_type_universe(universe)
+            .with_force_emit_all(true)
+            .with_shared_lib(shared)
+            .generate(&items, None)
+    };
+    let shared_ir = build(true);
+    assert!(
+        !shared_ir.contains("define void @_start"),
+        "a shared library owns no process entry:\n{shared_ir}"
+    );
+    assert!(
+        !shared_ir.contains("ptr @main"),
+        "@llvm.used / entry asm must not reference the undefined @main in a shared lib:\n{shared_ir}"
+    );
+    let exe_ir = build(false);
+    assert!(
+        exe_ir.contains("define void @_start"),
+        "the executable lane of the same libc-free program keeps the owned entry:\n{exe_ir}"
+    );
+}
+
 
 #[test]
 fn test_enum_handle_abi_no_struct_decl() {
@@ -8827,7 +9085,8 @@ defn make() -> Option {
   term Some(7);
 }
 
-        node __test_go [true][true] { get(make()); };
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; get(make()); };
     "#;
     let tokens = crate::lexer::tokenize(src).unwrap();
     let mut p = crate::parser::Parser::new(tokens, src);

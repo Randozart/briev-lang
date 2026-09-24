@@ -14,8 +14,12 @@ Briev's transactional safety guarantees.
 ## Syntax
 
 ```briev
-// Conventional: boilerplate wrapper
-node main [true][true] {
+// Conventional: boilerplate wrapper (mirrors the synthesized form —
+// an explicit [true][true] tautology is rejected, so the one-shot
+// booted flag carries the contract)
+let __booted: Int = 0;
+node main [!__booted][__booted] {
+    __booted = 1;
     println#("hello");
 };
 

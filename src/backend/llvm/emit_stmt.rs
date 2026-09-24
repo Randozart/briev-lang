@@ -1719,8 +1719,9 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 // identifier isn't a field, but its base is a Tier-1/Tier-2
                 // collection; run the structural tier resolution for it too.
                 Expr::Identifier(name)
-                    if backend.ctx.field_index_map.get(name).is_some()
-                        || backend.unpacked_instance_prefix(name).is_some() =>
+                    if backend.get_local(name).is_none()
+                        && (backend.ctx.field_index_map.get(name).is_some()
+                        || backend.unpacked_instance_prefix(name).is_some()) =>
                 {
                     let fidx = backend.ctx.field_index_map.get(name).copied();
                     let is_vector = matches!(&fidx, Some(idx) if matches!(
