@@ -3,16 +3,10 @@
 // the benchmark workload per plan 2026-08-03-host-callable-glue-export).
 // Exports pure functions that take/return C string pointers as Int, so the
 // round-trip tests (tests/pp_roundtrip_tests.rs) call them via the C ABI
-// without native Briev string construction. Conversion between C strings
-// and Briev strings uses the briev_rt.c runtime helpers.
+// without native Briev string construction.
 
 import "pp/types.bv";
-
-// C string ↔ Briev string conversion (briev_rt.c). Declared here because
-// no stdlib module wires these yet; the round-trip tests rely on them.
-
-frgn cstr_to_briev(ptr: Int) -> String : briev_cstr_to_briev from "lib/runtime/briev_rt.c";
-frgn str_to_c(handle: String) -> Int : briev_str_to_c from "lib/runtime/briev_rt.c";
+import "glue/c.bv";
 
 export defn briev_test_cstr_roundtrip(input_ptr: Int) -> Int {
     let s: String = cstr_to_briev(input_ptr);

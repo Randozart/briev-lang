@@ -49,74 +49,15 @@ typedef int32_t briev_int;
 #endif
 #endif
 
-// ── String conversion helpers (internal) ──────────────────────────────
-// 2026-08-01 (B0): A Briev String value is a ptr to a length-prefixed
-// [len][bytes] buffer. The old int64_t "handle" params were the address in
-// disguise; they are now typed as pointers so clang's IR (ptr) matches the
-// compiler's `ptr`-based frgn declares (String ABI = ptr). int64_t and
-// pointers are ABI-identical on x86-64 — this is a typing change only.
-char* briev_str_to_c(const char* handle) {
-    // 2026-07-22: Strip tag bits (bottom 2 bits) — they mark temporary
-    // flags (bit 0 = SSO inline, bit 1 = temporary concat result).
-    // After stripping, we have the raw data pointer.
-    uintptr_t u = (uintptr_t)handle;
-    uintptr_t ptr = u & ~3ULL;
-    if (u & 1) {
-        // SSO string — inline data packed at bits >= 3
-        // The LLVM SSO encoding: handle0 = (raw_data << 3) | 1
-        // where raw_data has bytes packed in LE order.
-        uint64_t raw_data = ((uint64_t)u) >> 3;
-        int64_t len = 0;
-        for (int i = 0; i < 6; i++) {
-            if ((raw_data >> (i * 8)) & 0xFF) len = i + 1;
-        }
-        if (len == 0) len = 1;
-        char* c_str = malloc((size_t)(len + 1));
-        if (!c_str) return NULL;
-        for (int64_t i = 0; i < len; i++) {
-            c_str[i] = (char)((raw_data >> (i * 8)) & 0xFF);
-        }
-        c_str[len] = '\0';
-        return c_str;
-    }
-    // 2026-08-03 (plan 2026-08-03-native-python-meld-composite): the fragile
-    // "looks like a C string" heuristic was REMOVED — it misread any Briev
-    // String whose length byte is printable ASCII (a 35-char path reads as
-    // '$' → the [len][bytes] header was strlened as a bare C string). Under
-    // the composite, every String value IS a [len][bytes][\0] Briev String
-    // (CStr → String is marshalled through cstr_to_briev at the boundary), so
-    // str_to_c only ever sees the heap form below. A bare C string passed to a
-    // String-typed site is a programming error, not a runtime case to guess.
-    // Heap Briev string: ptr is a pointer to [8-byte length][data][\0].
-    // 2026-08-03 (plan 2026-08-03-native-python-meld-composite): every Briev
-    // String allocation carries the NUL invariant (bytes[len] == '\0'), so
-    // the data region IS a valid C string in place — return it directly
-    // (zero-copy, the composite). Caller must NOT free; valid for the state's
-    // life (the composite ABI contract). Previously this malloc'd a copy (a
-    // leak for C drivers that never freed it).
-    if (ptr == 0) return NULL;
-    int64_t len = *(int64_t*)ptr;
-    if (len < 0 || len > 1024 * 1024 * 1024) return NULL;
-    return (char*)(ptr + 8);
-}
+// 2026-09-23 (frgn-elimination round 2): the C string-conversion helpers
+// briev_str_to_c / briev_cstr_to_briev / briev_cstring_concat were DELETED.
+// Their pure-Briev twins live in lib/glue/c.bv (str_to_c zero-copy view,
+// cstr_to_briev / cstring_concat over Alloc#/Copy#); the cstr doors no longer
+// depend on the runtime. briev_free_briev_str stays — briev_bits_to_str
+// (the Data→String door) still allocates with malloc.
 
-/// Convert a C string (null-terminated) to a Briev string.
-/// Returns a heap-allocated Briev string (8-byte length prefix + data).
-/// Caller should free via briev_free_briev_str().
-char* briev_cstr_to_briev(const char* c_str) {
-    if (!c_str) return 0;
-    int64_t len = (int64_t)strlen(c_str);
-    if (len > 1024 * 1024 * 1024) return 0; // sanity check
-    // Allocate: 8 bytes for length + len bytes for data + 1 for null terminator
-    char* buf = (char*)malloc((size_t)(len + 9));
-    if (!buf) return 0;
-    *(int64_t*)buf = len;               // write length prefix
-    if (len > 0) memcpy(buf + 8, c_str, (size_t)len);
-    buf[8 + len] = '\0';                // null terminator for C compatibility
-    return buf;
-}
-
-/// Free a Briev string allocated by briev_cstr_to_briev or similar.
+/// Free a Briev string allocated by briev_cstr_to_briev, briev_bits_to_str
+/// or the bitop helpers.
 void briev_free_briev_str(void* handle) {
     if (handle) free(handle);
 }
@@ -289,20 +230,6 @@ static long __briev_free_total = 0;
 // 2026-08-01 (D2): `Now#` — monotonic clock in nanoseconds, for the watchdog
 // `within N ms` deadline compare (the deadline is `now - start >= N ms`).
 #include <time.h>
-
-/// Concatenate two nul-terminated C strings into a new heap buffer.
-/// 2026-08-03: the C_String sub-protocol's Concat cross-op binding — a C
-/// string is not [len][data], so the generic inline concat is wrong for it.
-char* briev_cstring_concat(const char* a, const char* b) {
-    size_t la = a ? strlen(a) : 0;
-    size_t lb = b ? strlen(b) : 0;
-    char* out = (char*)malloc(la + lb + 1);
-    if (!out) return NULL;
-    if (la) memcpy(out, a, la);
-    if (lb) memcpy(out + la, b, lb);
-    out[la + lb] = '\0';
-    return out;
-}
 
 /* ── Install-time host services (Plan 1 HCALL slice, 2026-08-23) ────────
  * Called by the SELF-HOSTED tamer's host dispatch (lib/tamer/vm.bv

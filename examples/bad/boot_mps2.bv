@@ -1,0 +1,34 @@
+// bootstrap bad on Cortex-M3 (QEMU MPS2-AN385) — the authored machine
+// entry in .bad. The body owns the vector table + reset handler; no
+// startup.S, no compiler-owned _start. Board convention: the linker
+// script's ENTRY(Reset_Handler) and the reset vector both name
+// Reset_Handler (thumb bit set for Cortex-M).
+//
+// Note: this is a PLAIN .bv file — the `bootstrap` entry implies embedded
+// mode on a bare-metal triple; the `.b` suffix modifier is not needed
+// (2026-09-22).
+//
+// CMSDK APB UART: CTRL 0x40004008 (bit 0 = TX enable), DATA 0x40004000.
+bootstrap bad Reset_Handler() [true] {
+    section .isr_vector
+    sp_slot:  .word 0x2007C000
+    reset_v:  .word Reset_Handler + 1
+    section .text.start
+    Reset_Handler:
+    addr r0, msg
+    mov r2, 0x40004008
+    mov r3, 1
+    stb r3, r2
+    sub r2, r2, 8
+    mov r3, 0
+    .loop:
+    ldub r1, r0
+    jz r1, r3, .done
+    stb r1, r2
+    add r0, r0, 1
+    jmp .loop
+    .done:
+    halt
+    section .rodata
+    msg: .asciz "Briev boot\n"
+}

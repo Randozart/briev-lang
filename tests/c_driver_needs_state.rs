@@ -66,11 +66,11 @@ fn needs_state_pass_matches_reference() {
         std::fs::write(&driver_c, format!(r#"
 #include <stdio.h>
 long __briev_init_state(void);
-long needs_state_compute(long st, const char* s);
+long needs_state_compute(const char* s);
 int main(void) {{
     long st = __briev_init_state();
     const char* p = "{}";
-    printf("%ld\n", needs_state_compute(st, p));
+    printf("%ld\n", needs_state_compute(p));
     return 0;
 }}
 "#, esc)).unwrap();

@@ -180,6 +180,16 @@ the `lemma_properties` vocabulary is removed with the op-lemma feature — see
 - The layout frontend is token-aware and preserves original source spans.
 - `.f` produces the same AST as canonical brace syntax.
 
+#### `.b` — bare profile (legacy, optional)
+
+`.b` was historically the marker for bare-metal (embedded) compilation. Since
+2026-09-22 it is **optional**: a `bootstrap node` or `bootstrap bad` entry on
+a freestanding (non-linux) target triple implies embedded mode automatically
+(see §20, machine-entry). `.b` remains an explicit way to request the
+embedded codegen profile (static bump heap, no argv capture, bare-metal
+`_start`) for a program that is freestanding but has no authored `bootstrap`
+entry.
+
 ### 3.3 Target capability profiles
 
 Target restrictions are declared in configuration and validated once in the frontend. A backend does not independently invent a source-language subset.
@@ -2714,6 +2724,15 @@ full Briev expression over the params and `result` (matching `.defn`
 contract semantics); a leading group is the precondition. Call-site
 contracts are checked by the ordinary contract machinery.
 
+`bootstrap bad name() [post] { body }` (a plain `.bv` file) is the
+**authored machine entry**: the body IS the reset vector / `.text.start`
+routine. The compiler emits no owned `_start`; the author owns sp setup,
+`.bss`, the vector table, and the handoff (`call main` / park / jump).
+The body is parsed verbatim and its entry symbol auto-exported for the
+linker; the postcondition is taken on authority (raw `.bad` stores
+cannot carry typed-store proofs). QEMU-verified on the MPS2-AN385
+Cortex-M3 (`examples/bad/boot_mps2.bv`).
+
 `bad` replaces the earlier `asm<target>` declaration (see §20.1 note);
 `asm<Target>` is retained for backward compatibility and deprecated.
 
@@ -2746,7 +2765,37 @@ emitted as comments into the assembly. Friendly mnemonic aliases
 (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load by default from
 `std/bad/friendly.bad`; `brievc bad --raw` opts out (`_start` has no
 alias — it is the universal entry). `;` separates instructions on one
-line in every body context. Float literals ride a deduped `.rodata`
+line in every body context. **The acknowledge tier**: a `^` / `^^` /
+`^^^` prefix on an instruction line silences probable-error warnings
+(W1 caller-saved across `call`, W2 branch-path push/pop imbalance, W3
+`ret` with sp delta, W4 FP-pool scratch collision, W5 defn-inlined
+`ret`, W6 unresolved local label) for its scope — 1 caret this
+instruction, 2 the whole line, 3 full override of predicted errors.
+Hardware-capability and author-declared-contract failures are NEVER
+ack-able; acknowledged warnings are recorded (never silent) and a named
+warning that never fired is a loud error. **Raw blocks** —
+`raw <target>` ... `end` — emit their lines verbatim (directives like
+`.code32` included, unlike per-line exception rows) for the matching
+family and skip them otherwise; the escape hatch for text the portable
+core ISA cannot express (x86 real-mode MBR bodies, 32-bit multiboot
+prologues). `int N` is the BIOS software-interrupt op (`int $N` on
+x86_64; a loud error elsewhere). **Named raw blocks** — `raw <target>
+<name>` ... `end` — emit a callable `<name>:` label only on the matching
+family, making per-arch boot prologues stdlib data (`std/bad/arch.bad`:
+`uart_init`/`putc` per target); a `.bv` file imports them at top level
+(`import "std/bad/arch.bad"` — recorded, never parsed as Briev) and the
+bad backend prepends them to `bootstrap bad` bodies. A `.bv` file may
+call a `.bad` primitive as a TYPED function: a `bad fn` declaration
+(SPEC §20) provides the typed, contract-checked surface and its body
+tail-calls (`jmp`) the named raw block; params bind at ABI index 1 (the
+`.bv` call passes `%state` first) and the bootstrap entry sets `sp` from
+`_stack_top` before calling `.bv` code that uses frames. The
+bootstrapper disk primitive (`std/bad/disk.bad`) pairs a portable
+`load_image` copy-loop defn with per-arch raw disk sources (x86_64 INT
+13h `read_sectors`). `brievc build --all-targets` compiles the source
+for EVERY `[target.*]` profile in `briev.toml` in one invocation —
+profiles may carry `triple`, `linker_script`, and `entry` (the bootstrap
+bad symbol) as per-target overrides. Float literals ride a deduped `.rodata`
 literal pool; `syscall` takes a NAMED kernel call (`syscall write, ...`)
 whose per-target numbers live in config, routing the call through each
 target's syscall ABI. `.export` names a C-ABI entry

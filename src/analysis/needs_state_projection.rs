@@ -34,6 +34,10 @@ const STATEFUL_INTRINSICS: &[&str] = &[
     "SysQuery#", "EnvGet#", "HttpFetch#",
     "AllocArray#", "AllocInitArray#", "StringNew#",
     "StringFromPtr#", "StringConcat#",
+    // 2026-09-23 (stateless-defn mechanism): intrinsics whose lowering emits
+    // `ptr %state` directly (task-segment dispatch, cwd read) — must mirror
+    // export_abi.rs so the Briev pass and the Rust reference agree.
+    "TaskCall#", "GetCwd#", "ChDir#",
 ];
 
 /// Serialize the needs_state input projection for a program.
@@ -71,6 +75,20 @@ pub fn serialize_needs_state_projection(items: &[TopLevel]) -> String {
     emit_names(&mut out, "txn", &txns);
     emit_names(&mut out, "intrinsic", &STATEFUL_INTRINSICS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
     emit_names(&mut out, "export", &exports.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>());
+    // 2026-09-23 (stateless-defn mechanism): the Rust fixpoint's verdict for
+    // every defn — a `C:<name>` call to a defn in this set is STATELESS (the
+    // cstr doors, arithmetic lanes). The Briev pass mirrors it: a call to a
+    // regular/txn/intrinsic defn is stateful only when the name is NOT here.
+    // Computed from the SAME items the Rust analysis uses (single source of
+    // truth: src/analysis/export_abi.rs), so the projection carries the
+    // verdict and the Briev pass stays a faithful single-pass mirror.
+    let needs = crate::analysis::export_abi::compute_defn_needs_state(items);
+    let mut stateless: Vec<String> = needs.iter()
+        .filter(|(_, v)| !**v)
+        .map(|(k, _)| k.clone())
+        .collect();
+    stateless.sort();
+    emit_names(&mut out, "stateless", &stateless);
     for (name, d) in &exports {
         let mut tokens: Vec<String> = Vec::new();
         for stmt in &d.body {
@@ -183,7 +201,15 @@ fn emit_expr_flat(out: &mut Vec<String>, expr: &Expr) {
             if let Some(s) = start { emit_expr_flat(out, s); }
             if let Some(e) = end { emit_expr_flat(out, e); }
         }
+        Expr::Block(body) => {
+            out.push("c:".into());
+            for stmt in body { emit_stmt_flat(out, stmt); }
+        }
         Expr::AddrOf(inner) => emit_expr_flat(out, inner),
+        // 2026-09-23 (stateless-defn mechanism): `spawn`/`await` lower to
+        // task/event helpers with `%state` — ALWAYS stateful. Mark with the
+        // `o:` (other) token the Briev pass reads as stateful.
+        Expr::Spawn { .. } | Expr::Await(_) => out.push("o:".into()),
         _ => out.push("_:".into()),
     }
 }
@@ -244,6 +270,18 @@ mod tests {
         let p = serialize_needs_state_projection(&items);
         // {a (I saved) (I name)} {t (C cstr_to_briev [(I saved)])}
         assert!(p.contains("body greet 6 a: I:saved I:name t: C:cstr_to_briev I:saved"), "{}", p);
+    }
+
+    #[test]
+    fn projection_encodes_expression_block() {
+        let d = defn("block", vec![Statement::Term(Some(Expr::Block(vec![
+            Statement::Expression(Expr::Identifier("saved".into())),
+        ])))]);
+        let items = vec![TopLevel::Statement(Box::new(Statement::Let {
+            name: "saved".into(), names: vec![], ty: None, expr: None, modifiers: vec![],
+        })), exported(d)];
+        let p = serialize_needs_state_projection(&items);
+        assert!(p.contains("body block 4 t: c: x: I:saved"), "{}", p);
     }
 
     #[test]

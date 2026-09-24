@@ -11,25 +11,9 @@ fn test_xxhash_compiles() {
         String::from_utf8_lossy(&out.stderr));
 }
 
-#[test]
-fn test_yyjson_compiles() {
-    let out = Command::new("clang")
-        .args(["-c", "-x", "c", "-Ilib/std/c/json", "-o", "/dev/null", "lib/std/c/json/yyjson.c"])
-        .output()
-        .expect("clang must be in PATH");
-    assert!(out.status.success(), "yyjson compilation failed: {}",
-        String::from_utf8_lossy(&out.stderr));
-}
-
-#[test]
-fn test_briv_json_compiles() {
-    let out = Command::new("clang")
-        .args(["-c", "-x", "c", "-Ilib/std/c/json", "-o", "/dev/null", "lib/std/c/json/briv_json.c"])
-        .output()
-        .expect("clang must be in PATH");
-    assert!(out.status.success(), "briv_json compilation failed: {}",
-        String::from_utf8_lossy(&out.stderr));
-}
+// 2026-09-23: test_yyjson_compiles / test_briv_json_compiles deleted —
+// lib/std/c/json/ was removed in 4d471062 (pure-Briev JSON replaced the
+// vendored C); the tests referenced files that no longer exist.
 
 #[test]
 fn test_stb_image_compiles() {

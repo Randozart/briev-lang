@@ -129,6 +129,14 @@ fn build_supported_ops() -> HashSet<String> {
     for name in &["GetEnv#", "GetEnvInt#", "GetGlobalId#", "GetGlobalSize#", "GetLocalId#",
                    "ToInt#", "ToFloat#", "ToString#", "Concat#", "Length#",
                    "AddressOf#", "SysCall#", "SysConf#",
+                   // 2026-09-23 (frgn-elimination round 2): Environ#() loads
+                   // the compiler-owned @__briev_environ global (env.bv
+                   // threads it to the pure-Briev environ walkers).
+                   "Environ#",
+                   // 2026-08-03 (callbacks): CallPtr# calls a fn-value
+                   // operand — emit_call_ptr exists (intrinsics.rs); the
+                   // supported set must admit it (c_driver_callback).
+                   "CallPtr#",
                    "Load#", "Store#", "Copy#", "Fill#",
                    // 2026-08-27 (Slice C): typed volatile MMIO access.
                    "VolatileLoad#", "VolatileStore#",

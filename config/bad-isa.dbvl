@@ -34,51 +34,55 @@
 arg: "2";
 
 // ── Data movement ────────────────────────────────────────────────────
-mov: "2"; "x86_64:movq $2, $1"; "aarch64:mov $1, $2"; "riscv64:mv $1, $2|li $1, $2";
+mov: "2"; "thumb:movs $1, $2|ldr $1, =$2!"; "x86_64:movq $2, $1"; "aarch64:mov $1, $2"; "riscv64:mv $1, $2|li $1, $2";
 // addr d, sym — address-of a data label, the portable way. Symbols in
 // other non-branch ops are a loud error (x86 `movq msg, %rdi` would load
 // MEMORY, not the address — the classic footgun this op exists to close).
 // aarch64 rides adrp+add (page-based, full range, PIC-safe) — `adr`
 // would cap at ±1MB.
-addr: "2"; "x86_64:leaq $2(%rip), $1"; "aarch64:adrp $1, $2; add $1, $1, :lo12:$2"; "riscv64:lla $1, $2"; "sym";
+addr: "2"; "thumb:ldr $1, =$2"; "x86_64:leaq $2(%rip), $1"; "aarch64:adrp $1, $2; add $1, $1, :lo12:$2"; "riscv64:lla $1, $2"; "sym";
 
 // ── Arithmetic ───────────────────────────────────────────────────────
 // x86_64 add reg-form rides lea (no flags touched, no intermediate copy);
 // imm-form needs the copy since lea's index must be a register.
-add: "3"; "x86_64:leaq ($2, $3), $1|movq $2, $1; addq $3, $1"; "aarch64:add $1, $2, $3"; "riscv64:add $1, $2, $3|addi $1, $2, $3";
+add: "3"; "thumb:adds $1, $2, $3|adds $1, $2, $3"; "x86_64:leaq ($2, $3), $1|movq $2, $1; addq $3, $1"; "aarch64:add $1, $2, $3"; "riscv64:add $1, $2, $3|addi $1, $2, $3";
 // x86_64 sub has no lea form — copy-then-op covers reg and imm alike.
-sub: "3"; "x86_64:movq $2, $1; subq $3, $1"; "aarch64:sub $1, $2, $3"; "riscv64:sub $1, $2, $3|addi $1, $2, -$3";
+sub: "3"; "thumb:subs $1, $2, $3|subs $1, $2, $3"; "x86_64:movq $2, $1; subq $3, $1"; "aarch64:sub $1, $2, $3"; "riscv64:sub $1, $2, $3|addi $1, $2, -$3";
 // mul/div are register-only on aarch64 and riscv64 (no immediate forms in
 // the hardware) — an immediate operand there is a loud capability error.
 // x86_64 div clobbers %rax/%rdx (caller-saved); the imm form borrows %rcx.
-mul: "3"; "x86_64:imulq $3, $2; movq $2, $1"; "aarch64:mul $1, $2, $3|-"; "riscv64:mul $1, $2, $3|-";
-div: "3"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rax, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rax, $1"; "aarch64:sdiv $1, $2, $3|-"; "riscv64:div $1, $2, $3|-";
+mul: "3"; "thumb:muls $1, $2, $3|-"; "x86_64:imulq $3, $2; movq $2, $1"; "aarch64:mul $1, $2, $3|-"; "riscv64:mul $1, $2, $3|-";
+div: "3"; "thumb:sdiv $1, $2, $3|-"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rax, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rax, $1"; "aarch64:sdiv $1, $2, $3|-"; "riscv64:div $1, $2, $3|-";
 
 // ── Memory ───────────────────────────────────────────────────────────
-load: "2"; "x86_64:movq ($2), $1"; "aarch64:ldr $1, [$2]"; "riscv64:ld $1, 0($2)";
-store: "2"; "x86_64:movq $1, ($2)"; "aarch64:str $1, [$2]"; "riscv64:sd $1, 0($2)";
+load: "2"; "thumb:ldr $1, [$2]"; "x86_64:movq ($2), $1"; "aarch64:ldr $1, [$2]"; "riscv64:ld $1, 0($2)";
+store: "2"; "thumb:str $1, [$2]"; "x86_64:movq $1, ($2)"; "aarch64:str $1, [$2]"; "riscv64:sd $1, 0($2)";
 
 // ── Control flow ─────────────────────────────────────────────────────
 // Branches are compare-and-branch (3 operands) so they port to riscv64,
 // which has no flags. riscv beq/bne take registers only — the imm form
 // borrows t0 (caller-saved, disclosed).
-jmp: "1"; "x86_64:jmp $1"; "aarch64:b $1"; "riscv64:j $1"; "sym";
-jz: "3"; "x86_64:cmpq $2, $1; je $3"; "aarch64:cmp $1, $2; b.eq $3"; "riscv64:beq $1, $2, $3|li t0, $2; beq $1, t0, $3"; "sym";
-jnz: "3"; "x86_64:cmpq $2, $1; jne $3"; "aarch64:cmp $1, $2; b.ne $3"; "riscv64:bne $1, $2, $3|li t0, $2; bne $1, t0, $3"; "sym";
+jmp: "1"; "thumb:b $1"; "x86_64:jmp $1"; "aarch64:b $1"; "riscv64:j $1"; "sym";
+jz: "3"; "thumb:cmp $1, $2; beq $3"; "x86_64:cmpq $2, $1; je $3"; "aarch64:cmp $1, $2; b.eq $3"; "riscv64:beq $1, $2, $3|li t0, $2; beq $1, t0, $3"; "sym";
+jnz: "3"; "thumb:cmp $1, $2; bne $3"; "x86_64:cmpq $2, $1; jne $3"; "aarch64:cmp $1, $2; b.ne $3"; "riscv64:bne $1, $2, $3|li t0, $2; bne $1, t0, $3"; "sym";
 // cmp is flag-based; riscv64 has no flags, so it has NO riscv64 row —
 // using cmp under a riscv64 target is a loud capability error. Use jz/jnz.
-cmp: "2"; "x86_64:cmpq $2, $1"; "aarch64:cmp $1, $2";
-call: "1"; "x86_64:call $1"; "aarch64:bl $1"; "riscv64:call $1"; "sym";
-ret: "0"; "x86_64:ret"; "aarch64:ret"; "riscv64:ret";
+cmp: "2"; "thumb:cmp $1, $2"; "x86_64:cmpq $2, $1"; "aarch64:cmp $1, $2";
+call: "1"; "thumb:bl $1"; "x86_64:call $1"; "aarch64:bl $1"; "riscv64:call $1"; "sym";
+ret: "0"; "thumb:bx lr"; "x86_64:ret"; "aarch64:ret"; "riscv64:ret";
 
 // ── Stack ────────────────────────────────────────────────────────────
 // aarch64 has no push/pop: 16-byte pre/post-index keeps sp aligned.
 // riscv64 lowers to explicit sp arithmetic + load/store.
-push: "1"; "x86_64:pushq $1"; "aarch64:str $1, [sp, #-16]!"; "riscv64:addi sp, sp, -16; sd $1, 0(sp)";
-pop: "1"; "x86_64:popq $1"; "aarch64:ldr $1, [sp], #16"; "riscv64:ld $1, 0(sp); addi sp, sp, 16";
+push: "1"; "thumb:push { $1 }"; "x86_64:pushq $1"; "aarch64:str $1, [sp, #-16]!"; "riscv64:addi sp, sp, -16; sd $1, 0(sp)";
+pop: "1"; "thumb:pop { $1 }"; "x86_64:popq $1"; "aarch64:ldr $1, [sp], #16"; "riscv64:ld $1, 0(sp); addi sp, sp, 16";
 
 // ── System ───────────────────────────────────────────────────────────
-nop: "0"; "x86_64:nop"; "aarch64:nop"; "riscv64:nop";
+nop: "0"; "thumb:nop"; "x86_64:nop"; "aarch64:nop"; "riscv64:nop";
+// int N — BIOS software interrupt (x86 real-mode: int $0x10 video,
+// int $0x13 disk). Immediate-only; other targets have no BIOS int → the
+// loud capability error. Used by boot sectors / MBR bodies.
+int: "1"; "x86_64:int $1";
 // syscall num, a1, a2, a3 — PORTABLE end to end. Kernel-call NUMBERS
 // differ per target (x86_64 write=1, aarch64/riscv64 write=64), so the
 // number operand is a NAME (`syscall write, ...`) substituted through
@@ -90,41 +94,41 @@ nop: "0"; "x86_64:nop"; "aarch64:nop"; "riscv64:nop";
 // The number loads LAST — when an arg register IS the number source
 // (syscall exit, r0, r0, r0), arg routing must read it pre-clobber.
 syscall: "4"; "x86_64:movq $2, %rdi; movq $3, %rsi; movq $4, %rdx; movq $1#, %rax; syscall|-"; "aarch64:mov x0, $2; mov x1, $3; mov x2, $4; mov x8, $1#; svc #0|-"; "riscv64:mv a0, $2; mv a1, $3; mv a2, $4; li a7, $1#; ecall|-";
-halt: "0"; "x86_64:hlt"; "aarch64:wfi"; "riscv64:wfi";
+halt: "0"; "thumb:wfi"; "x86_64:hlt"; "aarch64:wfi"; "riscv64:wfi";
 
 // ── Application-grade ISA (2026-09-21, application-grade plan) ───────
 // Branches are compare-and-branch; unsigned names are ARM-style
 // (jlo/jls/jhi/jhs ↔ x86 jb/jbe/ja/jae ↔ riscv bltu/bgeu/bltu/bgeu).
 // riscv has no register-compare branches — the imm forms borrow t0
 // (caller-saved, disclosed).
-jlt: "3"; "x86_64:cmpq $2, $1; jl $3"; "aarch64:cmp $1, $2; b.lt $3"; "riscv64:blt $1, $2, $3|li t0, $2; blt $1, t0, $3"; "sym";
-jle: "3"; "x86_64:cmpq $2, $1; jle $3"; "aarch64:cmp $1, $2; b.le $3"; "riscv64:ble $1, $2, $3|li t0, $2; ble $1, t0, $3"; "sym";
-jgt: "3"; "x86_64:cmpq $2, $1; jg $3"; "aarch64:cmp $1, $2; b.gt $3"; "riscv64:bgt $1, $2, $3|li t0, $2; bgt $1, t0, $3"; "sym";
-jge: "3"; "x86_64:cmpq $2, $1; jge $3"; "aarch64:cmp $1, $2; b.ge $3"; "riscv64:bge $1, $2, $3|li t0, $2; bge $1, t0, $3"; "sym";
-jlo: "3"; "x86_64:cmpq $2, $1; jb $3"; "aarch64:cmp $1, $2; b.lo $3"; "riscv64:bltu $1, $2, $3|li t0, $2; bltu $1, t0, $3"; "sym";
-jls: "3"; "x86_64:cmpq $2, $1; jbe $3"; "aarch64:cmp $1, $2; b.ls $3"; "riscv64:bgeu $2, $1, $3|li t0, $2; bgeu t0, $1, $3"; "sym";
-jhi: "3"; "x86_64:cmpq $2, $1; ja $3"; "aarch64:cmp $1, $2; b.hi $3"; "riscv64:bltu $2, $1, $3|li t0, $2; bltu t0, $1, $3"; "sym";
-jhs: "3"; "x86_64:cmpq $2, $1; jae $3"; "aarch64:cmp $1, $2; b.hs $3"; "riscv64:bgeu $1, $2, $3|li t0, $2; bgeu $1, t0, $3"; "sym";
+jlt: "3"; "thumb:cmp $1, $2; blt $3"; "x86_64:cmpq $2, $1; jl $3"; "aarch64:cmp $1, $2; b.lt $3"; "riscv64:blt $1, $2, $3|li t0, $2; blt $1, t0, $3"; "sym";
+jle: "3"; "thumb:cmp $1, $2; ble $3"; "x86_64:cmpq $2, $1; jle $3"; "aarch64:cmp $1, $2; b.le $3"; "riscv64:ble $1, $2, $3|li t0, $2; ble $1, t0, $3"; "sym";
+jgt: "3"; "thumb:cmp $1, $2; bgt $3"; "x86_64:cmpq $2, $1; jg $3"; "aarch64:cmp $1, $2; b.gt $3"; "riscv64:bgt $1, $2, $3|li t0, $2; bgt $1, t0, $3"; "sym";
+jge: "3"; "thumb:cmp $1, $2; bge $3"; "x86_64:cmpq $2, $1; jge $3"; "aarch64:cmp $1, $2; b.ge $3"; "riscv64:bge $1, $2, $3|li t0, $2; bge $1, t0, $3"; "sym";
+jlo: "3"; "thumb:cmp $1, $2; blo $3"; "x86_64:cmpq $2, $1; jb $3"; "aarch64:cmp $1, $2; b.lo $3"; "riscv64:bltu $1, $2, $3|li t0, $2; bltu $1, t0, $3"; "sym";
+jls: "3"; "thumb:cmp $1, $2; bls $3"; "x86_64:cmpq $2, $1; jbe $3"; "aarch64:cmp $1, $2; b.ls $3"; "riscv64:bgeu $2, $1, $3|li t0, $2; bgeu t0, $1, $3"; "sym";
+jhi: "3"; "thumb:cmp $1, $2; bhi $3"; "x86_64:cmpq $2, $1; ja $3"; "aarch64:cmp $1, $2; b.hi $3"; "riscv64:bltu $2, $1, $3|li t0, $2; bltu t0, $1, $3"; "sym";
+jhs: "3"; "thumb:cmp $1, $2; bhs $3"; "x86_64:cmpq $2, $1; jae $3"; "aarch64:cmp $1, $2; b.hs $3"; "riscv64:bgeu $1, $2, $3|li t0, $2; bgeu $1, t0, $3"; "sym";
 
 // Logic (3-op destinations everywhere; x86 = copy-then-op so `and` keeps
 // its 2-operand encoding without leaking into the portable arity).
-and: "3"; "x86_64:movq $2, $1; andq $3, $1"; "aarch64:and $1, $2, $3"; "riscv64:and $1, $2, $3|andi $1, $2, $3";
-or: "3"; "x86_64:movq $2, $1; orq $3, $1"; "aarch64:orr $1, $2, $3"; "riscv64:or $1, $2, $3|ori $1, $2, $3";
-xor: "3"; "x86_64:movq $2, $1; xorq $3, $1"; "aarch64:eor $1, $2, $3"; "riscv64:xor $1, $2, $3|xori $1, $2, $3";
+and: "3"; "thumb:ands $1, $2, $3"; "x86_64:movq $2, $1; andq $3, $1"; "aarch64:and $1, $2, $3"; "riscv64:and $1, $2, $3|andi $1, $2, $3";
+or: "3"; "thumb:orrs $1, $2, $3"; "x86_64:movq $2, $1; orq $3, $1"; "aarch64:orr $1, $2, $3"; "riscv64:or $1, $2, $3|ori $1, $2, $3";
+xor: "3"; "thumb:eors $1, $2, $3"; "x86_64:movq $2, $1; xorq $3, $1"; "aarch64:eor $1, $2, $3"; "riscv64:xor $1, $2, $3|xori $1, $2, $3";
 // Shifts: x86 variable-count shifts require %cl (= r1's low byte) — the
 // reg-form template discloses the rcx clobber. aarch64 `lsl` takes a
 // register or #imm in one spelling (shared).
-shl: "3"; "x86_64:movq $2, $1; movq $3, %rcx; shlq %cl, $1|movq $2, $1; shlq $3, $1"; "aarch64:lsl $1, $2, $3"; "riscv64:sll $1, $2, $3|slli $1, $2, $3";
-shr: "3"; "x86_64:movq $2, $1; movq $3, %rcx; shrq %cl, $1|movq $2, $1; shrq $3, $1"; "aarch64:lsr $1, $2, $3"; "riscv64:srl $1, $2, $3|srli $1, $2, $3";
-sar: "3"; "x86_64:movq $2, $1; movq $3, %rcx; sarq %cl, $1|movq $2, $1; sarq $3, $1"; "aarch64:asr $1, $2, $3"; "riscv64:sra $1, $2, $3|srai $1, $2, $3";
+shl: "3"; "thumb:lsls $1, $2, $3"; "x86_64:movq $2, $1; movq $3, %rcx; shlq %cl, $1|movq $2, $1; shlq $3, $1"; "aarch64:lsl $1, $2, $3"; "riscv64:sll $1, $2, $3|slli $1, $2, $3";
+shr: "3"; "thumb:lsrs $1, $2, $3"; "x86_64:movq $2, $1; movq $3, %rcx; shrq %cl, $1|movq $2, $1; shrq $3, $1"; "aarch64:lsr $1, $2, $3"; "riscv64:srl $1, $2, $3|srli $1, $2, $3";
+sar: "3"; "thumb:asrs $1, $2, $3"; "x86_64:movq $2, $1; movq $3, %rcx; sarq %cl, $1|movq $2, $1; sarq $3, $1"; "aarch64:asr $1, $2, $3"; "riscv64:sra $1, $2, $3|srai $1, $2, $3";
 // Unary (arity 2 everywhere so the portable arity stays uniform; x86
 // copies first because its not/neg are 1-operand encodings).
-not: "2"; "x86_64:movq $2, $1; notq $1|-"; "aarch64:mvn $1, $2|-"; "riscv64:xori $1, $2, -1|-";
-neg: "2"; "x86_64:movq $2, $1; negq $1|-"; "aarch64:neg $1, $2|-"; "riscv64:neg $1, $2|-";
+not: "2"; "thumb:mvns $1, $2|-"; "x86_64:movq $2, $1; notq $1|-"; "aarch64:mvn $1, $2|-"; "riscv64:xori $1, $2, -1|-";
+neg: "2"; "thumb:negs $1, $2|-"; "x86_64:movq $2, $1; negq $1|-"; "aarch64:neg $1, $2|-"; "riscv64:neg $1, $2|-";
 
 // mod: riscv `rem`; aarch64 has no integer remainder — sdiv+msub with
 // scratch x9 (caller-saved, disclosed); x86 rides idivq's %rdx.
-mod: "3"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rdx, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rdx, $1"; "aarch64:sdiv x9, $2, $3; msub $1, x9, $3, $2|-"; "riscv64:rem $1, $2, $3|li t0, $3; rem $1, $2, t0";
+mod: "3"; "thumb:sdiv $1, $2, $3; muls $1, $1, $3; subs $1, $2, $1|-"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rdx, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rdx, $1"; "aarch64:sdiv x9, $2, $3; msub $1, x9, $3, $2|-"; "riscv64:rem $1, $2, $3|li t0, $3; rem $1, $2, t0";
 // High-multiplies (fixed-point workhorse): smulh/umulh/riscv mulh(u);
 // x86 = 128-bit imul/mul, high half in %rdx (rax/rdx clobber disclosed).
 mulhi: "3"; "x86_64:movq $2, %rax; imulq $3; movq %rdx, $1"; "aarch64:smulh $1, $2, $3|-"; "riscv64:mulh $1, $2, $3|-";
@@ -137,23 +141,23 @@ sltu: "3"; "x86_64:xorq %rax, %rax; cmpq $3, $2; setb %al; movzbq %al, $1"; "aar
 // Sub-width loads/stores. Load extensions are sign (ldb/ldh) or zero
 // (ldub/lduh). Stores use the .w8/.w16 width token refs (x86 needs
 // %al/%ax, aarch64 needs w-regs; riscv stores the low bits of any reg).
-ldb: "2"; "x86_64:movsbq ($2), $1"; "aarch64:ldrsb $1, [$2]"; "riscv64:lb $1, 0($2)";
-ldub: "2"; "x86_64:movzbq ($2), $1"; "aarch64:ldrb $1, [$2]"; "riscv64:lbu $1, 0($2)";
-ldh: "2"; "x86_64:movswq ($2), $1"; "aarch64:ldrsh $1, [$2]"; "riscv64:lh $1, 0($2)";
-lduh: "2"; "x86_64:movzwq ($2), $1"; "aarch64:ldrh $1, [$2]"; "riscv64:lhu $1, 0($2)";
-stb: "2"; "x86_64:movb $1.w8, ($2)"; "aarch64:strb $1.w8, [$2]"; "riscv64:sb $1, 0($2)";
-sth: "2"; "x86_64:movw $1.w16, ($2)"; "aarch64:strh $1.w16, [$2]"; "riscv64:sh $1, 0($2)";
+ldb: "2"; "thumb:ldrsb $1, [$2]"; "x86_64:movsbq ($2), $1"; "aarch64:ldrsb $1.w, [$2]"; "riscv64:lb $1, 0($2)";
+ldub: "2"; "thumb:ldrb $1, [$2]"; "x86_64:movzbq ($2), $1"; "aarch64:ldrb $1.w, [$2]"; "riscv64:lbu $1, 0($2)";
+ldh: "2"; "thumb:ldrsh $1, [$2]"; "x86_64:movswq ($2), $1"; "aarch64:ldrsh $1.w, [$2]"; "riscv64:lh $1, 0($2)";
+lduh: "2"; "thumb:ldrh $1, [$2]"; "x86_64:movzwq ($2), $1"; "aarch64:ldrh $1.w, [$2]"; "riscv64:lhu $1, 0($2)";
+stb: "2"; "thumb:strb $1, [$2]"; "x86_64:movb $1.w8, ($2)"; "aarch64:strb $1.w, [$2]"; "riscv64:sb $1, 0($2)";
+sth: "2"; "thumb:strh $1, [$2]"; "x86_64:movw $1.w16, ($2)"; "aarch64:strh $1.w, [$2]"; "riscv64:sh $1, 0($2)";
 
 // Offset memory: base + immediate displacement. x86 displacements are
 // BARE — the `$3!` raw-ref substitutes WITHOUT the target imm prefix
 // (general template escape; see the header comment).
-loadoff: "3"; "x86_64:movq $3!($2), $1"; "aarch64:ldr $1, [$2, $3]"; "riscv64:ld $1, $3($2)";
-storeoff: "3"; "x86_64:movq $1, $3!($2)"; "aarch64:str $1, [$2, $3]"; "riscv64:sd $1, $3($2)";
+loadoff: "3"; "thumb:ldr $1, [$2, $3]"; "x86_64:movq $3!($2), $1"; "aarch64:ldr $1, [$2, $3]"; "riscv64:ld $1, $3($2)";
+storeoff: "3"; "thumb:str $1, [$2, $3]"; "x86_64:movq $1, $3!($2)"; "aarch64:str $1, [$2, $3]"; "riscv64:sd $1, $3($2)";
 
 // Stack pairs. FIRST param = higher address on every target (x86 pushes
 // in reverse; aarch64 stp swaps operands; riscv stores explicitly).
-push2: "2"; "x86_64:pushq $1; pushq $2"; "aarch64:stp $2, $1, [sp, #-16]!"; "riscv64:addi sp, sp, -16; sd $2, 0(sp); sd $1, 8(sp)";
-pop2: "2"; "x86_64:popq $2; popq $1"; "aarch64:ldp $2, $1, [sp], #16"; "riscv64:ld $2, 0(sp); ld $1, 8(sp); addi sp, sp, 16";
+push2: "2"; "thumb:push { $2, $1 }"; "x86_64:pushq $1; pushq $2"; "aarch64:stp $2, $1, [sp, #-16]!"; "riscv64:addi sp, sp, -16; sd $2, 0(sp); sd $1, 8(sp)";
+pop2: "2"; "thumb:pop { $2, $1 }"; "x86_64:popq $2; popq $1"; "aarch64:ldp $2, $1, [sp], #16"; "riscv64:ld $2, 0(sp); ld $1, 8(sp); addi sp, sp, 16";
 
 // ── Floating point (double precision; f0-f15 register class) ─────────
 // riscv fp compares have no flags — the fp branch family borrows t0.
@@ -186,3 +190,15 @@ fjge: "3"; "x86_64:ucomisd $2, $1; jae $3"; "aarch64:fcmp $1, $2; b.pl $3"; "ris
 // match cvttsd2si/fcvtzs truncation).
 itof: "2"; "x86_64:cvtsi2sdq $2, $1|-"; "aarch64:scvtf $1, $2|-"; "riscv64:fcvt.d.l $1, $2|-";
 ftoi: "2"; "x86_64:cvttsd2si $2, $1|-"; "aarch64:fcvtzs $1, $2|-"; "riscv64:fcvt.l.d $1, $2, rtz|-";
+
+// ── CSR access (riscv64; M-mode bare-metal) ───────────────────────────
+// The CSRR/CSRW/CSRS/CSRC family reads/writes/sets/clears a named CSR
+// (mcause, mepc, mtvec, mscratch, mie, mstatus, pmpaddr0, pmpcfg0, ...).
+// The CSR NAME is a symbol operand (`"sym"`) — it substitutes literally.
+// `mret` returns from M-mode trap. Only riscv64 has rows: other targets
+// get a loud capability error (no such registers), never a silent pass.
+csrr: "2"; "riscv64:csrr $1, $2"; "sym";
+csrw: "2"; "riscv64:csrw $1, $2"; "sym";
+csrs: "2"; "riscv64:csrs $1, $2"; "sym";
+csrc: "2"; "riscv64:csrc $1, $2"; "sym";
+mret: "0"; "riscv64:mret";

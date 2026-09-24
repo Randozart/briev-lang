@@ -8,7 +8,6 @@
 //           brievc bindings pp-types.bv c → briev_types.h
 //           cc driver.c -L. -lpp-types → driver (toolchain-guarded)
 
-use std::path::Path;
 use std::process::Command;
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -68,8 +67,8 @@ static char* read_cstr(int64_t p) {
 
 int main(void) {
     BrievState* st = __briev_init_state();
-    printf("bits:%s\n", read_cstr(briev_test_type_bits(st, (int64_t)"42")));
-    printf("void:%s\n", read_cstr(briev_test_type_void(st)));
+    printf("bits:%s\n", read_cstr(briev_test_type_bits((int64_t)"42")));
+    printf("void:%s\n", read_cstr(briev_test_type_void()));
     printf("static:%s\n", read_cstr(briev_test_bits_static()));
     __glue_release(st);
     return 0;

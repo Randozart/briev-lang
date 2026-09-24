@@ -1,0 +1,51 @@
+// ── boot_stage1.bv — a bootloader handoff in .bad (riscv64 QEMU virt)
+// 2026-09-22. The `bootstrap bad` entry is stage 1: it does the machine
+// setup (PMP grant) then CALLS a kernel routine (stage 2) compiled in the
+// same image. The kernel prints its own banner, then control returns.
+// Demonstrates the bootloader pattern — a machine entry that prepares the
+// machine and hands off to a kernel — written entirely as a .bad body
+// with no reactor.
+//
+// Build: brievc build --raw-bin → boot_stage1.bin loads in QEMU -kernel.
+bootstrap bad Reset_Handler() [true] {
+    section .text.start
+    Reset_Handler:
+    // PMP: grant U-mode fetch/load/store.
+    mov r0, -1
+    csrw pmpaddr0, r0
+    mov r0, 15
+    csrw pmpcfg0, r0
+    // Stage 1 banner.
+    addr r1, msg1
+    mov r2, 0x10000000
+    mov r3, 0
+    .p1:
+    ldub r4, r1
+    jz r4, r3, .d1
+    store r4, r2
+    add r1, r1, 1
+    jmp .p1
+    .d1:
+    // Hand off to the kernel (stage 2).
+    call kernel
+    // Kernel returned — park.
+    halt
+
+// ── stage 2: the "kernel" ─────────────────────────────────────────────
+// A plain .bad label (not part of the entry). Prints its own banner.
+kernel:
+    addr r1, msg2
+    mov r2, 0x10000000
+    mov r3, 0
+    .p2:
+    ldub r4, r1
+    jz r4, r3, .d2
+    store r4, r2
+    add r1, r1, 1
+    jmp .p2
+    .d2:
+    ret
+    section .rodata
+    msg1: .asciz "stage1 "
+    msg2: .asciz "kernel\n"
+}

@@ -1,0 +1,43 @@
+// ── boot_mbr.bad — a real-mode MBR boot sector (2026-09-22) ───────────
+// BIOS loads the first 512 bytes of the disk to 0x7C00 and jumps to it
+// in 16-bit real mode. This sector prints "Briev" via BIOS INT 10h
+// (teletype) and parks.
+//
+// The 16-bit body is a `raw x86_64` block — .bad's core ISA emits 64-bit
+// GAS, and real mode needs .code16 + segment registers + BIOS ints. Raw
+// blocks are the ergonomic verbatim escape (one block, not one exception
+// per line); `int` is a portable core op.
+//
+// Build: brievc bad examples/bad/boot_mbr.bad --target x86_64 --raw-bin
+// Boot:  qemu-system-i386 -drive file=boot_mbr.bin,format=raw,if=floppy
+
+// The boot signature at bytes 510-511 is a data label + .byte directives.
+// (GAS resolves .org within the section; --raw-bin flattens it.)
+section .text
+raw x86_64
+    .code16
+    cli
+    // ES:BP → our string; INT 10h teletype reads it.
+    xorw %ax, %ax
+    movw %ax, %es
+    movw $msg, %bp
+    // Clear the screen via video mode 0x03 (80x25 text).
+    movb $0x00, %ah
+    movb $0x03, %al
+    int $0x10
+    movb $0x13, %ah
+    // ES:BP = string, CX = length, BH = page 0, BL = green.
+    movw $len, %cx
+    xorw %bx, %bx
+    movb $0x02, %bl
+    int $0x10
+    hlt
+    // The string and its length.
+    .code32
+    .align 2
+msg:
+    .asciz "Briev MBR"
+len = . - msg
+    .org 510
+    .byte 0x55, 0xAA
+end

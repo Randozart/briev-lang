@@ -249,6 +249,8 @@ pub struct BuildOptions {
     /// 2026-07-23: Target profile name (--target). None = default/single build.
     /// Overrides are resolved from briev.toml and merged into sysquery_overrides.
     pub target: Option<String>,
+    /// 2026-09-22 (--all-targets): build every briev.toml [target.*] profile.
+    pub all_targets: bool,
     /// 2026-07-23: Raw --sysquery flag pairs (unresolved, for run_build).
     pub sysquery_pairs: Vec<(String, String)>,
     /// 2026-07-23: Raw --sysquery-file paths (unresolved, for run_build).
@@ -267,6 +269,17 @@ pub struct BuildOptions {
     /// 2026-09-13 (rv64 capability kernel): explicit linker script path override.
     /// Set via --linker-script CLI flag. Takes precedence over dbvl linker_script.
     pub linker_script_override: Option<String>,
+    /// 2026-09-22 (--all-targets): the per-target linker entry symbol (the
+    /// `bootstrap bad` name), carried from a briev.toml `[target.*]` profile.
+    pub entry_override: Option<String>,
+    /// 2026-09-22 (bootstrap-bad plan): extract the flat loadable image
+    /// (objcopy -O binary) after linking — the boot-sector / firmware blob
+    /// a bootloader would load.
+    pub raw_bin: bool,
+    /// 2026-09-22 (universal-bootstrapper plan): with `raw_bin`, skip the
+    /// link and objcopy the flat image from the object directly (an
+    /// MBR-style `.code16`/`.org 510` body cannot link in a 64-bit ELF).
+    pub no_link: bool,
 }
 
 pub struct PreprocessedSource {
@@ -719,6 +732,7 @@ pub fn check_source_for(
         diff_mode: false,
         sysquery_overrides: HashMap::new(),
         target: None,
+        all_targets: false,
         sysquery_pairs: vec![],
         sysquery_files: vec![],
         style_css: None,
@@ -730,6 +744,9 @@ pub fn check_source_for(
         isr_mechanism: None,
         triple_override: triple_override.map(|t| t.to_string()),
         linker_script_override: None,
+        entry_override: None,
+        raw_bin: false,
+        no_link: false,
     };
     let (_items, _universe) = parse_and_check(file_path, source, &default_opts)?;
     println!("OK");

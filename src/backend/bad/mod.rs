@@ -17,6 +17,7 @@
 pub mod contracts;
 pub mod comptime;
 pub mod lower;
+pub mod notices;
 pub mod registry;
 
 use crate::ast::bad::BadProgram;
@@ -42,49 +43,114 @@ pub fn generate_with(
     source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
     friendly: bool,
 ) -> Result<String, String> {
+    let (asm, _) = generate_with_notices(source, target_triple, trace, base_dir, friendly)?;
+    Ok(asm)
+}
+
+/// `generate_with` plus the W-tier notices collected during lowering
+/// (the predicted probable errors, acknowledged and unacknowledged).
+/// Callers that want the notices — the CLI, the tests — use this.
+pub fn generate_with_notices(
+    source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
+    friendly: bool,
+) -> Result<(String, Vec<notices::Notice>), String> {
     let program: BadProgram =
         parse_bad(source).map_err(|e| format!("bad: line {}: {}", e.line, e.message))?;
     let (isa, regs) = registries();
     let family = target_triple.split('-').next().unwrap_or(target_triple);
-    lower::Lowerer::new(&isa, &regs, family)
+    let mut lowerer = lower::Lowerer::new(&isa, &regs, family)
         .with_trace(trace)
         .with_friendly(friendly)
-        .with_base_dir(base_dir.map(|p| p.to_path_buf()))
-        .run(&program)
+        .with_base_dir(base_dir.map(|p| p.to_path_buf()));
+    let asm = lowerer.run(&program)?;
+    let notices = lowerer.notices().to_vec();
+    Ok((asm, notices))
+}
+
+/// Request bundle for `generate_bad_fn` — six inputs, one struct (the
+/// analysis tools cap functions at five params).
+pub struct BadFnReq<'a> {
+    pub body: &'a str,
+    pub target_triple: &'a str,
+    pub param_env: std::collections::HashMap<String, lower::Bound>,
+    pub bootstrap: bool,
+    pub name: &'a str,
+    pub base_dir: Option<std::path::PathBuf>,
 }
 
 /// 2026-09-21: Compile a `bad fn` body from `.bv` — wrap the body
 /// in an entry label, append `ret`, parse as a .bad program, and lower
 /// with pre-bound parameter registers.
-pub fn generate_bad_fn(
-    body: &str,
-    target_triple: &str,
-    param_env: std::collections::HashMap<String, lower::Bound>,
-) -> Result<String, String> {
-    // Wrap body in an entry label and ensure it ends with `ret`.
-    let trimmed = body.trim();
-    let mut wrapped = String::from("_entry:\n");
-    wrapped.push_str(trimmed);
+///
+/// `bootstrap` (2026-09-22): the body is the authored machine entry —
+/// parsed VERBATIM (no `_entry:` wrap, no auto-`ret`). The author owns
+/// the vector table, `.text.start`, sp/.bss setup, and the handoff
+/// (`call main` / park / jump).
+pub fn generate_bad_fn(req: BadFnReq<'_>) -> Result<String, String> {
+    let program = prepare_bad_source(req.body, req.name, req.bootstrap)?;
+    let (isa, regs) = registries();
+    let family = req.target_triple.split('-').next().unwrap_or(req.target_triple);
+    lower::Lowerer::new(&isa, &regs, family)
+        .with_base_dir(req.base_dir)
+        .with_param_env(req.param_env)
+        .run(&program)
+}
+
+/// Source wrapping for `generate_bad_fn`: bootstrap bodies parse VERBATIM
+/// (entry label auto-exported); ordinary fn bodies get a global entry
+/// label named after the fn, leading `import` lines hoisted above it, and
+/// an auto-`ret` when the body does not end with one.
+fn prepare_bad_source(body: &str, name: &str, bootstrap: bool) -> Result<BadProgram, String> {
+    if bootstrap {
+        // The authored machine entry: the body MUST declare a label with
+        // the bootstrap fn name — it IS the machine entry symbol.
+        let mut with_export = format!(".global {name}\n");
+        with_export.push_str(body.trim());
+        with_export.push('\n');
+        return parse_bad(&with_export)
+            .map_err(|e| format!("bootstrap bad body: line {}: {}", e.line, e.message));
+    }
+    // Leading `import` lines (prepended .bv-top-level .bad imports) must
+    // come BEFORE the `_entry:` label — an import directive closes the
+    // current owner, so a label after it would orphan the following
+    // instructions.
+    let mut imports = String::new();
+    let rest: Vec<&str> = body
+        .trim()
+        .lines()
+        .skip_while(|l| {
+            let t = l.trim();
+            if t.starts_with("import ") {
+                imports.push_str(l);
+                imports.push('\n');
+                true
+            } else {
+                false
+            }
+        })
+        .collect();
+    let mut wrapped = imports;
+    // The entry label is the FN NAME (not a generic `_entry`) so the
+    // LLVM-side `declare @<name>` resolves the symbol at link — and it
+    // must be GLOBAL (the .bv caller lives in another translation unit).
+    wrapped.push_str(&format!(".global {name}\n{name}:\n"));
+    wrapped.push_str(&rest.join("\n"));
     // Auto-append `ret` if the body doesn't already end with one.
-    let last_line = trimmed.lines().last().unwrap_or("").trim();
+    let last_line = rest.last().unwrap_or(&"").trim();
     if last_line != "ret" && !last_line.ends_with("ret") {
         wrapped.push_str("\nret");
     }
     wrapped.push('\n');
-    let program: BadProgram =
-        parse_bad(&wrapped).map_err(|e| format!("bad fn body: line {}: {}", e.line, e.message))?;
-    let (isa, regs) = registries();
-    let family = target_triple.split('-').next().unwrap_or(target_triple);
-    lower::Lowerer::new(&isa, &regs, family)
-        .with_param_env(param_env)
-        .run(&program)
+    parse_bad(&wrapped).map_err(|e| format!("bad fn body: line {}: {}", e.line, e.message))
 }
 
-/// Whether the cross toolchain for `family` is installed.
+/// Whether the cross toolchain for `family` is installed — the cross_as
+/// bin, or (thumb/arm) clang's integrated assembler fallback.
 pub fn toolchain_available(family: &str) -> bool {
     let (isa, regs) = registries();
     let _ = isa;
-    regs.cross_as(family)
+    let via_bin = regs
+        .cross_as(family)
         .and_then(|as_bin| {
             std::process::Command::new(as_bin)
                 .arg("--version")
@@ -92,37 +158,117 @@ pub fn toolchain_available(family: &str) -> bool {
                 .ok()
                 .map(|o| o.status.success())
         })
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if via_bin {
+        return true;
+    }
+    if family.starts_with("thumb") || family.starts_with("arm") {
+        return clang_available();
+    }
+    false
 }
 
 /// Assemble emitted text to an object file via the platform assembler.
-/// The toolchain comes from the `cross_as` row per family.
-pub fn assemble(text: &str, family: &str, out_path: &std::path::Path) -> Result<(), String> {
+/// The toolchain comes from the `cross_as` row per family. For thumb/arm
+/// bare-metal targets, clang's integrated assembler is the fallback when
+/// the prefixed binutils (`arm-none-eabi-as`) is not installed — the
+/// dialect degrades to a documented clang path, never a silent pass.
+/// `triple` is the FULL target triple (not just the family): riscv64
+/// bare-metal (`-none`) needs `-mabi=lp64` soft-float to match the .bv
+/// side's default, while hosted (`-linux`) stays lp64d.
+pub fn assemble(text: &str, triple: &str, out_path: &std::path::Path) -> Result<(), String> {
+    let family = triple.split('-').next().unwrap_or(triple);
     let (_, regs) = registries();
     let as_bin = regs.cross_as(family).ok_or_else(|| {
         format!(
             "no cross_as row for target `{family}` - add one to bad-registers.dbvl"
         )
     })?;
-    let flags: Vec<&str> = match family {
-        "x86_64" => vec!["--64"],
-        _ => vec![],
-    };
+    let flags = as_flags(family, triple);
     let s_path = out_path.with_extension("s");
     std::fs::write(&s_path, text)
         .map_err(|e| format!("cannot write '{}': {}", s_path.display(), e))?;
-    let status = std::process::Command::new(as_bin)
-        .args(&flags)
-        .arg(&s_path)
+    // Preferred toolchain: the cross_as bin. If it is not installed, a
+    // thumb/arm family falls back to clang's integrated assembler.
+    if !bin_responsive(&as_bin) {
+        if (family.starts_with("thumb") || family.starts_with("arm")) && clang_available() {
+            return clang_assemble(triple, &s_path, out_path);
+        }
+        return Err(format!(
+            "cannot run `{as_bin}` for `{family}` - install the cross binutils, or \
+             (thumb/arm) clang's integrated assembler"
+        ));
+    }
+    run_as(&as_bin, &flags, &s_path, out_path, family)
+}
+
+/// Assembler flags per family — the full triple only matters for riscv64
+/// bare-metal (`-mabi=lp64` soft-float matches the .bv side's default;
+/// hosted `-linux` stays lp64d).
+fn as_flags(family: &str, triple: &str) -> Vec<&'static str> {
+    match family {
+        "x86_64" => vec!["--64"],
+        "riscv64" if !triple.contains("linux") => vec!["-mabi=lp64"],
+        _ => vec![],
+    }
+}
+
+/// Whether the named tool runs (`--version` probe).
+fn bin_responsive(bin: &str) -> bool {
+    std::process::Command::new(bin)
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Run the cross assembler over the emitted `.s`.
+fn run_as(
+    bin: &str, flags: &[&str], s_path: &std::path::Path, out_path: &std::path::Path,
+    family: &str,
+) -> Result<(), String> {
+    let status = std::process::Command::new(bin)
+        .args(flags)
+        .arg(s_path)
         .arg("-o")
         .arg(out_path)
         .status()
-        .map_err(|e| format!("cannot run `{as_bin}`: {e} - is binutils installed?"))?;
+        .map_err(|e| format!("cannot run `{bin}`: {e} - is binutils installed?"))?;
     if status.success() {
         Ok(())
     } else {
         Err(format!(
             "assembler rejected the emitted code for `{family}` - inspect {} for the \
+             exact instruction",
+            s_path.display()
+        ))
+    }
+}
+
+fn clang_available() -> bool {
+    bin_responsive("clang")
+}
+
+/// Assemble bare-metal thumb/arm with clang's integrated assembler.
+fn clang_assemble(
+    triple: &str, s_path: &std::path::Path, out_path: &std::path::Path,
+) -> Result<(), String> {
+    let family = triple.split('-').next().unwrap_or(triple);
+    let status = std::process::Command::new("clang")
+        .arg(format!("--target={triple}"))
+        .arg("-mcpu=cortex-m3")
+        .arg("-c")
+        .arg(s_path)
+        .arg("-o")
+        .arg(out_path)
+        .status()
+        .map_err(|e| format!("cannot run clang for `{family}`: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "clang rejected the emitted code for `{family}` - inspect {} for the \
              exact instruction",
             s_path.display()
         ))
@@ -380,7 +526,7 @@ mod appgrade_tests {
         assert!(x86.contains("movb %sil, (%rcx)"), "stb uses r4.w8=%sil: {}", x86);
         assert!(x86.contains("movw %di, (%rcx)"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
-        assert!(arm.contains("ldrsb x0, [x1]"), "{}", arm);
+        assert!(arm.contains("ldrsb w0, [x1]"), "aarch64 byte loads write a w-register: {}", arm);
         assert!(arm.contains("strb w4, [x1]"), "{}", arm);
         assert!(arm.contains("strh w5, [x1]"), "{}", arm);
         let riscv = lower_ok(src, "riscv64");
@@ -635,6 +781,37 @@ mod phase_d_tests {
                 .unwrap_or_else(|e| panic!("stdlib failed on {triple}: {e}"));
             assert_all_syms(&asm, triple, &["memcpy:", "memset:", "strlen:", "strcmp:"]);
         }
+    }
+
+    #[test]
+    fn thumb_lowers_to_cortex_m_and_assembles_via_clang() {
+        // 2026-09-22 (bootstrap-bad plan): thumb/arm rows in the ISA +
+        // register configs. If clang is installed, the emitted thumb-2
+        // text must actually assemble — the dialect's hardware-verification
+        // doctrine, degraded to a documented skip when clang is absent.
+        let src = "section .text\nglobal _start\n_start:\n    mov r0, 1\n    \
+                   add r1, r0, r0\n    jz r1, r0, .done\n    mov r2, 99\n    \
+                   .done:\n    halt\n";
+        let asm = generate(src, "thumbv7m-none-eabi").unwrap();
+        assert!(asm.contains("ldr r0, =1"), "{asm}");
+        assert!(asm.contains("adds r1, r0, r0"), "{asm}");
+        assert!(asm.contains("beq"), "{asm}");
+        assert!(asm.contains("wfi"), "{asm}");
+        if toolchain_available("thumbv7m") {
+            let out = test_dir("thumb").join("t.o");
+            assemble(&asm, "thumbv7m", &out).expect("thumb assemble failed");
+            std::fs::remove_file(&out).ok();
+        }
+    }
+
+    #[test]
+    fn thumb_missing_fpu_and_syscall_are_loud_errors() {
+        // Cortex-M3 has no FPU and no OS — the FP class and syscall have
+        // NO thumb row. A loud capability error, never a silent pass.
+        let err = generate("t:\n    fmov f0, 1.5\n    ret\n", "thumbv7m").unwrap_err();
+        assert!(err.contains("no `thumbv7m` lowering"), "{err}");
+        let err = generate("t:\n    syscall write, r0, r1, r2\n", "thumbv7m").unwrap_err();
+        assert!(err.contains("no `thumbv7m` lowering"), "{err}");
     }
 
     #[test]
@@ -997,5 +1174,352 @@ _start:
         assert!(x86.contains("xor %rbx, %rbx, %rbx"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
         assert!(arm.contains("mov x3, #0"), "{}", arm);
+    }
+}
+
+// ── W-tier notices (2026-09-22, acknowledge tier) ────────────────────
+mod notices_tests {
+    use super::*;
+    use crate::backend::bad::notices::Notice;
+
+    fn notices(src: &str, triple: &str) -> Vec<Notice> {
+        generate_with_notices(src, triple, false, None, true).unwrap().1
+    }
+
+    fn codes(src: &str, triple: &str) -> Vec<String> {
+        notices(src, triple).iter().map(|n| n.code.to_string()).collect()
+    }
+
+    #[test]
+    fn w1_fires_on_caller_saved_live_across_call() {
+        let c = codes("t:\n    mov r5, 1\n    call f\n    ret\n", "x86_64");
+        assert!(c.contains(&"W1".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn w1_silent_for_callee_saved() {
+        let c = codes("t:\n    mov r10, 1\n    call f\n    ret\n", "x86_64");
+        assert!(!c.contains(&"W1".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn w3_fires_on_ret_with_sp_delta() {
+        let c = codes("t:\n    push r0\n    ret\n", "x86_64");
+        assert!(c.contains(&"W3".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn w5_fires_on_defn_inlined_ret() {
+        let c = codes("defn f x\n    ret\n\nt:\n    call f\n", "x86_64");
+        assert!(c.contains(&"W5".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn ack_suppresses_and_records() {
+        let n = notices("t:\n    mov r5, 1\n    ^ W1 call f\n    ret\n", "x86_64");
+        let w1 = n.iter().find(|x| x.code == "W1").expect("W1 recorded (never silent)");
+        assert!(w1.acknowledged, "{w1:?}");
+        let n = notices("t:\n    mov r5, 1\n    ^ call f\n    ret\n", "x86_64");
+        let w1 = n.iter().find(|x| x.code == "W1").expect("bare ^ acks");
+        assert!(w1.acknowledged, "{w1:?}");
+    }
+
+    #[test]
+    fn ack_on_wrong_line_does_not_suppress() {
+        // `^` (Instr scope) on the mov line does NOT cover the call's W1.
+        let n = notices("t:\n    ^ mov r5, 1\n    call f\n    ret\n", "x86_64");
+        let w1 = n.iter().find(|x| x.code == "W1").expect("W1 still fires");
+        assert!(!w1.acknowledged, "{w1:?}");
+    }
+
+    #[test]
+    fn line_ack_propagates_across_segments() {
+        let n = notices("t:\n    ^^ mov r5, 1; call f\n    ret\n", "x86_64");
+        let w1 = n.iter().find(|x| x.code == "W1").expect("W1 recorded");
+        assert!(w1.acknowledged, "{w1:?}");
+    }
+
+    #[test]
+    fn stale_named_ack_is_a_loud_error() {
+        let err = generate("t:\n    ^ W9 mov r5, 1\n    ret\n", "x86_64").unwrap_err();
+        assert!(err.contains("stale"), "{err}");
+    }
+
+    #[test]
+    fn stale_ack_not_for_unfired_bare_ack() {
+        // Bare `^` (no names) never goes stale — it acknowledges whatever fires.
+        let n = notices("t:\n    ^ mov r5, 1\n    ret\n", "x86_64");
+        assert!(n.is_empty(), "{n:?}");
+    }
+
+    #[test]
+    fn w2_fires_on_branch_path_imbalance() {
+        let c = codes("defn f x
+    default => push r0
+    x86_64 => pop r0
+
+t:\n    call f
+", "x86_64");
+        assert!(c.contains(&"W2".to_string()), "{c:?}");
+    }
+}
+
+// ── bootstrap bad (2026-09-22) ────────────────────────────────────────
+mod bootstrap_bad_tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_parses_verbatim_and_exports_entry() {
+        // The body is the authored entry — no _entry: wrap, no auto-ret,
+        // and the bootstrap name is auto-exported for the linker.
+        let body = "section .isr_vector\nsp_slot: .word 0x2007C000\n\
+                    reset_v: .word Reset_Handler + 1\n\
+                    section .text.start\nReset_Handler:\n    mov r0, 1\n    halt\n";
+        let asm = generate_bad_fn(BadFnReq {
+            body,
+            target_triple: "thumbv7m-none-eabi",
+            param_env: std::collections::HashMap::new(),
+            bootstrap: true,
+            name: "Reset_Handler",
+            base_dir: None,
+        })
+        .unwrap();
+        assert!(asm.contains(".global Reset_Handler"), "{asm}");
+        assert!(asm.contains(".isr_vector"), "{asm}");
+        assert!(asm.contains("Reset_Handler:"), "{asm}");
+        // The author's halt is NOT rewritten to ret — verbatim.
+        assert!(asm.contains("wfi"), "{asm}");
+    }
+
+    #[test]
+    fn regular_bad_fn_still_wraps_and_appends_ret() {
+        // The wrap uses the FN NAME (global) so the LLVM declare @add
+        // resolves; the auto-ret appends for the return path.
+        let asm = generate_bad_fn(BadFnReq {
+            body: "add r0, r1, r2\n",
+            target_triple: "x86_64",
+            param_env: std::collections::HashMap::new(),
+            bootstrap: false,
+            name: "add",
+            base_dir: None,
+        })
+        .unwrap();
+        assert!(asm.contains(".global add"), "{asm}");
+        assert!(asm.contains("add:"), "{asm}");
+        assert!(asm.contains("ret"), "{asm}");
+    }
+}
+
+// ── CSR ops + rv64 bootstrap (2026-09-22) ─────────────────────────────
+mod csr_tests {
+    use super::*;
+
+    #[test]
+    fn csr_ops_lower_on_riscv64_and_error_elsewhere() {
+        let asm = generate("t:\n    csrw mtvec, r0\n    csrr r1, mcause\n    mret\n", "riscv64-unknown-none").unwrap();
+        assert!(asm.contains("csrw mtvec, a0"), "{asm}");
+        assert!(asm.contains("csrr a1, mcause"), "{asm}");
+        assert!(asm.contains("mret"), "{asm}");
+        // No CSR on x86_64 — loud capability error, never silent.
+        let err = generate("t:\n    csrw mtvec, r0\n", "x86_64").unwrap_err();
+        assert!(err.contains("no `x86_64` lowering"), "{err}");
+    }
+
+    #[test]
+    fn riscv64_bare_assembles_soft_float() {
+        // The bad .o must match the .bv side's soft-float ABI (clang's
+        // riscv64-unknown-none default); hosted linux keeps lp64d.
+        if toolchain_available("riscv64") {
+            let src = "t:\n    mov r0, -1\n    csrw pmpaddr0, r0\n    halt\n";
+            let asm = generate(src, "riscv64-unknown-none").unwrap();
+            let out = test_dir("csr").join("t.o");
+            assemble(&asm, "riscv64-unknown-none", &out).expect("assemble failed");
+            let obj = std::fs::read(&out).unwrap();
+            std::fs::remove_file(&out).ok();
+            assert!(obj.windows(4).any(|w| w == &[0x7f, b'E', b'L', b'F']), "ELF magic");
+        }
+    }
+}
+
+// ── raw binary extraction (2026-09-22, --raw-bin) ─────────────────────
+mod raw_bin_tests {
+    use super::*;
+
+    #[test]
+    fn objcopy_extracts_flat_image_from_linked_elf() {
+        // The raw image must start with the code (mov $42, %rax; hlt),
+        // not the ELF header — the boot-sector contract.
+        let src = "section .text\nglobal _start\n_start:\n    mov r0, 42\n    halt\n";
+        let asm = generate(src, "x86_64").unwrap();
+        let dir = test_dir("rawbin");
+        let o = dir.join("t.o");
+        assemble(&asm, "x86_64", &o).expect("assemble");
+        let bin = dir.join("t");
+        let status = std::process::Command::new("ld")
+            .arg(&o).arg("-o").arg(&bin).status().expect("ld");
+        assert!(status.success());
+        let raw = dir.join("t.bin");
+        let oc = if std::process::Command::new("llvm-objcopy").arg("--version").output().ok().map(|o| o.status.success()).unwrap_or(false) {
+            "llvm-objcopy"
+        } else { "objcopy" };
+        let status = std::process::Command::new(oc)
+            .arg("-O").arg("binary").arg(&bin).arg(&raw).status().expect("objcopy");
+        assert!(status.success());
+        let img = std::fs::read(&raw).unwrap();
+        // movl $42, %eax = 48 c7 c0 2a 00 00 00; hlt = f4
+        assert!(img.starts_with(&[0x48, 0xc7, 0xc0, 0x2a]), "{:02x?}", &img[..8]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+// ── raw blocks + int (2026-09-22, raw-blocks plan) ────────────────────
+mod raw_block_tests {
+    use super::*;
+
+    #[test]
+    fn raw_block_emits_on_matching_family_and_skips_otherwise() {
+        let src = "raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend\n";
+        let asm = generate(src, "x86_64-unknown-linux-gnu").unwrap();
+        assert!(asm.contains(".code32"), "{asm}");
+        assert!(asm.contains("movl $0x1000, %eax"), "{asm}");
+        // Not emitted for another family.
+        let asm = generate(src, "aarch64-unknown-linux-gnu").unwrap();
+        assert!(!asm.contains(".code32"), "{asm}");
+    }
+
+    #[test]
+    fn raw_block_allows_directives_that_exception_rows_reject() {
+        // The multiboot failure mode: .code32 in an exception row was an
+        // unknown-mnemonic error. A raw block passes it verbatim.
+        let asm = generate(
+            "raw x86_64\n    .code32\n    cli\n    .code64\nend\n",
+            "x86_64-unknown-linux-gnu",
+        )
+        .unwrap();
+        assert!(asm.contains(".code32"), "{asm}");
+        assert!(asm.contains(".code64"), "{asm}");
+    }
+
+    #[test]
+    fn int_op_lowers_on_x86_and_errors_elsewhere() {
+        let asm = generate("t:\n    int 0x10\n    ret\n", "x86_64-unknown-linux-gnu").unwrap();
+        assert!(asm.contains("int $16"), "{asm}");
+        let err = generate("t:\n    int 0x10\n    ret\n", "aarch64-unknown-linux-gnu").unwrap_err();
+        assert!(err.contains("no `aarch64` lowering"), "{err}");
+    }
+}
+
+// ── named raw blocks (2026-09-22, per-arch stdlib boot entries) ───────
+mod named_raw_block_tests {
+    use super::*;
+
+    #[test]
+    fn named_raw_block_emits_label_and_is_callable() {
+        let src = "raw riscv64 uart_init\n    li a2, 0x10000000\nend\n\
+                   _start:\n    call uart_init\n    halt\n";
+        let asm = generate(src, "riscv64-unknown-none").unwrap();
+        assert!(asm.contains("uart_init:"), "{asm}");
+        assert!(asm.contains("li a2, 0x10000000"), "{asm}");
+        assert!(asm.contains("call uart_init"), "{asm}");
+    }
+
+    #[test]
+    fn two_families_one_name_no_collision() {
+        let src = "raw riscv64 uart_init\n    li a2, 1\nend\n\
+                   raw thumbv7m uart_init\n    ldr r2, =2\nend\n\
+                   _start:\n    call uart_init\n    halt\n";
+        let rv = generate(src, "riscv64-unknown-none").unwrap();
+        assert!(rv.contains("li a2, 1"), "riscv block only: {rv}");
+        assert!(!rv.contains("ldr r2, =2"), "{rv}");
+        let th = generate(src, "thumbv7m-none-eabi").unwrap();
+        assert!(th.contains("ldr r2, =2"), "thumb block only: {th}");
+        assert!(!th.contains("li a2, 1"), "{th}");
+    }
+
+    #[test]
+    fn anonymous_raw_block_still_works() {
+        let asm = generate(
+            "raw x86_64\n    .code32\n    cli\nend\n",
+            "x86_64-unknown-linux-gnu",
+        )
+        .unwrap();
+        assert!(asm.contains(".code32"), "{asm}");
+    }
+}
+
+// ── Interpretation B (2026-09-22): .bv typed calls to .bad primitives ─
+mod interpretation_b_tests {
+    use super::*;
+
+    #[test]
+    fn bad_fn_label_is_global_fn_name() {
+        // The wrap uses the fn NAME (global) so the LLVM declare @name
+        // resolves across translation units.
+        let asm = generate_bad_fn(BadFnReq {
+            body: "call putc\n",
+            target_triple: "riscv64",
+            param_env: std::collections::HashMap::new(),
+            bootstrap: false,
+            name: "boot_putc",
+            base_dir: None,
+        })
+        .unwrap();
+        assert!(asm.contains(".global boot_putc"), "{asm}");
+        assert!(asm.contains("boot_putc:"), "{asm}");
+    }
+
+    #[test]
+    fn imports_land_before_entry_label() {
+        // A prepended .bad import must come BEFORE the fn label — an
+        // import directive closes the current owner, orphaning the body.
+        // Use a real empty import file so resolution succeeds.
+        let dir = test_dir("ib");
+        std::fs::write(dir.join("arch.bad"), "\n").ok();
+        let body = "import \"arch.bad\"\ncall putc\n";
+        let asm = generate_bad_fn(BadFnReq {
+            body,
+            target_triple: "riscv64",
+            param_env: std::collections::HashMap::new(),
+            bootstrap: false,
+            name: "boot_putc",
+            base_dir: Some(dir.clone()),
+        })
+        .unwrap();
+        let label_idx = asm.find("boot_putc:").unwrap_or(usize::MAX);
+        assert!(asm.contains(".global boot_putc"), "{asm}");
+        assert!(asm.contains("call putc"), "{asm}");
+        assert!(label_idx < asm.find("call putc").unwrap_or(usize::MAX), "{asm}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+// ── load_sectors disk abstraction (2026-09-22, universal completion) ──
+mod disk_tests {
+    use super::*;
+
+    #[test]
+    fn load_image_defn_lowers_with_portable_copy_loop() {
+        // load_image is a defn — invoked at INSTRUCTION POSITION (like
+        // ChargeGuest), not via `call`. It INLINES its copy loop.
+        let src = "import \"std/bad/disk.bad\"\n\
+                   _start:\n    load_image r4, r5, r6\n    halt\n";
+        let asm = generate(src, "riscv64-unknown-none").unwrap();
+        assert!(asm.contains("lbu"), "{asm}");
+        assert!(asm.contains("sb a4, 0(a5)"), "copy store: {asm}");
+        assert!(asm.contains("bge"), "loop branch: {asm}");
+    }
+
+    #[test]
+    fn read_sectors_is_x86_real_mode_raw() {
+        let src = "raw x86_64 read_sectors\n    .code16\n    int $0x13\nend\n\
+                   _start:\n    call read_sectors\n    halt\n";
+        let asm = generate(src, "x86_64-unknown-linux-gnu").unwrap();
+        assert!(asm.contains("read_sectors:"), "{asm}");
+        assert!(asm.contains(".code16"), "{asm}");
+        // Family-gated: no read_sectors label on riscv (the block emits
+        // only for x86_64). Symbol resolution is the linker's job, not
+        // generate()'s.
+        let asm = generate(src, "riscv64-unknown-none").unwrap();
+        assert!(!asm.contains("read_sectors:"), "{asm}");
     }
 }

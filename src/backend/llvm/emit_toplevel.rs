@@ -2826,6 +2826,11 @@ impl LlvmBackend {
         } else {
             "#8"
         };
+        // 2026-09-23 (term_guard_value -O3 collapse): __exit calls
+        // exit_group — it never returns. #13's willreturn lied to LLVM and
+        // -O3 LTO collapsed the whole main (the EndProgram call site's
+        // `unreachable` became UB). Emit it noreturn (#14).
+        let attr_idx = if d.name == "__exit" { "#14" } else { attr_idx };
         writeln!(out, ") local_unnamed_addr {}{} {{", attr_idx, section_attr).ok();
         writeln!(out, "  entry:").ok();
         self.fun.ssa_old_int_regs.clear();
@@ -2979,16 +2984,26 @@ impl LlvmBackend {
         writeln!(out, "}}").ok();
         // Phase 4.5: Emit dso_local export wrapper if #export modifier present
         if let Some(export_name) = Self::get_export_name(&d.modifiers) {
-            writeln!(out, "define dso_local {} @{}(" , ll_ret_ty, export_name).ok();
-            write!(out, "{}", self.ctx.state_ptr_param).ok();
+            writeln!(out, "define dso_local {} @{}(", ll_ret_ty, export_name).ok();
+            if needs_state {
+                write!(out, "{}", self.ctx.state_ptr_param).ok();
+            }
             for (i, (n, t)) in d.parameters.iter().enumerate() {
-                write!(out, ", {} %arg{}", self.llvm_type(t), i).ok();
+                if needs_state || i > 0 {
+                    write!(out, ", ").ok();
+                }
+                write!(out, "{} %arg{}", self.llvm_type(t), i).ok();
             }
             writeln!(out, ") local_unnamed_addr #0 {{").ok();
             write!(out, "  %res = call {} @{}(", ll_ret_ty, ll_name).ok();
-            write!(out, "ptr %state").ok();
+            if needs_state {
+                write!(out, "ptr %state").ok();
+            }
             for (i, (n, t)) in d.parameters.iter().enumerate() {
-                write!(out, ", {} %arg{}", self.llvm_type(t), i).ok();
+                if needs_state || i > 0 {
+                    write!(out, ", ").ok();
+                }
+                write!(out, "{} %arg{}", self.llvm_type(t), i).ok();
             }
             writeln!(out, ") local_unnamed_addr #0").ok();
             writeln!(out, "  ret {} %res", ll_ret_ty).ok();
@@ -5564,9 +5579,25 @@ impl LlvmBackend {
     pub(super) fn emit_bad_fn_declare(&mut self, out: &mut String, bf: &crate::ast::top::BadFn) {
         let ll_ret = self.llvm_type(&bf.ret_type);
         write!(out, "declare {} @{}(", ll_ret, bf.name).ok();
-        for (i, (_, t)) in bf.params.iter().enumerate() {
-            if i > 0 { write!(out, ", ").ok(); }
-            write!(out, "{}", self.llvm_type(t)).ok();
+        // 2026-09-23 (stateless-defn mechanism): the bad ABI passes the
+        // implicit `%state` pointer as the FIRST ABI arg (bad_param_env
+        // starts .bv-called fns at register index 1). The declare must match
+        // the .o the bad backend emits — a stateless caller passing %state
+        // to a `declare @boot_putc(i64)` was a param-count mismatch
+        // (opt: "use of undefined value '%state'"). Gate on defn_takes_state
+        // so a genuinely stateless bad fn (no state) stays 1-arg.
+        let st = if self.ctx.defn_takes_state(&bf.name) { "ptr" } else { "" };
+        let mut first = st.is_empty();
+        if !st.is_empty() {
+            write!(out, "ptr").ok();
+        }
+        for (_, t) in bf.params.iter() {
+            if first {
+                first = false;
+                write!(out, "{}", self.llvm_type(t)).ok();
+            } else {
+                write!(out, ", {}", self.llvm_type(t)).ok();
+            }
         }
         writeln!(out, ") #6").ok();
     }

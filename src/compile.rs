@@ -594,8 +594,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     emit_beast_snapshot(file_path, BeastStage::Provenance, BeastPosition::After, &items, &universe, opts)?;
 
     // 2026-07-16: P4 — Collect extra objects from ForeignBinding FromSpec paths
-    // for linking into the final binary.
-    let mut extra_objects = collect_extra_objects(&items, &resolver, briev_compiler::conformance::is_bare(std::path::Path::new(file_path)))?;
+    // for linking into the final binary. 2026-09-22: a `bootstrap node`/
+    // `bootstrap bad` on bare-metal is an authored entry — skip briev_rt
+    // there too (the freestanding path drops it, but don't even compile it).
+    let skip_briev_rt = briev_compiler::conformance::is_bare(std::path::Path::new(file_path))
+        || has_bootstrap_entry(&items);
+    let mut extra_objects = collect_extra_objects(&items, &resolver, skip_briev_rt)?;
 
     // ── Frgn dispatch resolution ──────────────────────────────────────
     // 2026-07-22: Resolve each frgn declaration's dispatch strategy before
@@ -782,8 +786,20 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             .lookup(&get_extension(&opts.file_path))
             .and_then(|e| e.target_triple.clone()))
         .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
-    let bad_fn_objects = compile_bad_fn_objects(&items, &bad_triple)?;
-    extra_objects.extend(bad_fn_objects);
+    let bad_fn_objects = compile_bad_fn_objects(&items, &bad_triple, &resolver.bad_imports, std::path::Path::new(file_path).parent().map(|p| p.to_path_buf()))?;
+    // 2026-09-22 (bootstrap-bad plan): bad fn .o files must link in the
+    // FREESTANDING path too (a `bootstrap bad` entry lives there) — they
+    // are kept separate from the frgn extra_objects (briev_rt etc.), which
+    // the bare path correctly drops.
+    extra_objects.extend(bad_fn_objects.clone());
+    // The bootstrap entry symbol, if a `bootstrap bad` is declared — the
+    // linker needs it as the process entry (no owned _start exists).
+    let bootstrap_entry = opts.entry_override.clone().or_else(|| {
+        items.iter().find_map(|i| match i {
+            briev_compiler::ast::TopLevel::BadFn(bf) if bf.bootstrap => Some(bf.name.clone()),
+            _ => None,
+        })
+    });
 
     if !opts.emit_ir_only {
         let binary_base = out_path.strip_suffix(ext).unwrap_or(&out_path);
@@ -830,7 +846,52 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             }
             all_objects.sort();
             all_objects.dedup();
-            compile_ll_to_binary(&out_path, &binary_path, &all_objects, &protocol_libs, opts.shared)?;
+            // 2026-09-22 (universal-bootstrapper plan): --no-link with
+            // --raw-bin skips the link entirely — the flat image is
+            // objcopy'd from the bootstrap bad .o directly (an MBR-style
+            // .code16/.org 510 body cannot link in a 64-bit ELF).
+            if !opts.no_link {
+                compile_ll_to_binary(&out_path, &binary_path, LinkInputs {
+                    extra_objects: &all_objects,
+                    protocol_libs: &protocol_libs,
+                    shared: opts.shared,
+                    bad_objects: &bad_fn_objects,
+                    bootstrap_entry: bootstrap_entry.as_deref(),
+                })?;
+            }
+        }
+        // 2026-09-22 (bootstrap-bad plan): --raw-bin extracts the flat
+        // loadable image (objcopy -O binary) — the boot-sector / firmware
+        // blob a bootloader would load from the linked ELF. With
+        // --no-link, the source is the bootstrap bad .o (not a linked
+        // binary).
+        if opts.raw_bin && opts.backend == BackendKind::Llvm {
+            let bin_img = format!("{binary_base}.bin");
+            // llvm-objcopy is target-agnostic (handles thumb/riscv/aarch64
+            // ELF); plain objcopy handles the host x86_64.
+            let oc = if std::process::Command::new("llvm-objcopy").arg("--version").output().ok().map(|o| o.status.success()).unwrap_or(false) {
+                "llvm-objcopy"
+            } else { "objcopy" };
+            // --no-link: flatten the bootstrap bad .o (the only code a
+            // flat boot sector can carry). Else flatten the linked ELF.
+            let src = if opts.no_link {
+                bad_fn_objects.first().ok_or_else(|| {
+                    "no-link raw-bin needs a bootstrap bad .o - add a `bootstrap bad` to the \
+                     program".to_string()
+                })?
+                .as_os_str()
+            } else {
+                std::ffi::OsStr::new(&binary_path)
+            };
+            let status = std::process::Command::new(oc)
+                .arg("-O").arg("binary")
+                .arg(src).arg(&bin_img)
+                .status()
+                .map_err(|e| format!("cannot run `{oc}`: {e} - is binutils installed?"))?;
+            if !status.success() {
+                return Err(format!("objcopy failed to extract the flat image from `{}`", src.to_string_lossy()));
+            }
+            println!("wrote {bin_img}");
         }
         // 2026-07-26: Phase 5 — Compile LLVM IR to WASM binary for webstack backend.
         // Uses llc to compile the .ll (emitted with wasm32 target triple) to .wasm.
@@ -1858,12 +1919,58 @@ fn determine_out_path(file_path: &str, out_dir: Option<&str>) -> Result<String, 
     Ok(format!("{}/{}.ll", parent, base))
 }
 
+/// 2026-09-22: whether any top-level item is an authored machine entry —
+/// a `bootstrap node` (Transaction with the bootstrap modifier) or a
+/// `bootstrap bad` (BadFn with the bootstrap flag).
+fn has_bootstrap_entry(items: &[briev_compiler::ast::TopLevel]) -> bool {
+    use briev_compiler::ast::top::TopLevel;
+    items.iter().any(|i| match i {
+        TopLevel::BadFn(bf) => bf.bootstrap,
+        TopLevel::Transaction(t) => t.modifiers.iter().any(|m| m.name == "bootstrap"),
+        _ => false,
+    })
+}
+
 /// 2026-09-21: Compile `bad fn` bodies through the bad backend.
 /// Each BadFn's body is a standalone .bad program compiled for the
 /// target triple; the resulting .o files are linked into the binary.
+/// Build param_env for one `bad fn`: each .bv param name →
+/// Bound::Token(register), integer params through abi_args, float params
+/// through abi_args_fp. A bootstrap entry is a machine entry, not an ABI
+/// function — no params bind (it owns sp/vector-table/handoff itself). A
+/// NON-bootstrap bad fn is CALLED FROM .bv code, where the LLVM call
+/// passes the implicit %state pointer as the FIRST ABI arg — so the real
+/// params start at register index 1 (a1/x1), not 0.
+fn bad_param_env(
+    bf: &briev_compiler::ast::top::BadFn, abi_args: &[String], abi_args_fp: &[String],
+) -> std::collections::HashMap<String, briev_compiler::backend::bad::lower::Bound> {
+    use briev_compiler::backend::bad::lower::Bound;
+    let mut param_env = std::collections::HashMap::new();
+    let mut r_idx = if bf.bootstrap { 0usize } else { 1usize };
+    let mut f_idx = 0usize;
+    for (pname, pty) in &bf.params {
+        let type_name = pty.to_string();
+        let is_float = type_name.starts_with("Float") || type_name.starts_with("F32")
+            || type_name.starts_with("F64") || type_name == "Double";
+        let reg = if is_float {
+            let r = abi_args_fp.get(f_idx).cloned().unwrap_or_else(|| format!("f{f_idx}"));
+            f_idx += 1;
+            r
+        } else {
+            let r = abi_args.get(r_idx).cloned().unwrap_or_else(|| format!("r{r_idx}"));
+            r_idx += 1;
+            r
+        };
+        param_env.insert(pname.clone(), Bound::Token(reg));
+    }
+    param_env
+}
+
 fn compile_bad_fn_objects(
     items: &[briev_compiler::ast::TopLevel],
     target_triple: &str,
+    bad_imports: &[std::path::PathBuf],
+    base_dir: Option<std::path::PathBuf>,
 ) -> Result<Vec<PathBuf>, String> {
     use briev_compiler::ast::top::TopLevel;
     let mut objects = Vec::new();
@@ -1880,41 +1987,42 @@ fn compile_bad_fn_objects(
             _ => continue,
         };
         // Build param_env: each .bv param name → Bound::Token(register).
-        let mut param_env = std::collections::HashMap::new();
-        let mut r_idx = 0usize;
-        let mut f_idx = 0usize;
-        for (_pname, pty) in &bf.params {
-            let type_name = pty.to_string();
-            let is_float = type_name.starts_with("Float") || type_name.starts_with("F32")
-                || type_name.starts_with("F64") || type_name == "Double";
-            let reg = if is_float {
-                let r = abi_args_fp.get(f_idx).cloned().unwrap_or_else(|| {
-                    format!("f{f_idx}")
-                });
-                f_idx += 1;
-                r
-            } else {
-                let r = abi_args.get(r_idx).cloned().unwrap_or_else(|| {
-                    format!("r{r_idx}")
-                });
-                r_idx += 1;
-                r
-            };
-            param_env.insert(
-                _pname.clone(),
-                briev_compiler::backend::bad::lower::Bound::Token(reg),
-            );
-        }
+        // See bad_param_env for the ABI index rules (bootstrap = no
+        // params; .bv-called fns start at register index 1 — the LLVM
+        // call passes the implicit %state pointer as the first ABI arg).
+        let param_env = bad_param_env(bf, &abi_args, &abi_args_fp);
         // Parse + lower the .bad body.
+        // 2026-09-22 (per-arch stdlib boot entries): prepend the .bv-top-level
+        // `.bad` imports so the body's `call uart_init` resolves the imported
+        // named raw blocks; base_dir lets relative import paths resolve.
+        let mut body = String::new();
+        for import in bad_imports {
+            body.push_str(&format!("import \"{}\"\n", import.display()));
+        }
+        body.push_str(&bf.body);
         let asm = briev_compiler::backend::bad::generate_bad_fn(
-            &bf.body,
-            target_triple,
-            param_env,
+            briev_compiler::backend::bad::BadFnReq {
+                body: &body,
+                target_triple,
+                param_env,
+                bootstrap: bf.bootstrap,
+                name: &bf.name,
+                base_dir: base_dir.clone(),
+            },
         )
         .map_err(|e| format!("bad fn `{}`: {}", bf.name, e))?;
         // Assemble to .o.
-        let o_path = cache_dir.join(format!("{}_{}.o", bf.name, family));
-        briev_compiler::backend::bad::assemble(&asm, family, &o_path)
+        // 2026-09-22: the cache key includes a content hash — two
+        // programs with the same bootstrap entry name must not collide
+        // (Reset_Handler from boot_mps2 vs bootloader are different code).
+        let hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            bf.body.hash(&mut h);
+            format!("{:016x}", h.finish())
+        };
+        let o_path = cache_dir.join(format!("{}_{}_{}.o", bf.name, family, &hash[..8]));
+        briev_compiler::backend::bad::assemble(&asm, target_triple, &o_path)
             .map_err(|e| format!("bad fn `{}` assemble: {}", bf.name, e))?;
         objects.push(o_path);
     }
@@ -2021,7 +2129,19 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
 ///
 /// 2026-07-26: Added `protocol_libs` parameter — library names from
 /// `from #System` frgns are passed as `-l<lib>` flags to clang.
-fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathBuf], protocol_libs: &[String], shared: bool) -> Result<(), String> {
+/// Inputs to `compile_ll_to_binary` beyond the two paths — bundled so
+/// the fn stays within the 6-param analysis bound (2026-09-22: the
+/// bad-fn/bootstrap additions grew the list to 7).
+struct LinkInputs<'a> {
+    extra_objects: &'a [PathBuf],
+    protocol_libs: &'a [String],
+    shared: bool,
+    bad_objects: &'a [PathBuf],
+    bootstrap_entry: Option<&'a str>,
+}
+
+fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>) -> Result<(), String> {
+    let LinkInputs { extra_objects, protocol_libs, shared, bad_objects, bootstrap_entry } = inputs;
     let ll_text = std::fs::read_to_string(ll_path)
         .map_err(|e| format!("cannot read '{}': {}", ll_path, e))?;
     // Extract target triple from the IR (first line: target triple = "..."`)
@@ -2062,6 +2182,9 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
     // `_start` (module asm) and references no runtime objects is FREESTANDING
     // — link -nostdlib (no crt1, no libc) and skip the runtime objects. The
     // owned _start captures argc/argv/environ itself and exits via syscall.
+    // 2026-09-22 (bootstrap-bad plan): a `bootstrap bad` entry is equally
+    // freestanding — the authored machine entry replaces the owned _start
+    // and needs no crt1/libc either (bad_objects links it in bare-metal).
     let freestanding = if shared {
         false
     } else {
@@ -2069,62 +2192,36 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
         // briev_rt.c/libc symbols (the backend gate proved it), so the
         // runtime objects — including briev_rt.o, which the env.bv frgns
         // pull unconditionally — are droppable.
-        ll_text.contains("define void @_start() naked") && protocol_libs.is_empty()
+        (ll_text.contains("define void @_start() naked") || !bad_objects.is_empty())
+            && protocol_libs.is_empty()
     };
     if freestanding {
-        cmd.args(["-nostdlib", "-no-pie", "-ffreestanding"]);
-        // 2026-09-13: for non-linux targets, use lld (GNU ld may not support
-        // the target arch — e.g. riscv64 emulation is missing from binutils ld)
-        // and the medany code model — QEMU virt RAM sits at 0x80000000, which
-        // overflows medlow's signed-32-bit %hi/%lo addressing (the Linux
-        // kernel / OpenSBI need medany for the same reason).
-        if !triple.contains("linux") {
-            cmd.arg("-fuse-ld=lld");
-            if triple.starts_with("riscv64") {
-                cmd.arg("-mcmodel=medany");
-            }
-        }
-        // 2026-09-13 (rv64 capability kernel): linker script passthrough.
-        // Read the linker script path from the IR (the backend emits a module
-        // asm comment `; linker: <path>` when configured). If present, pass
-        // -T <path> to the linker.
-        if let Some(ld_path) = ll_text.lines()
-            .find(|l| l.contains("; linker: "))
-            .and_then(|l| {
-                let start = l.find("; linker: ")?.checked_add(10)?;
-                Some(l[start..].trim().to_string())
-            })
-        {
-            cmd.arg(format!("-T{}", ld_path));
-        }
-        // 2026-09-13: for riscv64 bare-metal, link compiler-rt helpers
-        // (unsigned division/modulo intrinsics that LLVM emits).
-        if triple.starts_with("riscv64") {
-            // Resolve relative to the workspace root (Cargo.toml dir).
-            let workspace_root = std::env::var("CARGO_MANIFEST_DIR")
-                .unwrap_or_else(|_| ".".to_string());
-            let crt_path = std::path::PathBuf::from(&workspace_root)
-                .join("lib/runtime/compiler_rt_rv64.c");
-            if crt_path.exists() {
-                cmd.arg(crt_path);
-            }
-        }
-        // 2026-09-14 (rv64-finish plan Phase 5): ARM bare-metal — same
-        // compiler-rt need, AEABI ABI names (no hardware divider on
-        // Cortex-M3; LLVM emits __aeabi_ldivmod/__aeabi_memclr8). The
-        // division entries are assembly (.S): LLVM calls them with the
-        // AEABI register convention, which C cannot express.
-        if triple.starts_with("thumb") || triple.starts_with("arm") {
-            let workspace_root = std::env::var("CARGO_MANIFEST_DIR")
-                .unwrap_or_else(|_| ".".to_string());
-            for shim in ["lib/runtime/compiler_rt_arm.c", "lib/runtime/compiler_rt_arm.S"] {
-                let crt_path = std::path::PathBuf::from(&workspace_root).join(shim);
-                if crt_path.exists() {
-                    cmd.arg(crt_path);
-                }
-            }
-        }
+        apply_freestanding(&mut cmd, &triple, &ll_text, bad_objects, bootstrap_entry)?;
     } else {
+        // 2026-09-23 (frgn-elimination round 2): briev_rt.c is pulled by
+        // frgn `from` declarations — the env frgns were its last non-tamer
+        // referencers. The C-backed Data→String door (briev_bits_to_str) and
+        // the bitop lanes (briev_str_band/bor/bxor/bnot) still live there
+        // and are emitted via hardcoded declares, so a program that uses
+        // them must link the runtime even with no frgn pulling it.
+        let runtime_c = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("lib/runtime/briev_rt.c");
+        let needs_runtime = [
+            "@briev_bits_to_str(",
+            "@briev_str_band(",
+            "@briev_str_bor(",
+            "@briev_str_bxor(",
+            "@briev_str_bnot(",
+            "@briev_free_briev_str(",
+        ].iter().any(|sym| ll_text.contains(sym));
+        let has_runtime = extra_objects.iter().any(|o| {
+            o.to_string_lossy().contains("briev_rt")
+        });
+        if needs_runtime && !has_runtime {
+            let cache_dir = get_ffi_cache_dir();
+            let obj = compile_source_to_object(&runtime_c, &cache_dir)?;
+            cmd.arg(obj.as_os_str());
+        }
         for obj in extra_objects {
             cmd.arg(obj.as_os_str());
         }
@@ -2153,6 +2250,90 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, extra_objects: &[PathB
 
     println!("wrote {}", binary_path);
     Ok(())
+}
+
+/// Freestanding link flags: -nostdlib family, cross lld selection,
+/// linker-script passthrough, per-arch compiler-rt shims, bad objects,
+/// and the bootstrap entry symbol (2026-09-13/09-14/09-22 rationale
+/// comments preserved with each block).
+fn apply_freestanding(
+    cmd: &mut Command, triple: &str, ll_text: &str, bad_objects: &[PathBuf],
+    bootstrap_entry: Option<&str>,
+) -> Result<(), String> {
+    cmd.args(["-nostdlib", "-no-pie", "-ffreestanding"]);
+    // 2026-09-13: for non-linux targets, use lld (GNU ld may not support
+    // the target arch — e.g. riscv64 emulation is missing from binutils ld)
+    // and the medany code model — QEMU virt RAM sits at 0x80000000, which
+    // overflows medlow's signed-32-bit %hi/%lo addressing (the Linux
+    // kernel / OpenSBI need medany for the same reason).
+    if !triple.contains("linux") {
+        cmd.arg("-fuse-ld=lld");
+        if triple.starts_with("riscv64") {
+            cmd.arg("-mcmodel=medany");
+        }
+        // 2026-09-22 (aarch64 universal target): clang's aarch64 driver
+        // falls through to the host gcc (collect2) which cannot link
+        // aarch64 objects. Pin lld's machine emulation + static output
+        // so the driver stays on lld.
+        if triple.starts_with("aarch64") {
+            cmd.arg("-Wl,-m,aarch64elf");
+            cmd.arg("-static");
+        }
+    }
+    // 2026-09-13 (rv64 capability kernel): linker script passthrough.
+    // Read the linker script path from the IR (the backend emits a module
+    // asm comment `; linker: <path>` when configured). If present, pass
+    // -T <path> to the linker.
+    if let Some(ld_path) = ll_text.lines()
+        .find(|l| l.contains("; linker: "))
+        .and_then(|l| {
+            let start = l.find("; linker: ")?.checked_add(10)?;
+            Some(l[start..].trim().to_string())
+        })
+    {
+        cmd.arg(format!("-T{}", ld_path));
+    }
+    add_compiler_rt(cmd, triple);
+    // 2026-09-22 (bootstrap-bad plan): bad fn / `bootstrap bad` objects
+    // link in the freestanding path too — a bootstrap entry lives there.
+    for obj in bad_objects {
+        cmd.arg(obj.as_os_str());
+    }
+    // A `bootstrap bad` is the authored entry — the linker must enter at
+    // its symbol (no owned _start exists).
+    if let Some(entry) = bootstrap_entry {
+        cmd.arg(format!("-Wl,-e,{entry}"));
+    }
+    Ok(())
+}
+
+/// Per-arch compiler-rt shims (unsigned division/modulo intrinsics LLVM
+/// emits; ARM's division entries are .S under the AEABI convention).
+fn add_compiler_rt(cmd: &mut Command, triple: &str) {
+    let workspace_root =
+        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    let root = std::path::PathBuf::from(&workspace_root);
+    // 2026-09-13: riscv64 bare-metal needs compiler_rt_rv64.c (QEMU virt
+    // medany addressing — see apply_freestanding).
+    if triple.starts_with("riscv64") {
+        let crt_path = root.join("lib/runtime/compiler_rt_rv64.c");
+        if crt_path.exists() {
+            cmd.arg(crt_path);
+        }
+    }
+    // 2026-09-14 (rv64-finish plan Phase 5): ARM bare-metal — same
+    // compiler-rt need, AEABI ABI names (no hardware divider on
+    // Cortex-M3; LLVM emits __aeabi_ldivmod/__aeabi_memclr8). The
+    // division entries are assembly (.S): LLVM calls them with the
+    // AEABI register convention, which C cannot express.
+    if triple.starts_with("thumb") || triple.starts_with("arm") {
+        for shim in ["lib/runtime/compiler_rt_arm.c", "lib/runtime/compiler_rt_arm.S"] {
+            let crt_path = root.join(shim);
+            if crt_path.exists() {
+                cmd.arg(crt_path);
+            }
+        }
+    }
 }
 
 /// Compile LLVM IR to a linkable static library (`ar rcs lib<name>.a`),
@@ -2336,6 +2517,10 @@ mod tests {
             doc: None,
             ports_in: vec![],
             ports_out: vec![],
+            pins: vec![],
+            reference: None,
+            tolerance: None,
+            rating: None,
             extern_source: Some("/tmp/opencode/definitely-missing-uart.v".into()),
         });
         let err = copy_extern_companions(&[cell], "/tmp/opencode/probe-none.bv")
@@ -2517,6 +2702,10 @@ node go [done == false][done == true] {
             isr_mechanism: None,
             triple_override: None,
             linker_script_override: None,
+            all_targets: false,
+            entry_override: None,
+            raw_bin: false,
+            no_link: false,
         }
     }
 

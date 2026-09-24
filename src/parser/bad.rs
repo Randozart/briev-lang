@@ -89,27 +89,17 @@ impl<'s> Parser<'s> {
             // Local label `.name:` — nests into the owning label's body
             // (directives never carry a colon, so the colon keeps the
             // token-shape disambiguation honest).
-            if content.starts_with('.') && is_local_label_shape(content) {
-                match owner.as_ref() {
-                    Some(Owner::Label(i)) => {
-                        self.append_local(*i, content, span);
-                    }
-                    Some(Owner::Defn { idx, branch_rows, .. }) => {
-                        self.append_defn_local(*idx, *branch_rows, content, span)?;
-                    }
-                    _ => {
-                        return Err(BadParseError {
-                            message: format!(
-                                "local label `{content}` is outside any label - \
-                                 local labels must follow a global label or sit inside \
-                                 a defn body"
-                            ),
-                            line,
-                            span,
-                        });
-                    }
-                }
-                self.pos += 1;
+            if self.try_local(&mut owner, content, line, span)? {
+                continue;
+            }
+
+            // `raw <target>` ... `end` — verbatim assembly for one target.
+            // Captured BEFORE the top-level dispatch (the head line `raw
+            // x86_64` is not a directive or label shape). A block closes
+            // the current owner like any top-level item.
+            if let Some(block) = self.try_raw_block(content, line, span.clone())? {
+                owner = None;
+                self.items.push(BadTopLevel::RawBlock(block));
                 continue;
             }
 
@@ -176,6 +166,38 @@ impl<'s> Parser<'s> {
         Ok(BadProgram { items: self.items, span: Span::new(0, end, 0, 0) })
     }
 
+
+    /// `.name:` local label. Returns true when the line was consumed.
+    fn try_local(
+        &mut self, owner: &mut Option<Owner>, content: &str, line: usize, span: Span,
+    ) -> Result<bool, BadParseError> {
+        if !(content.starts_with('.') && is_local_label_shape(content)) {
+            return Ok(false);
+        }
+        match owner.as_ref() {
+            Some(Owner::Label(i)) => {
+                let i = *i;
+                self.append_local(i, content, span);
+            }
+            Some(Owner::Defn { idx, branch_rows, .. }) => {
+                let (idx, branch_rows) = (*idx, *branch_rows);
+                self.append_defn_local(idx, branch_rows, content, span)?;
+            }
+            _ => {
+                return Err(BadParseError {
+                    message: format!(
+                        "local label `{content}` is outside any label - \
+                         local labels must follow a global label or sit inside \
+                         a defn body"
+                    ),
+                    line,
+                    span,
+                });
+            }
+        }
+        self.pos += 1;
+        Ok(true)
+    }
 
     fn append_local(&mut self, idx: usize, content: &str, span: Span) {
         let name = split_label(content).map(|(n, _)| n[1..].to_string()).unwrap_or_default();
@@ -469,6 +491,60 @@ impl<'s> Parser<'s> {
         }))
     }
 
+    /// `raw x86_64` ... `end` — verbatim assembly for one target. Returns
+    /// `None` when the line is not a raw-block head. The block is captured
+    /// as-is (no mnemonic classification); `.end` terminates it, and an
+    /// unterminated block before EOF is a loud error.
+    fn try_raw_block(
+        &mut self, content: &str, line: usize, span: Span,
+    ) -> Result<Option<BadRawBlock>, BadParseError> {
+        // A bare `raw` with no target is a clear error, not an instruction.
+        if content.trim() == "raw" {
+            return Err(BadParseError {
+                message: "`raw` needs a target - write `raw x86_64` ... `end`".to_string(),
+                line,
+                span,
+            });
+        }
+        let Some((head, rest)) = content.split_once(char::is_whitespace) else {
+            return Ok(None);
+        };
+        if head != "raw" {
+            return Ok(None);
+        }
+        // `raw <target> [name]` — the optional name makes the block
+        // callable (a label emitted on the matching family).
+        let mut parts = rest.split_whitespace();
+        let target = parts.next().unwrap_or("");
+        validate_ident(target, line, span.clone())?;
+        let name = parts.next().map(|n| {
+            validate_ident(n, line, span.clone())?;
+            Ok(n.to_string())
+        }).transpose()?;
+        let mut lines = Vec::new();
+        self.pos += 1; // consume the `raw` head line
+        loop {
+            let Some((_, content, _)) = self.lines.get(self.pos).cloned() else {
+                return Err(BadParseError {
+                    message: format!(
+                        "raw block `raw {target}` (line {line}) is not terminated - add an \
+                         `end` line before the end of the file"
+                    ),
+                    line,
+                    span,
+                });
+            };
+            let trimmed = content.trim();
+            if trimmed == "end" {
+                self.pos += 1;
+                break;
+            }
+            lines.push(trimmed.to_string());
+            self.pos += 1;
+        }
+        Ok(Some(BadRawBlock { target: target.to_string(), name, lines, span }))
+    }
+
     /// `x86_64 => instr; instr` / `default => ...`
     fn try_branch_row(
         &mut self, content: &str, line: usize, span: Span,
@@ -482,30 +558,55 @@ impl<'s> Parser<'s> {
             validate_ident(target, line, span)?;
         }
         let mut body = Vec::new();
+        let mut line_ack: Option<Ack> = None;
         for piece in split_semicolons(rest) {
             let piece = piece.trim();
             if piece.is_empty() {
                 continue;
             }
             let (off, _, _) = self.lines[self.pos];
-            body.push(self.parse_instr_text(piece, off, line)?);
+            let (seg_ack, seg) = parse_ack_prefix(piece, off, line, span.clone())?;
+            let ack = seg_ack.or_else(|| line_ack.clone());
+            let mut instr = self.parse_instr_text(seg, off, line)?;
+            if let Some(a) = &ack {
+                if matches!(a.scope, AckScope::Line | AckScope::Override) {
+                    line_ack = Some(a.clone());
+                }
+            }
+            instr.ack = ack;
+            body.push(instr);
         }
         Ok(Some(BadBranch { target: target.to_string(), is_default, body, span }))
     }
 
-    /// `mnemonic ops` — a plain instruction line.
+    /// `mnemonic ops` — a plain instruction line. A leading `^` / `^^` /
+    /// `^^^` acknowledge prefix (optionally followed by a keyword tail
+    /// and/or `W<n>` warning names) is stripped before parsing.
     fn parse_instr_line(
         &mut self, content: &str, line: usize, span: Span,
     ) -> Result<Vec<BadInstr>, BadParseError> {
         let (off, _, _) = self.lines[self.pos];
         let mut out = Vec::new();
+        // A `^^` / `^^^` prefix scopes to the WHOLE line: the ack parsed
+        // on the first segment propagates to every `;`-separated instr.
+        let mut line_ack: Option<Ack> = None;
         for piece in split_semicolons(content) {
             let piece = piece.trim();
             if piece.is_empty() {
                 continue;
             }
-            let mut instr = self.parse_instr_text(piece, off, line)?;
-            instr.span = span;
+            let (seg_ack, seg) = parse_ack_prefix(piece, off, line, span.clone())?;
+            // The first segment's `^` is the line's acknowledge marker;
+            // `^^`/`^^^` propagate to the remaining segments.
+            let ack = seg_ack.or_else(|| line_ack.clone());
+            let mut instr = self.parse_instr_text(seg, off, line)?;
+            if let Some(a) = &ack {
+                if matches!(a.scope, AckScope::Line | AckScope::Override) {
+                    line_ack = Some(a.clone());
+                }
+            }
+            instr.ack = ack;
+            instr.span = span.clone();
             out.push(instr);
         }
         if out.is_empty() {
@@ -535,6 +636,7 @@ impl<'s> Parser<'s> {
             operands,
             contract: None,
             exceptions: Vec::new(),
+            ack: None,
             span: Span::new(off, off + text.len(), line, 0),
         })
     }
@@ -678,6 +780,104 @@ fn split_top(s: &str, sep: u8) -> Vec<&str> {
     }
     out.push(&s[start..]);
     out
+}
+
+/// Strip a leading acknowledge prefix from an instruction segment.
+///
+/// `^ mov r5, 1` / `^^ mov r5, 1` / `^^^ mov r5, 1` — the caret count is
+/// the scope (Instr / Line / Override). Optionally followed by a keyword
+/// tail (`^ack`, the future expansion slot) and/or explicit `W<n>` warning
+/// names (`^ W1 mov ...`, `^ack W1 mov ...`). Returns `(None, s)` when no
+/// prefix is present.
+fn parse_ack_prefix(
+    s: &str, off: usize, line: usize, span: Span,
+) -> Result<(Option<Ack>, &str), BadParseError> {
+    let Some(scope) = parse_ack_scope(s, line, span)? else {
+        return Ok((None, s));
+    };
+    let rest = s[carets_of(s)..].trim_start();
+    // Optional keyword tail (`ack`, future `seq`/`vol`/...).
+    let mut rest = rest;
+    if let Some((kw, tail)) = rest.split_once(char::is_whitespace) {
+        if kw == "ack" {
+            rest = tail.trim_start();
+        }
+    }
+    // Optional explicit warning names: `W1`, `W2`, ...
+    let (warnings, rest) = parse_ack_warnings(rest);
+    if warnings.is_empty() {
+        if rest.is_empty() {
+            return Err(BadParseError {
+                message: format!(
+                    "acknowledge prefix `{}` is not followed by an instruction",
+                    &s[..carets_of(s).min(8)]
+                ),
+                line,
+                span,
+            });
+        }
+        return Ok((Some(Ack { scope, warnings: Vec::new(), span }), rest));
+    }
+    if rest.is_empty() {
+        return Err(BadParseError {
+            message: format!(
+                "acknowledge prefix `{}` names {} warning(s) but no instruction follows",
+                &s[..carets_of(s).min(8)],
+                warnings.len()
+            ),
+            line,
+            span,
+        });
+    }
+    Ok((Some(Ack { scope, warnings, span }), rest))
+}
+
+/// Count the leading carets of an ack prefix.
+fn carets_of(s: &str) -> usize {
+    s.chars().take_while(|&c| c == '^').count()
+}
+
+/// Parse the caret count → scope; `None` when there is no prefix.
+fn parse_ack_scope(
+    s: &str, line: usize, span: Span,
+) -> Result<Option<AckScope>, BadParseError> {
+    let carets = carets_of(s);
+    if carets == 0 {
+        return Ok(None);
+    }
+    let scope = match carets {
+        1 => AckScope::Instr,
+        2 => AckScope::Line,
+        3 => AckScope::Override,
+        _ => {
+            return Err(BadParseError {
+                message: format!(
+                    "acknowledge prefix `{}` has {carets} carets - use `^` (this instruction), \
+                     `^^` (whole line), or `^^^` (full override of predicted errors)",
+                    &s[..carets.min(8)]
+                ),
+                line,
+                span,
+            });
+        }
+    };
+    Ok(Some(scope))
+}
+
+/// Consume leading `W<n>` warning names (space-separated).
+fn parse_ack_warnings(rest: &str) -> (Vec<String>, &str) {
+    let mut warnings = Vec::new();
+    let mut rest = rest;
+    loop {
+        let head = rest.split_whitespace().next().unwrap_or("");
+        if head.len() >= 2 && head.starts_with('W') && head[1..].chars().all(|c| c.is_ascii_digit()) {
+            warnings.push(head.to_string());
+            rest = rest[head.len()..].trim_start();
+        } else {
+            break;
+        }
+    }
+    (warnings, rest)
 }
 
 /// `1.5`, `3.14e-2`, `2E10` — a decimal float literal (validated by the
@@ -1026,5 +1226,75 @@ mod semicolon_tests {
         assert!(push.contract.is_some(), "contract binds to the FIRST packed");
         assert!(call.contract.is_none());
         assert_eq!(call.exceptions.len(), 1, "exception binds to the LAST");
+    }
+
+    #[test]
+    fn ack_prefix_scopes_by_caret_count() {
+        let p = parse_ok(
+            "t:\n    ^ mov r5, 1\n    ^^ mov r5, 1; call f\n    ^^^ mov r5, 1\n    \
+             ret\n",
+        );
+        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
+        let BadBodyItem::Instr(single) = &l.body[0] else { panic!("single") };
+        let ack = single.ack.as_ref().expect("^ parses to Instr ack");
+        assert_eq!(ack.scope, AckScope::Instr);
+        assert!(ack.warnings.is_empty());
+        let BadBodyItem::Instr(packed) = &l.body[1] else { panic!("packed") };
+        let ack = packed.ack.as_ref().expect("^^ parses to Line ack");
+        assert_eq!(ack.scope, AckScope::Line);
+        let BadBodyItem::Instr(call) = &l.body[2] else { panic!("call") };
+        let ack = call.ack.as_ref().expect("^^ propagates across ; segments");
+        assert_eq!(ack.scope, AckScope::Line);
+        let BadBodyItem::Instr(override_) = &l.body[3] else { panic!("override") };
+        let ack = override_.ack.as_ref().expect("^^^ parses to Override ack");
+        assert_eq!(ack.scope, AckScope::Override);
+    }
+
+    #[test]
+    fn ack_parses_keyword_tail_and_named_warnings() {
+        let p = parse_ok(
+            "t:\n    ^ack W1 mov r5, 1\n    ^ W2 W3 mov r6, 2\n    ^ W1 mov r7, 3\n",
+        );
+        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
+        let BadBodyItem::Instr(kw) = &l.body[0] else { panic!("kw") };
+        let ack = kw.ack.as_ref().expect("^ack parses");
+        assert_eq!(ack.scope, AckScope::Instr);
+        assert_eq!(ack.warnings, vec!["W1".to_string()]);
+        let BadBodyItem::Instr(warns) = &l.body[1] else { panic!("warns") };
+        let ack = warns.ack.as_ref().expect("W2 W3 parses");
+        assert_eq!(ack.warnings, vec!["W2".to_string(), "W3".to_string()]);
+        let BadBodyItem::Instr(w1) = &l.body[2] else { panic!("w1") };
+        let ack = w1.ack.as_ref().expect("W1 parses");
+        assert_eq!(ack.warnings, vec!["W1".to_string()]);
+    }
+
+    #[test]
+    fn ack_prefix_errors_are_loud() {
+        let err = parse_bad("t:\n    ^^^^ mov r5, 1\n").unwrap_err();
+        assert!(err.message.contains("carets"), "{}", err.message);
+        let err = parse_bad("t:\n    ^\n").unwrap_err();
+        assert!(err.message.contains("not followed by an instruction"), "{}", err.message);
+    }
+
+    #[test]
+    fn raw_block_captures_verbatim_and_terminates() {
+        let p = parse_ok(
+            "raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend\n",
+        );
+        let BadTopLevel::RawBlock(b) = &p.items[0] else { panic!("raw block") };
+        assert_eq!(b.target, "x86_64");
+        assert_eq!(b.lines, vec![".code32", "cli", "movl $0x1000, %eax"]);
+    }
+
+    #[test]
+    fn raw_block_unterminated_is_a_loud_error() {
+        let err = parse_bad("raw x86_64\n    cli\n").unwrap_err();
+        assert!(err.message.contains("not terminated"), "{}", err.message);
+    }
+
+    #[test]
+    fn raw_block_head_needs_a_target() {
+        let err = parse_bad("raw\n    cli\nend\n").unwrap_err();
+        assert!(err.message.contains("needs a target"), "{}", err.message);
     }
 }

@@ -3922,7 +3922,7 @@ fn test_struct_param_uses_ptr_in_signature() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("define i64 @process(ptr noundef noalias nocapture align 8 %state, i64 %arg0"),
+    assert!(output.contains("define i64 @process(i64 %arg0"),
         "Struct param should be the boxed i64 handle in the function signature.\nGot:\n{}", output);
 }
 
@@ -8830,7 +8830,10 @@ defn make() -> Option {
         &ir[..ir.len().min(2000)]
     );
     assert!(
-        ir.contains("define i64 @get(ptr noundef noalias nocapture align 8 %state, i64"),
+        // 2026-09-23 (stateless-defn mechanism): `get`'s body is a pure
+        // match — no state, so it emits WITHOUT the `%state` param (previously
+        // every defn carried `%state`, the blanket rule).
+        ir.contains("define i64 @get(i64"),
         "enum param must be the i64 handle: {}",
         &ir[..ir.len().min(3000)]
     );

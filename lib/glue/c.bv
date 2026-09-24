@@ -11,26 +11,66 @@
 //   import "glue/c.bv";
 //   export defn greet(name: CStr) -> CStr { ... };
 
-// C string ↔ Briev string transforms (briev_rt.c). `cstr_to_briev` reads a
-// nul-terminated C string into a [len][data] Briev String; `str_to_c` emits a
-// nul-terminated C string from a Briev String. The CastTo/CastFrom pair makes
-// the C_String variant 1-to-1 with the UTF8 base: the delta is one call.
-// 2026-08-28: `cstr_to_briev`'s param is Ptr<Void> — the C symbol takes a
-// pointer (`char* briev_cstr_to_briev(const char*)`), and the boundary value
-// register IS a ptr; the old `Int` declaration made the cast lane emit
-// `call ptr @briev_cstr_to_briev(i64 %ptr_val)` — a verifier error. An i64
-// handle caller (`name as Int`) still coerces via the Int→ptr lane.
-frgn cstr_to_briev(p: Ptr<Void>) -> String : briev_cstr_to_briev from "lib/runtime/briev_rt.c";
-frgn str_to_c(handle: String) -> Int : briev_str_to_c from "lib/runtime/briev_rt.c";
-frgn cstring_concat(a: Int, b: Int) -> Int : briev_cstring_concat from "lib/runtime/briev_rt.c";
+// C string ↔ Briev string transforms. `cstr_to_briev` reads a nul-terminated
+// C string into a [len][data][NUL] Briev String; `str_to_c` yields the data
+// pointer of a Briev String (a zero-copy view — every String allocation is
+// [len][bytes][NUL] since SSO retired, B4, so the data region IS a C string);
+// `cstring_concat` concatenates two C strings into a fresh NUL-terminated
+// buffer. The CastTo/CastFrom pair makes the C_String variant 1-to-1 with
+// the UTF8 base: the delta is one call.
+// 2026-08-28: `cstr_to_briev`'s param is Ptr<Void> — the boundary value
+// register IS a ptr; an i64 handle caller (`name as Int`) still coerces via
+// the Int→ptr lane.
+//
+// 2026-09-23 (frgn-elimination round 2): these were frgns to briev_rt.c
+// (briev_cstr_to_briev/briev_str_to_c/briev_cstring_concat). They are now
+// PURE-BRIEV defns — the C functions are deleted from the runtime (native-
+// runtime plan: `str_to_c` zero-copy view, `cstr_to_briev`/`cstring_concat`
+// via Alloc#/Copy# over cstr_len). The casting graph's ExtCallDyn resolves
+// the Briev-side name and passes %state when the name is a defn, so the
+// CastTo/CastFrom bindings are unchanged. The axiom stays DECLARED trusted
+// (the bodies use raw Load#/Copy# the symbolic gate does not evaluate).
+
+// cstr_to_briev — copy a NUL-terminated C string into a [len][bytes][NUL]
+// Briev String. The param is the cstr ADDRESS as an Int — every call site
+// (`name as Int`, `proj as Int`) already holds the pointer in an Int, and
+// as a pure-Briev defn the body does raw Int arithmetic over Load#/Copy#.
+defn cstr_to_briev(p: Int) -> String [p >= 0][term .^Length >= 0] {
+    let base: Int = p;
+    let len: Int = cstr_len(base);
+    let buf: Int = Alloc#(8 + len + 1) as Int;
+    Store#(buf, len, 8);
+    Copy#(buf + 8, base, len);
+    Store#(buf + 8 + len, 0, 1);
+    term (buf as Data) as String;
+};
+
+// str_to_c — zero-copy view: the Briev String's data region IS the
+// NUL-terminated C string (the [len][bytes][NUL] allocation invariant).
+// Returns the data pointer (not the header).
+defn str_to_c(handle: String) -> Int [handle .^Length >= 0][term >= 0] {
+    term ((handle as Data) as Int) + 8;
+};
+
+// cstring_concat — concatenate two NUL-terminated C strings into a fresh
+// NUL-terminated buffer, returned as a bare pointer (the C_String ABI).
+defn cstring_concat(a: Int, b: Int) -> Int [a >= 0 && b >= 0][term >= 0] {
+    let la: Int = cstr_len(a);
+    let lb: Int = cstr_len(b);
+    let buf: Int = Alloc#(la + lb + 1) as Int;
+    Copy#(buf, a, la);
+    Copy#(buf + la, b, lb);
+    Store#(buf + la + lb, 0, 1);
+    term buf;
+};
 
 // The C string sub-protocol of String: nul-terminated bytes vs the base's
 // [len][data] encoding. `Concat` is the variant's own operation — a CStr
 // concatenated with + uses it directly (zero cast), not the [len][data]
 // inline concat.
 // 2026-08-28 (axiom facility): the CastTo/CastFrom pair is implemented by
-// FFI functions (briev_rt.c) — the round-trip gate cannot evaluate foreign
-// bodies, so the pair is DECLARED trusted and enters the authority ledger.
+// the pure-Briev defns above — the round-trip gate skips the proof because
+// the bodies use raw Load#/Copy# (declared trusted, authority ledger).
 proto C_String: String {
     axiom CastTo(String<UTF8>) = cstr_to_briev(#Lh);
     axiom CastFrom(String<UTF8>) = str_to_c(#Lh);

@@ -1342,6 +1342,11 @@ pub struct BadFn {
     pub contract: Contract,
     /// Raw `.bad` source text (between the outermost braces).
     pub body: String,
+    /// `bootstrap bad` — the body IS the authored machine entry (reset
+    /// vector / `.text.start`). The compiler emits no owned `_start` when
+    /// one is present; the author owns sp, `.bss`, the vector table, and
+    /// the handoff (`call main` / park / jump). 2026-09-22.
+    pub bootstrap: bool,
     pub span: Span,
 }
 

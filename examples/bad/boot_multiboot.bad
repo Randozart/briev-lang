@@ -1,0 +1,64 @@
+// ── boot_multiboot.bad — a multiboot2 x86_64 kernel in .bad (2026-09-22)
+// The 32-bit protected-mode prologue (GDT, PAE/LME, long-mode jump) is a
+// `raw x86_64` block — the multiboot protocol enters in 32-bit mode with
+// paging off, and .bad's core ISA emits 64-bit GAS. The 64-bit body at
+// `_start64:` is portable core ops. Prints to VGA text memory (0xB8000).
+//
+// Build: brievc bad examples/bad/boot_multiboot.bad --target x86_64
+// Boot:  qemu-system-x86_64 -kernel boot_multiboot   (multiboot2 loader)
+//
+// The multiboot2 header must sit in the first 32768 bytes, 8-aligned.
+// The multiboot2 header must sit within the first 32768 bytes, 8-aligned,
+// IN THE SAME LOAD SEGMENT as the code (objcopy -O binary flattens only
+// the first LOAD segment) — so it rides .text, not a separate section.
+section .text
+mh_start:
+    .long 0xE85250D6
+    .long 0
+    .long mh_end - mh_start
+    .set mh_checksum, -(0xE85250D6 + 0 + (mh_end - mh_start))
+    .long mh_checksum
+    // end-of-tags
+    .long 0
+    .long 8
+mh_end:
+
+raw x86_64
+    .code32
+    cli
+    // Minimal identity GDT: null, 64-bit code (0x08), 32-bit data (0x10).
+    .align 8
+gdt32:
+    .quad 0
+    .quad 0x00AF9A000000FFFF
+    .quad 0x00CF92000000FFFF
+gdt32_end:
+    movl $(gdt32_end - gdt32 - 1), %eax
+    lgdt gdt32
+    // Enable PAE + LME (CR4.PAE, EFER.LME), then paging (CR0.PG).
+    xorl %eax, %eax
+    movl %eax, %cr3
+    movl %cr4, %eax
+    orl $0x20, %eax
+    movl %eax, %cr4
+    movl $0xC0000080, %ecx
+    rdmsr
+    orl $0x100, %eax
+    wrmsr
+    movl %cr0, %eax
+    orl $0x80000001, %eax
+    movl %eax, %cr0
+    ljmp $0x08, $_start64
+    .code64
+    .align 8
+end
+_start64: [r0 valid]
+    // 64-bit core body — portable ops (VGA text memory 0xB8000).
+    mov r0, 0xB8000
+    mov r1, 66
+    store r1, r0
+    mov r1, 65
+    store r1, r0
+    mov r1, 68
+    store r1, r0
+    halt

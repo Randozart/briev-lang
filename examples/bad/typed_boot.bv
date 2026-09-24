@@ -1,0 +1,45 @@
+// ── typed_boot.bv — Interpretation B end-to-end (2026-09-22) ──────────
+// The full typed chain: bootstrap bad (portable core) → `.bv` defn →
+// `bad` fn (typed, contract-checked) → per-arch `.bad` named raw block.
+// Proves .bv can call .bad primitives as typed functions.
+//
+// NOTE: only the BOOTSTRAP body imports arch.bad — the `bad fn` references
+// the `putc` symbol by name and the bootstrap object provides it (a named
+// raw block is a global label). Importing arch.bad into BOTH would create
+// duplicate symbols.
+
+// The typed wrapper: `c` binds to the ABI arg (a1/x1 — the .bv call
+// passes %state first); the body forwards c to the per-arch `putc`
+// named raw block via a TAIL call (`jmp`, not `call` — a bad fn has no
+// frame to save ra in, so it must not clobber ra; putc returns directly
+// to the .bv caller). The auto-ret appends for the no-putc path.
+bad boot_putc(c: Int) -> Int [result == 1] {
+    mov r0, c
+    jmp putc
+}
+
+// A regular .bv defn calling the bad fn — typed, contract-checked.
+defn banner() -> Int {
+    let b: Int = boot_putc(66);  // 'B'
+    let a: Int = boot_putc(65);  // 'A'
+    let d: Int = boot_putc(68);  // 'D'
+    term b + a + d;
+}
+
+bootstrap bad Reset_Handler() [true] {
+    import "std/bad/arch.bad"
+    // `core` is referenced from the imported uart_init (cross-object) —
+    // export it at the top, before any label opens an owner.
+    .global core
+    Reset_Handler:
+    // Per-arch machine entry (sets r2 = UART base), then portable core.
+    jmp uart_init
+core:
+    // A .bv defn uses the stack (frame saves) — a bootstrap bad owns the
+    // machine entry, so sp must be set from _stack_top before calling .bv
+    // code. (bootloader.bv's kernel defn was constant-folded, so it never
+    // touched the stack; banner is real code and needs one.)
+    addr sp, _stack_top
+    call banner   // .bv defn → bad fn → .bad raw block
+    halt
+}
