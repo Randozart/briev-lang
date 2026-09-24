@@ -115,6 +115,10 @@ pub enum Expr {
     StructLiteral {
         type_name: String,
         fields: Vec<(String, Expr)>,
+        /// 2026-09-24 (component laws): `spec Name: quantity;` fields —
+        /// structured physics parameters, distinct from ordinary BOM
+        /// annotation fields. Empty for ordinary struct literals.
+        specs: Vec<(String, Expr)>,
     },
 
     // ── Functions ───────────────────────────────────────────────

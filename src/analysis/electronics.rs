@@ -34,6 +34,10 @@ pub struct ComponentInstance {
     /// Struct-literal fields carried as schematic properties (`value` → Value,
     /// `package` → Footprint). Only literal-typed values are carried.
     pub properties: Vec<(String, String)>,
+    /// 2026-09-24 (component laws): `spec Name: quantity;` fields — the
+    /// structured physics channel. Invalid/missing quantities are absent so a
+    /// law consumer reports a missing parameter instead of guessing.
+    pub specs: BTreeMap<String, crate::ast::PropertyValue>,
 }
 
 /// A pin end of a net, resolved against its type's pin declarations.
@@ -63,6 +67,9 @@ pub struct TypeInfo {
     /// `rating 0.25;` → Some(watts), `rating any;` → Some(INFINITY),
     /// no clause → None (the proven-dissipation violation decides).
     pub rating: Option<f64>,
+    /// 2026-09-24 (component laws): type-level `spec Resistance` default in
+    /// ohms. `None` when the type declares only the dimension or no value.
+    pub resistance: Option<f64>,
 }
 
 /// One derived electrical node.
@@ -371,6 +378,13 @@ fn collect_type_pins(
                     crate::ast::top::Rating::Watts(w) => *w,
                     crate::ast::top::Rating::Any => f64::INFINITY,
                 });
+                // 2026-09-24 (component laws): a type-level resistance value
+                // is the parameter default. A dimension-only declaration
+                // (`Identifier("Ohm")`) is not a value.
+                let resistance = match td.body.metadata.get("resistance") {
+                    Some(crate::ast::PropertyValue::Quantity { si, dimension }) if *dimension == crate::ast::QuantityDim::Ohm => Some(*si),
+                    _ => None,
+                };
                 let mut pins: Vec<(String, u64)> =
                     td.body.pins.iter().map(|p| (p.name.clone(), p.number)).collect();
                 pins.sort_by_key(|&(_, n)| n);
@@ -395,7 +409,7 @@ fn collect_type_pins(
                 }
                 info.insert(
                     td.name.clone(),
-                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating },
+                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance },
                 );
             }
         }
@@ -413,7 +427,7 @@ fn collect_instances(
     for item in items {
         let TopLevel::Statement(stmt) = item else { continue };
         let Statement::Let { name, ty, expr, .. } = stmt.as_ref() else { continue };
-        let Some(Expr::StructLiteral { type_name: lit_ty, fields }) = expr else { continue };
+        let Some(Expr::StructLiteral { type_name: lit_ty, fields, specs }) = expr else { continue };
         let declared = ty.as_ref().map_or("", |t| match t {
             crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.as_str(),
             _ => "",
@@ -436,9 +450,44 @@ fn collect_instances(
                 _ => None,
             })
             .collect();
-        out.push(ComponentInstance { name: name.clone(), type_name, properties });
+        // Spec payloads are structured quantities (SI + dimension). A malformed
+        // spec value is not smuggled into properties — a later law consumer
+        // sees it as missing and names the fix.
+        let spec_values = collect_spec_quantities(specs);
+        out.push(ComponentInstance { name: name.clone(), type_name, properties, specs: spec_values });
     }
     out
+}
+
+/// Convert component-literal `spec` entries to structured SI quantities.
+/// Known spec names use their canonical metadata key; malformed quantities
+/// are absent so a law consumer reports the missing parameter, never guesses.
+fn collect_spec_quantities(
+    specs: &[(String, Expr)],
+) -> BTreeMap<String, crate::ast::PropertyValue> {
+    let mut out = BTreeMap::new();
+    for (name, expr) in specs {
+        let Some((key, quantity)) = spec_quantity(name, expr) else { continue };
+        out.insert(key, quantity);
+    }
+    out
+}
+
+/// One spec entry → (storage key, SI quantity). None for a malformed value.
+fn spec_quantity(name: &str, expr: &Expr) -> Option<(String, crate::ast::PropertyValue)> {
+    let Expr::UnitLiteral { value, unit } = expr else { return None };
+    let Some(crate::parser::quantity::UnitSuffix::Explicit { scale, dim }) =
+        crate::parser::quantity::parse_unit_suffix(unit)
+    else {
+        return None;
+    };
+    let key = crate::parser::spec_name_to_key(name)
+        .map(str::to_string)
+        .unwrap_or_else(|| name.to_lowercase());
+    Some((
+        key,
+        crate::ast::PropertyValue::Quantity { si: value * scale, dimension: dim },
+    ))
 }
 
 /// If `expr` is a pin access on a declared instance (`inst.pin` or
@@ -583,29 +632,31 @@ fn extract_numeric(expr: &Expr) -> Option<f64> {
     }
 }
 
-/// Extract a voltage value from an expression — V or bare numeric.
+/// Extract a physical quantity from a numeric expression in `expected`
+/// units. Bare numbers remain the compact legacy spelling; canonical
+/// full-word units are normalized through the shared suffix parser.
+fn extract_quantity(expr: &Expr, expected: crate::ast::QuantityDim) -> Option<f64> {
+    match expr {
+        Expr::UnitLiteral { value, unit } => {
+            crate::parser::quantity::quantity_si(*value, unit, expected).map(|(si, _)| si)
+        }
+        _ => extract_numeric(expr),
+    }
+}
+
+/// Extract a voltage value from an expression — V/Volt or bare numeric.
 fn extract_voltage(expr: &Expr) -> Option<f64> {
-    match expr {
-        Expr::UnitLiteral { value, unit } if unit == "V" => Some(*value),
-        _ => extract_numeric(expr),
-    }
+    extract_quantity(expr, crate::ast::QuantityDim::Volt)
 }
 
-/// Extract a current value from an expression — A, mA, or bare numeric.
+/// Extract a current value from an expression — A/Amp, mA/mAmp, or bare numeric.
 fn extract_current(expr: &Expr) -> Option<f64> {
-    match expr {
-        Expr::UnitLiteral { value, unit } if unit == "A" => Some(*value),
-        Expr::UnitLiteral { value, unit } if unit == "mA" => Some(value / 1000.0),
-        _ => extract_numeric(expr),
-    }
+    extract_quantity(expr, crate::ast::QuantityDim::Amp)
 }
 
-/// Extract a resistance value from an expression — R, Ω, or bare numeric.
+/// Extract a resistance value from an expression — Ohm/kOhm or bare numeric.
 fn extract_resistance(expr: &Expr) -> Option<f64> {
-    match expr {
-        Expr::UnitLiteral { value, unit } if unit == "R" || unit == "Ω" => Some(*value),
-        _ => extract_numeric(expr),
-    }
+    extract_quantity(expr, crate::ast::QuantityDim::Ohm)
 }
 
 fn voltage_drive(
@@ -970,11 +1021,24 @@ fn check_tolerance(
     }
 }
 
-/// Parse an ohmic value from a component property: plain (`330`), k/K
-/// (kilohm), M (megohm), R (unit marker, `330R`). Returns None for
-/// non-numeric values ("red") — no derivation, no error.
+/// Parse an ohmic value from a component property. Structured modern form is
+/// `330Ohm`/`4.7kOhm`; legacy forms include plain (`330`), k/K (kilohm),
+/// M (megohm), R/r (unit marker, `330R`), and the E-series `4k7`. Returns
+/// None for non-numeric values ("red") — no derivation, no error.
 fn parse_ohms(raw: &str) -> Option<f64> {
     let s = raw.trim();
+    // Canonical full-word form: the suffix starts at the first non-number.
+    if let Some(pos) = s.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-') {
+        let (num, suffix) = s.split_at(pos);
+        if let (Ok(v), Some(crate::parser::quantity::UnitSuffix::Explicit { scale, dim })) =
+            (num.parse::<f64>(), crate::parser::quantity::parse_unit_suffix(suffix))
+        {
+            if dim == crate::ast::QuantityDim::Ohm {
+                let out = v * scale;
+                return (out > 0.0).then_some(out);
+            }
+        }
+    }
     // Suffixes: k/K (kilohm), M (megohm), R/r (unit marker). Plain parse
     // otherwise. Non-numeric values ("red") → None: no derivation, no error.
     let (num, mult) = match s.chars().last()? {
@@ -1049,7 +1113,9 @@ struct SeriesPart {
     net_b: String,
 }
 
-/// Collect the series parts: two-pin instances with numeric values.
+/// Collect the series parts: two-pin instances with structured resistance,
+/// a type-level resistance default, or (legacy migration path only) a numeric
+/// opaque `value`.
 fn collect_series_parts(
     instances: &BTreeMap<String, &ComponentInstance>,
     type_info: &BTreeMap<String, TypeInfo>,
@@ -1060,15 +1126,19 @@ fn collect_series_parts(
         let Some(info) = type_info.get(&inst.type_name) else { continue };
         if info.pins.len() != 2 {
             continue;
-        }
-        let Some(raw) = inst.properties.iter().find(|(k, _)| k == "value").map(|(_, v)| v.clone())
-        else {
-            continue;
         };
-        let Some(ohms) = parse_ohms(&raw) else { continue };
-        if ohms <= 0.0 {
-            continue;
+        // Structured spec physics wins; the legacy `value` heuristic is a
+        // migration path, never a second truth when `spec Resistance` exists.
+        let ohms = match inst.specs.get("resistance") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension })
+                if *dimension == crate::ast::QuantityDim::Ohm && *si > 0.0 => Some(*si),
+            _ => info.resistance.filter(|r| *r > 0.0),
         }
+        .or_else(|| {
+            let raw = inst.properties.iter().find(|(k, _)| k == "value").map(|(_, v)| v.clone())?;
+            parse_ohms(&raw)
+        });
+        let Some(ohms) = ohms else { continue };
         let p0 = (inst.name.clone(), info.pins[0].0.clone());
         let p1 = (inst.name.clone(), info.pins[1].0.clone());
         let (Some(n0), Some(n1)) = (pin_to_net.get(&p0), pin_to_net.get(&p1)) else {
@@ -1079,7 +1149,7 @@ fn collect_series_parts(
         }
         parts.push(SeriesPart {
             name: inst.name.clone(),
-            raw,
+            raw: format_ohms(ohms),
             ohms,
             net_a: n0.clone(),
             net_b: n1.clone(),
@@ -1332,6 +1402,27 @@ fn format_volts(v: f64) -> String {
     let s = format!("{:.2}", v);
     let s = s.trim_end_matches('0').trim_end_matches('.');
     format!("{} V", s)
+}
+
+/// Canonical diagnostic spelling for resistance (2026-09-24 component laws):
+/// full-word `Ohm`, SI prefix chosen deterministically.
+fn format_ohms(r: f64) -> String {
+    let (prefix, scale) = ohm_prefix(r);
+    let v = r / scale;
+    let s = format!("{:.3}", v);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    format!("{}{}Ohm", s, prefix)
+}
+
+/// Pick the largest deterministic SI prefix not exceeding `r`.
+fn ohm_prefix(r: f64) -> (&'static str, f64) {
+    const PREFIXES: [(f64, &'static str); 4] =
+        [(1e9, "G"), (1e6, "M"), (1e3, "k"), (1e-3, "m")];
+    PREFIXES
+        .into_iter()
+        .find(|(lower, _)| r >= *lower)
+        .map(|(lower, prefix)| (prefix, lower))
+        .unwrap_or(("", 1.0))
 }
 
 /// Derive the netlist for an electronics program.
@@ -4835,6 +4926,50 @@ mod tests {
             nl.intent_errors[0].contains("no declared instance"),
             "{}",
             nl.intent_errors[0]
+        );
+    }
+
+    #[test]
+    fn component_spec_resistance_is_structured_si() {
+        // 2026-09-24 (component laws): `spec Resistance` is carried as SI +
+        // dimension, separate from the opaque BOM label.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Resistance: Ohm; };
+            let r1: Resistor = Resistor { value: "330R"; spec Resistance: 4.7kOhm; };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.components.len(), 1);
+        match nl.components[0].specs.get("resistance") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                assert_eq!(*dimension, crate::ast::QuantityDim::Ohm);
+                assert!((si - 4700.0).abs() < 1e-9);
+            }
+            other => panic!("expected structured 4.7kOhm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spec_resistance_feeds_series_derivation_before_legacy_value() {
+        // Structured physics is the sole truth when present: the opaque BOM
+        // label may say anything without changing the derivation.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; tolerance any; spec Resistance: Ohm; };
+            type Source { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Source = Source {};
+            let r1: Resistor = Resistor { value: "999R"; spec Resistance: 1kOhm; };
+            txn drive
+                [v1.p.voltage == 3.3V && v1.p.voltage == r1.a.voltage && r1.b.voltage == v1.n.voltage]
+                [r1.b.current <= 0.1]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.voltage
+                .net_current
+                .values()
+                .any(|i| (i - 0.0033).abs() < 1e-12),
+            "spec Resistance 1kOhm should derive 3.3mA, got {:?}",
+            nl.voltage.net_current
         );
     }
 

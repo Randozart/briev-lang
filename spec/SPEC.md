@@ -293,7 +293,21 @@ in the parser — netlist, contracts, and the emitter see named ordinary
  (case-sensitive), base units `V A R Ω F H Hz W K m`, the E-series
  fraction `4k7`, and dimension-checked resolution against the key
  (`spec Decouple: 3.3V` is an error — a Farad key takes a capacitance).
- `Length` (`m`/`mm`/`cm`) is the coordinate dimension.
+ `Length` (`m`/`mm`/`cm`) is the coordinate dimension. Canonical
+ full-word forms are also quantities — `Volt`, `Amp`, `Ohm`, `Farad`,
+ `Henry`, `Hertz`, `Watt`, `Kelvin`, `Metre`/`Meter` — combined with the
+ same prefixes (`4.7kOhm`, `20mAmp`). New component physics uses the
+ full-word form.
+
+ **Component physics parameters (2026-09-24).** A component type declares
+ the datasheet channel separately from its BOM label:
+ `spec Resistance: Ohm;` is a dimensioned parameter declaration; a
+ type-level `spec Resistance: 4.7kOhm;` is a default value. An instance
+ supplies or overrides it with `let r1: Resistor = Resistor { value:
+ "4k7"; spec Resistance: 4.7kOhm; };`. The `Resistance` key requires the
+ explicit full-word unit — `330R`, `330Ω`, and a bare number are errors.
+ `value` is opaque annotation and is never a second physics channel when
+ `spec Resistance` is present.
 
  **The fab section (2026-09-23).** A `.ebv` may attach a physical-layout
  section — `fab { board 40mm x 20mm; place u1 @ (20mm, 10mm) rot 90; }`

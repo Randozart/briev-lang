@@ -927,7 +927,7 @@ impl LlvmBackend {
             }
 
             // ── Struct literal ─────────────────────────────────────────
-            Expr::StructLiteral { type_name, fields } => {
+            Expr::StructLiteral { type_name, fields, specs: _ } => {
                 self.emit_struct_literal(out, v, type_name, fields, indent)
             }
 
@@ -1698,7 +1698,7 @@ impl LlvmBackend {
             Expr::PluginIntercept { .. } => {
                 panic!("unresolved plugin-intercept call reached codegen");
             }
-            Expr::StructLiteral { type_name, fields } => {
+            Expr::StructLiteral { type_name, fields, specs: _ } => {
                 return self.emit_struct_literal(out, v, type_name, fields, indent);
             }
             Expr::Exists(name) => { panic!("compile-time existence check '{}' reached LLVM codegen", name) },
@@ -3593,7 +3593,7 @@ impl LlvmBackend {
         }
 
         for (i, expr) in exprs.iter().enumerate() {
-            let Expr::StructLiteral { type_name, fields } = expr else { continue; };
+            let Expr::StructLiteral { type_name, fields, specs: _ } = expr else { continue; };
             let base_offset = (i as u64) * elem_size;
             for (field_name, field_expr) in fields {
                 let fr = self.fun.gen_reg();

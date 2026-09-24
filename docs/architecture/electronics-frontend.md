@@ -84,13 +84,33 @@ Corollaries:
    `"2mA"` — quoted implies arbitrary. Quantity notation is core `.ebv`;
    spec values use the same unit grammar as expressions
    (`2mA`, `3.3V`, `100n`, `4k7`; scaling prefixes `p n u m k M G`,
-   key-dimension resolution, dimension-conflict hard error).
+   key-dimension resolution, dimension-conflict hard error). Canonical
+   full-word units (`330Ohm`, `20mAmp`) are the spelling for new component
+   physics.
 3. **Resistance is physics, not a BOM label** — it moves to a spec; the
    compiler must never read an annotation to derive current.
    (Consequence: E14b-5's "values are immaterial for obligation
    satisfaction" is structurally true.)
 
 Full record: `docs/plans/2026-09-23-quantities-and-annotation-doctrine.md`.
+
+## Component laws (2026-09-24 direction)
+
+Components are not compiler-recognized catalog entries. A component type
+declares **constitutive equations** in type-body `when` laws; the compiler
+consumes equations, dimensions, guards, KCL, and solution status generically.
+`spec` supplies the law's constants (`spec Resistance: Ohm;`, instance
+`spec Resistance: 330Ohm;`). Direction is emergent: symmetric equations are
+bidirectional, guarded equations are directional. The first solver is
+piecewise-linear DC and refuses zero/multiple operating points rather than
+choosing silently. Full decisions and slice gates:
+`docs/plans/2026-09-24-electronics-component-laws.md`.
+
+Landed in Slice 1: centralized quantity parsing, canonical full-word units,
+`ComponentInstance.specs` as structured SI + dimension, structured
+`Resistance` preferred over the legacy numeric-`value` heuristic, and a
+type-level resistance default. Law elaboration and the solver are the next
+slices.
 
 ## Deferred (recorded, not built)
 
@@ -103,13 +123,15 @@ LED current lands in range — the residue of §3.2's `derive on:`, which
 was superseded by the `spec MinCurrent`/`MaxCurrent` obligation form;
 recorded as gap **E15** in the hardware-dialect ledger).
 
-Landed since the list was written: named nets (`net <name>:` — 2026-09-12),
-unit suffixes (`3.3V`/`20mA`/`330R` — 2026-09-12), instance arrays
+Landed since the list was written: unit suffixes (`3.3V`/`20mA`/`330R`,
+now alongside canonical `330Ohm`/`20mAmp`), instance arrays
 (`let r[i:16][j:8]` — 2026-09-23, E1, Slice 1), pin-level drive intents
 (`inst.pin = true;` — 2026-09-23, E14a gate), the E13 decoupling
 convention, the E14a intent-completion machinery, and per-prefix
 reference designators. The §3.2 USB-sensor gate fixture
 (`examples/electronics/usb_sensor.ebv`) compiles to a `.kicad_sch`.
+(Named-net syntax was considered and then **retracted** on 2026-09-22 —
+nets are named by derived physics, not author labels.)
 
 ## Tests
 
@@ -194,6 +216,18 @@ auto-places the rest deterministically, proves containment (error) and
 clearance (warning), and emits a `.kicad_pcb` alongside the schematic
 (physics-derived net labels, footprints from `config/footprints.dbvl`).
 New surface: `Length` dimension + `mm`/`cm` units.
+
+**2026-09-24 (component laws, Slice 1, plan
+`2026-09-24-electronics-component-laws.md`):** the physics parameter
+foundation. Unit parsing is centralized for spec values and expression
+literals, with canonical full-word quantities (`4.7kOhm`, `20mAmp`).
+`spec Resistance: Ohm;` declares a dimensioned component parameter and
+`spec Resistance: 330Ohm;` states its value; instance literals carry that
+value as structured SI + dimension (`ComponentInstance.specs`), separate
+from opaque `value` annotation. Structured resistance is preferred over
+the legacy numeric-`value` heuristic. The approved destination is
+type-body `when` laws as constitutive equations plus a piecewise-linear DC
+solver; later slices elaborate and solve them.
 
 **2026-09-23 (E14b slice 5, plan `2026-09-23-ebv-e14b-value-aware-pullup.md`):**
 value-aware pull-up matching. A MIN obligation is satisfied by any

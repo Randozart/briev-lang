@@ -382,9 +382,12 @@ fn rename_expr(expr: &Expr, map: &HashMap<String, String>) -> Expr {
         ),
         Expr::Deref(inner) => Expr::Deref(Box::new(rename_expr(inner, map))),
         Expr::AddrOf(inner) => Expr::AddrOf(Box::new(rename_expr(inner, map))),
-        Expr::StructLiteral { type_name, fields } => Expr::StructLiteral {
+        Expr::StructLiteral { type_name, fields, specs } => Expr::StructLiteral {
             type_name: rename_string(type_name, map),
             fields: fields.iter()
+                .map(|(n, e)| (rename_string(n, map), rename_expr(e, map)))
+                .collect(),
+            specs: specs.iter()
                 .map(|(n, e)| (rename_string(n, map), rename_expr(e, map)))
                 .collect(),
         },

@@ -152,7 +152,7 @@ pub fn eval_expr(
         Expr::DerivationBlock(_) => Ok(Value::Void),
 
         // ── Struct literal ───────────────────────────────────────
-        Expr::StructLiteral { type_name, fields } => {
+        Expr::StructLiteral { type_name, fields, specs: _ } => {
             let _ = type_name;
             let mut names = Vec::with_capacity(fields.len());
             let values: Result<Vec<Value>, _> = fields
@@ -3178,6 +3178,7 @@ defn go() -> Int {
                 ("name".into(), Expr::Quoted(b"ada".to_vec())),
                 ("age".into(), Expr::Decimal(36)),
             ],
+            specs: Vec::new(),
         }
     }
 

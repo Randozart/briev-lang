@@ -517,11 +517,11 @@ impl<'a> Builder<'a> {
                     self.walk_expr(e, queue);
                 }
             }
-            Expr::StructLiteral { type_name, fields } => {
+            Expr::StructLiteral { type_name, fields, specs } => {
                 // `HashMap { … }` / `Point { … }` — construction roots the
                 // type's behavioral members.
                 self.on_construction(type_name, queue);
-                for (_, e) in fields {
+                for (_, e) in fields.iter().chain(specs.iter()) {
                     self.walk_expr(e, queue);
                 }
             }
@@ -759,9 +759,9 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_call_names_expr(e, out);
             }
         }
-        Expr::StructLiteral { type_name, fields } => {
+        Expr::StructLiteral { type_name, fields, specs } => {
             out.push(type_name.clone());
-            for (_, e) in fields {
+            for (_, e) in fields.iter().chain(specs.iter()) {
                 collect_call_names_expr(e, out);
             }
         }

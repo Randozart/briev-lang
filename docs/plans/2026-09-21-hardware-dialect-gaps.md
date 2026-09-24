@@ -1010,3 +1010,27 @@ Ledger fully closed: the electronics dialect's intent-synthesis surface
 contention, relays, buses) is implemented. D18 remains open only for
 ERC-property breadth (more class behaviors when a consumer needs them) —
 the machinery is generic.
+
+### Amendment 2026-09-24 (XII): component laws — physics parameter foundation
+
+Plan `2026-09-24-electronics-component-laws.md`. The electronics behavior
+direction shifts from implicit part recognition to author-declared
+constitutive equations in type-body `when` laws. The compiler learns
+equations, dimensions, guards, KCL, and operating-point diagnostics;
+component types remain stdlib vocabulary.
+
+Landed in Slice 1:
+
+- centralized physical-suffix parsing for specs and expressions, with
+  canonical full-word units (`330Ohm`, `4.7kOhm`, `20mAmp`);
+- `spec Resistance: Ohm;` as a dimensioned parameter declaration and
+  `spec Resistance: 4.7kOhm;` as a typed default;
+- component literals accept `spec <Name>: <quantity>;` and carry the
+  value as structured SI + dimension, separate from opaque BOM fields;
+- structured resistance takes precedence over the legacy numeric-`value`
+  heuristic (which remains only as a migration path).
+
+Next slices: law IR/linear elaboration, unguarded DC solve, guarded
+piecewise modes, stdlib/fixture migration, then retirement of the
+`value`-as-ohms path. This is the substrate rail inference should build
+on, not a new keyword family.

@@ -5,17 +5,16 @@
 // @ prefix forces any token to Quoted(bytes).
 
 use super::helpers::Parser;
+use super::quantity::is_quantity_suffix;
 use crate::ast::{BinaryOpKind, ChainRef, Expr, ReflectKind, SpawnStorage, Type, UnaryOpKind};
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
 /// True when the suffix identifier is a physics unit that should produce
-/// `Expr::UnitLiteral` instead of `Expr::TaggedLiteral`.
+/// `Expr::UnitLiteral` instead of `Expr::TaggedLiteral`. One shared suffix
+/// table serves specs and expressions (2026-09-24 component laws).
 fn is_unit_suffix(s: &str) -> bool {
-    matches!(
-        s,
-        "V" | "A" | "mA" | "R" | "Ω" | "F" | "H" | "Hz" | "W" | "K"
-    )
+    is_quantity_suffix(s)
 }
 
 impl<'a> Parser<'a> {
@@ -1232,15 +1231,12 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
     fn parse_struct_literal(&mut self, type_name: String) -> Result<Expr, SyntaxError> {
         self.pos += 1; // consume {
         let mut fields = Vec::new();
+        let mut specs = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
-            let name = self.expect_identifier()?;
-            if self.eat(&Token::Colon) {
-                let value = self.parse_expression()?;
-                fields.push((name, value));
+            if self.check(&Token::Spec) {
+                self.parse_component_spec_field(&mut specs)?;
             } else {
-                // 2026-07-31: Bare shorthand: `Arena { base, offset }` means
-                // `Arena { base: base, offset: offset }`.
-                fields.push((name.clone(), Expr::Identifier(name)));
+                self.parse_struct_field(&mut fields)?;
             }
             // 2026-07-31: Accept either `;` or `,` separators (and a single
             // trailing separator before the closing brace).
@@ -1249,7 +1245,70 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
             }
         }
         self.expect(Token::RBrace)?;
-        Ok(Expr::StructLiteral { type_name, fields })
+        Ok(Expr::StructLiteral { type_name, fields, specs })
+    }
+
+    /// Parse one `spec Name: quantity;` entry in a component literal —
+    /// the structured physics channel, separate from BOM annotation
+    /// fields (2026-09-24 component laws).
+    fn parse_component_spec_field(
+        &mut self,
+        specs: &mut Vec<(String, Expr)>,
+    ) -> Result<(), SyntaxError> {
+        self.pos += 1; // consume spec
+        let name = self.expect_identifier()?;
+        self.expect(Token::Colon)?;
+        let value_pos = self.pos;
+        let value = self.parse_expression()?;
+        if name == "Resistance" {
+            self.require_canonical_resistance(value_pos, &value)?;
+        }
+        specs.push((name, value));
+        Ok(())
+    }
+
+    /// Component resistance has one canonical spelling: a numeric unit
+    /// literal with a full-word `Ohm` base (`330Ohm`, `4.7kOhm`). Legacy
+    /// `R`/`Ω` are annotations, never law physics (2026-09-24 component
+    /// laws).
+    fn require_canonical_resistance(&self, pos: usize, expr: &Expr) -> Result<(), SyntaxError> {
+        let span = self
+            .tokens
+            .get(pos)
+            .map(|(_, range)| self.make_span(range.clone()))
+            .unwrap_or_else(|| self.make_span(0..0));
+        let Expr::UnitLiteral { unit, .. } = expr else {
+            return Err(SyntaxError::InvalidExpression {
+                reason: "spec Resistance must be a quantity with an Ohm unit (e.g. `330Ohm`)"
+                    .into(),
+                span,
+            });
+        };
+        let canonical = matches!(unit.as_str(), "Ohm" | "mOhm" | "kOhm" | "MOhm" | "GOhm");
+        if canonical {
+            return Ok(());
+        }
+        Err(SyntaxError::InvalidExpression {
+            reason: format!(
+                "spec Resistance uses canonical Ohm units — write `{unit}` as e.g. `330Ohm` or `4.7kOhm`"
+            ),
+            span,
+        })
+    }
+
+    /// Parse one ordinary struct-literal field, including the bare
+    /// shorthand `field` meaning `field: field`.
+    fn parse_struct_field(&mut self, fields: &mut Vec<(String, Expr)>) -> Result<(), SyntaxError> {
+        let name = self.expect_identifier()?;
+        if self.eat(&Token::Colon) {
+            let value = self.parse_expression()?;
+            fields.push((name, value));
+        } else {
+            // 2026-07-31: Bare shorthand: `Arena { base, offset }` means
+            // `Arena { base: base, offset: offset }`.
+            fields.push((name.clone(), Expr::Identifier(name)));
+        }
+        Ok(())
     }
 
     /// 2026-07-26: Peek ahead after PascalCaseName { to check if the content

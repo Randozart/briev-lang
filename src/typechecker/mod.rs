@@ -1202,7 +1202,7 @@ pub fn infer_expression(
         }
         // 2026-07-31: Struct literal — `TypeName { field: e, ... }` resolves
         // to the struct type and validates the fields against its slots.
-        Expr::StructLiteral { type_name, fields } => {
+        Expr::StructLiteral { type_name, fields, specs: _ } => {
             // 2026-08-01 (D3): a struct literal for a GENERIC type infers as
             // the Applied form with the type params as placeholders
             // (`HashMapEntry { key, val }` in a HashMap<K, V> member → 

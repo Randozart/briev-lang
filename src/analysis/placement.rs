@@ -452,6 +452,7 @@ mod tests {
             name: name.into(),
             type_name: type_name.into(),
             properties: Vec::new(),
+            specs: Default::default(),
         };
         (name.into(), inst)
     }
@@ -528,6 +529,7 @@ mod tests {
             name: name.into(),
             type_name: "Res".into(),
             properties: vec![("package".into(), package.into())],
+            specs: Default::default(),
         };
         (name.into(), inst)
     }
