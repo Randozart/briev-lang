@@ -2123,7 +2123,7 @@ pub fn eval_statement(
         }
         Statement::Rollback(_) => Ok(Value::Void),
         Statement::MetadataAssignment(_, _) => Ok(Value::Void),
-        Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) => Ok(Value::Void),
+        Statement::InlineAsm { .. } | Statement::InlineDefn(_) => Ok(Value::Void),
         Statement::SyncBlock(body) => {
             let mut result = Value::Void;
             for stmt in body {

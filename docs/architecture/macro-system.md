@@ -271,6 +271,9 @@ Modification is detected via Debug output comparison.
 `$defn` and `$txn` are compile-time-only function definitions. They live
 at the top level alongside `$(Stage)` blocks, are extracted before codegen,
 and can call `$` intrinsics. They push logic from Rust into Briev.
+(2026-09-22, C6): `$txn` declares at TOP LEVEL only — there is no inline
+`$txn` declaration. Inline *invocation* (`$txn name(args)` from a
+`$(Stage)` block) is the call path.
 
 ### Syntax
 

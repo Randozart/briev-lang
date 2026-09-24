@@ -2474,14 +2474,14 @@ execute_many!(callee, block₁, block₂, …);
 ```
 
 **Variadic composites (2026-09-22).** A `$defn`/`$txn` may declare a final
-TypeScript-style rest parameter (`...name: expr`) that binds ALL trailing
+TypeScript-style rest parameter (`...name: Expr`) that binds ALL trailing
 call-site arguments as a compile-time list. It is the sanctioned compile-time
 iteration channel: a `foreach` over the rest name unrolls at expansion, one
-emission per element. A plain `expr` parameter is a RUNTIME quantity and
+emission per element. A plain `Expr` parameter is a RUNTIME quantity and
 never unrolls; only a rest parameter declares compile-time iteration.
 
 ```briev
-$defn execute_many(...calls: expr) {
+$defn execute_many(...calls: Expr) {
     foreach c in calls { c; }
 };
 // execute_many!(f(a), f(b), f(c)) → f(a); f(b); f(c);
@@ -2494,10 +2494,28 @@ Rules:
   guaranteed).
 - Zero trailing arguments is a mistake, not a no-op — the expansion errors
   naming the composite.
-- The rest name is an exposed binder (hygiene, §18.4): the loop variable is
+- The rest name is an exposed binder (hygiene, §18.7): the loop variable is
   body-local, not a caller capture.
 - Composites expand BEFORE typecheck: typecheck, contracts, and both
   backends see the emitted calls as if hand-written.
+
+**Value-returning composites (2026-09-22).** A composite declaring `-> Type`
+may be invoked in EXPRESSION position (`let r = f!(x)`, `r = f!(x)`,
+`g(f!(x))`, a match scrutinee or arm). The expansion produces an
+`Expr::Block` whose value is the composite's return: the body's trailing
+`term v` becomes the block's value statement, never a function return, so
+the caller's node is not truncated. A value-position call of a composite
+whose body yields no value is an error naming the composite. Statement
+position (the body as a splice) remains the default for body-only
+composites; the two are distinguished by whether the call site needs a
+value.
+
+```briev
+$defn aligned_size(n: Expr) -> Int {
+    term (n + 15) & ~15;
+};
+let r: Int = aligned_size!(4);   // r = 20 — computed at the call site
+```
 
 ### 18.3 Stages
 
@@ -2508,11 +2526,42 @@ $(Allocated) { ... }
 
 Stage blocks state when compile-time work executes. Stage vocabulary is compiler-known and exact.
 
-### 18.4 Quotation
+### 18.4 `$txn` — the convergent loop (2026-09-22)
+
+`$txn name(params) [pre][post] -> Type { body }` declares a compile-time
+CONVERGENT loop: the body runs repeatedly until `[post]` holds, at most a
+compiler-bound iteration limit. The iteration count is UNKNOWN at the call
+site — decided by the computation — the one compile-time loop `foreach`
+cannot express (a `foreach` needs a finite list; there is no comptime
+`while`).
+
+Rules:
+- `$txn` declares at TOP LEVEL only. There is no inline `$txn`
+  declaration. Inline INVOCATION (`$txn name(args)` from a `$(Stage)`
+  block) is the call path.
+- `[pre]` false → the loop is skipped (converged trivially). `[post]`
+  true after a pass → converged.
+- `term v` in the body is an EARLY RETURN (like `$defn`): the loop's value
+  is `v` immediately — the guarded-return shape (`{ when x >= 50 { x =
+  100; term x; }; }`).
+- A body without `term` converges to `Void` when `[post]` holds; the final
+  state lives in the caller's `$let` scope.
+- Exceeding the iteration bound without convergence is a compile error
+  naming the limit.
+- `$txn` may declare a `...` rest parameter (SPEC §18.2 rules apply); the
+  trailing arguments bind as the compile-time list.
+
+```briev
+$txn scale(x: Int) [x < 16][x >= 16] {
+    x = x * 2;
+};
+```
+
+### 18.5 Quotation
 
 Quotation and interpolation operate on AST values during compile time. They must preserve hygiene unless an explicit compiler capability requests generated names.
 
-### 18.5 Derivation
+### 18.6 Derivation
 
 `:=` introduces compile-time derivation/synthesis examples or a reference implementation.
 
@@ -2524,7 +2573,7 @@ defn parity(x: Int) -> Bool
 
 Generated behavior must satisfy the declared contracts and reference obligations. Derivation never weakens a contract.
 
-### 18.6 `Error#` — compile-time failure (2026-08-17)
+### 18.7 `Error#` — compile-time failure (2026-08-17)
 
 `Error#("message")` is a COMPILE-TIME failure, not a runtime value. Its
 semantics follow reachability:

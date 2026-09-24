@@ -12,7 +12,7 @@
 // at expansion, one emission per argument — N = arg count, known only at
 // compile time. Supersedes the retired Rust-side `execute_many!` macro
 // (2026-09-18): the composite reaches the same behavior in the language.
-$defn execute_many(...calls: expr) {
+$defn execute_many(...calls: Expr) {
     foreach c in calls {
         c;
     }

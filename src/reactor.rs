@@ -286,7 +286,7 @@ impl Reactor {
                 }
                 Ok(StmtResult::Continue)
             }
-            Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::InlineTxn(_) | Statement::Match { .. } => {
+            Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::Match { .. } => {
                 Ok(StmtResult::Continue)
             }
             Statement::Gate(cond) => {

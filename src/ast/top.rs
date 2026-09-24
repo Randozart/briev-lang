@@ -414,9 +414,6 @@ pub enum Statement {
     /// $defn name(params) -> Type { body } — compile-time-only definition.
     /// 2026-07-23: Only valid inside $(Stage) blocks. Body can call $ intrinsics.
     InlineDefn(Definition),
-    /// $txn name(params) [pre][post] -> Type { body } — compile-time-only tx.
-    /// 2026-07-23: Evaluated as a convergent loop with pre/post checks.
-    InlineTxn(Transaction),
     /// match expr { pattern => body; ... }; — compile-time match.
     /// 2026-07-24: Added for clean $defn branching (replaces when chains).
     Match {
@@ -442,13 +439,12 @@ impl PartialEq for StmtMatchArm {
     }
 }
 
-// 2026-07-23: Manual PartialEq — InlineDefn/InlineTxn wrap Definition/Transaction
-// which don't implement PartialEq. All other variants compare field-by-field.
+// 2026-07-23: Manual PartialEq — InlineDefn wraps a Definition (which doesn't
+// implement PartialEq). All other variants compare field-by-field.
 impl PartialEq for Statement {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Statement::InlineDefn(_), _) | (_, Statement::InlineDefn(_)) => false,
-            (Statement::InlineTxn(_), _) | (_, Statement::InlineTxn(_)) => false,
             (Statement::Let { name: n1, ty: t1, expr: e1, modifiers: m1, .. },
              Statement::Let { name: n2, ty: t2, expr: e2, modifiers: m2, .. }) =>
                 n1 == n2 && t1 == t2 && e1 == e2 && m1 == m2,

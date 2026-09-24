@@ -351,8 +351,7 @@ fn stmt_needs_state(
         | Statement::FreeHint(_)
         | Statement::KeepHint(_)
         | Statement::InlineAsm { .. }
-        | Statement::InlineDefn(_)
-        | Statement::InlineTxn(_) => false,
+        | Statement::InlineDefn(_) => false,
     }
 }
 

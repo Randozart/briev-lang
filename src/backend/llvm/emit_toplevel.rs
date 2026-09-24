@@ -2984,16 +2984,26 @@ impl LlvmBackend {
         writeln!(out, "}}").ok();
         // Phase 4.5: Emit dso_local export wrapper if #export modifier present
         if let Some(export_name) = Self::get_export_name(&d.modifiers) {
-            writeln!(out, "define dso_local {} @{}(" , ll_ret_ty, export_name).ok();
-            write!(out, "{}", self.ctx.state_ptr_param).ok();
+            writeln!(out, "define dso_local {} @{}(", ll_ret_ty, export_name).ok();
+            if needs_state {
+                write!(out, "{}", self.ctx.state_ptr_param).ok();
+            }
             for (i, (n, t)) in d.parameters.iter().enumerate() {
-                write!(out, ", {} %arg{}", self.llvm_type(t), i).ok();
+                if needs_state || i > 0 {
+                    write!(out, ", ").ok();
+                }
+                write!(out, "{} %arg{}", self.llvm_type(t), i).ok();
             }
             writeln!(out, ") local_unnamed_addr #0 {{").ok();
             write!(out, "  %res = call {} @{}(", ll_ret_ty, ll_name).ok();
-            write!(out, "ptr %state").ok();
+            if needs_state {
+                write!(out, "ptr %state").ok();
+            }
             for (i, (n, t)) in d.parameters.iter().enumerate() {
-                write!(out, ", {} %arg{}", self.llvm_type(t), i).ok();
+                if needs_state || i > 0 {
+                    write!(out, ", ").ok();
+                }
+                write!(out, "{} %arg{}", self.llvm_type(t), i).ok();
             }
             writeln!(out, ") local_unnamed_addr #0").ok();
             writeln!(out, "  ret {} %res", ll_ret_ty).ok();
@@ -3973,6 +3983,11 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                             }
                         }
                         let mut typed_args: Vec<String> = Vec::new();
+                        // 2026-09-22 (soundness-net catch): the cold function
+                        // references `%state` (observable intrinsics like Print#
+                        // emit `@__print_int(ptr %state, …)`), so the hidden
+                        // state pointer must be threaded as the first arg.
+                        typed_args.push("ptr %state".to_string());
                         for (fi, (_, llvm_ty, _)) in params.iter().enumerate() {
                             typed_args.push(format!("{} {}", llvm_ty, param_regs[fi]));
                         }
@@ -4042,7 +4057,13 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                     self.fun.let_binding_types.insert(cp_names[fi].clone(), briev_ty.clone());
                     self.fun.let_original_types.insert(cp_names[fi].clone(), briev_ty);
                 }
-                writeln!(out, "define void @{}({}) local_unnamed_addr #0 {{", cold_name, param_sig.join(", ")).ok();
+                let cold_sig = if param_sig.is_empty() {
+                    self.ctx.state_ptr_param.clone()
+                } else {
+                    format!("{}, {}", self.ctx.state_ptr_param, param_sig.join(", "))
+                };
+                writeln!(out, "define void @{}({}) local_unnamed_addr #0 {{",
+                    cold_name, cold_sig).ok();
 
                 // Rewrite guard body: replace ident references with param names
                 self.fun.terminated = false;

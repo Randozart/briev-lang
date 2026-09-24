@@ -594,19 +594,6 @@ fn format_stmt_into(stmt: &Statement, out: &mut String, level: usize) {
                 body: &defn.body,
             },
         ),
-        Statement::InlineTxn(txn) => format_callable(
-            out,
-            level,
-            "$txn",
-            &Callable {
-                name: &txn.name,
-                parameters: &txn.parameters,
-                output_type: txn.output_type.as_ref(),
-                contract: &txn.contract,
-                derivation: txn.derivation.as_ref(),
-                body: &txn.body,
-            },
-        ),
         _ => {
             indent(out, level);
             let _ = write!(out, "{}", stmt);

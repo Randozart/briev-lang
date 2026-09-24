@@ -105,7 +105,6 @@ impl Annotator {
                 | Statement::SyncBlock(..)
                 | Statement::TrgBinding { .. }
                 | Statement::InlineDefn(_)
-                | Statement::InlineTxn(_)
                 | Statement::Match { .. } => {}
                 // 2026-08-09 (Phase 10): defer/mutex bodies may call
                 // functions — collect them.
@@ -518,9 +517,7 @@ impl Annotator {
             Statement::InlineDefn(d) => {
                 format!("{}// compile-time defn {}\n", spaces, d.name)
             }
-            Statement::InlineTxn(t) => {
-                format!("{}// compile-time txn {}\n", spaces, t.name)
-            }
+
             Statement::Match { .. } => {
                 format!("{}// compile-time match\n", spaces)
             }

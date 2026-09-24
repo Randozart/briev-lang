@@ -3532,24 +3532,34 @@ impl<'a> Parser<'a> {
         };
         let derivation = self.parse_derivation_block()?;
         let metadata = self.parse_body_metadata()?;
-        // 2026-09-22 (unified-metaprogramming plan): the rest param lands on
-        // `$defn` composites in Phase 1; `$txn`'s convergent-loop flavor is
-        // Phase 2 (C6) — reject `...` here until then with a directed fix.
-        if let Some(name) = self.pending_variadic.take() {
-            return self.error_at_current(&format!(
-                "`$txn '{name}'` declares a `...` rest parameter, which is not \
-                 supported yet — rest params land on `$defn` composites \
-                 (execute_many-style); use a `$defn` or a fixed parameter list"
-            ));
+        // 2026-09-22 (C6): the rest param lands on `$txn` too — a convergent
+        // loop may iterate over an unknown-size set (the sanctioned
+        // compile-time iteration channel). Stored on the Transaction's
+        // modifiers as a `variadic` annotation (the stage evaluator reads it).
+        if let Some(rest_name) = self.pending_variadic.take() {
+            let mut modifiers = Vec::new();
+            modifiers.push(Annotation {
+                name: "variadic".to_string(),
+                value: Some(Expr::Quoted(rest_name.as_bytes().to_vec())),
+            });
+            Ok(TopLevel::CompileTimeTxn(Transaction {
+                name, type_params, parameters,
+                output_type: output_type.clone(),
+                outputs: vec![],
+                contract, body, metadata,
+                is_reactive: true, is_async: false,
+                derivation, modifiers, span: None, doc: self.take_doc(),
+            }))
+        } else {
+            Ok(TopLevel::CompileTimeTxn(Transaction {
+                name, type_params, parameters,
+                output_type: output_type.clone(),
+                outputs: vec![],
+                contract, body, metadata,
+                is_reactive: true, is_async: false,
+                derivation, modifiers: vec![], span: None, doc: self.take_doc(),
+            }))
         }
-        Ok(TopLevel::CompileTimeTxn(Transaction {
-            name, type_params, parameters,
-            output_type: output_type.clone(),
-            outputs: vec![],
-            contract, body, metadata,
-            is_reactive: true, is_async: false,
-            derivation, modifiers: vec![], span: None, doc: self.take_doc(),
-        }))
     }
 
     /// $let name = expr; / $const name = expr; — compile-time variable.

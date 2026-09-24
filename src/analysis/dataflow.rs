@@ -252,7 +252,7 @@ impl<'a> DataflowAnalyzer<'a> {
             }
             Statement::InlineAsm { .. } | Statement::TrgBinding { .. }
             | Statement::MetadataAssignment(..) | Statement::InlineDefn(_)
-            | Statement::InlineTxn(_) | Statement::Match { .. } => {}
+            | Statement::Match { .. } => {}
         }
     }
 

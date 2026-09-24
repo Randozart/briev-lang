@@ -395,7 +395,11 @@ impl<'a> Builder<'a> {
             Statement::FreeHint(_) => {
                 // Scheduler auto-free lowers to `__briev_free` for heap
                 // fields; the explicit hint is the AST-visible form.
+                // 2026-09-22 (soundness-net catch): a freed TASK HANDLE
+                // additionally lowers to `briev_task_cancel_impl` — root
+                // both so async programs pass the IR scan.
                 self.mark("__briev_free", queue);
+                self.mark("briev_task_cancel_impl", queue);
             }
             other => self.walk_stmt_rest(other, queue),
         }
@@ -503,7 +507,11 @@ impl<'a> Builder<'a> {
             Expr::Spawn { type_name, args, .. } => {
                 // `spawn defn(args)` = task spawn of the defn; `spawn Obj(…)`
                 // constructs the obj base — either way its members join.
+                // 2026-09-22 (soundness-net catch): a task spawn lowers to
+                // `briev_task_spawn_impl` in the backend — root it here so
+                // async-tasks-style programs pass the IR scan.
                 self.mark(type_name, queue);
+                self.mark("briev_task_spawn_impl", queue);
                 self.on_construction(type_name, queue);
                 // 2026-09-23 (soundness-net catch, async Phase D): `spawn`
                 // lowers to briev_task_spawn_impl, and the spawned tasks'

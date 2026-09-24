@@ -1,0 +1,23 @@
+// SPEC §18.2 — C3 one value domain: strings flow through the composite
+// fold exactly like Ints. A string literal folds to a comptime value, a
+// `$let` string seeds the fold env, and a `match` on a string splices only
+// the taken arm at expansion. String `==`/`!=` fold too.
+
+$let mode = "fast";
+
+let r: Int = 0;
+$defn classify(s: Expr) {
+    match s {
+        "fast" => { r = 1; },
+        "slow" => { r = 2; },
+        _ => { r = 0; },
+    }
+};
+
+let i: Int = 0;
+async node string_fold_user [i < 1][i == 1] {
+    classify!(mode);          // mode is "fast" → splices r = 1 only
+    classify!("slow");        // literal → splices r = 2 only
+    i = i + 1;
+    term;
+};

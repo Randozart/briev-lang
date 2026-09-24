@@ -62,19 +62,6 @@ fn load_bridge() -> Library {
     unsafe { Library::new(&so_path).expect("failed to load bridge .so") }
 }
 
-/// Allocate + init_state for stateful exports. 2026-08-03: per-export ABI is
-/// body-dependent (export_abi analysis): only exports that call Briv defns
-/// carry `ptr %state` — stateful tests allocate a buffer and pass it.
-fn make_state(lib: &Library) -> *mut c_void {
-    let state = unsafe { std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align(32, 8).unwrap()) as *mut c_void };
-    unsafe {
-        let init: Symbol<unsafe extern "C" fn(*mut c_void)> =
-            lib.get(b"init_state").expect("init_state not found");
-        init(state);
-    }
-    state
-}
-
 // ── IR validation ─────────────────────────────────────────────────────
 
 #[test]
@@ -120,11 +107,10 @@ fn test_bridge_loads_and_resolves() {
 #[test]
 fn test_pp_void_via_ffi() {
     let ref lib = load_bridge();
-    let state = make_state(lib);
     unsafe {
-        let func: Symbol<unsafe extern "C" fn(*mut c_void) -> i64> =
+        let func: Symbol<unsafe extern "C" fn() -> i64> =
             lib.get(b"briev_test_type_void").expect("func not found");
-        let ptr = func(state);
+        let ptr = func();
         eprintln!("void test: ptr={:p}", ptr as *const u8);
         assert_ne!(ptr, 0, "briev_test_type_void returned null");
         let s = CStr::from_ptr(ptr as *const i8).to_str().unwrap();
@@ -150,12 +136,11 @@ fn test_cstr_roundtrip_via_ffi() {
 #[test]
 fn test_custom_echo_via_ffi() {
     let ref lib = load_bridge();
-    let state = make_state(lib);
     unsafe {
-        let func: Symbol<unsafe extern "C" fn(*mut c_void, i64) -> i64> =
+        let func: Symbol<unsafe extern "C" fn(i64) -> i64> =
             lib.get(b"briev_test_custom_echo").expect("func not found");
         let input = CString::new("hello").unwrap();
-        let ptr = func(state, input.as_ptr() as i64);
+        let ptr = func(input.as_ptr() as i64);
         let s = CStr::from_ptr(ptr as *const i8).to_str().unwrap();
         assert_eq!(s, "hello");
     }
@@ -176,12 +161,11 @@ fn test_bits_static_via_ffi() {
 #[test]
 fn test_pp_bits_via_ffi() {
     let ref lib = load_bridge();
-    let state = make_state(lib);
     unsafe {
-        let func: Symbol<unsafe extern "C" fn(*mut c_void, i64) -> i64> =
+        let func: Symbol<unsafe extern "C" fn(i64) -> i64> =
             lib.get(b"briev_test_type_bits").expect("func not found");
         let input = CString::new("42").unwrap();
-        let ptr = func(state, input.as_ptr() as i64);
+        let ptr = func(input.as_ptr() as i64);
         let s = CStr::from_ptr(ptr as *const i8).to_str().unwrap();
         assert_eq!(s, "Bits(42)");
     }

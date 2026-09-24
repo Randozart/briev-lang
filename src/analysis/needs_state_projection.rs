@@ -201,6 +201,10 @@ fn emit_expr_flat(out: &mut Vec<String>, expr: &Expr) {
             if let Some(s) = start { emit_expr_flat(out, s); }
             if let Some(e) = end { emit_expr_flat(out, e); }
         }
+        Expr::Block(body) => {
+            out.push("c:".into());
+            for stmt in body { emit_stmt_flat(out, stmt); }
+        }
         Expr::AddrOf(inner) => emit_expr_flat(out, inner),
         // 2026-09-23 (stateless-defn mechanism): `spawn`/`await` lower to
         // task/event helpers with `%state` — ALWAYS stateful. Mark with the
@@ -266,6 +270,18 @@ mod tests {
         let p = serialize_needs_state_projection(&items);
         // {a (I saved) (I name)} {t (C cstr_to_briev [(I saved)])}
         assert!(p.contains("body greet 6 a: I:saved I:name t: C:cstr_to_briev I:saved"), "{}", p);
+    }
+
+    #[test]
+    fn projection_encodes_expression_block() {
+        let d = defn("block", vec![Statement::Term(Some(Expr::Block(vec![
+            Statement::Expression(Expr::Identifier("saved".into())),
+        ])))]);
+        let items = vec![TopLevel::Statement(Box::new(Statement::Let {
+            name: "saved".into(), names: vec![], ty: None, expr: None, modifiers: vec![],
+        })), exported(d)];
+        let p = serialize_needs_state_projection(&items);
+        assert!(p.contains("body block 4 t: c: x: I:saved"), "{}", p);
     }
 
     #[test]
