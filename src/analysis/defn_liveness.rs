@@ -27,7 +27,7 @@
 //! validation targets (bare-metal hello) contain none of the coarse
 //! triggers, so their binaries stay minimal.
 
-use crate::ast::{Expr, PropertyValue, Statement, TopLevel};
+use crate::ast::{Contract, Expr, PropertyValue, Statement, TopLevel};
 use std::collections::{HashMap, HashSet};
 
 /// The liveness verdict for one compilation unit. Consumed by the backend's
@@ -54,6 +54,7 @@ impl DefnLiveness {
         let mut pass = Builder {
             defns: HashMap::new(),
             txns: HashMap::new(),
+            contracts: HashMap::new(),
             type_members: HashMap::new(),
             roots: HashSet::new(),
             live: HashSet::new(),
@@ -66,7 +67,9 @@ impl DefnLiveness {
         }
 
         // Worklist closure. Roots seed the queue; every live callable's
-        // body contributes explicit calls + intrinsic-implied helpers.
+        // body AND contract contribute explicit calls + intrinsic-implied
+        // helpers (2026-09-24: contracts are emitted code — pre/post,
+        // watchdog condition/fallback, on-fire handler name).
         let mut queue: Vec<String> = pass.roots.iter().cloned().collect();
         debug_dump("roots", &queue);
         while let Some(name) = queue.pop() {
@@ -78,6 +81,9 @@ impl DefnLiveness {
             }
             if let Some(body) = pass.txns.get(&name) {
                 pass.walk_stmts(body, &mut queue);
+            }
+            if let Some(c) = pass.contracts.get(&name) {
+                pass.walk_contract(c, &mut queue);
             }
         }
 
@@ -102,6 +108,14 @@ struct Builder<'a> {
     /// txn name → body (top-level Transactions, reactive and callable —
     /// the closure walks both; reactive ones are roots regardless).
     txns: HashMap<String, &'a [Statement]>,
+    /// 2026-09-24 (contract-liveness gap, found by the series_converge
+    /// soundness-net panic): contract EXPRESSIONS of a live callable are
+    /// emitted code too — pre/post conditions, watchdog condition/fallback,
+    /// and the `-> handler(v)` on-fire callback (a bare handler NAME, not
+    /// an Expr — invisible to walk_expr). Index every contract beside its
+    /// body and walk it when the callable enters the queue; without this,
+    /// `?[...] -> print_best(x)` emits a call to a judged-dead defn.
+    contracts: HashMap<String, &'a Contract>,
     /// 2026-09-13 (usage-triggered member rooting): type/obj base name →
     /// member defn/txn/op names. Members are rooted when live code
     /// CONSTRUCTS the type (`HashMap { … }`, `spawn Enemy(…)`, ctor-style
@@ -115,6 +129,20 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
+    /// Index a defn: body for the call closure, contract for the emitted
+    /// pre/post/watchdog expressions (2026-09-24, contract-liveness gap).
+    fn index_defn(&mut self, d: &'a crate::ast::Definition) {
+        self.defns.entry(d.name.clone()).or_insert(&d.body);
+        self.contracts.entry(d.name.clone()).or_insert(&d.contract);
+    }
+
+    /// Index a txn: body + contract (same gap; the on-fire handler NAME
+    /// lives only in the contract — walk_expr can never see it).
+    fn index_txn(&mut self, t: &'a crate::ast::Transaction) {
+        self.txns.entry(t.name.clone()).or_insert(&t.body);
+        self.contracts.entry(t.name.clone()).or_insert(&t.contract);
+    }
+
     /// obj-like type bodies carry member txns/defns (`parse_obj_like`).
     /// Members are USAGE-ROOTED: registered under the type name and
     /// enqueued when live code constructs the type — prelude collection
@@ -126,11 +154,11 @@ impl<'a> Builder<'a> {
         for m in &td.body.members {
             match m {
                 TopLevel::Definition(d) => {
-                    self.defns.entry(d.name.clone()).or_insert(&d.body);
+                    self.index_defn(d);
                     members.push(d.name.clone());
                 }
                 TopLevel::Transaction(t) => {
-                    self.txns.entry(t.name.clone()).or_insert(&t.body);
+                    self.index_txn(t);
                     members.push(t.name.clone());
                 }
                 TopLevel::TypeDefOperator(op) => {
@@ -185,10 +213,14 @@ impl<'a> Builder<'a> {
     fn index_item(&mut self, item: &'a TopLevel) {
         match item {
             TopLevel::Definition(d) => {
+                // Top-level: plain insert is the established last-wins
+                // semantics — preserve it; the contract rides alongside.
                 self.defns.insert(d.name.clone(), &d.body);
+                self.contracts.entry(d.name.clone()).or_insert(&d.contract);
             }
             TopLevel::Transaction(t) => {
                 self.txns.insert(t.name.clone(), &t.body);
+                self.contracts.entry(t.name.clone()).or_insert(&t.contract);
                 // Reactive txns are reactor-dispatched by name — roots.
                 // Callable txns enter via closure from live callers.
                 if t.is_reactive {
@@ -212,11 +244,11 @@ impl<'a> Builder<'a> {
                 // pp_type_bits) or txns (e.g. sum_loop) tripped the net with
                 // "unreached defn". Index the inner defn/txn like any other.
                 if let TopLevel::Definition(d) = e.inner.as_ref() {
-                    self.defns.entry(d.name.clone()).or_insert(&d.body);
+                    self.index_defn(d);
                     self.roots.insert(d.name.clone());
                 }
                 if let TopLevel::Transaction(t) = e.inner.as_ref() {
-                    self.txns.entry(t.name.clone()).or_insert(&t.body);
+                    self.index_txn(t);
                     self.roots.insert(t.name.clone());
                     if t.is_reactive {
                         self.roots.insert(t.name.clone());
@@ -232,6 +264,7 @@ impl<'a> Builder<'a> {
                 // wrapper AND walk the body so its callees join the closure.
                 self.roots.insert(isr.name.clone());
                 self.txns.entry(isr.name.clone()).or_insert(&isr.body);
+                self.contracts.entry(isr.name.clone()).or_insert(&isr.contract);
             }
             TopLevel::AsmFn(asm) => {
                 // Top-level observable asm.
@@ -260,7 +293,7 @@ impl<'a> Builder<'a> {
                 // Obj member txns (`node apply_damage()…` inside
                 // `obj Enemy { … }`) — usage-rooted via construction.
                 let members = s.transactions.iter().map(|t| {
-                    self.txns.entry(t.name.clone()).or_insert(&t.body);
+                    self.index_txn(t);
                     t.name.clone()
                 }).collect();
                 self.type_members.insert(s.name.clone(), members);
@@ -342,6 +375,26 @@ impl<'a> Builder<'a> {
             "__briev_event_strict_trap",
         ] {
             self.mark(h, queue);
+        }
+    }
+
+    /// Walk a live callable's CONTRACT into the closure. Every expression
+    /// here is emitted code the backend runs for this callable: pre/post
+    /// conditions, the watchdog condition and its fallback, and — the name
+    /// that started this (series_converge soundness-net panic) — the
+    /// on-fire callback handler, a bare String identifier walk_expr can
+    /// never reach. Dead callables' contracts are never emitted, so only
+    /// live entries arrive here.
+    fn walk_contract(&mut self, c: &'a Contract, queue: &mut Vec<String>) {
+        self.walk_expr(&c.pre_condition, queue);
+        self.walk_expr(&c.post_condition, queue);
+        let Some(w) = &c.watchdog else { return };
+        self.walk_expr(&w.condition, queue);
+        if let Some(fb) = &w.fallback {
+            self.walk_expr(fb, queue);
+        }
+        if let Some(of) = &w.on_fire {
+            self.mark(&of.handler, queue);
         }
     }
 
@@ -927,6 +980,16 @@ mod tests {
     }
 
     fn txn(name: &str, is_reactive: bool, body: Vec<Statement>) -> TopLevel {
+        txn_with_contract(name, is_reactive, body, contract())
+    }
+
+    /// A txn with a caller-built contract (contract-liveness tests).
+    fn txn_with_contract(
+        name: &str,
+        is_reactive: bool,
+        body: Vec<Statement>,
+        contract: Contract,
+    ) -> TopLevel {
         TopLevel::Transaction(crate::ast::Transaction {
             name: name.to_string(),
             is_reactive,
@@ -935,7 +998,7 @@ mod tests {
             parameters: vec![],
             output_type: None,
             outputs: vec![],
-            contract: contract(),
+            contract,
             body,
             metadata: HashMap::new(),
             derivation: None,
@@ -943,6 +1006,25 @@ mod tests {
             span: None,
             doc: None,
         })
+    }
+
+    /// WatchdogSpec with the common zeros filled in.
+    fn watchdog(
+        condition: Expr,
+        fallback: Option<Expr>,
+        on_fire: Option<WatchdogOnFire>,
+    ) -> WatchdogSpec {
+        WatchdogSpec {
+            condition,
+            is_required: false,
+            cycles_bound: None,
+            seconds_bound: None,
+            deadline_ns: None,
+            is_proven: false,
+            retries: 0,
+            fallback: fallback.map(Box::new),
+            on_fire,
+        }
     }
 
     fn defn(name: &str, body: Vec<Statement>) -> TopLevel {
@@ -1111,6 +1193,64 @@ mod tests {
         let l = DefnLiveness::build(&items);
         assert!(l.is_live("init_fn"));
         assert!(!l.is_live("orphan"));
+    }
+
+    #[test]
+    fn watchdog_on_fire_roots_handler() {
+        // The series_converge shape (2026-09-24 soundness-net panic):
+        // `node converge [pre][post] ?[cond] -> print_best(x) { ... }`.
+        // The handler is a bare NAME in WatchdogOnFire — walk_expr can
+        // never see it — only the contract walk marks it.
+        let mut c = contract();
+        c.watchdog = Some(watchdog(
+            Expr::Bool(true),
+            None,
+            Some(WatchdogOnFire { handler: "print_best".into(), arg: Some("v".into()) }),
+        ));
+        let items = vec![
+            txn_with_contract("converge", true, vec![Statement::Term(None)], c),
+            defn("print_best", vec![Statement::Term(None)]),
+            defn("orphan", vec![Statement::Term(None)]),
+        ];
+        let l = DefnLiveness::build(&items);
+        assert!(l.is_live("converge"));
+        assert!(l.is_live("print_best"), "on-fire handler must join the closure");
+        assert!(!l.is_live("orphan"));
+    }
+
+    #[test]
+    fn watchdog_condition_and_fallback_calls_are_live() {
+        // Contract EXPRESSIONS are emitted code: `?[progress()]` and the
+        // fallback both run for a live callable — their callees must be live.
+        let mut c = contract();
+        c.watchdog = Some(watchdog(
+            Expr::Call("progress".into(), vec![], None),
+            Some(Expr::Call("recover".into(), vec![], None)),
+            None,
+        ));
+        let items = vec![
+            txn_with_contract("guarded", true, vec![Statement::Term(None)], c),
+            defn("progress", vec![Statement::Term(None)]),
+            defn("recover", vec![Statement::Term(None)]),
+        ];
+        let l = DefnLiveness::build(&items);
+        assert!(l.is_live("progress"), "watchdog condition callee must be live");
+        assert!(l.is_live("recover"), "watchdog fallback callee must be live");
+    }
+
+    #[test]
+    fn pre_and_post_condition_calls_are_live() {
+        let mut c = contract();
+        c.pre_condition = Expr::Call("ready".into(), vec![], None);
+        c.post_condition = Expr::Call("settled".into(), vec![], None);
+        let items = vec![
+            txn_with_contract("checked", true, vec![Statement::Term(None)], c),
+            defn("ready", vec![Statement::Term(None)]),
+            defn("settled", vec![Statement::Term(None)]),
+        ];
+        let l = DefnLiveness::build(&items);
+        assert!(l.is_live("ready"), "precondition callee must be live");
+        assert!(l.is_live("settled"), "postcondition callee must be live");
     }
 }
 
