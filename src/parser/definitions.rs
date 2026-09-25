@@ -3670,6 +3670,8 @@ impl<'a> Parser<'a> {
             "net_voltage" | "kicad_label" => {
                 parse_net_registry_spec(self, key, metadata)?;
             }
+            // 2026-09-25 (quantities Phase 4): the absolute-maximum current envelope.
+            "max_current" => return parse_qualified_envelope_spec(self, key, crate::ast::QuantityDim::Amp, metadata),
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
             // (`spec Rows: R` on `Matrix<T, R, C>`). The reader resolves the
@@ -4655,6 +4657,39 @@ fn parse_net_registry_spec(
     Ok(())
 }
 
+/// 2026-09-25 (quantities Phase 4): one envelope quantity — either a
+/// single value (uniform: every pin of the type) or a pin-qualified list
+/// (`a: 20mA, vdd: 100mA` for asymmetric parts). Qualified rows store
+/// under `<key>:<pin>`; identifiers cannot contain the separators, so
+/// the analysis split is unambiguous. The dimension is enforced by
+/// `parse_spec_quantity` — a volt under a max-current key is a parse
+/// error, never a silent wrong-dim entry.
+fn parse_qualified_envelope_spec(
+    parser: &mut Parser,
+    key: &str,
+    dim: crate::ast::QuantityDim,
+    metadata: &mut std::collections::HashMap<String, PropertyValue>,
+) -> Result<(), SyntaxError> {
+    if matches!(parser.peek(), Some(Token::Identifier(_))) {
+        loop {
+            let pin = parser.expect_identifier()?;
+            parser.expect(Token::Colon)?;
+            let (si, resolved) = parser.parse_spec_quantity(dim)?;
+            metadata.insert(format!("{key}:{pin}"), PropertyValue::Quantity { si, dimension: resolved });
+            if !parser.eat(&Token::Comma) {
+                break;
+            }
+        }
+    } else {
+        let (si, resolved) = parser.parse_spec_quantity(dim)?;
+        metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: resolved });
+    }
+    // Spec arms own their terminator (parse_envelope_spec's convention) —
+    // the type-body loop expects the next item, not a stray `;`.
+    parser.eat(&Token::Semicolon);
+    Ok(())
+}
+
 pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
     match name {
         "Alignment" => Some("alignment"),
@@ -4719,6 +4754,11 @@ pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // `any`.
         "Tolerance" => Some("tolerance"),
         "Rating" => Some("rating"),
+        // 2026-09-25 (quantities Phase 4, plan
+        // 2026-09-25-quantities-phase4-envelopes.md): the absolute-maximum
+        // current envelope — unconditional, every state, like Tolerance for
+        // volts. Uniform or pin-qualified (`a: 20mA, vdd: 100mA`).
+        "MaxCurrent" => Some("max_current"),
         // 2026-09-25 (E14b-7, rail-membership plan): the standard-net
         // registry — `spec NetVoltage` on a type makes it a `stdnet<Name>`
         // row (the expected rail voltage), `spec KicadLabel` the emitter
@@ -5474,16 +5514,16 @@ mod tests {
     }
 
     #[test]
-    fn test_instance_literal_rejects_envelope_specs() {
-        // The envelopes are type-level; an instance override would be a
-        // silent no-op the analysis never reads — refuse at parse time.
-        let err = parse_top(
-            "let d: D = D { spec Tolerance: 3.6V; };",
-        )
-        .unwrap_err();
+    fn test_instance_literal_lifts_envelope_specs() {
+        // 2026-09-25 (quantities Phase 4): the envelopes lift to instance
+        // literals — derating semantics; the instance value replaces the
+        // type default. The dimension stays a parse-time hard error.
+        let parsed = parse_top("let d: D = D { spec Tolerance: 3.6V; };");
+        assert!(parsed.is_ok(), "instance envelope override parses: {parsed:?}");
+        let err = parse_top("let d: D = D { spec MaxCurrent: 3.3V; };").unwrap_err();
         assert!(
-            err.contains("type-level envelope"),
-            "instance envelope must name the type body: {err}"
+            err.contains("the key expects amp"),
+            "wrong-dim envelope names both sides: {err}"
         );
     }
 

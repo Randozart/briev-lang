@@ -807,6 +807,7 @@ struct ProofInputs<'a> {
     states: &'a std::collections::BTreeSet<String>,
     modes: &'a BTreeMap<String, Vec<String>>,
     assigned_modes: &'a BTreeMap<String, String>,
+    unpop: &'a std::collections::HashSet<String>,
 }
 
 /// Everything needed after contract drives are classified: DC solve, proofs,
@@ -870,6 +871,7 @@ fn post_solve_checks(
                 states: &state.states,
                 modes: ctx.modes,
                 assigned_modes: &state.modes,
+                unpop: ctx.unpop,
             },
             &mut state_check,
         );
@@ -1001,6 +1003,95 @@ fn derive_electrical_proofs(input: ProofInputs<'_>, check: &mut VoltageCheck) {
         },
         check,
     );
+    // 2026-09-25 (quantities Phase 4): the absolute-maximum current
+    // envelope — unconditional, beside the volt tolerance.
+    check_max_current(input.instances, input.type_info, &pin_to_net, check, input.unpop);
+}
+
+/// The effective absolute-maximum current envelope for one pin — the
+/// instance's derating, then the type's pin-qualified row, then the
+/// type's uniform. Amp quantities only; anything else is absent.
+fn max_current_for(
+    inst: &ComponentInstance,
+    ti: &TypeInfo,
+    pname: &str,
+) -> Option<f64> {
+    let pick = |pv: &crate::ast::PropertyValue| match pv {
+        crate::ast::PropertyValue::Quantity { si, dimension }
+            if *dimension == crate::ast::QuantityDim::Amp =>
+        {
+            Some(*si)
+        }
+        _ => None,
+    };
+    inst.specs
+        .get("max_current")
+        .and_then(pick)
+        .or_else(|| ti.spec_defaults.get(&format!("max_current:{pname}")).and_then(pick))
+        .or_else(|| ti.spec_defaults.get("max_current").and_then(pick))
+}
+
+/// 2026-09-25 (quantities Phase 4, plan
+/// `2026-09-25-quantities-phase4-envelopes.md`): the absolute-maximum
+/// current envelope — unconditional, like volts over Tolerance. Law-exact
+/// current first, the series fixpoint as fallback. A pin whose current
+/// the solver cannot derive stays unproven (the anti-vacuity hard error
+/// is reserved for stated bounds); a pin over its envelope is a hard
+/// violation.
+fn check_max_current(
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    pin_to_net: &BTreeMap<(String, String), String>,
+    check: &mut VoltageCheck,
+    unpop: &std::collections::HashSet<String>,
+) {
+    // (instance, pin, limit) rows first — flat iteration, no nested loop.
+    let rows: Vec<(&&ComponentInstance, &String, f64)> = instances
+        .values()
+        .filter(|inst| !unpop.contains(&inst.name))
+        .filter_map(|inst| {
+            let ti = type_info.get(&inst.type_name)?;
+            Some(
+                ti.pins
+                    .iter()
+                    .filter_map(|(pname, _)| {
+                        max_current_for(inst, ti, pname).map(|limit| (pname, limit))
+                    })
+                    .map(move |(pname, limit)| (inst, pname, limit)),
+            )
+        })
+        .flatten()
+        .collect();
+    for (inst, pname, limit) in rows {
+        let key = (inst.name.clone(), pname.clone());
+        let derived = check
+            .pin_current
+            .get(&key)
+            .copied()
+            .or_else(|| pin_to_net.get(&key).and_then(|n| check.net_current.get(n).copied()));
+        let Some(derived) = derived else {
+            continue;
+        };
+        if derived.abs() > limit + f64::EPSILON {
+            check.violations.push(format!(
+                "pin '{}.{}' carries a derived current of {} but its absolute maximum \
+                 current is {} — the rating is violated. fix: lower the boundary voltage \
+                 or the series resistance, or fit a part rated for the current",
+                inst.name,
+                pname,
+                format_amps(derived.abs()),
+                format_amps(limit)
+            ));
+        } else {
+            check.proved.push(format!(
+                "I({}.{}) = {} <= {} — absolute maximum",
+                inst.name,
+                pname,
+                format_amps(derived.abs()),
+                format_amps(limit)
+            ));
+        }
+    }
 }
 
 /// Pin → net name index.
@@ -2211,6 +2302,18 @@ fn finished_netlist_checks(
     let convention = check_decoupling(ctx, unpop);
     let contention = check_contention(nets, ctx.instances, ctx.type_info, shortcircuit);
     (convention, contention)
+}
+
+/// Author net labels keyed by FINAL union-find root — resolved after the
+/// intent pass, because body wiring can merge nets further (E14b-7).
+fn resolve_net_labels(
+    bindings: &BTreeMap<String, (String, String)>,
+    ds: &mut DisjointSet,
+) -> BTreeMap<String, String> {
+    bindings
+        .iter()
+        .map(|(_, (root, label))| (ds.find(root), label.clone()))
+        .collect()
 }
 
 /// The return-topology bundle (2026-09-25, E14b-6): participation facts
@@ -5321,16 +5424,10 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
 
     // 2026-09-25 (E14b-7): author labels keyed by FINAL root — resolved
     // here, after the intent pass (body wiring can merge nets further).
-    let net_labels: BTreeMap<String, String> = topo
-        .net_bindings
-        .into_iter()
-        .map(|(_, (root, label))| (ds.find(&root), label))
-        .collect();
+    let net_labels = resolve_net_labels(&topo.net_bindings, &mut ds);
 
-    // Group members by root; sort everything for determinism (HashMap rule).
     let (groups, nc_pins) =
         group_pins(&instances, &type_pins, &type_info, &mut ds, &topo.exempt_pins);
-
     let (nets, dangling) = partition_nets(&groups, &nc_pins, &net_labels);
 
     // Voltage classes need the nets and instances before they move into the
@@ -6092,6 +6189,126 @@ mod tests {
         assert!(tokens.is_ok());
         let mut p = Parser::new(tokens.unwrap(), src);
         assert!(p.parse_program().is_err(), "net<> names a let's net, not a node");
+    }
+
+    // ── 2026-09-25 (quantities Phase 4, slice 1): spec MaxCurrent ────────
+
+    /// A driven LED chain with law physics: (3.3 − 1.8) V across 330 Ω ≈
+    /// 4.5 mA through the LED — inside the type's 20 mA envelope.
+    const LED_ENVELOPE_BOARD: &str = r#"
+        type Power { spec KicadType: "power_in"; spec Supply: true; };
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type Rail { pin hi: Power; pin lo: Power; reference "P"; };
+        type Resistor { pin a; pin b; reference "R"; spec Resistance: Ohm;
+            when true {
+                a.voltage - b.voltage == Resistance * a.current;
+                a.current + b.current == 0;
+            };
+        };
+        type Led { pin a; pin k; reference "D"; spec MaxCurrent: 20mA; spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
+            when a.voltage - k.voltage >= ForwardVoltage {
+                a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+            };
+        };
+        let p: Rail = Rail { value: "rail" };
+        let r: Resistor = Resistor { spec Resistance: 330Ohm };
+        let d: Led = Led { spec ForwardVoltage: 1.8Volt; spec DynamicResistance: 10Ohm };
+        txn on [p.hi.voltage == r.a.voltage && r.b.voltage == d.a.voltage && d.k.voltage == p.lo.voltage && p.hi.voltage == 3.3Volt && p.lo.voltage == 0.0Volt] [d.a.current > 0] { }
+    "#;
+
+    #[test]
+    fn max_current_envelope_proves() {
+        let nl = analyze(LED_ENVELOPE_BOARD);
+        assert!(
+            !nl.voltage.violations.iter().any(|v| v.contains("absolute maximum")),
+            "{:?}",
+            nl.voltage.violations
+        );
+        assert!(
+            nl.voltage.proved
+                .iter()
+                .any(|p| p.contains("d.a") && p.contains("absolute maximum")),
+            "{:?}",
+            nl.voltage.proved
+        );
+    }
+
+    #[test]
+    fn max_current_violation_is_an_error() {
+        let src = LED_ENVELOPE_BOARD.replace("spec Resistance: 330Ohm", "spec Resistance: 10Ohm");
+        let nl = analyze(&src);
+        assert!(
+            nl.voltage.violations
+                .iter()
+                .any(|v| v.contains("d.a") && v.contains("absolute maximum current is 20.0 mA")),
+            "{:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn instance_max_current_override_wins() {
+        // The type allows 20 mA; the instance is derated to 4 mA — the
+        // 4.5 mA operating point violates the INSTANCE rating.
+        let src = LED_ENVELOPE_BOARD.replace(
+            "spec ForwardVoltage: 1.8Volt; spec DynamicResistance: 10Ohm",
+            "spec ForwardVoltage: 1.8Volt; spec DynamicResistance: 10Ohm; spec MaxCurrent: 4mA",
+        );
+        let nl = analyze(&src);
+        assert!(
+            nl.voltage.violations
+                .iter()
+                .any(|v| v.contains("d.a") && v.contains("absolute maximum current is 4.0 mA")),
+            "the instance derating decides: {:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn pin_qualified_max_current_beats_uniform() {
+        // Asymmetric envelope: pin a is derated to 4 mA, uniform 20 mA
+        // would pass — the pin row decides.
+        let src = LED_ENVELOPE_BOARD
+            .replace("spec MaxCurrent: 20mA", "spec MaxCurrent: a: 4mA, k: 1A");
+        let nl = analyze(&src);
+        assert!(
+            nl.voltage.violations
+                .iter()
+                .any(|v| v.contains("d.a") && v.contains("absolute maximum current is 4.0 mA")),
+            "the pin-qualified row decides: {:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn unpop_led_skips_envelope() {
+        let src = LED_ENVELOPE_BOARD
+            .replace("spec Resistance: 330Ohm", "spec Resistance: 10Ohm")
+            .replace("let d: Led", "unpop d;\n        let d: Led");
+        let nl = analyze(&src);
+        assert!(
+            !nl.voltage
+                .violations
+                .iter()
+                .any(|v| v.contains("d.a") && v.contains("absolute maximum")),
+            "an absent part violates nothing: {:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn max_current_wrong_dim_is_a_parse_error() {
+        let src = r#"
+            type Led { pin a; pin k; reference "D"; };
+            let d: Led = Led { spec MaxCurrent: 3.3V };
+        "#;
+        let tokens = tokenize(src);
+        let mut p = Parser::new(tokens.unwrap(), src);
+        let err = format!("{}", p.parse_program().unwrap_err());
+        assert!(
+            err.contains("the key expects amp"),
+            "wrong-dim envelope is a parse error: {err}"
+        );
     }
 
     #[test]

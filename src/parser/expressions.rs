@@ -1266,24 +1266,78 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
     ) -> Result<(), SyntaxError> {
         self.pos += 1; // consume spec
         let name = self.expect_identifier()?;
-        // 2026-09-24 (quantities Phase 2): the envelopes are type-level —
-        // an instance cannot silently drop an override the analysis never
-        // reads. Per-instance envelopes are a designed feature, not a
-        // parse-through no-op.
-        if name == "Tolerance" || name == "Rating" {
-            let example = if name == "Tolerance" { "3.6V" } else { "0.25W" };
-            return self.error_at_current(&format!(
-                "spec {name} is a type-level envelope — an instance literal cannot override it. fix: declare `spec {name}: {example};` on the component type body (`type Part {{ … }}`)"
-            ));
-        }
         self.expect(Token::Colon)?;
         let value_pos = self.pos;
         let value = self.parse_expression()?;
         if name == "Resistance" {
             self.require_ascii_resistance(value_pos, &value)?;
         }
+        // 2026-09-25 (quantities Phase 4): the envelopes LIFT to instance
+        // literals — derating semantics. The instance value REPLACES the
+        // type default for this instance; the dimension is a parse-time
+        // hard error, never a silent wrong-dim entry.
+        let envelope_dim = match name.as_str() {
+            "Tolerance" => Some(crate::ast::QuantityDim::Volt),
+            "Rating" => Some(crate::ast::QuantityDim::Watt),
+            "MaxCurrent" => Some(crate::ast::QuantityDim::Amp),
+            _ => None,
+        };
+        if let Some(dim) = envelope_dim {
+            self.require_quantity_dim(value_pos, &value, dim, &name)?;
+        }
         specs.push((name, value));
         Ok(())
+    }
+
+    /// 2026-09-25 (quantities Phase 4): an envelope spec value must be a
+    /// quantity in the key's dimension — `spec MaxCurrent: 3.3V` is a
+    /// parse error naming the expected spelling.
+    fn require_quantity_dim(
+        &self,
+        pos: usize,
+        expr: &Expr,
+        dim: crate::ast::QuantityDim,
+        name: &str,
+    ) -> Result<(), SyntaxError> {
+        let example = match dim {
+            crate::ast::QuantityDim::Volt => "3.6V",
+            crate::ast::QuantityDim::Watt => "0.25W",
+            _ => "20mA",
+        };
+        let span = self
+            .tokens
+            .get(pos)
+            .map(|(_, range)| self.make_span(range.clone()))
+            .unwrap_or_else(|| self.make_span(0..0));
+        let Expr::UnitLiteral { unit, .. } = expr else {
+            return Err(SyntaxError::InvalidExpression {
+                reason: format!(
+                    "spec {name} must be a quantity with the key's unit (e.g. `{example}`)"
+                ),
+                span,
+            });
+        };
+        let Some(crate::parser::quantity::UnitSuffix::Explicit { dim: sdim, .. }) =
+            crate::parser::quantity::parse_unit_suffix(unit)
+        else {
+            return Err(SyntaxError::InvalidExpression {
+                reason: format!(
+                    "spec {name} must be a quantity with the key's unit (e.g. `{example}`)"
+                ),
+                span,
+            });
+        };
+        if sdim == dim {
+            return Ok(());
+        }
+        Err(SyntaxError::InvalidExpression {
+            reason: format!(
+                "spec {name} is in {} but the key expects {} — write the quantity like `{example}`",
+                crate::parser::quantity::dimension_name(sdim),
+                crate::parser::quantity::dimension_name(dim)
+            ),
+            span,
+        })
     }
 
     /// Component resistance must state an explicit ASCII ohm unit: `330R`,
