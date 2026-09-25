@@ -1266,6 +1266,16 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
     ) -> Result<(), SyntaxError> {
         self.pos += 1; // consume spec
         let name = self.expect_identifier()?;
+        // 2026-09-24 (quantities Phase 2): the envelopes are type-level —
+        // an instance cannot silently drop an override the analysis never
+        // reads. Per-instance envelopes are a designed feature, not a
+        // parse-through no-op.
+        if name == "Tolerance" || name == "Rating" {
+            let example = if name == "Tolerance" { "3.6V" } else { "0.25W" };
+            return self.error_at_current(&format!(
+                "spec {name} is a type-level envelope — an instance literal cannot override it. fix: declare `spec {name}: {example};` on the component type body (`type Part {{ … }}`)"
+            ));
+        }
         self.expect(Token::Colon)?;
         let value_pos = self.pos;
         let value = self.parse_expression()?;

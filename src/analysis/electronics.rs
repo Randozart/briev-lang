@@ -356,6 +356,38 @@ fn resolve_pin_class_props(
     }
 }
 
+/// TEMP: 2026-09-24 (tolerance-rating-spec-migration plan Slice 1): resolve
+/// the type-level envelope values from the body metadata (`spec Tolerance:
+/// 3.6V;` rates the pins; `any` declares unrated) with the legacy clause
+/// fields as fallback. Slice 3 of that plan deletes the fallback.
+fn envelope_values(
+    td: &crate::ast::top::TypeDef,
+) -> (Option<f64>, Option<f64>) {
+    let tolerance = match td.body.metadata.get("tolerance") {
+        Some(crate::ast::PropertyValue::Quantity { si, dimension })
+            if *dimension == crate::ast::QuantityDim::Volt => Some(*si),
+        Some(crate::ast::PropertyValue::Identifier(v)) if v == "any" => {
+            Some(f64::INFINITY)
+        }
+        _ => td.body.tolerance.as_ref().map(|t| match t {
+            crate::ast::top::Tolerance::Volts(v) => *v,
+            crate::ast::top::Tolerance::Any => f64::INFINITY,
+        }),
+    };
+    let rating = match td.body.metadata.get("rating") {
+        Some(crate::ast::PropertyValue::Quantity { si, dimension })
+            if *dimension == crate::ast::QuantityDim::Watt => Some(*si),
+        Some(crate::ast::PropertyValue::Identifier(v)) if v == "any" => {
+            Some(f64::INFINITY)
+        }
+        _ => td.body.rating.as_ref().map(|r| match r {
+            crate::ast::top::Rating::Watts(w) => *w,
+            crate::ast::top::Rating::Any => f64::INFINITY,
+        }),
+    };
+    (tolerance, rating)
+}
+
 /// Extract declared pins per component type from TypeDef bodies, plus the
 /// schematic facts (`!> Reference` prefix) each type carries. Also resolves
 /// pin-class ascriptions (E12) against the program's declared types —
@@ -391,17 +423,10 @@ fn collect_type_pins(
                     .unwrap_or_else(|| {
                         td.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "U".to_string())
                     });
-                // `tolerance 3.3;` rates the pins; `tolerance any;` declares
-                // unrated (a decision); no clause = unrated (B4 wires the
-                // driven-net violation for the no-clause case).
-                let tolerance = td.body.tolerance.as_ref().map(|t| match t {
-                    crate::ast::top::Tolerance::Volts(v) => *v,
-                    crate::ast::top::Tolerance::Any => f64::INFINITY,
-                });
-                let rating = td.body.rating.as_ref().map(|r| match r {
-                    crate::ast::top::Rating::Watts(w) => *w,
-                    crate::ast::top::Rating::Any => f64::INFINITY,
-                });
+                // `spec Tolerance: 3.3V;` rates the pins; `spec Tolerance:
+                // any;` declares unrated (a decision); absent = unrated (B4
+                // wires the driven-net violation for the no-clause case).
+                let (tolerance, rating) = envelope_values(td);
                 // 2026-09-24 (component laws): a type-level resistance value
                 // is the parameter default. A dimension-only declaration
                 // (`Identifier("Ohm")`) is not a value.
@@ -6403,6 +6428,66 @@ mod tests {
         "#;
         let nl = analyze(declared_any);
         assert!(nl.voltage.violations.is_empty(), "`tolerance any` declares the decision: {:?}", nl.voltage.violations);
+    }
+
+    #[test]
+    fn spec_tolerance_and_rating_feed_the_checks() {
+        // 2026-09-24 (quantities Phase 2): the envelopes read from the spec
+        // channel — rated, declared-unrated, and over-dissipating behave
+        // exactly like the clause forms they replace.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; reference "P"; spec Tolerance: 12V; };
+            type Load { pin vin; reference "L"; spec Tolerance: 3.3V; };
+            let p1: Power = Power { };
+            let l1: Load = Load { };
+            txn apply
+                [p1.vout.voltage == l1.vin.voltage && p1.vout.voltage == 5.0]
+                [l1.vin.current >= 0.0]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.voltage.violations.iter().any(|v| v.contains("tolerates only 3.3 V")),
+            "spec Tolerance must rate the pin: {:?}",
+            nl.voltage.violations
+        );
+
+        let any_src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; reference "P"; spec Tolerance: any; };
+            type Load { pin vin; reference "L"; spec Tolerance: any; };
+            let p1: Power = Power { };
+            let l1: Load = Load { };
+            txn apply
+                [p1.vout.voltage == l1.vin.voltage && p1.vout.voltage == 12.0]
+                [l1.vin.current >= 0.0]
+            { }
+        "#;
+        let nl = analyze(any_src);
+        assert!(
+            nl.voltage.violations.is_empty(),
+            "`spec Tolerance: any;` declares the decision: {:?}",
+            nl.voltage.violations
+        );
+
+        let rated = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; pin gnd; reference "P"; spec Tolerance: any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W; };
+            let p1: Power = Power { };
+            let r1: Resistor = Resistor { spec Resistance: 330Ohm; };
+            txn apply
+                [p1.vout.voltage == r1.a.voltage && r1.b.voltage == p1.gnd.voltage && p1.vout.voltage == 12.0 && p1.gnd.voltage == 0.0]
+                [r1.b.current > 0.0]
+            { }
+        "#;
+        let nl = analyze(rated);
+        assert!(
+            nl.voltage.violations.iter().any(|v| v.contains("rated 250.0 mW")),
+            "`spec Rating: 0.25W;` must rate the dissipation: {:?}",
+            nl.voltage.violations
+        );
     }
 
     // ── B4 flagship: Ohm's-law current derivation ────────────────────

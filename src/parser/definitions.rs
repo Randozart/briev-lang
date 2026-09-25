@@ -3630,7 +3630,7 @@ impl<'a> Parser<'a> {
             }
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadType, MaxBits, NoConnect, PullUp, Resistance, Return, Rows, Supply, Switchable",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadType, MaxBits, NoConnect, PullUp, Rating, Resistance, Return, Rows, Supply, Switchable, Tolerance",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -3677,25 +3677,23 @@ impl<'a> Parser<'a> {
             "resistance" => {
                 return self.parse_resistance_spec(key, metadata);
             }
+            // 2026-09-24 (quantities Phase 2): the envelope specs — an
+            // explicit-unit quantity (`3.6V` / `0.25W`), a bare dimension
+            // declaration (`Volt` / `Watt`), or `any` (declared unrated).
+            "tolerance" | "rating" => {
+                let dim = if key == "tolerance" {
+                    crate::ast::QuantityDim::Volt
+                } else {
+                    crate::ast::QuantityDim::Watt
+                };
+                return self.parse_envelope_spec(name, key, dim, metadata);
+            }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
             // (`spec Rows: R` on `Matrix<T, R, C>`). The reader resolves the
             // identifier via ResolvedType.type_params.
             "rows" | "cols" | "depth" => {
-                if matches!(self.peek(), Some(Token::Identifier(_))) {
-                    let id = self.expect_identifier()?;
-                    metadata.insert(key.into(), PropertyValue::Identifier(id));
-                } else {
-                    let n = self.expect_integer()?;
-                    if n < 0 {
-                        let msg = format!(
-                            "spec {} must be a non-negative integer, got {}",
-                            name, n
-                        );
-                        return self.error_at_current(&msg);
-                    }
-                    metadata.insert(key.into(), PropertyValue::Int(n));
-                }
+                return self.parse_shape_spec(name, key, metadata);
             }
             _ => {
                 let n = self.expect_integer()?;
@@ -3826,6 +3824,76 @@ impl<'a> Parser<'a> {
             );
         }
         metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: dim });
+        self.eat(&Token::Semicolon);
+        Ok(())
+    }
+
+    /// Parse a matrix-shape spec value: an IDENTIFIER references a type
+    /// parameter (`spec Rows: R` on `Matrix<T, R, C>`); an INTEGER fixes the
+    /// shape. Extracted from `parse_spec_value` to keep it under the length
+    /// gate (2026-09-24 tolerance-rating-spec-migration plan).
+    fn parse_shape_spec(
+        &mut self,
+        name: &str,
+        key: &str,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<(), SyntaxError> {
+        if matches!(self.peek(), Some(Token::Identifier(_))) {
+            let id = self.expect_identifier()?;
+            metadata.insert(key.into(), PropertyValue::Identifier(id));
+        } else {
+            let n = self.expect_integer()?;
+            if n < 0 {
+                let msg = format!("spec {} must be a non-negative integer, got {}", name, n);
+                return self.error_at_current(&msg);
+            }
+            metadata.insert(key.into(), PropertyValue::Int(n));
+        }
+        self.eat(&Token::Semicolon);
+        Ok(())
+    }
+
+    /// Parse an envelope spec value: `any` (declared unrated), a bare
+    /// dimension declaration (`Volt`/`Watt`), or an explicit-unit quantity
+    /// (`3.6V`, `0.25W`, `250mW`). A bare number is rejected — the unit IS
+    /// the physics (quantities Phase 2, plan
+    /// 2026-09-24-tolerance-rating-spec-migration).
+    fn parse_envelope_spec(
+        &mut self,
+        name: &str,
+        key: &str,
+        dim: crate::ast::QuantityDim,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<(), SyntaxError> {
+        if matches!(self.peek(), Some(Token::Identifier(v)) if v == "any") {
+            self.pos += 1;
+            metadata.insert(key.into(), PropertyValue::Identifier("any".into()));
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        let (unit_hint, example) = match dim {
+            crate::ast::QuantityDim::Volt => ("volt", "3.6V"),
+            _ => ("watt", "0.25W"),
+        };
+        let wanted: &[&str] = if dim == crate::ast::QuantityDim::Volt {
+            &["V", "Volt"]
+        } else {
+            &["W", "Watt"]
+        };
+        if matches!(self.peek(), Some(Token::Identifier(v)) if wanted.contains(&v.as_str())) {
+            let dim_decl = self.expect_identifier()?;
+            metadata.insert(key.into(), PropertyValue::Identifier(dim_decl));
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        let number_pos = self.pos;
+        let (si, resolved) = self.parse_spec_quantity(dim)?;
+        if self.pos <= number_pos + 1 {
+            return self.error_at_current(&format!(
+                "spec {name} needs an explicit ASCII {unit_hint} unit (e.g. `{example}`) or `any` to declare it unrated",
+            ));
+        }
+        metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: resolved });
         self.eat(&Token::Semicolon);
         Ok(())
     }
@@ -4643,6 +4711,13 @@ pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // 2026-09-24 (multi-state laws): authority for a component to keep
         // multiple consistent DC operating states.
         "Bistable" => Some("bistable"),
+        // 2026-09-24 (quantities Phase 2, plan
+        // 2026-09-24-tolerance-rating-spec-migration): the two envelope
+        // specs — max volts a pin tolerates / max watts a part dissipates.
+        // Former `tolerance`/`rating` clauses; explicit-unit quantities or
+        // `any`.
+        "Tolerance" => Some("tolerance"),
+        "Rating" => Some("rating"),
         _ => None,
     }
 }
@@ -5324,6 +5399,86 @@ mod tests {
     }
 
     #[test]
+    // ── 2026-09-24 (quantities Phase 2): Tolerance/Rating specs ─────────
+
+    #[test]
+    fn test_spec_tolerance_rating_parse_as_quantities() {
+        let tl = parse_top(
+            "type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6V; spec Rating: 0.25W; };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
+        match td.body.metadata.get("tolerance") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                assert_eq!(*dimension, crate::ast::QuantityDim::Volt);
+                assert!((si - 3.6).abs() < 1e-9);
+            }
+            other => panic!("expected 3.6V quantity, got {other:?}"),
+        }
+        match td.body.metadata.get("rating") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                assert_eq!(*dimension, crate::ast::QuantityDim::Watt);
+                assert!((si - 0.25).abs() < 1e-9);
+            }
+            other => panic!("expected 0.25W quantity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spec_tolerance_rating_any_declares_unrated() {
+        let tl = parse_top(
+            "type R { pin a; pin b; reference \"R\"; spec Tolerance: any; spec Rating: any; };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
+        assert!(
+            matches!(td.body.metadata.get("tolerance"), Some(crate::ast::PropertyValue::Identifier(v)) if v == "any"),
+            "any → declared unrated"
+        );
+        assert!(
+            matches!(td.body.metadata.get("rating"), Some(crate::ast::PropertyValue::Identifier(v)) if v == "any"),
+            "any → declared unrated"
+        );
+    }
+
+    #[test]
+    fn test_spec_envelope_rejects_bare_number_and_wrong_dimension() {
+        let err = parse_top(
+            "type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6; };",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("explicit ASCII volt unit"),
+            "bare number needs the unit: {err}"
+        );
+        let err = parse_top(
+            "type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6Ohm; };",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("key expects volts"),
+            "dimension conflict names both sides: {err}"
+        );
+    }
+
+    #[test]
+    fn test_instance_literal_rejects_envelope_specs() {
+        // The envelopes are type-level; an instance override would be a
+        // silent no-op the analysis never reads — refuse at parse time.
+        let err = parse_top(
+            "let d: D = D { spec Tolerance: 3.6V; };",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("type-level envelope"),
+            "instance envelope must name the type body: {err}"
+        );
+    }
+
     fn test_spec_unknown_name_rejected() {
         // 2026-08-13: unknown spec names are hard errors — never silent.
         let err = parse_top("type W: Int { spec Flurb: 3; };").unwrap_err();
