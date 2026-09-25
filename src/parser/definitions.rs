@@ -19,8 +19,6 @@ struct TypeBodyTargets<'a> {
     pins: &'a mut Vec<crate::ast::top::PinDecl>,
     pin_high_water: &'a mut u64,
     reference: &'a mut Option<String>,
-    tolerance: &'a mut Option<crate::ast::top::Tolerance>,
-    rating: &'a mut Option<crate::ast::top::Rating>,
 }
 
 impl<'a> Parser<'a> {
@@ -1533,8 +1531,6 @@ impl<'a> Parser<'a> {
         Ok(CellDef {
             pins: Vec::new(),
             reference: None,
-            tolerance: None,
-            rating: None,
             name,
             type_params,
             parameters: ports_in.clone(),
@@ -1604,8 +1600,6 @@ impl<'a> Parser<'a> {
         let mut pins: Vec<crate::ast::top::PinDecl> = Vec::new();
         let mut pin_high_water: u64 = 0;
         let mut reference: Option<String> = None;
-        let mut tolerance: Option<crate::ast::top::Tolerance> = None;
-        let mut rating: Option<crate::ast::top::Rating> = None;
         // 2026-08-26 (Phase B2): internal triggers keep their own field.
         let mut internal_triggers: Vec<Trigger> = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
@@ -1617,12 +1611,8 @@ impl<'a> Parser<'a> {
                 reference = Some(self.parse_reference_clause()?);
                 continue;
             }
-            if self.at_tolerance_clause() {
-                tolerance = Some(self.parse_tolerance_clause()?);
-                continue;
-            }
-            if self.at_rating_clause() {
-                rating = Some(self.parse_rating_clause()?);
+            if self.at_retired_envelope_clause() {
+                self.reject_retired_envelope_clause()?;
                 continue;
             }
             if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
@@ -1676,8 +1666,6 @@ impl<'a> Parser<'a> {
             name,
             pins,
             reference,
-            tolerance,
-            rating,
             type_params,
             parameters: ports_in.clone(),
             output_type: None,
@@ -2051,11 +2039,7 @@ impl<'a> Parser<'a> {
             self.parse_pin_clause(targets.pins, targets.pin_high_water)?;
             return Ok(true);
         }
-        if self.parse_electronics_property_clause(
-            targets.reference,
-            targets.tolerance,
-            targets.rating,
-        )? {
+        if self.parse_electronics_property_clause(targets.reference)? {
             return Ok(true);
         }
         Ok(false)
@@ -2085,23 +2069,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the shared electronics scalar-property clauses. Returns true
-    /// when one was consumed.
+    /// when one was consumed. The retired `tolerance`/`rating` clauses
+    /// report their rewrite here (2026-09-24 quantities Phase 2).
     fn parse_electronics_property_clause(
         &mut self,
         reference: &mut Option<String>,
-        tolerance: &mut Option<crate::ast::top::Tolerance>,
-        rating: &mut Option<crate::ast::top::Rating>,
     ) -> Result<bool, SyntaxError> {
         if self.at_reference_clause() {
             *reference = Some(self.parse_reference_clause()?);
             return Ok(true);
         }
-        if self.at_tolerance_clause() {
-            *tolerance = Some(self.parse_tolerance_clause()?);
-            return Ok(true);
-        }
-        if self.at_rating_clause() {
-            *rating = Some(self.parse_rating_clause()?);
+        if self.at_retired_envelope_clause() {
+            self.reject_retired_envelope_clause()?;
             return Ok(true);
         }
         Ok(false)
@@ -2930,8 +2909,9 @@ impl<'a> Parser<'a> {
 
     // ── 2026-09-11 (fundamentals doctrine, B3): Electronics property
     // clauses — SHARED by all four declaration body loops (D1: forms are
-    // syntax). `pin` / `reference` / `tolerance` carry identical grammar
-    // and identical enforcement everywhere.
+    // syntax). `pin` / `reference` carry identical grammar and identical
+    // enforcement everywhere. (2026-09-24 quantities Phase 2: `tolerance`
+    // / `rating` moved to type-level `spec Tolerance`/`spec Rating` keys.)
 
     /// `'[' <int> ']'` — the array-count half of a pin clause (E11).
     /// Absent → single pin (count 1); present → at least 1 element.
@@ -3047,49 +3027,53 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn at_rating_clause(&self) -> bool {
-        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "rating") {
-            return false;
-        }
-        matches!(self.peek_next(), Some(Token::Identifier(v)) if v == "any")
-            || matches!(
-                self.peek_next(),
-                Some(Token::Float(_)) | Some(Token::Integer(_))
-            )
-    }
-
-    /// `rating 0.25;` (max watts) | `rating any;` (declared unrated).
-    fn parse_rating_clause(&mut self) -> Result<crate::ast::top::Rating, SyntaxError> {
-        self.pos += 1; // consume `rating`
-        let r = match self.peek() {
-            Some(Token::Identifier(v)) if v == "any" => crate::ast::top::Rating::Any,
-            Some(Token::Float(f)) => crate::ast::top::Rating::Watts(*f),
-            Some(Token::Integer(n)) => crate::ast::top::Rating::Watts(*n as f64),
-            _ => {
-                return self
-                    .error_at_current("expected a power in watts (`rating 0.25;`) or `any` (`rating any;`)")
-            }
-        };
-        self.pos += 1;
-        self.eat(&Token::Semicolon);
-        Ok(r)
-    }
-
-    /// Is the current position an Electronics clause (`reference`/`tolerance`
+    /// Is the current position an Electronics clause (`reference`
     /// identifier followed by its clause payload, not a `:` slot)?
     fn at_reference_clause(&self) -> bool {
         matches!(self.peek(), Some(Token::Identifier(s)) if s == "reference")
             && matches!(self.peek_next(), Some(Token::String(_)))
     }
-    fn at_tolerance_clause(&self) -> bool {
-        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "tolerance") {
+
+    /// 2026-09-24 (quantities Phase 2): the `tolerance`/`rating` clauses are
+    /// retired — the envelope moved to the type-level `spec Tolerance`/
+    /// `spec Rating` metadata keys. Detect the retired spelling at the
+    /// clause site so the body scanners report what/why/fix instead of a
+    /// generic parse error.
+    fn at_retired_envelope_clause(&self) -> bool {
+        if !matches!(
+            self.peek(),
+            Some(Token::Identifier(s)) if s == "tolerance" || s == "rating"
+        ) {
             return false;
         }
+        // Payload-shaped only: `tolerance <n>;`/`tolerance any;` — a slot
+        // (`tolerance: Float;`) or other identifier use keeps its meaning.
         matches!(self.peek_next(), Some(Token::Identifier(v)) if v == "any")
             || matches!(
                 self.peek_next(),
                 Some(Token::Float(_)) | Some(Token::Integer(_))
             )
+    }
+
+    /// Report a retired `tolerance`/`rating` clause with the concrete
+    /// rewrite. The unit IS the physics: volts on Tolerance, watts on
+    /// Rating, or `any` to declare unrated.
+    fn reject_retired_envelope_clause(&self) -> Result<(), SyntaxError> {
+        let legacy = match self.peek() {
+            Some(Token::Identifier(s)) => s.clone(),
+            _ => return Ok(()),
+        };
+        let (key, example) = if legacy == "tolerance" {
+            ("Tolerance", "3.6V")
+        } else {
+            ("Rating", "0.25W")
+        };
+        self.error_at_current(&format!(
+            "the `{legacy}` clause was retired — the envelope is now a type-level spec key. \
+             why: one channel carries the physics (quantities Phase 2 doctrine). \
+             fix: replace `{legacy} …;` with `spec {key}: {example};` (value with an explicit \
+             ASCII unit) or `spec {key}: any;` (declared unrated)."
+        ))
     }
 
     /// `reference "R";` — schematic reference-designator prefix.
@@ -3105,34 +3089,6 @@ impl<'a> Parser<'a> {
         self.pos += 1;
         self.eat(&Token::Semicolon);
         Ok(s)
-    }
-
-    /// `tolerance 3.3;` (max volts) | `tolerance any;` (declared unrated).
-    fn parse_tolerance_clause(&mut self) -> Result<crate::ast::top::Tolerance, SyntaxError> {
-        self.pos += 1; // consume `tolerance`
-        let tol = match self.peek() {
-            Some(Token::Identifier(v)) if v == "any" => {
-                self.pos += 1;
-                crate::ast::top::Tolerance::Any
-            }
-            Some(Token::Float(f)) => {
-                let f = *f;
-                self.pos += 1;
-                crate::ast::top::Tolerance::Volts(f)
-            }
-            Some(Token::Integer(n)) => {
-                let n = *n;
-                self.pos += 1;
-                crate::ast::top::Tolerance::Volts(n as f64)
-            }
-            _ => {
-                return self.error_at_current(
-                    "expected a voltage (`tolerance 3.3;`) or `any` (`tolerance any;`)",
-                )
-            }
-        };
-        self.eat(&Token::Semicolon);
-        Ok(tol)
     }
 
     /// Mandatory-property enforcement (content-triggered): pins without a
@@ -3238,8 +3194,6 @@ impl<'a> Parser<'a> {
         let mut pins: Vec<crate::ast::top::PinDecl> = Vec::new();
         let mut pin_high_water: u64 = 0;
         let mut reference: Option<String> = None;
-        let mut tolerance: Option<crate::ast::top::Tolerance> = None;
-        let mut rating: Option<crate::ast::top::Rating> = None;
         let mut metadata = std::collections::HashMap::new();
         let mut operators: Vec<OperatorDef> = Vec::new();
         let mut atomic_slots: Vec<String> = Vec::new();
@@ -3257,8 +3211,6 @@ impl<'a> Parser<'a> {
                 pins: &mut pins,
                 pin_high_water: &mut pin_high_water,
                 reference: &mut reference,
-                tolerance: &mut tolerance,
-                rating: &mut rating,
             };
             while !self.check(&Token::RBrace) && !self.is_at_end() {
                 if self.parse_component_header_clause(&mut targets)? {
@@ -3306,8 +3258,6 @@ impl<'a> Parser<'a> {
                 slots,
                 pins,
                 reference: reference.clone(),
-                tolerance,
-            rating,
                 metadata,
                 projections: vec![],
                 bindings: vec![],
@@ -4074,7 +4024,7 @@ impl<'a> Parser<'a> {
             ports_in, ports_out,
             bit_range: None, span: None, coll, seq,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, tolerance: None, rating: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, when_laws, modes, span: None,
+                slots, pins: vec![], reference: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, when_laws, modes, span: None,
             },
         }))
     }
@@ -4358,7 +4308,7 @@ impl<'a> Parser<'a> {
             ports_in: vec![], ports_out: vec![],
             bit_range: None, span: None, coll: false, seq: false,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, tolerance: None, rating: None,
+                slots, pins: vec![], reference: None,
                 metadata: std::collections::HashMap::new(),
                 projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
             },
@@ -5752,22 +5702,37 @@ mod tests {
     // ── 2026-09-11 (B3): Electronics property clauses ────────────────
 
     #[test]
-    fn test_reference_and_tolerance_clauses_on_type() {
-        let tl = parse_top("type Led { pin a; pin k; reference \"D\"; tolerance 3.6; };").unwrap();
+    fn test_reference_clause_on_type() {
+        let tl = parse_top("type Led { pin a; pin k; reference \"D\"; spec Tolerance: 3.6V; };")
+            .unwrap();
         let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
         assert_eq!(td.body.reference.as_deref(), Some("D"));
         assert_eq!(td.body.pins.len(), 2);
-        match &td.body.tolerance {
-            Some(crate::ast::top::Tolerance::Volts(v)) => assert!((v - 3.6).abs() < 1e-9),
-            other => panic!("expected Volts(3.6), got {other:?}"),
+        match td.body.metadata.get("tolerance") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                assert_eq!(*dimension, crate::ast::QuantityDim::Volt);
+                assert!((si - 3.6).abs() < 1e-9);
+            }
+            other => panic!("expected 3.6V quantity, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_tolerance_any_clause() {
-        let tl = parse_top("type J { pin p1; reference \"J\"; tolerance any; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
-        assert!(matches!(td.body.tolerance, Some(crate::ast::top::Tolerance::Any)));
+    fn test_retired_tolerance_clause_reports_rewrite() {
+        // 2026-09-24 (quantities Phase 2): the clause is gone; the error
+        // names the replacement spelling with an explicit unit.
+        let err =
+            parse_top("type J { pin p1; reference \"J\"; tolerance any; };").unwrap_err().to_string();
+        assert!(err.contains("retired"), "{err}");
+        assert!(err.contains("spec Tolerance: any;"), "{err}");
+    }
+
+    #[test]
+    fn test_retired_rating_clause_reports_rewrite() {
+        let err =
+            parse_top("type R { pin a; pin b; reference \"R\"; rating 0.25; };").unwrap_err().to_string();
+        assert!(err.contains("retired"), "{err}");
+        assert!(err.contains("spec Rating: 0.25W;"), "{err}");
     }
 
     #[test]

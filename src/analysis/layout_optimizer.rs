@@ -414,8 +414,6 @@ mod tests {
             body: TypeDefBody {
                 pins: Vec::new(),
                 reference: None,
-                tolerance: None,
-                rating: None,
                 slots: vec![],
                 metadata,
                 projections: vec![],

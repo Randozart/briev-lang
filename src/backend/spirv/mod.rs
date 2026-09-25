@@ -860,8 +860,6 @@ mod tests {
                 crate::ast::top::TypeDefBody {
                     pins: Vec::new(),
                     reference: None,
-                    tolerance: None,
-                    rating: None,
                     slots: vec![],
                     metadata: md,
                     projections: vec![],
@@ -1049,8 +1047,6 @@ mod tests {
                 crate::ast::top::TypeDefBody {
                     pins: Vec::new(),
                     reference: None,
-                    tolerance: None,
-                    rating: None,
                     slots: vec![],
                     metadata: md,
                     projections: vec![],

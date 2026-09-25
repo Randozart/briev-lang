@@ -356,10 +356,11 @@ fn resolve_pin_class_props(
     }
 }
 
-/// TEMP: 2026-09-24 (tolerance-rating-spec-migration plan Slice 1): resolve
-/// the type-level envelope values from the body metadata (`spec Tolerance:
-/// 3.6V;` rates the pins; `any` declares unrated) with the legacy clause
-/// fields as fallback. Slice 3 of that plan deletes the fallback.
+/// 2026-09-24 (quantities Phase 2): resolve the type-level envelope values
+/// from the body metadata — `spec Tolerance: 3.6V;`/`spec Rating: 0.25W;`
+/// state the limit, `any` declares unrated (INFINITY), a dimension-only
+/// declaration (`spec Tolerance: Volt;`) or no key at all leaves the value
+/// absent (the driven-net/unrated checks own that case).
 fn envelope_values(
     td: &crate::ast::top::TypeDef,
 ) -> (Option<f64>, Option<f64>) {
@@ -369,10 +370,7 @@ fn envelope_values(
         Some(crate::ast::PropertyValue::Identifier(v)) if v == "any" => {
             Some(f64::INFINITY)
         }
-        _ => td.body.tolerance.as_ref().map(|t| match t {
-            crate::ast::top::Tolerance::Volts(v) => *v,
-            crate::ast::top::Tolerance::Any => f64::INFINITY,
-        }),
+        _ => None,
     };
     let rating = match td.body.metadata.get("rating") {
         Some(crate::ast::PropertyValue::Quantity { si, dimension })
@@ -380,10 +378,7 @@ fn envelope_values(
         Some(crate::ast::PropertyValue::Identifier(v)) if v == "any" => {
             Some(f64::INFINITY)
         }
-        _ => td.body.rating.as_ref().map(|r| match r {
-            crate::ast::top::Rating::Watts(w) => *w,
-            crate::ast::top::Rating::Any => f64::INFINITY,
-        }),
+        _ => None,
     };
     (tolerance, rating)
 }

@@ -4614,8 +4614,7 @@ pub fn check_program_with_target(
                     ports_in: vec![], ports_out: vec![],
                     bit_range: None, span: None, coll: true, seq: false,
                     body: crate::ast::top::TypeDefBody {
-                        slots: fake_slots, pins: vec![], reference: None, tolerance: None,
-            rating: None, metadata: Default::default(),
+                        slots: fake_slots, pins: vec![], reference: None, metadata: Default::default(),
                         projections: vec![], bindings: vec![],
                         operators: vec![], op_bindings: vec![],
                         constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,

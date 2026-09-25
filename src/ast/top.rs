@@ -298,17 +298,11 @@ pub struct CellDef {
     /// 2026-09-11 (fundamentals doctrine, B3): Electronics property clauses —
     /// uniform on every declaration form (D1: forms are syntax). Pins are
     /// electrical nodes; reference is the schematic designator prefix
-    /// (mandatory when pins exist); tolerance is the max voltage any pin
-    /// tolerates, or declared-unrated (`tolerance any`).
+    /// (mandatory when pins exist). The voltage/power envelope lives in the
+    /// type-level `spec Tolerance`/`spec Rating` metadata (2026-09-24
+    /// quantities Phase 2 — the `tolerance`/`rating` clauses are retired).
     pub pins: Vec<PinDecl>,
     pub reference: Option<String>,
-    pub tolerance: Option<Tolerance>,
-    /// 2026-09-12 (power ratings): `rating 0.25;` (max watts the part
-    /// dissipates) or `rating any;` (declared-unrated). Proven against the
-    /// derived P = V × I per part — same forced-explicitness doctrine as
-    /// tolerance: a part proven to dissipate with no rating clause is an
-    /// undeclared decision.
-    pub rating: Option<Rating>,
     /// 2026-08-27 (cbv-HW plan Slice A): set on `extern Name(ports) -> outs
     /// from "path";` declarations — the cell's DEFINITION lives in the
     /// referenced HDL source; CIRCT emits an `hw.module.extern` blackbox,
@@ -317,22 +311,6 @@ pub struct CellDef {
     pub extern_source: Option<String>,
     /// 2026-07-24: Doc comment text.
     pub doc: Option<String>,
-}
-
-/// 2026-09-11 (B3): `tolerance 3.3;` (max volts) or `tolerance any;`
-/// (DECLARED unrated — a decision, never a silent omission).
-#[derive(Debug, Clone)]
-pub enum Tolerance {
-    Volts(f64),
-    Any,
-}
-
-/// 2026-09-12 (power ratings): `rating 0.25;` (max watts) or `rating any;`
-/// (DECLARED unrated).
-#[derive(Debug, Clone)]
-pub enum Rating {
-    Watts(f64),
-    Any,
 }
 
 // ── Statement ──────────────────────────────────────────────────────────
@@ -1165,13 +1143,11 @@ pub struct TypeDefBody {
     pub pins: Vec<PinDecl>,
     /// 2026-09-11 (B3): Electronics property clauses — uniform on all four
     /// declaration forms. `reference` is the schematic designator prefix;
-    /// mandatory (parse-enforced) whenever pins exist.
+    /// mandatory (parse-enforced) whenever pins exist. The voltage/power
+    /// envelope lives in `metadata` under the type-level `spec Tolerance`/
+    /// `spec Rating` keys (2026-09-24 quantities Phase 2 — the
+    /// `tolerance`/`rating` clauses are retired).
     pub reference: Option<String>,
-    /// `tolerance 3.3;` (Volt) or `tolerance any;` (declared unrated).
-    pub tolerance: Option<Tolerance>,
-    /// 2026-09-12 (power ratings): `rating 0.25;` (max watts) or
-    /// `rating any;` (declared unrated) — proven against derived P = V × I.
-    pub rating: Option<Rating>,
     pub metadata: HashMap<String, PropertyValue>,
     pub projections: Vec<ProjectionDef>,
     pub bindings: Vec<TypeBinding>,

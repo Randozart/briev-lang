@@ -2555,8 +2555,6 @@ mod tests {
             ports_out: vec![],
             pins: vec![],
             reference: None,
-            tolerance: None,
-            rating: None,
             extern_source: Some("/tmp/opencode/definitely-missing-uart.v".into()),
         });
         let err = copy_extern_companions(&[cell], "/tmp/opencode/probe-none.bv")
