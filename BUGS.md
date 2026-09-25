@@ -6885,3 +6885,116 @@ next. Verified 12/12 module runs green, full suite 2492/0.
 **Class:** tests sharing process-global mutable state MUST serialize on a
 lock (or isolate state) — "known flaky" is a diagnosis, not an exemption;
 parallel test runners widen any race window until it fails consistently.
+
+## 2026-09-25: emitted `%briev.kernel` descriptor stayed at 5 members while C/Rust `BrievKernelDesc` grew to 15 — OOB reads, SIGSEGV on every accel launch [RESOLVED]
+
+**Date:** 2026-09-25 (baseline sweep — first accel benchmark, nbody_newton_accel, segfaulted at launch)
+**Symptom:** `benchmarks/nbody_newton_accel` died SIGSEGV inside
+`briev_dev_cuda_create_kernel` (memcpy of `desc->ptx` with a garbage size
+read past member 5).
+**Root cause:** `src/backend/llvm/kernel.rs` emitted the descriptor table
+with the 5-member layout frozen on 2026-08-31 (`txn_name, spirv,
+spirv_size, n_fields, fields`), while the shared ABI
+(`lib/runtime/briev_accel_rt.h` `BrievKernelDesc`, mirrored in
+`src/accel_rt.rs`) had grown to 15 members (…, `ptx` @80, `ptx_size` @88,
+`block_per_workitem` @92, sizeof 96). The Rust cuda lane read
+`ptx`/`ptx_size` past the end of the 40-byte emitted entries.
+`git log -S` proved kernel.rs never carried the tail fields;
+`docs/plans/2026-09-02-image-and-dehashtag.md` (lines 266-267) had
+required the lockstep widening and it was never done.
+**Fix:** kernel.rs emits the full 15-member `%briev.kernel` type
+(sizeof 96) and entries whose tail members are explicitly zero with a
+documented contract: `n_images 0` (SSBO-backed texel arrays unsupported
+on this lane → clean CPU/Vulkan fallback via `kernel_blob`), `ptx null/
+ptx_size 0` (PTX tier not emitted from this lane), `program_bytes 0`
+(field-derived program), `seed_fields null/n_seed_fields 0`,
+`block_per_workitem 0` (1:1). Pinned by
+`backend::tests::test_kernel_desc_abi_layout` (LLVM member list +
+`size_of`/`offset_of` on the Rust side) and
+`accel_rt::desc_abi::test_briev_kernel_desc_abi_pinned` (all 15 offsets).
+**Verified:** nbody_newton_accel no longer segfaults; `BOUND=5` bv ==
+C (`0.50002861`); `cargo test --lib` 2494/0.
+**Class:** a shared ABI struct mirrored in TWO emitters (C header + LLVM
+table) must be widened in lockstep — an offset-pinning test on BOTH sides
+is the enforcement mechanism; a plan note is not.
+
+## 2026-09-25: build.rs `rerun-if-changed` list was incomplete — `libbriev_accel_rt.a` went stale silently [RESOLVED]
+
+**Date:** 2026-09-25 (diagnosing the descriptor bug — fresh probe strings
+were missing from the linked binary)
+**Symptom:** edits to `src/accel_rt.rs` (e.g. new probe diagnostics)
+never reached `benchmarks/*` binaries; `target/compiler-in-briv/
+libbriev_accel_rt.a` kept its old bytes across rebuilds.
+**Root cause:** build.rs declares `cargo:rerun-if-changed` for the .bv
+passes, header and drivers — and declaring ANY such line replaces cargo's
+default whole-crate tracking. `src/accel_rt_standalone.rs` (the rustc
+crate that build.rs compiles into the staticlib) and `src/accel_rt.rs`
+(it includes) were not declared → cargo never reran the rustc step when
+they changed.
+**Fix:** added `rerun-if-changed` for `src/accel_rt_standalone.rs` and
+`src/accel_rt.rs` next to the existing declarations (dated provenance +
+undo note).
+**Verified:** touching accel_rt.rs now rebuilds the archive (timestamp +
+new probe strings present via `nm`).
+**Class:** once a build script emits any `rerun-if-changed`, it owns the
+FULL dependency list — every source that feeds a non-cargo build step
+must be declared, or that step silently stops tracking its inputs.
+
+## 2026-09-25: accel probe `state_size` computed before field registration — always 0 → 1-byte probe buffers → OOB gate → nondeterministic verdicts and `0` output [RESOLVED]
+
+**Date:** 2026-09-25 (baseline sweep — nbody_newton_accel printed `0`
+instead of `-0.00851473305` on some runs)
+**Symptom:** nondeterministic output: verdict=1 runs fast-forwarded the
+work counter without doing work and printed `0`; verdict=0 runs were
+correct. The probe's equality gate compared garbage.
+**Root cause:** `generate()` (src/backend/llvm/mod.rs) computed
+`state_size_bytes`/`state_ptr_param` at the top (line ~2660) — BEFORE
+`build_field_index` (~2783), synthetic field registration and
+`apply_field_modes` (~3353). At compute time the field list was empty →
+size 0 for EVERY program → the emitted probe call passed `i64 0` →
+`briev_accel_probe` allocated 1-byte lane copies, the lanes ran
+out-of-bounds, and the equality gate compared heap garbage — the
+probe verdict was a coin flip.
+**Fix:** moved the compute block after all field-table mutations
+(~line 3424, just before `emit_header`), with dated provenance. The
+emitted probe now passes the real size (98368 for nbody) and the params
+carry `dereferenceable(98368)`.
+**Verified:** `.ll` shows `ptr %state, i64 98368`; probe gate now
+deterministically reports the real comparison; `cargo test --lib` green.
+**Class:** module-level derived constants must be computed AFTER the
+passes that grow their inputs — compute-at-the-top silently freezes an
+empty-world answer. Order dependencies deserve an assertion (size > 0
+whenever fields exist), not a comment.
+
+## 2026-09-25: probe CPU lane ran the real goal check — cleared `@briev_begin_<name>` on the COPY, real reactor never fired the node again (hang) [RESOLVED]
+
+**Date:** 2026-09-25 (found while verifying the state_size fix: with a
+correct probe the once-working binary now hung at every BOUND)
+**Symptom:** nbody_newton_accel spun forever (busy CPU) at
+BOUND=100/1000/5000/50000. Registers frozen with the init counter at 1;
+`@briev_begin_init_bodies` cleared; reactor cycle executed no body.
+**Root cause:** the probe's CPU lane calls `@txn_<name>_cpu`, whose
+beginprogram goal check (emit_toplevel.rs
+`emit_beginprogram_goal_check`, 2026-08-06) stores `false` into the REAL
+global `@briev_begin_<name>` when the postcondition is met — and on the
+probe's state COPY it IS met (the lane runs the loop to completion). The
+probe is a what-if sandbox, but the goal check leaked a global side
+effect: after the probe, the real precondition
+`[beginprogram && i < nb]` read a cleared flag and the node never fired
+again. The pre-state_size era masked this: with size 0 the lane read
+heap garbage as the counter, the goal was almost never met, and the flag
+usually survived — UB luck.
+**Fix:** `emit_accel_probe_functions` now takes `has_beginprogram` and
+`briev_accel_run_probe_<name>` snapshots the flag before the lanes run
+and restores it after the verdict commit (sandbox purity — dated
+provenance + undo at the emission). Non-beginprogram bodies emit no flag
+traffic (the global does not exist for them).
+**Verified:** 6/6 `BOUND=50000` runs print `-0.00851473305`, rc=0, no
+hang; `BOUND=5` bv == C; `cargo test --lib` 2495/0 (+1 regression test
+`test_accel_run_probe_sandboxes_beginprogram_flag` asserting
+snapshot-before/restore-after-verdict and no flag traffic for
+non-beginprogram bodies).
+**Class:** anything that runs txn bodies OUTSIDE the reactor (probe,
+self-test, future replay tools) must sandbox module globals the bodies
+can write — entry flags today; the sandbox boundary is the emitted
+caller, not the body.

@@ -2655,13 +2655,6 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // Main's alloca sites alias the global via emit_state_base.
         self.ctx.state_is_global = items.iter().any(
             |i| matches!(i, TopLevel::IsrHandler(_)));
-        let sb = self.compute_state_size_bytes() as u64;
-        self.ctx.state_size_bytes = sb;
-        self.ctx.state_ptr_param = if sb > 0 {
-            format!("ptr noundef dereferenceable({}) noalias nocapture align 8 %state", sb)
-        } else {
-            "ptr noundef noalias nocapture align 8 %state".to_string()
-        };
 
         if self.ctx.is_embedded {
             self.check_embedded_restrictions(items);
@@ -3417,6 +3410,27 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         let enumerable = strategy.enumerable;
         let enum_keys = strategy.enum_keys;
         let enum_txn_names = strategy.enum_txn_names;
+
+        // 2026-09-24 (BUGS.md probe state_size): %State size + the %state
+        // param attributes are finalized HERE — after build_field_index
+        // (:~2783), the synthetic fields (cycle_count/arena), and
+        // apply_field_modes (the dead-field rewrite) — and before the first
+        // emitter consumes them. The former site ran BEFORE build_field_index
+        // registered any field, so state_size_bytes was 0 for every program:
+        // the auto-tuning probe got `state_size = i64 0`, allocated 1-byte
+        // lane buffers, heap-OOB'd every field access, and its equality gate
+        // compared garbage — the speed verdict degenerated to a coin flip
+        // and a GPU verdict fast-forwarded the counter without doing the
+        // work (nbody_newton_accel printed 0 nondeterministically).
+        // `dereferenceable(N)` on %state was likewise never emitted.
+        // To undo: move this block back up (reproduces size 0).
+        let sb = self.compute_state_size_bytes() as u64;
+        self.ctx.state_size_bytes = sb;
+        self.ctx.state_ptr_param = if sb > 0 {
+            format!("ptr noundef dereferenceable({}) noalias nocapture align 8 %state", sb)
+        } else {
+            "ptr noundef noalias nocapture align 8 %state".to_string()
+        };
 
         let mut out = String::new();
         self.emit_header(&mut out);

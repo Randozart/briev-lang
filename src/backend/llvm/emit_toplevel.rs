@@ -4005,7 +4005,8 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             // 2026-08-06 (accel plan): emit the dispatch wrapper for an accel
             // body (Gpu: device-availability gate; Probe: verdict global).
             if is_accel {
-                self.emit_accel_dispatch_wrapper(out, name);
+                let has_begin = LlvmBackend::expr_has_beginprogram(&txn.contract.pre_condition);
+                self.emit_accel_dispatch_wrapper(out, name, has_begin);
             }
 
             // Emit cold functions after the txn function
@@ -4081,7 +4082,12 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
     /// dispatch site (loop_engine counter/ssa paths), so the wrapper — lazy
     /// registry init + device/verdict gate → `briev_accel_launch`, else the CPU
     /// body `@txn_<name>_cpu` — is picked up automatically.
-    pub(super) fn emit_accel_dispatch_wrapper(&mut self, out: &mut String, name: &str) {
+    pub(super) fn emit_accel_dispatch_wrapper(
+        &mut self,
+        out: &mut String,
+        name: &str,
+        has_beginprogram: bool,
+    ) {
         let Some(&idx) = self.accel_kernel_idx.get(name) else { return; };
         // Copy the decision data up front — the emission methods below borrow
         // `self` mutably (gen_reg, emit_state_gep, emit_work_item_count).
@@ -4172,7 +4178,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         // Probe-decision bodies (not forced) get the auto-tuning probe
         // functions: CPU lane, GPU lane, output-equality gate, run_probe.
         if !forced {
-            self.emit_accel_probe_functions(out, name);
+            self.emit_accel_probe_functions(out, name, has_beginprogram);
         }
     }
 
@@ -4217,8 +4223,15 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
     /// dispatch + counter fast-forward), output-equality gate (write buffers
     /// within tolerance), and the run_probe that times both lanes and commits
     /// the verdict global. The runtime (`briev_accel_probe`) manages the two
-    /// lane state copies.
-    pub(super) fn emit_accel_probe_functions(&mut self, out: &mut String, name: &str) {
+    /// lane state copies. `has_beginprogram` is true when the body's
+    /// precondition reads `beginprogram` — those bodies carry the entry-flag
+    /// goal check, which run_probe must therefore sandbox (save/restore).
+    pub(super) fn emit_accel_probe_functions(
+        &mut self,
+        out: &mut String,
+        name: &str,
+        has_beginprogram: bool,
+    ) {
         let Some(&idx) = self.accel_kernel_idx.get(name) else { return; };
         let entry = &self.accel_entries[name];
         let counter = entry.shape.index_var.clone();
@@ -4274,6 +4287,18 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         let tuning = crate::config_tuning::ir_lowering();
         writeln!(out, "define void @briev_accel_run_probe_{}(ptr %state) {{", name).ok();
         writeln!(out, "entry:").ok();
+        // 2026-09-25 (probe sandbox purity): the CPU lane runs
+        // @txn_<name>_cpu, whose beginprogram goal check clears the REAL
+        // @briev_begin_<name> global when the goal is met ON THE COPY
+        // (2026-09-25 bug 11: nbody_newton_accel hung — the probe cleared the
+        // entry flag, so the real reactor's init node never fired again).
+        // The probe is a what-if measurement: snapshot the flag before the
+        // lanes run and restore it after the verdict is committed, so the
+        // sandbox leaves no global trace. Only beginprogram bodies carry the
+        // goal check; other bodies never touch the flag.
+        if has_beginprogram {
+            writeln!(out, "  %begin.save = load i1, ptr @briev_begin_{}", name).ok();
+        }
         writeln!(out, "  %v = call i32 @briev_accel_probe(").ok();
         writeln!(out, "    ptr @briev_accel_probe_cpu_{}, ptr @briev_accel_probe_gpu_{},", name, name).ok();
         //    {:?} (not {:e}): LLVM IR float literals must carry a decimal
@@ -4284,6 +4309,9 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         writeln!(out, "    ptr %state, i64 {}, i64 {}, double {:?}, double {:?},", state_size, tuning.accel_probe_k, tuning.accel_probe_tolerance, tuning.accel_probe_margin).ok();
         writeln!(out, "    ptr @briev_accel_gpu_ok_{})", name).ok();
         writeln!(out, "  store i32 %v, ptr @briev_accel_verdict_{}", name).ok();
+        if has_beginprogram {
+            writeln!(out, "  store i1 %begin.save, ptr @briev_begin_{}", name).ok();
+        }
         writeln!(out, "  ret void").ok();
         writeln!(out, "}}").ok();
     }

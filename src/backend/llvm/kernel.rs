@@ -388,13 +388,28 @@ fn emit_one_kernel_desc(
         // PTR, matching BrievKernelDesc's `const uint8_t* spirv`. The old
         // `i32 ptrtoint` both broke PIE linking (R_X86_64_32 against the
         // blob once it was actually retained) and misaligned the struct
-        // against the C descriptor (ptr,ptr,i32,i32,ptr).
-        "%briev.kernel {{ ptr @str.briev.{}, ptr @briev_kernel_{}, i32 {}, i32 {}, ptr @briev_kernel_{}_fields }}",
-        txn,
-        txn,
-        k.bytes.len(),
-        table.fields.len(),
-        txn
+        // against the C descriptor.
+        //
+        // 2026-09-24 (BUGS.md, descriptor-ABI drift): the entry carries ALL
+        // 15 BrievKernelDesc members. The 2026-09-02 image plan required
+        // lockstep widening but kernel.rs stayed at the original 5 — once
+        // the C struct grew, every .bv descriptor read out of bounds (the
+        // CUDA lane's `ptx`/`ptx_size` sat at offsets 80/88, past the end
+        // of a 32-byte entry → garbage memcpy size → nbody_newton_accel
+        // SIGSEGV). Tail fields this lane cannot fill use the header's
+        // documented zero contract: n_images 0 (the .bv offload lane keeps
+        // texel arrays SSBO-backed — see collect_accel_kernels), images
+        // null, block_threads 0 (driver default), shared_bytes 0,
+        // program_bytes 0 (field-derived extent), seed_fields null /
+        // n_seed_fields 0 (no seed table), ptx null / ptx_size 0 (no PTX
+        // image → clean CPU/Vulkan fallback per kernel_blob), and
+        // block_per_workitem 0 (flat gid model).
+        "%briev.kernel {{ ptr @str.briev.{txn}, ptr @briev_kernel_{txn}, i32 {spirv_len}, i32 {n_fields}, \
+         ptr @briev_kernel_{txn}_fields, i32 0, ptr null, i32 0, i32 0, i64 0, ptr null, i32 0, \
+         ptr null, i32 0, i32 0 }}",
+        txn = txn,
+        spirv_len = k.bytes.len(),
+        n_fields = table.fields.len(),
     )
 }
 
@@ -418,9 +433,27 @@ pub(crate) fn emit_accel_descriptors(
     // Mirrors the C BrievField exactly — the 7th member is proj_offset
     // (2026-09-01 vec4-projection-layout).
     out.push_str("%briev.field = type { ptr, i32, i64, i64, i64, i32, i64 }\n");
-    // 2026-08-31: { name, spirv ptr, size, n_fields, fields } — mirrors the C
-    // BrievKernelDesc exactly (the old i32 blob slot misaligned the struct).
-    out.push_str("%briev.kernel = type { ptr, ptr, i32, i32, ptr }\n");
+    // Mirrors lib/runtime/briev_accel_rt.h `BrievKernelDesc` and the
+    // #[repr(C)] Rust twin (src/accel_rt.rs) member-for-member, INCLUDING
+    // alignment padding — LLVM derives offsets from member types, and the
+    // C ABI derives them identically, so both come out at sizeof 96:
+    // txn_name 0, spirv 8, spirv_size 16, n_fields 20, fields 24,
+    // n_images 32, images 40, block_threads 48, shared_bytes 52,
+    // program_bytes 56, seed_fields 64, n_seed_fields 72, ptx 80,
+    // ptx_size 88, block_per_workitem 92.
+    //
+    // 2026-08-31: originally { ptr, ptr, i32, i32, ptr } — "mirrors the C
+    // BrievKernelDesc exactly" was TRUE THEN. 2026-09-02 (image plan,
+    // docs/plans/2026-09-02-image-and-dehashtag.md) and later desc growths
+    // required widening this type in lockstep; the widening never landed,
+    // so the runtime read tail members out of bounds (2026-09-24
+    // nbody_newton_accel SIGSEGV — BUGS.md). Any future BrievKernelDesc
+    // growth MUST update this line and emit_one_kernel_desc's entry format
+    // in the same commit; the pinned ABI test
+    // (test_kernel_desc_abi_layout, src/backend/llvm/tests.rs) and the
+    // Rust-side pin (test_briev_kernel_desc_abi_pinned, src/accel_rt.rs)
+    // fail if either side drifts.
+    out.push_str("%briev.kernel = type { ptr, ptr, i32, i32, ptr, i32, ptr, i32, i32, i64, ptr, i32, ptr, i32, i32 }\n");
     out.push_str("@briev_accel_ready = private global i32 0\n");
 
     let mut desc_entries: Vec<String> = Vec::new();

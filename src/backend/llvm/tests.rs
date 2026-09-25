@@ -1982,7 +1982,15 @@ fn test_accel_descriptors_emit() {
         ir.contains("%briev.field = type { ptr, i32, i64, i64, i64, i32, i64 }"),
         "field type (7th member = proj_offset)"
     );
-    assert!(ir.contains("%briev.kernel = type { ptr, ptr, i32, i32, ptr }"), "kernel type");
+    // 2026-09-24: ALL 15 members (see kernel.rs emit_accel_descriptors) —
+    // the runtime reads tail members (ptx at offset 80) through the C ABI,
+    // so a short type is an OOB read, not a cosmetic mismatch.
+    assert!(
+        ir.contains(
+            "%briev.kernel = type { ptr, ptr, i32, i32, ptr, i32, ptr, i32, i32, i64, ptr, i32, ptr, i32, i32 }"
+        ),
+        "kernel type (full 15-member BrievKernelDesc): {ir}"
+    );
     assert!(ir.contains("@briev_accel_descs"), "descs table");
     assert!(ir.contains("declare i32 @briev_accel_init(ptr, i32)"), "init decl");
     assert!(ir.contains("declare i32 @briev_accel_launch(i32, ptr, i64)"), "launch decl");
@@ -1991,6 +1999,80 @@ fn test_accel_descriptors_emit() {
     // field-entry order matches the C BrievField layout exactly
     // (kind, host_offset, elem_bytes, count, is_write, proj_offset).
     assert!(ir.contains("i32 1, i64 0, i64 4, i64 16, i32 1, i64 0"), "field entry: {ir}");
+    // 2026-09-24: descriptor entry tail = documented zero contract for every
+    // member this lane cannot fill (images/block_threads/shared_bytes/
+    // program_bytes/seed table/PTX/block_per_workitem).
+    assert!(
+        ir.contains(
+            "ptr @briev_kernel_force_fields, i32 0, ptr null, i32 0, i32 0, i64 0, ptr null, i32 0, ptr null, i32 0, i32 0 }"
+        ),
+        "kernel entry carries the full zero-filled tail: {ir}"
+    );
+}
+
+#[test]
+fn test_kernel_desc_abi_layout() {
+    // 2026-09-24 (BUGS.md descriptor-ABI drift): pins the emitted
+    // %briev.kernel against the C BrievKernelDesc ABI. The runtime
+    // (src/accel_rt.rs, #[repr(C)]) reads tail members at fixed byte
+    // offsets — the pre-fix 5-member entry put `ptx` (offset 80) past the
+    // end of the 32-byte constant, so briev_accel_init handed the CUDA
+    // driver a garbage blob size and memcpy'd out of bounds
+    // (nbody_newton_accel SIGSEGV). Expected: sizeof 96, ptx at 80 —
+    // mirrored by test_briev_kernel_desc_abi_pinned (src/accel_rt.rs).
+    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    backend.ctx.field_index_map.insert("a".to_string(), 0);
+    backend.ctx.field_types.push("[16 x float]".to_string());
+    backend.ctx.field_briev_types.push(Type::Vector(
+        Box::new(Type::Custom("Float".to_string())),
+        vec![crate::ast::Dimension::Anonymous(16)],
+    ));
+    let entry = accel_test_entry("a", true);
+    backend.accel_entries.insert("force".to_string(), entry);
+    let state_item = crate::ast::TopLevel::StateDecl(crate::ast::top::StateDecl {
+        name: "a".into(),
+        ty: Type::Vector(
+            Box::new(Type::Custom("Float".to_string())),
+            vec![crate::ast::Dimension::Anonymous(16)],
+        ),
+        span: None,
+    });
+    let blob = crate::backend::llvm::kernel::AccelKernelBlob {
+        txn_name: "force".to_string(),
+        bytes: vec![0x03, 0x02, 0x23, 0x07],
+    };
+    let (ir, _) =
+        crate::backend::llvm::kernel::emit_accel_descriptors(&backend, &[blob], &[state_item]);
+    // Member list drives LLVM's layout exactly like C's: each pair of
+    // adjacent ptrs/i32s computes the same padding. Offsets (bytes):
+    // txn_name 0, spirv 8, spirv_size 16, n_fields 20, fields 24,
+    // n_images 32, images 40, block_threads 48, shared_bytes 52,
+    // program_bytes 56, seed_fields 64, n_seed_fields 72, ptx 80,
+    // ptx_size 88, block_per_workitem 92 → 96.
+    let expected = [
+        "ptr", "ptr", "i32", "i32", "ptr", "i32", "ptr", "i32", "i32", "i64", "ptr", "i32", "ptr",
+        "i32", "i32",
+    ];
+    let expected_line = format!(
+        "%briev.kernel = type {{ {} }}",
+        expected.join(", ")
+    );
+    assert_eq!(
+        ir.lines().find(|l| l.starts_with("%briev.kernel")).unwrap_or(""),
+        expected_line,
+        "emitted type must match BrievKernelDesc member-for-member"
+    );
+    // The Rust/C reader side: pin the byte offsets the runtime depends on.
+    use std::mem::{align_of, offset_of, size_of};
+    assert_eq!(size_of::<crate::accel_rt::BrievKernelDesc>(), 96, "C sizeof");
+    assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, n_images), 32);
+    assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, ptx), 80);
+    assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, ptx_size), 88);
+    assert_eq!(
+        offset_of!(crate::accel_rt::BrievKernelDesc, block_per_workitem),
+        92
+    );
+    assert_eq!(align_of::<crate::accel_rt::BrievKernelDesc>(), 8);
 }
 
 #[test]
@@ -2008,7 +2090,7 @@ fn test_accel_wrapper_emits_dispatch() {
     let entry = accel_test_entry("a", false); // Probe: verdict gate
     backend.accel_entries.insert("force".to_string(), entry);
     let mut out = String::new();
-    backend.emit_accel_dispatch_wrapper(&mut out, "force");
+    backend.emit_accel_dispatch_wrapper(&mut out, "force", false);
     assert!(out.contains("define void @txn_force("), "wrapper define: {out}");
     assert!(out.contains("@briev_accel_init(ptr @briev_accel_descs, i32 1)"), "lazy init");
     assert!(out.contains("load i32, ptr @briev_accel_verdict"), "probe verdict gate");
@@ -2068,7 +2150,7 @@ fn test_accel_probe_functions_emit() {
     ));
     backend.accel_entries.insert("force".to_string(), accel_test_entry("a", true));
     let mut out = String::new();
-    backend.emit_accel_probe_functions(&mut out, "force");
+    backend.emit_accel_probe_functions(&mut out, "force", false);
     assert!(out.contains("define void @briev_accel_probe_cpu_force(ptr %state)"), "cpu lane: {out}");
     assert!(out.contains("call void @txn_force_cpu(ptr %state)"), "cpu lane runs the loop");
     assert!(out.contains("define void @briev_accel_probe_gpu_force(ptr %state)"), "gpu lane: {out}");
@@ -2077,6 +2159,54 @@ fn test_accel_probe_functions_emit() {
     assert!(out.contains("fcmp oge float"), "float tolerance compare");
     assert!(out.contains("define void @briev_accel_run_probe_force(ptr %state)"), "run_probe: {out}");
     assert!(out.contains("store i32 %v, ptr @briev_accel_verdict_force"), "verdict commit");
+}
+
+#[test]
+fn test_accel_run_probe_sandboxes_beginprogram_flag() {
+    // 2026-09-25 (bug 11): a beginprogram accel body's CPU lane runs
+    // @txn_<name>_cpu, whose goal check clears the REAL @briev_begin_<name>
+    // global when the goal is met on the probe's state COPY — the real
+    // reactor then never fires the node again (nbody_newton_accel hung).
+    // run_probe must snapshot the flag before the lanes run and restore it
+    // after the verdict is committed. Non-beginprogram bodies emit no
+    // flag traffic (the global doesn't exist for them).
+    let mut backend = LlvmBackend::new();
+    backend.accel_kernel_idx.insert("force".to_string(), 0);
+    backend.ctx.field_index_map.insert("i".to_string(), 0);
+    backend.ctx.field_types.push("i64".to_string());
+    backend.ctx.field_briev_types.push(Type::int());
+    backend.accel_entries.insert("force".to_string(), accel_test_entry("a", false));
+    let mut out = String::new();
+    backend.emit_accel_probe_functions(&mut out, "force", true);
+    assert!(
+        out.contains("load i1, ptr @briev_begin_force"),
+        "flag snapshot before lanes: {out}"
+    );
+    assert!(
+        out.contains("store i1 %begin.save, ptr @briev_begin_force"),
+        "flag restore after verdict commit: {out}"
+    );
+    // Restore must happen after the verdict store (lanes have fully run).
+    let restore_pos = out.find("store i1 %begin.save").unwrap_or(usize::MAX);
+    let verdict_pos = out.find("store i32 %v").unwrap_or(0);
+    assert!(
+        restore_pos > verdict_pos,
+        "restore must follow the verdict commit"
+    );
+
+    // Non-beginprogram body: no flag traffic at all.
+    let mut backend = LlvmBackend::new();
+    backend.accel_kernel_idx.insert("force".to_string(), 0);
+    backend.ctx.field_index_map.insert("i".to_string(), 0);
+    backend.ctx.field_types.push("i64".to_string());
+    backend.ctx.field_briev_types.push(Type::int());
+    backend.accel_entries.insert("force".to_string(), accel_test_entry("a", false));
+    let mut out = String::new();
+    backend.emit_accel_probe_functions(&mut out, "force", false);
+    assert!(
+        !out.contains("@briev_begin_force"),
+        "no flag global for a non-beginprogram body: {out}"
+    );
 }
 
 #[test]

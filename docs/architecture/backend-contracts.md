@@ -153,6 +153,16 @@ Hard-won in this effort; each one corresponds to a real defect class.
 > `@constant` global); the transitive no-alloc proof (check_section_proofs)
 > runs at the TYPECHECK — the backend consumes the placement without re-proving
 > it (frontend-driven dispatch).
+>
+> **2026-09-25 (accel descriptor + probe sandbox, BUGS.md 2026-09-25).**
+> Three laws from the baseline-sweep accel bugs:
+>
+> | Law | Failure it prevents |
+> |-----|---------------------|
+> | The emitted `%briev.kernel` descriptor table (kernel.rs) is the LLVM mirror of the shared `BrievKernelDesc` ABI (`lib/runtime/briev_accel_rt.h` + `src/accel_rt.rs`) — any member added to the ABI is added to the table in the SAME commit, with the entry tail explicitly zeroed per the documented zero contract (`n_images 0`, `ptx null/0`, `program_bytes 0`, `seed_fields null/0`, `block_per_workitem 0`). Pinned from both sides: `test_kernel_desc_abi_layout` (member list + `size_of`/`offset_of`) and `accel_rt::desc_abi::test_briev_kernel_desc_abi_pinned` | Reader reads `ptx`/`ptx_size` past a 5-member entry → garbage memcpy size → SIGSEGV (nbody_newton_accel, 2026-09-25) |
+> | Anything that runs txn bodies OUTSIDE the reactor (probe lanes, self-test, future replay tools) must leave NO global trace: `briev_accel_run_probe_<name>` snapshots `@briev_begin_<name>` before the lanes run and restores it after the verdict commit (bodies with a beginprogram precondition carry the goal check, which clears the REAL flag when the goal is met on the probe's state COPY) | Probe clears the entry flag → the real reactor's node never fires again → busy hang (nbody_newton_accel, 2026-09-25) |
+> | Module-level derived constants (`state_size_bytes`, `state_ptr_param`) are computed AFTER every pass that grows their inputs (`build_field_index`, synthetic field registration, `apply_field_modes`) — never at the top of `generate()` | Frozen empty-world answer: probe received `state_size 0` for every program → 1-byte lane buffers → OOB gate → coin-flip verdicts, nondeterministic `0` output |
+
 
 ---
 
