@@ -183,6 +183,22 @@ fn build_gpu_rt(out_root: &Path) {
     for drv in ["briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
         println!("cargo:rerun-if-changed={}", rt_dir.join(drv).display());
     }
+    // 2026-09-24 (BUGS.md stale runtime archive): declaring ANY
+    // rerun-if-changed REPLACES cargo's default source tracking — the
+    // staticlib sources were undeclared, so editing src/accel_rt.rs never
+    // rebuilt libbriev_accel_rt.a and every benchmark silently linked the
+    // archive from whenever build.rs last ran (diagnosing a stale-ABI
+    // crash cost a whole session). Track the wrapper AND the module it
+    // `#[path]`-includes (plus the C ABI header consumers of the archive
+    // read). To undo: drop these lines (restores silent staleness).
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest.join("src/accel_rt_standalone.rs").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest.join("src/accel_rt.rs").display()
+    );
     println!("cargo:rustc-cfg=gpu_rt");
 }
 // SENTINEL: gpu-rt build script loaded (gpu-backend-hardening Track A)

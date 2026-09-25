@@ -77,6 +77,42 @@ pub struct BrievKernelDesc {
     pub block_per_workitem: u32,
 }
 
+/// 2026-09-24 (BUGS.md descriptor-ABI drift): pins this #[repr(C)] reader
+/// against the C header (lib/runtime/briev_accel_rt.h) AND the LLVM emitter
+/// (src/backend/llvm/kernel.rs `%briev.kernel`), which must list the same
+/// members so LLVM's derived offsets match C's. The pre-fix emitter froze
+/// at the 2026-08-31 five-member layout while this struct grew six times —
+/// `ptx` (offset 80) read past the end of the emitted constant and
+/// briev_accel_init handed the CUDA driver a garbage size
+/// (nbody_newton_accel SIGSEGV). Mirrored by test_kernel_desc_abi_layout
+/// in src/backend/llvm/tests.rs.
+#[cfg(test)]
+mod desc_abi {
+    use super::BrievKernelDesc;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn test_briev_kernel_desc_abi_pinned() {
+        assert_eq!(size_of::<BrievKernelDesc>(), 96, "C sizeof(BrievKernelDesc)");
+        assert_eq!(align_of::<BrievKernelDesc>(), 8);
+        assert_eq!(offset_of!(BrievKernelDesc, txn_name), 0);
+        assert_eq!(offset_of!(BrievKernelDesc, spirv), 8);
+        assert_eq!(offset_of!(BrievKernelDesc, spirv_size), 16);
+        assert_eq!(offset_of!(BrievKernelDesc, n_fields), 20);
+        assert_eq!(offset_of!(BrievKernelDesc, fields), 24);
+        assert_eq!(offset_of!(BrievKernelDesc, n_images), 32);
+        assert_eq!(offset_of!(BrievKernelDesc, images), 40);
+        assert_eq!(offset_of!(BrievKernelDesc, block_threads), 48);
+        assert_eq!(offset_of!(BrievKernelDesc, shared_bytes), 52);
+        assert_eq!(offset_of!(BrievKernelDesc, program_bytes), 56);
+        assert_eq!(offset_of!(BrievKernelDesc, seed_fields), 64);
+        assert_eq!(offset_of!(BrievKernelDesc, n_seed_fields), 72);
+        assert_eq!(offset_of!(BrievKernelDesc, ptx), 80);
+        assert_eq!(offset_of!(BrievKernelDesc, ptx_size), 88);
+        assert_eq!(offset_of!(BrievKernelDesc, block_per_workitem), 92);
+    }
+}
+
 #[repr(C)]
 pub struct BrievStridedCopy {
     pub src: *const core::ffi::c_void,
@@ -1109,6 +1145,11 @@ pub extern "C" fn briev_accel_probe(
     gpu_ok: Option<unsafe extern "C" fn(*const core::ffi::c_void, *const core::ffi::c_void, f64, *mut core::ffi::c_void) -> i32>,
 ) -> i32 {
     if briev_accel_available() == 0 || probe_k <= 0 {
+        if unsafe { g_verbose } != 0 {
+            eprintln!(
+                "[briev_accel] probe: unavailable or probe_k={probe_k} ≤ 0 — CPU lane"
+            );
+        }
         return 0;
     }
     let n = state_size as usize;
@@ -1135,6 +1176,13 @@ pub extern "C" fn briev_accel_probe(
     }
     let gpu_t = t0.elapsed().as_secs_f64();
 
+    let verbose = unsafe { g_verbose } != 0;
+    if verbose {
+        eprintln!(
+            "[briev_accel] probe: timed cpu_t={cpu_t:.6e} gpu_t={gpu_t:.6e}"
+        );
+    }
+
     // Correctness gate: the GPU lane's result must match the CPU lane's
     // within tolerance — the probe doubles as the safety net against GPU
     // codegen bugs.
@@ -1148,10 +1196,20 @@ pub extern "C" fn briev_accel_probe(
             )
         };
         if ok == 0 {
+            if verbose {
+                eprintln!("[briev_accel] probe: output gate FAILED — CPU lane");
+            }
             return 0;
         }
     }
-    (gpu_t * (1.0 + margin) < cpu_t) as i32
+    let verdict = (gpu_t * (1.0 + margin) < cpu_t) as i32;
+    if verbose {
+        eprintln!(
+            "[briev_accel] probe: gate passed, gpu*(1+{margin:.2})={} < cpu? verdict={verdict}",
+            if verdict == 1 { "yes" } else { "no" }
+        );
+    }
+    verdict
 }
 
 // ── Self-test (the former BRIEV_ACCEL_SELF_TEST C main) — selection pack
