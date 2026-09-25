@@ -35,6 +35,17 @@ type Kelvin { spec Bits: 32; };
 type Power { spec KicadType: "power_in"; spec Supply: true; };
 type Ground { spec KicadType: "power_in"; spec Return: true; };
 type In { spec KicadType: "input"; };
+// ── Standard-net registry (2026-09-25, E14b-7) ─────────────────────────
+// `stdnet<Name>` looks up a type declaring `spec NetVoltage` — the rail
+// volts its members expect — and `spec KicadLabel`, the emitter spelling.
+// Rows are ordinary declarations: a board adds house nets by declaring
+// more, no compiler change. Expectations constrain membership; they
+// never drive a rail. Return stays class-inferred (Ground above), so the
+// registry is supply-family only.
+type VBUS { spec NetVoltage: 5V; spec KicadLabel: "VBUS"; };
+type V5V { spec NetVoltage: 5V; spec KicadLabel: "+5V"; };
+type V3V3 { spec NetVoltage: 3.3V; spec KicadLabel: "+3V3"; };
+type V12V { spec NetVoltage: 12V; spec KicadLabel: "+12V"; };
 // Drive capability (E14a): which classes may hold a drive — the intent
 // machinery enumerates candidates through this property.
 type Out { spec KicadType: "output"; spec CanDrive: true; };

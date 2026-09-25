@@ -2224,8 +2224,9 @@ struct ReturnTopology {
     participation_notes: Vec<String>,
     topology_proofs: Vec<String>,
     topology_errors: Vec<String>,
-    /// Author net labels (net<>/stdnet<>) by final union-find root.
-    net_labels: BTreeMap<String, String>,
+    /// Author net bindings (net<>/stdnet<>): name → (root at bind time,
+    /// emitter label). The caller resolves final roots post-intents.
+    net_bindings: BTreeMap<String, (String, String)>,
 }
 
 /// 2026-09-25 (E14b-6): the return-topology pass, in dependency order —
@@ -2245,22 +2246,18 @@ fn force_return_topology(
         collect_participation(items, instances, type_pins);
     let mut topology_proofs = infer_return_net(instances, type_info, &unpop, ds);
     let mut topology_errors = Vec::new();
-    // author net labels by FINAL root — resolved after all forcing unions
-    let mut net_labels: BTreeMap<String, String> = BTreeMap::new();
+
     // 2026-09-25 (E14b-7): supply-rail membership by refutation — before
     // bridging, whose bridge test consumes the final supply nets.
-    {
+    let net_bindings: BTreeMap<String, (String, String)> = {
         let mut mctx = NetlistContext::new(items, ds, type_pins, type_info, instances);
         let (rails, source_pins) = collect_driven_rails_full(items, &mut mctx);
-        let (membership_proofs, membership_errors, net_bindings) =
+        let (membership_proofs, membership_errors, bindings) =
             infer_rail_membership(&mut mctx, &rails, &source_pins, &unpop);
         topology_proofs.extend(membership_proofs);
         topology_errors.extend(membership_errors);
-        net_labels = net_bindings
-            .into_iter()
-            .map(|(_, (root, label))| (ds.find(&root), label))
-            .collect();
-    }
+        bindings
+    };
     {
         let mut bctx = NetlistContext::new(items, ds, type_pins, type_info, instances);
         topology_proofs.extend(force_decoupler_bridges(&mut bctx, &unpop, &mut topology_errors));
@@ -2273,7 +2270,7 @@ fn force_return_topology(
         participation_notes,
         topology_proofs,
         topology_errors,
-        net_labels,
+        net_bindings,
     }
 }
 
@@ -2785,6 +2782,20 @@ fn infer_rail_membership(
     {
         let mut bindings = NetBindings { bound: &mut bound, errors: &mut errors };
         bind_connected_names(ctx, unpop, &named, &mut bindings);
+        // A rail's drive-fact source pin IS the rail — its name binds
+        // there even though nothing wires it (the plan's forced-pin list
+        // includes the source).
+        for (inst, pname, _, attachment) in
+            membership_obligations(instances, type_info, &named, unpop)
+        {
+            let key = pin_key(&inst, &pname);
+            let (true, Some((name, _))) = (source_pins.contains(&key), attachment) else {
+                continue;
+            };
+            let root = ctx.ds.find(&key);
+            let label = stdnet_label(&type_props, &name).unwrap_or_else(|| name.clone());
+            bindings.bind(&name, &root, label);
+        }
         for obligation in membership_obligations(instances, type_info, &named, unpop) {
             if let Some(proof) =
                 resolve_one_membership(ctx, rails, source_pins, &mut bindings, obligation)
@@ -5308,11 +5319,19 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     };
     intent_proofs.extend(topo.topology_proofs);
 
+    // 2026-09-25 (E14b-7): author labels keyed by FINAL root — resolved
+    // here, after the intent pass (body wiring can merge nets further).
+    let net_labels: BTreeMap<String, String> = topo
+        .net_bindings
+        .into_iter()
+        .map(|(_, (root, label))| (ds.find(&root), label))
+        .collect();
+
     // Group members by root; sort everything for determinism (HashMap rule).
     let (groups, nc_pins) =
         group_pins(&instances, &type_pins, &type_info, &mut ds, &topo.exempt_pins);
 
-    let (nets, dangling) = partition_nets(&groups, &nc_pins, &topo.net_labels);
+    let (nets, dangling) = partition_nets(&groups, &nc_pins, &net_labels);
 
     // Voltage classes need the nets and instances before they move into the
     // result struct. 2026-09-22 (Slice B): acknowledged shorts suppress the

@@ -22,12 +22,14 @@
 //
 // `// E14b:` marks explicit statements the pure-intent form will delete.
 // Deleted so far: the io_od pull-up wiring (slice 1), the gnd-path
-// equality (slice 2, low-hold forcing), the bus unions (slice 3), and —
-// 2026-09-25 (slice 6) — the whole return side (ground unions, decoupler
-// attachments, the switch return). Remaining explicit: rail BIRTH
-// (`j1.vbus == 5.0V`, `u1.vout == 3.3V`) and supply-rail MEMBERSHIP
-// (which driven rail each Supply pin joins) — a design decision the
-// compiler must not guess (multiple tolerance-compatible rails exist).
+// equality (slice 2, low-hold forcing), the bus unions (slice 3), the
+// whole return side (slice 6), and — 2026-09-25 (slice 7) — every
+// supply-membership equality, replaced by `stdnet<>` declarations at
+// the lets. Remaining explicit: rail BIRTH (`j1.vbus == 5.0V`,
+// `u1.vout == 3.3V` — boundary conditions; the LDO output becomes a
+// component law when `spec Output` lands) and the signal wiring the
+// synthesis backlog owns (button pull-up placement, LED series
+// resistor — E15).
 //
 // 2026-09-24: resistor magnitudes now use structured `spec Resistance`;
 // `value` is only the BOM label. The local Resistor declares ordinary DC
@@ -93,11 +95,17 @@ type Led {
 type UsbMicro { pin vbus: Power; pin gnd: Ground; reference "J"; spec Tolerance: any; spec Rating: any; };
 type DebugHdr { pin sig[7]; pin gnd: Ground; pin vcc: Power; reference "J"; spec Tolerance: any; spec Rating: any; };
 
-let j1: UsbMicro = UsbMicro { value: "USB-Micro-B", package: "SMD" };
-let j2: DebugHdr = DebugHdr { value: "SWD", package: "HDR-2x5" };
-let u1: Ldo      = Ldo      { value: "AP2112K-3.3", package: "SOT-25" };
-let u2: Mcu      = Mcu      { value: "STM32F042",   package: "QFN-32" };
-let u3: Sensor   = Sensor   { value: "SHT40",       package: "DFN-4"  };
+// Supply-rail membership (2026-09-25, E14b-7): `stdnet<>` names each
+// instance's supply net — a declared standard (lib/std/electronics.bv:
+// VBUS = 5V, V3V3 = 3.3V) whose expectation filters the membership
+// candidates. The LDO declares per pin: `in` on the USB rail, `vout` on
+// 3.3V. No membership equalities exist anywhere below; u2.vdd, u3.vdd
+// and j2.vcc join the 3.3V rail by expectation + refutation.
+stdnet<VBUS> let j1: UsbMicro = UsbMicro { value: "USB-Micro-B", package: "SMD" };
+stdnet<V3V3> let j2: DebugHdr = DebugHdr { value: "SWD", package: "HDR-2x5" };
+stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: "AP2112K-3.3", package: "SOT-25" };
+stdnet<V3V3> let u2: Mcu      = Mcu      { value: "STM32F042",   package: "QFN-32" };
+stdnet<V3V3> let u3: Sensor   = Sensor   { value: "SHT40",       package: "DFN-4"  };
 let led1: Led    = Led      { value: "green",       package: "0603"   };
 let r_led: Resistor = Resistor { value: "330R",      package: "0603", spec Resistance: 330Ohm };
 let r_pu[2]: Resistor = Resistor { value: "4k7",     package: "0603", spec Resistance: 4.7kOhm };
@@ -113,29 +121,21 @@ budget j1.vbus <= 500mA;
 trg usb_attached @ j1;
 
 // Rails and returns: §3.2 stated no topology (pure-intent form). The
-// return side is now solver-inferred (2026-09-25, E14b-6): every
-// Return-class pin unions into the board return net, and the decoupling
-// convention auto-bridges each `spec Decouple` supply pin with a free
-// `spec Decoupler` part (return side + supply side). The four caps map
-// one-to-one onto the four supply pins (u1.in, u1.vout, u2.vdd, u3.vdd);
-// the DNP cap bridges nothing — its pads dangle by construction.
-// Remaining explicit equalities are rail BIRTH (`j1.vbus == 5.0V`,
-// `u1.vout == 3.3V`) and supply-rail MEMBERSHIP (`u1.in`/`u2.vdd`/
-// `u3.vdd`/`j2.vcc` choosing a rail) — membership is the next E14b slice
-// (multiple tolerance-compatible rails = a design decision, not
-// inference).
+// return side is solver-inferred (2026-09-25, E14b-6); supply membership
+// is declared by `stdnet<>` at the lets and inferred by the ladder
+// (2026-09-25, E14b-7). What remains here is §3.2's exact form: rail
+// BIRTH (`j1.vbus == 5.0V`, `u1.vout == 3.3V` — boundary conditions;
+// `u1.vout` becomes a component law when the LDO declares `spec Output`)
+// plus the explicit signal wiring the synthesis backlog still owns (the
+// button pull-up placement and the LED series resistor — E15).
 async node usb_powered [
     usb_attached
     && j1.vbus.voltage == 5.0V
-    && j1.vbus.voltage == u1.in.voltage
     && u1.vout.voltage == 3.3V
-    && u1.vout.voltage == u2.vdd.voltage
-    && u1.vout.voltage == u3.vdd.voltage
     && u2.gpio[3].voltage == sw1.a.voltage
     && u1.vout.voltage == r_btn.a.voltage
     && r_btn.b.voltage == u2.gpio[3].voltage
     && u3.addr.voltage == j1.gnd.voltage
-    && j2.vcc.voltage == u1.vout.voltage
 ] [u1.vout.voltage == 3.3V && j1.vbus.voltage == 5.0V] {
     u1.en = true;               // E14b-4: drive assignment wires en <-> gpio[0]
     led1 = true;                // E14b-4: led1.k <-> gpio[1] (gpio[2..7] are

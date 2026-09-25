@@ -1195,3 +1195,34 @@ E14b remaining (backlog): supply-rail MEMBERSHIP (which driven rail each
 design decision needing a declared-intent surface, not inference), the
 LDO output law (`spec Output` so `u1.vout == 3.3V` stops being a guard
 fact), series-resistor placement (E15, trigger-gated).
+
+### Amendment 2026-09-25 (XIX): E14b slice 7 landed — supply-rail membership via `net<>` / `stdnet<>`
+
+The last membership equalities leave the gate fixture. Two contextual
+strategy keywords on `let` (order-free modifier family, `sync<g>` shape):
+
+- **`stdnet<Ident>`** — registry-backed. The registry is ordinary
+  type-body specs: `spec NetVoltage` (the expected rail volts) + `spec
+  KicadLabel` (the emitter spelling); stdlib seeds VBUS (5V), V5V, V3V3
+  (+3V3), V12V. The expectation filters membership candidates to rails
+  driven at the declared volts and is checked against existing drives —
+  **expectations constrain, they never drive**. Unknown stdnet names
+  error with the declare-it fix. Return stays class-inferred; the
+  registry is supply-family only.
+- **`net<ident>`** — board-local, opaque (never consults the registry,
+  Rule 15). Binds to a rail only through a physics-forced pin (drive
+  source, tolerance refutation), then propagates to ambiguous pins with
+  exactly one bound-named candidate rail.
+
+Bare `<name>` requires exactly one supply-class pin; `<in: VBUS, vout:
+V3V3>` qualifies per pin (the LDO). Names never span two rails; return-
+class and non-supply pins take no name. The ladder: expectation →
+tolerance refutation (unique survivor infers silently, proof line) →
+propagation → D13 enumerated error naming the keywords. The author
+label flows through `Net.author_label` into the KiCad emitter; unnamed
+rails keep physics labels. Plan:
+`2026-09-25-ebv-e14b-rail-membership.md`. The usb_sensor guard is now
+§3.2's exact form — rail births plus the signal wiring E15 owns. Gate
+delta item 1 (rails and returns) is CLOSED except rail births; the LDO
+output law (`spec Output`) is the remaining follow-on that dissolves
+`u1.vout == 3.3V`.

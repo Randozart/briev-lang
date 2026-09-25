@@ -1,6 +1,6 @@
 # Plan 2026-09-25: E14b slice 7 — supply-rail membership via `net<>` / `stdnet<>`
 
-**Status:** building
+**Status:** landed 2026-09-25 (Slices 1–3)
 **Branch:** `feat/e14a-intent-synthesis`
 **Design record:** E14b gate delta item 1 — the rail-membership half of
 "rails and returns stated as guard equalities". Slice 6 (2026-09-25,

@@ -324,6 +324,25 @@ no current, no divider, and no dissipation. The approved destination is
 type-body `when` laws as constitutive equations plus a piecewise-linear DC
 solver; later slices elaborate and solve them.
 
+**2026-09-25 (E14b slice 7, plan `2026-09-25-ebv-e14b-rail-membership.md`):**
+supply-rail membership via the `net<>`/`stdnet<>` strategy keywords
+(order-free modifier family, `sync<g>` shape) on `let`. `stdnet<Name>`
+looks up a declared registry row — an ordinary type with `spec
+NetVoltage` (+ `spec KicadLabel`); stdlib seeds VBUS, V5V, V3V3, V12V.
+The ladder: expectation filter (candidates = rails driven at the
+declared volts; expectations constrain, they never drive) → tolerance
+refutation (unique survivor infers silently) → propagation toward a
+single bound-named candidate rail → D13 enumerated error naming the
+keywords. Names bind to rails only through physics-forced pins; a name
+refusing to span two rails is an error; return-class and non-supply
+pins take no name; the bare form requires exactly one supply pin
+(`<in: VBUS, vout: V3V3>` qualifies per pin). `net<ident>` is the
+board-local opaque form (never consults the registry, Rule 15). Author
+labels flow through `Net.author_label` into the KiCad emitter. The
+usb_sensor guard is now §3.2's exact form — rail births plus the
+signal wiring E15 owns. Distinct from the label-only `net <name>:`
+retired 2026-09-22: this is membership semantics the engine acts on.
+
 **2026-09-25 (E14b slice 6, plan `2026-09-25-ebv-e14b-return-net.md`):**
 return-net inference + decoupler auto-bridging. Every pin whose class
 declares `spec Return: true` on a populated instance unions into the

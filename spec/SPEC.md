@@ -382,6 +382,30 @@ in the parser — netlist, contracts, and the emitter see named ordinary
  hard compile error — the backend refuses any board whose decoupling
  convention is violated.
 
+**Supply-rail membership (2026-09-25).** A supply pin not on any net
+joins a rail through the membership ladder: a `stdnet<>` expectation
+filters candidates to rails driven at the row's `spec NetVoltage`; pin
+tolerance refutes the rest; a unique survivor is inferred silently. The
+two strategy keywords ride the instance declaration (order-free
+modifiers, `sync<g>` shape):
+
+```briev
+stdnet<VBUS> let j1: UsbMicro = UsbMicro { ... };              // sole supply pin
+stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { ... };        // per-pin
+net<div_mid> let x: Divider = Divider { ... };                 // board-local, opaque
+```
+
+The registry is ordinary declarations — a type with `spec NetVoltage`
+(+ optional `spec KicadLabel`, the emitter spelling). stdlib seeds
+`VBUS`, `V5V`, `V3V3`, `V12V`; a board adds house nets by declaring
+more, no compiler change. `net<name>` is the board-local form: opaque
+to the compiler, bound to a rail only through a physics-forced pin, then
+propagated to ambiguous pins with exactly one bound-named candidate.
+Names never span two rails; return-class and non-supply pins take no
+name; residual ambiguity is a compile error enumerating the candidates.
+**Expectations constrain, they never drive** — a rail is born from a
+boundary drive or a component law, never from its name.
+
 **Source-pin budgets (2026-09-21).** `budget u1.out <= 250mA;` caps the
 derived current draw across the named pin's net. The roll-up is the KCL
 boundary sum over the proven part graph — the same derivations that
