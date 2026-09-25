@@ -55,7 +55,10 @@ for name, n in sizes.items():
     # form has no score buffer s — buffers the template omits are skipped,
     # not fatal.
     src, cnt = re.subn(rf"let {name}: \w+\[\d+\];", f"let {name}: {elem}[{n}];", src)
-    if cnt != 1 and not (name == "s" and cnt == 0):
+    # 2026-09-25: o1 joins s as an optional scratch — the composite and the
+    # 2-pass deferred form materialize no accumulator scratch; both compute
+    # straight into a_out.
+    if cnt != 1 and not (name in ("s", "o1") and cnt == 0):
         raise SystemExit(f"field '{name}': expected exactly 1 decl, found {cnt}")
 
 pathlib.Path(a.out).write_text(src)

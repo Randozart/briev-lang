@@ -18,6 +18,8 @@ KLAYOUT="${KLAYOUT:-jd}"
 [ $((H % HKV)) -eq 0 ] || { echo "H=$H not divisible by HKV=$HKV" >&2; exit 1; }
 G=$((H / HKV))
 BRIEVC=./target/release/brievc
+# 2026-09-25: extra brievc flags from the environment (e.g. BRIEVC_FLAGS="--config-dir <d>" for tuning A/Bs) — unquoted expansion is deliberate.
+BRIEVC_FLAGS="${BRIEVC_FLAGS:-}"
 OUT=$(mktemp -d /tmp/opencode/m3.XXXX)
 
 # 1. Instantiate the .abv at the requested geometry.
@@ -33,7 +35,7 @@ python3 benchmarks/attn_instantiate.py \
 [ "$F16KV" = "1" ] && sed -i '1i import "std/types/float.bv";' examples/gpu/m3_attn_tmp.abv
 
 # 2. Build the dual-image runner.
-"$BRIEVC" build examples/gpu/m3_attn_tmp.abv --out "$OUT" >/dev/null
+$BRIEVC build examples/gpu/m3_attn_tmp.abv $BRIEVC_FLAGS --out "$OUT" >/dev/null
 mv "$OUT/m3_attn_tmp_runner.c" "$OUT/attention_decode_runner.c"
 rm -f examples/gpu/m3_attn_tmp.abv
 for kp in 0 1 2; do

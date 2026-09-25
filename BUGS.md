@@ -7051,3 +7051,44 @@ main emission on the hosted lane.
 count the call sites — a duplicated helper call duplicates the emitted
 IR, and the duplicate may sit on a cold path for months before it
 explodes.
+
+## 2026-09-25: block-redundant store loops in block-per-workitem PTX kernels — scheduling-dependent corruption on the plain (knob-off) CUDA lane [RESOLVED]
+
+**Date:** 2026-09-25 (Front D deferred-emitter retirement A/B — the plain
+knob failed the m3 correctness gate: a_err 5.1-13.5 vs a 1e-6 reference)
+**Symptom:** attention_decode_2pass on the CUDA lane with
+`ptx_deferred_region: 0` produced wrong attention output that VARIED
+between runs of the IDENTICAL binary (runner.c md5 constant across
+runs): streaks of PASS (a_err 6.6e-06) alternating with streaks of FAIL
+(a_err 5-13). The VULKAN lane was correct throughout, and the deferred
+knob (1024-thread region emitter) was correct throughout.
+**Root cause:** the general PTX emitter's block-per-workitem lowering
+runs the body on ALL block threads (64). The two-pass form's elementwise
+loops (`acc[..dd] += p * v[..dd]`, the final `a_out` normalize) were
+lowered block-redundantly — every thread executed the whole loop against
+the same addresses with no synchronization — 64-way unsynchronized RMW:
+lost updates, winner depends on warp scheduling. The dot loops were
+safe by design (`tid & 31` lane mapping, documented 2026-09-18: "both
+warps compute the same full total") — the elementwise store loops had
+no equivalent treatment. The deferred-region emitter was the only
+correct path for this shape, and the BAKED default config ships
+`ptx_deferred_region: false` — the default configuration was the broken
+one.
+**Fix:** `Gen::body_is_distributable` (every statement stores an
+item-affine-nonzero address, no carried-scalar assigns) +
+`Gen::emit_thread_distributed` (thread t takes items start+t,
+start+t+block, … — each address written exactly once, equal to the
+interpreter's sequential semantics, parallelized). The stride reads a
+new `block_threads` field mirroring the dispatch decision (deferred
+1024 / warp-sliced 128 / lane-reduction 64) — one contract, two sites.
+Pure-register bodies stay block-redundant (identical totals per thread,
+benign).
+**Verified:** plain knob 6/6 PASS at a_err 6.6e-06 — bit-identical to
+the SPIR-V lane's error; deferred knob unchanged (4/4 at 3.52e-06);
+`cargo test --lib` 2495/0.
+**Class:** block-per-workitem means the BLOCK collectively executes one
+work item — every memory-writing loop inside it must either distribute
+iterations across threads (disjoint addresses, proven) or synchronize;
+a loop that is merely REDUCED per-warp is not safe to store from. The
+SASS told the whole story: 10 SHFL.BFLY, zero STS/LDS/BAR — warp-local
+reductions with nothing merging the block.

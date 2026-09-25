@@ -19,6 +19,8 @@ F16KV="${F16KV:-0}"
 [ $((H % HKV)) -eq 0 ] || { echo "H=$H not divisible by HKV=$HKV" >&2; exit 1; }
 G=$((H / HKV))
 BRIEVC=./target/release/brievc
+# 2026-09-25: extra brievc flags from the environment (e.g. BRIEVC_FLAGS="--config-dir <d>" for tuning A/Bs) — unquoted expansion is deliberate.
+BRIEVC_FLAGS="${BRIEVC_FLAGS:-}"
 CYBER=/home/randozart/Desktop/Projects/cyberllama
 OUT=$(mktemp -d /tmp/opencode/m4.XXXX)
 echo "artifacts: $OUT"
@@ -39,7 +41,7 @@ python3 benchmarks/attn_instantiate.py \
     --out examples/gpu/m4_attn_tmp.abv
 # Float16 fields need the stdlib type in scope (float.bv declares it).
 [ "$F16KV" = "1" ] && sed -i '1i import "std/types/float.bv";' examples/gpu/m4_attn_tmp.abv
-"$BRIEVC" build examples/gpu/m4_attn_tmp.abv --out "$OUT" >/dev/null
+$BRIEVC build examples/gpu/m4_attn_tmp.abv $BRIEVC_FLAGS --out "$OUT" >/dev/null
 mv "$OUT/m4_attn_tmp_runner.c" "$OUT/attn_runner.c"
 rm -f examples/gpu/m4_attn_tmp.abv
 
