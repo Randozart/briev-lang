@@ -161,6 +161,30 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             indent(out, level);
             let _ = write!(out, "trg {} @ {};", trg.name, trg.instance);
         }
+        TopLevel::Budget(b) => {
+            indent(out, level);
+            let _ = write!(out, "budget {};", b.contract);
+        }
+        // 2026-09-22 (Slice B): participation facts.
+        TopLevel::Unpop(d) => {
+            indent(out, level);
+            let _ = write!(out, "unpop {};", d.instance);
+        }
+        TopLevel::ShortCircuit(d) => {
+            indent(out, level);
+            let _ = write!(out, "shortcircuit unpop {};", d.instance);
+        }
+        // 2026-09-22 (Slice C): the static when law.
+        TopLevel::WhenLaw(w) => {
+            indent(out, level);
+            let _ = write!(out, "when {}", w.guard);
+            for fact in &w.facts {
+                indent(out, level + 1);
+                let _ = write!(out, "{}", fact);
+            }
+            indent(out, level);
+            out.push('}');
+        }
         TopLevel::TriggerBinding { name, instance, .. } => {
             indent(out, level);
             let _ = write!(out, "trg {} @ {};", name, instance);
@@ -257,6 +281,20 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
         TopLevel::RenderBlock(r) => {
             indent(out, level);
             let _ = write!(out, "render {} {{ {} }};", r.struct_name, r.view_html);
+        }
+        TopLevel::FabBlock(f) => {
+            indent(out, level);
+            let _ = write!(
+                out,
+                "fab {{ board {}mm x {}mm; {} }};",
+                f.board.0,
+                f.board.1,
+                f.placements
+                    .iter()
+                    .map(|p| format!("place {} @ ({}mm, {}mm) rot {};", p.inst, p.x, p.y, p.rot))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
         }
         TopLevel::ProtocolDef(p) => {
             indent(out, level);

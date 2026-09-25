@@ -4,8 +4,8 @@
 // Handles: let, assign, term, if, guard, foreach, trg, asm, sync, return, escape, metadata.
 
 use super::helpers::Parser;
-use crate::ast::{Expr, PropertyValue, Statement};
-use crate::errors::SyntaxError;
+use crate::ast::{Expr, PropertyValue, Statement, TopLevel, Type};
+use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
 impl<'a> Parser<'a> {
@@ -135,6 +135,15 @@ impl<'a> Parser<'a> {
                     self.parse_lifetime_hint(true)
                 } else if self.check_identifier("keep") {
                     self.parse_lifetime_hint(false)
+                } else if self.check_identifier("open") {
+                    // 2026-09-22 (D16 p3b): `open a.pin, b.pin;` — disconnection.
+                    // Comma separates the two pins; parse_expression stops at `,`.
+                    self.pos += 1; // consume 'open'
+                    let lhs = self.parse_expression()?;
+                    self.expect(Token::Comma)?;
+                    let rhs = self.parse_expression()?;
+                    self.expect(Token::Semicolon)?;
+                    Ok(Statement::Open(Box::new(lhs), Box::new(rhs)))
                 } else {
                     // 2026-08-22 (spec-conformance plan Phase 2): a
                     // declaration-shaped misspelled keyword (`nod ready { … }`)
@@ -188,6 +197,120 @@ impl<'a> Parser<'a> {
             expr,
             modifiers: Vec::new(),
         })
+    }
+
+    /// E1 — bounded instance arrays: `let r_pu[2]: Resistor = Resistor { … };`,
+    /// `let c[i:5]: Capacitor = Capacitor { … };`, multi-dim
+    /// `let mesh[i:16][j:8]: Resistor = Resistor { … };`.
+    ///
+    /// Expands eagerly into ONE plain top-level `Statement::Let` per element,
+    /// named with literal indices (`r_pu[0]`, `mesh[0][3]`) — the E11
+    /// discipline: every downstream consumer (netlist derivation, emitter,
+    /// contracts via `resolve_pin`) stays array-blind. The optional
+    /// `name:` prefix inside a dimension (`[i:5]`) labels the index for
+    /// generator tooling; E1 parses and discards it — population decisions
+    /// live in generator programs, never the compiler (plan T1).
+    ///
+    /// Only component literals are accepted: an instance array exists to
+    /// mass-instantiate parts. Scalar/aggregate bindings keep the type-side
+    /// form `name: T[N]`. A total of 1 element yields the bare name
+    /// (`let x[1]: T` → `x`), mirroring E11's single-pin rule.
+    pub fn parse_let_array(&mut self) -> Result<Vec<TopLevel>, SyntaxError> {
+        self.pos += 1; // `let`
+        let base = self.expect_identifier()?;
+        let dims = self.parse_instance_array_dims()?;
+        let total: i64 = dims.iter().product();
+        if total > 4096 {
+            return self.error_at_current(&format!(
+                "an instance array expands to {} elements (max 4096) — split the declaration",
+                total
+            ));
+        }
+        let (ty, expr) = self.parse_instance_array_init(&base)?;
+        let elements = Self::expand_instance_names(&base, &dims, total)
+            .into_iter()
+            .map(|name| {
+                TopLevel::Statement(Box::new(Statement::Let {
+                    name: name.clone(),
+                    names: vec![name],
+                    ty: ty.clone(),
+                    expr: Some(expr.clone()),
+                    modifiers: Vec::new(),
+                }))
+            });
+        Ok(elements.collect())
+    }
+
+    /// Parse one or more `[<binder>:]<extent>]` dimensions after an
+    /// instance-array name; a zero/negative extent is an error.
+    fn parse_instance_array_dims(&mut self) -> Result<Vec<i64>, SyntaxError> {
+        let mut dims: Vec<i64> = Vec::new();
+        while self.eat(&Token::LBracket) {
+            // Optional index binder: `[i:5]` — `i:` labels the dimension.
+            if matches!(self.peek(), Some(Token::Identifier(_)))
+                && matches!(self.peek_next(), Some(Token::Colon))
+            {
+                self.pos += 1;
+                self.expect(Token::Colon)?;
+            }
+            let n = self.expect_integer()?;
+            if n < 1 {
+                return self.error_at_current(&format!(
+                    "instance-array dimension must have at least 1 element, got {}",
+                    n
+                ));
+            }
+            self.expect(Token::RBracket)?;
+            dims.push(n);
+        }
+        Ok(dims)
+    }
+
+    /// Parse `: T = <expr>;` after an instance-array header; the
+    /// initializer must be a component literal (mass-instantiation only).
+    fn parse_instance_array_init(
+        &mut self,
+        base: &str,
+    ) -> Result<(Option<Type>, Expr), SyntaxError> {
+        let ty = self.parse_optional_type()?;
+        let Some(expr) = (if self.eat(&Token::Eq) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        }) else {
+            return self.error_at_current(&format!(
+                "instance array '{}' needs a component literal: `let {}[N]: T = T {{ value: … }};`",
+                base, base
+            ));
+        };
+        if !matches!(expr, Expr::StructLiteral { .. }) {
+            return self.error_at_current(&format!(
+                "an instance array binds a component literal — the initializer of '{}' is not one; scalar arrays use `{}: T[N]`",
+                base, base
+            ));
+        }
+        self.expect(Token::Semicolon)?;
+        Ok((ty, expr))
+    }
+
+    /// Expand instance-array dimensions into element names, row-major with
+    /// the last dimension varying fastest. A total of 1 yields the bare
+    /// name (E11's single-element rule mirrored).
+    fn expand_instance_names(base: &str, dims: &[i64], total: i64) -> Vec<String> {
+        let mut suffixes: Vec<String> = vec![String::new()];
+        for &sz in dims {
+            let mut next = Vec::with_capacity(suffixes.len() * sz as usize);
+            for prefix in &suffixes {
+                for k in 0..sz {
+                    next.push(format!("{}[{}]", prefix, k));
+                }
+            }
+            suffixes = next;
+        }
+        if total == 1 {
+            return vec![base.to_string()];
+        }
+        suffixes.iter().map(|s| format!("{}{}", base, s)).collect()
     }
 
     /// term expr;
@@ -360,7 +483,23 @@ impl<'a> Parser<'a> {
     fn parse_guard_statement_when(&mut self) -> Result<Statement, SyntaxError> {
         self.pos += 1; // consume 'when'
         let cond = self.parse_expression()?;
-        let body = self.parse_block()?;
+        let mut body = self.parse_block()?;
+        // 2026-09-21 (D16 phase 2): trailing strategy clause —
+        // `when cond { ... } thru <Name>;`. The selection desugars into a
+        // marker statement the analysis reads; zero new Statement
+        // variants. `thru` is a contextual identifier.
+        // 2026-09-23 (D16 revision): `via` → `thru` — "via" is the settled
+        // PCB term for a layer-jumping hole (our own .kicad_pcb routing
+        // emits `(via ...)`); `thru` keeps the "passing through the
+        // mechanism" meaning with no collision.
+        if self.check_identifier("thru") {
+            self.pos += 1;
+            let name = self.expect_identifier()?;
+            body.push(Statement::MetadataAssignment(
+                "thru".to_string(),
+                crate::ast::PropertyValue::Identifier(name),
+            ));
+        }
         // 2026-07-17: Same trailing semicolon fix as bracket guard.
         self.expect(Token::Semicolon)?;
         Ok(Statement::Guarded(cond, body))
@@ -761,4 +900,76 @@ mod tests {
         assert!(printed.contains("halt;"), "canonical form must round-trip, got: {printed}");
     }
 
+    // ── 2026-09-23 (E1): bounded instance arrays ────────────────────────
+
+    /// Parse `src` and collect the top-level `Statement::Let` names in order.
+    fn let_names(src: &str) -> Vec<String> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let items = p.parse_program().unwrap();
+        items
+            .iter()
+            .filter_map(|i| match i {
+                crate::ast::TopLevel::Statement(s) => match s.as_ref() {
+                    Statement::Let { name, .. } => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn instance_array_expands_row_major() {
+        let src = r#"let r[3]: Resistor = Resistor { value: "10k" };"#;
+        assert_eq!(let_names(src), ["r[0]", "r[1]", "r[2]"]);
+    }
+
+    #[test]
+    fn instance_array_multi_dim_with_index_binder() {
+        let src = r#"let m[i:2][j:3]: Mesh = Mesh { value: "x" };"#;
+        assert_eq!(
+            let_names(src),
+            ["m[0][0]", "m[0][1]", "m[0][2]", "m[1][0]", "m[1][1]", "m[1][2]"]
+        );
+    }
+
+    #[test]
+    fn instance_array_single_element_keeps_bare_name() {
+        let src = r#"let x[1]: T = T { value: "y" };"#;
+        assert_eq!(let_names(src), ["x"]);
+    }
+
+    #[test]
+    fn instance_array_zero_dim_is_an_error() {
+        let src = r#"let r[0]: T = T { value: "y" };"#;
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_program().unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("at least 1 element"), "{}", msg);
+    }
+
+    #[test]
+    fn instance_array_requires_a_component_literal() {
+        for src in [
+            r#"let r[2]: Int = 5;"#,
+            r#"let r[2]: Int;"#,
+            r#"let r[2] = [1, 2];"#,
+        ] {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut p = Parser::new(tokens, src);
+            let err = p.parse_program().unwrap_err();
+            let msg = format!("{:?}", err);
+            assert!(msg.contains("component literal"), "for `{}`: {}", src, msg);
+        }
+    }
+
+    #[test]
+    fn plain_and_tuple_lets_bypass_the_array_lookahead() {
+        assert_eq!(let_names("let x: Int = 1;"), ["x"]);
+        let tokens = crate::lexer::tokenize("let (a, b) = pair;").unwrap();
+        let mut p = Parser::new(tokens, "let (a, b) = pair;");
+        assert!(p.parse_program().is_ok(), "tuple let must not take the array path");
+    }
 }

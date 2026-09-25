@@ -249,57 +249,339 @@ so `Volt` stands exactly where `Float` stands in the software family: no
 IEEE semantics, no inheritance, no baggage. Quantities are provenance
 values — proven at compile time, never executed.
 
-**Properties, not annotations.** Pins, reference designators, and tolerances
-are first-class clauses with identical grammar on every declaration form:
+**Properties, not annotations.** Pins and reference designators are
+first-class clauses with identical grammar on every declaration form; the
+voltage/power envelope is a type-level `spec` key with an explicit unit:
 
 ```briev
 type Led {
     pin a;
     pin k;
-    reference "D";      // mandatory whenever pins exist (parse-enforced)
-    tolerance 3.6;      // max volts — a rated decision
+    reference "D";              // mandatory whenever pins exist (parse-enforced)
+    spec Tolerance: 3.6V;       // max volts — a rated decision
 };
 ```
 
 `pin a;` auto-numbers (highest-so-far + 1); `pin p1 = 1;` states the
 datasheet number (≥ 1, unique per type). Pins are type-level topology,
-never instance-construction fields. `tolerance any;` DECLARED unrated — a
-pin with no clause at all is an undeclared decision and violates any net
-driving it.
+never instance-construction fields. `spec Tolerance: any;` DECLARED
+unrated — a pin with no envelope at all is an undeclared decision and
+violates any net driving it. (`tolerance …;`/`rating …;` clauses are
+retired; the parser names the replacement spelling.)
+
+**Pin electrical classes (2026-09-21).** A pin may ascribe a class
+fundamental — `pin vbus: Power;` — on either side of the pin number
+(`pin p2 = 3: Nc;`). Classes are PARENTLESS TYPES in
+`std/electronics.bv` (`Power`, `Ground`, `In`, `Out`, `Io`, `IoOd`,
+`Nc`) carrying their facts as `spec` properties: `spec KicadType: "…"`
+is the KiCad electrical pin type the backend emits, and
+`spec NoConnect: true` marks the intentionally-unconnected class
+(exempt from the dangling-pin error). The parser accepts any type name;
+analysis resolves the ascription against the declared types and consumes
+the properties generically — the compiler knows no class names, and a
+new class is a stdlib declaration, not a compiler release.
+
+**Pin arrays (2026-09-21).** `pin gpio[8]: Io;` declares eight pins
+named `gpio[0]`…`gpio[7]`, numbered consecutively — the high-water rule
+continues past the array, and an explicit number seeds the first
+element. Contracts address an element as `inst.gpio[3].voltage`; every
+element is an ordinary pin to the netlist, the serialization, and the
+emitter (arrays are declaration sugar, expanded by the parser).
+
+**Instance arrays (2026-09-23).** `let r[3]: Resistor = Resistor { value: "10k" };`
+declares three instances named `r[0]`…`r[2]`; multi-dimensional forms
+(`let m[i:2][j:3]: T = …`) expand row-major with the last index varying
+fastest, and an index binder (`[i:2]`) is accepted and discarded —
+population decisions belong to generator programs, not declarations.
+An array of total length 1 expands to the bare name (`let x[1]` → `x`),
+mirroring the pin-array single-element rule; a zero extent is a parse
+error; the initializer must be a component literal. Expansion happens
+in the parser — netlist, contracts, and the emitter see named ordinary
+ instances (`r[0]`), never an array type.
+
+ **Quantities are bare (2026-09-23).** Spec values that are physics carry
+ the unit grammar as notation, never a quoted string: `spec Decouple:
+ 100n;`, `spec MinCurrent: 2mA;` — scaling prefixes `p n u m k M G`
+ (case-sensitive), ASCII base units `V A R F H Hz W K m`, the E-series
+ fraction `4k7`, and dimension-checked resolution against the key
+ (`spec Decouple: 3.3V` is an error — a Farad key takes a capacitance).
+ `Length` (`m`/`mm`/`cm`) is the coordinate dimension. Full-word aliases
+ are also quantities — `Volt`, `Amp`, `Ohm`, `Farad`, `Henry`, `Hertz`,
+ `Watt`, `Kelvin`, `Metre`/`Meter` — combined with the same prefixes
+ (`4.7kOhm`, `20mAmp`). Compact and full-word ASCII forms are equally
+ valid (`330R` and `330Ohm`; `20mA` and `20mAmp`). Non-ASCII symbols such
+ as `Ω` are not part of the language surface.
+
+ **Component physics parameters (2026-09-24).** A component type declares
+ the datasheet channel separately from its BOM label:
+ `spec Resistance: R;` (or `Ohm;`) is a dimensioned parameter declaration;
+ a type-level `spec Resistance: 4.7kR;` is a default value. An instance
+ supplies or overrides it with `let r1: Resistor = Resistor { value:
+ "4k7"; spec Resistance: 4.7kR; };`. The `Resistance` key requires an
+ explicit ASCII ohm unit — `Ω` and a bare number are errors. Component
+ bodies may declare additional PascalCase law parameters in the same way
+ (`spec ForwardVoltage: Volt;`, `spec DynamicResistance: R;`); elsewhere
+ unknown specs remain errors. `value` is opaque annotation: it is carried
+ to the emitted BOM/schematic and is never parsed — a value-only instance
+ derives no physics (2026-09-24, plan `2026-09-24-retire-legacy-value-physics`).
+
+ **Component laws (2026-09-24).** A pin-bearing component type states its
+ behavior as type-body `when` laws over `.voltage`, `.current`, and its
+ spec parameters. Pin current is positive into the pin. The compiler owns
+ the fundamental substrate: dimensional algebra (`Ohm == Volt / Amp`),
+ quantity normalization, law elaboration, guard enumeration, KCL, and
+ deterministic DC solving. A component owns its own constitutive
+ equations. Linear DC laws are solved against contract voltage
+ boundaries. Guarded linear branches enumerate deterministically; zero
+ valid states is an error. Multiple valid states are retained only when
+ every guarded-law component in the ambiguous group declares
+ `spec Bistable: true;`; otherwise the ambiguity is an error. Every
+ contract is checked in every retained state — a bound must never be
+ certified by one state while another violates it. The stdlib resistor,
+ wire, diode, and LED types are ordinary declarations of this mechanism —
+ the compiler knows no component catalog names.
+
+ **Named component modes (2026-09-24).** A component may declare mutually
+ exclusive operating states directly — `mode closed { … } mode open { … }`.
+ Mode bodies use ordinary component-law equations. Each declared mode is an
+ explicit state candidate; `spec Bistable` is not required because there is
+ no solver-selected ambiguity. A node precondition selects modes with
+ Boolean member sugar — `sw1.closed` or `!sw1.closed`. Node postconditions
+ are proved only in states satisfying that node's precondition; tolerance,
+ power-rating, and budget checks still apply in every state. An unknown
+ mode or a node whose mode predicate matches no solved state is a hard
+ error.
+
+ **Law participation states (2026-09-24).** A law-bearing component marked
+ `unpop` is solved twice: present, with its laws participating; and absent,
+ with its laws and KCL contributions removed and its pins open. Tolerances,
+ current bounds, power ratings, and budgets are checked in both states.
+ The absent state is not a substitute for the present state.
+
+ **The fab section (2026-09-23).** A `.ebv` may attach a physical-layout
+ section — `fab { board 40mm x 20mm; place u1 @ (20mm, 10mm) rot 90; }`
+ — declaring the board outline and pinned part positions; everything
+ unplaced flows to a deterministic auto-placer. The compiler proves
+ containment (off-board = hard error) and clearance (warning) from the
+ outline, the footprints (`config/footprints.dbvl`), and the positions,
+ and emits a `.kicad_pcb` alongside the schematic. Placement is the only
+ author control; routing is compiler machinery (a follow-on).
+
+ **The decoupling convention (2026-09-21; auto-bridging 2026-09-25).** A
+ component type stating `spec Decouple: 100n;` requires, per instance, a
+ part whose type declares `spec Decoupler: true;` bridging each supply
+ pin (`spec Supply: true;` — on the `Power` fundamental) to a return pin
+ (`spec Return: true;` — on `Ground`). The rail roles and the decoupler
+ property live on stdlib declarations; the checker consumes the property
+ interface generically. Return-class pins of populated instances union
+ into the board's single return net, and an un-bridged supply net takes
+ the next free two-pin decoupler automatically (its return side joins
+ the return net, its supply side the supply pin's net — the symmetric
+ pick is immaterial). A part with any other connectable-pin count is
+ never auto-wired. An un-bridged instance with no free decoupler is a
+ hard compile error — the backend refuses any board whose decoupling
+ convention is violated.
+
+**Supply-rail membership (2026-09-25).** A supply pin not on any net
+joins a rail through the membership ladder: a `stdnet<>` expectation
+filters candidates to rails driven at the row's `spec NetVoltage`; pin
+tolerance refutes the rest; a unique survivor is inferred silently. The
+two strategy keywords ride the instance declaration (order-free
+modifiers, `sync<g>` shape):
+
+```briev
+stdnet<VBUS> let j1: UsbMicro = UsbMicro { ... };              // sole supply pin
+stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { ... };        // per-pin
+net<div_mid> let x: Divider = Divider { ... };                 // board-local, opaque
+```
+
+The registry is ordinary declarations — a type with `spec NetVoltage`
+(+ optional `spec KicadLabel`, the emitter spelling). stdlib seeds
+`VBUS`, `V5V`, `V3V3`, `V12V`; a board adds house nets by declaring
+more, no compiler change. `net<name>` is the board-local form: opaque
+to the compiler, bound to a rail only through a physics-forced pin, then
+propagated to ambiguous pins with exactly one bound-named candidate.
+Names never span two rails; return-class and non-supply pins take no
+name; residual ambiguity is a compile error enumerating the candidates.
+**Expectations constrain, they never drive** — a rail is born from a
+boundary drive or a component law, never from its name.
+
+**Source-pin budgets (2026-09-21).** `budget u1.out <= 250mA;` caps the
+derived current draw across the named pin's net. The roll-up is the KCL
+boundary sum over the proven part graph — the same derivations that
+prove postcondition currents, summed direction-agnostically at the net.
+A net with no derived draw passes vacuously (nothing provable flows).
+An exceeded budget is a hard compile error.
+
+**Node-body intents (2026-09-21, first slice).** Inside a `node`, two
+body fact forms participate in the netlist: `a = b;` where both sides
+resolve to pins is a wiring fact, and `inst = true;` is a drive intent —
+the instance participates and its wiring must complete. Completion is
+deliberately narrow: exactly one open pin on the instance plus exactly
+one unconnected drive-capable pin (`spec CanDrive`, declared on the
+`Out`/`Io`/`IoOd` fundamentals) wires them with a recorded proof; zero
+candidates, several candidates (each named), or several open pins are
+hard compile errors — the compiler never chooses silently. Every
+intent-established connection carries its provenance (which node, which
+intent) in the verification output.
+
+**Conditional wiring through mechanisms (2026-09-21).** `when cond { …
+} thru <Name>;` — a single pin voltage-comparison condition plus a
+declared switching part synthesizes a conditional connection: the
+condition's net drives the part's `Control`-class pin, and its
+`Path`-class pins bridge the wired pins. `Control` and `Path` are class
+fundamentals in `std/electronics.bv`; any declared type with exactly one
+`Control` pin and at least two `Path` pins is a mechanism. `thru <Name>`
+narrows by type (or instance); no `thru` and several qualifying mechanisms
+is a hard error naming the candidates. The bridge is recorded as a
+conditional edge (closed when the control net's region holds) with full
+provenance; the schematic shows the switch as ordinary copper. Copper
+cannot be conditional: a non-mechanizable signal-level condition (e.g. a
+compound one) is a hard error, never a silent always-connected wire.
+A bridge whose pins are already unconditionally connected (same
+union-find root before synthesis) is redundant — the switch can never
+open them. The compiler emits a hard error naming the unconditional
+wiring that defeats the mechanism.
+
+**Mechanism conditions are exact (2026-09-22).** The condition must be a
+single pin voltage comparison in the precise shape
+`<pin>.voltage == <voltage literal>` (e.g. `u1.gpio0.voltage == 3.3V`).
+The pin side must be a `.voltage` access and the non-pin side a voltage
+literal. Anything else that resembles a mechanism condition — a bare pin
+against a literal (`u1.gpio0 == 3.3V`), a non-literal operand
+(`u1.gpio0.voltage == banana`), or a level-name (`u1.gpio0 = high`) —
+is a hard error naming the expected shape. The `.voltage` access is what
+makes a condition a *voltage* claim; level-name sugar (`x = high`, `spec
+DefaultLevel`) is deferred — see the hardware-dialect-gaps ledger.
+
+**Nets are named by what they are (2026-09-22).** There is no net-naming
+syntax — the compiler derives labels from physics. A net touching a
+`Return`-class pin is `GND`; a net with a derived drive voltage is
+`V{volts}`; everything else is a structural `N#`. Values come from the
+`let` literal (never a store statement). `bind`/`store`/`net <name>:`
+were retracted on review: they asserted facts the compiler already
+derives — see the hardware-dialect-gaps ledger.
+
+**`open` — author-expressed disconnection (2026-09-22, D16 p3b).** Inside
+a node body, `open a.pin, b.pin;` declares that the two pins must NOT be
+connected: they would interact if connected, but the wire is open; analyse
+them as separate nets. This is a negative constraint the netlist (the
+transitive closure of positive wiring facts) can never infer. If any
+wiring fact or mechanism bridge would tie them, the compiler emits a hard
+error naming both the `open` fact and the connecting fact — the
+complement of the mechanism redundancy gate. `open` is a contextual
+keyword in node-body position; it shadows same-named functions there
+(rename such an `open()` action, e.g. to `release()`).
+
+**Unpopulated parts and intentional shorts (2026-09-22, plan
+2026-09-22-electronics-participation-and-when-law).** A declared instance
+is populated by default (it lands on the board and in the BOM). Two
+top-level facts express participation choices:
+
+- `unpop <inst>;` — the part is absent from the BOM (`in_bom no`), but the
+  design is verified in BOTH configurations: present (the part conducts as
+  its type declares) and absent (its pins are open, exempt from the
+  dangling-pin error). This is a *hypothesis*: the only reason to declare
+  absence is to pin the claim that the board holds either way. The compiler
+  enumerates the 2ⁿ state space up to a bound (default ≤ 4 unpop parts);
+  beyond it, the compile refuses with "split or document" rather than
+  silently checking a subset. `unpop` cannot exempt a part the design
+  requires (e.g. a `spec Decouple` obligation): the absent state fails.
+  A jumper is an unpop'd `Wire` — `type Wire { pin a; pin b; reference
+  "W"; };` in `std/electronics.bv` — whose present state shorts `a<->b`.
+- `shortcircuit unpop <inst>: <Type>;` — the author acknowledges that
+  populating this part shorts its net: the shorted-supply error for that
+  part's present state is suppressed and recorded as proven-and-acknowledged.
+  `shortcircuit` on a populated part emits a warning with a suggest-`unpop`
+  hint. (A future `sacrificial` + melting-point declaration will suppress
+  that warning for a part proven to fail first — deferred, thermal model
+  pending, see the hardware-dialect-gaps ledger.)
+
+**The static `when` law (2026-09-22).** `when G { F₁; …; Fₙ }` declares
+`G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must make it so. Its meaning is decided
+by position:
+
+- Inside a `defn` / `node` / `txn`, `when` is guarded/reactive behavior —
+  unchanged.
+- At top level, or in an `obj`/`type` body, `when` is a **static forced
+  fact**: the compiler propagates the consequence (derives it downstream —
+  into the netlist's voltage/current/power proofs for electronics, into
+  proof obligations for software) and verifies consistency — anything that
+  contradicts an in-force fact under a satisfiable guard is a compile error.
+  If even one satisfiable state escapes, the compiler refuses; it never
+  silently passes a state it cannot enumerate. "Make it so" is propagate +
+  verify, never synthesis — the solver adds no parts to honor the law.
+  Top-level facts are program-global; obj/type facts are scoped to the
+  declaration and inherited per instance.
+
+```briev
+// electronics — a conditional drive (type-body law)
+type Regulator { pin in: Power; pin out: Power; pin gnd: Ground;
+    when in.voltage >= 5V { out.voltage = 3.3V; } }
+// software — a conditional member fact (obj-body law)
+obj Sensor { when temperature > 100 { thermal_alarm = true; } }
+// top-level — a free-standing forced fact
+when usb_attached { j1.vbus.voltage = 5.0V; }
+```
+
+**ERC: contention and wired-AND (2026-09-22, D6/D12).** A net with TWO
+drive-capable pins is contention — a short — UNLESS every drive-capable
+member declares `spec WiredAnd: true` (open-drain wired-AND: released =
+high-Z, so multiple `IoOd` pins may share a net; `Io`/`Out` may not). An
+acknowledged `shortcircuit unpop …` net is exempt. Property-driven: the
+compiler reads `spec WiredAnd`, never a class name.
+
+**Mechanisms may be relays (2026-09-22).** A bridge mechanism has one
+Control pin (a gate/FET) OR TWO (a relay coil — one element across both
+coil pins). `when cond { … } thru Type;` synthesizes: the condition net
+drives every control pin; the Path pins bridge the wired pins. A relay is
+just a type with two `Control` + two `Path` pins. (`thru` — since
+2026-09-23, the mechanism-strategy keyword; `via` is the PCB layer-hole
+term and is reserved for that meaning.)
+
+**Whole-bus equality (2026-09-22).** A range-indexed pin equality in a
+precondition expands element-wise: `u2.gpio[0..=3].voltage ==
+u3.data[0..=3].voltage` unions each element pair. Half-open `[0..3]` is
+three elements; inclusive `[0..=3]` is four. A length mismatch or an
+empty/reversed range is a hard error — the buses must agree element-wise.
 
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses
 puts both pins on the same electrical node; the netlist is the transitive
 closure (union-find). A `==` against a literal drives the net at that
-level; disagreeing drives on one net are a shorted supply. A conjunct may
-be prefixed `net <name>:` to NAME the equivalence class — inference is
-unchanged; the name replaces the auto-generated `N1, N2…` in diagnostics
-and KiCad output (net names are contextual: keywords like `out` are valid
-names). Postconditions state physics — and the compiler PROVES them:
-through a two-pin part with a numeric value, I = V / R is derived at
-compile time and the derived current is checked against the stated bound.
+level; disagreeing drives on one net are a shorted supply. Nets have no
+author names — the emitter labels them from physics (a `Return`-class net
+is `GND`, a driven supply net `V{volts}`, else `N#`). Postconditions
+state physics — and the compiler PROVES them: through a two-pin part with
+a numeric value, I = V / R is derived at compile time and the derived
+current is checked against the stated bound.
 
-Physics literals carry unit suffixes: `3.3V` (volts), `20mA` (→ 0.02 A),
-`330R` (ohms), plus `A`, `Ω`, `F`, `H`, `Hz`, `W`, `K`. A suffixed literal
-is the value; the suffix selects the conversion (`mA` divides by 1000).
-Bare numerics stay valid everywhere a suffixed form is.
+Physics literals carry ASCII unit suffixes: `3.3V` (volts), `20mA`
+(→ 0.02 A), `330R` (ohms), plus `A`, `F`, `H`, `Hz`, `W`, `K`. Full-word
+aliases (`3.3Volt`, `20mAmp`, `330Ohm`) are equally valid. A suffixed
+literal is the value; the suffix selects the conversion (`mA` divides by
+1000). Bare numerics stay valid everywhere a suffixed form is.
 
 ```briev
 txn powered
-    [net vcc: j1.p1.voltage == r1.a.voltage && net out: r1.b.voltage == d1.a.voltage && net gnd: d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3V]
+    [j1.p1.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3V]
     [d1.a.current > 0.0 && d1.a.current <= 20mA]
 { }
 ```
 
 Here 3.3 V is proven within the LED's 3.6 V tolerance, and the 20 mA bound
-is proven from 3.3 V / 330 Ω = 10 mA — by derivation, not assertion.
+is proven from 3.3 V / 330 R = 10 mA — by derivation, not assertion.
 
-**Power ratings.** `rating 0.25;` declares the watts a part may dissipate
-(`rating any;` declares it unrated on purpose). Every valued two-pin part
-with both endpoints voltage-classed has a PROVEN dissipation P = V × I:
-above the rating is a violation; a proven-dissipating part with no rating
-clause is an undeclared decision; within the rating records a proof fact.
+**Power ratings.** `spec Rating: 0.25W;` declares the watts a part may
+dissipate (`spec Rating: any;` declares it unrated on purpose). Every
+valued two-pin part with both endpoints voltage-classed has a PROVEN
+dissipation P = V × I: above the rating is a violation; a
+proven-dissipating part with no rating spec is an undeclared decision;
+within the rating records a proof fact.
 A part with an unclassed endpoint has no proven drop — nothing is forced.
+A component-law part with a complete operating point is power-proven from
+`P = Σ pin_voltage × pin_current`; a missing pin quantity proves no total
+dissipation and forces nothing.
 Precedence: conjoined obligations use `==` (single `=` binds loosest, §4).
 A dangling pin — declared but on no net — is a compile error naming the
 pin. Compilation emits a KiCad 7 schematic; the backend refuses any board
@@ -309,17 +591,15 @@ that is incomplete or electrically violated.
 > surface is being extended toward intent-based synthesis: the author
 > declares behaviors and invariants over `volatile` component pins
 > (`node name [guard] { drive-maps }`), and the compiler infers both the
-> wiring (net membership) and the physics. Planned constructs — pin
-> electrical classes declared as **fundamentals in
-> `std/electronics.bv`** (`Power`/`Ground`/`In`/`Out`/`Io`/`IoOd`/`Nc`,
-> PascalCase — they are types, carrying `spec KicadType`/`spec NoConnect`
-> properties the compiler consumes generically), `spec` datasheet-fact
-> clauses, pin arrays, population facts (`populated = false`),
-> `chain`/`await` sequencing sugar, and ambiguity-lifting modifiers — are
-> inventoried with full semantics in
+> wiring (net membership) and the physics. Planned constructs — `spec`
+> datasheet-fact clauses on component types, pin arrays, population facts
+> (`populated = false`), `chain`/`into` sequencing sugar, and
+> ambiguity-lifting modifiers — are inventoried with full semantics in
 > `docs/plans/2026-09-21-intent-synthesis-node-semantics.md`. Grammar is
 > unfrozen pending implementation; this section documents the current
-> surface only.
+> surface only. (Pin electrical classes left this list 2026-09-21: they
+> are implemented — see above. `chain`/`into` left this list 2026-09-22:
+> implemented in the core — see §11.4.2.)
 
 ## 4. Lexical conventions
 
@@ -1207,6 +1487,74 @@ the contracts (who enables whom) and refuses any reactive cycle whose
 nodes declare no completion — a cycle that cannot be shown to quiesce
 carries no liveness obligation and does not compile. `--explain-causality`
 prints the derived wiring ("what fires into what") for inspection.
+
+#### 9.4.1 Chains (`chain` / `into`, 2026-09-22)
+
+A chain is a top-level sequencing block that desugars at parse time to
+ordinary nodes (one per step). It is core-language sugar — identical in
+`.bv` (software) and `.ebv` (hardware) programs.
+
+```briev
+chain power_up [dc_present] {
+    u_buck5.en = high;          // action → node power_up_1
+    into u_buck5.pgood;         // sign-off → ANDed into all later guards
+    u_buck3.en = high;          // action → node power_up_2
+    into u_buck3.pgood;
+    u_core.en = high;           // final step → node power_up_3
+};
+```
+
+Desugar rule:
+
+- Every maximal run of actions between `into` markers is one step.
+- Step `N` becomes `node <chain>_N [base ∧ s₁ ∧ … ∧ s_{N-1}] { body }`,
+  post `[true]` (the body does the work). The base guard is optional
+  (omitted → `[true]`).
+- `into <cond>;` is the sign-off: `<cond>` is ANDed into every LATER
+  step's precondition. It is a *condition* — a real boolean (a pin
+  comparison in `.ebv`, a state expression in `.bv`) — never an invented
+  pseudo-fact.
+- A chain must contain at least one action, and must not end in a
+  sign-off (a trailing `into ...;` gates a later step that does not
+  exist — a parse error).
+
+`await` is unrelated: it consumes a `Task<R>` handle (§12.2). `keep` is
+unrelated: it transfers ownership. `chain`/`into` are new keywords; a
+bare `trg` name as a chain sign-off is not a form — write `into <trg>;`.
+
+#### 9.4.2 The static `when` law (2026-09-22)
+
+`when G { F₁; …; Fₙ }` declares `G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must
+make it so. Its meaning is decided by **position**:
+
+- Inside a `defn` / `node` / `txn`, `when` is guarded/reactive behavior —
+  unchanged.
+- At **top level**, or in an **`obj`/`type` body**, `when` is a **static
+  forced fact**: the compiler propagates the consequence and verifies
+  consistency — anything that contradicts an in-force fact under a
+  satisfiable guard is a compile error. If even one satisfiable state
+  escapes, the compile refuses. "Make it so" is propagate + verify, never
+  synthesis (the solver adds no parts to honor the law).
+
+```briev
+// software — an obj-body law forcing a member
+obj Sensor { when temperature > 100 { thermal_alarm = true; } }
+// top-level — a free-standing forced fact
+when usb_attached { j1.vbus.voltage = 5.0V; }
+// electronics — a type-body law (a regulator's behavior)
+type Regulator { pin in: Power; pin out: Power; pin gnd: Ground;
+    when in.voltage >= 5V { out.voltage = 3.3V; } }
+```
+
+Electronics law facts are conditional drives: a drive forcing the same net
+to a different voltage under a jointly-satisfiable guard is a shorted
+supply. Software law facts force members: a node/txn body assignment (or
+another law) forcing the same member differently under a jointly-
+satisfiable guard is a refusal. Top-level facts are program-global;
+obj/type facts are scoped to the declaration (type-body laws are inherited
+per instance). Mutually-exclusive guards never conflict — the
+satisfiability probe understands unit literals, pin-access chains, and
+opposite comparisons on the same lhs.
 
 ### 9.5 Objects
 

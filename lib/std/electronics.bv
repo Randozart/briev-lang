@@ -10,7 +10,7 @@
 // The component CATALOG below is the extension surface — the compiler
 // knows none of these names (Rule 14/15). Pins are first-class clauses;
 // `reference` is parse-mandatory with pins; `tolerance` rates the pins in
-// Volt (`tolerance any;` declares unrated).
+// Volt (`spec Tolerance: any;` declares unrated).
 
 type Volt { spec Bits: 32; };
 type Amp { spec Bits: 32; };
@@ -20,6 +20,48 @@ type Henry { spec Bits: 32; };
 type Hertz { spec Bits: 32; };
 type Watt { spec Bits: 32; };
 type Kelvin { spec Bits: 32; };
+
+// ── 2026-09-21 (E12, design record D6): pin electrical classes ──────────
+// Fundamentals, not keywords: a pin clause ascribes one by type name —
+// `pin vbus: Power;` — and the compiler resolves the reference and reads
+// these spec properties generically. The compiler knows no class names
+// (Rules 14/15): declaring a NEW class is a declaration here, not a
+// compiler release.
+// No `spec Bits` here: classes are valueless markers — nothing ever holds
+// a `Power` or an `Nc`, so no storage width exists to declare. Bits stays
+// on the value quantities above (they enter proven arithmetic).
+// Rail roles (E13): the decoupling convention attaches across a supply
+// pin and a return pin — property-driven, no class names in the compiler.
+type Power { spec KicadType: "power_in"; spec Supply: true; };
+type Ground { spec KicadType: "power_in"; spec Return: true; };
+type In { spec KicadType: "input"; };
+// ── Standard-net registry (2026-09-25, E14b-7) ─────────────────────────
+// `stdnet<Name>` looks up a type declaring `spec NetVoltage` — the rail
+// volts its members expect — and `spec KicadLabel`, the emitter spelling.
+// Rows are ordinary declarations: a board adds house nets by declaring
+// more, no compiler change. Expectations constrain membership; they
+// never drive a rail. Return stays class-inferred (Ground above), so the
+// registry is supply-family only.
+type VBUS { spec NetVoltage: 5V; spec KicadLabel: "VBUS"; };
+type V5V { spec NetVoltage: 5V; spec KicadLabel: "+5V"; };
+type V3V3 { spec NetVoltage: 3.3V; spec KicadLabel: "+3V3"; };
+type V12V { spec NetVoltage: 12V; spec KicadLabel: "+12V"; };
+// Drive capability (E14a): which classes may hold a drive — the intent
+// machinery enumerates candidates through this property.
+type Out { spec KicadType: "output"; spec CanDrive: true; };
+type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
+// 2026-09-22 (ERC contention, D6/D12): open-drain = wired-AND by
+// definition — released = high-Z, so multiple IoOd pins may SHARE a driven
+// net. `Io`/`Out` may not (two drive-capable pins on one net = contention).
+type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
+
+// Mechanism vocabulary (D16 phase 2): a switch type declares exactly one
+// Control pin and >=2 Path pins; `when cond { ... } via Type;` synthesizes
+// control<-condition, path<-A, path<-B. Property interface decides — the
+// compiler never knows part names (Rules 14/15).
+type Control { spec KicadType: "input"; spec Control: true; };
+type Path { spec KicadType: "passive"; spec Switchable: true; };
+type Nc { spec KicadType: "no_connect"; spec NoConnect: true; };
 
 // A pin: two electrical quantities. Contracts reference them directly —
 // `r1.a.voltage == j1.p1.voltage` — and the netlist derives from those
@@ -33,23 +75,119 @@ type Resistor {
     pin a;
     pin b;
     reference "R";
+    spec Tolerance: any;
+    // The generic library part is abstract: no package size/rating is
+    // selected here. A board chooses a concrete rated part at instantiation.
+    spec Rating: any;
+    // 2026-09-24 (component laws): the structured physics parameter. A
+    // dimension-only declaration requires instances to supply a value;
+    // the opaque BOM `value` is never a second truth.
+    spec Resistance: Ohm;
+    // Ohm's law plus branch-current conservation. Positive current enters
+    // each pin; the analyzer maps the two pin voltages to their nets.
+    when true {
+        a.voltage - b.voltage == Resistance * a.current;
+        a.current + b.current == 0;
+    }
+    // 2026-09-23 (E14b slice 1): pull-up eligible — the min-voltage
+    // forcing pass consumes this part for a released (WiredAnd) net.
+    spec PullUp: true;
+};
+
+// 2026-09-24 (SPST component modes): an ideal single-pole single-throw
+// mechanical switch. `closed` is an equipotential link; `open` carries no
+// branch current. Mode names are component vocabulary, not compiler keys.
+type Spst {
+    pin a: Path;
+    pin b: Path;
+    reference "SW";
+    spec Tolerance: any;
+    spec Rating: any;
+
+    mode closed {
+        a.voltage == b.voltage;
+        a.current + b.current == 0;
+    }
+
+    mode open {
+        a.current == 0Amp;
+        b.current == 0Amp;
+    }
 };
 
 type Capacitor {
     pin p;
     pin n;
     reference "C";
+    spec Decoupler: true;   // E13: satisfies `spec Decouple` conventions
 };
 
 type Led {
     pin a;
     pin k;
     reference "D";
-    tolerance 3.6;
+    spec Tolerance: 3.6V;
+    // The generic LED is abstract; a concrete package chooses its rated
+    // dissipation at the board-library layer.
+    spec Rating: any;
+    spec ForwardVoltage: Volt;
+    spec DynamicResistance: Ohm;
+    // 2026-09-24 (component laws): a LED is a directional light-emitting
+    // junction; parameters belong to the chosen part, not the type name.
+    when a.voltage - k.voltage >= ForwardVoltage {
+        a.current ==
+            (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+    }
+    when a.voltage - k.voltage < ForwardVoltage {
+        a.current == 0Amp;
+    }
+    when true {
+        a.current + k.current == 0;
+    }
 };
 
 type Connector {
     pin p1 = 1;
     pin p2 = 2;
     reference "J";
+};
+
+// 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+// Slice B): a solder-bridge / zero-ohm link. Populated, it shorts its two
+// pins; `unpop wire: Wire;` leaves the pad pair open while the board is
+// still verified in both states. A jumper is an unpop'd Wire.
+type Wire {
+    pin a;
+    pin b;
+    reference "W";
+    // 2026-09-24 (component laws): a populated wire is an ideal link; an
+    // unpop wire remains the participation model's open pad pair.
+    when true {
+        a.voltage == b.voltage;
+        a.current + b.current == 0;
+    }
+};
+
+// 2026-09-24 (component laws): a piecewise-linear diode. Forward current is
+// (V - ForwardVoltage) / DynamicResistance; reverse current is zero.
+type Diode {
+    pin a;
+    pin k;
+    reference "D";
+    spec Tolerance: any;
+    // The generic junction is abstract; a concrete package chooses its
+    // rated dissipation at the board-library layer.
+    spec Rating: any;
+    spec ForwardVoltage: Volt;
+    spec DynamicResistance: Ohm;
+    when a.voltage - k.voltage >= ForwardVoltage {
+        a.current ==
+            (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+    }
+    when a.voltage - k.voltage < ForwardVoltage {
+        a.current == 0Amp;
+    }
+    when true {
+        a.current + k.current == 0;
+    }
 };

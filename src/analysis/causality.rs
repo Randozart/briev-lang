@@ -399,7 +399,6 @@ fn expr_identifiers(e: &Expr, out: &mut BTreeSet<String>) {
         | Expr::AddrOf(x)
         | Expr::Consume(x)
         | Expr::Await(x) => expr_identifiers(x, out),
-        Expr::Named { inner, .. } => expr_identifiers(inner, out),
         Expr::Call(_, args, _) => {
             for a in args {
                 expr_identifiers(a, out);

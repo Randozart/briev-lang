@@ -106,6 +106,12 @@ impl Annotator {
                 | Statement::TrgBinding { .. }
                 | Statement::InlineDefn(_)
                 | Statement::Match { .. } => {}
+// 2026-09-22 (D16 p3b): `open` — collect any calls inside
+                // its expressions.
+                Statement::Open(lhs, rhs) => {
+                    self.collect_calls_from_expr(lhs, calls);
+                    self.collect_calls_from_expr(rhs, calls);
+                }
                 // 2026-08-09 (Phase 10): defer/mutex bodies may call
                 // functions — collect them.
                 Statement::Defer(body) | Statement::Mutex(body) => {
@@ -217,9 +223,6 @@ impl Annotator {
                 for a in args {
                     self.collect_calls_from_expr(a, calls);
                 }
-            }
-            Expr::Named { inner, .. } => {
-                self.collect_calls_from_expr(inner, calls);
             }
             Expr::UnitLiteral { .. } => {}
             Expr::Capture { expr, .. } => {
@@ -521,6 +524,13 @@ impl Annotator {
             Statement::Match { .. } => {
                 format!("{}// compile-time match\n", spaces)
             }
+            // 2026-09-22 (D16 p3b): author-expressed disconnection.
+            Statement::Open(lhs, rhs) => format!(
+                "{}open {}, {};\n",
+                spaces,
+                self.format_expr(lhs),
+                self.format_expr(rhs),
+            ),
         }
     }
 
@@ -667,9 +677,6 @@ impl Annotator {
                 if *inclusive { "=" } else { "" },
                 self.format_expr(end)
             ),
-            Expr::Named { name, inner } => {
-                format!("net {}: {}", name, self.format_expr(inner))
-            }
             Expr::UnitLiteral { value, unit } => {
                 format!("{}{}", value, unit)
             }

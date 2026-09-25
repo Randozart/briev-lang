@@ -484,10 +484,6 @@ pub fn eval_nav_chain(
         Expr::Quoted(bytes) => String::from_utf8(bytes.clone())
             .map(NavValue::Str)
             .map_err(|_| "invalid UTF-8 string literal".into()),
-        // Named is transparent — unwrap and recurse.
-        Expr::Named { inner, .. } => {
-            eval_nav_chain(inner, program, universe, stage, scope, sandbox, pm)
-        }
         // UnitLiteral: treat as Float value.
         Expr::UnitLiteral { value, .. } => Ok(NavValue::Int(*value as i64)),
         // 2026-07-23: Binary operators — arithmetic and comparison.
@@ -1784,7 +1780,6 @@ fn expect_prop_arg(args: &[Expr], idx: usize, intrinsic: &str) -> Result<Propert
 fn extract_str_lit(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Quoted(bytes) => String::from_utf8(bytes.clone()).ok(),
-        Expr::Named { inner, .. } => extract_str_lit(inner),
         Expr::UnitLiteral { .. } => None,
         _ => None,
     }
@@ -2086,7 +2081,6 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
             Ok(())
         }
         Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-        Expr::Named { inner, .. } => resolve_dollar_refs_in_expr(inner, scope),
         Expr::Capture { expr, .. } => resolve_dollar_refs_in_expr(expr, scope),
         Expr::PluginIntercept { receiver, args, .. } => {
             if let Some(recv) = receiver {
@@ -2161,6 +2155,11 @@ fn resolve_dollar_refs_in_stmt(stmt: &mut Statement, scope: &Scope) -> Result<()
         }
         Statement::InlineAsm { .. } | Statement::MetadataAssignment(..)
         | Statement::InlineDefn(_) | Statement::Match { .. } => Ok(()),
+        // 2026-09-22 (D16 p3b): `open` — resolve $refs in its expressions.
+        Statement::Open(lhs, rhs) => {
+            resolve_dollar_refs_in_expr(lhs, scope)?;
+            resolve_dollar_refs_in_expr(rhs, scope)
+        }
     }
 }
 
@@ -2213,6 +2212,20 @@ fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(
     match tl {
         TopLevel::Statement(stmt) => resolve_dollar_refs_in_stmt(stmt, scope),
         TopLevel::StaticStruct(_) | TopLevel::Trait(_) | TopLevel::Impl(_) => Ok(()),
+        // 2026-09-21 (E7): electronics-surface statement — no $-refs to
+        // resolve (same conservative skip as Trigger).
+        TopLevel::Budget(_) => Ok(()),
+        // 2026-09-22 (Slice B): participation facts — no $-refs to resolve.
+        TopLevel::Unpop(_) | TopLevel::ShortCircuit(_) => Ok(()),
+        // 2026-09-22 (Slice C): the static when law — resolve $-refs in its
+        // guard and facts.
+        TopLevel::WhenLaw(w) => {
+            resolve_dollar_refs_in_expr(&mut w.guard, scope)?;
+            for fact in &mut w.facts {
+                resolve_dollar_refs_in_stmt(fact, scope)?;
+            }
+            Ok(())
+        }
         TopLevel::Definition(def) => {
             for stmt in &mut def.body {
                 resolve_dollar_refs_in_stmt(stmt, scope)?;
@@ -2281,6 +2294,7 @@ fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(
         | TopLevel::TypeDef(_) | TopLevel::Codec(_)
         | TopLevel::Assertion { .. } | TopLevel::Fuzzed { .. }
         | TopLevel::RenderBlock(_) | TopLevel::Stylesheet(_)
+        | TopLevel::FabBlock(_)
         | TopLevel::SvgComponent { .. } | TopLevel::SyncGroup { .. }
         | TopLevel::Cfg(_) | TopLevel::ProtocolDef(_)
         | TopLevel::AsmFn(_)

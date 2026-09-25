@@ -302,9 +302,58 @@ pub fn check_satisfiable(a: &Expr, b: &Expr) -> bool {
                     return false;
                 }
             }
+            // 2026-09-22 (Slice C): opposite numeric comparisons on the SAME
+            // lhs are unsatisfiable together — `temperature > 100` vs
+            // `temperature <= 100`. This is what lets mutually-exclusive
+            // when-law guards and node guards be classified as disjoint.
+            if comparison_contradicts(a, b) {
+                return false;
+            }
             true
         }
     }
+}
+
+/// `lhs OP c` vs `lhs OP' c'` with the same lhs where the operator pair and
+/// constants make the conjunction impossible: `>` vs `<=`, `>=` vs `<`.
+fn comparison_contradicts(a: &Expr, b: &Expr) -> bool {
+    use crate::ast::BinaryOpKind::*;
+    fn as_comp(expr: &Expr) -> Option<(&Expr, crate::ast::BinaryOpKind, f64)> {
+        match expr {
+            Expr::BinaryOp(k, l, r) => {
+                let (val, neg) = match r.as_ref() {
+                    Expr::Decimal(n) => (*n as f64, false),
+                    Expr::UnitLiteral { value, .. } => (*value, false),
+                    Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => match inner.as_ref() {
+                        Expr::Decimal(n) => (-(*n as f64), false),
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                let _ = neg;
+                Some((l.as_ref(), *k, val))
+            }
+            _ => None,
+        }
+    }
+    let (Some((l1, k1, c1)), Some((l2, k2, c2))) = (as_comp(a), as_comp(b)) else {
+        return false;
+    };
+    if !expr_eq(l1, l2) {
+        return false;
+    }
+    // Same threshold — `>` vs `<=` (and `>=` vs `<`) on the same constant.
+    if (c1 - c2).abs() < f64::EPSILON {
+        return matches!((k1, k2), (Gt, Le) | (Ge, Lt) | (Le, Gt) | (Lt, Ge));
+    }
+    // Different thresholds — `x > hi` vs `x <= lo` with hi >= lo is UNSAT.
+    if (c1 > c2) && matches!((k1, k2), (Gt, Le) | (Ge, Lt)) {
+        return true;
+    }
+    if (c1 < c2) && matches!((k1, k2), (Le, Gt) | (Lt, Ge)) {
+        return true;
+    }
+    false
 }
 
 /// Match `Expr::BinaryOp(Eq, lhs, rhs)` and return (lhs, rhs).
@@ -320,6 +369,15 @@ fn const_ne(a: &Expr, b: &Expr) -> bool {
     // String constants compare by byte content; numeric constants by value.
     if let (Expr::Quoted(x), Expr::Quoted(y)) = (a, b) {
         return x != y;
+    }
+    // 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+    // Slice A): unit literals compare by their numeric value regardless of
+    // suffix — `3.3V` vs `1.8V` are unequal, `3.3V` vs `3.3V` equal. This
+    // is what lets the concurrency gate see two voltage-comparison guards
+    // on the same pin as mutually exclusive (no false async/sync demand on
+    // clock-sensitive electronics boards).
+    if let (Expr::UnitLiteral { value: va, .. }, Expr::UnitLiteral { value: vb, .. }) = (a, b) {
+        return (va - vb).abs() > f64::EPSILON;
     }
     match (const_value(a), const_value(b)) {
         (Some(x), Some(y)) => x != y,
@@ -381,6 +439,15 @@ fn expr_eq(l: &Expr, r: &Expr) -> bool {
         (Expr::Decimal(a), Expr::Decimal(b)) => a == b,
         (Expr::Bool(a), Expr::Bool(b)) => a == b,
         (Expr::Quoted(a), Expr::Quoted(b)) => a == b,
+        // 2026-09-22 (Slice A, plan 2026-09-22-...-when-law): field-access
+        // chains compare structurally — `u1.sclk.voltage` equals itself, so
+        // the concurrency gate can match the SAME pin-access lhs across two
+        // guards and (via const_ne) see `== 3.3V` vs `== 1.8V` as mutually
+        // exclusive. This is what makes clock-sensitive electronics nodes
+        // free of false async/sync classification demands.
+        (Expr::Field(la, fa), Expr::Field(lb, fb)) => {
+            fa == fb && expr_eq(la, lb)
+        }
         // 2026-08-01 (Phase 3c): Call equality — `entry_cmd()` == `entry_cmd()`.
         // Needed so `entry_cmd() == "a"` vs `entry_cmd() == "b"` shares a lhs.
         (Expr::Call(na, aa, ta), Expr::Call(nb, ab, tb)) => {

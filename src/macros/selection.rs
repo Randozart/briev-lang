@@ -463,6 +463,8 @@ pub fn stmt_tag(stmt: &Statement) -> &str {
         Statement::SyncBlock(_) => "sync",
         Statement::Defer(_) => "defer",
         Statement::Mutex(_) => "mutex",
+        // 2026-09-22 (D16 p3b): author-expressed disconnection.
+        Statement::Open(_, _) => "open",
     }
 }
 

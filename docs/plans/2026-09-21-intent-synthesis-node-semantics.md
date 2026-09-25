@@ -36,11 +36,13 @@ cells      reusable composites (ports + internal instances/relations/nodes)
 instances  mass arrays + singles + population facts
 trg        board inputs (external reality; wake sources)
 nodes      guards + drive maps  (chain sugar available)
-lifting    two ambiguity slots: persist-tighten, commit-select (names TBD)
+lift       RETRACTED (2026-09-22): persist-tighten/commit-select had no
+           solver substrate; bind/store were the keywords, now gone
 ```
 
-**Nets are never declared. Never written. Fully inferred.** Net names are
-`store`-able labels on derived equivalence classes (emitter concern only).
+**Nets are never declared. Never written. Fully inferred.** Net labels are
+derived from physics (return-class → `GND`, driven → `V{volts}`, else
+`N#`) — emitter concern only.
 
 ### What this kills (recorded so it stays dead)
 
@@ -76,9 +78,8 @@ machinery unchanged from E7's original design; only the attachment point
 moved).
 
 **D5 — `spec` clauses are the datasheet channel.** Catalog types carry
-solver-consumable facts: `spec fb_ref: 0.8V;`, `spec decouple: 100n;`,
-`spec default_level: low;`. The compiler knows "an `in` pin wants its spec
-level", never a part name (Rule 15).
+solver-consumable facts: `spec fb_ref: 0.8V;`, `spec decouple: 100n;`.
+The compiler consumes these generically — never a part name (Rule 15).
 
 **D6 — Pin classes are the physics vocabulary.**
 `power` / `ground` / `in` / `out` / `io` / `io_od` / `nc`. Class semantics:
@@ -103,9 +104,11 @@ negative costs a false proof. Analog of Rule 22: NO IMPLICIT BISTABILITY.
 
 **D9 — Chains.** `chain name [base-guard] { ... };` desugars to plain
 nodes; two statement kinds: *actions* (`u.en = high;` → auto-node with
-accumulated guard) and *sign-offs* (`await u.pgood;` / bare `trg` name →
-ANDed into all subsequent guards). Sign-offs name **real pins** (`out`-
-class), never invented pseudo-facts. Steps are ordinary nodes post-desugar:
+accumulated guard) and *sign-offs* (`into u.pgood;` → ANDed into all
+subsequent guards; the bare-`trg` shorthand `pwr_btn;` is REMOVED —
+electronics authors write `into pwr_btn;`). Sign-offs name **real pins**
+(`out`-class), never invented pseudo-facts. Steps are ordinary nodes
+post-desugar:
 
 - outcomes **broadcast wakes** to every subscriber (wake sets) — a fact
   guards the next step, a fan-controller node, and a different chain with
@@ -116,6 +119,14 @@ class), never invented pseudo-facts. Steps are ordinary nodes post-desugar:
   accumulated guard
 - chains carry **zero private semantics** — pure grouping ergonomics;
   general across dialects (core desugarer pass, additive)
+- **2026-09-22 (plan 2026-09-22-core-chain-into): IMPLEMENTED in the
+  core.** `chain`/`into` are core keywords, not electronics-specific.
+  Parse-time desugar (pipe-chaining precedent): `chain` never reaches the
+  AST; each step becomes a reactive node `name_1, name_2, …`, step N's
+  pre = `base ∧ s₁ ∧ … ∧ s_{N-1}`, post `[true]`. `await`/`keep` are NOT
+  reused — they already mean task-await and ownership-transfer in the
+  core (one keyword, one meaning). A trailing `into ...;` is an error (a
+  sign-off gates a later step; a final one gates nothing).
 
 **D10 — Cells are hierarchy and catalog.** `cell` = reusable composite:
 ports, internal instances, internal relations/nodes. The component catalog
@@ -139,7 +150,7 @@ one candidate iff no contract distinguishes them (under-enumerate = false
 proofs; over-enumerate = noise that makes users ignore diagnostics). Two
 standing guards: **the solver never invents components** (it wires declared
 instances only; adding parts is author work), and the **well-posedness
-gate** — every pin must be constrained by ≥1 behavior/invariant/keep/
+gate** — every pin must be constrained by ≥1 behavior/invariant/bind/
 store/population-fact, else error listing the unconstrained pins (copper
 the spec doesn't cover must not ship).
 
@@ -148,28 +159,67 @@ the spec doesn't cover must not ship).
 | # | Site | Resolution stage |
 |---|---|---|
 | 1 | Structure existence (is an element forced) | physics proofs — free |
-| 2 | Net membership (which pins connect) | `keep` narrows |
-| 3 | Value choice (which R; free variable with bounds) | `store`, or declared E-series domain; unresolved at BOM = error with bounds. No silent defaults (Rule 3) |
+| 2 | Net membership (which pins connect) | a body wiring fact (`a = b;`) states it; `bind` retracted 2026-09-22 (duplicated the wiring fact) |
+| 3 | Value choice (which R; free variable with bounds) | the `let` literal carries it; `store` retracted 2026-09-22 (inert until a value solver exists) |
 | 4 | Participation vs DNP (unconnected instance) | population fact required for exemption; else error listing *populate-or-DNP* |
 | 5 | Cross-node drive conflicts | Rule 22 classification, else error |
 | 6 | Polarity/orientation | usually derived from intent (led "on" ⇒ forward bias); under-constrained parts surface candidates |
 | 7 | Over-constraint (keeps that kill all solutions) | UNSAT error naming the **minimal conflicting set** |
 | 8 | Equivalent variants (series order, symmetric pins) | canonicalize silently, deterministically |
 
-**D14 — Lifting slots.** *persist-tighten* — declares a fact that must
-hold in every solution (narrows before the solve); *commit-select* — picks
-one solution from enumerated candidates (visible in the emitted proof
-string). Modifier-family keywords (intent, never speed — Rule 2; if the
-compiler could have inferred it, using the keyword is a bug report).
-Names provisional (`keep`/`store` are the working examples); derived facts
-(`derive on: a.current >= 2mA;`) are a separate construct — proven
-properties, not intents.
+**D14 — Lifting slots.** *persist-tighten* and *commit-select* were
+proposed to resolve the ambiguity surface (which pins connect; which
+value). **2026-09-22 (plan 2026-09-22-retract-lifting-slots): RETRACTED.
+** The engine is deterministic — single solution, no value solver, no
+candidate enumeration — so the slots presume machinery that does not
+exist. `bind` duplicated a plain body wiring fact; `store` was inert
+(the `let` literal carries values and physics reads them); `store
+net(...)` and `net <name>:` asserted names the compiler derives from
+physics. Per Rule 2, the keywords themselves were the bug. **Deferred
+until a solver exists.** The one survivor is the D16 p3b disconnection:
+`open a.pin, b.pin;` — a NEGATIVE constraint, never inferable from the
+positive wiring closure; the complement gate to the phase-3 redundancy
+check. Derived facts (`derive on: a.current >= 2mA;`) remain a separate
+construct — proven properties, not intents.
 
 **D15 — Firmware = extern boundary.** Chip-internal logic (EC firmware)
 is outside the proof surface: the EC appears as a component whose pins
 obey declared per-state pin contracts — a volatile black box, the board
 language's `extern`. Non-goals, recorded: PCB layout, length matching,
 impedance/signal integrity, transient/time-domain simulation.
+**REVISED 2026-09-23 (fab plan):** PCB PLACEMENT was picked up — the
+`fab` section declares the board outline + pinned positions and the
+compiler auto-places the rest, proves containment/clearance, and emits a
+`.kicad_pcb` (routing follows as compiler machinery). Length matching,
+impedance, and transient analysis remain non-goals.
+
+**D18 — The static `when` law (2026-09-22, plan 2026-09-22-electronics-
+participation-and-when-law).** `when G { F₁; …; Fₙ }` declares
+`G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must make it so. Meaning is decided by
+**position**:
+
+- Inside a `defn`/`node`/`txn` → guarded/reactive behavior (unchanged).
+- At top level / in an `obj` / in a `type` → a **static forced fact**: the
+  compiler propagates the consequence and verifies consistency — anything
+  that contradicts an in-force fact under a satisfiable guard is a refusal.
+  If even one satisfiable state escapes, the compile refuses.
+
+"Make it so" = propagate + verify, never synthesis (the solver adds no
+parts — D13). Two consumers, same law:
+
+- **Electronics** (C1): law facts are conditional drives joined into
+  `classify_drives` — two in-force drives at different voltages under
+  jointly-satisfiable guards are a shorted supply; mutually-exclusive
+  guards never conflict. Type-body laws are inherited per instance
+  (bare pin refs qualified to `inst.pin`).
+- **Software** (C2): a law fact forces a member; a node/txn body assignment
+  or another law that forces it differently under a jointly-satisfiable
+  guard is a refusal (`analysis/when_law.rs`).
+
+The guard-satisfiability probe (`check_satisfiable`) understands unit
+literals, pin-access chains, and opposite numeric comparisons on the same
+lhs (`x > 100` vs `x <= 100` disjoint) — this is the Slice-A Rule-22
+precision work, shared by the concurrency gate and the when-law gate.
 
 ## 3. Fixtures (gate evidence)
 
@@ -180,14 +230,14 @@ trg dc_present;
 trg pwr_btn;
 
 chain power_up [dc_present] {
-    u_buck5.en = high;          // action  → node power_up.1
-    await u_buck5.pgood;        // sign-off → guard term for all later steps
+    u_buck5.en = high;          // action  → node power_up_1
+    into u_buck5.pgood;         // sign-off → guard term for all later steps
     u_buck3.en = high;
-    await u_buck3.pgood;
-    pwr_btn;                    // external trg joins the guard
-    u_core.en = high;
+    into u_buck3.pgood;
+    into pwr_btn;               // external trg joins the guard (no bare form)
+    u_core.en = high;           // final step → node power_up_3
 };
-// power_up.3 (pgood fact) is a wake source for a fan chain, a charger
+// power_up_3 (pgood fact) is a wake source for a fan chain, a charger
 // chain, and the next step — equal standing, no fan-out syntax.
 ```
 
@@ -244,10 +294,7 @@ trg usb_attached;
 node usb_powered [usb_attached && j1.vbus.voltage == 5.0V] {
     u1.enabled = true;          // en wiring inferred (candidates exist)
     led1 = true;                // physics derives the series resistor;
-                                // io-class pruning + keep pick the driver
-    keep led1.a = u2.gpio[0];
-    store r_led.value = "330R";
-    store net(u1.out) = "v3v3"; // even naming is a store on a derived class
+                                // io-class pruning picks the driver
 }
 node i2c_idle [usb_powered.up && u2.sda.released] {
     u2.sda.voltage >= 2.7V;  u3.scl.voltage >= 2.7V;
@@ -255,16 +302,15 @@ node i2c_idle [usb_powered.up && u2.sda.released] {
     // FORCED; solver wires r_pu[*] to u1.out. No resolution keywords exist.
 }
 node button_pressed [usb_powered.up && sw1.closed] {
-    u2.gpio[3].voltage <= 0.3V; // forces a gnd path → store r_btn.via(...)
+    u2.gpio[3].voltage <= 0.3V; // forces a gnd path
 }
 ```
 
 **Gate:** compiles with the stated intents; each stated omission is a hard
-error with enumerated candidates (drop `keep` → 8-candidate GPIO error;
-drop `store r_led.value` → unresolvable BOM value error with bounds;
-remove a decoupling cap → convention error; undeclared driver for `led1`
-→ membership candidates; `sw1` path without `store r_btn.via(...)` →
-membership candidates).
+error with enumerated candidates (undeclared driver for `led1` →
+membership candidates; `sw1` path without an explicit gnd wiring →
+membership candidates; remove a decoupling cap → convention error; an
+`open` naming two wired pins → disconnection error).
 
 ### 3.3 IdeaPad power tree (motherboard-class fixture — STUB)
 
@@ -281,13 +327,61 @@ motherboard-class gate.
 
 | Stage | Scope | Gate |
 |---|---|---|
-| **E14a** | intent-*completion*: explicit equalities still allowed; drive-map intents (`led1 = true`) infer the remaining memberships; ambiguity = enumerated-candidate errors; pin classes, vol, spec, population, chain desugar, lifting slots | §3.2 fixture compiles + its error matrix; netlist/KiCad deterministic |
-| **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized |
+| **E14a** | intent-*completion*: explicit equalities still allowed; drive-map intents (`led1 = true`) infer the remaining memberships; ambiguity = enumerated-candidate errors; pin classes, vol, spec, population, chain desugar; lifting slots RETRACTED (2026-09-22) — no solver substrate | §3.2 fixture compiles + its error matrix; netlist/KiCad deterministic — **GATE PASSED 2026-09-23** (see gate delta below) |
+| **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized — **slices 1–5 landed 2026-09-23** (min pull-up forcing, max low-hold forcing, bus assembly, drive assignment, value-aware pull-up matching); **slice 6 landed 2026-09-25** (return-net inference + decoupler auto-bridging — the fixture's return side is solver-inferred); **slice 7 landed 2026-09-25** (supply-rail membership via `net<>`/`stdnet<>` — the fixture's guard is §3.2's exact form); remaining: LDO output law |
 
 Both stages: `L`. E14a ships useful even if E14b stalls (strict
 generalization order). Prerequisite gap work (E11 pin arrays, E12 pin
 classes, E13 spec-clause convention checks, E7 budgets-on-pins) lands as
 separate additive passes per the gap registry.
+
+### E14a gate delta (2026-09-23) — what the fixture needed beyond pure intent
+
+The §3.2 fixture (`examples/electronics/usb_sensor.ebv`) compiled with the
+translation table of plan `2026-09-23-ebv-gate-fixture.md`. Every site
+where E14a had to state MORE than §3.2's pure-intent form is an E14b
+backlog item, each marked `// E14b:` in the fixture file:
+
+1. **Rails and returns** (VBUS, 3v3, gnd) stated as guard equalities —
+   E14b deletes them (pure intent states behavior only).
+2. **io_od pull-up placement** (`r_pu[*]` to `u1.vout`) stated explicitly —
+   §3.2 relied on solver-side forcing of the released (high-Z) net; E14b
+   wires `r_pu[*]` from the pull-up physics alone.
+3. **`u1.en` wiring** — stated as an explicit fact so the `u1.en = true;`
+   pin intent records "already connected". §3.2's `u1.enabled = true;`
+   intended the en line to infer; with the LDO input driven, E14b's
+   solver is the honest home for that inference (pin-level drive intents
+   DO complete when the pin is open — the fixture pre-wires to keep the
+   completion unambiguous).
+4. **Button gnd path** (`u2.gpio[3] → sw1.p1 → u2.gnd`) stated explicitly —
+   §3.2 relied on `u2.gpio[3].voltage <= 0.3V` forcing the gnd path.
+5. **LED series resistor placement** (`r_led` between 3v3 and led1.a)
+   explicit — §3.2's derive-on-type obligation would place it.
+6. **SWD header (j2)** ADDED: §3.2 declares `swdio`/`swclk` but no
+   connector — as written they would dangle. The header is the fixture's
+   one structural addition.
+7. **The LED bound (§3.2's `derive on:`) is a `spec` obligation** — the
+   per-instance current bound is `spec MinCurrent`/`spec MaxCurrent`
+   (Phase 4 of plan `2026-09-23-quantities-and-annotation-doctrine.md`);
+   the fixture states it as a use-site txn postcondition today. The
+   series-resistor PLACEMENT (choosing r_led so the current lands in
+   range) is a separate synthesis concern — gap **E15** in the
+   hardware-dialect ledger (deferred 2026-09-23 with a trigger).
+
+Behavior members §3.2 wanted (`.up`, `.closed`, `.released`) stayed
+retracted — guards restate them as voltage facts (locked 2026-09-22).
+
+**Delta closure (2026-09-25, E14b slices 6+7):** item 1 and item 4 are
+CLOSED except rail births. Return-class pins union into the board return
+net, the decoupling convention auto-bridges supply nets, the button's
+`<= 0.3V` obligation forces the p1-pre-wired switch path to return
+(slice 6, plan `2026-09-25-ebv-e14b-return-net.md`), and supply-rail
+membership is declared via `stdnet<>` at the lets + inferred through
+the expectation/refutation/propagation ladder (slice 7, plan
+`2026-09-25-ebv-e14b-rail-membership.md`). What remains of item 1 is
+only the rail-birth boundary conditions — `j1.vbus == 5.0V` forever
+(external reality), `u1.vout == 3.3V` until the LDO output law (`spec
+Output`) lands.
 
 ## 5. Documentation chain (at implementation time)
 
@@ -332,3 +426,130 @@ Rationale: `pin vbus: Power;` reads as a type ascription, exactly as §3.5
 promises for fundamentals ("the fundamentals are physical quantities").
 A closed keyword set would be compiler vocabulary the language cannot
 extend — the precise failure Rule 14 exists to prevent.
+
+---
+
+## Amendment 2026-09-21 — D16: conditional wiring (`when` in node bodies)
+
+Body facts are wiring; a `when` around them asks for CONDITIONAL wiring.
+Two honest readings, one trap:
+
+**The trap.** Copper cannot vary. A `when x.voltage == 3.3V { a = b; }` that
+silently produced an unconditional union would lie — always-connected
+copper emitted for a conditional request. The gate: conditional wiring
+facts whose condition is SIGNAL-LEVEL (references a pin — pins are
+volatile reality) require a MECHANISM; without one, hard error naming
+the missing capability (D7 made constructive). Region-level conditions
+(state facts, no pin reference) carve a sub-region: the facts are
+ordinary wiring, unconditional in that region — exactly the nested-node
+decomposition `node N [G] { when H { f } } ≡ node N_H [G ∧ H] { f }`.
+
+**Reading 1 — region assertion.** The when carves the node's firing
+region; facts inside apply to it. Where nothing requires disconnection
+elsewhere, always-connected copper is a valid implementation.
+
+**Reading 2 — mechanism synthesis (the prize).** The condition drives a
+declared switching part: control pin ← the condition's net, path
+terminals ← the wired pins. This is the enable-chain semantics
+(`when u_en.voltage == 3.3V { chip.POWER_ON = u1.gnd; }`) made
+constructive. Needs switch-part vocabulary: `spec Control: true;` on
+gate-class pins, switchable path pins — a later property slice.
+
+**Plan.** Phase 1: guarded facts seen and classified (closing the
+silent-skip hole in body_facts); pin-referencing conditions demand a
+mechanism (D7 error); region-level conditions (`true`, pin-free) apply
+as ordinary facts. Phase 2: mechanism synthesis with the switch-part
+property vocabulary. Phase 3: the cross-region complement check
+formalized (connected in region A + required-disconnected in region B →
+mechanism demand). Condition vocabulary: single pin voltage-comparisons
+(`x.voltage == 3.3V`, `rail.ok`); level-name sugar deferred.
+
+Guarded statements are `Statement::Guarded` — already parsed by the
+core; this slice is analysis-only. Nested whens compound their
+conditions (`when a { when b { f } }` ≡ conditioned on `a && b`).
+
+---
+
+## Amendment 2026-09-21 — D16 phase 2 finalized: mechanism synthesis via strategy clause
+**REVISED 2026-09-23:** the strategy keyword is **`thru`** (`when <cond> {
+<facts> } thru <Name>;`) — `via` was retired because "via" is the settled
+PCB term for a layer-jumping hole (our own `.kicad_pcb` routing emits
+`(via …)`); `thru` keeps the "passing through the mechanism" meaning with
+no collision. Same grammar, same contextual identifier, same marker
+statement.
+
+**Grammar** (additive, in the shared when-statement parse):
+`when <cond> { <facts> } thru <Name>;`
+`thru` is a contextual identifier; the selection desugars into the body as
+a marker statement the analysis reads — zero new Statement variants.
+
+**Selection semantics** (narrowing filter, never a silent pick — D13):
+- No `thru` → enumerate qualifying mechanisms: declared instances with
+  exactly one `Control`-class pin + ≥2 `Path`-class pins, control
+  unconnected or already on the condition's net. 1 → synthesize; 0/n →
+  hard error with candidates + the `thru Type` fix.
+- `thru T` → narrow to instances **of type T**: 1 → synthesize; 0 → error
+  ("declare `let sw: T = …`"); n → error listing instances (pre-wire a
+  control pin to disambiguate).
+- Name resolution: type first, instance second (bare `thru sw1;` exact-pick
+  also works). Synthesis wires **declared instances only**.
+
+**Vocabulary** (stdlib + two new spec-gate keys):
+- `type Control { spec KicadType: "input"; spec Control: true; };`
+- `type Path { spec KicadType: "passive"; spec Switchable: true; };`
+- A switch type: exactly one Control pin, ≥2 Path pins. Property interface
+  decides — the compiler never knows "MOSFET" (Rules 14/15).
+
+**Synthesis**: condition = single pin voltage-comparison (a
+`u1.gpio0.voltage == 3.3V` shape — the non-pin operand must be a voltage
+literal; `x = high`-style level sugar is deferred, see the ledger);
+condition pin's net feeds control; bridge request (A, B, control) →
+three unions + a `conditional_bridges` record (the phase-3 complement
+check and eventual per-region physics consume it) + proof provenance.
+Path-side assignment canonical for symmetric parts. Emitter untouched —
+the mechanism is ordinary copper. Conduction physics stays black-box
+(D15): the compiler proves the wiring; the part's datasheet owns the
+conduction.
+
+**General rule now in force (D14 realization):** ambiguity diagnostics
+REQUEST the strategy selection and name the candidates — the compiler
+never picks silently, in mechanisms or anywhere else.
+
+---
+
+## Amendment 2026-09-21 — D17: model boundaries (the honesty ledger)
+
+The schematic-level model is sound and honestly bounded. These are the
+incomplete items we MUST account for later — each with its trigger and
+its eventual home. None may be silently claimed as covered.
+
+- **B1 — Parasitics.** Traces have R/L/C; every current proof assumes
+  ideal wire. *Trigger:* first board that misbehaves in silicon, or the
+  first budget check that needs trace-resistance terms. *Home:* layout
+  domain (non-goal) with schematic-level budget hooks last.
+- **B2 — Signal integrity / EMI.** A 20 V rail beside a 1.8 V sense line
+  is a layout problem. *Trigger:* real-world failure or a standards
+  requirement (EMC). *Home:* post-layout analysis; explicitly non-goal.
+- **B3 — Thermal.** Dissipation is PROVEN per part (P = V × I vs rating);
+  heat SPREADING (copper pours, vias, airflow) is not. *Trigger:* a part
+  whose rating passes electrically but fails thermally. *Home:* layout +
+  a future convention slice (thermal pad / pour requirements per part
+  class, property-driven like E13).
+- **B4 — Thresholds.** "High" is really "above VIH-min, worst case over
+  temperature." The voltage-comparison vocabulary is the first honest
+  cut. *Trigger:* first level-sensitive proof that must survive
+  tolerance. *Home:* `tolerance` machinery + per-class threshold specs.
+- **B5 — Test & safety provisions.** Test points, ESD structures,
+  creepage/clearance on the 20 V input, fuse conventions. *Trigger:*
+  first fab-worthy board (the usb_sensor or the IdeaPad-class gate).
+  *Home:* convention slices — the E13 pattern (declared property,
+  generic checker) extends directly.
+- **B6 — Layout reality.** A real board is ~40% schematic, ~60% layout;
+  most fabbed-board failures live in the deferred 60%. *Standing rule:*
+  the compiler claims SCHEMATIC-LEVEL truth only — every verification
+  output carries that scope. The ledger (this file + D16/D17
+  amendments) is the record of what is and is not claimed.
+
+D17 is a standing obligation: whenever a slice's proofs approach one of
+these boundaries, the boundary is re-stated in that slice's output —
+never silently crossed.

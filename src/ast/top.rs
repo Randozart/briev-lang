@@ -27,6 +27,34 @@ pub enum TopLevel {
     /// Replaces the `op X: member(#Y)` binding form (SPEC §15.2).
     TypeDefOperator(Definition),
     Transaction(Transaction),
+    /// 2026-09-21 (E7, design record D4): a source-pin current budget —
+    /// `budget u1.out <= 250mA;`. One comparison expression; analysis
+    /// destructures it (pin path vs current literal, either order) and
+    /// checks the pin's net derived draw against the limit.
+    Budget(BudgetDecl),
+    /// 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+    /// Slice B): a part excluded from the BOM but whose board is verified in
+    /// BOTH states — `unpop c_dnp;`. Present = the part conducts as its type
+    /// declares; absent = its pins are open (Nc-exempt from dangling). The
+    /// compiler enumerates the 2^n state space up to a bound and refuses
+    /// beyond it. "The only reason to declare absence is to pin the claim
+    /// that the board holds either way."
+    Unpop(ParticipationDecl),
+    /// 2026-09-22 (Slice B): an acknowledged intentional short —
+    /// `shortcircuit unpop wire: Wire;` suppresses the shorted-supply error
+    /// for that part's present state. On a populated part it is a warning
+    /// with a suggest-`unpop` hint.
+    ShortCircuit(ParticipationDecl),
+    /// 2026-09-22 (Slice C, plan 2026-09-22-electronics-participation-and-
+    /// when-law.md): the static `when` law at TOP LEVEL — `when G { F₁;
+    /// …; Fₙ }` declares `G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must make it
+    /// so. The meaning is decided by position: in a defn/node/txn, `when`
+    /// stays guarded/reactive behavior (Statement::Guarded); at top level,
+    /// in an obj, or in a type, it is a static forced fact — the compiler
+    /// propagates the consequence and errors if anything contradicts an
+    /// in-force fact under a satisfiable guard. "Make it so" is propagate +
+    /// verify, never synthesis (the solver adds no parts).
+    WhenLaw(WhenLawDecl),
     Cell(CellDef),
     Import(Import),
     Export(Export),
@@ -82,6 +110,10 @@ pub enum TopLevel {
     /// the table from the declared handler set.
     IsrHandler(IsrHandler),
     RenderBlock(RenderBlock),
+    /// 2026-09-23 (fab plan): the physical-layout section — board outline
+    /// + pinned part placements; everything unplaced flows to the
+    /// auto-placer.
+    FabBlock(FabBlock),
     Stylesheet(String),
     SvgComponent {
         name: String,
@@ -266,17 +298,11 @@ pub struct CellDef {
     /// 2026-09-11 (fundamentals doctrine, B3): Electronics property clauses —
     /// uniform on every declaration form (D1: forms are syntax). Pins are
     /// electrical nodes; reference is the schematic designator prefix
-    /// (mandatory when pins exist); tolerance is the max voltage any pin
-    /// tolerates, or declared-unrated (`tolerance any`).
+    /// (mandatory when pins exist). The voltage/power envelope lives in the
+    /// type-level `spec Tolerance`/`spec Rating` metadata (2026-09-24
+    /// quantities Phase 2 — the `tolerance`/`rating` clauses are retired).
     pub pins: Vec<PinDecl>,
     pub reference: Option<String>,
-    pub tolerance: Option<Tolerance>,
-    /// 2026-09-12 (power ratings): `rating 0.25;` (max watts the part
-    /// dissipates) or `rating any;` (declared-unrated). Proven against the
-    /// derived P = V × I per part — same forced-explicitness doctrine as
-    /// tolerance: a part proven to dissipate with no rating clause is an
-    /// undeclared decision.
-    pub rating: Option<Rating>,
     /// 2026-08-27 (cbv-HW plan Slice A): set on `extern Name(ports) -> outs
     /// from "path";` declarations — the cell's DEFINITION lives in the
     /// referenced HDL source; CIRCT emits an `hw.module.extern` blackbox,
@@ -285,22 +311,6 @@ pub struct CellDef {
     pub extern_source: Option<String>,
     /// 2026-07-24: Doc comment text.
     pub doc: Option<String>,
-}
-
-/// 2026-09-11 (B3): `tolerance 3.3;` (max volts) or `tolerance any;`
-/// (DECLARED unrated — a decision, never a silent omission).
-#[derive(Debug, Clone)]
-pub enum Tolerance {
-    Volts(f64),
-    Any,
-}
-
-/// 2026-09-12 (power ratings): `rating 0.25;` (max watts) or `rating any;`
-/// (DECLARED unrated).
-#[derive(Debug, Clone)]
-pub enum Rating {
-    Watts(f64),
-    Any,
 }
 
 // ── Statement ──────────────────────────────────────────────────────────
@@ -420,6 +430,11 @@ pub enum Statement {
         expr: Box<Expr>,
         arms: Vec<StmtMatchArm>,
     },
+    /// 2026-09-22 (D16 p3b): author-expressed disconnection — `open a.pin,
+    /// b.pin;`. The two pins would interact if connected, but the wire is
+    /// open; analyse as such. A negative constraint the compiler can never
+    /// infer from the positive wiring closure.
+    Open(Box<Expr>, Box<Expr>),
 }
 
 /// 2026-07-24: A single arm in a statement-level match. 2026-08-22
@@ -469,6 +484,8 @@ impl PartialEq for Statement {
             (Statement::SyncBlock(b1), Statement::SyncBlock(b2)) => b1 == b2,
             (Statement::Match { expr: e1, arms: a1 }, Statement::Match { expr: e2, arms: a2 }) => e1 == e2 && a1 == a2,
             (Statement::Match { .. }, _) | (_, Statement::Match { .. }) => false,
+            // 2026-09-22 (D16 p3b): author-expressed disconnection.
+            (Statement::Open(l1, r1), Statement::Open(l2, r2)) => l1 == l2 && r1 == r2,
             _ => false,
         }
     }
@@ -1126,13 +1143,11 @@ pub struct TypeDefBody {
     pub pins: Vec<PinDecl>,
     /// 2026-09-11 (B3): Electronics property clauses — uniform on all four
     /// declaration forms. `reference` is the schematic designator prefix;
-    /// mandatory (parse-enforced) whenever pins exist.
+    /// mandatory (parse-enforced) whenever pins exist. The voltage/power
+    /// envelope lives in `metadata` under the type-level `spec Tolerance`/
+    /// `spec Rating` keys (2026-09-24 quantities Phase 2 — the
+    /// `tolerance`/`rating` clauses are retired).
     pub reference: Option<String>,
-    /// `tolerance 3.3;` (Volt) or `tolerance any;` (declared unrated).
-    pub tolerance: Option<Tolerance>,
-    /// 2026-09-12 (power ratings): `rating 0.25;` (max watts) or
-    /// `rating any;` (declared unrated) — proven against derived P = V × I.
-    pub rating: Option<Rating>,
     pub metadata: HashMap<String, PropertyValue>,
     pub projections: Vec<ProjectionDef>,
     pub bindings: Vec<TypeBinding>,
@@ -1143,18 +1158,79 @@ pub struct TypeDefBody {
     /// 2026-07-31: obj member declarations (txn/defn) — self-parameterized
     /// methods on the obj. Populated by parse_obj_like.
     pub members: Vec<TopLevel>,
+    /// 2026-09-22 (Slice C): static `when` laws declared in the type/obj
+    /// body — `when G { F₁; …; }`. Each instance of this type inherits the
+    /// law; the compiler obliges it (propagate + verify).
+    pub when_laws: Vec<WhenLawDecl>,
+    /// 2026-09-24 (SPST component modes): explicitly named, mutually
+    /// exclusive operating states. Each instance is solved once per mode.
+    /// Component behavior remains stdlib/user vocabulary — the compiler knows
+    /// mode machinery, never `closed` or `open`.
+    pub modes: Vec<ModeDecl>,
     pub span: Option<Span>,
 }
+
+/// 2026-09-24 (SPST component modes): one named operating state. The body
+/// uses ordinary constitutive-law equation facts; elaboration shares the
+/// `when`-law path. Mode exclusivity is structural, not guarded ambiguity.
+#[derive(Debug, Clone)]
+pub struct ModeDecl {
+    pub name: String,
+    pub facts: Vec<Statement>,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-21 (E12, design record D6): electrical class of a pin — declared
+/// as a FUNDAMENTAL in `std/electronics.bv` (`Power`, `Ground`, `In`,
+/// `Out`, `Io`, `IoOd`, `Nc`), never a compiler keyword. The pin clause
+/// ascribes the type by name (`pin vbus: Power;`); resolution and property
+/// lookup (`spec KicadType` / `spec NoConnect`) happen in analysis against
+/// the imported declarations. No enum here: a closed class set is compiler
+/// vocabulary the language cannot extend (Rules 14/15).
 
 /// 2026-09-11 (Part C, Electronics Briev): one `pin` declaration inside a
 /// component type body. `number` is the KiCad pin number — explicit from
 /// `pin a = 7;` or auto-assigned by the parser (highest number so far + 1,
 /// starting at 1) for `pin a;`. Name is the contract-facing handle
-/// (`r1.a.voltage`); number is the physical mapping.
+/// (`r1.a.voltage`); number is the physical mapping. `class_ref` is the
+/// ascribed class-fundamental name, if any.
 #[derive(Debug, Clone)]
 pub struct PinDecl {
     pub name: String,
     pub number: u64,
+    pub class_ref: Option<String>,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-21 (E7, design record D4): one `budget` statement. The whole
+/// comparison is kept as an expression — the LHS/R destructuring (pin
+/// path, current literal, either order) happens in analysis, mirroring
+/// how postcondition bounds are read.
+#[derive(Debug, Clone)]
+pub struct BudgetDecl {
+    pub contract: Expr,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-22 (Slice B): a participation fact — which instance is unpopulated
+/// (`unpop c_dnp;`) or an acknowledged short (`shortcircuit …;`). The
+/// optional type is the `unpop wire: Wire;` spelling (declaration-site type
+/// hint for diagnostics); analysis resolves the instance by name.
+#[derive(Debug, Clone)]
+pub struct ParticipationDecl {
+    pub instance: String,
+    pub ty: Option<Type>,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-22 (Slice C): the static `when` law — `when G { F₁; …; Fₙ }`.
+/// The guard and the forced facts it implies. Position decides semantics:
+/// top level / obj / type → static forced fact (this struct); defn/node/txn
+/// → reactive guarded behavior (Statement::Guarded, unchanged).
+#[derive(Debug, Clone)]
+pub struct WhenLawDecl {
+    pub guard: Expr,
+    pub facts: Vec<Statement>,
     pub span: Option<Span>,
 }
 
@@ -1282,6 +1358,26 @@ pub struct FuzzCase {
 pub struct RenderBlock {
     pub struct_name: String,
     pub view_html: String,
+    pub span: Option<Span>,
+}
+
+/// 2026-09-23 (fab plan): a part's pinned board placement.
+#[derive(Debug, Clone)]
+pub struct FabPlacement {
+    pub inst: String,
+    /// mm, relative to the board origin (centre).
+    pub x: f64,
+    pub y: f64,
+    /// degrees; default 0.
+    pub rot: f64,
+}
+
+/// The physical-layout section: the board outline + pinned placements.
+#[derive(Debug, Clone)]
+pub struct FabBlock {
+    /// Board outline, mm (W, H).
+    pub board: (f64, f64),
+    pub placements: Vec<FabPlacement>,
     pub span: Option<Span>,
 }
 

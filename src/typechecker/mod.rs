@@ -1162,6 +1162,11 @@ pub fn infer_expression(
                 // Int. General (any generic's first type param is its
                 // element), so no type-name matching.
                 Type::Applied(_, args) if !args.is_empty() => args[0].clone(),
+                // 2026-09-23 (E11 companion): indexing the pin marker yields
+                // a pin — `u2.gpio[0]` (base field resolves to Pin, Index
+                // selects the element). Same compiler-known marker the Part
+                // C field resolution produces (`r1.a` → Pin).
+                Type::Custom(n) if n == "Pin" => Type::Custom("Pin".to_string()),
                 _ => Type::int(),
             };
             // 2026-08-18 (Phase D): indexing an OBJ consults its `op At`
@@ -1208,7 +1213,7 @@ pub fn infer_expression(
         }
         // 2026-07-31: Struct literal — `TypeName { field: e, ... }` resolves
         // to the struct type and validates the fields against its slots.
-        Expr::StructLiteral { type_name, fields } => {
+        Expr::StructLiteral { type_name, fields, specs: _ } => {
             // 2026-08-01 (D3): a struct literal for a GENERIC type infers as
             // the Applied form with the type params as placeholders
             // (`HashMapEntry { key, val }` in a HashMap<K, V> member → 
@@ -1505,7 +1510,6 @@ pub fn infer_expression(
                     Ok((Type::Custom(type_name.clone()), Provenance::Unknown))
                 }
             }
-            Expr::Named { inner, .. } => infer_expression(inner, ctx),
             Expr::UnitLiteral { .. } => Ok((Type::float(), Provenance::Unknown)),
             Expr::Capture { expr, name } => {
                 // 2026-09-16: `expr >> name` — register the captured value's
@@ -1675,9 +1679,6 @@ fn try_coerce_via_parse(
                 Expr::Float(_) | Expr::Decimal(_) | Expr::TaggedLiteral(_, _) => ("Decimal", None),
                 _ => return false,
             }
-        }
-        Expr::Named { inner, .. } => {
-            return try_coerce_via_parse(inner, target_ty, arg_ty, ctx);
         }
         Expr::UnitLiteral { value, .. } => {
             return try_coerce_via_parse(&Expr::Float(*value), target_ty, arg_ty, ctx);
@@ -2504,7 +2505,6 @@ fn elaborate_expr(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<
                 elaborate_expr(a, ctx, errors);
             }
         }
-        Expr::Named { inner, .. } => elaborate_expr(inner, ctx, errors),
         Expr::UnitLiteral { .. } => {}
         _ => {}
     }
@@ -3333,7 +3333,21 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // 2026-08-09 (Phase 12, SPEC §18.2): the meld admission is removed —
             // only an explicit coercion path admits the pair.
             // 2026-08-22 (Phase 3b): a structural-sum target admits members.
-            if !types_compatible(&lhs_ty, &rhs_ty, ctx) {
+            // 2026-09-23 (E14a): electronics drive intents are DECLARATIVE
+            // facts — `inst = true;` (instance) and `inst.pin = true;`
+            // (pin, lhs resolves to the compiler-known Pin marker) assign
+            // Bool to a non-Bool target by design; the netlist analysis
+            // consumes them, nothing executes them.
+            let intent_fact = rhs_ty == Type::bool_()
+                && (lhs_ty == Type::Custom("Pin".to_string())
+                    || match &lhs_ty {
+                        Type::Custom(n) => ctx
+                            .type_pins
+                            .get(n)
+                            .map_or(false, |pins| !pins.is_empty()),
+                        _ => false,
+                    });
+            if !types_compatible(&lhs_ty, &rhs_ty, ctx) && !intent_fact {
                 let coercible = try_coerce_via_parse(rhs, &rhs_ty, &lhs_ty, ctx);
                 if !coercible {
                     return Err(TypeError::TypeMismatch {
@@ -3522,6 +3536,13 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::Expression(expr) => {
+            // 2026-09-23 (E14b slice 1): a declarative voltage obligation —
+            // `inst.pin.voltage >= 3.3V;` in a node body is a physics fact
+            // the pull-up forcing consumes; it never executes (like the
+            // drive intents above).
+            if is_voltage_obligation(expr, ctx) {
+                return Ok(());
+            }
             infer_type_only(expr, ctx)?;
             Ok(())
         }
@@ -3533,6 +3554,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::Gate(cond) => {
+            if is_voltage_obligation(cond, ctx) {
+                return Ok(());
+            }
             infer_type_only(cond, ctx)?;
             Ok(())
         }
@@ -3581,6 +3605,13 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::InlineAsm { .. } | Statement::InlineDefn(_) | Statement::Match { .. } => Ok(()),
+        // 2026-09-22 (D16 p3b): `open` — the netlist analysis consumes it; the
+        // typechecker verifies its expressions type-check.
+        Statement::Open(lhs, rhs) => {
+            infer_type_only(lhs, ctx)?;
+            infer_type_only(rhs, ctx)?;
+            Ok(())
+        }
         Statement::SyncBlock(body) => {
             for stmt in body {
                 infer_statement(stmt, ctx)?;
@@ -4046,7 +4077,7 @@ pub fn check_program_with_target(
     }
     // 2026-07-14: Pre-collect state variable bindings from top-level `let`
     // so they are visible to all transactions and definitions.
-    let state_bindings: std::collections::HashMap<String, Type> = items
+    let mut state_bindings: std::collections::HashMap<String, Type> = items
         .iter()
         .filter_map(|item| {
             match item {
@@ -4108,6 +4139,28 @@ pub fn check_program_with_target(
             None
         })
         .collect();
+
+    // 2026-09-23 (E1): instance-array elements ALSO register the base name
+    // as a vector of the element type — `let r_pu[0]` binds `r_pu[0]` AND
+    // `r_pu: Resistor[·]` so the base expression in `r_pu[0].a` typechecks
+    // (Index unwraps one layer per bracket group; sizes are type-irrelevant
+    // here — the element count lives in the expanded sibling bindings).
+    let mut array_bases: std::collections::HashMap<String, Type> =
+        std::collections::HashMap::new();
+    for (name, ty) in &state_bindings {
+        if let Some((base, dims)) = name.split_once('[') {
+            if name.ends_with(']') && !base.is_empty() {
+                let mut wrapped = ty.clone();
+                for _ in 0..dims.matches('[').count() + 1 {
+                    wrapped = Type::Vector(Box::new(wrapped), vec![crate::ast::Dimension::Anonymous(1)]);
+                }
+                array_bases.entry(base.to_string()).or_insert(wrapped);
+            }
+        }
+    }
+    for (base, ty) in array_bases {
+        state_bindings.entry(base).or_insert(ty);
+    }
 
     // 2026-08-09 (init kind, Phase 2): init names → type, collected SEPARATELY
     // from state_bindings so init is read-only (not a mutable `state_key`) but
@@ -4443,14 +4496,19 @@ pub fn check_program_with_target(
                     });
                 }
                 all_type_slots.insert(td.name.clone(), slots);
-                // 2026-09-11 (Part C): register component pins — field
-                // resolution only (`r1.a` → Pin); never literal construction.
-                if !td.body.pins.is_empty() {
-                    all_type_pins.insert(td.name.clone(), td.body.pins.clone());
-                }
-                if !td.traits.is_empty() {
-                    all_trait_assertions.insert(td.name.clone(), td.traits.clone());
-                }
+            }
+            // 2026-09-11 (Part C): register component pins — field
+            // resolution only (`r1.a` → Pin); never literal construction.
+            // UNCONDITIONAL (2026-09-23): a component type declares pins
+            // and NO slots/ports — nesting this under the slots condition
+            // left every pins-only type (Ldo, Mcu, Connector, …) without a
+            // pin registration, so `inst.pin` field access failed in bodies.
+            if !td.body.pins.is_empty() {
+                all_type_pins.insert(td.name.clone(), td.body.pins.clone());
+            }
+            // Trait assertions are type-level too — same unconditional rule.
+            if !td.traits.is_empty() {
+                all_trait_assertions.insert(td.name.clone(), td.traits.clone());
             }
             if td.coll {
                 // 2026-08-15 (coll plan §3.4): the typechecker must see the
@@ -4556,11 +4614,10 @@ pub fn check_program_with_target(
                     ports_in: vec![], ports_out: vec![],
                     bit_range: None, span: None, coll: true, seq: false,
                     body: crate::ast::top::TypeDefBody {
-                        slots: fake_slots, pins: vec![], reference: None, tolerance: None,
-            rating: None, metadata: Default::default(),
+                        slots: fake_slots, pins: vec![], reference: None, metadata: Default::default(),
                         projections: vec![], bindings: vec![],
                         operators: vec![], op_bindings: vec![],
-                        constraints: vec![], members: vec![], span: None,
+                        constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
                     },
                 };
                 let slot_map: std::collections::HashMap<String, Vec<(String, crate::ast::Type)>> =
@@ -5110,6 +5167,37 @@ fn body_assigns_var(body: &[Statement], var: &str) -> bool {
         }
         _ => false,
     })
+}
+
+/// 2026-09-23 (E14b slice 1): a declarative physics obligation — a
+/// comparison `inst.pin.voltage OP <literal>` (any comparison op) in a
+/// node body. One side is a `.voltage` access resolving through the pin
+/// marker; the other is a voltage literal. The pull-up forcing pass
+/// consumes it; it is never executed.
+fn is_voltage_obligation(expr: &Expr, ctx: &mut TypecheckContext) -> bool {
+    let Expr::BinaryOp(kind, l, r) = expr else {
+        return false;
+    };
+    if !kind.is_comparison() {
+        return false;
+    }
+    let literal = |e: &Expr| {
+        matches!(
+            e,
+            Expr::UnitLiteral { .. } | Expr::Decimal(_) | Expr::Float(_)
+        )
+    };
+    let mut voltage_access = |e: &Expr| -> bool {
+        let Expr::Field(base, field) = e else {
+            return false;
+        };
+        field == "voltage"
+            && matches!(
+                infer_type_only(base, ctx),
+                Ok(Type::Custom(n)) if n == "Pin"
+            )
+    };
+    (voltage_access(l) && literal(r)) || (voltage_access(r) && literal(l))
 }
 
 /// Whether the body stores a truthy literal into the named flag:
@@ -5771,7 +5859,13 @@ fn resolve_field_type(receiver: &Type, field: &str, ctx: &TypecheckContext) -> O
     // checking uses `type_slots` alone, so pins are never construction
     // fields (they are type-level topology, not per-instance values).
     if let Some(pins) = ctx.type_pins.get(type_name) {
-        if pins.iter().any(|p| p.name == field) {
+        // 2026-09-23 (E11 companion): a pin ARRAY expands to `gpio[0]…`;
+        // field access on the BASE name (`u2.gpio`) still resolves to Pin —
+        // the Index expr then selects the element.
+        if pins
+            .iter()
+            .any(|p| p.name == field || p.name.starts_with(&format!("{}[", field)))
+        {
             return Some(Type::Custom("Pin".to_string()));
         }
     }

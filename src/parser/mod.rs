@@ -8,6 +8,7 @@ mod definitions;
 mod expressions;
 mod helpers;
 mod metadata;
+pub(crate) mod quantity;
 mod statements;
 mod types;
 

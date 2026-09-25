@@ -1,0 +1,193 @@
+// ── usb_sensor.ebv — the E14a gate fixture ──────────────────────────────
+// 2026-09-23 (plan 2026-09-23-ebv-gate-fixture.md): design record §3.2
+// translated to landed syntax. Compile:  brievc build usb_sensor.ebv
+//
+// Translation notes (§3.2 → landed surface):
+//   - pin classes are PascalCase stdlib types (Power/Ground/In/Io/IoOd/Nc);
+//   - `spec decouple: 100n;` → `spec Decouple: 100n;` (E13);
+//   - `populated = false: c_dnp;` → `unpop c_dnp;` (Slice B);
+//   - `let r_pu[2]` / `let c[i:2]` — instance arrays landed (E1); the cap
+//     count follows the E13 bridge convention (one per distinct supply
+//     net — u2.vdd/u3.vdd share u1.vout's net and its bridge);
+//   - `u1.enabled = true;` → `u1.en = true;` (intent names the pin);
+//   - §3.2 placeholder tolerances (0.33/0.3) predate the locked
+//     max-volts semantics — rated values substituted;
+//   - type-level `derive on:` (Led) superseded — the bound is the
+//     `spec MinCurrent`/`spec MaxCurrent` obligation form (quantities
+//     plan Phase 4); the fixture uses a txn postcondition today;
+//   - `usb_powered.up`, `sw1.closed`, `u2.sda.released` members not
+//     landed — guards restate them as voltage facts;
+//   - a SWD debug header (j2) is added: §3.2 declares `swdio`/`swclk`
+//     but no connector for them — as written they would dangle.
+//
+// `// E14b:` marks explicit statements the pure-intent form will delete.
+// Deleted so far: the io_od pull-up wiring (slice 1), the gnd-path
+// equality (slice 2, low-hold forcing), the bus unions (slice 3), the
+// whole return side (slice 6), and — 2026-09-25 (slice 7) — every
+// supply-membership equality, replaced by `stdnet<>` declarations at
+// the lets. Remaining explicit: rail BIRTH (`j1.vbus == 5.0V`,
+// `u1.vout == 3.3V` — boundary conditions; the LDO output becomes a
+// component law when `spec Output` lands) and the signal wiring the
+// synthesis backlog owns (button pull-up placement, LED series
+// resistor — E15).
+//
+// 2026-09-24: resistor magnitudes now use structured `spec Resistance`;
+// `value` is only the BOM label. The local Resistor declares ordinary DC
+// conduction laws (`when true`); the SPST button's conditional topology
+// is mode state (`mode closed`), not a law guard.
+
+type Ldo {
+    pin in: Power;
+    pin gnd: Ground;
+    pin vout: Power;
+    pin en: In;
+    reference "U";
+    spec Tolerance: 6V;
+    spec Rating: 0.9W;
+    spec Decouple: 100n;
+};
+type Mcu {
+    pin vdd: Power;
+    pin gnd: Ground;
+    pin gpio[8]: Io;                 // E11 pin array
+    pin sda: IoOd;                   // wired-AND by class definition
+    pin scl: IoOd;
+    pin swdio: Io;
+    pin swclk: In;
+    pin pa0_unused: Nc;
+    reference "U";
+    spec Tolerance: 4V;
+    spec Rating: any;
+    spec Decouple: 100n;
+};
+type Sensor {
+    pin vdd: Power;
+    pin gnd: Ground;
+    pin sda: IoOd;
+    pin scl: IoOd;
+    pin addr: In;
+    reference "U";
+    spec Tolerance: 5V;
+    spec Rating: any;
+    spec Decouple: 100n;
+};
+type Resistor {
+    pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W;
+    spec Resistance: Ohm; spec PullUp: true;
+    // 2026-09-24 (component laws): structured physics. `value` remains the
+    // BOM label only.
+    when true {
+        a.voltage - b.voltage == Resistance * a.current;
+        a.current + b.current == 0;
+    }
+};
+type Capacitor { pin a; pin b; reference "C"; spec Tolerance: any; spec Rating: any; spec Decoupler: true; };
+type Led {
+    pin a;
+    pin k;
+    reference "D";
+    spec Tolerance: 3.6V;
+    spec Rating: any;
+    // The LED current bound (§3.2's `derive on:`) is the `spec
+    // MinCurrent`/`spec MaxCurrent` obligation form (quantities plan
+    // Phase 4); the fixture states it as a txn postcondition at use.
+};
+type UsbMicro { pin vbus: Power; pin gnd: Ground; reference "J"; spec Tolerance: any; spec Rating: any; };
+type DebugHdr { pin sig[7]; pin gnd: Ground; pin vcc: Power; reference "J"; spec Tolerance: any; spec Rating: any; };
+
+// Supply-rail membership (2026-09-25, E14b-7): `stdnet<>` names each
+// instance's supply net — a declared standard (lib/std/electronics.bv:
+// VBUS = 5V, V3V3 = 3.3V) whose expectation filters the membership
+// candidates. The LDO declares per pin: `in` on the USB rail, `vout` on
+// 3.3V. No membership equalities exist anywhere below; u2.vdd, u3.vdd
+// and j2.vcc join the 3.3V rail by expectation + refutation.
+stdnet<VBUS> let j1: UsbMicro = UsbMicro { value: "USB-Micro-B", package: "SMD" };
+stdnet<V3V3> let j2: DebugHdr = DebugHdr { value: "SWD", package: "HDR-2x5" };
+stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: "AP2112K-3.3", package: "SOT-25" };
+stdnet<V3V3> let u2: Mcu      = Mcu      { value: "STM32F042",   package: "QFN-32" };
+stdnet<V3V3> let u3: Sensor   = Sensor   { value: "SHT40",       package: "DFN-4"  };
+let led1: Led    = Led      { value: "green",       package: "0603"   };
+let r_led: Resistor = Resistor { value: "330R",      package: "0603", spec Resistance: 330Ohm };
+let r_pu[2]: Resistor = Resistor { value: "4k7",     package: "0603", spec Resistance: 4.7kOhm };
+let r_btn: Resistor = Resistor { value: "10k",       package: "0603", spec Resistance: 10kOhm };
+let sw1: Spst    = Spst     { value: "SPST",        package: "SMD"    };
+let c[i:2]: Capacitor = Capacitor { value: "100n",  package: "0402"   };
+let c_dnp: Capacitor  = Capacitor { value: "10u",   package: "0805"   };
+unpop c_dnp;                       // pad exists, part absent
+
+budget u1.vout <= 250mA;
+budget j1.vbus <= 500mA;
+
+trg usb_attached @ j1;
+
+// Rails and returns: §3.2 stated no topology (pure-intent form). The
+// return side is solver-inferred (2026-09-25, E14b-6); supply membership
+// is declared by `stdnet<>` at the lets and inferred by the ladder
+// (2026-09-25, E14b-7). What remains here is §3.2's exact form: rail
+// BIRTH (`j1.vbus == 5.0V`, `u1.vout == 3.3V` — boundary conditions;
+// `u1.vout` becomes a component law when the LDO declares `spec Output`)
+// plus the explicit signal wiring the synthesis backlog still owns (the
+// button pull-up placement and the LED series resistor — E15).
+async node usb_powered [
+    usb_attached
+    && j1.vbus.voltage == 5.0V
+    && u1.vout.voltage == 3.3V
+    && u2.gpio[3].voltage == sw1.a.voltage
+    && u1.vout.voltage == r_btn.a.voltage
+    && r_btn.b.voltage == u2.gpio[3].voltage
+    && u3.addr.voltage == j1.gnd.voltage
+] [u1.vout.voltage == 3.3V && j1.vbus.voltage == 5.0V] {
+    u1.en = true;               // E14b-4: drive assignment wires en <-> gpio[0]
+    led1 = true;                // E14b-4: led1.k <-> gpio[1] (gpio[2..7] are
+                                // already claimed by j2 and the button)
+    r_led.a = u1.vout;           // E14b: series resistor placement is
+    r_led.b = led1.a;           //        physics-derived in pure intent;
+                                //        330Ohm is the provisional datasheet pick
+    // SWD/debug header signals (§3.2 declares the MCU pins; j2 is the
+    // connector their dangling would otherwise demand).
+    j2.sig[0] = u2.swdio;
+    j2.sig[1] = u2.swclk;
+    j2.sig[2] = u2.gpio[2];
+    j2.sig[3] = u2.gpio[4];
+    j2.sig[4] = u2.gpio[5];
+    j2.sig[5] = u2.gpio[6];
+    j2.sig[6] = u2.gpio[7];
+}
+
+// io_od pull-ups (E14b slice 1): min-voltage obligations force the
+// pull-up wiring. The solver wires r_pu[*] to the 3.3V rail (the lowest
+// qualifying driven supply) and completes `u2.sda.voltage >= 2.7V` —
+// no resolution keywords exist.
+async node i2c_idle [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
+    u2.sda.voltage >= 2.7V;   // E14b-3: same-name WiredAnd obligations
+    u3.sda.voltage >= 2.7V;   // assemble the sda bus (one pull-up)
+    u2.scl.voltage >= 2.7V;   // and the scl bus (one pull-up)
+    u3.scl.voltage >= 2.7V;
+}
+
+// Button modes: r_btn is the pull-up to the rail; sw1 is the low path.
+// 2026-09-24 (SPST modes): node state sugar selects the applicable law mode.
+// 2026-09-25 (E14b-6): the low bound is a body obligation — it FORCES the
+// sw1 low path (p1 pre-wired, free pin completes to the return net); no
+// explicit sw1.b equality exists anywhere.
+async node button_pressed
+    [u1.vout.voltage == 3.3V && sw1.closed]
+    [u2.gpio[3].voltage <= 0.3V]
+{
+    u2.gpio[3].voltage <= 0.3V;
+}
+
+async node button_released
+    [u1.vout.voltage == 3.3V && !sw1.closed]
+    [u2.gpio[3].voltage >= 2.7V]
+{ }
+
+// Physical board (fab plan): outline + pinned placements; everything
+// unplaced flows to the deterministic auto-placer. Connectors sit at the
+// edges; the rest flow.
+fab {
+    board 40mm x 30mm;
+    place j1 @ (5mm, 15mm);        // USB connector, left edge
+    place j2 @ (33mm, 15mm);       // SWD header, right edge
+    place led1 @ (20mm, 25mm);     // indicator where the eye expects it
+}

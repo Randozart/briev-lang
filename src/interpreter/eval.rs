@@ -152,7 +152,7 @@ pub fn eval_expr(
         Expr::DerivationBlock(_) => Ok(Value::Void),
 
         // ── Struct literal ───────────────────────────────────────
-        Expr::StructLiteral { type_name, fields } => {
+        Expr::StructLiteral { type_name, fields, specs: _ } => {
             let _ = type_name;
             let mut names = Vec::with_capacity(fields.len());
             let values: Result<Vec<Value>, _> = fields
@@ -368,7 +368,6 @@ pub fn eval_expr(
                     })?;
                 Ok(Value::Range { start: s, end: e, inclusive: *inclusive })
             }
-            Expr::Named { inner, .. } => eval_expr(inner, heap, bindings, functions),
             Expr::UnitLiteral { value, .. } => Ok(f64_to_bits(*value)),
             Expr::Capture { expr, name } => {
                 let val = eval_expr(expr, heap, bindings, functions)?;
@@ -2124,6 +2123,9 @@ pub fn eval_statement(
         Statement::Rollback(_) => Ok(Value::Void),
         Statement::MetadataAssignment(_, _) => Ok(Value::Void),
         Statement::InlineAsm { .. } | Statement::InlineDefn(_) => Ok(Value::Void),
+        // 2026-09-22 (D16 p3b): `open` — the netlist analysis consumes it,
+        // not the runtime. No-op here.
+        Statement::Open(..) => Ok(Value::Void),
         Statement::SyncBlock(body) => {
             let mut result = Value::Void;
             for stmt in body {
@@ -3176,6 +3178,7 @@ defn go() -> Int {
                 ("name".into(), Expr::Quoted(b"ada".to_vec())),
                 ("age".into(), Expr::Decimal(36)),
             ],
+            specs: Vec::new(),
         }
     }
 

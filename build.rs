@@ -138,6 +138,11 @@ fn build_gpu_rt(out_root: &Path) {
         }
         objs.push(obj);
     }
+    // `ar rcs` on an existing archive replaces/adds members but never
+    // deletes them — a pre-Family-K archive would keep its stale
+    // `briev_accel_rt.o` and collide with the Rust exports at link time.
+    // Always start from no archive (2026-09-22, merge with Family K).
+    let _ = std::fs::remove_file(&arc);
     let ar_ok = all_ok && Command::new("ar")
         .args(["rcs"])
         .arg(&arc)

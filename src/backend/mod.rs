@@ -659,9 +659,6 @@ pub fn collect_expr_identifiers(expr: &Expr, ids: &mut std::collections::HashSet
             for a in args { collect_expr_identifiers(a, ids); }
         }
         Expr::Exists(name) => { panic!("compile-time existence check '{}' reached codegen", name) },
-        Expr::Named { inner, .. } => {
-            collect_expr_identifiers(inner, ids);
-        }
         Expr::UnitLiteral { .. } => {}
         Expr::Slice { array, start, end, stride } => {
             collect_expr_identifiers(array, ids);

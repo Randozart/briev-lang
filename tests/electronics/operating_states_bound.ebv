@@ -1,0 +1,36 @@
+// ── operating_states_bound.ebv — all-state violation fixture ────────────
+// 2026-09-24 (plan 2026-09-24-multi-state-law-solving.md).
+//
+// Same bistable element as `operating_states.ebv`, but the postcondition
+// requires non-negative current. The negative bistable state violates it;
+// the positive state alone must not be allowed to certify the board.
+
+type Source {
+    pin p;
+    pin n;
+    reference "V";
+    spec Tolerance: any;
+    spec Rating: any;
+};
+
+type Flip {
+    pin a;
+    pin k;
+    reference "F";
+    spec Tolerance: any;
+    spec Rating: any;
+    spec Bistable: true;
+    when a.current >= 0Amp { a.current == 1Amp; }
+    when a.current < 0Amp { a.current == -1Amp; }
+    when true { a.current + k.current == 0; }
+};
+
+let v1: Source = Source { };
+let f1: Flip = Flip { };
+
+txn mixed_state_bound
+    [v1.p.voltage == 1.0V && v1.p.voltage == f1.a.voltage
+     && f1.k.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+    [f1.a.current >= 0Amp]
+{
+}

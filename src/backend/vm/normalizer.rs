@@ -39,8 +39,6 @@ mod tests {
             body: TypeDefBody {
                 pins: Vec::new(),
                 reference: None,
-                tolerance: None,
-                rating: None,
                 slots: vec![
                     TypeDefSlot { name: "x".to_string(), ty: Type::int(), bit_range: None },
                     TypeDefSlot { name: "y".to_string(), ty: Type::int(), bit_range: None },
@@ -52,6 +50,9 @@ mod tests {
                 op_bindings: vec![],
                 constraints: vec![],
                 members: vec![],
+                when_laws: vec![],
+
+                modes: vec![],
                 span: None,
             },
             span: None,

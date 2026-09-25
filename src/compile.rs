@@ -415,6 +415,19 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         ));
     }
 
+    // ── Static when-law gate (2026-09-22, Slice C2) ──────────────────────
+    // Software `when G { F }` at top level / in obj / in type bodies is a
+    // forced fact the compiler must make hold everywhere. A member fact that
+    // any node/txn body or another law contradicts under a jointly-
+    // satisfiable guard is a refusal.
+    let when_errors = briev_compiler::analysis::when_law::run_when_law_check(&items);
+    if !when_errors.is_empty() {
+        return Err(format!(
+            "when-law gate:\n  {}",
+            when_errors.join("\n  ")
+        ));
+    }
+
     // ── Typed stage: AST transformation (after type check) ────────────
     emit_beast_snapshot(file_path, BeastStage::TypeCheck, BeastPosition::Before, &items, &universe, opts)?;
     pm.run_ast(StageKind::Typed, &mut items, &mut universe)?;
@@ -1558,6 +1571,29 @@ fn codegen(
                 Ok(sch) => output = sch,
                 Err(errs) => return Err(errs.join("\n")),
             }
+            // 2026-09-23 (fab plan): a `fab` section asks for a board — the
+            // .kicad_pcb is written as a companion to the schematic.
+            match briev_compiler::backend::electronics::ElectronicsBackend::generate_board(
+                &analysis.electronics,
+                items,
+            ) {
+                Ok(Some(board)) => {
+                    let pcb_path = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?
+                        .replace(".ll", ".kicad_pcb");
+                    if let Some(parent) = std::path::Path::new(&pcb_path).parent() {
+                        if !parent.as_os_str().is_empty() {
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                format!("cannot create output dir '{}': {}", parent.display(), e)
+                            })?;
+                        }
+                    }
+                    std::fs::write(&pcb_path, &board)
+                        .map_err(|e| format!("cannot write '{}': {}", pcb_path, e))?;
+                    println!("wrote {}", pcb_path);
+                }
+                Ok(None) => {}
+                Err(errs) => return Err(errs.join("\n")),
+            }
             ".kicad_sch"
         }
         BackendKind::Gpu => {
@@ -2519,8 +2555,6 @@ mod tests {
             ports_out: vec![],
             pins: vec![],
             reference: None,
-            tolerance: None,
-            rating: None,
             extern_source: Some("/tmp/opencode/definitely-missing-uart.v".into()),
         });
         let err = copy_extern_companions(&[cell], "/tmp/opencode/probe-none.bv")

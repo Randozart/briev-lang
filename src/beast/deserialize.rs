@@ -153,13 +153,23 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
             "pins" => {
                 for sub in entry.iter().skip(1) {
                     if let SExpr::List(pp) = sub {
-                        if pp.len() == 3 && sexpr_str(&pp[0]).unwrap_or_default() == "pin" {
+                        // 2026-09-21 (E12): `(pin name number)` or
+                        // `(pin name number ClassType)` — the class
+                        // ascription is optional for pre-E12 streams.
+                        let is_pin = sexpr_str(&pp[0]).unwrap_or_default() == "pin";
+                        if is_pin && (pp.len() == 3 || pp.len() == 4) {
                             let num: u64 = sexpr_str(&pp[2])?
                                 .parse()
                                 .map_err(|_| "bad pin number".to_string())?;
+                            let class_ref = if pp.len() == 4 {
+                                Some(sexpr_str(&pp[3])?.to_string())
+                            } else {
+                                None
+                            };
                             pins.push(crate::ast::top::PinDecl {
                                 name: sexpr_str(&pp[1])?.to_string(),
                                 number: num,
+                                class_ref,
                                 span: None,
                             });
                         }
@@ -182,10 +192,9 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
         bit_range: None, span: None, coll: false, seq: false,
         ports_in: Vec::new(),
         ports_out: Vec::new(),
-        body: TypeDefBody { slots, pins, reference: None, tolerance: None,
-            rating: None, metadata, projections: vec![], bindings: vec![],
+        body: TypeDefBody { slots, pins, reference: None, metadata, projections: vec![], bindings: vec![],
             operators: vec![], op_bindings: vec![],
-            constraints: vec![], members: vec![], span: None },
+            constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None },
     }))
 }
 
@@ -673,6 +682,38 @@ fn parse_unop(s: &str) -> Result<UnaryOpKind, String> {
     })
 }
 
+/// The dimension for a quantity tag name (`"volt"` → Volt) — the reverse
+/// of `QuantityDim::name()`.
+fn quantity_dim_of_name(name: &str) -> Option<crate::ast::QuantityDim> {
+    Some(match name {
+        "volt" => crate::ast::QuantityDim::Volt,
+        "amp" => crate::ast::QuantityDim::Amp,
+        "ohm" => crate::ast::QuantityDim::Ohm,
+        "farad" => crate::ast::QuantityDim::Farad,
+        "henry" => crate::ast::QuantityDim::Henry,
+        "hertz" => crate::ast::QuantityDim::Hertz,
+        "watt" => crate::ast::QuantityDim::Watt,
+        "kelvin" => crate::ast::QuantityDim::Kelvin,
+        "length" => crate::ast::QuantityDim::Length,
+        _ => return None,
+    })
+}
+
+/// The `(quantity <si> <dimension>)` tagged form of a Quantity value.
+fn sexpr_to_quantity(parts: &[SExpr]) -> Result<PropertyValue, String> {
+    if parts.len() < 3 {
+        return Err("quantity property needs a value and a dimension".into());
+    }
+    let si = match &parts[1] {
+        SExpr::Atom(Atom::Float(f)) => *f,
+        _ => return Err("quantity value must be a float".into()),
+    };
+    let dim_name = sexpr_str(&parts[2])?;
+    let dim = quantity_dim_of_name(&dim_name)
+        .ok_or_else(|| format!("unknown quantity dimension '{}'", dim_name))?;
+    Ok(PropertyValue::Quantity { si, dimension: dim })
+}
+
 fn sexpr_to_pv(expr: &SExpr) -> Result<PropertyValue, String> {
     match expr {
         SExpr::Atom(Atom::String(s)) => {
@@ -694,6 +735,9 @@ fn sexpr_to_pv(expr: &SExpr) -> Result<PropertyValue, String> {
                 let mut items = Vec::new();
                 for i in 1..parts.len() { items.push(sexpr_to_pv(&parts[i])?); }
                 Ok(PropertyValue::List(items))
+            } else if tag == "quantity" {
+                // 2026-09-23 (quantities plan): `(quantity <si> <dimension>)`.
+                sexpr_to_quantity(parts)
             } else {
                 Ok(PropertyValue::Identifier(sexpr_str(&parts[0])?.to_string()))
             }

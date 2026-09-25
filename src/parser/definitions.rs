@@ -7,9 +7,19 @@
 // replace the marker with explicit macros.
 
 use super::helpers::{ModifierPrefix, Parser};
+use super::quantity::{dimension_name, parse_unit_suffix, UnitSuffix};
 use crate::ast::*;
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
+
+/// Mutable targets for the shared component-header body scanner.
+struct TypeBodyTargets<'a> {
+    when_laws: &'a mut Vec<crate::ast::top::WhenLawDecl>,
+    modes: &'a mut Vec<crate::ast::top::ModeDecl>,
+    pins: &'a mut Vec<crate::ast::top::PinDecl>,
+    pin_high_water: &'a mut u64,
+    reference: &'a mut Option<String>,
+}
 
 impl<'a> Parser<'a> {
     /// 2026-09-06 (Phase 8): parse the `section(".name")` prefix — consume
@@ -42,6 +52,24 @@ impl<'a> Parser<'a> {
     pub fn parse_top_level(&mut self) -> Result<TopLevel, SyntaxError> {
         if self.eat(&Token::Export) {
             return self.parse_export();
+        }
+        // 2026-09-21 (E7, design record D4): `budget <inst>.<pin> <=
+        // <current>;` — a source-pin budget. Contextual keyword: only a
+        // top-level `budget` identifier enters this arm.
+        if self.check_identifier("budget") {
+            return self.parse_top_level_budget();
+        }
+        // 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+        // Slice B): `unpop <inst>;` — a part excluded from the BOM but
+        // verified in both present/absent states. Contextual keyword.
+        if self.check_identifier("unpop") {
+            return self.parse_top_level_participation(false);
+        }
+        // `shortcircuit unpop <inst>: <Type>;` — an acknowledged intentional
+        // short (suppresses the present-state shorted-supply error).
+        // `shortcircuit <inst>;` on a populated part is a warning + hint.
+        if self.check_identifier("shortcircuit") {
+            return self.parse_top_level_shortcircuit();
         }
         // 2026-09-06 (Phase 8, plan 2026-09-06-cpp-expressiveness.md):
         // `section(".name")` placement prefix — contextual keyword (the
@@ -83,6 +111,10 @@ impl<'a> Parser<'a> {
         }
         match self.peek() {
             Some(Token::Defn) => self.parse_definition().map(TopLevel::Definition),
+            // 2026-09-22 (Slice C): top-level `when G { … }` is the static
+            // when law — `G ⟹ facts`, the compiler obliges. (Inside a
+            // defn/node/txn body, `when` stays reactive — unchanged.)
+            Some(Token::When) => self.parse_top_level_when_law(),
             Some(Token::Txn) => self
                 .parse_transaction(false, false)
                 .map(TopLevel::Transaction),
@@ -146,7 +178,9 @@ impl<'a> Parser<'a> {
             // <name>`. Modifiers compose in any order before a node/txn/let/
             // defn; the shared scanner consumes the run and the dispatch
             // below validates the structural identifier against the set.
-            Some(t) if Self::is_modifier_token(t) => self.parse_modifier_prefixed(),
+            Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => {
+                self.parse_modifier_prefixed()
+            }
             Some(Token::Cell) => self.parse_cell().map(TopLevel::Cell),
             // 2026-08-27 (cbv-HW plan Slice A): `extern Name<T>(ports)
             // -> outs from "path";` — a FOREIGN hardware module import.
@@ -193,6 +227,8 @@ impl<'a> Parser<'a> {
             Some(Token::Struct) => self.parse_struct_def(false, false).map(TopLevel::StaticStruct),
             // 2026-07-26: Handle `render struct Name { <html> }` and `render obj Name { <html> }`
             Some(Token::Render) => self.parse_render_block(),
+            // 2026-09-23 (fab plan): the physical-layout section.
+            Some(Token::Fab) => self.parse_fab_block(),
             // 2026-07-14: Handle `enum Name { variants }` as TypeDef (converted by normalizer)
             Some(Token::Enum) => self.parse_enum_like().map(TopLevel::TypeDef),
             // 2026-07-14: Top-level let — state variable declaration
@@ -335,6 +371,114 @@ impl<'a> Parser<'a> {
             view_html,
             span: Some(start_span),
         }))
+    }
+
+    /// 2026-09-23 (fab plan): `fab { board 30mm x 20mm; place u1 @ (20mm,
+    /// 10mm) [rot 90]; }` — the physical-layout section. `board`/`place`/
+    /// `rot`/`x` are contextual identifiers scoped to the block; only
+    /// `fab` is a token. Lengths parse through the quantity grammar (bare
+    /// = the SI base, metres; `mm`/`cm` are the working suffixes), stored
+    /// in mm.
+    pub fn parse_fab_block(&mut self) -> Result<TopLevel, SyntaxError> {
+        let start_span = self
+            .peek_with_span()
+            .map(|(_, s)| self.make_span(s.clone()))
+            .unwrap_or(Span::dummy());
+        self.pos += 1; // consume `fab`
+        self.expect(Token::LBrace)?;
+        let (w, h, placements) = self.parse_fab_body()?;
+        self.expect(Token::RBrace)?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::FabBlock(crate::ast::FabBlock {
+            board: (w, h),
+            placements,
+            span: Some(start_span),
+        }))
+    }
+
+    /// The `board`/`place` statements between the braces.
+    fn parse_fab_body(&mut self) -> Result<(f64, f64, Vec<crate::ast::FabPlacement>), SyntaxError> {
+        let mut board: Option<(f64, f64)> = None;
+        let mut placements = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            match self.parse_fab_item()? {
+                FabItem::Board(b) => board = Some(b),
+                FabItem::Place(p) => placements.push(p),
+            }
+        }
+        let Some(board) = board else {
+            return self.error_at_current(
+                "a fab block needs a `board <W> x <H>;` line — the outline feeds the containment check",
+            );
+        };
+        Ok((board.0, board.1, placements))
+    }
+
+    /// One statement inside a fab block.
+    fn parse_fab_item(&mut self) -> Result<FabItem, SyntaxError> {
+        if self.eat_identifier("board") {
+            return Ok(FabItem::Board(self.parse_fab_board()?));
+        }
+        if self.eat_identifier("place") {
+            return Ok(FabItem::Place(self.parse_fab_placement()?));
+        }
+        self.error_at_current(
+            "expected `board <W> x <H>;` or `place <inst> @ (<x>, <y>) [rot <deg>];` in a fab block",
+        )
+    }
+
+    /// A fab length quantity in mm — `20mm`, `2cm`; a bare number is the
+    /// SI base (metres).
+    fn parse_fab_length(&mut self) -> Result<f64, SyntaxError> {
+        let (si, _dim) = self.parse_spec_quantity(crate::ast::QuantityDim::Length)?;
+        Ok(si * 1000.0)
+    }
+
+    /// One `board <W> x <H>;` line (the `board` identifier is consumed).
+    fn parse_fab_board(&mut self) -> Result<(f64, f64), SyntaxError> {
+        let w = self.parse_fab_length()?;
+        if !self.eat_identifier("x") {
+            return self.error_at_current(
+                "expected 'x' between board dimensions (`board 30mm x 20mm;`)",
+            );
+        }
+        let h = self.parse_fab_length()?;
+        self.expect(Token::Semicolon)?;
+        Ok((w, h))
+    }
+
+    /// One `place <inst> @ (<x>, <y>) [rot <deg>];` line (the `place`
+    /// identifier is consumed).
+    fn parse_fab_placement(&mut self) -> Result<crate::ast::FabPlacement, SyntaxError> {
+        let inst = self.expect_identifier()?;
+        self.expect(Token::At)?;
+        self.expect(Token::LParen)?;
+        let x = self.parse_fab_length()?;
+        self.expect(Token::Comma)?;
+        let y = self.parse_fab_length()?;
+        self.expect(Token::RParen)?;
+        let mut rot = 0.0;
+        if self.eat_identifier("rot") {
+            rot = match self.peek() {
+                Some(Token::Float(f)) => {
+                    let v = *f;
+                    self.pos += 1;
+                    v
+                }
+                Some(Token::Integer(n)) => {
+                    let v = *n as f64;
+                    self.pos += 1;
+                    v
+                }
+                _ => {
+                    return self.error_at_current(
+                        "expected a rotation in degrees (`rot 90;`)",
+                    )
+                }
+            };
+        }
+        self.expect(Token::Semicolon)?;
+        Ok(crate::ast::FabPlacement { inst, x, y, rot })
     }
 
     /// 2026-07-22: Parse `frgn` declaration (import model).
@@ -557,35 +701,34 @@ impl<'a> Parser<'a> {
             // On failure, record the error and skip to the next plausible
             // top-level boundary (closing `}` at col 0 or EOF) so ALL
             // issues are reported in one pass instead of cascading.
-            match self.parse_top_level() {
-                Ok(item) => items.push(item),
-                Err(e) => {
-                    let offset = self
-                        .tokens
-                        .get(self.pos.min(self.tokens.len() - 1))
-                        .map(|(_, s)| s.start)
-                        .unwrap_or(0);
-                    // Convert byte offset to line number
-                    let src_text = &self.source[..offset.min(self.source.len())];
-                    let line = src_text.as_bytes().iter().filter(|&&b| b == b'\n').count() + 1;
-                    errors.push(format!("line {line}: {e}"));
-                    // Skip to next `}` at column 0 or EOF
-                    while !self.is_at_end() {
-                        if self.check(&Token::RBrace) {
-                            // Check if this RBrace starts at column 0 (top-level boundary)
-                            if let Some((_, span)) = self.tokens.get(self.pos) {
-                                let span_start = span.start;
-                                // Find the start of this line in source
-                                let line_start = self.source[..span_start.min(self.source.len())]
-                                    .rfind("\n").map(|p| p + 1).unwrap_or(0);
-                                if span_start - line_start == 0 {
-                                    break;
-                                }
-                            }
-                        }
-                        self.advance();
+            // 2026-09-22 (plan 2026-09-22-core-chain-into): `chain` is a
+            // top-level block that desugars to MULTIPLE reactor nodes — it
+            // cannot flow through the single-item parse_top_level. Handle it
+            // here so the desugared nodes splice into the program directly
+            // (the chain never reaches the AST as a variant).
+            if self.check_identifier("chain") {
+                match self.parse_chain() {
+                    Ok(nodes) => items.extend(nodes),
+                    Err(e) => {
+                        self.recover_top_level_error(&e, &mut errors);
                     }
                 }
+                continue;
+            }
+            // 2026-09-23 (plan 2026-09-23-ebv-gate-fixture, E1): `let
+            // name[…]…: T = T { … };` expands to one element let per element
+            // — same splice shape as `chain`, same eager-expansion
+            // discipline as E11 pin arrays.
+            if self.at_let_array() {
+                match self.parse_let_array() {
+                    Ok(elements) => items.extend(elements),
+                    Err(e) => self.recover_top_level_error(&e, &mut errors),
+                }
+                continue;
+            }
+            match self.parse_top_level() {
+                Ok(item) => items.push(item),
+                Err(e) => self.recover_top_level_error(&e, &mut errors),
             }
         }
         if !errors.is_empty() {
@@ -594,6 +737,189 @@ impl<'a> Parser<'a> {
         // 2026-08-01 (Phase 4): implicit entry wrapping is owned by the script
         // plugin (script_plugin.rs) — it synthesizes the one-shot opening node.
         Ok(items)
+    }
+
+    /// 2026-09-23 (E1): true when the current position starts an instance-array
+    /// declaration — `let <ident> [` … distinguishable from a plain `let`
+    /// (whose name is followed by `:`, `=`, or `;`) and from tuple
+    /// destructuring (`let (`) at a three-token lookahead.
+    fn at_let_array(&self) -> bool {
+        self.check(&Token::Let)
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                Some(Token::Identifier(_))
+            )
+            && matches!(
+                self.tokens.get(self.pos + 2).map(|(t, _)| t),
+                Some(Token::LBracket)
+            )
+    }
+
+    /// Record a top-level parse error and skip to the next plausible
+    /// top-level boundary (closing `}` at col 0 or EOF) so ALL issues are
+    /// reported in one pass instead of cascading (2026-08-23 F3 recovery;
+    /// extracted 2026-09-22 for reuse by the `chain` splice path).
+    fn recover_top_level_error(&mut self, e: &SyntaxError, errors: &mut Vec<String>) {
+        let offset = self
+            .tokens
+            .get(self.pos.min(self.tokens.len() - 1))
+            .map(|(_, s)| s.start)
+            .unwrap_or(0);
+        // Convert byte offset to line number
+        let src_text = &self.source[..offset.min(self.source.len())];
+        let line = src_text.as_bytes().iter().filter(|&&b| b == b'\n').count() + 1;
+        errors.push(format!("line {line}: {e}"));
+        // Skip to next `}` at column 0 or EOF
+        while !self.is_at_end() {
+            if self.check(&Token::RBrace) {
+                // Check if this RBrace starts at column 0 (top-level boundary)
+                if let Some((_, span)) = self.tokens.get(self.pos) {
+                    let span_start = span.start;
+                    // Find the start of this line in source
+                    let line_start = self.source[..span_start.min(self.source.len())]
+                        .rfind("\n").map(|p| p + 1).unwrap_or(0);
+                    if span_start - line_start == 0 {
+                        break;
+                    }
+                }
+            }
+            self.advance();
+        }
+    }
+
+    /// Parse: `chain name [base-guard] { ... };` — a top-level sequencing
+    /// block (D9, plan 2026-09-22-core-chain-into). Desugars at parse time
+    /// to ONE reactor node per step: each step's actions become a node body,
+    /// each `into <cond>;` sign-off is ANDed into every LATER step's guard.
+    ///
+    /// The chain never reaches the AST as a variant — `parse_program` splices
+    /// the returned nodes directly. Zero new semantics: the nodes are exactly
+    /// what an author would write by hand, so the reactor, typechecker, and
+    /// (for `.ebv`) the netlist analysis all consume them unchanged.
+    fn parse_chain(&mut self) -> Result<Vec<TopLevel>, SyntaxError> {
+        // 2026-09-22: contextual keyword — consumed here, not a lexer token.
+        self.pos += 1; // consume 'chain'
+        let name = self.expect_identifier()?;
+        // 2026-09-22 (guard discipline): the chain's base guard becomes step
+        // 1's precondition. Optional — omitted → `[true]`, matching node
+        // defaults. Only a single `[pre]` is accepted: chains have no
+        // postcondition of their own (each step node's post is `[true]`, the
+        // body does the work).
+        let base_guard = self.chain_base_guard()?;
+        self.expect(Token::LBrace)?;
+        // Split the body into steps. A step is a run of ordinary node-body
+        // statements terminated by an `into <cond>;` sign-off (or the end of
+        // the chain). Consecutive actions accumulate in the current step.
+        let steps = self.chain_steps(&name)?;
+        Self::chain_check(&name, &steps)?;
+        Ok(Self::chain_nodes(&name, base_guard, &steps))
+    }
+
+    /// The chain's optional base guard: `[pre]` or `[true]` when omitted.
+    fn chain_base_guard(&mut self) -> Result<Expr, SyntaxError> {
+        if self.check(&Token::LBracket) {
+            self.parse_single_contract_condition()
+        } else {
+            Ok(Expr::Bool(true))
+        }
+    }
+
+    /// Split a chain body into steps at `into <cond>;` sign-offs. Returns
+    /// (actions, optional sign-off) per step; the trailing action run (no
+    /// sign-off) is the final step.
+    fn chain_steps(&mut self, name: &str) -> Result<Vec<(Vec<Statement>, Option<Expr>)>, SyntaxError> {
+        let mut steps: Vec<(Vec<Statement>, Option<Expr>)> = Vec::new();
+        let mut current: Vec<Statement> = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            if self.check_identifier("into") {
+                // Sign-off: `into <cond>;` — end the current step and record
+                // the condition that gates all later steps.
+                self.pos += 1; // consume 'into'
+                let cond = self.parse_expression()?;
+                self.expect(Token::Semicolon)?;
+                steps.push((std::mem::take(&mut current), Some(cond)));
+            } else {
+                current.push(self.parse_statement()?);
+            }
+        }
+        self.expect(Token::RBrace)?;
+        self.eat(&Token::Semicolon);
+        // The final action run (no trailing sign-off) is the last step.
+        if !current.is_empty() {
+            steps.push((current, None));
+        }
+        if steps.is_empty() {
+            return Err(SyntaxError::InvalidStatement {
+                reason: format!(
+                    "chain '{}' has no actions — a chain must contain at least one action step",
+                    name
+                ),
+                span: Span::dummy(),
+            });
+        }
+        Ok(steps)
+    }
+
+    /// Chain well-formedness: the last statement must be an action, not a
+    /// sign-off — a trailing `into ...;` gates a later step that does not
+    /// exist.
+    fn chain_check(
+        name: &str,
+        steps: &[(Vec<Statement>, Option<Expr>)],
+    ) -> Result<(), SyntaxError> {
+        if steps.last().map(|(_, so)| so.is_some()).unwrap_or(false) {
+            return Err(SyntaxError::InvalidStatement {
+                reason: format!(
+                    "chain '{}' ends in `into ...;` — a sign-off gates a LATER step, and a final one gates nothing. Add a final action step after it",
+                    name
+                ),
+                span: Span::dummy(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Build one reactor node per step with the accumulated guard: step N's
+    /// pre = base ∧ s₁ ∧ … ∧ s_{N-1}, post `[true]`.
+    fn chain_nodes(
+        name: &str,
+        base_guard: Expr,
+        steps: &[(Vec<Statement>, Option<Expr>)],
+    ) -> Vec<TopLevel> {
+        let mut nodes = Vec::with_capacity(steps.len());
+        let mut acc = base_guard;
+        for (i, (body, signoff)) in steps.iter().enumerate() {
+            let mut contract = Contract::new(acc.clone(), Expr::Bool(true));
+            // 2026-09-22 (chain): each step's contract is WRITTEN (the chain
+            // author's base guard and sign-offs are real preconditions) — the
+            // typechecker must prove and classify each step node. The post is
+            // `[true]` (the body does the work), matching node defaults.
+            contract.explicit = true;
+            nodes.push(TopLevel::Transaction(Transaction {
+                name: format!("{}_{}", name, i + 1),
+                is_reactive: true,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: Vec::new(),
+                contract,
+                body: body.clone(),
+                metadata: std::collections::HashMap::new(),
+                derivation: None,
+                modifiers: vec![],
+                span: None,
+                doc: None,
+            }));
+            if let Some(s) = signoff {
+                acc = Expr::BinaryOp(
+                    crate::ast::BinaryOpKind::And,
+                    Box::new(acc),
+                    Box::new(s.clone()),
+                );
+            }
+        }
+        nodes
     }
 
     /// Parse: defn name<T>(params) -> RetType [pre][post] { body } [:= { ... }]
@@ -1028,6 +1354,15 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// 2026-09-25 (E14b-7, rail-membership plan): `net<name>` / `stdnet<name>`
+    /// — contextual net-name strategy keywords. Identifiers, not reserved
+    /// tokens: the modifier dispatch only fires on them when the top-level
+    /// scanner will consume the `<...>` payload (a declaration prefix holds
+    /// no expressions, so comparison syntax cannot collide here).
+    fn is_net_modifier(t: &Token) -> bool {
+        matches!(t, Token::Identifier(s) if s == "net" || s == "stdnet")
+    }
+
     /// 2026-09-22 (order-free-modifiers plan): dispatch a declaration whose
     /// modifier prefix was consumed. Validates the structural identifier
     /// against the collected modifiers:
@@ -1041,11 +1376,13 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(Token::Node) => {
                 self.reject_memory_pins(&prefix, "a node has no memory pin")?;
+                self.reject_net_names(&prefix, "a node")?;
                 let txn = self.parse_node()?;
                 self.finish_reactive(txn, prefix)
             }
             Some(Token::Txn) => {
                 self.reject_memory_pins(&prefix, "a txn has no memory pin")?;
+                self.reject_net_names(&prefix, "a txn")?;
                 let txn = self.parse_transaction(false, prefix.is_async)?;
                 self.finish_reactive(txn, prefix)
             }
@@ -1080,11 +1417,24 @@ impl<'a> Parser<'a> {
                         "`accel` applies to a node/txn only — a defn has no GPU-deferral surface",
                     );
                 }
+                self.reject_net_names(&prefix, "a defn")?;
                 let mut defn = self.parse_definition()?;
                 defn.modifiers.extend(prefix.annotations);
                 Ok(TopLevel::Definition(defn))
             }
             _ => self.modifier_target_error(&prefix),
+        }
+    }
+
+    /// 2026-09-25 (E14b-7): `net<>`/`stdnet<>` name a let's supply net —
+    /// reject them on node/txn/defn, which have no supply pins.
+    fn reject_net_names(&self, prefix: &ModifierPrefix, what: &str) -> Result<(), SyntaxError> {
+        if prefix.annotations.iter().any(|a| a.name == "net" || a.name == "stdnet") {
+            self.error_at_current(&format!(
+                "`net<>`/`stdnet<>` names a let's supply net — {what} has no supply pins"
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -1207,8 +1557,6 @@ impl<'a> Parser<'a> {
         Ok(CellDef {
             pins: Vec::new(),
             reference: None,
-            tolerance: None,
-            rating: None,
             name,
             type_params,
             parameters: ports_in.clone(),
@@ -1278,8 +1626,6 @@ impl<'a> Parser<'a> {
         let mut pins: Vec<crate::ast::top::PinDecl> = Vec::new();
         let mut pin_high_water: u64 = 0;
         let mut reference: Option<String> = None;
-        let mut tolerance: Option<crate::ast::top::Tolerance> = None;
-        let mut rating: Option<crate::ast::top::Rating> = None;
         // 2026-08-26 (Phase B2): internal triggers keep their own field.
         let mut internal_triggers: Vec<Trigger> = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
@@ -1291,12 +1637,8 @@ impl<'a> Parser<'a> {
                 reference = Some(self.parse_reference_clause()?);
                 continue;
             }
-            if self.at_tolerance_clause() {
-                tolerance = Some(self.parse_tolerance_clause()?);
-                continue;
-            }
-            if self.at_rating_clause() {
-                rating = Some(self.parse_rating_clause()?);
+            if self.at_retired_envelope_clause() {
+                self.reject_retired_envelope_clause()?;
                 continue;
             }
             if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
@@ -1350,8 +1692,6 @@ impl<'a> Parser<'a> {
             name,
             pins,
             reference,
-            tolerance,
-            rating,
             type_params,
             parameters: ports_in.clone(),
             output_type: None,
@@ -1622,6 +1962,188 @@ impl<'a> Parser<'a> {
     /// Parse: meld name -> target;
     /// Parse top-level trg binding: trg name @ instance.#port;
     /// 2026-07-15: The # prefix is required for layout port access.
+    /// `budget <inst>.<pin> <= <current>;` — a source-pin budget (E7).
+    /// Parsed as one expression; the pin-path/current destructuring
+    /// happens in analysis, mirroring postcondition bounds.
+    fn parse_top_level_budget(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume `budget`
+        let contract = self.parse_expression()?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::Budget(crate::ast::top::BudgetDecl {
+            contract,
+            span: None,
+        }))
+    }
+
+    /// 2026-09-22 (Slice B): `unpop <inst>;` — a participation fact naming
+    /// an instance excluded from the BOM. Also consumed for the shared
+    /// `shortcircuit unpop …` prefix via the same parse shape.
+    fn parse_top_level_participation(&mut self, consumed_shortcircuit: bool) -> Result<TopLevel, SyntaxError> {
+        if !consumed_shortcircuit {
+            self.pos += 1; // consume `unpop`
+        }
+        let instance = self.expect_identifier()?;
+        let mut ty = None;
+        if self.eat(&Token::Colon) {
+            ty = Some(self.parse_type()?);
+        }
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::Unpop(crate::ast::top::ParticipationDecl {
+            instance,
+            ty,
+            span: None,
+        }))
+    }
+
+    /// `shortcircuit unpop <inst>: <Type>;` — acknowledges an intentional
+    /// short. Also accepts `shortcircuit <inst>;` (a populated part — the
+    /// analysis warns with a suggest-`unpop` hint). The `unpop` prefix picks
+    /// the acknowledgment form; otherwise it is a populated-part short.
+    fn parse_top_level_shortcircuit(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume `shortcircuit`
+        if self.eat_identifier("unpop") {
+            let p = self.parse_top_level_participation(true)?;
+            if let TopLevel::Unpop(d) = p {
+                return Ok(TopLevel::ShortCircuit(d));
+            }
+            unreachable!("parse_top_level_participation(true) returns Unpop");
+        }
+        let instance = self.expect_identifier()?;
+        let mut ty = None;
+        if self.eat(&Token::Colon) {
+            ty = Some(self.parse_type()?);
+        }
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::ShortCircuit(crate::ast::top::ParticipationDecl {
+            instance,
+            ty,
+            span: None,
+        }))
+    }
+
+    /// 2026-09-22 (Slice C): top-level `when <guard> { <facts> };` — the
+    /// static when law. Parses the same shape as a guarded statement but
+    /// yields a TopLevel so the analysis treats it as a forced fact, not
+    /// reactive behavior.
+    fn parse_top_level_when_law(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume 'when'
+        let guard = self.parse_expression()?;
+        let facts = self.parse_block()?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::WhenLaw(crate::ast::top::WhenLawDecl {
+            guard,
+            facts,
+            span: None,
+        }))
+    }
+
+    /// Parse `!> key: value;` / `spec Name: value;` within a component body.
+    /// Component-local law parameters are allowed once pins are declared.
+    fn parse_component_metadata_clause(
+        &mut self,
+        targets: &mut TypeBodyTargets<'_>,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<bool, SyntaxError> {
+        let at_metadata = self.check(&Token::ExclaimArrow) || self.check(&Token::Spec);
+        if !at_metadata {
+            return Ok(false);
+        }
+        self.parse_metadata_clause_scoped(metadata, !targets.pins.is_empty())?;
+        Ok(true)
+    }
+
+    /// Parse component pins, scalar electronics properties, when laws, and
+    /// named modes in one place. Returns true when a clause was consumed.
+    fn parse_component_header_clause(
+        &mut self,
+        targets: &mut TypeBodyTargets<'_>,
+    ) -> Result<bool, SyntaxError> {
+        if self.parse_component_law_clause(targets.when_laws, targets.modes)? {
+            return Ok(true);
+        }
+        if self.check(&Token::Pin) {
+            self.parse_pin_clause(targets.pins, targets.pin_high_water)?;
+            return Ok(true);
+        }
+        if self.parse_electronics_property_clause(targets.reference)? {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Parse type-body component-law clauses. Returns true when a clause was
+    /// consumed. Combining `when` and named modes keeps body scanners flat.
+    fn parse_component_law_clause(
+        &mut self,
+        when_laws: &mut Vec<crate::ast::top::WhenLawDecl>,
+        modes: &mut Vec<crate::ast::top::ModeDecl>,
+    ) -> Result<bool, SyntaxError> {
+        if self.check(&Token::When) {
+            when_laws.push(self.parse_when_law()?);
+            return Ok(true);
+        }
+        let at_mode = self.check_identifier("mode")
+            && matches!(
+                self.tokens.get(self.pos + 2).map(|(t, _)| t),
+                Some(Token::LBrace)
+            );
+        if at_mode {
+            modes.push(self.parse_mode_decl()?);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Parse the shared electronics scalar-property clauses. Returns true
+    /// when one was consumed. The retired `tolerance`/`rating` clauses
+    /// report their rewrite here (2026-09-24 quantities Phase 2).
+    fn parse_electronics_property_clause(
+        &mut self,
+        reference: &mut Option<String>,
+    ) -> Result<bool, SyntaxError> {
+        if self.at_reference_clause() {
+            *reference = Some(self.parse_reference_clause()?);
+            return Ok(true);
+        }
+        if self.at_retired_envelope_clause() {
+            self.reject_retired_envelope_clause()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// 2026-09-22 (Slice C): `when <guard> { <facts> };` — shared by the
+    /// top-level and type/obj-body parse sites. The guard is an expression;
+    /// the facts are ordinary body statements (assignments, pin drives).
+    fn parse_when_law(&mut self) -> Result<crate::ast::top::WhenLawDecl, SyntaxError> {
+        self.pos += 1; // consume 'when'
+        let guard = self.parse_expression()?;
+        let facts = self.parse_block()?;
+        self.eat(&Token::Semicolon);
+        Ok(crate::ast::top::WhenLawDecl {
+            guard,
+            facts,
+            span: None,
+        })
+    }
+
+    /// Parse a named component operating mode (2026-09-24 SPST modes):
+    /// `mode name { <law facts> }`. `mode` is contextual so ordinary fields
+    /// and methods named `mode` remain legal.
+    fn parse_mode_decl(&mut self) -> Result<crate::ast::top::ModeDecl, SyntaxError> {
+        let start = self.pos;
+        self.pos += 1; // consume contextual 'mode'
+        let name = self.expect_identifier()?;
+        let facts = self.parse_block()?;
+        self.eat(&Token::Semicolon);
+        let span = self
+            .tokens
+            .get(start)
+            .map(|(_, range)| self.make_span(range.clone()))
+            .unwrap_or_else(crate::errors::Span::dummy);
+        Ok(crate::ast::top::ModeDecl { name, facts, span: Some(span) })
+    }
+
     fn parse_top_level_trg(&mut self) -> Result<Trigger, SyntaxError> {
         self.pos += 1;
         let name = self.expect_identifier()?;
@@ -2413,11 +2935,81 @@ impl<'a> Parser<'a> {
 
     // ── 2026-09-11 (fundamentals doctrine, B3): Electronics property
     // clauses — SHARED by all four declaration body loops (D1: forms are
-    // syntax). `pin` / `reference` / `tolerance` carry identical grammar
-    // and identical enforcement everywhere.
+    // syntax). `pin` / `reference` carry identical grammar and identical
+    // enforcement everywhere. (2026-09-24 quantities Phase 2: `tolerance`
+    // / `rating` moved to type-level `spec Tolerance`/`spec Rating` keys.)
 
-    /// `pin <name> [= <int>];` — first-class component pin. Auto-numbered
-    /// pins continue after the highest explicit number (high-water rule).
+    /// `'[' <int> ']'` — the array-count half of a pin clause (E11).
+    /// Absent → single pin (count 1); present → at least 1 element.
+    fn parse_pin_count(&mut self, pin_name: &str) -> Result<u64, SyntaxError> {
+        if !self.eat(&Token::LBracket) {
+            return Ok(1);
+        }
+        let n = self.expect_integer()?;
+        if n < 1 {
+            return self.error_at_current(&format!(
+                "pin array '{}' must have at least 1 element, got {}",
+                pin_name, n
+            ));
+        }
+        self.expect(Token::RBracket)?;
+        Ok(n as u64)
+    }
+
+    /// `'=' <int>` or the high-water continuation — the number half of a
+    /// pin clause. Explicit numbers must be ≥ 1 (KiCad pin numbers start
+    /// at 1).
+    fn parse_pin_number(
+        &mut self,
+        pin_name: &str,
+        high_water: &mut u64,
+    ) -> Result<u64, SyntaxError> {
+        if !self.eat(&Token::Eq) {
+            return Ok(*high_water + 1);
+        }
+        let n = self.expect_integer()?;
+        if n < 1 {
+            return self.error_at_current(&format!(
+                "pin '{}' number must be 1 or greater (KiCad pin numbers start at 1), got {}",
+                pin_name, n
+            ));
+        }
+        Ok(n as u64)
+    }
+
+    /// `':' <TypeName>` — the class-ascription half of a pin clause (E12).
+    /// Legal on either side of the pin number, at most once. ANY type name
+    /// is stored verbatim: resolution against the imported class
+    /// fundamentals happens in analysis (design record D6 — the parser
+    /// carries no class vocabulary).
+    fn parse_pin_class_ref(
+        &mut self,
+        pin_name: &str,
+        slot: &mut Option<String>,
+    ) -> Result<(), SyntaxError> {
+        if slot.is_some() {
+            return self.error_at_current(&format!(
+                "pin '{}' has two class ascriptions — state one: `pin {}: Type;`",
+                pin_name, pin_name
+            ));
+        }
+        *slot = Some(self.expect_identifier()?);
+        Ok(())
+    }
+
+    /// `pin <name>[[<count>]] [':' <TypeName>] ['=' <int>] [':' <TypeName>];`
+    /// — first-class component pin. Auto-numbered pins continue after the
+    /// highest explicit number (high-water rule). The class ascription
+    /// (E12, design record D6) may sit on either side of the number:
+    /// `pin vbus: Power;`, `pin p1 = 1;`, `pin p1 = 1: Nc;`.
+    ///
+    /// 2026-09-21 (E11): `pin gpio[8]: Io;` declares an ARRAY of pins. The
+    /// parser expands it eagerly into one PinDecl per element, named
+    /// `gpio[0]…gpio[7]` (KiCad pin names are arbitrary strings), numbered
+    /// consecutively from the high-water rule (or from the explicit number
+    /// upward). Arrays are declaration sugar — every downstream consumer
+    /// (BEAST, netlist, emitter) sees plain pins. Contracts address an
+    /// element as `inst.gpio[3]` (analysis::electronics resolve_pin).
     fn parse_pin_clause(
         &mut self,
         pins: &mut Vec<crate::ast::top::PinDecl>,
@@ -2425,78 +3017,89 @@ impl<'a> Parser<'a> {
     ) -> Result<(), SyntaxError> {
         self.pos += 1; // consume `pin`
         let pin_name = self.expect_identifier()?;
-        let number = if self.eat(&Token::Eq) {
-            let n = self.expect_integer()?;
-            self.eat(&Token::Semicolon);
-            if n < 1 {
-                return self.error_at_current(&format!(
-                    "pin '{}' number must be 1 or greater (KiCad pin numbers start at 1), got {}",
-                    pin_name, n
-                ));
-            }
-            n as u64
-        } else {
-            self.eat(&Token::Semicolon);
-            *high_water + 1
-        };
+        let count = self.parse_pin_count(&pin_name)?;
+        let mut class_ref: Option<String> = None;
+        if self.eat(&Token::Colon) {
+            self.parse_pin_class_ref(&pin_name, &mut class_ref)?;
+        }
+        let number = self.parse_pin_number(&pin_name, high_water)?;
+        if self.eat(&Token::Colon) {
+            self.parse_pin_class_ref(&pin_name, &mut class_ref)?;
+        }
+        self.eat(&Token::Semicolon);
         if pins.iter().any(|p| p.name == pin_name) {
             return self.error_at_current(&format!(
                 "duplicate pin '{}' in declaration body — pin names must be unique within a component",
                 pin_name
             ));
         }
-        *high_water = (*high_water).max(number);
-        pins.push(crate::ast::top::PinDecl {
-            name: pin_name,
-            number,
-            span: None,
-        });
+        // 2026-09-21 (E11): eager expansion — a single pin keeps its bare
+        // name; an array emits `name[0]…name[count-1]` with consecutive
+        // numbers so downstream passes stay array-blind.
+        for i in 0..count {
+            let element = if count == 1 {
+                pin_name.clone()
+            } else {
+                format!("{}[{}]", pin_name, i)
+            };
+            pins.push(crate::ast::top::PinDecl {
+                name: element,
+                number: number + i,
+                class_ref: class_ref.clone(),
+                span: None,
+            });
+        }
+        *high_water = (*high_water).max(number + count - 1);
         Ok(())
     }
 
-    fn at_rating_clause(&self) -> bool {
-        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "rating") {
-            return false;
-        }
-        matches!(self.peek_next(), Some(Token::Identifier(v)) if v == "any")
-            || matches!(
-                self.peek_next(),
-                Some(Token::Float(_)) | Some(Token::Integer(_))
-            )
-    }
-
-    /// `rating 0.25;` (max watts) | `rating any;` (declared unrated).
-    fn parse_rating_clause(&mut self) -> Result<crate::ast::top::Rating, SyntaxError> {
-        self.pos += 1; // consume `rating`
-        let r = match self.peek() {
-            Some(Token::Identifier(v)) if v == "any" => crate::ast::top::Rating::Any,
-            Some(Token::Float(f)) => crate::ast::top::Rating::Watts(*f),
-            Some(Token::Integer(n)) => crate::ast::top::Rating::Watts(*n as f64),
-            _ => {
-                return self
-                    .error_at_current("expected a power in watts (`rating 0.25;`) or `any` (`rating any;`)")
-            }
-        };
-        self.pos += 1;
-        self.eat(&Token::Semicolon);
-        Ok(r)
-    }
-
-    /// Is the current position an Electronics clause (`reference`/`tolerance`
+    /// Is the current position an Electronics clause (`reference`
     /// identifier followed by its clause payload, not a `:` slot)?
     fn at_reference_clause(&self) -> bool {
         matches!(self.peek(), Some(Token::Identifier(s)) if s == "reference")
             && matches!(self.peek_next(), Some(Token::String(_)))
     }
-    fn at_tolerance_clause(&self) -> bool {
-        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "tolerance") {
+
+    /// 2026-09-24 (quantities Phase 2): the `tolerance`/`rating` clauses are
+    /// retired — the envelope moved to the type-level `spec Tolerance`/
+    /// `spec Rating` metadata keys. Detect the retired spelling at the
+    /// clause site so the body scanners report what/why/fix instead of a
+    /// generic parse error.
+    fn at_retired_envelope_clause(&self) -> bool {
+        if !matches!(
+            self.peek(),
+            Some(Token::Identifier(s)) if s == "tolerance" || s == "rating"
+        ) {
             return false;
         }
+        // Payload-shaped only: `tolerance <n>;`/`tolerance any;` — a slot
+        // (`tolerance: Float;`) or other identifier use keeps its meaning.
         matches!(self.peek_next(), Some(Token::Identifier(v)) if v == "any")
             || matches!(
                 self.peek_next(),
                 Some(Token::Float(_)) | Some(Token::Integer(_))
             )
+    }
+
+    /// Report a retired `tolerance`/`rating` clause with the concrete
+    /// rewrite. The unit IS the physics: volts on Tolerance, watts on
+    /// Rating, or `any` to declare unrated.
+    fn reject_retired_envelope_clause(&self) -> Result<(), SyntaxError> {
+        let legacy = match self.peek() {
+            Some(Token::Identifier(s)) => s.clone(),
+            _ => return Ok(()),
+        };
+        let (key, example) = if legacy == "tolerance" {
+            ("Tolerance", "3.6V")
+        } else {
+            ("Rating", "0.25W")
+        };
+        self.error_at_current(&format!(
+            "the `{legacy}` clause was retired — the envelope is now a type-level spec key. \
+             why: one channel carries the physics (quantities Phase 2 doctrine). \
+             fix: replace `{legacy} …;` with `spec {key}: {example};` (value with an explicit \
+             ASCII unit) or `spec {key}: any;` (declared unrated)."
+        ))
     }
 
     /// `reference "R";` — schematic reference-designator prefix.
@@ -2512,34 +3115,6 @@ impl<'a> Parser<'a> {
         self.pos += 1;
         self.eat(&Token::Semicolon);
         Ok(s)
-    }
-
-    /// `tolerance 3.3;` (max volts) | `tolerance any;` (declared unrated).
-    fn parse_tolerance_clause(&mut self) -> Result<crate::ast::top::Tolerance, SyntaxError> {
-        self.pos += 1; // consume `tolerance`
-        let tol = match self.peek() {
-            Some(Token::Identifier(v)) if v == "any" => {
-                self.pos += 1;
-                crate::ast::top::Tolerance::Any
-            }
-            Some(Token::Float(f)) => {
-                let f = *f;
-                self.pos += 1;
-                crate::ast::top::Tolerance::Volts(f)
-            }
-            Some(Token::Integer(n)) => {
-                let n = *n;
-                self.pos += 1;
-                crate::ast::top::Tolerance::Volts(n as f64)
-            }
-            _ => {
-                return self.error_at_current(
-                    "expected a voltage (`tolerance 3.3;`) or `any` (`tolerance any;`)",
-                )
-            }
-        };
-        self.eat(&Token::Semicolon);
-        Ok(tol)
     }
 
     /// Mandatory-property enforcement (content-triggered): pins without a
@@ -2645,36 +3220,31 @@ impl<'a> Parser<'a> {
         let mut pins: Vec<crate::ast::top::PinDecl> = Vec::new();
         let mut pin_high_water: u64 = 0;
         let mut reference: Option<String> = None;
-        let mut tolerance: Option<crate::ast::top::Tolerance> = None;
-        let mut rating: Option<crate::ast::top::Rating> = None;
         let mut metadata = std::collections::HashMap::new();
         let mut operators: Vec<OperatorDef> = Vec::new();
         let mut atomic_slots: Vec<String> = Vec::new();
         let mut op_bindings: Vec<OperatorBinding> = Vec::new();
         let mut members: Vec<crate::ast::TopLevel> = Vec::new();
+        // 2026-09-22 (Slice C): static when laws declared in the type body.
+        let mut when_laws: Vec<crate::ast::top::WhenLawDecl> = Vec::new();
+        let mut modes: Vec<crate::ast::top::ModeDecl> = Vec::new();
         if self.eat(&Token::LBrace) {
+            // 2026-09-24 (SPST modes): component header clauses share one
+            // dispatch so the type-body scanner does not grow branchy again.
+        let mut targets = TypeBodyTargets {
+                when_laws: &mut when_laws,
+                modes: &mut modes,
+                pins: &mut pins,
+                pin_high_water: &mut pin_high_water,
+                reference: &mut reference,
+            };
             while !self.check(&Token::RBrace) && !self.is_at_end() {
-                // 2026-09-11 (B3): shared Electronics clauses — uniform on
-                // every declaration form.
-                if self.check(&Token::Pin) {
-                    self.parse_pin_clause(&mut pins, &mut pin_high_water)?;
+                if self.parse_component_header_clause(&mut targets)? {
                     continue;
                 }
-                if self.at_reference_clause() {
-                    reference = Some(self.parse_reference_clause()?);
-                    continue;
-                }
-                if self.at_tolerance_clause() {
-                    tolerance = Some(self.parse_tolerance_clause()?);
-                    continue;
-                }
-                if self.at_rating_clause() {
-                    rating = Some(self.parse_rating_clause()?);
-                    continue;
-                }
-                // !> key: value; or spec PascalCase: value; — metadata assignment
-                if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
-                    self.parse_metadata_clause(&mut metadata)?;
+                // !> key/value and spec metadata share the component-header
+                // dispatch so component-local law parameters keep their scope.
+                if self.parse_component_metadata_clause(&mut targets, &mut metadata)? {
                     continue;
                 }
                 let prefixes = self.parse_field_prefixes();
@@ -2714,8 +3284,6 @@ impl<'a> Parser<'a> {
                 slots,
                 pins,
                 reference: reference.clone(),
-                tolerance,
-            rating,
                 metadata,
                 projections: vec![],
                 bindings: vec![],
@@ -2723,6 +3291,8 @@ impl<'a> Parser<'a> {
                 op_bindings,
                 constraints: vec![],
                 members,
+                when_laws,
+                modes,
                 span: None,
             },
             span: None,
@@ -2974,12 +3544,22 @@ impl<'a> Parser<'a> {
         &mut self,
         metadata: &mut std::collections::HashMap<String, PropertyValue>,
     ) -> Result<(), SyntaxError> {
+        self.parse_metadata_clause_scoped(metadata, false)
+    }
+
+    /// Component bodies accept unknown PascalCase `spec` names as declared,
+    /// dimensioned law parameters. Other declaration forms stay closed.
+    fn parse_metadata_clause_scoped(
+        &mut self,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+        allow_law_parameter: bool,
+    ) -> Result<(), SyntaxError> {
         let is_spec = self.check(&Token::Spec);
         self.advance();
         let key = self.expect_identifier()?;
         self.expect(Token::Colon)?;
         if is_spec {
-            return self.parse_spec_value(&key, metadata);
+            return self.parse_spec_value(&key, metadata, allow_law_parameter);
         }
         match key.as_str() {
             "ctd" => {
@@ -3017,12 +3597,16 @@ impl<'a> Parser<'a> {
         &mut self,
         name: &str,
         metadata: &mut std::collections::HashMap<String, PropertyValue>,
+        allow_law_parameter: bool,
     ) -> Result<(), SyntaxError> {
         let key = match spec_name_to_key(name) {
             Some(k) => k,
+            None if allow_law_parameter => {
+                return self.parse_law_parameter_spec(name, metadata);
+            }
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Cols, Depth, Endian, Format, MaxBits, Rows",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadLabel, KicadType, MaxBits, NetVoltage, NoConnect, PullUp, Rating, Resistance, Return, Rows, Supply, Switchable, Tolerance",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -3046,25 +3630,52 @@ impl<'a> Parser<'a> {
                 let id = self.expect_identifier()?;
                 metadata.insert(key.into(), PropertyValue::Identifier(id));
             }
+            // 2026-09-21 (E12, design record D6): pin-class property keys.
+            "kicad_type" => {
+                let s = self.expect_string()?;
+                metadata.insert(key.into(), PropertyValue::String(s));
+            }
+            // 2026-09-21 (E12/E13): boolean spec keys — `true`/`false`
+            // lex as dedicated Bool tokens, not identifiers.
+            "no_connect" | "supply" | "return" | "decoupler" | "can_drive"
+            | "control" | "switchable" | "wired_and" | "pull_up" | "bistable" => {
+                return self.parse_boolean_spec(name, key, metadata);
+            }
+            // 2026-09-21 (E13): the stated convention value — a string
+            // today (presence check); value matching is a later slice.
+            "decouple" => {
+                let (si, dim) = self.parse_spec_quantity(crate::ast::QuantityDim::Farad)?;
+                metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: dim });
+            }
+            // 2026-09-24 (component laws): `spec Resistance: R;`/`Ohm;`
+            // declares a required parameter's dimension; a quantity such as
+            // `330R`/`4.7kOhm` states a value/default. ASCII unit forms only.
+            "resistance" => {
+                return self.parse_resistance_spec(key, metadata);
+            }
+            // 2026-09-24 (quantities Phase 2): the envelope specs — an
+            // explicit-unit quantity (`3.6V` / `0.25W`), a bare dimension
+            // declaration (`Volt` / `Watt`), or `any` (declared unrated).
+            "tolerance" | "rating" => {
+                let dim = if key == "tolerance" {
+                    crate::ast::QuantityDim::Volt
+                } else {
+                    crate::ast::QuantityDim::Watt
+                };
+                return self.parse_envelope_spec(name, key, dim, metadata);
+            }
+            // 2026-09-25 (E14b-7, rail-membership plan): the standard-net
+            // registry rows — an explicit-volt quantity (the expectation)
+            // and the emitter label spelling.
+            "net_voltage" | "kicad_label" => {
+                parse_net_registry_spec(self, key, metadata)?;
+            }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
             // (`spec Rows: R` on `Matrix<T, R, C>`). The reader resolves the
             // identifier via ResolvedType.type_params.
             "rows" | "cols" | "depth" => {
-                if matches!(self.peek(), Some(Token::Identifier(_))) {
-                    let id = self.expect_identifier()?;
-                    metadata.insert(key.into(), PropertyValue::Identifier(id));
-                } else {
-                    let n = self.expect_integer()?;
-                    if n < 0 {
-                        let msg = format!(
-                            "spec {} must be a non-negative integer, got {}",
-                            name, n
-                        );
-                        return self.error_at_current(&msg);
-                    }
-                    metadata.insert(key.into(), PropertyValue::Int(n));
-                }
+                return self.parse_shape_spec(name, key, metadata);
             }
             _ => {
                 let n = self.expect_integer()?;
@@ -3077,6 +3688,259 @@ impl<'a> Parser<'a> {
         }
         self.eat(&Token::Semicolon);
         Ok(())
+    }
+
+    /// Parse a component-law parameter: `spec Name: Dimension;` declares a
+    /// required parameter; `spec Name: quantity;` states a default. Unknown
+    /// names are allowed only in component bodies (2026-09-24 laws).
+    fn parse_law_parameter_spec(
+        &mut self,
+        name: &str,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<(), SyntaxError> {
+        let dimension = match self.peek() {
+            Some(Token::Identifier(dim)) if crate::parser::quantity::parse_unit_suffix(dim).is_some() => {
+                Some(dim.clone())
+            }
+            _ => None,
+        };
+        if let Some(dim) = dimension {
+            self.pos += 1;
+            let key = name.to_lowercase();
+            metadata.insert(key, PropertyValue::Identifier(dim.clone()));
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        let start = self.pos;
+        if let Some(value) = match self.peek() {
+            Some(Token::Float(value)) => Some(*value),
+            Some(Token::Integer(value)) => Some(*value as f64),
+            _ => None,
+        } {
+            self.pos += 1;
+            let Some(Token::Identifier(unit)) = self.peek() else {
+                return self.error_at_current(&format!(
+                    "spec {name} needs an explicit ASCII unit (e.g. `330R` or `0.7V`)"
+                ));
+            };
+            let Some(crate::parser::quantity::UnitSuffix::Explicit { scale, dim }) =
+                crate::parser::quantity::parse_unit_suffix(unit)
+            else {
+                return self.error_at_current(&format!(
+                    "'{unit}' is not an ASCII unit for spec {name}"
+                ));
+            };
+            self.pos += 1;
+            let key = name.to_lowercase();
+            metadata.insert(key, PropertyValue::Quantity { si: value * scale, dimension: dim });
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        self.pos = start;
+        self.error_at_current(&format!(
+            "spec {name} must declare a dimension (`V`, `A`, `R`, `Ohm`, or a full-word alias) or state a quantity (e.g. `0.7V`)"
+        ))
+    }
+
+    /// Parse a boolean spec key (`true`/`false` lex as dedicated tokens).
+    /// Helper keeps the growing spec dispatcher under the length gate.
+    fn parse_boolean_spec(
+        &mut self,
+        name: &str,
+        key: &str,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<(), SyntaxError> {
+        let v = match self.peek() {
+            Some(Token::BoolTrue) => Some(true),
+            Some(Token::BoolFalse) => Some(false),
+            _ => None,
+        };
+        let Some(b) = v else {
+            return self.error_at_current(&format!("spec {} must be `true` or `false`", name));
+        };
+        self.advance();
+        metadata.insert(key.into(), PropertyValue::Bool(b));
+        self.eat(&Token::Semicolon);
+        Ok(())
+    }
+
+    /// Parse the component-law resistance parameter: `R` or `Ohm` declares
+    /// the required dimension; an ASCII quantity (`330R`, `4.7kR`, `4k7`,
+    /// `4.7kOhm`) states a value. Helper keeps `parse_spec_value` flat and
+    /// the law channel's spelling rules in one place.
+    fn parse_resistance_spec(
+        &mut self,
+        key: &str,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<(), SyntaxError> {
+        let dimension = match self.peek() {
+            Some(Token::Identifier(unit)) if matches!(unit.as_str(), "R" | "Ohm") => {
+                Some(unit.clone())
+            }
+            _ => None,
+        };
+        if let Some(dim) = dimension {
+            self.pos += 1;
+            metadata.insert(key.into(), PropertyValue::Identifier(dim));
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        let number_pos = self.pos;
+        // The cursor is on the number; the unit identifier is adjacent.
+        // Diagnose a non-ASCII/wrong suffix before the generic quantity path.
+        if let Some((Token::Identifier(suffix), _)) = self.tokens.get(number_pos + 1) {
+            let resistance =
+                crate::parser::quantity::is_resistance_suffix(suffix);
+            if !resistance {
+                return self.error_at_current(&format!(
+                    "spec Resistance needs an ASCII ohm unit — write `{suffix}` as e.g. `330R`, `4k7`, or `4.7kOhm`"
+                ));
+            }
+        }
+        let (si, dim) = self.parse_spec_quantity(crate::ast::QuantityDim::Ohm)?;
+        if self.pos <= number_pos + 1 {
+            // The number is one token; an explicit unit adds a second. A
+            // bare number is ambiguous component physics.
+            return self.error_at_current(
+                "spec Resistance needs an explicit ASCII ohm unit (e.g. `330R`, `4k7`, or `4.7kOhm`)",
+            );
+        }
+        metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: dim });
+        self.eat(&Token::Semicolon);
+        Ok(())
+    }
+
+    /// Parse a matrix-shape spec value: an IDENTIFIER references a type
+    /// parameter (`spec Rows: R` on `Matrix<T, R, C>`); an INTEGER fixes the
+    /// shape. Extracted from `parse_spec_value` to keep it under the length
+    /// gate (2026-09-24 tolerance-rating-spec-migration plan).
+    fn parse_shape_spec(
+        &mut self,
+        name: &str,
+        key: &str,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<(), SyntaxError> {
+        if matches!(self.peek(), Some(Token::Identifier(_))) {
+            let id = self.expect_identifier()?;
+            metadata.insert(key.into(), PropertyValue::Identifier(id));
+        } else {
+            let n = self.expect_integer()?;
+            if n < 0 {
+                let msg = format!("spec {} must be a non-negative integer, got {}", name, n);
+                return self.error_at_current(&msg);
+            }
+            metadata.insert(key.into(), PropertyValue::Int(n));
+        }
+        self.eat(&Token::Semicolon);
+        Ok(())
+    }
+
+    /// Parse an envelope spec value: `any` (declared unrated), a bare
+    /// dimension declaration (`Volt`/`Watt`), or an explicit-unit quantity
+    /// (`3.6V`, `0.25W`, `250mW`). A bare number is rejected — the unit IS
+    /// the physics (quantities Phase 2, plan
+    /// 2026-09-24-tolerance-rating-spec-migration).
+    fn parse_envelope_spec(
+        &mut self,
+        name: &str,
+        key: &str,
+        dim: crate::ast::QuantityDim,
+        metadata: &mut std::collections::HashMap<String, PropertyValue>,
+    ) -> Result<(), SyntaxError> {
+        if matches!(self.peek(), Some(Token::Identifier(v)) if v == "any") {
+            self.pos += 1;
+            metadata.insert(key.into(), PropertyValue::Identifier("any".into()));
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        let (unit_hint, example) = match dim {
+            crate::ast::QuantityDim::Volt => ("volt", "3.6V"),
+            _ => ("watt", "0.25W"),
+        };
+        let wanted: &[&str] = if dim == crate::ast::QuantityDim::Volt {
+            &["V", "Volt"]
+        } else {
+            &["W", "Watt"]
+        };
+        if matches!(self.peek(), Some(Token::Identifier(v)) if wanted.contains(&v.as_str())) {
+            let dim_decl = self.expect_identifier()?;
+            metadata.insert(key.into(), PropertyValue::Identifier(dim_decl));
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        let number_pos = self.pos;
+        let (si, resolved) = self.parse_spec_quantity(dim)?;
+        if self.pos <= number_pos + 1 {
+            return self.error_at_current(&format!(
+                "spec {name} needs an explicit ASCII {unit_hint} unit (e.g. `{example}`) or `any` to declare it unrated",
+            ));
+        }
+        metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: resolved });
+        self.eat(&Token::Semicolon);
+        Ok(())
+    }
+
+    /// Parse a bare quantity spec value — a number with an optional unit
+    /// suffix (`2mA`, `3.3V`, `100n`, `4k7`, `330R`). The key's dimension
+    /// supplies the base unit when the suffix omits it (`100n` on a Farad
+    /// key is 100 nF); a suffix whose explicit base conflicts with the
+    /// key's dimension is a hard error (the doctrine: quantities are
+    /// physics, written bare, dimension-checked). Returns SI + the
+    /// resolved dimension.
+    fn parse_spec_quantity(
+        &mut self,
+        dim: crate::ast::QuantityDim,
+    ) -> Result<(f64, crate::ast::QuantityDim), SyntaxError> {
+        let value = match self.peek() {
+            Some(Token::Float(f)) => {
+                let v = *f;
+                self.pos += 1;
+                v
+            }
+            Some(Token::Integer(n)) => {
+                let v = *n as f64;
+                self.pos += 1;
+                v
+            }
+            _ => {
+                return self.error_at_current(
+                    "expected a quantity (a number with an optional unit suffix, e.g. `2mA` or `100n`)",
+                )
+            }
+        };
+        // An identifier after the number MUST be a unit suffix — a typo is
+        // an error, never a silent bare number.
+        let suffix = match self.peek() {
+            Some(Token::Identifier(s)) => match parse_unit_suffix(s) {
+                Some(u) => {
+                    self.pos += 1;
+                    u
+                }
+                None => {
+                    return self.error_at_current(&format!(
+                        "'{}' is not a unit suffix — write a quantity like `2mA`, `3.3V`, `100n`, or `4k7`, or the bare base unit",
+                        s
+                    ))
+                }
+            },
+            _ => return Ok((value, dim)),
+        };
+        let (si, resolved) = match suffix {
+            UnitSuffix::Explicit { scale, dim: sdim } => {
+                if sdim != dim {
+                    return self.error_at_current(&format!(
+                        "spec value is in {} but the key expects {} — write the quantity in {}",
+                        dimension_name(sdim),
+                        dimension_name(dim),
+                        dimension_name(dim)
+                    ));
+                }
+                (value * scale, sdim)
+            }
+            UnitSuffix::BarePrefix { scale } => (value * scale, dim),
+            UnitSuffix::Fraction { scale, frac } => ((value + frac) * scale, dim),
+        };
+        Ok((si, resolved))
     }
 
     /// 2026-07-14: Parse a `struct Name { fields }` declaration as a TypeDef.
@@ -3131,8 +3995,16 @@ impl<'a> Parser<'a> {
         let mut atomic_slots: Vec<String> = Vec::new();
         let mut operators: Vec<OperatorDef> = Vec::new();
         let mut op_bindings: Vec<OperatorBinding> = Vec::new();
+        // 2026-09-22 (Slice C): static when laws in the obj body.
+        let mut when_laws: Vec<crate::ast::top::WhenLawDecl> = Vec::new();
+        let mut modes: Vec<crate::ast::top::ModeDecl> = Vec::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
+                // 2026-09-24 (SPST modes): when laws and named modes share
+                // one component-law dispatch here too.
+                if self.parse_component_law_clause(&mut when_laws, &mut modes)? {
+                    continue;
+                }
                 // !> key: value; or spec PascalCase: value; — metadata.
                 if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
                     self.parse_metadata_clause(&mut metadata)?;
@@ -3184,7 +4056,7 @@ impl<'a> Parser<'a> {
             ports_in, ports_out,
             bit_range: None, span: None, coll, seq,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, tolerance: None, rating: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, span: None,
+                slots, pins: vec![], reference: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, when_laws, modes, span: None,
             },
         }))
     }
@@ -3468,9 +4340,9 @@ impl<'a> Parser<'a> {
             ports_in: vec![], ports_out: vec![],
             bit_range: None, span: None, coll: false, seq: false,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, tolerance: None, rating: None,
+                slots, pins: vec![], reference: None,
                 metadata: std::collections::HashMap::new(),
-                projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], span: None,
+                projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
             },
         }))
     }
@@ -3764,7 +4636,26 @@ fn record_atomic_fields(
     );
 }
 
-fn spec_name_to_key(name: &str) -> Option<&'static str> {
+/// 2026-09-25 (E14b-7, rail-membership plan): the standard-net registry
+/// values — `spec NetVoltage: <volts>` (the membership expectation) and
+/// `spec KicadLabel: "..."` (the emitter spelling). Rows are ordinary
+/// type-body specs; the membership pass reads the properties generically.
+fn parse_net_registry_spec(
+    parser: &mut Parser,
+    key: &str,
+    metadata: &mut std::collections::HashMap<String, PropertyValue>,
+) -> Result<(), SyntaxError> {
+    if key == "net_voltage" {
+        let (si, dim) = parser.parse_spec_quantity(crate::ast::QuantityDim::Volt)?;
+        metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: dim });
+    } else {
+        let s = parser.expect_string()?;
+        metadata.insert(key.into(), PropertyValue::String(s));
+    }
+    Ok(())
+}
+
+pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
     match name {
         "Alignment" => Some("alignment"),
         "Bits" => Some("bits"),
@@ -3790,8 +4681,59 @@ fn spec_name_to_key(name: &str) -> Option<&'static str> {
         "Rows" => Some("rows"),
         "Cols" => Some("cols"),
         "Depth" => Some("depth"),
+        // 2026-09-21 (E12, design record D6): pin-class property keys —
+        // declared on the class fundamentals in std/electronics.bv and
+        // consumed generically by the analysis + KiCad emitter. The KEY
+        // spellings are metadata plumbing (like the layout keys above);
+        // the class NAMES live only in stdlib — the compiler never sees
+        // `Power` or `Nc` in Rust.
+        "KicadType" => Some("kicad_type"),
+        "NoConnect" => Some("no_connect"),
+        // 2026-09-21 (E13, design record D5): decoupling-convention keys.
+        // `Supply`/`Return` mark the rail pins of a class; `Decouple`
+        // states the convention on a component type; `Decoupler` marks a
+        // part that satisfies it. All consumed generically by analysis.
+        "Supply" => Some("supply"),
+        "Return" => Some("return"),
+        "CanDrive" => Some("can_drive"),
+        "Control" => Some("control"),
+        "Switchable" => Some("switchable"),
+        "WiredAnd" => Some("wired_and"),
+        "Decouple" => Some("decouple"),
+        "Decoupler" => Some("decoupler"),
+        // 2026-09-23 (E14b slice 1, design record D5 pattern): `PullUp`
+        // marks a two-pin part the pull-up forcing pass may consume when a
+        // min-voltage obligation lands on a released (WiredAnd) net. Same
+        // property interface as `Decoupler` — the compiler knows no names.
+        "PullUp" => Some("pull_up"),
+        // 2026-09-24 (component laws): the generic ohmic parameter. The name
+        // is a physics dimension channel, not a component catalog entry.
+        "Resistance" => Some("resistance"),
+        // 2026-09-24 (multi-state laws): authority for a component to keep
+        // multiple consistent DC operating states.
+        "Bistable" => Some("bistable"),
+        // 2026-09-24 (quantities Phase 2, plan
+        // 2026-09-24-tolerance-rating-spec-migration): the two envelope
+        // specs — max volts a pin tolerates / max watts a part dissipates.
+        // Former `tolerance`/`rating` clauses; explicit-unit quantities or
+        // `any`.
+        "Tolerance" => Some("tolerance"),
+        "Rating" => Some("rating"),
+        // 2026-09-25 (E14b-7, rail-membership plan): the standard-net
+        // registry — `spec NetVoltage` on a type makes it a `stdnet<Name>`
+        // row (the expected rail voltage), `spec KicadLabel` the emitter
+        // spelling. Read generically by the membership pass; the compiler
+        // never reads the NAME as physics (Rule 15).
+        "NetVoltage" => Some("net_voltage"),
+        "KicadLabel" => Some("kicad_label"),
         _ => None,
     }
+}
+
+/// One statement inside a fab block (2026-09-23 fab plan).
+enum FabItem {
+    Board((f64, f64)),
+    Place(crate::ast::FabPlacement),
 }
 
 #[cfg(test)]
@@ -3909,6 +4851,35 @@ mod tests {
     }
 
     #[test]
+    fn test_fab_block_parses() {
+        // 2026-09-23 (fab plan): the physical-layout section — board
+        // outline + pinned placements; lengths in mm, rotation optional.
+        let src = "fab { board 30mm x 20mm; place u1 @ (20mm, 10mm); \
+                    place j1 @ (2mm, 10mm) rot 90; }";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let items = p.parse_program().unwrap();
+        assert_eq!(items.len(), 1, "one fab block");
+        let crate::ast::TopLevel::FabBlock(f) = &items[0] else {
+            panic!("expected FabBlock, got {:?}", items[0]);
+        };
+        assert_eq!(f.board, (30.0, 20.0));
+        assert_eq!(f.placements.len(), 2);
+        assert_eq!(f.placements[0].inst, "u1");
+        assert!((f.placements[0].x - 20.0).abs() < 1e-9);
+        assert!((f.placements[0].y - 10.0).abs() < 1e-9);
+        assert_eq!(f.placements[0].rot, 0.0);
+        assert_eq!(f.placements[1].inst, "j1");
+        assert_eq!(f.placements[1].rot, 90.0);
+    }
+
+    #[test]
+    fn test_fab_block_requires_board() {
+        let err = parse_top("fab { place u1 @ (1mm, 2mm); }").unwrap_err();
+        assert!(format!("{}", err).contains("board"), "{}", err);
+    }
+
+    #[test]
     fn test_spec_in_type_body() {
         // 2026-08-13 (layout-keywords plan): `spec Bits: 4` maps to the
         // lowercase metadata key `bits` (same read path as `!> bits`).
@@ -3918,6 +4889,250 @@ mod tests {
             Some(crate::ast::PropertyValue::Int(4)) => {}
             other => panic!("expected bits=4, got {:?}", other),
         }
+    }
+
+    /// Assert the type's `decouple` spec is a Farad quantity near `si`.
+    fn assert_decouple_farad(td: &crate::ast::TypeDef, si: f64) {
+        match td.body.metadata.get("decouple") {
+            Some(crate::ast::PropertyValue::Quantity { si: got, dimension }) => {
+                assert!(
+                    (*got - si).abs() < 1e-9,
+                    "decouple si = {got}, expected {si}"
+                );
+                assert_eq!(*dimension, crate::ast::QuantityDim::Farad);
+            }
+            other => panic!("expected a Farad quantity, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_spec_quantity_bare_prefix_takes_key_dimension() {
+        // `100n` on a Farad key is 100 nF — the bare prefix resolves to
+        // the key's dimension (the quantities doctrine: quantities are
+        // physics, written bare).
+        let tl = parse_top("type C { spec Decouple: 100n; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 100e-9);
+    }
+
+    #[test]
+    fn test_spec_quantity_prefix_and_base() {
+        let tl = parse_top("type C { spec Decouple: 10uF; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 10e-6);
+        let tl = parse_top("type C { spec Decouple: 2.2uF; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 2.2e-6);
+    }
+
+    #[test]
+    fn test_spec_quantity_bare_number_is_base_unit() {
+        // A bare number is the base unit of the key's dimension — 100
+        // farads (valid, if odd).
+        let tl = parse_top("type C { spec Decouple: 100; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 100.0);
+    }
+
+    #[test]
+    fn test_spec_quantity_e_series_fraction() {
+        // `4k7` — the E-series fraction: 4.7 kilo = 4700.
+        let tl = parse_top("type C { spec Decouple: 4k7; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_decouple_farad(&td, 4700.0);
+    }
+
+    #[test]
+    fn test_spec_quantity_dimension_conflict_rejected() {
+        // `spec Decouple: 3.3V` — a voltage on a Farad key is a hard error,
+        // never a silent reinterpretation.
+        let err = parse_top("type C { spec Decouple: 3.3V; };").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("volts") && msg.contains("farads"),
+            "dimension-conflict message names both: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_spec_quantity_bad_suffix_rejected() {
+        let err = parse_top("type C { spec Decouple: 100banana; };").unwrap_err();
+        assert!(format!("{}", err).contains("unit suffix"), "{}", err);
+    }
+
+    #[test]
+    fn test_spec_quantity_length_units() {
+        // 2026-09-23 (fab plan): bare `m` (metre), `mm`, `cm` resolve to
+        // the Length dimension in SI (metres); `mA` must still resolve via
+        // the prefix path (the `m` length addition must not break it).
+        use crate::parser::quantity::{parse_unit_suffix, UnitSuffix};
+        let expect = |suffix: &str, si: f64, dim: crate::ast::QuantityDim| {
+            match parse_unit_suffix(suffix) {
+                Some(UnitSuffix::Explicit { scale, dim: got }) => {
+                    assert_eq!(got, dim, "suffix {suffix}");
+                    assert!((scale - si).abs() < 1e-12, "suffix {suffix}: {scale} vs {si}");
+                }
+                other => panic!("suffix {suffix}: expected Explicit, got {other:?}"),
+            }
+        };
+        expect("m", 1.0, crate::ast::QuantityDim::Length);
+        expect("mm", 1e-3, crate::ast::QuantityDim::Length);
+        expect("cm", 1e-2, crate::ast::QuantityDim::Length);
+        expect("mA", 1e-3, crate::ast::QuantityDim::Amp);
+        assert!(parse_unit_suffix("mmA").is_none(), "double prefix is invalid");
+    }
+
+    #[test]
+    fn test_spec_resistance_dimension_and_value() {
+        // 2026-09-24 (ASCII units): compact and full-word forms are equally
+        // valid; the dimension declaration may use `R` or `Ohm`.
+        for dimension in ["R", "Ohm"] {
+            let src = format!(
+                "type R {{ pin a; pin b; reference \"R\"; spec Resistance: {dimension}; }};"
+            );
+            let tl = parse_top(&src).unwrap();
+            let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+            assert_eq!(
+                td.body.metadata.get("resistance"),
+                Some(&crate::ast::PropertyValue::Identifier(dimension.into()))
+            );
+        }
+
+        for (value, expected) in [("330R", 330.0), ("4.7kR", 4700.0), ("4k7", 4700.0), ("4.7kOhm", 4700.0)] {
+            let src = format!(
+                "type R {{ pin a; pin b; reference \"R\"; spec Resistance: {value}; }};"
+            );
+            let tl = parse_top(&src).unwrap();
+            let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+            match td.body.metadata.get("resistance") {
+                Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                    assert_eq!(*dimension, crate::ast::QuantityDim::Ohm);
+                    assert!((si - expected).abs() < 1e-9, "{value}: {si}");
+                }
+                other => panic!("expected a {value} quantity, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_spec_resistance_requires_explicit_ascii_unit() {
+        // Component physics is not dimensionless. ASCII compact units are
+        // valid; non-ASCII symbols are not.
+        let err = parse_top(
+            "type R { pin a; pin b; reference \"R\"; spec Resistance: 330; };",
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("explicit ASCII ohm unit"),
+            "bare number: {err}"
+        );
+        let err = parse_top(
+            "type R { pin a; pin b; reference \"R\"; spec Resistance: 330Ω; };",
+        )
+        .unwrap_err();
+        assert!(
+            !format!("{err}").contains("internal"),
+            "Ω must be rejected at the quantity surface: {err}"
+        );
+    }
+
+    #[test]
+    fn test_component_literal_spec_field_is_separate_from_annotations() {
+        let src = r#"
+            type R { pin a; pin b; reference "R"; spec Resistance: Ohm; };
+            let r1: R = R { value: "330R"; spec Resistance: 330Ohm; };
+        "#;
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let items = p.parse_program().unwrap();
+        let crate::ast::TopLevel::Statement(stmt) = &items[1] else {
+            panic!("expected instance let")
+        };
+        let crate::ast::Statement::Let { expr, .. } = stmt.as_ref() else {
+            panic!("expected let")
+        };
+        let Some(expr) = expr else { panic!("expected let initializer") };
+        let crate::ast::Expr::StructLiteral { fields, specs, .. } = expr else {
+            panic!("expected struct literal")
+        };
+        assert!(fields.iter().any(|(n, _)| n == "value"));
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].0, "Resistance");
+        assert!(matches!(specs[0].1, crate::ast::Expr::UnitLiteral { .. }));
+    }
+
+    #[test]
+    fn test_component_resistance_spec_accepts_compact_ascii() {
+        // The BOM label and the physics channel may both use `R`; only
+        // non-ASCII symbols are excluded.
+        let src = r#"
+            type R { pin a; pin b; reference "R"; spec Resistance: R; };
+            let r1: R = R { value: "330R"; spec Resistance: 330R; };
+        "#;
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let items = p.parse_program().unwrap();
+        let crate::ast::TopLevel::Statement(stmt) = &items[1] else {
+            panic!("expected instance let")
+        };
+        let crate::ast::Statement::Let { expr, .. } = stmt.as_ref() else {
+            panic!("expected let")
+        };
+        let Some(crate::ast::Expr::StructLiteral { specs, .. }) = expr else {
+            panic!("expected struct literal")
+        };
+        assert!(matches!(specs[0].1, crate::ast::Expr::UnitLiteral { .. }));
+    }
+
+    #[test]
+    fn test_component_law_parameters_accept_generic_names() {
+        // Law parameters are not compiler catalog keys: any PascalCase name
+        // is legal once a component declares its dimension.
+        let tl = parse_top(
+            "type Led { pin a; pin k; reference \"D\"; spec Tolerance: any; \
+             spec ForwardVoltage: Volt; spec DynamicResistance: Ohm; };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert_eq!(
+            td.body.metadata.get("forwardvoltage"),
+            Some(&crate::ast::PropertyValue::Identifier("Volt".into()))
+        );
+        assert_eq!(
+            td.body.metadata.get("dynamicresistance"),
+            Some(&crate::ast::PropertyValue::Identifier("Ohm".into()))
+        );
+
+        let tl = parse_top(
+            "type Led { pin a; pin k; reference \"D\"; spec Tolerance: any; \
+             spec ForwardVoltage: 1.8Volt; };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        match td.body.metadata.get("forwardvoltage") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                assert_eq!(*dimension, crate::ast::QuantityDim::Volt);
+                assert!((si - 1.8).abs() < 1e-12);
+            }
+            other => panic!("expected 1.8Volt default, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_component_modes_parse_contextually() {
+        // 2026-09-24 (SPST modes): `mode` is contextual and its block is a
+        // named finite-state authority, not a slot declaration.
+        let tl = parse_top(
+            "type Spst { pin a; pin b; reference \"SW\"; spec Tolerance: any; spec Rating: any; \
+             mode closed { a.voltage == b.voltage; a.current + b.current == 0; } \
+             mode open { a.current == 0Amp; b.current == 0Amp; } };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let names: Vec<_> = td.body.modes.iter().map(|mode| mode.name.as_str()).collect();
+        assert_eq!(names, ["closed", "open"]);
+        assert_eq!(td.body.modes[0].facts.len(), 2);
+        assert_eq!(td.body.modes[1].facts.len(), 2);
     }
 
     #[test]
@@ -4192,6 +5407,86 @@ mod tests {
     }
 
     #[test]
+    // ── 2026-09-24 (quantities Phase 2): Tolerance/Rating specs ─────────
+
+    #[test]
+    fn test_spec_tolerance_rating_parse_as_quantities() {
+        let tl = parse_top(
+            "type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6V; spec Rating: 0.25W; };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
+        match td.body.metadata.get("tolerance") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                assert_eq!(*dimension, crate::ast::QuantityDim::Volt);
+                assert!((si - 3.6).abs() < 1e-9);
+            }
+            other => panic!("expected 3.6V quantity, got {other:?}"),
+        }
+        match td.body.metadata.get("rating") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                assert_eq!(*dimension, crate::ast::QuantityDim::Watt);
+                assert!((si - 0.25).abs() < 1e-9);
+            }
+            other => panic!("expected 0.25W quantity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_spec_tolerance_rating_any_declares_unrated() {
+        let tl = parse_top(
+            "type R { pin a; pin b; reference \"R\"; spec Tolerance: any; spec Rating: any; };",
+        )
+        .unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
+        assert!(
+            matches!(td.body.metadata.get("tolerance"), Some(crate::ast::PropertyValue::Identifier(v)) if v == "any"),
+            "any → declared unrated"
+        );
+        assert!(
+            matches!(td.body.metadata.get("rating"), Some(crate::ast::PropertyValue::Identifier(v)) if v == "any"),
+            "any → declared unrated"
+        );
+    }
+
+    #[test]
+    fn test_spec_envelope_rejects_bare_number_and_wrong_dimension() {
+        let err = parse_top(
+            "type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6; };",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("explicit ASCII volt unit"),
+            "bare number needs the unit: {err}"
+        );
+        let err = parse_top(
+            "type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6Ohm; };",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("key expects volts"),
+            "dimension conflict names both sides: {err}"
+        );
+    }
+
+    #[test]
+    fn test_instance_literal_rejects_envelope_specs() {
+        // The envelopes are type-level; an instance override would be a
+        // silent no-op the analysis never reads — refuse at parse time.
+        let err = parse_top(
+            "let d: D = D { spec Tolerance: 3.6V; };",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("type-level envelope"),
+            "instance envelope must name the type body: {err}"
+        );
+    }
+
     fn test_spec_unknown_name_rejected() {
         // 2026-08-13: unknown spec names are hard errors — never silent.
         let err = parse_top("type W: Int { spec Flurb: 3; };").unwrap_err();
@@ -4219,6 +5514,39 @@ mod tests {
         let pins = parse_pins("type J { pin vcc = 1; pin gnd = 2; reference \"J\"; };");
         assert_eq!((pins[0].name.as_str(), pins[0].number), ("vcc", 1));
         assert_eq!((pins[1].name.as_str(), pins[1].number), ("gnd", 2));
+    }
+
+    #[test]
+    fn test_pin_array_expands_elements() {
+        // 2026-09-21 (E11): `pin gpio[3]` expands to gpio[0]…gpio[2] with
+        // consecutive numbers; the high-water rule continues after the
+        // array; the class ascription copies to every element.
+        let pins = parse_pins(
+            "type U { pin en = 7; pin gpio[3]: Nc; pin a; reference \"U\"; };",
+        );
+        assert_eq!(pins.len(), 5);
+        assert_eq!((pins[0].name.as_str(), pins[0].number), ("en", 7));
+        assert_eq!(pins[1].name, "gpio[0]");
+        assert_eq!(pins[1].number, 8);
+        assert_eq!(pins[1].class_ref.as_deref(), Some("Nc"));
+        assert_eq!(pins[3].name, "gpio[2]");
+        assert_eq!(pins[3].number, 10);
+        assert_eq!(pins[4].name, "a");
+        assert_eq!(pins[4].number, 11);
+    }
+
+    #[test]
+    fn test_pin_class_ascription_both_positions() {
+        // 2026-09-21 (E12): the class fundamental name is stored verbatim —
+        // resolution against declared types happens in analysis, never here
+        // (design record D6: the parser carries no class vocabulary).
+        let pins = parse_pins(
+            "type C { pin vbus: Power; pin p2 = 3: Nc; pin plain; reference \"C\"; };",
+        );
+        assert_eq!(pins[0].class_ref.as_deref(), Some("Power"));
+        assert_eq!(pins[1].class_ref.as_deref(), Some("Nc"));
+        assert_eq!(pins[1].number, 3);
+        assert_eq!(pins[2].class_ref, None);
     }
 
     #[test]
@@ -4432,22 +5760,37 @@ mod tests {
     // ── 2026-09-11 (B3): Electronics property clauses ────────────────
 
     #[test]
-    fn test_reference_and_tolerance_clauses_on_type() {
-        let tl = parse_top("type Led { pin a; pin k; reference \"D\"; tolerance 3.6; };").unwrap();
+    fn test_reference_clause_on_type() {
+        let tl = parse_top("type Led { pin a; pin k; reference \"D\"; spec Tolerance: 3.6V; };")
+            .unwrap();
         let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
         assert_eq!(td.body.reference.as_deref(), Some("D"));
         assert_eq!(td.body.pins.len(), 2);
-        match &td.body.tolerance {
-            Some(crate::ast::top::Tolerance::Volts(v)) => assert!((v - 3.6).abs() < 1e-9),
-            other => panic!("expected Volts(3.6), got {other:?}"),
+        match td.body.metadata.get("tolerance") {
+            Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
+                assert_eq!(*dimension, crate::ast::QuantityDim::Volt);
+                assert!((si - 3.6).abs() < 1e-9);
+            }
+            other => panic!("expected 3.6V quantity, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_tolerance_any_clause() {
-        let tl = parse_top("type J { pin p1; reference \"J\"; tolerance any; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
-        assert!(matches!(td.body.tolerance, Some(crate::ast::top::Tolerance::Any)));
+    fn test_retired_tolerance_clause_reports_rewrite() {
+        // 2026-09-24 (quantities Phase 2): the clause is gone; the error
+        // names the replacement spelling with an explicit unit.
+        let err =
+            parse_top("type J { pin p1; reference \"J\"; tolerance any; };").unwrap_err().to_string();
+        assert!(err.contains("retired"), "{err}");
+        assert!(err.contains("spec Tolerance: any;"), "{err}");
+    }
+
+    #[test]
+    fn test_retired_rating_clause_reports_rewrite() {
+        let err =
+            parse_top("type R { pin a; pin b; reference \"R\"; rating 0.25; };").unwrap_err().to_string();
+        assert!(err.contains("retired"), "{err}");
+        assert!(err.contains("spec Rating: 0.25W;"), "{err}");
     }
 
     #[test]
@@ -6058,6 +7401,221 @@ fn bootstrap_node_rejects_pre_post_double_form() {
         msg.contains("single handoff postcondition"),
         "{msg}"
     );
+}
+
+// ── 2026-09-22 (plan 2026-09-22-core-chain-into): chain/into ─────────────
+
+#[cfg(test)]
+mod chain_tests {
+    use crate::lexer::tokenize;
+    use crate::parser::Parser;
+
+    fn parse_prog(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_program().expect("parse failed")
+    }
+
+    #[test]
+    fn chain_desugars_to_nodes_with_accumulated_guards() {
+    // The D9 fixture, software-shaped: two sign-offs → three nodes, each
+    // later node guarded by the base AND all prior sign-offs.
+    let src = "chain power_up [dc_present] {\n\
+               \x20   u_buck5.en = high;\n\
+               \x20   into u_buck5.pgood;\n\
+               \x20   u_buck3.en = high;\n\
+               \x20   into u_buck3.pgood;\n\
+               \x20   u_core.en = high;\n\
+               };\n";
+    let items = parse_prog(src);
+    assert_eq!(items.len(), 3, "3 steps → 3 nodes, got {:?}", items);
+    let crate::ast::TopLevel::Transaction(t1) = &items[0] else {
+        panic!("step 1 must be a transaction");
+    };
+    assert_eq!(t1.name, "power_up_1");
+    assert!(t1.is_reactive, "chain steps are reactive nodes");
+    // pre = base guard; post = true
+    let crate::ast::Expr::Identifier(b) = &t1.contract.pre_condition else {
+        panic!("step 1 pre should be the base guard, got {:?}", t1.contract.pre_condition);
+    };
+    assert_eq!(b, "dc_present");
+    assert!(matches!(t1.contract.post_condition, crate::ast::Expr::Bool(true)));
+    assert_eq!(t1.body.len(), 1, "one action per step");
+
+    let crate::ast::TopLevel::Transaction(t2) = &items[1] else { panic!("step 2") };
+    assert_eq!(t2.name, "power_up_2");
+    // pre = dc_present && u_buck5.pgood
+    let crate::ast::Expr::BinaryOp(kind, l, r) = &t2.contract.pre_condition else {
+        panic!("step 2 pre should be a conjunction, got {:?}", t2.contract.pre_condition);
+    };
+    assert_eq!(*kind, crate::ast::BinaryOpKind::And);
+    let crate::ast::Expr::Identifier(b2) = l.as_ref() else { panic!("step2 pre lhs") };
+    assert_eq!(b2, "dc_present");
+    let crate::ast::Expr::Field(base2, f2) = r.as_ref() else { panic!("step2 pre rhs") };
+    let crate::ast::Expr::Identifier(i2) = base2.as_ref() else { panic!("step2 pre rhs base") };
+    assert_eq!(i2, "u_buck5");
+    assert_eq!(f2, "pgood");
+
+    let crate::ast::TopLevel::Transaction(t3) = &items[2] else { panic!("step 3") };
+    assert_eq!(t3.name, "power_up_3");
+    let crate::ast::Expr::BinaryOp(_, l3, r3) = &t3.contract.pre_condition else {
+        panic!("step 3 pre should be a conjunction");
+    };
+    let crate::ast::Expr::BinaryOp(_, _, _) = l3.as_ref() else {
+        panic!("step 3 pre lhs should be the nested conjunction");
+    };
+    let crate::ast::Expr::Field(base3, f3) = r3.as_ref() else { panic!("step3 pre rhs") };
+    let crate::ast::Expr::Identifier(i3) = base3.as_ref() else { panic!("step3 pre rhs base") };
+    assert_eq!(i3, "u_buck3");
+    assert_eq!(f3, "pgood");
+}
+
+#[test]
+fn chain_base_guard_is_optional() {
+    let src = "chain boot { start(); into ready; run(); };\n";
+    let items = parse_prog(src);
+    assert_eq!(items.len(), 2);
+    let crate::ast::TopLevel::Transaction(t1) = &items[0] else { panic!("step 1") };
+    assert!(
+        matches!(t1.contract.pre_condition, crate::ast::Expr::Bool(true)),
+        "omitted base guard defaults to true, got {:?}",
+        t1.contract.pre_condition
+    );
+}
+
+#[test]
+fn chain_step_actions_may_be_guarded_statements() {
+    // A `when` action inside a step desugars naturally — it is just a
+    // statement in the step's node body.
+    let src = "chain on [armed] {\n\
+               \x20   when door_open { unlock(); };\n\
+               \x20   into unlatched;\n\
+               \x20   release();\n\
+               };\n";
+    let items = parse_prog(src);
+    assert_eq!(items.len(), 2);
+    let crate::ast::TopLevel::Transaction(t1) = &items[0] else { panic!("step 1") };
+    assert!(
+        matches!(&t1.body[0], crate::ast::Statement::Guarded(_, _)),
+        "a when-guarded action stays a guarded statement in the node body"
+    );
+}
+
+#[test]
+fn chain_rejects_trailing_signoff() {
+    let src = "chain bad [g] { a(); into done; };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = Parser::new(tokens, src);
+    let err = p.parse_program().unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("ends in `into ...;`"),
+        "expected the trailing-sign-off error, got: {msg}"
+    );
+}
+
+#[test]
+fn chain_rejects_empty_body() {
+    let src = "chain empty [g] { };\n";
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = Parser::new(tokens, src);
+    let err = p.parse_program().unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("no actions"),
+        "expected the empty-chain error, got: {msg}"
+    );
+}
+}
+
+// ── 2026-09-22 (D16 p3b): open disconnection ─────────────────────────────
+
+#[cfg(test)]
+mod open_tests {
+    use crate::lexer::tokenize;
+    use crate::parser::Parser;
+
+    fn parse_prog(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_program().expect("parse failed")
+    }
+
+    #[test]
+    fn open_parses() {
+        let src = "node n [true] { open u1.a, u2.b; };\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::Transaction(t) = &items[0] else {
+            panic!("expected a node");
+        };
+        assert!(
+            matches!(
+                &t.body[0],
+                crate::ast::Statement::Open(l, r)
+                    if matches!(l.as_ref(), crate::ast::Expr::Field(..))
+                        && matches!(r.as_ref(), crate::ast::Expr::Field(..))
+            ),
+            "open must parse to Statement::Open with two pins, got {:?}",
+            t.body[0]
+        );
+    }
+}
+
+// ── 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
+// Slice B): unpop / shortcircuit participation facts ─────────────────────
+
+#[cfg(test)]
+mod participation_tests {
+    use crate::lexer::tokenize;
+    use crate::parser::Parser;
+
+    fn parse_prog(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_program().expect("parse failed")
+    }
+
+    #[test]
+    fn unpop_parses() {
+        let src = "unpop c_dnp;\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::Unpop(d) = &items[0] else {
+            panic!("expected Unpop, got {:?}", items[0]);
+        };
+        assert_eq!(d.instance, "c_dnp");
+        assert!(d.ty.is_none());
+    }
+
+    #[test]
+    fn unpop_with_type_parses() {
+        let src = "unpop wire: Wire;\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::Unpop(d) = &items[0] else {
+            panic!("expected Unpop");
+        };
+        assert_eq!(d.instance, "wire");
+        assert!(d.ty.is_some());
+    }
+
+    #[test]
+    fn shortcircuit_unpop_parses() {
+        let src = "shortcircuit unpop wire: Wire;\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::ShortCircuit(d) = &items[0] else {
+            panic!("expected ShortCircuit, got {:?}", items[0]);
+        };
+        assert_eq!(d.instance, "wire");
+    }
+
+    #[test]
+    fn shortcircuit_populated_parses() {
+        let src = "shortcircuit r1;\n";
+        let items = parse_prog(src);
+        let crate::ast::TopLevel::ShortCircuit(d) = &items[0] else {
+            panic!("expected ShortCircuit");
+        };
+        assert_eq!(d.instance, "r1");
+    }
 }
 
 #[test]

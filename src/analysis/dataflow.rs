@@ -164,9 +164,6 @@ impl<'a> DataflowAnalyzer<'a> {
                 self.extract_ids_recursive(start, ids);
                 self.extract_ids_recursive(end, ids);
             }
-            Expr::Named { inner, .. } => {
-                self.extract_ids_recursive(inner, ids);
-            }
             Expr::UnitLiteral { .. } => {}
             Expr::Capture { expr, .. } => {
                 self.extract_ids_recursive(expr, ids);
@@ -253,6 +250,12 @@ impl<'a> DataflowAnalyzer<'a> {
             Statement::InlineAsm { .. } | Statement::TrgBinding { .. }
             | Statement::MetadataAssignment(..) | Statement::InlineDefn(_)
             | Statement::Match { .. } => {}
+            // 2026-09-22 (D16 p3b): `open` — collect ids from its
+            // expressions.
+            Statement::Open(lhs, rhs) => {
+                self.extract_ids_recursive(lhs, ids);
+                self.extract_ids_recursive(rhs, ids);
+            }
         }
     }
 

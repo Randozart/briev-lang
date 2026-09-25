@@ -908,8 +908,6 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
         body: crate::ast::top::TypeDefBody {
             pins: Vec::new(),
             reference: None,
-            tolerance: None,
-            rating: None,
             slots: vec![
                 crate::ast::top::TypeDefSlot { name: "data".to_string(), ty: Type::Vector(
                     Box::new(Type::Custom("T".to_string())),
@@ -951,6 +949,7 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
                 doc: None,
             })],
             span: None,
+            when_laws: vec![], modes: vec![],
         },
         span: None,
     }));
@@ -1030,8 +1029,6 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
         body: TypeDefBody {
             pins: Vec::new(),
             reference: None,
-            tolerance: None,
-            rating: None,
             slots: vec![TypeDefSlot { name: "count".to_string(), ty: Type::int(), bit_range: None }],
             metadata: HashMap::new(),
             projections: vec![],
@@ -1072,6 +1069,7 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
                 doc: None,
             })],
             span: None,
+            when_laws: vec![], modes: vec![],
         },
         span: None,
     }));
@@ -1231,8 +1229,6 @@ fn spawn_pool_countdown_program_storage(
         body: TypeDefBody {
             pins: Vec::new(),
             reference: None,
-            tolerance: None,
-            rating: None,
             slots: vec![TypeDefSlot { name: "count".to_string(), ty: Type::int(), bit_range: None }],
             metadata: HashMap::new(),
             projections: vec![],
@@ -1273,6 +1269,7 @@ fn spawn_pool_countdown_program_storage(
                 doc: None,
             })],
             span: None,
+            when_laws: vec![], modes: vec![],
         },
         span: None,
     }));
@@ -1452,9 +1449,7 @@ fn test_spill_spawn_emits_per_instance_heap() {
 /// = ...` instance) must still register its pool counter + member columns —
 /// otherwise `spawn Obj()` panics on a missing pool and the member body reads
 /// a nonexistent `@member` global.
-#[test]
-fn test_spawn_only_base_registers_pool() {
-    use crate::ast::top::{TypeDef, TypeDefBody, TypeDefSlot};
+fn counter_type_def() -> TopLevel {
     let obj = TopLevel::TypeDef(Box::new(TypeDef {
         name: "Counter".to_string(),
         type_params: vec![],
@@ -1469,8 +1464,6 @@ fn test_spawn_only_base_registers_pool() {
         body: TypeDefBody {
             pins: Vec::new(),
             reference: None,
-            tolerance: None,
-            rating: None,
             slots: vec![TypeDefSlot { name: "count".to_string(), ty: Type::int(), bit_range: None }],
             metadata: HashMap::new(),
             projections: vec![],
@@ -1511,9 +1504,15 @@ fn test_spawn_only_base_registers_pool() {
                 doc: None,
             })],
             span: None,
+            when_laws: vec![],
+            modes: vec![],
         },
         span: None,
     }));
+    obj
+}
+
+fn spawn_work_state_and_node() -> [TopLevel; 2] {
     let ticks = TopLevel::Statement(Box::new(Statement::Let {
         name: "ticks".to_string(),
         names: vec![],
@@ -1579,6 +1578,18 @@ fn test_spawn_only_base_registers_pool() {
         span: None,
         doc: None,
     });
+      [ticks, node]
+}
+
+fn spawn_only_base_items() -> [TopLevel; 3] {
+    let obj = counter_type_def();
+    let [ticks, node] = spawn_work_state_and_node();
+    [obj, ticks, node]
+}
+
+#[test]
+fn test_spawn_only_base_registers_pool() {
+    let [obj, ticks, node] = spawn_only_base_items();
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&[obj, ticks, node], None);
     // No top-level instance — but the pool counter + member column must still
@@ -2678,8 +2689,6 @@ fn test_type_with_slots_populates_struct_types() {
             body: TypeDefBody {
                 pins: Vec::new(),
                 reference: None,
-                tolerance: None,
-                rating: None,
                 slots: vec![
                     TypeDefSlot { name: "ptr".to_string(), ty: Type::Applied("Ptr".to_string(), vec![Type::Custom("UInt8".to_string())]), bit_range: None },
                     TypeDefSlot { name: "len".to_string(), ty: Type::Custom("Int".to_string()), bit_range: None },
@@ -2690,6 +2699,8 @@ fn test_type_with_slots_populates_struct_types() {
                 operators: vec![], op_bindings: vec![],
                 constraints: vec![],
                 members: vec![],
+                when_laws: vec![],
+                modes: vec![],
                 span: None,
             },
             span: None,
@@ -4415,6 +4426,7 @@ fn test_struct_literal_field_offsets() {
                             ("b".to_string(), Expr::Bool(true)),
                             ("c".to_string(), Expr::Decimal(65)),
                         ],
+                        specs: Vec::new(),
                     }),
                     modifiers: vec![],
                 },
@@ -4498,6 +4510,7 @@ fn test_addr_of_struct_literal() {
                             ("x".to_string(), Expr::Decimal(10)),
                             ("y".to_string(), Expr::Decimal(20)),
                         ],
+                        specs: Vec::new(),
                     }),
                     modifiers: vec![],
                 },
@@ -4591,6 +4604,7 @@ fn test_frgn_ptr_param_inttoptr() {
                             ("x".to_string(), Expr::Decimal(10)),
                             ("y".to_string(), Expr::Decimal(20)),
                         ],
+                        specs: Vec::new(),
                     }),
                     modifiers: vec![],
                 },
@@ -4753,6 +4767,7 @@ fn test_struct_array_list_literal() {
                                 ("x".to_string(), Expr::Decimal(10)),
                                 ("y".to_string(), Expr::Decimal(20)),
                             ],
+                            specs: Vec::new(),
                         },
                         Expr::StructLiteral {
                             type_name: "Point".to_string(),
@@ -4760,6 +4775,7 @@ fn test_struct_array_list_literal() {
                                 ("x".to_string(), Expr::Decimal(30)),
                                 ("y".to_string(), Expr::Decimal(40)),
                             ],
+                            specs: Vec::new(),
                         },
                     ])),
                     modifiers: vec![],
@@ -4853,6 +4869,7 @@ fn test_struct_array_addr_of_and_frgn_call() {
                                 ("name".to_string(), Expr::Decimal(1)),
                                 ("flags".to_string(), Expr::Decimal(2)),
                             ],
+                            specs: Vec::new(),
                         },
                     ])),
                     modifiers: vec![],
@@ -5051,8 +5068,8 @@ fn test_modulo_partition_drives_rotated_loop() {
 
 /// Phase 2 (§7.1): a dense kalman-style txn (FFI guard outlined → #11) must
 /// be downgraded to `#0` because the frontend density measurement is > 4.0.
-#[test]
-fn test_density_consumer_downgrades_dense_txn() {
+fn density_consumer_declarations() -> Vec<TopLevel> {
+    let mut declarations: Vec<TopLevel>;
     let float_field = |name: &str| TopLevel::Statement(Box::new(Statement::Let {
         name: name.to_string(),
         names: vec![],
@@ -5060,7 +5077,7 @@ fn test_density_consumer_downgrades_dense_txn() {
         expr: Some(Expr::Float(0.0)),
         modifiers: vec![],
     }));
-    let mut program: Vec<TopLevel> = vec![
+    declarations = vec![
         TopLevel::StateDecl(StateDecl {
             name: "count".to_string(),
             ty: Type::int(),
@@ -5073,16 +5090,20 @@ fn test_density_consumer_downgrades_dense_txn() {
         }),
     ];
     for n in ["x0", "x1", "x2", "p00", "p10", "p20"] {
-        program.push(float_field(n));
+        declarations.push(float_field(n));
     }
     for (n, v) in [("a00", 1.0), ("a01", 0.01), ("a02", 0.0)] {
-        program.push(TopLevel::Constant(Constant {
+        declarations.push(TopLevel::Constant(Constant {
             name: n.to_string(),
             ty: Type::Custom("Float".to_string()),
             expr: Expr::Float(v),
             section: None,
         }));
     }
+    declarations
+}
+
+fn density_consumer_body() -> Vec<Statement> {
     let mul = |l: Expr, r: Expr| Expr::BinaryOp(BinaryOpKind::Mul, Box::new(l), Box::new(r));
     let add = |l: Expr, r: Expr| Expr::BinaryOp(BinaryOpKind::Add, Box::new(l), Box::new(r));
     let body = vec![
@@ -5127,6 +5148,11 @@ fn test_density_consumer_downgrades_dense_txn() {
         ),
         Statement::Term(None),
     ];
+    body
+}
+
+fn density_consumer_program() -> Vec<TopLevel> {
+    let mut program = density_consumer_declarations();
     program.push(TopLevel::Transaction(Transaction {
         name: "propagate".to_string(),
         is_reactive: true,
@@ -5146,13 +5172,19 @@ fn test_density_consumer_downgrades_dense_txn() {
             explicit: false,
             span: None,
         post_authority: false},
-        body,
+        body: density_consumer_body(),
         metadata: HashMap::new(),
         derivation: None,
         modifiers: vec![],
         span: None,
         doc: None,
     }));
+    program
+}
+
+#[test]
+fn test_density_consumer_downgrades_dense_txn() {
+    let program = density_consumer_program();
     let output = LlvmBackend::new().generate(&program, None);
     let txn_line = output.lines()
         .find(|l| l.contains("define void @txn_propagate"))
@@ -6442,9 +6474,7 @@ node go [done == 0][done == 1] {
 /// because unit tests skip the full pipeline's numeric-seed construction — that
 /// path (`let m: HashMap<Int,Int> = 2 * N`) is pinned end-to-end by the
 /// hash_ops_idio benchmark (MATCH at parity).
-#[test]
-fn test_hashmap_capacity_seed_and_break_probe() {
-    let src = r#"
+const HASHMAP_CAPACITY_SEED_SRC: &str = r#"
 obj HashMap<K, V> {
     keys: Ptr<K>;
     vals: Ptr<V>;
@@ -6508,6 +6538,10 @@ node go [done == 0][done == 1] {
     term;
 };
 "#;
+
+#[test]
+fn test_hashmap_capacity_seed_and_break_probe() {
+    let src = HASHMAP_CAPACITY_SEED_SRC;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
     let mut pm = crate::plugin::PluginManager::new();
@@ -6581,9 +6615,7 @@ node go [done == 0][done == 1] {
 /// List len field (i64 16 GEP) that was written by exactly `N` INCREMENT
 /// stores (`add nsw i64 %{..}, 1`, one per push) — never a constant-1 seed
 /// store (bug a) and never an empty/absent field (bug b).
-#[test]
-fn test_arrow_push_binds_returned_list_and_pooled_member_field() {
-    let src = r#"
+const ARROW_PUSH_POOLED_MEMBER_SRC: &str = r#"
 coll obj MyList { data: Ptr<Int>; };
 obj Box {
     keys: Ptr<Int>;
@@ -6646,6 +6678,10 @@ node go [done == 0][done == 3] {
     term;
 };
 "#;
+
+#[test]
+fn test_arrow_push_binds_returned_list_and_pooled_member_field() {
+    let src = ARROW_PUSH_POOLED_MEMBER_SRC;
     let mut items = parse_bv_source(src);
     let mut universe = crate::type_universe::TypeUniverse::new();
     let mut pm = crate::plugin::PluginManager::new();
@@ -8507,6 +8543,7 @@ fn struct_literal_stmt(name: &str, bind: &str, fields: Vec<(&str, Expr)>) -> Sta
         expr: Some(Expr::StructLiteral {
             type_name: name.to_string(),
             fields: fields.into_iter().map(|(n, e)| (n.to_string(), e)).collect(),
+            specs: Vec::new(),
         }),
         modifiers: vec![],
     }

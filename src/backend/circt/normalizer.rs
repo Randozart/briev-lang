@@ -82,8 +82,6 @@ mod tests {
             body: TypeDefBody {
                 pins: Vec::new(),
                 reference: None,
-                tolerance: None,
-                rating: None,
                 slots: slots.into_iter().map(|(n, ty)| TypeDefSlot {
                     name: n.to_string(), ty, bit_range: None,
                 }).collect(),
@@ -94,6 +92,8 @@ mod tests {
                 op_bindings: vec![],
                 constraints: vec![],
                 members: vec![],
+                when_laws: vec![],
+                modes: vec![],
                 span: None,
             },
             span: None,

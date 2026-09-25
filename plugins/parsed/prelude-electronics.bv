@@ -1,7 +1,15 @@
 // ── Electronics Prelude — KiCad / PCB Targets ────────────────────────────
 // 2026-09-11 (Part C, Electronics skeleton): inserts the electronics
 // component library before the first user import. Used by .ebv files;
-// provides Pin, Resistor, Capacitor, Led, Connector.
+// provides Pin, Resistor, Capacitor, Led, Connector, the pin electrical
+// classes (Power/Ground/In/Out/Io/IoOd/Nc), and the quantities.
+// 2026-09-23 (E14a gate): the import-anchor branch only fired when the
+// source declared its own `import` — a fixture with types but no imports
+// never saw std/electronics.bv, so every class ascription resolved to a
+// "not in scope" class error with default props (can_drive false broke
+// intent completion). The fallback anchors on the first type declaration:
+// class ascriptions only exist inside types, so that anchor always
+// precedes the first use when no import exists.
 
 $(Parsed @ highest) {
     let anchor = Tag$("import").First$();
@@ -9,8 +17,15 @@ $(Parsed @ highest) {
         anchor.Before$()
             .Insert$(Import$("std/electronics.bv"));
     };
-    // No imports? Insert before the first non-import item, or skip.
+    // No imports? Anchor on the first type declaration — class
+    // fundamentals must precede every ascription. (Tag "typedef" is the
+    // TopLevel::TypeDef serialization name — the tag vocabulary is the
+    // .beast variant names, not the surface keyword.)
     when anchor.Count$() == 0 {
-        // Nothing to anchor on — the source declares its own types.
+        let type_anchor = Tag$("typedef").First$();
+        when type_anchor.Count$() > 0 {
+            type_anchor.Before$()
+                .Insert$(Import$("std/electronics.bv"));
+        };
     };
 };

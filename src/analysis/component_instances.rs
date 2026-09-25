@@ -504,7 +504,7 @@ fn collect_instance_lets(
             ));
         }
         let literal_fields = match expr {
-            Some(Expr::StructLiteral { type_name, fields }) => {
+            Some(Expr::StructLiteral { type_name, fields, specs }) => {
                 if type_name != base {
                     return Err(format!(
                         "component instance '{}' is typed '{}' but constructed as '{}'",

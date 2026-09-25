@@ -175,10 +175,6 @@ impl LlvmBackend {
                 let new_end = Box::new(Self::rewrite_cell_identifiers(end, cell_name));
                 Expr::Range { start: new_start, end: new_end, inclusive: *inclusive }
             }
-            Expr::Named { name, inner } => Expr::Named {
-                name: name.clone(),
-                inner: Box::new(Self::rewrite_cell_identifiers(inner, cell_name)),
-            },
             Expr::UnitLiteral { value, unit } => Expr::UnitLiteral { value: *value, unit: unit.clone() },
             Expr::Capture { expr, name } => Expr::Capture {
                 expr: Box::new(Self::rewrite_cell_identifiers(expr, cell_name)),
@@ -251,10 +247,7 @@ impl LlvmBackend {
             Statement::KeepHint(name) => Statement::KeepHint(name.clone()),
             Statement::Guarded(cond, stmts) => Statement::Guarded(
                 Self::rewrite_cell_identifiers(cond, cell_name),
-                stmts
-                    .iter()
-                    .map(|s| Self::rewrite_cell_stmt_identifiers(s, cell_name))
-                    .collect(),
+                Self::rewrite_cell_stmt_body(stmts, cell_name),
             ),
             Statement::Gate(cond) => Statement::Gate(Self::rewrite_cell_identifiers(cond, cell_name)),
             Statement::Trap | Statement::Halt => stmt.clone(),
@@ -284,28 +277,16 @@ impl LlvmBackend {
                 modifiers: modifiers.clone(),
             },
             Statement::Block(stmts) => Statement::Block(
-                stmts
-                    .iter()
-                    .map(|s| Self::rewrite_cell_stmt_identifiers(s, cell_name))
-                    .collect(),
+                Self::rewrite_cell_stmt_body(stmts, cell_name),
             ),
             Statement::SyncBlock(stmts) => Statement::SyncBlock(
-                stmts
-                    .iter()
-                    .map(|s| Self::rewrite_cell_stmt_identifiers(s, cell_name))
-                    .collect(),
+                Self::rewrite_cell_stmt_body(stmts, cell_name),
             ),
             Statement::Defer(stmts) => Statement::Defer(
-                stmts
-                    .iter()
-                    .map(|s| Self::rewrite_cell_stmt_identifiers(s, cell_name))
-                    .collect(),
+                Self::rewrite_cell_stmt_body(stmts, cell_name),
             ),
             Statement::Mutex(stmts) => Statement::Mutex(
-                stmts
-                    .iter()
-                    .map(|s| Self::rewrite_cell_stmt_identifiers(s, cell_name))
-                    .collect(),
+                Self::rewrite_cell_stmt_body(stmts, cell_name),
             ),
             Statement::InlineAsm { .. } => stmt.clone(),
             Statement::TrgBinding { name, instance } => Statement::TrgBinding {
@@ -315,13 +296,26 @@ impl LlvmBackend {
             Statement::Foreach { item, list, body } => Statement::Foreach {
                 item: item.clone(),
                 list: Box::new(Self::rewrite_cell_identifiers(list, cell_name)),
-                body: body
-                    .iter()
-                    .map(|s| Self::rewrite_cell_stmt_identifiers(s, cell_name))
-                    .collect(),
+                body: Self::rewrite_cell_stmt_body(body, cell_name),
             },
             Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::Match { .. } => stmt.clone(),
+            // 2026-09-22 (D16 p3b): `open` — rewrite identifiers in its
+            // expressions, else keep intact.
+            Statement::Open(lhs, rhs) => Statement::Open(
+                Box::new(Self::rewrite_cell_identifiers(lhs, cell_name)),
+                Box::new(Self::rewrite_cell_identifiers(rhs, cell_name)),
+            ),
         }
+    }
+
+    /// Map `rewrite_cell_stmt_identifiers` over a statement slice — the
+    /// recursive-body arm shared by guarded/block/sync/defer/mutex/barrier/
+    /// foreach. Extracted to keep the caller under the function-length gate.
+    fn rewrite_cell_stmt_body(stmts: &[Statement], cell_name: &str) -> Vec<Statement> {
+        stmts
+            .iter()
+            .map(|s| Self::rewrite_cell_stmt_identifiers(s, cell_name))
+            .collect()
     }
 
     // ═══════════════════════════════════════════════════════════════

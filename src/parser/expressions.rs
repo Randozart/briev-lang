@@ -5,17 +5,16 @@
 // @ prefix forces any token to Quoted(bytes).
 
 use super::helpers::Parser;
+use super::quantity::is_quantity_suffix;
 use crate::ast::{BinaryOpKind, ChainRef, Expr, ReflectKind, SpawnStorage, Type, UnaryOpKind};
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
 /// True when the suffix identifier is a physics unit that should produce
-/// `Expr::UnitLiteral` instead of `Expr::TaggedLiteral`.
+/// `Expr::UnitLiteral` instead of `Expr::TaggedLiteral`. One shared suffix
+/// table serves specs and expressions (2026-09-24 component laws).
 fn is_unit_suffix(s: &str) -> bool {
-    matches!(
-        s,
-        "V" | "A" | "mA" | "R" | "Ω" | "F" | "H" | "Hz" | "W" | "K"
-    )
+    is_quantity_suffix(s)
 }
 
 impl<'a> Parser<'a> {
@@ -53,54 +52,13 @@ impl<'a> Parser<'a> {
     }
 
     /// Logical AND: a && b
-    ///
-    /// Also handles `net <name>:` prefix for named net annotations in
-    /// electronics contracts. The prefix wraps the following equality in
-    /// `Expr::Named`.
     fn parse_and(&mut self) -> Result<Expr, SyntaxError> {
-        let mut expr = self.parse_and_lhs()?;
+        let mut expr = self.parse_equality()?;
         while self.eat(&Token::AndAnd) {
-            let rhs = self.parse_and_lhs()?;
+            let rhs = self.parse_equality()?;
             expr = Expr::BinaryOp(BinaryOpKind::And, Box::new(expr), Box::new(rhs));
         }
         Ok(expr)
-    }
-
-    /// Parse the left-hand side of an AND: possibly `net <name>:` prefixed
-    /// equality, or a bare equality.
-    fn parse_and_lhs(&mut self) -> Result<Expr, SyntaxError> {
-        if self.at_net_prefix() {
-            self.pos += 1; // consume 'net'
-            // The name can be an identifier or a keyword token.
-            let name = format!("{}", self.tokens[self.pos].0);
-            self.pos += 1; // consume name
-            self.pos += 1; // consume ':'
-            let inner = self.parse_equality()?;
-            Ok(Expr::Named { name, inner: Box::new(inner) })
-        } else {
-            self.parse_equality()
-        }
-    }
-
-    /// True when the current token sequence is `net <name>:` — a named net
-    /// annotation prefix. The name can be any identifier or keyword (net
-    /// names are contextual, not reserved).
-    fn at_net_prefix(&self) -> bool {
-        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "net") {
-            return false;
-        }
-        // The name after `net` must be present and not be `:` (which would
-        // mean `net:` with no name). Keywords are valid net names.
-        let name_ok = self.peek_next().is_some_and(|t| !matches!(t,
-            Token::Colon | Token::EqEq | Token::Ne | Token::Lt | Token::Gt
-            | Token::Le | Token::Ge | Token::AndAnd | Token::OrOr
-            | Token::Plus | Token::Minus | Token::Star | Token::Slash
-            | Token::Percent | Token::LBrace | Token::RBrace
-            | Token::LParen | Token::RParen | Token::LBracket | Token::RBracket
-            | Token::Comma | Token::Semicolon | Token::Dot | Token::ColonEq
-            | Token::Integer(_) | Token::Float(_) | Token::BoolTrue | Token::BoolFalse
-        ));
-        name_ok && self.tokens.get(self.pos + 2).map_or(false, |(t, _)| matches!(t, Token::Colon))
     }
 
     /// Equality: a == b, a != b
@@ -1282,15 +1240,12 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
     fn parse_struct_literal(&mut self, type_name: String) -> Result<Expr, SyntaxError> {
         self.pos += 1; // consume {
         let mut fields = Vec::new();
+        let mut specs = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
-            let name = self.expect_identifier()?;
-            if self.eat(&Token::Colon) {
-                let value = self.parse_expression()?;
-                fields.push((name, value));
+            if self.check(&Token::Spec) {
+                self.parse_component_spec_field(&mut specs)?;
             } else {
-                // 2026-07-31: Bare shorthand: `Arena { base, offset }` means
-                // `Arena { base: base, offset: offset }`.
-                fields.push((name.clone(), Expr::Identifier(name)));
+                self.parse_struct_field(&mut fields)?;
             }
             // 2026-07-31: Accept either `;` or `,` separators (and a single
             // trailing separator before the closing brace).
@@ -1299,7 +1254,79 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
             }
         }
         self.expect(Token::RBrace)?;
-        Ok(Expr::StructLiteral { type_name, fields })
+        Ok(Expr::StructLiteral { type_name, fields, specs })
+    }
+
+    /// Parse one `spec Name: quantity;` entry in a component literal —
+    /// the structured physics channel, separate from BOM annotation
+    /// fields (2026-09-24 component laws).
+    fn parse_component_spec_field(
+        &mut self,
+        specs: &mut Vec<(String, Expr)>,
+    ) -> Result<(), SyntaxError> {
+        self.pos += 1; // consume spec
+        let name = self.expect_identifier()?;
+        // 2026-09-24 (quantities Phase 2): the envelopes are type-level —
+        // an instance cannot silently drop an override the analysis never
+        // reads. Per-instance envelopes are a designed feature, not a
+        // parse-through no-op.
+        if name == "Tolerance" || name == "Rating" {
+            let example = if name == "Tolerance" { "3.6V" } else { "0.25W" };
+            return self.error_at_current(&format!(
+                "spec {name} is a type-level envelope — an instance literal cannot override it. fix: declare `spec {name}: {example};` on the component type body (`type Part {{ … }}`)"
+            ));
+        }
+        self.expect(Token::Colon)?;
+        let value_pos = self.pos;
+        let value = self.parse_expression()?;
+        if name == "Resistance" {
+            self.require_ascii_resistance(value_pos, &value)?;
+        }
+        specs.push((name, value));
+        Ok(())
+    }
+
+    /// Component resistance must state an explicit ASCII ohm unit: `330R`,
+    /// `4k7`, or `4.7kOhm` are valid. `Ω` is never accepted (2026-09-24
+    /// unit ergonomics).
+    fn require_ascii_resistance(&self, pos: usize, expr: &Expr) -> Result<(), SyntaxError> {
+        let span = self
+            .tokens
+            .get(pos)
+            .map(|(_, range)| self.make_span(range.clone()))
+            .unwrap_or_else(|| self.make_span(0..0));
+        let Expr::UnitLiteral { unit, .. } = expr else {
+            return Err(SyntaxError::InvalidExpression {
+                reason: "spec Resistance must be a quantity with an ASCII ohm unit (e.g. `330R`)"
+                    .into(),
+                span,
+            });
+        };
+        let resistance = crate::parser::quantity::is_resistance_suffix(unit);
+        if resistance {
+            return Ok(());
+        }
+        Err(SyntaxError::InvalidExpression {
+            reason: format!(
+                "spec Resistance needs an ASCII ohm unit — write `{unit}` as e.g. `330R`, `4k7`, or `4.7kOhm`"
+            ),
+            span,
+        })
+    }
+
+    /// Parse one ordinary struct-literal field, including the bare
+    /// shorthand `field` meaning `field: field`.
+    fn parse_struct_field(&mut self, fields: &mut Vec<(String, Expr)>) -> Result<(), SyntaxError> {
+        let name = self.expect_identifier()?;
+        if self.eat(&Token::Colon) {
+            let value = self.parse_expression()?;
+            fields.push((name, value));
+        } else {
+            // 2026-07-31: Bare shorthand: `Arena { base, offset }` means
+            // `Arena { base: base, offset: offset }`.
+            fields.push((name.clone(), Expr::Identifier(name)));
+        }
+        Ok(())
     }
 
     /// 2026-07-26: Peek ahead after PascalCaseName { to check if the content
@@ -1317,7 +1344,9 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
         // component constructions, zero-value placeholders). An identifier
         // immediately followed by `{}` is a construction, never a block:
         // blocks never attach directly to identifiers in Briev.
-        if matches!(next_tok, Token::RBrace) { return true; }
+        // 2026-09-24 (component laws): `T { spec Name: …; }` is a component
+        // literal with structured physics, never a block.
+        if matches!(next_tok, Token::RBrace | Token::Spec) { return true; }
         let next_is_ident = matches!(next_tok, Token::Identifier(_));
         if !next_is_ident { return false; }
         // Check the token after the identifier — must be ':' or ',' for a

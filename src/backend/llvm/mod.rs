@@ -75,7 +75,6 @@ fn collect_called_names_expr(e: &Expr, out: &mut std::collections::HashSet<Strin
                 collect_pattern_calls(&arm.pattern, out);
             }
         }
-        Expr::Named { inner, .. } => collect_called_names_expr(inner, out),
         Expr::UnitLiteral { .. } => {}
         _ => {}
     }
@@ -289,7 +288,6 @@ fn try_eval_cfloat(
                 None
             }
         }
-        Expr::Named { inner, .. } => try_eval_cfloat(inner, constants, is_float),
         Expr::UnitLiteral { value, .. } => {
             Some(*value)
         }
@@ -492,7 +490,6 @@ fn collect_bytes_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>
                 collect_bytes_expr(&arm.body, seen, out);
             }
         }
-        Expr::Named { inner, .. } => { collect_bytes_expr(inner, seen, out); }
         Expr::UnitLiteral { .. } => {}
         _ => {}
     }
@@ -603,7 +600,6 @@ fn collect_masks_expr(expr: &Expr, seen: &mut std::collections::HashSet<Vec<u8>>
                 collect_masks_expr(&arm.body, seen, out);
             }
         }
-        Expr::Named { inner, .. } => { collect_masks_expr(inner, seen, out); }
         Expr::UnitLiteral { .. } => {}
         _ => {}
     }
@@ -712,6 +708,12 @@ fn collect_strings_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<S
             for s in body { collect_strings_stmt(s, seen, out); }
         }
         Statement::InlineAsm { .. } | Statement::TrgBinding { .. } | Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::Match { .. } => {}
+        // 2026-09-22 (D16 p3b): `open` — collect strings from its
+        // expressions.
+        Statement::Open(lhs, rhs) => {
+            collect_strings_expr(lhs, seen, out);
+            collect_strings_expr(rhs, seen, out);
+        }
     }
 }
 
@@ -817,7 +819,6 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
                 collect_strings_expr(start, seen, out);
                 collect_strings_expr(end, seen, out);
             }
-            Expr::Named { inner, .. } => { collect_strings_expr(inner, seen, out); }
             Expr::UnitLiteral { .. } => {}
             Expr::Capture { expr, .. } => { collect_strings_expr(expr, seen, out); }
 
@@ -2402,9 +2403,6 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                     self.check_expr_embedded(&ex.output, ctx_name, threading_intrinsics);
                 }
             }
-            Expr::Named { inner, .. } => {
-                self.check_expr_embedded(inner, ctx_name, threading_intrinsics);
-            }
             Expr::UnitLiteral { .. } => {}
             _ => {}
         }
@@ -3071,11 +3069,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                                 ports_in: Vec::new(),
                                 ports_out: Vec::new(),
                                 body: crate::ast::top::TypeDefBody {
-                                    slots: td_slots.clone(), pins: Vec::new(), reference: None, tolerance: None,
-            rating: None, metadata: Default::default(),
+                                    slots: td_slots.clone(), pins: Vec::new(), reference: None, metadata: Default::default(),
                                     projections: vec![], bindings: vec![],
                                     operators: vec![], op_bindings: vec![],
-                                    constraints: vec![], members: vec![], span: None,
+                                    constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
                                 },
                             };
                             let synth = crate::backend::llvm::coll_scaffold::synthesize_members(

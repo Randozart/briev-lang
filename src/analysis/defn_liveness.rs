@@ -675,11 +675,11 @@ impl<'a> Builder<'a> {
                     self.walk_expr(e, queue);
                 }
             }
-            Expr::StructLiteral { type_name, fields } => {
+            Expr::StructLiteral { type_name, fields, specs } => {
                 // `HashMap { … }` / `Point { … }` — construction roots the
                 // type's behavioral members.
                 self.on_construction(type_name, queue);
-                for (_, e) in fields {
+                for (_, e) in fields.iter().chain(specs.iter()) {
                     self.walk_expr(e, queue);
                 }
             }
@@ -693,15 +693,7 @@ impl<'a> Builder<'a> {
             Expr::Deref(inner)
             | Expr::AddrOf(inner)
             | Expr::Consume(inner)
-            | Expr::Named { inner, .. } => self.walk_expr(inner, queue),
-            Expr::Await(inner) => {
-                // 2026-09-23 (soundness-net catch, async Phase C/D): `await`
-                // lowers to briev_await_impl; root the task/event family the
-                // same way Spawn does (the awaited task's fire/read helpers
-                // are emitted from the same lowering surface).
-                self.root_task_event_family(queue);
-                self.walk_expr(inner, queue);
-            }
+            | Expr::Await(inner) => self.walk_expr(inner, queue),
             Expr::PluginIntercept { args, .. } => {
                 for a in args {
                     self.walk_expr(a, queue);
@@ -896,7 +888,7 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
         Expr::UnaryOp(_, i) => collect_call_names_expr(i, out),
         Expr::Field(o, _) | Expr::Deref(o) | Expr::AddrOf(o) | Expr::Consume(o)
         | Expr::Await(o) | Expr::IsType(o, _) | Expr::Cast(o, _)
-        | Expr::Named { inner: o, .. } => collect_call_names_expr(o, out),
+        => collect_call_names_expr(o, out),
         Expr::Index(o, i) => {
             collect_call_names_expr(o, out);
             collect_call_names_expr(i, out);
@@ -943,9 +935,9 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_call_names_expr(e, out);
             }
         }
-        Expr::StructLiteral { type_name, fields } => {
+        Expr::StructLiteral { type_name, fields, specs } => {
             out.push(type_name.clone());
-            for (_, e) in fields {
+            for (_, e) in fields.iter().chain(specs.iter()) {
                 collect_call_names_expr(e, out);
             }
         }

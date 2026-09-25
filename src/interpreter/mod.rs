@@ -1436,6 +1436,7 @@ mod tests {
         Expr::StructLiteral {
             type_name: "Damage".to_string(),
             fields: vec![("amount".to_string(), Expr::Decimal(amount))],
+            specs: Vec::new(),
         }
     }
 

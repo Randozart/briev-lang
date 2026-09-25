@@ -860,8 +860,6 @@ mod tests {
                 crate::ast::top::TypeDefBody {
                     pins: Vec::new(),
                     reference: None,
-                    tolerance: None,
-                    rating: None,
                     slots: vec![],
                     metadata: md,
                     projections: vec![],
@@ -870,6 +868,9 @@ mod tests {
                     op_bindings: vec![],
                     constraints: vec![],
                     members: vec![],
+                    when_laws: vec![],
+
+                    modes: vec![],
                     span: None,
                 }
             },
@@ -1046,8 +1047,6 @@ mod tests {
                 crate::ast::top::TypeDefBody {
                     pins: Vec::new(),
                     reference: None,
-                    tolerance: None,
-                    rating: None,
                     slots: vec![],
                     metadata: md,
                     projections: vec![],
@@ -1056,6 +1055,9 @@ mod tests {
                     op_bindings: vec![],
                     constraints: vec![],
                     members: vec![],
+                    when_laws: vec![],
+
+                    modes: vec![],
                     span: None,
                 }
             },

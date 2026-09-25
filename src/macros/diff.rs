@@ -25,6 +25,12 @@ fn item_key(tl: &TopLevel) -> String {
         Definition(d) => format!("defn:{}", d.name),
         TypeDefOperator(d) => format!("op:{}", d.name),
         Transaction(t) => format!("txn:{}", t.name),
+        Budget(b) => format!("budget@{:?}", b.span),
+        // 2026-09-22 (Slice B): participation facts.
+        Unpop(d) => format!("unpop:{}", d.instance),
+        ShortCircuit(d) => format!("shortcircuit:{}", d.instance),
+        // 2026-09-22 (Slice C): the static when law — keyed by the guard.
+        WhenLaw(w) => format!("when-law@{}", w.guard),
         Cell(c) => format!("cell:{}", c.name),
         ForeignBinding(f) => format!("frgn:{}", f.effective_briev_name()),
         Export(e) => format!("export:{}", e.export_name.as_deref().unwrap_or("_")),
@@ -44,7 +50,7 @@ fn item_key(tl: &TopLevel) -> String {
         Codec(c) => format!("codec:{}", c.name),
         Assertion { .. } => "assertion".into(),
         Fuzzed { .. } => "fuzzed".into(),
-        Statement(_) | Stylesheet(_) | SvgComponent { .. } | SyncGroup { .. } | StageBlock(_) | RenderBlock(_) | Cfg(_) => {
+        Statement(_) | Stylesheet(_) | SvgComponent { .. } | SyncGroup { .. } | StageBlock(_) | RenderBlock(_) | FabBlock(_) | Cfg(_) => {
             format!("{:?}", tl)
         }
         AsmFn(a) => format!("asm:<{}> {}", a.target, a.name),
@@ -68,6 +74,12 @@ pub fn item_summary(tl: &TopLevel) -> String {
         Definition(d) => format!("defn {}", d.name),
         TypeDefOperator(d) => format!("op {}", d.name),
         Transaction(t) => format!("txn {}", t.name),
+        Budget(_) => "budget <source-pin limit>".to_string(),
+        // 2026-09-22 (Slice B): participation facts.
+        Unpop(d) => format!("unpop {}", d.instance),
+        ShortCircuit(d) => format!("shortcircuit {}", d.instance),
+        // 2026-09-22 (Slice C): the static when law.
+        WhenLaw(_) => "when <forced-fact law>".to_string(),
         Cell(c) => format!("cell {}", c.name),
         ForeignBinding(f) => format!("frgn {}", f.foreign_name),
         Export(e) => format!("export {}", e.export_name.as_deref().unwrap_or("_")),
@@ -90,6 +102,7 @@ pub fn item_summary(tl: &TopLevel) -> String {
         Statement(_) => "statement".into(),
         StageBlock(sb) => format!("$({:?})", sb.stage),
         RenderBlock(_) => "render".into(),
+        FabBlock(_) => "fab".into(),
         Stylesheet(_) => "stylesheet".into(),
         SvgComponent { name, .. } => format!("svg {}", name),
         SyncGroup { .. } => "sync-group".into(),

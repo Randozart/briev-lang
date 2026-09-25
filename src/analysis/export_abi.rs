@@ -230,7 +230,7 @@ fn collect_expr_locals(expr: &Expr, out: &mut HashSet<String>) {
             collect_expr_locals(r, out);
         }
         Expr::UnaryOp(_, i) | Expr::Deref(i) | Expr::AddrOf(i) | Expr::Consume(i)
-        | Expr::Await(i) | Expr::Cast(i, _) | Expr::IsType(i, _) | Expr::Named { inner: i, .. }
+        | Expr::Await(i) | Expr::Cast(i, _) | Expr::IsType(i, _)
         | Expr::Capture { expr: i, .. } | Expr::Reflect(i, _, _) => collect_expr_locals(i, out),
         Expr::Field(o, _) => collect_expr_locals(o, out),
         Expr::Index(o, i) => {
@@ -264,8 +264,8 @@ fn collect_expr_locals(expr: &Expr, out: &mut HashSet<String>) {
                 collect_expr_locals(&arm.body, out);
             }
         }
-        Expr::StructLiteral { fields, .. } => {
-            for (_, e) in fields { collect_expr_locals(e, out); }
+        Expr::StructLiteral { fields, specs, .. } => {
+            for (_, e) in fields.iter().chain(specs.iter()) { collect_expr_locals(e, out); }
         }
         Expr::Lambda(_, body) => collect_expr_locals(body, out),
         Expr::PluginIntercept { args, receiver, .. } => {
@@ -334,6 +334,9 @@ fn stmt_needs_state(
                 })
         }
         Statement::TrgBinding { instance, .. } => any_expr(instance),
+        // 2026-09-22 (D16 p3b): `open` records disconnection, but its pin
+        // expressions can still name state fields; visit them conservatively.
+        Statement::Open(lhs, rhs) => any_expr(lhs) || any_expr(rhs),
         Statement::Block(body)
         | Statement::SyncBlock(body)
         | Statement::Defer(body)
@@ -464,14 +467,14 @@ fn expr_needs_state(
                     arm.guard.as_ref().is_some_and(|g| rec(g)) || rec(&arm.body)
                 })
         }
-        Expr::StructLiteral { fields, .. } => fields.iter().any(|(_, e)| rec(e)),
+        Expr::StructLiteral { fields, specs, .. } => {
+            fields.iter().chain(specs.iter()).any(|(_, e)| rec(e))
+        }
         Expr::Lambda(_, body) => rec(body),
         Expr::Within(a, b) => rec(a) || rec(b),
         Expr::Deref(inner) | Expr::AddrOf(inner) | Expr::Consume(inner) => {
             rec(inner)
         }
-        // `expr >> name` capture and `name: expr` named args wrap an inner.
-        Expr::Named { inner, .. } => rec(inner),
         Expr::PluginIntercept { args, receiver, .. } => {
             receiver.as_ref().is_some_and(|r| rec(r)) || args.iter().any(|a| rec(a))
         }

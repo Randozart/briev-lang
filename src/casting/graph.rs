@@ -1389,8 +1389,6 @@ mod tests {
                 body: crate::ast::top::TypeDefBody {
                     pins: Vec::new(),
                     reference: None,
-                    tolerance: None,
-                    rating: None,
                     slots: vec![],
                     metadata: Default::default(),
                     projections: vec![],
@@ -1399,6 +1397,9 @@ mod tests {
                     op_bindings: vec![],
                     constraints: vec![],
                     members: vec![],
+                    when_laws: vec![],
+
+                    modes: vec![],
                     span: None,
                 },
                 span: None,
@@ -1520,8 +1521,6 @@ mod tests {
                 slots: vec![],
                 pins: vec![],
                 reference: None,
-                tolerance: None,
-                rating: None,
                 metadata: {
                     let mut m = std::collections::HashMap::new();
                     m.insert("bits".to_string(), crate::ast::PropertyValue::Int(32));
@@ -1533,6 +1532,9 @@ mod tests {
                 op_bindings: vec![],
                 constraints: vec![],
                 members: vec![],
+                when_laws: vec![],
+
+                modes: vec![],
                 span: None,
             },
             span: None,

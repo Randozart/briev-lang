@@ -396,6 +396,11 @@ impl Reactor {
             Statement::MetadataAssignment(_, _) => {
                 Ok(StmtResult::Continue)
             }
+            // 2026-09-22 (D16 p3b): `open` — the netlist analysis consumes
+            // it; the reactor does not.
+            Statement::Open(..) => {
+                Ok(StmtResult::Continue)
+            }
         }
     }
 }

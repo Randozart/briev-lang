@@ -2184,11 +2184,10 @@ impl LlvmBackend {
                                     name: n.clone(), ty: ty.clone(), bit_range: None,
                                 })
                                 .collect(),
-                            metadata: Default::default(), pins: Vec::new(), reference: None, tolerance: None,
-            rating: None, projections: vec![],
+                            metadata: Default::default(), pins: Vec::new(), reference: None, projections: vec![],
                             bindings: vec![], operators: vec![],
                             op_bindings: vec![], constraints: vec![],
-                            members: vec![], span: None,
+                            members: vec![], when_laws: vec![], modes: vec![], span: None,
                         },
                     };
                     if let Some((seq_expr, elem_ty)) = crate::backend::llvm::coll_scaffold::derive_sequence_member(

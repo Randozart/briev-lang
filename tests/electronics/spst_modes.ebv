@@ -1,0 +1,64 @@
+// ── spst_modes.ebv — named component modes + node state selection ───────
+// 2026-09-24 (plan 2026-09-24-spst-component-modes.md).
+//
+// The pull-up holds the button node high while the SPST is open. When the
+// mode is closed, the switch grounds the node and the same resistor carries
+// 3.3V / 1kR = 3.3mA. The two node preconditions select their applicable
+// operating states; neither node is proved in the other state.
+
+type Source {
+    pin p;
+    pin n;
+    reference "V";
+    spec Tolerance: any;
+    spec Rating: any;
+};
+
+type Spst {
+    pin a;
+    pin b;
+    reference "SW";
+    spec Tolerance: any;
+    spec Rating: any;
+
+    mode closed {
+        a.voltage == b.voltage;
+        a.current + b.current == 0;
+    }
+
+    mode open {
+        a.current == 0Amp;
+        b.current == 0Amp;
+    }
+};
+
+type Resistor {
+    pin a;
+    pin b;
+    reference "R";
+    spec Tolerance: any;
+    spec Rating: 0.05W;
+    spec Resistance: Ohm;
+    when true {
+        a.voltage - b.voltage == Resistance * a.current;
+        a.current + b.current == 0;
+    }
+};
+
+let v1: Source = Source { };
+let r1: Resistor = Resistor { spec Resistance: 1kR; };
+let sw1: Spst = Spst { };
+
+async node button_pressed
+    [v1.p.voltage == 3.3V && v1.p.voltage == r1.a.voltage
+     && r1.b.voltage == sw1.a.voltage && sw1.b.voltage == v1.n.voltage
+     && v1.n.voltage == 0.0V && sw1.closed]
+    [sw1.a.voltage <= 0.3V && r1.a.current >= 1mA]
+{ }
+
+async node button_released
+    [v1.p.voltage == 3.3V && v1.p.voltage == r1.a.voltage
+     && r1.b.voltage == sw1.a.voltage && sw1.b.voltage == v1.n.voltage
+     && v1.n.voltage == 0.0V && !sw1.closed]
+    [sw1.a.voltage >= 2.7V && r1.a.current <= 0.1mA]
+{ }

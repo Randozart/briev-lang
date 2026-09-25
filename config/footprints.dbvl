@@ -1,0 +1,31 @@
+// ── Footprint geometry library (2026-09-23 fab plan) ─────────────────────
+// Data Briev line table, baked into the binary via include_str!. Each line:
+//   footprint.<package>: <pad_x>; <pad_y>; <pad_size>;  (×N, in pin-number
+//     order)  <outline_w>; <outline_h>;
+// All values in mm, relative to the part origin (centre).
+//
+// Pads are POSITIONAL — they map to a type's pins by number, so the pad
+// geometry never couples to pin NAMES (Rules 14/15: the compiler knows no
+// vocabulary). A footprint with FEWER pads than the type's pins is a
+// compile error at use; extra pads are tolerated (a coarse package string
+// like "SMD" can serve several 2-pin parts).
+//
+// Geometry is NOMINAL for now — enough for placement, routing, and
+// containment checks. Vendor-accurate IPC pad geometry is a later
+// refinement of the same format (a data change, never a compiler change).
+//
+// Field order is positional (the encodings.dbvl pattern); a schema would
+// only document it. Loaded by src/analysis/footprints.rs.
+
+footprint.0603: -0.40; 0.00; 0.50;  0.40; 0.00; 0.50;  1.60; 0.80;
+footprint.0402: -0.25; 0.00; 0.30;  0.25; 0.00; 0.30;  1.00; 0.50;
+footprint.0805: -0.50; 0.00; 0.70;  0.50; 0.00; 0.70;  2.00; 1.25;
+footprint.SMD:  -0.60; 0.00; 0.70;  0.60; 0.00; 0.70;  2.50; 1.50;
+// SOT-25 — Ldo (4 pins): a two-side nominal quad.
+footprint.SOT-25: -1.00; 0.90; 0.50;  1.00; 0.90; 0.50;  0.00; -0.90; 0.50;  1.00; -0.90; 0.50;  3.00; 2.20;
+// QFN-32 — Mcu (15 pins): a nominal perimeter, pitch 0.5.
+footprint.QFN-32: -2.20; -1.50; 0.30;  -2.20; -0.50; 0.30;  -2.20; 0.50; 0.30;  -2.20; 1.50; 0.30;  2.20; -1.50; 0.30;  2.20; -0.50; 0.30;  2.20; 0.50; 0.30;  2.20; 1.50; 0.30;  -1.50; 2.20; 0.30;  -0.50; 2.20; 0.30;  0.50; 2.20; 0.30;  1.50; 2.20; 0.30;  -1.50; -2.20; 0.30;  -0.50; -2.20; 0.30;  0.50; -2.20; 0.30;  5.00; 5.00;
+// DFN-4 — Sensor (5 pins): a 5-pad single-side row.
+footprint.DFN-4: -1.00; 0.00; 0.35;  -0.50; 0.00; 0.35;  0.00; 0.00; 0.35;  0.50; 0.00; 0.35;  1.00; 0.00; 0.35;  2.50; 1.30;
+// HDR-2x5 — DebugHdr (9 pins): 2.54 pitch, two rows, 5 + 4 pads.
+footprint.HDR-2x5: -5.08; 1.27; 0.90;  -2.54; 1.27; 0.90;  0.00; 1.27; 0.90;  2.54; 1.27; 0.90;  5.08; 1.27; 0.90;  -5.08; -1.27; 0.90;  -2.54; -1.27; 0.90;  0.00; -1.27; 0.90;  2.54; -1.27; 0.90;  12.70; 5.08;
