@@ -1226,3 +1226,32 @@ rails keep physics labels. Plan:
 delta item 1 (rails and returns) is CLOSED except rail births; the LDO
 output law (`spec Output`) is the remaining follow-on that dissolves
 `u1.vout == 3.3V`.
+
+### Amendment 2026-09-25 (XX): quantities Phase 4 landed — envelope specs & the anti-vacuity rule
+
+`spec MaxCurrent` joins the envelope channel: the absolute-maximum
+current rating, unconditional, checked in every reachable state like
+`Tolerance` for volts. Uniform (`spec MaxCurrent: 20mA;`) or
+pin-qualified (`spec MaxCurrent: a: 4mA, vdd: 100mA;`) — and the same
+pin-qualified form extends `spec Tolerance` (the asymmetric-parts
+problem). Instance literals now carry envelopes: the parse-time
+rejection lifted with OVERRIDE semantics — the instance value replaces
+the type default for that instance (derating: datasheet typical vs
+board derating). Resolution per pin: instance derating > type pin row >
+type uniform.
+
+Deliberately absent: `MinCurrent`/`MinVoltage`/`MaxVoltage` keys.
+MaxVoltage is `Tolerance`; min bounds are state-dependent (the LED
+carries 0 A when unpowered — an unconditional min would be a false
+violation), so they live in node POSTconditions (`[d1.a.current > 0]`),
+the proven-property bracket — state-scoped by the guard for free, and
+the surface E15's placement forcing will consume.
+
+The vacuous-proof hole E15 flagged is closed: a stated current bound on
+a pin with no derivable current was silently skipped; it is now a hard
+error naming the missing law physics. Absent-participation states are
+exempt (an unpop part's pins carry no copper — the bound is not
+evidence there). led_blinker migrated: `spec MaxCurrent: 20mAmp` on the
+instance, the minimum in `async node powered`'s postcondition. Plan:
+`2026-09-25-quantities-phase4-envelopes.md`. E15's prerequisites are now
+all landed except E-series value selection.

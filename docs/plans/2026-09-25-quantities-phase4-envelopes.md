@@ -1,6 +1,6 @@
 # Plan 2026-09-25: quantities Phase 4 — envelope specs & current bounds
 
-**Status:** building
+**Status:** landed 2026-09-25 (Slices 1–4)
 **Branch:** `feat/e14a-intent-synthesis`
 **Plan chain:** `2026-09-23-quantities-and-annotation-doctrine.md` Phase 4
 (deferred there, trigger now met), E15 prerequisites (gap registry).

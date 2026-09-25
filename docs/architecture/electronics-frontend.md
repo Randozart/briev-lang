@@ -324,6 +324,20 @@ no current, no divider, and no dissipation. The approved destination is
 type-body `when` laws as constitutive equations plus a piecewise-linear DC
 solver; later slices elaborate and solve them.
 
+**2026-09-25 (quantities Phase 4, plan `2026-09-25-quantities-phase4-envelopes.md`):**
+envelope specs + the anti-vacuity rule. `spec MaxCurrent` — the
+absolute-maximum current envelope, unconditional, every state — joins
+`Tolerance`/`Rating`, with pin-qualified rows (`spec Tolerance: in:
+24V, vdd: 3.6V;`) for asymmetric parts and INSTANCE literals overriding
+type envelopes (derating; resolution instance > pin row > uniform).
+Min bounds are deliberately NOT spec keys: they live in node
+postconditions (`[d1.a.current > 0]`), state-scoped by the guard — a
+min-current requirement does not hold in every state. And the vacuous-
+proof hole is closed: a stated current bound the solver cannot attempt
+is a hard error naming the missing law physics (absent-participation
+states exempt). led_blinker migrated: envelope on the instance, minimum
+in the node postcondition.
+
 **2026-09-25 (E14b slice 7, plan `2026-09-25-ebv-e14b-rail-membership.md`):**
 supply-rail membership via the `net<>`/`stdnet<>` strategy keywords
 (order-free modifier family, `sync<g>` shape) on `let`. `stdnet<Name>`

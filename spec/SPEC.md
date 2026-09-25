@@ -382,6 +382,21 @@ in the parser — netlist, contracts, and the emitter see named ordinary
  hard compile error — the backend refuses any board whose decoupling
  convention is violated.
 
+**Envelope specs (2026-09-25).** The datasheet channel carries
+absolute-maximum ratings as unconditional envelopes — checked in every
+reachable state, violation = hard error, proof line otherwise:
+`spec Tolerance: 3.6V;` (max volts, per pin), `spec Rating: 0.25W;`
+(max dissipation, per part), `spec MaxCurrent: 20mA;` (max current, per
+pin). Asymmetric parts qualify per pin — `spec Tolerance: in: 24V,
+vdd: 3.6V;` — and instance literals override the type default for that
+instance (derating): `let d1: Led = Led { ...; spec MaxCurrent: 15mA; };`.
+Resolution: instance > type pin row > type uniform. Minimum
+requirements are NOT envelopes — they are state-dependent, so they live
+in a node's postcondition (`[d1.a.current > 0]`), proven only in the
+states the node's guard admits. A stated current bound the solver
+cannot attempt is a hard error — bounds are proven or refused, never
+vacuous.
+
 **Supply-rail membership (2026-09-25).** A supply pin not on any net
 joins a rail through the membership ladder: a `stdnet<>` expectation
 filters candidates to rails driven at the row's `spec NetVoltage`; pin
