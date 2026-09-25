@@ -803,6 +803,12 @@ struct Gen<'a> {
     /// whole-block (`ctaid >= count → ret`) so all 64 threads enter the
     /// body and the lane-strided butterfly has full 32-lane coverage.
     block_work_item: bool,
+    /// 2026-09-25 (bug 14): threads per block for the block-per-workitem
+    /// dispatch — the stride for thread-distributed loops. Must mirror the
+    /// dispatch decision in ptx/mod.rs exactly (deferred region 1024,
+    /// warp-sliced 128, lane-reduction 64); the two sites are the one
+    /// contract.
+    block_threads: u32,
 }
 
 impl<'a> Gen<'a> {
@@ -830,6 +836,7 @@ impl<'a> Gen<'a> {
             int_bits,
             casting_graph: crate::casting::graph::CastingGraph::new(),
             block_work_item: false,
+            block_threads: 64,
             strip_acc: None,
             active_strip: 0,
         }
@@ -928,6 +935,17 @@ impl<'a> Gen<'a> {
         if region.is_some() {
             self.block_work_item = true;
         }
+        // 2026-09-25 (bug 14): the stride for thread-distributed loops must
+        // equal the dispatch's block_threads exactly (ptx/mod.rs: deferred
+        // region 1024, warp-sliced 128, lane-reduction 64) — a mismatched
+        // stride silently skips or double-covers iterations.
+        self.block_threads = if region.is_some() {
+            1024
+        } else if has_warp_slice(&shape.kernel_stmts, self.consts) {
+            128
+        } else {
+            64
+        };
 
         body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
         if self.block_work_item {
@@ -1060,6 +1078,33 @@ impl<'a> Gen<'a> {
                     end: self.range_exclusive_end(list, end_v)?,
                     unroll,
                 };
+                // 2026-09-25 (bug 14): a block-per-workitem kernel runs its
+                // body on ALL block threads. A loop whose stores hit
+                // item-affine addresses was lowered block-redundantly —
+                // every thread read-modify-wrote the SAME addresses with no
+                // synchronization, so updates were lost
+                // scheduling-dependently (attention_decode_2pass, CUDA lane:
+                // a_err up to 13.5 vs a 1e-6 reference, streaky PASS/FAIL
+                // runs of the identical binary). Such loops are
+                // thread-distributed instead: thread t takes items
+                // {start+t, start+t+block, ...}, each address written
+                // exactly once — the interpreter's sequential semantics,
+                // parallelized. Pure-register bodies (carried scalars like
+                // the softmax's m/l) stay block-redundant: every thread
+                // computes the identical total, which is benign. See
+                // body_is_distributable for the exact gate.
+                if self.block_work_item
+                    && Self::body_is_distributable(loop_body, item, self.consts)
+                {
+                    return self.emit_thread_distributed(
+                        loop_body,
+                        item,
+                        ctx.start,
+                        ctx.end,
+                        decl,
+                        body,
+                    );
+                }
                 // 2026-09-19 (M1 warp-sliced reductions, plan
                 // general-machinery): a LONG serial reduction splits across
                 // the block's 4 warps (P1 block-per-workitem dispatch,
@@ -1302,6 +1347,82 @@ impl<'a> Gen<'a> {
     /// The loop item in non-site positions (store addresses, scalar math)
     /// reads a per-slot register (cnt + k) so correctness never depends on
     /// the site analysis.
+    /// 2026-09-25 (bug 14): a loop body is thread-distributable when every
+    /// statement stores to an address linear in the loop item with a
+    /// NONZERO coefficient (distinct items → distinct addresses, so a
+    /// tid-strided distribution writes each address exactly once), and no
+    /// statement assigns a carried scalar (a register updated across
+    /// iterations would turn into a per-thread partial under
+    /// distribution). `Let` locals are pure per-thread registers — their
+    /// redundant initialization is identical across threads and benign.
+    /// Anything else keeps the existing lowering (block-redundant for
+    /// register bodies; the lane-reduction path owns the reduction shape).
+    fn body_is_distributable(
+        body: &[Statement],
+        item: &str,
+        consts: &std::collections::HashMap<String, Expr>,
+    ) -> bool {
+        let mut any_store = false;
+        for s in body {
+            match s {
+                Statement::Assign(Expr::Index(_, idx), _) => {
+                    match linear_coeff(idx, item, consts) {
+                        Some(c) if c != 0 => any_store = true,
+                        _ => return false,
+                    }
+                }
+                // A carried scalar (`l = l + …`) must NOT be distributed —
+                // each thread would hold a partial instead of the total.
+                Statement::Assign(Expr::Identifier(_), _) => return false,
+                Statement::Let { .. } => continue,
+                _ => return false,
+            }
+        }
+        any_store
+    }
+
+    /// Emit a foreach as a thread-distributed loop: thread t handles items
+    /// {start + t, start + t + block_threads, …}. Every stored address is
+    /// written exactly once across the block (body_is_distributable proved
+    /// the addresses item-affine-nonzero and the body carried-free), so the
+    /// result equals the interpreter's sequential execution.
+    fn emit_thread_distributed(
+        &mut self,
+        loop_body: &[Statement],
+        item: &str,
+        start: i64,
+        end: i64,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let cnt = self.fresh_r();
+        decl.push_str(&format!("    .reg .u32 {};\n", cnt));
+        let pred = self.fresh_p();
+        decl.push_str(&format!("    .reg .pred {};\n", pred));
+        let tid = self.fresh_r();
+        decl.push_str(&format!("    .reg .u32 {};\n", tid));
+        let lab = self.label;
+        self.label += 1;
+        let head = format!("L{}_head", lab);
+        let tail = format!("L{}_end", lab);
+        body.push_str(&format!("    mov.u32 {}, %tid.x;\n", tid));
+        body.push_str(&format!("    add.u32 {}, {}, {};\n", cnt, tid, start));
+        body.push_str(&format!("{}:\n", head));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, cnt, end));
+        body.push_str(&format!("    @{} bra {};\n", pred, tail));
+        self.regs.insert(item.to_string(), cnt.clone());
+        for s in loop_body {
+            self.emit_stmt(s, decl, body)?;
+        }
+        body.push_str(&format!(
+            "    add.u32 {}, {}, {};\n",
+            cnt, cnt, self.block_threads
+        ));
+        body.push_str(&format!("    bra {};\n", head));
+        body.push_str(&format!("{}:\n", tail));
+        Ok(())
+    }
+
     fn emit_serial_unrolled(
         &mut self,
         plan: &SerialUnrollPlan,
