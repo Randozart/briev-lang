@@ -367,14 +367,20 @@ in the parser — netlist, contracts, and the emitter see named ordinary
  and emits a `.kicad_pcb` alongside the schematic. Placement is the only
  author control; routing is compiler machinery (a follow-on).
 
- **The decoupling convention (2026-09-21).** A component type stating
- `spec Decouple: 100n;` requires, per instance, a part whose type
- declares `spec Decoupler: true;` bridging each supply pin (`spec
-Supply: true;` — on the `Power` fundamental) to a return pin (`spec
-Return: true;` — on `Ground`). The rail roles and the decoupler
-property live on stdlib declarations; the checker consumes the property
-interface generically. An un-bridged instance is a hard compile error —
-the backend refuses any board whose decoupling convention is violated.
+ **The decoupling convention (2026-09-21; auto-bridging 2026-09-25).** A
+ component type stating `spec Decouple: 100n;` requires, per instance, a
+ part whose type declares `spec Decoupler: true;` bridging each supply
+ pin (`spec Supply: true;` — on the `Power` fundamental) to a return pin
+ (`spec Return: true;` — on `Ground`). The rail roles and the decoupler
+ property live on stdlib declarations; the checker consumes the property
+ interface generically. Return-class pins of populated instances union
+ into the board's single return net, and an un-bridged supply net takes
+ the next free two-pin decoupler automatically (its return side joins
+ the return net, its supply side the supply pin's net — the symmetric
+ pick is immaterial). A part with any other connectable-pin count is
+ never auto-wired. An un-bridged instance with no free decoupler is a
+ hard compile error — the backend refuses any board whose decoupling
+ convention is violated.
 
 **Source-pin budgets (2026-09-21).** `budget u1.out <= 250mA;` caps the
 derived current draw across the named pin's net. The roll-up is the KCL

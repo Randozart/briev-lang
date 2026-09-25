@@ -1157,3 +1157,41 @@ the replacement spelling; instance-literal `spec Tolerance`/`spec Rating`
 is a parse-time error naming the type body (per-instance envelopes are
 Phase 4, pending the pin-semantics design). Plan:
 `2026-09-24-tolerance-rating-spec-migration.md`.
+
+### Amendment 2026-09-25 (XVIII): E14b slice 6 landed — return-net inference + decoupler auto-bridging
+
+The return side of the gate fixture is solver-inferred (plan
+`2026-09-25-ebv-e14b-return-net.md`). Two forcing rules, both property-
+driven and choice-free:
+
+1. **Return net (D6 class semantics):** every pin whose class declares
+   `spec Return: true` on a populated instance unions into the board's
+   single return net. Nothing to enumerate — no D13 ambiguity. Split or
+   isolated returns stay ordinary explicit equalities (an author wanting
+   them does not ascribe the Return class). Unpopulated instances
+   contribute no copper.
+2. **Decoupler auto-bridging (E13 check → force):** an un-bridged supply
+   net takes the next fully-free populated two-pin `spec Decoupler`
+   part — return side to the return net, supply side to the supply pin's
+   net (symmetric pins, immaterial pick). The bridge test is net-level,
+   as in check_decoupling: pins sharing an already-bridged net demand no
+   new part. Parts with ≠2 connectable pins are never auto-wired; a
+   demanded bridge with no return net is a hard error; impossible
+   obligations still fall to the E13 what/why/fix diagnostic.
+
+Additionally: `wire_low` completes the **p1-pre-wired switchable part**
+(one path pin on the obligation net, the other free → free pin joins the
+return net), and stdlib `Spst` pins ascribe `: Path` again (the E14a
+fixture's Switch had it; the stdlib migration dropped it). Fixture delta:
+17 guard equalities deleted; caps sized to the bridge convention
+(`c[i:2]` — u2.vdd/u3.vdd share u1.vout's net and its bridge); the button
+low bound moved into the node body (the landed obligation surface —
+postcondition bounds verify, they do not force). Error matrix case 2
+(dropped switch return) now COMPILES — the obligation forces the path;
+case 3 (removed decap) means shrinking the population.
+
+E14b remaining (backlog): supply-rail MEMBERSHIP (which driven rail each
+`spec Supply` pin joins — multiple tolerance-compatible rails make this a
+design decision needing a declared-intent surface, not inference), the
+LDO output law (`spec Output` so `u1.vout == 3.3V` stops being a guard
+fact), series-resistor placement (E15, trigger-gated).

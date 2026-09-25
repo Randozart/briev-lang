@@ -328,7 +328,7 @@ motherboard-class gate.
 | Stage | Scope | Gate |
 |---|---|---|
 | **E14a** | intent-*completion*: explicit equalities still allowed; drive-map intents (`led1 = true`) infer the remaining memberships; ambiguity = enumerated-candidate errors; pin classes, vol, spec, population, chain desugar; lifting slots RETRACTED (2026-09-22) — no solver substrate | §3.2 fixture compiles + its error matrix; netlist/KiCad deterministic — **GATE PASSED 2026-09-23** (see gate delta below) |
-| **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized — **slices 1–5 landed 2026-09-23** (min pull-up forcing, max low-hold forcing, bus assembly, drive assignment, value-aware pull-up matching); remaining: rail inference |
+| **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized — **slices 1–5 landed 2026-09-23** (min pull-up forcing, max low-hold forcing, bus assembly, drive assignment, value-aware pull-up matching); **slice 6 landed 2026-09-25** (return-net inference + decoupler auto-bridging — the fixture's return side is solver-inferred); remaining: supply-rail membership (needs a declared-intent design), LDO output law |
 
 Both stages: `L`. E14a ships useful even if E14b stalls (strict
 generalization order). Prerequisite gap work (E11 pin arrays, E12 pin
@@ -370,6 +370,15 @@ backlog item, each marked `// E14b:` in the fixture file:
 
 Behavior members §3.2 wanted (`.up`, `.closed`, `.released`) stayed
 retracted — guards restate them as voltage facts (locked 2026-09-22).
+
+**Delta closure (2026-09-25, E14b slice 6):** item 1's RETURN half and
+item 4 are closed — return-class pins union into the board return net,
+the decoupling convention auto-bridges supply nets, and the button's
+`<= 0.3V` obligation forces the p1-pre-wired switch path to return
+(plan `2026-09-25-ebv-e14b-return-net.md`). What remains of item 1 is
+supply-rail MEMBERSHIP (u1.in, u2.vdd, u3.vdd, j2.vcc choosing between
+tolerance-compatible driven rails) — a declared-intent design fork, not
+inference — plus the LDO output law behind `u1.vout == 3.3V`.
 
 ## 5. Documentation chain (at implementation time)
 

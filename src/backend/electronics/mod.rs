@@ -1109,16 +1109,40 @@ mod tests {
     fn usb_sensor_gate_fixture_derives_and_emits() {
         // Slice 2 gate: derive_netlist on the real fixture reports zero
         // errors across every vector, and the emitter produces a sheet
-        // with unique per-prefix designators (U1-U3, J1-J2, C1-C6, R1-R4).
+        // with unique per-prefix designators (U1-U3, J1-J2, C1-C3, R1-R4).
         let nl = derive_netlist(&fixture_items(gate_fixture()));
         assert_clean(&nl, "usb_sensor");
+        // 2026-09-25 (E14b-6): the return side is solver-inferred — the
+        // button's low path is forced by the `<= 0.3V` obligation (the
+        // p1-pre-wired Spst completes to the return net), and the
+        // decoupling convention auto-bridges the supply nets. Gate delta
+        // items 1 and 4 of the design record.
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("low-hold forced") && p.contains("sw1")),
+            "sw1 low path forced: {:?}",
+            nl.intent_proofs
+        );
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("auto-bridged") && p.contains("c[0]")),
+            "c[0] auto-bridged: {:?}",
+            nl.intent_proofs
+        );
+        assert!(
+            !nl.dangling.iter().any(|d| d.contains("sw1.b")),
+            "sw1.b must not dangle: {:?}",
+            nl.dangling
+        );
         assert!(
             nl.nets.len() >= 4,
             "rails + gnd + signals expected, got {} nets",
             nl.nets.len()
         );
         let sch = ElectronicsBackend::generate(&nl).unwrap();
-        for want in ["U1", "U2", "U3", "J1", "J2", "C6", "R4", "D1", "SW1"] {
+        for want in ["U1", "U2", "U3", "J1", "J2", "C3", "R4", "D1", "SW1"] {
             let needle = format!("\"{want}\"");
             assert!(sch.contains(&needle), "{want} designator missing: {needle}");
         }
@@ -1138,7 +1162,7 @@ mod tests {
             unique.len(),
             "duplicate instance references: {refs:?}"
         );
-        assert_eq!(refs.len(), 17, "one ref per part: {refs:?}");
+        assert_eq!(refs.len(), 14, "one ref per part: {refs:?}");
     }
 
     #[test]
@@ -1176,36 +1200,19 @@ mod tests {
     }
 
     #[test]
-    fn error_matrix_dropped_button_gnd_path_dangles() {
-        // Case 2: detach the switch return while retaining the closed-state
-        // low obligation. The pin must dangle; the law mode cannot invent
-        // topology.
-        let fx = mutate(
-            gate_fixture(),
-            "sw1.b.voltage == j1.gnd.voltage",
-            "sw1.b.voltage == sw1.b.voltage",
-        );
-        let nl = derive_netlist(&fixture_items(&fx));
-        assert!(
-            nl.dangling.iter().any(|d| d.contains("sw1.b")),
-            "sw1.b must dangle: {:?}",
-            nl.dangling
-        );
-    }
-
-    #[test]
     fn error_matrix_removed_decap_breaks_convention() {
-        // Case 3: remove c[0]'s rail bridge — u1's `in` supply pin is left
-        // with only the unpopulated bulk cap, which does not bridge in the
-        // present state. The E13 convention must refuse.
-        let fx = mutate(gate_fixture(), "\n    && c[0].a.voltage == u1.in.voltage", "");
-        let fx = mutate(&fx, "\n    && j1.gnd.voltage == c[0].b.voltage", "");
+        // Case 3 (2026-09-25, E14b-6): removing a decoupling capacitor now
+        // means shrinking the population — free decouplers are consumed by
+        // the forcing rule one-to-one, so one cap fewer than supply pins
+        // leaves the last obligation unbridgeable. The E13 convention must
+        // refuse.
+        let fx = mutate(gate_fixture(), "let c[i:2]: Capacitor", "let c[i:1]: Capacitor");
         let nl = derive_netlist(&fixture_items(&fx));
         assert!(
             nl.convention_errors
                 .iter()
-                .any(|e| e.contains("u1") && e.contains("supply pin 'in'")),
-            "u1.in decoupling convention must fail: {:?}",
+                .any(|e| e.contains("u1") && e.contains("supply pin 'vout'")),
+            "u1.vout decoupling convention must fail: {:?}",
             nl.convention_errors
         );
     }
@@ -1764,7 +1771,7 @@ let nl = netlist_of(src);
             "board outline: {board}"
         );
         let footprints = board.matches("(footprint \"").count();
-        assert!(footprints >= 17, "one per part: {footprints}");
+        assert!(footprints >= 14, "one per part: {footprints}");
         assert!(
             board.contains("(pad \"1\" smd rect"),
             "pads wired: {board}"

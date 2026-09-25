@@ -87,8 +87,8 @@ type Resistor {
 // mechanical switch. `closed` is an equipotential link; `open` carries no
 // branch current. Mode names are component vocabulary, not compiler keys.
 type Spst {
-    pin a;
-    pin b;
+    pin a: Path;
+    pin b: Path;
     reference "SW";
     spec Tolerance: any;
     spec Rating: any;

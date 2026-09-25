@@ -324,6 +324,23 @@ no current, no divider, and no dissipation. The approved destination is
 type-body `when` laws as constitutive equations plus a piecewise-linear DC
 solver; later slices elaborate and solve them.
 
+**2026-09-25 (E14b slice 6, plan `2026-09-25-ebv-e14b-return-net.md`):**
+return-net inference + decoupler auto-bridging. Every pin whose class
+declares `spec Return: true` on a populated instance unions into the
+board's single return net (D6 class semantics — choice-free, no D13
+surface). The E13 decoupling convention became a forcing rule: an
+un-bridged supply net consumes the next free two-pin `spec Decoupler`
+part (return side → return net, supply side → the supply pin's net);
+the bridge test stays net-level, ≠2-pin decouplers are never auto-wired,
+and impossible obligations keep the E13 diagnostic. `wire_low` gained the
+p1-pre-wired switch completion (one path pin on the obligation net, the
+free pin joins the return net), and stdlib `Spst` pins ascribe `: Path`
+again. The usb_sensor fixture's return side is solver-inferred: 17 guard
+equalities deleted, caps sized to the bridge convention (`c[i:2]`), the
+button low bound moved into the node body (postcondition bounds verify —
+they do not force). Remaining E14b: supply-rail membership (declared-
+intent design fork) and the LDO output law.
+
 **2026-09-23 (E14b slice 5, plan `2026-09-23-ebv-e14b-value-aware-pullup.md`):**
 value-aware pull-up matching. A MIN obligation is satisfied by any
 pull-up resistance, so distinct-value free parts assign deterministically

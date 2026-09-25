@@ -2189,6 +2189,319 @@ fn bridges_rail(
     })
 }
 
+/// The finished-netlist checks, in check order: the E13 decoupling
+/// verification (the auto-bridged obligations included — every union is
+/// final when it fires) and the ERC contention scan (two drive-capable
+/// non-open-drain pins on one net is a short, 2026-09-22). Returned
+/// separately — they land in distinct netlist fields.
+fn finished_netlist_checks(
+    ctx: &mut NetlistContext,
+    unpop: &std::collections::HashSet<String>,
+    shortcircuit: &std::collections::HashSet<String>,
+    nets: &[Net],
+) -> (Vec<String>, Vec<String>) {
+    let convention = check_decoupling(ctx, unpop);
+    let contention = check_contention(nets, ctx.instances, ctx.type_info, shortcircuit);
+    (convention, contention)
+}
+
+/// The return-topology bundle (2026-09-25, E14b-6): participation facts
+/// plus the forcing outputs — one struct instead of a 7-tuple across the
+/// netlist pipeline (FactSink pattern).
+struct ReturnTopology {
+    unpop: std::collections::HashSet<String>,
+    shortcircuit: std::collections::HashSet<String>,
+    exempt_pins: std::collections::HashSet<String>,
+    participation_warnings: Vec<String>,
+    participation_notes: Vec<String>,
+    topology_proofs: Vec<String>,
+    topology_errors: Vec<String>,
+}
+
+/// 2026-09-25 (E14b-6): the return-topology pass, in dependency order —
+/// participation facts first (the absent-state set gates both forcing
+/// rules and feeds the grouping exemption), then return-net inference
+/// (the rail obligation forcing needs), then decoupler auto-bridging.
+/// All of it precedes the intent pass so drive completions see final
+/// nets. `ds` is mutated in place.
+fn force_return_topology(
+    items: &[TopLevel],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    ds: &mut DisjointSet,
+) -> ReturnTopology {
+    let (unpop, shortcircuit, exempt_pins, participation_warnings, participation_notes) =
+        collect_participation(items, instances, type_pins);
+    let mut topology_proofs = infer_return_net(instances, type_info, &unpop, ds);
+    let mut topology_errors = Vec::new();
+    {
+        let mut bctx = NetlistContext::new(items, ds, type_pins, type_info, instances);
+        topology_proofs.extend(force_decoupler_bridges(&mut bctx, &unpop, &mut topology_errors));
+    }
+    ReturnTopology {
+        unpop,
+        shortcircuit,
+        exempt_pins,
+        participation_warnings,
+        participation_notes,
+        topology_proofs,
+        topology_errors,
+    }
+}
+
+/// 2026-09-25 (E14b-6, design-record gate delta item 1): return-net
+/// inference — every pin whose class declares `spec Return: true` unions
+/// into the board's single return net. D6 class semantics, not a choice
+/// among candidates: there is nothing to enumerate, so no D13 ambiguity
+/// arises. An author needing isolated returns does not ascribe the Return
+/// class — split returns stay ordinary explicit equalities. Unpopulated
+/// instances contribute no copper. Returns wiring-report provenance.
+fn infer_return_net(
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    unpop: &std::collections::HashSet<String>,
+    ds: &mut DisjointSet,
+) -> Vec<String> {
+    // Collect (instance, pin) members first — flat iteration, no nested
+    // loop (the pass is inherently O(instances × pins)).
+    let members: Vec<(String, String)> = instances
+        .iter()
+        .filter(|(name, _)| !unpop.contains(*name))
+        .filter_map(|(name, inst)| {
+            let ti = type_info.get(&inst.type_name)?;
+            Some(
+                rail_pins(ti, true)
+                    .iter()
+                    .map(|(n, _)| (name.clone(), n.clone()))
+                    .collect::<Vec<(String, String)>>(),
+            )
+        })
+        .flatten()
+        .collect();
+    let mut proofs = Vec::new();
+    let mut base: Option<String> = None;
+    for (name, pname) in members {
+        let key = pin_key(&name, &pname);
+        ds.make(key.clone());
+        match &base {
+            None => base = Some(ds.find(&key)),
+            Some(b) => ds.union(&key, b),
+        }
+        proofs.push(format!(
+            "return net: {}.{} joined the board return net (class declares spec Return)",
+            name, pname
+        ));
+    }
+    proofs
+}
+
+/// The board return net's root — the return-class pin of the first
+/// populated instance declaring one (infer_return_net unions them all, so
+/// any member's root identifies the net).
+fn populated_return_root(
+    ctx: &mut NetlistContext,
+    unpop: &std::collections::HashSet<String>,
+) -> Option<String> {
+    let instances = ctx.instances;
+    let type_info = ctx.type_info;
+    for inst in instances.values() {
+        if unpop.contains(&inst.name) {
+            continue;
+        }
+        let Some(ti) = type_info.get(&inst.type_name) else {
+            continue;
+        };
+        if let Some((pname, _)) = rail_pins(ti, true).first() {
+            let key = pin_key(&inst.name, pname);
+            ctx.ds.make(key.clone());
+            return Some(ctx.ds.find(&key));
+        }
+    }
+    None
+}
+
+/// Whether the type declares `spec Decoupler: true`.
+fn is_decoupler_type(
+    type_props: &BTreeMap<String, &std::collections::HashMap<String, crate::ast::PropertyValue>>,
+    type_name: &str,
+) -> bool {
+    type_props
+        .get(type_name)
+        .and_then(|m| m.get("decoupler"))
+        .and_then(property_bool)
+        .unwrap_or(false)
+}
+
+/// Whether the type is auto-bridgeable: exactly two connectable (non-NC)
+/// pins, so the return/supply assignment is forced up to symmetry.
+fn auto_bridgeable_pins(
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    type_name: &str,
+) -> Option<Vec<String>> {
+    let pins = type_pins.get(type_name)?;
+    let ti = type_info.get(type_name)?;
+    let mut names: Vec<String> = pins
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !ti.pin_classes[*i].no_connect)
+        .map(|(_, (n, _))| n.clone())
+        .collect();
+    if names.len() != 2 {
+        return None;
+    }
+    names.sort();
+    Some(names)
+}
+
+/// 2026-09-25 (E14b-6): decoupler auto-bridging — the E13 decoupling
+/// convention as a forcing rule. Each supply-class pin of a populated
+/// `spec Decouple` instance whose net has no bridging decoupler yet takes
+/// the next fully-free populated two-pin `spec Decoupler` part: pin[0]
+/// joins the return net, pin[1] joins the supply pin's net. The pins are
+/// symmetric, so the pick is immaterial (deterministic, D13). Parts with
+/// any other connectable-pin count are never auto-wired; impossible
+/// obligations fall through to check_decoupling's what/why/fix diagnostic.
+/// A demanded bridge with no return net anywhere is a hard error here.
+fn force_decoupler_bridges(
+    ctx: &mut NetlistContext,
+    unpop: &std::collections::HashSet<String>,
+    errors: &mut Vec<String>,
+) -> Vec<String> {
+    let mut proofs = Vec::new();
+    let instances = ctx.instances;
+    let type_info = ctx.type_info;
+    // Owned map of shared bags — cloned so the loop can hold it across
+    // `bridges_rail`'s mutable context borrow (the values are `&HashMap`).
+    let type_props = ctx.type_props.clone();
+    let type_pins = ctx.type_pins;
+    let Some(ret) = populated_return_root(ctx, unpop) else {
+        // D13: a demanded bridge with no return net is a hard error. Only
+        // an ENUMERABLE obligation demands it — a Decouple type without a
+        // supply-class pin has none, and check_decoupling already reports
+        // that more specific defect.
+        let demanded = instances.values().any(|c| {
+            !unpop.contains(&c.name)
+                && type_props
+                    .get(&c.type_name)
+                    .map(|m| m.contains_key("decouple"))
+                    .unwrap_or(false)
+                && type_info
+                    .get(&c.type_name)
+                    .map(|ti| !rail_pins(ti, false).is_empty())
+                    .unwrap_or(false)
+        });
+        if demanded {
+            errors.push(
+                "decoupling obligation has no return net: no populated instance declares a \
+                 Return-class pin, so a decoupling part has nothing to bridge to. fix: ascribe a \
+                 return class (e.g. `: Ground`) to a rail pin of the supplied type, or state the \
+                 supply pin's attachment explicitly"
+                    .to_string(),
+            );
+        }
+        return proofs;
+    };
+    // 2026-09-25 (E14b-6): only `spec Decoupler` parts may satisfy the
+    // bridge test — the supply instance itself always spans its own
+    // supply/return pins and must never count (check_decoupling filters
+    // the same way).
+    let decouplers: Vec<&ComponentInstance> = instances
+        .values()
+        .copied()
+        .filter(|c| !unpop.contains(&c.name) && is_decoupler_type(&type_props, &c.type_name))
+        .collect();
+    let mut free_caps: Vec<&ComponentInstance> = decouplers
+        .iter()
+        .copied()
+        .filter(|c| pins_free(ctx, c))
+        .collect();
+    let mut state = BridgeState {
+        decouplers,
+        free_caps,
+        type_props,
+        type_info,
+        type_pins,
+        ret,
+    };
+    // Collect (instance, supply-pin) obligations first — flat iteration,
+    // no nested loop (the pass is inherently O(instances × pins)).
+    let mut obligations: Vec<(&ComponentInstance, String)> = Vec::new();
+    for inst in instances.values() {
+        if unpop.contains(&inst.name) {
+            continue;
+        }
+        let declares = state
+            .type_props
+            .get(&inst.type_name)
+            .map(|m| m.contains_key("decouple"))
+            .unwrap_or(false);
+        if !declares {
+            continue;
+        }
+        let Some(ti) = state.type_info.get(&inst.type_name) else {
+            continue;
+        };
+        obligations.extend(rail_pins(ti, false).iter().map(|(n, _)| (*inst, n.clone())));
+    }
+    for (inst, pname) in &obligations {
+        if let Some(proof) = bridge_one_supply_pin(ctx, &mut state, inst, pname) {
+            proofs.push(proof);
+        }
+    }
+    proofs
+}
+
+/// Working set for the auto-bridging pass — one bundle instead of a
+/// parameter ladder (FactSink pattern). `type_props` is an owned map of
+/// shared bags so it can be held across `bridges_rail`'s mutable context
+/// borrow.
+struct BridgeState<'a> {
+    decouplers: Vec<&'a ComponentInstance>,
+    free_caps: Vec<&'a ComponentInstance>,
+    type_props: BTreeMap<String, &'a std::collections::HashMap<String, crate::ast::PropertyValue>>,
+    type_info: &'a BTreeMap<String, TypeInfo>,
+    type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
+    ret: String,
+}
+
+/// Bridge one supply pin when its net lacks a decoupler: consume the next
+/// free two-pin `spec Decoupler` part — return side to the return net,
+/// supply side to the pin's net. `None` = already bridged or no free part
+/// (the E13 check reports the latter).
+fn bridge_one_supply_pin(
+    ctx: &mut NetlistContext,
+    state: &mut BridgeState,
+    inst: &ComponentInstance,
+    pname: &str,
+) -> Option<String> {
+    let s_key = pin_key(&inst.name, pname);
+    ctx.ds.make(s_key.clone());
+    let s_root = ctx.ds.find(&s_key);
+    if state
+        .decouplers
+        .iter()
+        .any(|cap| bridges_rail(ctx, cap, &s_root, &state.ret))
+    {
+        return None;
+    }
+    let idx = state.free_caps.iter().position(|cap| {
+        auto_bridgeable_pins(state.type_pins, state.type_info, &cap.type_name).is_some()
+    })?;
+    let cap = state.free_caps.remove(idx);
+    let names = auto_bridgeable_pins(state.type_pins, state.type_info, &cap.type_name)?;
+    let (r_key, s_cap_key) = (pin_key(&cap.name, &names[0]), pin_key(&cap.name, &names[1]));
+    ctx.ds.make(r_key.clone());
+    ctx.ds.make(s_cap_key.clone());
+    ctx.ds.union(&r_key, &state.ret);
+    ctx.ds.union(&s_cap_key, &s_root);
+    Some(format!(
+        "decoupling convention: {} auto-bridged ({} <-> return net, {} <-> {}.{})",
+        cap.name, names[0], names[1], inst.name, pname
+    ))
+}
+
 /// 2026-09-21 (E13, design record D5): the decoupling convention — a
 /// component type declaring `spec Decouple` must, per instance, have a
 /// part whose type declares `spec Decoupler` bridging each supply-class
@@ -3740,6 +4053,63 @@ impl<'a, 'b> ObligationForcing<'a, 'b> {
         ));
     }
 
+    /// 2026-09-25 (E14b-6): the single-free-pin low-path completion —
+    /// the part's wired sibling sits on the obligation net (p1-pre-wired)
+    /// or on the return rail; the free pin completes the opposite side.
+    /// The sibling check MUST precede any root-side union — unioning the
+    /// free pin to the obligation net first would short the net to return.
+    fn complete_single_free_low(
+        &mut self,
+        w: &LowHoldWire,
+        part: &str,
+        pins: &[(String, u64)],
+        pa: &(String, u64),
+    ) {
+        let pa_key = pin_key(part, &pa.0);
+        let sibling_on_ret = pins
+            .iter()
+            .any(|(n, _)| n != &pa.0 && self.ctx.ds.find(&pin_key(part, n)) == w.ret);
+        let sibling_on_root = pins
+            .iter()
+            .any(|(n, _)| n != &pa.0 && self.ctx.ds.find(&pin_key(part, n)) == w.root);
+        self.ctx.ds.make(pa_key.clone());
+        if sibling_on_ret {
+            self.ctx.ds.make(w.root.clone());
+            self.ctx.ds.union(&pa_key, &w.root);
+            self.proofs.push(format!(
+                "low-hold forced by '<= {}V' (node '{}'): {}.{} <-> net, other path pin on \
+                 return rail — obligation satisfied",
+                w.vmax,
+                w.nodes.join(", "),
+                part,
+                pa.0
+            ));
+            return;
+        }
+        if sibling_on_root {
+            self.ctx.ds.make(w.ret.clone());
+            self.ctx.ds.union(&pa_key, &w.ret);
+            self.proofs.push(format!(
+                "low-hold forced by '<= {}V' (node '{}'): {}.{} <-> return rail, sibling path \
+                 pin already on the net — obligation satisfied",
+                w.vmax,
+                w.nodes.join(", "),
+                part,
+                pa.0
+            ));
+            return;
+        }
+        self.errors.push(format!(
+            "low-hold obligation '<= {}V' (node '{}'): {}.{} has only one free switchable pin \
+             and its other path pin is neither on the net nor on the return rail — it cannot \
+             complete the low path. Wire the low path explicitly",
+            w.vmax,
+            w.nodes.join(", "),
+            part,
+            pa.0
+        ));
+    }
+
     /// Wire the low-hold path: net → (switchable part) → return rail.
     /// The part's return side may already be wired (guard equality); only
     /// the free switchable pins are consumed here.
@@ -3763,6 +4133,10 @@ impl<'a, 'b> ObligationForcing<'a, 'b> {
         let Some(pa) = free.first() else {
             return;
         };
+        if free.len() == 1 {
+            self.complete_single_free_low(&w, part, &pins, pa);
+            return;
+        }
         let pa_key = pin_key(part, &pa.0);
         self.ctx.ds.make(w.root.clone());
         self.ctx.ds.make(pa_key.clone());
@@ -3777,13 +4151,8 @@ impl<'a, 'b> ObligationForcing<'a, 'b> {
             ));
             return;
         }
-        let Some(pb) = free.get(1) else {
-            self.errors.push(format!(
-                "low-hold obligation '<= {}V' (node '{}'): {}.{} has only one free switchable pin and its other path pin is not on the return rail — it cannot complete the low path. Wire the low path explicitly",
-                w.vmax, w.nodes.join(", "), part, pa.0
-            ));
-            return;
-        };
+        // free.len() >= 2 here — the single-free case returned above.
+        let pb = free[1];
         let pb_key = pin_key(part, &pb.0);
         self.ctx.ds.make(w.ret.clone());
         self.ctx.ds.make(pb_key.clone());
@@ -4364,20 +4733,22 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
 
     let mut ds = DisjointSet::new();
     let bus_errors = collect_pin_unions(items, &instances, &type_pins, &mut ds);
+    // 2026-09-25 (E14b-6): return topology — participation facts, the
+    // return-net union, and decoupler auto-bridging, in that order (the
+    // absent-state set gates both passes; forcing precedes the intent
+    // pass so completions see final nets).
+    let topo = force_return_topology(items, &instances, &type_pins, &type_info, &mut ds);
     // 2026-09-21 (E14a): node-body intents — body wiring facts union
     // first; drive intents then complete the last open pin.
-    let (intent_errors, intent_proofs, conditional_bridges) = {
+    let (intent_errors, mut intent_proofs, conditional_bridges) = {
         let mut ictx = NetlistContext::new(items, &mut ds, &type_pins, &type_info, &instances);
         collect_intents(&mut ictx, items)
     };
+    intent_proofs.extend(topo.topology_proofs);
 
     // Group members by root; sort everything for determinism (HashMap rule).
-    // 2026-09-22 (Slice B): participation facts collected first so the
-    // absent-state pins (open, Nc-exempt) feed the grouping exemption.
-    let (unpop, shortcircuit, exempt_pins, participation_warnings, participation_notes) =
-        collect_participation(items, &instances, &type_pins);
     let (groups, nc_pins) =
-        group_pins(&instances, &type_pins, &type_info, &mut ds, &exempt_pins);
+        group_pins(&instances, &type_pins, &type_info, &mut ds, &topo.exempt_pins);
 
     let (nets, dangling) = partition_nets(&groups, &nc_pins);
 
@@ -4386,7 +4757,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     // present-state shorted-supply error.
     let mut voltage = derive_voltage(
         items,
-        &VoltageInputs { nets: &nets, shortcircuit: &shortcircuit },
+        &VoltageInputs { nets: &nets, shortcircuit: &topo.shortcircuit },
         &instances,
         &type_pins,
         &type_info,
@@ -4403,20 +4774,21 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
             type_info: &type_info,
             laws: &component_laws,
             modes: &mode_catalog(&instances, &type_info),
-            unpop: &unpop,
+            unpop: &topo.unpop,
         },
         &mut voltage,
     );
     law_errors.extend(law_solve_errors);
 
-    // 2026-09-21 (E13): the decoupling convention runs on the finished
-    // netlist — every union is final when it fires.
+    // 2026-09-21 (E13) + 2026-09-22 (ERC contention): the finished-netlist
+    // checks — decoupling verification (the auto-bridged obligations
+    // included; every union is final when they fire) and the contention
+    // scan. Forcing errors land first in the convention vector.
     let mut ctx = NetlistContext::new(items, &mut ds, &type_pins, &type_info, &instances);
-    let convention_errors = check_decoupling(&mut ctx, &unpop);
-    // 2026-09-22 (ERC contention): two drive-capable non-open-drain pins on
-    // one net is a short — checked on the finished netlist.
-    let contention_errors =
-        check_contention(&nets, &instances, &type_info, &shortcircuit);
+    let (checked_convention_errors, contention_errors) =
+        finished_netlist_checks(&mut ctx, &topo.unpop, &topo.shortcircuit, &nets);
+    let mut convention_errors = topo.topology_errors;
+    convention_errors.extend(checked_convention_errors);
 
     ElectronicsNetlist {
         components: instance_list,
@@ -4431,10 +4803,10 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         conditional_bridges,
         voltage,
         type_info,
-        unpop,
-        shortcircuit,
-        participation_notes,
-        participation_warnings,
+        unpop: topo.unpop,
+        shortcircuit: topo.shortcircuit,
+        participation_notes: topo.participation_notes,
+        participation_warnings: topo.participation_warnings,
         contention_errors,
         bus_errors,
         law_errors,
@@ -4610,6 +4982,164 @@ mod tests {
             nl.convention_errors[0].contains("u1") && nl.convention_errors[0].contains("vdd"),
             "{}",
             nl.convention_errors[0]
+        );
+    }
+
+    // ── 2026-09-25 (E14b-6): return-net inference + decoupler
+    // auto-bridging ──────────────────────────────────────────────────────
+
+    #[test]
+    fn return_pins_union_without_explicit_equality() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; };
+
+            let u1: Chip = Chip { value: "a" };
+            let u2: Chip = Chip { value: "b" };
+        "#;
+        let nl = analyze(src);
+        let idx = pin_net_index(&nl.nets);
+        assert_eq!(
+            idx[&("u1".to_string(), "vss".to_string())],
+            idx[&("u2".to_string(), "vss".to_string())],
+            "return-class pins union into one net: {:?}",
+            idx
+        );
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("return net") && p.contains("u1.vss")),
+            "{:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn unpop_return_pin_stays_off_the_return_net() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; };
+
+            let u1: Chip = Chip { value: "a" };
+            let u2: Chip = Chip { value: "b" };
+            unpop u2;
+        "#;
+        let nl = analyze(src);
+        let idx = pin_net_index(&nl.nets);
+        assert!(
+            !idx.contains_key(&("u2".to_string(), "vss".to_string())),
+            "an absent part contributes no copper — its pins group nowhere: {:?}",
+            idx
+        );
+        assert!(
+            nl.dangling.iter().any(|d| d.contains("u1.vss")),
+            "u1.vss is the only populated return pin — a lone pin dangles: {:?}",
+            nl.dangling
+        );
+    }
+
+    #[test]
+    fn decoupler_auto_bridges_without_explicit_equality() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: 100n; };
+            type Cap { pin a; pin b; reference "C"; spec Decoupler: true; };
+
+            let u1: Chip = Chip { value: "mcu" };
+            let c1: Cap = Cap { value: "100n" };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.convention_errors.is_empty(),
+            "the convention auto-bridges: {:?}",
+            nl.convention_errors
+        );
+        let idx = pin_net_index(&nl.nets);
+        // The cap's pins are symmetric — the return/supply assignment is
+        // forced up to symmetry (D13: the pick is immaterial).
+        let cap_nets = [
+            idx[&("c1".to_string(), "a".to_string())].clone(),
+            idx[&("c1".to_string(), "b".to_string())].clone(),
+        ];
+        let ret_net = idx[&("u1".to_string(), "vss".to_string())].clone();
+        let sup_net = idx[&("u1".to_string(), "vdd".to_string())].clone();
+        assert!(
+            cap_nets.contains(&ret_net) && cap_nets.contains(&sup_net) && ret_net != sup_net,
+            "cap bridges supply net {} to return net {}: {:?}",
+            sup_net,
+            ret_net,
+            idx
+        );
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("auto-bridged") && p.contains("c1")),
+            "{:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn unpop_decoupler_never_auto_bridges() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: 100n; };
+            type Cap { pin a; pin b; reference "C"; spec Decoupler: true; };
+
+            let u1: Chip = Chip { value: "mcu" };
+            let c1: Cap = Cap { value: "100n" };
+            unpop c1;
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.convention_errors.len(), 1, "{:?}", nl.convention_errors);
+        assert!(
+            nl.convention_errors[0].contains("no decoupling part bridges"),
+            "{}",
+            nl.convention_errors[0]
+        );
+    }
+
+    #[test]
+    fn three_pin_decoupler_is_not_auto_wired() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: 100n; };
+            type Cap3 { pin a; pin b; pin c; reference "C"; spec Decoupler: true; };
+
+            let u1: Chip = Chip { value: "mcu" };
+            let c1: Cap3 = Cap3 { value: "array" };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.convention_errors.len(), 1, "{:?}", nl.convention_errors);
+        assert!(
+            nl.convention_errors[0].contains("no decoupling part bridges"),
+            "{}",
+            nl.convention_errors[0]
+        );
+    }
+
+    #[test]
+    fn decouple_obligation_without_return_net_is_an_error() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Chip { pin vdd: Power; reference "U"; spec Decouple: 100n; };
+            type Cap { pin a; pin b; reference "C"; spec Decoupler: true; };
+
+            let u1: Chip = Chip { value: "mcu" };
+            let c1: Cap = Cap { value: "100n" };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("no return net")),
+            "{:?}",
+            nl.convention_errors
         );
     }
 
