@@ -729,7 +729,7 @@ mod tests {
 
         txn powered
             [j1.vcc.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.gnd.voltage]
-            [d1.a.current > 0.0 && d1.a.current <= 0.02]
+            [d1.k.voltage == j1.gnd.voltage]
         {
         }
     "#;
@@ -749,7 +749,7 @@ mod tests {
 
             txn on
                 [j1.p1.voltage == u1.vdd.voltage && j1.gnd.voltage == u1.gnd.voltage]
-                [u1.vdd.current >= 0.0]
+                [u1.vdd.voltage == j1.p1.voltage]
             { }
         "#;
         let nl = netlist_of(src);
@@ -773,7 +773,7 @@ mod tests {
 
             txn on
                 [j1.a.voltage == u1.gpio[0].voltage && j1.b.voltage == u1.gpio[1].voltage]
-                [u1.gpio[0].current >= 0.0 && u1.gpio[0].current <= 0.02]
+                [u1.gpio[0].voltage == j1.a.voltage]
             { }
         "#;
         let nl = netlist_of(src);
@@ -829,7 +829,7 @@ mod tests {
             txn on
                 [j1.vcc.voltage == 3.3V && j1.vcc.voltage == r1.a.voltage &&
                  r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.gnd.voltage]
-                [d1.a.current > 0.0 && d1.a.current <= 0.02]
+                [d1.k.voltage == j1.gnd.voltage]
             { }
         "#;
         let nl = netlist_of(src);
@@ -957,7 +957,7 @@ mod tests {
                 [j1.vbus.voltage == u1.vdd.voltage && j1.gnd.voltage == u1.gnd.voltage
                  && d1.a.voltage == u1.vdd.voltage && d1.k.voltage == u1.gnd.voltage
                  && j1.vbus.voltage == 3.3]
-                [d1.a.current > 0.0 && d1.a.current <= 0.02]
+                [d1.k.voltage == u1.gnd.voltage]
             { }
         "#;
         let nl = netlist_of(src);

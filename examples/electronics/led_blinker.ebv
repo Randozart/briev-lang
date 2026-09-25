@@ -37,10 +37,16 @@ let d1: Led       = Led {
     package: "0805";
     spec ForwardVoltage: 1.8Volt;
     spec DynamicResistance: 10Ohm;
+    spec MaxCurrent: 20mAmp;
 };
 
-txn powered
+// The LED bound is two surfaces (2026-09-25, quantities Phase 4): the
+// ABSOLUTE MAXIMUM is `spec MaxCurrent` on the instance — unconditional,
+// every state; the MINIMUM is the node's postcondition — a proven
+// property of this region, state-scoped by the guard (the LED carries
+// 0 A whenever the board is unpowered, and that is not a violation).
+async node powered
     [j1.p1.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.p2.voltage && j1.p1.voltage == 3.3Volt && j1.p2.voltage == 0.0Volt]
-    [d1.a.current > 0.0 && d1.a.current <= 20mAmp]
+    [d1.a.current > 0.0]
 {
 }

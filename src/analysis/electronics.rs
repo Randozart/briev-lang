@@ -1000,6 +1000,7 @@ fn derive_electrical_proofs(input: ProofInputs<'_>, check: &mut VoltageCheck) {
             states: input.states,
             modes: input.modes,
             assigned: input.assigned_modes,
+            unpop: input.unpop,
         },
         check,
     );
@@ -1949,6 +1950,7 @@ struct CurrentBoundTables<'a> {
     states: &'a std::collections::BTreeSet<String>,
     modes: &'a BTreeMap<String, Vec<String>>,
     assigned: &'a BTreeMap<String, String>,
+    unpop: &'a std::collections::HashSet<String>,
 }
 
 /// Prove (or violate) the postcondition current bounds against the derived
@@ -1970,6 +1972,21 @@ fn check_current_bounds(
         let law_current = check.pin_current.get(&key).copied();
         let Some(derived) = law_current.or_else(|| check.net_current.get(net_name).copied())
         else {
+            // 2026-09-25 (quantities Phase 4): in an absent-participation
+            // state an unpop part's pins carry no copper — the bound is
+            // not evidence there, exactly like the decoupling convention.
+            // Anywhere else, a bound the solver cannot attempt is
+            // VACUOUSLY PROVEN — the hole E15 flagged. Never silent.
+            let absent_state = tables.states.contains("participation=absent")
+                && tables.unpop.contains(&bound.pin.component);
+            if !absent_state {
+                let inst = instances.get(&bound.pin.component);
+                let type_name = inst.map(|c| c.type_name.as_str()).unwrap_or("?");
+                check.violations.push(format!(
+                    "pin '{}.{}' (of {}) has a current bound (from '{}') but no derivable current — the component declares no law physics that solves it, so the bound would be vacuously proven. fix: declare the component's laws (`when` + spec parameters), or remove the bound",
+                    bound.pin.component, bound.pin.pin, type_name, bound.transaction
+                ));
+            }
             continue;
         };
         let site = CurrentBoundSite {
@@ -6450,6 +6467,29 @@ mod tests {
     }
 
     #[test]
+    fn bound_without_derivable_current_is_not_vacuously_proven() {
+        // A stated current bound on a lawless pin is a hard error — the
+        // exact vacuous-proof hole E15 flagged (2026-09-25, Phase 4).
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; reference "P"; spec Tolerance: any; };
+            type Load { pin vin; reference "L"; spec Tolerance: any; };
+            let p1: Power = Power { };
+            let l1: Load = Load { };
+            txn apply [p1.vout.voltage == l1.vin.voltage && p1.vout.voltage == 5.0] [l1.vin.current > 0.0] { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.voltage
+                .violations
+                .iter()
+                .any(|v| v.contains("l1.vin") && v.contains("vacuously proven")),
+            "{:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
     fn non_decoupler_part_does_not_satisfy_convention() {
         // A resistor across the rail is not a decoupling part: the
         // property interface (spec Decoupler) decides, never the type name.
@@ -8180,7 +8220,7 @@ mod tests {
             let l1: Load = Load { };
             txn apply
                 [p1.vout.voltage == l1.vin.voltage && p1.vout.voltage == 5.0]
-                [l1.vin.current > 0.0]
+                [l1.vin.voltage == 5.0]
             { }
         "#;
         let nl = analyze(src);
@@ -8280,7 +8320,7 @@ mod tests {
             let l1: Load = Load { };
             txn apply
                 [p1.vout.voltage == l1.vin.voltage && p1.vout.voltage == 5.0]
-                [l1.vin.current >= 0.0]
+                [l1.vin.voltage == 5.0]
             { }
         "#;
         let nl = analyze(src);
@@ -8298,7 +8338,7 @@ mod tests {
             let l1: Load = Load { };
             txn apply
                 [p1.vout.voltage == l1.vin.voltage && p1.vout.voltage == 12.0]
-                [l1.vin.current >= 0.0]
+                [l1.vin.voltage == 12.0]
             { }
         "#;
         let nl = analyze(any_src);
@@ -8316,7 +8356,7 @@ mod tests {
             let r1: Resistor = Resistor { spec Resistance: 330Ohm; };
             txn apply
                 [p1.vout.voltage == r1.a.voltage && r1.b.voltage == p1.gnd.voltage && p1.vout.voltage == 12.0 && p1.gnd.voltage == 0.0]
-                [r1.b.current > 0.0]
+                [r1.b.voltage == 0.0]
             { }
         "#;
         let nl = analyze(rated);
@@ -8472,7 +8512,7 @@ mod tests {
             let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
             txn apply
                 [p1.vout.voltage == r1.a.voltage && r1.b.voltage == p1.gnd.voltage && p1.vout.voltage == 12.0 && p1.gnd.voltage == 0.0]
-                [r1.b.current > 0.0]
+                [r1.b.voltage == 0.0]
             { }
         "#;
         let nl = analyze(src);
@@ -8508,7 +8548,7 @@ mod tests {
             let r1: Resistor = Resistor { value: "330" };
             txn apply
                 [p1.vout.voltage == r1.a.voltage && r1.b.voltage == r1.a.voltage && p1.vout.voltage == 5.0]
-                [r1.b.current > 0.0]
+                [r1.b.voltage == 5.0]
             { }
         "#;
         let nl = analyze(src);
@@ -8536,10 +8576,15 @@ mod tests {
     fn unit_suffix_current_bound() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; spec Resistance: Ohm;
+                when true {
+                    a.voltage - b.voltage == Resistance * a.current;
+                    a.current + b.current == 0;
+                };
+            };
             type Connector { pin p1 = 1; pin p2 = 2; reference "J"; spec Tolerance: any; };
             let j1: Connector = Connector { };
-            let r1: Resistor = Resistor { value: "330R"; };
+            let r1: Resistor = Resistor { value: "330R"; spec Resistance: 330Ohm; };
             txn powered
                 [j1.p1.voltage == r1.a.voltage && j1.p2.voltage == r1.b.voltage && j1.p1.voltage == 3.3]
                 [r1.b.current > 0.0 && r1.b.current <= 20mA]
