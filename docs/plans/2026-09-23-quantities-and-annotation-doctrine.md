@@ -124,3 +124,14 @@ fixture + stdlib parse · quantity-grammar tests pass.
 
 This plan + the doctrine in `docs/architecture/electronics-frontend.md`.
 Ledger Amendment VII (Phase 1 landed) + subsequent phases when they land.
+
+## Amendment 2026-09-24: corollary 3 closed
+
+Phase 3 (`spec Resistance`) landed with the component-laws plan, and the
+legacy `parse_ohms`-on-annotation path it displaced was deleted the same day
+— `docs/plans/2026-09-24-retire-legacy-value-physics.md`, ledger Amendment
+XVI. `derive_current`'s series graph now reads only structured physics
+(instance spec, type default). Corollary 3 is DONE: `value` is pure
+annotation structurally, not by rule. Phase 4 (envelope specs
+`MinCurrent`/`MaxCurrent`) remains the next deferred phase — trigger: a
+second type wants a per-instance bound.

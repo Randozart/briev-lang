@@ -71,8 +71,8 @@ pub struct TypeInfo {
     /// ohms. `None` when the type declares only the dimension or no value.
     pub resistance: Option<f64>,
     /// 2026-09-24 (component laws): the type declares constitutive laws.
-    /// Such parts are solved from their law IR, never double-counted by the
-    /// legacy series-value heuristic.
+    /// Such parts are solved from their law IR and are not part of the
+    /// series-graph derivation at all.
     pub has_laws: bool,
     /// 2026-09-24 (component laws): type-level quantity defaults for law
     /// parameters, keyed by lowercase spec name. Dimension-only declarations
@@ -1291,37 +1291,6 @@ fn check_tolerance(
     }
 }
 
-/// Parse an ohmic value from a component property. Structured modern form is
-/// `330Ohm`/`4.7kOhm`; legacy forms include plain (`330`), k/K (kilohm),
-/// M (megohm), R/r (unit marker, `330R`), and the E-series `4k7`. Returns
-/// None for non-numeric values ("red") — no derivation, no error.
-fn parse_ohms(raw: &str) -> Option<f64> {
-    let s = raw.trim();
-    // Canonical full-word form: the suffix starts at the first non-number.
-    if let Some(pos) = s.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-') {
-        let (num, suffix) = s.split_at(pos);
-        if let (Ok(v), Some(crate::parser::quantity::UnitSuffix::Explicit { scale, dim })) =
-            (num.parse::<f64>(), crate::parser::quantity::parse_unit_suffix(suffix))
-        {
-            if dim == crate::ast::QuantityDim::Ohm {
-                let out = v * scale;
-                return (out > 0.0).then_some(out);
-            }
-        }
-    }
-    // Suffixes: k/K (kilohm), M (megohm), R/r (unit marker). Plain parse
-    // otherwise. Non-numeric values ("red") → None: no derivation, no error.
-    let (num, mult) = match s.chars().last()? {
-        'k' | 'K' => (&s[..s.len() - 1], 1e3),
-        'M' => (&s[..s.len() - 1], 1e6),
-        'R' | 'r' => (&s[..s.len() - 1], 1.0),
-        _ => (s, 1.0),
-    };
-    let v = num.trim().parse::<f64>().ok()?;
-    let out = v * mult;
-    if out > 0.0 { Some(out) } else { None }
-}
-
 /// Collect current-bound obligations from POSTconditions:
 /// `[x.pin.current <= B]` (upper) / `[x.pin.current >= B]` (lower).
 struct CurrentBound {
@@ -1397,9 +1366,10 @@ struct SeriesPart {
     net_b: String,
 }
 
-/// Collect the series parts: two-pin instances with structured resistance,
-/// a type-level resistance default, or (legacy migration path only) a numeric
-/// opaque `value`.
+/// Collect the series parts: two-pin instances whose physics comes from a
+/// structured `spec Resistance` or a type-level resistance default. The
+/// opaque `value` label is never parsed (annotation-vs-physics doctrine,
+/// plan 2026-09-24-retire-legacy-value-physics) — it carries no derivation.
 fn collect_series_parts(
     instances: &BTreeMap<String, &ComponentInstance>,
     type_info: &BTreeMap<String, TypeInfo>,
@@ -1411,17 +1381,13 @@ fn collect_series_parts(
         if info.pins.len() != 2 || info.has_laws {
             continue;
         };
-        // Structured spec physics wins; the legacy `value` heuristic is a
-        // migration path, never a second truth when `spec Resistance` exists.
+        // Physics source: the instance's structured spec, then the type-level
+        // default. The `value` annotation is carried to KiCad and never read.
         let ohms = match inst.specs.get("resistance") {
             Some(crate::ast::PropertyValue::Quantity { si, dimension })
                 if *dimension == crate::ast::QuantityDim::Ohm && *si > 0.0 => Some(*si),
             _ => info.resistance.filter(|r| *r > 0.0),
-        }
-        .or_else(|| {
-            let raw = inst.properties.iter().find(|(k, _)| k == "value").map(|(_, v)| v.clone())?;
-            parse_ohms(&raw)
-        });
+        };
         let Some(ohms) = ohms else { continue };
         let p0 = (inst.name.clone(), info.pins[0].0.clone());
         let p1 = (inst.name.clone(), info.pins[1].0.clone());
@@ -4673,7 +4639,7 @@ mod tests {
         type Connector { pin vcc; pin gnd; reference "J"; };
 
         let j1: Connector = Connector { value: "JST-2" };
-        let r1: Resistor = Resistor { value: "330" };
+        let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
         let d1: Led = Led { value: "red" };
 
         budget j1.vcc <= 0.05;
@@ -5640,9 +5606,9 @@ mod tests {
     }
 
     #[test]
-    fn spec_resistance_feeds_series_derivation_before_legacy_value() {
-        // Structured physics is the sole truth when present: the opaque BOM
-        // label may say anything without changing the derivation.
+    fn spec_resistance_is_the_sole_physics_source() {
+        // Structured physics is the sole truth: the opaque BOM label may say
+        // anything without changing the derivation.
         let src = r#"
             type Resistor { pin a; pin b; reference "R"; tolerance any; spec Resistance: Ohm; };
             type Source { pin p; pin n; reference "V"; tolerance any; };
@@ -5661,6 +5627,37 @@ mod tests {
                 .any(|i| (i - 0.0033).abs() < 1e-12),
             "spec Resistance 1kOhm should derive 3.3mA, got {:?}",
             nl.voltage.net_current
+        );
+    }
+
+    #[test]
+    fn value_annotation_alone_never_derives_series_physics() {
+        // 2026-09-24 (retire legacy value physics): `value` is an annotation.
+        // The SAME circuit as the spec test, but with no `spec Resistance`,
+        // must derive no current at all — the BOM label carries no physics.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Source { pin p; pin n; reference "V"; tolerance any; };
+            let v1: Source = Source {};
+            let r1: Resistor = Resistor { value: "1k" };
+            txn drive
+                [v1.p.voltage == 3.3V && v1.p.voltage == r1.a.voltage && r1.b.voltage == v1.n.voltage]
+                [r1.b.current <= 0.1]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.voltage.net_current.is_empty(),
+            "value-only resistor must derive no current, got {:?}",
+            nl.voltage.net_current
+        );
+        assert!(
+            !nl.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("Ohm's law")),
+            "no Ohm's-law proof may come from a label: {:?}",
+            nl.voltage.proved
         );
     }
 
@@ -6418,7 +6415,7 @@ mod tests {
             type Resistor { pin a; pin b; reference "R"; tolerance any; };
             type Led { pin a; pin k; reference "D"; tolerance 3.6; };
             let p1: Power = Power { };
-            let r1: Resistor = Resistor { value: "330" };
+            let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
             let d1: Led = Led { };
             txn apply
                 [p1.vout.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && p1.vout.voltage == 3.3]
@@ -6446,8 +6443,8 @@ mod tests {
             type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
             type Sensor { pin s; reference "S"; tolerance 2.0; };
             let p1: Power = Power { };
-            let r1: Resistor = Resistor { value: "1k" };
-            let r2: Resistor = Resistor { value: "1k" };
+            let r1: Resistor = Resistor { value: "1k", spec Resistance: 1kOhm; };
+            let r2: Resistor = Resistor { value: "1k", spec Resistance: 1kOhm; };
             let s1: Sensor = Sensor { };
             txn apply
                 [p1.vout.voltage == r1.a.voltage && r1.b.voltage == r2.a.voltage && r2.b.voltage == p1.gnd.voltage && r1.b.voltage == s1.s.voltage]
@@ -6474,8 +6471,8 @@ mod tests {
             type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
             type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
             let p1: Power = Power { };
-            let r1: Resistor = Resistor { value: "660" };
-            let r2: Resistor = Resistor { value: "660" };
+            let r1: Resistor = Resistor { value: "660", spec Resistance: 660Ohm; };
+            let r2: Resistor = Resistor { value: "660", spec Resistance: 660Ohm; };
             txn apply
                 [p1.vout.voltage == r1.a.voltage && r1.b.voltage == p1.gnd.voltage && r1.a.voltage == r2.a.voltage && r2.b.voltage == p1.gnd.voltage && p1.vout.voltage == 3.3 && p1.gnd.voltage == 0.0]
                 [p1.vout.current <= 0.008]
@@ -6501,7 +6498,7 @@ mod tests {
             type Resistor { pin a; pin b; reference "R"; tolerance any; };
             type Led { pin a; pin k; reference "D"; tolerance 3.6; };
             let p1: Power = Power { };
-            let r1: Resistor = Resistor { value: "33" };
+            let r1: Resistor = Resistor { value: "33", spec Resistance: 33Ohm; };
             let d1: Led = Led { };
             txn apply
                 [p1.vout.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && p1.vout.voltage == 3.3]
@@ -6550,7 +6547,7 @@ mod tests {
             type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
             type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
             let p1: Power = Power { };
-            let r1: Resistor = Resistor { value: "330" };
+            let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
             txn apply
                 [p1.vout.voltage == r1.a.voltage && r1.b.voltage == p1.gnd.voltage && p1.vout.voltage == 12.0 && p1.gnd.voltage == 0.0]
                 [r1.b.current > 0.0]
@@ -6567,7 +6564,7 @@ mod tests {
             type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
             type Resistor { pin a; pin b; reference "R"; tolerance any; };
             let p1: Power = Power { };
-            let r1: Resistor = Resistor { value: "330" };
+            let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
             txn apply
                 [p1.vout.voltage == r1.a.voltage && r1.b.voltage == p1.gnd.voltage && p1.vout.voltage == 5.0 && p1.gnd.voltage == 0.0]
                 [r1.b.current > 0.0]

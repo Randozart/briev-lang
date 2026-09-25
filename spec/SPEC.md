@@ -319,8 +319,9 @@ in the parser — netlist, contracts, and the emitter see named ordinary
  explicit ASCII ohm unit — `Ω` and a bare number are errors. Component
  bodies may declare additional PascalCase law parameters in the same way
  (`spec ForwardVoltage: Volt;`, `spec DynamicResistance: R;`); elsewhere
- unknown specs remain errors. `value` is opaque annotation and is never a
- second physics channel when a structured spec parameter is present.
+ unknown specs remain errors. `value` is opaque annotation: it is carried
+ to the emitted BOM/schematic and is never parsed — a value-only instance
+ derives no physics (2026-09-24, plan `2026-09-24-retire-legacy-value-physics`).
 
  **Component laws (2026-09-24).** A pin-bearing component type states its
  behavior as type-body `when` laws over `.voltage`, `.current`, and its

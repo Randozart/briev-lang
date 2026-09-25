@@ -1123,3 +1123,20 @@ now separates `button_pressed` (`sw1.closed`, prove low) from
 `button_released` (`!sw1.closed`, prove high), declares its pull-up
 resistor with component laws, and no longer relies on the old numeric-
 `value` heuristic for that path.
+
+### Amendment 2026-09-24 (XVI): legacy numeric-`value` physics RETIRED
+
+The narrow migration path named in Amendment XV is gone.
+`collect_series_parts` read instance `value` and `parse_ohms`ed it as a
+last-resort resistance — the final place the compiler interpreted an
+annotation as physics (quantities doctrine corollary 3). With every shipped
+example on `spec Resistance`, the fallback and `parse_ohms` are deleted
+(plan `2026-09-24-retire-legacy-value-physics.md`): the two surviving
+physics sources are the instance `spec Resistance` (structured SI) and the
+type-level default, instance winning. A value-only resistor derives no
+current, no divider, no dissipation, and no bound proof; `value` is carried
+to KiCad and never parsed. Tests that exercised the heuristic migrated to
+`spec Resistance` and assert the same physics. Residual (documented,
+non-goal): `values_distinct` still compares switch `value` labels
+conservatively for the multi-pole ambiguity — an identity check awaiting a
+capacity spec with a real consumer, not a physics read.

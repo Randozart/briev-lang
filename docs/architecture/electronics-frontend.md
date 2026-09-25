@@ -107,9 +107,11 @@ choosing silently. Full decisions and slice gates:
 `docs/plans/2026-09-24-electronics-component-laws.md`.
 
 Landed in Slice 1: centralized quantity parsing, canonical full-word units,
-`ComponentInstance.specs` as structured SI + dimension, structured
-resistance preferred over the legacy numeric-`value` heuristic, and a
-type-level resistance default.
+`ComponentInstance.specs` as structured SI + dimension, and a type-level
+resistance default. Structured `spec Resistance` is now the ONLY physics
+source — the legacy numeric-`value` heuristic was deleted 2026-09-24 (plan
+`2026-09-24-retire-legacy-value-physics.md`); `value` is carried to KiCad
+and never parsed.
 
 Landed in Slice 2: `analysis/electronics_laws.rs` elaborates pin-bearing
 type-body laws per instance into linear guard/equation IR. It resolves bare
@@ -126,8 +128,8 @@ variables, and KCL is added on non-boundary nets. Deterministic Gaussian
 elimination proves one operating point or names the group as contradictory /
 underdetermined with its free variables. Solved pin currents feed current
 bounds; solved net voltages feed tolerance and downstream checks.
-Law-bearing types are excluded from the legacy series-value path, so they
-are never double-counted.
+Law-bearing parts are solved from their law IR and never enter the series
+graph, so there is no legacy value path left to double-count.
 
 Landed in Slice 4: guarded laws use deterministic branch-mode enumeration
 (bounded at 12 guarded laws per group). A mode supplies its active
@@ -225,7 +227,7 @@ keywords are valid names since net names are contextual). Unit suffixes —
 `3.3V`, `20mA`, `330R` (`Expr::UnitLiteral { value, unit }`, parsed after
 adjacent numeric literals when `is_unit_suffix` matches; `mA` → /1000;
 interpretation in `extract_voltage`/`extract_current`/`extract_resistance`;
-instance values store the raw suffixed string for `parse_ohms`).
+instance `value` stays the raw label string and is never parsed).
 Names resolve against FINAL union-find roots (stale-root safe); two
 DIFFERENT names on one node are a hard error refusing emission
 (`net_conflicts`, checked like dangling pins); the same name twice is
@@ -297,11 +299,13 @@ literals, with both compact and full-word ASCII quantities (`4.7kR`,
 `4.7kOhm`, `20mA`, `20mAmp`). `spec Resistance: R;` (or `Ohm;`) declares a
 dimensioned component parameter and `spec Resistance: 330R;` states its
 value; instance literals carry that value as structured SI + dimension
-(`ComponentInstance.specs`), separate from opaque `value` annotation.
-Structured resistance is preferred over the legacy numeric-`value`
-heuristic. The approved destination is type-body `when` laws as
-constitutive equations plus a piecewise-linear DC solver; later slices
-elaborate and solve them.
+(`ComponentInstance.specs`), separate from the opaque `value` annotation.
+Structured resistance is the sole physics source: the legacy numeric-`value`
+heuristic (`parse_ohms` on the label) was deleted 2026-09-24 (plan
+`2026-09-24-retire-legacy-value-physics.md`) — a value-only instance derives
+no current, no divider, and no dissipation. The approved destination is
+type-body `when` laws as constitutive equations plus a piecewise-linear DC
+solver; later slices elaborate and solve them.
 
 **2026-09-23 (E14b slice 5, plan `2026-09-23-ebv-e14b-value-aware-pullup.md`):**
 value-aware pull-up matching. A MIN obligation is satisfied by any

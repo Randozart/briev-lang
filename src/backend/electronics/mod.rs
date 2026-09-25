@@ -815,7 +815,7 @@ mod tests {
             type Connector { pin vcc; pin gnd; reference "J"; };
 
             let j1: Connector = Connector { value: "JST-2" };
-            let r1: Resistor = Resistor { value: "330" };
+            let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
             let d1: Led = Led { value: "red" };
 
             budget j1.vcc <= 0.005;
