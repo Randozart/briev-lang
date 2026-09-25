@@ -64,7 +64,7 @@ pub struct TypeInfo {
     /// per-pin ratings are a follow-on).
     pub tolerance: Option<f64>,
     /// 2026-09-12 (power ratings): max watts this part dissipates —
-    /// `rating 0.25;` → Some(watts), `rating any;` → Some(INFINITY),
+    /// `spec Rating: 0.25W;` → Some(watts), `spec Rating: any;` → Some(INFINITY),
     /// no clause → None (the proven-dissipation violation decides).
     pub rating: Option<f64>,
     /// 2026-09-24 (component laws): type-level `spec Resistance` default in
@@ -1298,7 +1298,7 @@ fn check_tolerance(
                 violations.push(format!(
                     "net '{}' is driven at {} but pin '{}.{}' (of {}) has no tolerance clause — \
                      an unrated pin on a driven net is an undeclared decision. \
-                     fix: add `tolerance <max>;` rated for {}, or `tolerance any;` to declare \
+                     fix: add `spec Tolerance: <max>V;` rated for {}, or `spec Tolerance: any;` to declare \
                      the pin unrated on purpose.",
                     net.name, format_volts(class), p.component, p.pin, inst.type_name, format_volts(class)
                 ));
@@ -1606,7 +1606,7 @@ fn derive_power(
             None => check.violations.push(format!(
                 "part '{}' ({}, {}) dissipates a derived {} but its type declares no power rating — \
                  an unstated rating on a proven-dissipating part is an undeclared decision. \
-                 fix: add `rating <watts>;` rated above the derived dissipation, or `rating any;` \
+                 fix: add `spec Rating: <watts>W;` rated above the derived dissipation, or `spec Rating: any;` \
                  to declare the part unrated on purpose.",
                 p.name, inst.type_name, p.raw, format_watts(watts)
             )),
@@ -1661,8 +1661,8 @@ fn derive_law_power(ctx: LawPowerContext<'_>, check: &mut VoltageCheck) {
             None => check.violations.push(format!(
                 "{state}component-law part '{}' ({}) dissipates a derived {} but its type declares no power \
                  rating — an unstated rating on a proven-dissipating law part is an undeclared \
-                 decision. fix: add `rating <watts>;` rated above the derived dissipation, or \
-                 `rating any;` to declare the part unrated on purpose.",
+                 decision. fix: add `spec Rating: <watts>W;` rated above the derived dissipation, or \
+                 `spec Rating: any;` to declare the part unrated on purpose.",
                 law.instance,
                 inst.type_name,
                 format_watts(power)
@@ -4660,7 +4660,7 @@ mod tests {
 
     const BUDGET_BOARD: &str = r#"
         type Resistor { pin a; pin b; reference "R"; };
-        type Led { pin a; pin k; reference "D"; tolerance 3.6; };
+        type Led { pin a; pin k; reference "D"; spec Tolerance: 3.6V; };
         type Connector { pin vcc; pin gnd; reference "J"; };
 
         let j1: Connector = Connector { value: "JST-2" };
@@ -5051,7 +5051,7 @@ mod tests {
             type Control { spec KicadType: "input"; spec Control: true; };
             type Path { spec KicadType: "passive"; spec Switchable: true; };
             type Relay { pin coil1: Control; pin coil2: Control;
-                         pin c1: Path; pin c2: Path; reference "K"; tolerance any; };
+                         pin c1: Path; pin c2: Path; reference "K"; spec Tolerance: any; };
             type Supply { pin vout; reference "S"; spec KicadType: "power_in"; spec Supply: true; };
             type Lamp { pin a; pin k; reference "L"; };
             type Jack { pin p1; pin p2; reference "J"; };
@@ -5123,7 +5123,7 @@ mod tests {
         // An unpop part's pins are open in the absent state — no dangling
         // error, and the instance is recorded as unpopulated.
         let src = r#"
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
             type Conn { pin p1; pin p2; reference "J"; };
             let r1: Resistor = Resistor { value: "10k" };
             let j1: Conn = Conn { value: "x" };
@@ -5147,7 +5147,7 @@ mod tests {
         // shorted-supply error.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Wire { pin a; pin b; reference "W"; tolerance any; };
+            type Wire { pin a; pin b; reference "W"; spec Tolerance: any; };
             let w1: Wire = Wire { value: "0R" };
             shortcircuit unpop w1: Wire;
             txn apply
@@ -5170,7 +5170,7 @@ mod tests {
         // error — shortcircuit suppresses only the stated part.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Wire { pin a; pin b; reference "W"; tolerance any; };
+            type Wire { pin a; pin b; reference "W"; spec Tolerance: any; };
             let w1: Wire = Wire { value: "0R" };
             txn apply
                 [w1.a.voltage == w1.b.voltage && w1.a.voltage == 5.0 && w1.b.voltage == 3.3]
@@ -5190,7 +5190,7 @@ mod tests {
         // `shortcircuit r1;` (no unpop) on a populated part → warning with
         // the suggest-unpop hint, not an error.
         let src = r#"
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
             type Conn { pin p1; pin p2; reference "J"; };
             let r1: Resistor = Resistor { value: "10k" };
             let j1: Conn = Conn { value: "x" };
@@ -5229,9 +5229,9 @@ mod tests {
         // is driven at 3.3V. The law is inherited per instance and the
         // conditional drive joins the net's class.
         let src = r#"
-            type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; tolerance any; };
-            type Conn { pin p; pin g; reference "J"; tolerance any; };
-            type Regulator { pin vin: Power; pin vout: Power; pin gnd: Power; reference "U"; tolerance any;
+            type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; spec Tolerance: any; };
+            type Conn { pin p; pin g; reference "J"; spec Tolerance: any; };
+            type Regulator { pin vin: Power; pin vout: Power; pin gnd: Power; reference "U"; spec Tolerance: any;
                 when vin.voltage >= 5V { vout.voltage = 3.3V; }
             }
             let u1: Regulator = Regulator { value: "LM1117" };
@@ -5259,9 +5259,9 @@ mod tests {
         // contract drives the output net at 5V unconditionally — while the
         // law's guard can hold, that is a contradiction.
         let src = r#"
-            type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; tolerance any; };
-            type Conn { pin p; reference "J"; tolerance any; };
-            type Regulator { pin vin: Power; pin vout: Power; pin gnd: Power; reference "U"; tolerance any;
+            type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; spec Tolerance: any; };
+            type Conn { pin p; reference "J"; spec Tolerance: any; };
+            type Regulator { pin vin: Power; pin vout: Power; pin gnd: Power; reference "U"; spec Tolerance: any;
                 when vin.voltage >= 5V { vout.voltage = 3.3V; }
             }
             let u1: Regulator = Regulator { value: "LM1117" };
@@ -5282,8 +5282,8 @@ mod tests {
         // at different voltages — but the guards can never both hold, so no
         // contradiction.
         let src = r#"
-            type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; tolerance any; };
-            type Switch { pin sel: Power; pin vout: Power; pin gnd: Power; reference "U"; tolerance any;
+            type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; spec Tolerance: any; };
+            type Switch { pin sel: Power; pin vout: Power; pin gnd: Power; reference "U"; spec Tolerance: any;
                 when sel.voltage == 3.3V { vout.voltage = 1.8V; }
                 when sel.voltage == 1.8V { vout.voltage = 3.3V; }
             }
@@ -5306,7 +5306,7 @@ mod tests {
         // net is contention — a short unless one is wired-AND.
         let src = r#"
             type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
-            type Mcu { pin p1: Io; pin p2: Io; reference "U"; tolerance any; };
+            type Mcu { pin p1: Io; pin p2: Io; reference "U"; spec Tolerance: any; };
             let u1: Mcu = Mcu { value: "u" };
             node n [u1.p1.voltage == u1.p2.voltage] { };
         "#;
@@ -5323,7 +5323,7 @@ mod tests {
         // IoOd declares WiredAnd — open-drain wired-AND permits sharing.
         let src = r#"
             type IoOd { spec KicadType: "open_collector"; spec CanDrive: true; spec WiredAnd: true; };
-            type Mcu { pin p1: IoOd; pin p2: IoOd; reference "U"; tolerance any; };
+            type Mcu { pin p1: IoOd; pin p2: IoOd; reference "U"; spec Tolerance: any; };
             let u1: Mcu = Mcu { value: "u" };
             node n [u1.p1.voltage == u1.p2.voltage] { };
         "#;
@@ -5341,7 +5341,7 @@ mod tests {
         // exempt from contention, like the shorted-supply check.
         let src = r#"
             type Io { spec KicadType: "bidirectional"; spec CanDrive: true; };
-            type Wire { pin a: Io; pin b: Io; reference "W"; tolerance any; };
+            type Wire { pin a: Io; pin b: Io; reference "W"; spec Tolerance: any; };
             let w1: Wire = Wire { value: "0R" };
             shortcircuit unpop w1: Wire;
             node n [w1.a.voltage == w1.b.voltage] { };
@@ -5361,8 +5361,8 @@ mod tests {
         // u2.gpio[0..=3] == u3.data[0..=3] expands to 4 element unions —
         // each element pair shares a net (inclusive range = 4 elements).
         let src = r#"
-            type Chip { pin gpio[4]; pin gnd; reference "U"; tolerance any; };
-            type Sensor { pin data[4]; pin gnd; reference "S"; tolerance any; };
+            type Chip { pin gpio[4]; pin gnd; reference "U"; spec Tolerance: any; };
+            type Sensor { pin data[4]; pin gnd; reference "S"; spec Tolerance: any; };
             let u2: Chip = Chip { value: "u2" };
             let u3: Sensor = Sensor { value: "u3" };
             node n [u2.gpio[0..=3].voltage == u3.data[0..=3].voltage && u2.gnd.voltage == u3.gnd.voltage] { };
@@ -5390,8 +5390,8 @@ mod tests {
     fn whole_bus_length_mismatch_is_an_error() {
         // Half-open [0..3] = 3 elements vs [0..7] = 7 — a hard error.
         let src = r#"
-            type Chip { pin gpio[4]; pin gnd; reference "U"; tolerance any; };
-            type Sensor { pin data[8]; pin gnd; reference "S"; tolerance any; };
+            type Chip { pin gpio[4]; pin gnd; reference "U"; spec Tolerance: any; };
+            type Sensor { pin data[8]; pin gnd; reference "S"; spec Tolerance: any; };
             let u2: Chip = Chip { value: "u2" };
             let u3: Sensor = Sensor { value: "u3" };
             node n [u2.gpio[0..3].voltage == u3.data[0..7].voltage && u2.gnd.voltage == u3.gnd.voltage] { };
@@ -5412,7 +5412,7 @@ mod tests {
         // `r[0].a` / `r[1].b` resolve to the expanded element instances;
         // unions form the same nets the hand-unrolled lets would.
         let src = r#"
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
             type Conn { pin p1; pin p2; reference "J"; };
             let r[2]: Resistor = Resistor { value: "4k7" };
             let j1: Conn = Conn { value: "x" };
@@ -5441,7 +5441,7 @@ mod tests {
     #[test]
     fn instance_array_multi_dim_element_resolves() {
         let src = r#"
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
             type Conn { pin p1; pin p2; reference "J"; };
             let m[i:2][j:2]: Resistor = Resistor { value: "x" };
             let j1: Conn = Conn { value: "x" };
@@ -5635,8 +5635,8 @@ mod tests {
         // Structured physics is the sole truth: the opaque BOM label may say
         // anything without changing the derivation.
         let src = r#"
-            type Resistor { pin a; pin b; reference "R"; tolerance any; spec Resistance: Ohm; };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; spec Resistance: Ohm; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source {};
             let r1: Resistor = Resistor { value: "999R"; spec Resistance: 1kOhm; };
             txn drive
@@ -5661,8 +5661,8 @@ mod tests {
         // The SAME circuit as the spec test, but with no `spec Resistance`,
         // must derive no current at all — the BOM label carries no physics.
         let src = r#"
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source {};
             let r1: Resistor = Resistor { value: "1k" };
             txn drive
@@ -5691,14 +5691,14 @@ mod tests {
         let src = r#"
             type Resistor {
                 pin a; pin b;
-                reference "R"; tolerance any; rating 0.05;
+                reference "R"; spec Tolerance: any; spec Rating: 0.05W;
                 spec Resistance: Ohm;
                 when true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 }
             };
-            type Supply { pin p; pin n; reference "V"; tolerance any; };
+            type Supply { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Supply = Supply { };
             let r1: Resistor = Resistor { spec Resistance: 330Ohm; };
             txn drive
@@ -5721,14 +5721,14 @@ mod tests {
         let resistor = r#"
             type Resistor {
                 pin a; pin b;
-                reference "R"; tolerance any; rating 0.05;
+                reference "R"; spec Tolerance: any; spec Rating: 0.05W;
                 spec Resistance: Ohm;
                 when true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 }
             };
-            type Supply { pin p; pin n; reference "V"; tolerance any; };
+            type Supply { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Supply = Supply { };
             let top: Resistor = Resistor { spec Resistance: 1kOhm; };
             let bottom: Resistor = Resistor { spec Resistance: 1kOhm; };
@@ -5757,13 +5757,13 @@ mod tests {
         let src = r#"
             type Resistor {
                 pin a; pin b;
-                reference "R"; tolerance any;
+                reference "R"; spec Tolerance: any;
                 spec Resistance: Ohm;
                 when true {
                     a.current + b.current == 0;
                 }
             };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source { };
             let r1: Resistor = Resistor { spec Resistance: 1kOhm; };
             txn open_load
@@ -5787,13 +5787,13 @@ mod tests {
         let src = r#"
             type Wire {
                 pin a; pin b;
-                reference "W"; tolerance any;
+                reference "W"; spec Tolerance: any;
                 when true {
                     a.voltage == b.voltage;
                     a.current + b.current == 0;
                 }
             };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source { };
             let w1: Wire = Wire { };
             txn contradiction
@@ -5818,14 +5818,14 @@ mod tests {
             r#"
                 type Resistor {{
                     pin a; pin b;
-                    reference "R"; tolerance any; {rating}
+                    reference "R"; spec Tolerance: any; {rating}
                     spec Resistance: Ohm;
                     when true {{
                         a.voltage - b.voltage == Resistance * a.current;
                         a.current + b.current == 0;
                     }}
                 }};
-                type Source {{ pin p; pin n; reference "V"; tolerance any; }};
+                type Source {{ pin p; pin n; reference "V"; spec Tolerance: any; }};
                 let v1: Source = Source {{ }};
                 let r1: Resistor = Resistor {{ spec Resistance: 1kR; }};
                 txn drive
@@ -5841,13 +5841,13 @@ mod tests {
             "{:?}",
             missing.voltage.violations
         );
-        let over = analyze(&body("rating 0.01;"));
+        let over = analyze(&body("spec Rating: 0.01W;"));
         assert!(
             over.voltage.violations.iter().any(|e| e.contains("exceeds the declared rating")),
             "{:?}",
             over.voltage.violations
         );
-        let within = analyze(&body("rating 0.05;"));
+        let within = analyze(&body("spec Rating: 0.05W;"));
         assert!(
             within.voltage.violations.is_empty(),
             "{:?}",
@@ -5866,14 +5866,14 @@ mod tests {
             r#"
                 type Resistor {{
                     pin a; pin b;
-                    reference "R"; tolerance any; rating 0.05;
+                    reference "R"; spec Tolerance: any; spec Rating: 0.05W;
                     spec Resistance: Ohm;
                     when true {{
                         a.voltage - b.voltage == Resistance * a.current;
                         a.current + b.current == 0;
                     }}
                 }};
-                type Source {{ pin p; pin n; reference "V"; tolerance any; }};
+                type Source {{ pin p; pin n; reference "V"; spec Tolerance: any; }};
                 let v1: Source = Source {{ }};
                 let r1: Resistor = Resistor {{ spec Resistance: 330R; }};
                 budget v1.p {limit};
@@ -5901,14 +5901,14 @@ mod tests {
             r#"
                 type Resistor {{
                     pin a; pin b;
-                    reference "R"; tolerance any; rating 0.05;
+                    reference "R"; spec Tolerance: any; spec Rating: 0.05W;
                     spec Resistance: Ohm;
                     when true {{
                         a.voltage - b.voltage == Resistance * a.current;
                         a.current + b.current == 0;
                     }}
                 }};
-                type Source {{ pin p; pin n; reference "V"; tolerance any; }};
+                type Source {{ pin p; pin n; reference "V"; spec Tolerance: any; }};
                 let v1: Source = Source {{ }};
                 let r1: Resistor = Resistor {{ spec Resistance: 330R; }};
                 txn drive
@@ -5938,14 +5938,14 @@ mod tests {
         let src = r#"
             type Resistor {
                 pin a; pin b;
-                reference "R"; tolerance any; rating any;
+                reference "R"; spec Tolerance: any; spec Rating: any;
                 spec Resistance: Ohm;
                 when true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 }
             };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source { };
             let r1: Resistor = Resistor { spec Resistance: 1kR; };
             unpop r1;
@@ -5984,14 +5984,14 @@ mod tests {
         let src = r#"
             type Resistor {
                 pin a; pin b;
-                reference "R"; tolerance any; rating any;
+                reference "R"; spec Tolerance: any; spec Rating: any;
                 spec Resistance: Ohm;
                 when true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 }
             };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source { };
             let r1: Resistor = Resistor { spec Resistance: 1kR; };
             unpop r1;
@@ -6018,12 +6018,12 @@ mod tests {
         let src = r#"
             type Flip {
                 pin a; pin k;
-                reference "F"; tolerance any; rating any;
+                reference "F"; spec Tolerance: any; spec Rating: any;
                 when a.current >= 0Amp { a.current == 1Amp; }
                 when a.current < 0Amp { a.current == -1Amp; }
                 when true { a.current + k.current == 0; }
             };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source { };
             let f1: Flip = Flip { };
             txn drive
@@ -6048,13 +6048,13 @@ mod tests {
             r#"
                 type Flip {{
                     pin a; pin k;
-                    reference "F"; tolerance any; rating any;
+                    reference "F"; spec Tolerance: any; spec Rating: any;
                     spec Bistable: true;
                     when a.current >= 0Amp {{ a.current == 1Amp; }}
                     when a.current < 0Amp {{ a.current == -1Amp; }}
                     when true {{ a.current + k.current == 0; }}
                 }};
-                type Source {{ pin p; pin n; reference "V"; tolerance any; }};
+                type Source {{ pin p; pin n; reference "V"; spec Tolerance: any; }};
                 let v1: Source = Source {{ }};
                 let f1: Flip = Flip {{ }};
                 txn drive
@@ -6169,7 +6169,7 @@ mod tests {
         let src = r#"
             type Spst {
                 pin a; pin b;
-                reference "SW"; tolerance any; rating any;
+                reference "SW"; spec Tolerance: any; spec Rating: any;
                 mode closed {
                     a.voltage == b.voltage;
                     a.current + b.current == 0;
@@ -6179,7 +6179,7 @@ mod tests {
                     b.current == 0Amp;
                 }
             };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source { };
             let sw1: Spst = Spst { };
             async node impossible
@@ -6204,7 +6204,7 @@ mod tests {
         let src = r#"
             type Diode {
                 pin a; pin k;
-                reference "D"; tolerance any; rating any;
+                reference "D"; spec Tolerance: any; spec Rating: any;
                 when a.voltage - k.voltage >= 0.7Volt {
                     a.current ==
                         (a.voltage - k.voltage - 0.7Volt) / 100Ohm;
@@ -6216,7 +6216,7 @@ mod tests {
                     a.current + k.current == 0;
                 }
             };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source { };
             let d1: Diode = Diode { };
             txn forward
@@ -6236,7 +6236,7 @@ mod tests {
         let src = r#"
             type Diode {
                 pin a; pin k;
-                reference "D"; tolerance any; rating any;
+                reference "D"; spec Tolerance: any; spec Rating: any;
                 when a.voltage - k.voltage >= 0.7Volt {
                     a.current ==
                         (a.voltage - k.voltage - 0.7Volt) / 100Ohm;
@@ -6248,7 +6248,7 @@ mod tests {
                     a.current + k.current == 0;
                 }
             };
-            type Source { pin p; pin n; reference "V"; tolerance any; };
+            type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source { };
             let d1: Diode = Diode { };
             txn reverse
@@ -6337,8 +6337,8 @@ mod tests {
     fn contract_equality_drives_net_voltage() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; reference "P"; tolerance any; };
-            type Load { pin vin; reference "L"; tolerance 5.5; };
+            type Power { pin vout; reference "P"; spec Tolerance: any; };
+            type Load { pin vin; reference "L"; spec Tolerance: 5.5V; };
             let p1: Power = Power { };
             let l1: Load = Load { };
             txn apply
@@ -6360,7 +6360,7 @@ mod tests {
             struct Pin { voltage: Float; current: Float; };
             type Power { pin vout;     reference "P";
 };
-            type Led { pin a; pin k; tolerance 3.3;     reference "L";
+            type Led { pin a; pin k; spec Tolerance: 3.3V;     reference "L";
 };
             let p1: Power = Power { };
             let d1: Led = Led { };
@@ -6378,8 +6378,8 @@ mod tests {
     fn disagreeing_drives_are_a_shorted_supply() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Rail { pin hi; pin lo; reference "R"; tolerance any; };
-            type Load { pin vin; reference "L"; tolerance any; };
+            type Rail { pin hi; pin lo; reference "R"; spec Tolerance: any; };
+            type Load { pin vin; reference "L"; spec Tolerance: any; };
             let r1: Rail = Rail { };
             let l1: Load = Load { };
             txn apply
@@ -6395,7 +6395,7 @@ mod tests {
     #[test]
     fn unrated_on_driven_net_needs_a_declared_decision() {
         // 2026-09-11 (B4, decision D8): no tolerance clause on a driven net
-        // is an UNDECLARED decision — a violation; `tolerance any;` is the
+        // is an UNDECLARED decision — a violation; `spec Tolerance: any;` is the
         // declared opt-out.
         let unrated = r#"
             struct Pin { voltage: Float; current: Float; };
@@ -6417,8 +6417,8 @@ mod tests {
 
         let declared_any = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; reference "P"; tolerance any; };
-            type Load { pin vin; reference "L"; tolerance any; };
+            type Power { pin vout; reference "P"; spec Tolerance: any; };
+            type Load { pin vin; reference "L"; spec Tolerance: any; };
             let p1: Power = Power { };
             let l1: Load = Load { };
             txn apply
@@ -6496,9 +6496,9 @@ mod tests {
     fn ohms_law_derives_current_and_proves_bounds() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; reference "P"; tolerance any; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
-            type Led { pin a; pin k; reference "D"; tolerance 3.6; };
+            type Power { pin vout; reference "P"; spec Tolerance: any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Led { pin a; pin k; reference "D"; spec Tolerance: 3.6V; };
             let p1: Power = Power { };
             let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
             let d1: Led = Led { };
@@ -6524,9 +6524,9 @@ mod tests {
         // 2.0 V-rated pin there violates and a 3.3 V-rated one passes.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
-            type Sensor { pin s; reference "S"; tolerance 2.0; };
+            type Power { pin vout; pin gnd; reference "P"; spec Tolerance: any; spec Rating: any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W; };
+            type Sensor { pin s; reference "S"; spec Tolerance: 2.0V; };
             let p1: Power = Power { };
             let r1: Resistor = Resistor { value: "1k", spec Resistance: 1kOhm; };
             let r2: Resistor = Resistor { value: "1k", spec Resistance: 1kOhm; };
@@ -6553,8 +6553,8 @@ mod tests {
         // while a 12 mA bound holds.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
+            type Power { pin vout; pin gnd; reference "P"; spec Tolerance: any; spec Rating: any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W; };
             let p1: Power = Power { };
             let r1: Resistor = Resistor { value: "660", spec Resistance: 660Ohm; };
             let r2: Resistor = Resistor { value: "660", spec Resistance: 660Ohm; };
@@ -6579,9 +6579,9 @@ mod tests {
     fn ohms_law_violates_an_exceeded_current_bound() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; reference "P"; tolerance any; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
-            type Led { pin a; pin k; reference "D"; tolerance 3.6; };
+            type Power { pin vout; reference "P"; spec Tolerance: any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Led { pin a; pin k; reference "D"; spec Tolerance: 3.6V; };
             let p1: Power = Power { };
             let r1: Resistor = Resistor { value: "33", spec Resistance: 33Ohm; };
             let d1: Led = Led { };
@@ -6603,8 +6603,8 @@ mod tests {
     fn agreeing_drives_do_not_conflict() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Rail { pin hi; pin lo; reference "R"; tolerance any; };
-            type Load { pin vin; reference "L"; tolerance any; };
+            type Rail { pin hi; pin lo; reference "R"; spec Tolerance: any; };
+            type Load { pin vin; reference "L"; spec Tolerance: any; };
             let r1: Rail = Rail { };
             let l1: Load = Load { };
             txn apply
@@ -6629,8 +6629,8 @@ mod tests {
         // 0805-class rating. The compiler refuses by derivation.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; rating 0.25; };
+            type Power { pin vout; pin gnd; reference "P"; spec Tolerance: any; spec Rating: any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W; };
             let p1: Power = Power { };
             let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
             txn apply
@@ -6646,8 +6646,8 @@ mod tests {
     fn proven_dissipation_without_rating_is_undeclared() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Power { pin vout; pin gnd; reference "P"; spec Tolerance: any; spec Rating: any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
             let p1: Power = Power { };
             let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
             txn apply
@@ -6665,8 +6665,8 @@ mod tests {
         // dissipation, no rating decision forced.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; pin gnd; reference "P"; tolerance any; rating any; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Power { pin vout; pin gnd; reference "P"; spec Tolerance: any; spec Rating: any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
             let p1: Power = Power { };
             let r1: Resistor = Resistor { value: "330" };
             txn apply
@@ -6682,8 +6682,8 @@ mod tests {
     fn unit_suffix_voltage_drive() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
-            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; spec Tolerance: any; };
             let j1: Connector = Connector { };
             let r1: Resistor = Resistor { };
             txn powered
@@ -6699,8 +6699,8 @@ mod tests {
     fn unit_suffix_current_bound() {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
-            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Connector { pin p1 = 1; pin p2 = 2; reference "J"; spec Tolerance: any; };
             let j1: Connector = Connector { };
             let r1: Resistor = Resistor { value: "330R"; };
             txn powered

@@ -8,8 +8,8 @@ type Spst {
     pin a;
     pin b;
     reference "SW";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
     mode closed {
         a.voltage == b.voltage;
         a.current + b.current == 0;
@@ -24,8 +24,8 @@ type Source {
     pin p;
     pin n;
     reference "V";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
 };
 
 let v1: Source = Source { };

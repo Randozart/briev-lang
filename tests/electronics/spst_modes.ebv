@@ -10,16 +10,16 @@ type Source {
     pin p;
     pin n;
     reference "V";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
 };
 
 type Spst {
     pin a;
     pin b;
     reference "SW";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
 
     mode closed {
         a.voltage == b.voltage;
@@ -36,8 +36,8 @@ type Resistor {
     pin a;
     pin b;
     reference "R";
-    tolerance any;
-    rating 0.05;
+    spec Tolerance: any;
+    spec Rating: 0.05W;
     spec Resistance: Ohm;
     when true {
         a.voltage - b.voltage == Resistance * a.current;

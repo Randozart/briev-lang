@@ -9,16 +9,16 @@ type Source {
     pin p;
     pin n;
     reference "V";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
 };
 
 type Flip {
     pin a;
     pin k;
     reference "F";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
     spec Bistable: true;
     when a.current >= 0Amp { a.current == 1Amp; }
     when a.current < 0Amp { a.current == -1Amp; }

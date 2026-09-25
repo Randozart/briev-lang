@@ -10,7 +10,7 @@
 // The component CATALOG below is the extension surface — the compiler
 // knows none of these names (Rule 14/15). Pins are first-class clauses;
 // `reference` is parse-mandatory with pins; `tolerance` rates the pins in
-// Volt (`tolerance any;` declares unrated).
+// Volt (`spec Tolerance: any;` declares unrated).
 
 type Volt { spec Bits: 32; };
 type Amp { spec Bits: 32; };
@@ -64,10 +64,10 @@ type Resistor {
     pin a;
     pin b;
     reference "R";
-    tolerance any;
+    spec Tolerance: any;
     // The generic library part is abstract: no package size/rating is
     // selected here. A board chooses a concrete rated part at instantiation.
-    rating any;
+    spec Rating: any;
     // 2026-09-24 (component laws): the structured physics parameter. A
     // dimension-only declaration requires instances to supply a value;
     // the opaque BOM `value` is never a second truth.
@@ -90,8 +90,8 @@ type Spst {
     pin a;
     pin b;
     reference "SW";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
 
     mode closed {
         a.voltage == b.voltage;
@@ -115,10 +115,10 @@ type Led {
     pin a;
     pin k;
     reference "D";
-    tolerance 3.6;
+    spec Tolerance: 3.6V;
     // The generic LED is abstract; a concrete package chooses its rated
     // dissipation at the board-library layer.
-    rating any;
+    spec Rating: any;
     spec ForwardVoltage: Volt;
     spec DynamicResistance: Ohm;
     // 2026-09-24 (component laws): a LED is a directional light-emitting
@@ -163,10 +163,10 @@ type Diode {
     pin a;
     pin k;
     reference "D";
-    tolerance any;
+    spec Tolerance: any;
     // The generic junction is abstract; a concrete package chooses its
     // rated dissipation at the board-library layer.
-    rating any;
+    spec Rating: any;
     spec ForwardVoltage: Volt;
     spec DynamicResistance: Ohm;
     when a.voltage - k.voltage >= ForwardVoltage {

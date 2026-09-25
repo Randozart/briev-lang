@@ -811,7 +811,7 @@ mod tests {
         // leaves the compiler.
         let src = r#"
             type Resistor { pin a; pin b; reference "R"; };
-            type Led { pin a; pin k; reference "D"; tolerance 3.6; };
+            type Led { pin a; pin k; reference "D"; spec Tolerance: 3.6V; };
             type Connector { pin vcc; pin gnd; reference "J"; };
 
             let j1: Connector = Connector { value: "JST-2" };
@@ -908,8 +908,8 @@ mod tests {
         // like dangling pins — an unsound board never leaves the compiler.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Power { pin vout; reference "P"; tolerance any; };
-            type Led { pin a; pin k; reference "D"; tolerance 3.3; };
+            type Power { pin vout; reference "P"; spec Tolerance: any; };
+            type Led { pin a; pin k; reference "D"; spec Tolerance: 3.3V; };
             let p1: Power = Power { };
             let d1: Led = Led { };
             txn apply
@@ -937,11 +937,11 @@ mod tests {
         // rest stay structural N#. No author net names exist anymore.
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Ground { spec KicadType: "power_in"; spec Return: true; tolerance any; };
-            type Power { spec KicadType: "power_in"; spec Supply: true; tolerance any; };
-            type Led { pin a; pin k; reference "D"; tolerance any; };
-            type Conn { pin vbus: Power; pin gnd: Ground; reference "J"; tolerance any; };
-            type Mcu { pin vdd: Power; pin gnd: Ground; reference "U"; tolerance any; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; spec Tolerance: any; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; spec Tolerance: any; };
+            type Led { pin a; pin k; reference "D"; spec Tolerance: any; };
+            type Conn { pin vbus: Power; pin gnd: Ground; reference "J"; spec Tolerance: any; };
+            type Mcu { pin vdd: Power; pin gnd: Ground; reference "U"; spec Tolerance: any; };
 
             let j1: Conn = Conn { value: "j" };
             let u1: Mcu = Mcu { value: "u" };
@@ -967,7 +967,7 @@ mod tests {
         // but is excluded from the BOM (in_bom no).
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
             type Conn { pin p1; pin p2; reference "J"; };
             let r1: Resistor = Resistor { value: "10k" };
             let j1: Conn = Conn { value: "x" };
@@ -1009,7 +1009,7 @@ mod tests {
     #[test]
     fn instance_array_emission_matches_hand_unrolled() {
         let array_src = r#"
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
             type Conn { pin p1; pin p2; reference "J"; };
             let r[3]: Resistor = Resistor { value: "4k7" };
             let j1: Conn = Conn { value: "x" };
@@ -1020,7 +1020,7 @@ mod tests {
             ] { };
         "#;
         let flat_src = r#"
-            type Resistor { pin a; pin b; reference "R"; tolerance any; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
             type Conn { pin p1; pin p2; reference "J"; };
             let r0: Resistor = Resistor { value: "4k7" };
             let r1: Resistor = Resistor { value: "4k7" };

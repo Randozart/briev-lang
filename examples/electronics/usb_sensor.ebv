@@ -32,8 +32,8 @@ type Ldo {
     pin vout: Power;
     pin en: In;
     reference "U";
-    tolerance 6;
-    rating 0.9;
+    spec Tolerance: 6V;
+    spec Rating: 0.9W;
     spec Decouple: 100n;
 };
 type Mcu {
@@ -46,8 +46,8 @@ type Mcu {
     pin swclk: In;
     pin pa0_unused: Nc;
     reference "U";
-    tolerance 4;
-    rating any;
+    spec Tolerance: 4V;
+    spec Rating: any;
     spec Decouple: 100n;
 };
 type Sensor {
@@ -57,12 +57,12 @@ type Sensor {
     pin scl: IoOd;
     pin addr: In;
     reference "U";
-    tolerance 5;
-    rating any;
+    spec Tolerance: 5V;
+    spec Rating: any;
     spec Decouple: 100n;
 };
 type Resistor {
-    pin a; pin b; reference "R"; tolerance any; rating 0.25;
+    pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W;
     spec Resistance: Ohm; spec PullUp: true;
     // 2026-09-24 (component laws): structured physics. `value` remains the
     // BOM label only.
@@ -71,19 +71,19 @@ type Resistor {
         a.current + b.current == 0;
     }
 };
-type Capacitor { pin a; pin b; reference "C"; tolerance any; rating any; spec Decoupler: true; };
+type Capacitor { pin a; pin b; reference "C"; spec Tolerance: any; spec Rating: any; spec Decoupler: true; };
 type Led {
     pin a;
     pin k;
     reference "D";
-    tolerance 3.6;
-    rating any;
+    spec Tolerance: 3.6V;
+    spec Rating: any;
     // The LED current bound (§3.2's `derive on:`) is the `spec
     // MinCurrent`/`spec MaxCurrent` obligation form (quantities plan
     // Phase 4); the fixture states it as a txn postcondition at use.
 };
-type UsbMicro { pin vbus: Power; pin gnd: Ground; reference "J"; tolerance any; rating any; };
-type DebugHdr { pin sig[7]; pin gnd: Ground; pin vcc: Power; reference "J"; tolerance any; rating any; };
+type UsbMicro { pin vbus: Power; pin gnd: Ground; reference "J"; spec Tolerance: any; spec Rating: any; };
+type DebugHdr { pin sig[7]; pin gnd: Ground; pin vcc: Power; reference "J"; spec Tolerance: any; spec Rating: any; };
 
 let j1: UsbMicro = UsbMicro { value: "USB-Micro-B", package: "SMD" };
 let j2: DebugHdr = DebugHdr { value: "SWD", package: "HDR-2x5" };

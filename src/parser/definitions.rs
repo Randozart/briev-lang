@@ -5081,7 +5081,7 @@ mod tests {
         // Law parameters are not compiler catalog keys: any PascalCase name
         // is legal once a component declares its dimension.
         let tl = parse_top(
-            "type Led { pin a; pin k; reference \"D\"; tolerance any; \
+            "type Led { pin a; pin k; reference \"D\"; spec Tolerance: any; \
              spec ForwardVoltage: Volt; spec DynamicResistance: Ohm; };",
         )
         .unwrap();
@@ -5096,7 +5096,7 @@ mod tests {
         );
 
         let tl = parse_top(
-            "type Led { pin a; pin k; reference \"D\"; tolerance any; \
+            "type Led { pin a; pin k; reference \"D\"; spec Tolerance: any; \
              spec ForwardVoltage: 1.8Volt; };",
         )
         .unwrap();
@@ -5115,7 +5115,7 @@ mod tests {
         // 2026-09-24 (SPST modes): `mode` is contextual and its block is a
         // named finite-state authority, not a slot declaration.
         let tl = parse_top(
-            "type Spst { pin a; pin b; reference \"SW\"; tolerance any; rating any; \
+            "type Spst { pin a; pin b; reference \"SW\"; spec Tolerance: any; spec Rating: any; \
              mode closed { a.voltage == b.voltage; a.current + b.current == 0; } \
              mode open { a.current == 0Amp; b.current == 0Amp; } };",
         )

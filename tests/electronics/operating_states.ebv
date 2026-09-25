@@ -15,16 +15,16 @@ type Source {
     pin p;
     pin n;
     reference "V";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
 };
 
 type Flip {
     pin a;
     pin k;
     reference "F";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
     spec Bistable: true;
     // Two stable branch modes: positive or negative current. The signs are
     // complementary at zero current, so exactly the two one-amp modes solve.
@@ -37,8 +37,8 @@ type Resistor {
     pin a;
     pin b;
     reference "R";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
     spec Resistance: Ohm;
     when true {
         a.voltage - b.voltage == Resistance * a.current;

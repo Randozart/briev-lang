@@ -22,8 +22,8 @@ type Connector {
     pin p1 = 1;
     pin p2 = 2;
     reference "J";
-    tolerance any;
-    rating any;
+    spec Tolerance: any;
+    spec Rating: any;
 };
 
 let j1: Connector = Connector { value: "JST-PH-2"; package: "JST-PH" };
