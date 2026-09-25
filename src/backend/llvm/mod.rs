@@ -5854,6 +5854,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     writeln!(out, "  br label %.end").ok();
                     writeln!(out, ".end:").ok();
                 }
+                // 2026-09-25 (bug 12): host exit — flush the buffered stdout
+                // lane (sub-CAP output was lost at ret; same tail the counter
+                // engines emit, has_stdout_flush gates presence + liveness).
+                self.emit_stdout_flush_tail(out);
                 writeln!(out, "  ret i32 0").ok();
                 writeln!(out, "}}").ok();
                 return true;

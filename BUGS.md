@@ -6998,3 +6998,56 @@ non-beginprogram bodies).
 self-test, future replay tools) must sandbox module globals the bodies
 can write — entry flags today; the sandbox boundary is the emitted
 caller, not the body.
+
+## 2026-09-25: host mains returned without flushing the buffered stdout lane — sub-CAP output lost (bit_clear, deep_recursion) [RESOLVED]
+
+**Date:** 2026-09-25 (baseline sweep correctness gate — both printed `""`
+where the C reference printed `0` / `1250000025000000`)
+**Symptom:** any program whose TOTAL output was under `@__STDOUT_CAP`
+printed nothing at exit. The 2026-09-11 buffered-stdout design flushes
+only when the buffer fills (`__stdout_byte` CAP check) or at `__exit`
+(endprogram). Programs with neither — the common small-output case —
+wrote into a buffer that died with main's frame.
+**Root cause:** `emit_stdout_flush_tail` (2026-09-11) was called only by
+the FIVE counter-engine mains (`emit_folded_main`, `emit_countable_*`,
+`emit_version_dag_main_inner` — counter.rs). The reactor-loop main
+(loop_engine/ssa.rs `.ss_main_loop` exit), the modulo-rotated main
+(`.mr_end`), the modulo-switch main, the folded-multi main (`.fm_end`),
+the prealloc main (loop_engine/mod.rs) and the folded-loop/precomputed
+mains never flushed. 2026-09-23 fixed the flush GATE (live_defns
+ordering); the reactor shapes never had the call at all.
+**Fix:** every host main exit now calls `emit_stdout_flush_tail` before
+`ret i32 0` (7 new sites, dated provenance; embedded lane excluded — it
+parks in wfi, never exits). The helper is `pub(crate)` now (it was
+private to counter.rs; the other loop engines are sibling modules).
+Gate unchanged: fires only when the stdlib lane defines `__stdout_flush`
+AND liveness roots it (i.e. the program actually printed).
+**Verified:** new end-to-end tests
+`tests/stdout_flush_tail_test.rs` (reactor-loop main prints "42",
+modulo-rotated main prints "0\n1\n2\n3" — both under CAP);
+bit_clear prints `0`, deep_recursion prints `1250000025000000`, both ==
+C; `cargo test --lib` 2495/0.
+**Class:** a program-wide mechanism (flush at exit) must be applied at
+EVERY main shape, not just the engines that existed when it was written
+— a new loop engine inherits the tail by construction, never by
+copied-and-forgotten call sites.
+
+## 2026-09-25: `emit_precomputed_main` emitted `%state` twice — the fully-precomputed path could never compile [RESOLVED]
+
+**Date:** 2026-09-25 (found while adding the flush tail to every main
+shape — adjacent to bug 12, same function)
+**Symptom:** latent: any program that fully precomputes
+(`precomputed_final_values`, the EmitPureCounterFold path) emitted
+`%state = alloca %State, align 8` twice in main — clang rejects the
+module ("instruction redefinition"). No suite benchmark hit the path
+(this session), so it failed loudly only in principle.
+**Root cause:** commit 243288ef (ISR handlers) mechanically replaced the
+old `writeln!("%state = alloca …")` line with TWO `emit_state_base()`
+calls instead of one during the shared-state refactor.
+**Fix:** one `emit_state_base(out)` call, with dated provenance + undo.
+**Verified:** `cargo test --lib` 2495/0; the flush-tail tests exercise
+main emission on the hosted lane.
+**Class:** when a refactor swaps a raw emission for a helper call,
+count the call sites — a duplicated helper call duplicates the emitted
+IR, and the duplicate may sit on a cold path for months before it
+explodes.

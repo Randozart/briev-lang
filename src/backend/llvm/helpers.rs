@@ -431,7 +431,12 @@ impl LlvmBackend {
         final_values: &[(Vec<String>, HashMap<String, i64>)],
     ) {
         self.emit_main_header(out, "#0", false);
-        self.emit_state_base(out);
+        // 2026-09-25 (bug 13): exactly ONE state base — the 243288ef ISR
+        // refactor replaced the old `%state = alloca` line with two
+        // emit_state_base calls, emitting a duplicate `%state` definition
+        // (clang: "instruction redefinition") whenever a program fully
+        // precomputed. The ISR plan needs the zero-GEP alias form, not a
+        // second definition.
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -456,6 +461,10 @@ impl LlvmBackend {
                 }
             }
         }
+        // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
+        // (sub-CAP output was lost at ret; same tail the counter engines
+        // emit, has_stdout_flush gates presence + liveness).
+        self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
         writeln!(out).ok();

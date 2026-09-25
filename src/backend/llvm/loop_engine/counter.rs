@@ -2439,8 +2439,10 @@ fn collect_hoist_identifiers(
 
 impl LlvmBackend {
     /// 2026-09-11 (buffered stdout): gated epilogue flush — see the
-    /// has_stdout_flush field on the backend.
-    fn emit_stdout_flush_tail(&mut self, out: &mut String) {
+    /// has_stdout_flush field on the backend. 2026-09-25 (bug 12): pub(crate)
+    /// — every main shape (all loop engines, not just the counter family)
+    /// must flush the buffered stdout lane at its host exit.
+    pub(crate) fn emit_stdout_flush_tail(&mut self, out: &mut String) {
         if self.has_stdout_flush {
             writeln!(out, "  %__flush = call i64 @__stdout_flush(ptr %state)").ok();
         }

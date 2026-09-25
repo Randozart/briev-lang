@@ -131,6 +131,12 @@ impl LlvmBackend {
             writeln!(out, "  br label %.end").ok();
         }
         writeln!(out, ".end:").ok();
+        // 2026-09-25 (bug 12): the buffered stdout lane flushes only when the
+        // buffer fills (@__STDOUT_CAP) or at __exit (endprogram). A host main
+        // returning through this path printed nothing when total output was
+        // under CAP (bit_clear: buffered "0\n", lost at ret). Same tail the
+        // counter engines emit — has_stdout_flush gates presence + liveness.
+        self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
         writeln!(out).ok();
@@ -197,6 +203,10 @@ impl LlvmBackend {
         writeln!(out, "  store i64 {}, ptr {}, align 8", next, c_gep).ok();
         writeln!(out, "  br label %.mr_loop").ok();
         writeln!(out, ".mr_end:").ok();
+        // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
+        // (sub-CAP output was lost at ret; same tail the counter engines
+        // emit, has_stdout_flush gates presence + liveness).
+        self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
         writeln!(out).ok();
@@ -495,6 +505,10 @@ impl LlvmBackend {
                 writeln!(out, "  br label %.ss_main_loop").ok();
             }
         } else {
+            // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
+            // (sub-CAP output was lost at ret; see emit_modulo_switch_main).
+            // The embedded lane above parks instead of exiting — no flush.
+            self.emit_stdout_flush_tail(out);
             writeln!(out, "  ret i32 0").ok();
         }
         } // end loop_buf scope
@@ -591,6 +605,10 @@ impl LlvmBackend {
         writeln!(out, "  store i64 {}, ptr {}, align 8", next, c_gep).ok();
         writeln!(out, "  br label %.fm_loop").ok();
         writeln!(out, ".fm_end:").ok();
+        // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
+        // (sub-CAP output was lost at ret; same tail the counter engines
+        // emit, has_stdout_flush gates presence + liveness).
+        self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
         writeln!(out).ok();

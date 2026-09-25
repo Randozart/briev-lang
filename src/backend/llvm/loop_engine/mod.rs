@@ -286,6 +286,10 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
         writeln!(out, "  br label %.exit_check").ok();
     }
     writeln!(out, ".end:").ok();
+    // 2026-09-25 (bug 12): host exit — flush the buffered stdout lane
+    // (sub-CAP output was lost at ret; same tail the counter engines emit,
+    // has_stdout_flush gates presence + liveness).
+    self.emit_stdout_flush_tail(out);
     writeln!(out, "  ret i32 0").ok();
     writeln!(out, "}}").ok();
     writeln!(out).ok();
