@@ -2235,6 +2235,16 @@ fn force_return_topology(
         collect_participation(items, instances, type_pins);
     let mut topology_proofs = infer_return_net(instances, type_info, &unpop, ds);
     let mut topology_errors = Vec::new();
+    // 2026-09-25 (E14b-7): supply-rail membership by refutation — before
+    // bridging, whose bridge test consumes the final supply nets.
+    {
+        let mut mctx = NetlistContext::new(items, ds, type_pins, type_info, instances);
+        let (rails, source_pins) = collect_driven_rails_full(items, &mut mctx);
+        let (membership_proofs, membership_errors) =
+            infer_rail_membership(&mut mctx, &rails, &source_pins, &unpop);
+        topology_proofs.extend(membership_proofs);
+        topology_errors.extend(membership_errors);
+    }
     {
         let mut bctx = NetlistContext::new(items, ds, type_pins, type_info, instances);
         topology_proofs.extend(force_decoupler_bridges(&mut bctx, &unpop, &mut topology_errors));
@@ -2248,6 +2258,98 @@ fn force_return_topology(
         topology_proofs,
         topology_errors,
     }
+}
+
+/// 2026-09-25 (E14b-7, plan `2026-09-25-ebv-e14b-rail-membership.md`):
+/// supply-rail membership by refutation — rung 2 of the ladder. For each
+/// populated instance's supply-class pin whose net is unconnected, the
+/// candidates are the driven rails within the pin's tolerance; a unique
+/// survivor unions silently (proof line, D3 provenance), zero candidates
+/// is a hard error, and multiple candidates is a NEW ambiguity
+/// diagnostic enumerating the rails (fix text upgrades to the net<>/stdnet<>
+/// keywords in slice 2). Unrated pins place no tolerance constraint.
+/// Errors land in the topology/convention channel: the compiler demands
+/// a decision, it never guesses supply copper.
+fn infer_rail_membership(
+    ctx: &mut NetlistContext,
+    rails: &BTreeMap<String, f64>,
+    source_pins: &std::collections::HashSet<String>,
+    unpop: &std::collections::HashSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    let instances = ctx.instances;
+    let type_info = ctx.type_info;
+    // Collect (instance, pin, tolerance) obligations first — flat
+    // iteration, no nested loop.
+    let mut obligations: Vec<(String, String, Option<f64>)> = Vec::new();
+    for inst in instances.values() {
+        if unpop.contains(&inst.name) {
+            continue;
+        }
+        let Some(ti) = type_info.get(&inst.type_name) else {
+            continue;
+        };
+        obligations.extend(
+            rail_pins(ti, false)
+                .iter()
+                .map(|(n, _)| (inst.name.clone(), n.clone(), ti.tolerance)),
+        );
+    }
+    let mut proofs = Vec::new();
+    let mut errors = Vec::new();
+    for (inst, pname, tolerance) in &obligations {
+        let key = pin_key(inst, pname);
+        if pin_connected(ctx.ds, &key) || source_pins.contains(&key) {
+            continue;
+        }
+        let rated = match tolerance {
+            None => "unrated".to_string(),
+            Some(v) => format!("<= {}V", format_volts(*v)),
+        };
+        let candidates: Vec<(String, f64)> = rails
+            .iter()
+            .filter(|(_, v)| tolerance.map_or(true, |tol| **v <= tol))
+            .map(|(r, v)| (r.clone(), *v))
+            .collect();
+        let drive_list = rails
+            .iter()
+            .map(|(r, v)| format!("{}@{}", format_volts(*v), r))
+            .collect::<Vec<_>>()
+            .join(", ");
+        match candidates.len() {
+            0 => errors.push(format!(
+                "supply pin '{}.{}' has no driven rail within its tolerance ({}): driven rails \
+                 are {}. fix: add a drive for the intended supply net, or state the wire \
+                 explicitly",
+                inst, pname, rated, drive_list
+            )),
+            1 => {
+                let (root, v) = &candidates[0];
+                ctx.ds.make(key.clone());
+                ctx.ds.union(&key, root);
+                proofs.push(format!(
+                    "membership inferred: {}.{} joins the {}V rail (the only driven rail within \
+                     tolerance; rated {})",
+                    inst,
+                    pname,
+                    format_volts(*v),
+                    rated
+                ));
+            }
+            n => {
+                let cands = candidates
+                    .iter()
+                    .map(|(r, v)| format!("{}@{}", format_volts(*v), r))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                errors.push(format!(
+                    "supply pin '{}.{}' is membership-ambiguous: {} driven rails are within its \
+                     tolerance ({}; driven: {}). fix: state the wire explicitly",
+                    inst, pname, n, cands, drive_list
+                ));
+            }
+        }
+    }
+    (proofs, errors)
 }
 
 /// 2026-09-25 (E14b-6, design-record gate delta item 1): return-net
@@ -4189,7 +4291,19 @@ struct LowHoldWire {
 /// contracts, resolved to union-find roots; only Supply-class pins count
 /// as rails (a rail must be a real source, not an arbitrary driven net).
 fn collect_driven_rails(items: &[TopLevel], ctx: &mut NetlistContext) -> BTreeMap<String, f64> {
+    collect_driven_rails_full(items, ctx).0
+}
+
+/// The driven supply rails, two ways: root → volts (the forcing maps) and
+/// the SOURCE pin keys themselves — a driven pin defines its rail and is
+/// exempt from membership inference (2026-09-25, E14b-7: a rail's source
+/// cannot "join" another rail).
+fn collect_driven_rails_full(
+    items: &[TopLevel],
+    ctx: &mut NetlistContext,
+) -> (BTreeMap<String, f64>, std::collections::HashSet<String>) {
     let mut rails: BTreeMap<String, f64> = BTreeMap::new();
+    let mut source_pins: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut eqs: Vec<(Expr, Expr)> = Vec::new();
     for item in items {
         let TopLevel::Transaction(t) = item else {
@@ -4208,13 +4322,15 @@ fn collect_driven_rails(items: &[TopLevel], ctx: &mut NetlistContext) -> BTreeMa
         if !classes.supply {
             continue;
         }
-        let root = ctx.ds.find(&pin_key(&pin.component, &pin.pin));
+        let key = pin_key(&pin.component, &pin.pin);
+        source_pins.insert(key.clone());
+        let root = ctx.ds.find(&key);
         let entry = rails.entry(root).or_insert(0.0);
         if volts > *entry {
             *entry = volts;
         }
     }
-    rails
+    (rails, source_pins)
 }
 
 /// 2026-09-23 (E14b): entry — guard, collect driven rails, then force
@@ -4970,6 +5086,8 @@ mod tests {
             type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Decouple: 100n; };
 
             let u1: Chip = Chip { value: "mcu" };
+
+            txn on [u1.vdd.voltage == 3.3V] [u1.vdd.current >= 0.0] { }
         "#;
         let nl = analyze(src);
         assert_eq!(
@@ -5050,6 +5168,8 @@ mod tests {
 
             let u1: Chip = Chip { value: "mcu" };
             let c1: Cap = Cap { value: "100n" };
+
+            txn on [u1.vdd.voltage == 3.3V] [u1.vdd.current >= 0.0] { }
         "#;
         let nl = analyze(src);
         assert!(
@@ -5093,6 +5213,8 @@ mod tests {
             let u1: Chip = Chip { value: "mcu" };
             let c1: Cap = Cap { value: "100n" };
             unpop c1;
+
+            txn on [u1.vdd.voltage == 3.3V] [u1.vdd.current >= 0.0] { }
         "#;
         let nl = analyze(src);
         assert_eq!(nl.convention_errors.len(), 1, "{:?}", nl.convention_errors);
@@ -5113,6 +5235,8 @@ mod tests {
 
             let u1: Chip = Chip { value: "mcu" };
             let c1: Cap3 = Cap3 { value: "array" };
+
+            txn on [u1.vdd.voltage == 3.3V] [u1.vdd.current >= 0.0] { }
         "#;
         let nl = analyze(src);
         assert_eq!(nl.convention_errors.len(), 1, "{:?}", nl.convention_errors);
@@ -5140,6 +5264,138 @@ mod tests {
                 .any(|e| e.contains("no return net")),
             "{:?}",
             nl.convention_errors
+        );
+    }
+
+    // ── 2026-09-25 (E14b-7): membership by refutation ────────────────────
+
+    /// Two driven rails, a tolerance-refuted supply pin: the 5V rail is
+    /// not within the 4V tolerance, so membership is forced to the 3.3V
+    /// rail with no author input.
+    const REFUTATION_BOARD: &str = r#"
+        type Power { spec KicadType: "power_in"; spec Supply: true; };
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type Src { pin p: Power; reference "U"; };
+        type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
+
+        let s1: Src = Src { value: "usb" };
+        let s2: Src = Src { value: "ldo" };
+        let u1: Chip = Chip { value: "mcu" };
+
+        txn r1 [s1.p.voltage == 5.0V] [s1.p.current >= 0.0] { }
+        txn r2 [s2.p.voltage == 3.3V] [s2.p.current >= 0.0] { }
+    "#;
+
+    #[test]
+    fn membership_infers_unique_survivor() {
+        let nl = analyze(REFUTATION_BOARD);
+        assert!(
+            nl.convention_errors.is_empty(),
+            "tolerance refutation forces membership: {:?}",
+            nl.convention_errors
+        );
+        let idx = pin_net_index(&nl.nets);
+        assert_eq!(
+            idx[&("u1".to_string(), "vdd".to_string())],
+            idx[&("s2".to_string(), "p".to_string())],
+            "u1.vdd joins the only rail within tolerance: {:?}",
+            idx
+        );
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("membership inferred") && p.contains("u1.vdd")),
+            "{:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn membership_zero_candidates_is_an_error() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Src { pin p: Power; reference "U"; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 2V; };
+
+            let s1: Src = Src { value: "ldo" };
+            let u1: Chip = Chip { value: "mcu" };
+
+            txn r1 [s1.p.voltage == 3.3V] [s1.p.current >= 0.0] { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("no driven rail within its tolerance") && e.contains("u1.vdd")),
+            "{:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn membership_ambiguity_enumerates_rails() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Src { pin p: Power; reference "U"; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; };
+
+            let s1: Src = Src { value: "usb" };
+            let s2: Src = Src { value: "ldo" };
+            let u1: Chip = Chip { value: "mcu" };
+
+            txn r1 [s1.p.voltage == 5.0V] [s1.p.current >= 0.0] { }
+            txn r2 [s2.p.voltage == 3.3V] [s2.p.current >= 0.0] { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("membership-ambiguous") && e.contains("u1.vdd")),
+            "{:?}",
+            nl.convention_errors
+        );
+        let ambiguous = nl
+            .convention_errors
+            .iter()
+            .find(|e| e.contains("membership-ambiguous"))
+            .unwrap();
+        assert!(
+            ambiguous.contains("5 V@s1") && ambiguous.contains("3.3 V@s2"),
+            "both rails enumerated: {ambiguous}"
+        );
+    }
+
+    #[test]
+    fn unpop_supply_pin_skips_membership() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Src { pin p: Power; reference "U"; };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; };
+
+            let s1: Src = Src { value: "usb" };
+            let u1: Chip = Chip { value: "a" };
+            let u2: Chip = Chip { value: "b" };
+            unpop u2;
+
+            txn r1 [s1.p.voltage == 5.0V] [s1.p.current >= 0.0] { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            !nl.convention_errors
+                .iter()
+                .any(|e| e.contains("u2.vdd")),
+            "an absent part demands nothing: {:?}",
+            nl.convention_errors
+        );
+        let idx = pin_net_index(&nl.nets);
+        assert_eq!(
+            idx[&("u1".to_string(), "vdd".to_string())],
+            idx[&("s1".to_string(), "p".to_string())],
+            "the populated chip infers onto the sole rail: {:?}",
+            idx
         );
     }
 
