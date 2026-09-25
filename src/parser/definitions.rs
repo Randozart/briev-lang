@@ -3855,6 +3855,28 @@ impl<'a> Parser<'a> {
             self.eat(&Token::Semicolon);
             return Ok(());
         }
+        // 2026-09-25 (quantities Phase 4): pin-qualified rows for asymmetric
+        // parts — `spec Tolerance: in: 24V, vdd: 3.6V;` under
+        // `<key>:<pin>`. The colon lookahead decides: a bare unit
+        // spelling (`Volt`) is the dimension declaration, `v:` qualifies a
+        // pin. Per-pin RATINGS need a per-pin dissipation model — refused
+        // until one exists, never a silent no-op.
+        if dim != crate::ast::QuantityDim::Watt
+            && matches!(self.peek(), Some(Token::Identifier(_)))
+            && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Colon))
+        {
+            loop {
+                let pin = self.expect_identifier()?;
+                self.expect(Token::Colon)?;
+                let (si, resolved) = self.parse_spec_quantity(dim)?;
+                metadata.insert(format!("{key}:{pin}"), PropertyValue::Quantity { si, dimension: resolved });
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
         let (unit_hint, example) = match dim {
             crate::ast::QuantityDim::Volt => ("volt", "3.6V"),
             _ => ("watt", "0.25W"),

@@ -1372,6 +1372,44 @@ fn drive_conflicts(
 /// Every pin on a driven net must tolerate its class. `tolerance any` is a
 /// declared decision (never violates); NO tolerance clause on a driven net
 /// is an undeclared decision — a violation naming the fix.
+/// The effective volt tolerance for one pin — the instance's derating,
+/// then the type's pin-qualified row, then the type's uniform. Volt
+/// quantities only; anything else is absent.
+fn tolerance_for(
+    inst: &ComponentInstance,
+    ti: &TypeInfo,
+    pname: &str,
+) -> Option<f64> {
+    let pick = |pv: &crate::ast::PropertyValue| match pv {
+        crate::ast::PropertyValue::Quantity { si, dimension }
+            if *dimension == crate::ast::QuantityDim::Volt =>
+        {
+            Some(*si)
+        }
+        _ => None,
+    };
+    inst.specs
+        .get("tolerance")
+        .and_then(pick)
+        .or_else(|| ti.spec_defaults.get(&format!("tolerance:{pname}")).and_then(pick))
+        .or_else(|| ti.spec_defaults.get("tolerance").and_then(pick))
+        .or(ti.tolerance)
+}
+
+/// The effective watt rating for one part — the instance's derating,
+/// then the type's uniform.
+fn rating_for(inst: &ComponentInstance, ti: &TypeInfo) -> Option<f64> {
+    let pick = |pv: &crate::ast::PropertyValue| match pv {
+        crate::ast::PropertyValue::Quantity { si, dimension }
+            if *dimension == crate::ast::QuantityDim::Watt =>
+        {
+            Some(*si)
+        }
+        _ => None,
+    };
+    inst.specs.get("rating").and_then(pick).or(ti.rating)
+}
+
 fn check_tolerance(
     nets: &[Net],
     instances: &BTreeMap<String, &ComponentInstance>,
@@ -1384,13 +1422,14 @@ fn check_tolerance(
         for p in &net.pins {
             let Some(inst) = instances.get(&p.component) else { continue };
             let Some(info) = type_info.get(&inst.type_name) else { continue };
-            let Some(tol) = info.tolerance else {
+            let Some(tol) = tolerance_for(inst, info, &p.pin) else {
                 violations.push(format!(
                     "net '{}' is driven at {} but pin '{}.{}' (of {}) has no tolerance clause — \
                      an unrated pin on a driven net is an undeclared decision. \
-                     fix: add `spec Tolerance: <max>V;` rated for {}, or `spec Tolerance: any;` to declare \
+                     fix: add `spec Tolerance: <max>V;` (pin-qualified: `spec Tolerance: {}: <max>V;`) \
+                     rated for {}, or `spec Tolerance: any;` to declare \
                      the pin unrated on purpose.",
-                    net.name, format_volts(class), p.component, p.pin, inst.type_name, format_volts(class)
+                    net.name, format_volts(class), p.component, p.pin, inst.type_name, p.pin, format_volts(class)
                 ));
                 continue;
             };
@@ -1692,7 +1731,7 @@ fn derive_power(
         let watts = dv * dv / p.ohms;
         let Some(inst) = instances.get(&p.name) else { continue };
         let Some(info) = type_info.get(&inst.type_name) else { continue };
-        match info.rating {
+        match rating_for(inst, info) {
             None => check.violations.push(format!(
                 "part '{}' ({}, {}) dissipates a derived {} but its type declares no power rating — \
                  an unstated rating on a proven-dissipating part is an undeclared decision. \
@@ -1747,7 +1786,7 @@ fn derive_law_power(ctx: LawPowerContext<'_>, check: &mut VoltageCheck) {
             // Zero solved dissipation proves no thermal decision.
             continue;
         }
-        match info.rating {
+        match rating_for(inst, info) {
             None => check.violations.push(format!(
                 "{state}component-law part '{}' ({}) dissipates a derived {} but its type declares no power \
                  rating — an unstated rating on a proven-dissipating law part is an undeclared \
@@ -6308,6 +6347,105 @@ mod tests {
         assert!(
             err.contains("the key expects amp"),
             "wrong-dim envelope is a parse error: {err}"
+        );
+    }
+
+    // ── 2026-09-25 (quantities Phase 4, slice 2): pin-qualified envelopes ─
+
+    /// Two driven rails; the chip's tolerance rows are per pin (6 V on the
+    /// 5 V rail, 3.6 V on the 3.3 V rail).
+    const PIN_TOLERANCE_BOARD: &str = r#"
+        type Power { spec KicadType: "power_in"; spec Supply: true; };
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type Src { pin p: Power; reference "S"; spec Tolerance: any; };
+        type Chip { pin vdd: Power; pin aux: Power; pin gnd: Ground; reference "U"; spec Tolerance: vdd: 6V, aux: 3.6V; };
+        let s5: Src = Src { value: "5v" };
+        let s3: Src = Src { value: "3v3" };
+        let u: Chip = Chip { value: "mcu" };
+        txn r5 [s5.p.voltage == u.vdd.voltage && s5.p.voltage == 5.0Volt] [s5.p.current >= 0.0] { }
+        txn r3 [s3.p.voltage == u.aux.voltage && s3.p.voltage == 3.3Volt] [s3.p.current >= 0.0] { }
+    "#;
+
+    #[test]
+    fn pin_qualified_tolerance_proves_per_pin() {
+        let nl = analyze(PIN_TOLERANCE_BOARD);
+        assert!(
+            !nl.voltage
+                .violations
+                .iter()
+                .any(|v| v.contains("tolerates only") || v.contains("no tolerance clause")),
+            "both pins prove within their rows: {:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn pin_qualified_tolerance_violates_only_the_pin() {
+        // aux derated to 3.2 V: the 3.3 V rail violates aux and ONLY aux —
+        // vdd's 6 V row is untouched by the uniform absence.
+        let src = PIN_TOLERANCE_BOARD.replace("aux: 3.6V", "aux: 3.2V");
+        let nl = analyze(&src);
+        let aux = nl
+            .voltage
+            .violations
+            .iter()
+            .find(|v| v.contains("u.aux") && v.contains("tolerates only 3.2 V"));
+        assert!(aux.is_some(), "{:?}", nl.voltage.violations);
+        assert!(
+            !nl.voltage
+                .violations
+                .iter()
+                .any(|v| v.contains("u.vdd") && v.contains("tolerates only")),
+            "vdd's row is independent: {:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn instance_tolerance_override_wins() {
+        // Type row 6 V; the instance derates to 4.5 V — the 5 V rail
+        // violates the INSTANCE rating, not the type's.
+        let src = PIN_TOLERANCE_BOARD.replace(
+            "let u: Chip = Chip { value: \"mcu\" };",
+            "let u: Chip = Chip { value: \"mcu\"; spec Tolerance: 4.5V };",
+        );
+        let nl = analyze(&src);
+        assert!(
+            nl.voltage
+                .violations
+                .iter()
+                .any(|v| v.contains("u.vdd") && v.contains("tolerates only 4.5 V")),
+            "the instance derating decides: {:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn instance_rating_override_wins() {
+        // A 10 Ω part across 3.3 V dissipates ~1.09 W; the instance
+        // derates the rating to 0.5 W — violation names the derated value.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Rail { pin hi: Power; pin lo: Power; reference "P"; };
+            type Resistor { pin a; pin b; reference "R"; spec Resistance: Ohm; spec Rating: 5W;
+                when true {
+                    a.voltage - b.voltage == Resistance * a.current;
+                    a.current + b.current == 0;
+                };
+            };
+            let p: Rail = Rail { value: "rail" };
+            let r: Resistor = Resistor { spec Resistance: 10Ohm; spec Rating: 0.5W };
+            txn on [p.hi.voltage == r.a.voltage && r.b.voltage == p.lo.voltage && p.hi.voltage == 3.3Volt && p.lo.voltage == 0.0Volt] [r.a.current >= 0.0] { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.voltage
+                .violations
+                .iter()
+                .any(|v| v.contains("r") && v.contains("rated 500.0 mW")),
+            "the instance derating decides: {:?}",
+            nl.voltage.violations
         );
     }
 
