@@ -343,6 +343,12 @@ impl ElectronicsBackend {
     /// `V3.3`); anything else keeps its structural `N#` identity. The
     /// physics (pin classes + derived voltage) is the source of truth.
     fn net_label(netlist: &ElectronicsNetlist, net: &crate::analysis::electronics::Net) -> String {
+        // 2026-09-25 (E14b-7): the author's net label (net<>/stdnet<>) wins
+        // — it is declared semantics, not a guess. Unnamed nets keep the
+        // physics-derived label below.
+        if let Some(label) = &net.author_label {
+            return label.clone();
+        }
         let inst_to_type: std::collections::BTreeMap<&str, &str> = netlist
             .components
             .iter()

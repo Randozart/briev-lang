@@ -178,7 +178,9 @@ impl<'a> Parser<'a> {
             // <name>`. Modifiers compose in any order before a node/txn/let/
             // defn; the shared scanner consumes the run and the dispatch
             // below validates the structural identifier against the set.
-            Some(t) if Self::is_modifier_token(t) => self.parse_modifier_prefixed(),
+            Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => {
+                self.parse_modifier_prefixed()
+            }
             Some(Token::Cell) => self.parse_cell().map(TopLevel::Cell),
             // 2026-08-27 (cbv-HW plan Slice A): `extern Name<T>(ports)
             // -> outs from "path";` — a FOREIGN hardware module import.
@@ -1352,6 +1354,15 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// 2026-09-25 (E14b-7, rail-membership plan): `net<name>` / `stdnet<name>`
+    /// — contextual net-name strategy keywords. Identifiers, not reserved
+    /// tokens: the modifier dispatch only fires on them when the top-level
+    /// scanner will consume the `<...>` payload (a declaration prefix holds
+    /// no expressions, so comparison syntax cannot collide here).
+    fn is_net_modifier(t: &Token) -> bool {
+        matches!(t, Token::Identifier(s) if s == "net" || s == "stdnet")
+    }
+
     /// 2026-09-22 (order-free-modifiers plan): dispatch a declaration whose
     /// modifier prefix was consumed. Validates the structural identifier
     /// against the collected modifiers:
@@ -1365,11 +1376,13 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(Token::Node) => {
                 self.reject_memory_pins(&prefix, "a node has no memory pin")?;
+                self.reject_net_names(&prefix, "a node")?;
                 let txn = self.parse_node()?;
                 self.finish_reactive(txn, prefix)
             }
             Some(Token::Txn) => {
                 self.reject_memory_pins(&prefix, "a txn has no memory pin")?;
+                self.reject_net_names(&prefix, "a txn")?;
                 let txn = self.parse_transaction(false, prefix.is_async)?;
                 self.finish_reactive(txn, prefix)
             }
@@ -1404,11 +1417,24 @@ impl<'a> Parser<'a> {
                         "`accel` applies to a node/txn only — a defn has no GPU-deferral surface",
                     );
                 }
+                self.reject_net_names(&prefix, "a defn")?;
                 let mut defn = self.parse_definition()?;
                 defn.modifiers.extend(prefix.annotations);
                 Ok(TopLevel::Definition(defn))
             }
             _ => self.modifier_target_error(&prefix),
+        }
+    }
+
+    /// 2026-09-25 (E14b-7): `net<>`/`stdnet<>` name a let's supply net —
+    /// reject them on node/txn/defn, which have no supply pins.
+    fn reject_net_names(&self, prefix: &ModifierPrefix, what: &str) -> Result<(), SyntaxError> {
+        if prefix.annotations.iter().any(|a| a.name == "net" || a.name == "stdnet") {
+            self.error_at_current(&format!(
+                "`net<>`/`stdnet<>` names a let's supply net — {what} has no supply pins"
+            ))
+        } else {
+            Ok(())
         }
     }
 
@@ -3580,7 +3606,7 @@ impl<'a> Parser<'a> {
             }
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadType, MaxBits, NoConnect, PullUp, Rating, Resistance, Return, Rows, Supply, Switchable, Tolerance",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadLabel, KicadType, MaxBits, NetVoltage, NoConnect, PullUp, Rating, Resistance, Return, Rows, Supply, Switchable, Tolerance",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -3637,6 +3663,12 @@ impl<'a> Parser<'a> {
                     crate::ast::QuantityDim::Watt
                 };
                 return self.parse_envelope_spec(name, key, dim, metadata);
+            }
+            // 2026-09-25 (E14b-7, rail-membership plan): the standard-net
+            // registry rows — an explicit-volt quantity (the expectation)
+            // and the emitter label spelling.
+            "net_voltage" | "kicad_label" => {
+                parse_net_registry_spec(self, key, metadata)?;
             }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
@@ -4604,6 +4636,25 @@ fn record_atomic_fields(
     );
 }
 
+/// 2026-09-25 (E14b-7, rail-membership plan): the standard-net registry
+/// values — `spec NetVoltage: <volts>` (the membership expectation) and
+/// `spec KicadLabel: "..."` (the emitter spelling). Rows are ordinary
+/// type-body specs; the membership pass reads the properties generically.
+fn parse_net_registry_spec(
+    parser: &mut Parser,
+    key: &str,
+    metadata: &mut std::collections::HashMap<String, PropertyValue>,
+) -> Result<(), SyntaxError> {
+    if key == "net_voltage" {
+        let (si, dim) = parser.parse_spec_quantity(crate::ast::QuantityDim::Volt)?;
+        metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: dim });
+    } else {
+        let s = parser.expect_string()?;
+        metadata.insert(key.into(), PropertyValue::String(s));
+    }
+    Ok(())
+}
+
 pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
     match name {
         "Alignment" => Some("alignment"),
@@ -4668,6 +4719,13 @@ pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // `any`.
         "Tolerance" => Some("tolerance"),
         "Rating" => Some("rating"),
+        // 2026-09-25 (E14b-7, rail-membership plan): the standard-net
+        // registry — `spec NetVoltage` on a type makes it a `stdnet<Name>`
+        // row (the expected rail voltage), `spec KicadLabel` the emitter
+        // spelling. Read generically by the membership pass; the compiler
+        // never reads the NAME as physics (Rule 15).
+        "NetVoltage" => Some("net_voltage"),
+        "KicadLabel" => Some("kicad_label"),
         _ => None,
     }
 }

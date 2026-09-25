@@ -2,7 +2,7 @@
 // 2026-07-12: Phase 1.6 — expect, advance, peek, error reporting, span tracking.
 // Flat code: each function is max 2 levels of nesting.
 
-use crate::ast::{Annotation, TopLevel};
+use crate::ast::{Annotation, Expr, TopLevel};
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 use std::collections::HashSet;
@@ -144,6 +144,30 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     prefix.sync_groups = Some(self.parse_sync_groups()?);
                 }
+                Some(Token::Identifier(s))
+                    if (s == "net" || s == "stdnet")
+                        && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
+                {
+                    // 2026-09-25 (E14b-7, rail-membership plan): `net<name>`
+                    // / `stdnet<name>` — the supply-net strategy keywords.
+                    // Contextual identifiers, not reserved tokens: the arm
+                    // only fires when directly followed by `<` in a
+                    // declaration prefix, where no comparison syntax can
+                    // occur. Payload is a canonical identifier string
+                    // ("NAME" or "pin:NAME,pin:NAME") carried as the
+                    // annotation value; the analysis splits it — the
+                    // compiler never reads the name as physics (Rule 15).
+                    let keyword = s.clone();
+                    if prefix.annotations.iter().any(|a| a.name == keyword) {
+                        return Err(self.dup_modifier(&keyword));
+                    }
+                    self.pos += 1;
+                    let payload = self.parse_net_modifier_payload(&keyword)?;
+                    prefix.annotations.push(Annotation {
+                        name: keyword,
+                        value: Some(Expr::Quoted(payload.into_bytes())),
+                    });
+                }
                 _ => break,
             }
         }
@@ -183,6 +207,36 @@ impl<'a> Parser<'a> {
         } else {
             Ok(vec![])
         }
+    }
+
+    /// 2026-09-25 (E14b-7): the payload of `net<...>` / `stdnet<...>` —
+    /// either one bare net name (`<v3_3>`, `<VBUS>`) or a comma list of
+    /// pin-qualified names (`<in: VBUS, vout: V3V3>`). Canonicalized to
+    /// "NAME" or "pin:NAME,..." (identifiers cannot contain the
+    /// separators, so the analysis split is unambiguous).
+    fn parse_net_modifier_payload(&mut self, keyword: &str) -> Result<String, SyntaxError> {
+        self.expect(Token::Lt)?;
+        let mut parts: Vec<String> = Vec::new();
+        loop {
+            let first = self.expect_identifier()?;
+            if self.eat(&Token::Colon) {
+                let name = self.expect_identifier()?;
+                parts.push(format!("{first}:{name}"));
+            } else {
+                parts.push(first);
+            }
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(Token::Gt)?;
+        if parts.is_empty() {
+            return self.error_at_current(&format!(
+                "`{keyword}<>` names nothing — give a net name (`{keyword}<VBUS>`) or \
+                 pin-qualified names (`{keyword}<in: VBUS, vout: V3V3>`)"
+            ));
+        }
+        Ok(parts.join(","))
     }
 
     /// True when the current `seq`/`pack`/`coll` modifier is heading for a

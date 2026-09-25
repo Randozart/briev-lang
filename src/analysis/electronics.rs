@@ -92,6 +92,10 @@ pub struct TypeInfo {
 pub struct Net {
     pub name: String,
     pub pins: Vec<PinRef>,
+    /// 2026-09-25 (E14b-7): the author's net label (net<>/stdnet<>) when
+    /// the net carries one — the emitter prefers it over the
+    /// physics-derived label; the structural name stays the identity.
+    pub author_label: Option<String>,
 }
 
 /// The derived netlist plus hard diagnostics.
@@ -2145,6 +2149,9 @@ struct NetlistContext<'a> {
     /// up through them (consolidated so the walkers stay under the
     /// parameter gate).
     instances: &'a BTreeMap<String, &'a ComponentInstance>,
+    /// 2026-09-25 (E14b-7): `net<>`/`stdnet<>` attachments per instance —
+    /// the supply-membership ladder's declared-intent channel.
+    net_names: BTreeMap<String, Vec<NetAttach>>,
 }
 
 impl<'a> NetlistContext<'a> {
@@ -2161,6 +2168,7 @@ impl<'a> NetlistContext<'a> {
             type_info,
             type_props: collect_type_metadata(items),
             instances,
+            net_names: collect_net_names(items),
         }
     }
 }
@@ -2216,6 +2224,8 @@ struct ReturnTopology {
     participation_notes: Vec<String>,
     topology_proofs: Vec<String>,
     topology_errors: Vec<String>,
+    /// Author net labels (net<>/stdnet<>) by final union-find root.
+    net_labels: BTreeMap<String, String>,
 }
 
 /// 2026-09-25 (E14b-6): the return-topology pass, in dependency order —
@@ -2235,15 +2245,21 @@ fn force_return_topology(
         collect_participation(items, instances, type_pins);
     let mut topology_proofs = infer_return_net(instances, type_info, &unpop, ds);
     let mut topology_errors = Vec::new();
+    // author net labels by FINAL root — resolved after all forcing unions
+    let mut net_labels: BTreeMap<String, String> = BTreeMap::new();
     // 2026-09-25 (E14b-7): supply-rail membership by refutation — before
     // bridging, whose bridge test consumes the final supply nets.
     {
         let mut mctx = NetlistContext::new(items, ds, type_pins, type_info, instances);
         let (rails, source_pins) = collect_driven_rails_full(items, &mut mctx);
-        let (membership_proofs, membership_errors) =
+        let (membership_proofs, membership_errors, net_bindings) =
             infer_rail_membership(&mut mctx, &rails, &source_pins, &unpop);
         topology_proofs.extend(membership_proofs);
         topology_errors.extend(membership_errors);
+        net_labels = net_bindings
+            .into_iter()
+            .map(|(_, (root, label))| (ds.find(&root), label))
+            .collect();
     }
     {
         let mut bctx = NetlistContext::new(items, ds, type_pins, type_info, instances);
@@ -2257,30 +2273,303 @@ fn force_return_topology(
         participation_notes,
         topology_proofs,
         topology_errors,
+        net_labels,
     }
 }
 
-/// 2026-09-25 (E14b-7, plan `2026-09-25-ebv-e14b-rail-membership.md`):
-/// supply-rail membership by refutation — rung 2 of the ladder. For each
-/// populated instance's supply-class pin whose net is unconnected, the
-/// candidates are the driven rails within the pin's tolerance; a unique
-/// survivor unions silently (proof line, D3 provenance), zero candidates
-/// is a hard error, and multiple candidates is a NEW ambiguity
-/// diagnostic enumerating the rails (fix text upgrades to the net<>/stdnet<>
-/// keywords in slice 2). Unrated pins place no tolerance constraint.
-/// Errors land in the topology/convention channel: the compiler demands
-/// a decision, it never guesses supply copper.
-fn infer_rail_membership(
-    ctx: &mut NetlistContext,
-    rails: &BTreeMap<String, f64>,
-    source_pins: &std::collections::HashSet<String>,
+/// 2026-09-25 (E14b-7): one `net<>`/`stdnet<>` attachment on an instance
+/// `let` — an optional pin qualifier, the net name, and whether the name
+/// is registry-backed (`stdnet`, carries `spec NetVoltage`) or
+/// board-local (`net`, opaque to the compiler, Rule 15).
+#[derive(Debug, Clone)]
+pub struct NetAttach {
+    pub pin: Option<String>,
+    pub name: String,
+    pub standard: bool,
+}
+
+/// Collect the net-name attachments from instance `let` modifiers. The
+/// annotation value is the canonical payload the modifier scanner built
+/// ("NAME" or "pin:NAME,..."); identifiers cannot contain the separators,
+/// so the split is unambiguous.
+fn collect_net_names(items: &[TopLevel]) -> BTreeMap<String, Vec<NetAttach>> {
+    let mut out: BTreeMap<String, Vec<NetAttach>> = BTreeMap::new();
+    // (let name, standard, payload) rows first — flat iteration, no
+    // nested loop (one loop per dimension).
+    let rows: Vec<(String, bool, String)> = items
+        .iter()
+        .filter_map(|it| match it {
+            TopLevel::Statement(s) => Some(s.as_ref()),
+            _ => None,
+        })
+        .filter_map(|stmt| match stmt {
+            Statement::Let { name, modifiers, .. } => Some((name, modifiers)),
+            _ => None,
+        })
+        .flat_map(|(name, modifiers)| modifiers.iter().map(move |ann| (name, ann)))
+        .filter_map(|(name, ann)| {
+            let standard = match ann.name.as_str() {
+                "net" => false,
+                "stdnet" => true,
+                _ => return None,
+            };
+            let Some(Expr::Quoted(bytes)) = &ann.value else {
+                return None;
+            };
+            Some((name.clone(), standard, String::from_utf8_lossy(bytes).to_string()))
+        })
+        .collect();
+    for (name, standard, part) in rows
+        .iter()
+        .flat_map(|(name, standard, payload)| {
+            payload.split(',').map(move |p| (name, *standard, p))
+        })
+    {
+        let (pin, net_name) = match part.split_once(':') {
+            Some((p, n)) => (Some(p.to_string()), n.to_string()),
+            None => (None, part.to_string()),
+        };
+        out.entry(name.clone()).or_default().push(NetAttach {
+            pin,
+            name: net_name,
+            standard,
+        });
+    }
+    out
+}
+
+/// The declared `spec NetVoltage` of a standard net — the registry row is
+/// any type whose body declares the key. The compiler reads the declared
+/// property, never the name (Rule 15).
+fn stdnet_expected_volts(
+    type_props: &BTreeMap<String, &std::collections::HashMap<String, crate::ast::PropertyValue>>,
+    name: &str,
+) -> Option<f64> {
+    type_props.get(name).and_then(|m| m.get("net_voltage")).and_then(|pv| match pv {
+        crate::ast::PropertyValue::Quantity { si, dimension }
+            if *dimension == crate::ast::QuantityDim::Volt =>
+        {
+            Some(*si)
+        }
+        _ => None,
+    })
+}
+
+/// The declared `spec KicadLabel` of a standard net — the emitter label
+/// when the bare name is not the spelling the tools expect.
+fn stdnet_label(
+    type_props: &BTreeMap<String, &std::collections::HashMap<String, crate::ast::PropertyValue>>,
+    name: &str,
+) -> Option<String> {
+    type_props.get(name).and_then(|m| m.get("kicad_label")).and_then(property_string)
+}
+
+/// The name bindings of one membership pass — the duplicate-name rule in
+/// ONE place (three call sites shared it before, E14b-7).
+struct NetBindings<'a> {
+    bound: &'a mut BTreeMap<String, (String, String)>,
+    errors: &'a mut Vec<String>,
+}
+
+impl NetBindings<'_> {
+    /// The current bindings, for propagation lookups.
+    fn snapshot(&self) -> &BTreeMap<String, (String, String)> {
+        self.bound
+    }
+}
+
+impl NetBindings<'_> {
+    /// Bind a net name to a rail root. A name refusing to span two rails
+    /// is the whole point: two rails are not one net.
+    fn bind(&mut self, name: &str, root: &str, label: String) {
+        match self.bound.get(name) {
+            Some((existing, _)) if existing != root => {
+                self.errors.push(format!(
+                    "net name '{}' cannot name two different rails — two rails are not one \
+                     net. fix: use distinct names, or state the wire that merges them",
+                    name
+                ));
+            }
+            Some(_) => {}
+            None => {
+                self.bound.insert(name.to_string(), (root.to_string(), label));
+            }
+        }
+    }
+}
+
+/// Resolve one attachment's pin: the explicit qualifier, or the sole
+/// supply pin for the bare form. An ambiguous bare form names the pins.
+fn attach_pin(
+    inst_name: &str,
+    supplies: &[&(String, u64)],
+    att: &NetAttach,
+    errors: &mut Vec<String>,
+) -> Option<String> {
+    let pname = match &att.pin {
+        Some(p) => p.clone(),
+        None => {
+            if supplies.len() != 1 {
+                let pins = supplies
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                errors.push(format!(
+                    "'{}' declares {} supply pins ({}) — a bare net name is ambiguous. fix: \
+                     qualify per pin (`{}<in: VBUS, vout: V3V3>`)",
+                    inst_name,
+                    supplies.len(),
+                    pins,
+                    if att.standard { "stdnet" } else { "net" }
+                ));
+                return None;
+            }
+            supplies[0].0.clone()
+        }
+    };
+    Some(pname)
+}
+
+/// The type-side world of one attachment — a bundle under the parameter
+/// gate.
+struct AttachCheck<'a> {
+    type_props:
+        &'a BTreeMap<String, &'a std::collections::HashMap<String, crate::ast::PropertyValue>>,
+    ti: &'a TypeInfo,
+    inst_name: &'a str,
+}
+
+/// One attachment's class + registry validation. Errors state what, why,
+/// and the fix; `None` drops the attachment from the pass.
+fn validate_attach(
+    check: &AttachCheck,
+    pname: &str,
+    att: &NetAttach,
+    errors: &mut Vec<String>,
+) -> Option<(String, bool)> {
+    let (type_props, ti, inst_name) = (check.type_props, check.ti, check.inst_name);
+    let Some(idx) = ti.pins.iter().position(|(n, _)| *n == pname) else {
+        errors.push(format!(
+            "'{}' has no pin '{}' for the net name '{}'",
+            inst_name, pname, att.name
+        ));
+        return None;
+    };
+    if ti.pin_classes[idx].return_pin {
+        errors.push(format!(
+            "'{}.{}' is a return-class pin — the return net is class-inferred and takes no \
+             net name",
+            inst_name, pname
+        ));
+        return None;
+    }
+    if !ti.pin_classes[idx].supply {
+        errors.push(format!(
+            "'{}.{}' is not a supply-class pin — net names attach to supply membership only",
+            inst_name, pname
+        ));
+        return None;
+    }
+    if att.standard && stdnet_expected_volts(type_props, &att.name).is_none() {
+        errors.push(format!(
+            "no standard net '{}' is declared — declare a type '{}' with `spec NetVoltage` \
+             (and optional `spec KicadLabel`), or use the board-local form net<{}>",
+            att.name, att.name, att.name
+        ));
+        return None;
+    }
+    Some((att.name.clone(), att.standard))
+}
+
+/// Expand + validate the `net<>`/`stdnet<>` attachments of each populated
+/// instance into per-pin entries.
+fn expand_net_attachments(
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    type_props: &BTreeMap<String, &std::collections::HashMap<String, crate::ast::PropertyValue>>,
+    net_names: &BTreeMap<String, Vec<NetAttach>>,
     unpop: &std::collections::HashSet<String>,
-) -> (Vec<String>, Vec<String>) {
+) -> (BTreeMap<(String, String), (String, bool)>, Vec<String>) {
+    let mut named = BTreeMap::new();
+    let mut errors = Vec::new();
+    let rows: Vec<(&&ComponentInstance, &TypeInfo, &Vec<NetAttach>)> = instances
+        .values()
+        .filter(|inst| !unpop.contains(&inst.name))
+        .filter_map(|inst| Some((inst, type_info.get(&inst.type_name)?, net_names.get(&inst.name)?)))
+        .collect();
+    let attach_rows: Vec<(&&ComponentInstance, &TypeInfo, &NetAttach)> = rows
+        .into_iter()
+        .flat_map(|(inst, ti, attaches)| {
+            attaches.iter().map(move |att| (inst, ti, att))
+        })
+        .collect();
+    for (inst, ti, att) in attach_rows {
+        let supplies = rail_pins(ti, false);
+        let Some(pname) = attach_pin(&inst.name, &supplies, att, &mut errors) else {
+            continue;
+        };
+        let check = AttachCheck { type_props, ti, inst_name: &inst.name };
+        let Some(entry) = validate_attach(&check, &pname, att, &mut errors) else {
+            continue;
+        };
+        let key = (inst.name.clone(), pname);
+        if let Some((existing, _)) = named.get(&key) {
+            errors.push(format!(
+                "'{}.{}' carries two net names ('{}' and '{}') — one pin, one net name",
+                inst.name, key.1, existing, entry.0
+            ));
+            continue;
+        }
+        named.insert(key, entry);
+    }
+    (named, errors)
+}
+
+/// Bind names through connected pins first — a drive-fact source pin
+/// (j1.vbus) IS its rail; a pin pre-wired by a guard equality sits on a
+/// final net. Both bind their name to that net's root.
+fn bind_connected_names(
+    ctx: &mut NetlistContext,
+    unpop: &std::collections::HashSet<String>,
+    named: &BTreeMap<(String, String), (String, bool)>,
+    bindings: &mut NetBindings,
+) {
     let instances = ctx.instances;
     let type_info = ctx.type_info;
-    // Collect (instance, pin, tolerance) obligations first — flat
-    // iteration, no nested loop.
-    let mut obligations: Vec<(String, String, Option<f64>)> = Vec::new();
+    let type_props = ctx.type_props.clone();
+    let rows: Vec<(&&ComponentInstance, &(String, u64))> = instances
+        .values()
+        .filter(|inst| !unpop.contains(&inst.name))
+        .filter_map(|inst| {
+            let ti = type_info.get(&inst.type_name)?;
+            Some((inst, rail_pins(ti, false)))
+        })
+        .flat_map(|(inst, pins)| pins.into_iter().map(move |p| (inst, p)))
+        .collect();
+    for (inst, (pname, _)) in rows {
+        let key = pin_key(&inst.name, pname);
+        let Some(att) = named.get(&(inst.name.clone(), pname.clone())) else {
+            continue;
+        };
+        if !pin_connected(ctx.ds, &key) {
+            continue;
+        }
+        let root = ctx.ds.find(&key);
+        let label = stdnet_label(&type_props, &att.0).unwrap_or_else(|| att.0.clone());
+        bindings.bind(&att.0, &root, label);
+    }
+}
+
+/// The membership obligations of one pass — flat list, no nested loop
+/// (the pass is inherently O(instances × pins)).
+fn membership_obligations(
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    named: &BTreeMap<(String, String), (String, bool)>,
+    unpop: &std::collections::HashSet<String>,
+) -> Vec<(String, String, Option<f64>, Option<(String, bool)>)> {
+    let mut obligations: Vec<(String, String, Option<f64>, Option<(String, bool)>)> = Vec::new();
     for inst in instances.values() {
         if unpop.contains(&inst.name) {
             continue;
@@ -2288,68 +2577,223 @@ fn infer_rail_membership(
         let Some(ti) = type_info.get(&inst.type_name) else {
             continue;
         };
-        obligations.extend(
-            rail_pins(ti, false)
-                .iter()
-                .map(|(n, _)| (inst.name.clone(), n.clone(), ti.tolerance)),
-        );
+        obligations.extend(rail_pins(ti, false).iter().map(|(n, _)| {
+            (
+                inst.name.clone(),
+                n.clone(),
+                ti.tolerance,
+                named.get(&(inst.name.clone(), n.clone())).cloned(),
+            )
+        }));
     }
+    obligations
+}
+
+/// Resolve one obligation through the ladder: expectation filter →
+/// tolerance refutation → propagation toward bound-named rails →
+/// enumerated ambiguity.
+/// The ladder's fix text per attachment shape.
+fn membership_fix(attachment: &Option<(String, bool)>) -> String {
+    match attachment {
+        Some((name, true)) => format!("correct the {} expectation or add the drive", name),
+        Some((name, false)) => format!("state the wire, or correct the {} name", name),
+        None => "state the wire, or name the intended net (net<name> / stdnet<NAME>)".to_string(),
+    }
+}
+
+/// Why a pin has no rail to join — the expectation names itself when the
+/// admission failed on declared volts, else the tolerance.
+fn no_rail_why(
+    attachment: &Option<(String, bool)>,
+    expectation: Option<f64>,
+    rated: &str,
+) -> String {
+    match expectation {
+        Some(exp) => format!(
+            "{} expects a {}-driven rail",
+            attachment.as_ref().map(|(n, _)| n.as_str()).unwrap_or(""),
+            format_volts(exp)
+        ),
+        None => format!("no driven rail is within its tolerance ({})", rated),
+    }
+}
+
+/// Why the unique survivor is the answer — a declared standard net, or
+/// plain tolerance refutation.
+fn unique_membership_why(attachment: &Option<(String, bool)>) -> String {
+    attachment
+        .as_ref()
+        .filter(|(_, standard)| *standard)
+        .map(|(n, _)| format!("standard net {} drives it", n))
+        .unwrap_or_else(|| "the only driven rail within tolerance".to_string())
+}
+
+/// The driven-rail list as it appears in diagnostics ("3.3 V@root, ...").
+fn membership_drive_list(rails: &BTreeMap<String, f64>) -> String {
+    rails
+        .iter()
+        .map(|(r, v)| format!("{}@{}", format_volts(*v), r))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The rails this obligation may join: within pin tolerance, and — when a
+/// stdnet expectation is present — driven at exactly the expected volts.
+fn membership_candidates(
+    rails: &BTreeMap<String, f64>,
+    tolerance: Option<f64>,
+    expectation: Option<f64>,
+) -> Vec<(String, f64)> {
+    rails
+        .iter()
+        .filter(|(_, v)| tolerance.map_or(true, |tol| **v <= tol))
+        .filter(|(_, v)| expectation.map_or(true, |exp| (**v - exp).abs() < f64::EPSILON))
+        .map(|(r, v)| (r.clone(), *v))
+        .collect()
+}
+
+fn resolve_one_membership(
+    ctx: &mut NetlistContext,
+    rails: &BTreeMap<String, f64>,
+    source_pins: &std::collections::HashSet<String>,
+    bindings: &mut NetBindings,
+    obligation: (String, String, Option<f64>, Option<(String, bool)>),
+) -> Option<String> {
+    let (inst, pname, tolerance, attachment) = obligation;
+    let key = pin_key(&inst, &pname);
+    if pin_connected(ctx.ds, &key) || source_pins.contains(&key) {
+        return None;
+    }
+    let expectation = attachment
+        .as_ref()
+        .filter(|(_, standard)| *standard)
+        .and_then(|(name, _)| stdnet_expected_volts(&ctx.type_props.clone(), name));
+    let rated = match tolerance {
+        None => "unrated".to_string(),
+        Some(v) => format!("<= {}", format_volts(v)),
+    };
+    let drive_list = membership_drive_list(rails);
+    let candidates = membership_candidates(rails, tolerance, expectation);
+    let fix = membership_fix(&attachment);
+    match candidates.len() {
+        0 => {
+            let why = no_rail_why(&attachment, expectation, &rated);
+            bindings.errors.push(format!(
+                "supply pin '{}.{}' has no rail to join: {}; driven rails are {}. fix: {}",
+                inst, pname, why, drive_list, fix
+            ));
+            None
+        }
+        1 => {
+            let (root, v) = &candidates[0];
+            ctx.ds.make(key.clone());
+            ctx.ds.union(&key, root);
+            let proof = format!(
+                "membership inferred: {}.{} joins the {} rail ({}; rated {})",
+                inst,
+                pname,
+                format_volts(*v),
+                unique_membership_why(&attachment),
+                rated
+            );
+            if let Some((name, _)) = &attachment {
+                let label = stdnet_label(&ctx.type_props.clone(), name)
+                    .unwrap_or_else(|| name.clone());
+                bindings.bind(name, root, label);
+            }
+            Some(proof)
+        }
+        n => {
+            // Rung 3: propagation — candidates on a bound-named rail.
+            let named_candidates: std::collections::BTreeSet<String> = candidates
+                .iter()
+                .filter_map(|(r, _)| {
+                    bindings
+                        .snapshot()
+                        .iter()
+                        .find_map(|(name, (root, _))| (root == r).then_some(name.clone()))
+                })
+                .collect();
+            match named_candidates.len() {
+                1 => {
+                    let name = named_candidates.iter().next().unwrap();
+                    let (root, _) = bindings.snapshot()[name].clone();
+                    ctx.ds.make(key.clone());
+                    ctx.ds.union(&key, &root);
+                    if let Some((own, _)) = &attachment {
+                        let label = stdnet_label(&ctx.type_props.clone(), own)
+                            .unwrap_or_else(|| own.clone());
+                        bindings.bind(own, &root, label);
+                    }
+                    Some(format!(
+                        "membership propagated: {}.{} joins {} (the only bound-named rail \
+                         among its candidates; rated {})",
+                        inst, pname, name, rated
+                    ))
+                }
+                _ => {
+                    let cands = candidates
+                        .iter()
+                        .map(|(r, v)| format!("{}@{}", format_volts(*v), r))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    bindings.errors.push(format!(
+                        "supply pin '{}.{}' is membership-ambiguous: {} rails are within its \
+                         tolerance ({}) and no single bound net name decides among them. \
+                         fix: name the intended net (net<name> / stdnet<NAME>)",
+                        inst, pname, n, cands
+                    ));
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// 2026-09-25 (E14b-7, plan `2026-09-25-ebv-e14b-rail-membership.md`):
+/// supply-rail membership — the full ladder. Rung 1: a `stdnet<>`
+/// expectation filters candidates to rails driven at the declared
+/// `spec NetVoltage`; expectations constrain, they never drive. Rung 2:
+/// pin tolerance refutes; a unique survivor unions silently (proof line,
+/// D3 provenance). Rung 3: propagation — an ambiguous pin with exactly
+/// one bound-named candidate rail joins it. Rung 4: residual ambiguity
+/// is a hard diagnostic enumerating the candidates and naming the
+/// keywords. Rail source pins are exempt (a driven pin defines its
+/// rail). Names bind to rails only through physics-forced pins; the
+/// compiler never reads a name as physics (Rule 15). Returns the wiring
+/// proofs, the errors, and the name→(root, label) bindings.
+fn infer_rail_membership(
+    ctx: &mut NetlistContext,
+    rails: &BTreeMap<String, f64>,
+    source_pins: &std::collections::HashSet<String>,
+    unpop: &std::collections::HashSet<String>,
+) -> (
+    Vec<String>,
+    Vec<String>,
+    BTreeMap<String, (String, String)>,
+) {
+    let instances = ctx.instances;
+    let type_info = ctx.type_info;
+    let type_props = ctx.type_props.clone();
+    let net_names = ctx.net_names.clone();
     let mut proofs = Vec::new();
     let mut errors = Vec::new();
-    for (inst, pname, tolerance) in &obligations {
-        let key = pin_key(inst, pname);
-        if pin_connected(ctx.ds, &key) || source_pins.contains(&key) {
-            continue;
-        }
-        let rated = match tolerance {
-            None => "unrated".to_string(),
-            Some(v) => format!("<= {}V", format_volts(*v)),
-        };
-        let candidates: Vec<(String, f64)> = rails
-            .iter()
-            .filter(|(_, v)| tolerance.map_or(true, |tol| **v <= tol))
-            .map(|(r, v)| (r.clone(), *v))
-            .collect();
-        let drive_list = rails
-            .iter()
-            .map(|(r, v)| format!("{}@{}", format_volts(*v), r))
-            .collect::<Vec<_>>()
-            .join(", ");
-        match candidates.len() {
-            0 => errors.push(format!(
-                "supply pin '{}.{}' has no driven rail within its tolerance ({}): driven rails \
-                 are {}. fix: add a drive for the intended supply net, or state the wire \
-                 explicitly",
-                inst, pname, rated, drive_list
-            )),
-            1 => {
-                let (root, v) = &candidates[0];
-                ctx.ds.make(key.clone());
-                ctx.ds.union(&key, root);
-                proofs.push(format!(
-                    "membership inferred: {}.{} joins the {}V rail (the only driven rail within \
-                     tolerance; rated {})",
-                    inst,
-                    pname,
-                    format_volts(*v),
-                    rated
-                ));
-            }
-            n => {
-                let cands = candidates
-                    .iter()
-                    .map(|(r, v)| format!("{}@{}", format_volts(*v), r))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                errors.push(format!(
-                    "supply pin '{}.{}' is membership-ambiguous: {} driven rails are within its \
-                     tolerance ({}; driven: {}). fix: state the wire explicitly",
-                    inst, pname, n, cands, drive_list
-                ));
+    let mut bound: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let (named, expand_errors) =
+        expand_net_attachments(instances, type_info, &type_props, &net_names, unpop);
+    errors.extend(expand_errors);
+    {
+        let mut bindings = NetBindings { bound: &mut bound, errors: &mut errors };
+        bind_connected_names(ctx, unpop, &named, &mut bindings);
+        for obligation in membership_obligations(instances, type_info, &named, unpop) {
+            if let Some(proof) =
+                resolve_one_membership(ctx, rails, source_pins, &mut bindings, obligation)
+            {
+                proofs.push(proof);
             }
         }
     }
-    (proofs, errors)
+    (proofs, errors, bound)
 }
 
 /// 2026-09-25 (E14b-6, design-record gate delta item 1): return-net
@@ -4639,6 +5083,7 @@ fn conditional_bridge_strings(bridges: &[BridgeRequest]) -> Vec<String> {
 fn partition_nets(
     groups: &BTreeMap<String, Vec<PinRef>>,
     nc_pins: &std::collections::HashSet<String>,
+    author_labels: &BTreeMap<String, String>,
 ) -> (Vec<Net>, Vec<String>) {
     let mut nets = Vec::new();
     let mut dangling = Vec::new();
@@ -4649,6 +5094,7 @@ fn partition_nets(
             nets.push(Net {
                 name: format!("N{}", net_index),
                 pins: members.clone(),
+                author_label: author_labels.get(root).cloned(),
             });
         } else {
             let p = &members[0];
@@ -4866,7 +5312,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let (groups, nc_pins) =
         group_pins(&instances, &type_pins, &type_info, &mut ds, &topo.exempt_pins);
 
-    let (nets, dangling) = partition_nets(&groups, &nc_pins);
+    let (nets, dangling) = partition_nets(&groups, &nc_pins, &topo.net_labels);
 
     // Voltage classes need the nets and instances before they move into the
     // result struct. 2026-09-22 (Slice B): acknowledged shorts suppress the
@@ -5327,7 +5773,7 @@ mod tests {
         assert!(
             nl.convention_errors
                 .iter()
-                .any(|e| e.contains("no driven rail within its tolerance") && e.contains("u1.vdd")),
+                .any(|e| e.contains("no driven rail is within its tolerance") && e.contains("u1.vdd")),
             "{:?}",
             nl.convention_errors
         );
@@ -5397,6 +5843,236 @@ mod tests {
             "the populated chip infers onto the sole rail: {:?}",
             idx
         );
+    }
+
+    // ── 2026-09-25 (E14b-7 slice 2): net<> / stdnet<> ────────────────────
+
+    const NET_REGISTRY: &str = r#"
+        type Power { spec KicadType: "power_in"; spec Supply: true; };
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type VBUS { spec NetVoltage: 5V; };
+        type V3V3 { spec NetVoltage: 3.3V; spec KicadLabel: "+3V3"; };
+        type Src { pin p: Power; reference "U"; };
+        type Chip { pin vdd: Power; pin vss: Ground; reference "U"; };
+        type ChipA { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
+        type Ldo { pin in: Power; pin vout: Power; pin gnd: Ground; reference "U"; };
+    "#;
+
+    fn net_board(extra: &str) -> String {
+        format!(
+            r#"{}
+            let s1: Src = Src {{ value: "usb" }};
+            let s2: Src = Src {{ value: "ldo" }};
+
+            txn r1 [s1.p.voltage == 5.0V] [s1.p.current >= 0.0] {{ }}
+            txn r2 [s2.p.voltage == 3.3V] [s2.p.current >= 0.0] {{ }}
+            {}"#,
+            NET_REGISTRY, extra
+        )
+    }
+
+    #[test]
+    fn stdnet_expectation_forces_membership_and_labels() {
+        let src = net_board("stdnet<V3V3> let u1: Chip = Chip { value: \"mcu\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors.is_empty(),
+            "the 3.3V expectation decides: {:?}",
+            nl.convention_errors
+        );
+        let idx = pin_net_index(&nl.nets);
+        assert_eq!(
+            idx[&("u1".to_string(), "vdd".to_string())],
+            idx[&("s2".to_string(), "p".to_string())],
+            "u1.vdd joins the 3.3V rail: {:?}",
+            idx
+        );
+        let net_name = &idx[&("u1".to_string(), "vdd".to_string())];
+        let net = nl.nets.iter().find(|n| &n.name == net_name).unwrap();
+        assert_eq!(
+            net.author_label.as_deref(),
+            Some("+3V3"),
+            "the registry KicadLabel flows to the net: {:?}",
+            net
+        );
+    }
+
+    #[test]
+    fn stdnet_unknown_name_is_an_error() {
+        let src = net_board("stdnet<V1V8> let u1: Chip = Chip { value: \"mcu\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("no standard net 'V1V8' is declared")),
+            "{:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn stdnet_expectation_without_matching_drive_is_an_error() {
+        // Only a 5V rail is driven; the V3V3 expectation admits nothing.
+        let src = net_board("stdnet<V3V3> let u1: Chip = Chip { value: \"mcu\" };");
+        let src = src.replace(
+            "txn r2 [s2.p.voltage == 3.3V] [s2.p.current >= 0.0] { }",
+            "let s2: Src = Src { value: \"idle\" };",
+        );
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("u1.vdd") && e.contains("V3V3 expects a 3.3 V-driven rail")),
+            "{:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn bare_form_on_multi_supply_is_an_error() {
+        let src = net_board("stdnet<VBUS> let u1: Ldo = Ldo { value: \"ldo\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors.iter().any(|e| {
+                e.contains("u1") && e.contains("2 supply pins") && e.contains("qualify")
+            }),
+            "{:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn qualified_form_covers_both_supply_pins() {
+        let src = net_board("stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: \"ldo\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors.is_empty(),
+            "{:?}",
+            nl.convention_errors
+        );
+        let idx = pin_net_index(&nl.nets);
+        assert_eq!(
+            idx[&("u1".to_string(), "in".to_string())],
+            idx[&("s1".to_string(), "p".to_string())],
+            "u1.in joins the VBUS rail: {:?}",
+            idx
+        );
+        assert_eq!(
+            idx[&("u1".to_string(), "vout".to_string())],
+            idx[&("s2".to_string(), "p".to_string())],
+            "u1.vout joins the V3V3 rail: {:?}",
+            idx
+        );
+    }
+
+    #[test]
+    fn net_binds_through_forced_pin_and_propagates() {
+        let src = net_board("net<v3_3> let a: ChipA = ChipA { value: \"a\" };\nlet b: Chip = Chip { value: \"b\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors.is_empty(),
+            "the forced pin binds v3_3; the ambiguous pin propagates: {:?}",
+            nl.convention_errors
+        );
+        let idx = pin_net_index(&nl.nets);
+        let a_net = idx[&("a".to_string(), "vdd".to_string())].clone();
+        assert_eq!(
+            a_net,
+            idx[&("s2".to_string(), "p".to_string())],
+            "a.vdd forced onto 3.3V"
+        );
+        assert_eq!(
+            idx[&("b".to_string(), "vdd".to_string())],
+            a_net,
+            "b.vdd propagates to the bound net"
+        );
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("membership propagated") && p.contains("b.vdd")),
+            "{:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn two_named_candidates_stay_ambiguous() {
+        let src = net_board("net<vbus> let s1x: Src = Src { value: \"x\" };\nlet c: Chip = Chip { value: \"c\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("c.vdd") && e.contains("no single bound net name decides")),
+            "s1.p (net<vbus>) and s2.p (unnamed) leave c.vdd ambiguous: {:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn return_pin_takes_no_net_name() {
+        let src = net_board("net<gnd> let u1: Chip = Chip { value: \"mcu\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("u1.vdd") && e.contains("membership-ambiguous")),
+            "the bare form lands on vdd (the sole supply pin), which stays ambiguous; vss is \
+             the return and takes no name: {:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn non_supply_pin_takes_no_net_name() {
+        let src = net_board("stdnet<in: VBUS, gnd: V3V3> let u1: Ldo = Ldo { value: \"ldo\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("u1.gnd") && e.contains("return-class pin")),
+            "{:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn identifier_opacity_no_registry_read_for_net() {
+        // net<VBUS> is board-LOCAL even though a standard net VBUS exists:
+        // the opaque form never consults the registry (Rule 15).
+        let src = net_board("net<VBUS> let u1: Chip = Chip { value: \"mcu\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("u1.vdd") && e.contains("membership-ambiguous")),
+            "no expectation is applied — the unrated pin stays ambiguous: {:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn duplicate_pin_qualifier_is_an_error() {
+        let src = net_board("stdnet<in: VBUS, in: V3V3> let u1: Ldo = Ldo { value: \"ldo\" };");
+        let nl = analyze(&src);
+        assert!(
+            nl.convention_errors
+                .iter()
+                .any(|e| e.contains("u1.in") && e.contains("two net names")),
+            "{:?}",
+            nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn net_modifier_on_a_node_is_a_parse_error() {
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            net<VBUS> async node n [true] [true] { }
+        "#;
+        let tokens = tokenize(src);
+        assert!(tokens.is_ok());
+        let mut p = Parser::new(tokens.unwrap(), src);
+        assert!(p.parse_program().is_err(), "net<> names a let's net, not a node");
     }
 
     #[test]
@@ -7050,6 +7726,12 @@ mod tests {
             struct Pin { voltage: Float; };
             type A { pin x; pin y;     reference "A";
 };
+    let site = MembershipSite {
+        inst: inst.clone(),
+        pname: pname.clone(),
+        rated: rated.clone(),
+        attachment: attachment.clone(),
+    };
             type B { pin z;     reference "B";
 };
             let a: A = A { };
