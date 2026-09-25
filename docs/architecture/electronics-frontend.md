@@ -191,11 +191,13 @@ Phase B of `2026-09-11-fundamentals-doctrine-and-electronics.md` landed:
   the B1 mechanism (a parentless type registers base = own name; both
   category walks treat a self-base as the root). No name tables, no Float
   inheritance. Provenance-only: nothing executes.
-- **Clauses**: `pin` / `reference` / `tolerance` parse via shared helpers in
+- **Clauses**: `pin` / `reference` parse via shared helpers in
   `parse_type_body`, `parse_obj_like`, and `parse_cell`. `reference` is
-  parse-mandatory when pins exist. The `!> Reference`/`!> Tolerance`
-  metadata path is DELETED — analysis reads `td.body.reference`/
-  `td.body.tolerance` and `CellDef.pins/reference/tolerance`.
+  parse-mandatory when pins exist. The `!> Reference` metadata path is
+  DELETED — analysis reads `td.body.reference` and `CellDef.pins/reference`.
+  (2026-09-24: the `tolerance`/`rating` clauses joined that deletion — the
+  envelope is `spec Tolerance`/`spec Rating` body metadata, see the dated
+  entry below.)
 - **Proving**: drives from `[x.voltage == literal]`; shorted supplies;
   tolerance enforcement (rated-below-class violates; no-clause on a driven
   net violates; `any` never does); **Ohm's-law derivation** — I = V/R
@@ -233,12 +235,14 @@ DIFFERENT names on one node are a hard error refusing emission
 (`net_conflicts`, checked like dangling pins); the same name twice is
 redundant, not a conflict.
 
-**2026-09-12 (power ratings):** `rating 0.25;` / `rating any;` on
-type/obj/cell bodies. After the current fixpoint, `derive_power` computes
-P = ΔV²/R for every valued two-pin part with both endpoints classed:
-exceeding the declared rating is a violation; proven dissipation with no
-clause is an undeclared decision; within-rating records a proof fact.
-One-sided parts (no proven ΔV) and zero-drop straps force nothing.
+**2026-09-12 (power ratings):** `spec Rating: 0.25W;` / `spec Rating: any;`
+(clause form `rating 0.25;` retired 2026-09-24 — see the dated entry
+below) on type/obj/cell bodies. After the current fixpoint, `derive_power`
+computes P = ΔV²/R for every valued two-pin part with both endpoints
+classed: exceeding the declared rating is a violation; proven dissipation
+with no rating spec is an undeclared decision; within-rating records a
+proof fact. One-sided parts (no proven ΔV) and zero-drop straps force
+nothing.
 
 Deferred: per-pin tolerances, LLVM/GPU representation (awaits
 simulation), PinDecl in cell bodies' beast serialization, pin roles,
@@ -261,6 +265,19 @@ precondition filters the states in which that node's postconditions are
 proved. Board-wide tolerance/rating/budget checks still cover all modes.
 `usb_sensor.ebv` now uses stdlib `Spst` for pressed/released behavior and
 declares its pull-up resistor as a law-bearing component.
+
+**2026-09-24 (tolerance/rating → spec keys, plan
+`2026-09-24-tolerance-rating-spec-migration.md`):** the `tolerance …;` /
+`rating …;` clauses are retired. The envelope is type-level `spec
+Tolerance: 3.6V;` / `spec Rating: 0.25W;` (explicit ASCII unit required —
+the unit IS the physics; `any` declares unrated, `Volt`/`Watt` alone
+declare the dimension). Values live in `TypeDefBody.metadata`; the
+`ast::top::Tolerance`/`Rating` enums and the `TypeDefBody`/`CellDef`
+fields are deleted, and an instance-literal `spec Tolerance:` is a
+parse-time error (envelopes are type-level; per-instance is Phase 4).
+Old clauses parse-error at the clause site naming the replacement;
+`check_tolerance`/`derive_power` consume `TypeInfo.tolerance`/`rating`
+built from the metadata (`any` → INFINITY).
 
 **2026-09-24 (multi-state law solving, plan
 `2026-09-24-multi-state-law-solving.md`):** the DC solver now returns

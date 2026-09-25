@@ -249,23 +249,25 @@ so `Volt` stands exactly where `Float` stands in the software family: no
 IEEE semantics, no inheritance, no baggage. Quantities are provenance
 values — proven at compile time, never executed.
 
-**Properties, not annotations.** Pins, reference designators, and tolerances
-are first-class clauses with identical grammar on every declaration form:
+**Properties, not annotations.** Pins and reference designators are
+first-class clauses with identical grammar on every declaration form; the
+voltage/power envelope is a type-level `spec` key with an explicit unit:
 
 ```briev
 type Led {
     pin a;
     pin k;
-    reference "D";      // mandatory whenever pins exist (parse-enforced)
-    tolerance 3.6;      // max volts — a rated decision
+    reference "D";              // mandatory whenever pins exist (parse-enforced)
+    spec Tolerance: 3.6V;       // max volts — a rated decision
 };
 ```
 
 `pin a;` auto-numbers (highest-so-far + 1); `pin p1 = 1;` states the
 datasheet number (≥ 1, unique per type). Pins are type-level topology,
-never instance-construction fields. `tolerance any;` DECLARED unrated — a
-pin with no clause at all is an undeclared decision and violates any net
-driving it.
+never instance-construction fields. `spec Tolerance: any;` DECLARED
+unrated — a pin with no envelope at all is an undeclared decision and
+violates any net driving it. (`tolerance …;`/`rating …;` clauses are
+retired; the parser names the replacement spelling.)
 
 **Pin electrical classes (2026-09-21).** A pin may ascribe a class
 fundamental — `pin vbus: Power;` — on either side of the pin number
@@ -540,11 +542,12 @@ txn powered
 Here 3.3 V is proven within the LED's 3.6 V tolerance, and the 20 mA bound
 is proven from 3.3 V / 330 R = 10 mA — by derivation, not assertion.
 
-**Power ratings.** `rating 0.25;` declares the watts a part may dissipate
-(`rating any;` declares it unrated on purpose). Every valued two-pin part
-with both endpoints voltage-classed has a PROVEN dissipation P = V × I:
-above the rating is a violation; a proven-dissipating part with no rating
-clause is an undeclared decision; within the rating records a proof fact.
+**Power ratings.** `spec Rating: 0.25W;` declares the watts a part may
+dissipate (`spec Rating: any;` declares it unrated on purpose). Every
+valued two-pin part with both endpoints voltage-classed has a PROVEN
+dissipation P = V × I: above the rating is a violation; a
+proven-dissipating part with no rating spec is an undeclared decision;
+within the rating records a proof fact.
 A part with an unclassed endpoint has no proven drop — nothing is forced.
 A component-law part with a complete operating point is power-proven from
 `P = Σ pin_voltage × pin_current`; a missing pin quantity proves no total

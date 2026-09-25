@@ -87,10 +87,13 @@ Spec value = `[number][suffix]` | `[number]`:
 - Tests: unit grammar (bare prefix, prefix+base, fraction, base),
   dimension-conflict error, bare-number = base unit.
 
-### Phase 2 — Tolerance/Rating → PascalCase specs (deferred)
+### Phase 2 — Tolerance/Rating → PascalCase specs (DONE 2026-09-24)
 
 - Delete `tolerance`/`rating` clauses; `spec Tolerance: 3.3V;` /
-  `spec Rating: 0.25W;` (dim Volt/Watt, `any` = Identifier).
+  `spec Rating: 0.25W;` (dim Volt/Watt, `any` = Identifier). Landed per
+  plan `2026-09-24-tolerance-rating-spec-migration.md` (Slices 1–4):
+  clauses parse-error with the replacement spelling; AST enums/fields
+  deleted; metadata is the single channel.
 - `check_tolerance`/`derive_power` read specs; AST TypeInfo built from
   specs; migrate stdlib + fixture + all tests.
 - Trigger: Phase 1 lands clean; this is a mechanical migration.

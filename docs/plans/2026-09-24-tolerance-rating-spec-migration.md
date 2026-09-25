@@ -1,6 +1,10 @@
 # Plan 2026-09-24: Tolerance/Rating become PascalCase specs
 
-**Status:** building
+**Status:** landed 2026-09-24 (Slices 1–4, commits `1546f04c` → docs).
+Gates green per slice: `cargo test --lib`, emits for usb_sensor /
+led_blinker / `tests/electronics/*.ebv`, Praetor no-new-diagnostics on
+touched surfaces, grep gates (no legacy clause in live sources; no
+`ast::top::Tolerance`/`Rating` symbol anywhere).
 **Branch:** `feat/e14a-intent-synthesis`
 **Refines:** `docs/plans/2026-09-23-quantities-and-annotation-doctrine.md`
 (Phase 2, deferred → now), hardware-dialect-gaps Amendment XVI

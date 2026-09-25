@@ -1140,3 +1140,20 @@ to KiCad and never parsed. Tests that exercised the heuristic migrated to
 non-goal): `values_distinct` still compares switch `value` labels
 conservatively for the multi-pole ambiguity — an identity check awaiting a
 capacity spec with a real consumer, not a physics read.
+
+### Amendment 2026-09-24 (XVII): tolerance/rating clauses → spec keys (Phase 2 LANDED)
+
+The `tolerance …;` / `rating …;` clauses are gone. The envelope is
+type-level `spec Tolerance: 3.6V;` / `spec Rating: 0.25W;` — explicit
+ASCII unit required (the unit IS the physics), `any` declares unrated,
+`Volt`/`Watt` alone declare the dimension. This closes quantities-doctrine
+Phase 2 (`2026-09-23-quantities-and-annotation-doctrine.md`): the compiler
+no longer carries a second, clause-shaped channel for the same physics.
+AST enums `Tolerance`/`Rating` and the `TypeDefBody`/`CellDef` fields are
+deleted; values live in body `metadata` (BEAST round-trips them like any
+spec); `check_tolerance`/`derive_power` consume `TypeInfo` built from the
+metadata. Old clauses report a retirement error at the clause site with
+the replacement spelling; instance-literal `spec Tolerance`/`spec Rating`
+is a parse-time error naming the type body (per-instance envelopes are
+Phase 4, pending the pin-semantics design). Plan:
+`2026-09-24-tolerance-rating-spec-migration.md`.
