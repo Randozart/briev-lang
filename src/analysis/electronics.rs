@@ -2394,13 +2394,16 @@ struct ReturnTopology {
 /// (the rail obligation forcing needs), then decoupler auto-bridging.
 /// All of it precedes the intent pass so drive completions see final
 /// nets. `ds` is mutated in place.
-fn force_return_topology(
-    items: &[TopLevel],
-    instances: &BTreeMap<String, &ComponentInstance>,
-    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
-    type_info: &BTreeMap<String, TypeInfo>,
-    ds: &mut DisjointSet,
-) -> ReturnTopology {
+struct TopologyPass<'a> {
+    items: &'a [TopLevel],
+    instances: &'a BTreeMap<String, &'a ComponentInstance>,
+    type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
+    type_info: &'a BTreeMap<String, TypeInfo>,
+    laws: &'a [crate::analysis::electronics_laws::ComponentLaws],
+}
+
+fn force_return_topology(tables: &TopologyPass<'_>, ds: &mut DisjointSet) -> ReturnTopology {
+    let TopologyPass { items, instances, type_pins, type_info, laws } = *tables;
     let (unpop, shortcircuit, exempt_pins, participation_warnings, participation_notes) =
         collect_participation(items, instances, type_pins);
     let mut topology_proofs = infer_return_net(instances, type_info, &unpop, ds);
@@ -2410,7 +2413,8 @@ fn force_return_topology(
     // bridging, whose bridge test consumes the final supply nets.
     let net_bindings: BTreeMap<String, (String, String)> = {
         let mut mctx = NetlistContext::new(items, ds, type_pins, type_info, instances);
-        let (rails, source_pins) = collect_driven_rails_full(items, &mut mctx);
+        let (rails, source_pins, birth_proofs) = collect_driven_rails_full(items, laws, &mut mctx);
+        topology_proofs.extend(birth_proofs);
         let (membership_proofs, membership_errors, bindings) =
             infer_rail_membership(&mut mctx, &rails, &source_pins, &unpop);
         topology_proofs.extend(membership_proofs);
@@ -4904,18 +4908,25 @@ struct LowHoldWire {
 /// Driven supply rails: `[x.voltage == <literal>]` drives across all
 /// contracts, resolved to union-find roots; only Supply-class pins count
 /// as rails (a rail must be a real source, not an arbitrary driven net).
-fn collect_driven_rails(items: &[TopLevel], ctx: &mut NetlistContext) -> BTreeMap<String, f64> {
-    collect_driven_rails_full(items, ctx).0
+fn collect_driven_rails(
+    items: &[TopLevel],
+    laws: &[crate::analysis::electronics_laws::ComponentLaws],
+    ctx: &mut NetlistContext,
+) -> BTreeMap<String, f64> {
+    collect_driven_rails_full(items, laws, ctx).0
 }
 
 /// The driven supply rails, two ways: root → volts (the forcing maps) and
 /// the SOURCE pin keys themselves — a driven pin defines its rail and is
 /// exempt from membership inference (2026-09-25, E14b-7: a rail's source
-/// cannot "join" another rail).
+/// cannot "join" another rail). Contract facts AND component laws birth
+/// rails (2026-09-25, E14b-8); birth proofs accompany the merge (the
+/// caller prints them once, ahead of the membership proofs they enable).
 fn collect_driven_rails_full(
     items: &[TopLevel],
+    laws: &[crate::analysis::electronics_laws::ComponentLaws],
     ctx: &mut NetlistContext,
-) -> (BTreeMap<String, f64>, std::collections::HashSet<String>) {
+) -> (BTreeMap<String, f64>, std::collections::HashSet<String>, Vec<String>) {
     let mut rails: BTreeMap<String, f64> = BTreeMap::new();
     let mut source_pins: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut eqs: Vec<(Expr, Expr)> = Vec::new();
@@ -4944,24 +4955,106 @@ fn collect_driven_rails_full(
             *entry = volts;
         }
     }
-    (rails, source_pins)
+    let (law_rails, law_sources, proofs) = law_rail_births(laws, ctx);
+    for (root, volts) in law_rails {
+        let entry = rails.entry(root).or_insert(0.0);
+        if volts > *entry {
+            *entry = volts;
+        }
+    }
+    source_pins.extend(law_sources);
+    (rails, source_pins, proofs)
+}
+
+/// 2026-09-25 (E14b-8, plan `2026-09-25-ebv-e14b-ldo-output-law`): rails
+/// born by component laws — an unconditional law pinning one pin's
+/// voltage to a constant drives its net exactly as a contract fact does.
+/// The membership ladder and the obligation forcing both consume the
+/// merged map, so a board whose regulator declares `spec Output` needs no
+/// voltage equality anywhere. Supply-class pins only — the fact path's
+/// filter; guarded laws and named modes do not birth rails.
+fn law_rail_births(
+    laws: &[crate::analysis::electronics_laws::ComponentLaws],
+    ctx: &mut NetlistContext,
+) -> (BTreeMap<String, f64>, std::collections::HashSet<String>, Vec<String>) {
+    let mut rails: BTreeMap<String, f64> = BTreeMap::new();
+    let mut sources: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut proofs: Vec<String> = Vec::new();
+    let mut seen: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
+    let births = laws
+        .iter()
+        .flat_map(|component| component.laws.iter())
+        .filter(|law| law.guard == crate::analysis::electronics_laws::LawGuard::Always)
+        .flat_map(|law| {
+            law.equations
+                .iter()
+                .filter_map(|eq| constant_voltage_pin(&eq.expression))
+        });
+    for (pin, volts) in births {
+        if pin_classes_of(ctx, &pin).map_or(true, |classes| !classes.supply) {
+            continue;
+        }
+        let key = pin_key(&pin.component, &pin.pin);
+        let root = ctx.ds.find(&key);
+        let entry = rails.entry(root).or_insert(0.0);
+        if volts > *entry {
+            *entry = volts;
+        }
+        sources.insert(key);
+        if seen.insert((pin.component.clone(), pin.pin.clone())) {
+            proofs.push(format!(
+                "rail born: {}.{} drives the {} rail (component law)",
+                pin.component,
+                pin.pin,
+                format_volts(volts)
+            ));
+        }
+    }
+    (rails, sources, proofs)
+}
+
+/// The single constant a law equation fixes, if that is what it is:
+/// `expression == 0` with exactly one term — a pin voltage in Volt.
+/// `vout.voltage == Output` elaborates to `Voltage(vout)·coeff + const`,
+/// so the pinned value is `-const / coeff`.
+fn constant_voltage_pin(
+    expression: &crate::analysis::electronics_laws::LinearExpression,
+) -> Option<(PinRef, f64)> {
+    if expression.dimension != crate::analysis::electronics_laws::LawDimension::VOLT
+        || expression.terms.len() != 1
+    {
+        return None;
+    }
+    let (variable, coefficient) = expression.terms[0].clone();
+    if coefficient == 0.0 {
+        return None;
+    }
+    let crate::analysis::electronics_laws::LawVariable::Voltage(pin) = variable else {
+        return None;
+    };
+    Some((pin, -expression.constant / coefficient))
 }
 
 /// 2026-09-23 (E14b): entry — guard, collect driven rails, then force
 /// every voltage obligation (min → pull-up, max → low-hold).
+struct VoltageForcing<'a> {
+    items: &'a [TopLevel],
+    laws: &'a [crate::analysis::electronics_laws::ComponentLaws],
+    obligations: &'a [VoltageObligation],
+}
+
 fn force_voltage_obligations(
-    items: &[TopLevel],
+    inputs: &VoltageForcing<'_>,
     ctx: &mut NetlistContext,
-    obligations: &[VoltageObligation],
     errors: &mut Vec<String>,
     proofs: &mut Vec<String>,
 ) {
-    if obligations.is_empty() {
+    if inputs.obligations.is_empty() {
         return;
     }
-    let rails = collect_driven_rails(items, ctx);
+    let rails = collect_driven_rails(inputs.items, inputs.laws, ctx);
     let mut forcing = ObligationForcing::new(ctx, rails, errors, proofs);
-    forcing.run(obligations);
+    forcing.run(inputs.obligations);
 }
 
 /// Pin-class properties of a resolved pin (for the rail filter) — the
@@ -5124,6 +5217,7 @@ fn complete_intent(
 fn collect_intents(
     ctx: &mut NetlistContext,
     items: &[TopLevel],
+    laws: &[crate::analysis::electronics_laws::ComponentLaws],
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
     let mut errors = Vec::new();
     let mut proofs = Vec::new();
@@ -5155,7 +5249,12 @@ fn collect_intents(
     // later instance intent (led1 saw five "free" IoOd pins and went
     // ambiguous). The forcing consumes passive parts (pull-up resistors,
     // switches), never CanDrive pins, so it cannot steal a completion.
-    force_voltage_obligations(items, ctx, &obligations, &mut errors, &mut proofs);
+    force_voltage_obligations(
+        &VoltageForcing { items, laws, obligations: &obligations },
+        ctx,
+        &mut errors,
+        &mut proofs,
+    );
     // 2026-09-23 (E14b slice 4): batch drive assignment first — several
     // open drive intents over interchangeable free drive-capable pins are
     // a perfect matching, wired deterministically; intents it cannot
@@ -5447,6 +5546,32 @@ fn elaborate_law_ir(
     )
 }
 
+/// 2026-09-21 (E14a): node-body intents — body wiring facts union first;
+/// drive intents then complete the last open pin. Returns errors, proofs
+/// (the caller appends the topology proofs), and conditional bridges.
+fn run_intent_pass(
+    ds: &mut DisjointSet,
+    tp: &TopologyPass<'_>,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut ictx = NetlistContext::new(tp.items, ds, tp.type_pins, tp.type_info, tp.instances);
+    collect_intents(&mut ictx, tp.items, tp.laws)
+}
+
+/// 2026-09-21 (E13) + 2026-09-22 (ERC contention): the finished-netlist
+/// checks — decoupling verification (the auto-bridged obligations included;
+/// every union is final when they fire) and the contention scan. Returns
+/// the checked convention errors and the contention errors; the forcing
+/// errors land first in the convention vector at the call site.
+fn finished_checks_pass(
+    ds: &mut DisjointSet,
+    tp: &TopologyPass<'_>,
+    topo: &ReturnTopology,
+    nets: &[Net],
+) -> (Vec<String>, Vec<String>) {
+    let mut ctx = NetlistContext::new(tp.items, ds, tp.type_pins, tp.type_info, tp.instances);
+    finished_netlist_checks(&mut ctx, &topo.unpop, &topo.shortcircuit, nets)
+}
+
 pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let (type_pins, type_info, class_errors) = collect_type_pins(items);
     if type_pins.is_empty() {
@@ -5469,14 +5594,15 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     // return-net union, and decoupler auto-bridging, in that order (the
     // absent-state set gates both passes; forcing precedes the intent
     // pass so completions see final nets).
-    let topo = force_return_topology(items, &instances, &type_pins, &type_info, &mut ds);
-    // 2026-09-21 (E14a): node-body intents — body wiring facts union
-    // first; drive intents then complete the last open pin.
-    let (intent_errors, mut intent_proofs, conditional_bridges) = {
-        let mut ictx = NetlistContext::new(items, &mut ds, &type_pins, &type_info, &instances);
-        collect_intents(&mut ictx, items)
+    let tp = TopologyPass {
+        items,
+        instances: &instances,
+        type_pins: &type_pins,
+        type_info: &type_info,
+        laws: &component_laws,
     };
-    intent_proofs.extend(topo.topology_proofs);
+    let topo = force_return_topology(&tp, &mut ds);
+    let (intent_errors, mut intent_proofs, conditional_bridges) = run_intent_pass(&mut ds, &tp);
 
     // 2026-09-25 (E14b-7): author labels keyed by FINAL root — resolved
     // here, after the intent pass (body wiring can merge nets further).
@@ -5514,15 +5640,11 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     );
     law_errors.extend(law_solve_errors);
 
-    // 2026-09-21 (E13) + 2026-09-22 (ERC contention): the finished-netlist
-    // checks — decoupling verification (the auto-bridged obligations
-    // included; every union is final when they fire) and the contention
-    // scan. Forcing errors land first in the convention vector.
-    let mut ctx = NetlistContext::new(items, &mut ds, &type_pins, &type_info, &instances);
     let (checked_convention_errors, contention_errors) =
-        finished_netlist_checks(&mut ctx, &topo.unpop, &topo.shortcircuit, &nets);
+        finished_checks_pass(&mut ds, &tp, &topo, &nets);
     let mut convention_errors = topo.topology_errors;
     convention_errors.extend(checked_convention_errors);
+    intent_proofs.extend(topo.topology_proofs);
 
     ElectronicsNetlist {
         components: instance_list,
@@ -6097,6 +6219,160 @@ mod tests {
                 .any(|e| e.contains("u1.vdd") && e.contains("V3V3 expects a 3.3 V-driven rail")),
             "{:?}",
             nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn ldo_output_law_births_the_rail() {
+        // 2026-09-25 (E14b-8): NO voltage equality names u1.vout — the
+        // regulator's own law births the 3.3 V rail; the follower joins
+        // it by tolerance refutation against the law-driven voltage.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Ldo {
+                pin in: Power;
+                pin vout: Power;
+                pin gnd: Ground;
+                reference "U";
+                spec Tolerance: any;
+                spec Output: Volt;
+                when true { vout.voltage == Output; }
+            };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
+            let u1: Ldo = Ldo { spec Output: 3.3V };
+            let u2: Chip = Chip { };
+            txn on [u1.in.voltage == 5.0V] { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        assert!(nl.convention_errors.is_empty(), "{:?}", nl.convention_errors);
+        assert!(
+            nl.intent_proofs.iter().any(|p| p.contains("rail born: u1.vout")),
+            "{:?}", nl.intent_proofs
+        );
+        assert!(
+            nl.intent_proofs.iter().any(|p| {
+                p.contains("membership inferred") && p.contains("u2.vdd")
+            }),
+            "{:?}", nl.intent_proofs
+        );
+        let idx = pin_net_index(&nl.nets);
+        assert_eq!(
+            idx[&("u1".to_string(), "vout".to_string())],
+            idx[&("u2".to_string(), "vdd".to_string())],
+            "u2.vdd joins the law-born rail: {:?}",
+            idx
+        );
+        let net_name = &idx[&("u1".to_string(), "vout".to_string())];
+        let volts = nl.voltage.net_voltage.get(net_name).copied();
+        assert!(
+            volts.map_or(false, |v| (v - 3.3).abs() < 1e-9),
+            "law pins the rail at 3.3 V: {volts:?}"
+        );
+    }
+
+    #[test]
+    fn stdnet_expectation_joins_a_law_born_rail() {
+        // 2026-09-25 (E14b-8): the full ladder against a law-driven rail —
+        // the declared expectation resolves through the component law.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type V3V3 { spec NetVoltage: 3.3V; spec KicadLabel: "+3V3"; };
+            type Ldo {
+                pin in: Power;
+                pin vout: Power;
+                pin gnd: Ground;
+                reference "U";
+                spec Tolerance: any;
+                spec Output: Volt;
+                when true { vout.voltage == Output; }
+            };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
+            let u1: Ldo = Ldo { spec Output: 3.3V };
+            stdnet<V3V3> let u2: Chip = Chip { };
+            txn on [u1.in.voltage == 5.0V] { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        assert!(nl.convention_errors.is_empty(), "{:?}", nl.convention_errors);
+        assert!(
+            nl.intent_proofs.iter().any(|p| {
+                p.contains("membership inferred") && p.contains("u2.vdd")
+                    && p.contains("standard net V3V3 drives it")
+            }),
+            "{:?}", nl.intent_proofs
+        );
+        let idx = pin_net_index(&nl.nets);
+        let net_name = &idx[&("u2".to_string(), "vdd".to_string())];
+        let net = nl.nets.iter().find(|n| &n.name == net_name).unwrap();
+        assert_eq!(
+            net.author_label.as_deref(),
+            Some("+3V3"),
+            "the registry KicadLabel flows to the law-born rail: {net_name}"
+        );
+    }
+
+    #[test]
+    fn law_born_rail_refutes_a_mismatched_expectation() {
+        // 2026-09-25 (E14b-8): V5V expects 5 V; the only rail that exists
+        // is law-born at 3.3 V — zero candidates, the ladder demands a fix.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Nc { spec KicadType: "no_connect"; spec NoConnect: true; };
+            type V5V { spec NetVoltage: 5V; spec KicadLabel: "+5V"; };
+            type Ldo {
+                pin in: Nc;
+                pin vout: Power;
+                pin gnd: Ground;
+                reference "U";
+                spec Tolerance: any;
+                spec Output: Volt;
+                when true { vout.voltage == Output; }
+            };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
+            let u1: Ldo = Ldo { spec Output: 3.3V };
+            stdnet<V5V> let u2: Chip = Chip { };
+            let u3: Chip = Chip { };   // joins by tolerance: the rail has copper
+            txn on [u1.vout.voltage >= 0.0] { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        assert!(
+            nl.convention_errors.iter().any(|e| {
+                e.contains("no rail to join") && e.contains("u2.vdd")
+                    && e.contains("V5V expects a 5 V-driven rail")
+            }),
+            "{:?}", nl.convention_errors
+        );
+    }
+
+    #[test]
+    fn drive_disagreeing_with_a_component_law_is_a_hard_error() {
+        // 2026-09-25 (E14b-8): `spec Output: 1.8V` against a contract fact
+        // stating 3.3 V — the boundary folds into the law equation and the
+        // system has no operating point. Never a silent override.
+        let src = r#"
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Ldo {
+                pin in: Power;
+                pin vout: Power;
+                pin gnd: Ground;
+                reference "U";
+                spec Tolerance: any;
+                spec Output: Volt;
+                when true { vout.voltage == Output; }
+            };
+            let u1: Ldo = Ldo { spec Output: 1.8V };
+            txn on [u1.vout.voltage == 3.3V] { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.law_errors.iter().any(|e| e.contains("no DC operating point")),
+            "{:?}", nl.law_errors
         );
     }
 
