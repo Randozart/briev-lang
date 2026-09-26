@@ -54,6 +54,13 @@ throughout; the stale CLI was wrong.
 
 ## C1 — Provenance plumbing (machinery only, zero behavior change)
 
+**DONE 2026-09-26**: 3 tests green (`test_provenance_survives_two_level_chain`,
+`test_provenance_root_items_are_none`, `test_provenance_cache_shared_origins`);
+suite 2680/0 (2677 + 3); Praetor parity (filter metrics identical to baseline,
+`resolve_import` improved 58→51 cognitive / 375→337 lines — CSS/SVG loaders
+extracted to stay under the line budget). CSS/SVG/DBriev loads register
+records; `import "target"` (generated board items) and root items stay `None`.
+
 New on `ImportResolver`:
 
 ```rust

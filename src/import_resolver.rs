@@ -21,6 +21,7 @@
 // or embeds the Work.
 
 use crate::ast::{Expr, Import, ImportKind, TopLevel, Type};
+use crate::conformance::{classify, SourceKind};
 use crate::dbriev::v2 as dbriev_v2;
 use crate::lexer::Token;
 use logos::Logos;
@@ -41,8 +42,34 @@ fn load_module_registry() -> HashMap<String, String> {
     crate::dbriev::config_db::load_string_registry(Path::new("config"), "module-registry")
 }
 
+/// 2026-09-25 (interop Wave 1, plan `2026-09-25-interop-wave1.md` C1): the
+/// provenance record for one loaded module — every file-backed load (Briev
+/// `.bv`, electronics `.ebv`, CSS, SVG, DBriev `.dbv`) registers exactly one
+/// record, appended once (cache hits reuse the record's id, so a diamond
+/// import shares a single id across both splice sites).
+///
+/// `item_origins` on the resolver is the parallel shadow vector: index i
+/// carries `Some(module id)` when items[i] came from a module and `None`
+/// when it is a root-file item or generated (e.g. `import "target"` board
+/// items are synthesized from board DBriev tables, not one source file).
+///
+/// Consumers: the cross-dialect collision rule (Wave 1 C4) needs to know
+/// WHICH module a colliding name came from, and per-module dialect semantics
+/// (C3) key off `kind`. Zero behavior change on its own — nothing reads the
+/// fields until C3/C4 land.
+///
+/// How to undo: delete `ModuleRecord`, the two resolver fields,
+/// `push_module`, and the origins threading (every mirror mutation pairs
+/// with an items mutation — see `resolve_imports_inner`).
+#[derive(Debug, Clone)]
+pub struct ModuleRecord {
+    pub specifier: String,
+    pub source_path: PathBuf,
+    pub kind: Option<SourceKind>,
+}
+
 pub struct ImportResolver {
-    loaded_modules: HashMap<String, (Vec<TopLevel>, Vec<String>)>,
+    loaded_modules: HashMap<String, (Vec<TopLevel>, Vec<String>, Vec<Option<u32>>)>,
     search_paths: Vec<PathBuf>,
     root_path: PathBuf,
     stdlib_path: Option<PathBuf>,
@@ -65,6 +92,14 @@ pub struct ImportResolver {
     /// (a `.bad` file is never parsed as Briev); the bad backend inlines
     /// them when compiling `bootstrap bad` bodies.
     pub bad_imports: Vec<PathBuf>,
+    /// 2026-09-25 (interop Wave 1 C1): append-only provenance table —
+    /// index = module id. See `ModuleRecord` for the full rationale.
+    pub modules: Vec<ModuleRecord>,
+    /// 2026-09-25 (interop Wave 1 C1): parallel to the FINAL items vector
+    /// returned by `resolve_imports` — `None` = root-file or generated item,
+    /// `Some(id)` = `modules[id]`. Kept in lockstep with every items
+    /// mutation (remove/splice/dedup/filter) inside `resolve_imports_inner`.
+    pub item_origins: Vec<Option<u32>>,
 }
 
 /// The name of a top-level item, if it carries one.
@@ -325,6 +360,8 @@ impl ImportResolver {
             registry: load_module_registry(),
             resolved_paths: Vec::new(),
             bad_imports: Vec::new(),
+            modules: Vec::new(),
+            item_origins: Vec::new(),
         }
     }
 
@@ -401,11 +438,33 @@ impl ImportResolver {
         None
     }
 
+    /// Resolve every import in `items`, splicing resolved module items at
+    /// the import sites. Public signature is unchanged since provenance
+    /// landed (2026-09-25, Wave 1 C1): callers read the resolved origins
+    /// afterwards from `self.item_origins` (parallel to the returned items).
     pub fn resolve_imports(
         &mut self,
         items: Vec<TopLevel>,
         file_path: &PathBuf,
     ) -> Result<Vec<TopLevel>, String> {
+        let root_origins = vec![None; items.len()];
+        let (items, origins) = self.resolve_imports_inner(items, root_origins, file_path)?;
+        self.item_origins = origins;
+        Ok(items)
+    }
+
+    /// The recursion core: identical to the old `resolve_imports`, except
+    /// every mutation of `items` mirrors on `origins` at the SAME index
+    /// (remove⇔remove, splice⇔splice) so the two vectors never desync —
+    /// an origins/items desync would misattribute C4 collisions.
+    /// `origins` enters aligned with `items` (root call: all `None`;
+    /// module call from `resolve_import`: all `Some(module id)`).
+    fn resolve_imports_inner(
+        &mut self,
+        items: Vec<TopLevel>,
+        origins: Vec<Option<u32>>,
+        file_path: &PathBuf,
+    ) -> Result<(Vec<TopLevel>, Vec<Option<u32>>), String> {
         // Set root path from the main file's directory on first call
         if self.root_path == PathBuf::from(".") {
             self.root_path = file_path
@@ -415,6 +474,7 @@ impl ImportResolver {
         }
 
         let mut items = items;
+        let mut origins = origins;
 
         // 2026-08-06 (Phase 11): track which module path each imported name
         // came from. Two DIFFERENT modules providing the same unqualified name
@@ -442,7 +502,7 @@ impl ImportResolver {
                 index += 1;
                 continue;
             };
-            let resolved = self.resolve_import(&import, file_path)?;
+            let (resolved, resolved_origins) = self.resolve_import(&import, file_path)?;
             Self::record_imported_names(
                 &mut imported_names,
                 &mut imported_aliases,
@@ -451,13 +511,27 @@ impl ImportResolver {
                 import.alias.as_deref(),
             )?;
             items.remove(index);
+            origins.remove(index);
             items.splice(index..index, resolved);
+            origins.splice(index..index, resolved_origins);
         }
 
-        // 2026-06-13: Dedup items
-        items = dedup_items(items);
+        // 2026-06-13: Dedup items (2026-09-25: survivors keep their origins)
+        dedup_items_with_origins(items, origins)
+    }
 
-        Ok(items)
+    /// 2026-09-25 (interop Wave 1 C1): register a loaded file-backed module
+    /// and return its id. Called once per ACTUAL load — cache hits reuse the
+    /// cached origins, so a diamond import shares one record. Returns the
+    /// index of the pushed record.
+    fn push_module(&mut self, specifier: &str, source_path: &Path) -> u32 {
+        let kind = classify(source_path);
+        self.modules.push(ModuleRecord {
+            specifier: specifier.to_string(),
+            source_path: source_path.to_path_buf(),
+            kind,
+        });
+        (self.modules.len() - 1) as u32
     }
 
     /// Resolve `import "target"` — loads the board D-briev description and emits typed constants.
@@ -617,10 +691,10 @@ impl ImportResolver {
         &mut self,
         import: &Import,
         source_file: &PathBuf,
-    ) -> Result<Vec<TopLevel>, String> {
+    ) -> Result<(Vec<TopLevel>, Vec<Option<u32>>), String> {
         // Skip empty module paths
         if import.path().is_empty() {
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
 
         // Handle Registry imports — look up name in registry dir first,
@@ -655,7 +729,11 @@ impl ImportResolver {
 
         // Handle `import "target"` — board-level device description
         if import.path() == "target" {
-            return self.resolve_target_import();
+            // Generated items (assembled from board DBriev tables) — not a
+            // single source file, so they carry no module origin (Wave 1 C1).
+            let items = self.resolve_target_import()?;
+            let n = items.len();
+            return Ok((items, vec![None; n]));
         }
 
         // 2026-08-22 (spec-conformance plan Phase 1a): glob imports are
@@ -670,77 +748,23 @@ impl ImportResolver {
         }
 
         // Cache check
-        if let Some((cached, sed_names)) = self.loaded_modules.get(import.path()) {
-            return self.filter_items(cached, sed_names, &import.symbols);
+        if let Some((cached, sed_names, cached_origins)) = self.loaded_modules.get(import.path()) {
+            return self.filter_items_with_origins(cached, cached_origins, sed_names, &import.symbols);
         }
 
-        // Check for CSS import
+        // Check for CSS import (loader extracted 2026-09-25, C1: flat
+        // control flow — the exists/load/cache/record body lives in the
+        // helper; `None` means "not an existing file, fall through").
         if import.path().ends_with(".css") {
-            let css_path = source_file
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(&import.path());
-
-            if css_path.exists() {
-                let css_content = std::fs::read_to_string(&css_path)
-                    .map_err(|e| format!("Failed to read CSS '{}': {}", css_path.display(), e))?;
-                let css_for_cache = css_content.clone();
-                self.loaded_modules.insert(
-                    import.path().to_string(),
-                    (vec![TopLevel::Stylesheet(css_for_cache)], vec![]),
-                );
-                return Ok(vec![TopLevel::Stylesheet(css_content)]);
+            if let Some(loaded) = self.load_css_import(import, source_file)? {
+                return Ok(loaded);
             }
         }
 
-        // Check for SVG import
+        // Check for SVG import (same extraction as CSS above).
         if import.path().ends_with(".svg") {
-            let svg_path = source_file
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(&import.path());
-
-            if svg_path.exists() {
-                let svg_content = std::fs::read_to_string(&svg_path)
-                    .map_err(|e| format!("Failed to read SVG '{}': {}", svg_path.display(), e))?;
-                let component_name = import
-                    .symbols
-                    .first()
-                    .map(|(local, _)| local.clone())
-                    .unwrap_or_else(|| {
-                        let file_name = if let Some(last_slash) = import.path().rfind('/') {
-                            &import.path()[last_slash + 1..]
-                        } else {
-                            &import.path()
-                        };
-                        let file_name = file_name.trim_end_matches(".svg");
-                        file_name
-                            .split('-')
-                            .map(|s| {
-                                let mut chars = s.chars();
-                                match chars.next() {
-                                    Some(c) => {
-                                        c.to_uppercase().collect::<String>() + chars.as_str()
-                                    }
-                                    None => String::new(),
-                                }
-                            })
-                            .collect::<String>()
-                    });
-                let svg_for_cache = svg_content.clone();
-                self.loaded_modules.insert(
-                    import.path().to_string(),
-                    (vec![TopLevel::SvgComponent {
-                        name: component_name.clone(),
-                        content: svg_for_cache,
-                    }], vec![]),
-                );
-                return Ok(vec![TopLevel::SvgComponent {
-                    name: component_name,
-                    content: svg_content,
-                }]);
+            if let Some(loaded) = self.load_svg_import(import, source_file)? {
+                return Ok(loaded);
             }
         }
 
@@ -795,12 +819,14 @@ impl ImportResolver {
 
             let program_for_cache = dbriev_items.clone();
 
+            let m_id = self.push_module(import.path(), &dbriev_path);
+            let origins = vec![Some(m_id); dbriev_items.len()];
             self.loaded_modules.insert(
                 import.path().to_string(),
-                (program_for_cache, vec![]),
+                (program_for_cache, vec![], origins.clone()),
             );
 
-            return Ok(dbriev_items);
+            return Ok((dbriev_items, origins));
         }
 
         // 2026-09-22 (per-arch stdlib boot entries): `import "*.bad"` —
@@ -859,9 +885,9 @@ impl ImportResolver {
             }
             self.loaded_modules.insert(
                 import.path().to_string(),
-                (vec![], vec![]),
+                (vec![], vec![], vec![]),
             );
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
 
         // Default: Briev module (.bv)
@@ -954,6 +980,11 @@ impl ImportResolver {
         let source = std::fs::read_to_string(&resolved_path)
             .map_err(|e| format!("Failed to read '{}': {}", resolved_path.display(), e))?;
 
+        // Wave 1 C1: this module's id — EVERY item parsed below belongs to
+        // it (including items its own nested imports splice in: their
+        // inner origins are already `Some(id)` and pass through untouched).
+        let m_id = self.push_module(import.path(), &resolved_path);
+
         let tokens = lex_source(&source)?;
         let mut parser = crate::parser::Parser::new(tokens, &source);
         // 2026-07-14: Parse errors in imported files are non-fatal — the
@@ -975,24 +1006,124 @@ impl ImportResolver {
             }
         };
 
-        let resolved = self.resolve_imports(imported_program, &resolved_path)?;
+        let module_len = imported_program.len();
+        let (resolved, resolved_origins) =
+            self.resolve_imports_inner(imported_program, vec![Some(m_id); module_len], &resolved_path)?;
         if import.path().contains("glue/c") {
         }
 
-        // Cache the fully resolved program
-        self.loaded_modules
-            .insert(import.path().to_string(), (resolved.clone(), vec![]));
+        // Cache the fully resolved program (origins ride along — a cache
+        // hit must attribute items to the SAME module id: diamond test).
+        self.loaded_modules.insert(
+            import.path().to_string(),
+            (resolved.clone(), vec![], resolved_origins.clone()),
+        );
 
-        let result = self.filter_items(&resolved, &[], &import.symbols);
+        let result = self.filter_items_with_origins(&resolved, &resolved_origins, &[], &import.symbols);
 
         self.in_progress.remove(import.path());
         result
     }
 
+    /// 2026-09-25 (interop Wave 1 C1): `.css` asset import body, extracted
+    /// from `resolve_import` (flat control flow / Praetor line budget).
+    /// `Ok(None)` = file does not exist (fall through to later arms);
+    /// `Ok(Some(..))` = loaded, cached, and registered as one module record.
+    fn load_css_import(
+        &mut self,
+        import: &Import,
+        source_file: &PathBuf,
+    ) -> Result<Option<(Vec<TopLevel>, Vec<Option<u32>>)>, String> {
+        let css_path = source_file
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(&import.path());
+        if !css_path.exists() {
+            return Ok(None);
+        }
+        let css_content = std::fs::read_to_string(&css_path)
+            .map_err(|e| format!("Failed to read CSS '{}': {}", css_path.display(), e))?;
+        let css_for_cache = css_content.clone();
+        let m_id = self.push_module(import.path(), &css_path);
+        self.loaded_modules.insert(
+            import.path().to_string(),
+            (vec![TopLevel::Stylesheet(css_for_cache)], vec![], vec![Some(m_id)]),
+        );
+        Ok(Some((vec![TopLevel::Stylesheet(css_content)], vec![Some(m_id)])))
+    }
+
+    /// 2026-09-25 (interop Wave 1 C1): `.svg` component import body,
+    /// extracted from `resolve_import` (same rationale as `load_css_import`).
+    fn load_svg_import(
+        &mut self,
+        import: &Import,
+        source_file: &PathBuf,
+    ) -> Result<Option<(Vec<TopLevel>, Vec<Option<u32>>)>, String> {
+        let svg_path = source_file
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(&import.path());
+        if !svg_path.exists() {
+            return Ok(None);
+        }
+        let svg_content = std::fs::read_to_string(&svg_path)
+            .map_err(|e| format!("Failed to read SVG '{}': {}", svg_path.display(), e))?;
+        let component_name = import
+            .symbols
+            .first()
+            .map(|(local, _)| local.clone())
+            .unwrap_or_else(|| {
+                let file_name = if let Some(last_slash) = import.path().rfind('/') {
+                    &import.path()[last_slash + 1..]
+                } else {
+                    &import.path()
+                };
+                let file_name = file_name.trim_end_matches(".svg");
+                file_name
+                    .split('-')
+                    .map(|s| {
+                        let mut chars = s.chars();
+                        match chars.next() {
+                            Some(c) => {
+                                c.to_uppercase().collect::<String>() + chars.as_str()
+                            }
+                            None => String::new(),
+                        }
+                    })
+                    .collect::<String>()
+            });
+        let svg_for_cache = svg_content.clone();
+        let m_id = self.push_module(import.path(), &svg_path);
+        self.loaded_modules.insert(
+            import.path().to_string(),
+            (vec![TopLevel::SvgComponent {
+                name: component_name.clone(),
+                content: svg_for_cache,
+            }], vec![], vec![Some(m_id)]),
+        );
+        Ok(Some((vec![TopLevel::SvgComponent {
+            name: component_name,
+            content: svg_content,
+        }], vec![Some(m_id)])))
+    }
+
     /// 2026-08-06 (Phase 11): filter imported items by the EXPORTED names and
     /// apply selective renames (`{ Local: Exported }`). Preserves the D3
     /// transitive-referenced-type closure and the file-private (sed) filter.
-    fn filter_items(&self, items: &[TopLevel], sed_names: &[String], symbols: &[(String, String)]) -> Result<Vec<TopLevel>, String> {
+    /// 2026-09-25 (interop Wave 1 C1): provenance split — origins ride in
+    /// lockstep; the final pass is the only place items are kept or dropped,
+    /// so it zips `origins` there; alignment is enforced by
+    /// `assert_origins_aligned` (hard-error, never silent truncation).
+    fn filter_items_with_origins(
+        &self,
+        items: &[TopLevel],
+        origins: &[Option<u32>],
+        sed_names: &[String],
+        symbols: &[(String, String)],
+    ) -> Result<(Vec<TopLevel>, Vec<Option<u32>>), String> {
+        assert_origins_aligned(items.len(), origins.len(), "filtering module items")?;
         let rename: HashMap<String, String> = symbols
             .iter()
             .filter(|(l, e)| l != e)
@@ -1060,9 +1191,11 @@ impl ImportResolver {
             }
         }
         let mut out: Vec<TopLevel> = Vec::new();
-        for item in items {
+        let mut out_origins: Vec<Option<u32>> = Vec::new();
+        for (item, origin) in items.iter().zip(origins) {
             if always(item) {
                 out.push(item.clone());
+                out_origins.push(*origin);
                 continue;
             }
             match Self::item_name(item) {
@@ -1072,11 +1205,12 @@ impl ImportResolver {
                     } else {
                         out.push(item.clone());
                     }
+                    out_origins.push(*origin);
                 }
                 _ => {}
             }
         }
-        Ok(out)
+        Ok((out, out_origins))
     }
 
     /// The unqualified name of a top-level item (import filtering + renames).
@@ -1129,7 +1263,7 @@ impl ImportResolver {
     fn resolve_stdlib_import(
         &mut self,
         module: &str,
-    ) -> Result<Vec<TopLevel>, String> {
+    ) -> Result<(Vec<TopLevel>, Vec<Option<u32>>), String> {
         let stdlib_root = self.resolve_stdlib_root().ok_or_else(|| {
             format!(
                 "Cannot resolve import '{}': no stdlib path configured. \
@@ -1150,8 +1284,8 @@ impl ImportResolver {
 
         // Use a distinct cache key for stdlib imports
         let cache_key = format!("stdlib:{}", module);
-        if let Some((cached, sed_names)) = self.loaded_modules.get(&cache_key) {
-            return self.filter_items(cached, sed_names, &[]);
+        if let Some((cached, sed_names, cached_origins)) = self.loaded_modules.get(&cache_key) {
+            return self.filter_items_with_origins(cached, cached_origins, sed_names, &[]);
         }
 
         if !candidate.exists() {
@@ -1165,16 +1299,23 @@ impl ImportResolver {
         let source = std::fs::read_to_string(&candidate)
             .map_err(|e| format!("Failed to read '{}': {}", candidate.display(), e))?;
 
+        // Wave 1 C1: stdlib modules carry provenance like any other module.
+        let m_id = self.push_module(module, &candidate);
+
         let tokens = lex_source(&source)?;
         let mut parser = crate::parser::Parser::new(tokens, &source);
         let imported_program = parser.parse_program().unwrap_or_default();
+        let module_len = imported_program.len();
 
-        let resolved = self.resolve_imports(imported_program, &candidate)?;
+        let (resolved, resolved_origins) =
+            self.resolve_imports_inner(imported_program, vec![Some(m_id); module_len], &candidate)?;
 
-        self.loaded_modules
-            .insert(cache_key, (resolved.clone(), vec![]));
+        self.loaded_modules.insert(
+            cache_key,
+            (resolved.clone(), vec![], resolved_origins.clone()),
+        );
 
-        self.filter_items(&resolved, &[], &[])
+        self.filter_items_with_origins(&resolved, &resolved_origins, &[], &[])
     }
 }
 
@@ -1224,7 +1365,33 @@ fn item_key(item: &TopLevel) -> Option<(String, String)> {
 /// definitions shadow imported ones, matching lexical-scope semantics.
 /// Diamond-import dedup still works because identical items from the same
 /// module collapse to one copy regardless of which is "last."
-fn dedup_items(items: Vec<TopLevel>) -> Vec<TopLevel> {
+/// 2026-09-25 (interop Wave 1 C1): the origins/items alignment invariant,
+/// shared by `filter_items_with_origins` and `dedup_items_with_origins` —
+/// every caller aligns the vectors, so a length mismatch is an INTERNAL
+/// invariant violation (an origins/items desync would misattribute C4
+/// collisions) and hard-errors rather than silently truncating items.
+fn assert_origins_aligned(
+    items_len: usize,
+    origins_len: usize,
+    context: &str,
+) -> Result<(), String> {
+    if items_len == origins_len {
+        return Ok(());
+    }
+    Err(format!(
+        "internal: origins desync — {} items vs {} origins while {}",
+        items_len, origins_len, context
+    ))
+}
+
+/// 2026-06-13: dedup items (last occurrence wins — lexical shadowing).
+/// 2026-09-25 (interop Wave 1 C1): survivors keep their origins; alignment
+/// enforced by `assert_origins_aligned` (same contract as filtering).
+fn dedup_items_with_origins(
+    items: Vec<TopLevel>,
+    origins: Vec<Option<u32>>,
+) -> Result<(Vec<TopLevel>, Vec<Option<u32>>), String> {
+    assert_origins_aligned(items.len(), origins.len(), "deduplicating")?;
     use std::collections::HashMap;
     let mut last_indices: HashMap<(String, String), usize> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
@@ -1232,15 +1399,19 @@ fn dedup_items(items: Vec<TopLevel>) -> Vec<TopLevel> {
             last_indices.insert(key, i);
         }
     }
-    let mut result = Vec::with_capacity(items.len());
-    for (i, item) in items.into_iter().enumerate() {
-        match item_key(&item) {
-            Some(key) if last_indices[&key] == i => result.push(item),
-            Some(_) => {}
-            None => result.push(item),
+    let mut result: Vec<TopLevel> = Vec::with_capacity(items.len());
+    let mut result_origins: Vec<Option<u32>> = Vec::with_capacity(origins.len());
+    for (i, (item, origin)) in items.into_iter().zip(origins).enumerate() {
+        let keep = match item_key(&item) {
+            Some(key) => last_indices[&key] == i,
+            None => true,
+        };
+        if keep {
+            result.push(item);
+            result_origins.push(origin);
         }
     }
-    result
+    Ok((result, result_origins))
 }
 
 impl Default for ImportResolver {
@@ -1770,6 +1941,181 @@ fn test_resolved_paths_are_recorded() {
         resolver.resolved_paths[0].1.ends_with("m.bv"),
         "the record must map the specifier to its canonical path: {:?}",
         resolver.resolved_paths
+    );
+}
+
+// ── Wave 1 C1: provenance tests (2026-09-25) ─────────────────────────
+
+/// Helper: the origin recorded for the named `defn` in the resolved items.
+fn definition_origin(
+    items: &[TopLevel],
+    origins: &[Option<u32>],
+    name: &str,
+) -> Option<Option<u32>> {
+    items
+        .iter()
+        .zip(origins)
+        .find(|(item, _)| matches!(item, TopLevel::Definition(d) if d.name == name))
+        .map(|(_, origin)| *origin)
+}
+
+/// A→B→C: C's items must carry C's module id, not B's — provenance
+/// survives the two-level splice chain (each `resolve_imports_inner`
+/// level returns its own aligned origins that the parent splices).
+#[test]
+fn test_provenance_survives_two_level_chain() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("mod_c.bv"),
+        "defn from_c -> Int { term 3; };",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("mod_b.bv"),
+        "import \"mod_c\";\ndefn from_b -> Int { term 2; };",
+    )
+    .unwrap();
+    let src = dir.path().join("main.bv");
+    fs::write(&src, "").unwrap();
+
+    let mut resolver = ImportResolver::new();
+    resolver.add_search_path(dir.path().to_path_buf());
+    let items = import_program("mod_b", vec![]);
+    let result = resolver.resolve_imports(items, &src).unwrap();
+    let origins = &resolver.item_origins;
+
+    assert_eq!(result.len(), origins.len(), "origins must align with items");
+
+    let origin_c = definition_origin(&result, origins, "from_c")
+        .expect("from_c must be spliced into the result");
+    let origin_b = definition_origin(&result, origins, "from_b")
+        .expect("from_b must be spliced into the result");
+    let id_c = origin_c.expect("imported items must carry a module id");
+    let id_b = origin_b.expect("imported items must carry a module id");
+    assert_ne!(id_c, id_b, "C's items must not be attributed to B");
+    assert_eq!(resolver.modules[id_c as usize].specifier, "mod_c");
+    assert!(
+        resolver.modules[id_c as usize]
+            .source_path
+            .file_name()
+            .unwrap()
+            .eq("mod_c.bv"),
+        "record points at C's file: {:?}",
+        resolver.modules[id_c as usize].source_path
+    );
+    assert_eq!(resolver.modules[id_b as usize].specifier, "mod_b");
+    assert_eq!(
+        resolver.modules.len(),
+        2,
+        "root file is not a module; exactly B and C register"
+    );
+}
+
+/// Root-file items carry `None` — provenance distinguishes "written here"
+/// from "imported from module id".
+#[test]
+fn test_provenance_root_items_are_none() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("mod_m.bv"),
+        "defn imported_fn -> Int { term 1; };",
+    )
+    .unwrap();
+    let src = dir.path().join("main.bv");
+    fs::write(&src, "").unwrap();
+
+    let root_src = "defn root_fn -> Int { term 0; };";
+    let tokens = lex_source(root_src).unwrap();
+    let mut parser = crate::parser::Parser::new(tokens, root_src);
+    let mut root_items = parser.parse_program().unwrap();
+    root_items.push(TopLevel::Import(Import::literal(
+        "mod_m".to_string(),
+        vec![],
+    )));
+
+    let mut resolver = ImportResolver::new();
+    resolver.add_search_path(dir.path().to_path_buf());
+    let result = resolver.resolve_imports(root_items, &src).unwrap();
+    let origins = &resolver.item_origins;
+
+    assert_eq!(
+        definition_origin(&result, origins, "root_fn"),
+        Some(None),
+        "root-file items carry no module id"
+    );
+    let imported = definition_origin(&result, origins, "imported_fn")
+        .expect("imported_fn must be spliced")
+        .expect("imported items must carry a module id");
+    assert_eq!(resolver.modules[imported as usize].specifier, "mod_m");
+}
+
+/// Diamond (X and Y both import C): the cached C loads ONCE (one module
+/// record) and both splice sites carry the SAME id. `let` statements have
+/// no dedup key, so both site copies survive into the final items — the
+/// only shape where "both sites, same id" is observable after dedup.
+#[test]
+fn test_provenance_cache_shared_origins() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("mod_c.bv"),
+        "let shared_val: Int = 7;\ndefn from_c -> Int { term 3; };",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("mod_x.bv"),
+        "import \"mod_c\";\ndefn from_x -> Int { term 1; };",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("mod_y.bv"),
+        "import \"mod_c\";\ndefn from_y -> Int { term 2; };",
+    )
+    .unwrap();
+    let src = dir.path().join("main.bv");
+    fs::write(&src, "").unwrap();
+
+    let mut resolver = ImportResolver::new();
+    resolver.add_search_path(dir.path().to_path_buf());
+    let items = vec![
+        TopLevel::Import(Import::literal("mod_x".to_string(), vec![])),
+        TopLevel::Import(Import::literal("mod_y".to_string(), vec![])),
+    ];
+    let result = resolver.resolve_imports(items, &src).unwrap();
+    let origins = &resolver.item_origins;
+    assert_eq!(result.len(), origins.len(), "origins must align with items");
+
+    let shared_ids: Vec<u32> = result
+        .iter()
+        .zip(origins)
+        .filter(|(item, _)| {
+            matches!(item, TopLevel::Statement(s) if matches!(s.as_ref(), crate::ast::Statement::Let { name, .. } if name == "shared_val"))
+        })
+        .map(|(_, origin)| origin.expect("imported let must carry a module id"))
+        .collect();
+    assert_eq!(
+        shared_ids.len(),
+        2,
+        "both diamond splice sites survive dedup (no dedup key for lets)"
+    );
+    assert_eq!(
+        shared_ids[0], shared_ids[1],
+        "cache hit must reuse the SAME module id at both sites"
+    );
+
+    let c_records = resolver
+        .modules
+        .iter()
+        .filter(|m| m.specifier == "mod_c")
+        .count();
+    assert_eq!(c_records, 1, "cached module must register exactly once");
+
+    let origin_c = definition_origin(&result, origins, "from_c")
+        .expect("from_c spliced")
+        .expect("imported defn carries id");
+    assert_eq!(
+        resolver.modules[origin_c as usize].specifier,
+        "mod_c",
+        "shared id must point at C"
     );
 }
 }
