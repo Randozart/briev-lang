@@ -742,7 +742,9 @@ import collections: <std/collections>;
 import { LocalName: ExportedName, OtherName } from "./module.bv";
 ```
 
-Conflicting unqualified imports are errors and must be resolved with a module alias or selective rename. Import order never changes meaning.
+Conflicting unqualified imports are errors and must be resolved with a selective rename or an identical definition. Import order never changes meaning.
+
+There is no overloading: the unqualified namespace holds one declaration per name, across modules as well as within one. Two definitions of the same name with different signatures in one scope is a conflict, resolvable the same way as above.
 
 Glob imports are invalid.
 

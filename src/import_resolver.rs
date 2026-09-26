@@ -492,14 +492,6 @@ impl ImportResolver {
         let mut items = items;
         let mut origins = origins;
 
-        // 2026-08-06 (Phase 11): track which module path each imported name
-        // came from. Two DIFFERENT modules providing the same unqualified name
-        // is a hard error (SPEC 7.2); the same path (diamond) is fine.
-        // 2026-08-09 (Phase 11, Slice 2): a second map tracks the `:` module
-        // alias per imported name — differing aliases resolve a collision.
-        let mut imported_names: HashMap<String, (String, String)> = HashMap::new();
-        let mut imported_aliases: HashMap<String, String> = HashMap::new();
-
         let mut index = 0;
 
         while index < items.len() {
@@ -519,21 +511,78 @@ impl ImportResolver {
                 continue;
             };
             let (resolved, resolved_origins) = self.resolve_import(&import, file_path)?;
-            Self::record_imported_names(
-                &mut imported_names,
-                &mut imported_aliases,
-                &resolved,
-                import.path(),
-                import.alias.as_deref(),
-            )?;
             items.remove(index);
             origins.remove(index);
             items.splice(index..index, resolved);
             origins.splice(index..index, resolved_origins);
         }
 
+        // 2026-09-26 (Wave 1 C4): the pre-dedup collision gate — see
+        // `check_cross_module_collisions`. Replaces `record_imported_names`,
+        // which only saw pairs inside ONE splice pass.
+        self.check_cross_module_collisions(&items, &origins)?;
+
         // 2026-06-13: Dedup items (2026-09-25: survivors keep their origins)
         dedup_items_with_origins(items, origins)
+    }
+
+    /// 2026-09-26 (Wave 1 C4, plan 2026-09-25-interop-wave1): BEFORE dedup,
+    /// any two items sharing an unqualified-namespace key with DIFFERENT
+    /// origins and DIFFERENT `{:?}` dumps is a hard error. This is the gate
+    /// that makes SPEC 7.2's "import order never changes meaning" true:
+    /// last-wins shadowing across module boundaries (root-vs-import and
+    /// module-local-vs-import — the order-dependent winner) is retired.
+    /// Escapes: same origin (diamond), identical dump (benign duplicate,
+    /// e.g. `SYS_WRITE` in both fs.bv and net.bv), and `impl` (coherence,
+    /// §17.2). Selective rename (`{ Local: Exported }`) moves one side to a
+    /// different key. Replaces `record_imported_names` (retired 2026-09-26:
+    /// this check sees every pair the record saw, keyed like the dedup it
+    /// guards, plus the root pairs the record could not see). How to undo:
+    /// delete this method + `collision_key` and restore the record maps/call
+    /// from the C3 commit.
+    fn check_cross_module_collisions(
+        &self,
+        items: &[TopLevel],
+        origins: &[Option<u32>],
+    ) -> Result<(), String> {
+        assert_origins_aligned(items.len(), origins.len(), "checking collisions")?;
+        let mut seen: HashMap<(String, String), (Option<u32>, String)> = HashMap::new();
+        for (item, origin) in items.iter().zip(origins) {
+            if matches!(item, TopLevel::Impl(_)) {
+                continue;
+            }
+            let Some(key) = collision_key(item) else {
+                continue;
+            };
+            let dump = format!("{:?}", item);
+            if let Some((prior_origin, prior_dump)) = seen.get(&key) {
+                if prior_origin == origin || prior_dump == &dump {
+                    continue;
+                }
+                return Err(format!(
+                    "import name '{}' conflicts: provided by {} and also by {} — one \
+                     shared root namespace means the winner would depend on import \
+                     order. Fix: rename one side with a selective import \
+                     (`{{ Local: Exported }}`) or make the two definitions identical.",
+                    key.1,
+                    Self::origin_side(&self.modules, *prior_origin),
+                    Self::origin_side(&self.modules, *origin),
+                ));
+            }
+            seen.insert(key, (*origin, dump));
+        }
+        Ok(())
+    }
+
+    /// The message-side name for an origin: `None` = the main file.
+    fn origin_side(modules: &[ModuleRecord], origin: Option<u32>) -> String {
+        match origin {
+            None => "the main file".to_string(),
+            Some(id) => modules
+                .get(id as usize)
+                .map(|m| format!("'{}'", m.specifier))
+                .unwrap_or_else(|| "an unknown module".to_string()),
+        }
     }
 
     /// 2026-09-25 (interop Wave 1 C1): register a loaded file-backed module
@@ -640,60 +689,6 @@ impl ImportResolver {
     }
 
     /// Resolve `import "target"` — loads the board D-briev description and emits typed constants.
-    /// 2026-08-06 (Phase 11): record which module path each imported name came
-    /// from. Two DIFFERENT modules providing the same unqualified name is a
-    /// hard error (SPEC 7.2) UNLESS the definitions are IDENTICAL (a benign
-    /// duplicate, e.g. `SYS_WRITE` declared in both fs.bv and net.bv); the
-    /// same path (diamond) is fine.
-    fn record_imported_names(
-        imported: &mut HashMap<String, (String, String)>,
-        imported_aliases: &mut HashMap<String, String>,
-        resolved: &[TopLevel],
-        path: &str,
-        alias: Option<&str>,
-    ) -> Result<(), String> {
-        for item in resolved {
-            // 2026-08-09 (Phase 11, Slice 2): an `impl T` EXTENDS the type `T`
-            // — it does not DECLARE it, so it must not participate in name
-            // collision. The type declaration carries the name; an impl is a
-            // coherence relationship (§17.2). Skipping impls here also fixes a
-            // false collision: `type Point` in a.bv + `impl Point` in b.bv,
-            // both imported, are a valid cross-module coherence pair.
-            if matches!(item, TopLevel::Impl(_)) {
-                continue;
-            }
-            if let Some(n) = Self::item_name(item) {
-                if let Some((src, prior)) = imported.get(n) {
-                    // 2026-08-09 (Phase 11, Slice 2): two imports providing the
-                    // same exported name are legal when they carry DIFFERENT
-                    // `:` module aliases — the alias is a collision-resolving
-                    // local TAG (SPEC §7.2; no qualified access — Briev inlines).
-                    // Same path (diamond) and identical definitions stay benign.
-                    let same_alias = match (imported_aliases.get(n), alias) {
-                        (Some(a), Some(b)) => a == b,
-                        (None, None) => true,
-                        // One side aliased, the other not: the aliased import
-                        // is a distinct tag, so they coexist.
-                        _ => false,
-                    };
-                    if src != path && *prior != format!("{:?}", item) && same_alias {
-                        return Err(format!(
-                            "import name '{}' conflicts: provided by both '{}' and '{}' — \
-                             use a selective rename (`{{ Local: Exported }}`) or a module alias",
-                            n, src, path
-                        ));
-                    }
-                } else {
-                    imported.insert(n.to_string(), (path.to_string(), format!("{:?}", item)));
-                    if let Some(a) = alias {
-                        imported_aliases.insert(n.to_string(), a.to_string());
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn resolve_target_import(&mut self) -> Result<Vec<TopLevel>, String> {
         let board = self.board_name.as_deref().unwrap_or("stm32f407");
 
@@ -1510,6 +1505,19 @@ fn item_key(item: &TopLevel) -> Option<(String, String)> {
     }
 }
 
+/// 2026-09-26 (Wave 1 C4): the unqualified-import namespace key (SPEC 7.2)
+/// for collision checking. `item_key` where dedup has one — the check guards
+/// exactly the pairs dedup would collapse to a last-wins winner — plus a
+/// name-only fallback for items that carry a name but no dedup key (top-level
+/// `let`, `init`) so the retired `record_imported_names`' protection for
+/// those names is not lost.
+fn collision_key(item: &TopLevel) -> Option<(String, String)> {
+    if let Some(key) = item_key(item) {
+        return Some(key);
+    }
+    item_name(item).map(|n| ("named".into(), n.to_string()))
+}
+
 /// Keep the LAST occurrence of each named top-level item — local/recent
 /// definitions shadow imported ones, matching lexical-scope semantics.
 /// Diamond-import dedup still works because identical items from the same
@@ -2036,15 +2044,21 @@ fn test_cross_module_impl_does_not_collide_with_target_type() {
 
 /// 2026-08-09 (Phase 11, Slice 2): a `:` module alias resolves a name collision
 /// between two DIFFERENT modules exporting the same symbol (SPEC §7.2).
+/// 2026-09-26 (Wave 1 C4): RETIRED as a collision escape — the alias tag never
+/// renamed the inlined items ("no qualified access"), so differing aliases
+/// only silenced the old record while dedup silently dropped one `foo`
+/// (order-dependent winner — exactly the trap C4 closes; SPEC §7.2's escape
+/// list updated in the same commit). The escape that is real: selective
+/// rename (`{ Local: Exported }`) or an identical definition.
 #[test]
-fn test_module_alias_resolves_collision() {
+fn test_module_alias_is_no_longer_a_collision_escape() {
     let dir = TempDir::new().unwrap();
     fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
     fs::write(dir.path().join("m2.bv"), "defn foo -> Int { term 2; };").unwrap();
     let src = dir.path().join("main.bv");
     fs::write(&src, "").unwrap();
-    // `import a: "m1.bv"; import b: "m2.bv";` — both export `foo` but carry
-    // DIFFERENT aliases, so they coexist (no qualified access — inlined tags).
+    // `import a: "m1.bv"; import b: "m2.bv";` — both export `foo`; the tags
+    // differ but the inlined names do not, so the collision is real.
     let mut a = Import::literal("m1.bv".to_string(), vec![]);
     a.alias = Some("a".to_string());
     let mut b = Import::literal("m2.bv".to_string(), vec![]);
@@ -2055,11 +2069,177 @@ fn test_module_alias_resolves_collision() {
     ];
     let mut resolver = ImportResolver::new();
     resolver.add_search_path(dir.path().to_path_buf());
+    let err = resolver.resolve_imports(items, &src).unwrap_err();
     assert!(
-        resolver.resolve_imports(items, &src).is_ok(),
-        "differing module aliases must resolve the collision"
+        err.contains("conflicts") && err.contains("selective import"),
+        "differing module aliases must not mask the collision: {err}"
     );
 }
+
+    // ── Wave 1 C4: the pre-dedup collision gate (2026-09-26) ──────────
+
+    /// Parse a root program — for tests whose ROOT items collide with
+    /// imports, the pair class the retired `record_imported_names` never saw.
+    fn parse_root(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("test root lexes");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        p.parse_program().expect("test root parses")
+    }
+
+    /// Positional root-shadows-import is retired: a root defn and an
+    /// imported defn sharing a key would have an order-dependent winner
+    /// (SPEC 7.2: import order never changes meaning) — now a hard error
+    /// naming both sides.
+    #[test]
+    fn test_root_import_collision_is_error() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
+        let root_src = "defn foo -> Int { term 9; };";
+        let src = dir.path().join("main.bv");
+        fs::write(&src, root_src).unwrap();
+        let mut items = parse_root(root_src);
+        items.push(TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])));
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let err = resolver.resolve_imports(items, &src).unwrap_err();
+        assert!(
+            err.contains("conflicts") && err.contains("main file") && err.contains("'m1.bv'"),
+            "the root-vs-import error must name both sides: {err}"
+        );
+    }
+
+    /// The same rule spans dialects: a `.bv` and an `.ebv` module both
+    /// exporting `foo` collide — origins differ, so the winner would depend
+    /// on import order.
+    #[test]
+    fn test_collision_across_dialects_is_error() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
+        fs::write(dir.path().join("m2.ebv"), "defn foo -> Int { term 2; };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![
+            TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])),
+            TopLevel::Import(Import::literal("m2.ebv".to_string(), vec![])),
+        ];
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let err = resolver.resolve_imports(items, &src).unwrap_err();
+        assert!(
+            err.contains("conflicts") && err.contains("'m1.bv'") && err.contains("'m2.ebv'"),
+            "the cross-dialect error must name both modules: {err}"
+        );
+    }
+
+    /// Identical definitions are the benign-duplicate escape: a root defn
+    /// byte-identical to the imported one is not an order-dependent winner.
+    #[test]
+    fn test_identical_defs_benign() {
+        let dir = TempDir::new().unwrap();
+        let body = "defn foo -> Int { term 1; };";
+        fs::write(dir.path().join("m1.bv"), body).unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, body).unwrap();
+        let mut items = parse_root(body);
+        items.push(TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])));
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        let foos = result
+            .iter()
+            .filter(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo"))
+            .count();
+        assert_eq!(foos, 1, "identical duplicates collapse to one: {} copies", foos);
+    }
+
+    /// A diamond (the same module imported twice) shares one origin — the
+    /// gate must not mistake it for a conflict.
+    #[test]
+    fn test_diamond_import_benign() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let items = vec![
+            TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])),
+            TopLevel::Import(Import::literal("m1.bv".to_string(), vec![])),
+        ];
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        assert_eq!(
+            resolver.modules.iter().filter(|m| m.specifier == "m1.bv").count(),
+            1,
+            "one load, one record"
+        );
+        let foos = result
+            .iter()
+            .filter(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo"))
+            .count();
+        assert_eq!(foos, 1, "the diamond collapses to one copy: {} copies", foos);
+    }
+
+    /// Selective rename is THE escape: moving the import's `foo` to a
+    /// different local key removes the collision with the root defn.
+    #[test]
+    fn test_alias_resolves_collision() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("m1.bv"), "defn foo -> Int { term 1; };").unwrap();
+        let root_src = "defn foo -> Int { term 9; };";
+        let src = dir.path().join("main.bv");
+        fs::write(&src, root_src).unwrap();
+        let mut items = parse_root(root_src);
+        items.push(TopLevel::Import(Import::literal(
+            "m1.bv".to_string(),
+            vec![("foo_local".to_string(), "foo".to_string())],
+        )));
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        assert!(
+            result.iter().any(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo")),
+            "the root defn survives"
+        );
+        assert!(
+            result.iter().any(|t| matches!(t, TopLevel::Definition(d) if d.name == "foo_local")),
+            "the renamed import coexists"
+        );
+    }
+
+    /// `impl` stays exempt: an impl EXTENDS its target type, it does not
+    /// declare it (SPEC §17.2 coherence) — a root type + a module impl is a
+    /// valid pair, not a collision.
+    #[test]
+    fn test_impls_stay_exempt() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("impl.bv"),
+            "impl Point { defn origin() -> Int { term 0; }; };",
+        )
+        .unwrap();
+        let root_src = "type Point: Int;";
+        let src = dir.path().join("main.bv");
+        fs::write(&src, root_src).unwrap();
+        let mut items = parse_root(root_src);
+        items.push(TopLevel::Import(Import::literal("impl.bv".to_string(), vec![])));
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+        assert!(
+            result.iter().any(|t| matches!(t, TopLevel::TypeDef(td) if td.name == "Point")),
+            "the root type survives"
+        );
+        assert!(
+            result.iter().any(|t| matches!(t, TopLevel::Impl(imp) if imp.target == "Point")),
+            "the module impl coheres with it"
+        );
+    }
 
 /// 2026-08-09 (Phase 11, Slice 2): same-alias imports of the same exported
 /// name from DIFFERENT modules STILL collide (the alias is per-import).

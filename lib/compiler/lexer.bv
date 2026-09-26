@@ -2,6 +2,8 @@
 // Tier 3: Lexer Components
 
 import "std/char";
+import { char_at, len, to_int, to_float } from "std/string";
+import { StringBuilder, new_builder, append_char, to_string } from "std/string_builder.bv";
 
 // ===== LEXER STATE =====
 

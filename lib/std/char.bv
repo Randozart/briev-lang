@@ -1,7 +1,7 @@
 // Char - Unicode codepoint operations
 // Tier 2: String & Text Processing
 
-import "std/string_builder.bv";
+import { StringBuilder, new_builder, append_char } from "std/string_builder.bv";
 
 // ===== NATIVE DEFINITIONS =====
 

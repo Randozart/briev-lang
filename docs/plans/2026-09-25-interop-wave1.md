@@ -196,6 +196,95 @@ Tests: `test_root_import_collision_is_error`;
 `test_diamond_import_benign`; `test_alias_resolves_collision`;
 `test_impls_stay_exempt`.
 
+### DONE (2026-09-26)
+
+**Gate implemented** (`import_resolver.rs`): `check_cross_module_collisions`
+runs in `resolve_imports_inner` before `dedup_items_with_origins`, at every
+nesting level. `record_imported_names` retired (the gate sees every pair the
+record saw, keyed like the dedup it guards, plus the root pairs the record
+could not see). Module alias is no longer a collision escape — the alias tag
+never renamed inlined items, so differing aliases only silenced the retired
+record while dedup silently dropped one name; `test_module_alias_is_no_longer_a_collision_escape` pins that. SPEC §7.2 edited: the escape list is "a selective rename or an identical definition" (alias withdrawn), plus a new line stating the no-overload invariant (one unqualified name per scope, across modules).
+
+**No-overload ground truth** (verified in source before fixing): the
+typechecker holds ONE signature per callable name — `fn_param_types` /
+`fn_return_types` are `HashMap<String, …>` keyed by name only
+(`src/typechecker/mod.rs:1961`, `:2002`), registration is plain `.insert`
+(`:4706`, `:5439`) so a second same-name defn silently overwrites the first.
+There is no `(name, param_types)` key anywhere in call resolution. C4's
+pre-dedup gate is the only thing that catches the pair.
+
+**Sweep fixes (this commit)** — the gate surfaced 3 active sources; fixing
+them exposed the stdlib's same-name-different-signature pattern, fixed
+proactively:
+
+- `examples/electronics/led_blinker.ebv` — deleted the local `type Connector`
+  (identical to `std/electronics.bv`'s except two unused `spec` declarations;
+  the instance sets neither, so the netlist is unchanged).
+- `examples/electronics/usb_sensor.ebv` — renamed the local types that
+  shadow std's: `Resistor` → `RatedResistor` (keeps the concrete
+  `spec Rating: 0.25W` — switching to std's `Rating: any` would turn the
+  dissipation proof into INFINITY, a contract weakening, Golden Rule 1),
+  `Led` → `BomLed` (the no-physics variant; std's `Led` requires
+  `ForwardVoltage`/`DynamicResistance` the instances don't supply),
+  `Capacitor` → `BoardCapacitor` (keeps `spec Tolerance: any` — std's
+  `Capacitor` has no tolerance clause, and the decoupler pins sit on driven
+  nets, so dropping the declaration makes the pin-tolerance contract fire).
+  The `usb_sensor_gate_fixture` mutation anchor in
+  `src/backend/electronics/mod.rs` updated to the new name.
+- `lib/std/string.bv` — deleted its `char_at` defn (`-> String`, 1-char
+  substring; zero callers repo-wide — `char.bv`'s `char_at -> Char` is the
+  canonical one, called by lexer/reader/soa/needs_state), and narrowed the
+  `std/char.bv` import to `{ int_to_char }` (its only char-borne use, ×9).
+  The builder import is already selective (`{ StringBuilder, new_builder,
+  append_char, append_str }`) — the full import would re-leak `len` /
+  `to_string` against string.bv's own.
+- `lib/std/char.bv` — builder import narrowed to
+  `{ StringBuilder, new_builder, append_char }`; the full import used to
+  leak `len`/`to_string` into every importer's scope (e.g. string.bv's via
+  its `std/char` import).
+- `lib/compiler/token.bv` — builder import narrowed to
+  `{ StringBuilder, new_builder, append_str, append_int, append_char }`.
+- `lib/compiler/lexer.bv` — gained selective `std/string`
+  (`{ char_at, len, to_int, to_float }`) and `std/string_builder`
+  (`{ StringBuilder, new_builder, append_char, to_string }`) imports. This
+  also fixes lexer's two pre-existing `len(String)` type errors (its only
+  import was `std/char`, whose builder-nested `len` took a StringBuilder).
+  Its remaining type errors (range `+`, `Char == Int`, `TokenEof`) are
+  pre-existing tamer-WIP, baseline-verified unchanged in kind.
+- `tests/_iso.bv` — deleted its local `char_at` (duplicated `char.bv`'s
+  with a different dump; `char.bv`'s is in scope via its `std/char` import).
+
+**Latent pairs left in place (verified out of every real scope, no code
+change)**: `hashmap.bv` `len<K,V>` + `is_empty` vs `string.bv`/`string_builder.bv`
+'s (no swept scope co-imports both — `hashmap.bv` imports nothing, and the
+only co-importer is `main.bv`, which is parse-broken WIP that never reaches
+resolution); `option.bv`/`result.bv` `unwrap`/`is_some`/etc. (importer sets
+disjoint except the same parse-broken `main.bv`). `lib/std/encoding.bv`
+carries INTRA-file duplicate defns (`is_hex_string`, `reverse_string`,
+`count_char`, `url_decode_simple` each ×2) — same-origin, so C4-correct
+(benign) and invisible to the gate; it is tamer-track WIP with zero callers
+repo-wide and is deliberately left untouched per the tamer ownership note.
+
+**Tamer-track note**: `lib/compiler/*.bv` are excluded from the conformance
+sweep ("tamer WIP, coordinate before migrating" — `conformance.rs:227`).
+C4 is invisible to the parse-broken ones (`ast`, `main`, `parser`,
+`proof_engine`, `range`, `typechecker`, `call_graph` — parse fails before
+resolution). The checkable ones (`token`, `lexer`, `needs_state`, `reader`,
+`soa_reorder`) were baseline-checked before and after: token/needs_state/
+reader/soa_reorder unchanged-OK, lexer improved from 2 type errors to the
+pre-existing tamer-WIP set (see above).
+
+**Verification**: `cargo test --lib` = 2694/0 (2688 baseline + 6 new C4 tests
++ sweep now passing). Conformance sweep green. `brievc check` on all touched
+files: string/char/encoding/token/needs_state/reader/soa_reorder/_iso OK;
+lexer improved (above); test_char parse-broken pre-existing (WIP test, not in
+active roots). Praetor: the Rust-side changes were already gated at the C4
+implementation (import_resolver/pipeline/compile passed at 39/39); this
+commit's additional changes are `.bv`/`.ebv`/SPEC/plan (Praetor does not
+analyze them) plus a 3-line test-anchor edit in `backend/electronics/mod.rs`
+(no new diagnostics — anchor string only, no complexity/line/param change).
+
 ## C5 — `.rbv`→`.bv` declared edge (item 5)
 
 - Interop plan edge-registry table; row 1: `.rbv`→`.bv` — same-file binding

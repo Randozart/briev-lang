@@ -13,8 +13,8 @@
 // Escaping
 // Encoding
 import "std/collections.bv";
-import "std/string_builder.bv";
-import "std/char.bv";
+import { StringBuilder, new_builder, append_char, append_str } from "std/string_builder.bv";
+import { int_to_char } from "std/char.bv";
 // 2026-09-09 (Family A): byte_at moved to cast_lanes.bv (pure-Briev Load#
 // over the [len][bytes] layout) so the lane parsers and this file share one
 // definition. The prelude already injects cast_lanes.bv everywhere.
@@ -126,11 +126,6 @@ txn find_loop(s: String, needle: String, i: Int, lim: Int)
 
 defn find(s: String, needle: String) [true][term >= -1] -> Int {
   term find_loop(s, needle, 0, CharCount#(s));
-};
-
-// Character access
-defn char_at(s: String, index: Int) [index >= 0 && index < CharCount#(s)][CharCount#(term) == 1] -> String {
-  term s[index:index+1];
 };
 
 // Substring operations

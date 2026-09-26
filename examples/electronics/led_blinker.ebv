@@ -18,14 +18,6 @@
 //   J1.p1 ──── R1.a  R1.b ──── D1.a (anode)
 //   J1.p2 ──── D1.k (cathode)
 
-type Connector {
-    pin p1 = 1;
-    pin p2 = 2;
-    reference "J";
-    spec Tolerance: any;
-    spec Rating: any;
-};
-
 let j1: Connector = Connector { value: "JST-PH-2"; package: "JST-PH" };
 let r1: Resistor  = Resistor {
     value: "330R";

@@ -1212,7 +1212,11 @@ mod tests {
         // the forcing rule one-to-one, so one cap fewer than supply pins
         // leaves the last obligation unbridgeable. The E13 convention must
         // refuse.
-        let fx = mutate(gate_fixture(), "let c[i:2]: Capacitor", "let c[i:1]: Capacitor");
+        let fx = mutate(
+            gate_fixture(),
+            "let c[i:2]: BoardCapacitor",
+            "let c[i:1]: BoardCapacitor",
+        );
         let nl = derive_netlist(&fixture_items(&fx));
         assert!(
             nl.convention_errors

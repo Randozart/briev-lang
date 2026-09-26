@@ -1,7 +1,7 @@
 // Token - Lexer token type definition
 // Tier 3: Lexer Components
 
-import "std/string_builder";
+import { StringBuilder, new_builder, append_str, append_int, append_char } from "std/string_builder.bv";
 import "std/char";
 
 // ===== TOKEN ENUM =====

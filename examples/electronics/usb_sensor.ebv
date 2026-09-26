@@ -32,8 +32,8 @@
 // resistor — E15).
 //
 // 2026-09-24: resistor magnitudes now use structured `spec Resistance`;
-// `value` is only the BOM label. The local Resistor declares ordinary DC
-// conduction laws (`when true`); the SPST button's conditional topology
+// `value` is only the BOM label. The local RatedResistor declares ordinary
+// DC conduction laws (`when true`); the SPST button's conditional topology
 // is mode state (`mode closed`), not a law guard.
 
 type Ldo {
@@ -71,7 +71,7 @@ type Sensor {
     spec Rating: any;
     spec Decouple: 100n;
 };
-type Resistor {
+type RatedResistor {
     pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W;
     spec Resistance: Ohm; spec PullUp: true;
     // 2026-09-24 (component laws): structured physics. `value` remains the
@@ -81,8 +81,8 @@ type Resistor {
         a.current + b.current == 0;
     }
 };
-type Capacitor { pin a; pin b; reference "C"; spec Tolerance: any; spec Rating: any; spec Decoupler: true; };
-type Led {
+type BoardCapacitor { pin a; pin b; reference "C"; spec Tolerance: any; spec Rating: any; spec Decoupler: true; };
+type BomLed {
     pin a;
     pin k;
     reference "D";
@@ -106,13 +106,13 @@ stdnet<V3V3> let j2: DebugHdr = DebugHdr { value: "SWD", package: "HDR-2x5" };
 stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: "AP2112K-3.3", package: "SOT-25" };
 stdnet<V3V3> let u2: Mcu      = Mcu      { value: "STM32F042",   package: "QFN-32" };
 stdnet<V3V3> let u3: Sensor   = Sensor   { value: "SHT40",       package: "DFN-4"  };
-let led1: Led    = Led      { value: "green",       package: "0603"   };
-let r_led: Resistor = Resistor { value: "330R",      package: "0603", spec Resistance: 330Ohm };
-let r_pu[2]: Resistor = Resistor { value: "4k7",     package: "0603", spec Resistance: 4.7kOhm };
-let r_btn: Resistor = Resistor { value: "10k",       package: "0603", spec Resistance: 10kOhm };
+let led1: BomLed  = BomLed  { value: "green",     package: "0603"   };
+let r_led: RatedResistor = RatedResistor { value: "330R",  package: "0603", spec Resistance: 330Ohm };
+let r_pu[2]: RatedResistor = RatedResistor { value: "4k7", package: "0603", spec Resistance: 4.7kOhm };
+let r_btn: RatedResistor = RatedResistor { value: "10k",   package: "0603", spec Resistance: 10kOhm };
 let sw1: Spst    = Spst     { value: "SPST",        package: "SMD"    };
-let c[i:2]: Capacitor = Capacitor { value: "100n",  package: "0402"   };
-let c_dnp: Capacitor  = Capacitor { value: "10u",   package: "0805"   };
+let c[i:2]: BoardCapacitor = BoardCapacitor { value: "100n", package: "0402"   };
+let c_dnp: BoardCapacitor  = BoardCapacitor { value: "10u",   package: "0805"   };
 unpop c_dnp;                       // pad exists, part absent
 
 budget u1.vout <= 250mA;
