@@ -114,8 +114,8 @@ type DebugHdr { pin sig[7]; pin gnd: Ground; pin vcc: Power; reference "J"; spec
 // and j2.vcc join the 3.3V rail by expectation + refutation.
 stdnet<VBUS> let j1: UsbMicro = UsbMicro { value: "USB-Micro-B", package: "SMD" };
 stdnet<V3V3> let j2: DebugHdr = DebugHdr { value: "SWD", package: "HDR-2x5" };
-stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: "AP2112K-3.3", package: "SOT-25", spec Output: 3.3V };
-stdnet<V3V3> let u2: Mcu      = Mcu      { value: "STM32F042",   package: "QFN-32" };
+stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: "AP2112K-3.3", package: "SOT-25", jlcpcn: "C5199793", spec Output: 3.3V };
+stdnet<V3V3> let u2: Mcu      = Mcu      { value: "STM32F042",   package: "QFN-32", jlcpcn: "C4859347" };
 stdnet<V3V3> let u3: Sensor   = Sensor   { value: "SHT40",       package: "DFN-4"  };
 let led1: Led    = Led      { value: "green",       package: "0603"   };
 let r_led: Resistor = Resistor { value: "330R",      package: "0603", spec Resistance: 330Ohm };

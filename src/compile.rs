@@ -1571,6 +1571,21 @@ fn codegen(
                 Ok(sch) => output = sch,
                 Err(errs) => return Err(errs.join("\n")),
             }
+            // 2026-09-25 (E5): the assembly BOM rides with the schematic —
+            // populated parts only, deterministic order.
+            let bom = briev_compiler::backend::electronics::ElectronicsBackend::generate_bom(&analysis.electronics);
+            let bom_path = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?
+                .replace(".ll", ".csv");
+            if let Some(parent) = std::path::Path::new(&bom_path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        format!("cannot create output dir '{}': {}", parent.display(), e)
+                    })?;
+                }
+            }
+            std::fs::write(&bom_path, &bom)
+                .map_err(|e| format!("cannot write '{}': {}", bom_path, e))?;
+            println!("wrote {}", bom_path);
             // 2026-09-23 (fab plan): a `fab` section asks for a board — the
             // .kicad_pcb is written as a companion to the schematic.
             match briev_compiler::backend::electronics::ElectronicsBackend::generate_board(

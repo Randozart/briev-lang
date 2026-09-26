@@ -130,6 +130,9 @@ struct Placement<'a> {
     /// 2026-09-22 (Slice B): an `unpop` part is excluded from the BOM
     /// (`in_bom no`) but its pads remain on the board.
     unpop: bool,
+    /// 2026-09-25 (E5): the vendor order code (`jlcpcn: "C12345"` on the
+    /// instance literal) — hidden schematic property and a BOM column.
+    jlcpcn: &'a str,
 }
 
 pub struct ElectronicsBackend;
@@ -235,6 +238,45 @@ impl ElectronicsBackend {
         Ok(out)
     }
 
+    /// Emit the assembly BOM as CSV — one row per populated part, in the
+    /// same name-sorted order as the schematic (determinism rule). Columns:
+    /// reference, value, footprint, jlcpcn. An `unpop` part is absent (its
+    /// `in_bom no` schematic flag is the same decision). 2026-09-25 (E5).
+    pub fn generate_bom(netlist: &ElectronicsNetlist) -> String {
+        let mut components = netlist.components.clone();
+        components.sort_by(|a, b| a.name.cmp(&b.name));
+        let refs = Self::reference_map(netlist, &components);
+        let mut out = String::from("reference,value,footprint,jlcpcn\n");
+        for comp in &components {
+            if netlist.unpop.contains(&comp.name) {
+                continue;
+            }
+            let reference = refs.get(&comp.name).cloned().unwrap_or_default();
+            let value = Self::property_of(comp, "value").unwrap_or_else(|| comp.type_name.clone());
+            let footprint = Self::property_of(comp, "package").unwrap_or_default();
+            let jlcpcn = Self::property_of(comp, "jlcpcn").unwrap_or_default();
+            out.push_str(&format!(
+                "{},{},{},{}\n",
+                Self::csv_field(&reference),
+                Self::csv_field(&value),
+                Self::csv_field(&footprint),
+                Self::csv_field(&jlcpcn),
+            ));
+        }
+        out
+    }
+
+    /// Quote a CSV field only when needed (RFC 4180): a comma, quote, or
+    /// newline inside forces quoting; embedded quotes double. Bare fields
+    /// stay bare so the common BOM diffs cleanly.
+    fn csv_field(s: &str) -> String {
+        if s.contains([',', '"', '\n']) {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    }
+
     /// lib_symbols: one generic symbol per distinct component TYPE, in
     /// first-appearance order of the sorted instance list (deterministic).
     fn emit_symbol_library(netlist: &ElectronicsNetlist, components: &[ComponentInstance], out: &mut String) {
@@ -280,6 +322,7 @@ impl ElectronicsBackend {
             let reference = refs.get(&comp.name).cloned().unwrap_or_default();
             let value = Self::property_of(comp, "value").unwrap_or_else(|| comp.type_name.clone());
             let footprint = Self::property_of(comp, "package").unwrap_or_default();
+            let jlcpcn = Self::property_of(comp, "jlcpcn").unwrap_or_default();
             let placement = Placement {
                 comp,
                 x,
@@ -288,6 +331,7 @@ impl ElectronicsBackend {
                 value: &value,
                 footprint: &footprint,
                 unpop: netlist.unpop.contains(&comp.name),
+                jlcpcn: &jlcpcn,
             };
             Self::emit_instance(out, &placement);
             for (x_off, y_off, pin_name, _) in Self::pin_offsets(netlist, &comp.type_name) {
@@ -501,6 +545,14 @@ impl ElectronicsBackend {
             "    (property \"Footprint\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) (hide yes)))\n",
             p.footprint, coord(x), coord(y)
         ));
+        // 2026-09-25 (E5): vendor order code pass-through — a hidden property
+        // so the schematic carries what the BOM says. Absent when unstated.
+        if !p.jlcpcn.is_empty() {
+            out.push_str(&format!(
+                "    (property \"JLCPCN\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) (hide yes)))\n",
+                p.jlcpcn, coord(x), coord(y)
+            ));
+        }
         out.push_str("    (instances (project briev\n");
         out.push_str(&format!(
             "      (path \"/{}\" (reference \"{}\") (unit 1))\n",
@@ -888,6 +940,62 @@ mod tests {
         assert!(sch.contains("(property \"Value\" \"330\""));
         assert!(sch.contains("(property \"Value\" \"red\""));
         assert!(sch.contains("(property \"Value\" \"JST-2\""));
+    }
+
+    #[test]
+    fn jlcpcn_passes_through_and_bom_lists_populated_parts() {
+        // 2026-09-25 (E5): `jlcpcn` is a vendor order code — hidden schematic
+        // property plus a BOM column. The BOM carries populated parts only,
+        // in the schematic's name-sorted order, with the same value default.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; };
+            type Led { pin a; pin k; reference "D"; };
+
+            let r1: Resistor = Resistor { value: "330", package: "0603", jlcpcn: "C12345" };
+            let d1: Led = Led { value: "red" };
+            unpop d1;
+
+            txn powered
+                [r1.a.voltage == d1.a.voltage && d1.k.voltage == r1.b.voltage]
+                [d1.k.voltage == r1.b.voltage]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        let sch = ElectronicsBackend::generate(&nl).unwrap();
+        assert!(
+            sch.contains("(property \"JLCPCN\" \"C12345\""),
+            "jlcpcn property missing: {sch}"
+        );
+
+        let bom = ElectronicsBackend::generate_bom(&nl);
+        let lines: Vec<&str> = bom.lines().collect();
+        assert_eq!(lines[0], "reference,value,footprint,jlcpcn");
+        assert_eq!(lines[1], "R1,330,0603,C12345");
+        assert_eq!(lines.len(), 2, "unpop part must be absent: {bom}");
+    }
+
+    #[test]
+    fn bom_defaults_and_escapes_csv_fields() {
+        // A missing value falls back to the type name (same default as the
+        // schematic); a value with a comma is RFC-4180 quoted.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; };
+
+            let r1: Resistor = Resistor { };
+            let r2: Resistor = Resistor { value: "10k, 1%" };
+
+            txn powered
+                [r1.a.voltage == r2.a.voltage && r2.b.voltage == r1.b.voltage]
+                [r1.b.voltage == r2.b.voltage]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        let bom = ElectronicsBackend::generate_bom(&nl);
+        let lines: Vec<&str> = bom.lines().collect();
+        assert_eq!(lines[1], "R1,Resistor,,");
+        assert_eq!(lines[2], "R2,\"10k, 1%\",,");
     }
 
     #[test]

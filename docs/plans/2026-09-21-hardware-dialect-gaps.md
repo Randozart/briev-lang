@@ -122,6 +122,18 @@ track below.
 - **Effort:** M
 
 ### E5 — Invalid footprint identifiers; no BOM
+- **Status:** CLOSED 2026-09-25 — resolved in two halves. The
+  footprint-identifier half was superseded by the fab layer
+  (`2026-09-23-ebv-fab-layer.md`): the raw `package` string is the
+  declared key into the compiler-carred geometry library
+  (`config/footprints.dbvl`), unknown packages are a hard compile error
+  at board use, and no KiCad `Library:Name` vocabulary exists (Rules
+  14/15). The BOM half landed: `ElectronicsBackend::generate_bom`
+  emits `<stem>.csv` (reference,value,footprint,jlcpcn) beside the
+  schematic — populated parts only, name-sorted, RFC 4180 escaping —
+  and `jlcpcn: "C…"` on an instance literal passes through as a hidden
+  schematic property. KiCad BOM import / JLCPCB checker acceptance
+  remain manual vendor gates.
 - **Evidence:** `emit_instance` (`:321`) writes the `Footprint` property
   from the raw `package` string (`"0805"` — not a KiCad
   `Library:Footprint` ID); no BOM emission anywhere.
