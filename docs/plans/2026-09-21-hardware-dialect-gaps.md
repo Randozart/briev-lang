@@ -169,6 +169,15 @@ track below.
 - **Effort:** M
 
 ### E9 — `lib/std/hardware.bv` missing while the prelude imports it
+- **Status:** CLOSED 2026-09-25 — the import is DROPPED, not supplied.
+  `.sbv` needs no stdlib content today (sized scalars, registers, and
+  operators are compiler intrinsics; frgn/link are banned on the
+  silicon surface), and no honest `hardware.bv` content exists to
+  write. `plugins/parsed/prelude-hw.bv` keeps its slot in the prelude
+  family (one name for `--no-std` and the per-extension config) with
+  the insert commented out and the re-add recipe recorded; the guard
+  is `tests/silicon/sized_register.sbv` — an `.sbv` with a user import
+  must build.
 - **Evidence:** `plugins/parsed/prelude-hw.bv:11` inserts
   `import "std/hardware.bv"`; `lib/std/` contains no `hardware.bv`
   (verified by listing).

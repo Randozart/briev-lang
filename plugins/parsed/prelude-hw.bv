@@ -1,17 +1,27 @@
 // ── Hardware Prelude — CIRCT / Cell Targets ──────────────────────────────
 // 2026-07-21: Rewritten with direct AST navigation DSL.
 // 2026-07-23: Added Count$ check — Before$ on empty selection causes error.
-// Inserts hardware stdlib import before the first user import.
-// Used by .sbv files; provides Cell, Wire, Register, Bit.
+// Used by .sbv files.
+//
+// 2026-09-25 (E9, plan `2026-09-21-hardware-dialect-gaps.md`): the import
+// insert is DROPPED. It injected `std/hardware.bv`, a file that never
+// existed in `lib/std/` — so every `.sbv` program with at least one user
+// import failed with "Cannot find module 'std/hardware.bv'". The silicon
+// dialect needs no stdlib content today: sized scalars (`UInt<8>`),
+// registers (`reg let`), and every operator are compiler intrinsics, and
+// `.sbv` bans frgn/link anyway. The slot stays in the prelude family so
+// `--no-std` and the per-extension config keep one name for `.sbv`.
+//
+// When a real silicon stdlib lands (a `lib/std/hardware.bv` with content
+// a hardware program actually needs), re-add the insert here:
+//
+//     let anchor = Tag$("import").First$();
+//     when anchor.Count$() > 0 {
+//         anchor.Before$().Insert$(Import$("std/hardware.bv"));
+//     };
+//
+// Rule: never re-add the import before the file exists — no placeholder
+// module, no empty file (Rule 7 / ALWAYS FINISH applies to it).
 
 $(Parsed @ highest) {
-    let anchor = Tag$("import").First$();
-    when anchor.Count$() > 0 {
-        anchor.Before$()
-            .Insert$(Import$("std/hardware.bv"));
-    };
-    // No imports? Insert before the first non-import item, or skip.
-    when anchor.Count$() == 0 {
-        // Create a minimal result — no imports to insert before
-    };
 };
