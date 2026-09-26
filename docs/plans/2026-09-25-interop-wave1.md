@@ -82,6 +82,24 @@ C's id, not B's); `test_provenance_root_items_are_none`;
 
 ## C2 — Truthful extension dispatch (items 1+3)
 
+**DONE 2026-09-26**: 4 tests green (`test_ebv_module_imports`,
+`test_diagnostic_names_only_searched_exts`,
+`test_rbv_module_imports_briev_remainder`, `test_dbv_import_rejected`);
+suite 2684/0; Praetor no-new-diagnostics (`resolve_import` improved
+58→32 cognitive / 375→325 lines via `search_module_file` +
+`not_found_diagnostic` extraction). Implemented per plan with one
+documented refinement: explicit known code extensions (`.bv`, `.ebv`,
+`.rbv`, `.abv`, `.sbv`) resolve as single-extension searches (this is how
+`.rbv`/`.abv`/`.sbv` become reachable — implicit search stays
+`.bv`→`.ebv` only); imports now lex via `lex_for_path` (shared with the
+root path). **Data refusal deviation**: the explicit `x.dbv` specifier
+still loads typed constants (learn-briev/11-triggers.md:237 documents
+`import bindings from "std/bindings/system_triggers.dbv"` — feature kept),
+so `DataStructured | DataLine` rejection is implemented as diagnostic
+enrichment instead of a dead classify arm: the not-found error probes for
+`{mp}.dbv`/`{mp}.dbvl`, explains "data dialects are not code imports",
+and gives the explicit-specifier fix (what/why/fix, house style).
+
 1. Each search round tries `{mp}.bv` then `{mp}.ebv` — the existing
    diagnostic's promise becomes true. Wave 1 searches exactly these two;
    `.abv`/`.sbv`/`.rbv` remain unsearchable until their waves, and the

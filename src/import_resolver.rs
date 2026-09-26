@@ -534,6 +534,95 @@ impl ImportResolver {
         (self.modules.len() - 1) as u32
     }
 
+    /// 2026-09-25 (Wave 1 C2): the three candidate rounds for ONE extension:
+    /// (1) each search path (`lib/`, `imports/`, `.`) under `source_dir`,
+    /// (2) `lib/` under the ancestor holding the nearest `Cargo.toml` —
+    /// std/*, glue/*, and any lib/ module findable from anywhere; the walk-up
+    /// stops at the first Cargo.toml (the compiler repo or a user project
+    /// root), (3) `source_dir` directly. Extracted from `resolve_import` so
+    /// implicit `.bv`/`.ebv` search and explicit-extension imports share one
+    /// resolution order (Rule 17).
+    fn search_module_file(
+        &self,
+        source_dir: &Path,
+        module_path: &str,
+        ext: &str,
+    ) -> Option<PathBuf> {
+        for search_dir in &self.search_paths {
+            let candidate = source_dir
+                .join(search_dir)
+                .join(format!("{}{}", module_path, ext));
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        let mut current = source_dir.to_path_buf();
+        while let Some(parent) = current.parent() {
+            if parent.join("Cargo.toml").exists() {
+                let lib_candidate = parent
+                    .join("lib")
+                    .join(format!("{}{}", module_path, ext));
+                if lib_candidate.exists() {
+                    return Some(lib_candidate);
+                }
+                break;
+            }
+            current = parent.to_path_buf();
+        }
+        let direct = source_dir.join(format!("{}{}", module_path, ext));
+        if direct.exists() {
+            return Some(direct);
+        }
+        None
+    }
+
+    /// 2026-09-25 (Wave 1 C2): house-style not-found diagnostic — what was
+    /// searched (truthful: exactly the extensions the search probes), why,
+    /// and the concrete fix. If a DATA file sits at the same path it is
+    /// called out: data dialects are not code imports — the explicit
+    /// `x.dbv` specifier loads typed constants (learn-briev/11-triggers.md);
+    /// an implicit specifier over a data file is this error case.
+    fn not_found_diagnostic(
+        &self,
+        specifier: &str,
+        module_path: &str,
+        explicit_ext: Option<&str>,
+        source_dir: &Path,
+    ) -> String {
+        let exts = match explicit_ext {
+            Some(ext) => ext.to_string(),
+            None => ".{bv,ebv}".to_string(),
+        };
+        let dir = source_dir.display();
+        let mut msg = format!(
+            "Cannot find module '{specifier}'. Searched: {dir}/lib/{mp}{exts}, \
+             {dir}/imports/{mp}{exts}, {dir}/{mp}{exts}, and lib/ under the \
+             nearest project root.",
+            specifier = specifier,
+            mp = module_path,
+            exts = exts,
+            dir = dir,
+        );
+        if let Some(data_path) = ["dbv", "dbvl"].iter().find_map(|extension| {
+            self.search_module_file(source_dir, module_path, &format!(".{}", extension))
+        }) {
+            msg.push_str(&format!(
+                " A data file exists at '{}' — data dialects are not code \
+                 imports: load its constants with `import {{ name }} from \
+                 \"{}\"`, or check it with `brievc check`.",
+                data_path.display(),
+                specifier,
+            ));
+        }
+        msg.push_str(&format!(
+            " Fix: create {mp}.bv (or {mp}.ebv) in a searched directory, correct \
+             the import path, or — for a file in another dialect — import it with \
+             its explicit extension (`import \"./{mp}.<ext>\"`).",
+            mp = module_path,
+        ));
+        msg
+    }
+
     /// Resolve `import "target"` — loads the board D-briev description and emits typed constants.
     /// 2026-08-06 (Phase 11): record which module path each imported name came
     /// from. Two DIFFERENT modules providing the same unqualified name is a
@@ -890,12 +979,17 @@ impl ImportResolver {
             return Ok((vec![], vec![]));
         }
 
-        // Default: Briev module (.bv)
-        let module_path = if import.path().ends_with(".bv") {
-            import.path()[..import.path().len() - 3].replace('.', "/")
-        } else {
-            import.path().replace('.', "/")
-        };
+        // Default: code-dialect module search (2026-09-25, interop Wave 1 C2).
+        // An explicit known code extension (`.bv`, `.ebv`, `.rbv`, `.abv`,
+        // `.sbv`) searches ONLY that extension; extension-less specifiers
+        // search `.bv` then `.ebv` — the diagnostic's `{bv,ebv}` promise is
+        // now true, and an electronics module becomes importable from `.bv`
+        // (the real `.ebv` import candidate, item 3). `.abv`/`.sbv` are NOT
+        // implicit candidates; their waves add them. Data (`.dbv`/`.dbvl`),
+        // asset (`.css`/`.svg`), and `.bad` imports are handled by their own
+        // arms above and never reach this search.
+        let (raw_base, explicit_ext) = split_known_code_ext(import.path());
+        let module_path = raw_base.replace('.', "/");
         // TypeScript-style import resolution:
         //   "./foo" or "../foo" → relative to importing file
         //   "foo/bar"           → relative to project root
@@ -909,55 +1003,15 @@ impl ImportResolver {
             self.root_path.clone()
         };
 
-        // Search for .bv files in the search paths.
-        let mut found_path = None;
-        for search_dir in &self.search_paths {
-            let bv_candidate = source_dir
-                .join(search_dir)
-                .join(format!("{}.bv", module_path));
+        let found_path = match explicit_ext {
+            Some(ext) => self.search_module_file(&source_dir, &module_path, ext),
+            None => ["bv", "ebv"].iter().find_map(|extension| {
+                self.search_module_file(&source_dir, &module_path, &format!(".{}", extension))
+            }),
+        };
 
-            if bv_candidate.exists() {
-                found_path = Some(bv_candidate);
-                break;
-            }
-        }
-
-        // Search from the project root's lib/ directory (findable from
-        // anywhere) — std/*, glue/*, and any other lib/ module. The walk-up
-        // stops at the first ancestor Cargo.toml (the compiler repo, or a
-        // user project's root).
-        if found_path.is_none() {
-            let mut current = source_dir.clone();
-            while let Some(parent) = current.parent() {
-                if parent.join("Cargo.toml").exists() {
-                    let std_path = parent.join("lib").join(format!("{}.bv", module_path));
-                    if std_path.exists() {
-                        found_path = Some(std_path);
-                    }
-                    break;
-                }
-                current = parent.to_path_buf();
-            }
-        }
-
-        if found_path.is_none() {
-            let direct_bv = source_dir.join(format!("{}.bv", module_path));
-            if direct_bv.exists() {
-                found_path = Some(direct_bv);
-            }
-        }
-
-        let resolved_path = found_path.ok_or_else(|| {
-            let dir = source_dir.display();
-            format!(
-                "Cannot find module '{}'. Searched in: \
-                 {dir}/lib/{mp}.{{bv,ebv}}, \
-                 {dir}/imports/{mp}.{{bv,ebv}}, \
-                 {dir}/{mp}.{{bv,ebv}}",
-                import.path(),
-                mp = module_path,
-            )
-        })?;
+        let resolved_path = found_path
+            .ok_or_else(|| self.not_found_diagnostic(import.path(), &module_path, explicit_ext, &source_dir))?;
 
         // 2026-08-09 (Phase 11, Slice 2): record the deterministic resolution
         // (specifier → canonical path) for reproducibility/diagnostics (SPEC
@@ -985,8 +1039,31 @@ impl ImportResolver {
         // inner origins are already `Some(id)` and pass through untouched).
         let m_id = self.push_module(import.path(), &resolved_path);
 
-        let tokens = lex_source(&source)?;
-        let mut parser = crate::parser::Parser::new(tokens, &source);
+        // 2026-09-25 (Wave 1 C2): per-dialect source preparation after
+        // `classify(&resolved_path)`. `.rbv` extracts its Briev remainder
+        // (markup/style/view stay with the view pipeline; a logic-only
+        // `.rbv` passes through unchanged). Briev and Electronics share the
+        // parser — electronics syntax is lexer/AST-level on main. `.abv`/
+        // `.sbv` (explicit extensions only) parse as Briev until their waves
+        // land per-kind semantics; the shared parser accepts their
+        // declarations today. Data kinds cannot reach here: the `.dbv`/
+        // `.dbvl` arm above owns them (explicit data specifiers load typed
+        // constants; implicit ones are the diagnostic-enrichment case).
+        let resolved_str = resolved_path.to_string_lossy().to_string();
+        let parse_source = match classify(&resolved_path) {
+            Some(SourceKind::Rendered) => {
+                crate::pipeline::preprocess_source_for_path(&resolved_str, &source)?.briev_source
+            }
+            _ => source,
+        };
+
+        // 2026-08-06 → 2026-09-25 (Wave 1 C2): imports now lex through the
+        // shared `lex_for_path` (formatted `.f` profiles layout-process,
+        // real token spans for error messages) — same entry as the root
+        // compile path, so an imported module parses EXACTLY like a root
+        // file of its dialect.
+        let tokens = crate::pipeline::lex_for_path(&resolved_str, &parse_source)?;
+        let mut parser = crate::parser::Parser::new(tokens, &parse_source);
         // 2026-07-14: Parse errors in imported files are non-fatal — the
         // imported file may use syntax (struct literals, etc.) that the
         // parser supports as AST but not yet as a fully parseable form.
@@ -1320,6 +1397,24 @@ impl ImportResolver {
 }
 
 /// Lex a source string into a token vector with span information.
+/// 2026-09-25 (Wave 1 C2): split a known CODE-dialect extension off an
+/// import specifier — `(base, Some(".bv"))` for explicit extensions,
+/// `(spec, None)` for extension-less. Callers map '.'→'/' over the base.
+/// Data (`.dbv`/`.dbvl`), asset (`.css`/`.svg`), and `.bad` are not code
+/// dialects: their dedicated arms in `resolve_import` run first, so they
+/// never reach this split. `.bv` first in the list matters only for
+/// documentation — the suffixes do not overlap (`x.ebv` does not end in
+/// `.bv`).
+fn split_known_code_ext(spec: &str) -> (&str, Option<&'static str>) {
+    const CODE_EXTS: [&str; 5] = [".bv", ".ebv", ".rbv", ".abv", ".sbv"];
+    for ext in CODE_EXTS {
+        if spec.len() > ext.len() && spec.ends_with(ext) {
+            return (&spec[..spec.len() - ext.len()], Some(ext));
+        }
+    }
+    (spec, None)
+}
+
 fn lex_source(source: &str) -> Result<Vec<(Token, std::ops::Range<usize>)>, String> {
     let lexer = Token::lexer(source);
     let mut tokens = Vec::new();
@@ -2116,6 +2211,151 @@ fn test_provenance_cache_shared_origins() {
         resolver.modules[origin_c as usize].specifier,
         "mod_c",
         "shared id must point at C"
+    );
+}
+
+// ── Wave 1 C2: extension dispatch tests (2026-09-25) ─────────────────
+
+/// The real `.ebv` import candidate (item 3): an extension-less specifier
+/// resolves an `.ebv` file when no `.bv` sibling exists, and the module
+/// record classifies it as Electronics.
+#[test]
+fn test_ebv_module_imports() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("elec_mod.ebv"),
+        "defn ebv_fn -> Int { term 1; };",
+    )
+    .unwrap();
+    let src = dir.path().join("main.bv");
+    fs::write(&src, "").unwrap();
+
+    let mut resolver = ImportResolver::new();
+    resolver.add_search_path(dir.path().to_path_buf());
+    let items = import_program("elec_mod", vec![]);
+    let result = resolver.resolve_imports(items, &src).unwrap();
+
+    assert!(
+        definition_origin(&result, &resolver.item_origins, "ebv_fn").is_some(),
+        "the .ebv module's defn must be spliced: {:?}",
+        result
+    );
+    let record = resolver
+        .modules
+        .iter()
+        .find(|m| m.specifier == "elec_mod")
+        .expect("elec_mod registers a module record");
+    assert_eq!(
+        record.kind,
+        Some(SourceKind::Electronics),
+        "record classifies by resolved path: {:?}",
+        record.source_path
+    );
+    assert!(
+        record.source_path.ends_with("elec_mod.ebv"),
+        "record points at the .ebv file: {:?}",
+        record.source_path
+    );
+}
+
+/// The diagnostic's promise is truthful (item 1): it names ONLY the
+/// extensions the search actually probes (`.bv`, `.ebv`) — no `.abv`,
+/// `.rbv`, or `.sbv` — and carries the concrete fix (house style).
+#[test]
+fn test_diagnostic_names_only_searched_exts() {
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("main.bv");
+    fs::write(&src, "").unwrap();
+
+    let mut resolver = ImportResolver::new();
+    resolver.add_search_path(dir.path().to_path_buf());
+    let items = import_program("ghost_mod", vec![]);
+    let err = resolver.resolve_imports(items, &src).unwrap_err();
+
+    assert!(
+        err.contains(".{bv,ebv}") && err.contains("ghost_mod"),
+        "error must name the searched extension set: {}",
+        err
+    );
+    for unsearched in [".abv", ".rbv", ".sbv"] {
+        assert!(
+            !err.contains(unsearched),
+            "error must not promise unsearched ext {}: {}",
+            unsearched,
+            err
+        );
+    }
+    assert!(err.contains("Fix:"), "error must carry the fix: {}", err);
+}
+
+/// An explicit `.rbv` specifier imports the file, and only its Briev
+/// remainder parses — markup and style stay with the view pipeline.
+#[test]
+fn test_rbv_module_imports_briev_remainder() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("views.rbv"),
+        "<view><div>ok</div></view>\n<style>.a{color:red;}</style>\n\
+         defn rbv_fn -> Int { term 2; };\n",
+    )
+    .unwrap();
+    let src = dir.path().join("main.bv");
+    fs::write(&src, "").unwrap();
+
+    let mut resolver = ImportResolver::new();
+    resolver.add_search_path(dir.path().to_path_buf());
+    let items = vec![TopLevel::Import(Import::literal(
+        "views.rbv".to_string(),
+        vec![],
+    ))];
+    let result = resolver.resolve_imports(items, &src).unwrap();
+
+    assert!(
+        definition_origin(&result, &resolver.item_origins, "rbv_fn").is_some(),
+        "the .rbv remainder's defn must be spliced: {:?}",
+        result
+    );
+    let record = resolver
+        .modules
+        .iter()
+        .find(|m| m.specifier == "views.rbv")
+        .expect("views.rbv registers a module record");
+    assert_eq!(record.kind, Some(SourceKind::Rendered));
+}
+
+/// Data dialects are not code imports (item 3's contract): an implicit
+/// specifier over a `.dbv` file is rejected with the explanation and the
+/// explicit-specifier fix (the `x.dbv` arm still loads data constants).
+#[test]
+fn test_dbv_import_rejected() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("registry_data.dbv"),
+        "entry { kind: \"probe\" }",
+    )
+    .unwrap();
+    let src = dir.path().join("main.bv");
+    fs::write(&src, "").unwrap();
+
+    let mut resolver = ImportResolver::new();
+    resolver.add_search_path(dir.path().to_path_buf());
+    let items = import_program("registry_data", vec![]);
+    let err = resolver.resolve_imports(items, &src).unwrap_err();
+
+    assert!(
+        err.contains("data dialects are not code imports"),
+        "error must state the data-dialect refusal: {}",
+        err
+    );
+    assert!(
+        err.contains("registry_data.dbv"),
+        "error must point at the data file it found: {}",
+        err
+    );
+    assert!(
+        err.contains("import { name } from"),
+        "error must carry the explicit data-import fix: {}",
+        err
     );
 }
 }
