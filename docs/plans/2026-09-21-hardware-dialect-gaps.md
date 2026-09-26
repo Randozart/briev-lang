@@ -142,6 +142,13 @@ track below.
 - **Effort:** S
 
 ### E7 — No supply-rail current roll-up
+- **Status:** CLOSED 2026-09-25 — landed 2026-09-21 as budgets-on-pins
+  (`44ab3e10`, design record D4). The roll-up machinery is this entry's
+  design; only the attachment point moved: instead of comparing against
+  the source component's `rating` clause, the board states
+  `budget <instance>.<pin> <= <current>;` and the KCL boundary sum over
+  the proven part graph is checked against it (`check_budgets`,
+  `src/analysis/electronics.rs:3442`). Hard diagnostic on exceed.
 - **Evidence:** analysis proves per-net physics — Ohm fixpoint
   (`derive_current :736`), KCL (`contribution_pass :695`), power
   (`derive_power :777`), postcondition bounds (`check_current_bounds
