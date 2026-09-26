@@ -282,6 +282,44 @@ pub struct BuildOptions {
     pub no_link: bool,
 }
 
+/// 2026-09-25 (interop Wave 1 C3): the de-facto default option set, lifted
+/// out of `check_source_for` (Rule 17 — the tree carries several hand-rolled
+/// `BuildOptions { … }` literals that duplicate this field set piecewise;
+/// only `check_source_for` is migrated here, the CLI/feature literals set
+/// real overrides from flags and stay explicit). `file_path` and
+/// `triple_override` default to empty/None and callers override them.
+impl Default for BuildOptions {
+    fn default() -> Self {
+        BuildOptions {
+            run: false,
+            config_dir: None, file_path: String::new(),
+            emit_ir_only: false, out_dir: None,
+            optimize_budget: 256, emit_beast_stages: vec![],
+            backend: BackendKind::Llvm, no_stdlib: false,
+            stdlib_path: None, disable_plugins: vec![],
+            enable_plugins: vec![], trg_unresolved_action: TrgUnresolvedAction::Warn,
+            explain_causality: false, extra_objects: vec![],
+            shared: false, library_mode: false,
+            keep_all_defns: false, int_bits: 64,
+            glue_config: None, stack_threshold: 4096,
+            allow_read: false, allow_write: false,
+            allow_run: false, allow_sys_query: false,
+            allow_net: false, macro_budget: 0,
+            dump_vfs: false, update_lockfile: false,
+            dump_traces: false, diff_mode: false,
+            sysquery_overrides: HashMap::new(), target: None,
+            all_targets: false, sysquery_pairs: vec![],
+            sysquery_files: vec![], style_css: None,
+            view_html: None, view_bindings: vec![],
+            ssr: false, dev: false,
+            accel_cpu_fallback: None, isr_mechanism: None,
+            triple_override: None, linker_script_override: None,
+            entry_override: None, raw_bin: false,
+            no_link: false,
+        }
+    }
+}
+
 pub struct PreprocessedSource {
     pub briev_source: String,
     pub style_css: Option<String>,
@@ -699,54 +737,9 @@ pub fn check_source_for(
     triple_override: Option<&str>,
 ) -> Result<(), String> {
     let default_opts = BuildOptions {
-        run: false,
-        config_dir: None,
         file_path: file_path.to_string(),
-        emit_ir_only: false,
-        out_dir: None,
-        optimize_budget: 256,
-        emit_beast_stages: vec![],
-        backend: BackendKind::Llvm,
-        no_stdlib: false,
-        stdlib_path: None,
-        disable_plugins: vec![],
-        enable_plugins: vec![],
-        trg_unresolved_action: TrgUnresolvedAction::Warn,
-            explain_causality: false,
-        extra_objects: vec![],
-        shared: false,
-        library_mode: false,
-        keep_all_defns: false,
-        int_bits: 64,
-        glue_config: None,
-        stack_threshold: 4096,
-        allow_read: false,
-        allow_write: false,
-        allow_run: false,
-        allow_sys_query: false,
-        allow_net: false,
-        macro_budget: 0,
-        dump_vfs: false,
-        update_lockfile: false,
-        dump_traces: false,
-        diff_mode: false,
-        sysquery_overrides: HashMap::new(),
-        target: None,
-        all_targets: false,
-        sysquery_pairs: vec![],
-        sysquery_files: vec![],
-        style_css: None,
-        view_html: None,
-        view_bindings: vec![],
-        ssr: false,
-        dev: false,
-        accel_cpu_fallback: None,
-        isr_mechanism: None,
         triple_override: triple_override.map(|t| t.to_string()),
-        linker_script_override: None,
-        entry_override: None,
-        raw_bin: false,
-        no_link: false,
+        ..Default::default()
     };
     let (_items, _universe) = parse_and_check(file_path, source, &default_opts)?;
     println!("OK");
@@ -852,6 +845,23 @@ pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> PluginManag
     pm
 }
 
+/// 2026-09-25 (interop Wave 1 C3): the per-module plugin factory — given a
+/// resolved module path, build the scoped PluginManager that dialect gets
+/// AT THE ROOT: the same `build_plugin_manager` (per-extension plugin set
+/// from `config/targets.dbvl`, CLI enable/disable, `--no-std`'s prelude
+/// family, macro sandbox), so an imported module's Parsed-stage prelude is
+/// exactly its root treatment. Installed on `ImportResolver::plugin_factory`
+/// by the compile/check paths; `None` (default) = modules parse plain
+/// (pre-C3 behavior; `library::parse_and_check` keeps it — that path runs no
+/// plugin stages even at the root). How to undo: drop this helper, the
+/// resolver field, and the `run_ast` block in `resolve_import`.
+pub fn module_plugin_factory(
+    opts: &BuildOptions,
+) -> Box<dyn Fn(&str) -> Result<PluginManager, String>> {
+    let opts = opts.clone();
+    Box::new(move |module_path| Ok(build_plugin_manager(module_path, &opts)))
+}
+
 pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
     let mut pm = build_plugin_manager(file_path, opts);
     let project_root = std::env::current_dir()
@@ -885,6 +895,7 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
     if let Some(ref stdlib_path) = opts.stdlib_path {
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
+    resolver.plugin_factory = Some(module_plugin_factory(opts));
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
     extract_inline_stage_blocks(&mut items, &mut pm);
     {
@@ -981,6 +992,7 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     if let Some(ref stdlib_path) = opts.stdlib_path {
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
+    resolver.plugin_factory = Some(module_plugin_factory(opts));
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
     extract_inline_stage_blocks(&mut items, &mut pm);
     {

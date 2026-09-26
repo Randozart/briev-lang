@@ -138,6 +138,44 @@ Tests: `test_ebv_import_gets_electronics_prelude`;
 `test_bv_import_gets_native_prelude`; `test_prelude_not_double_spliced`;
 `test_no_plugin_factory_is_todays_behavior`.
 
+### DONE (2026-09-26)
+
+Shipped as committed: field + `pipeline::module_plugin_factory` +
+`ImportResolver::run_module_prelude` (extracted for the Praetor gate),
+installed at `compile_to_typed`, `pipeline::parse_and_check`, and
+`compile::compile_source`; `library::parse_and_check` keeps `None` (that
+path runs no plugin stages even at the root). Suite **2688/0** (2684 + the
+4 tests above); conformance sweep green; `brievc check` green on both
+`.ebv` fixtures. Praetor gate: 53→52 diagnostics — no new entries (one
+removed: `check_source_for`, migrated onto the new `Default`); four
+pre-existing ">50 lines" values grew by exactly +1 (the one-line factory
+assignment at each call site).
+
+Three deviations from the text above, each recorded at its site:
+
+1. **Universe threading dropped.** All three root call sites run Parsed
+   with a BLOCK-LOCAL `parsed_universe` that is discarded before resolution
+   — threading `&mut TypeUniverse` through `resolve_imports` would give
+   modules MORE state than a root file gets (root parity broken) plus ~25
+   test-call-site churn. Each module's prelude gets a fresh
+   `TypeUniverse::new()`, mirroring the root exactly.
+2. **`std/…` specifiers skip the prelude.** Stdlib files are the prelude's
+   CONTENT, not its consumer (root prelude + flat inlining already put
+   their names in scope), and running it would self-cycle: verified std
+   files carry prelude anchors (`lib/std/io.bv` has `import`), so an std
+   file's own prelude would re-insert the std bundle while its `std→std`
+   imports are still in `in_progress` → the 2026-07-01 cycle guard errors
+   on every build. `std/electronics.bv` remains reachable from any `.ebv`
+   module; it just parses plain.
+3. **`BuildOptions: Default` added** (Rule 17: the tree hand-rolled this
+   field set in 6+ literals; `check_source_for` migrated, CLI literals stay
+   explicit overrides). Provenance comments live on the field, the factory,
+   and the helper — call sites are bare assignments.
+
+Profile flags already read the MODULE's path: the factory forwards
+`resolved_path` to the same `build_plugin_manager` → `get_extension` a root
+compile uses — no extra gate.
+
 ## C4 — Cross-dialect collision rule (item 4)
 
 Before dedup: any pair sharing an `item_key` (`(kind, name)`) whose origins

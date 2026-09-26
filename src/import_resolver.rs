@@ -20,7 +20,7 @@
 // that is itself a compiler, interpreter, or similar tool that incorporates
 // or embeds the Work.
 
-use crate::ast::{Expr, Import, ImportKind, TopLevel, Type};
+use crate::ast::{Expr, Import, ImportKind, StageKind, TopLevel, Type};
 use crate::conformance::{classify, SourceKind};
 use crate::dbriev::v2 as dbriev_v2;
 use crate::lexer::Token;
@@ -100,6 +100,21 @@ pub struct ImportResolver {
     /// `Some(id)` = `modules[id]`. Kept in lockstep with every items
     /// mutation (remove/splice/dedup/filter) inside `resolve_imports_inner`.
     pub item_origins: Vec<Option<u32>>,
+    /// 2026-09-25 (interop Wave 1 C3): per-module dialect prelude. Given a
+    /// resolved module path, build the scoped PluginManager whose
+    /// Parsed-stage plugins run on the module AFTER parse and BEFORE nested
+    /// resolution (`resolve_import`), so the `Import$` anchors its prelude
+    /// splices are resolved by the inner walk — exactly the stage order a
+    /// root file gets (`pipeline::compile_to_typed` runs Parsed, then
+    /// resolves). Built from the ROOT's BuildOptions via
+    /// `pipeline::module_plugin_factory`, so a module gets the per-extension
+    /// treatment `config/targets.dbvl` gives a root file of its dialect
+    /// (including `--no-std`'s prelude family and CLI enable/disable).
+    /// `None` = modules parse plain (pre-C3 behavior; `library::parse_and_check`
+    /// keeps it — that path runs no plugin stages even at the root).
+    /// How to undo: drop this field, the `run_ast` block in `resolve_import`,
+    /// and `pipeline::module_plugin_factory`.
+    pub plugin_factory: Option<Box<dyn Fn(&str) -> Result<crate::plugin::PluginManager, String>>>,
 }
 
 /// The name of a top-level item, if it carries one.
@@ -362,6 +377,7 @@ impl ImportResolver {
             bad_imports: Vec::new(),
             modules: Vec::new(),
             item_origins: Vec::new(),
+            plugin_factory: None,
         }
     }
 
@@ -1072,7 +1088,7 @@ impl ImportResolver {
         // drops a module's defns, e.g. std/string's `..` slices) is never
         // hidden again. The import still proceeds with the items that DID
         // parse (non-fatal, pre-merge behavior).
-        let imported_program = match parser.parse_program() {
+        let mut imported_program = match parser.parse_program() {
             Ok(p) => p,
             Err(e) => {
                 eprintln!(
@@ -1083,6 +1099,7 @@ impl ImportResolver {
             }
         };
 
+        self.run_module_prelude(import.path(), &resolved_str, &mut imported_program)?;
         let module_len = imported_program.len();
         let (resolved, resolved_origins) =
             self.resolve_imports_inner(imported_program, vec![Some(m_id); module_len], &resolved_path)?;
@@ -1100,6 +1117,43 @@ impl ImportResolver {
 
         self.in_progress.remove(import.path());
         result
+    }
+
+    /// 2026-09-25 (Wave 1 C3): run a module's dialect prelude after parse
+    /// and before nested resolution. The module's dialect plugins (scoped by
+    /// `config/targets.dbvl` through the factory) run at Parsed on the freshly
+    /// parsed program — same stage/order as a root file — so prelude-inserted
+    /// `Import$` anchors resolve in the inner walk.
+    /// std-skip: stdlib modules do NOT run it. `std/…` files are the prelude's
+    /// CONTENT, not its consumer — the root prelude plus flat inlining already
+    /// puts their names in scope — and running it would self-cycle: an std
+    /// file's own prelude re-inserts the std bundle while its `std→std`
+    /// imports are still in `in_progress`, which the cycle guard (2026-07-01)
+    /// errors on. `std/electronics.bv` remains reachable from any `.ebv`
+    /// module; it just parses plain. Fresh universe per module mirrors the
+    /// root call sites, whose Parsed-stage universes are block-local and
+    /// discarded — threading one through would diverge from that parity (C3
+    /// plan deviation note).
+    /// How to undo: drop this helper with the `plugin_factory` field and
+    /// `pipeline::module_plugin_factory`.
+    fn run_module_prelude(
+        &self,
+        specifier: &str,
+        module_path: &str,
+        program: &mut Vec<TopLevel>,
+    ) -> Result<(), String> {
+        if specifier.starts_with("std/") {
+            return Ok(());
+        }
+        if let Some(ref factory) = self.plugin_factory {
+            let pm = factory(module_path)?;
+            pm.run_ast(
+                StageKind::Parsed,
+                program,
+                &mut crate::type_universe::TypeUniverse::new(),
+            )?;
+        }
+        Ok(())
     }
 
     /// 2026-09-25 (interop Wave 1 C1): `.css` asset import body, extracted
@@ -1526,6 +1580,22 @@ mod tests {
     fn import_program(path: &str, symbols: Vec<String>) -> Vec<TopLevel> {
         let symbols: Vec<(String, String)> = symbols.into_iter().map(|s| (s.clone(), s)).collect();
         vec![TopLevel::Import(Import::literal(path.to_string(), symbols))]
+    }
+
+    /// 2026-09-25 (Wave 1 C3): symlink the repo `lib/` into the fixture dir
+    /// so prelude-inserted `std/…` imports resolve — round-1 search probes
+    /// `lib/` under the source dir, which a bare TempDir lacks. Tests that
+    /// never trigger a prelude don't call it.
+    fn link_repo_lib(dir: &TempDir) {
+        let repo_lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("lib");
+        std::os::unix::fs::symlink(repo_lib, dir.path().join("lib"))
+            .expect("symlink repo lib into fixture");
+    }
+
+    /// 2026-09-25 (Wave 1 C3): the production factory the compile/check
+    /// call sites install (`pipeline::module_plugin_factory`), default opts.
+    fn default_factory() -> Box<dyn Fn(&str) -> Result<crate::plugin::PluginManager, String>> {
+        crate::pipeline::module_plugin_factory(&crate::pipeline::BuildOptions::default())
     }
 
     #[test]
@@ -2358,4 +2428,152 @@ fn test_dbv_import_rejected() {
         err
     );
 }
+
+    // ── Wave 1 C3: per-module dialect preludes ─────────────────────────
+
+    /// An imported `.ebv` module runs the electronics prelude (the
+    /// `config/targets.dbvl` row `.ebv → prelude-electronics`): its
+    /// prelude-inserted `Import$("std/electronics.bv")` resolves and splices,
+    /// proven by the stdlib module record, a spliced typedef, and the typedef's
+    /// origin attributing to that record.
+    #[test]
+    fn test_ebv_import_gets_electronics_prelude() {
+        let dir = TempDir::new().unwrap();
+        link_repo_lib(&dir);
+        // Typedef anchor — prelude-electronics' no-import fallback (E14a gate).
+        fs::write(dir.path().join("elec_mod.ebv"), "type Probe { x: Int };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        resolver.plugin_factory = Some(default_factory());
+        let items = import_program("elec_mod", vec![]);
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        let std_id = resolver
+            .modules
+            .iter()
+            .position(|m| m.specifier == "std/electronics.bv")
+            .unwrap_or_else(|| {
+                panic!(
+                    "module prelude must load std/electronics.bv: {:?}",
+                    resolver.modules.iter().map(|m| &m.specifier).collect::<Vec<_>>()
+                )
+            }) as u32;
+        assert!(
+            resolver.modules[std_id as usize].kind.is_some(),
+            "the stdlib record is file-backed and classifies: {:?}",
+            resolver.modules[std_id as usize].source_path
+        );
+        let volt = result
+            .iter()
+            .position(|t| matches!(t, TopLevel::TypeDef(td) if td.name == "Volt"))
+            .expect("std/electronics.bv items must splice into the program");
+        assert_eq!(
+            resolver.item_origins[volt],
+            Some(std_id),
+            "the spliced typedef carries the stdlib module's origin"
+        );
+    }
+
+    /// An imported `.bv` module runs the native prelude (targets.dbvl
+    /// `.bv → prelude-native …`): its import anchor triggers the std bundle
+    /// splice — proven by the `std/io.bv` module record — while the module's
+    /// OWN import still resolves.
+    #[test]
+    fn test_bv_import_gets_native_prelude() {
+        let dir = TempDir::new().unwrap();
+        link_repo_lib(&dir);
+        fs::write(dir.path().join("dep.bv"), "defn dep_fn -> Int { term 1; };").unwrap();
+        fs::write(dir.path().join("mod.bv"), "import \"dep\";").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        resolver.plugin_factory = Some(default_factory());
+        let items = import_program("mod", vec![]);
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        assert!(
+            resolver.modules.iter().any(|m| m.specifier == "std/io.bv"),
+            "native prelude's std bundle must load: {:?}",
+            resolver.modules.iter().map(|m| &m.specifier).collect::<Vec<_>>()
+        );
+        assert!(
+            definition_origin(&result, &resolver.item_origins, "dep_fn").is_some(),
+            "the module's own import must still resolve: {:?}",
+            result
+        );
+    }
+
+    /// Diamond safety: two `.ebv` modules each trigger the electronics
+    /// prelude — the stdlib module loads ONCE (one record, cache-shared) and
+    /// its items survive dedup exactly once; both modules' own typedefs stay.
+    #[test]
+    fn test_prelude_not_double_spliced() {
+        let dir = TempDir::new().unwrap();
+        link_repo_lib(&dir);
+        fs::write(dir.path().join("elec_a.ebv"), "type FooA { x: Int };").unwrap();
+        fs::write(dir.path().join("elec_b.ebv"), "type FooB { x: Int };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        resolver.plugin_factory = Some(default_factory());
+        let items = vec![
+            TopLevel::Import(Import::literal("elec_a", vec![])),
+            TopLevel::Import(Import::literal("elec_b", vec![])),
+        ];
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        let std_recs = resolver
+            .modules
+            .iter()
+            .filter(|m| m.specifier == "std/electronics.bv")
+            .count();
+        assert_eq!(std_recs, 1, "one load, one record: {:?}", resolver.modules);
+        let volts = result
+            .iter()
+            .filter(|t| matches!(t, TopLevel::TypeDef(td) if td.name == "Volt"))
+            .count();
+        assert_eq!(volts, 1, "std items dedup to a single copy: {} copies", volts);
+        for name in ["FooA", "FooB"] {
+            assert!(
+                result.iter().any(|t| matches!(t, TopLevel::TypeDef(td) if td.name == name)),
+                "module {}'s own typedef must survive: {:?}",
+                name,
+                result
+            );
+        }
+    }
+
+    /// Regression guard for the C3 gate: with NO factory (library mode,
+    /// pre-C3 callers) an `.ebv` module parses plain — no stdlib record, no
+    /// spliced stdlib items — while its own items still splice.
+    #[test]
+    fn test_no_plugin_factory_is_todays_behavior() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("elec_mod.ebv"), "type Probe { x: Int };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let items = import_program("elec_mod", vec![]);
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        assert!(
+            !resolver.modules.iter().any(|m| m.specifier.starts_with("std/")),
+            "no prelude ran without a factory: {:?}",
+            resolver.modules
+        );
+        assert!(
+            result.iter().any(|t| matches!(t, TopLevel::TypeDef(td) if td.name == "Probe")),
+            "the module's own typedef must splice: {:?}",
+            result
+        );
+    }
 }
