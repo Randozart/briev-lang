@@ -2,7 +2,7 @@
 
 Date: 2026-09-26
 Gap: `2026-09-21-hardware-dialect-gaps.md` E15 (series-part placement synthesis)
-Status: planned — slices not started
+Status: slice 1 LANDED 2026-09-26 (this commit); slices 2–3 pending
 
 ## Problem
 

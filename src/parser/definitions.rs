@@ -3606,7 +3606,7 @@ impl<'a> Parser<'a> {
             }
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadLabel, KicadType, MaxBits, NetVoltage, NoConnect, PullUp, Rating, Resistance, Return, Rows, Supply, Switchable, Tolerance",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadLabel, KicadType, MaxBits, NetVoltage, NoConnect, PullUp, Rating, Resistance, Return, Rows, SeriesPart, Supply, Switchable, Tolerance",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -3638,7 +3638,7 @@ impl<'a> Parser<'a> {
             // 2026-09-21 (E12/E13): boolean spec keys — `true`/`false`
             // lex as dedicated Bool tokens, not identifiers.
             "no_connect" | "supply" | "return" | "decoupler" | "can_drive"
-            | "control" | "switchable" | "wired_and" | "pull_up" | "bistable" => {
+            | "control" | "switchable" | "wired_and" | "pull_up" | "series_part" | "bistable" => {
                 return self.parse_boolean_spec(name, key, metadata);
             }
             // 2026-09-21 (E13): the stated convention value — a string
@@ -4765,6 +4765,11 @@ pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // min-voltage obligation lands on a released (WiredAnd) net. Same
         // property interface as `Decoupler` — the compiler knows no names.
         "PullUp" => Some("pull_up"),
+        // 2026-09-26 (E15 slice 1, plan
+        // 2026-09-26-ebv-e15-series-part-placement.md): `SeriesPart` marks a
+        // two-pin part the current-obligation forcing pass may place IN
+        // SERIES with a load — same property interface as `PullUp`.
+        "SeriesPart" => Some("series_part"),
         // 2026-09-24 (component laws): the generic ohmic parameter. The name
         // is a physics dimension channel, not a component catalog entry.
         "Resistance" => Some("resistance"),

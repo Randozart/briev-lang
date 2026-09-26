@@ -285,6 +285,16 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // the shape detectors and backends only ever see plain Expr::Index.
     briev_compiler::analysis::desugar::rewrite_multi_index(&mut items)?;
     let mut universe = TypeUniverse::new();
+    // 2026-09-26 (E15): register the declared typedefs BEFORE the typecheck —
+    // imports (the electronics stdlib's Volt/Amp/Ohm) were previously absent
+    // from the typechecker's universe, so quantity comparisons against their
+    // fields could not admit numeral literals there. Same registration the
+    // backend normalizers run; idempotent (types.insert overwrite).
+    briev_compiler::backend::register_types::register_typedefs(
+        &items,
+        &mut universe,
+        opts.int_bits,
+    )?;
     // 2026-09-14 (machine-entry plan): effective mechanism — CLI override,
     // else the target profile's row (keyed by triple, longest prefix).
     let check_isr_mechanism = opts.isr_mechanism.clone()

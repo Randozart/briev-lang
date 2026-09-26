@@ -302,6 +302,30 @@ pub(crate) fn collect_type_metadata(
 }
 
 /// 2026-09-21 (E12): metadata property readers — `spec` values arrive as
+/// The SI value of a volt-dimensioned spec property — anything else absent.
+fn quantity_volt(pv: &crate::ast::PropertyValue) -> Option<f64> {
+    match pv {
+        crate::ast::PropertyValue::Quantity { si, dimension }
+            if *dimension == crate::ast::QuantityDim::Volt =>
+        {
+            Some(*si)
+        }
+        _ => None,
+    }
+}
+
+/// The SI value of an ohm-dimensioned spec property — anything else absent.
+fn quantity_ohm(pv: &crate::ast::PropertyValue) -> Option<f64> {
+    match pv {
+        crate::ast::PropertyValue::Quantity { si, dimension }
+            if *dimension == crate::ast::QuantityDim::Ohm =>
+        {
+            Some(*si)
+        }
+        _ => None,
+    }
+}
+
 /// `PropertyValue` variants; these tolerate the identifier spellings too.
 fn property_string(pv: &crate::ast::PropertyValue) -> Option<String> {
     match pv {
@@ -710,6 +734,37 @@ fn resolve_voltage_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInsta
     resolve_pin(base, instances, type_pins)
 }
 
+/// The current sibling of `resolve_voltage_pin` — `inst.pin.current`.
+fn resolve_current_pin(expr: &Expr, instances: &BTreeMap<String, &ComponentInstance>, type_pins: &BTreeMap<String, Vec<(String, u64)>>) -> Option<PinRef> {
+    let Expr::Field(base, prop) = expr else { return None };
+    if prop != "current" {
+        return None;
+    }
+    resolve_pin(base, instances, type_pins)
+}
+
+/// A current OBLIGATION pair — `pin.current >= <amp quantity>`, either
+/// order. Returns (pin, amps).
+fn current_obligation_pair(
+    l: &Expr,
+    r: &Expr,
+    ctx: &NetlistContext,
+) -> Option<(PinRef, f64)> {
+    if let (Some(p), Some(v)) = (
+        resolve_current_pin(l, ctx.instances, ctx.type_pins),
+        extract_current(r),
+    ) {
+        return Some((p, v));
+    }
+    if let (Some(p), Some(v)) = (
+        resolve_current_pin(r, ctx.instances, ctx.type_pins),
+        extract_current(l),
+    ) {
+        return Some((p, v));
+    }
+    None
+}
+
 /// A voltage DRIVE is `[x.voltage == <literal>]` — pin access on one side,
 /// float/int literal on the other, either order. Returns (pin, volts).
 /// Extract a numeric value from an expression — Float, Decimal, or
@@ -827,6 +882,9 @@ struct PostSolveContext<'a> {
     laws: &'a [crate::analysis::electronics_laws::ComponentLaws],
     modes: &'a BTreeMap<String, Vec<String>>,
     unpop: &'a std::collections::HashSet<String>,
+    /// 2026-09-26 (E15): contract drives PLUS law-born rail volts — the
+    /// fixed boundaries every law group's solve sees.
+    dc_drives: &'a BTreeMap<String, f64>,
 }
 
 /// Solve laws, derive electrical quantities, prove bounds, and check budgets.
@@ -843,7 +901,7 @@ fn post_solve_checks(
         type_info: ctx.type_info,
         modes: ctx.modes,
         unpop: ctx.unpop,
-        drives: &voltage.net_voltage,
+        drives: ctx.dc_drives,
     });
     let mut law_all = law_errors;
     law_all.extend(validate_node_mode_states(&ctx, &states));
@@ -3771,6 +3829,7 @@ struct FactSink<'a> {
     /// (min — pull-up forcing) and `inst.pin.voltage <= V;` (max —
     /// low-hold forcing); consumed after the wiring facts settle.
     obligations: &'a mut Vec<VoltageObligation>,
+    current_obligations: &'a mut Vec<CurrentObligation>,
     bridges: &'a mut Vec<BridgeRequest>,
     /// 2026-09-22 (D16 p3b): disconnections from `open a.pin, b.pin;`.
     opens: &'a mut Vec<(Expr, Expr)>,
@@ -3784,6 +3843,18 @@ struct VoltageObligation {
     node: String,
     pin: PinRef,
     volts: f64,
+    min: bool,
+}
+
+/// 2026-09-26 (E15 slice 1): a CURRENT obligation — `pin.current >= I;`
+/// in a node body. The forcing pass places a free `spec SeriesPart`
+/// between the pin's net and the feeding rail so the derived current can
+/// satisfy it; the node postcondition (and the load's `spec MaxCurrent`)
+/// remain the proof surfaces.
+struct CurrentObligation {
+    node: String,
+    pin: PinRef,
+    amps: f64,
     min: bool,
 }
 
@@ -4023,16 +4094,30 @@ impl FactSink<'_> {
                 return;
             }
         };
-        let Some((pin, volts)) = voltage_obligation_pair(l, r, ctx) else {
-            self.not_a_fact(expr);
+        if let Some((pin, volts)) = voltage_obligation_pair(l, r, ctx) {
+            self.obligations.push(VoltageObligation {
+                node: self.node.to_string(),
+                pin,
+                volts,
+                min,
+            });
             return;
-        };
-        self.obligations.push(VoltageObligation {
-            node: self.node.to_string(),
-            pin,
-            volts,
-            min,
-        });
+        }
+        // 2026-09-26 (E15 slice 1): the current sibling — a MIN current
+        // obligation forces a series part; a MAX current obligation is the
+        // envelope's job (spec MaxCurrent), not a wiring request.
+        if let Some((pin, amps)) = current_obligation_pair(l, r, ctx) {
+            if min {
+                self.current_obligations.push(CurrentObligation {
+                    node: self.node.to_string(),
+                    pin,
+                    amps,
+                    min,
+                });
+                return;
+            }
+        }
+        self.not_a_fact(expr);
     }
 
     fn not_a_fact(&mut self, expr: &Expr) {
@@ -4560,6 +4645,20 @@ fn voltage_obligation_pair(
     None
 }
 
+/// Everything the series wiring renders, bundled to keep the parameter
+/// list flat (2026-09-26, E15 — the `Placement` pattern).
+struct SeriesWire<'a> {
+    part: &'a str,
+    root: &'a str,
+    rail: &'a str,
+    vrail: f64,
+    vf: f64,
+    amps: f64,
+    nodes: String,
+    comp: String,
+    pin: String,
+}
+
 /// 2026-09-23 (E14b): the voltage-obligation forcing pass — bundles
 /// the working set (nets context, driven rails, diagnostic sinks) so the
 /// per-obligation methods stay under the parameter gate (FactSink
@@ -4659,6 +4758,306 @@ impl<'a, 'b> ObligationForcing<'a, 'b> {
             self.ctx.ds.make(k.clone());
             self.ctx.ds.union(first, k);
         }
+    }
+
+    /// 2026-09-26 (E15 slice 1, plan
+    /// `2026-09-26-ebv-e15-series-part-placement.md`): current obligations —
+    /// a MIN current obligation on a load pin forces a free `spec
+    /// SeriesPart` between the pin's net and the feeding rail (the lowest
+    /// driven rail above the load's forward voltage). Dedup per pin, max
+    /// amps wins.
+    fn run_current(&mut self, obligations: &[CurrentObligation]) {
+        let mut per_pin: BTreeMap<(String, String), (f64, String, Vec<String>)> = BTreeMap::new();
+        for ob in obligations {
+            let key = (ob.pin.component.clone(), ob.pin.pin.clone());
+            let entry = per_pin.entry(key).or_insert((0.0, ob.node.clone(), Vec::new()));
+            if ob.amps > entry.0 {
+                entry.0 = ob.amps;
+            }
+            entry.1 = ob.node.clone();
+            if !entry.2.contains(&ob.node) {
+                entry.2.push(ob.node.clone());
+            }
+        }
+        for ((comp, pin), (amps, _node, nodes)) in per_pin {
+            self.force_series(&comp, &pin, amps, &nodes);
+        }
+    }
+
+    /// One current obligation: the load's anode net needs a fed path
+    /// through a series part. The load must declare its forward physics
+    /// (an obligation over an unknown drop would be vacuous — D6), the
+    /// rail must exceed that drop, and a stated series resistance must
+    /// actually deliver the amps (an early, named-window error — the DC
+    /// solve remains the exact proof through the node postcondition).
+    fn force_series(&mut self, comp: &str, pin: &str, amps: f64, nodes: &[String]) {
+        let root = self.ctx.ds.find(&pin_key(comp, pin));
+        if self.net_has_series_part(&root) {
+            self.proofs.push(format!(
+                "current obligation '>= {}' (node '{}'): net already series-fed — satisfied",
+                format_amps(amps),
+                nodes.join(", ")
+            ));
+            return;
+        }
+        let Some((vf, rdyn)) = self.load_forward_physics(comp) else {
+            self.errors.push(format!(
+                "current obligation '>= {}' (node '{}') on '{}.{}': the load declares no \
+                 ForwardVoltage physics — the derived current would be a guess, not a \
+                 proof. fix: declare the load's law physics (`spec ForwardVoltage` + \
+                 `spec DynamicResistance` at the instance or type), or wire the series \
+                 path explicitly",
+                format_amps(amps),
+                nodes.join(", "),
+                comp,
+                pin
+            ));
+            return;
+        };
+        let Some((rail, vrail)) = self.qualifying_rail_above(vf) else {
+            self.errors.push(format!(
+                "current obligation '>= {}' (node '{}') cannot be fed: no driven rail \
+                 exceeds the load's forward drop ({}). Drive a rail or lower the drop",
+                format_amps(amps),
+                nodes.join(", "),
+                format_volts(vf)
+            ));
+            return;
+        };
+        // Value-aware pick (E15 D4): a series part's resistance MATTERS.
+        // Among the free candidates with a stated resistance, take the
+        // LARGEST that still delivers the obligation (deterministic, and
+        // the least current the board has to waste). Candidates without a
+        // stated value are slice 2's synthesis input and are skipped here.
+        let Some(part) = self.pick_series_part((vrail, vf, rdyn), amps, nodes) else {
+            return; // the pick already named the window
+        };
+        self.wire_series(SeriesWire {
+            part: &part,
+            root: &root,
+            rail: &rail,
+            vrail,
+            vf,
+            amps,
+            nodes: nodes.join(", "),
+            comp: comp.to_string(),
+            pin: pin.to_string(),
+        });
+    }
+
+    /// The load's forward physics — `(ForwardVoltage, DynamicResistance)`,
+    /// instance value first, type default second. None without the volts:
+    /// an obligation over an unknown drop would be vacuous (D6).
+    fn load_forward_physics(&self, comp: &str) -> Option<(f64, f64)> {
+        let inst = self.ctx.instances.get(comp)?;
+        let vf = inst
+            .specs
+            .get("forwardvoltage")
+            .and_then(quantity_volt)
+            .or_else(|| {
+                let ti = self.ctx.type_info.get(&inst.type_name);
+                ti.and_then(|ti| ti.spec_defaults.get("forwardvoltage"))
+                    .and_then(quantity_volt)
+            })?;
+        let rdyn = inst
+            .specs
+            .get("dynamicresistance")
+            .and_then(quantity_ohm)
+            .or_else(|| {
+                let ti = self.ctx.type_info.get(&inst.type_name);
+                ti.and_then(|ti| ti.spec_defaults.get("dynamicresistance"))
+                    .and_then(quantity_ohm)
+            })
+            .unwrap_or(0.0);
+        Some((vf, rdyn))
+    }
+
+    /// Value-aware pick among the free series parts: the LARGEST stated
+    /// resistance that still delivers `amps` from `(vrail - vf)` across
+    /// `rdyn`. Err carries the ready-made window diagnostic.
+    fn pick_series_part(
+        &mut self,
+        boundary: (f64, f64, f64),
+        amps: f64,
+        nodes: &[String],
+    ) -> Option<String> {
+        let (vrail, vf, rdyn) = boundary;
+        let candidates = self.free_series_parts();
+        let mut picked: Option<String> = None;
+        let mut stated_any = false;
+        for cand in &candidates {
+            let Some(r_series) = self.stated_resistance(cand) else {
+                continue;
+            };
+            stated_any = true;
+            if (vrail - vf) / (r_series + rdyn) >= amps {
+                picked = Some(cand.clone());
+            }
+        }
+        if picked.is_some() {
+            return picked;
+        }
+        if stated_any || !candidates.is_empty() {
+            self.errors.push(format!(
+                "current obligation '>= {}' (node '{}') cannot be met: the rail at {} \
+                 minus the forward drop {} leaves {} for the series part — no free \
+                 `spec SeriesPart` part states a resistance small enough to deliver \
+                 the amps. fix: state a Resistance at or below {}Ohm on a free part, \
+                 or add one",
+                format_amps(amps),
+                nodes.join(", "),
+                format_volts(vrail),
+                format_volts(vf),
+                format_volts(vrail - vf),
+                ((vrail - vf) / amps) as i64
+            ));
+        } else {
+            self.errors.push(format!(
+                "current obligation '>= {}' (node '{}') has no series part: no free \
+                 `spec SeriesPart: true` two-pin part remains. Add one (e.g. a \
+                 resistor) or wire the load's feed explicitly",
+                format_amps(amps),
+                nodes.join(", ")
+            ));
+        }
+        None
+    }
+
+    /// Whether ANY pin of a `spec SeriesPart` type sits on the net — the
+    /// series-fed satisfied check (mirrors net_has_pull_up).
+    fn net_has_series_part(&mut self, root: &str) -> bool {
+        let instances = &self.ctx.instances;
+        let type_props = &self.ctx.type_props;
+        let type_pins = &self.ctx.type_pins;
+        let ds = &mut self.ctx.ds;
+        instances.values().any(|c| {
+            type_props
+                .get(&c.type_name)
+                .and_then(|m| m.get("series_part"))
+                .and_then(property_bool)
+                .unwrap_or(false)
+                && type_pins.get(&c.type_name).map_or(false, |ps| {
+                    ps.iter()
+                        .any(|(n, _)| ds.find(&pin_key(&c.name, n)) == root)
+                })
+        })
+    }
+
+    /// Free `spec SeriesPart` two-pin parts, sorted — the deterministic
+    /// pick (mirrors free_parts).
+    fn free_series_parts(&self) -> Vec<String> {
+        let mut parts: Vec<String> = self
+            .ctx
+            .instances
+            .values()
+            .filter(|c| {
+                self.ctx
+                    .type_props
+                    .get(&c.type_name)
+                    .and_then(|m| m.get("series_part"))
+                    .and_then(property_bool)
+                    .unwrap_or(false)
+            })
+            .filter(|c| {
+                self.ctx
+                    .type_pins
+                    .get(&c.type_name)
+                    .map_or(false, |pins| pins.len() == 2)
+            })
+            .filter(|c| pins_free(self.ctx, c))
+            .map(|c| c.name.clone())
+            .collect();
+        parts.sort();
+        parts
+    }
+
+    /// Lowest driven rail strictly ABOVE the forward drop, with its volts.
+    /// Ties at the minimum are ambiguous (D13) — hard error.
+    fn qualifying_rail_above(&mut self, vf: f64) -> Option<(String, f64)> {
+        let mut cands: Vec<(f64, String)> = self
+            .rails
+            .iter()
+            .filter(|(_, v)| **v > vf + f64::EPSILON)
+            .map(|(r, v)| (*v, r.clone()))
+            .collect();
+        cands.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let best = cands.first()?;
+        let ties: Vec<&String> = cands
+            .iter()
+            .filter(|(v, _)| (v - best.0).abs() < f64::EPSILON)
+            .map(|(_, r)| r)
+            .collect();
+        if ties.len() > 1 {
+            self.errors.push(format!(
+                "the series feed is ambiguous: multiple rails tie at the minimal {}V \
+                 above the forward drop ({}). Tie the load to one rail explicitly \
+                 (`inst.pin = rail.pin;`) or raise the obligation",
+                best.0,
+                ties.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            ));
+            return None;
+        }
+        Some((ties[0].clone(), best.0))
+    }
+
+    /// The part's stated resistance — the instance's `spec Resistance`
+    /// value, else the type-level default. `value` strings are never read
+    /// as physics (2026-09-24 laws: the annotation rides to KiCad only).
+    fn stated_resistance(&self, part: &str) -> Option<f64> {
+        let c = self.ctx.instances.get(part)?;
+        c.specs
+            .get("resistance")
+            .and_then(|pv| match pv {
+                crate::ast::PropertyValue::Quantity { si, dimension }
+                    if *dimension == crate::ast::QuantityDim::Ohm && *si > 0.0 =>
+                {
+                    Some(*si)
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                self.ctx
+                    .type_info
+                    .get(&c.type_name)
+                    .and_then(|ti| ti.resistance)
+            })
+    }
+
+    /// Wire the chosen series part between the obligation net and the rail.
+    fn wire_series(&mut self, w: SeriesWire<'_>) {
+        let Some(pins) = self.ctx.type_pins.get(self.ctx.instances[w.part].type_name.as_str()) else {
+            return;
+        };
+        let Some(pa) = pins.first() else {
+            return;
+        };
+        let Some(pb) = pins.get(1) else {
+            return;
+        };
+        let pa_key = pin_key(w.part, &pa.0);
+        let pb_key = pin_key(w.part, &pb.0);
+        self.ctx.ds.make(w.root.to_string());
+        self.ctx.ds.make(pa_key.clone());
+        self.ctx.ds.make(w.rail.to_string());
+        self.ctx.ds.make(pb_key.clone());
+        self.ctx.ds.union(w.root, &pa_key);
+        self.ctx.ds.union(w.rail, &pb_key);
+        self.proofs.push(format!(
+            "series part forced by current obligation '>= {}' (node '{}'): {}.{} <-> {}.{} \
+             (load anode), {}.{} <-> {} rail ({}V, forward drop {}V) — the DC solve proves \
+             the bound through it",
+            format_amps(w.amps),
+            w.nodes,
+            w.part,
+            pa.0,
+            w.comp,
+            w.pin,
+            w.part,
+            pb.0,
+            w.rail,
+            format_volts(w.vrail),
+            format_volts(w.vf)
+        ));
     }
 
     /// A MIN obligation: wire a free `spec PullUp` part between the net
@@ -5223,12 +5622,61 @@ fn constant_voltage_pin(
     Some((pin, -expression.constant / coefficient))
 }
 
+/// 2026-09-26 (E15/E14b-8 parity): law-born rails are FIXED boundaries in
+/// every law group's solve — the LDO's `spec Output` pins its rail exactly
+/// as a contract drive would. Without this, a series group across the born
+/// rail sees the rail as a free variable and enumerates a phantom second
+/// operating point.
+fn merge_law_rail_boundaries(
+    nets: &[Net],
+    laws: &[crate::analysis::electronics_laws::ComponentLaws],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+    mut base: BTreeMap<String, f64>,
+) -> BTreeMap<String, f64> {
+    for net in nets {
+        for p in &net.pins {
+            if let Some(volts) = law_birth_volts(laws, p, instances, type_info) {
+                base.entry(net.name.clone()).or_insert(volts);
+            }
+        }
+    }
+    base
+}
+
+/// The law-born rail volts on ONE pin, ds-free: the pin's component law
+/// has an always-guarded equation pinning this supply-class pin to a
+/// constant (the E14b-8 birth, re-read per pin for boundary fixing).
+fn law_birth_volts(
+    laws: &[crate::analysis::electronics_laws::ComponentLaws],
+    pin: &PinRef,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_info: &BTreeMap<String, TypeInfo>,
+) -> Option<f64> {
+    let inst = instances.get(&pin.component)?;
+    let ti = type_info.get(&inst.type_name)?;
+    let idx = ti.pins.iter().position(|(n, _)| n == &pin.pin)?;
+    if !ti.pin_classes.get(idx).map_or(false, |c| c.supply) {
+        return None;
+    }
+    laws.iter()
+        .find(|l| l.instance == pin.component)?
+        .laws
+        .iter()
+        .filter(|law| law.guard == crate::analysis::electronics_laws::LawGuard::Always)
+        .flat_map(|law| law.equations.iter())
+        .filter_map(|eq| constant_voltage_pin(&eq.expression))
+        .find(|(p, _)| p.component == pin.component && p.pin == pin.pin)
+        .map(|(_, volts)| volts)
+}
+
 /// 2026-09-23 (E14b): entry — guard, collect driven rails, then force
 /// every voltage obligation (min → pull-up, max → low-hold).
 struct VoltageForcing<'a> {
     items: &'a [TopLevel],
     laws: &'a [crate::analysis::electronics_laws::ComponentLaws],
     obligations: &'a [VoltageObligation],
+    current_obligations: &'a [CurrentObligation],
 }
 
 fn force_voltage_obligations(
@@ -5237,11 +5685,17 @@ fn force_voltage_obligations(
     errors: &mut Vec<String>,
     proofs: &mut Vec<String>,
 ) {
-    if inputs.obligations.is_empty() {
+    if inputs.obligations.is_empty() && inputs.current_obligations.is_empty() {
         return;
     }
     let rails = collect_driven_rails(inputs.items, inputs.laws, ctx);
     let mut forcing = ObligationForcing::new(ctx, rails, errors, proofs);
+    // 2026-09-26 (E15 slice 1): current obligations run FIRST — the series
+    // pick is VALUE-constrained (the part must actually deliver the amps),
+    // while a pull-up satisfies a voltage obligation at any resistance (a
+    // released net sits at the rail regardless). The constrained demand
+    // claims the scarce part first.
+    forcing.run_current(inputs.current_obligations);
     forcing.run(inputs.obligations);
 }
 
@@ -5412,6 +5866,7 @@ fn collect_intents(
     let mut intents: Vec<(String, String)> = Vec::new();
     let mut pin_intents: Vec<(String, PinRef)> = Vec::new();
     let mut obligations: Vec<VoltageObligation> = Vec::new();
+    let mut current_obligations: Vec<CurrentObligation> = Vec::new();
     let mut bridges: Vec<BridgeRequest> = Vec::new();
     let mut opens: Vec<(Expr, Expr)> = Vec::new();
     for item in items {
@@ -5425,6 +5880,7 @@ fn collect_intents(
             intents: &mut intents,
             pin_intents: &mut pin_intents,
             obligations: &mut obligations,
+            current_obligations: &mut current_obligations,
             bridges: &mut bridges,
             opens: &mut opens,
         };
@@ -5438,7 +5894,12 @@ fn collect_intents(
     // ambiguous). The forcing consumes passive parts (pull-up resistors,
     // switches), never CanDrive pins, so it cannot steal a completion.
     force_voltage_obligations(
-        &VoltageForcing { items, laws, obligations: &obligations },
+        &VoltageForcing {
+            items,
+            laws,
+            obligations: &obligations,
+            current_obligations: &current_obligations,
+        },
         ctx,
         &mut errors,
         &mut proofs,
@@ -5813,6 +6274,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
 
     // 2026-09-24 (Slice 6): law solve, current/power proofs, and budgets run
     // in one post-drive pipeline so solver quantities participate everywhere.
+    let dc_drives = merge_law_rail_boundaries(&nets, &component_laws, &instances, &type_info, voltage.net_voltage.clone());
     let (law_solve_errors, budget_errors) = post_solve_checks(
         PostSolveContext {
             items,
@@ -5823,6 +6285,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
             laws: &component_laws,
             modes: &mode_catalog(&instances, &type_info),
             unpop: &topo.unpop,
+            dc_drives: &dc_drives,
         },
         &mut voltage,
     );
@@ -7128,6 +7591,154 @@ mod tests {
             nl.voltage.proved.iter().any(|p| p.contains("fan-in 16 <= 16")),
             "fan-in proof missing: {:?}",
             nl.voltage.proved.iter().filter(|p| p.contains("fan-in")).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn series_part_forced_by_current_obligation() {
+        // 2026-09-26 (E15 slice 1): the current obligation forces the free
+        // `spec SeriesPart` part between the anode net and the feeding
+        // rail — the value-aware pick takes the largest resistance that
+        // still delivers the amps (330R qualifies, 4k7 does not).
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Out { spec KicadType: "output"; spec CanDrive: true; };
+            type Volt { spec Bits: 32; };
+            type Amp { spec Bits: 32; };
+            struct Pin { voltage: Volt; current: Amp; };
+            type Led {
+                pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
+                spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
+                when a.voltage - k.voltage >= ForwardVoltage {
+                    a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+                }
+                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                when true { a.current + k.current == 0; }
+            };
+            type Resistor {
+                pin a; pin b; reference "R"; spec Tolerance: any;
+                spec SeriesPart: true; spec PullUp: true;
+                spec Resistance: Ohm;
+                when true { a.voltage - b.voltage == Resistance * a.current; }
+            };
+            type Src { pin p: Power; reference "S"; spec Tolerance: any; };
+            type Sink { pin g; reference "X"; spec Tolerance: any; };
+
+            let d1: Led = Led { spec ForwardVoltage: 2.0Volt, spec DynamicResistance: 10Ohm, spec MaxCurrent: 20mAmp };
+            let r1: Resistor = Resistor { spec Resistance: 330Ohm };
+            let s1: Src = Src { };
+            let x1: Sink = Sink { };
+
+            txn powered
+                [s1.p.voltage == 3.3V && d1.k.voltage == 0V
+                 && d1.k.voltage == x1.g.voltage]
+                [d1.a.current >= 0.002]
+            {
+                d1.a.current >= 0.002;
+            }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        assert!(nl.voltage.violations.is_empty(), "{:?}", nl.voltage.violations);
+        // The 330R part is the forced pick (4700R cannot deliver 2 mA).
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("series part forced") && p.contains("r1")),
+            "series proof missing: {:?}",
+            nl.intent_proofs.iter().filter(|p| p.contains("series")).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn understrength_series_candidates_refuse_with_window() {
+        // E15 D4: when NO free part states a small enough resistance, the
+        // obligation refuses naming the window — the rail minus the forward
+        // drop over the obligation amps is the resistance ceiling.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Out { spec KicadType: "output"; spec CanDrive: true; };
+            type Volt { spec Bits: 32; };
+            type Amp { spec Bits: 32; };
+            struct Pin { voltage: Volt; current: Amp; };
+            type Led {
+                pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
+                spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
+                when a.voltage - k.voltage >= ForwardVoltage {
+                    a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+                }
+                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                when true { a.current + k.current == 0; }
+            };
+            type Resistor {
+                pin a; pin b; reference "R"; spec Tolerance: any;
+                spec SeriesPart: true;
+                spec Resistance: Ohm;
+                when true { a.voltage - b.voltage == Resistance * a.current; }
+            };
+
+            type Src { pin p: Power; reference "S"; spec Tolerance: any; };
+            type Sink { pin g; reference "X"; spec Tolerance: any; };
+
+            let d1: Led = Led { spec ForwardVoltage: 2.0Volt, spec DynamicResistance: 10Ohm };
+            let r1: Resistor = Resistor { spec Resistance: 47000Ohm };
+            let s1: Src = Src { };
+            let x1: Sink = Sink { };
+
+            txn powered
+                [s1.p.voltage == 3.3V && d1.k.voltage == 0V
+                 && d1.k.voltage == x1.g.voltage]
+                [true]
+            {
+                d1.a.current >= 0.002;
+            }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("cannot be met") && e.contains("Resistance at or below")),
+            "{:?}",
+            nl.intent_errors
+        );
+    }
+
+    #[test]
+    fn current_obligation_without_load_physics_refuses() {
+        // E15 D6: an obligation over an unknown forward drop would be a
+        // guess, not a proof — the load must declare its law physics.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Out { spec KicadType: "output"; spec CanDrive: true; };
+            type Volt { spec Bits: 32; };
+            type Amp { spec Bits: 32; };
+            struct Pin { voltage: Volt; current: Amp; };
+            type Led { pin a; pin k; reference "D"; spec Tolerance: any; };
+            type Resistor {
+                pin a; pin b; reference "R"; spec Tolerance: any;
+                spec SeriesPart: true;
+            };
+
+            let d1: Led = Led { };
+            let r1: Resistor = Resistor { };
+
+            txn powered
+                [d1.k.voltage == 0V]
+                [true]
+            {
+                d1.a.current >= 0.002;
+            }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("ForwardVoltage physics")),
+            "{:?}",
+            nl.intent_errors
         );
     }
 

@@ -84,6 +84,7 @@ type Sensor {
 };
 type Resistor {
     pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W;
+    spec SeriesPart: true;
     spec Resistance: Ohm; spec PullUp: true;
     // 2026-09-24 (component laws): structured physics. `value` remains the
     // BOM label only.
@@ -93,16 +94,6 @@ type Resistor {
     }
 };
 type Capacitor { pin a; pin b; reference "C"; spec Tolerance: any; spec Rating: any; spec Decoupler: true; };
-type Led {
-    pin a;
-    pin k;
-    reference "D";
-    spec Tolerance: 3.6V;
-    spec Rating: any;
-    // The LED bound is two surfaces (2026-09-25, quantities Phase 4):
-    // `spec MaxCurrent` at use (unconditional absolute maximum) and the
-    // minimum as a node postcondition — state-scoped by the guard.
-};
 type UsbMicro { pin vbus: Power; pin gnd: Ground; reference "J"; spec Tolerance: any; spec Rating: any; };
 type DebugHdr { pin sig[7]; pin gnd: Ground; pin vcc: Power; reference "J"; spec Tolerance: any; spec Rating: any; };
 
@@ -117,7 +108,9 @@ stdnet<V3V3> let j2: DebugHdr = DebugHdr { value: "SWD", package: "HDR-2x5" };
 stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: "AP2112K-3.3", package: "SOT-25", jlcpcn: "C5199793", spec Output: 3.3V };
 stdnet<V3V3> let u2: Mcu      = Mcu      { value: "STM32F042",   package: "QFN-32", jlcpcn: "C4859347" };
 stdnet<V3V3> let u3: Sensor   = Sensor   { value: "SHT40",       package: "DFN-4"  };
-let led1: Led    = Led      { value: "green",       package: "0603"   };
+// led1 rides the stdlib Led (law physics: ForwardVoltage/DynamicResistance
+// junction + zero reverse current); the instance states its part values.
+let led1: Led    = Led      { value: "green", package: "0603", spec ForwardVoltage: 2.0Volt, spec DynamicResistance: 10Ohm, spec MaxCurrent: 20mAmp };
 let r_led: Resistor = Resistor { value: "330R",      package: "0603", spec Resistance: 330Ohm };
 let r_pu[2]: Resistor = Resistor { value: "4k7",     package: "0603", spec Resistance: 4.7kOhm };
 let r_btn: Resistor = Resistor { value: "10k",       package: "0603", spec Resistance: 10kOhm };
@@ -135,24 +128,27 @@ trg usb_attached @ j1;
 // return side is solver-inferred (2026-09-25, E14b-6); supply membership
 // is declared by `stdnet<>` at the lets and inferred by the ladder
 // (2026-09-25, E14b-7); the 3.3V rail is born by the LDO's `spec Output`
-// law (E14b-8). What remains here is §3.2's external reality — the USB
-// port's 5.0V — plus the explicit signal wiring the synthesis backlog
-// still owns (the button pull-up placement and the LED series resistor —
-// E15).
+// law (E14b-8). The LED series resistor is now FORCED too (2026-09-26,
+// E15 slice 1): the current obligation places r_led and the DC solve
+// proves the bound — no explicit r_led wiring exists. What remains is
+// §3.2's external reality (the USB port's 5.0V) and the button net's
+// explicit guard wiring.
 async node usb_powered [
     usb_attached
     && j1.vbus.voltage == 5.0V
+    && led1.k.voltage == 0V        // the MCU pin sinks the LED (E15: the
+                                   // series path needs both ends driven)
     && u2.gpio[3].voltage == sw1.a.voltage
     && u1.vout.voltage == r_btn.a.voltage
     && r_btn.b.voltage == u2.gpio[3].voltage
     && u3.addr.voltage == j1.gnd.voltage
-] [j1.vbus.voltage == 5.0V] {
+] [j1.vbus.voltage == 5.0V && led1.a.current >= 0.002Amp] {
     u1.en = true;               // E14b-4: drive assignment wires en <-> gpio[0]
     led1 = true;                // E14b-4: led1.k <-> gpio[1] (gpio[2..7] are
                                 // already claimed by j2 and the button)
-    r_led.a = u1.vout;           // E14b: series resistor placement is
-    r_led.b = led1.a;           //        physics-derived in pure intent;
-                                //        330Ohm is the provisional datasheet pick
+    led1.a.current >= 0.002Amp;    // E15: current obligation — r_led is
+                                // forced between the 3.3V rail and the
+                                // anode; 330Ohm is proven, not wired
     // SWD/debug header signals (§3.2 declares the MCU pins; j2 is the
     // connector their dangling would otherwise demand).
     j2.sig[0] = u2.swdio;

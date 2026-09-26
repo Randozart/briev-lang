@@ -997,7 +997,15 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     // the build path sees (the divergence class this fn's doc records).
     crate::plugin::composite::expand_composites(&mut items, &pm)?;
 
-    let universe = TypeUniverse::new();
+    let mut universe = TypeUniverse::new();
+    // 2026-09-26 (E15): declared typedefs registered before the typecheck —
+    // same as the build path; `check` and `build` must not diverge on
+    // quantity-literal admission (imports like the electronics Volt/Amp).
+    crate::backend::register_types::register_typedefs(
+        &items,
+        &mut universe,
+        opts.int_bits,
+    )?;
     check_types(&mut items, &universe, effective_isr_mechanism(opts).as_deref())?;
     // 2026-08-01 (C4): watchdog contract checks also run on the `check` path
     // (parse_and_check) — `brievc check` must catch trigger/handler violations

@@ -23,7 +23,7 @@ let saved: String = "";
 let count: Int = 0;
 
 export defn save(name: CStr) -> CStr {
-    saved = cstr_to_briev(name as Int);
+    saved = cstr_to_briev(name as String as Int);
     term str_to_c(saved) as CStr;
 };
 
@@ -44,7 +44,7 @@ export defn persist(path: CStr) -> CStr {
     // Literal syscall numbers: SysCall#'s first arg is resolved either as a
     // literal or an ABSTRACT op name (Read/Write/Open/...) — a named `const`
     // like SYS_OPEN is NOT resolved (falls to 0, an open-elsewhere syscall).
-    let fd: Int = SysCall#(2, path as Int, 577, 420, 0, 0, 0);
+    let fd: Int = SysCall#(2, path as String as Int, 577, 420, 0, 0, 0);
     let data: Int = str_to_c(saved);
     let n: Int = SysCall#(1, fd, data, saved .^Length, 0, 0, 0);
     SysCall#(3, fd, 0, 0, 0, 0, 0);
@@ -55,7 +55,7 @@ export defn persist(path: CStr) -> CStr {
 // for the size, seek back, Alloc# a [len][bytes][NUL] buffer, read the
 // payload, wrap as a String.
 export defn load(path: CStr) -> CStr {
-    let fd: Int = SysCall#(2, path as Int, 0, 0, 0, 0, 0);
+    let fd: Int = SysCall#(2, path as String as Int, 0, 0, 0, 0, 0);
     let size: Int = SysCall#(8, fd, 0, 2, 0, 0, 0);
     SysCall#(8, fd, 0, 0, 0, 0, 0);
     let buf: Int = Alloc#(8 + size + 1) as Int;

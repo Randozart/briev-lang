@@ -249,6 +249,20 @@ track below.
 - **Effort:** S
 
 ### E15 — No series-part placement synthesis (the residue of §3.2's `derive on:`)
+- **Status:** SLICE 1 LANDED 2026-09-26 (plan
+  `2026-09-26-ebv-e15-series-part-placement.md`): a MIN current
+  obligation (`led1.a.current >= 0.002;` in a node body) forces a free
+  `spec SeriesPart` two-pin part between the anode net and the lowest
+  driven rail above the load's declared `ForwardVoltage`, picking the
+  LARGEST stated resistance that still delivers the amps; law-born
+  rails became fixed DC boundaries (E14b-8 parity — this fixed a latent
+  law-group index-instability bug the new topology exposed); chained
+  casts (`x as A as B`) now parse; the typechecker admits numeral
+  literals against exact-width quantity fundamentals and registers
+  imported typedefs on both the build and check paths. The fixture's
+  explicit r_led wiring is DELETED — the bound is proven from the solved
+  operating point. Slices 2–3 (E-series value synthesis, docs closure)
+  remain.
 - **Status:** OPEN — deferred 2026-09-23, documented (cannot defer without
   documentation). Not built; recorded with a trigger.
 - **What it is:** from a component's current obligation plus its intrinsic

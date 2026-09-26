@@ -239,9 +239,12 @@ impl<'a> Parser<'a> {
 
     /// Type cast: expr as Type. Tighter than unary but looser than postfix.
     /// 2026-07-15: Unblocks volatile-io.bv, target-import.bv, etc.
+    /// 2026-09-26 (E15): chains parse — the typechecker's multi-category
+    /// diagnostic names exactly this form (`value as A as B`); the grammar
+    /// now honors it.
     fn parse_as(&mut self, allow_index: bool) -> Result<Expr, SyntaxError> {
         let mut expr = self.parse_postfix(allow_index)?;
-        if self.eat(&Token::As) {
+        while self.eat(&Token::As) {
             let ty = self.parse_type()?;
             expr = Expr::Cast(Box::new(expr), ty);
         }
