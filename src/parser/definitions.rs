@@ -3670,8 +3670,10 @@ impl<'a> Parser<'a> {
             "net_voltage" | "kicad_label" => {
                 parse_net_registry_spec(self, key, metadata)?;
             }
-            // 2026-09-25 (quantities Phase 4): the absolute-maximum current envelope.
-            "max_current" => return parse_qualified_envelope_spec(self, key, crate::ast::QuantityDim::Amp, metadata),
+            // Max-current envelope (Phase 4) + E8 drive_current (same shape).
+            "max_current" | "drive_current" => {
+                return parse_qualified_envelope_spec(self, key, crate::ast::QuantityDim::Amp, metadata)
+            }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
             // (`spec Rows: R` on `Matrix<T, R, C>`). The reader resolves the
@@ -4781,6 +4783,13 @@ pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // current envelope — unconditional, every state, like Tolerance for
         // volts. Uniform or pin-qualified (`a: 20mA, vdd: 100mA`).
         "MaxCurrent" => Some("max_current"),
+        // 2026-09-26 (E8, plan 2026-09-26-ebv-e8-driven-node-drive.md): the
+        // driven-node capability envelopes — `DriveCurrent` caps what a
+        // part may source from a pin, `FanIn` caps the load-branch count.
+        // Consumed generically by the driven-node check; the compiler
+        // knows no op-amp (Rule 15).
+        "DriveCurrent" => Some("drive_current"),
+        "FanIn" => Some("fan_in"),
         // 2026-09-25 (E14b-7, rail-membership plan): the standard-net
         // registry — `spec NetVoltage` on a type makes it a `stdnet<Name>`
         // row (the expected rail voltage), `spec KicadLabel` the emitter

@@ -463,6 +463,12 @@ fn collect_type_pins(
                         crate::ast::PropertyValue::Quantity { .. } => {
                             Some((key.clone(), value.clone()))
                         }
+                        // 2026-09-26 (E8): dimensionless counts ride the same
+                        // bag (`spec FanIn: 16`). Quantity consumers pick by
+                        // dimension and ignore Ints, so this widens nothing.
+                        crate::ast::PropertyValue::Int(n) if *n >= 0 => {
+                            Some((key.clone(), value.clone()))
+                        }
                         _ => None,
                     })
                     .collect();
@@ -1007,6 +1013,10 @@ fn derive_electrical_proofs(input: ProofInputs<'_>, check: &mut VoltageCheck) {
     // 2026-09-25 (quantities Phase 4): the absolute-maximum current
     // envelope — unconditional, beside the volt tolerance.
     check_max_current(input.instances, input.type_info, &pin_to_net, check, input.unpop);
+    // 2026-09-26 (E8): driven-node capability — the net's derived draw and
+    // load count, attributed to the lone drive-capable pin, against that
+    // part's datasheet envelopes (`spec DriveCurrent` / `spec FanIn`).
+    check_drive_capability(&input, check);
 }
 
 /// The effective absolute-maximum current envelope for one pin — the
@@ -1092,6 +1102,184 @@ fn check_max_current(
                 format_amps(limit)
             ));
         }
+    }
+}
+
+/// The effective drive-current capability for one pin — the same envelope
+/// ladder as `max_current_for` (instance override, pin-qualified type row,
+/// type uniform). Amp quantities only; anything else is absent.
+fn drive_current_for(inst: &ComponentInstance, ti: &TypeInfo, pname: &str) -> Option<f64> {
+    let pick = |pv: &crate::ast::PropertyValue| match pv {
+        crate::ast::PropertyValue::Quantity { si, dimension }
+            if *dimension == crate::ast::QuantityDim::Amp =>
+        {
+            Some(*si)
+        }
+        _ => None,
+    };
+    inst.specs
+        .get("drive_current")
+        .and_then(pick)
+        .or_else(|| ti.spec_defaults.get(&format!("drive_current:{pname}")).and_then(pick))
+        .or_else(|| ti.spec_defaults.get("drive_current").and_then(pick))
+}
+
+/// The effective fan-in bound for one pin — the same envelope ladder. A
+/// dimensionless count (Int property); anything else is absent.
+fn fan_in_for(inst: &ComponentInstance, ti: &TypeInfo, pname: &str) -> Option<u64> {
+    let pick = |pv: &crate::ast::PropertyValue| match pv {
+        crate::ast::PropertyValue::Int(n) if *n >= 0 => Some(*n as u64),
+        _ => None,
+    };
+    inst.specs
+        .get("fan_in")
+        .and_then(pick)
+        .or_else(|| ti.spec_defaults.get(&format!("fan_in:{pname}")).and_then(pick))
+        .or_else(|| ti.spec_defaults.get("fan_in").and_then(pick))
+}
+
+/// Whether one pin's class may hold a drive (`spec CanDrive: true`).
+fn pin_can_drive(ti: &TypeInfo, pname: &str) -> bool {
+    ti.pins
+        .iter()
+        .position(|(n, _)| n == pname)
+        .and_then(|i| ti.pin_classes.get(i))
+        .map_or(false, |c| c.can_drive)
+}
+
+/// 2026-09-26 (E8, plan `2026-09-26-ebv-e8-driven-node-drive.md`): the
+/// driven-node check. A net with exactly one `can_drive` pin has a DRIVER;
+/// its datasheet envelopes cap what the net may ask of it. `spec
+/// DriveCurrent` caps the net's derived draw (the E7 roll-up: component-law
+/// DC, else the B4 fixpoint — a net with no derived draw skips, nothing
+/// provable flows); `spec FanIn` caps the load-branch count. Two
+/// drive-capable pins on one net are ERC contention (refused upstream);
+/// zero means nothing sources the net and there is nothing to attribute.
+/// Unpop drivers are exempt (no copper). Violations join the B4 contract
+/// family; passes emit proof lines so the operating point is PROVEN.
+fn check_drive_capability(input: &ProofInputs<'_>, check: &mut VoltageCheck) {
+    for net in input.nets {
+        let Some((drv, inst, ti)) = net_driver(input, net) else {
+            continue;
+        };
+        let load_count = net.pins.len().saturating_sub(1);
+        if let Some(max_fan) = fan_in_for(inst, ti, &drv.pin) {
+            fan_in_verdict(drv, max_fan, load_count, input.states, check);
+        }
+        let Some(limit) = drive_current_for(inst, ti, &drv.pin) else {
+            continue;
+        };
+        let Some(draw) = driven_net_draw(input, net, check) else {
+            continue; // no derived draw — nothing to attribute to the driver
+        };
+        drive_current_verdict(drv, limit, draw, input.states, check);
+    }
+}
+
+/// The lone drive-capable pin of a net with its instance and type info —
+/// the net's DRIVER. Zero drive pins (nothing sources the net) and two or
+/// more (ERC contention, refused upstream) both mean "no check". An unpop
+/// driver is no driver: an unpopulated part carries no copper.
+fn net_driver<'a>(
+    input: &ProofInputs<'a>,
+    net: &'a Net,
+) -> Option<(&'a PinRef, &'a ComponentInstance, &'a TypeInfo)> {
+    let drivers: Vec<&PinRef> = net
+        .pins
+        .iter()
+        .filter(|p| {
+            input
+                .instances
+                .get(&p.component)
+                .and_then(|inst| input.type_info.get(&inst.type_name))
+                .map_or(false, |ti| pin_can_drive(ti, &p.pin))
+        })
+        .collect();
+    if drivers.len() != 1 {
+        return None;
+    }
+    let drv = drivers[0];
+    if input.unpop.contains(&drv.component) {
+        return None;
+    }
+    let inst = input.instances.get(&drv.component)?;
+    let ti = input.type_info.get(&inst.type_name)?;
+    Some((drv, inst, ti))
+}
+
+/// The net's derived draw with its provenance — the same roll-up budgets
+/// use: component-law DC first, the B4 series fixpoint as fallback.
+fn driven_net_draw(
+    input: &ProofInputs<'_>,
+    net: &Net,
+    check: &mut VoltageCheck,
+) -> Option<(f64, &'static str)> {
+    let law_draw = law_net_draw(net, input.laws, check);
+    if let Some(draw) = law_draw {
+        return Some((draw, "component-law DC"));
+    }
+    let pin_to_net = pin_net_index(input.nets);
+    let parts = collect_series_parts(input.instances, input.type_info, &pin_to_net);
+    net_draw(&net.name, &parts, &check.net_voltage).map(|draw| (draw, "B4 fixpoint"))
+}
+
+/// Fan-in verdict: the load-branch count against the declared maximum.
+fn fan_in_verdict(
+    drv: &PinRef,
+    max_fan: u64,
+    load_count: usize,
+    states: &std::collections::BTreeSet<String>,
+    check: &mut VoltageCheck,
+) {
+    if load_count > max_fan as usize {
+        check.violations.push(format!(
+            "{}fan-in exceeded: '{}.{}' drives {} loads on one net but its FanIn \
+             declares {} — the part cannot see that many branches. fix: declare a \
+             higher FanIn, split the net, or buffer it",
+            state_prefix(states),
+            drv.component,
+            drv.pin,
+            load_count,
+            max_fan
+        ));
+    } else {
+        check.proved.push(format!(
+            "fan-in {} <= {} at {}.{} — declared drive fan-in",
+            load_count, max_fan, drv.component, drv.pin
+        ));
+    }
+}
+
+/// Drive-current verdict: the net's derived draw against the part's
+/// declared sourcing capability.
+fn drive_current_verdict(
+    drv: &PinRef,
+    limit: f64,
+    draw: (f64, &'static str),
+    states: &std::collections::BTreeSet<String>,
+    check: &mut VoltageCheck,
+) {
+    let (drawn, provenance) = draw;
+    if drawn > limit + f64::EPSILON {
+        check.violations.push(format!(
+            "{}drive capability exceeded: '{}.{}' is rated to source {} but its net \
+             draws {} — the derived sum over the driven node ({provenance}) is past the \
+             part's DriveCurrent. fix: a stronger driver, lighter loads, or series \
+             resistance",
+            state_prefix(states),
+            drv.component,
+            drv.pin,
+            format_amps(limit),
+            format_amps(drawn)
+        ));
+    } else {
+        check.proved.push(format!(
+            "I({}.{} net) = {} <= {} — drive capability ({provenance})",
+            drv.component,
+            drv.pin,
+            format_amps(drawn),
+            format_amps(limit)
+        ));
     }
 }
 
@@ -6762,6 +6950,184 @@ mod tests {
                 .any(|v| v.contains("l1.vin") && v.contains("vacuously proven")),
             "{:?}",
             nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn drive_capability_proves_within_rating() {
+        // 2026-09-26 (E8): the net's derived load sum, attributed to the
+        // lone drive-capable pin, sits inside `spec DriveCurrent` — a
+        // PROOF line, not merely the absence of an error.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Out { spec KicadType: "output"; spec CanDrive: true; };
+            type OpAmp { pin drv: Out; pin gnd: Ground; reference "U"; spec Tolerance: any;
+                         spec DriveCurrent: drv: 10mA; };
+            type Res { pin a; pin b; reference "R"; spec Tolerance: any; spec Resistance: 1kOhm; };
+
+            let u1: OpAmp = OpAmp { value: "op" };
+            let r1: Res = Res { };
+            let r2: Res = Res { };
+            let r3: Res = Res { };
+
+            txn on
+                [u1.drv.voltage == 3.3V && u1.drv.voltage == r1.a.voltage &&
+                 r1.b.voltage == u1.gnd.voltage && u1.drv.voltage == r2.a.voltage &&
+                 r2.b.voltage == u1.gnd.voltage && u1.drv.voltage == r3.a.voltage &&
+                 r3.b.voltage == u1.gnd.voltage]
+                [u1.gnd.voltage == r3.b.voltage]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.voltage.violations.is_empty(), "{:?}", nl.voltage.violations);
+        assert!(
+            nl.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("u1.drv") && p.contains("drive capability")),
+            "drive proof missing: {:?}",
+            nl.voltage.proved.iter().filter(|p| p.contains("drive")).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn overdriven_node_refuses_emission() {
+        // E8 gate: an overdriven node is a compile error — four 1k loads at
+        // 3.3 V draw 13.2 mA past the declared 10 mA capability.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Out { spec KicadType: "output"; spec CanDrive: true; };
+            type OpAmp { pin drv: Out; pin gnd: Ground; reference "U"; spec Tolerance: any;
+                         spec DriveCurrent: drv: 10mA; };
+            type Res { pin a; pin b; reference "R"; spec Tolerance: any; spec Resistance: 1kOhm; };
+
+            let u1: OpAmp = OpAmp { value: "op" };
+            let r1: Res = Res { };
+            let r2: Res = Res { };
+            let r3: Res = Res { };
+            let r4: Res = Res { };
+
+            txn on
+                [u1.drv.voltage == 3.3V && u1.drv.voltage == r1.a.voltage &&
+                 r1.b.voltage == u1.gnd.voltage && u1.drv.voltage == r2.a.voltage &&
+                 r2.b.voltage == u1.gnd.voltage && u1.drv.voltage == r3.a.voltage &&
+                 r3.b.voltage == u1.gnd.voltage && u1.drv.voltage == r4.a.voltage &&
+                 r4.b.voltage == u1.gnd.voltage]
+                [u1.gnd.voltage == r4.b.voltage]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.voltage
+                .violations
+                .iter()
+                .any(|v| v.contains("drive capability exceeded") && v.contains("u1.drv")),
+            "{:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn fan_in_bound_counts_load_branches() {
+        // E8 gate, fan-in half: three loads past `spec FanIn: 2` refuse;
+        // the count is net.pins minus the driver's own pin.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Out { spec KicadType: "output"; spec CanDrive: true; };
+            type OpAmp { pin drv: Out; pin gnd: Ground; reference "U"; spec Tolerance: any;
+                         spec FanIn: 2; };
+            type Res { pin a; pin b; reference "R"; spec Tolerance: any; spec Resistance: 1kOhm; };
+
+            let u1: OpAmp = OpAmp { value: "op" };
+            let r1: Res = Res { };
+            let r2: Res = Res { };
+            let r3: Res = Res { };
+
+            txn on
+                [u1.drv.voltage == r1.a.voltage && r1.b.voltage == u1.gnd.voltage &&
+                 u1.drv.voltage == r2.a.voltage && r2.b.voltage == u1.gnd.voltage &&
+                 u1.drv.voltage == r3.a.voltage && r3.b.voltage == u1.gnd.voltage]
+                [u1.gnd.voltage == r3.b.voltage]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.voltage
+                .violations
+                .iter()
+                .any(|v| v.contains("fan-in exceeded") && v.contains("3 loads")),
+            "{:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn undriven_net_skips_drive_capability() {
+        // No derived draw on the driven net — nothing to attribute; the
+        // envelope stays unproven but refuses nothing (budgets' vacuous
+        // rule). A stated POST bound would be the anti-vacuity error; the
+        // envelope is a capability, not a claim.
+        let src = r#"
+            type OpAmp { pin drv: Out; reference "U"; spec Tolerance: any;
+                         spec DriveCurrent: drv: 10mA; };
+
+            let u1: OpAmp = OpAmp { value: "op" };
+
+            txn on
+                [u1.drv.voltage == 3.3V]
+                [u1.drv.voltage == 3.3V]
+            { }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            !nl.voltage
+                .violations
+                .iter()
+                .any(|v| v.contains("drive capability")),
+            "{:?}",
+            nl.voltage.violations
+        );
+    }
+
+    #[test]
+    fn sixteen_input_summing_node_proves_within_rating() {
+        // E8 gate, verbatim: a 16-input summing node proves within rating.
+        // 16 × 3.3V / 10k = 5.28 mA against a 10 mA DriveCurrent, fan-in 16.
+        let mut src = String::from(
+            r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Out { spec KicadType: "output"; spec CanDrive: true; };
+            type OpAmp { pin drv: Out; pin gnd: Ground; reference "U"; spec Tolerance: any;
+                         spec DriveCurrent: drv: 10mAmp; spec FanIn: 16; };
+            type Res { pin a; pin b; reference "R"; spec Tolerance: any; spec Resistance: 10kOhm; };
+
+            let u1: OpAmp = OpAmp { value: "op" };
+        "#,
+        );
+        for i in 1..=16 {
+            src.push_str(&format!("let r{i}: Res = Res {{ }};\n"));
+        }
+        src.push_str("txn on [u1.drv.voltage == 3.3V");
+        for i in 1..=16 {
+            src.push_str(&format!(
+                " && u1.drv.voltage == r{i}.a.voltage && r{i}.b.voltage == u1.gnd.voltage"
+            ));
+        }
+        src.push_str("] [u1.gnd.voltage == r16.b.voltage] { }");
+        let nl = analyze(&src);
+        assert!(nl.voltage.violations.is_empty(), "{:?}", nl.voltage.violations);
+        assert!(
+            nl.voltage
+                .proved
+                .iter()
+                .any(|p| p.contains("drive capability") && p.contains("5.3 mA")),
+            "drive proof missing: {:?}",
+            nl.voltage.proved.iter().filter(|p| p.contains("drive")).collect::<Vec<_>>()
+        );
+        assert!(
+            nl.voltage.proved.iter().any(|p| p.contains("fan-in 16 <= 16")),
+            "fan-in proof missing: {:?}",
+            nl.voltage.proved.iter().filter(|p| p.contains("fan-in")).collect::<Vec<_>>()
         );
     }
 
