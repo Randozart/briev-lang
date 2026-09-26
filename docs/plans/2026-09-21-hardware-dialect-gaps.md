@@ -186,6 +186,16 @@ track below.
 - **Effort:** M
 
 ### E8 — No op-amp drive / fan-in model
+- **Status:** CLOSED 2026-09-26 (`488494ea`, plan
+  `2026-09-26-ebv-e8-driven-node-drive.md`). A net with exactly one
+  `can_drive` pin has a driver; `spec DriveCurrent` (pin-qualified,
+  instance-overridable — the Phase 4 envelope ladder) caps the net's
+  derived draw (the E7 roll-up), `spec FanIn` caps the load-branch
+  count. Violations join the B4 contract family; passes emit proof
+  lines. Gate as contract tests: a 16-input summing node proves within
+  rating (5.3 mA ≤ 10 mA, fan-in 16 ≤ 16); an overdriven node refuses.
+  The original evidence is stale (`parse_rating_clause` retired, law
+  parts no longer opaque) — the residue was exactly this check.
 - **Evidence:** non-ohmic parts are `rating any` black boxes
   (`parse_rating_clause :2366`; the Led model in
   `led_blinker.ebv:38-44`); no driven-node or fan-in analysis exists.

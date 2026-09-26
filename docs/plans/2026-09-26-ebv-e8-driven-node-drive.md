@@ -2,7 +2,8 @@
 
 Date: 2026-09-26
 Gap: `2026-09-21-hardware-dialect-gaps.md` E8 (op-amp drive / fan-in model)
-Status: in progress
+Status: LANDED — slices 1+2 and the gate fixture landed as one analysis
+commit (`488494ea`); slice 3's docs are this commit.
 
 ## Problem
 
