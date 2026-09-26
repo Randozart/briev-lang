@@ -1255,3 +1255,31 @@ evidence there). led_blinker migrated: `spec MaxCurrent: 20mAmp` on the
 instance, the minimum in `async node powered`'s postcondition. Plan:
 `2026-09-25-quantities-phase4-envelopes.md`. E15's prerequisites are now
 all landed except E-series value selection.
+
+### Amendment 2026-09-25 (XXI): LDO output law landed — `spec Output` births the rail
+
+The last rail-birth gap closes. `spec Output` is an ordinary law
+parameter — dimension-only at the type (`spec Output: Volt;`), value at
+the instance (`spec Output: 3.3V`) — paired with an unconditional law
+(`when true { vout.voltage == Output; }`). The birth is detected
+generically: an always-guarded law equation that pins a single
+supply-class pin voltage to a constant drives its net exactly as a
+contract fact does; the membership ladder and the obligation forcing
+both consume the merged rail map, and the proof line reads
+`rail born: u1.vout drives the 3.3 rail (component law)`.
+
+No parser change was needed — the law-parameter path (`Resistance`,
+`Decouple`) already carried it. A drive that contradicts the law
+(`spec Output: 1.8V` plus a surviving `vout == 3.3V` fact) is the hard
+"no DC operating point" error; consistent values stay silent. Modes do
+not birth rails; guarded laws do not birth rails.
+
+One modeling lesson from the gate fixture: once the LDO joins a law
+group its branch currents must be determined or the operating point is
+not unique — the type declares `en.current == 0Amp` (high-impedance
+enable) and `gnd.current == 0Amp` (quiescent neglected) beside the
+output equation. usb_sensor.ebv now carries zero `u1.vout == 3.3V`
+facts — rails, membership, pull-up forcing, budgets, and the emitter
+all run on component physics; only `j1.vbus == 5.0V` (external
+reality) and E15's signal wiring remain explicit. Plan:
+`2026-09-25-ebv-e14b-ldo-output-law.md`.

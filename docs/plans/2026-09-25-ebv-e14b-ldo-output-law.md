@@ -1,6 +1,6 @@
 # Plan 2026-09-25: E14b slice 8 — LDO output law (`spec Output`) and law-derived rail birth
 
-**Status:** building
+**Status:** landed — all three slices (analysis `0b1cb778`, fixture + docs)
 **Branch:** `feat/e14a-intent-synthesis`
 **Design record:** E14b gate delta item 1 — the rail-BIRTH half of
 "rails and returns stated as guard equalities". Slice 6 closed the

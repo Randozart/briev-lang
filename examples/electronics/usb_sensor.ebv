@@ -15,21 +15,20 @@
 //   - type-level `derive on:` (Led) superseded — the maximum is the
 //     `spec MaxCurrent` envelope (quantities Phase 4, landed), the
 //     minimum a node postcondition at use;
-//   - `usb_powered.up`, `sw1.closed`, `u2.sda.released` members not
-//     landed — guards restate them as voltage facts;
+//   - `usb_powered.up` lands as the `usb_attached` trigger, `sw1.closed`
+//     as the SPST mode state; `u2.sda.released` stays restated as the
+//     pull-up voltage obligations;
 //   - a SWD debug header (j2) is added: §3.2 declares `swdio`/`swclk`
 //     but no connector for them — as written they would dangle.
 //
 // `// E14b:` marks explicit statements the pure-intent form will delete.
 // Deleted so far: the io_od pull-up wiring (slice 1), the gnd-path
 // equality (slice 2, low-hold forcing), the bus unions (slice 3), the
-// whole return side (slice 6), and — 2026-09-25 (slice 7) — every
-// supply-membership equality, replaced by `stdnet<>` declarations at
-// the lets. Remaining explicit: rail BIRTH (`j1.vbus == 5.0V`,
-// `u1.vout == 3.3V` — boundary conditions; the LDO output becomes a
-// component law when `spec Output` lands) and the signal wiring the
-// synthesis backlog owns (button pull-up placement, LED series
-// resistor — E15).
+// whole return side (slice 6), every supply-membership equality (slice
+// 7, `stdnet<>` declarations), and — 2026-09-25 (slice 8) — the rail
+// BIRTH equalities: the LDO's `spec Output` law drives the 3.3V rail.
+// Remaining explicit: the signal wiring the synthesis backlog owns
+// (button pull-up placement, LED series resistor — E15).
 //
 // 2026-09-24: resistor magnitudes now use structured `spec Resistance`;
 // `value` is only the BOM label. The local Resistor declares ordinary DC
@@ -45,6 +44,18 @@ type Ldo {
     spec Tolerance: 6V;
     spec Rating: 0.9W;
     spec Decouple: 100n;
+    // 2026-09-25 (E14b-8): the output law parameter — dimension-only at
+    // the type, value at the instance; the law births the 3.3V rail so
+    // no contract equality anywhere names u1.vout. Two branch laws keep
+    // the operating point unique once u1 joins a law group: the enable
+    // input draws no current, and the quiescent (ground) current is
+    // neglected — without them I(en)/I(gnd) leave the solve underdetermined.
+    spec Output: Volt;
+    when true {
+        vout.voltage == Output;
+        en.current == 0Amp;
+        gnd.current == 0Amp;
+    }
 };
 type Mcu {
     pin vdd: Power;
@@ -103,7 +114,7 @@ type DebugHdr { pin sig[7]; pin gnd: Ground; pin vcc: Power; reference "J"; spec
 // and j2.vcc join the 3.3V rail by expectation + refutation.
 stdnet<VBUS> let j1: UsbMicro = UsbMicro { value: "USB-Micro-B", package: "SMD" };
 stdnet<V3V3> let j2: DebugHdr = DebugHdr { value: "SWD", package: "HDR-2x5" };
-stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: "AP2112K-3.3", package: "SOT-25" };
+stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: "AP2112K-3.3", package: "SOT-25", spec Output: 3.3V };
 stdnet<V3V3> let u2: Mcu      = Mcu      { value: "STM32F042",   package: "QFN-32" };
 stdnet<V3V3> let u3: Sensor   = Sensor   { value: "SHT40",       package: "DFN-4"  };
 let led1: Led    = Led      { value: "green",       package: "0603"   };
@@ -123,20 +134,19 @@ trg usb_attached @ j1;
 // Rails and returns: §3.2 stated no topology (pure-intent form). The
 // return side is solver-inferred (2026-09-25, E14b-6); supply membership
 // is declared by `stdnet<>` at the lets and inferred by the ladder
-// (2026-09-25, E14b-7). What remains here is §3.2's exact form: rail
-// BIRTH (`j1.vbus == 5.0V`, `u1.vout == 3.3V` — boundary conditions;
-// `u1.vout` becomes a component law when the LDO declares `spec Output`)
-// plus the explicit signal wiring the synthesis backlog still owns (the
-// button pull-up placement and the LED series resistor — E15).
+// (2026-09-25, E14b-7); the 3.3V rail is born by the LDO's `spec Output`
+// law (E14b-8). What remains here is §3.2's external reality — the USB
+// port's 5.0V — plus the explicit signal wiring the synthesis backlog
+// still owns (the button pull-up placement and the LED series resistor —
+// E15).
 async node usb_powered [
     usb_attached
     && j1.vbus.voltage == 5.0V
-    && u1.vout.voltage == 3.3V
     && u2.gpio[3].voltage == sw1.a.voltage
     && u1.vout.voltage == r_btn.a.voltage
     && r_btn.b.voltage == u2.gpio[3].voltage
     && u3.addr.voltage == j1.gnd.voltage
-] [u1.vout.voltage == 3.3V && j1.vbus.voltage == 5.0V] {
+] [j1.vbus.voltage == 5.0V] {
     u1.en = true;               // E14b-4: drive assignment wires en <-> gpio[0]
     led1 = true;                // E14b-4: led1.k <-> gpio[1] (gpio[2..7] are
                                 // already claimed by j2 and the button)
@@ -156,9 +166,12 @@ async node usb_powered [
 
 // io_od pull-ups (E14b slice 1): min-voltage obligations force the
 // pull-up wiring. The solver wires r_pu[*] to the 3.3V rail (the lowest
-// qualifying driven supply) and completes `u2.sda.voltage >= 2.7V` —
-// no resolution keywords exist.
-async node i2c_idle [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
+// qualifying driven supply — now law-driven) and completes
+// `u2.sda.voltage >= 2.7V` — no resolution keywords exist. The guard
+// restates §3.2's `usb_powered.up` as the external trigger; the post is
+// `true` (a voltage post would re-feed `collect_drives` and mask the
+// law path).
+async node i2c_idle [usb_attached] [true] {
     u2.sda.voltage >= 2.7V;   // E14b-3: same-name WiredAnd obligations
     u3.sda.voltage >= 2.7V;   // assemble the sda bus (one pull-up)
     u2.scl.voltage >= 2.7V;   // and the scl bus (one pull-up)
@@ -171,14 +184,14 @@ async node i2c_idle [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
 // sw1 low path (p1 pre-wired, free pin completes to the return net); no
 // explicit sw1.b equality exists anywhere.
 async node button_pressed
-    [u1.vout.voltage == 3.3V && sw1.closed]
+    [usb_attached && sw1.closed]
     [u2.gpio[3].voltage <= 0.3V]
 {
     u2.gpio[3].voltage <= 0.3V;
 }
 
 async node button_released
-    [u1.vout.voltage == 3.3V && !sw1.closed]
+    [usb_attached && !sw1.closed]
     [u2.gpio[3].voltage >= 2.7V]
 { }
 

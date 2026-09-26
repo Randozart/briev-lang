@@ -324,6 +324,24 @@ no current, no divider, and no dissipation. The approved destination is
 type-body `when` laws as constitutive equations plus a piecewise-linear DC
 solver; later slices elaborate and solve them.
 
+**2026-09-25 (E14b slice 8, plan `2026-09-25-ebv-e14b-ldo-output-law.md`):**
+law-derived rail birth via `spec Output`. The LDO output law is an
+ordinary law parameter — dimension-only at the type (`spec Output:
+Volt;`), value at the instance (`spec Output: 3.3V`) — with an
+unconditional `when true { vout.voltage == Output; }`. Birth detection
+is generic: an always-guarded equation pinning a single supply-class
+pin voltage to a constant drives its net as a contract fact would; the
+births merge into the driven-rail map ahead of the membership ladder
+and the obligation forcing, proving `rail born: u1.vout drives the 3.3
+rail (component law)`. No parser change (the law-parameter path
+carried it); a drive contradicting the law is the existing hard
+"no DC operating point" error. Joining a law group demands a unique
+operating point — the type declares `en.current == 0Amp` and
+`gnd.current == 0Amp` beside the output equation, or the branch
+currents stay free and the closed switch state fails to solve. The
+usb_sensor fixture's six rail-birth equalities are deleted; only
+`j1.vbus == 5.0V` (external reality) and E15's signal wiring remain.
+
 **2026-09-25 (quantities Phase 4, plan `2026-09-25-quantities-phase4-envelopes.md`):**
 envelope specs + the anti-vacuity rule. `spec MaxCurrent` — the
 absolute-maximum current envelope, unconditional, every state — joins
