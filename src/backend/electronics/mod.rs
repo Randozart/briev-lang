@@ -135,61 +135,68 @@ struct Placement<'a> {
     jlcpcn: &'a str,
 }
 
+/// Everything the power-symbol instance renders, bundled to keep the
+/// parameter list flat (2026-09-25, E6 — same pattern as `Placement`).
+struct PowerPlacement<'a> {
+    name: &'a str,
+    net_index: usize,
+    pwr_no: usize,
+    sx: f64,
+    sy: f64,
+}
+
 pub struct ElectronicsBackend;
 
 impl ElectronicsBackend {
     /// Emit the `.kicad_sch` text. Fails on dangling pins AND on electrical
     /// violations — an incomplete or electrically-unsound board never leaves
     /// the compiler.
-    pub fn generate(netlist: &ElectronicsNetlist) -> Result<String, Vec<String>> {
-        // 2026-09-22 (Slice B): participation warnings are NOT errors — a
-        // populated short or an undeclared participation name is surfaced
-        // as a note; the board still emits.
-        for w in &netlist.participation_warnings {
-            eprintln!("note: {}", w);
-        }
+    /// The emission refusals, in priority order: the first violated
+    /// category wins and the rest are not reported — intent diagnostics
+    /// outrank downstream diagnostics on an incomplete board (the intent
+    /// is what was supposed to complete it), and diagnostics on a board
+    /// that will not emit only mislead. None = the sheet may emit.
+    fn emission_refusals(netlist: &ElectronicsNetlist) -> Option<Vec<String>> {
         // 2026-09-21 (E14a): drive-intent failures — an intent that could
-        // not complete, or completed ambiguously. Refuse FIRST: intent
-        // diagnostics outrank downstream diagnostics on an incomplete
-        // board (the intent is what was supposed to complete it).
+        // not complete, or completed ambiguously.
         if !netlist.intent_errors.is_empty() {
             let mut errs = vec![
                 "cannot emit schematic: a drive intent could not be completed".to_string(),
             ];
             errs.extend(netlist.intent_errors.iter().map(|e| format!("  {}", e)));
-            return Err(errs);
+            return Some(errs);
         }
         if !netlist.dangling.is_empty() {
             let mut errs = vec!["cannot emit schematic: the netlist is incomplete".to_string()];
             errs.extend(netlist.dangling.iter().map(|d| format!("  {}", d)));
-            return Err(errs);
+            return Some(errs);
         }
         // 2026-09-21 (E12): unresolved pin-class ascriptions — the class
-        // type is not in scope. Refuse before anything else emits.
+        // type is not in scope.
         if !netlist.class_errors.is_empty() {
             let mut errs = vec![
                 "cannot emit schematic: a pin names a class type that is not in scope".to_string(),
             ];
             errs.extend(netlist.class_errors.iter().map(|e| format!("  {}", e)));
-            return Err(errs);
+            return Some(errs);
         }
         // 2026-09-21 (E13): decoupling-convention violations — an instance
         // of a `spec Decouple` type without a bridging `spec Decoupler`
-        // part on its rail. Refuse before anything else emits.
+        // part on its rail.
         if !netlist.convention_errors.is_empty() {
             let mut errs = vec![
                 "cannot emit schematic: the decoupling convention is violated".to_string(),
             ];
             errs.extend(netlist.convention_errors.iter().map(|e| format!("  {}", e)));
-            return Err(errs);
+            return Some(errs);
         }
         // 2026-09-21 (E7): source-pin budgets — a net's derived draw past
-        // its stated budget. Refuse before anything else emits.
+        // its stated budget.
         if !netlist.budget_errors.is_empty() {
             let mut errs =
                 vec!["cannot emit schematic: a source-pin budget is exceeded".to_string()];
             errs.extend(netlist.budget_errors.iter().map(|e| format!("  {}", e)));
-            return Err(errs);
+            return Some(errs);
         }
         // 2026-09-22 (ERC contention): two drive-capable non-open-drain pins
         // on one net is a short — refused like any other electrical violation.
@@ -197,15 +204,15 @@ impl ElectronicsBackend {
             let mut errs =
                 vec!["cannot emit schematic: a net is driven by contending pins".to_string()];
             errs.extend(netlist.contention_errors.iter().map(|e| format!("  {}", e)));
-            return Err(errs);
+            return Some(errs);
         }
         // 2026-09-24 (component laws): an invalid constitutive law cannot
-        // prove physics — refuse before any schematic is emitted.
+        // prove physics.
         if !netlist.law_errors.is_empty() {
             let mut errs =
                 vec!["cannot emit schematic: a component law is invalid".to_string()];
             errs.extend(netlist.law_errors.iter().map(|e| format!("  {}", e)));
-            return Err(errs);
+            return Some(errs);
         }
         // 2026-09-22 (whole-bus equality): a mismatched bus length is a hard
         // error — the buses must agree element-wise.
@@ -213,7 +220,7 @@ impl ElectronicsBackend {
             let mut errs =
                 vec!["cannot emit schematic: a whole-bus equality is malformed".to_string()];
             errs.extend(netlist.bus_errors.iter().map(|e| format!("  {}", e)));
-            return Err(errs);
+            return Some(errs);
         }
         // 2026-09-11 (B4): voltage/current proving — shorted supplies,
         // over-voltage into rated pins, undeclared unrated pins, and
@@ -223,19 +230,75 @@ impl ElectronicsBackend {
                 "cannot emit schematic: the electrical contracts are violated".to_string(),
             ];
             errs.extend(netlist.voltage.violations.iter().map(|v| format!("  {}", v)));
+            return Some(errs);
+        }
+        None
+    }
+
+    pub fn generate(netlist: &ElectronicsNetlist) -> Result<String, Vec<String>> {
+        // 2026-09-22 (Slice B): participation warnings are NOT errors — a
+        // populated short or an undeclared participation name is surfaced
+        // as a note; the board still emits.
+        for w in &netlist.participation_warnings {
+            eprintln!("note: {}", w);
+        }
+        if let Some(errs) = Self::emission_refusals(netlist) {
             return Err(errs);
         }
 
         let mut components = netlist.components.clone();
         components.sort_by(|a, b| a.name.cmp(&b.name));
 
+        // 2026-09-25 (E6): rail-classified nets (a pin whose class declares
+        // `spec Supply`/`spec Return`) emit a KiCad power symbol named by
+        // the net's declared/derived label — ERC-grade supply recognition.
+        let power_names = Self::net_power_names(netlist);
+
         let mut out = String::new();
         Self::emit_header(&mut out);
-        Self::emit_symbol_library(netlist, &components, &mut out);
+        Self::emit_symbol_library(netlist, &components, &power_names, &mut out);
         let pin_xy = Self::emit_instances(netlist, &components, &mut out);
-        Self::emit_all_nets(netlist, &pin_xy, &mut out);
+        Self::emit_all_nets(netlist, &pin_xy, &power_names, &mut out);
         out.push_str(")\n");
         Ok(out)
+    }
+
+    /// Per-net power-symbol names (index-aligned to `netlist.nets`): a net
+    /// touching a supply- or return-class pin gets ONE, named by the net's
+    /// label — the author's declared `net<>`/`stdnet<>` spelling, else the
+    /// physics-derived `GND`/`V{volts}`. The name is never a net-name guess
+    /// (Rule 15): it is the same declared vocabulary the label path uses.
+    fn net_power_names(netlist: &ElectronicsNetlist) -> Vec<Option<String>> {
+        let inst_to_type: std::collections::BTreeMap<&str, &str> = netlist
+            .components
+            .iter()
+            .map(|c| (c.name.as_str(), c.type_name.as_str()))
+            .collect();
+        netlist
+            .nets
+            .iter()
+            .map(|net| {
+                let is_rail = net.pins.iter().any(|p| {
+                    let info = inst_to_type
+                        .get(p.component.as_str())
+                        .and_then(|ty| netlist.type_info.get(*ty));
+                    let idx = info
+                        .and_then(|i| i.pins.iter().position(|(n, _)| n == &p.pin));
+                    match (info, idx) {
+                        (Some(i), Some(ix)) => i
+                            .pin_classes
+                            .get(ix)
+                            .map_or(false, |c| c.supply || c.return_pin),
+                        _ => false,
+                    }
+                });
+                if is_rail {
+                    Some(Self::net_label(netlist, net))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Emit the assembly BOM as CSV — one row per populated part, in the
@@ -277,9 +340,12 @@ impl ElectronicsBackend {
         }
     }
 
-    /// lib_symbols: one generic symbol per distinct component TYPE, in
-    /// first-appearance order of the sorted instance list (deterministic).
-    fn emit_symbol_library(netlist: &ElectronicsNetlist, components: &[ComponentInstance], out: &mut String) {
+    fn emit_symbol_library(
+        netlist: &ElectronicsNetlist,
+        components: &[ComponentInstance],
+        power_names: &[Option<String>],
+        out: &mut String,
+    ) {
         out.push_str("  (lib_symbols\n");
         let mut lib_done: Vec<&str> = Vec::new();
         for comp in components {
@@ -298,6 +364,32 @@ impl ElectronicsBackend {
                 &info.pin_classes,
             );
             lib_done.push(&comp.type_name);
+        }
+        // 2026-09-25 (E6): one power library symbol per distinct rail name,
+        // sorted — its single power_in pin is what KiCad's ERC reads as
+        // supply recognition. Sorted for deterministic output.
+        let mut distinct: Vec<&str> = power_names.iter().filter_map(|p| p.as_deref()).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        for name in distinct {
+            out.push_str(&format!(
+                "    (symbol \"power:{}\" (power) (in_bom yes) (on_board yes)\n",
+                name
+            ));
+            out.push_str(
+                "      (property \"Reference\" \"#PWR\" (at 0 0 0) (effects (font (size 1.27 1.27)) hide yes))\n",
+            );
+            out.push_str(&format!(
+                "      (property \"Value\" \"{}\" (at 0 -3.81 0) (effects (font (size 1.27 1.27))))\n",
+                name
+            ));
+            out.push_str(&format!("      (symbol \"{}_1_1\"\n", name));
+            out.push_str(&format!(
+                "        (pin power_in line (at 0 0 90) (length 2.54) (name \"{}\" (effects (font (size 1.27 1.27)))) (number \"1\" (effects (font (size 1.27 1.27)))))\n",
+                name
+            ));
+            out.push_str("      )\n");
+            out.push_str("    )\n");
         }
         out.push_str("  )\n\n");
     }
@@ -361,13 +453,19 @@ impl ElectronicsBackend {
     }
 
     /// Wires + labels: each net is a chain of its member pins in placement
-    /// order — L-shaped hops through the inter-column channel.
+    /// order — L-shaped hops through the inter-column channel. Rail nets
+    /// (E6) carry a power symbol instead of a label: the chain gains the
+    /// symbol's pin point (topmost member − 5.08, matching
+    /// `emit_power_symbol`), and the label is suppressed — the symbol's
+    /// value names the net.
     fn emit_all_nets(
         netlist: &ElectronicsNetlist,
         pin_xy: &[(String, String, f64, f64)],
+        power_names: &[Option<String>],
         out: &mut String,
     ) {
-        for net in &netlist.nets {
+        let mut pwr_no = 0usize;
+        for (i, net) in netlist.nets.iter().enumerate() {
             let mut pts: Vec<(f64, f64)> = Vec::new();
             for p in &net.pins {
                 if let Some(&(_, _, x, y)) =
@@ -377,8 +475,67 @@ impl ElectronicsBackend {
                 }
             }
             let label = Self::net_label(netlist, net);
-            Self::emit_net(out, net, &pts, &label);
+            let symbol_pt = power_names[i].as_ref().and_then(|_| {
+                // Topmost member, same sort emit_net applies.
+                let mut sorted = pts.clone();
+                sorted.sort_by(|a, b| {
+                    a.1.partial_cmp(&b.1).unwrap().then(a.0.partial_cmp(&b.0).unwrap())
+                });
+                sorted.first().map(|&(x, y)| (x, y - 5.08))
+            });
+            // 2026-09-25 (E6): the symbol instance rides the same net
+            // iteration as its wire chain — no separate nested pass.
+            if let (Some(name), Some((sx, sy))) = (&power_names[i], symbol_pt) {
+                pwr_no += 1;
+                Self::emit_power_symbol(
+                    out,
+                    &PowerPlacement { name, net_index: i, pwr_no, sx, sy },
+                );
+            }
+            Self::emit_net(out, net, &pts, &label, symbol_pt);
         }
+    }
+
+    /// One power-symbol instance (loop-free): `lib_id "power:<name>"`,
+    /// sequential `#PWR` reference, its pin one hop above the net's
+    /// topmost member point — exactly the point the wire chain gains.
+    fn emit_power_symbol(out: &mut String, p: &PowerPlacement) {
+        let reference = format!("#PWR{:02}", p.pwr_no);
+        out.push_str(&format!(
+            "  (symbol (lib_id \"power:{}\") (at {} {} 0) (unit 1)\n",
+            p.name,
+            coord(p.sx),
+            coord(p.sy)
+        ));
+        out.push_str("    (in_bom yes) (on_board yes)\n");
+        out.push_str(&format!(
+            "    (uuid \"{}\")\n",
+            Self::uuid(&format!("pwr:{}", p.net_index))
+        ));
+        out.push_str(&format!(
+            "    (property \"Reference\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) hide yes))\n",
+            reference,
+            coord(p.sx),
+            coord(p.sy)
+        ));
+        out.push_str(&format!(
+            "    (property \"Value\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27))))\n",
+            p.name,
+            coord(p.sx),
+            coord(p.sy + 3.81)
+        ));
+        out.push_str(&format!(
+            "    (pin \"1\" (uuid \"{}\"))\n",
+            Self::uuid(&format!("pwrpin:{}", p.net_index))
+        ));
+        out.push_str("    (instances (project briev\n");
+        out.push_str(&format!(
+            "      (path \"/{}\" (reference \"{}\") (unit 1))\n",
+            Self::uuid("sheet"),
+            reference
+        ));
+        out.push_str("    ))\n");
+        out.push_str("  )\n");
     }
 
     /// The readable schematic label for a net — derived from WHAT the net
@@ -563,12 +720,23 @@ impl ElectronicsBackend {
         out.push_str("  )\n");
     }
 
-    fn emit_net(out: &mut String, net: &crate::analysis::electronics::Net, pts: &[(f64, f64)], label: &str) {
-        if pts.len() < 2 {
+    fn emit_net(
+        out: &mut String,
+        net: &crate::analysis::electronics::Net,
+        pts: &[(f64, f64)],
+        label: &str,
+        symbol_pt: Option<(f64, f64)>,
+    ) {
+        // 2026-09-25 (E6): the power symbol's pin joins the chain first —
+        // it sits above the topmost member, so it sorts first.
+        let mut ordered: Vec<(f64, f64)> = pts.to_vec();
+        if let Some(sp) = symbol_pt {
+            ordered.push(sp);
+        }
+        if ordered.len() < 2 {
             return;
         }
         // L-shaped hops between consecutive members (top-down placement).
-        let mut ordered: Vec<(f64, f64)> = pts.to_vec();
         ordered.sort_by(|a, b| {
             a.1.partial_cmp(&b.1)
                 .unwrap()
@@ -597,15 +765,18 @@ impl ElectronicsBackend {
                 ));
             }
         }
-        // One net label at the topmost member.
-        let (x, y) = ordered[0];
-        out.push_str(&format!(
-            "  (label \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) (justify (left bottom))) (uuid \"{}\"))\n",
-            label,
-            coord(x + 1.27),
-            coord(y),
-            Self::uuid(&format!("label:{}:{}:{}", label, coord(x), coord(y)))
-        ));
+        // One net label at the topmost member — skipped when a power symbol
+        // names the net (E6): two names on one net would fight in KiCad.
+        if symbol_pt.is_none() {
+            let (x, y) = ordered[0];
+            out.push_str(&format!(
+                "  (label \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) (justify (left bottom))) (uuid \"{}\"))\n",
+                label,
+                coord(x + 1.27),
+                coord(y),
+                Self::uuid(&format!("label:{}:{}:{}", label, coord(x), coord(y)))
+            ));
+        }
     }
 
     /// Emit the `.kicad_pcb` board when the program carries a `fab`
@@ -976,6 +1147,49 @@ mod tests {
     }
 
     #[test]
+    fn rail_nets_get_power_symbols_plain_nets_keep_labels() {
+        // 2026-09-25 (E6): a net touching a supply/return-class pin emits a
+        // power symbol (lib entry + instance) named by the net's declared or
+        // derived label, and the plain label is suppressed. Unclassed nets
+        // are untouched. The symbol's pin point joins the wire chain.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Led { pin a; pin k; reference "D"; spec Tolerance: any; };
+            type Reg { pin vin: Power; pin vout: Power; pin gnd: Ground; reference "U"; spec Tolerance: any; };
+
+            let j1: Reg = Reg { value: "ldo" };
+            let d1: Led = Led { value: "red" };
+
+            txn powered
+                [j1.vin.voltage == j1.vout.voltage && j1.vout.voltage == d1.a.voltage && d1.k.voltage == j1.gnd.voltage]
+                [d1.k.voltage == j1.gnd.voltage]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        let sch = ElectronicsBackend::generate(&nl).unwrap();
+
+        // Two rail nets: the supply net (vin=vout=led.a) and the return.
+        // The return is GND (class-derived); the supply nets have no derived
+        // voltage here, so they keep their structural names.
+        assert!(sch.contains("(symbol \"power:GND\" (power)"), "{sch}");
+        assert_eq!(sch.matches("(power)").count(), 2, "two power lib entries: {sch}");
+        assert!(sch.contains("(lib_id \"power:GND\")"), "{sch}");
+        assert!(sch.contains("\"#PWR01\"") && sch.contains("\"#PWR02\""), "{sch}");
+        // The label is replaced by the symbol on rail nets.
+        assert!(
+            !sch.contains("(label \"GND\""),
+            "GND label must be replaced by the power symbol: {sch}"
+        );
+
+        // Unclassed nets (LED_CIRCUIT): labels stay, no power machinery.
+        let plain = ElectronicsBackend::generate(&netlist_of(LED_CIRCUIT)).unwrap();
+        assert_eq!(plain.matches("(power)").count(), 0, "{plain}");
+        assert!(plain.contains("(label \"N1\""), "{plain}");
+    }
+
+    #[test]
     fn bom_defaults_and_escapes_csv_fields() {
         // A missing value falls back to the type name (same default as the
         // schematic); a value with a comma is RFC-4180 quoted.
@@ -1276,7 +1490,11 @@ mod tests {
             unique.len(),
             "duplicate instance references: {refs:?}"
         );
-        assert_eq!(refs.len(), 14, "one ref per part: {refs:?}");
+        assert_eq!(
+            refs.len(),
+            17,
+            "one ref per part + one #PWR per rail net (GND, VBUS, +3V3): {refs:?}"
+        );
     }
 
     #[test]

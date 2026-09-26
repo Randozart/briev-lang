@@ -145,6 +145,17 @@ track below.
 - **Effort:** S
 
 ### E6 — No power symbols (rails as labeled wires)
+- **Status:** CLOSED 2026-09-25 — rail-classified nets (a pin whose
+  class declares `spec Supply`/`spec Return`) emit a KiCad power
+  symbol instead of a wire label: one `power:<Name>` library entry per
+  distinct rail name (sorted, deduped), one `#PWR`-numbered instance
+  per rail net, the symbol's pin joining the wire chain one hop above
+  the topmost member. The name is the net's existing declared/derived
+  label — the author's `net<>`/`stdnet<>` spelling (`VBUS`, `+3V3`),
+  else `GND`/`V{volts}` — never a name inference (Rule 15).
+  Classification is the E12/E13 class machinery (`spec Supply`,
+  `spec Return`), not net names. KiCad ERC recognition remains the
+  manual vendor gate.
 - **Evidence:** `emit_net` (`:356`) emits wire + `label` only.
 - **Blocks:** ERC-grade supply recognition; readability of rail-heavy sheets.
 - **General fix:** power-symbol emission for supply-classified nets.
