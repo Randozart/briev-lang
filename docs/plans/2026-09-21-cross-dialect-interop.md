@@ -101,18 +101,9 @@ import form (two forms for one fact is the `Mmio#` mistake).
 
 ## Waves
 
-- **Wave 1 — provenance + first edge**: resolver classifies resolved
-  imports by dialect (`classify()` exists in conformance.rs), tags spliced
-  items with per-module SourceKind (the missing data structure);
-  per-module extension-keyed semantics (accel default, profiles, prelude
-  filtering) apply per imported module, not root-only; fix the stale
-  `.ebv` error text. **Name-collision rule: a `.bv` and an `.abv` both
-  exporting `kernel` is an ERROR or forces aliasing — silent last-wins
-  across dialects is a correctness trap.** Formalize `.rbv`→`.bv`.
-- **Wave 2 — the static pair + runtime pairs**: `.sbv`→`.ebv` projection
-  (the headline case); declare `.bv`↔`.abv` and `.bv`↔`.sbv`.
-- **Wave 3 — derivation**: transitive bridges + synthesized bridge nodes;
-  diagnostics name the first failing hop with the fix.
+- **Wave 1 — provenance + first edge — DONE 2026-09-26** (C0–C5, `docs/plans/2026-09-25-interop-wave1.md`): resolver classifies resolved imports by dialect and tags spliced items with per-module provenance (C1, `ModuleRecord`/`item_origins`); truthful extension dispatch + the real `.ebv` import candidate (C2, extension-less search `.bv`→`.ebv`, per-kind parse); per-module dialect semantics (C3, `plugin_factory` + `run_module_prelude`); the cross-dialect collision rule (C4, pre-dedup gate, order-dependent shadowing retired, SPEC §7.2); and the `.rbv`→`.bv` first DECLARED edge (C5, row 1 above, corpus `examples/view-bind-edge.rbv`). C6 (SPEC §7, `glue-ffi.md`, wave status rows) lands with the same arc.
+- **Wave 2 — the static pair + runtime pairs**: `.sbv`→`.ebv` projection (the headline case); declare `.bv`↔`.abv` and `.bv`↔`.sbv`.
+- **Wave 3 — derivation**: transitive bridges + synthesized bridge nodes; diagnostics name the first failing hop with the fix.
 
 ## Queue position
 

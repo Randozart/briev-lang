@@ -303,10 +303,30 @@ analyze them) plus a 3-line test-anchor edit in `backend/electronics/mod.rs`
 
 ## C6 — Docs (same arc)
 
-SPEC §7 (resolution order, `.ebv` candidates, collision rule, `as`),
-`glue-ffi.md` (provenance + collision behavior), interop plan wave-1
-status rows. AGENTS.md e14a exclusion line: left alone for now (branch
-still live; manual edit deferred by owner).
+**DONE 2026-09-26.** The documentation arc that closes Wave 1.
+
+- **SPEC §7** — §7.1 gains the extension-search rules (extension-less
+  searches `.bv`→`.ebv`; explicit known code extensions search only that
+  extension; the not-found diagnostic names exactly what it searched; data
+  and asset files are not code imports). §7.2 carries the collision rule +
+  no-overload invariant (landed in C4). New §7.5 (per-module dialect
+  semantics): each imported module runs its own dialect's Parsed-stage
+  prelude (`.ebv` → electronics, `.bv` → native), a `.rbv` module contributes
+  only its Briev remainder, profile flags are read from the module's own
+  path, and `std/…` specifiers skip the prelude (they are the prelude's
+  content). Provenance (every item carries its module of origin; the root's
+  don't) is stated here and referenced by the §7.2 gate.
+- **`glue-ffi.md` §4.3** — cross-module provenance + the pre-dedup collision
+  gate, with the bridge-modules-are-not-exempt note and a worked `CStr`
+  example (name-keyed, no overloading).
+- **Interop plan** — the per-pair table row 1 is now DECLARED (C5) and the
+  Waves section marks Wave 1 DONE (C0–C5) with a pointer to this plan.
+- **AGENTS.md e14a exclusion line** — left alone (branch still live; manual
+  edit deferred by owner).
+
+**Verification**: docs-only commit (SPEC, `glue-ffi.md`, both plans) — no
+Rust changed, so no Praetor/cargo gate; conformance sweep and `cargo test
+--lib` remain green (2695/0 from C5).
 
 ## Verification per commit
 
