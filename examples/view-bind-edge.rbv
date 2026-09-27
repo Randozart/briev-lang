@@ -1,0 +1,33 @@
+// view-bind-edge.rbv — the .rbv -> .bv declared edge (interop Wave 1, C5)
+//
+// The view is a binding SURFACE onto the .bv spine, not a second program:
+// every directive resolves to an ordinary host signal and the browser
+// write path routes back through the reactor's single-writer txn.
+//
+// Read binding: b-text observes the root signal `greeting` — the field
+// stays live (its slot is kept for the txn's flush) and the browser
+// renders it.
+//
+// Write-routed binding: b-bind writes `greeting` — routed to the UNIQUE
+// user writer txn `set_greeting` (compiler-generated resets excluded),
+// which is why the field's contract is the write contract: [true][greeting
+// == new_greeting].
+
+let greeting: String = "hello";
+
+txn set_greeting(new_greeting: String) [true][greeting == new_greeting] {
+    greeting = new_greeting;
+    term;
+};
+
+<view>
+    <div class="greeting-box">
+        <p>Read: <span b-text="greeting">hello</span></p>
+        <input type="text" b-bind:value="greeting" />
+    </div>
+</view>
+
+<style>
+.greeting-box { padding: 20px; font-family: sans-serif; }
+input { padding: 8px; font-size: 16px; }
+</style>

@@ -287,12 +287,19 @@ analyze them) plus a 3-line test-anchor edit in `backend/electronics/mod.rs`
 
 ## C5 — `.rbv`→`.bv` declared edge (item 5)
 
+**DONE 2026-09-26.** The first declared edge, committed.
+
 - Interop plan edge-registry table; row 1: `.rbv`→`.bv` — same-file binding
   surface `b-bind`, write-contract routing = single-writer proof
   (`pipeline.rs:586-657`), view keeps targets live (`:574-579`).
-- Corpus: `examples/` example exercising one read binding + one
-  write-routed binding; sweep picks it up.
-- Test: `test_rbv_edge_declared_surface` (frontend_check on the example).
+- Corpus: `examples/view-bind-edge.rbv` — one READ binding (`b-text` observes
+  the root signal) + one WRITE-routed binding (`b-bind` routes to the unique
+  user-writer txn `set_greeting`, single-writer proof); the conformance sweep
+  picks it up (active source, `.rbv` → `Rendered`, `conformance.rs:178`).
+- Test: `test_rbv_edge_declared_surface` (`import_resolver.rs`) — the example
+  passes the same frontend check the conformance sweep runs: the `.rbv`'s
+  Briev remainder parses, the write binding's target stays live for the txn's
+  write + flush, and the single-writer route resolves.
 
 ## C6 — Docs (same arc)
 

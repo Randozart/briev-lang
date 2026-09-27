@@ -92,7 +92,7 @@ import form (two forms for one fact is the `Mmio#` mistake).
 
 | Pair | Status |
 |---|---|
-| `.rbv`→`.bv` | exists informally (view bindings + write-contract routing) — formalize as the FIRST declared edge |
+| `.rbv`→`.bv` | **DECLARED (2026-09-26, Wave 1 C5)** — the first declared edge. View = a binding surface onto the .bv spine: `b-text`/`b-when`/`b-class` READ the root signal (the field stays live for the txn's flush, `view_root_signals`, `pipeline.rs:578`); `b-bind` WRITEs, routed to the unique user-writer txn (single-writer proof, `resolve_bind_routes`, `pipeline.rs:611`; compiler-generated resets excluded). Corpus: `examples/view-bind-edge.rbv` (one read + one write-routed binding; the conformance sweep picks it up). Test: `test_rbv_edge_declared_surface` (`import_resolver.rs`). |
 | `.bv`↔`.abv` | exists (accel mixed lane, kernel↔state, `.abv` GPU-only charter) — declare it |
 | `.bv`↔`.sbv` | half-exists (MMIO `@addr` on the shared AST, board packs) — formalize port↔state-region |
 | `.sbv`→`.ebv` | NEW — the structural projection: silicon module → electronics COMPONENT; ports → pins (direction map); port contracts → electrical constraints (`reference`/`tolerance` clauses exist in `.ebv` Volt); emits hierarchical KiCad symbol/sheet. Purest pair: both static, neither executes |

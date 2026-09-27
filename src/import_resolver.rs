@@ -2756,4 +2756,23 @@ fn test_dbv_import_rejected() {
             result
         );
     }
+
+    // ── Wave 1 C5: the .rbv → .bv declared edge ───────────────────────
+
+    /// The `.rbv` → `.bv` edge (interop plan row 1) is DECLARED, not derived:
+    /// a view is a binding surface onto the .bv spine. The corpus example
+    /// (`examples/view-bind-edge.rbv`) exercises both directions — a READ
+    /// binding (`b-text` observes the root signal) and a WRITE-routed
+    /// binding (`b-bind` routes to the unique user-writer txn) — and must
+    /// pass the same frontend check the conformance sweep runs: the .rbv's
+    /// Briev remainder parses, the write binding's target stays live for the
+    /// txn's write + flush, and the single-writer route resolves.
+    #[test]
+    fn test_rbv_edge_declared_surface() {
+        let example = "examples/view-bind-edge.rbv";
+        let src = std::fs::read_to_string(example)
+            .unwrap_or_else(|e| panic!("missing corpus example {example}: {e}"));
+        crate::pipeline::check_source_for(example, &src, None)
+            .unwrap_or_else(|e| panic!("{example} failed the declared-edge check: {e}"));
+    }
 }
