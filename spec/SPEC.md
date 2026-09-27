@@ -755,6 +755,8 @@ There is no overloading: the unqualified namespace holds one declaration per nam
 
 Glob imports are invalid.
 
+> **2026-09-27 (import aliases).** An import alias (`import board: "fpga.sbv";`) names the module's projected interface instance; access through it is ordinary member access on a compiler-synthesized object. No dialect projects an interface instance yet, so today the alias records provenance only. Instance-shaped modules (`.sbv` port surfaces, `.abv` buffer surfaces) will require the alias — a bare import grafts declarations only, and an instance surface has none to graft. There is no qualified-access operator and no second import grammar; `=` is never an import form.
+
 ### 7.3 Visibility and re-export
 
 Ordinary imports are private to the importing module.

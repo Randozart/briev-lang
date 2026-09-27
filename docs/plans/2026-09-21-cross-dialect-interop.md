@@ -71,6 +71,14 @@ projections — nothing runs. A `// bridge: <relation>` annotation is the
 reserved escape hatch if a default relation is ever wrong — NOT a second
 import form (two forms for one fact is the `Mmio#` mistake).
 
+> **2026-09-27 (amendment — user decision).** The `board = "fpga.sbv"` and
+> `{core} = ` sketches above are SUPERSEDED: the shipped `:` alias grammar
+> carries the entire load (`import board: "fpga.sbv";`). The alias names the
+> module's projected interface instance; access through it is ordinary
+> member access on a compiler-synthesized object. No `=`, no qualified-access
+> operator, no dialect keywords, no namespace blocks. Full decision, examples,
+> and phasing: `2026-09-25-sbv-ebv-bridge.md` §"Syntax decision".
+
 ## The three mechanism tiers
 
 - **Owned by the compiler (eternal)**: provenance tagging; the

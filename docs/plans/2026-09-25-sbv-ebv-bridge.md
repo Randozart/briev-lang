@@ -13,6 +13,96 @@ SPEC §8.6 (structural trait conformance is THE semantics; explicit
 assertion = intent + diagnostics), SPEC §8.7 (semantic categories;
 crossing = at most one explicitly declared edge).
 
+## Syntax decision (2026-09-27): the import alias is the instance binding
+
+User decision, amending the 2026-09-21 plan's `import board = "fpga.sbv"`
+sketch (that section carries a dated note pointing here). The shipped `:`
+alias grammar carries the entire load — no `=`, no qualified-access
+operator, no dialect keywords, no namespace blocks:
+
+> **Alias when the module has an interface instance (state-shaped). Bare
+> import when it has only declarations.**
+
+`:` keeps its one meaning — "local name : source name" — extended to name
+the module's PROJECTED INTERFACE INSTANCE for instance-shaped dialects;
+access through it is ordinary member access (`.`) on a compiler-synthesized
+ordinary object. No new name-resolution machinery: the synthesis emits
+`obj` items, and everything after the alias is member access Briev
+already has. The synthesized object is DISCLOSED
+(`synthesized: port→state region for 'board' (fpga.sbv)`), per the
+2026-09-21 plan's artificial-driver constraints.
+
+Consumer grammar (every token shipped today; only `board.*`'s MEANING is
+new, and only for instance-shaped modules):
+
+```briev
+import board: "fpga.sbv";            // alias = the projected instance
+
+let booted: Bool = false;
+
+node boot [!booted][booted] {        // node form: SPEC §9.4
+    board.core.leds = 0x5A;          // ordinary member write → MMIO volatile store
+    booted = true;
+    term;
+};
+```
+
+What the compiler synthesizes from the declared port table (ordinary `obj`
+grammar — this is the expressiveness-closure proof: the compiler's optimum
+is expressible as ordinary objects):
+
+```briev
+// synthesized (disclosed) — ordinary obj grammar
+obj BoardFpga {
+    core: BoardCore;
+    ram:  BoardRam;
+};
+obj BoardCore {
+    leds: UInt8;                     // slot layout from the declared table; leds → @addr
+};
+obj BoardRam {
+    clk:  Bool;
+};
+```
+
+Scaling property (why not flat selective imports): two modules exporting
+the same port name coexist under aliases with no C4 collision
+(`a.clk` ≠ `b.clk`), while flat imports force a rename on every side:
+
+```briev
+import a: "core.sbv";
+import b: "ram.sbv";                 // both export `clk` — fine: a.clk ≠ b.clk
+```
+
+Instance-shaped module with a BARE import — an honest gate (the 2026-09-21
+plan's "imported interface points surface as ordinary host things" made
+explicit):
+
+```briev
+import "fpga.sbv";
+// error: 'fpga.sbv' projects an interface instance (2 ports). Bind it with an
+// alias: `import board: "fpga.sbv";` — bare import grafts declarations only,
+// and a port module has none to graft.
+```
+
+Never (the `Mmio#` mistake class — two forms for one fact):
+
+```briev
+import board = "fpga.sbv";           // ✗ `=` is assignment load — second grammar
+board.leds@0x400000 = x;             // ✗ no per-use address syntax — the table owns addresses
+import silicon board from "fpga.sbv";// ✗ no dialect keywords
+module fpga { ... }                  // ✗ no namespace blocks — the alias IS the namespace
+```
+
+**Phasing.** The static pair (`.sbv`→`.ebv`, this wave) needs NO alias —
+a die grafts as a component, declarations only, C4-gated like any graft.
+The instance binding lands with the RUNTIME pairs (Wave 2b: `.bv`↔`.sbv`
+ports→state, `.bv`↔`.abv` buffers): alias + instance-shaped module →
+synthesize projected obj items from the declared table, bind the alias as
+the instance name. Until then the alias records provenance only (SPEC
+§7.2 note, same date). Tests at 2b: `test_alias_binds_projected_instance`,
+`test_qualified_ports_coexist`, `test_unaliased_instance_module_is_error`.
+
 ## The domain split (why this edge is different)
 
 - Computational family — `.bv` `.dbv` `.abv` `.rbv`: one device, one
