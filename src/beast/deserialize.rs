@@ -170,6 +170,7 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
                                 name: sexpr_str(&pp[1])?.to_string(),
                                 number: num,
                                 class_ref,
+                                unit: None,
                                 span: None,
                             });
                         }

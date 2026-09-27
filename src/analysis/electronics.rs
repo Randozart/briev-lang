@@ -85,6 +85,14 @@ pub struct TypeInfo {
     /// 2026-09-24 (SPST modes): declared named modes, sorted by declaration.
     /// Empty for purely guarded-law components.
     pub modes: Vec<String>,
+    /// 2026-09-27 (E4): the symbol unit each pin belongs to, index-aligned
+    /// to `pins` (the pin's `unit` clause, or the type's single default
+    /// unit name — the type name uppercased — when no `unit` clauses exist).
+    pub pin_units: Vec<String>,
+    /// 2026-09-27 (E4): the unit blocks in first-seen declaration order —
+    /// unit name → pin indices into `pins` (declaration order within the
+    /// unit). A type with no `unit` clauses is a single group.
+    pub unit_groups: Vec<(String, Vec<usize>)>,
 }
 
 /// One derived electrical node.
@@ -940,6 +948,42 @@ fn collect_type_pins(
                     .filter_map(|p| p.class_ref.as_deref().map(|c| (p.name.as_str(), c)))
                     .collect();
                 let mut pin_classes = Vec::with_capacity(pins.len());
+                let mut pin_units: Vec<String> = Vec::with_capacity(pins.len());
+                // 2026-09-27 (E4, D2): unit blocks in first-seen declaration
+                // order. The declaration-order pin list carries each pin's
+                // `unit` clause; a pin with none belongs to the default unit
+                // (the type name uppercased). Pins are re-sorted by number
+                // above, so the unit GROUPS keep declaration order while the
+                // per-pin `pin_units` map follows the sorted `pins` index.
+                let default_unit = td
+                    .name
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_else(|| "U".to_string());
+                let mut unit_order: Vec<String> = Vec::new();
+                let mut unit_members: std::collections::BTreeMap<String, Vec<usize>> =
+                    std::collections::BTreeMap::new();
+                for (decl_idx, pd) in td.body.pins.iter().enumerate() {
+                    let u = pd
+                        .unit
+                        .clone()
+                        .unwrap_or_else(|| default_unit.clone());
+                    if !unit_order.contains(&u) {
+                        unit_order.push(u.clone());
+                    }
+                    unit_members.entry(u).or_default().push(decl_idx);
+                }
+                let unit_groups: Vec<(String, Vec<usize>)> = unit_order
+                    .iter()
+                    .map(|u| {
+                        (
+                            u.clone(),
+                            // declaration-order indices into td.body.pins
+                            unit_members.get(u).unwrap().clone(),
+                        )
+                    })
+                    .collect();
                 for (pname, _) in &pins {
                     pin_classes.push(resolve_pin_class_props(
                         pname,
@@ -948,6 +992,14 @@ fn collect_type_pins(
                         td,
                         &mut class_errors,
                     ));
+                    pin_units.push(
+                        td.body
+                            .pins
+                            .iter()
+                            .find(|pd| pd.name == *pname)
+                            .and_then(|pd| pd.unit.clone())
+                            .unwrap_or_else(|| default_unit.clone()),
+                    );
                 }
                 let spec_defaults = td
                     .body
@@ -974,7 +1026,7 @@ fn collect_type_pins(
                 );
                 info.insert(
                     td.name.clone(),
-                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty() || !td.body.modes.is_empty(), spec_defaults, bistable, modes: td.body.modes.iter().map(|m| m.name.clone()).collect() },
+                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty() || !td.body.modes.is_empty(), spec_defaults, bistable, modes: td.body.modes.iter().map(|m| m.name.clone()).collect(), pin_units, unit_groups },
                 );
             }
         }
@@ -6835,6 +6887,64 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let items = p.parse_program().unwrap();
         derive_netlist(&items)
+    }
+
+    #[test]
+    fn multi_unit_type_groups_pins_by_first_seen_unit() {
+        // 2026-09-27 (E4, slice 1): a 5-pin op-amp declares two signal units
+        // (A: in-/in+/out, B: inB-/inB+/outB); the first-seen order fixes the
+        // unit numbers, and the per-pin `pin_units` map follows the sorted
+        // `pins` index.
+        let src = r#"
+            type OpAmp {
+                pin in_a = 1 unit A; pin in_b = 2 unit A; pin o = 3 unit A;
+                pin in_c = 4 unit B; pin in_d = 5 unit B;
+                reference "U"; spec Tolerance: any;
+            };
+        "#;
+        let nl = analyze(src);
+        let ti = nl.type_info.get("OpAmp").unwrap();
+        assert_eq!(ti.unit_groups.len(), 2, "{:?}", ti.unit_groups);
+        assert_eq!(ti.unit_groups[0].0, "A");
+        assert_eq!(ti.unit_groups[1].0, "B");
+        // `pins` is sorted by KiCad number (1..5); pin_units is index-aligned:
+        // pin number 1 → unit A, pin number 4 → unit B.
+        for (i, (pname, _)) in ti.pins.iter().enumerate() {
+            let expected = if pname == "in_a" || pname == "in_b" || pname == "o" {
+                "A"
+            } else {
+                "B"
+            };
+            assert_eq!(ti.pin_units[i], expected, "pin {} misassigned", pname);
+        }
+    }
+
+    #[test]
+    fn single_unit_type_keeps_one_default_group() {
+        // E4 slice 1: a type with no `unit` clauses is one group, named by
+        // the type's first letter — existing single-unit output unchanged.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+        "#;
+        let nl = analyze(src);
+        let ti = nl.type_info.get("Resistor").unwrap();
+        assert_eq!(ti.unit_groups.len(), 1, "{:?}", ti.unit_groups);
+        assert_eq!(ti.unit_groups[0].0, "R");
+        assert_eq!(ti.unit_groups[0].1.len(), 2);
+        assert_eq!(ti.pin_units.len(), 2);
+        assert!(ti.pin_units.iter().all(|u| u == "R"));
+    }
+
+    #[test]
+    fn duplicate_unit_on_one_pin_is_a_parse_error() {
+        // E4 slice 1: `unit` at most once per pin — the second names the fix.
+        let src = r#"
+            type OpAmp { pin in_a = 1 unit A unit B; reference "U"; };
+        "#;
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let res = p.parse_program();
+        assert!(res.is_err(), "expected a parse error");
     }
 
     const LED_CIRCUIT: &str = r#"

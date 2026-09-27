@@ -1199,6 +1199,9 @@ pub struct PinDecl {
     pub name: String,
     pub number: u64,
     pub class_ref: Option<String>,
+    /// 2026-09-27 (E4): the symbol unit this pin belongs to (`unit A`).
+    /// None = the type's single default unit.
+    pub unit: Option<String>,
     pub span: Option<Span>,
 }
 

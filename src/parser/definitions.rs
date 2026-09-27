@@ -2997,11 +2997,41 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// `pin <name>[[<count>]] [':' <TypeName>] ['=' <int>] [':' <TypeName>];`
+    /// `unit <name>` — the symbol-unit half of a pin clause (E4). Legal
+    /// after the number and class, at most once. The unit NAME is stored
+    /// verbatim: grouping into unit blocks happens in analysis (D2 — first-
+    /// seen order), and the emitter never knows a part vocabulary (Rule 15).
+    fn parse_pin_unit_ref(
+        &mut self,
+        pin_name: &str,
+        slot: &mut Option<String>,
+    ) -> Result<(), SyntaxError> {
+        if slot.is_some() {
+            return self.error_at_current(&format!(
+                "pin '{}' names two units — state one: `pin {} … unit <name>;`",
+                pin_name, pin_name
+            ));
+        }
+        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "unit") {
+            return self.error_at_current(&format!(
+                "expected a unit name after `unit`, pin '{}'",
+                pin_name
+            ));
+        }
+        self.pos += 1; // consume `unit`
+        let unit_name = self.expect_identifier()?;
+        *slot = Some(unit_name);
+        Ok(())
+    }
+
+    /// `pin <name>[[<count>]] [':' <TypeName>] ['=' <int>] [':' <TypeName>]
+    /// ['unit' <name>];`
     /// — first-class component pin. Auto-numbered pins continue after the
     /// highest explicit number (high-water rule). The class ascription
     /// (E12, design record D6) may sit on either side of the number:
-    /// `pin vbus: Power;`, `pin p1 = 1;`, `pin p1 = 1: Nc;`.
+    /// `pin vbus: Power;`, `pin p1 = 1;`, `pin p1 = 1: Nc;`. The symbol unit
+    /// (E4, design record D1) follows the number/class: `pin in+ = 1: In
+    /// unit A;`.
     ///
     /// 2026-09-21 (E11): `pin gpio[8]: Io;` declares an ARRAY of pins. The
     /// parser expands it eagerly into one PinDecl per element, named
@@ -3019,12 +3049,16 @@ impl<'a> Parser<'a> {
         let pin_name = self.expect_identifier()?;
         let count = self.parse_pin_count(&pin_name)?;
         let mut class_ref: Option<String> = None;
+        let mut unit: Option<String> = None;
         if self.eat(&Token::Colon) {
             self.parse_pin_class_ref(&pin_name, &mut class_ref)?;
         }
         let number = self.parse_pin_number(&pin_name, high_water)?;
         if self.eat(&Token::Colon) {
             self.parse_pin_class_ref(&pin_name, &mut class_ref)?;
+        }
+        if matches!(self.peek(), Some(Token::Identifier(s)) if s == "unit") {
+            self.parse_pin_unit_ref(&pin_name, &mut unit)?;
         }
         self.eat(&Token::Semicolon);
         if pins.iter().any(|p| p.name == pin_name) {
@@ -3046,6 +3080,7 @@ impl<'a> Parser<'a> {
                 name: element,
                 number: number + i,
                 class_ref: class_ref.clone(),
+                unit: unit.clone(),
                 span: None,
             });
         }
