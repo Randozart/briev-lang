@@ -1,17 +1,40 @@
-// ── Hardware Prelude — CIRCT / Cell Targets ──────────────────────────────
+// ── Hardware Prelude — Silicon (.sbv) Targets ───────────────────────────
 // 2026-07-21: Rewritten with direct AST navigation DSL.
 // 2026-07-23: Added Count$ check — Before$ on empty selection causes error.
-// Inserts hardware stdlib import before the first user import.
-// Used by .sbv files; provides Cell, Wire, Register, Bit.
+// 2026-09-27 (Wave 2 C0): the anchor referenced `std/hardware.bv`, which has
+// never existed — every `.sbv` file with an import failed resolution. Per
+// the bridge design record (2026-09-25, Layer 0), a die's boundary fields
+// are bare `let`s typed by the stdlib pin classes, so the prelude provides
+// `std/electronics.bv` (Power/Ground/In/Out/Io/IoOd and the component
+// vocabulary). Cell/Wire/Register/Bit hardware vocabulary lands as stdlib
+// data with the CIRCT backend work — never as a missing-file promise.
+// Fallbacks mirror prelude-electronics (E14a gate): a die with no imports
+// anchors on its first boundary field (`state` — the .beast variant name,
+// not the surface keyword) or, failing that, its first typedef. Both
+// fallbacks firing (fields AND types, no imports) double-splices
+// std/electronics.bv — same module id, identical dump: the C4 benign pair.
 
 $(Parsed @ highest) {
     let anchor = Tag$("import").First$();
     when anchor.Count$() > 0 {
         anchor.Before$()
-            .Insert$(Import$("std/hardware.bv"));
+            .Insert$(Import$("std/electronics.bv"));
     };
-    // No imports? Insert before the first non-import item, or skip.
+    // No imports? A die's boundary fields are file-scope `let`s — anchor
+    // there; class ascriptions must precede every use.
     when anchor.Count$() == 0 {
-        // Create a minimal result — no imports to insert before
+        let state_anchor = Tag$("state").First$();
+        when state_anchor.Count$() > 0 {
+            state_anchor.Before$()
+                .Insert$(Import$("std/electronics.bv"));
+        };
+    };
+    // No fields either? Class ascriptions also live inside typedefs.
+    when anchor.Count$() == 0 {
+        let type_anchor = Tag$("typedef").First$();
+        when type_anchor.Count$() > 0 {
+            type_anchor.Before$()
+                .Insert$(Import$("std/electronics.bv"));
+        };
     };
 };

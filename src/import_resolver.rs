@@ -2775,4 +2775,23 @@ fn test_dbv_import_rejected() {
         crate::pipeline::check_source_for(example, &src, None)
             .unwrap_or_else(|e| panic!("{example} failed the declared-edge check: {e}"));
     }
+
+    // ── Wave 2 C0: the die substrate ──────────────────────────────────
+
+    /// The `.sbv` substrate (bridge design record, Layer 0): a die's
+    /// file-scope bare `let`s ARE the boundary pins, typed by the stdlib
+    /// pin classes. Two things must hold: the `.sbv` prelude provides
+    /// `std/electronics.bv` WITHOUT an explicit import (the prelude's
+    /// state-anchored fallback — the pre-2026-09-27 anchor referenced
+    /// `std/hardware.bv`, a file that has never existed, so every `.sbv`
+    /// with an import failed resolution), and bare pin-class fields
+    /// typecheck as ordinary state declarations.
+    #[test]
+    fn test_sbv_die_boundary_fields_check() {
+        let example = "examples/silicon/sensor_die.sbv";
+        let src = std::fs::read_to_string(example)
+            .unwrap_or_else(|e| panic!("missing corpus example {example}: {e}"));
+        crate::pipeline::check_source_for(example, &src, None)
+            .unwrap_or_else(|e| panic!("{example} failed the die-substrate check: {e}"));
+    }
 }

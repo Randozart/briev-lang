@@ -21,6 +21,42 @@ is staged separately — pointer at the tail.
 
 ## C0 — Substrate verification
 
+**DONE 2026-09-27.** The die fixture (`examples/silicon/sensor_die.sbv`)
+checks clean: bare file-scope `let`s typed by pin classes typecheck as
+ordinary state declarations, and the `.sbv` prelude provides
+`std/electronics.bv` without an explicit import.
+
+**Defect found and fixed (the C0 reason this stage exists):** the `.sbv`
+prelude (`plugins/parsed/prelude-hw.bv`, dated 2026-07-21) anchored
+`Import$("std/hardware.bv")` — a file that has NEVER existed — so every
+`.sbv` file with an import failed resolution. No `.sbv` corpus file
+existed to catch it (this fixture is the first ever swept). Fix: the
+anchor now inserts `std/electronics.bv` — the bridge design record
+(Layer 0) builds dies on exactly those pin classes — with the E14a-gate
+fallback mirrored for import-less dies (anchored on the first `state`
+decl, `.beast` variant name per `beast/serialize.rs:134`, then typedef).
+The old "provides Cell, Wire, Register, Bit" comment was a promise the
+tree never kept; that vocabulary lands as stdlib data with the CIRCT
+backend work, never as a missing-file reference. A no-import die with
+both fields and typedefs double-splices `std/electronics.bv` — same
+module id, identical dump: the C4 benign pair (noted at the prelude).
+
+Test: `test_sbv_die_boundary_fields_check` (frontend_check on the
+fixture — the C5 pattern). Suite **2696/0**; conformance sweep green
+with the first `.sbv` in the corpus; Praetor gate on
+`import_resolver.rs` clean (test addition only).
+
+The die fixture (no explicit import — prelude provides, same parity as
+`.ebv` files):
+
+```briev
+let sda: IoOd;
+let scl: Out;
+let gpio: Io[8];
+let vdd: Power;
+let gnd: Ground;
+```
+
 The die is a `.sbv` file whose file-scope bare `let`s ARE the boundary
 pins, typed by pin classes:
 
