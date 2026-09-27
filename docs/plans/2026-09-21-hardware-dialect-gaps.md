@@ -249,22 +249,27 @@ track below.
 - **Effort:** S
 
 ### E15 — No series-part placement synthesis (the residue of §3.2's `derive on:`)
-- **Status:** SLICE 1 LANDED 2026-09-26 (plan
-  `2026-09-26-ebv-e15-series-part-placement.md`): a MIN current
-  obligation (`led1.a.current >= 0.002;` in a node body) forces a free
-  `spec SeriesPart` two-pin part between the anode net and the lowest
-  driven rail above the load's declared `ForwardVoltage`, picking the
-  LARGEST stated resistance that still delivers the amps; law-born
-  rails became fixed DC boundaries (E14b-8 parity — this fixed a latent
-  law-group index-instability bug the new topology exposed); chained
-  casts (`x as A as B`) now parse; the typechecker admits numeral
+- **Status:** CLOSED 2026-09-26 (plan
+  `2026-09-26-ebv-e15-series-part-placement.md`): slice 1 `7d2e29e5` — a
+  MIN current obligation (`led1.a.current >= 0.002;` in a node body)
+  forces a free `spec SeriesPart` two-pin part between the anode net and
+  the lowest driven rail above the load's declared `ForwardVoltage`,
+  picking the LARGEST stated resistance that still delivers the amps;
+  law-born rails became fixed DC boundaries (E14b-8 parity — this fixed a
+  latent law-group index-instability bug the new topology exposed);
+  chained casts (`x as A as B`) now parse; the typechecker admits numeral
   literals against exact-width quantity fundamentals and registers
-  imported typedefs on both the build and check paths. The fixture's
+  imported typedefs on both the build and check paths; the fixture's
   explicit r_led wiring is DELETED — the bound is proven from the solved
-  operating point. Slices 2–3 (E-series value synthesis, docs closure)
-  remain.
-- **Status:** OPEN — deferred 2026-09-23, documented (cannot defer without
-  documentation). Not built; recorded with a trigger.
+  operating point. Slice 2 `653e914b` — unstated series resistances are
+  synthesized from the E-series window: `config/e_series.dbvl` (E24
+  ladder, the footprints.dbvl pattern) + loader; a probe elaboration
+  learns the law-born rail volts; the window
+  `[(Vrail−Vf)/Imax−Rdyn, (Vrail−Vf)/Imin−Rdyn]` is computed per
+  obligation, the smallest E24 step inside it is injected into the
+  sorted-first free unstated part before the real elaboration; inverted
+  and empty windows are hard intent errors naming both bounds. Slice 3
+  (this commit) — docs closure.
 - **What it is:** from a component's current obligation plus its intrinsic
   forward-voltage physics, the compiler should PLACE a current-limiting
   series part (topology) and SIZE it (value) so the current lands in range —

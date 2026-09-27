@@ -2,7 +2,7 @@
 
 Date: 2026-09-26
 Gap: `2026-09-21-hardware-dialect-gaps.md` E15 (series-part placement synthesis)
-Status: slice 1 LANDED 2026-09-26 (this commit); slices 2–3 pending
+Status: ALL SLICES LANDED 2026-09-26 — slice 1 `7d2e29e5`, slice 2 `653e914b`, slice 3 this commit; gap E15 CLOSED
 
 ## Problem
 
@@ -86,3 +86,23 @@ The fixture compiles with NO explicit r_led wiring; the LED's current
 bound is proven from derived physics through the forced series part;
 deleting r_led from the source is the D13 hard error naming the
 obligation it abandoned.
+
+## Landing record (2026-09-26)
+
+- **Slice 1** (`7d2e29e5`): `spec SeriesPart` interface (parser + property),
+  MIN current-obligation forcing — a free two-pin `spec SeriesPart` part is
+  wired between the anode net and the lowest driven rail above the load's
+  declared `ForwardVoltage`, picking the largest stated resistance that
+  still delivers the amps; out-of-window = hard error naming the ceiling;
+  law-born rails became fixed DC boundaries (fixed a latent law-group
+  index-instability bug); the fixture's explicit `r_led` wiring lines are
+  DELETED — the bound is proven from the solved operating point.
+- **Slice 2** (`653e914b`): `config/e_series.dbvl` (E24 ladder, the
+  footprints.dbvl pattern) + loader; the pre-pass probes the law
+  elaboration once for the law-born rail volts, computes the window
+  `[(Vrail−Vf)/Imax−Rdyn, (Vrail−Vf)/Imin−Rdyn]` per obligation, picks the
+  smallest E24 step inside it, and injects the resistance into the
+  sorted-first free unstated part BEFORE the real elaboration. Inverted
+  and empty windows are hard intent errors naming both bounds; the proof
+  line names the window and the pick.
+- **Slice 3** (this commit): plan + gap ledger closed; design record above.
