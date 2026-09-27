@@ -314,6 +314,18 @@ fn quantity_volt(pv: &crate::ast::PropertyValue) -> Option<f64> {
     }
 }
 
+/// The SI value of an amp-dimensioned spec property — anything else absent.
+fn quantity_amp(pv: &crate::ast::PropertyValue) -> Option<f64> {
+    match pv {
+        crate::ast::PropertyValue::Quantity { si, dimension }
+            if *dimension == crate::ast::QuantityDim::Amp =>
+        {
+            Some(*si)
+        }
+        _ => None,
+    }
+}
+
 /// The SI value of an ohm-dimensioned spec property — anything else absent.
 fn quantity_ohm(pv: &crate::ast::PropertyValue) -> Option<f64> {
     match pv {
@@ -342,6 +354,464 @@ fn property_bool(pv: &crate::ast::PropertyValue) -> Option<bool> {
         crate::ast::PropertyValue::Identifier(s) if s == "false" => Some(false),
         _ => None,
     }
+}
+
+/// 2026-09-26 (E15 slice 2): the synthesis pre-pass's read-only tables —
+/// every decision reads these, none of them is mutated in place.
+#[derive(Clone, Copy)]
+struct SynthesisTables<'a> {
+    type_pins: &'a BTreeMap<String, Vec<(String, u64)>>,
+    type_info: &'a BTreeMap<String, TypeInfo>,
+    type_props: &'a BTreeMap<String, &'a std::collections::HashMap<String, crate::ast::PropertyValue>>,
+}
+
+/// 2026-09-26 (E15 slice 2): the synthesis pre-pass's working set — the
+/// tables, probe elaboration, and the obligations every decision reads.
+struct SynthesisContext<'a> {
+    instances: BTreeMap<String, &'a ComponentInstance>,
+    obligations: BTreeMap<(String, String), f64>,
+    tables: SynthesisTables<'a>,
+    probe_laws: &'a [crate::analysis::electronics_laws::ComponentLaws],
+}
+
+/// 2026-09-26 (E15 slice 2): one synthesis decision — the window, the E24
+/// pick, and the obligation it came from.
+struct SynthesisDecision {
+    comp: String,
+    pin: String,
+    amps: f64,
+    imax: f64,
+    value: f64,
+    rmin: f64,
+    rmax: f64,
+    vrail: f64,
+}
+
+/// The one free `spec SeriesPart` two-pin part with no stated resistance —
+/// the sorted-first candidate is the deterministic synthesis target (D13).
+fn free_series_part_name(
+    instance_list: &[ComponentInstance],
+    ds: &DisjointSet,
+    tables: &SynthesisTables<'_>,
+    taken: &std::collections::HashSet<String>,
+) -> Option<String> {
+    let mut names: Vec<&str> = instance_list.iter().map(|c| c.name.as_str()).collect();
+    names.sort_unstable();
+    for name in names {
+        if taken.contains(name) {
+            continue;
+        }
+        let Some(c) = instance_list.iter().find(|c| c.name == name) else {
+            continue;
+        };
+        let is_series = tables
+            .type_props
+            .get(&c.type_name)
+            .and_then(|m| m.get("series_part"))
+            .and_then(property_bool)
+            .unwrap_or(false);
+        if !is_series {
+            continue;
+        }
+        let pins = tables.type_pins.get(&c.type_name);
+        if pins.map_or(true, |p| p.len() != 2) {
+            continue;
+        }
+        if c.specs.contains_key("resistance") {
+            continue;
+        }
+        let free = pins.map_or(false, |p| {
+            p.iter().all(|(n, _)| !pin_connected(ds, &pin_key(&c.name, n)))
+        });
+        if !free {
+            continue;
+        }
+        return Some(name.to_string());
+    }
+    None
+}
+
+/// MIN current obligations, deduped per load pin (max amps wins).
+fn collect_min_current_obligations(
+    items: &[TopLevel],
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    instance_list: &[ComponentInstance],
+) -> BTreeMap<(String, String), f64> {
+    let instances: BTreeMap<String, &ComponentInstance> = instance_list
+        .iter()
+        .map(|c| (c.name.clone(), c))
+        .collect();
+    let mut obligations: BTreeMap<(String, String), f64> = BTreeMap::new();
+    for item in items {
+        let TopLevel::Transaction(t) = item else { continue };
+        collect_current_obligations_stmts(&t.body, &instances, type_pins, &mut obligations);
+    }
+    obligations
+}
+
+/// Decide one obligation's synthesis: the window, the E24 pick, or the
+/// error that explains why there is no pick.
+/// The two outputs decide_synthesis writes: the decisions it reached and
+/// the errors it refused.
+struct SynthesisOut {
+    decisions: Vec<SynthesisDecision>,
+    errors: Vec<String>,
+}
+
+fn decide_synthesis(
+    items: &[TopLevel],
+    comp: &str,
+    pin: &str,
+    amps: f64,
+    ctx: &SynthesisContext<'_>,
+    out: &mut SynthesisOut,
+) {
+    let Some(inst) = ctx.instances.get(comp) else {
+        return;
+    };
+    let Some((vf, rdyn)) = load_forward_physics_raw(inst, ctx.tables.type_info) else {
+        return; // slice 1's forcing names the missing physics
+    };
+    let Some(imax) = inst.specs.get("max_current").and_then(quantity_amp) else {
+        return; // no upper bound — no window; slice 1's path applies
+    };
+    let Some(vrail) = feeding_rail_volts(items, vf, ctx) else {
+        return; // the forcing pass owns "no rail" diagnostics
+    };
+    let rmin = (vrail - vf) / imax - rdyn;
+    let rmax = (vrail - vf) / amps - rdyn;
+    if rmin > rmax {
+        out.errors.push(format!(
+            "the current obligation '>= {}' on '{}.{}' has an inverted E-series \
+             window: the MaxCurrent bound ({}) needs at most {} ohm, but the \
+             obligation needs at least {} ohm. fix: lower the obligation or raise \
+             the load's MaxCurrent",
+            format_amps(amps),
+            comp,
+            pin,
+            format_amps(imax),
+            rmin as i64,
+            rmax as i64
+        ));
+        return;
+    }
+    let Some(value) = e_series_value_in_window(rmin, rmax) else {
+        out.errors.push(format!(
+            "the current obligation '>= {}' on '{}.{}' has an empty E-series window: \
+             no preferred value lands in [{}, {}] ohm. fix: adjust the obligation, \
+             the rail, or state the resistance outright",
+            format_amps(amps),
+            comp,
+            pin,
+            rmin as i64,
+            rmax as i64
+        ));
+        return;
+    };
+    out.decisions.push(SynthesisDecision {
+        comp: comp.to_string(),
+        pin: pin.to_string(),
+        amps,
+        imax,
+        value,
+        rmin,
+        rmax,
+        vrail,
+    });
+}
+
+/// Apply every decision: inject the resistance into the target part's
+/// specs and value string, and record the proof line.
+fn apply_syntheses(
+    instance_list: &mut [ComponentInstance],
+    ds: &DisjointSet,
+    tables: &SynthesisTables<'_>,
+    decisions: &[SynthesisDecision],
+    proofs: &mut Vec<String>,
+) {
+    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in decisions {
+        let Some(part) =
+            free_series_part_name(instance_list, ds, tables, &taken)
+        else {
+            continue; // no synthesis target — slice 1's path applies
+        };
+        taken.insert(part.clone());
+        let Some(c) = instance_list.iter_mut().find(|c| c.name == part) else {
+            continue;
+        };
+        c.specs.insert(
+            "resistance".to_string(),
+            crate::ast::PropertyValue::Quantity {
+                si: d.value,
+                dimension: crate::ast::QuantityDim::Ohm,
+            },
+        );
+        c.properties.retain(|(k, _)| k != "value");
+        c.properties.push(("value".to_string(), format!("{}Ohm", d.value as i64)));
+        proofs.push(format!(
+            "E-series synthesis: {} := {}Ohm (window [{}, {}] ohm from the {} rail)",
+            c.name,
+            d.value as i64,
+            d.rmin as i64,
+            d.rmax as i64,
+            format_volts(d.vrail)
+        ));
+    }
+}
+
+/// 2026-09-26 (E15 slice 2): synthesize unstated series-part resistances
+/// from the E-series window. For every MIN current obligation on a load
+/// pin, the rail volts (the lowest driven supply above the forward drop —
+/// contract drives and law births, the same rule the forcing pass applies)
+/// and the load's `MaxCurrent` bound give the resistance window
+/// `[(Vrail − Vf)/Imax − Rdyn, (Vrail − Vf)/Imin − Rdyn]`; the smallest
+/// E24 step inside it is injected into the sorted-first FREE `spec
+/// SeriesPart` part that states no resistance of its own. Runs BEFORE the
+/// real law elaboration (an unstated `Resistance` is a law error there) —
+/// the caller probes the elaboration once to learn the law-born rail
+/// volts, then re-elaborates with the injected values. Errors are hard
+/// intent errors; proofs name the window and the pick.
+fn synthesize_series_values(
+    items: &[TopLevel],
+    instance_list: &mut [ComponentInstance],
+    ds: &DisjointSet,
+    tables: &SynthesisTables<'_>,
+    probe_laws: &[crate::analysis::electronics_laws::ComponentLaws],
+    proofs: &mut Vec<String>,
+) -> Vec<String> {
+    let SynthesisTables { type_pins, type_info, type_props } = *tables;
+    let ctx = SynthesisContext {
+        instances: instance_list
+            .iter()
+            .map(|c| (c.name.clone(), c))
+            .collect(),
+        obligations: collect_min_current_obligations(items, type_pins, instance_list),
+        tables: *tables,
+        probe_laws,
+    };
+    let mut out = SynthesisOut { decisions: Vec::new(), errors: Vec::new() };
+    for ((comp, pin), amps) in &ctx.obligations {
+        decide_synthesis(items, comp, pin, *amps, &ctx, &mut out);
+    }
+    apply_syntheses(instance_list, ds, tables, &out.decisions, proofs);
+    out.errors
+}
+
+/// Walk a node body (through guarded regions) collecting MIN current
+/// obligations, deduped per load pin (max amps wins).
+fn collect_current_obligations_stmts(
+    stmts: &[Statement],
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    out: &mut BTreeMap<(String, String), f64>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Statement::Guarded(_, inner) => {
+                collect_current_obligations_stmts(inner, instances, type_pins, out);
+            }
+            Statement::Expression(expr) => {
+                collect_from_expr(expr, instances, type_pins, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One expression: a Ge/Gt binary op with a current pin on one side and a
+/// bare amp value on the other is a MIN current obligation.
+fn collect_from_expr(
+    expr: &Expr,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    out: &mut BTreeMap<(String, String), f64>,
+) {
+    let Expr::BinaryOp(kind, l, r) = expr else { return };
+    if !matches!(kind, BinaryOpKind::Ge | BinaryOpKind::Gt) {
+        return;
+    }
+    let Some(p) = resolve_current_pin(l, instances, type_pins)
+        .or_else(|| resolve_current_pin(r, instances, type_pins))
+    else {
+        return;
+    };
+    let Some(v) = extract_current(l).or_else(|| extract_current(r)) else {
+        return;
+    };
+    let key = (p.component.clone(), p.pin.clone());
+    let entry = out.entry(key).or_insert(0.0);
+    if v > *entry {
+        *entry = v;
+    }
+}
+
+/// The load's forward physics from raw tables — `(ForwardVoltage,
+/// DynamicResistance)`, instance value first, type default second.
+fn load_forward_physics_raw(
+    inst: &ComponentInstance,
+    type_info: &BTreeMap<String, TypeInfo>,
+) -> Option<(f64, f64)> {
+    let ti = type_info.get(&inst.type_name);
+    let vf = inst
+        .specs
+        .get("forwardvoltage")
+        .and_then(quantity_volt)
+        .or_else(|| {
+            ti.and_then(|ti| ti.spec_defaults.get("forwardvoltage"))
+                .and_then(quantity_volt)
+        })?;
+    let rdyn = inst
+        .specs
+        .get("dynamicresistance")
+        .and_then(quantity_ohm)
+        .or_else(|| {
+            ti.and_then(|ti| ti.spec_defaults.get("dynamicresistance"))
+                .and_then(quantity_ohm)
+        })
+        .unwrap_or(0.0);
+    Some((vf, rdyn))
+}
+
+/// The volts of the rail that would feed a load pin: the LOWEST driven
+/// supply above the forward drop — driven means a contract voltage drive
+/// or a law-born rail pin (E14b-8), the same rule the forcing pass applies
+/// over roots. None when no supply qualifies.
+fn feeding_rail_volts(items: &[TopLevel], vf: f64, ctx: &SynthesisContext<'_>) -> Option<f64> {
+    collect_supply_rail_candidates(items, ctx)
+        .into_iter()
+        .filter(|volts| *volts > vf + f64::EPSILON)
+        .min_by(f64::total_cmp)
+}
+
+/// All driven supply-pin volts from both sources (contract drives and
+/// law-born rails), pre-filtered to the rail-class pins.
+fn collect_supply_rail_candidates(
+    items: &[TopLevel],
+    ctx: &SynthesisContext<'_>,
+) -> Vec<f64> {
+    let mut out: Vec<f64> = Vec::new();
+    out.extend(contract_drive_rail_volts(items, ctx));
+    out.extend(law_birth_rail_volts(ctx));
+    out
+}
+
+/// Contract voltage drives on supply pins (pre + post conditions).
+fn contract_drive_rail_volts(items: &[TopLevel], ctx: &SynthesisContext<'_>) -> Vec<f64> {
+    let mut out: Vec<f64> = Vec::new();
+    for item in items {
+        let TopLevel::Transaction(t) = item else { continue };
+        for cond in [&t.contract.pre_condition, &t.contract.post_condition] {
+            let mut triples = Vec::new();
+            collect_eq_triples(cond, &mut triples);
+            for (l, r) in triples {
+                if let Some((pin, v)) = voltage_drive(&l, &r, &ctx.instances, ctx.tables.type_pins) {
+                    if is_supply_pin(&pin, ctx) {
+                        out.push(v);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Law-born rails from the probe elaboration (E14b-8).
+fn law_birth_rail_volts(ctx: &SynthesisContext<'_>) -> Vec<f64> {
+    let mut out: Vec<f64> = Vec::new();
+    for component in ctx.probe_laws {
+        for law in &component.laws {
+            if law.guard != crate::analysis::electronics_laws::LawGuard::Always {
+                continue;
+            }
+            for volts in law_birth_from_law(law, ctx) {
+                out.push(volts);
+            }
+        }
+    }
+    out
+}
+
+/// One law's always-guarded constant-voltage equations on supply pins.
+fn law_birth_from_law(
+    law: &crate::analysis::electronics_laws::ElaboratedLaw,
+    ctx: &SynthesisContext<'_>,
+) -> Vec<f64> {
+    law.equations
+        .iter()
+        .filter_map(|eq| constant_voltage_pin(&eq.expression))
+        .filter(|(pin, _)| is_supply_pin(pin, ctx))
+        .map(|(_, volts)| volts)
+        .collect()
+}
+
+/// True when the pin's class is supply-classified.
+fn is_supply_pin(pin: &PinRef, ctx: &SynthesisContext<'_>) -> bool {
+    ctx.instances
+        .get(&pin.component)
+        .and_then(|inst| ctx.tables.type_info.get(&inst.type_name))
+        .and_then(|ti| {
+            ti.pins
+                .iter()
+                .position(|(n, _)| n == &pin.pin)
+                .and_then(|i| ti.pin_classes.get(i))
+        })
+        .map_or(false, |c| c.supply)
+}
+
+
+/// The E24 preferred-value ladder — `config/e_series.dbvl` baked via
+/// include_str! (the footprints.dbvl pattern). A new family is a data row;
+/// the compiler carries the table, never a hardcoded part list (Rules 14/15).
+fn e24_base() -> &'static Vec<f64> {
+    static CACHE: std::sync::OnceLock<Vec<f64>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| parse_e_series(include_str!("../../config/e_series.dbvl")))
+}
+
+/// Parse the `e_series.<family>: v; v; …;` line table. Malformed entries are
+/// a hard parse failure — a bad table row must never silently misplace a
+/// synthesized value.
+fn parse_e_series(content: &str) -> Vec<f64> {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let Some(row) = line.split_once(':') else {
+            continue; // only `e_series.<family>: …` rows carry data
+        };
+        if !row.0.trim().starts_with("e_series.") {
+            continue;
+        }
+        for token in row.1.split(';') {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let v: f64 = token
+                .parse()
+                .unwrap_or_else(|_| panic!("e_series.dbvl: '{token}' is not a number"));
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// The smallest E-series step inside the resistance window — candidates are
+/// the base row across decades (mΩ..MΩ covers every board-scale resistor).
+/// None = the window holds no preferred value.
+fn e_series_value_in_window(rmin: f64, rmax: f64) -> Option<f64> {
+    let mut best: Option<f64> = None;
+    for exp in -6..=6 {
+        for base in e24_base() {
+            let v = base * 10f64.powi(exp);
+            if v >= rmin && v <= rmax && best.map_or(true, |b| v < b) {
+                best = Some(v);
+            }
+        }
+    }
+    best
 }
 
 /// Resolve one pin's class ascription into its property set (E12/D16).
@@ -6226,7 +6696,40 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     if type_pins.is_empty() {
         return ElectronicsNetlist::default();
     }
-    let instance_list = collect_instances(items, &type_pins);
+    let mut instance_list = collect_instances(items, &type_pins);
+    let instances: BTreeMap<String, &ComponentInstance> = instance_list
+        .iter()
+        .map(|c| (c.name.clone(), c))
+        .collect();
+
+    let mut ds = DisjointSet::new();
+    let bus_errors = collect_pin_unions(items, &instances, &type_pins, &mut ds);
+
+    // 2026-09-26 (E15 slice 2): probe the law elaboration once to learn the
+    // law-born rail volts, synthesize unstated series-part resistances from
+    // the E-series window, then re-elaborate with the injected values. The
+    // maps are rebuilt after the mutation.
+    let probe_laws = {
+        let probe_instances: BTreeMap<String, &ComponentInstance> = instance_list
+            .iter()
+            .map(|c| (c.name.clone(), c))
+            .collect();
+        elaborate_law_ir(items, &probe_instances, &type_info, &type_pins).components
+    };
+    let mut synthesis_proofs = Vec::new();
+    let synthesis_tables = SynthesisTables {
+        type_pins: &type_pins,
+        type_info: &type_info,
+        type_props: &collect_type_metadata(items),
+    };
+    let synthesis_errors = synthesize_series_values(
+        items,
+        &mut instance_list,
+        &ds,
+        &synthesis_tables,
+        &probe_laws,
+        &mut synthesis_proofs,
+    );
     let instances: BTreeMap<String, &ComponentInstance> = instance_list
         .iter()
         .map(|c| (c.name.clone(), c))
@@ -6236,9 +6739,6 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     // before topology-dependent checks; Slice 3 consumes the IR.
     let law_ir = elaborate_law_ir(items, &instances, &type_info, &type_pins);
     let (mut law_errors, component_laws) = (law_ir.errors, law_ir.components);
-
-    let mut ds = DisjointSet::new();
-    let bus_errors = collect_pin_unions(items, &instances, &type_pins, &mut ds);
     // 2026-09-25 (E14b-6): return topology — participation facts, the
     // return-net union, and decoupler auto-bridging, in that order (the
     // absent-state set gates both passes; forcing precedes the intent
@@ -6251,7 +6751,10 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
         laws: &component_laws,
     };
     let topo = force_return_topology(&tp, &mut ds);
-    let (intent_errors, mut intent_proofs, conditional_bridges) = run_intent_pass(&mut ds, &tp);
+    let (mut intent_errors, mut intent_proofs, conditional_bridges) =
+        run_intent_pass(&mut ds, &tp);
+    intent_errors.extend(synthesis_errors);
+    intent_proofs.extend(synthesis_proofs);
 
     // 2026-09-25 (E14b-7): author labels keyed by FINAL root — resolved
     // here, after the intent pass (body wiring can merge nets further).
@@ -7743,6 +8246,169 @@ mod tests {
     }
 
     #[test]
+    fn e_series_window_synthesizes_resistance() {
+        // 2026-09-26 (E15 slice 2): the obligation's window
+        // [(10−1)/0.1 − 10, (10−1)/0.01 − 10] = [80, 890] ohm holds
+        // E24 steps from 100R up — the smallest lands in the free part.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Volt { spec Bits: 32; };
+            type Amp { spec Bits: 32; };
+            struct Pin { voltage: Volt; current: Amp; };
+            type Led {
+                pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
+                spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
+                when a.voltage - k.voltage >= ForwardVoltage {
+                    a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+                }
+                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                when true { a.current + k.current == 0; }
+            };
+            type Resistor {
+                pin a; pin b; reference "R"; spec Tolerance: any;
+                spec SeriesPart: true;
+                spec Resistance: Ohm;
+                when true { a.voltage - b.voltage == Resistance * a.current; }
+            };
+            type Src { pin p: Power; reference "S"; spec Tolerance: any; };
+            type Sink { pin g; reference "X"; spec Tolerance: any; };
+
+            let d1: Led = Led { spec ForwardVoltage: 1.0Volt, spec DynamicResistance: 10Ohm, spec MaxCurrent: 0.1Amp };
+            let r1: Resistor = Resistor {};
+            let s1: Src = Src { };
+            let x1: Sink = Sink { };
+
+            txn powered
+                [s1.p.voltage == 10V && d1.k.voltage == 0V
+                 && d1.k.voltage == x1.g.voltage]
+                [true]
+            {
+                d1.a.current >= 0.01;
+            }
+        "#;
+        let nl = analyze(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(nl.law_errors.is_empty(), "{:?}", nl.law_errors);
+        assert!(nl.voltage.violations.is_empty(), "{:?}", nl.voltage.violations);
+        let r1 = nl.components.iter().find(|c| c.name == "r1").unwrap();
+        match r1.specs.get("resistance").unwrap() {
+            crate::ast::PropertyValue::Quantity { si, dimension } => {
+                assert!((si - 82.0).abs() < 1e-9, "pinned 82R, got {}", si);
+                assert!(matches!(dimension, crate::ast::QuantityDim::Ohm));
+            }
+            other => panic!("resistance not a quantity: {:?}", other),
+        }
+        assert!(
+            nl.intent_proofs
+                .iter()
+                .any(|p| p.contains("E-series synthesis") && p.contains("r1")),
+            "synthesis proof missing: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
+    fn inverted_window_refuses_with_bounds_named() {
+        // E15 slice 2: an obligation drawing more than the load's
+        // MaxCurrent inverts the window — the refusal names both bounds.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Volt { spec Bits: 32; };
+            type Amp { spec Bits: 32; };
+            struct Pin { voltage: Volt; current: Amp; };
+            type Led {
+                pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
+                spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
+                when a.voltage - k.voltage >= ForwardVoltage {
+                    a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+                }
+                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                when true { a.current + k.current == 0; }
+            };
+            type Resistor {
+                pin a; pin b; reference "R"; spec Tolerance: any;
+                spec SeriesPart: true;
+                spec Resistance: Ohm;
+                when true { a.voltage - b.voltage == Resistance * a.current; }
+            };
+            type Src { pin p: Power; reference "S"; spec Tolerance: any; };
+            type Sink { pin g; reference "X"; spec Tolerance: any; };
+
+            let d1: Led = Led { spec ForwardVoltage: 1.0Volt, spec DynamicResistance: 0Ohm, spec MaxCurrent: 0.1Amp };
+            let r1: Resistor = Resistor { spec Resistance: 100Ohm };
+            let s1: Src = Src { };
+            let x1: Sink = Sink { };
+
+            txn powered
+                [s1.p.voltage == 10V && d1.k.voltage == 0V
+                 && d1.k.voltage == x1.g.voltage]
+                [true]
+            {
+                d1.a.current >= 0.5;
+            }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.intent_errors
+                .iter()
+                .any(|e| e.contains("inverted E-series window")),
+            "{:?}",
+            nl.intent_errors
+        );
+    }
+
+    #[test]
+    fn synthesis_skips_when_load_bounds_absent() {
+        // E15 slice 2: no MaxCurrent, no window — synthesis stays silent and
+        // the slice-1 forcing path carries the stated part instead.
+        let src = r#"
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Volt { spec Bits: 32; };
+            type Amp { spec Bits: 32; };
+            struct Pin { voltage: Volt; current: Amp; };
+            type Led {
+                pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
+                spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
+                when a.voltage - k.voltage >= ForwardVoltage {
+                    a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+                }
+                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                when true { a.current + k.current == 0; }
+            };
+            type Resistor {
+                pin a; pin b; reference "R"; spec Tolerance: any;
+                spec SeriesPart: true;
+                spec Resistance: Ohm;
+                when true { a.voltage - b.voltage == Resistance * a.current; }
+            };
+            type Src { pin p: Power; reference "S"; spec Tolerance: any; };
+            type Sink { pin g; reference "X"; spec Tolerance: any; };
+
+            let d1: Led = Led { spec ForwardVoltage: 1.0Volt, spec DynamicResistance: 0Ohm };
+            let r1: Resistor = Resistor { spec Resistance: 900Ohm };
+            let s1: Src = Src { };
+            let x1: Sink = Sink { };
+
+            txn powered
+                [s1.p.voltage == 10V && d1.k.voltage == 0V
+                 && d1.k.voltage == x1.g.voltage]
+                [true]
+            {
+                d1.a.current >= 0.01;
+            }
+        "#;
+        let nl = analyze(src);
+        assert!(
+            !nl.intent_proofs.iter().any(|p| p.contains("E-series synthesis")),
+            "no synthesis expected: {:?}",
+            nl.intent_proofs
+        );
+    }
+
+    #[test]
     fn non_decoupler_part_does_not_satisfy_convention() {
         // A resistor across the rail is not a decoupling part: the
         // property interface (spec Decoupler) decides, never the type name.
@@ -8747,7 +9413,7 @@ mod tests {
         assert_eq!(nl.components.len(), 1);
         match nl.components[0].specs.get("resistance") {
             Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
-                assert_eq!(*dimension, crate::ast::QuantityDim::Ohm);
+                assert!(matches!(dimension, crate::ast::QuantityDim::Ohm));
                 assert!((si - 4700.0).abs() < 1e-9);
             }
             other => panic!("expected structured 4.7kOhm, got {other:?}"),
