@@ -10082,6 +10082,30 @@ mod tests {
         assert_eq!(cells, [Some("100"), Some("220"), Some("330"), Some("470")]);
     }
 
+    // ── 2026-09-28 (E3, Slice 3): 512-instance tile gate ────────────────
+
+    #[test]
+    fn tile_512_fixture_wires_every_instance() {
+        // 2026-09-28 (E3 gate): the committed 512-instance fixture — 16×32
+        // resistors wired to the two rails by TWO wildcard broadcasts —
+        // resolves with no errors, declares 512 tile elements, and every
+        // element's a/b pin is wired (nothing dangles).
+        let src = include_str!("../../tests/electronics/tile_512.ebv");
+        let nl = analyze(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        assert!(nl.bus_errors.is_empty(), "{:?}", nl.bus_errors);
+        assert!(nl.dangling.is_empty(), "all 512×2 pins must be wired: {:?}", nl.dangling);
+        let tile_count = nl
+            .components
+            .iter()
+            .filter(|c| c.name.starts_with("t["))
+            .count();
+        assert_eq!(tile_count, 512, "16×32 = 512 tile elements");
+        // Two nets: the a-rail (j1.p1 + 512 a-pins) and the b-rail (j1.p2 +
+        // 512 b-pins).
+        assert_eq!(nl.nets.len(), 2, "broadcast tile = 2 nets: {:?}", nl.nets);
+    }
+
     #[test]
     fn thru_strategy_narrows_to_type() {
         // Two switches, different types: `via Fet` selects q1.
