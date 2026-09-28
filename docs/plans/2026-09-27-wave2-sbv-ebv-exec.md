@@ -208,3 +208,69 @@ edges; synthesized bridge nodes for distant pairs).
 `cargo test --lib` green · the commit's new tests · Praetor on changed
 dirs (`--target` = DIRECTORY) · conformance sweep green · no new warnings.
 Baseline: suite 2695/0 (post-Wave-1).
+
+## C2 status: INVESTIGATED (2026-09-28) — parked, electronics-overlap
+
+C2's corpus (`examples/silicon/die_board.ebv`) is landed and **checks
+clean** through the shared pipeline. But C2's substance is ~90%
+verification of EXISTING electronics machinery (class compatibility,
+contention naming, arity-mismatch naming, direction, tolerance) — the
+`feat/e14a-intent-synthesis` lane. The genuinely interop-owned part is
+small (the die's tolerance-declaration site + a "dies ride the general
+path" regression proof). **Hand the electronics remainder to the
+electronics agent**; do not duplicate its work here.
+
+### Findings
+
+1. **Stale-binary hazard recurred.** The first `sensor.sda` failure was a
+   pre-C1 `brievc` binary, not a code defect; `cargo build` before probing
+   resolved it. C0 recorded the lesson; there is still no mechanical guard.
+2. **`brievc build` fails the tolerance gate** (`analysis/electronics.rs`
+   `check_tolerance`): the projected `SensorDie` has no `spec Tolerance`,
+   so `sensor.vdd` on the driven 3.3V rail is an "undeclared decision."
+   The model is TYPE-level — one tolerance for every pin of a component
+   (usb_sensor's `Mcu` carries one for all 12) — so no component can
+   express per-pin ratings today; dies are not worse off.
+3. **A die file has no clause site for tolerance** (bare `let`s). `NetVoltage`
+   is a RAIL declaration (`stdnet<VBUS>` in `lib/std/electronics.bv`), not
+   pin tolerance. The static pair therefore cannot BUILD a real board until
+   the site is decided.
+4. **Tolerance-site options** (decision belongs to the electronics lane,
+   since the gate and the envelope model are theirs):
+   - **A** file-scope `spec Tolerance` clause in `.sbv`; the projection
+     folds it into the synthesized component's `metadata` (the table
+     `envelope_values` reads). Minimal, author-data, one tolerance per die.
+   - **B** per-pin tolerance in the analysis (`PinDecl` metadata) — a
+     general model change benefiting every component; larger.
+   - **C** class-carried tolerance (pin classes in `std/electronics.bv`) —
+     semantically wrong (class ≠ part rating).
+   - **D** wrap pins in a `type` body — fights Layer 0 (bare `let`s ARE the
+     pins) and the graft pattern.
+5. **`hardware_validator` is dead code** — zero call sites; the `.sbv`
+   synthesizability gate never runs. Logged in BUGS.md during C1; hooking
+   it is compiler-owned and unclaimed.
+6. **BEAST drops all TypeDef members** (`members: vec![]` on both
+   serialize and deserialize) — pre-existing; member-defns ride the same
+   path. Not a C2 issue, but it is why nested state cannot round-trip yet.
+7. **Nested `const` has no precedent anywhere** (`Token::Const`
+   dispatches only at file scope) — the nested-`let` member arm (C1) is the
+   member-declaration pattern, not a const parallel.
+
+### C2 tests not written (all exercise existing electronics channels)
+
+`test_die_board_direction_preserved`, `test_die_board_contention_named`,
+`test_die_board_arity_mismatch_named`, gate-fixture derive (`assert_clean`).
+
+### Directions for pickup (any order; none overlap electronics analysis)
+
+- **Wave 2b runtime pairs** — the approved alias/instance-binding design
+  (`board.core.leds = 0x5A` → MMIO store, disclosure, unaliased-instance
+  gate). Biggest interop deliverable, zero electronics overlap.
+- **C4 Layer 3 pinout records** — `.dbv` `Pinout (QFN32) { … }` grammar +
+  validator + `--fab`. Self-contained data/grammar layer (C5's XDC/PCF/KiCad
+  emission is the EDA half).
+- **Quick wins** — `hardware_validator` hookup; stale-binary guard.
+
+Working-tree note at parking time: this file and
+`examples/silicon/die_board.ebv` only; a leftover `mod probe_c2` debug test
+was removed before parking.
