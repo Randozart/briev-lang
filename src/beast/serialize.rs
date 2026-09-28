@@ -181,6 +181,19 @@ fn emit_typedef(t: &TypeDef) -> SExpr {
     for (k, v) in &t.body.metadata {
         children.push(list(&[atom("metadata"), atom(k), pv_to_sexpr(v)]));
     }
+    // 2026-09-28 (BEAST TypeDef member round-trip): self-parameterized
+    // obj members (txn/defn/op-as-member) were silently dropped — the
+    // deserialize side defaulted to `members: vec![]` and the serialize
+    // side never emitted them, so `.f` profile round-trips lost nested
+    // state. Emit each member under a `(members (member …)*)` list; the
+    // reader restores it in parse_typedef.
+    if !t.body.members.is_empty() {
+        let mut members: Vec<SExpr> = vec![atom("members")];
+        for m in &t.body.members {
+            members.push(list(&[atom("member"), emit_toplevel(m)]));
+        }
+        children.push(SExpr::List(members));
+    }
     SExpr::List(children)
 }
 
@@ -468,6 +481,79 @@ mod tests {
                     b.body.metadata.get("reference"),
                     Some(&crate::ast::PropertyValue::String("R".to_string()))
                 );
+            }
+            _ => panic!("expected TypeDef"),
+        }
+    }
+
+    #[test]
+    fn test_roundtrip_typedef_members() {
+        // 2026-09-28 (BEAST TypeDef member round-trip): self-parameterized
+        // obj members (txn/defn) survive serialize→deserialize. Pre-fix,
+        // `members` was always `vec![]` on both sides and nested state was
+        // silently lost through `.f` profile round-trips.
+        let defn = TopLevel::Definition(Definition {
+            name: "reset".into(),
+            type_params: vec![],
+            parameters: vec![("self".to_string(), Type::int())],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                span: None,
+                explicit: false,
+                post_authority: false,
+            },
+            body: vec![Statement::Term(Some(Expr::Decimal(0)))],
+            metadata: std::collections::HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            annotations: vec![],
+            span: None,
+            variadic_param: None,
+            doc: None,
+        });
+        let items = vec![TopLevel::TypeDef(Box::new(TypeDef {
+            name: "Widget".into(),
+            type_params: vec![],
+            parent: None,
+            protocol: None,
+            traits: vec![],
+            bit_range: None,
+            coll: false,
+            ports_in: vec![],
+            ports_out: vec![],
+            seq: false,
+            body: TypeDefBody {
+                reference: None,
+                slots: vec![TypeDefSlot { name: "state".into(), ty: Type::int(), bit_range: None }],
+                pins: vec![],
+                metadata: std::collections::HashMap::new(),
+                projections: vec![],
+                bindings: vec![],
+                operators: vec![],
+                op_bindings: vec![],
+                constraints: vec![],
+                members: vec![defn],
+                when_laws: vec![],
+                modes: vec![],
+                span: None,
+            },
+            span: None,
+        }))];
+        let universe = TypeUniverse::new();
+        let ir = to_beast(&items, &universe);
+        let (restored, _) = from_beast(&ir).unwrap();
+        match (&items[0], &restored[0]) {
+            (TopLevel::TypeDef(a), TopLevel::TypeDef(b)) => {
+                assert_eq!(a.body.members.len(), 1);
+                assert_eq!(b.body.members.len(), 1, "member must round-trip; got: {}", ir);
+                match &b.body.members[0] {
+                    TopLevel::Definition(d) => assert_eq!(d.name, "reset"),
+                    other => panic!("expected Definition member, got {:?}", other),
+                }
             }
             _ => panic!("expected TypeDef"),
         }

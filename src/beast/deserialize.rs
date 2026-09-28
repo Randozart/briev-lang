@@ -40,6 +40,27 @@ pub fn from_beast(text: &str) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
     Ok((items, universe))
 }
 
+/// 2026-09-28 (BEAST TypeDef member round-trip): dispatch a nested top-level
+/// S-expression to the right parser. Used by `parse_typedef` to restore
+/// self-parameterized obj members (txn/defn/op-as-member).
+fn parse_toplevel(expr: &SExpr) -> Result<TopLevel, String> {
+    let SExpr::List(parts) = expr else {
+        return Err("expected top-level list".into());
+    };
+    if parts.is_empty() { return Err("empty top-level list".into()); }
+    let tag = sexpr_str(&parts[0])?;
+    match tag {
+        "defn" => Ok(TopLevel::Definition(parse_definition(parts)?)),
+        "txn" => Ok(TopLevel::Transaction(parse_transaction(parts)?)),
+        "state" => parse_statedecl(parts),
+        "trigger" => parse_trigger(parts),
+        "constant" => parse_constant(parts),
+        "init" => parse_init(parts),
+        "typedef" => Ok(TopLevel::TypeDef(parse_typedef(parts)?)),
+        _ => Err(format!("unknown top-level tag '{}'", tag)),
+    }
+}
+
 fn sexpr_str(expr: &SExpr) -> Result<&str, String> {
     match expr {
         SExpr::Atom(Atom::String(s)) => Ok(s.as_str()),
@@ -125,6 +146,11 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
     let mut slots = Vec::new();
     let mut pins: Vec<crate::ast::top::PinDecl> = Vec::new();
     let mut metadata = HashMap::new();
+    // 2026-09-28 (BEAST TypeDef member round-trip): restore self-parameterized
+    // obj members (txn/defn/op-as-member) that emit_typedef writes under
+    // `(members (member …)*)`. Pre-fix streams omit the list entirely —
+    // the default stays empty, so old byte streams are unaffected.
+    let mut members: Vec<crate::ast::TopLevel> = Vec::new();
     // 2026-09-11: emit_typedef writes each body section as ONE nested list
     // — (slots (slot …)*), (pins (pin …)*), one (metadata k v) list per
     // entry. The old flat-parts loop never matched that shape, so typedef
@@ -184,6 +210,15 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
                     metadata.insert(k, v);
                 }
             }
+            "members" => {
+                for sub in entry.iter().skip(1) {
+                    if let SExpr::List(mp) = sub {
+                        if mp.len() >= 2 && sexpr_str(&mp[0]).unwrap_or_default() == "member" {
+                            members.push(parse_toplevel(&mp[1])?);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -195,7 +230,7 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
         ports_out: Vec::new(),
         body: TypeDefBody { slots, pins, reference: None, metadata, projections: vec![], bindings: vec![],
             operators: vec![], op_bindings: vec![],
-            constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None },
+            constraints: vec![], members, when_laws: vec![], modes: vec![], span: None },
     }))
 }
 

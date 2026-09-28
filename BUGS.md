@@ -101,23 +101,28 @@ bit-pattern read (needed by the pure-Briev float formatter) was impossible.
 then `zext i32 → i64` (both the chain loop and `emit_single_cast_lane`).
 **Undo:** revert the `cur_ll == "float"` arms in both sites.
 
-## Tuple-returning defn with a String field mis-lays the String as i64 — OPEN 2026-09-09
+## Tuple-returning defn with a String field mis-lays the String as i64 — FIXED 2026-09-28 (verified at current tip)
 
 **Date:** 2026-09-09 (parity spike)
-**Symptom:** a `defn` returning `(String, Int)` (or any tuple containing a
-String) compiles to IR where the String field is `load i64`'d out of the
-tuple struct, then fed to `__print_str(ptr ...)` — clang rejects
-`'%t31' defined with type 'i64' but expected 'ptr'`. Int-only tuples
-(`(Int, Int)`, `(Int, Int, Int)`) work fine.
-**Repro:** `defn pair(x: Int) -> (String, Int) { term ("ab", x); }` then
-`let (a, b) = pair(3); println!("{} {}", a, b);` — IR fails to compile.
-**Root cause (hypothesis):** the tuple layout/load path stores the String
-field in an i64 slot instead of a ptr; the String ABI (length-prefixed
-buffer ptr) is not preserved through tuple packing. Not yet traced.
-**Workaround in spike:** split into a String-returning function and an
+**Fixed:** verified 2026-09-28 at tip `1d0dc01f` — the repro now compiles and
+runs correctly (`ab3` for `("ab", 3)`; `ab3ab7cd` for a 3-element
+`(String, Int, String)` tuple). The destructure path
+(`emit_stmt.rs:491-514`) loads each slot as i64 then
+`inttoptr`s the String element before use (`__print_str` receives a valid
+ptr). The fix landed somewhere between 2026-09-09 and 2026-09-28 in the
+String-ABI / tuple-correctness work (candidate: `a84568d5`
+"String ABI boxing fixes" or the async Phase C/D ABI fixes that touched
+`emit_stmt.rs` `let_bindings`); the exact commit was not isolated —
+behavioral verification at the current tip is sufficient.
+**Symptom (historical):** a `defn` returning `(String, Int)` (or any tuple
+containing a String) compiled to IR where the String field was `load i64`'d
+out of the tuple struct, then fed to `__print_str(ptr ...)` — clang
+rejected `'%t31' defined with type 'i64' but expected 'ptr'`. Int-only
+tuples (`(Int, Int)`, `(Int, Int, Int)`) worked fine.
+**Repro (historical):** `defn pair(x: Int) -> (String, Int) { term ("ab", x); }`
+then `let (a, b) = pair(3); println!("{} {}", a, b);` — IR failed to compile.
+**Workaround (historical):** split into a String-returning function and an
 Int-returning function (duplicate the shared computation).
-**Fix path:** trace tuple pack/unpack in emit_expr.rs (the struct { i64, ... }
-layout for String fields); String fields must be `ptr` slots.
 
 ## PiggyBank Phase D — arrow dispatch + sealed-op gaps (FIXED 2026-08-18)
 
