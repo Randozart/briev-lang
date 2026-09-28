@@ -5359,9 +5359,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             "briev_syscall", "briev_sysconf", "ShellCmd", "__briev_setenv",
             "__print_float64",
             "briev_host_print_int", "briev_host_fail", "briev_host_table_set",
-            "briev_host_arity_of", "briev_task_spawn", "briev_task_cancel",
-            "briev_await", "briev_event_alloc", "briev_event_read",
-            "briev_event_fire", "briev_event_ready", "briev_event_strict_trap",
+            "briev_host_arity_of",
             // __getenv_int/__getenv_briev are NOT here: they are adapter-
             // served (the backend emits C-ABI defines over the captured
             // environ). Same for the __argv_* family (retired with cli.bv).

@@ -5860,42 +5860,23 @@ impl LlvmBackend {
 //
 // A spawned defn lowers to N segment functions `__task_<fn>_seg<k>` over a
 // shared argv block (params only — locals die at yield, the probed reference
-// rule), plus a private fn-pointer table. Spawn/await/free call into the C
-// scheduler in briev_rt.c, which drives segments round-robin exactly like
-// the interpreter's Await handler.
+// rule), plus a private fn-pointer table. Spawn/await/event reads call the
+// PURE-BRIEV scheduler twins in lib/std/cast_lanes.bv (briev_task_spawn_impl
+// / briev_await_impl / briev_event_*_impl) over the backend-owned
+// @__briev_sched / @__briev_events head globals, dispatched via TaskCall# —
+// the round-robin is exactly the interpreter's Await handler.
 //
-// TEMP undo: delete this block + the Await/spawn/FreeHint arms + the rt.c
-// block to return to eager-inline spawns.
+// 2026-09-28 (Family H cleanup): the old C-symbol declares here
+// (briev_task_spawn/await/cancel + briev_event_*) were deleted with the C
+// task/event machine in briev_rt.c — no emitted IR references them.
+//
+// TEMP undo: delete this block + the Await/spawn/FreeHint arms to return to
+// eager-inline spawns.
 
 impl crate::backend::llvm::LlvmBackend {
-    /// Emit everything the segmented task runtime needs: extern declares,
-    /// per-task segment functions, and the segment-table globals.
+    /// Emit everything the segmented task runtime needs: per-task segment
+    /// functions and the segment-table globals.
     pub(super) fn emit_task_runtime(&mut self, out: &mut String) {
-        writeln!(out,
-            "declare i64 @briev_task_spawn(ptr, i32, i32, ptr)").ok();
-        // 2026-08-26 (async Phase D): event-port runtime surface.
-        let tm = |n: &str| self.ctx.defn_params.contains_key(n);
-        if !tm("briev_event_alloc_impl") {
-            writeln!(out, "declare i64 @briev_event_alloc()").ok();
-        }
-        if !tm("briev_event_fire_impl") {
-            writeln!(out, "declare void @briev_event_fire(i64, i64)").ok();
-        }
-        if !tm("briev_event_read_impl") {
-            writeln!(out, "declare i32 @briev_event_read(i64, ptr)").ok();
-        }
-        if !tm("briev_event_ready_impl") {
-            writeln!(out, "declare i32 @briev_event_ready(i64)").ok();
-        }
-        if !tm("__briev_event_strict_trap") {
-            writeln!(out, "declare void @briev_event_strict_trap()").ok();
-        }
-        writeln!(out,
-            "declare i64 @briev_await(i64)").ok();
-        writeln!(out,
-            "declare void @briev_task_cancel(i64)").ok();
-        writeln!(out).ok();
-
         let mut names: Vec<String> = self.ctx.task_segments.keys().cloned().collect();
         names.sort();
         for name in &names {
