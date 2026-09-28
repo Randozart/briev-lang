@@ -293,6 +293,11 @@ impl ElectronicsBackend {
         Self::emit_symbol_library(netlist, &components, &power_names, &mut out);
         let pin_xy = Self::emit_instances(netlist, &components, &mut out);
         Self::emit_all_nets(netlist, &pin_xy, &power_names, &mut out);
+        // 2026-09-28: the sheet-instances table is mandatory — a sheet
+        // without it is refused by kicad-cli ("Failed to load schematic").
+        out.push_str("  (sheet_instances\n");
+        out.push_str("    (path \"/\" (page \"1\"))\n");
+        out.push_str("  )\n");
         out.push_str(")\n");
         Ok(out)
     }
@@ -412,7 +417,12 @@ impl ElectronicsBackend {
                 name
             ));
             out.push_str(
-                "      (property \"Reference\" \"#PWR\" (at 0 0 0) (effects (font (size 1.27 1.27)) hide yes))\n",
+                // 2026-09-28: `hide yes` breaks the load — KiCad 10 parses
+                // `hide` as the property flag; the trailing `yes` is then a
+                // stray token. (The `(hide yes)` form inside an INSTANCE
+                // property's effects still loads — only the bare-flag form
+                // here is rejected.)
+                "      (property \"Reference\" \"#PWR\" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))\n",
             );
             out.push_str(&format!(
                 "      (property \"Value\" \"{}\" (at 0 -3.81 0) (effects (font (size 1.27 1.27))))\n",
@@ -617,7 +627,11 @@ impl ElectronicsBackend {
             Self::uuid(&format!("pwr:{}", p.net_index))
         ));
         out.push_str(&format!(
-            "    (property \"Reference\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) hide yes))\n",
+            // 2026-09-28: bare `hide` — the `hide yes` form breaks the load
+            // (KiCad 10 reads `hide` as the property flag, `yes` as a stray
+            // token); the `(hide yes)` nested form on Footprint/JLCPCN is
+            // still accepted.
+            "    (property \"Reference\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) hide))\n",
             reference,
             coord(p.sx),
             coord(p.sy)
@@ -716,12 +730,15 @@ impl ElectronicsBackend {
 
     fn uuid(tag: &str) -> String {
         // Deterministic UUID-shaped identifiers — schematics diff cleanly.
+        // 2026-09-28: the last group must be 12 HEX digits ({:012x}); the
+        // previous {:012} printed decimal, overflowing the group (up to 15
+        // digits) and KiCad refused to load the file outright.
         let mut h: u64 = 1_469_598_103_934_665_603;
         for b in tag.bytes() {
             h ^= b as u64;
             h = h.wrapping_mul(1_099_511_628_211);
         }
-        format!("b713e5c0-0000-4000-8000-{:012}", h & 0xFFFF_FFFF_FFFF)
+        format!("b713e5c0-0000-4000-8000-{:012x}", h & 0xFFFF_FFFF_FFFF)
     }
 
     // ── emission ──────────────────────────────────────────────────────
@@ -926,7 +943,11 @@ impl ElectronicsBackend {
         if symbol_pt.is_none() {
             let (x, y) = ordered[0];
             out.push_str(&format!(
-                "  (label \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) (justify (left bottom))) (uuid \"{}\"))\n",
+                // 2026-09-28: KiCad 10 parses justify tokens bare
+                // (`(justify left bottom)`); the parenthesized form
+                // (`(justify (left bottom))`) fails the whole-file load.
+                // The uuid is REQUIRED on a label (wires tolerate absence).
+                "  (label \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid \"{}\"))\n",
                 label,
                 coord(x + 1.27),
                 coord(y),
@@ -1300,6 +1321,73 @@ mod tests {
         assert_eq!(lines[0], "reference,value,footprint,jlcpcn");
         assert_eq!(lines[1], "R1,330,0603,C12345");
         assert_eq!(lines.len(), 2, "unpop part must be absent: {bom}");
+    }
+
+    #[test]
+    fn emitted_sheet_is_kicad_10_loadable() {
+        // 2026-09-28 (E3 prep): kicad-cli 10 refused our sheets outright.
+        // Three load blockers, each asserted structurally here and gated
+        // against the real tool at the fixture level:
+        //   1. uuid last group must be 12 hex digits ({:012x}, not {:012}).
+        //   2. label justify must be bare tokens — `(justify left bottom)`.
+        //   3. the sheet_instances table is mandatory.
+        let sch = ElectronicsBackend::generate(&netlist_of(LED_CIRCUIT)).unwrap();
+        let uuid_re = regex::Regex::new(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        )
+        .unwrap();
+        let uuids: Vec<&str> = sch
+            .match_indices("(uuid \"")
+            .filter_map(|(i, _)| {
+                let rest = &sch[i + 7..];
+                let end = rest.find('"')?;
+                Some(&rest[..end])
+            })
+            .collect();
+        assert!(uuids.len() >= 3, "expected uuids on sheet+symbols+wires: {sch}");
+        for u in &uuids {
+            assert!(uuid_re.is_match(u), "malformed uuid '{u}' in:\n{sch}");
+        }
+        assert!(sch.contains("(sheet_instances\n    (path \"/\" (page \"1\"))\n  )"), "sheet_instances missing:\n{sch}");
+        assert!(sch.contains("(justify left bottom)"), "bare justify missing:\n{sch}");
+        assert!(
+            !sch.contains("(justify (left bottom))"),
+            "parenthesized justify must not appear:\n{sch}"
+        );
+    }
+
+    #[test]
+    fn power_symbol_hide_is_bare() {
+        // 2026-09-28 (E3 prep): the power-symbol `hide yes` broke the load —
+        // KiCad 10 reads `hide` as the property flag and `yes` as a stray
+        // token. Both the lib-symbol and instance Reference properties must
+        // be bare `hide`. Gated against the real tool at the fixture level.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Led { pin a; pin k; reference "D"; spec Tolerance: any; };
+            type Reg { pin vin: Power; pin vout: Power; pin gnd: Ground; reference "U"; spec Tolerance: any; };
+            let j1: Reg = Reg { value: "ldo" };
+            let d1: Led = Led { value: "red" };
+            txn powered
+                [j1.vin.voltage == j1.vout.voltage && j1.vout.voltage == d1.a.voltage && d1.k.voltage == j1.gnd.voltage]
+                [d1.k.voltage == j1.gnd.voltage]
+            { }
+        "#;
+        let sch = ElectronicsBackend::generate(&netlist_of(src)).unwrap();
+        assert!(sch.contains("(property \"Reference\" \"#PWR"), "expected a power symbol: {sch}");
+        // The power-symbol Reference property must be bare `hide`, never
+        // `hide yes` (KiCad 10 rejects the latter as a stray token).
+        for line in sch.lines() {
+            if line.contains("(property \"Reference\" \"#PWR") {
+                assert!(
+                    line.contains("(effects (font (size 1.27 1.27)) hide)"),
+                    "power Reference property must be bare 'hide': {line}"
+                );
+                assert!(!line.contains("hide yes"), "power Reference uses 'hide yes': {line}");
+            }
+        }
     }
 
     #[test]
