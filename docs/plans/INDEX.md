@@ -138,28 +138,42 @@ From this index's 2026-09-08 pass — **verify freshness before starting**:
 
 ## Open bugs / known gaps (`BUGS.md`)
 
-- Tuple-returning defn with a String field mis-lays it as i64 — **OPEN** (2026-09-09).
 - CIRCT `ExportVerilog` `hw.module.generated` — **OPEN** (toolchain).
 - GPU shallow-K emitter race — **OPEN, correctness-gated**.
 - Baseline-harness defects — **PARTIAL**; protocol round-trip proofs — **PARTIAL**.
 - `json.bv` migration blocked on generic type inference + three language gaps.
 - `hardware_validator` dead code — OPEN (found in C2; unclaimed).
-- **BEAST drops all TypeDef members** (`members: vec![]` both sides) — nested
-  state cannot round-trip through `.f` profiles; pre-existing.
-- `get_env_int_or` migration (~20 benchmark sources) — deferred.
-- **Stale-binary guard** — no mechanical guard; bit twice (C0, C2). `cargo
-  build` before trusting `brievc`.
 - `2026-09-11-phase2b2-instance-state.md` — extracted housekeeping item, pending.
+
+**Closed 2026-09-28** (this session, umbrella
+`2026-09-28-native-daily-use-gpu-parity-umbrella.md`):
+- Tuple-returning defn with a String field — **FIXED-VERIFIED** at tip
+  `1d0dc01f` (repro compiles + runs; BUGS.md entry updated).
+- BEAST TypeDef members — **FIXED** (`1300ce92`): serialize/deserialize
+  round-trip `body.members` + `parse_toplevel` dispatch + round-trip test.
+- **Stale-binary guard — SHIPPED** (`478940bb`): `brievc freshness`
+  command, mtime compare vs `src/`+`config/`, exit 1 + offending file
+  when stale.
+- `get_env_int_or` migration — **STALE INDEX ENTRY**: zero references
+  remain (env.bv replaced the intrinsic 2026-07-19); no action needed.
+- Front D (umbrella stage 1) — **A/B REJECTED 2026-09-25** (deferred
+  emitter stays; plain path 26× slower on composite @4096;
+  `benchmarks/results/2026-09-25-front-d-ab.md`). Stage 1 verdict
+  settled — no re-run needed at the 2026-09-28 tip.
 
 ---
 
 ## Recommended starting points (no foreign-lane overlap)
 
-1. **Front D retirement** — umbrella's mandated next stage; self-contained GPU A/B.
+1. **GPU re-baseline + re-rank** (umbrella stage 5) — stage 1 (Front D) is
+   settled REJECTED; the stage-5 candidate list needs a fresh baseline at
+   the current tip before picking 5a/5b/5c/5d.
 2. **Wave 2b runtime pairs / alias binding** — approved design, biggest interop value.
-3. **Quick wins** — `hardware_validator` hookup; stale-binary guard.
+3. **Quick wins** — `hardware_validator` hookup (stale-binary guard now
+   shipped: `brievc freshness`).
 4. **C4 pinout records** — self-contained `.dbv` grammar + validator + `--fab`.
-5. **Runtime families D+** — parity-harness-driven, msured.
+5. **Runtime families H/I/J** — finish `briev_rt.c` (511 lines remain:
+   async/event machine, spawn/setenv, Tamer HCALL, string-bitop helpers).
 
 ---
 
