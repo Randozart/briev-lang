@@ -368,6 +368,23 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
                 out.push_str("};");
             }
         }
+        TopLevel::Data(t) => {
+            indent(out, level);
+            let _ = write!(out, "data {}: ", t.name);
+            for d in &t.dims {
+                let _ = write!(out, "[{}]", d);
+            }
+            let _ = write!(out, " = [");
+            let n = t.cells.len();
+            for (i, c) in t.cells.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "{}", c);
+            }
+            let _ = write!(out, "];");
+            let _ = n;
+        }
         TopLevel::ResourceDecl(_)
         | TopLevel::ForeignBinding(_)
         | TopLevel::Codec(_)

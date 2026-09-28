@@ -147,6 +147,25 @@ pub enum TopLevel {
     /// once before `beginprogram`/any transition fires; provably immutable
     /// thereafter. Optionally declares an expected value set.
     Init(InitDecl),
+    /// 2026-09-27 (E2): a constant data table — `data name: Type[dims] =
+    /// [ cells ];`. A compile-time named binding of integer cells in row-major
+    /// order, usable in instance `value`/`package` positions by index.
+    Data(DataTable),
+}
+
+/// 2026-09-27 (E2, design record D1): a named constant data table. `dims` is
+/// the declared per-row shape (1-D: one length; N-D: chained lengths);
+/// `cells` is the row-major cell list (declaration order — the determinism
+/// rule). Cells are integer literals for the first class.
+#[derive(Debug, Clone)]
+pub struct DataTable {
+    pub name: String,
+    /// Declared dimensions (1-D: `[8]`; 2-D: `[16][8]`; …), in declaration
+    /// order. `cells.len()` must equal the product of `dims`.
+    pub dims: Vec<u64>,
+    /// Row-major cell list, declaration order.
+    pub cells: Vec<i64>,
+    pub span: Option<Span>,
 }
 
 // ── InitDecl ──────────────────────────────────────────────────────────

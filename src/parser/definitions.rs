@@ -59,6 +59,11 @@ impl<'a> Parser<'a> {
         if self.check_identifier("budget") {
             return self.parse_top_level_budget();
         }
+        // 2026-09-27 (E2, design record D1): `data name: Type[dims] =
+        // [ cells ];` — a named constant data table. Contextual keyword.
+        if self.check_identifier("data") {
+            return self.parse_top_level_data();
+        }
         // 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
         // Slice B): `unpop <inst>;` — a part excluded from the BOM but
         // verified in both present/absent states. Contextual keyword.
@@ -1973,6 +1978,159 @@ impl<'a> Parser<'a> {
             contract,
             span: None,
         }))
+    }
+
+    /// 2026-09-27 (E2, D1): `data name: Type[dims] = [ cells ];` — a named
+    /// constant data table. 1-D and N-D forms; `dims` are the chained
+    /// `[n]` lengths, `cells` is the row-major integer-literal list.
+    /// `cells.len()` must equal the product of `dims` (a ragged/short row
+    /// is a hard error naming the table).
+    fn parse_top_level_data(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume `data`
+        let name = self.expect_identifier()?;
+        self.expect(Token::Colon)?;
+        let _base = self.expect_identifier()?; // Int (the first-class cell type)
+        let mut dims: Vec<u64> = Vec::new();
+        while self.eat(&Token::LBracket) {
+            let n = self.expect_integer()?;
+            if n == 0 {
+                return self.error_at_current(&format!(
+                    "data table '{}' declares a dimension of 0 — state a length >= 1",
+                    name
+                ));
+            }
+            self.expect(Token::RBracket)?;
+            dims.push(n as u64);
+        }
+        if dims.is_empty() {
+            return self.error_at_current(&format!(
+                "data table '{}' needs at least one dimension — `data {}: T[n] = [ … ];`",
+                name, name
+            ));
+        }
+        self.expect(Token::Eq)?;
+        let cells = self.parse_data_cells(&name, &dims)?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::Data(crate::ast::top::DataTable {
+            name,
+            dims,
+            cells,
+            span: None,
+        }))
+    }
+
+    /// The cell list of a data table: `[ v, v, … ]` (1-D) or nested
+    /// `[ [ v, … ], [ v, … ] ]` (N-D). Row-major, declaration order. Each
+    /// cell is an integer literal; a non-integer cell or a cell count that
+    /// mismatches the declared shape is a hard error naming the table.
+    fn parse_data_cells(&mut self, name: &str, dims: &[u64]) -> Result<Vec<i64>, SyntaxError> {
+        let mut cells: Vec<i64> = Vec::new();
+        if !self.eat(&Token::LBracket) {
+            return self.error_at_current(&format!(
+                "data table '{}' needs a cell list — `data {} = [ … ];`",
+                name, name
+            ));
+        }
+        self.parse_data_cell_row(name, dims, 0, &mut cells)?;
+        let expected: u64 = dims.iter().product();
+        if cells.len() as u64 != expected {
+            return self.error_at_current(&format!(
+                "data table '{}' declares {} cell{} but lists {} — state the full row-major list",
+                name,
+                expected,
+                if expected == 1 { "" } else { "s" },
+                cells.len()
+            ));
+        }
+        Ok(cells)
+    }
+
+    /// One row of a data table at `depth`. `depth == dims.len()` is the leaf
+    /// (the 1-D innermost); each nested `[` opens a row and each `]` closes
+    /// it. A ragged row (a row with the wrong cell count) is a hard error.
+    fn parse_data_cell_row(
+        &mut self,
+        name: &str,
+        dims: &[u64],
+        depth: usize,
+        cells: &mut Vec<i64>,
+    ) -> Result<(), SyntaxError> {
+        if depth + 1 == dims.len() {
+            return self.parse_data_leaf_row(name, cells);
+        }
+        self.parse_data_nested_row(name, dims, depth, cells)
+    }
+
+    /// A leaf row: a run of integer literals terminated by `]`. `]` alone
+    /// (an empty row) is legal — the cell-count check reports the short list.
+    fn parse_data_leaf_row(&mut self, name: &str, cells: &mut Vec<i64>) -> Result<(), SyntaxError> {
+        loop {
+            if self.eat(&Token::RBracket) {
+                return Ok(());
+            }
+            let v = self.parse_data_cell(name)?;
+            cells.push(v);
+            if self.eat(&Token::Comma) {
+                continue;
+            }
+            if !self.eat(&Token::RBracket) {
+                return self.error_at_current(&format!(
+                    "data table '{}' cell row needs a comma between cells or a closing bracket",
+                    name
+                ));
+            }
+            return Ok(());
+        }
+    }
+
+    /// A nested row: `dims[depth]` sub-rows, each `[`-opened, comma-separated,
+    /// with this level's closing `]`.
+    fn parse_data_nested_row(
+        &mut self,
+        name: &str,
+        dims: &[u64],
+        depth: usize,
+        cells: &mut Vec<i64>,
+    ) -> Result<(), SyntaxError> {
+        let row_len = dims[depth];
+        for i in 0..row_len {
+            if !self.eat(&Token::LBracket) {
+                return self.error_at_current(&format!(
+                    "data table '{}' row {} is missing its opening bracket",
+                    name, i
+                ));
+            }
+            self.parse_data_cell_row(name, dims, depth + 1, cells)?;
+            if i + 1 < row_len && !self.eat(&Token::Comma) {
+                return self.error_at_current(&format!(
+                    "data table '{}' needs a comma between rows",
+                    name
+                ));
+            }
+        }
+        if !self.eat(&Token::RBracket) {
+            return self.error_at_current(&format!(
+                "data table '{}' cell list is missing its closing bracket",
+                name
+            ));
+        }
+        Ok(())
+    }
+
+    /// One cell: an integer literal (the first class). A non-integer or a
+    /// malformed cell is a hard error naming the table.
+    fn parse_data_cell(&mut self, name: &str) -> Result<i64, SyntaxError> {
+        match self.peek() {
+            Some(Token::Integer(n)) => {
+                let v = *n;
+                self.pos += 1;
+                Ok(v)
+            }
+            _ => self.error_at_current(&format!(
+                "data table '{}' cell must be an integer literal — the first class carries Int cells only",
+                name
+            )),
+        }
     }
 
     /// 2026-09-22 (Slice B): `unpop <inst>;` — a participation fact naming
@@ -4875,6 +5033,60 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let err = p.parse_program().expect_err("missing from must error");
         assert!(format!("{err}").contains("from"), "{err}");
+    }
+
+    // ── 2026-09-27 (E2, data tables): parser slice ──────────────────────
+
+    #[test]
+    fn test_data_table_1d_parses_row_major_cells() {
+        // `data r: Int[4] = [ 10, 20, 30, 40 ];` — dims + declaration order.
+        let tl = parse_top("data r: Int[4] = [ 10, 20, 30, 40 ];").unwrap();
+        let crate::ast::TopLevel::Data(t) = tl else { panic!("expected Data, got {:?}", tl) };
+        assert_eq!(t.name, "r");
+        assert_eq!(t.dims, vec![4]);
+        assert_eq!(t.cells, vec![10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn test_data_table_2d_parses_row_major_cells() {
+        // `data m: Int[2][3]` — chained dims, flattened row-major cells.
+        let tl = parse_top("data m: Int[2][3] = [ [1, 2, 3], [4, 5, 6] ];").unwrap();
+        let crate::ast::TopLevel::Data(t) = tl else { panic!("expected Data, got {:?}", tl) };
+        assert_eq!(t.name, "m");
+        assert_eq!(t.dims, vec![2, 3]);
+        assert_eq!(t.cells, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_data_table_cell_count_mismatch_is_an_error() {
+        // A ragged row (fewer cells than declared) names the table + counts.
+        let err = parse_top("data m: Int[2][3] = [ [1, 2, 3], [4, 5] ];")
+            .expect_err("short row must error");
+        assert!(err.contains("data table 'm'"), "{err}");
+        assert!(err.contains("declares 6"), "{err}");
+        assert!(err.contains("lists 5"), "{err}");
+    }
+
+    #[test]
+    fn test_data_table_non_integer_cell_is_an_error() {
+        // The first class carries Int cells only; the error names the table.
+        let err = parse_top("data r: Int[2] = [ 1, foo ];").expect_err("non-int cell must error");
+        assert!(err.contains("data table 'r'"), "{err}");
+        assert!(err.contains("integer literal"), "{err}");
+    }
+
+    #[test]
+    fn test_data_table_missing_dimension_is_an_error() {
+        let err = parse_top("data r: Int = [ 1 ];").expect_err("missing dims must error");
+        assert!(err.contains("data table 'r'"), "{err}");
+        assert!(err.contains("dimension"), "{err}");
+    }
+
+    #[test]
+    fn test_data_table_zero_dimension_is_an_error() {
+        let err = parse_top("data r: Int[0] = [ ];").expect_err("zero dim must error");
+        assert!(err.contains("data table 'r'"), "{err}");
+        assert!(err.contains("dimension of 0"), "{err}");
     }
 
     use crate::lexer::tokenize;
