@@ -160,8 +160,14 @@ pub enum TopLevel {
 #[derive(Debug, Clone)]
 pub struct DataTable {
     pub name: String,
+    /// The declared type as parsed — `Int[2][2]` (a Vector of the cell
+    /// type). The typechecker binds the table name at this type so an
+    /// indexed field (`value: w[i][j]`) infers the cell type; resolution
+    /// to a literal cell is analysis's job.
+    pub ty: Type,
     /// Declared dimensions (1-D: `[8]`; 2-D: `[16][8]`; …), in declaration
-    /// order. `cells.len()` must equal the product of `dims`.
+    /// order — the same extents as `ty`. `cells.len()` must equal the
+    /// product of `dims`.
     pub dims: Vec<u64>,
     /// Row-major cell list, declaration order.
     pub cells: Vec<i64>,

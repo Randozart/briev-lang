@@ -9653,6 +9653,24 @@ mod tests {
     }
 
     #[test]
+    fn data_table_tile_fixture_resolves_all_cells() {
+        // 2026-09-27 (E2 gate): the committed fixture — a 2×2 tile fed
+        // from a 2×2 matrix — resolves all four cells with no intent
+        // errors; the emitter gate (byte-identical BOM, two byte-identical
+        // runs) is checked against the same fixture at the CLI.
+        let src = include_str!("../../tests/electronics/data_table_tile.ebv");
+        let nl = analyze(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        let cells: Vec<Option<&str>> = nl
+            .components
+            .iter()
+            .filter(|c| c.name.starts_with("t["))
+            .map(value_property)
+            .collect();
+        assert_eq!(cells, [Some("100"), Some("220"), Some("330"), Some("470")]);
+    }
+
+    #[test]
     fn thru_strategy_narrows_to_type() {
         // Two switches, different types: `via Fet` selects q1.
         let src = MECH_BOARD.replace(

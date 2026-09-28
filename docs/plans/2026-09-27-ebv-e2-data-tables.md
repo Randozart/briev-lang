@@ -2,7 +2,9 @@
 
 Date: 2026-09-27
 Gap: `2026-09-21-hardware-dialect-gaps.md` E2 (data tables)
-Status: OPEN — plan only; slices pending
+Status: LANDED 2026-09-27 — slices 1–3 closed (`cfe170c9` parser+AST,
+`b1056d29` resolution + binder substitution, this commit the gate
+fixture); gap E2 → CLOSED
 
 ## Problem
 

@@ -4151,6 +4151,13 @@ pub fn check_program_with_target(
                 TopLevel::Constant(c) => {
                     return Some((c.name.clone(), c.ty.clone()));
                 }
+                // 2026-09-27 (E2): a data table binds its name at the
+                // declared vector type so an indexed field (`value:
+                // w[i][j]`) infers the cell type; resolution to a literal
+                // cell is electronics analysis's job.
+                TopLevel::Data(t) => {
+                    return Some((t.name.clone(), t.ty.clone()));
+                }
                 // 2026-08-27 (cbv-HW plan Slice B): an @-addressed trigger is
                 // an MMIO INPUT pin — its VALUE is a readable Int in txn/defn
                 // bodies on every target (volatile load on embedded, pin wire

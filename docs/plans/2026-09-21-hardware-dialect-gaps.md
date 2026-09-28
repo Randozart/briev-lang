@@ -86,6 +86,24 @@ track below.
 - **Effort:** M
 
 ### E2 — No data tables feeding instance values
+- **Status:** CLOSED 2026-09-27 (plan
+  `2026-09-27-ebv-e2-data-tables.md`): slice 1 `cfe170c9` — `data
+  name: Int[dims] = [ cells ];` parses to `TopLevel::Data` (the declared
+  Vector type, literal extents, row-major Int cells); a malformed or
+  ragged cell list, a missing/zero/named dimension, and a non-Int cell
+  type are hard errors naming the table. Slice 2 `b1056d29` — named
+  instance-array binders (`let t[i:2][j:2]`) substitute per-element into
+  indexed literal fields at parse (`value: w[i][j]` → `w[0][1]` per
+  element), and `collect_instances` resolves the indexed field to its
+  cell's literal string — byte-identical to the same hand-written
+  literal in the BOM; hard errors name table + index (duplicate
+  declaration, bare table name, missing table, non-literal index,
+  dimension mismatch, out-of-range); the typechecker binds the table
+  name at its declared vector type so the indexed field infers the cell
+  type. Slice 3 (this commit) — the `tests/electronics/data_table_tile.ebv`
+  gate fixture (a 2×2 tile fed from a 2×2 matrix): compiles with 0
+  errors, the BOM carries all four cell values, two runs are
+  byte-identical.
 - **Evidence:** no constant-table AST form exists; instance `value` fields
   are string literals only.
 - **Blocks:** weight-matrix-driven population (which pad gets which value)

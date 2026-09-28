@@ -1981,42 +1981,56 @@ impl<'a> Parser<'a> {
     }
 
     /// 2026-09-27 (E2, D1): `data name: Type[dims] = [ cells ];` — a named
-    /// constant data table. 1-D and N-D forms; `dims` are the chained
-    /// `[n]` lengths, `cells` is the row-major integer-literal list.
-    /// `cells.len()` must equal the product of `dims` (a ragged/short row
-    /// is a hard error naming the table).
+    /// constant data table. The type parses through the ordinary type
+    /// parser (so the cell type carries its canonical form); the shape
+    /// check demands a Vector of first-class Int cells with literal
+    /// extents. `cells.len()` must equal the product of `dims` (a ragged
+    /// row is a hard error naming the table).
     fn parse_top_level_data(&mut self) -> Result<TopLevel, SyntaxError> {
         self.pos += 1; // consume `data`
         let name = self.expect_identifier()?;
         self.expect(Token::Colon)?;
-        let _base = self.expect_identifier()?; // Int (the first-class cell type)
-        let mut dims: Vec<u64> = Vec::new();
-        while self.eat(&Token::LBracket) {
-            let n = self.expect_integer()?;
-            if n == 0 {
+        let ty = self.parse_type()?;
+        let dims = self.data_dims(&name, &ty)?;
+        self.expect(Token::Eq)?;
+        let cells = self.parse_data_cells(&name, &dims)?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::Data(crate::ast::top::DataTable { name, ty, dims, cells, span: None }))
+    }
+
+    /// The declared shape of a data table: a Vector of first-class Int
+    /// cells with literal extents ≥ 1; anything else names the fix.
+    fn data_dims(&mut self, name: &str, ty: &crate::ast::Type) -> Result<Vec<u64>, SyntaxError> {
+        let crate::ast::Type::Vector(base, dims) = ty else {
+            return self.error_at_current(&format!(
+                "data table '{}' needs a dimension — declare `data {}: Int[n] = [ … ];`",
+                name, name
+            ));
+        };
+        if **base != crate::ast::Type::int() {
+            return self.error_at_current(&format!(
+                "data table '{}' declares cells of {} — the first class carries Int cells only",
+                name, base
+            ));
+        }
+        let mut out = Vec::with_capacity(dims.len());
+        for d in dims {
+            let crate::ast::Dimension::Anonymous(n) = d else {
+                return self.error_at_current(&format!(
+                    "data table '{}' states a named dimension — give a literal extent, for \
+                     example `[8]`",
+                    name
+                ));
+            };
+            if *n == 0 {
                 return self.error_at_current(&format!(
                     "data table '{}' declares a dimension of 0 — state a length >= 1",
                     name
                 ));
             }
-            self.expect(Token::RBracket)?;
-            dims.push(n as u64);
+            out.push(*n as u64);
         }
-        if dims.is_empty() {
-            return self.error_at_current(&format!(
-                "data table '{}' needs at least one dimension — `data {}: T[n] = [ … ];`",
-                name, name
-            ));
-        }
-        self.expect(Token::Eq)?;
-        let cells = self.parse_data_cells(&name, &dims)?;
-        self.eat(&Token::Semicolon);
-        Ok(TopLevel::Data(crate::ast::top::DataTable {
-            name,
-            dims,
-            cells,
-            span: None,
-        }))
+        Ok(out)
     }
 
     /// The cell list of a data table: `[ v, v, … ]` (1-D) or nested
