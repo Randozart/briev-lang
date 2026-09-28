@@ -41,6 +41,12 @@ pub fn eval_expr(
         Expr::BeginProgram => Ok(Value::Atom(Atom::Bool(true))),
         Expr::Char(c) => Ok(Value::Atom(Atom::Char(*c))),
         Expr::Quoted(bytes) | Expr::TaggedQuotedLiteral(bytes, _) => Ok(Value::bits(bytes.clone())),
+        // 2026-09-28 (E3): the `[*]` selector is an electronics-only leaf,
+        // eagerly expanded in analysis — never an interpreter value.
+        Expr::Wildcard => Err(RuntimeError::TypeError {
+            expected: "an evaluable expression".into(),
+            found: "the `[*]` wildcard selector (electronics-only)".into(),
+        }),
 
         // ── References ──────────────────────────────────────────
         Expr::Identifier(name) => bindings

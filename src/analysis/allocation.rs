@@ -264,6 +264,8 @@ impl<'a> DagBuilder<'a> {
 
     fn walk_expr(&mut self, expr: &mut Expr) {
         match expr {
+            // 2026-09-28 (E3): the `[*]` selector is a leaf — nothing to walk.
+            Expr::Wildcard => {}
             Expr::Consume(inner) | Expr::Await(inner) => {
                 self.walk_expr(inner);
             }

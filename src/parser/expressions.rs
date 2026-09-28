@@ -574,6 +574,15 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
                 let name = self.expect_identifier()?;
                 expr = Expr::Reflect(Box::new(expr), name, ReflectKind::Runtime);
             } else if self.eat(&Token::LBracket) {
+                // 2026-09-28 (E3): `arr[*]` — the wildcard selector, every
+                // element of the array. `*` here is the wildcard INSIDE the
+                // containment `[]` (Rule 21): `[]` = bound, `*` = "all".
+                // Only valid as a full single-dimension selector.
+                if self.eat(&Token::Star) {
+                    self.expect(Token::RBracket)?;
+                    expr = Expr::Index(Box::new(expr), Box::new(Expr::Wildcard));
+                    continue;
+                }
                 // 2026-08-22 (spec-conformance plan Phase 6b, SPEC §16.5):
                 // `a[...]` — the FULL-RANGE ellipsis. Single-dimension it is
                 // exactly `a[:]` (whole copy). A comma after any selector

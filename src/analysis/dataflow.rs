@@ -92,6 +92,8 @@ impl<'a> DataflowAnalyzer<'a> {
     fn extract_ids_recursive(&self, expr: &Expr, ids: &mut HashSet<String>) {
         match expr {
             Expr::Identifier(name) => { ids.insert(name.clone()); }
+            // 2026-09-28 (E3): the `[*]` selector is a leaf — no ids inside.
+            Expr::Wildcard => {}
             Expr::Decimal(_) | Expr::TaggedLiteral(_, _) | Expr::Char(_) | Expr::Float(_) | Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _) | Expr::Bool(_) | Expr::BeginProgram => {}
             Expr::BinaryOp(_, l, r) => {
                 self.extract_ids_recursive(l, ids);

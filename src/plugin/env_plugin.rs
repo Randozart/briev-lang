@@ -125,6 +125,8 @@ fn walk_expr(expr: &mut Expr) {
                 *expr = replacement;
             }
         }
+        // 2026-09-28 (E3): the `[*]` selector is a leaf — no nested intercepts.
+        Expr::Wildcard => {}
         Expr::BinaryOp(_, lhs, rhs) => {
             walk_expr(lhs);
             walk_expr(rhs);

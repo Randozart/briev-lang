@@ -903,6 +903,10 @@ pub fn infer_expression(
         Expr::Bool(_) => Ok((Type::bool_(), Provenance::Unknown)),
         Expr::BeginProgram => Ok((Type::bool_(), Provenance::Unknown)),
         Expr::Quoted(_) => Ok((Type::string(), Provenance::Unknown)),
+        // 2026-09-28 (E3): the `[*]` selector is a leaf — it only appears in
+        // electronics preconditions (eagerly expanded there); give it a
+        // permissive scalar type so the general typechecker accepts it.
+        Expr::Wildcard => Ok((Type::int(), Provenance::Unknown)),
         // 2026-08-06 (Phase 7): `#b"..."` (TaggedQuotedLiteral prefix "b") is a
         // Data byte literal; other prefix-tagged literals are Strings.
         Expr::TaggedQuotedLiteral(_, prefix) => {

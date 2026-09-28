@@ -377,6 +377,9 @@ fn expr_needs_state(
         stmts.iter().any(|s| stmt_needs_state(s, regular, txns, state_fields, always_stateful, locals, needs))
     };
     match expr {
+        // 2026-09-28 (E3): the `[*]` selector carries no runtime state — it is
+        // a leaf, resolved by eager expansion before codegen.
+        Expr::Wildcard => false,
         // Field access always needs state (reads struct metadata)
         Expr::Field(_, _) => true,
         Expr::Call(name, args, _) => {

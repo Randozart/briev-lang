@@ -125,6 +125,8 @@ impl Annotator {
         match expr {
             Expr::Exists(_) => {},
             Expr::BeginProgram => {},
+            // 2026-09-28 (E3): the `[*]` selector is a leaf — no calls inside.
+            Expr::Wildcard => {},
             Expr::Slice { array, start, end, stride } => {
                 self.collect_calls_from_expr(array, calls);
                 if let Some(e) = start.as_deref() { self.collect_calls_from_expr(e, calls); }
@@ -540,6 +542,8 @@ impl Annotator {
             Expr::Consume(inner) => format!("~{}", self.format_expr(inner)),
             Expr::Await(inner) => format!("await {}", self.format_expr(inner)),
             Expr::BeginProgram => "beginprogram".to_string(),
+            // 2026-09-28 (E3): the `[*]` selector renders as `*`.
+            Expr::Wildcard => "*".to_string(),
             Expr::Decimal(n) | Expr::TaggedLiteral(n, _) => n.to_string(),
             Expr::Float(f) => f.to_string(),
             Expr::Quoted(s) | Expr::TaggedQuotedLiteral(s, _) => format!("\"{}\"", String::from_utf8_lossy(s)),

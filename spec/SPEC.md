@@ -297,7 +297,15 @@ An array of total length 1 expands to the bare name (`let x[1]` → `x`),
 mirroring the pin-array single-element rule; a zero extent is a parse
 error; the initializer must be a component literal. Expansion happens
 in the parser — netlist, contracts, and the emitter see named ordinary
- instances (`r[0]`), never an array type.
+instances (`r[0]`), never an array type.
+
+**Wildcard element access (2026-09-28).** `[*]` selects *every* element of
+an array in an expression — an instance array (`t[*].a.voltage` ranges all
+elements of `t`) or a pin array on a concrete instance
+(`u2.gpio[*].voltage` ranges every element pin). It is the compact form of
+the element-by-element spelling and is resolved by the same eager
+expansion (the netlist stays array-blind). `[*]` means *all*; a bounded
+range `[lo..hi]` still means *a bound* — the two are distinct selectors.
 
  **Quantities are bare (2026-09-23).** Spec values that are physics carry
  the unit grammar as notation, never a quoted string: `spec Decouple:
@@ -559,6 +567,18 @@ precondition expands element-wise: `u2.gpio[0..=3].voltage ==
 u3.data[0..=3].voltage` unions each element pair. Half-open `[0..3]` is
 three elements; inclusive `[0..=3]` is four. A length mismatch or an
 empty/reversed range is a hard error — the buses must agree element-wise.
+
+**Wildcard wiring (2026-09-28).** A `[*]` pin access in a precondition
+equality expands to every element, with two rules:
+- `scalar == wildcard` is a **broadcast** — the scalar pin joins *every*
+  expanded element on one net. `j1.p1.voltage == t[*].a.voltage` puts the
+  connector pin and all 512 `t` `a`-pins on a single node. This is the
+  rail-to-bank form.
+- `wildcard == wildcard` is **element-wise** (paired by flattened index,
+  like the range form); the two sides must have the same element count.
+- `[*]` spans an instance array (`t[*].a.voltage`, any dimensionality) or
+  a pin array (`u2.gpio[*].voltage`). Expansion order is declaration
+  (row-major) order — the E1 rule.
 
 **Contracts are the wiring and the physics.** There is no connection
 operator. Preconditions state topology — a `==` between two pin accesses

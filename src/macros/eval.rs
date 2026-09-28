@@ -1984,6 +1984,8 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
     fn resolve_dollar_refs_in_expr(expr: &mut Expr, scope: &Scope) -> Result<(), String> {
     match expr {
         Expr::UnitLiteral { .. } => Ok(()),
+        // 2026-09-28 (E3): the `[*]` selector is a leaf — no dollar refs inside.
+        Expr::Wildcard => Ok(()),
         Expr::Identifier(name) => {
             // $$escape → produce literal $ident (no interpolation). The leading
             // $ is preserved but won't be re-matched by $ident because we return.
