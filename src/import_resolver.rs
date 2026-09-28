@@ -1095,9 +1095,33 @@ impl ImportResolver {
         };
 
         self.run_module_prelude(import.path(), &resolved_str, &mut imported_program)?;
+        // 2026-09-27 (interop Wave 2 C1 — the graft pattern, bridge design
+        // record §"The graft pattern"): a `.sbv` module grafts its
+        // file-scope declarations LIKE ANY MODULE (resolved below through
+        // the ordinary path — fields as shared program state, types/defns
+        // as declarations, its prelude-inserted std/electronics import
+        // splicing transitively) PLUS the synthesized component typedef:
+        // pins ≡ fields, identity not a bridge. Projection reads THIS
+        // file's parsed items only — never the transitive splice — so it
+        // runs on `imported_program` before the move. `classify` is
+        // Silicon iff the extension is `.sbv` (explicit only — the
+        // extension-less search never picks it, Wave 1 C2). The component
+        // leads the graft (the board-facing surface), C4-gated with
+        // everything else.
+        // How to undo: drop this block with `project_sbv_component`.
+        let sbv_component = if classify(&resolved_path) == Some(SourceKind::Silicon) {
+            Some(project_sbv_component(import, &imported_program))
+        } else {
+            None
+        };
         let module_len = imported_program.len();
-        let (resolved, resolved_origins) =
+        let (mut resolved, mut resolved_origins) =
             self.resolve_imports_inner(imported_program, vec![Some(m_id); module_len], &resolved_path)?;
+        if let Some(component) = sbv_component {
+            let n = component.len();
+            resolved.splice(0..0, component);
+            resolved_origins.splice(0..0, vec![Some(m_id); n]);
+        }
         if import.path().contains("glue/c") {
         }
 
@@ -1381,6 +1405,23 @@ impl ImportResolver {
             TopLevel::StateDecl(mut s) => { s.name = local.to_string(); TopLevel::StateDecl(s) }
             TopLevel::TypeDef(mut t) => { t.name = local.to_string(); TopLevel::TypeDef(t) }
             TopLevel::Trait(mut t) => { t.name = local.to_string(); TopLevel::Trait(t) }
+            // 2026-09-27 (Wave 2 C1 — the graft pattern): top-level state
+            // renames. A die field colliding with a board let needs the C4
+            // rename escape like any other named item; this previously fell
+            // to `other` (silent no-op) — the item kept its exported name
+            // and the collision was unescapable. A single-name let renames
+            // `names` in lockstep (its one element IS the binding); a
+            // renamed tuple destructure keeps its element names (the local
+            // name binds only the head).
+            TopLevel::Statement(mut s) => {
+                if let crate::ast::Statement::Let { name, names, .. } = s.as_mut() {
+                    *name = local.to_string();
+                    if names.len() == 1 {
+                        names[0] = local.to_string();
+                    }
+                }
+                TopLevel::Statement(s)
+            }
             other => other,
         }
     }
@@ -1462,6 +1503,180 @@ fn split_known_code_ext(spec: &str) -> (&str, Option<&'static str>) {
         }
     }
     (spec, None)
+}
+
+/// 2026-09-27 (interop Wave 2 C1, bridge design record Layer 0): project a
+/// parsed `.sbv` module into the component it grafts onto a board.
+///
+/// One rule, no selection logic: every file-scope bare `let` (the parser's
+/// `Statement::Let` with `expr: None`; an initialized top-level `let` is
+/// runtime state, not a boundary pin — BEAST/analysis `StateDecl` is the
+/// same bare shape) becomes a pin named exactly after the field. `Io[8]`
+/// expands element-wise exactly like the parser's own `pin gpio[8]: Io`
+/// (E11 eager expansion): one `PinDecl` per element, shared class
+/// ascription, numbers continuing the high-water rule across fields — the
+/// netlist and emitter stay array-blind either way. Multi-dim fields
+/// flatten row-major (`name[i][j]`), same array-blind contract.
+///
+/// Encapsulation is structural (design record): nested items never project,
+/// and ONLY the component grafts — the die's other file-scope declarations
+/// (types, defns) are its internal machinery, flat v1. A field typed by a
+/// die-internal type still projects (one rule, no projection-time
+/// judgment) and fails honestly at the board's typecheck — the leak signal
+/// is the board's ordinary not-in-scope diagnostic.
+///
+/// Class ascription resolves in the CONSUMER: `IoOd`/`Power`/… are
+/// fundamentals of the board's own `std/electronics.bv` prelude, so a
+/// plain-`.bv` board that imports a die without electronics in scope gets
+/// the ordinary not-in-scope error.
+///
+/// `reference` stays `None`: analysis derives the designator prefix from
+/// the type name (analysis/electronics.rs) — the projection invents no
+/// designator knowledge (Rule 15: no knowledge of specific types).
+fn project_sbv_component(import: &Import, program: &[TopLevel]) -> Vec<TopLevel> {
+    let mut pins = Vec::new();
+    let mut high_water: u64 = 0;
+    for item in program {
+        // The boundary-field forms: the parser's bare top-level
+        // `let name: Ty;` (Statement::Let, expr None — an initialized let
+        // is runtime state, not a boundary pin) and the BEAST/analysis
+        // StateDecl, which carries the same bare shape.
+        let (names, ty) = match item {
+            TopLevel::StateDecl(sd) => (vec![sd.name.clone()], &sd.ty),
+            TopLevel::Statement(s) => match s.as_ref() {
+                crate::ast::Statement::Let {
+                    names,
+                    ty: Some(ty),
+                    expr: None,
+                    ..
+                } => (names.clone(), ty),
+                _ => continue,
+            },
+            _ => continue,
+        };
+        sbv_field_pins(&mut pins, &mut high_water, &names, ty);
+    }
+    vec![TopLevel::TypeDef(Box::new(crate::ast::top::TypeDef {
+        name: sbv_component_name(import.path()),
+        type_params: vec![],
+        parent: None,
+        protocol: None,
+        traits: vec![],
+        bit_range: None,
+        coll: false,
+        ports_in: vec![],
+        ports_out: vec![],
+        seq: false,
+        span: None,
+        body: crate::ast::top::TypeDefBody {
+            slots: vec![],
+            pins,
+            reference: None,
+            metadata: HashMap::new(),
+            projections: vec![],
+            bindings: vec![],
+            operators: vec![],
+            op_bindings: vec![],
+            constraints: vec![],
+            members: vec![],
+            when_laws: vec![],
+            modes: vec![],
+            span: None,
+        },
+    }))]
+}
+
+/// The projected component's intrinsic name: PascalCase file stem
+/// (`sensor_die.sbv` → `SensorDie`) — mirrors `load_svg_import`, with `_`
+/// also split (Briev file stems use underscores). Symbols do NOT name it:
+/// `filter_items_with_origins` keeps by EXPORTED name then applies the
+/// exported→local rename, so the intrinsic name must survive the
+/// keep-check — `import { D: SensorDie }` renames AFTER the check. (The
+/// svg loader names by local symbol, which drops a renamed import; not
+/// mirrored deliberately.) `alias` records provenance only — instance
+/// binding is Wave 2b (bridge design record §"Syntax decision").
+fn sbv_component_name(path: &str) -> String {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    file.trim_end_matches(".sbv")
+        .split(['-', '_'])
+        .map(|seg| {
+            let mut chars = seg.chars();
+            match chars.next() {
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+/// The pin-class ascription base name and flattened dimensions of a
+/// boundary field's type. Only a NAMED type carries an ascription (the pin
+/// grammar is ident-only — `pin x: Type;`); `Bits(8)` and other compiler
+/// constructs project as an unclassed pin (`pin x;`), which the board's
+/// analysis resolves honestly.
+fn pin_shape(ty: &Type) -> (Option<String>, Vec<crate::ast::Dimension>) {
+    match ty {
+        Type::Vector(inner, dims) => {
+            let (base, mut all) = pin_shape(inner);
+            all.extend(dims.iter().cloned());
+            (base, all)
+        }
+        Type::Custom(n) => (Some(n.clone()), vec![]),
+        Type::Applied(n, _) => (Some(n.clone()), vec![]),
+        _ => (None, vec![]),
+    }
+}
+
+/// Row-major element name for one flattened array pin: `gpio[3]`,
+/// `tile[1][2]`. Called only when every dimension is ≥ 1 (a zero-length
+/// dimension yields a zero-count element loop — an empty array is zero
+/// pins, honestly).
+fn sbv_pin_element(base: &str, sizes: &[usize], flat: usize) -> String {
+    let mut rest = flat;
+    let mut idxs = vec![0usize; sizes.len()];
+    for (k, &s) in sizes.iter().enumerate().rev() {
+        idxs[k] = rest % s;
+        rest /= s;
+    }
+    let mut name = base.to_string();
+    for i in idxs {
+        name.push_str(&format!("[{i}]"));
+    }
+    name
+}
+
+/// The pins of ONE boundary field: element-wise expansion across all
+/// dimensions (E11 — the netlist stays array-blind), numbers continuing
+/// the shared high-water rule. One flat loop over (field, element) pairs —
+/// field-major, identical order to nested loops, and no O(n²) shape for
+/// Praetor. Empty dims → product of nothing = 1: the scalar case.
+fn sbv_field_pins(
+    pins: &mut Vec<crate::ast::top::PinDecl>,
+    high_water: &mut u64,
+    names: &[String],
+    ty: &Type,
+) {
+    let (class_ref, dims) = pin_shape(ty);
+    let sizes: Vec<usize> = dims
+        .iter()
+        .map(|d| match d {
+            crate::ast::Dimension::Anonymous(n) => *n,
+            crate::ast::Dimension::Named(_, n) => *n,
+        })
+        .collect();
+    let count = sizes.iter().product::<usize>();
+    let total = count * names.len();
+    for i in 0..total {
+        let field = &names[i / count];
+        let flat = i % count;
+        *high_water += 1;
+        pins.push(crate::ast::top::PinDecl {
+            name: sbv_pin_element(field, &sizes, flat),
+            number: *high_water,
+            class_ref: class_ref.clone(),
+            span: None,
+        });
+    }
 }
 
 fn lex_source(source: &str) -> Result<Vec<(Token, std::ops::Range<usize>)>, String> {
@@ -2793,5 +3008,186 @@ fn test_dbv_import_rejected() {
             .unwrap_or_else(|e| panic!("missing corpus example {example}: {e}"));
         crate::pipeline::check_source_for(example, &src, None)
             .unwrap_or_else(|e| panic!("{example} failed the die-substrate check: {e}"));
+    }
+
+    // ── Wave 2 C1: Layer 0 projection ─────────────────────────────────
+
+    /// The graft pattern (bridge design record §"The graft pattern", user
+    /// decision 2026-09-27): an imported `.sbv` grafts its file-scope
+    /// declarations LIKE ANY MODULE — the boundary fields splice as shared
+    /// program state — PLUS the synthesized component whose pins are those
+    /// same fields (identity, not a bridge). For the fixture: one
+    /// `SensorDie` component (12 pins: sda, scl, gpio[0..7], vdd, gnd —
+    /// E11 element-wise expansion, consecutive high-water numbers) and the
+    /// five fields as bare state. Resolver-level tests run without the
+    /// plugin factory, so the die's prelude is inert here; in a real board
+    /// it splices `std/electronics.bv` transitively (the graft pattern's
+    /// free consequence).
+    #[test]
+    fn test_sbv_import_projects_component() {
+        let dir = TempDir::new().unwrap();
+        let fixture = std::fs::read_to_string("examples/silicon/sensor_die.sbv")
+            .expect("die fixture present");
+        fs::write(dir.path().join("sensor_die.sbv"), fixture).unwrap();
+        let src = dir.path().join("main.ebv");
+        fs::write(&src, "").unwrap();
+
+        let items = import_program("sensor_die.sbv", vec![]);
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        let mut field_names: Vec<&str> = result
+            .iter()
+            .filter_map(|i| match i {
+                TopLevel::Statement(s) => match s.as_ref() {
+                    crate::ast::Statement::Let { name, .. } => Some(name.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        field_names.sort_unstable();
+        assert_eq!(
+            field_names,
+            ["gnd", "gpio", "scl", "sda", "vdd"],
+            "boundary fields splice as shared program state (Layer 1)"
+        );
+        let components: Vec<&crate::ast::top::TypeDef> = result
+            .iter()
+            .filter_map(|i| match i {
+                TopLevel::TypeDef(t) if t.name == "SensorDie" => Some(t.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            components.len(),
+            1,
+            "exactly one projected component: {:?}",
+            result.iter().filter_map(ImportResolver::item_name).collect::<Vec<_>>()
+        );
+        let pins: Vec<(String, u64, Option<&str>)> = components[0]
+            .body
+            .pins
+            .iter()
+            .map(|p| (p.name.clone(), p.number, p.class_ref.as_deref()))
+            .collect();
+        let mut expected: Vec<(String, u64, Option<&str>)> =
+            vec![("sda".into(), 1, Some("IoOd")), ("scl".into(), 2, Some("Out"))];
+        for i in 0..8u64 {
+            expected.push((format!("gpio[{i}]"), 3 + i, Some("Io")));
+        }
+        expected.push(("vdd".into(), 11, Some("Power")));
+        expected.push(("gnd".into(), 12, Some("Ground")));
+        assert_eq!(pins, expected, "pins = fields, E11 expansion, classes kept");
+        assert_eq!(
+            result.len(),
+            6,
+            "the fixture grafts exactly its component + five fields: {:?}",
+            result.iter().filter_map(ImportResolver::item_name).collect::<Vec<_>>()
+        );
+    }
+
+    /// Structural encapsulation (design record; graft pattern): file-scope
+    /// = package boundary — everything at file scope grafts (component,
+    /// fields, types, defns, containers); anything NESTED is internal
+    /// hierarchy and never projects as a pin. Requires member `let` to
+    /// parse (obj bodies accept it since this wave). Also root-checks the
+    /// die: a nested-let die must pass the ordinary die check (the
+    /// typechecker ignores non-callable members).
+    #[test]
+    fn test_die_internal_items_never_project() {
+        let dir = TempDir::new().unwrap();
+        let die = "type Internal : Bits { spec MaxBits: 8; };\n\
+                   defn helper -> Int { term 1; };\n\
+                   let sda: IoOd;\n\
+                   obj DieInner {\n\
+                       let scratch: Int;\n\
+                       defn hidden -> Int { term 1; };\n\
+                   };\n";
+        fs::write(dir.path().join("inner_die.sbv"), die).unwrap();
+        let src = dir.path().join("main.ebv");
+        fs::write(&src, "").unwrap();
+
+        let items = import_program("inner_die.sbv", vec![]);
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        let names: Vec<&str> = result.iter().filter_map(ImportResolver::item_name).collect();
+        for grafted in ["InnerDie", "Internal", "helper", "sda", "DieInner"] {
+            assert!(
+                names.contains(&grafted),
+                "file-scope '{grafted}' grafts (package boundary): {names:?}"
+            );
+        }
+        for internal in ["scratch", "hidden"] {
+            assert!(
+                !names.contains(&internal),
+                "nested '{internal}' never reaches the board: {names:?}"
+            );
+        }
+        let obj = result
+            .iter()
+            .find_map(|i| match i {
+                TopLevel::TypeDef(t) if t.name == "DieInner" => Some(t.as_ref()),
+                _ => None,
+            })
+            .expect("DieInner grafts as a container");
+        assert!(
+            obj.body.members.iter().any(|m| matches!(
+                m,
+                TopLevel::Statement(s) if matches!(s.as_ref(), crate::ast::Statement::Let { name, .. } if name == "scratch")
+            )),
+            "the internal net lives in the container body, parseable"
+        );
+        let component = result
+            .iter()
+            .find_map(|i| match i {
+                TopLevel::TypeDef(t) if t.name == "InnerDie" => Some(t.as_ref()),
+                _ => None,
+            })
+            .unwrap();
+        let pin_names: Vec<&str> = component.body.pins.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(pin_names, ["sda"], "only the file-scope field projects");
+
+        // Root check: the same die as a standalone file passes the ordinary
+        // die check with its nested-let internals (typechecker-safe). The
+        // root prelude resolves std/electronics.bv through lib/ under the
+        // source dir — symlink the repo lib/ into the fixture dir.
+        link_repo_lib(&dir);
+        crate::pipeline::check_source_for(
+            &dir.path().join("inner_die.sbv").to_string_lossy(),
+            die,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("nested-let die failed the root check: {e}"));
+    }
+
+    /// The C4 rename escape works for STATE items (graft pattern
+    /// prerequisite): `import { Local: Exported }` on a top-level let
+    /// renames the spliced binding. `rename_item` silently no-opped
+    /// Statement items before this wave, leaving a die-field/board-let
+    /// collision unescapable.
+    #[test]
+    fn test_rename_top_level_state_item() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("state_mod.bv"), "let counter: Int;\n").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let items = vec![TopLevel::Import(Import::literal(
+            "state_mod.bv",
+            vec![("c2".to_string(), "counter".to_string())],
+        ))];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        let names: Vec<&str> = result.iter().filter_map(ImportResolver::item_name).collect();
+        assert!(
+            names.contains(&"c2") && !names.contains(&"counter"),
+            "renamed state binds the local name: {names:?}"
+        );
     }
 }

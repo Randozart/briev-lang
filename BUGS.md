@@ -7092,3 +7092,24 @@ iterations across threads (disjoint addresses, proven) or synchronize;
 a loop that is merely REDUCED per-warp is not safe to store from. The
 SASS told the whole story: 10 SHFL.BFLY, zero STS/LDS/BAR — warp-local
 reductions with nothing merging the block.
+
+## 2026-09-28 — `hardware_validator` is dead code (the .sbv synthesizability gate never runs)
+
+**Found:** Wave 2 C1 (die-graft work), while checking whether imported die
+items pass any hardware gate.
+**Symptom:** none — that is the bug. `src/hardware_validator.rs` (frozen
+globals, `frgn` bans, unsized-Int/Float/String rejections, total-txn
+contract checks for `.sbv`) has ZERO call sites: `grep -rn
+"hardware_validator::" src/` returns nothing. The checks never fire, for
+root `.sbv` files or imported ones.
+**Impact:** a `.sbv` file using `Float`, unsized `Int`, or `frgn` passes
+every gate today. The validator's diagnostic text (".sbv does not allow
+…") promises a contract the compiler does not enforce.
+**Fix (deferred — not C1 scope):** wire the validator into the
+pipeline's per-dialect check for `SourceKind::Silicon` roots (and decide
+its relation to imported die items once the graft pattern's consumers
+exist), or delete the module and re-land its checks as tests. Until
+then, treat `.sbv` synthesizability as UNENFORCED.
+**Class:** a validator with no caller is documentation, not a gate —
+the failure mode is silent contract erosion, the exact thing the
+validator was written to prevent.
