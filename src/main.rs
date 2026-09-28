@@ -53,6 +53,7 @@ fn main() {
         "fmt" => run_fmt(&args[2..]),
         "install-deps" => deps::install_all(),
         "install-highlighter" => run_install_highlighter(&args[2..]),
+        "freshness" => run_freshness_check(),
         "help" | "--help" | "-h" => { print_usage(&args[0]); Ok(()) }
         _ => {
         // Default: compile the file
@@ -125,6 +126,7 @@ fn print_usage(program: &str) {
     eprintln!("  {} vocab [path]                 Emit the canonical language vocabulary manifest (default: stdout)", name);
     eprintln!("  {} grammar <path>               Regenerate the TextMate grammar keyword/type patterns from the vocab", name);
     eprintln!("  {} fmt <file> [--stdout|--check]  Format a source file canonically (round-trip safe)", name);
+    eprintln!("  {} freshness                     Check the brievc binary is newer than src/ + config/ (stale-binary guard)", name);
     eprintln!("  {} help                          Show this help", name);
 }
 
@@ -1073,6 +1075,73 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     let items = parser.parse_program().map_err(|e| format!("parse failed: {}", e))?;
     let report = briev_compiler::macros::memcheck::run_memcheck(&items);
     briev_compiler::macros::memcheck::print_memcheck(&report);
+    Ok(())
+}
+
+/// `brievc freshness` — stale-binary guard (INDEX.md quick win).
+/// 2026-09-28: the baked-in configs (`include_str!` in config_tuning,
+/// footprints, e_series, meta-vocab, stdlib splices) mean a `brievc` built
+/// BEFORE a source/config edit silently compiles with the old behavior.
+/// This command compares the binary's mtime against the newest mtime in
+/// `src/` and `config/` (the two `include_str!` trees) and reports the
+/// offending file. Exit 0 = fresh, 1 = stale (rebuild required).
+fn run_freshness_check() -> Result<(), String> {
+    let bin = std::env::current_exe()
+        .map_err(|e| format!("cannot resolve current executable: {}", e))?;
+    let bin_mtime = std::fs::metadata(&bin)
+        .and_then(|m| m.modified())
+        .map_err(|e| format!("cannot stat {}: {}", bin.display(), e))?;
+    let bsec = bin_mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut newest: Option<(i64, std::path::PathBuf)> = None;
+    for dir in ["src", "config"] {
+        let root = Path::new(dir);
+        if !root.exists() { continue; }
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                let ext = match p.extension().and_then(|e| e.to_str()) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                if !matches!(ext, "rs" | "dbvl" | "dbv" | "toml" | "bv") {
+                    continue;
+                }
+                let Ok(m) = entry.metadata() else { continue };
+                let Ok(t) = m.modified() else { continue };
+                let tsec = t
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                if tsec > bsec {
+                    match newest {
+                        None => newest = Some((tsec, p)),
+                        Some((nt, _)) if tsec > nt => newest = Some((tsec, p)),
+                        Some(_) => {}
+                    }
+                }
+            }
+        }
+    }
+    match newest {
+        Some((_, p)) => {
+            eprintln!(
+                "STALE: {} is newer than {} — run `cargo build --release` before trusting brievc",
+                p.display(),
+                bin.display()
+            );
+            std::process::exit(1);
+        }
+        None => println!("fresh: {} is up to date with src/ + config/", bin.display()),
+    }
     Ok(())
 }
 
