@@ -80,6 +80,43 @@ the C5 pattern).
 
 ## C1 — Layer 0 projection: imported die → component
 
+**DONE 2026-09-28 (commit `47247c89`; pattern decision `b4ffc40d`).**
+Implemented per the revision note above. The splice runs the ordinary
+resolve (fields/types/defns graft; the die's prelude splices
+`std/electronics.bv` transitively — a plain-`.bv` board gets the pin
+classes for free), and the synthesized component leads the grafted items.
+Details worth keeping:
+
+- The projection reads bare top-level `let`s (`Statement::Let`,
+  `expr: None`) and BEAST/analysis `StateDecl`; component name = intrinsic
+  PascalCase stem (NOT the import symbol — the exported-name keep-check
+  and exported→local rename in `filter_items_with_origins` need the
+  intrinsic name to survive; naming by local would drop renamed imports —
+  the svg loader's rule, deliberately not mirrored). `reference` stays
+  `None` (analysis derives the designator prefix — no designator
+  knowledge, Rule 15).
+- `rename_item` gained the `Statement::Let` arm — a PRE-EXISTING gap
+  (renamed top-level lets silently no-opped); without it a die field
+  colliding with a board let had no C4 escape.
+- Nested `let` now parses in obj bodies (member-declaration pattern beside
+  defn/txn/node). Verified fact: nested `const` has no precedent anywhere
+  (`Token::Const` is top-level-only), and BEAST round-trips drop ALL
+  type-body members today (`members: vec![]` both sides — pre-existing,
+  member-defns ride the same path).
+- BUGS.md: `hardware_validator` has zero call sites — the `.sbv`
+  synthesizability gate never runs (found during C1, deferred).
+
+Tests: `test_sbv_import_projects_component` (exact splice: component +
+five fields; 12 pins, E11 expansion, classes), 
+`test_die_internal_items_never_project` (file-scope grafts incl.
+containers; nested `scratch`/`hidden` never project; the die ALSO
+root-checks clean with nested-let internals),
+`test_rename_top_level_state_item`, 
+`test_obj_body_accepts_member_let` (parser: bare + initialized).
+Suite **2700/0**; sweep green; Praetor identity diff on changed files:
+no new diagnostics (the projection's expansion loop flattened to a
+field-major single loop — no new O(n²)/O(n^k) entries).
+
 > **2026-09-27 revision (after review — user approved).** The C1 semantics
 > below were written before the graft-pattern decision; the approved
 > pattern (`2026-09-25-sbv-ebv-bridge.md` §"The graft pattern") is: the
