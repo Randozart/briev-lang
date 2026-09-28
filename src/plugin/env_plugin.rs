@@ -80,6 +80,11 @@ fn walk_item(item: &mut TopLevel) {
             }
             walk_stmts(&mut init.body);
         }
+        // 2026-09-28 (usage-readiness): `sync<g> node` wraps the item in a
+        // SyncGroup — a `get_env_int!` in the node body previously skipped
+        // env resolution and hit the codegen panic at emit_expr.rs:1700.
+        // Walk the wrapped item like any other.
+        TopLevel::SyncGroup { item, .. } => walk_item(item),
         TopLevel::StateDecl(_) | TopLevel::Trigger(_) => {}
         TopLevel::ForeignBinding(_) => {}
         _ => {}

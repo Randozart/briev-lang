@@ -177,6 +177,11 @@ fn walk_item(
             }
             walk_stmts(&mut init.body, known_types, universe)
         }
+        // 2026-09-28 (usage-readiness): `sync<g> node` wraps the item in a
+        // SyncGroup — a `println!` in the node body previously skipped print
+        // resolution and hit the codegen panic at emit_expr.rs:1700.
+        // Walk the wrapped item like any other.
+        TopLevel::SyncGroup { item, .. } => walk_item(item, known_types, universe),
         _ => Ok(()),
     }
 }

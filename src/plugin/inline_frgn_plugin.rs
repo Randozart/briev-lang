@@ -99,8 +99,29 @@ fn collect_intercepts(
                 }
                 collect_from_stmts(&mut init.body, synthesized, seen, rewrites)?;
             }
+            // 2026-09-28 (usage-readiness): walk `sync<g>`-wrapped nodes.
+            TopLevel::SyncGroup { item, .. } => collect_intercept_item(item, synthesized, seen, rewrites)?,
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn collect_intercept_item(
+    item: &mut TopLevel,
+    synthesized: &mut Vec<ForeignBinding>,
+    seen: &mut std::collections::HashSet<(String, String)>,
+    rewrites: &mut Vec<(Expr, Expr)>,
+) -> Result<(), String> {
+    match item {
+        TopLevel::Definition(d) => {
+            collect_from_stmts(&mut d.body, synthesized, seen, rewrites)?;
+        }
+        TopLevel::Transaction(t) => {
+            collect_from_stmts(&mut t.body, synthesized, seen, rewrites)?;
+        }
+        TopLevel::SyncGroup { item, .. } => collect_intercept_item(item, synthesized, seen, rewrites)?,
+        _ => {}
     }
     Ok(())
 }
@@ -197,11 +218,26 @@ fn rewrite_expr(
     Ok(())
 }
 
+/// 2026-09-28 (usage-readiness): recurse into a `sync<g>`-wrapped item so
+/// inline_frgn! intercepts inside sync-group nodes are collected and
+/// rewritten like any other node.
+fn rewrite_intercept_item(item: &mut TopLevel, intercept: &Expr, call: &Expr) {
+    match item {
+        TopLevel::Definition(d) => rewrite_stmts(&mut d.body, intercept, call),
+        TopLevel::Transaction(t) => rewrite_stmts(&mut t.body, intercept, call),
+        TopLevel::SyncGroup { item, .. } => rewrite_intercept_item(item, intercept, call),
+        _ => {}
+    }
+}
+
 fn rewrite_intercept(program: &mut [TopLevel], intercept: &Expr, call: &Expr) {
     for item in program.iter_mut() {
         match item {
             TopLevel::Definition(d) => rewrite_stmts(&mut d.body, intercept, call),
             TopLevel::Transaction(t) => rewrite_stmts(&mut t.body, intercept, call),
+            // 2026-09-28 (usage-readiness): walk `sync<g>`-wrapped nodes for
+            // inline_frgn! intercepts — same gap the print/env plugins had.
+            TopLevel::SyncGroup { item, .. } => rewrite_intercept_item(item, intercept, call),
             TopLevel::Init(init) => {
                 if let Some(value) = &mut init.value {
                     if *value == *intercept {

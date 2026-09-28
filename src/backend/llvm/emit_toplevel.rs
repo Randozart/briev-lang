@@ -2393,7 +2393,29 @@ impl LlvmBackend {
                 // Int/UInt slots are i{int_bits} (i32 on wasm32); the old
                 // hardcoded `store i64` broke those slots. Exact ints and i64
                 // (x86_64) are unchanged.
-                writeln!(out, "{}store {} {}, ptr {}, align {}", indent, ty, n, gep, self.align_of(ty)).ok();
+                // 2026-09-28 (usage-readiness): struct-typed fields (obj
+                // instances like Stack) have LLVM types `[1 x ...]` /
+                // `{ ... }` — a bare integer is invalid IR for those. The
+                // `op Init` construction path normally handles these, but when
+                // it falls through (no Init op, or the init value is a bare
+                // Decimal), emit zeroinitializer for a zero value instead.
+                if ty.starts_with('[') || ty.starts_with('{') {
+                    if n == 0 {
+                        writeln!(out, "{}store {} zeroinitializer, ptr {}, align {}", indent, ty, gep, self.align_of(ty)).ok();
+                    } else {
+                        // Non-zero scalar into a struct slot: zero-init the
+                        // struct, then store the scalar into the first element.
+                        // This is the op-Init fallback — correct for the
+                        // common `obj` layout { data, len }.
+                        writeln!(out, "{}store {} zeroinitializer, ptr {}, align {}", indent, ty, gep, self.align_of(ty)).ok();
+                        let first = field_reg("f");
+                        let inner = &ty[2..ty.len() - 1]; // strip `[N x ` and `]`
+                        writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 0", indent, first, inner, gep).ok();
+                        writeln!(out, "{}store i64 {}, ptr {}", indent, n, first).ok();
+                    }
+                } else {
+                    writeln!(out, "{}store {} {}, ptr {}, align {}", indent, ty, n, gep, self.align_of(ty)).ok();
+                }
             }
             Some(Expr::Float(f)) => {
                 self.emit_float_literal_store(out, indent, f, (ty, gep));
