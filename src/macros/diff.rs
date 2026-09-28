@@ -63,6 +63,7 @@ fn item_key(tl: &TopLevel) -> String {
         ProtocolDef(p) => format!("protocol:{}", p.name),
         ModuleMetadata(_) => "module-metadata".into(),
         Init(i) => format!("init:{}", i.name),
+        Data(t) => format!("data:{}", t.name),
     }
 }
 
@@ -117,6 +118,7 @@ pub fn item_summary(tl: &TopLevel) -> String {
         ProtocolDef(p) => format!("proto {}: #{}", p.name, p.category),
         ModuleMetadata(meta) => format!("module metadata ({} keys)", meta.len()),
         Init(i) => format!("init {}", i.name),
+        Data(t) => format!("data {}", t.name),
     }
 }
 

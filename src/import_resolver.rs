@@ -1674,6 +1674,9 @@ fn sbv_field_pins(
             name: sbv_pin_element(field, &sizes, flat),
             number: *high_water,
             class_ref: class_ref.clone(),
+            // 2026-09-28 (E4 merge): die pins have no symbol unit — the type's
+            // single default unit.
+            unit: None,
             span: None,
         });
     }

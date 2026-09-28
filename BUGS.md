@@ -7093,6 +7093,64 @@ a loop that is merely REDUCED per-warp is not safe to store from. The
 SASS told the whole story: 10 SHFL.BFLY, zero STS/LDS/BAR — warp-local
 reductions with nothing merging the block.
 
+## Emitted .kicad_sch failed to load in KiCad 10 — four syntax defects — FIXED 2026-09-28
+
+**Symptom:** `kicad-cli sch erc <emitted>.kicad_sch` refused every emitted
+sheet outright ("Failed to load schematic", exit 3) on KiCad 10.0.6. The
+E4–E6 gate claims of "renders correctly / ERCs clean in KiCad" were never
+validated against a real KiCad binary — they were structural assertions
+only. Surfaced while preparing the E3 (hierarchical sheets) gate, which
+requires ERC to actually run.
+
+**Root causes (each alone is a load blocker; found by section-bisection
+against kicad-cli):**
+1. `Self::uuid` formatted the last group `{:012}` on a u64 — DECIMAL, not
+   hex — overflowing the 12-hex group up to 15 digits
+   ("…-108940779875558"). KiCad rejects the whole file on a malformed
+   uuid. Fix: `{:012x}`.
+2. Label effects emitted `(justify (left bottom))` — parenthesized
+   tokens. KiCad 10 parses justify flags bare: `(justify left bottom)`.
+   The parenthesized form fails the whole-file load.
+3. No `(sheet_instances (path "/" (page "1")))` block — mandatory in
+   every sheet; its absence is a load refusal.
+4. Power-symbol `Reference` properties emitted `hide yes` (lib symbol
+   AND instance). KiCad reads `hide` as the property flag and `yes` as a
+   stray token → load refusal. The `(hide yes)` form nested inside
+   Footprint/JLCPCN's `effects` still loads (verified) — only the
+   bare-flag form is rejected.
+
+**Fix:** all four in `src/backend/electronics/mod.rs` (`uuid`, the label
+line, the `generate` close, and the two power Reference property lines).
+Structural unit tests (`emitted_sheet_is_kicad_10_loadable`,
+`power_symbol_hide_is_bare`) pin the shapes; the fixture-level gate runs
+`kicad-cli sch erc --severity-error` for real. The stale
+`examples/electronics/led_blinker.kicad_sch` (carried the malformed
+uuids) was regenerated from the current emitter.
+
+**Verified:** kicad-cli 10.0.6 now LOADS all 5 emitted fixtures
+(led_blinker, usb_sensor, operating_states, spst_modes,
+data_table_tile) and ERCs them. 3 of 5 are ERC-error-clean
+(led_blinker, operating_states, data_table_tile → 0 errors).
+`cargo test --lib` 2731/0.
+
+**Newly surfaced (SEPARATE, still OPEN — not fixed by this):** with the
+sheets loadable, real electrical ERC errors exist on the two complex
+fixtures — these are emission defects in the electrical layer, not
+loadability:
+- `usb_sensor`: 5× `[power_pin_not_driven]` (power_in rails GND/+5V/+3V3
+  with no power driver anywhere), 3× `[pin_not_connected]` (the `unpop`
+  decoupler C3's pins get no wire/label — the decoupler auto-bridge does
+  not emit wiring to an unpop part), 2× `[label_dangling]`.
+- `spst_modes`: 1× `[label_dangling]` (a label at a pin coordinate that
+  no wire reaches, on the mode-selected multi-state board).
+These are tracked as the E3 follow-up: the 512-tile gate fixture is
+designed ERC-clean (resistors on two rails, like data_table_tile —
+0 errors) so E3 can land, and the complex-fixture electrical fixes are a
+distinct body of work before "ERC-clean" can be claimed for them.
+
+**Undo:** revert the four emitter lines (uuid `{:012x}`→`{:012}`, the
+label justify, the `sheet_instances` block, the two `hide`→`hide yes`).
+
 ## 2026-09-28 — `hardware_validator` is dead code (the .sbv synthesizability gate never runs)
 
 **Found:** Wave 2 C1 (die-graft work), while checking whether imported die

@@ -1833,6 +1833,9 @@ impl LlvmBackend {
             Expr::Range { .. } => panic!(
                 "a range expression is only valid as a `foreach` iterable, not as a value"
             ),
+            // 2026-09-28 (E3): the `[*]` selector is eagerly expanded by
+            // electronics analysis; it is never a codegen value.
+            Expr::Wildcard => panic!("the `[*]` wildcard selector is not a codegen value"),
             // 2026-08-07 (object instance pools): `spawn Obj(args)` — allocate
             // the next pool row from the __spawn_next_<base> counter, run the
             // Init member at that row, increment the counter, and return the

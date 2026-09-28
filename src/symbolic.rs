@@ -134,6 +134,8 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         Expr::Bool(b) => SymbolicValue::bool_literal(*b),
         Expr::BeginProgram => SymbolicValue::bool_literal(true),
         Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _) => SymbolicValue::Unknown,
+        // 2026-09-28 (E3): the `[*]` selector is a leaf — no symbolic value.
+        Expr::Wildcard => SymbolicValue::Unknown,
 
         // Variable references
         Expr::Identifier(name) => {

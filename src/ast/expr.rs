@@ -75,6 +75,10 @@ pub enum Expr {
     /// compiler-known identifier resolved by the D1 reflection table.
     Reflect(Box<Expr>, String, ReflectKind),
     Index(Box<Expr>, Box<Expr>),
+    /// 2026-09-28 (E3): the `[*]` wildcard selector — every element of the
+    /// indexed array. Only valid as an index (`t[*]`, `u2.gpio[*]`); resolved
+    /// by eager expansion in electronics analysis, never emitted directly.
+    Wildcard,
     /// arr[start:end:stride] — zero-copy slice view
     Slice {
         array: Box<Expr>,

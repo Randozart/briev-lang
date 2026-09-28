@@ -721,6 +721,8 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
     match expr {
         Expr::Consume(inner) => { collect_strings_expr(inner, seen, out); }
         Expr::Await(inner) => { collect_strings_expr(inner, seen, out); }
+        // 2026-09-28 (E3): the `[*]` selector is a leaf — no strings inside.
+        Expr::Wildcard => {}
         Expr::BeginProgram => {}
         Expr::Quoted(s) => {
             let s_str = String::from_utf8_lossy(s).into_owned();

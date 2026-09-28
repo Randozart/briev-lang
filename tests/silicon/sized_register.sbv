@@ -1,0 +1,14 @@
+// ── sized_register.sbv — E9 regression gate (2026-09-25) ─────────────────
+// The user import is the point: prelude-hw used to inject a second import
+// (`std/hardware.bv`) whose file never existed, so ANY `.sbv` with an
+// import failed with "Cannot find module". The insert is dropped (gap
+// E9); this file proves user imports resolve and no phantom import is
+// injected. Gate:  brievc build tests/silicon/sized_register.sbv
+
+import "std/types.bv";
+
+reg let count: UInt<8> = 0;
+
+txn inc [count < 255] [count == count + 1] {
+    count = count + 1;
+}

@@ -8,8 +8,11 @@
 //   3. Every postcondition must hold in every retained operating state.
 //
 // The source pin is 1 V and the return is 0 V. The bistable element may
-// carry +1 A or −1 A. The unpopulated 1 kR resistor would carry 1 mA in its
-// present state and no current when absent. Both facts satisfy the bounds.
+// carry +1 A or −1 A. The unpopulated 1 kR resistor carries no current in
+// any retained state — bounds on an absent part are dead letters (2026-09-25,
+// quantities Phase 4: absent pins are exempt from bounds, as from dangling
+// and the decoupling convention), so the postcondition bounds only the
+// populated Flip.
 
 type Source {
     pin p;
@@ -55,6 +58,6 @@ txn operating_states
     [v1.p.voltage == 1.0V && v1.p.voltage == f1.a.voltage
      && f1.k.voltage == v1.n.voltage && v1.n.voltage == 0.0V
      && v1.p.voltage == r1.a.voltage && r1.b.voltage == v1.n.voltage]
-    [f1.a.current <= 2Amp && r1.a.current >= 0Amp]
+    [f1.a.current <= 2Amp]
 {
 }

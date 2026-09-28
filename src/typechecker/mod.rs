@@ -903,6 +903,10 @@ pub fn infer_expression(
         Expr::Bool(_) => Ok((Type::bool_(), Provenance::Unknown)),
         Expr::BeginProgram => Ok((Type::bool_(), Provenance::Unknown)),
         Expr::Quoted(_) => Ok((Type::string(), Provenance::Unknown)),
+        // 2026-09-28 (E3): the `[*]` selector is a leaf — it only appears in
+        // electronics preconditions (eagerly expanded there); give it a
+        // permissive scalar type so the general typechecker accepts it.
+        Expr::Wildcard => Ok((Type::int(), Provenance::Unknown)),
         // 2026-08-06 (Phase 7): `#b"..."` (TaggedQuotedLiteral prefix "b") is a
         // Data byte literal; other prefix-tagged literals are Strings.
         Expr::TaggedQuotedLiteral(_, prefix) => {
@@ -2514,6 +2518,39 @@ fn elaborate_expr(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<
 /// width's value domain is admitted against a width-specialized operand —
 /// the width makes the domain explicit, so this is not coercion: the
 /// literal IS in range. `Bool<1>` admits true/false.
+/// 2026-09-26 (E15 slice 1): a numeral literal is admitted against a
+/// quantity fundamental — a declared type with an EXACT width (`spec
+/// Bits: N` registering min==max, e.g. Volt/Amp/Ohm in the electronics
+/// stdlib) — wherever the comparison appears. Same doctrine as
+/// `literal_fits_sized`, one level up: the fundamental is Custom-typed,
+/// not Constrained. A type with only the primordial fallback width
+/// (min=0) admits nothing — an exact declared width is the contract.
+fn numeral_admits_quantity(ty: &Type, expr: &Expr, universe: &TypeUniverse) -> bool {
+    let Type::Custom(_) = ty else {
+        return false;
+    };
+    let Some(k) = ty.universe_key() else {
+        return false;
+    };
+    let Some(rt) = universe.get(k) else {
+        return false;
+    };
+    if rt.min_bits == 0 || rt.min_bits != rt.max_bits {
+        return false;
+    }
+    // Integer literals admit through the width domain; float literals are
+    // f32-domain and admit against widths that hold one (>= 32) — a
+    // narrower exact-width fundamental rejects them (the precision
+    // contract, mirroring float_literal_fits).
+    match decimal_value(expr) {
+        Some(v) => {
+            let unsigned = rt.properties.contains_key("Cast.UInt");
+            value_fits_width(v, rt.max_bits as usize, unsigned)
+        }
+        None => rt.max_bits >= 32 && expr_literal_f32(expr).is_some(),
+    }
+}
+
 fn literal_fits_sized(ty: &Type, expr: &Expr, universe: &TypeUniverse) -> bool {
     let Type::Constrained(inner, range) = ty else {
         return false;
@@ -2585,6 +2622,7 @@ fn float_literal_fits(
 fn expr_literal_f32(e: &Expr) -> Option<f32> {
     match e {
         Expr::Float(v) => Some(*v as f32),
+        Expr::UnitLiteral { value, .. } => Some(*value as f32),
         _ => None,
     }
 }
@@ -2692,8 +2730,14 @@ fn infer_binary_op(
 
     // 2026-08-25 (sized scalars): a fitting literal is IN the specialized
     // domain — `n + 1`, `[n < 15]` on Int8 — no coercion, no overload needed.
+    // 2026-09-26 (E15): the same admission over quantity fundamentals
+    // (`spec Bits`-rooted declared types — Volt/Amp/Ohm) in EVERY
+    // comparison position: a node body obligation is the same surface as a
+    // postcondition (2026-09-11 fundamentals doctrine, Phase B2).
     let literal_admitted = literal_fits_sized(&lhs_ty, rhs, ctx.universe)
-        || literal_fits_sized(&rhs_ty, lhs, ctx.universe);
+        || literal_fits_sized(&rhs_ty, lhs, ctx.universe)
+        || numeral_admits_quantity(&lhs_ty, rhs, ctx.universe)
+        || numeral_admits_quantity(&rhs_ty, lhs, ctx.universe);
 
     if kind.is_comparison() || kind.is_logical() {
         if lhs_str != rhs_str && !literal_admitted {
@@ -4110,6 +4154,13 @@ pub fn check_program_with_target(
                 }
                 TopLevel::Constant(c) => {
                     return Some((c.name.clone(), c.ty.clone()));
+                }
+                // 2026-09-27 (E2): a data table binds its name at the
+                // declared vector type so an indexed field (`value:
+                // w[i][j]`) infers the cell type; resolution to a literal
+                // cell is electronics analysis's job.
+                TopLevel::Data(t) => {
+                    return Some((t.name.clone(), t.ty.clone()));
                 }
                 // 2026-08-27 (cbv-HW plan Slice B): an @-addressed trigger is
                 // an MMIO INPUT pin — its VALUE is a readable Int in txn/defn

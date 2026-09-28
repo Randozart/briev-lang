@@ -86,6 +86,24 @@ track below.
 - **Effort:** M
 
 ### E2 — No data tables feeding instance values
+- **Status:** CLOSED 2026-09-27 (plan
+  `2026-09-27-ebv-e2-data-tables.md`): slice 1 `cfe170c9` — `data
+  name: Int[dims] = [ cells ];` parses to `TopLevel::Data` (the declared
+  Vector type, literal extents, row-major Int cells); a malformed or
+  ragged cell list, a missing/zero/named dimension, and a non-Int cell
+  type are hard errors naming the table. Slice 2 `b1056d29` — named
+  instance-array binders (`let t[i:2][j:2]`) substitute per-element into
+  indexed literal fields at parse (`value: w[i][j]` → `w[0][1]` per
+  element), and `collect_instances` resolves the indexed field to its
+  cell's literal string — byte-identical to the same hand-written
+  literal in the BOM; hard errors name table + index (duplicate
+  declaration, bare table name, missing table, non-literal index,
+  dimension mismatch, out-of-range); the typechecker binds the table
+  name at its declared vector type so the indexed field infers the cell
+  type. Slice 3 (this commit) — the `tests/electronics/data_table_tile.ebv`
+  gate fixture (a 2×2 tile fed from a 2×2 matrix): compiles with 0
+  errors, the BOM carries all four cell values, two runs are
+  byte-identical.
 - **Evidence:** no constant-table AST form exists; instance `value` fields
   are string literals only.
 - **Blocks:** weight-matrix-driven population (which pad gets which value)
@@ -110,6 +128,21 @@ track below.
 - **Effort:** M
 
 ### E4 — No multi-unit symbols (op-amp = 2–3 units)
+- **Status:** CLOSED 2026-09-27 (plan
+  `2026-09-27-ebv-e4-multi-unit-symbols.md`): slice 1 `794d5ba6` —
+  `unit <name>` on the pin clause (`PinDecl.unit`); analysis groups pins
+  into unit blocks in first-seen declaration order
+  (`TypeInfo.pin_units` + `TypeInfo.unit_groups`), a no-unit type is one
+  default group; the parser rejects a second `unit` on one pin. Slice 2
+  `0587a027` — `emit_symbol_def` emits one body+pin block pair per unit
+  (unit N at `y = N * unit_height`); single-unit types keep the original
+  `Name_0_1`/`Name_1_1` suffixes (verified byte-identical against four
+  fixtures); `emit_instances` emits one placement instance per unit — unit
+  1 carries the bare reference + the footprint, unit N>1 carries
+  `<ref><UnitName>` and no footprint; `pin_xy` routes each pin to its
+  unit's origin. Slice 3 (this commit) — the `opamp_gate.ebv` gate
+  fixture (a dual op-amp: signal A, signal B, power unit) emits three
+  symbol units and three placement instances (`U1`/`U1B`/`U1P`).
 - **Evidence:** `emit_symbol_def` (`:291`) emits one rectangle per type;
   `pin_layout` (`:96`) splits pins left/right only.
 - **Blocks:** op-amps (2 signal units + power unit), dual op-amps, relays —
@@ -122,6 +155,18 @@ track below.
 - **Effort:** M
 
 ### E5 — Invalid footprint identifiers; no BOM
+- **Status:** CLOSED 2026-09-25 — resolved in two halves. The
+  footprint-identifier half was superseded by the fab layer
+  (`2026-09-23-ebv-fab-layer.md`): the raw `package` string is the
+  declared key into the compiler-carred geometry library
+  (`config/footprints.dbvl`), unknown packages are a hard compile error
+  at board use, and no KiCad `Library:Name` vocabulary exists (Rules
+  14/15). The BOM half landed: `ElectronicsBackend::generate_bom`
+  emits `<stem>.csv` (reference,value,footprint,jlcpcn) beside the
+  schematic — populated parts only, name-sorted, RFC 4180 escaping —
+  and `jlcpcn: "C…"` on an instance literal passes through as a hidden
+  schematic property. KiCad BOM import / JLCPCB checker acceptance
+  remain manual vendor gates.
 - **Evidence:** `emit_instance` (`:321`) writes the `Footprint` property
   from the raw `package` string (`"0805"` — not a KiCad
   `Library:Footprint` ID); no BOM emission anywhere.
@@ -133,6 +178,17 @@ track below.
 - **Effort:** S
 
 ### E6 — No power symbols (rails as labeled wires)
+- **Status:** CLOSED 2026-09-25 — rail-classified nets (a pin whose
+  class declares `spec Supply`/`spec Return`) emit a KiCad power
+  symbol instead of a wire label: one `power:<Name>` library entry per
+  distinct rail name (sorted, deduped), one `#PWR`-numbered instance
+  per rail net, the symbol's pin joining the wire chain one hop above
+  the topmost member. The name is the net's existing declared/derived
+  label — the author's `net<>`/`stdnet<>` spelling (`VBUS`, `+3V3`),
+  else `GND`/`V{volts}` — never a name inference (Rule 15).
+  Classification is the E12/E13 class machinery (`spec Supply`,
+  `spec Return`), not net names. KiCad ERC recognition remains the
+  manual vendor gate.
 - **Evidence:** `emit_net` (`:356`) emits wire + `label` only.
 - **Blocks:** ERC-grade supply recognition; readability of rail-heavy sheets.
 - **General fix:** power-symbol emission for supply-classified nets.
@@ -142,6 +198,13 @@ track below.
 - **Effort:** S
 
 ### E7 — No supply-rail current roll-up
+- **Status:** CLOSED 2026-09-25 — landed 2026-09-21 as budgets-on-pins
+  (`44ab3e10`, design record D4). The roll-up machinery is this entry's
+  design; only the attachment point moved: instead of comparing against
+  the source component's `rating` clause, the board states
+  `budget <instance>.<pin> <= <current>;` and the KCL boundary sum over
+  the proven part graph is checked against it (`check_budgets`,
+  `src/analysis/electronics.rs:3442`). Hard diagnostic on exceed.
 - **Evidence:** analysis proves per-net physics — Ohm fixpoint
   (`derive_current :736`), KCL (`contribution_pass :695`), power
   (`derive_power :777`), postcondition bounds (`check_current_bounds
@@ -156,6 +219,16 @@ track below.
 - **Effort:** M
 
 ### E8 — No op-amp drive / fan-in model
+- **Status:** CLOSED 2026-09-26 (`488494ea`, plan
+  `2026-09-26-ebv-e8-driven-node-drive.md`). A net with exactly one
+  `can_drive` pin has a driver; `spec DriveCurrent` (pin-qualified,
+  instance-overridable — the Phase 4 envelope ladder) caps the net's
+  derived draw (the E7 roll-up), `spec FanIn` caps the load-branch
+  count. Violations join the B4 contract family; passes emit proof
+  lines. Gate as contract tests: a 16-input summing node proves within
+  rating (5.3 mA ≤ 10 mA, fan-in 16 ≤ 16); an overdriven node refuses.
+  The original evidence is stale (`parse_rating_clause` retired, law
+  parts no longer opaque) — the residue was exactly this check.
 - **Evidence:** non-ohmic parts are `rating any` black boxes
   (`parse_rating_clause :2366`; the Led model in
   `led_blinker.ebv:38-44`); no driven-node or fan-in analysis exists.
@@ -169,6 +242,15 @@ track below.
 - **Effort:** M
 
 ### E9 — `lib/std/hardware.bv` missing while the prelude imports it
+- **Status:** CLOSED 2026-09-25 — the import is DROPPED, not supplied.
+  `.sbv` needs no stdlib content today (sized scalars, registers, and
+  operators are compiler intrinsics; frgn/link are banned on the
+  silicon surface), and no honest `hardware.bv` content exists to
+  write. `plugins/parsed/prelude-hw.bv` keeps its slot in the prelude
+  family (one name for `--no-std` and the per-extension config) with
+  the insert commented out and the re-add recipe recorded; the guard
+  is `tests/silicon/sized_register.sbv` — an `.sbv` with a user import
+  must build.
 - **Evidence:** `plugins/parsed/prelude-hw.bv:11` inserts
   `import "std/hardware.bv"`; `lib/std/` contains no `hardware.bv`
   (verified by listing).
@@ -200,8 +282,27 @@ track below.
 - **Effort:** S
 
 ### E15 — No series-part placement synthesis (the residue of §3.2's `derive on:`)
-- **Status:** OPEN — deferred 2026-09-23, documented (cannot defer without
-  documentation). Not built; recorded with a trigger.
+- **Status:** CLOSED 2026-09-26 (plan
+  `2026-09-26-ebv-e15-series-part-placement.md`): slice 1 `7d2e29e5` — a
+  MIN current obligation (`led1.a.current >= 0.002;` in a node body)
+  forces a free `spec SeriesPart` two-pin part between the anode net and
+  the lowest driven rail above the load's declared `ForwardVoltage`,
+  picking the LARGEST stated resistance that still delivers the amps;
+  law-born rails became fixed DC boundaries (E14b-8 parity — this fixed a
+  latent law-group index-instability bug the new topology exposed);
+  chained casts (`x as A as B`) now parse; the typechecker admits numeral
+  literals against exact-width quantity fundamentals and registers
+  imported typedefs on both the build and check paths; the fixture's
+  explicit r_led wiring is DELETED — the bound is proven from the solved
+  operating point. Slice 2 `653e914b` — unstated series resistances are
+  synthesized from the E-series window: `config/e_series.dbvl` (E24
+  ladder, the footprints.dbvl pattern) + loader; a probe elaboration
+  learns the law-born rail volts; the window
+  `[(Vrail−Vf)/Imax−Rdyn, (Vrail−Vf)/Imin−Rdyn]` is computed per
+  obligation, the smallest E24 step inside it is injected into the
+  sorted-first free unstated part before the real elaboration; inverted
+  and empty windows are hard intent errors naming both bounds. Slice 3
+  (this commit) — docs closure.
 - **What it is:** from a component's current obligation plus its intrinsic
   forward-voltage physics, the compiler should PLACE a current-limiting
   series part (topology) and SIZE it (value) so the current lands in range —
@@ -1226,3 +1327,60 @@ rails keep physics labels. Plan:
 delta item 1 (rails and returns) is CLOSED except rail births; the LDO
 output law (`spec Output`) is the remaining follow-on that dissolves
 `u1.vout == 3.3V`.
+
+### Amendment 2026-09-25 (XX): quantities Phase 4 landed — envelope specs & the anti-vacuity rule
+
+`spec MaxCurrent` joins the envelope channel: the absolute-maximum
+current rating, unconditional, checked in every reachable state like
+`Tolerance` for volts. Uniform (`spec MaxCurrent: 20mA;`) or
+pin-qualified (`spec MaxCurrent: a: 4mA, vdd: 100mA;`) — and the same
+pin-qualified form extends `spec Tolerance` (the asymmetric-parts
+problem). Instance literals now carry envelopes: the parse-time
+rejection lifted with OVERRIDE semantics — the instance value replaces
+the type default for that instance (derating: datasheet typical vs
+board derating). Resolution per pin: instance derating > type pin row >
+type uniform.
+
+Deliberately absent: `MinCurrent`/`MinVoltage`/`MaxVoltage` keys.
+MaxVoltage is `Tolerance`; min bounds are state-dependent (the LED
+carries 0 A when unpowered — an unconditional min would be a false
+violation), so they live in node POSTconditions (`[d1.a.current > 0]`),
+the proven-property bracket — state-scoped by the guard for free, and
+the surface E15's placement forcing will consume.
+
+The vacuous-proof hole E15 flagged is closed: a stated current bound on
+a pin with no derivable current was silently skipped; it is now a hard
+error naming the missing law physics. Absent-participation states are
+exempt (an unpop part's pins carry no copper — the bound is not
+evidence there). led_blinker migrated: `spec MaxCurrent: 20mAmp` on the
+instance, the minimum in `async node powered`'s postcondition. Plan:
+`2026-09-25-quantities-phase4-envelopes.md`. E15's prerequisites are now
+all landed except E-series value selection.
+
+### Amendment 2026-09-25 (XXI): LDO output law landed — `spec Output` births the rail
+
+The last rail-birth gap closes. `spec Output` is an ordinary law
+parameter — dimension-only at the type (`spec Output: Volt;`), value at
+the instance (`spec Output: 3.3V`) — paired with an unconditional law
+(`when true { vout.voltage == Output; }`). The birth is detected
+generically: an always-guarded law equation that pins a single
+supply-class pin voltage to a constant drives its net exactly as a
+contract fact does; the membership ladder and the obligation forcing
+both consume the merged rail map, and the proof line reads
+`rail born: u1.vout drives the 3.3 rail (component law)`.
+
+No parser change was needed — the law-parameter path (`Resistance`,
+`Decouple`) already carried it. A drive that contradicts the law
+(`spec Output: 1.8V` plus a surviving `vout == 3.3V` fact) is the hard
+"no DC operating point" error; consistent values stay silent. Modes do
+not birth rails; guarded laws do not birth rails.
+
+One modeling lesson from the gate fixture: once the LDO joins a law
+group its branch currents must be determined or the operating point is
+not unique — the type declares `en.current == 0Amp` (high-impedance
+enable) and `gnd.current == 0Amp` (quiescent neglected) beside the
+output equation. usb_sensor.ebv now carries zero `u1.vout == 3.3V`
+facts — rails, membership, pull-up forcing, budgets, and the emitter
+all run on component physics; only `j1.vbus == 5.0V` (external
+reality) and E15's signal wiring remain explicit. Plan:
+`2026-09-25-ebv-e14b-ldo-output-law.md`.

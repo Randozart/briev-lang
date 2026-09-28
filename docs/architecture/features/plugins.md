@@ -242,7 +242,7 @@ automatically at startup:
 plugins/
   parsed/
     prelude.bv        # Injects stdlib imports
-    prelude-hw.bv     # Injects hardware stdlib for .sbv
+    prelude-hw.bv     # Silicon prelude slot for .sbv (insert dropped — gap E9)
   typed/
     auto-main.bv      # Adds [#] entry marker to main
     entry-check.bv     # Verifies entry mechanism exists

@@ -184,10 +184,15 @@ fn component_groups<'a>(ctx: &DcContext<'a>) -> Vec<ComponentGroup<'a>> {
             nets: nets.iter().cloned().collect(),
         };
         merge_touching_groups(&mut target, &mut groups, &mut net_group, &nets);
-        groups.retain(|group| !group.components.is_empty());
+        // 2026-09-26 (E15): indices stay STABLE during the loop — draining
+        // merged groups here (retain) shifted every later net_group entry
+        // onto the wrong group, splitting groups that shared a net (the
+        // series LED + resistor group solved as two phantom halves). The
+        // empties are dropped once, after the loop.
         register_group_nets(&target, &mut net_group, groups.len());
         groups.push(target);
     }
+    groups.retain(|group| !group.components.is_empty());
     groups
 }
 

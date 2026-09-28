@@ -65,6 +65,8 @@ impl fmt::Display for Expr {
             }
             Expr::Field(obj, name) => write!(f, "{}.{}", obj, name),
             Expr::Index(obj, index) => write!(f, "{}[{}]", obj, index),
+            // 2026-09-28 (E3): `[*]` wildcard selector renders as `*`.
+            Expr::Wildcard => write!(f, "*"),
             Expr::Slice { array, start, end, stride } => {
                 write!(f, "{}[", array)?;
                 if let Some(s) = start { write!(f, "{}", s)?; }

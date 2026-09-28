@@ -91,6 +91,8 @@ fn is_invariant_expression(
 ) -> bool {
     match expr {
         Expr::Decimal(_) | Expr::Char(_) | Expr::Float(_) | Expr::Bool(_) | Expr::BeginProgram => true,
+        // 2026-09-28 (E3): the `[*]` selector is a leaf constant — invariant.
+        Expr::Wildcard => true,
         Expr::Quoted(_) => true,
         Expr::Identifier(name) => {
             // Previously proven invariant let-binding

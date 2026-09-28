@@ -41,10 +41,12 @@ impl LlvmBackend {
             | Expr::Bool(_)
             | Expr::BeginProgram
             | Expr::Float(_)
-            | Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _)
+            |             Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _)
             | Expr::StructLiteral { .. }
             | Expr::FormattingAnnotation(_)
-            | Expr::TaggedLiteral(_, _) => expr.clone(),
+            | Expr::TaggedLiteral(_, _)
+            // 2026-09-28 (E3): the `[*]` selector is a leaf — no ids to rewrite.
+            | Expr::Wildcard => expr.clone(),
 
             // Identifier leaf
             Expr::Identifier(name) => Expr::Identifier(prefix(name)),

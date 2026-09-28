@@ -324,6 +324,38 @@ no current, no divider, and no dissipation. The approved destination is
 type-body `when` laws as constitutive equations plus a piecewise-linear DC
 solver; later slices elaborate and solve them.
 
+**2026-09-25 (E14b slice 8, plan `2026-09-25-ebv-e14b-ldo-output-law.md`):**
+law-derived rail birth via `spec Output`. The LDO output law is an
+ordinary law parameter — dimension-only at the type (`spec Output:
+Volt;`), value at the instance (`spec Output: 3.3V`) — with an
+unconditional `when true { vout.voltage == Output; }`. Birth detection
+is generic: an always-guarded equation pinning a single supply-class
+pin voltage to a constant drives its net as a contract fact would; the
+births merge into the driven-rail map ahead of the membership ladder
+and the obligation forcing, proving `rail born: u1.vout drives the 3.3
+rail (component law)`. No parser change (the law-parameter path
+carried it); a drive contradicting the law is the existing hard
+"no DC operating point" error. Joining a law group demands a unique
+operating point — the type declares `en.current == 0Amp` and
+`gnd.current == 0Amp` beside the output equation, or the branch
+currents stay free and the closed switch state fails to solve. The
+usb_sensor fixture's six rail-birth equalities are deleted; only
+`j1.vbus == 5.0V` (external reality) and E15's signal wiring remain.
+
+**2026-09-25 (quantities Phase 4, plan `2026-09-25-quantities-phase4-envelopes.md`):**
+envelope specs + the anti-vacuity rule. `spec MaxCurrent` — the
+absolute-maximum current envelope, unconditional, every state — joins
+`Tolerance`/`Rating`, with pin-qualified rows (`spec Tolerance: in:
+24V, vdd: 3.6V;`) for asymmetric parts and INSTANCE literals overriding
+type envelopes (derating; resolution instance > pin row > uniform).
+Min bounds are deliberately NOT spec keys: they live in node
+postconditions (`[d1.a.current > 0]`), state-scoped by the guard — a
+min-current requirement does not hold in every state. And the vacuous-
+proof hole is closed: a stated current bound the solver cannot attempt
+is a hard error naming the missing law physics (absent-participation
+states exempt). led_blinker migrated: envelope on the instance, minimum
+in the node postcondition.
+
 **2026-09-25 (E14b slice 7, plan `2026-09-25-ebv-e14b-rail-membership.md`):**
 supply-rail membership via the `net<>`/`stdnet<>` strategy keywords
 (order-free modifier family, `sync<g>` shape) on `let`. `stdnet<Name>`

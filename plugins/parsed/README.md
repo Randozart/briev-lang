@@ -10,7 +10,7 @@ pipeline expansion.  See `docs/plans/2026-07-21-granular-pipeline-and-ast-naviga
 ## Current plugins
 
 - `prelude.bv` — Injects standard library imports for LLVM/Webstack/GPU targets
-- `prelude-hw.bv` — Injects hardware stdlib for CIRCT/Cell targets
+- `prelude-hw.bv` — Silicon prelude slot for CIRCT/Cell targets (no stdlib insert today — see the file header, gap E9)
 
 ## Writing a Parsed plugin
 

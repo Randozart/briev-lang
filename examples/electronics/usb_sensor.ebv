@@ -71,9 +71,12 @@ type Sensor {
     spec Rating: any;
     spec Decouple: 100n;
 };
-type RatedResistor {
+ type RatedResistor {
     pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W;
     spec Resistance: Ohm; spec PullUp: true;
+    // 2026-09-26 (E15): the button pull-up is the free series part — the
+    // synthesis target for an unstated series resistance (plan E15).
+    spec SeriesPart: true;
     // 2026-09-24 (component laws): structured physics. `value` remains the
     // BOM label only.
     when true {

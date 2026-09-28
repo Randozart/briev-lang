@@ -425,8 +425,8 @@ mod tests {
                 reference: None,
                 slots: vec![TypeDefSlot { name: "r".into(), ty: Type::int(), bit_range: None }],
                 pins: vec![
-                    crate::ast::top::PinDecl { name: "a".into(), number: 1, class_ref: None, span: None },
-                    crate::ast::top::PinDecl { name: "b".into(), number: 7, class_ref: Some("Power".into()), span: None },
+                    crate::ast::top::PinDecl { name: "a".into(), number: 1, class_ref: None, unit: None, span: None },
+                    crate::ast::top::PinDecl { name: "b".into(), number: 7, class_ref: Some("Power".into()), unit: None, span: None },
                 ],
                 metadata: {
                     let mut m = std::collections::HashMap::new();

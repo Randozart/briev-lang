@@ -1,0 +1,41 @@
+// ── tile_512.ebv — E3 gate: a 512-instance tile wired by [*] wildcard ─────
+// 2026-09-28 (plan 2026-09-28-ebv-e3-hierarchical-sheets.md). The 512
+// resistors (16×32) are mass-instantiated (E1) and wired to the two rails by
+// TWO wildcard broadcasts (E3 slice 2) — no hand-unrolled equalities, no
+// data table. `t[*]` ranges every element; `scalar == wildcard` is a
+// broadcast, so j1.p1 joins all 512 a-pins and j1.p2 joins all 512 b-pins.
+//
+// The compiler gate is: netlist byte-identical to the hand-unrolled form
+// (proved in `wildcard_netlist_equals_hand_unrolled`), two byte-identical
+// compile runs, and the emitted sheets load ERC-clean in KiCad (the slice-3
+// hierarchical emitter).
+//
+// Compile:  brievc build tile_512.ebv → tile_512.csv
+//           (+ tile_512.kicad_sch; two runs are byte-identical)
+
+type TileRes {
+    pin a;
+    pin b;
+    reference "R";
+    spec Tolerance: any;
+};
+
+type TileConn {
+    pin p1 = 1;
+    pin p2 = 2;
+    reference "J";
+    spec Tolerance: any;
+    spec Rating: any;
+};
+
+let j1: TileConn = TileConn { value: "JST-PH-2", package: "JST-PH" };
+// 16×32 = 512 elements, named t[0][0]…t[15][31] (row-major, E1).
+let t[i:16][j:32]: TileRes = TileRes { value: "100R", package: "0603" };
+
+async node tile
+    [j1.p1.voltage == t[*].a.voltage
+     && j1.p2.voltage == t[*].b.voltage
+     && j1.p1.voltage == 3.3Volt && j1.p2.voltage == 0.0Volt]
+    [j1.p1.voltage >= 0.0Volt]
+{
+}

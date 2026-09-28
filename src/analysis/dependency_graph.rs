@@ -219,6 +219,8 @@ fn collect_expr_ids_inner(expr: &Expr, ids: &mut Vec<String>) {
         Expr::Identifier(n) => {
             ids.push(n.clone());
         }
+        // 2026-09-28 (E3): the `[*]` selector is a leaf — no ids inside.
+        Expr::Wildcard => {}
         Expr::BinaryOp(_, a, b) => {
             collect_expr_ids_inner(a, ids);
             collect_expr_ids_inner(b, ids);

@@ -59,6 +59,11 @@ impl<'a> Parser<'a> {
         if self.check_identifier("budget") {
             return self.parse_top_level_budget();
         }
+        // 2026-09-27 (E2, design record D1): `data name: Type[dims] =
+        // [ cells ];` — a named constant data table. Contextual keyword.
+        if self.check_identifier("data") {
+            return self.parse_top_level_data();
+        }
         // 2026-09-22 (plan 2026-09-22-electronics-participation-and-when-law,
         // Slice B): `unpop <inst>;` — a part excluded from the BOM but
         // verified in both present/absent states. Contextual keyword.
@@ -1975,6 +1980,173 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// 2026-09-27 (E2, D1): `data name: Type[dims] = [ cells ];` — a named
+    /// constant data table. The type parses through the ordinary type
+    /// parser (so the cell type carries its canonical form); the shape
+    /// check demands a Vector of first-class Int cells with literal
+    /// extents. `cells.len()` must equal the product of `dims` (a ragged
+    /// row is a hard error naming the table).
+    fn parse_top_level_data(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume `data`
+        let name = self.expect_identifier()?;
+        self.expect(Token::Colon)?;
+        let ty = self.parse_type()?;
+        let dims = self.data_dims(&name, &ty)?;
+        self.expect(Token::Eq)?;
+        let cells = self.parse_data_cells(&name, &dims)?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::Data(crate::ast::top::DataTable { name, ty, dims, cells, span: None }))
+    }
+
+    /// The declared shape of a data table: a Vector of first-class Int
+    /// cells with literal extents ≥ 1; anything else names the fix.
+    fn data_dims(&mut self, name: &str, ty: &crate::ast::Type) -> Result<Vec<u64>, SyntaxError> {
+        let crate::ast::Type::Vector(base, dims) = ty else {
+            return self.error_at_current(&format!(
+                "data table '{}' needs a dimension — declare `data {}: Int[n] = [ … ];`",
+                name, name
+            ));
+        };
+        if **base != crate::ast::Type::int() {
+            return self.error_at_current(&format!(
+                "data table '{}' declares cells of {} — the first class carries Int cells only",
+                name, base
+            ));
+        }
+        let mut out = Vec::with_capacity(dims.len());
+        for d in dims {
+            let crate::ast::Dimension::Anonymous(n) = d else {
+                return self.error_at_current(&format!(
+                    "data table '{}' states a named dimension — give a literal extent, for \
+                     example `[8]`",
+                    name
+                ));
+            };
+            if *n == 0 {
+                return self.error_at_current(&format!(
+                    "data table '{}' declares a dimension of 0 — state a length >= 1",
+                    name
+                ));
+            }
+            out.push(*n as u64);
+        }
+        Ok(out)
+    }
+
+    /// The cell list of a data table: `[ v, v, … ]` (1-D) or nested
+    /// `[ [ v, … ], [ v, … ] ]` (N-D). Row-major, declaration order. Each
+    /// cell is an integer literal; a non-integer cell or a cell count that
+    /// mismatches the declared shape is a hard error naming the table.
+    fn parse_data_cells(&mut self, name: &str, dims: &[u64]) -> Result<Vec<i64>, SyntaxError> {
+        let mut cells: Vec<i64> = Vec::new();
+        if !self.eat(&Token::LBracket) {
+            return self.error_at_current(&format!(
+                "data table '{}' needs a cell list — `data {} = [ … ];`",
+                name, name
+            ));
+        }
+        self.parse_data_cell_row(name, dims, 0, &mut cells)?;
+        let expected: u64 = dims.iter().product();
+        if cells.len() as u64 != expected {
+            return self.error_at_current(&format!(
+                "data table '{}' declares {} cell{} but lists {} — state the full row-major list",
+                name,
+                expected,
+                if expected == 1 { "" } else { "s" },
+                cells.len()
+            ));
+        }
+        Ok(cells)
+    }
+
+    /// One row of a data table at `depth`. `depth == dims.len()` is the leaf
+    /// (the 1-D innermost); each nested `[` opens a row and each `]` closes
+    /// it. A ragged row (a row with the wrong cell count) is a hard error.
+    fn parse_data_cell_row(
+        &mut self,
+        name: &str,
+        dims: &[u64],
+        depth: usize,
+        cells: &mut Vec<i64>,
+    ) -> Result<(), SyntaxError> {
+        if depth + 1 == dims.len() {
+            return self.parse_data_leaf_row(name, cells);
+        }
+        self.parse_data_nested_row(name, dims, depth, cells)
+    }
+
+    /// A leaf row: a run of integer literals terminated by `]`. `]` alone
+    /// (an empty row) is legal — the cell-count check reports the short list.
+    fn parse_data_leaf_row(&mut self, name: &str, cells: &mut Vec<i64>) -> Result<(), SyntaxError> {
+        loop {
+            if self.eat(&Token::RBracket) {
+                return Ok(());
+            }
+            let v = self.parse_data_cell(name)?;
+            cells.push(v);
+            if self.eat(&Token::Comma) {
+                continue;
+            }
+            if !self.eat(&Token::RBracket) {
+                return self.error_at_current(&format!(
+                    "data table '{}' cell row needs a comma between cells or a closing bracket",
+                    name
+                ));
+            }
+            return Ok(());
+        }
+    }
+
+    /// A nested row: `dims[depth]` sub-rows, each `[`-opened, comma-separated,
+    /// with this level's closing `]`.
+    fn parse_data_nested_row(
+        &mut self,
+        name: &str,
+        dims: &[u64],
+        depth: usize,
+        cells: &mut Vec<i64>,
+    ) -> Result<(), SyntaxError> {
+        let row_len = dims[depth];
+        for i in 0..row_len {
+            if !self.eat(&Token::LBracket) {
+                return self.error_at_current(&format!(
+                    "data table '{}' row {} is missing its opening bracket",
+                    name, i
+                ));
+            }
+            self.parse_data_cell_row(name, dims, depth + 1, cells)?;
+            if i + 1 < row_len && !self.eat(&Token::Comma) {
+                return self.error_at_current(&format!(
+                    "data table '{}' needs a comma between rows",
+                    name
+                ));
+            }
+        }
+        if !self.eat(&Token::RBracket) {
+            return self.error_at_current(&format!(
+                "data table '{}' cell list is missing its closing bracket",
+                name
+            ));
+        }
+        Ok(())
+    }
+
+    /// One cell: an integer literal (the first class). A non-integer or a
+    /// malformed cell is a hard error naming the table.
+    fn parse_data_cell(&mut self, name: &str) -> Result<i64, SyntaxError> {
+        match self.peek() {
+            Some(Token::Integer(n)) => {
+                let v = *n;
+                self.pos += 1;
+                Ok(v)
+            }
+            _ => self.error_at_current(&format!(
+                "data table '{}' cell must be an integer literal — the first class carries Int cells only",
+                name
+            )),
+        }
+    }
+
     /// 2026-09-22 (Slice B): `unpop <inst>;` — a participation fact naming
     /// an instance excluded from the BOM. Also consumed for the shared
     /// `shortcircuit unpop …` prefix via the same parse shape.
@@ -2997,11 +3169,41 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    /// `pin <name>[[<count>]] [':' <TypeName>] ['=' <int>] [':' <TypeName>];`
+    /// `unit <name>` — the symbol-unit half of a pin clause (E4). Legal
+    /// after the number and class, at most once. The unit NAME is stored
+    /// verbatim: grouping into unit blocks happens in analysis (D2 — first-
+    /// seen order), and the emitter never knows a part vocabulary (Rule 15).
+    fn parse_pin_unit_ref(
+        &mut self,
+        pin_name: &str,
+        slot: &mut Option<String>,
+    ) -> Result<(), SyntaxError> {
+        if slot.is_some() {
+            return self.error_at_current(&format!(
+                "pin '{}' names two units — state one: `pin {} … unit <name>;`",
+                pin_name, pin_name
+            ));
+        }
+        if !matches!(self.peek(), Some(Token::Identifier(s)) if s == "unit") {
+            return self.error_at_current(&format!(
+                "expected a unit name after `unit`, pin '{}'",
+                pin_name
+            ));
+        }
+        self.pos += 1; // consume `unit`
+        let unit_name = self.expect_identifier()?;
+        *slot = Some(unit_name);
+        Ok(())
+    }
+
+    /// `pin <name>[[<count>]] [':' <TypeName>] ['=' <int>] [':' <TypeName>]
+    /// ['unit' <name>];`
     /// — first-class component pin. Auto-numbered pins continue after the
     /// highest explicit number (high-water rule). The class ascription
     /// (E12, design record D6) may sit on either side of the number:
-    /// `pin vbus: Power;`, `pin p1 = 1;`, `pin p1 = 1: Nc;`.
+    /// `pin vbus: Power;`, `pin p1 = 1;`, `pin p1 = 1: Nc;`. The symbol unit
+    /// (E4, design record D1) follows the number/class: `pin in+ = 1: In
+    /// unit A;`.
     ///
     /// 2026-09-21 (E11): `pin gpio[8]: Io;` declares an ARRAY of pins. The
     /// parser expands it eagerly into one PinDecl per element, named
@@ -3019,12 +3221,16 @@ impl<'a> Parser<'a> {
         let pin_name = self.expect_identifier()?;
         let count = self.parse_pin_count(&pin_name)?;
         let mut class_ref: Option<String> = None;
+        let mut unit: Option<String> = None;
         if self.eat(&Token::Colon) {
             self.parse_pin_class_ref(&pin_name, &mut class_ref)?;
         }
         let number = self.parse_pin_number(&pin_name, high_water)?;
         if self.eat(&Token::Colon) {
             self.parse_pin_class_ref(&pin_name, &mut class_ref)?;
+        }
+        if matches!(self.peek(), Some(Token::Identifier(s)) if s == "unit") {
+            self.parse_pin_unit_ref(&pin_name, &mut unit)?;
         }
         self.eat(&Token::Semicolon);
         if pins.iter().any(|p| p.name == pin_name) {
@@ -3046,6 +3252,7 @@ impl<'a> Parser<'a> {
                 name: element,
                 number: number + i,
                 class_ref: class_ref.clone(),
+                unit: unit.clone(),
                 span: None,
             });
         }
@@ -3606,7 +3813,7 @@ impl<'a> Parser<'a> {
             }
             None => {
                 let msg = format!(
-                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadLabel, KicadType, MaxBits, NetVoltage, NoConnect, PullUp, Rating, Resistance, Return, Rows, Supply, Switchable, Tolerance",
+                    "unknown spec '{}' — known specs: Alignment, Bits, Bytes, Bistable, CanDrive, Cols, Control, Decouple, Decoupler, Depth, Endian, Format, KicadLabel, KicadType, MaxBits, NetVoltage, NoConnect, PullUp, Rating, Resistance, Return, Rows, SeriesPart, Supply, Switchable, Tolerance",
                     name
                 );
                 return self.error_at_current(&msg);
@@ -3638,7 +3845,7 @@ impl<'a> Parser<'a> {
             // 2026-09-21 (E12/E13): boolean spec keys — `true`/`false`
             // lex as dedicated Bool tokens, not identifiers.
             "no_connect" | "supply" | "return" | "decoupler" | "can_drive"
-            | "control" | "switchable" | "wired_and" | "pull_up" | "bistable" => {
+            | "control" | "switchable" | "wired_and" | "pull_up" | "series_part" | "bistable" => {
                 return self.parse_boolean_spec(name, key, metadata);
             }
             // 2026-09-21 (E13): the stated convention value — a string
@@ -3669,6 +3876,10 @@ impl<'a> Parser<'a> {
             // and the emitter label spelling.
             "net_voltage" | "kicad_label" => {
                 parse_net_registry_spec(self, key, metadata)?;
+            }
+            // Max-current envelope (Phase 4) + E8 drive_current (same shape).
+            "max_current" | "drive_current" => {
+                return parse_qualified_envelope_spec(self, key, crate::ast::QuantityDim::Amp, metadata)
             }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
@@ -3850,6 +4061,28 @@ impl<'a> Parser<'a> {
         if matches!(self.peek(), Some(Token::Identifier(v)) if v == "any") {
             self.pos += 1;
             metadata.insert(key.into(), PropertyValue::Identifier("any".into()));
+            self.eat(&Token::Semicolon);
+            return Ok(());
+        }
+        // 2026-09-25 (quantities Phase 4): pin-qualified rows for asymmetric
+        // parts — `spec Tolerance: in: 24V, vdd: 3.6V;` under
+        // `<key>:<pin>`. The colon lookahead decides: a bare unit
+        // spelling (`Volt`) is the dimension declaration, `v:` qualifies a
+        // pin. Per-pin RATINGS need a per-pin dissipation model — refused
+        // until one exists, never a silent no-op.
+        if dim != crate::ast::QuantityDim::Watt
+            && matches!(self.peek(), Some(Token::Identifier(_)))
+            && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Colon))
+        {
+            loop {
+                let pin = self.expect_identifier()?;
+                self.expect(Token::Colon)?;
+                let (si, resolved) = self.parse_spec_quantity(dim)?;
+                metadata.insert(format!("{key}:{pin}"), PropertyValue::Quantity { si, dimension: resolved });
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
             self.eat(&Token::Semicolon);
             return Ok(());
         }
@@ -4673,6 +4906,39 @@ fn parse_net_registry_spec(
     Ok(())
 }
 
+/// 2026-09-25 (quantities Phase 4): one envelope quantity — either a
+/// single value (uniform: every pin of the type) or a pin-qualified list
+/// (`a: 20mA, vdd: 100mA` for asymmetric parts). Qualified rows store
+/// under `<key>:<pin>`; identifiers cannot contain the separators, so
+/// the analysis split is unambiguous. The dimension is enforced by
+/// `parse_spec_quantity` — a volt under a max-current key is a parse
+/// error, never a silent wrong-dim entry.
+fn parse_qualified_envelope_spec(
+    parser: &mut Parser,
+    key: &str,
+    dim: crate::ast::QuantityDim,
+    metadata: &mut std::collections::HashMap<String, PropertyValue>,
+) -> Result<(), SyntaxError> {
+    if matches!(parser.peek(), Some(Token::Identifier(_))) {
+        loop {
+            let pin = parser.expect_identifier()?;
+            parser.expect(Token::Colon)?;
+            let (si, resolved) = parser.parse_spec_quantity(dim)?;
+            metadata.insert(format!("{key}:{pin}"), PropertyValue::Quantity { si, dimension: resolved });
+            if !parser.eat(&Token::Comma) {
+                break;
+            }
+        }
+    } else {
+        let (si, resolved) = parser.parse_spec_quantity(dim)?;
+        metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: resolved });
+    }
+    // Spec arms own their terminator (parse_envelope_spec's convention) —
+    // the type-body loop expects the next item, not a stray `;`.
+    parser.eat(&Token::Semicolon);
+    Ok(())
+}
+
 pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
     match name {
         "Alignment" => Some("alignment"),
@@ -4724,6 +4990,11 @@ pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // min-voltage obligation lands on a released (WiredAnd) net. Same
         // property interface as `Decoupler` — the compiler knows no names.
         "PullUp" => Some("pull_up"),
+        // 2026-09-26 (E15 slice 1, plan
+        // 2026-09-26-ebv-e15-series-part-placement.md): `SeriesPart` marks a
+        // two-pin part the current-obligation forcing pass may place IN
+        // SERIES with a load — same property interface as `PullUp`.
+        "SeriesPart" => Some("series_part"),
         // 2026-09-24 (component laws): the generic ohmic parameter. The name
         // is a physics dimension channel, not a component catalog entry.
         "Resistance" => Some("resistance"),
@@ -4737,6 +5008,18 @@ pub(crate) fn spec_name_to_key(name: &str) -> Option<&'static str> {
         // `any`.
         "Tolerance" => Some("tolerance"),
         "Rating" => Some("rating"),
+        // 2026-09-25 (quantities Phase 4, plan
+        // 2026-09-25-quantities-phase4-envelopes.md): the absolute-maximum
+        // current envelope — unconditional, every state, like Tolerance for
+        // volts. Uniform or pin-qualified (`a: 20mA, vdd: 100mA`).
+        "MaxCurrent" => Some("max_current"),
+        // 2026-09-26 (E8, plan 2026-09-26-ebv-e8-driven-node-drive.md): the
+        // driven-node capability envelopes — `DriveCurrent` caps what a
+        // part may source from a pin, `FanIn` caps the load-branch count.
+        // Consumed generically by the driven-node check; the compiler
+        // knows no op-amp (Rule 15).
+        "DriveCurrent" => Some("drive_current"),
+        "FanIn" => Some("fan_in"),
         // 2026-09-25 (E14b-7, rail-membership plan): the standard-net
         // registry — `spec NetVoltage` on a type makes it a `stdnet<Name>`
         // row (the expected rail voltage), `spec KicadLabel` the emitter
@@ -4782,6 +5065,60 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let err = p.parse_program().expect_err("missing from must error");
         assert!(format!("{err}").contains("from"), "{err}");
+    }
+
+    // ── 2026-09-27 (E2, data tables): parser slice ──────────────────────
+
+    #[test]
+    fn test_data_table_1d_parses_row_major_cells() {
+        // `data r: Int[4] = [ 10, 20, 30, 40 ];` — dims + declaration order.
+        let tl = parse_top("data r: Int[4] = [ 10, 20, 30, 40 ];").unwrap();
+        let crate::ast::TopLevel::Data(t) = tl else { panic!("expected Data, got {:?}", tl) };
+        assert_eq!(t.name, "r");
+        assert_eq!(t.dims, vec![4]);
+        assert_eq!(t.cells, vec![10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn test_data_table_2d_parses_row_major_cells() {
+        // `data m: Int[2][3]` — chained dims, flattened row-major cells.
+        let tl = parse_top("data m: Int[2][3] = [ [1, 2, 3], [4, 5, 6] ];").unwrap();
+        let crate::ast::TopLevel::Data(t) = tl else { panic!("expected Data, got {:?}", tl) };
+        assert_eq!(t.name, "m");
+        assert_eq!(t.dims, vec![2, 3]);
+        assert_eq!(t.cells, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_data_table_cell_count_mismatch_is_an_error() {
+        // A ragged row (fewer cells than declared) names the table + counts.
+        let err = parse_top("data m: Int[2][3] = [ [1, 2, 3], [4, 5] ];")
+            .expect_err("short row must error");
+        assert!(err.contains("data table 'm'"), "{err}");
+        assert!(err.contains("declares 6"), "{err}");
+        assert!(err.contains("lists 5"), "{err}");
+    }
+
+    #[test]
+    fn test_data_table_non_integer_cell_is_an_error() {
+        // The first class carries Int cells only; the error names the table.
+        let err = parse_top("data r: Int[2] = [ 1, foo ];").expect_err("non-int cell must error");
+        assert!(err.contains("data table 'r'"), "{err}");
+        assert!(err.contains("integer literal"), "{err}");
+    }
+
+    #[test]
+    fn test_data_table_missing_dimension_is_an_error() {
+        let err = parse_top("data r: Int = [ 1 ];").expect_err("missing dims must error");
+        assert!(err.contains("data table 'r'"), "{err}");
+        assert!(err.contains("dimension"), "{err}");
+    }
+
+    #[test]
+    fn test_data_table_zero_dimension_is_an_error() {
+        let err = parse_top("data r: Int[0] = [ ];").expect_err("zero dim must error");
+        assert!(err.contains("data table 'r'"), "{err}");
+        assert!(err.contains("dimension of 0"), "{err}");
     }
 
     use crate::lexer::tokenize;
@@ -5492,16 +5829,16 @@ mod tests {
     }
 
     #[test]
-    fn test_instance_literal_rejects_envelope_specs() {
-        // The envelopes are type-level; an instance override would be a
-        // silent no-op the analysis never reads — refuse at parse time.
-        let err = parse_top(
-            "let d: D = D { spec Tolerance: 3.6V; };",
-        )
-        .unwrap_err();
+    fn test_instance_literal_lifts_envelope_specs() {
+        // 2026-09-25 (quantities Phase 4): the envelopes lift to instance
+        // literals — derating semantics; the instance value replaces the
+        // type default. The dimension stays a parse-time hard error.
+        let parsed = parse_top("let d: D = D { spec Tolerance: 3.6V; };");
+        assert!(parsed.is_ok(), "instance envelope override parses: {parsed:?}");
+        let err = parse_top("let d: D = D { spec MaxCurrent: 3.3V; };").unwrap_err();
         assert!(
-            err.contains("type-level envelope"),
-            "instance envelope must name the type body: {err}"
+            err.contains("the key expects amp"),
+            "wrong-dim envelope names both sides: {err}"
         );
     }
 

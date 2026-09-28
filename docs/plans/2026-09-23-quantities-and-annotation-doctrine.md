@@ -104,14 +104,24 @@ Spec value = `[number][suffix]` | `[number]`:
   becomes pure annotation; no `parse_ohms`-on-annotation anywhere.
 - Trigger: Phase 2 lands; per-instance physics home confirmed.
 
-### Phase 4 — Envelope specs (deferred)
+### Phase 4 — Envelope specs (DONE 2026-09-25 — plan
+### `2026-09-25-quantities-phase4-envelopes.md`)
 
-- `spec MinCurrent: 2mA;` / `spec MaxCurrent: 20mA;` (dim Amp) +
-  Min/MaxVoltage.
-- `check_current_bounds` gains lower-bound proofs (today: upper only).
-- Fixture LED bound `[led1.a.current >= 2mA && <= 20mA]` becomes a
-  type-level guarantee.
-- Trigger: a second type wants a per-instance bound.
+- `spec MaxCurrent: 20mA;` (dim Amp) — the absolute-maximum current
+  envelope, unconditional, checked in every reachable state like
+  Tolerance. Uniform or pin-qualified (`a: 4mA, vdd: 100mA`), and
+  instance literals override (derating).
+- `MinVoltage`/`MaxVoltage` deliberately have NO keys: MaxVoltage IS
+  `spec Tolerance` (landed Phase 2); min bounds are node POSTconditions
+  (`[d1.a.current > 0]` / voltage obligations) — state-scoped by the
+  node guard, because a min-current requirement does not hold in every
+  state (the LED legitimately carries 0 A when unpowered).
+- Lower-bound proofs: already landed with the component-law DC solve;
+  Phase 4 closed the vacuous-proof hole instead — a stated current
+  bound with no derivable current is a hard error (absent-participation
+  states exempt).
+- Fixture LED bound: `spec MaxCurrent` on the instance + the minimum in
+  the node postcondition (led_blinker migrated).
 
 ### Phase 5 — Docs
 
@@ -135,6 +145,7 @@ legacy `parse_ohms`-on-annotation path it displaced was deleted the same day
 — `docs/plans/2026-09-24-retire-legacy-value-physics.md`, ledger Amendment
 XVI. `derive_current`'s series graph now reads only structured physics
 (instance spec, type default). Corollary 3 is DONE: `value` is pure
-annotation structurally, not by rule. Phase 4 (envelope specs
-`MinCurrent`/`MaxCurrent`) remains the next deferred phase — trigger: a
-second type wants a per-instance bound.
+annotation structurally, not by rule. Phase 4 landed 2026-09-25 (plan
+`2026-09-25-quantities-phase4-envelopes.md`); the per-instance envelope
+surface lifted with it — instance literals override type envelopes
+(derating semantics), the question this amendment left deferred.

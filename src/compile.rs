@@ -286,6 +286,16 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // the shape detectors and backends only ever see plain Expr::Index.
     briev_compiler::analysis::desugar::rewrite_multi_index(&mut items)?;
     let mut universe = TypeUniverse::new();
+    // 2026-09-26 (E15): register the declared typedefs BEFORE the typecheck —
+    // imports (the electronics stdlib's Volt/Amp/Ohm) were previously absent
+    // from the typechecker's universe, so quantity comparisons against their
+    // fields could not admit numeral literals there. Same registration the
+    // backend normalizers run; idempotent (types.insert overwrite).
+    briev_compiler::backend::register_types::register_typedefs(
+        &items,
+        &mut universe,
+        opts.int_bits,
+    )?;
     // 2026-09-14 (machine-entry plan): effective mechanism — CLI override,
     // else the target profile's row (keyed by triple, longest prefix).
     let check_isr_mechanism = opts.isr_mechanism.clone()
@@ -1572,6 +1582,21 @@ fn codegen(
                 Ok(sch) => output = sch,
                 Err(errs) => return Err(errs.join("\n")),
             }
+            // 2026-09-25 (E5): the assembly BOM rides with the schematic —
+            // populated parts only, deterministic order.
+            let bom = briev_compiler::backend::electronics::ElectronicsBackend::generate_bom(&analysis.electronics);
+            let bom_path = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?
+                .replace(".ll", ".csv");
+            if let Some(parent) = std::path::Path::new(&bom_path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        format!("cannot create output dir '{}': {}", parent.display(), e)
+                    })?;
+                }
+            }
+            std::fs::write(&bom_path, &bom)
+                .map_err(|e| format!("cannot write '{}': {}", bom_path, e))?;
+            println!("wrote {}", bom_path);
             // 2026-09-23 (fab plan): a `fab` section asks for a board — the
             // .kicad_pcb is written as a companion to the schematic.
             match briev_compiler::backend::electronics::ElectronicsBackend::generate_board(

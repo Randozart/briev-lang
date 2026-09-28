@@ -1984,6 +1984,8 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
     fn resolve_dollar_refs_in_expr(expr: &mut Expr, scope: &Scope) -> Result<(), String> {
     match expr {
         Expr::UnitLiteral { .. } => Ok(()),
+        // 2026-09-28 (E3): the `[*]` selector is a leaf — no dollar refs inside.
+        Expr::Wildcard => Ok(()),
         Expr::Identifier(name) => {
             // $$escape → produce literal $ident (no interpolation). The leading
             // $ is preserved but won't be re-matched by $ident because we return.
@@ -2217,6 +2219,8 @@ fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(
         TopLevel::Budget(_) => Ok(()),
         // 2026-09-22 (Slice B): participation facts — no $-refs to resolve.
         TopLevel::Unpop(_) | TopLevel::ShortCircuit(_) => Ok(()),
+        // 2026-09-27 (E2): data tables hold integer literals only — no $-refs.
+        TopLevel::Data(_) => Ok(()),
         // 2026-09-22 (Slice C): the static when law — resolve $-refs in its
         // guard and facts.
         TopLevel::WhenLaw(w) => {

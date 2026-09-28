@@ -328,7 +328,7 @@ motherboard-class gate.
 | Stage | Scope | Gate |
 |---|---|---|
 | **E14a** | intent-*completion*: explicit equalities still allowed; drive-map intents (`led1 = true`) infer the remaining memberships; ambiguity = enumerated-candidate errors; pin classes, vol, spec, population, chain desugar; lifting slots RETRACTED (2026-09-22) — no solver substrate | §3.2 fixture compiles + its error matrix; netlist/KiCad deterministic — **GATE PASSED 2026-09-23** (see gate delta below) |
-| **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized — **slices 1–5 landed 2026-09-23** (min pull-up forcing, max low-hold forcing, bus assembly, drive assignment, value-aware pull-up matching); **slice 6 landed 2026-09-25** (return-net inference + decoupler auto-bridging — the fixture's return side is solver-inferred); **slice 7 landed 2026-09-25** (supply-rail membership via `net<>`/`stdnet<>` — the fixture's guard is §3.2's exact form); remaining: LDO output law |
+| **E14b** | pure intent: no explicit wiring equalities; guards + behaviors only | §3.2 written without any net/`==` topology; §3.3 materialized — **slices 1–5 landed 2026-09-23** (min pull-up forcing, max low-hold forcing, bus assembly, drive assignment, value-aware pull-up matching); **slice 6 landed 2026-09-25** (return-net inference + decoupler auto-bridging — the fixture's return side is solver-inferred); **slice 7 landed 2026-09-25** (supply-rail membership via `net<>`/`stdnet<>` — the fixture's guard is §3.2's exact form); **slice 8 landed 2026-09-25** (LDO output law `spec Output` + law-derived rail birth — no contract fact names `u1.vout` anywhere); remaining: E15 signal wiring/placement only |
 
 Both stages: `L`. E14a ships useful even if E14b stalls (strict
 generalization order). Prerequisite gap work (E11 pin arrays, E12 pin
@@ -382,6 +382,16 @@ the expectation/refutation/propagation ladder (slice 7, plan
 only the rail-birth boundary conditions — `j1.vbus == 5.0V` forever
 (external reality), `u1.vout == 3.3V` until the LDO output law (`spec
 Output`) lands.
+
+**Delta closure (2026-09-25, E14b slice 8):** item 1 is CLOSED. The
+LDO's `spec Output` parameter (dimension at the type, value at the
+instance) plus its unconditional law births the 3.3V rail from
+component physics; the fixture's six `u1.vout == 3.3V` sites are gone
+and no contract fact names `u1.vout` anywhere — `j1.vbus == 5.0V`
+remains as external reality (the port is the boundary the board does
+not own). Delta items 1 and 2 are CLOSED (pull-up forcing landed in
+slice 1); what remains is E15's signal wiring and part placement
+(items 3, 5, 7) plus the fixture's structural SWD addition (item 6).
 
 ## 5. Documentation chain (at implementation time)
 

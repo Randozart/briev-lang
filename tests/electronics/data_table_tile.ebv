@@ -1,0 +1,47 @@
+// ── data_table_tile.ebv — E2 gate: a 2×2 tile fed from a data matrix ────
+// 2026-09-27 (plan 2026-09-27-ebv-e2-data-tables.md). The four cell values
+// reach the BOM through the same resolution a hand-written literal takes —
+// the compiler gate is byte-identical emission and two byte-identical runs.
+//
+// The table carries values only (D6: a generic Int matrix — the compiler
+// knows no part vocabulary). Population is a declaration, never a table
+// predicate (D5): every part here is present, and no `unpop` decision comes
+// from the matrix. Specs remain quantity positions (D1: cells are bare Int
+// literals), so this tile's type declares no constitutive law — `value` is
+// a BOM annotation.
+//
+// Compile:  brievc build data_table_tile.ebv → data_table_tile.csv
+//           (+ data_table_tile.kicad_sch; two runs are byte-identical)
+
+type TileRes {
+    pin a;
+    pin b;
+    reference "R";
+    spec Tolerance: any;
+};
+
+type Connector {
+    pin p1 = 1;
+    pin p2 = 2;
+    reference "J";
+    spec Tolerance: any;
+    spec Rating: any;
+};
+
+// Row-major value matrix — declaration order is the determinism rule (D4).
+data w: Int[2][2] = [ [ 100, 220 ], [ 330, 470 ] ];
+
+let j1: Connector = Connector { value: "JST-PH-2", package: "JST-PH" };
+// The named binders feed the table index per element (E2 slice 2):
+// t[0][0] takes w[0][0], t[1][1] takes w[1][1], row-major.
+let t[i:2][j:2]: TileRes = TileRes { value: w[i][j], package: "0603" };
+
+async node tile
+    [j1.p1.voltage == t[0][0].a.voltage && j1.p1.voltage == t[0][1].a.voltage
+     && j1.p1.voltage == t[1][0].a.voltage && j1.p1.voltage == t[1][1].a.voltage
+     && j1.p2.voltage == t[0][0].b.voltage && j1.p2.voltage == t[0][1].b.voltage
+     && j1.p2.voltage == t[1][0].b.voltage && j1.p2.voltage == t[1][1].b.voltage
+     && j1.p1.voltage == 3.3Volt && j1.p2.voltage == 0.0Volt]
+    [j1.p1.voltage >= 0.0Volt]
+{
+}
