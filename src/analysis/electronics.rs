@@ -3069,6 +3069,18 @@ fn collect_pin_unions(
                 }
                 BusPair::NotBus => {}
             }
+            // 2026-09-28 (E3, Slice 2): a `[*]` wildcard on either side of the
+            // equality expands to every element. `scalar == wildcard` is a
+            // broadcast (the scalar joins all elements); `wildcard ==
+            // wildcard` is element-wise (paired by index; a length mismatch
+            // is a hard error). Neither side wildcard falls through to the
+            // single-pin path below.
+            let wc = wildcard_bus_access(&l);
+            let wr = wildcard_bus_access(&r);
+            if wc.is_some() || wr.is_some() {
+                apply_wildcard_pair(&l, &r, &wc, &wr, instances, type_pins, ds, &mut errors);
+                continue;
+            }
             let (Some(lp), Some(rp)) = (
                 resolve_pin(&l, instances, type_pins),
                 resolve_pin(&r, instances, type_pins),
@@ -3083,6 +3095,79 @@ fn collect_pin_unions(
         }
     }
     errors
+}
+
+/// 2026-09-28 (E3, Slice 2): expand a `[*]` wildcard pair and union the
+/// resulting element pins. `scalar == wildcard` is a broadcast — the scalar
+/// joins every element on one net. `wildcard == wildcard` is element-wise —
+/// paired by flattened index; a length mismatch is a hard error naming both
+/// lengths (the E11 convention). Called only when at least one side is a
+/// wildcard; the caller `continue`s afterward.
+fn apply_wildcard_pair(
+    l: &Expr,
+    r: &Expr,
+    wc: &Option<WildcardBus>,
+    wr: &Option<WildcardBus>,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    ds: &mut DisjointSet,
+    errors: &mut Vec<String>,
+) {
+    match (wc, wr) {
+        (Some(lb), Some(rb)) => {
+            let le = expand_wildcard(lb, instances, type_pins);
+            let re = expand_wildcard(rb, instances, type_pins);
+            if le.len() != re.len() {
+                errors.push(format!(
+                    "whole-bus equality '{}' ({} elements) vs '{}' ({} elements) — the buses \
+                     must be the same length",
+                    l,
+                    le.len(),
+                    r,
+                    re.len()
+                ));
+                return;
+            }
+            for (lp, rp) in le.iter().zip(re.iter()) {
+                union_pins(ds, lp, rp);
+            }
+        }
+        (Some(lb), None) => union_broadcast(lb, r, instances, type_pins, ds),
+        (None, Some(rb)) => union_broadcast(rb, l, instances, type_pins, ds),
+        (None, None) => {}
+    }
+}
+
+/// 2026-09-28 (E3, Slice 2): broadcast — `scalar == wildcard`. The scalar
+/// pin joins every expanded element on one net.
+fn union_broadcast(
+    bus: &WildcardBus,
+    scalar_expr: &Expr,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+    ds: &mut DisjointSet,
+) {
+    let elements = expand_wildcard(bus, instances, type_pins);
+    let Some(sp) = resolve_pin(scalar_expr, instances, type_pins) else {
+        return;
+    };
+    let sk = pin_key(&sp.component, &sp.pin);
+    ds.make(sk.clone());
+    for ep in &elements {
+        ds.make(pin_key(&ep.component, &ep.pin));
+        ds.union(&sk, &pin_key(&ep.component, &ep.pin));
+    }
+}
+
+/// 2026-09-28 (E3, Slice 2): union two resolved pins into one net (the
+/// element-pair helper, factored so the broadcast and pairwise paths share
+/// the make+union idiom).
+fn union_pins(ds: &mut DisjointSet, lp: &PinRef, rp: &PinRef) {
+    let lk = pin_key(&lp.component, &lp.pin);
+    let rk = pin_key(&rp.component, &rp.pin);
+    ds.make(lk.clone());
+    ds.make(rk.clone());
+    ds.union(&lk, &rk);
 }
 
 /// 2026-09-22 (whole-bus equality, Slice 3): if both sides of an equality
@@ -3178,6 +3263,158 @@ fn range_pin_ref(
                 arr_name.to_string(),
             )),
             Box::new(Expr::Decimal(k as i64)),
+        )),
+        "voltage".to_string(),
+    );
+    resolve_pin(&expr, instances, type_pins)
+}
+
+/// 2026-09-28 (E3, Slice 2): a `[*]` wildcard element access in a pin
+/// equality. Two shapes:
+///   - a PIN array on a concrete instance: `u2.gpio[*].voltage`
+///     = `Field(Index(Field(Ident(inst), arr), Wildcard), "voltage")`;
+///   - an INSTANCE array (any dim): `t[*].a.voltage`
+///     = `Field(Field(Index(Ident(arr), Wildcard…), pin), "voltage")`.
+/// Returns which array is ranged and the fixed pin (for the instance-array
+/// shape). A scalar pin access (no wildcard) is not a wildcard bus.
+enum WildcardBus {
+    /// `inst.arr[*].voltage` — every element pin of a single instance.
+    PinArray { inst: String, arr: String },
+    /// `arr[*].pin.voltage` — every element instance of an instance array.
+    InstanceArray { arr: String, pin: String },
+}
+
+/// Peel `Index(_, Wildcard)` layers down to a bare `Identifier` root; require
+/// at least one wildcard on the path. `t[*]` → `t`; `t[*][*]` → `t`; a bare
+/// `t` (no index) is not a wildcard root.
+fn wildcard_instance_root(expr: &Expr) -> Option<String> {
+    let mut cur = expr;
+    let mut saw_wildcard = false;
+    loop {
+        match cur {
+            Expr::Index(inner, idx) => {
+                if !matches!(idx.as_ref(), Expr::Wildcard) {
+                    return None;
+                }
+                saw_wildcard = true;
+                cur = inner.as_ref();
+            }
+            Expr::Identifier(name) if saw_wildcard => return Some(name.clone()),
+            _ => return None,
+        }
+    }
+}
+
+/// Recognize a `[*]` wildcard pin access (the two `WildcardBus` shapes).
+/// Returns None for a scalar pin access (no wildcard) — the caller falls
+/// back to single-pin resolution.
+fn wildcard_bus_access(expr: &Expr) -> Option<WildcardBus> {
+    let Expr::Field(inner, prop) = expr else { return None };
+    if prop != "voltage" {
+        return None;
+    }
+    match inner.as_ref() {
+        // Pin array: `u2.gpio[*]` → Index(Field(Ident(inst), arr), Wildcard).
+        Expr::Index(base, idx) => {
+            if !matches!(idx.as_ref(), Expr::Wildcard) {
+                return None;
+            }
+            let Expr::Field(inst, arr) = base.as_ref() else {
+                return None;
+            };
+            let Expr::Identifier(inst_name) = inst.as_ref() else {
+                return None;
+            };
+            Some(WildcardBus::PinArray { inst: inst_name.clone(), arr: arr.clone() })
+        }
+        // Instance array: `t[*].a` → Field(Index(Ident(t), Wildcard…), pin).
+        Expr::Field(base, pin) => {
+            let arr = wildcard_instance_root(base.as_ref())?;
+            Some(WildcardBus::InstanceArray { arr, pin: pin.clone() })
+        }
+        _ => None,
+    }
+}
+
+/// 2026-09-28 (E3, Slice 2): the numeric index tuple inside an array-element
+/// name (`t[3][17]` → `[3, 17]`), so element names order row-major (the E1
+/// declaration order), not lexicographically (`t[3][10]` < `t[3][2]` is
+/// false; the tuple says 10 > 2).
+fn element_index_key(name: &str) -> Vec<i64> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < name.len() {
+        if name.as_bytes()[i] == b'[' {
+            let end = name[i..].find(']').map(|k| i + k).unwrap_or(name.len());
+            let digits = &name[i + 1..end.min(name.len())];
+            if let Ok(n) = digits.parse::<i64>() {
+                out.push(n);
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// 2026-09-28 (E3, Slice 2): expand a `[*]` wildcard bus to its element
+/// `PinRef`s in declaration (row-major) order. A pin-array wildcard returns
+/// every element pin of the instance, in pin-number order; an instance-array
+/// wildcard returns the fixed pin of every element instance, element names
+/// sorted by their numeric index tuple (deterministic, E1 order).
+fn expand_wildcard(
+    bus: &WildcardBus,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> Vec<PinRef> {
+    match bus {
+        WildcardBus::PinArray { inst, arr } => {
+            let Some(comp) = instances.get(inst) else { return Vec::new() };
+            let Some(pins) = type_pins.get(&comp.type_name) else {
+                return Vec::new();
+            };
+            let prefix = format!("{}[", arr);
+            let mut els: Vec<&(String, u64)> = pins
+                .iter()
+                .filter(|(n, _)| n.starts_with(&prefix))
+                .collect();
+            els.sort_by_key(|(n, _)| element_index_key(n));
+            els.iter()
+                .map(|(n, num)| PinRef { component: inst.clone(), pin: n.clone(), number: *num })
+                .collect()
+        }
+        WildcardBus::InstanceArray { arr, pin } => {
+            let prefix = format!("{}[", arr);
+            let mut names: Vec<String> = instances
+                .keys()
+                .filter(|k| k.starts_with(&prefix))
+                .cloned()
+                .collect();
+            names.sort_by_key(|k| element_index_key(k));
+            let mut out = Vec::new();
+            for name in names {
+                if let Some(pr) = resolve_element_pin(&name, pin, instances, type_pins) {
+                    out.push(pr);
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Resolve `name.pin.voltage` for a concrete (already-expanded) element
+/// instance name — the same shape `resolve_pin` handles.
+fn resolve_element_pin(
+    name: &str,
+    pin: &str,
+    instances: &BTreeMap<String, &ComponentInstance>,
+    type_pins: &BTreeMap<String, Vec<(String, u64)>>,
+) -> Option<PinRef> {
+    let expr = Expr::Field(
+        Box::new(Expr::Field(
+            Box::new(Expr::Identifier(name.to_string())),
+            pin.to_string(),
         )),
         "voltage".to_string(),
     );
@@ -9456,6 +9693,181 @@ mod tests {
             nl.bus_errors
         );
         assert!(nl.bus_errors[0].contains("3 elements") && nl.bus_errors[0].contains("7 elements"), "{}", nl.bus_errors[0]);
+    }
+
+    // ── 2026-09-28 (E3, Slice 2): [*] wildcard wiring ───────────────────
+
+    #[test]
+    fn wildcard_instance_array_broadcasts_to_every_element() {
+        // `j1.p1 == t[*].a` (broadcast) puts j1.p1 and EVERY element's a-pin
+        // on one net; `j1.p2 == t[*].b` likewise. Two nets total.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let t[i:2][j:3]: Resistor = Resistor { value: "x" };
+            let j1: Conn = Conn { value: "x" };
+            node n [
+                j1.p1.voltage == t[*].a.voltage &&
+                j1.p2.voltage == t[*].b.voltage
+            ] { };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.bus_errors.is_empty(), "{:?}", nl.bus_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        // 6 elements × 2 pins all wired → exactly 2 nets (a-rail, b-rail).
+        assert_eq!(nl.nets.len(), 2, "broadcast must make 2 nets: {:?}", nl.nets);
+        for k in 0..2 {
+            for j in 0..3 {
+                let name = format!("t[{}][{}]", k, j);
+                // Each element's a-pin shares a net with j1.p1 (the a-rail).
+                assert!(
+                    nl.nets.iter().any(|n| {
+                        n.pins.iter().any(|p| p.component == name && p.pin == "a")
+                            && n.pins.iter().any(|p| p.component == "j1" && p.pin == "p1")
+                    }),
+                    "{} a not on the p1 rail: {:?}",
+                    name,
+                    nl.nets
+                );
+                // Each element's b-pin shares a net with j1.p2 (the b-rail).
+                assert!(
+                    nl.nets.iter().any(|n| {
+                        n.pins.iter().any(|p| p.component == name && p.pin == "b")
+                            && n.pins.iter().any(|p| p.component == "j1" && p.pin == "p2")
+                    }),
+                    "{} b not on the p2 rail: {:?}",
+                    name,
+                    nl.nets
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wildcard_pin_array_broadcasts_to_every_element_pin() {
+        // `u2.gpio[*] == j1.p1` (broadcast) — every element pin of u2's gpio
+        // array joins j1.p1 on one net.
+        let src = r#"
+            type Chip { pin gpio[4]; reference "U"; spec Tolerance: any; };
+            type Conn { pin p1; reference "J"; };
+            let u2: Chip = Chip { value: "u2" };
+            let j1: Conn = Conn { value: "x" };
+            node n [j1.p1.voltage == u2.gpio[*].voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.bus_errors.is_empty(), "{:?}", nl.bus_errors);
+        assert!(nl.dangling.is_empty(), "{:?}", nl.dangling);
+        // One net: j1.p1 + gpio[0..3].
+        assert_eq!(nl.nets.len(), 1, "pin-array broadcast = 1 net: {:?}", nl.nets);
+        assert!(
+            nl.nets.iter().any(|n| {
+                n.pins.iter().any(|p| p.component == "j1" && p.pin == "p1")
+                    && n.pins.iter().any(|p| p.component == "u2" && p.pin == "gpio[0]")
+                    && n.pins.iter().any(|p| p.component == "u2" && p.pin == "gpio[3]")
+            }),
+            "all 4 element pins must join the net: {:?}",
+            nl.nets
+        );
+    }
+
+    #[test]
+    fn wildcard_vs_wildcard_is_element_wise() {
+        // `t[*].a == s[*].a` pairs elements by index (same shape, 6 each).
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            let t[i:2][j:3]: Resistor = Resistor { value: "x" };
+            let s[i:2][j:3]: Resistor = Resistor { value: "y" };
+            node n [t[*].a.voltage == s[*].a.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.bus_errors.is_empty(), "{:?}", nl.bus_errors);
+        // 6 element pairs → 6 nets (a[k] of t and s paired).
+        assert_eq!(nl.nets.len(), 6, "element-wise = 6 nets: {:?}", nl.nets);
+        for k in 0..2 {
+            for j in 0..3 {
+                let tn = format!("t[{}][{}]", k, j);
+                let sn = format!("s[{}][{}]", k, j);
+                assert!(
+                    nl.nets.iter().any(|n| {
+                        n.pins.iter().any(|p| p.component == tn && p.pin == "a")
+                            && n.pins.iter().any(|p| p.component == sn && p.pin == "a")
+                    }),
+                    "element {} must pair t/s: {:?}",
+                    k * 3 + j,
+                    nl.nets
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wildcard_length_mismatch_is_an_error() {
+        // t (6 elements) vs s (4 elements) — a hard error naming both lengths.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            let t[i:2][j:3]: Resistor = Resistor { value: "x" };
+            let s[i:2][j:2]: Resistor = Resistor { value: "y" };
+            node n [t[*].a.voltage == s[*].a.voltage] { };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            !nl.bus_errors.is_empty(),
+            "a 6-vs-4 wildcard equality must error: {:?}",
+            nl.bus_errors
+        );
+        assert!(nl.bus_errors[0].contains("6 elements") && nl.bus_errors[0].contains("4 elements"), "{}", nl.bus_errors[0]);
+    }
+
+    #[test]
+    fn wildcard_netlist_equals_hand_unrolled() {
+        // The `[*]` broadcast netlist must be byte-identical to writing out
+        // every equality by hand (modulo nothing — same unions, same nets).
+        let unrolled = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let t[i:2][j:3]: Resistor = Resistor { value: "x" };
+            let j1: Conn = Conn { value: "x" };
+            node n [
+                j1.p1.voltage == t[0][0].a.voltage && t[0][0].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == t[0][1].a.voltage && t[0][1].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == t[0][2].a.voltage && t[0][2].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == t[1][0].a.voltage && t[1][0].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == t[1][1].a.voltage && t[1][1].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == t[1][2].a.voltage && t[1][2].b.voltage == j1.p2.voltage
+            ] { };
+        "#;
+        let wild = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            let t[i:2][j:3]: Resistor = Resistor { value: "x" };
+            let j1: Conn = Conn { value: "x" };
+            node n [
+                j1.p1.voltage == t[*].a.voltage &&
+                j1.p2.voltage == t[*].b.voltage
+            ] { };
+        "#;
+        let a = analyze(unrolled);
+        let b = analyze(wild);
+        assert!(a.bus_errors.is_empty(), "{:?}", a.bus_errors);
+        assert!(b.bus_errors.is_empty(), "{:?}", b.bus_errors);
+        let net = |nl: &ElectronicsNetlist| {
+            let mut v: Vec<String> = nl
+                .nets
+                .iter()
+                .map(|n| {
+                    let mut pins: Vec<String> = n
+                        .pins
+                        .iter()
+                        .map(|p| format!("{}.{}", p.component, p.pin))
+                        .collect();
+                    pins.sort();
+                    pins.join(",")
+                })
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(net(&a), net(&b), "wildcard netlist must match hand-unrolled");
     }
 
     // ── 2026-09-23 (E1): bounded instance arrays ────────────────────────
