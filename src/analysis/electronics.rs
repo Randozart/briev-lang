@@ -1052,15 +1052,43 @@ pub(crate) fn collect_instances_for_laws(
     items: &[TopLevel],
     type_pins: &BTreeMap<String, Vec<(String, u64)>>,
 ) -> Vec<ComponentInstance> {
-    collect_instances(items, type_pins)
+    // Same items → same resolution; derive_netlist reports the data-table
+    // errors once (collecting them here would double-report).
+    collect_instances(items, type_pins).0
+}
+
+/// The declared data tables by name (2026-09-27, E2). A duplicate name is
+/// a hard error naming it; the first declaration wins for resolution (the
+/// error is fatal regardless).
+fn collect_data_tables<'a>(
+    items: &'a [TopLevel],
+    errors: &mut Vec<String>,
+) -> BTreeMap<String, &'a crate::ast::top::DataTable> {
+    let mut tables = BTreeMap::new();
+    for item in items {
+        let TopLevel::Data(t) = item else { continue };
+        if tables.insert(t.name.clone(), t).is_some() {
+            errors.push(format!(
+                "data table '{}' is declared more than once — rename one declaration so index \
+                 resolution is unambiguous",
+                t.name
+            ));
+        }
+    }
+    tables
 }
 
 /// Collect component instances: top-level `let name: T = T { fields };` where
-/// T declares pins. Literal fields become schematic properties.
+/// T declares pins. Literal fields become schematic properties; a table-
+/// indexed field (`value: w[i][j]`, E2) resolves to its cell's literal.
+/// Returns the instances plus any data-table errors (duplicate declaration,
+/// missing table, bad index) for the caller to report.
 fn collect_instances(
     items: &[TopLevel],
     type_pins: &BTreeMap<String, Vec<(String, u64)>>,
-) -> Vec<ComponentInstance> {
+) -> (Vec<ComponentInstance>, Vec<String>) {
+    let mut errors = Vec::new();
+    let tables = collect_data_tables(items, &mut errors);
     let mut out = Vec::new();
     for item in items {
         let TopLevel::Statement(stmt) = item else { continue };
@@ -1080,13 +1108,7 @@ fn collect_instances(
         };
         let properties = fields
             .iter()
-            .filter_map(|(fname, fexpr)| match fexpr {
-                Expr::Quoted(bytes) => Some((fname.clone(), String::from_utf8_lossy(bytes).into_owned())),
-                Expr::Decimal(d) => Some((fname.clone(), d.to_string())),
-                Expr::Float(f) => Some((fname.clone(), f.to_string())),
-                Expr::UnitLiteral { value, unit } => Some((fname.clone(), format!("{}{}", value, unit))),
-                _ => None,
-            })
+            .filter_map(|(fname, fexpr)| resolve_instance_field(fname, fexpr, &tables, &mut errors))
             .collect();
         // Spec payloads are structured quantities (SI + dimension). A malformed
         // spec value is not smuggled into properties — a later law consumer
@@ -1094,7 +1116,137 @@ fn collect_instances(
         let spec_values = collect_spec_quantities(specs);
         out.push(ComponentInstance { name: name.clone(), type_name, properties, specs: spec_values });
     }
-    out
+    (out, errors)
+}
+
+/// One instance-literal field → (name, string value), or None when the
+/// field carries no schematic property. The four literal forms keep their
+/// existing shape; a table-indexed field resolves to its cell (2026-09-27,
+/// E2/D2); everything else (pin accesses, symbols) stays property-less as
+/// before. A resolution failure pushes a hard error naming table + index.
+fn resolve_instance_field(
+    fname: &str,
+    fexpr: &Expr,
+    tables: &BTreeMap<String, &crate::ast::top::DataTable>,
+    errors: &mut Vec<String>,
+) -> Option<(String, String)> {
+    if let Some(v) = literal_instance_field(fname, fexpr) {
+        return Some(v);
+    }
+    resolve_table_instance_field(fname, fexpr, tables, errors)
+}
+
+/// The four literal field forms → a property, with the same string shape
+/// they have always had (a hand-written literal is the reference).
+fn literal_instance_field(fname: &str, fexpr: &Expr) -> Option<(String, String)> {
+    match fexpr {
+        Expr::Quoted(bytes) => Some((fname.to_string(), String::from_utf8_lossy(bytes).into_owned())),
+        Expr::Decimal(d) => Some((fname.to_string(), d.to_string())),
+        Expr::Float(f) => Some((fname.to_string(), f.to_string())),
+        Expr::UnitLiteral { value, unit } => Some((fname.to_string(), format!("{}{}", value, unit))),
+        _ => None,
+    }
+}
+
+/// E2/D2: resolve `value: tbl[i…]` to the cell's literal string. An
+/// identifier-rooted chain against a declared table resolves; a bare table
+/// name, a missing table, a non-literal index, a dimension mismatch, or an
+/// out-of-range index is a hard error naming the table and index. Bare
+/// non-table identifiers and Field-rooted chains keep their prior
+/// property-less behavior.
+fn resolve_table_instance_field(
+    fname: &str,
+    fexpr: &Expr,
+    tables: &BTreeMap<String, &crate::ast::top::DataTable>,
+    errors: &mut Vec<String>,
+) -> Option<(String, String)> {
+    let (root, idxs) = table_index_chain(fexpr);
+    let Expr::Identifier(root_name) = root else {
+        return None;
+    };
+    if idxs.as_ref().is_some_and(Vec::is_empty) {
+        if tables.contains_key(root_name) {
+            errors.push(format!(
+                "the '{}' field names data table '{}' without an index — state the cell, for \
+                 example '{}[0]'",
+                fname, root_name, root_name
+            ));
+        }
+        return None;
+    }
+    let Some(table) = tables.get(root_name) else {
+        errors.push(format!(
+            "the '{}' field indexes '{}', which is not a declared data table — declare it as \
+             'data {}' or name a table that exists",
+            fname, root_name, root_name
+        ));
+        return None;
+    };
+    let Some(idxs) = idxs else {
+        errors.push(format!(
+            "the '{}' field indexes data table '{}' with a non-literal index — use integer \
+             literals, for example '{}[0]'",
+            fname, root_name, root_name
+        ));
+        return None;
+    };
+    if idxs.len() != table.dims.len() {
+        errors.push(format!(
+            "the '{}' field indexes data table '{}' with {} indices, but the table declares {} \
+             dimensions — state every index",
+            fname,
+            root_name,
+            idxs.len(),
+            table.dims.len()
+        ));
+        return None;
+    }
+    let Some(cell) = table_cell(table, &idxs) else {
+        let shown = idxs.iter().map(i64::to_string).collect::<Vec<_>>().join(", ");
+        let extents = table
+            .dims
+            .iter()
+            .map(|d| format!("[{}]", d))
+            .collect::<String>();
+        errors.push(format!(
+            "the '{}' field indexes data table '{}' at [{}], out of range — the table declares {}",
+            fname, root_name, shown, extents
+        ));
+        return None;
+    };
+    Some((fname.to_string(), cell.to_string()))
+}
+
+/// Flatten `tbl[a][b]` → (root expr, indices outermost-last). A non-literal
+/// anywhere in the chain yields None for the indices (the root is still
+/// reported, so a bad index on a known table names the table).
+fn table_index_chain(expr: &Expr) -> (&Expr, Option<Vec<i64>>) {
+    let mut idxs = Vec::new();
+    let mut cur = expr;
+    let mut ok = true;
+    while let Expr::Index(inner, idx) = cur {
+        match idx.as_ref() {
+            Expr::Decimal(d) => idxs.push(*d),
+            _ => ok = false,
+        }
+        cur = inner;
+    }
+    idxs.reverse(); // walk was outermost-first; tables are stated innermost-first
+    (cur, if ok { Some(idxs) } else { None })
+}
+
+/// Row-major cell lookup: dims `[D0][D1]…` with indices `[i0][i1]…` →
+/// `flat = ((i0·D1 + i1)·D2 + i2)…`. None when any index is out of range
+/// (the declared dims and the cell count match — the parser enforces it).
+fn table_cell(table: &crate::ast::top::DataTable, idxs: &[i64]) -> Option<i64> {
+    let mut flat: u64 = 0;
+    for (d, &i) in idxs.iter().enumerate() {
+        if i < 0 || i as u64 >= table.dims[d] {
+            return None;
+        }
+        flat = flat * table.dims[d] + i as u64;
+    }
+    table.cells.get(flat as usize).copied()
 }
 
 /// Convert component-literal `spec` entries to structured SI quantities.
@@ -6748,7 +6900,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     if type_pins.is_empty() {
         return ElectronicsNetlist::default();
     }
-    let mut instance_list = collect_instances(items, &type_pins);
+    let (mut instance_list, data_errors) = collect_instances(items, &type_pins);
     let instances: BTreeMap<String, &ComponentInstance> = instance_list
         .iter()
         .map(|c| (c.name.clone(), c))
@@ -6806,6 +6958,7 @@ pub fn derive_netlist(items: &[TopLevel]) -> ElectronicsNetlist {
     let (mut intent_errors, mut intent_proofs, conditional_bridges) =
         run_intent_pass(&mut ds, &tp);
     intent_errors.extend(synthesis_errors);
+    intent_errors.extend(data_errors); // 2026-09-27 (E2): table resolution
     intent_proofs.extend(synthesis_proofs);
 
     // 2026-09-25 (E14b-7): author labels keyed by FINAL root — resolved
@@ -9365,6 +9518,138 @@ mod tests {
             nl.dangling
         );
         assert_eq!(nl.dangling.len(), 6, "{:?}", nl.dangling);
+    }
+
+    // ── 2026-09-27 (E2): data tables feeding instance values ────────────
+
+    /// The `value` property of one component, or None.
+    fn value_property(c: &ComponentInstance) -> Option<&str> {
+        c.properties.iter().find(|(k, _)| k == "value").map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn table_fed_instance_array_resolves_cell_values() {
+        // A 4-part array fed from a 1×4 table: each element's substituted
+        // binder index resolves to its cell — the same strings a hand-written
+        // literal would produce.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Conn { pin p1; pin p2; reference "J"; };
+            data w: Int[4] = [ 100, 220, 330, 470 ];
+            let r[i:4]: Resistor = Resistor { value: w[i] };
+            let j1: Conn = Conn { value: "x" };
+            node n [
+                j1.p1.voltage == r[0].a.voltage && r[0].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == r[1].a.voltage && r[1].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == r[2].a.voltage && r[2].b.voltage == j1.p2.voltage &&
+                j1.p1.voltage == r[3].a.voltage && r[3].b.voltage == j1.p2.voltage
+            ] { };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        let cells: Vec<Option<&str>> = nl
+            .components
+            .iter()
+            .filter(|c| c.name.starts_with("r["))
+            .map(value_property)
+            .collect();
+        assert_eq!(
+            cells,
+            [Some("100"), Some("220"), Some("330"), Some("470")],
+            "{:?}",
+            nl.components
+        );
+    }
+
+    #[test]
+    fn table_fed_matrix_resolves_row_major_cells() {
+        // 2×2 matrix through two named binders — E2's weight-matrix feed.
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            data m: Int[2][2] = [ [ 11, 12 ], [ 21, 22 ] ];
+            let t[i:2][j:2]: Resistor = Resistor { value: m[i][j] };
+        "#;
+        let nl = analyze(src);
+        assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
+        let cells: Vec<Option<&str>> = nl
+            .components
+            .iter()
+            .map(value_property)
+            .collect();
+        assert_eq!(cells, [Some("11"), Some("12"), Some("21"), Some("22")]);
+    }
+
+    #[test]
+    fn table_index_out_of_range_names_table_and_index() {
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            data w: Int[4] = [ 1, 2, 3, 4 ];
+            let r0: Resistor = Resistor { value: w[4] };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        let e = &nl.intent_errors[0];
+        assert!(e.contains("data table 'w'") && e.contains("[4]") && e.contains("out of range"), "{e}");
+    }
+
+    #[test]
+    fn table_index_on_missing_table_is_an_error() {
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            let r0: Resistor = Resistor { value: nope[0] };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_errors[0].contains("'nope'")
+                && nl.intent_errors[0].contains("not a declared data table"),
+            "{:?}",
+            nl.intent_errors
+        );
+    }
+
+    #[test]
+    fn bare_table_name_is_an_error() {
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            data w: Int[2] = [ 1, 2 ];
+            let r0: Resistor = Resistor { value: w };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        assert!(nl.intent_errors[0].contains("without an index"), "{:?}", nl.intent_errors);
+    }
+
+    #[test]
+    fn non_literal_table_index_is_an_error() {
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            data w: Int[2] = [ 1, 2 ];
+            let r0: Resistor = Resistor { value: w[k] };
+        "#;
+        let nl = analyze(src);
+        assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
+        assert!(
+            nl.intent_errors[0].contains("non-literal index"),
+            "{:?}",
+            nl.intent_errors
+        );
+    }
+
+    #[test]
+    fn duplicate_data_table_is_an_error() {
+        let src = r#"
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            data w: Int[2] = [ 1, 2 ];
+            data w: Int[2] = [ 3, 4 ];
+            let r0: Resistor = Resistor { value: w[0] };
+        "#;
+        let nl = analyze(src);
+        assert!(
+            nl.intent_errors.iter().any(|e| e.contains("declared more than once")),
+            "{:?}",
+            nl.intent_errors
+        );
     }
 
     #[test]

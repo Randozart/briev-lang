@@ -1303,6 +1303,34 @@ mod tests {
     }
 
     #[test]
+    fn table_fed_array_bom_matches_hand_written_literals() {
+        // 2026-09-27 (E2): the gate — a 4-part array fed from a 1×4 data
+        // table emits a BOM byte-identical to the same board written with
+        // hand-written literals (declaration order is the determinism rule).
+        let table_src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; };
+            data w: Int[4] = [ 100, 220, 330, 470 ];
+            let r[i:4]: Resistor = Resistor { value: w[i] };
+        "#;
+        let literal_src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; };
+            let r0: Resistor = Resistor { value: 100 };
+            let r1: Resistor = Resistor { value: 220 };
+            let r2: Resistor = Resistor { value: 330 };
+            let r3: Resistor = Resistor { value: 470 };
+        "#;
+        let table_bom = ElectronicsBackend::generate_bom(&netlist_of(table_src));
+        let literal_bom = ElectronicsBackend::generate_bom(&netlist_of(literal_src));
+        assert_eq!(table_bom, literal_bom, "table BOM:\n{table_bom}\nliteral BOM:\n{literal_bom}");
+        assert!(table_bom.contains("R1,100,,"), "{table_bom}");
+        assert!(table_bom.contains("R4,470,,"), "{table_bom}");
+        // Determinism: two runs of the same input are byte-identical.
+        assert_eq!(table_bom, ElectronicsBackend::generate_bom(&netlist_of(table_src)));
+    }
+
+    #[test]
     fn rail_nets_get_power_symbols_plain_nets_keep_labels() {
         // 2026-09-25 (E6): a net touching a supply/return-class pin emits a
         // power symbol (lib entry + instance) named by the net's declared or

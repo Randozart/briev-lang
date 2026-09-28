@@ -8,6 +8,13 @@ use crate::ast::{Expr, PropertyValue, Statement, TopLevel, Type};
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
+/// One instance-array dimension: optional index binder name (`i` in
+/// `[i:5]`) and the extent. Module scope (Praetor: no structs in impls).
+pub(crate) struct InstanceDim {
+    pub name: Option<String>,
+    pub size: i64,
+}
+
 impl<'a> Parser<'a> {
     /// Parse a single statement.
     pub fn parse_statement(&mut self) -> Result<Statement, SyntaxError> {
@@ -207,8 +214,10 @@ impl<'a> Parser<'a> {
     /// named with literal indices (`r_pu[0]`, `mesh[0][3]`) — the E11
     /// discipline: every downstream consumer (netlist derivation, emitter,
     /// contracts via `resolve_pin`) stays array-blind. The optional
-    /// `name:` prefix inside a dimension (`[i:5]`) labels the index for
-    /// generator tooling; E1 parses and discards it — population decisions
+    /// `name:` prefix inside a dimension (`[i:5]`) labels the index; E2
+    /// (2026-09-27) consumes it: a bare binder used as a bracket index in a
+    /// literal field substitutes to that element's index (`value: w[i][j]`
+    /// → `value: w[0][1]`) — the table feed. Population decisions still
     /// live in generator programs, never the compiler (plan T1).
     ///
     /// Only component literals are accepted: an instance array exists to
@@ -219,7 +228,7 @@ impl<'a> Parser<'a> {
         self.pos += 1; // `let`
         let base = self.expect_identifier()?;
         let dims = self.parse_instance_array_dims()?;
-        let total: i64 = dims.iter().product();
+        let total: i64 = dims.iter().map(|d| d.size).product();
         if total > 4096 {
             return self.error_at_current(&format!(
                 "an instance array expands to {} elements (max 4096) — split the declaration",
@@ -227,29 +236,41 @@ impl<'a> Parser<'a> {
             ));
         }
         let (ty, expr) = self.parse_instance_array_init(&base)?;
-        let elements = Self::expand_instance_names(&base, &dims, total)
+        let elements = Self::expand_instance_elements(&base, &dims);
+        let out = elements
             .into_iter()
-            .map(|name| {
+            .map(|(name, idxs)| {
+                let binders: Vec<(String, i64)> = dims
+                    .iter()
+                    .zip(idxs.iter())
+                    .filter_map(|(d, &i)| d.name.clone().map(|n| (n, i)))
+                    .collect();
                 TopLevel::Statement(Box::new(Statement::Let {
                     name: name.clone(),
                     names: vec![name],
                     ty: ty.clone(),
-                    expr: Some(expr.clone()),
+                    expr: Some(substitute_index_binders(&expr, &binders)),
                     modifiers: Vec::new(),
                 }))
-            });
-        Ok(elements.collect())
+            })
+            .collect();
+        Ok(out)
     }
 
     /// Parse one or more `[<binder>:]<extent>]` dimensions after an
     /// instance-array name; a zero/negative extent is an error.
-    fn parse_instance_array_dims(&mut self) -> Result<Vec<i64>, SyntaxError> {
-        let mut dims: Vec<i64> = Vec::new();
+    fn parse_instance_array_dims(&mut self) -> Result<Vec<InstanceDim>, SyntaxError> {
+        let mut dims: Vec<InstanceDim> = Vec::new();
         while self.eat(&Token::LBracket) {
-            // Optional index binder: `[i:5]` — `i:` labels the dimension.
+            // Optional index binder: `[i:5]` — `i:` labels the dimension
+            // and feeds E2's per-element table-index substitution.
+            let mut name = None;
             if matches!(self.peek(), Some(Token::Identifier(_)))
                 && matches!(self.peek_next(), Some(Token::Colon))
             {
+                if let Some(Token::Identifier(n)) = self.peek() {
+                    name = Some(n.clone());
+                }
                 self.pos += 1;
                 self.expect(Token::Colon)?;
             }
@@ -261,7 +282,7 @@ impl<'a> Parser<'a> {
                 ));
             }
             self.expect(Token::RBracket)?;
-            dims.push(n);
+            dims.push(InstanceDim { name, size: n });
         }
         Ok(dims)
     }
@@ -293,24 +314,30 @@ impl<'a> Parser<'a> {
         Ok((ty, expr))
     }
 
-    /// Expand instance-array dimensions into element names, row-major with
-    /// the last dimension varying fastest. A total of 1 yields the bare
-    /// name (E11's single-element rule mirrored).
-    fn expand_instance_names(base: &str, dims: &[i64], total: i64) -> Vec<String> {
-        let mut suffixes: Vec<String> = vec![String::new()];
-        for &sz in dims {
-            let mut next = Vec::with_capacity(suffixes.len() * sz as usize);
-            for prefix in &suffixes {
-                for k in 0..sz {
-                    next.push(format!("{}[{}]", prefix, k));
+    /// Expand instance-array dimensions into (element name, per-dimension
+    /// indices), row-major with the last dimension varying fastest. A total
+    /// of 1 yields the bare name (E11's single-element rule mirrored). The
+    /// per-element indices feed E2's named-binder substitution.
+    fn expand_instance_elements(base: &str, dims: &[InstanceDim]) -> Vec<(String, Vec<i64>)> {
+        let total: i64 = dims.iter().map(|d| d.size).product();
+        if total == 1 {
+            return vec![(base.to_string(), dims.iter().map(|_| 0).collect())];
+        }
+        let mut out: Vec<(String, Vec<i64>)> = vec![(String::new(), Vec::new())];
+        for d in dims {
+            let mut next = Vec::with_capacity(out.len() * d.size as usize);
+            for (prefix, idxs) in &out {
+                for k in 0..d.size {
+                    let mut idxs_k = idxs.clone();
+                    idxs_k.push(k);
+                    next.push((format!("{}[{}]", prefix, k), idxs_k));
                 }
             }
-            suffixes = next;
+            out = next;
         }
-        if total == 1 {
-            return vec![base.to_string()];
-        }
-        suffixes.iter().map(|s| format!("{}{}", base, s)).collect()
+        out.into_iter()
+            .map(|(s, idxs)| (format!("{}{}", base, s), idxs))
+            .collect()
     }
 
     /// term expr;
@@ -706,6 +733,42 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// 2026-09-27 (E2 table feed): rewrite a named array binder (`i` in
+/// `[i:5]`) used as a bracket index — `w[i][j]` → `w[0][1]` for element
+/// `(0, 1)`. Walks the component literal's fields (the only position an
+/// index can feed a table); only bare binder identifiers in index position
+/// are rewritten, every other expr keeps its authored form (table lookup
+/// and its errors are analysis's job — the parser never learns table names).
+fn substitute_index_binders(expr: &Expr, binders: &[(String, i64)]) -> Expr {
+    match expr {
+        Expr::StructLiteral { type_name, fields, specs } => Expr::StructLiteral {
+            type_name: type_name.clone(),
+            fields: fields
+                .iter()
+                .map(|(n, e)| (n.clone(), substitute_index_binders(e, binders)))
+                .collect(),
+            // spec payloads are quantities, never index chains; left as authored.
+            specs: specs.clone(),
+        },
+        Expr::Index(base, idx) => Expr::Index(
+            Box::new(substitute_index_binders(base, binders)),
+            Box::new(substitute_binder_ref(idx, binders)),
+        ),
+        _ => expr.clone(),
+    }
+}
+
+/// One bracket index: a bare named binder becomes its element's literal
+/// index; any other expr is kept as authored.
+fn substitute_binder_ref(idx: &Expr, binders: &[(String, i64)]) -> Expr {
+    if let Expr::Identifier(b) = idx {
+        if let Some((_, v)) = binders.iter().find(|(n, _)| n == b) {
+            return Expr::Decimal(*v);
+        }
+    }
+    idx.clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -938,6 +1001,79 @@ mod tests {
     fn instance_array_single_element_keeps_bare_name() {
         let src = r#"let x[1]: T = T { value: "y" };"#;
         assert_eq!(let_names(src), ["x"]);
+    }
+
+    // ── 2026-09-27 (E2): binder substitution into table indexes ─────────
+
+    /// Parse and return (let name, `value` field expr) pairs in declaration
+    /// order — asserts per-element binder substitution.
+    fn let_value_exprs(src: &str) -> Vec<(String, String)> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let items = p.parse_program().unwrap();
+        items
+            .iter()
+            .filter_map(|i| match i {
+                crate::ast::TopLevel::Statement(s) => match s.as_ref() {
+                    Statement::Let {
+                        name,
+                        expr: Some(Expr::StructLiteral { fields, .. }),
+                        ..
+                    } => {
+                        let v = fields
+                            .iter()
+                            .find(|(f, _)| f == "value")
+                            .map(|(_, e)| format!("{}", e));
+                        Some((name.clone(), v.unwrap_or_default()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn instance_array_binder_substitutes_into_table_index() {
+        // `value: w[i]` becomes the element's cell index — E2's table feed.
+        let src = r#"let r[i:4]: Resistor = Resistor { value: w[i] };"#;
+        assert_eq!(
+            let_value_exprs(src),
+            [
+                ("r[0]".to_string(), "w[0]".to_string()),
+                ("r[1]".to_string(), "w[1]".to_string()),
+                ("r[2]".to_string(), "w[2]".to_string()),
+                ("r[3]".to_string(), "w[3]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn instance_array_two_dim_binders_substitute_row_major() {
+        let src = r#"let m[i:2][j:2]: Resistor = Resistor { value: w[i][j] };"#;
+        assert_eq!(
+            let_value_exprs(src),
+            [
+                ("m[0][0]".to_string(), "w[0][0]".to_string()),
+                ("m[0][1]".to_string(), "w[0][1]".to_string()),
+                ("m[1][0]".to_string(), "w[1][0]".to_string()),
+                ("m[1][1]".to_string(), "w[1][1]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn instance_array_literal_fields_are_untouched_by_substitution() {
+        // A quoted field is not an index expr — every element keeps it as
+        // authored (the E1 shape).
+        let src = r#"let r[i:2]: Resistor = Resistor { value: "10k" };"#;
+        assert_eq!(
+            let_value_exprs(src),
+            [
+                ("r[0]".to_string(), "\"10k\"".to_string()),
+                ("r[1]".to_string(), "\"10k\"".to_string()),
+            ]
+        );
     }
 
     #[test]
