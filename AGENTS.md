@@ -342,6 +342,7 @@ contracts.
 
 | Resource | Location |
 |----------|----------|
+| **START HERE — fresh-session orientation** | `docs/plans/INDEX.md` — current status map: live foreign lanes (do not touch), the active umbrella + ordering, every workstream's remaining work with pointers, open bugs, recommended starting points. Read before picking up any plan |
 | **Briev-native runtime + family realignment (active 2026-09-09)** | `docs/plans/2026-09-09-briev-native-runtime-and-family-realignment.md` — briev_rt.c elimination family-by-family (A+B+C DONE on `feat/briev-native-runtime`: cast lanes, print family, string ops — 14/14 parity corpora), embedded fold, Electronics `.ebv`, `.sbv` Silicon, logo swap. Parity harness: `bash benchmarks/parity/run.sh`. Amendments (2026-09-10): expressiveness closure, allocator ownership, `Asm#` two-mode intrinsic, `inline_frgn!` plugin |
 | **Briev capability frontier (2026-09-10)** | `docs/architecture/briev-capability-frontier.md` — expressiveness-closure principle (the compiler's optimum must be expressible in the language), tier table, contracts-vs-UB inversion, self-hosting endgame |
 | **GPU backend handoff (.abv/.bv, active 2026-08-31)** | `docs/HANDOFF-2026-08-31-gpu.md` — SPIR-V kernel backend + offload chain state, doctrine (.abv = pure GPU, .bv = CPU + verified offload), next steps (M1 GEMV bench, O2-O6 ladder), trap list. Also: `docs/plans/2026-08-31-vitriol-gemm-comparison.md` (benchmark target + ledger), `docs/plans/2026-08-31-abv-gpu-by-default.md` (route fixes log)
