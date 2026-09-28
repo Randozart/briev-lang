@@ -110,6 +110,21 @@ track below.
 - **Effort:** M
 
 ### E4 — No multi-unit symbols (op-amp = 2–3 units)
+- **Status:** CLOSED 2026-09-27 (plan
+  `2026-09-27-ebv-e4-multi-unit-symbols.md`): slice 1 `794d5ba6` —
+  `unit <name>` on the pin clause (`PinDecl.unit`); analysis groups pins
+  into unit blocks in first-seen declaration order
+  (`TypeInfo.pin_units` + `TypeInfo.unit_groups`), a no-unit type is one
+  default group; the parser rejects a second `unit` on one pin. Slice 2
+  `0587a027` — `emit_symbol_def` emits one body+pin block pair per unit
+  (unit N at `y = N * unit_height`); single-unit types keep the original
+  `Name_0_1`/`Name_1_1` suffixes (verified byte-identical against four
+  fixtures); `emit_instances` emits one placement instance per unit — unit
+  1 carries the bare reference + the footprint, unit N>1 carries
+  `<ref><UnitName>` and no footprint; `pin_xy` routes each pin to its
+  unit's origin. Slice 3 (this commit) — the `opamp_gate.ebv` gate
+  fixture (a dual op-amp: signal A, signal B, power unit) emits three
+  symbol units and three placement instances (`U1`/`U1B`/`U1P`).
 - **Evidence:** `emit_symbol_def` (`:291`) emits one rectangle per type;
   `pin_layout` (`:96`) splits pins left/right only.
 - **Blocks:** op-amps (2 signal units + power unit), dual op-amps, relays —

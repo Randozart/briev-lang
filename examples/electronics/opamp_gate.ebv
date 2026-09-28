@@ -1,0 +1,60 @@
+// ── opamp_gate.ebv — the E4 gate fixture ─────────────────────────────────
+// 2026-09-27 (plan 2026-09-27-ebv-e4-multi-unit-symbols.md): a dual
+// op-amp with a power unit. Compile:  brievc build opamp_gate.ebv
+//
+// The gate: the dual op-amp declares three units — signal A (in-/in+/out),
+// signal B (inB-/inB+/outB), and a power unit (V+/V-). The emitted
+// .kicad_sch must carry per-unit symbol blocks and per-unit placement
+// instances: unit 1 carries the bare reference + the footprint, unit 2
+// carries the unit-2 reference and no footprint. The signal pins route to
+// the correct unit's origin; the power net touches both signal units' V+
+// pins. ERC stays clean by construction — each unit is a complete symbol
+// block with its own pins.
+//
+// The dual op-amp's two signal units share the power pins — this is the
+// exact shape of the entire active-component catalog (dual op-amps,
+// relays, multi-section regulators). The mechanism is unit-generic: the
+// compiler reads the `unit` clause as data and knows no part vocabulary
+// (Rule 15).
+
+struct Pin { voltage: Volt; current: Amp; };
+type Volt { spec Bits: 32; };
+type Amp { spec Bits: 32; };
+
+type Power { spec KicadType: "power_in"; spec Supply: true; };
+type Ground { spec KicadType: "power_in"; spec Return: true; };
+type In { spec KicadType: "input"; };
+
+// The dual op-amp: two signal units + a power unit.
+type DualOpAmp {
+    // Signal unit A: inverting input, non-inverting input, output.
+    pin in_a = 1: In unit A;
+    pin in_b = 2: In unit A;
+    pin o_a  = 3 unit A;
+    // Signal unit B: the second amplifier's inputs + output.
+    pin in_c = 4: In unit B;
+    pin in_d = 5: In unit B;
+    pin o_b  = 6 unit B;
+    // Power unit: the shared supply + return pins.
+    pin vdd: Power unit P;
+    pin vss: Ground unit P;
+    reference "U"; spec Tolerance: any; spec Rating: any;
+};
+
+type Conn { pin vcc: Power; pin gnd: Ground; pin a: In; pin b: In; reference "J"; };
+type Out { pin p: In; reference "O"; };
+
+let u1: DualOpAmp = DualOpAmp { value: "LM358" };
+let j1: Conn = Conn { value: "JST-4" };
+let o1: Out = Out { value: "out-a" };
+let o2: Out = Out { value: "out-b" };
+
+// Unit A driven by j1.a, unit B by j1.b; outputs to o1/o2. The power
+// net touches both signal units' V+ pins (the shared supply).
+txn on
+    [j1.vcc.voltage == u1.vdd.voltage && j1.gnd.voltage == u1.vss.voltage
+     && j1.a.voltage == u1.in_a.voltage && j1.b.voltage == u1.in_b.voltage
+     && j1.a.voltage == u1.in_c.voltage && j1.b.voltage == u1.in_d.voltage
+     && u1.o_a.voltage == o1.p.voltage && u1.o_b.voltage == o2.p.voltage]
+    [u1.o_a.voltage == o1.p.voltage && u1.o_b.voltage == o2.p.voltage]
+{ }

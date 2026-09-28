@@ -2,7 +2,7 @@
 
 Date: 2026-09-27
 Gap: `2026-09-21-hardware-dialect-gaps.md` E4 (multi-unit symbols)
-Status: OPEN — plan only; slices pending
+Status: ALL SLICES LANDED 2026-09-27 — slice 1 `794d5ba6`, slice 2 `0587a027`, slice 3 this commit; gap E4 CLOSED
 
 ## Problem
 
@@ -98,3 +98,30 @@ KiCad. The compiler gate: the emitted `.kicad_sch` carries per-unit symbol
 blocks and per-unit placement instances, is byte-deterministic (sorted
 iteration), and a single-unit fixture is byte-identical to the pre-E4
 output (no regression).
+
+## Landing record (2026-09-27)
+
+- **Slice 1** (`794d5ba6`): `unit <name>` on the pin clause → `PinDecl.unit`;
+  analysis groups pins into unit blocks in first-seen declaration order
+  (`TypeInfo.pin_units` index-aligned to `pins`, `TypeInfo.unit_groups`
+  first-seen unit order → pin indices); a no-unit type is one default group
+  (the type's first letter). The parser rejects a second `unit` on one pin.
+  BEAST (de)serialization carries `unit: None`. Tests: a 5-pin two-unit
+  op-amp groups A/B correctly; a single-unit type is one group; the
+  duplicate-unit form parse-errors.
+- **Slice 2** (`0587a027`): `emit_symbol_def` emits one body+pin block pair
+  per unit (unit N at `y = N * unit_height`, KiCad's per-unit stacking);
+  single-unit types keep the original `Name_0_1`/`Name_1_1` block suffixes
+  — verified byte-identical against four fixtures. `emit_instances` emits
+  one placement instance per unit: unit 1 carries the bare reference + the
+  footprint, unit N>1 carries `<ref><UnitName>` and no footprint. `pin_xy`
+  stores each pin at its unit's origin so nets route to the correct pin.
+  Unit/props tables bundled into structs (`UnitTables`, `PlacementProps`,
+  `ComponentPlacement`) to stay under the parameter gate; `emit_unit_block`
+  / `emit_component_units` split out to stay under the cognitive gate.
+  Tests: a 5-pin two-unit op-amp renders per-unit blocks + instances; a
+  single-unit type emits the original suffixes and no unit-2 instances.
+- **Slice 3** (this commit): the `opamp_gate.ebv` gate fixture — a dual
+  op-amp (signal A, signal B, power unit) emits three symbol units and
+  three placement instances (`U1`/`U1B`/`U1P`) with the power net touching
+  both signal units' supply pins. Plan + gap ledger closed.
