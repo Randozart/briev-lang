@@ -1,0 +1,55 @@
+// ── die_board.ebv — Wave 2 C2 corpus: a board using the projected die ───
+// 2026-09-27 (Wave 2 C2, bridge design record Layer 1). The die grafts
+// (C1): `import "sensor_die.sbv"` brings the SensorDie component (pins =
+// the die's file-scope boundary fields) plus the fields as shared state.
+// The board uses it like any component — zero die-specific machinery:
+//
+//   j1.sig[0..7] ←── sensor.gpio[0..7]   (element-wise, E11 naming)
+//   j1.sig[8]    ←── sensor.scl          (die output drives the header)
+//   sensor.sda   ── pull-up obligation (E14b forcing wires r_pu)
+//   vdd/gnd      ── stdnet<V3V3> membership + solver-inferred return
+//
+// Nets are precondition pin equalities; the rail is born at the header
+// (the board's power entry). Compile:  brievc build die_board.ebv
+
+import "sensor_die.sbv";
+
+type Header {
+    pin sig[9];
+    pin gnd: Ground;
+    pin vcc: Power;
+    reference "J";
+    spec Tolerance: any;
+    spec Rating: any;
+};
+type PullUp {
+    pin a; pin b; reference "R"; spec Tolerance: any; spec Rating: 0.25W;
+    spec Resistance: Ohm; spec PullUp: true;
+};
+
+stdnet<V3V3> let j1: Header = Header { value: "EXP", package: "HDR" };
+stdnet<V3V3> let sensor: SensorDie = SensorDie { value: "SHT-clone", package: "QFN-16" };
+let r_pu: PullUp = PullUp { value: "4k7", package: "0603", spec Resistance: 4.7kOhm };
+
+async node wired
+    [j1.vcc.voltage == 3.3V
+     && j1.sig[0].voltage == sensor.gpio[0].voltage
+     && j1.sig[1].voltage == sensor.gpio[1].voltage
+     && j1.sig[2].voltage == sensor.gpio[2].voltage
+     && j1.sig[3].voltage == sensor.gpio[3].voltage
+     && j1.sig[4].voltage == sensor.gpio[4].voltage
+     && j1.sig[5].voltage == sensor.gpio[5].voltage
+     && j1.sig[6].voltage == sensor.gpio[6].voltage
+     && j1.sig[7].voltage == sensor.gpio[7].voltage
+     && j1.sig[8].voltage == sensor.scl.voltage
+    ]
+    [j1.vcc.voltage == 3.3V]
+{
+}
+
+// The open-drain sda idles high — the obligation forces the pull-up
+// wiring to the lowest qualifying rail (E14b slice 1 machinery, driven
+// entirely by a DIE pin).
+async node i2c_idle [j1.vcc.voltage == 3.3V] [j1.vcc.voltage == 3.3V] {
+    sensor.sda.voltage >= 2.7V;
+}

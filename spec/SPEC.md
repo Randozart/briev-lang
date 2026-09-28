@@ -768,6 +768,13 @@ import <std/collections>;
 - Package registries are configured roots, not a separate source-language import category.
 - Resolution is deterministic and records the resolved path.
 
+Extension search (2026-09-26, interop Wave 1 C2):
+
+- An extension-less specifier searches `.bv` then `.ebv` — a module is found as an electronics module when no `.bv` sibling exists. `.abv`, `.sbv`, and `.rbv` are NOT implicit candidates.
+- An explicit known code extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.sbv`) searches ONLY that extension.
+- The not-found diagnostic names exactly the extensions it searched, and says what to do (house style: what/why/fix).
+- Data dialects (`.dbv`, `.dbvl`) and asset files (`.css`, `.svg`) are not code imports; the diagnostic detects a data file and gives the explicit-data-import fix.
+
 ### 7.2 Aliases and selective imports
 
 `as` is reserved for semantic conversion. Import aliases use local-to-source `:` binding.
@@ -777,9 +784,13 @@ import collections: <std/collections>;
 import { LocalName: ExportedName, OtherName } from "./module.bv";
 ```
 
-Conflicting unqualified imports are errors and must be resolved with a module alias or selective rename. Import order never changes meaning.
+Conflicting unqualified imports are errors and must be resolved with a selective rename or an identical definition. Import order never changes meaning.
+
+There is no overloading: the unqualified namespace holds one declaration per name, across modules as well as within one. Two definitions of the same name with different signatures in one scope is a conflict, resolvable the same way as above.
 
 Glob imports are invalid.
+
+> **2026-09-27 (import aliases).** An import alias (`import board: "fpga.sbv";`) names the module's projected interface instance; access through it is ordinary member access on a compiler-synthesized object. No dialect projects an interface instance yet, so today the alias records provenance only. Instance-shaped modules (`.sbv` port surfaces, `.abv` buffer surfaces) will require the alias — a bare import grafts declarations only, and an instance surface has none to graft. There is no qualified-access operator and no second import grammar; `=` is never an import form.
 
 ### 7.3 Visibility and re-export
 
@@ -794,6 +805,17 @@ export import { PublicName } from "./internal.bv";
 ### 7.4 Import graph
 
 Diamond dependencies are valid. Genuine import cycles are compile-time errors. Shared declarations must move to an acyclic interface module.
+
+### 7.5 Per-module dialect semantics (2026-09-26, interop Wave 1 C3)
+
+An imported module runs its own dialect's Parsed-stage prelude, not the root file's:
+
+- A module of dialect K is resolved with K's prelude (`config/targets.dbvl` row), so an `.ebv` module gets the electronics prelude (its `Import$("std/electronics.bv")` anchor resolves) and a `.bv` module gets the native prelude. The root file's prelude choice does not apply to imported modules.
+- A `.rbv` module contributes only its Briev remainder to the importing program; its markup, style, and view stay with the view pipeline (the `.rbv` → `.bv` declared edge, §21 / interop plan).
+- A module's profile flags (strict/bare/formatted) are read from the module's own path for provenance; per-module profile enforcement is per-feature, not a global gate.
+- Stdlib (`std/…`) specifiers skip the module prelude — stdlib files are the prelude's CONTENT, not its consumer; running the prelude on them would self-cycle.
+
+Provenance: every item in the resolved program carries its module of origin (the root's items have none). The origin is used for the cross-module collision gate (§7.2) and is recorded for reproducibility.
 
 ## 8. Declarations
 

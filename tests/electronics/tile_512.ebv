@@ -20,7 +20,7 @@ type TileRes {
     spec Tolerance: any;
 };
 
-type Connector {
+type TileConn {
     pin p1 = 1;
     pin p2 = 2;
     reference "J";
@@ -28,7 +28,7 @@ type Connector {
     spec Rating: any;
 };
 
-let j1: Connector = Connector { value: "JST-PH-2", package: "JST-PH" };
+let j1: TileConn = TileConn { value: "JST-PH-2", package: "JST-PH" };
 // 16×32 = 512 elements, named t[0][0]…t[15][31] (row-major, E1).
 let t[i:16][j:32]: TileRes = TileRes { value: "100R", package: "0603" };
 

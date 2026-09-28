@@ -1,0 +1,19 @@
+// sensor_die.sbv — Wave 2 C0 substrate fixture: the file IS the die.
+//
+// Layer 0 (bridge design record): a `.sbv` file's file-scope bare `let`s
+// ARE the boundary pins. Pin-ness lives in the TYPE (pin classes are
+// valueless markers, std/electronics.bv); direction lives in the class
+// (In/Out/Io/IoOd) — no `port` keyword, no declaration-time direction
+// (a wire is bidirectional; the current driver decides).
+//
+// The C1 projection turns exactly these fields into an `.ebv` component:
+// pin names = field names, class = field type, arrays element-wise.
+// (No explicit import: the `.sbv` prelude provides std/electronics.bv,
+// same parity as `.ebv` files — and this exercises the prelude's
+// state-anchored fallback.)
+
+let sda: IoOd;
+let scl: Out;
+let gpio: Io[8];
+let vdd: Power;
+let gnd: Ground;

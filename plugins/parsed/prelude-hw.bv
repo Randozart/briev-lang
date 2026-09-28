@@ -1,27 +1,40 @@
-// ── Hardware Prelude — CIRCT / Cell Targets ──────────────────────────────
+// ── Hardware Prelude — Silicon (.sbv) Targets ───────────────────────────
 // 2026-07-21: Rewritten with direct AST navigation DSL.
 // 2026-07-23: Added Count$ check — Before$ on empty selection causes error.
-// Used by .sbv files.
-//
-// 2026-09-25 (E9, plan `2026-09-21-hardware-dialect-gaps.md`): the import
-// insert is DROPPED. It injected `std/hardware.bv`, a file that never
-// existed in `lib/std/` — so every `.sbv` program with at least one user
-// import failed with "Cannot find module 'std/hardware.bv'". The silicon
-// dialect needs no stdlib content today: sized scalars (`UInt<8>`),
-// registers (`reg let`), and every operator are compiler intrinsics, and
-// `.sbv` bans frgn/link anyway. The slot stays in the prelude family so
-// `--no-std` and the per-extension config keep one name for `.sbv`.
-//
-// When a real silicon stdlib lands (a `lib/std/hardware.bv` with content
-// a hardware program actually needs), re-add the insert here:
-//
-//     let anchor = Tag$("import").First$();
-//     when anchor.Count$() > 0 {
-//         anchor.Before$().Insert$(Import$("std/hardware.bv"));
-//     };
-//
-// Rule: never re-add the import before the file exists — no placeholder
-// module, no empty file (Rule 7 / ALWAYS FINISH applies to it).
+// 2026-09-27 (Wave 2 C0): the anchor referenced `std/hardware.bv`, which has
+// never existed — every `.sbv` file with an import failed resolution. Per
+// the bridge design record (2026-09-25, Layer 0), a die's boundary fields
+// are bare `let`s typed by the stdlib pin classes, so the prelude provides
+// `std/electronics.bv` (Power/Ground/In/Out/Io/IoOd and the component
+// vocabulary). Cell/Wire/Register/Bit hardware vocabulary lands as stdlib
+// data with the CIRCT backend work — never as a missing-file promise.
+// Fallbacks mirror prelude-electronics (E14a gate): a die with no imports
+// anchors on its first boundary field (`state` — the .beast variant name,
+// not the surface keyword) or, failing that, its first typedef. Both
+// fallbacks firing (fields AND types, no imports) double-splices
+// std/electronics.bv — same module id, identical dump: the C4 benign pair.
 
 $(Parsed @ highest) {
+    let anchor = Tag$("import").First$();
+    when anchor.Count$() > 0 {
+        anchor.Before$()
+            .Insert$(Import$("std/electronics.bv"));
+    };
+    // No imports? A die's boundary fields are file-scope `let`s — anchor
+    // there; class ascriptions must precede every use.
+    when anchor.Count$() == 0 {
+        let state_anchor = Tag$("state").First$();
+        when state_anchor.Count$() > 0 {
+            state_anchor.Before$()
+                .Insert$(Import$("std/electronics.bv"));
+        };
+    };
+    // No fields either? Class ascriptions also live inside typedefs.
+    when anchor.Count$() == 0 {
+        let type_anchor = Tag$("typedef").First$();
+        when type_anchor.Count$() > 0 {
+            type_anchor.Before$()
+                .Insert$(Import$("std/electronics.bv"));
+        };
+    };
 };

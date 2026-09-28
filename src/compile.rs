@@ -251,6 +251,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     if let Some(ref stdlib_path) = opts.stdlib_path {
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
+    resolver.plugin_factory = Some(briev_compiler::pipeline::module_plugin_factory(opts));
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
 
     // 2026-07-24: Extract stage blocks from imported files. The first

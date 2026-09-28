@@ -71,6 +71,14 @@ projections — nothing runs. A `// bridge: <relation>` annotation is the
 reserved escape hatch if a default relation is ever wrong — NOT a second
 import form (two forms for one fact is the `Mmio#` mistake).
 
+> **2026-09-27 (amendment — user decision).** The `board = "fpga.sbv"` and
+> `{core} = ` sketches above are SUPERSEDED: the shipped `:` alias grammar
+> carries the entire load (`import board: "fpga.sbv";`). The alias names the
+> module's projected interface instance; access through it is ordinary
+> member access on a compiler-synthesized object. No `=`, no qualified-access
+> operator, no dialect keywords, no namespace blocks. Full decision, examples,
+> and phasing: `2026-09-25-sbv-ebv-bridge.md` §"Syntax decision".
+
 ## The three mechanism tiers
 
 - **Owned by the compiler (eternal)**: provenance tagging; the
@@ -92,7 +100,7 @@ import form (two forms for one fact is the `Mmio#` mistake).
 
 | Pair | Status |
 |---|---|
-| `.rbv`→`.bv` | exists informally (view bindings + write-contract routing) — formalize as the FIRST declared edge |
+| `.rbv`→`.bv` | **DECLARED (2026-09-26, Wave 1 C5)** — the first declared edge. View = a binding surface onto the .bv spine: `b-text`/`b-when`/`b-class` READ the root signal (the field stays live for the txn's flush, `view_root_signals`, `pipeline.rs:578`); `b-bind` WRITEs, routed to the unique user-writer txn (single-writer proof, `resolve_bind_routes`, `pipeline.rs:611`; compiler-generated resets excluded). Corpus: `examples/view-bind-edge.rbv` (one read + one write-routed binding; the conformance sweep picks it up). Test: `test_rbv_edge_declared_surface` (`import_resolver.rs`). |
 | `.bv`↔`.abv` | exists (accel mixed lane, kernel↔state, `.abv` GPU-only charter) — declare it |
 | `.bv`↔`.sbv` | half-exists (MMIO `@addr` on the shared AST, board packs) — formalize port↔state-region |
 | `.sbv`→`.ebv` | NEW — the structural projection: silicon module → electronics COMPONENT; ports → pins (direction map); port contracts → electrical constraints (`reference`/`tolerance` clauses exist in `.ebv` Volt); emits hierarchical KiCad symbol/sheet. Purest pair: both static, neither executes |
@@ -101,18 +109,9 @@ import form (two forms for one fact is the `Mmio#` mistake).
 
 ## Waves
 
-- **Wave 1 — provenance + first edge**: resolver classifies resolved
-  imports by dialect (`classify()` exists in conformance.rs), tags spliced
-  items with per-module SourceKind (the missing data structure);
-  per-module extension-keyed semantics (accel default, profiles, prelude
-  filtering) apply per imported module, not root-only; fix the stale
-  `.ebv` error text. **Name-collision rule: a `.bv` and an `.abv` both
-  exporting `kernel` is an ERROR or forces aliasing — silent last-wins
-  across dialects is a correctness trap.** Formalize `.rbv`→`.bv`.
-- **Wave 2 — the static pair + runtime pairs**: `.sbv`→`.ebv` projection
-  (the headline case); declare `.bv`↔`.abv` and `.bv`↔`.sbv`.
-- **Wave 3 — derivation**: transitive bridges + synthesized bridge nodes;
-  diagnostics name the first failing hop with the fix.
+- **Wave 1 — provenance + first edge — DONE 2026-09-26** (C0–C5, `docs/plans/2026-09-25-interop-wave1.md`): resolver classifies resolved imports by dialect and tags spliced items with per-module provenance (C1, `ModuleRecord`/`item_origins`); truthful extension dispatch + the real `.ebv` import candidate (C2, extension-less search `.bv`→`.ebv`, per-kind parse); per-module dialect semantics (C3, `plugin_factory` + `run_module_prelude`); the cross-dialect collision rule (C4, pre-dedup gate, order-dependent shadowing retired, SPEC §7.2); and the `.rbv`→`.bv` first DECLARED edge (C5, row 1 above, corpus `examples/view-bind-edge.rbv`). C6 (SPEC §7, `glue-ffi.md`, wave status rows) lands with the same arc.
+- **Wave 2 — the static pair + runtime pairs**: `.sbv`→`.ebv` projection (the headline case); declare `.bv`↔`.abv` and `.bv`↔`.sbv`.
+- **Wave 3 — derivation**: transitive bridges + synthesized bridge nodes; diagnostics name the first failing hop with the fix.
 
 ## Queue position
 

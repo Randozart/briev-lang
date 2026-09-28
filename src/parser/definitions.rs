@@ -4262,6 +4262,24 @@ impl<'a> Parser<'a> {
                     self.eat(&Token::Semicolon);
                     continue;
                 }
+                // 2026-09-27 (Wave 2 C1 — the graft pattern, bridge design
+                // record §"The graft pattern"): member `let` — the
+                // container's internal state (a die's internal nets).
+                // `let` dispatched only at file scope before this, while
+                // bodies already accept defn/txn/node members. Nested items
+                // splice as declarations but never project as pins
+                // (file-scope = package boundary). Scope: obj bodies only —
+                // the type body (parse_type_body) takes no members at all,
+                // and cell bodies convert members to transactions; they
+                // gain the arm with their own wave if the silicon work
+                // needs it. (Nested `const` has no precedent anywhere —
+                // `Token::Const` is top-level-only — so this is the
+                // member-declaration pattern, not a const parallel.)
+                if self.check(&Token::Let) {
+                    let stmt = self.parse_let_statement()?;
+                    members.push(crate::ast::TopLevel::Statement(Box::new(stmt)));
+                    continue;
+                }
                 let prefixes = self.parse_field_prefixes();
                 let slot_name = self.expect_identifier()?;
                 if slot_name == "op" {
@@ -5836,6 +5854,39 @@ mod tests {
         let tl = parse_top(src).unwrap();
         let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
         td.body.pins
+    }
+
+    #[test]
+    fn test_obj_body_accepts_member_let() {
+        // 2026-09-27 (Wave 2 C1 — the graft pattern): member `let` — the
+        // container's internal state (a die's internal nets). `let`
+        // dispatched only at file scope before; bodies already accept
+        // defn/txn/node members.
+        let tl = parse_top("obj DieInner { let scratch: Int; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let member = td
+            .body
+            .members
+            .iter()
+            .find_map(|m| match m {
+                crate::ast::TopLevel::Statement(s) => match s.as_ref() {
+                    crate::ast::Statement::Let { name, expr: None, ty: Some(_), .. } => {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("member let parses as a bare Statement::Let");
+        assert_eq!(member, "scratch");
+        // An initialized member let is still a member let (runtime state,
+        // not a boundary pin — the projection only reads file scope).
+        let tl = parse_top("obj X { let seed: Int = 7; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        assert!(td.body.members.iter().any(|m| matches!(
+            m,
+            crate::ast::TopLevel::Statement(s) if matches!(s.as_ref(), crate::ast::Statement::Let { name, .. } if name == "seed")
+        )));
     }
 
     #[test]

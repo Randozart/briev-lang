@@ -17,13 +17,10 @@
 // compiler reads the `unit` clause as data and knows no part vocabulary
 // (Rule 15).
 
-struct Pin { voltage: Volt; current: Amp; };
-type Volt { spec Bits: 32; };
-type Amp { spec Bits: 32; };
-
-type Power { spec KicadType: "power_in"; spec Supply: true; };
-type Ground { spec KicadType: "power_in"; spec Return: true; };
-type In { spec KicadType: "input"; };
+// Pin classes (Volt/Amp/Power/Ground/In) come from std/electronics.bv,
+// auto-imported by the electronics prelude (2026-09-28, main merge): the
+// local redefinitions collided with the stdlib's identical definitions
+// under the shared-root namespace check.
 
 // The dual op-amp: two signal units + a power unit.
 type DualOpAmp {
@@ -42,12 +39,12 @@ type DualOpAmp {
 };
 
 type Conn { pin vcc: Power; pin gnd: Ground; pin a: In; pin b: In; reference "J"; };
-type Out { pin p: In; reference "O"; };
+type OutPad { pin p: In; reference "O"; };
 
 let u1: DualOpAmp = DualOpAmp { value: "LM358" };
 let j1: Conn = Conn { value: "JST-4" };
-let o1: Out = Out { value: "out-a" };
-let o2: Out = Out { value: "out-b" };
+let o1: OutPad = OutPad { value: "out-a" };
+let o2: OutPad = OutPad { value: "out-b" };
 
 // Unit A driven by j1.a, unit B by j1.b; outputs to o1/o2. The power
 // net touches both signal units' V+ pins (the shared supply).

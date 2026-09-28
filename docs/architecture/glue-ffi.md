@@ -168,6 +168,19 @@ expression covers "cannot call this" (checked at compile time).
 `meld CStr -> String` declaration (both survive import resolution), so the
 melds and boundary vocabulary of a library apply to the importing bridge.
 
+### 4.3 Cross-module provenance and the collision gate (2026-09-26, interop Wave 1)
+
+Import resolution now tags every spliced item with its module of origin
+(`ImportResolver::modules` / `item_origins`, SPEC §7.5) and runs a **pre-dedup
+cross-module collision gate**: two items sharing an unqualified name with
+different origins and different shapes is a hard error — the positional
+"root shadows import" winner is retired (import order never changes meaning,
+SPEC §7.2). Bridge modules are not exempt: a `glue/<lang>/types.bv` boundary
+type and a same-named type from another module in scope must be renamed via a
+selective import or be an identical definition. The gate is name-keyed (the
+typechecker has no overloading), so a `CStr` from `glue/c.bv` and a user `CStr`
+in the same program is a conflict, resolvable the same way as any other.
+
 ---
 
 ## 5. How to add a new language
