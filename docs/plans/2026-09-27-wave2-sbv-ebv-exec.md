@@ -80,6 +80,18 @@ the C5 pattern).
 
 ## C1 — Layer 0 projection: imported die → component
 
+> **2026-09-27 revision (after review — user approved).** The C1 semantics
+> below were written before the graft-pattern decision; the approved
+> pattern (`2026-09-25-sbv-ebv-bridge.md` §"The graft pattern") is: the
+> die's file-scope declarations splice LIKE ANY MODULE (fields as shared
+> program state, types/defns as declarations) PLUS the synthesized
+> component typedef — pins ≡ fields, identity not a bridge. Includes:
+> nested `let` parses in obj/cell bodies (internal hierarchy needs it),
+> and `rename_item` learns `Statement::Let` (renamed state imports no-op
+> today — without the fix, a die field colliding with a board let has no
+> C4 escape). The C1 tests below gain: fields present in the splice;
+> internal items grafted but never projected.
+
 One rule (design record Layer 0): an imported `.sbv` file projects an
 `.ebv` component whose pins are its file-scope fields — pin names = field
 names, direction/class from the field's pin class, arrays element-wise

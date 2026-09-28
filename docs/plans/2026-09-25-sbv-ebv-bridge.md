@@ -147,6 +147,38 @@ sets wake on their change (the `node @ address` machine-entry model is
 literally pins waking computation), writes are drives, and the electrical
 solver (`.ebv` laws) and computational nodes read/write the same fields.
 
+### The graft pattern (2026-09-27, after review — resolves the Layer 0/1 reading)
+
+> **A die grafts its file-scope declarations like any module — bare `let`s
+> as shared program state, types/defns as declarations — plus the
+> synthesized component typedef. The component's pins are the fields:
+> identity, not a bridge.**
+
+The two headline sentences ("grafts as a component, declarations only" /
+"the die's fields are shared reactive variables in one program") cohere
+only under this one reading, and every constraint lands on it:
+
+- *Layer 0* ("projects an `.ebv` component whose pins are its
+  file-scope fields") — the typedef, derived mechanically from the fields.
+- *Layer 1* ("fields are shared reactive variables … nothing to bridge")
+  — literally: the fields splice; `sensor.sda` ≡ `sda` by construction
+  (the pin table is generated FROM the fields, so instance pin access and
+  the field are the same state — C2 wires that identity into the netlist).
+- *"file-scope = package boundary"* — all file-scope declarations reach
+  the board; an interpretation that hides the die's file-scope defns/types
+  contradicts the boundary rule.
+- *"C4-gated like any graft"* — now meaningful: multiple items pass the
+  cross-module gate, and the rename escape must work for state items too.
+- Free consequence: a plain-`.bv` board importing a die receives
+  `std/electronics.bv` transitively (the die's own prelude splice), so the
+  projected pin classes resolve there — no board-side requirement.
+
+A die is one physical thing, so it gets one set of state, module-level —
+no per-instance pin storage. Nested `let` (internal hierarchy) requires
+the parser to accept member `let` in declaration bodies (obj, cell — the
+loops that already accept defn/txn members); nested items splice as
+declarations but never project as pins.
+
 Correctness at every edge — ALWAYS on, vocabulary-free, all existing e14a
 machinery:
 
