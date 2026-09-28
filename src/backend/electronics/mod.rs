@@ -15,7 +15,7 @@
 pub mod routing;
 
 use std::collections::BTreeMap;
-use crate::analysis::electronics::{ComponentInstance, ElectronicsNetlist};
+use crate::analysis::electronics::{ComponentInstance, ElectronicsNetlist, TypeInfo};
 use crate::backend::capabilities::BackendCapabilities;
 
 pub const CAPABILITIES: BackendCapabilities = BackendCapabilities {
@@ -133,6 +133,11 @@ struct Placement<'a> {
     /// 2026-09-25 (E5): the vendor order code (`jlcpcn: "C12345"` on the
     /// instance literal) — hidden schematic property and a BOM column.
     jlcpcn: &'a str,
+    /// 2026-09-27 (E4, D4): the symbol unit this placement instance is
+    /// (1 = the default unit). Unit 1 only carries the footprint property.
+    unit: usize,
+    /// 2026-09-27 (E4, D4): emit the Footprint property (unit 1 only).
+    emit_footprint: bool,
 }
 
 /// Everything the power-symbol instance renders, bundled to keep the
@@ -143,6 +148,35 @@ struct PowerPlacement<'a> {
     pwr_no: usize,
     sx: f64,
     sy: f64,
+}
+
+/// 2026-09-27 (E4): the per-type pin tables a unit block reads — the
+/// shared `pin_layout` geometry plus each pin's class props, bundled to
+/// keep the block under the parameter gate.
+#[derive(Clone, Copy)]
+struct UnitTables<'a> {
+    pins: &'a [(String, u64)],
+    classes: &'a [crate::analysis::electronics::PinClassProps],
+}
+
+/// 2026-09-27 (E4): the per-component placement facts — the instance,
+/// its resolved type info, its origin, and its reference — bundled to
+/// keep the unit loop under the parameter gate.
+struct ComponentPlacement<'a> {
+    comp: &'a ComponentInstance,
+    info: &'a TypeInfo,
+    origin: (f64, f64),
+    reference: &'a str,
+}
+
+/// 2026-09-27 (E4): the per-instance facts a placement renders, bundled to
+/// keep the unit loop under the parameter gate.
+#[derive(Clone, Copy)]
+struct PlacementProps<'a> {
+    value: &'a str,
+    footprint: &'a str,
+    jlcpcn: &'a str,
+    unpop: bool,
 }
 
 pub struct ElectronicsBackend;
@@ -362,6 +396,7 @@ impl ElectronicsBackend {
                 &info.reference_prefix,
                 &info.pins,
                 &info.pin_classes,
+                &info.unit_groups,
             );
             lib_done.push(&comp.type_name);
         }
@@ -415,23 +450,92 @@ impl ElectronicsBackend {
             let value = Self::property_of(comp, "value").unwrap_or_else(|| comp.type_name.clone());
             let footprint = Self::property_of(comp, "package").unwrap_or_default();
             let jlcpcn = Self::property_of(comp, "jlcpcn").unwrap_or_default();
-            let placement = Placement {
-                comp,
-                x,
-                y,
-                reference: &reference,
+            let info = netlist
+                .type_info
+                .get(&comp.type_name)
+                .expect("analysis guarantees TypeInfo for every component type");
+            let props = PlacementProps {
                 value: &value,
                 footprint: &footprint,
-                unpop: netlist.unpop.contains(&comp.name),
                 jlcpcn: &jlcpcn,
+                unpop: netlist.unpop.contains(&comp.name),
             };
-            Self::emit_instance(out, &placement);
-            for (x_off, y_off, pin_name, _) in Self::pin_offsets(netlist, &comp.type_name) {
-                pin_xy.push((comp.name.clone(), pin_name, x + x_off, y + y_off));
-            }
+            let cp = ComponentPlacement {
+                comp,
+                info,
+                origin: (x, y),
+                reference: &reference,
+            };
+            Self::emit_component_units(out, &mut pin_xy, &cp, &props);
         }
         out.push('\n');
         pin_xy
+    }
+
+    /// 2026-09-27 (E4, D4/D5): one placement instance per unit for a
+    /// component. Unit 1 gets the bare reference + the footprint; unit N>1
+    /// gets `<ref><UnitName>` and no footprint (one part, one footprint).
+    /// 2026-09-27 (E4, D4/D5): one placement instance per unit for a
+    /// component. Unit 1 gets the bare reference + the footprint; unit N>1
+    /// gets `<ref><UnitName>` and no footprint (one part, one footprint).
+    /// The unit-N origin is the unit-1 origin + the unit offset.
+    fn emit_component_units(
+        out: &mut String,
+        pin_xy: &mut Vec<(String, String, f64, f64)>,
+        cp: &ComponentPlacement<'_>,
+        props: &PlacementProps<'_>,
+    ) {
+        let ComponentPlacement { comp, info, origin, reference } = *cp;
+        let PlacementProps { value, footprint, jlcpcn, unpop } = *props;
+        let (x, y) = origin;
+        let h = Self::unit_height(&info.pins, &info.pin_classes);
+        for (u, (_, members)) in info.unit_groups.iter().enumerate() {
+            let unit_y = u as f64 * h;
+            let unit_ref = if u == 0 {
+                reference.to_string()
+            } else {
+                format!("{}{}", reference, info.unit_groups[u].0)
+            };
+            let placement = Placement {
+                comp,
+                x,
+                y: y + unit_y,
+                reference: &unit_ref,
+                value,
+                footprint,
+                unpop: u == 0 && unpop,
+                jlcpcn,
+                unit: u + 1,
+                emit_footprint: u == 0,
+            };
+            Self::emit_instance(out, &placement);
+            for &i in members {
+                let (x_off, y_off) = Self::pin_offset_at(&info.pins, members, i);
+                pin_xy.push((
+                    comp.name.clone(),
+                    info.pins[i].0.clone(),
+                    x + x_off,
+                    y + unit_y + y_off,
+                ));
+            }
+        }
+    }
+
+    /// One pin's offset relative to its unit's origin — the pin laid out by
+    /// `pin_layout` over its unit's member subset (E4 D3: per-unit geometry
+    /// is identical to the single-unit layout of the unit's own pins).
+    /// `members` is the unit's pin indices into `pins` (declaration order);
+    /// `idx` is the target pin's index into `pins`.
+    fn pin_offset_at(
+        pins: &[(String, u64)],
+        members: &[usize],
+        idx: usize,
+    ) -> (f64, f64) {
+        let unit_pins: Vec<(String, u64)> = members.iter().map(|&i| pins[i].clone()).collect();
+        let layout = pin_layout(&unit_pins);
+        let pos = members.iter().position(|&i| i == idx).expect("member present");
+        let (x, y, _, _) = layout[pos];
+        (x, y)
     }
 
     /// Per-prefix reference designators in DECLARATION order (U1, U2…,
@@ -636,6 +740,7 @@ impl ElectronicsBackend {
         reference: &str,
         pins: &[(String, u64)],
         classes: &[crate::analysis::electronics::PinClassProps],
+        unit_groups: &[(String, Vec<usize>)],
     ) {
         out.push_str(&format!("    (symbol \"{}\" (in_bom yes) (on_board yes)\n", name));
         out.push_str(&format!(
@@ -646,37 +751,85 @@ impl ElectronicsBackend {
             "      (property \"Value\" \"{}\" (at 0 -5.08 0) (effects (font (size 1.27 1.27))))\n",
             name
         ));
-        // Body: generic rectangle sized to the pin count.
-        let half_h = (pins.len() as f64).max(2.0) * PIN_PITCH / 2.0;
-        out.push_str(&format!("      (symbol \"{}_0_1\"\n", name));
+        // 2026-09-27 (E4, D3): one body+pin block pair per unit — unit N's
+        // blocks sit at y = N * unit_height (KiCad's per-unit stacking).
+        // A single-unit type is u=0 at y=0 — byte-identical to pre-E4.
+        let single = unit_groups.len() == 1;
+        let tables = UnitTables { pins, classes };
+        for (u, (_, members)) in unit_groups.iter().enumerate() {
+            Self::emit_unit_block(out, name, u, members, &tables, single);
+        }
+        out.push_str("    )\n");
+    }
+
+    /// One symbol unit's body + pin blocks (E4 D3). `u` is the 0-based unit
+    /// index; `single` flags the single-unit type that keeps the original
+    /// `Name_0_1`/`Name_1_1` block suffixes for byte-identical pre-E4 output.
+    fn emit_unit_block(
+        out: &mut String,
+        name: &str,
+        u: usize,
+        members: &[usize],
+        tables: &UnitTables<'_>,
+        single: bool,
+    ) {
+        let UnitTables { pins, classes } = *tables;
+        let unit_y = u as f64 * Self::unit_height(pins, classes);
+        let half_h = (members.len() as f64).max(2.0) * PIN_PITCH / 2.0;
+        // Body block: `Name_U_1` for every unit (single u=0 → `Name_0_1`).
+        out.push_str(&format!("      (symbol \"{}_{u}_1\"\n", name));
         out.push_str(&format!(
             "        (rectangle (start -2.54 {}) (end 2.54 {}) (stroke (width 0.254) (type default)) (fill (type background)))\n",
-            half_h, -half_h
+            half_h + unit_y, -half_h + unit_y
         ));
         out.push_str("      )\n");
-        out.push_str(&format!("      (symbol \"{}_1_1\"\n", name));
+        // Pin block: `Name_1_1` for the single-unit type (the original
+        // emitter's form), `Name_U_2` for multi-unit types.
+        let pin_block = if single {
+            format!("      (symbol \"{}_1_1\"\n", name)
+        } else {
+            format!("      (symbol \"{}_{u}_2\"\n", name)
+        };
+        out.push_str(&pin_block);
         // 2026-09-21 (E12): the KiCad electrical pin type comes from the
         // pin's class fundamental (`spec KicadType`), resolved in analysis.
         // Unclassed pins default to `passive` — pre-E12 output unchanged.
+        let unit_pins: Vec<(String, u64)> =
+            members.iter().map(|&i| pins[i].clone()).collect();
+        let unit_classes: Vec<&crate::analysis::electronics::PinClassProps> =
+            members.iter().map(|&i| &classes[i]).collect();
         for ((x, y, pname, number), cls) in
-            pin_layout(pins).into_iter().zip(classes.iter())
+            pin_layout(&unit_pins).into_iter().zip(unit_classes.iter())
         {
             let angle = if x < 0.0 { 0 } else { 180 };
             out.push_str(&format!(
                 "        (pin {} line (at {} {} {}) (length 2.54) (name \"{}\" (effects (font (size 1.27 1.27)))) (number \"{}\" (effects (font (size 1.27 1.27)))))\n",
-                cls.kicad_type, x, y, angle, pname, number
+                cls.kicad_type, x, y + unit_y, angle, pname, number
             ));
         }
         out.push_str("      )\n");
-        out.push_str("    )\n");
+    }
+
+    /// The vertical step between unit blocks — the tallest unit's pin stack
+    /// plus one pitch of clearance, so stacked units never overlap.
+    fn unit_height(
+        pins: &[(String, u64)],
+        _classes: &[crate::analysis::electronics::PinClassProps],
+    ) -> f64 {
+        let n = pins.len() as f64;
+        let left_count = (pins.len() + 1) / 2;
+        let right_count = pins.len() - left_count;
+        let max_side = left_count.max(right_count) as f64;
+        let _ = n;
+        max_side * PIN_PITCH + PIN_PITCH
     }
 
     fn emit_instance(out: &mut String, p: &Placement) {
         let x = p.x;
         let y = p.y;
         out.push_str(&format!(
-            "  (symbol (lib_id \"{}\") (at {} {} 0) (unit 1)\n",
-            p.comp.type_name, coord(x), coord(y)
+            "  (symbol (lib_id \"{}\") (at {} {} 0) (unit {})\n",
+            p.comp.type_name, coord(x), coord(y), p.unit
         ));
         // 2026-09-22 (Slice B): an `unpop` part keeps its pads on the board
         // but is excluded from the BOM.
@@ -698,10 +851,12 @@ impl ElectronicsBackend {
             coord(x - 7.62),
             coord(y + 3.81)
         ));
-        out.push_str(&format!(
-            "    (property \"Footprint\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) (hide yes)))\n",
-            p.footprint, coord(x), coord(y)
-        ));
+        if p.emit_footprint {
+            out.push_str(&format!(
+                "    (property \"Footprint\" \"{}\" (at {} {} 0) (effects (font (size 1.27 1.27)) (hide yes)))\n",
+                p.footprint, coord(x), coord(y)
+            ));
+        }
         // 2026-09-25 (E5): vendor order code pass-through — a hidden property
         // so the schematic carries what the BOM says. Absent when unstated.
         if !p.jlcpcn.is_empty() {
@@ -712,9 +867,10 @@ impl ElectronicsBackend {
         }
         out.push_str("    (instances (project briev\n");
         out.push_str(&format!(
-            "      (path \"/{}\" (reference \"{}\") (unit 1))\n",
+            "      (path \"/{}\" (reference \"{}\") (unit {}))\n",
             Self::uuid("sheet"),
-            p.reference
+            p.reference,
+            p.unit
         ));
         out.push_str("    ))\n");
         out.push_str("  )\n");
@@ -2151,6 +2307,89 @@ let nl = netlist_of(src);
             "{:?}",
             err
         );
+    }
+
+    #[test]
+    fn multi_unit_type_emits_per_unit_blocks_and_instances() {
+        // 2026-09-27 (E4, slice 2): a 5-pin two-unit op-amp emits two
+        // symbol blocks in the lib symbol and two placement instances,
+        // unit 1 carrying the footprint, unit 2 carrying the unit-2 ref.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type OpAmp {
+                pin in_a = 1 unit A; pin in_b = 2 unit A; pin o = 3 unit A;
+                pin in_c = 4 unit B; pin in_d = 5 unit B;
+                pin vdd: Power; pin vss: Ground;
+                reference "U"; spec Tolerance: any;
+            };
+            type Conn { pin vcc: Power; pin gnd: Ground; reference "J"; };
+            type In { pin p; reference "I"; };
+            let u1: OpAmp = OpAmp { value: "opamp" };
+            let j1: Conn = Conn { value: "JST-2" };
+            let i1: In = In { value: "in1" };
+            let i2: In = In { value: "in2" };
+            txn on
+                [j1.vcc.voltage == u1.vdd.voltage && j1.gnd.voltage == u1.vss.voltage
+                 && i1.p.voltage == u1.in_a.voltage && i2.p.voltage == u1.in_b.voltage
+                 && i1.p.voltage == u1.in_c.voltage && i2.p.voltage == u1.in_d.voltage
+                 && i1.p.voltage == u1.o.voltage]
+                [true]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        let out = ElectronicsBackend::generate(&nl).unwrap();
+        // Two unit blocks in the lib symbol (body + pins per unit).
+        let pat_body_a = format!("(symbol \"{}\"\n", "OpAmp_0_1");
+        let pat_body_b = format!("(symbol \"{}\"\n", "OpAmp_1_1");
+        let pat_pin_a  = format!("(symbol \"{}\"\n", "OpAmp_0_2");
+        let pat_pin_b  = format!("(symbol \"{}\"\n", "OpAmp_1_2");
+        assert!(out.contains(&pat_body_a), "unit-A body block missing");
+        assert!(out.contains(&pat_body_b), "unit-B body block missing");
+        assert!(out.contains(&pat_pin_a),  "unit-A pin block missing");
+        assert!(out.contains(&pat_pin_b),  "unit-B pin block missing");
+        // Two placement instances (unit 1 + unit 2).
+        let placements = out.matches("(lib_id \"OpAmp\")").count();
+        assert!(placements >= 2, "expected >=2 OpAmp placements, got {}", placements);
+        assert!(out.contains("(unit 2)"), "unit-2 placement missing");
+        // Unit-1 instance carries the footprint.
+        assert!(out.contains("(property \"Footprint\""), "footprint missing");
+        // Unit-2 reference appends the unit name.
+        let refs: Vec<&str> = out.lines().filter(|l| l.contains("(reference \"U1")).collect();
+        assert!(refs.iter().any(|r| r.contains("U1A") || r.contains("U1B")),
+            "unit-2 reference missing: {:?}", refs);
+    }
+
+    #[test]
+    fn single_unit_type_output_is_byte_identical_to_pre_e4() {
+        // E4 slice 2 regression gate: a single-unit type emits the
+        // `_0_1`/`_1_1` block suffixes and a single placement instance —
+        // the pre-E4 output, unchanged.
+        let src = r#"
+            struct Pin { voltage: Float; current: Float; };
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            type Led { pin a; pin k; reference "D"; spec Tolerance: any; };
+            type Conn { pin vcc; pin gnd; reference "J"; };
+            let j1: Conn = Conn { value: "JST-2" };
+            let r1: Resistor = Resistor { value: "330" };
+            let d1: Led = Led { value: "red" };
+            txn powered
+                [j1.vcc.voltage == r1.a.voltage && r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.gnd.voltage]
+                [d1.k.voltage == j1.gnd.voltage]
+            { }
+        "#;
+        let nl = netlist_of(src);
+        let out = ElectronicsBackend::generate(&nl).unwrap();
+        // The original block suffixes — not `_0_2`/`_1_2`.
+        let pat_body = format!("(symbol \"{}\"\n", "Resistor_0_1");
+        let pat_pin  = format!("(symbol \"{}\"\n", "Resistor_1_1");
+        assert!(out.contains(&pat_body), "body block wrong");
+        assert!(out.contains(&pat_pin),  "pin block wrong");
+        assert!(!out.contains("_0_2") && !out.contains("_1_2"), "multi-unit suffix leaked");
+        // One placement instance per component, all (unit 1).
+        assert!(out.matches("(unit 1)").count() >= 3, "unit-1 instances missing");
+        assert!(!out.contains("(unit 2)"), "unit-2 instance on a single-unit type");
     }
 
     #[test]
