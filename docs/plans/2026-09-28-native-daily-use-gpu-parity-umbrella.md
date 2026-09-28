@@ -9,6 +9,90 @@ Main tip at planning: `1d0dc01f` (post e14a merge).
 Decisions: Front D first (umbrella order kept); bugs first then
 briev_rt.c families (interleaved); full umbrella scope.
 
+## Session findings (2026-09-28, this session)
+
+Executed through Phase 2 + usage-readiness. Commits `a94a95e5` →
+`6379b394` (10 commits).
+
+**Phase 1 (Front D):** No re-run needed — the A/B was already done
+2026-09-25 (`benchmarks/results/2026-09-25-front-d-ab.md`): REJECTED,
+plain path 26× slower on composite @4096. The deferred-region matcher
+stays. Verified the m3 harness routes through SPIR-V (not PTX), so a
+naive knob-flip A/B on that harness measures nothing — the composite
+microbench (`benchmarks/composite_decode_microbench.sh`) is the correct
+A/B vehicle. Composite baseline at current tip: p50 430.7 µs @4096.
+
+**Phase 2a (tuple-String):** Verified FIXED at tip `1d0dc01f` — the
+repro (`defn -> (String, Int)` + destructure) compiles and runs
+(`ab3`; 3-element `(String,Int,String)` → `ab3ab7cd`). BUGS.md entry
+updated.
+
+**Phase 2b (BEAST TypeDef members):** Fixed (`1300ce92`) —
+serialize/deserialize now round-trip `body.members` via a new
+`parse_toplevel` dispatch + `(members (member …)*)` list shape.
+Round-trip test added. Pre-fix, nested state was silently lost through
+`.f` profiles.
+
+**Phase 2c (stale-binary guard):** Shipped (`478940bb`) — `brievc
+freshness` command (mtime compare vs `src/`+`config/`, exit 1 + offending
+file when stale). `get_env_int_or` INDEX entry confirmed STALE (zero
+references remain; env.bv replaced the intrinsic 2026-07-19).
+
+**Phase 2d (briev_rt.c):** The C task/event machine (async Phase C/D,
+~200 lines: `briev_task_spawn/cancel/await` +
+`briev_event_alloc/read/fire/ready/strict_trap`) was DEAD — Family H
+(`7a3b821d`) had already migrated the scheduler to pure-Briev twins in
+`cast_lanes.bv` but never deleted the C bodies. Deleted (`173d5aa6`)
++ removed the 7 dead symbols from `kept_runtime_symbol` + the stale
+C-symbol declares in `emit_task_runtime` + the dead
+`__briev_free_total` global. `briev_rt.c` 511→303 lines. Remaining in
+the file: string-bitop helpers, `briev_syscall`/`briev_sysconf`
+(non-Linux fallback / zero-user), `ShellCmd`/`__briev_spawn*`/
+`__briev_setenv` (libc-flavored, user-facing per plan §2.5), `__print_float64`,
+Tamer HCALL host services (KEEP — tamer frgns reference them).
+
+**Phase 3 (GPU):** Deferred per user (GPUs in use). Composite baseline
+captured: 430.7 µs @4096 (matches the 2026-09-25 deferred-era numbers —
+no regression from this session's changes). GEMM 4096³ dispatch failed
+on both lanes (device contention / not rebuilt) — needs a clean-GPU
+re-run. Stage-5 re-rank still needs the fresh full baseline + Rule 12b
+A/B before picking 5a/5b/5c/5d.
+
+**Usage-readiness (daily programming):** Two blockers found and fixed
+(`6379b394`):
+1. **SyncGroup plugin gap** — `sync<g> node` wraps the item in
+   `TopLevel::SyncGroup`; the env, print, and inline_frgn plugins'
+   `walk_item` had no SyncGroup arm, so `get_env_int!` / `println!` /
+   `inline_frgn!` inside a sync-group node body were never resolved —
+   the unresolved PluginIntercept hit the codegen panic at
+   `emit_expr.rs:1700`. `async_counters_runtime.bv` (sync + println! +
+   get_env_int!) crashed on every build. All three plugins now recurse
+   into `SyncGroup.item`.
+2. **Struct-typed field init** — `let st: Stack<Int, 256> = 0` where the
+   `op Init` construction falls through emitted `store [1 x [256 x i64]] 0`
+   (invalid IR). The `zeroinitializer` fix (2026-07-31 A4) only covered
+   the `None`-init path; the `Some(Decimal(0))` path now emits
+   `zeroinitializer` for struct/array LLVM types.
+
+`tests/tier1/daily_use_smoke.bv` added as the day-one regression gate
+(string len, Stack via `<-`, `get_env_int!`, arithmetic, sync<group>
+node, println! in a when-guard). Picked up by the conformance sweep.
+`cargo test --lib` green (2761) at every commit.
+
+**Remaining usage-readiness gaps (known, not fixed this session):**
+- `Stack<Int,256> = 0` + `op Init` construction path: the `op Init`
+  (`init` txn: `data[0]=val; len=1`) fires for `= 0` but the subsequent
+  `<- st` ExtractFrom returned 0 in the smoke test (CopyFrom vs
+  ExtractFrom arrow semantics — pre-existing, `stack_push_pop.bv` uses
+  the same pattern and "works" because its benchmark doesn't read the
+  popped value). Needs a dedicated investigation.
+- `SysConf#` / no-arg `SysCall#()` — zero users; retirement is a
+  language decision (intrinsic + C fallback + interpreter + signature
+  all reference them).
+- `test_collections.bv` is aspirational (parse errors — `new_stack`/
+  `new_queue`/`new_map` don't exist; the working constructors are
+  `op Init` `= 0` / `= []` + `<-` arrows).
+
 ## Phase 1 — Front D (2026-09-24-followup-stages.md stage 1)
 
 1. Fresh full baseline (Rule 12): `cargo build --release` +
