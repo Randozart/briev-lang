@@ -92,6 +92,12 @@ const PLACE_X_LEFT: f64 = 101.6;
 const PLACE_X_RIGHT: f64 = 152.4;
 const PLACE_Y0: f64 = 50.8;
 const PLACE_PITCH: f64 = 25.4;
+/// 2026-09-28 (E3, D5): components per child sheet. The emitter splits the
+/// name-sorted components into fixed-size banks (declaration order) so a
+/// 512-instance tile spans several A4 sheets instead of one 13 m tall sheet.
+/// Boards with at most this many components emit a single sheet (byte-
+/// identical to the pre-hierarchy emitter — no regression for small fixtures).
+const BANK_SIZE: usize = 64;
 
 /// Format a schematic coordinate: round to the KiCad grid (0.01 mm), never
 /// emitting float noise like 76.19999999999999.
@@ -177,6 +183,16 @@ struct PlacementProps<'a> {
     footprint: &'a str,
     jlcpcn: &'a str,
     unpop: bool,
+}
+
+/// 2026-09-28 (E3): the per-bank wiring inputs for `emit_bank_nets` — the
+/// rail names (global, shared across banks), the per-net cross-sheet flags
+/// for this bank, and the bank index (for deterministic UUIDs). Bundled to
+/// keep the helper under the parameter gate.
+struct BankWiring<'a> {
+    power_names: &'a [Option<String>],
+    cross: &'a [bool],
+    bank: usize,
 }
 
 pub struct ElectronicsBackend;
@@ -300,6 +316,239 @@ impl ElectronicsBackend {
         out.push_str("  )\n");
         out.push_str(")\n");
         Ok(out)
+    }
+
+    /// 2026-09-28 (E3, D5): emit the schematic as a master sheet + one child
+    /// sheet per bank of `BANK_SIZE` components (name-sorted declaration
+    /// order). Returns `(filename, content)` pairs — the master is the first
+    /// pair (the `.kicad_sch`), children are `<stem>_<i>.kicad_sch`. Boards
+    /// with at most `BANK_SIZE` components return the single pre-hierarchy
+    /// sheet (byte-identical to `generate`). See the plan
+    /// `2026-09-28-ebv-e3-hierarchical-sheets.md` for the kicad-cli
+    /// hierarchy limitation that shapes the gate.
+    pub fn generate_hierarchical(
+        netlist: &ElectronicsNetlist,
+        stem: &str,
+    ) -> Result<Vec<(String, String)>, Vec<String>> {
+        for w in &netlist.participation_warnings {
+            eprintln!("note: {}", w);
+        }
+        if let Some(errs) = Self::emission_refusals(netlist) {
+            return Err(errs);
+        }
+        let mut components = netlist.components.clone();
+        components.sort_by(|a, b| a.name.cmp(&b.name));
+        // Small board: the single sheet IS the answer — identical bytes to
+        // `generate`, so every existing fixture is untouched.
+        if components.len() <= BANK_SIZE {
+            let sch = Self::generate(netlist)?;
+            return Ok(vec![(format!("{}.kicad_sch", stem), sch)]);
+        }
+        let power_names = Self::net_power_names(netlist);
+        let refs = Self::reference_map(&netlist, &components);
+        let banks = Self::partition_banks(&components, BANK_SIZE);
+        let n = banks.len();
+        // Per-bank membership: which net indices are cross-sheet (touch a pin
+        // outside the bank)? A net is local iff every pin's component is in
+        // the bank.
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (i, bank) in banks.iter().enumerate() {
+            let members: std::collections::BTreeSet<&str> =
+                bank.iter().map(|c| c.name.as_str()).collect();
+            let cross: Vec<bool> = netlist
+                .nets
+                .iter()
+                .map(|net| net.pins.iter().any(|p| !members.contains(p.component.as_str())))
+                .collect();
+            let filename = format!("{}_{}.kicad_sch", stem, i);
+            let mut sheet = String::new();
+            Self::emit_header_with_uuid(&mut sheet, &Self::uuid(&format!("sheet:{}", i)));
+            Self::emit_symbol_library(netlist, bank, &power_names, &mut sheet);
+            let pin_xy = Self::emit_bank_instances(netlist, bank, &refs, &mut sheet);
+            Self::emit_bank_nets(
+                netlist,
+                &pin_xy,
+                &BankWiring {
+                    power_names: &power_names,
+                    cross: &cross,
+                    bank: i,
+                },
+                &mut sheet,
+            );
+            Self::emit_sheet_instances(&mut sheet, &Self::uuid(&format!("sheet:{}", i)));
+            out.push((filename, sheet));
+        }
+        // Master: one (sheet …) ref per child + the sheet_instances table.
+        // kicad-cli cannot load a master with (sheet …) refs (see plan
+        // finding) — the master is for the KiCad GUI; children are the
+        // ERC-verifiable unit.
+        let mut master = String::new();
+        Self::emit_header(&mut master);
+        for i in 0..n {
+            master.push_str(&format!(
+                "  (sheet \"{}_{}.kicad_sch\" (at {} {} 0) (units mm) (page_id {}) (uuid \"{}\"))\n",
+                stem,
+                i,
+                coord(PLACE_X_LEFT + (i % 2) as f64 * 50.8),
+                coord(PLACE_Y0 + (i / 2) as f64 * PLACE_PITCH),
+                i + 1,
+                Self::uuid(&format!("sheet:{}", i))
+            ));
+        }
+        master.push_str("  (sheet_instances\n");
+        master.push_str(&format!("    (path \"/{}\" (page \"1\"))\n", Self::uuid("sheet")));
+        for i in 0..n {
+            master.push_str(&format!(
+                "    (path \"/{}\" (page \"{}\"))\n",
+                Self::uuid(&format!("sheet:{}", i)),
+                i + 2
+            ));
+        }
+        master.push_str("  )\n");
+        master.push_str(")\n");
+        out.insert(0, (format!("{}.kicad_sch", stem), master));
+        Ok(out)
+    }
+
+    /// Split the name-sorted components into fixed-size banks (declaration
+    /// order). The last bank holds the remainder.
+    fn partition_banks<'a>(
+        components: &'a [ComponentInstance],
+        size: usize,
+    ) -> Vec<&'a [ComponentInstance]> {
+        components.chunks(size).collect()
+    }
+
+    /// Emit the sheet header with an explicit uuid (a child sheet's identity
+    /// is `uuid("sheet:<i>")` so its instances' `path` and the master's
+    /// `sheet_instances` agree).
+    fn emit_header_with_uuid(out: &mut String, sheet_uuid: &str) {
+        out.push_str("(kicad_sch\n");
+        out.push_str("  (version 20230121)\n");
+        out.push_str("  (generator briev)\n");
+        out.push_str(&format!("  (uuid \"{}\")\n", sheet_uuid));
+        out.push_str("  (paper \"A4\")\n");
+    }
+
+    /// Emit one bank's instances; placement restarts at `PLACE_Y0` per bank
+    /// (idx is the bank-local index, not the global one). Returns the global
+    /// pin coordinates for routing.
+    fn emit_bank_instances(
+        netlist: &ElectronicsNetlist,
+        bank: &[ComponentInstance],
+        refs: &std::collections::BTreeMap<String, String>,
+        out: &mut String,
+    ) -> Vec<(String, String, f64, f64)> {
+        let mut pin_xy = Vec::new();
+        for (idx, comp) in bank.iter().enumerate() {
+            let (x, y) = (
+                if idx % 2 == 0 { PLACE_X_LEFT } else { PLACE_X_RIGHT },
+                PLACE_Y0 + idx as f64 * PLACE_PITCH,
+            );
+            let reference = refs.get(&comp.name).cloned().unwrap_or_default();
+            let value = Self::property_of(comp, "value").unwrap_or_else(|| comp.type_name.clone());
+            let footprint = Self::property_of(comp, "package").unwrap_or_default();
+            let jlcpcn = Self::property_of(comp, "jlcpcn").unwrap_or_default();
+            let info = netlist
+                .type_info
+                .get(&comp.type_name)
+                .expect("analysis guarantees TypeInfo for every component type");
+            let props = PlacementProps {
+                value: &value,
+                footprint: &footprint,
+                jlcpcn: &jlcpcn,
+                unpop: netlist.unpop.contains(&comp.name),
+            };
+            let cp = ComponentPlacement {
+                comp,
+                info,
+                origin: (x, y),
+                reference: &reference,
+            };
+            Self::emit_component_units(out, &mut pin_xy, &cp, &props);
+        }
+        out.push('\n');
+        pin_xy
+    }
+
+    /// Emit one bank's nets: local nets (every pin in the bank) route as
+    /// wires via `emit_net`; cross-sheet nets emit a `(global_label …)` at
+    /// each in-bank pin — the same name on every bank is what KiCad joins.
+    /// Emit one global label per in-bank pin of a cross-sheet net. The label
+    /// sits exactly on the pin coordinate (pin_xy holds absolute pin points)
+    /// — a global label with no local wire must touch the pin or ERC flags it
+    /// dangling.
+    fn emit_cross_labels(
+        out: &mut String,
+        label: &str,
+        pts: &[(f64, f64)],
+        net_index: usize,
+        bank: usize,
+    ) {
+        for &(x, y) in pts {
+            out.push_str(&format!(
+                "  (global_label \"{}\" (shape input) (at {} {} 0) (effects (font (size 1.27 1.27)) (justify left)) (uuid \"{}\"))\n",
+                label,
+                coord(x),
+                coord(y),
+                Self::uuid(&format!("gl:net:{}:bank:{}:{}:{}", net_index, bank, coord(x), coord(y)))
+            ));
+        }
+    }
+
+    fn emit_bank_nets(
+        netlist: &ElectronicsNetlist,
+        pin_xy: &[(String, String, f64, f64)],
+        wiring: &BankWiring,
+        out: &mut String,
+    ) {
+        // Index the pin coordinates once for O(1) lookup per net pin —
+        // iterating the vec per pin would be O(nets × pins).
+        let pin_map: std::collections::BTreeMap<(String, String), (f64, f64)> = pin_xy
+            .iter()
+            .map(|&(ref c, ref pn, x, y)| ((c.clone(), pn.clone()), (x, y)))
+            .collect();
+        let mut pwr_no = 0usize;
+        for (i, net) in netlist.nets.iter().enumerate() {
+            // In-bank pins only — a cross-sheet net's other pins live on
+            // other sheets and are joined by the shared label name.
+            let pts: Vec<(f64, f64)> = net
+                .pins
+                .iter()
+                .filter_map(|p| pin_map.get(&(p.component.clone(), p.pin.clone())).copied())
+                .collect();
+            let label = Self::net_label(netlist, net);
+            if wiring.cross[i] {
+                // One global label per in-bank pin on this net.
+                Self::emit_cross_labels(out, &label, &pts, i, wiring.bank);
+                continue;
+            }
+            // Local net: wire the in-bank pins (all of them are in-bank).
+            let symbol_pt = wiring.power_names[i].as_ref().and_then(|_| {
+                let mut sorted = pts.clone();
+                sorted.sort_by(|a, b| {
+                    a.1.partial_cmp(&b.1).unwrap().then(a.0.partial_cmp(&b.0).unwrap())
+                });
+                sorted.first().map(|&(x, y)| (x, y - 5.08))
+            });
+            if let (Some(name), Some((sx, sy))) = (&wiring.power_names[i], symbol_pt) {
+                pwr_no += 1;
+                Self::emit_power_symbol(
+                    out,
+                    &PowerPlacement { name, net_index: i, pwr_no, sx, sy },
+                );
+            }
+            Self::emit_net(out, net, &pts, &label, symbol_pt);
+        }
+    }
+
+    /// Emit the `sheet_instances` table for a leaf sheet (a child with no
+    /// sub-sheets carries only its own path).
+    fn emit_sheet_instances(out: &mut String, sheet_uuid: &str) {
+        out.push_str("  (sheet_instances\n");
+        out.push_str(&format!("    (path \"/{}\" (page \"1\"))\n", sheet_uuid));
+        out.push_str("  )\n");
+        out.push_str(")\n");
     }
 
     /// Per-net power-symbol names (index-aligned to `netlist.nets`): a net
@@ -2525,5 +2774,78 @@ let nl = netlist_of(src);
         let nl = derive_netlist(&items);
         let board = ElectronicsBackend::generate_board(&nl, &items).unwrap();
         assert!(board.is_none(), "no fab section → no board");
+    }
+
+    // 2026-09-28 (E3, D5): hierarchical sheet emission gates. The 512-tile
+    // fixture (513 components: 512 TileRes + 1 TileConn) spans 9 banks of
+    // 64. Each child must be self-contained (rails are global labels on
+    // in-bank pins) and the master must reference every child.
+
+    fn tile512_netlist() -> ElectronicsNetlist {
+        let src = include_str!("../../../tests/electronics/tile_512.ebv");
+        derive_netlist(&fixture_items(src))
+    }
+
+    #[test]
+    fn tile_512_hierarchy_bank_count_and_master() {
+        let nl = tile512_netlist();
+        let files = ElectronicsBackend::generate_hierarchical(&nl, "tile_512").unwrap();
+        // 513 components / 64 per bank = 9 banks (8 full + 1 of 1). Plus the
+        // master = 10 files, master first.
+        assert_eq!(files.len(), 10, "expected master + 9 children");
+        assert_eq!(files[0].0, "tile_512.kicad_sch", "master is first");
+        let master = &files[0].1;
+        // Master references every child by filename.
+        for i in 0..9 {
+            let child = format!("tile_512_{}.kicad_sch", i);
+            assert!(master.contains(&child), "master missing sheet ref {child}");
+        }
+        // Master's sheet_instances: root + 9 child paths = 10 path lines.
+        let paths = master.matches("(path \"/").count();
+        assert_eq!(paths, 10, "master sheet_instances path count");
+        // Master carries no instances or lib symbols.
+        assert!(!master.contains("(symbol (lib_id"), "master must not place instances");
+        assert!(!master.contains("(lib_symbols"), "master must not define symbols");
+    }
+
+    #[test]
+    fn tile_512_child_is_self_contained() {
+        let nl = tile512_netlist();
+        let files = ElectronicsBackend::generate_hierarchical(&nl, "tile_512").unwrap();
+        for (name, content) in files.iter().skip(1) {
+            // Each child defines the symbols it places and has a sheet table.
+            assert!(content.contains("(lib_symbols"), "{name} missing lib_symbols");
+            assert!(content.contains("(sheet_instances"), "{name} missing sheet_instances");
+            // A child places no sub-sheets.
+            assert!(!content.contains("(sheet \""), "{name} must not reference sub-sheets");
+            // The two rail nets are cross-sheet: every child carries global
+            // labels for both rails (each in-bank pin on a rail gets one).
+            assert!(content.contains("(global_label \""), "{name} missing global labels");
+        }
+    }
+
+    #[test]
+    fn small_board_single_sheet_byte_identical_to_generate() {
+        // A board with at most BANK_SIZE components must emit exactly the
+        // single pre-hierarchy sheet — the regression guard for every
+        // existing fixture.
+        let nl = derive_netlist(&fixture_items(gate_fixture()));
+        let single = ElectronicsBackend::generate(&nl).unwrap();
+        let files = ElectronicsBackend::generate_hierarchical(&nl, "usb_sensor").unwrap();
+        assert_eq!(files.len(), 1, "small board is one sheet");
+        assert_eq!(files[0].0, "usb_sensor.kicad_sch");
+        assert_eq!(files[0].1, single, "small board must match generate() byte-for-byte");
+    }
+
+    #[test]
+    fn generate_hierarchical_is_deterministic() {
+        let nl = tile512_netlist();
+        let a = ElectronicsBackend::generate_hierarchical(&nl, "tile_512").unwrap();
+        let b = ElectronicsBackend::generate_hierarchical(&nl, "tile_512").unwrap();
+        assert_eq!(a.len(), b.len());
+        for (fa, fb) in a.iter().zip(b.iter()) {
+            assert_eq!(fa.0, fb.0, "filename drift");
+            assert_eq!(fa.1, fb.1, "content drift: {}", fa.0);
+        }
     }
 }

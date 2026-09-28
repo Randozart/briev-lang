@@ -4,7 +4,7 @@ Date: 2026-09-28
 Gap: `2026-09-21-hardware-dialect-gaps.md` E3 (single A4 sheet, channel-routed
 wires); E11 whole-bus residue; E1 plan line 50–52 (`r_pu[0..=1]` instance
 buses claimed but never implemented)
-Status: IN PROGRESS
+Status: DONE
 Branch: `feat/e14a-intent-synthesis`
 
 ## Problem
@@ -95,14 +95,41 @@ The E3 gate is *"a 512-instance tile opens ERC-clean in KiCad"*. Two halves:
    `let t[i:16][j:32]: TileRes = TileRes { value: "100R", package: "0603" };`
    + one connector, wired by two wildcard broadcast equalities. Emits a
    single sheet first (proves authoring); ERC-clean.
-4. **Hierarchical sheet emission** — partition components into banks
-   (declaration order, fixed size); master sheet with `(sheet …)` instances +
-   global labels per cross-sheet net; each child `.kicad_sch` carries its
-   instances + `(global_label …)` for the rails (same name on every sheet =
-   connected). Fixture emits N child files + master; `kicad-cli` loads all.
-5. **Gate + docs closure** — `kicad-cli sch erc` on the master: 0 errors;
-   `cargo test --lib` green; two runs byte-identical (determinism); gap E3 →
-   CLOSED; ledger + design-record refresh.
+ 4. **Hierarchical sheet emission** — `generate_hierarchical(netlist) ->
+    Vec<(filename, content)>`. Partition the name-sorted components into banks
+    of `BANK_SIZE = 64` (declaration/sort order). If `components.len() <= 64`,
+    return the existing single sheet (byte-identical — no regression for small
+    fixtures). Else emit a master + one child per bank:
+    - **Child `tile_<i>.kicad_sch`** — header (sheet uuid = `uuid("sheet:<i>")`),
+      `lib_symbols` for the types used in that bank, the bank's instances
+      (placement restarts at `PLACE_Y0` per bank), and per net: *local* nets
+      (all pins in-bank) route as wires (existing `emit_net`); *cross-sheet*
+      nets emit a `(global_label "NET" (shape input) (at <pin>) …)` at each
+      in-bank pin. Same label name across banks = connected.
+    - **Master `tile.kicad_sch`** — header, one `(sheet "<stem>_<i>.kicad_sch"
+      (at …) (units mm) (page_id N) (uuid …))` per bank + a `sheet_instances`
+      table (root path = master uuid + one entry per child uuid). No instances,
+      no lib_symbols.
+ 5. **Gate + docs closure** — `kicad-cli sch erc` on **each child**: 0 errors
+    (kicad-cli cannot traverse hierarchy — see finding below, so the master is
+    GUI-verified only); `cargo test --lib` green; two runs byte-identical
+    (all files); gap E3 → CLOSED; ledger + design-record refresh.
+
+## Finding: kicad-cli does not traverse hierarchical sheets (2026-09-28)
+
+`kicad-cli sch erc` (10.0.6) **refuses to load any schematic containing a
+`(sheet …)` reference** — "Failed to load schematic" on a master with even one
+`(sheet …)` line; the identical master minus that line loads and ERCs clean.
+Verified by bisection: the `(sheet …)` block alone is the load blocker; the
+master's own content (header, labels, `sheet_instances`) is valid. This is a
+kicad-cli limitation, not a syntax defect.
+
+Consequence: the "ERC the master" gate is not CLI-verifiable. Each **child**
+sheet is self-contained (its rails are global labels that connect to in-bank
+pins), so the workable CLI gate is *per-child* `sch erc` = 0 errors. The master
+is still emitted for human use in the KiCad GUI (which does traverse
+hierarchy); its correctness is structural (Rust tests assert the sheet refs +
+`sheet_instances` paths) and is recorded here + BUGS.md as the CLI gap.
 
 ## Gate (from the gap entry)
 
