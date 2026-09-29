@@ -1578,9 +1578,41 @@ fn codegen(
             // 2026-09-11 (Part C, Electronics skeleton): the frontend-derived
             // netlist (analysis.electronics) is emitted as a KiCad 7
             // schematic. Dangling pins fail the compile — no partial boards.
-            match briev_compiler::backend::electronics::ElectronicsBackend::generate(&analysis.electronics) {
-                Ok(sch) => output = sch,
-                Err(errs) => return Err(errs.join("\n")),
+            // 2026-09-28 (E3, D5): the emitter splits a large board into a
+            // master sheet + one child per bank (BANK_SIZE components). A
+            // small board is a single sheet (byte-identical to the old
+            // `generate`). The master is `output`; children are written as
+            // companions (the BOM/pcb pattern below).
+            let stem = std::path::Path::new(&opts.file_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("board")
+                .to_string();
+            let files =
+                briev_compiler::backend::electronics::ElectronicsBackend::generate_hierarchical(
+                    &analysis.electronics,
+                    &stem,
+                )
+                .map_err(|errs| errs.join("\n"))?;
+            // First pair is the master (the `.kicad_sch`); the rest are
+            // children written as companion files in the out dir.
+            let (master_name, master_content) = files
+                .first()
+                .cloned()
+                .ok_or("hierarchical emission returned no master sheet")?;
+            let _ = master_name;
+            output = master_content;
+            let out_dir = std::path::Path::new(
+                &determine_out_path(&opts.file_path, opts.out_dir.as_deref())?,
+            )
+            .parent()
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+            for (child_name, child_content) in files.iter().skip(1) {
+                let child_path = format!("{}/{}", out_dir, child_name);
+                std::fs::write(&child_path, child_content)
+                    .map_err(|e| format!("cannot write '{}': {}", child_path, e))?;
+                println!("wrote {}", child_path);
             }
             // 2026-09-25 (E5): the assembly BOM rides with the schematic —
             // populated parts only, deterministic order.

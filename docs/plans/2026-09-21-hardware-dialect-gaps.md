@@ -117,10 +117,25 @@ track below.
 - **Effort:** M
 
 ### E3 — KiCad emitter: single A4 sheet, channel-routed wires
+- **Status:** CLOSED 2026-09-28 (plan
+  `2026-09-28-ebv-e3-hierarchical-sheets.md`): `generate_hierarchical`
+  (`src/backend/electronics/mod.rs`) splits the netlist into `BANK_SIZE` (64)
+  -component banks. ≤64 components → the single pre-hierarchy sheet, byte-
+  identical to `generate()` (regression guard for every fixture). Larger
+  boards → a master sheet + one self-contained child per bank: each child
+  carries its own `lib_symbols`, instances, and `sheet_instances`; a net
+  touching more than one bank is emitted as `(global_label …)` at each in-
+  bank pin (rails included — `V3.3`/`GND` are just nets). The master is
+  header + `(sheet …)` refs + `sheet_instances` only, no instances.
+  Deterministic (BTreeMap + fixed geometry + UUID-v5). Gate: a 512-instance
+  tile → 9 ERC-clean children (0 errors each), 11 compiler files byte-
+  identical across runs. Note: kicad-cli cannot load a master with sheet
+  refs (verified), so the gate is per-child `sch erc` = 0 errors; the master
+  is GUI-only and structurally asserted in Rust tests.
 - **Evidence:** `ElectronicsBackend::generate`
-  (`src/backend/electronics/mod.rs:128`) emits one sheet, paper A4;
-  `emit_net` (`:356`) routes one L-shaped wire per net through the
-  inter-column channel — wire count grows O(nets).
+  (`src/backend/electronics/mod.rs:278`) emits one sheet, paper A4;
+  `emit_net` routes one L-shaped wire per net through the inter-column
+  channel — wire count grew O(nets).
 - **Blocks:** thousands of instances (crossbar tiles) unusable in KiCad.
 - **General fix:** per-bank hierarchical sheets + global labels (net
   naming already exists via `Expr::Named`).

@@ -622,6 +622,17 @@ A dangling pin — declared but on no net — is a compile error naming the
 pin. Compilation emits a KiCad 7 schematic; the backend refuses any board
 that is incomplete or electrically violated.
 
+**Hierarchical sheet emission (2026-09-28).** A board of at most
+`BANK_SIZE` (64) components emits a single sheet. A larger board emits a
+master sheet plus one self-contained child per bank: each child carries its
+own symbol library, instances, and sheet table, and a net touching more than
+one bank is emitted as a `global_label` at each in-bank pin (rail nets
+included — `V3.3`/`GND` are ordinary nets). The master references every
+child and places no instances. Emission is deterministic (sorted iteration,
+fixed geometry, UUID-v5), so two builds of the same source are
+byte-identical. The single-sheet output for a small board is byte-identical
+to the pre-hierarchy emitter (regression guard).
+
 > **2026-09-21 (intent synthesis — PLANNED, non-normative).** The `.ebv`
 > surface is being extended toward intent-based synthesis: the author
 > declares behaviors and invariants over `volatile` component pins
