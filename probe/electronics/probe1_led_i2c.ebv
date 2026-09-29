@@ -1,0 +1,142 @@
+// ── probe1_led_i2c.ebv — mixed passive + active, intent-synthesized ──────
+// A USB-powered 3.3V board driving an I2C temperature sensor with a
+// decoupled rail, a status LED (series resistor placed by intent), an
+// I2C pull-up pair, and a reset button. Exercises: stdnet membership,
+// spec Decouple, SeriesPart placement (E15), budgets, pull-up synthesis,
+// the fab block (board outline + pinned placements), and unpop.
+//
+// Compile:  brievc build probe1_led_i2c.ebv
+
+type Ldo {
+    pin in: Power;
+    pin gnd: Ground;
+    pin vout: Power;
+    pin en: In;
+    reference "U";
+    spec Tolerance: 6V;
+    spec Rating: 0.9W;
+    spec Decouple: 100n;
+};
+type Mcu {
+    pin vdd: Power;
+    pin gnd: Ground;
+    pin sda: IoOd;
+    pin scl: IoOd;
+    pin gpio[4]: Io;
+    pin rst: In;
+    reference "U";
+    spec Tolerance: 4V;
+    spec Rating: any;
+    spec Decouple: 100n;
+};
+type TempSensor {
+    pin vdd: Power;
+    pin gnd: Ground;
+    pin sda: IoOd;
+    pin scl: IoOd;
+    reference "U";
+    spec Tolerance: 5V;
+    spec Rating: any;
+    spec Decouple: 100n;
+};
+type Res {
+    pin a;
+    pin b;
+    reference "R";
+    spec Tolerance: any;
+    spec Rating: 0.25W;
+    spec Resistance: Ohm;
+    spec PullUp: true;
+    spec SeriesPart: true;
+    when true {
+        a.voltage - b.voltage == Resistance * a.current;
+        a.current + b.current == 0;
+    }
+};
+type Cap { pin a; pin b; reference "C"; spec Tolerance: any; spec Rating: any; spec Decoupler: true; };
+type LedP {
+    pin a;
+    pin k;
+    reference "D";
+    spec Tolerance: 3.6V;
+    spec Rating: any;
+};
+type Usb { pin vbus: Power; pin gnd: Ground; reference "J"; spec Tolerance: any; spec Rating: any; };
+type Breakout { pin s0 = 1; pin s1 = 2; reference "J"; spec Tolerance: any; spec Rating: any; };
+type Button {
+    pin a: Path;
+    pin b: Path;
+    reference "SW";
+    spec Tolerance: any;
+    spec Rating: any;
+    mode closed {
+        a.voltage == b.voltage;
+        a.current + b.current == 0;
+    }
+    mode open {
+        a.current == 0Amp;
+        b.current == 0Amp;
+    }
+};
+
+stdnet<VBUS> let j1: Usb = Usb { value: "USB-B", package: "SMD" };
+stdnet<in: VBUS, vout: V3V3> let u1: Ldo = Ldo { value: "AP2112K-3.3", package: "SOT-25" };
+stdnet<V3V3> let u2: Mcu = Mcu { value: "STM32F030", package: "QFN-32" };
+stdnet<V3V3> let u3: TempSensor = TempSensor { value: "TMP102", package: "DFN-4" };
+let led1: LedP = LedP { value: "green", package: "0603" };
+let r_led: Res = Res { value: "330R", package: "0603", spec Resistance: 330Ohm };
+let r_pu[2]: Res = Res { value: "4k7", package: "0603", spec Resistance: 4.7kOhm };
+let r_rst: Res = Res { value: "10k", package: "0603", spec Resistance: 10kOhm };
+let sw_rst: Button = Button { value: "SPST", package: "SMD" };
+let jb: Breakout = Breakout { value: "2x1", package: "SMD" };
+let c[i:2]: Cap = Cap { value: "100n", package: "0402" };
+let c_bulk: Cap = Cap { value: "10u", package: "0805" };
+unpop c_bulk;
+
+budget u1.vout <= 200mA;
+budget j1.vbus <= 500mA;
+
+trg usb_attached @ j1;
+
+// Rail birth + the return side the solver completes. u2.rst joins the
+// button; the LED path is intent-placed (r_led in series, led1 to gnd).
+async node powered [
+    usb_attached
+    && j1.vbus.voltage == 5.0V
+    && u1.vout.voltage == 3.3V
+    && u2.rst.voltage == sw_rst.a.voltage
+    && sw_rst.b.voltage == j1.gnd.voltage
+    && u1.vout.voltage == r_rst.a.voltage
+    && r_rst.b.voltage == u2.rst.voltage
+] [u1.vout.voltage == 3.3V && j1.vbus.voltage == 5.0V] {
+    u1.en = true;
+    led1 = true;
+    r_led.a = u1.vout;
+    r_led.b = led1.a;
+    u2.gpio[2].voltage == jb.s0.voltage;
+    u2.gpio[3].voltage == jb.s1.voltage;
+}
+
+// I2C pull-ups: the min-voltage obligations force r_pu[*] onto the 3.3V
+// rail and complete the sda/scl buses (one pull-up each).
+async node i2c_idle [u1.vout.voltage == 3.3V] [u1.vout.voltage == 3.3V] {
+    u2.sda.voltage >= 2.7V;
+    u3.sda.voltage >= 2.7V;
+    u2.scl.voltage >= 2.7V;
+    u3.scl.voltage >= 2.7V;
+}
+
+// Reset button: r-pull-up to the rail, the button pulls the MCU pin low
+// when closed (the low bound FORCES the low path).
+async node rst_pressed [u1.vout.voltage == 3.3V && sw_rst.closed] [u2.rst.voltage <= 0.3V] {
+    u2.rst.voltage <= 0.3V;
+}
+async node rst_released [u1.vout.voltage == 3.3V && !sw_rst.closed] [u2.rst.voltage >= 2.7V] { }
+
+// Physical board: 45mm x 35mm, connectors + LED pinned, the rest flow.
+fab {
+    board 45mm x 35mm;
+    place j1 @ (6mm, 17mm);
+    place led1 @ (24mm, 30mm);
+    place sw_rst @ (40mm, 30mm);
+}

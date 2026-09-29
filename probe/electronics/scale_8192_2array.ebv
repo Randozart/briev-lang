@@ -1,0 +1,15 @@
+// 8192 resistors as TWO 4096 arrays (parser cap is 4096/array).
+type R { pin a; pin b; reference "R"; spec Tolerance: any; };
+type J { pin p1 = 1; pin p2 = 2; reference "J"; spec Tolerance: any; spec Rating: any; };
+let j1: J = J { value: "JST-PH-2", package: "JST-PH" };
+let t0[i:64][j:64]: R = R { value: "100R", package: "0603" };
+let t1[i:64][j:64]: R = R { value: "100R", package: "0603" };
+async node tile
+    [j1.p1.voltage == t0[*].a.voltage
+     && j1.p1.voltage == t1[*].a.voltage
+     && j1.p2.voltage == t0[*].b.voltage
+     && j1.p2.voltage == t1[*].b.voltage
+     && j1.p1.voltage == 3.3Volt && j1.p2.voltage == 0.0Volt]
+    [j1.p1.voltage >= 0.0Volt]
+{
+}

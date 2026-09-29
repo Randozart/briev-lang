@@ -1,0 +1,57 @@
+// ── probe2_amp_chain.ebv — multi-unit dual op-amp + pin-array ────────────
+// A signal conditioner: two dual op-amps (each = 2 signal units + 1 power
+// unit, 7 pins total) in a gain stage + buffer, fed by a pin-array source
+// header. Exercises E4 multi-unit symbols (per-unit body+pin blocks, per-
+// unit placement instances, shared power net touching both units) plus a
+// pin array (E11). No power symbols are emitted as rails here beyond the
+// op-amp power pins — the gate is the unit machinery, not the rail ERC.
+//
+// Compile:  brievc build probe2_amp_chain.ebv
+
+type DualAmp {
+    // Signal unit A
+    pin in_a = 1: In unit A;
+    pin in_b = 2: In unit A;
+    pin o_a  = 3 unit A;
+    // Signal unit B
+    pin in_c = 4: In unit B;
+    pin in_d = 5: In unit B;
+    pin o_b  = 6 unit B;
+    // Shared power unit
+    pin vdd: Power unit P;
+    pin vss: Ground unit P;
+    reference "U";
+    spec Tolerance: any;
+    spec Rating: any;
+};
+type Source { pin vcc: Power; pin gnd: Ground; pin s0 = 1; pin s1 = 2; pin s2 = 3; reference "J"; };
+type Sink   { pin p0 = 1; pin p1 = 2; pin p2 = 3; pin gnd: Ground; reference "J"; };
+
+let u1: DualAmp = DualAmp { value: "LM358A", package: "SMD" };
+let u2: DualAmp = DualAmp { value: "LM358B", package: "SMD" };
+let js: Source = Source { value: "3x1-in", package: "SMD" };
+let jt: Sink   = Sink   { value: "3x1-out", package: "SMD" };
+
+// Unit A of u1: in_a <- s0, in_b <- gnd (grounded reference), o_a -> unit A
+// of u2 (cascaded gain). Unit B of u1: in_c <- s1, o_b -> s2 buffer. u2's
+// two units both feed the sink. The power net (vdd) joins both op-amps'
+// P units; the return (vss) is one net.
+txn on
+    [js.vcc.voltage == u1.vdd.voltage
+     && js.vcc.voltage == u2.vdd.voltage
+     && js.gnd.voltage == u1.vss.voltage
+     && js.gnd.voltage == u2.vss.voltage
+     && js.s0.voltage == u1.in_a.voltage
+     && js.s1.voltage == u1.in_c.voltage
+     && js.s2.voltage == u1.in_b.voltage
+     && u1.o_a.voltage == u2.in_a.voltage
+     && u1.o_b.voltage == u2.in_c.voltage
+     && u1.in_d.voltage == js.gnd.voltage
+     && u2.in_b.voltage == js.gnd.voltage
+     && u2.in_d.voltage == js.gnd.voltage
+     && u2.o_a.voltage == jt.p0.voltage
+     && u2.o_b.voltage == jt.p1.voltage
+     && jt.p2.voltage == js.gnd.voltage
+     && jt.gnd.voltage == js.gnd.voltage]
+    [u2.o_a.voltage == jt.p0.voltage && u2.o_b.voltage == jt.p1.voltage]
+{ }
