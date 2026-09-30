@@ -8,7 +8,10 @@ exists so the decisions are made deliberately, not by drift.
 `derivation-not-recognition.md` (the compiler's obligation),
 `briev-capability-frontier.md` (expressiveness closure),
 `briev-vs-cuda-thesis.md` (why proof beats UB), `abv-gpu-doctrine.md`
-(one plan, per-vendor projections). **Feeds:** Golden Rules 2, 3, 22.
+(one plan, per-vendor projections),
+`docs/plans/2026-09-30-hardware-manipulation-expressiveness.md`
+(reach every hardware capability — the manipulation surface).
+**Feeds:** Golden Rules 2, 3, 22.
 
 ---
 
