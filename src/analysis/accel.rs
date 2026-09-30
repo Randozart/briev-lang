@@ -179,6 +179,11 @@ pub struct DeferredNormalization {
     pub normalize_var: String,
     /// The normalize foreach's range END expression (resolved at emission).
     pub normalize_end: Expr,
+    /// 2026-09-30 (KernelPlan Phase 1b): the REDUCTION span — the range END
+    /// of the loop that accumulates `denominator` (the `j`/KV length). The
+    /// plan needs this fact; it was previously only known to the backend's
+    /// richer `detect_deferred_region`.
+    pub reduce_end: Expr,
 }
 
 impl ReductionInfo {
@@ -1078,14 +1083,15 @@ fn detect_deferred_normalizer(stmts: &[Statement], _index_var: &str) -> Option<D
 /// only), and a trailing normalize foreach whose body is pure division by
 /// it. Anything else fails closed.
 fn match_den(stmts: &[Statement], den: &str) -> Option<DeferredNormalization> {
-    let w = single_self_add_loop(stmts, den)?;
-    trailing_normalize_loop(stmts, den, w)
+    let (w, reduce_end) = single_self_add_loop(stmts, den)?;
+    trailing_normalize_loop(stmts, den, w, reduce_end)
 }
 
 /// The single loop holding self-add writes to `den`, provided every write
 /// to `den` is a self-add confined to that one loop and the init appears
-/// exactly once. Any other write shape fails closed (None).
-fn single_self_add_loop(stmts: &[Statement], den: &str) -> Option<usize> {
+/// exactly once. Any other write shape fails closed (None). Returns the
+/// loop index and its range END (the reduction span).
+fn single_self_add_loop(stmts: &[Statement], den: &str) -> Option<(usize, Expr)> {
     // The init must appear exactly once (re-init would break the
     // loop-completed proof).
     if stmts
@@ -1096,11 +1102,12 @@ fn single_self_add_loop(stmts: &[Statement], den: &str) -> Option<usize> {
     {
         return None;
     }
-    let mut writer: Option<usize> = None;
+    let mut writer: Option<(usize, Expr)> = None;
     for (idx, stmt) in stmts.iter().enumerate() {
-        let Statement::Foreach { body, .. } = stmt else {
+        let Statement::Foreach { list, body, .. } = stmt else {
             continue;
         };
+        let mut hit = false;
         for (lhs, rhs) in top_assigns(body) {
             if !assigns_to(lhs, den) {
                 continue;
@@ -1108,11 +1115,18 @@ fn single_self_add_loop(stmts: &[Statement], den: &str) -> Option<usize> {
             if !is_self_add(rhs, den) {
                 return None;
             }
-            if writer.is_some() && writer != Some(idx) {
-                return None;
-            }
-            writer = Some(idx);
+            hit = true;
         }
+        if !hit {
+            continue;
+        }
+        if writer.as_ref().is_some_and(|(i, _)| *i != idx) {
+            return None;
+        }
+        let Expr::Range { end, .. } = list.as_ref() else {
+            return None;
+        };
+        writer = Some((idx, end.as_ref().clone()));
     }
     let w = writer?;
     // No top-level scalar write outside loops.
@@ -1131,6 +1145,7 @@ fn trailing_normalize_loop(
     stmts: &[Statement],
     den: &str,
     after: usize,
+    reduce_end: Expr,
 ) -> Option<DeferredNormalization> {
     for (idx, stmt) in stmts.iter().enumerate().skip(after + 1) {
         let Statement::Foreach { item, list, body } = stmt else {
@@ -1148,6 +1163,7 @@ fn trailing_normalize_loop(
             out_buf,
             normalize_var: item.clone(),
             normalize_end: end.as_ref().clone(),
+            reduce_end,
         });
     }
     None

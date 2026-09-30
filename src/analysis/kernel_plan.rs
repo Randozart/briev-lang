@@ -203,7 +203,19 @@ impl KernelPlan {
             WorkItem::Strided
         };
         let mut ops = Vec::new();
-        if let Some(red) = &shape.reduction {
+        if let Some(dn) = &shape.deferred_normalize {
+            // Deferred/softmax region (takes precedence, as in the emitter):
+            // the reduction span is the accumulator loop's range end.
+            ops.push(PlanOp::Reduce {
+                op: ReduceOp::SoftmaxNormalize,
+                span: resolve(&dn.reduce_end).unwrap_or(0),
+                tree: ReduceTree::Linear,
+                frag: None,
+            });
+            ops.push(PlanOp::Barrier {
+                scope: Scope::Workgroup,
+            });
+        } else if let Some(red) = &shape.reduction {
             let op = match red.kind {
                 ReductionKind::Dot => ReduceOp::Add,
                 ReductionKind::Softmax => ReduceOp::SoftmaxNormalize,
@@ -486,6 +498,42 @@ mod tests {
             "{d}"
         );
         assert!(d.contains("op barrier scope=wg"), "{d}");
+        assert!(d.contains("op store a_out:global:4"), "{d}");
+    }
+
+    #[test]
+    fn from_shape_builds_deferred_plan() {
+        use crate::analysis::accel::{DeferredNormalization, KernelShape};
+        let mut consts = std::collections::HashMap::new();
+        consts.insert("NKV".to_string(), Expr::Decimal(4096));
+        consts.insert("D".to_string(), Expr::Decimal(128));
+        let shape = KernelShape {
+            index_var: "h".into(),
+            count_expr: Some(Expr::Decimal(32)),
+            kernel_stmts: vec![],
+            host_stmts: vec![],
+            read_buffers: vec!["q".into(), "k".into(), "v".into(), "o1".into()],
+            write_buffers: vec!["a_out".into()],
+            scalar_ins: vec![],
+            eligible: true,
+            reasons: vec![],
+            work_cols: None,
+            reduction: None,
+            deferred_normalize: Some(DeferredNormalization {
+                denominator: "l".into(),
+                acc_buf: "o1".into(),
+                out_buf: "a_out".into(),
+                normalize_var: "d".into(),
+                normalize_end: Expr::Identifier("D".into()),
+                reduce_end: Expr::Identifier("NKV".into()),
+            }),
+        };
+        let d = KernelPlan::from_shape("fattn", &shape, &consts).dump();
+        assert!(d.contains("node fattn"), "{d}");
+        assert!(
+            d.contains("op reduce softmax span=4096 tree=linear"),
+            "deferred span is the accumulator loop end: {d}"
+        );
         assert!(d.contains("op store a_out:global:4"), "{d}");
     }
 
