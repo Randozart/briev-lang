@@ -17,6 +17,7 @@
 //! are inspectable, golden-testable, and usable by the A/B harnesses.
 
 use crate::analysis::gpu_strategy::GpuHardware;
+use crate::ast::Expr;
 use serde::{Deserialize, Serialize};
 
 /// Which memory an operand lives in.
@@ -165,6 +166,80 @@ pub struct KernelPlan {
 }
 
 impl KernelPlan {
+    /// Derive the plan for an eligible kernel shape (Phase 1).
+    ///
+    /// This first increment covers the reduction nodes whose span is
+    /// analysis-derivable (`ReductionInfo`, both `Dot` and `Softmax`). The
+    /// deferred-region span (`softmax_fused!`) is currently detected in the
+    /// backend emitter; relocating that fact into analysis (and the GEMM
+    /// `Tile`/`Mma` enrichment) is the next Phase-1 increment — see
+    /// `docs/plans/2026-09-30-kernel-plan-and-per-target-lowering.md`.
+    pub fn from_shape(
+        name: &str,
+        shape: &crate::analysis::accel::KernelShape,
+        consts: &std::collections::HashMap<String, Expr>,
+    ) -> KernelPlan {
+        use crate::analysis::accel::ReductionKind;
+        let resolve = |e: &Expr| -> Option<u64> {
+            match e {
+                Expr::Decimal(v) if *v >= 0 => Some(*v as u64),
+                Expr::Identifier(n) => match consts.get(n) {
+                    Some(Expr::Decimal(v)) if *v >= 0 => Some(*v as u64),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let has_deferred = shape.deferred_normalize.is_some();
+        let has_reduce = shape.reduction.is_some();
+        let proofs = PlanProofs {
+            disjoint_workitems: shape.eligible,
+            associative_reduce: has_reduce || has_deferred,
+            single_writer: shape.write_buffers.len() <= 1,
+        };
+        let work = if has_reduce || has_deferred {
+            WorkItem::PerItem
+        } else {
+            WorkItem::Strided
+        };
+        let mut ops = Vec::new();
+        if let Some(red) = &shape.reduction {
+            let op = match red.kind {
+                ReductionKind::Dot => ReduceOp::Add,
+                ReductionKind::Softmax => ReduceOp::SoftmaxNormalize,
+            };
+            ops.push(PlanOp::Reduce {
+                op,
+                span: resolve(&red.inner).unwrap_or(0),
+                tree: ReduceTree::Linear,
+                frag: None,
+            });
+            ops.push(PlanOp::Barrier {
+                scope: Scope::Workgroup,
+            });
+        }
+        if let Some(buf) = shape.write_buffers.first() {
+            ops.push(PlanOp::Store {
+                dst: MemRef {
+                    buf: buf.clone(),
+                    space: MemSpace::Global,
+                    elem_bytes: 4,
+                },
+            });
+        }
+        KernelPlan {
+            node: name.to_string(),
+            work,
+            ops,
+            shape: PlanShape {
+                tile_m: 1,
+                tile_n: 1,
+                stages: 1,
+            },
+            proofs,
+        }
+    }
+
     /// A stable, line-oriented textual dump for golden tests and A/B
     /// harnesses. Format is part of the test contract — extend, don't
     /// reorder.
@@ -426,5 +501,43 @@ mod tests {
         assert!(ptx.mma.iter().all(|f| !f.cooperative));
         let json = serde_json::to_string(&ptx).expect("serialize");
         assert!(json.contains("\"Ptx\""), "{json}");
+    }
+
+    #[test]
+    fn from_shape_builds_reduction_plan() {
+        use crate::analysis::accel::{KernelShape, ReductionInfo, ReductionKind};
+        let mut consts = std::collections::HashMap::new();
+        consts.insert("K".to_string(), Expr::Decimal(4096));
+        let shape = KernelShape {
+            index_var: "i".into(),
+            count_expr: Some(Expr::Decimal(64)),
+            kernel_stmts: vec![],
+            host_stmts: vec![],
+            read_buffers: vec!["a".into()],
+            write_buffers: vec!["y".into()],
+            scalar_ins: vec![],
+            eligible: true,
+            reasons: vec![],
+            work_cols: None,
+            reduction: Some(ReductionInfo {
+                inner: Expr::Identifier("K".into()),
+                kind: ReductionKind::Dot,
+                row_buf: "a".into(),
+                col_buf: "x".into(),
+                out_buf: "y".into(),
+            }),
+            deferred_normalize: None,
+        };
+        let p = KernelPlan::from_shape("dot", &shape, &consts);
+        let d = p.dump();
+        assert!(d.contains("node dot"), "{d}");
+        assert!(d.contains("work per_item"), "{d}");
+        assert!(
+            d.contains("proofs disjoint=true associative=true single_writer=true"),
+            "{d}"
+        );
+        assert!(d.contains("op reduce add span=4096 tree=linear"), "{d}");
+        assert!(d.contains("op barrier scope=wg"), "{d}");
+        assert!(d.contains("op store y:global:4"), "{d}");
     }
 }
