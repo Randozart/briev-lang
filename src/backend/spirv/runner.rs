@@ -121,6 +121,26 @@ pub struct RunnerKernel {
     /// `(work_item, slice)`), then its `<name>__combine` companion with
     /// `count` — two ordered launches of one logical node.
     pub split: u32,
+    /// 2026-09-30 (per-lane projections, plan
+    /// 2026-09-30-kernel-plan-and-per-target-lowering.md Phase 2): the node
+    /// this kernel dispatches for. Equals `name` for a primary kernel; a
+    /// companion (e.g. a split combine) carries the primary node's name so
+    /// the runner groups it. Enables per-lane kernel *sets* (item (B)) —
+    /// different kernel counts on CUDA vs Vulkan for one node.
+    pub owner: String,
+    /// Which lane(s) may launch this kernel.
+    pub domain: KernelDomain,
+}
+
+/// 2026-09-30 (Phase 2): the lane(s) a kernel belongs to. `Shared` is the
+/// ship case (a dual-image desc selected per driver); `CudaOnly` /
+/// `VulkanOnly` are per-lane projections (a companion or a lane-specific
+/// variant).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelDomain {
+    Shared,
+    CudaOnly,
+    VulkanOnly,
 }
 
 /// The SSBO layout EXACTLY as the kernel sees it (name-sorted, real element
@@ -981,8 +1001,8 @@ pub fn build_kernels(
             touched_fields: touched,
             // 2026-09-17 (M2.0): the SPIR-V producer carries no CUDA image;
             // compile.rs merges build_ptx_kernels blobs in by node name.
-            ptx: Vec::new(),
-            block_per_workitem: false, split: 1,
+            ptx: Vec::new(), block_per_workitem: false, split: 1,
+            owner: name.clone(), domain: KernelDomain::Shared,
         });
     }
     Ok(out)
@@ -1118,6 +1138,47 @@ fn emit_kernel_node(
     emit_scalar_read(&k.count_expr, ctx.fields, ctx.consts, &mut count_c)
         .expect("kernel count lowers");
     let ci = c_ident(name);
+    // 2026-09-30 (Phase 2, per-lane projections): a node may map to more
+    // than one kernel (companions like a split combine) or to lane-specific
+    // kernels. Group by `owner`, split by `domain`, and emit a
+    // lane-conditional launch sequence. The single-Shared case — every ship
+    // kernel — takes the pre-fix path below, byte-identical.
+    let node_ks: Vec<(usize, &RunnerKernel)> = ctx
+        .kernels
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| x.owner == *name)
+        .collect();
+    let multi = node_ks.len() > 1
+        || node_ks
+            .iter()
+            .any(|(_, x)| x.domain != KernelDomain::Shared);
+    if multi {
+        out.push_str(&format!("    // kernel node '{}'\n", name));
+        out.push_str(&format!("    if ({}) {{\n", pre));
+        out.push_str(&format!(
+            "      fired = 1;\n      long long n_{} = {};\n",
+            ci, count_c
+        ));
+        out.push_str("      if (briev_accel_cuda_lane()) {\n");
+        for (i, x) in node_ks
+            .iter()
+            .filter(|(_, x)| x.domain != KernelDomain::VulkanOnly)
+        {
+            out.push_str(&dispatch_geometry_stmt(x, *i, &ci));
+        }
+        out.push_str("      } else {\n");
+        for (i, x) in node_ks
+            .iter()
+            .filter(|(_, x)| x.domain != KernelDomain::CudaOnly)
+        {
+            out.push_str(&dispatch_geometry_stmt(x, *i, &ci));
+        }
+        out.push_str("      }\n");
+        out.push_str(&format!("      S_{} = n_{};\n", c_ident(&k.index_var), ci));
+        out.push_str("    }\n");
+        return;
+    }
     out.push_str(&format!("    // kernel node '{}'\n", name));
     out.push_str(&format!("    if ({}) {{\n", pre));
     out.push_str(&format!(
@@ -1466,6 +1527,8 @@ mod dispatch_tests {
             ptx: Vec::new(),
             block_per_workitem: false,
             split: 1,
+            owner: "k".into(),
+            domain: KernelDomain::Shared,
         };
         overrides(&mut k);
         k

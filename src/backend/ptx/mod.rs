@@ -1337,6 +1337,8 @@ fn build_fused_attention_kernel(
         ptx: Vec::new(),
         block_per_workitem: false,
         split: 1,
+        owner: cf.producer.clone(),
+        domain: crate::backend::spirv::runner::KernelDomain::Shared,
     }))
 }
 
@@ -1608,7 +1610,7 @@ fn emit_cooperative_reduction_ptx(
         ptx.into_bytes()
     };
     Ok(Some(RunnerKernel {
-        name,
+        name: name.clone(),
         spirv: blob,
         image_plans: Vec::new(),
         index_var: shape.index_var.clone(),
@@ -1627,6 +1629,8 @@ fn emit_cooperative_reduction_ptx(
         ptx: Vec::new(),
         block_per_workitem: false,
         split: 1,
+        owner: name,
+        domain: crate::backend::spirv::runner::KernelDomain::Shared,
     }))
 }
 
@@ -1805,6 +1809,8 @@ fn push_deferred_combine(
         ptx: Vec::new(),
         block_per_workitem: true,
         split: 1,
+        owner: cp.name.to_string(),
+        domain: crate::backend::spirv::runner::KernelDomain::CudaOnly,
     });
     Ok(())
 }
@@ -1997,6 +2003,8 @@ pub fn build_ptx_kernels(
                     &e.shape.kernel_stmts, &consts,
                 ),
                 split: def_split,
+                owner: name.clone(),
+                domain: crate::backend::spirv::runner::KernelDomain::Shared,
             });
             // 2026-09-30 (general reduction-split): the combine companion.
             if def_split > 1 {
@@ -2254,6 +2262,8 @@ pub fn build_ptx_kernels(
             ptx: Vec::new(),
             block_per_workitem: false,
         split: 1,
+        owner: name.clone(),
+        domain: crate::backend::spirv::runner::KernelDomain::Shared,
         });
     }
     Ok(out)
