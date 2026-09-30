@@ -36,6 +36,17 @@ detectors (`has_lane_reduction`, `has_warp_slice`, `detect_deferred_region`
 in `general.rs`). Trigger = **underfill only**: `work_items < sm_count ×
 ctas_per_sm` AND the inner span is chunkable.
 
+**Integration refinement (found 2026-09-30).** For the deferred region the
+`j` span is backend-detected (`DeferredRegionParts.la_end` = KV), not
+present on `KernelShape`. So the split factor is computed **at the deferred
+emission site** (`general.rs::emit_deferred_region`, where `kv` and
+`self.count` are both in scope) via
+`gpu_strategy::reduction_split_factor(count, kv)` — the same pattern the
+backend already uses for the GEMM tile (`gpu_strategy::select` at
+`mod.rs:2006`), so the "backend consumes a model decision" pillar holds.
+No `KernelShape` field is needed for the deferred case; a `KernelShape`
+field may still be added for the cooperative Dot/Softmax path.
+
 ## Cost model
 
 Extend `src/analysis/gpu_strategy.rs` (the existing underfill physics):
