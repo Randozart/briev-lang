@@ -89,6 +89,17 @@ bandwidth-doomed; the E-series E1f regime does not apply here.
 Each behind a knob, measured before/after, canaries (64³–256³) gated,
 recorded in the same results file.
 
+**Phase 2' results (2026-09-30):** column-major rasterization REJECTED
+(2.4× worse). **Forced CTA tile is a WIN:** (2,8)@512T = tile 128×256
+gives **+16% @4096³, +24% @8192³** (deep-K, operands > L2), all-ones
+PASS; thin-K `4096×4096×512` regresses (not DRAM-bound) → gate by shape.
+The model (`estimate_time`) under-rates this: it divides `memory_s` by
+`stages` and applies the occupancy penalty unconditionally, so it picks
+(2,4). **Phase 3 fix (own step, model calibration + tests):** model the
+DRAM-bandwidth floor `max(compute, bytes/BW)` and apply the occupancy
+penalty only when compute-bound, so the wider tile is chosen
+automatically for DRAM-bound shapes (Golden Rule 2 — no keyword needed).
+
 
 **Phase 3 — model gating (winners only).**
 - Load-path axis in `gpu_strategy` + per-device calibration parameter;

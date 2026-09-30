@@ -2009,13 +2009,21 @@ pub fn build_ptx_kernels(
                 plan.k as u64,
                 &crate::analysis::gpu_strategy::GpuHardware::SM86,
             );
-            let (mw, nw, eff_stages) = match strategy
-                .and_then(|s| strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, thread_cap))
-            {
-                Some((mw, nw, st)) => (mw, nw, resolve_eff_stages(stages_cfg, st, stages)),
-                None => {
-                    let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
-                    (mw, nw, stages)
+            let (mw, nw, eff_stages) = {
+                let fmw = crate::config_tuning::ir_lowering().ptx_tensor_force_mw as usize;
+                let fnw = crate::config_tuning::ir_lowering().ptx_tensor_force_nw as usize;
+                if fmw > 0 && fnw > 0 {
+                    (fmw, fnw, stages)
+                } else {
+                    match strategy
+                        .and_then(|s| strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, thread_cap))
+                    {
+                        Some((mw, nw, st)) => (mw, nw, resolve_eff_stages(stages_cfg, st, stages)),
+                        None => {
+                            let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
+                            (mw, nw, stages)
+                        }
+                    }
                 }
             };
             let mw_ok = plan.m % ((16 * warp_mh * mw) as i64) == 0

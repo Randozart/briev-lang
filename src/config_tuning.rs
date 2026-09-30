@@ -213,6 +213,14 @@ pub struct IrLoweringSettings {
     /// stays L2-resident. 0 = row-major (ship: `ctaid = m_cta·n_tiles +
     /// n_cta`, concurrent CTAs share A) ; 1 = column-major (share B).
     pub ptx_gemm_grid_order: u32,
+    /// 2026-09-30 (stage-5 5b Phase 2''): force the tensor-GEMM CTA tile
+    /// `(mw × nw)` warps, bypassing the shape-strategy model. 0 = auto
+    /// (ship). Diagnostic for re-measuring the tile/occupancy trade under
+    /// the DRAM-bound reframe (the E-series rejected big tiles under a
+    /// compute-bound assumption). Both must be nonzero to take effect; the
+    /// M/N divisibility guard still applies.
+    pub ptx_tensor_force_mw: u32,
+    pub ptx_tensor_force_nw: u32,
     /// 2026-09-13 (E8a, plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec):
     /// warp specialization — the CTA grows to 10 warps (8 consumers keep the
     /// exact ship compute + y pass; 2 producer warps run the cp.async fill
@@ -373,6 +381,8 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_stages: 0,
     ptx_tensor_nofill: 0,
     ptx_gemm_grid_order: 0,
+    ptx_tensor_force_mw: 0,
+    ptx_tensor_force_nw: 0,
     ptx_tensor_warp_spec: false,
     ptx_fused_attention: false,
     ptx_serial_unroll: 4,
@@ -632,6 +642,14 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_gemm_grid_order", 0)
             .map(|v| v.max(0).min(1) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_gemm_grid_order),
+        ptx_tensor_force_mw: db
+            .field_int("ptx_tensor_force_mw", 0)
+            .map(|v| v.max(0).min(16) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_force_mw),
+        ptx_tensor_force_nw: db
+            .field_int("ptx_tensor_force_nw", 0)
+            .map(|v| v.max(0).min(16) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_force_nw),
         ptx_tensor_warp_spec: db
             .field_int("ptx_tensor_warp_spec", 0)
             .map(|v| v != 0)

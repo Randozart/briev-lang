@@ -120,3 +120,38 @@ window) while 4096³/8192³ are stable — likely the unclocked DVFS caveat
 plus possible shared-GPU contention. Any future A/B must interleave
 reference/candidate and discard the first run.
 
+## Phase 2'' — forced CTA tile — WIN for deep-K large shapes
+
+`ptx_tensor_force_mw`/`ptx_tensor_force_nw` (0 = auto) bypass the strategy
+model. 4096³, all-ones PASS, steady:
+
+| tile (mw,nw) | threads | smem | TF |
+|---|---|---|---|
+| auto (2,4) 128×128 | 256 | 24576 | 26.8 |
+| (4,4) 256×128 | 512 | 36864 | 30.7 |
+| **(2,8) 128×256** | 512 | 36864 | **31.5** |
+| (4,2) 256×64 | 256 | 30720 | 23.2 |
+| (8,2) 512×64 | 512 | 55296 | 21.4 |
+| (2,2) 64×64 | 128 | 18432 | 19.0 |
+
+Interleaved auto vs (2,8) (reliable): 4096³ **26.6–27.0 vs 30.7–31.4
+(+16%)**; 8192³ 25.7 vs 31.8 (**+24%**); 4096×4096×1024 +12%. The wider
+tile cuts A re-reads (n_tiles 32→16). This **validates the memory-bound
+reframe**: the E-series rejected these tiles under a compute-bound
+assumption; under DRAM-boundedness they win.
+
+**Gate (case-specific):** thin-K `4096×4096×512` (K=512, near-L2, not
+DRAM-bound) regresses hard — (2,8)/(4,4) 15–20 TF vs auto 25.7. So the
+wider tile is for **deep-K shapes whose operands exceed L2**; keep the
+auto tile for thin-K / L2-resident shapes. 2048³ is inconclusive (the
+sustained runs throttled — see the hazard note).
+
+**Model gap (Phase 3).** `estimate_time` divides `memory_s` by `stages`
+(treating memory as latency that the pipeline hides) and applies the
+4-CTA/SM occupancy penalty unconditionally — so it under-rates the wider
+tile's traffic saving and over-rates its occupancy cost, picking (2,4).
+The fix must model the DRAM-bandwidth *floor* (`max(compute, bytes/BW)`)
+and apply the occupancy penalty only when compute-bound. That is a
+calibration change requiring the model tests — do it as its own step.
+
+
