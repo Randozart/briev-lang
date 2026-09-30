@@ -199,14 +199,13 @@ pub struct IrLoweringSettings {
     /// override (only 2 and 3 are valid — see the generator assert).
     pub ptx_tensor_stages: u32,
     /// 2026-09-30 (stage-5 5b, plan 2026-09-30-stage5b-cuda-gemm-s5): fill
-    /// diagnostic instrument. When set, the mw kernel's K-loop cooperative
-    /// fills (A and B cp.async strips) are NOT emitted — the prologue fills
-    /// stage 0 once and the pipeline then re-reads it. This removes the
-    /// global→smem traffic and the smem WRITE half of the round-trip while
-    /// KEEPING ldmatrix (smem read) + mma + barriers, so its timing isolates
-    /// the "smem-fed mma ceiling" (E7b semantics) from the full kernel.
-    /// Timing-only: output is garbage. Default 0 (off, byte-identical).
-    pub ptx_tensor_nofill: bool,
+    /// diagnostic instrument. Skips selected K-loop cooperative fills of the
+    /// mw kernel (the prologue still fills stage 0 once), keeping ldmatrix +
+    /// mma + barriers — timing-only (output garbage). Isolates the smem-fed
+    /// mma ceiling (E7b semantics) and separates the A vs B fill cost.
+    /// 0 = off (byte-identical); 1 = skip A+B fills; 2 = skip A only;
+    /// 3 = skip B only.
+    pub ptx_tensor_nofill: u32,
     /// 2026-09-13 (E8a, plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec):
     /// warp specialization — the CTA grows to 10 warps (8 consumers keep the
     /// exact ship compute + y pass; 2 producer warps run the cp.async fill
@@ -365,7 +364,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_bsmem_pad: 0,
     ptx_tensor_ksteps_per_stage: 1,
     ptx_tensor_stages: 0,
-    ptx_tensor_nofill: false,
+    ptx_tensor_nofill: 0,
     ptx_tensor_warp_spec: false,
     ptx_fused_attention: false,
     ptx_serial_unroll: 4,
@@ -619,7 +618,7 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_stages),
         ptx_tensor_nofill: db
             .field_int("ptx_tensor_nofill", 0)
-            .map(|v| v != 0)
+            .map(|v| v.max(0).min(3) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_nofill),
         ptx_tensor_warp_spec: db
             .field_int("ptx_tensor_warp_spec", 0)

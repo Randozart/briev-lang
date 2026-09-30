@@ -94,7 +94,16 @@ through the same E2E rig, 4096³, 30 iters:
 | variant | TF (×3) |
 |---|---|
 | ship (fills on) | 27.1 |
-| **no-fill** | **42.3, 45.4, 45.4** |
+| **no-fill (A+B)** | **42.3, 45.4, 45.4** |
+| **no-A only** | **38.4, 38.6** |
+| **no-B only** | **38.5, 39.3** |
+
+**Removing EITHER operand's fill alone recovers ~11.5 TF** (27.1 →
+38.5), and both recover ~18 TF (→45). The cost is therefore not the
+volume of one operand's traffic but the **per-kstep fill burst + wait +
+`bar.sync` serialization**: halving the burst unblocks the same amount as
+removing it entirely. (E-series on 580 concluded "A fill is the wall";
+on 615 it is symmetric.)
 
 **The fill path costs 18.3 TF (27.1 → 45.4).** And the compute/ldmatrix
 side is intact on 615: no-fill 45.4 ≈ the 580-era 46.2. So the driver
@@ -116,8 +125,15 @@ Note the fill cost is NOT DRAM bandwidth: 4096³ is compute-bound
 smem-write + barrier cadence mechanism.
 
 **Verdict: the structural direction is the correct one** — reduce or
-bypass the smem round-trip. Candidate approaches (design next):
-A-resident register staging (E-series E1f measured 42.5 on 580),
-producer/consumer warp specialization (E8a, parked), or
-`gpu_schedule` DAG fusion that amortizes the round-trip across a
-multi-GEMM graph. The config/pipeline lever is exhausted.
+bypass the smem round-trip. The A/B isolation sharpens the target:
+- **Register-staging ONE operand** (A or B) removes that operand's smem
+  round-trip → projects to ~38.5 TF (E-series E1f measured 42.5 on 580
+  with A-resident).
+- **De-bursting the per-kstep fills** (stagger A and B issue, or split
+  the wait/bar) projects to a similar gain with a smaller emitter change
+  — the burst+barrier is the serialization, not either operand.
+- `gpu_schedule` DAG fusion amortizes the round-trip across a graph
+  (architectural, separate scope).
+
+The config/pipeline lever is exhausted. Design + Rule-20 pre-B one of the
+above before implementing.

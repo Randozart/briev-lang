@@ -58,24 +58,25 @@ Full measurements + attribution in
 
 ## Phase 3 — structural verdict (2026-09-30)
 
-`ptx_tensor_nofill` (diagnostic, default off) skips the K-loop A/B
-`cp.async` fills, keeping ldmatrix + mma + barriers. E2E 4096³:
-**ship 27.1 → no-fill 42.3–45.4 TF** (fill path = 18.3 TF). The compute
-side is intact on 615 (45.4 ≈ 580's 46.2); the whole degradation is the
-fill/smem-round-trip. Existing fill knobs cannot recover it
-(`kps=2` 27.1, `stages=2` 27.0, `b_lookahead` 5.7, kps2+s2 27.0). The
-cost is mechanism (cp.async issue + smem write + barrier cadence), not
-DRAM bandwidth (4096³ is compute-bound).
+`ptx_tensor_nofill` (diagnostic, default off; mode 1=A+B, 2=A, 3=B)
+skips the K-loop cooperative fills, keeping ldmatrix + mma + barriers.
+E2E 4096³: **ship 27.1 → no-fill(A+B) 42.3–45.4; no-A 38.5; no-B 38.9
+TF**. Removing EITHER operand's fill alone recovers ~11.5 TF — the cost
+is the per-kstep fill burst + wait + `bar.sync` serialization, not one
+operand's volume. The compute side is intact on 615 (45.4 ≈ 580's 46.2);
+the whole degradation is the fill path. Existing fill knobs cannot
+recover it (`kps=2` 27.1, `stages=2` 27.0, `b_lookahead` 5.7, kps2+s2
+27.0). Not DRAM bandwidth (4096³ is compute-bound).
 
-**Direction confirmed: reduce/bypass the smem round-trip.** Candidate
-structural designs (pick + Rule-20 pre-B each):
-1. **A-resident register staging** (E-series E1f measured 42.5 on 580;
-   removes A's smem round-trip, keeps B staged).
-2. **Producer/consumer warp specialization** (E8a; 2 producer warps run
-   the fill pipeline, 8 consumer warps compute; prototype was incorrect
-   and parked — high risk, high ceiling).
+**Direction confirmed: reduce/bypass the smem round-trip.** Designs
+(pick + Rule-20 pre-B):
+1. **Register-stage ONE operand** (A or B) — removes its smem round-trip;
+   projects ~38.5 TF (E-series E1f: A-resident, 42.5 on 580).
+2. **De-burst the per-kstep fills** — stagger A/B issue or split the
+   wait/bar; similar projected gain, smaller emitter change (the burst
+   is the serialization, not either operand).
 3. **`gpu_schedule` DAG fusion** — amortize the round-trip across a
-   multi-GEMM graph (architectural; the doctrine's chosen path).
+   multi-GEMM graph (architectural, separate scope).
 
 ## Baseline (Rule 12 — measured BEFORE any change)
 
