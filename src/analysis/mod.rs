@@ -31,6 +31,7 @@ pub mod roofline;
 pub mod struct_generator;
 pub mod gpu_cost;
 pub mod gpu_strategy;
+pub mod kernel_plan;
 pub mod accel;
 pub mod coalescing;
 pub mod region;

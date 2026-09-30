@@ -14,7 +14,7 @@
 /// (f16 tensor), DRAM bandwidth, L2 size, shared memory per SM, static smem
 /// cap per CTA, register file per SM, SM count. These belong in config
 /// (measured per device, not guessed — gpu-offloading.md:134).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GpuHardware {
     /// Peak tensor TFLOPS (f16-accumulate).
     pub peak_tflops: f64,
