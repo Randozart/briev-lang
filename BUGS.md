@@ -33,6 +33,65 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## LLVM IR emission nondeterminism (three §4 violations) — FIXED 2026-09-30
+
+**Symptom:** compiling the SAME source twice with the SAME compiler
+produced different `.ll` bytes — observed as 2/57 changed files in the
+stage-5 5c pre-B IR A/B
+(`docs/plans/2026-09-30-stage5-re-rank-and-5c.md`). Verified
+pre-existing: repeated runs of the pre-fix compiler produced 2–4
+distinct hashes per affected file. House rule §4 (HashMap/HashSet
+iteration producing LLVM IR must be sorted) was violated in three
+places:
+
+1. **Async-body call order in main** — `src/backend/llvm/strategy.rs`
+   collected `async_txn_names` with `HashSet::iter().collect()`;
+   `emit_async_phase` (`src/backend/llvm/helpers.rs:550`) emits one
+   `call void @async_body_*` per name in that random order (the Family
+   H comment's "deterministic order" claim was false).
+2. **Synthetic exit AND order** — `program_convergence`
+   (`src/analysis/loop_shape.rs`) iterated the `collect_txns` HashMap,
+   so `counter_ge_bounds` order was random and the `.reduce(And)` in
+   `src/backend/llvm/mod.rs` built the exit condition in random order —
+   swapped `gep_exit*` field reads run-to-run
+   (`async_counters_idio`: fields are `i64`-uniform, and the AND is
+   commutative, so this one was byte-unstable but not miscompiled).
+3. **`sa*` prealloc slot types** — `emit_ssa_mt_prealloc`
+   (`src/backend/llvm/loop_engine/ssa.rs`) iterated the
+   `field_index_map` HashMap, shuffling which slot name received which
+   field TYPE run-to-run (`deep_recursion`; slots were dead in that
+   shape — `%saN` referenced only by their own `alloca` — but sorted
+   order also guarantees slot↔type matches `%State` layout for any
+   shape that does consume them).
+
+**Fixes:** sort at the collection point in each of the three files
+(async names by name; `counter_ge_bounds` by counter name; prealloc
+by field index — layout order). Async-body order across disjoint-write
+nodes and the exit AND are contract-commutative, so sorting selects a
+canonical schedule with no semantic change. Regression tests:
+`test_async_body_call_order_is_sorted` and
+`test_multi_txn_emission_is_byte_stable_across_instances`
+(`src/backend/llvm/tests.rs`) — the latter generates the same
+two-counter program with two fresh backends and demands byte-identical
+`.ll`.
+
+**How to undo:** remove the three sorts + two tests — the run-to-run
+`.ll` drift returns (compile `benchmarks/deep_recursion.bv` twice with
+one binary and diff).
+
+**Related (same day): the `async_counters_idio` harness MISMATCH
+(10 lines vs 1, recorded since 2026-07-19) was NOT a codegen bug.**
+The C companion (`benchmarks/async_counters_idio_c.c`) modeled a
+converged state (`g_a = N`, dead stores → zero output) while the Briev
+source has observable `println!` effects (every 10M) that may never be
+folded away. The backend correctly emits 10 lines (counted-match drain
+of each async node, nodes in sorted order). Companion rewritten as a
+semantic mirror of the source; harness → MATCH.
+
+**Status:** FIXED 2026-09-30 (found by the 5c IR A/B gate).
+
+## GEMM 4096³: SPIR-V/Vulkan correct, CUDA/cubin IMA — FIXED 2026-09-30 (cubin tier)
+
 ## GEMM 4096³: SPIR-V/Vulkan correct, CUDA/cubin IMA — FIXED 2026-09-30 (cubin tier)
 
 **Context:** GEMM 4096³ correctness+timing session (plan

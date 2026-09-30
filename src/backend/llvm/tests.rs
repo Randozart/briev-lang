@@ -3144,6 +3144,87 @@ fn test_natural_death_skipped_for_persistent_txn() {
         "Persistent program without #!exit — natural death creates exit condition");
 }
 
+// ── 2026-09-30 (BUGS.md): emission determinism across instances ──────────
+// The synthetic exit AND chain (loop_shape::program_convergence) and the
+// sa-slot prealloc (emit_ssa_mt_prealloc) both iterated HashMaps, so two
+// fresh backends emitted different .ll bytes for the same program. House
+// rule §4: HashMap iteration producing LLVM IR must be sorted. Behavioral
+// invariant: byte-identical emission across backend instances.
+fn make_two_counter_program() -> Vec<TopLevel> {
+    let counter_txn = |name: &str, var: &str| {
+        TopLevel::Transaction(Transaction {
+            name: name.to_string(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier(var.to_string())),
+                    Box::new(Expr::Identifier("N".to_string())),
+                ),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: true,
+                span: None,
+                post_authority: false,
+            },
+            body: vec![Statement::Assign(
+                Expr::Identifier(var.to_string()),
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier(var.to_string())),
+                    Box::new(Expr::Decimal(1)),
+                ),
+            )],
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            doc: None,
+            span: None,
+        })
+    };
+    vec![
+        TopLevel::StateDecl(StateDecl {
+            name: "a".to_string(),
+            ty: Type::int(),
+            span: None,
+        }),
+        TopLevel::StateDecl(StateDecl {
+            name: "b".to_string(),
+            ty: Type::int(),
+            span: None,
+        }),
+        TopLevel::Constant(Constant {
+            name: "N".to_string(),
+            ty: Type::int(),
+            expr: Expr::Decimal(4),
+            section: None,
+        }),
+        counter_txn("run_a", "a"),
+        counter_txn("run_b", "b"),
+    ]
+}
+
+#[test]
+fn test_multi_txn_emission_is_byte_stable_across_instances() {
+    let program = make_two_counter_program();
+    let mut b1 = LlvmBackend::new();
+    let out1 = b1.generate(&program, None);
+    let mut b2 = LlvmBackend::new();
+    let out2 = b2.generate(&program, None);
+    assert!(b1.ctx.has_natural_exit,
+        "Two bounded reactive counters must derive a synthetic exit");
+    assert!(out1.contains(".exit_check:"),
+        "The combined exit check is emitted in main:\n{out1}");
+    assert_eq!(out1, out2,
+        "Two fresh backends must emit byte-identical .ll for the same program \
+         (HashMap-ordered exit AND chain / sa-slot allocas would differ)");
+}
+
 // ── 2026-08-26 (bug sweep B4): undispatched plain-txn warning ────────────
 // The warning hoisted ahead of dispatch-mode selection must fire for EVERY
 // program mode and stay silent for library/shared-lib export shims.
@@ -4011,6 +4092,29 @@ fn test_async_bodies_called_in_main() {
         "The barriers are deleted");
     assert!(!output.contains("@__barrier_wait__"),
         "The barriers are deleted");
+}
+
+// 2026-09-30 (async call order nondeterminism): the async-body calls in
+// main must appear in SORTED name order — the source used to collect a
+// HashSet directly, so SipHash's per-process seed randomized the order
+// and the same compiler emitted different .ll bytes run-to-run (house
+// rule §4: HashMap/HashSet iteration producing LLVM IR must be sorted).
+// Behavioral test: alphabetical order, asserted on the emitted IR.
+#[test]
+fn test_async_body_call_order_is_sorted() {
+    let program = make_async_pair_program();
+    let output = LlvmBackend::new().generate(&program, None);
+    let pos_a = output
+        .find("call void @async_body_inc_a(")
+        .expect("inc_a call emitted");
+    let pos_b = output
+        .find("call void @async_body_inc_b(")
+        .expect("inc_b call emitted");
+    assert!(
+        pos_a < pos_b,
+        "async body calls must be sorted by name (inc_a before inc_b): \
+         inc_a at {pos_a}, inc_b at {pos_b}"
+    );
 }
 
 #[test]

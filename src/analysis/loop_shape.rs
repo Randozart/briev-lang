@@ -189,6 +189,16 @@ pub fn program_convergence(
             counter_ge_bounds.push((bp.var.clone(), bound_expr));
         }
     }
+    // 2026-09-30 (BUGS.md: async exit-condition order nondeterminism):
+    // `txns` comes from `collect_txns` (a HashMap), so this loop pushed
+    // (counter, bound) pairs in hash order and the `.reduce(And)` in
+    // `emit_toplevel` built the synthetic exit in that random order —
+    // the same compiler emitted swapped `gep_exit*` field reads
+    // run-to-run (seen in the stage-5 5c IR A/B as
+    // `async_counters_idio` instability). The AND is commutative, but
+    // emission must be byte-stable (house rule §4): sort by counter
+    // name. Undo: remove this sort — the run-to-run .ll drift returns.
+    counter_ge_bounds.sort_by(|a, b| a.0.cmp(&b.0));
     let has_natural_exit = !counter_ge_bounds.is_empty();
     ProgramConvergence {
         counter_ge_bounds,

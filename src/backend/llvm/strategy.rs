@@ -274,7 +274,18 @@ impl LlvmBackend {
         }
 
         self.has_async_txns = !async_txn_names.is_empty();
+        // 2026-09-30 (BUGS.md: async call order nondeterminism): this
+        // used to be a bare `HashSet::iter().collect()` — SipHash's
+        // per-process seed randomized the async-body call order in main,
+        // producing different .ll bytes run-to-run (A/B verification of
+        // `async_counters`/`async_counters_idio` caught it; verified
+        // pre-existing: 4 runs of the SAME pre-fix compiler → 2 distinct
+        // hashes). House rule §4: HashMap/HashSet iteration producing
+        // LLVM IR MUST be sorted. The language treats async bodies as
+        // unordered (the sequential fallback is an arbitrary order), so
+        // sorted names pick one stable order — alphabetical.
         self.async_txn_names = async_txn_names.iter().cloned().collect();
+        self.async_txn_names.sort();
         self.async_thread_pool_size = self.async_txn_names.len() as u32;
 
         if !async_txn_names.is_empty() {

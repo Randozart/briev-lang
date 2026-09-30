@@ -294,7 +294,16 @@ impl LlvmBackend {
         _txns: &[(String, &crate::ast::Transaction)],
     ) {
         // Emit alloca for each state field at function entry
-        for (name, idx) in &self.ctx.field_index_map {
+        // 2026-09-30 (BUGS.md: sa-slot alloca order nondeterminism):
+        // field_index_map is a HashMap — raw iteration shuffled which
+        // slot name (sa9, sa11, ...) received which field TYPE
+        // run-to-run (deep_recursion .ll drift in the stage-5 5c IR
+        // A/B). Sort by field index: the sequence then matches the
+        // %State struct layout exactly (house rule §4). Undo: revert
+        // to iterating the map directly — the .ll drift returns.
+        let mut fields: Vec<(&String, &usize)> = self.ctx.field_index_map.iter().collect();
+        fields.sort_by_key(|(_, idx)| **idx);
+        for (name, idx) in fields {
             let alloca = self.fun.next_reg_with_prefix("sa");
             let ft = &self.ctx.field_types[*idx];
             let llvm_type = match ft.as_str() {
