@@ -53,7 +53,7 @@ static uint16_t f32_to_f16(float v) {
         uint32_t rem = mant & 0x1fffu;
         if (rem > 0x1000u || (rem == 0x1000u && (m & 1u) == 1u)) m += 1;
         uint32_t e = (uint32_t)(unbiased + 15);
-        if (m == 0x800u) { m = 0; e += 1; }
+        if (m == 0x400u) { m = 0; e += 1; }
         if (e >= 31) return (uint16_t)(sign | 0x7c00u);
         return (uint16_t)(sign | (e << 10) | m);
     }

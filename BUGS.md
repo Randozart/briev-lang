@@ -7246,3 +7246,66 @@ then, treat `.sbv` synthesizability as UNENFORCED.
 **Class:** a validator with no caller is documentation, not a gate —
 the failure mode is silent contract erosion, the exact thing the
 validator was written to prevent.
+
+## 2026-09-30 — NVIDIA driver 615.71.09 regressed the workgroup-smem + barrier compute path ~2.5× (RTX 3060, Vulkan) [OPEN — vendor]
+
+**Found:** 2026-09-30, GEMM 4096³ investigation — the documented
+4.55 ms / 30.2 TF could not be reproduced by its own commit.
+**Symptom:** rebuild of era commit `5cbe5299` (the documented 4.55 ms
+commit) in a clean worktree measures gpu_time ≈ 11.46 ms on this
+machine today; current tip measures ≈ 11.59 ms (era-vs-tip ≈ 1% — the
+compiler did NOT regress). Batched timing rules out per-launch fence
+cost; clocks are pinned (1927 MHz SM / 7501 MHz mem / 100% util — no
+thermal throttle); all-ones + f64-exact + coverage gates prove the
+kernel computes correctly.
+**Cause (isolated):** pacman log — driver `580.178.04` → `615.71.09`
+on 2026-09-17 14:53. All 4.55-era records predate the upgrade. Three
+probes on 615 isolate the regression to the smem-fill/barrier shape:
+
+| Probe | Work shape | 580-era record | on 615 |
+|-------|-----------|----------------|--------|
+| `mma_ceiling_bench` (register coopmat + L2 loads, no barriers) | register mma chain | 50.1 ms/launch | 50.3 ms/launch (unchanged) |
+| `gemv_bench` coop 4096 (workgroup/subgroup) | bandwidth + subgroup add | 0.199 ms | 0.193 ms (unchanged) |
+| `gemm_h` tensor 4096³ (DRAM→smem fill + workgroup barriers + coopmat from smem) | the regressed shape | 4.55 ms | 11.46 ms (2.5×) |
+
+Hardware is healthy (ceiling + GEMV sit at their 580-era numbers);
+software is healthy (era kernel == tip kernel). The regression is in
+the vendor driver's scheduling of workgroup shared-memory + barrier
+pipelines on the Vulkan path.
+**Impact:** every portable-lane (SPIR-V/Vulkan) kernel whose hot loop
+is a smem-tiled fill with workgroup barriers is ~2.5× slower than the
+same code on 580.178.04 — GEMM 4096³ shows 11.9–12.2 TF instead of
+30.2. Timing rows recorded after 2026-09-17 in this repo are 615-era
+numbers and are NOT comparable to 580-era rows without re-measuring.
+**Fix:** vendor issue (no repro yet — the ceiling + GEMV + gemm_h
+triple above IS the minimal repro set: same binary shape class, one
+regressed). Mitigations in-repo: (a) prefer the PTX/CUDA tier for
+smem-tiled GEMM on NVIDIA while open; (b) record driver version in
+every benchmark results header (starting with this entry); (c) never
+read pre-09-17 and post-09-17 GPU numbers as a regression pair.
+**Class:** environment regression wearing a compiler-regression
+disguise — the control that exposed it was rebuilding the era's own
+commit (AGENTS Performance Recovery Protocol step 1-2).
+
+## 2026-09-30 — `f32_to_f16` reference helper had a wrong carry check — corrupted GEMM verify references [FIXED]
+
+**Found:** 2026-09-30, while building the f64-exact reference gate for
+gemm_h 4096³.
+**Symptom:** verify maxrel 0.56 at inputs that are exact halfway cases
+(e.g. 8191.5 → returned 4096.0 instead of 8192.0).
+**Cause:** the rounding carry check in `f32_to_f16` compared the
+10-bit mantissa `m = mant >> 13` against `0x800u` (an 11-bit value
+that never matches); it must be `0x400u` (the implicit bit). Inputs
+landing exactly on a halfway boundary either failed to carry into the
+exponent or were mis-rounded — silently corrupting the CPU reference,
+not the kernel under test.
+**Impact:** reference-only. Any bench round using this helper to build
+expected values could fail-or-pass incorrectly at halfway inputs; it
+never touched timing loops or device code. Present since `c122ead2`
+(2026-09-02) / `38f07e2c` (2026-09-04).
+**Fix:** `m == 0x800u` → `m == 0x400u` in
+`benchmarks/gpu/gemm_h_bench.c` and `benchmarks/gpu/mma_ceiling_bench.c`
+(2026-09-30). The custom harness used for the gate carries the same
+fix; with it, the f64-exact reference passes at maxrel 0.045.
+**Class:** a reference bug masquerading as a kernel bug — always
+isolate which side of the gate moved before believing a failure.
