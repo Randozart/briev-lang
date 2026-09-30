@@ -100,6 +100,18 @@ DRAM-bandwidth floor `max(compute, bytes/BW)` and apply the occupancy
 penalty only when compute-bound, so the wider tile is chosen
 automatically for DRAM-bound shapes (Golden Rule 2 — no keyword needed).
 
+**Phase 3 caveat (must not regress thin-K).** A naive roofline swap is
+NOT sufficient: for thin-K `4096×4096×512` the model would then still
+prefer the wide tile (less modelled memory), but the measurement shows
+the wide tile is *worse* there (15–20 vs 25.7 TF) — thin-K is short on
+ksteps (32), so the wider tile's occupancy/prologue cost dominates and
+the DRAM saving is small. The fix therefore needs an explicit short-K /
+under-fill term, not just `max(compute, memory)`. Validate the model
+against the full measured matrix (64³…8192³, thin-K, K=1024) before it
+drives dispatch; the existing calibration tests (`e4c_tile_preserved_at_4096`
+etc.) encode the old compute-bound answer and must be updated with the new
+evidence.
+
 
 **Phase 3 — model gating (winners only).**
 - Load-path axis in `gpu_strategy` + per-device calibration parameter;
