@@ -206,12 +206,15 @@ field retired).
    - 1b(a) **DONE** (`2b3fbd44`): the deferred region's reduce span
      (`reduce_end` = the accumulator loop's range end) is now an analysis
      fact; `from_shape` builds the deferred `SoftmaxNormalize` plan.
-   - 1b(b) **NEXT**: relocate `GemmPlan`'s structural detection from
-     `backend/spirv/gemm.rs` into analysis (`analysis-once`), enrich the
-     plan with `Tile`/`Mma`/`Stage`/`AsyncCopy`, then golden plans for
-     every `.abv` node.
+   - 1b(b) **DONE** (`fa78ad0b`): `analysis::gemm_shape` owns the
+     structural matcher (relocated from the backend; `fold_consts` moved
+     to the frontend). `from_shape` enriches GEMM nodes with
+     `Tile/Stage/AsyncCopy/LoadMatrix/Mma/Store`; `gemm_h.abv` output is
+     byte-identical to pre-relocation.
+   - observability **DONE** (`e71742eb`): `BRIEV_DUMP_PLANS` prints every
+     eligible node's plan.
 3. **Phase 2** PTX lowering adapters → (B) runner/desc projection
-   (absorb tensor case, delete S1 `split`).
+   (absorb tensor case, delete S1 `split`). **NEXT.**
 4. **Split as `ReduceTree::Split`** → device-validate (unblocks 5a).
 5. SPIR-V lowering; Vulkan consumes `gpu_strategy`.
 6. Phase 3 retirements.
