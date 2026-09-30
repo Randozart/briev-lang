@@ -59,13 +59,14 @@ impl FragLayout {
     }
 }
 
-/// How each block claims work items.
+/// How the work items are claimed. Abstract — the block size / stride is a
+/// *lowering* choice (from the target profile), never a plan fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkItem {
-    /// One block = one work item (block-per-workitem dispatch).
-    Block { threads: u32 },
-    /// Flat grid-stride: `gid = ctaid * stride + tid`.
-    ThreadStrided { stride: u32 },
+    /// One work item owns one unit (block-per-workitem dispatch).
+    PerItem,
+    /// A flat grid-stride over the items.
+    Strided,
 }
 
 /// Tiling/pipeline shape selected by the cost model for a target profile.
@@ -171,10 +172,8 @@ impl KernelPlan {
         let mut s = String::new();
         s.push_str(&format!("node {}\n", self.node));
         match self.work {
-            WorkItem::Block { threads } => s.push_str(&format!("work block threads={threads}\n")),
-            WorkItem::ThreadStrided { stride } => {
-                s.push_str(&format!("work strided stride={stride}\n"))
-            }
+            WorkItem::PerItem => s.push_str("work per_item\n"),
+            WorkItem::Strided => s.push_str("work strided\n"),
         }
         s.push_str(&format!(
             "shape tile={}x{} stages={}\n",
@@ -354,7 +353,7 @@ mod tests {
     fn sample_plan() -> KernelPlan {
         KernelPlan {
             node: "fattn".into(),
-            work: WorkItem::Block { threads: 1024 },
+            work: WorkItem::PerItem,
             shape: PlanShape {
                 tile_m: 128,
                 tile_n: 256,
@@ -403,7 +402,7 @@ mod tests {
     fn dump_is_stable_and_readable() {
         let d = sample_plan().dump();
         assert!(d.contains("node fattn"), "{d}");
-        assert!(d.contains("work block threads=1024"), "{d}");
+        assert!(d.contains("work per_item"), "{d}");
         assert!(d.contains("shape tile=128x256 stages=3"), "{d}");
         assert!(d.contains("proofs disjoint=true associative=true single_writer=true"), "{d}");
         assert!(d.contains("op tile k 128x256"), "{d}");
