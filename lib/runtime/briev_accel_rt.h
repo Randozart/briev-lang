@@ -271,6 +271,11 @@ int briev_accel_launch_resident_2d(uint32_t idx, void* state,
                                    uint64_t nx, uint64_t ny);
 int briev_accel_launch_resident_batch(uint32_t idx, void* state,
                                       uint64_t nx, uint64_t ny, uint32_t times);
+/* 2026-09-30 (dual-image dispatch): 1 = the active device lane is CUDA.
+ * Generated runners with BOTH a SPIR-V and a PTX image dispatch each
+ * image's own grid geometry through this query; single-image runners
+ * never call it. */
+int briev_accel_cuda_lane(void);
 int briev_accel_download(uint32_t idx, void* state);
 int briev_accel_push_ranges(void* state, const size_t* ranges, uint32_t n);
 int briev_accel_push_strided(const BrievPushDesc* descs, uint32_t n);

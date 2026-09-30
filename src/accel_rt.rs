@@ -264,6 +264,28 @@ fn driver() -> Option<&'static BrievDeviceDriver> {
     }
 }
 
+/// 2026-09-30 (GEMM 4096³ CUDA IMA fix, BUGS.md): report whether the
+/// ACTIVE device lane is the CUDA driver. The generated runner dispatches
+/// dual-image kernels (one SPIR-V image + one PTX image in the same desc)
+/// through the geometry each image's grid decode was built for — the PTX
+/// tensor image decodes its CTA tile from `ctaid.x` with its own tile
+/// shape, the SPIR-V tensor image from the `(16·R·64)` workgroup grid.
+/// One launch geometry cannot serve both (the 4096³ cubin IMA: the PTX
+/// image received the SPIR-V grid → half the CTAs and zero dynamic shared
+/// memory → out-of-bounds smem writes). This only REPORTS the decision
+/// `select_driver` already made (image-aware chain + BRIEV_ACCEL_DEVICE
+/// override) — no second selection logic to drift.
+#[unsafe(no_mangle)]
+pub extern "C" fn briev_accel_cuda_lane() -> i32 {
+    match driver() {
+        None => 0,
+        Some(d) => {
+            let cuda = unsafe { &*addr_of!(briev_dev_cuda) };
+            std::ptr::eq(d, cuda) as i32
+        }
+    }
+}
+
 /// `.name` as a Rust str lossily (driver names are ASCII).
 fn driver_name(d: &BrievDeviceDriver) -> String {
     unsafe { CStr::from_ptr(d.name).to_string_lossy().into_owned() }
@@ -1288,6 +1310,22 @@ mod self_test {
         SELF_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 2026-09-30 (CUDA lane query): no driver selected → the runner's
+    /// lane split must take the SPIR-V arm (0), never the CUDA arm.
+    /// Serialized with the other self-tests on the same process-global RT.
+    #[test]
+    fn test_cuda_lane_reports_inactive_without_driver() {
+        let _g = self_test_guard();
+        let r = unsafe { &mut *addr_of_mut!(RT) };
+        r.driver = std::ptr::null();
+        r.init_done = false;
+        assert_eq!(
+            briev_accel_cuda_lane(),
+            0,
+            "no active driver must report a non-CUDA lane"
+        );
     }
 
     #[repr(C)]

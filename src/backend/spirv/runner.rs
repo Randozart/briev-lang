@@ -1108,6 +1108,17 @@ fn emit_kernel_node(
 /// cooperative rows (32 lanes × rows), 2D cols×rows, or the flat 1D
 /// fallback. Coverage is identical in all three; only the hardware routing
 /// of the work-item id differs.
+///
+/// 2026-09-30 (GEMM 4096³ CUDA IMA fix, BUGS.md): a DUAL-image kernel
+/// (one SPIR-V image + one PTX image in the same desc) has TWO grid
+/// decodes that are not interchangeable — the PTX tensor image decodes
+/// its CTA tile from `ctaid.x`/`ctaid.y` with its own tile shape, the
+/// SPIR-V tensor image from the `(16·R·64)` workgroup grid. One emitted
+/// launch geometry can only serve one of them; giving the cubin the
+/// SPIR-V grid launched half the CTAs with zero dynamic shared memory
+/// (OOB smem writes → IMA rc 700). For `ptx_tensor` kernels with a PTX
+/// blob the statement splits per lane (`briev_accel_cuda_lane()`); every
+/// other program emits exactly the pre-fix statement.
 fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
     if k.fused_mma {
         // Phase 4b mma rung: one 16-row block per 32·nwarps lanes; the count
@@ -1118,29 +1129,59 @@ fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
         );
     }
     if k.ptx_tensor {
-        if k.block_threads > 64 || (k.block_threads == 64 && k.shared_bytes > 0) {
-            // PTX tensor multi-warp (mw/nw kernel): block_threads-thread
-            // blocks. CTA tile = mw*32 rows × nw*64 cols = mw*nw*2048
-            // elements. Each thread covers 64 elements. count = M*N.
-            // nx = count/64 → gx = count/(64*block_threads) =
-            // count/(2048*mw*nw) = correct CTA count. The kernel decodes
-            // m_cta and n_cta from ctaid.x.
-            // 2026-09-16 (shape strategy selector Stage 1): a 2-warp mw
-            // kernel is block_threads=64 WITH shared smem — distinguished
-            // from the S3b single-warp warp-tile (also 64-thread blocks,
-            // but shared_bytes=0) so the mw grid math applies.
-            return format!(
-                "      if (n_{ci} > 0 && !briev_accel_launch_resident_2d({kidx}, state, n_{ci} / 64, 1)) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
-            );
+        let ptx = ptx_tensor_dispatch_geometry_stmt(k, kidx, ci);
+        if k.ptx.is_empty() {
+            // PTX-only image (pre dual-image layout): the PTX geometry IS
+            // the program's geometry — dispatch it unconditionally.
+            return ptx;
         }
-        // PTX tensor warp-tile (S3b): one 32×16 C tile per 32-lane block,
-        // decoded from ctaid.y. count = M*N work items (the counter
-        // fast-forward), blocks = count/(32*16). nx=32 → the driver's
-        // launch_dev2d dispatches exactly ny blocks.
+        // Dual image: dispatch each image's own geometry on the lane that
+        // consumes it (see doc comment above). Single-image programs never
+        // enter this arm. Undo: remove together with the merge in
+        // compile.rs and `briev_accel_cuda_lane`.
+        let spirv = spirv_dispatch_geometry_stmt(k, kidx, ci);
         return format!(
-            "      if (n_{ci} > 0 && !briev_accel_launch_resident_2d({kidx}, state, 32, n_{ci} / (32 * 16))) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
+            "      if (briev_accel_cuda_lane()) {{\n{ptx}      }} else {{\n{spirv}      }}\n"
         );
     }
+    spirv_dispatch_geometry_stmt(k, kidx, ci)
+}
+
+/// The PTX tensor image's grid geometry (only for `ptx_tensor` kernels —
+/// the blob carries the matching grid decode contract).
+fn ptx_tensor_dispatch_geometry_stmt(
+    k: &RunnerKernel,
+    kidx: usize,
+    ci: &str,
+) -> String {
+    if k.block_threads > 64 || (k.block_threads == 64 && k.shared_bytes > 0) {
+        // PTX tensor multi-warp (mw/nw kernel): block_threads-thread
+        // blocks. CTA tile = mw*32 rows × nw*64 cols = mw*nw*2048
+        // elements. Each thread covers 64 elements. count = M*N.
+        // nx = count/64 → gx = count/(64*block_threads) =
+        // count/(2048*mw*nw) = correct CTA count. The kernel decodes
+        // m_cta and n_cta from ctaid.x.
+        // 2026-09-16 (shape strategy selector Stage 1): a 2-warp mw
+        // kernel is block_threads=64 WITH shared smem — distinguished
+        // from the S3b single-warp warp-tile (also 64-thread blocks,
+        // but shared_bytes=0) so the mw grid math applies.
+        return format!(
+            "      if (n_{ci} > 0 && !briev_accel_launch_resident_2d({kidx}, state, n_{ci} / 64, 1)) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
+        );
+    }
+    // PTX tensor warp-tile (S3b): one 32×16 C tile per 32-lane block,
+    // decoded from ctaid.y. count = M*N work items (the counter
+    // fast-forward), blocks = count/(32*16). nx=32 → the driver's
+    // launch_dev2d dispatches exactly ny blocks.
+    format!(
+        "      if (n_{ci} > 0 && !briev_accel_launch_resident_2d({kidx}, state, 32, n_{ci} / (32 * 16))) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
+    )
+}
+
+/// The SPIR-V image's grid geometry (the pre-fix dispatch statement —
+/// also the CUDA-lane statement for dual-image kernels whose PTX blob
+/// shares this contract: naive, reductions, cooperative rows).
+fn spirv_dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
     if k.tensor {
         // Tensor GEMM (R 16-row strips × 64 cols per workgroup, R =
         // k.tensor_tile_rows — the SAME clamp the kernel emitter used):
@@ -1351,4 +1392,132 @@ pub fn prepare_run(
         program_bytes: layout.program_bytes,
         seed_fields: seed,
     })
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    fn kernel(overrides: &mut dyn FnMut(&mut RunnerKernel)) -> RunnerKernel {
+        let mut k = RunnerKernel {
+            name: "gemm".to_string(),
+            spirv: vec![0x03, 0x02, 0x23, 0x07],
+            image_plans: Vec::new(),
+            index_var: "i".to_string(),
+            count_expr: Expr::Decimal(16777216),
+            work_cols: None,
+            cooperative: false,
+            tiled: false,
+            tensor: false,
+            tensor_tile_rows: 1,
+            ptx_tensor: false,
+            fused_mma: false,
+            fused_mma_blocks_div: 0,
+            block_threads: 64,
+            shared_bytes: 0,
+            touched_fields: Vec::new(),
+            ptx: Vec::new(),
+            block_per_workitem: false,
+        };
+        overrides(&mut k);
+        k
+    }
+
+    /// 2026-09-30 (GEMM 4096³ CUDA IMA fix): a dual-image tensor kernel
+    /// MUST dispatch each image's own geometry on the lane that consumes
+    /// it — CUDA arm = PTX mw grid (nx = n/64), SPIR-V arm = the (16·R·64)
+    /// workgroup grid. One geometry for both = the cubin IMA.
+    #[test]
+    fn dual_image_tensor_splits_per_lane() {
+        let k = kernel(&mut |k| {
+            k.ptx = vec![0x7f, 0x45, 0x4c, 0x46];
+            k.ptx_tensor = true;
+            k.tensor = true;
+            k.tensor_tile_rows = 4;
+            k.block_threads = 256;
+            k.shared_bytes = 12288;
+        });
+        let s = dispatch_geometry_stmt(&k, 0, "gemm");
+        assert!(
+            s.contains("if (briev_accel_cuda_lane()) {"),
+            "dual-image tensor must split per lane: {s}"
+        );
+        assert!(
+            s.contains("n_gemm / 64, 1)"),
+            "CUDA arm must be the PTX mw grid: {s}"
+        );
+        assert!(
+            s.contains("w_gemm = (n_gemm / (16 * 4 * 64)) * 32"),
+            "SPIR-V arm must be the tensor workgroup grid: {s}"
+        );
+        let cuda_at = s.find("briev_accel_cuda_lane").expect("lane query");
+        let spirv_at = s.find("} else {").expect("else arm");
+        assert!(cuda_at < spirv_at, "PTX arm must precede the else: {s}");
+    }
+
+    /// SPIR-V-only tensor: pre-fix statement, no lane query (byte-identical
+    /// to the pre-2026-09-30 dispatch).
+    #[test]
+    fn spirv_only_tensor_emits_pre_fix_statement() {
+        let k = kernel(&mut |k| {
+            k.tensor = true;
+            k.tensor_tile_rows = 4;
+            k.block_threads = 32;
+        });
+        let s = dispatch_geometry_stmt(&k, 0, "gemm");
+        assert!(!s.contains("briev_accel_cuda_lane"), "no split: {s}");
+        assert!(
+            s.contains("w_gemm = (n_gemm / (16 * 4 * 64)) * 32"),
+            "{s}"
+        );
+    }
+
+    /// Dual-image non-tensor (naive GEMM, reductions): both blobs share the
+    /// flat contract — today's verified behavior, no lane query.
+    #[test]
+    fn dual_image_naive_keeps_single_flat_dispatch() {
+        let k = kernel(&mut |k| {
+            k.ptx = vec![0x7f, 0x45];
+            k.block_threads = 64;
+        });
+        let s = dispatch_geometry_stmt(&k, 0, "gemm");
+        assert!(!s.contains("briev_accel_cuda_lane"), "flat is shared: {s}");
+        assert!(
+            s.contains("briev_accel_launch_resident(0, state, n_gemm)"),
+            "{s}"
+        );
+    }
+
+    /// PTX-only layout (pre dual-image): the PTX geometry is dispatched
+    /// unconditionally — preserves the pre-merge S3b/mw behavior.
+    #[test]
+    fn ptx_only_legacy_dispatches_ptx_geometry() {
+        let k = kernel(&mut |k| {
+            k.ptx_tensor = true;
+            k.tensor = true;
+            k.block_threads = 256;
+            k.shared_bytes = 8192;
+        });
+        let s = dispatch_geometry_stmt(&k, 0, "gemm");
+        assert!(!s.contains("briev_accel_cuda_lane"), "no split: {s}");
+        assert!(s.contains("n_gemm / 64, 1)"), "PTX geometry: {s}");
+    }
+
+    /// S3b single-warp ptx arm (64 threads, no dynamic smem) vs mw arm.
+    #[test]
+    fn s3b_ptx_arm_dispatches_warp_tile_grid() {
+        let k = kernel(&mut |k| {
+            k.ptx = vec![0x7f];
+            k.ptx_tensor = true;
+            k.tensor = true;
+            k.block_threads = 64;
+            k.shared_bytes = 0;
+        });
+        let s = dispatch_geometry_stmt(&k, 0, "gemm");
+        assert!(
+            s.contains("state, 32, n_gemm / (32 * 16))"),
+            "S3b arm: {s}"
+        );
+        assert!(s.contains("briev_accel_cuda_lane"), "split: {s}");
+    }
 }

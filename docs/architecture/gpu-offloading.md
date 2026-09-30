@@ -100,8 +100,24 @@ blobs + per-kernel layout descriptors + calls a stable `briev_accel_*` ABI.
 int  briev_accel_init(const BrievKernelDesc* descs, uint32_t n);
 int  briev_accel_launch(uint32_t idx, const void* state, uint64_t work_n);
 int  briev_accel_available(void);
+int  briev_accel_cuda_lane(void);  // 1 = active lane is CUDA (see below)
 int  briev_accel_probe(...);   // auto-tuning probe
 ```
+
+**Dual-image dispatch (2026-09-30).** A kernel desc can carry TWO
+images: the SPIR-V blob (Vulkan/OpenCL) and a PTX/cubin blob (CUDA).
+Some image pairs do NOT share one launch grid — the f16 tensor PTX
+image decodes its own CTA tile (`ctaid.x`, `mw·32 × nw·64`, dynamic
+smem stages) while the SPIR-V image decodes the `(16·R·64)` workgroup
+grid. For such kernels the generated runner emits BOTH geometries and
+selects at dispatch time with `briev_accel_cuda_lane()` — a read-only
+report of `select_driver`'s already-made choice (image-aware chain +
+`BRIEV_ACCEL_DEVICE` override; no second selection logic to drift).
+The PTX image's grid contract (`block_threads`, `shared_bytes`,
+`ptx_tensor`) travels with the blob through the merge in
+`src/compile.rs`. Single-image programs never call the query and emit
+the same dispatch they always have. (Origin: GEMM 4096³ cubin IMA —
+BUGS.md "GEMM 4096³ … FIXED 2026-09-30".)
 
 - `BrievDeviceDriver` function-pointer table; drivers consume SPIR-V:
   `briev_dev_vulkan` (Vulkan compute) + `briev_dev_opencl` (OpenCL 3.0 IL),

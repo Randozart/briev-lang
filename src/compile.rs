@@ -1775,6 +1775,21 @@ fn codegen(
                             // threads = 4 warp slices; the Vulkan lane
                             // parses LocalSize and ignores this field).
                             k.block_threads = p.block_threads;
+                            // 2026-09-30 (GEMM 4096³ CUDA IMA fix, BUGS.md):
+                            // the PTX tensor GRID CONTRACT is part of the
+                            // image — `shared_bytes` (the dynamic stage
+                            // arrays) and `ptx_tensor` (the CTA-tile decode
+                            // variant) must travel with the blob. Without
+                            // them the CUDA lane launched the PTX image with
+                            // the SPIR-V grid and zero dynamic shared memory
+                            // (half the CTAs, OOB smem writes → IMA). The
+                            // runner dispatches per lane via
+                            // `briev_accel_cuda_lane()`; Vulkan ignores both
+                            // fields (LocalSize comes from the SPIR-V).
+                            // Undo: remove together with the lane split in
+                            // `dispatch_geometry_stmt`.
+                            k.shared_bytes = p.shared_bytes;
+                            k.ptx_tensor = p.ptx_tensor;
                         }
                     }
                 }

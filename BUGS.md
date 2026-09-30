@@ -33,7 +33,7 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
-## GEMM 4096³: SPIR-V/Vulkan correct, CUDA/cubin IMA — OPEN (cubin tier) 2026-09-30
+## GEMM 4096³: SPIR-V/Vulkan correct, CUDA/cubin IMA — FIXED 2026-09-30 (cubin tier)
 
 **Context:** GEMM 4096³ correctness+timing session (plan
 `2026-09-28-daily-use-sweep-and-gpu-session.md`, Phase B2). Two lanes:
@@ -50,31 +50,64 @@ uniform ~4.5% per-cell error — that is the kernel's declared
 the GEMM kernel with an all-ones (or other f16-exact) seed, not a
 f64-exact reference.
 
-**Finding 2 (CUDA/cubin — IMA, OPEN):** the SAME 4096³ kernel, when the
-runner carries the PTX/cubin image, is auto-selected to the CUDA lane
-(`select_driver` image-aware: a PTX-bearing desc → CUDA) and FAULTS:
-`cuLaunchKernel` + `cuStreamSynchronize` → `an illegal memory access
-(rc 700)`. The 128MB prime H2D succeeds (no "HtoD failed"); the fault is
-in the kernel execution. 64³ (gemm_small) runs on CUDA fine, so the
-cubin is shape-dependent: correct at 64³, IMA at 4096³. The SPIR-V
-artifact is proven correct, so this is a bug in the hand-emitted PTX /
-ptxas-cubin tier (or the CUDA driver's large-shape launch), NOT in the
-kernel logic. Pre-existing (this session's changes — ABI alignment,
-image-aware driver select, download scalar-skip — do not touch the PTX
-emitter or the CUDA driver).
+**Finding 2 (CUDA/cubin — IMA, FIXED same day):** the SAME 4096³ kernel,
+when the runner carries the PTX/cubin image, was auto-selected to the
+CUDA lane (`select_driver` image-aware: a PTX-bearing desc → CUDA) and
+FAULTED: `cuLaunchKernel` + `cuStreamSynchronize` → `an illegal memory
+access (rc 700)`. 64³ (gemm_small) ran on CUDA fine — the failure is
+shape/class dependent: the f16 TENSOR image pair.
 
-**Repro:**
+**Root cause (2026-09-30):** the dual-image merge in `src/compile.rs`
+(M2.0, "one runner serves both lanes") copied only `ptx`,
+`block_threads`, and `block_per_workitem` from the PTX kernel into the
+merged desc — it dropped **`shared_bytes`** (the PTX tensor image's
+dynamic shared-memory stage arrays) and **`ptx_tensor`** (its CTA-tile
+grid-decode variant). Consequences on the CUDA lane:
+1. the desc carried `shared_bytes = 0`, so `cuLaunchKernel` allocated
+   ZERO dynamic smem while the cubin writes its stage arrays there →
+   out-of-bounds shared-memory writes → rc 700;
+2. the runner emitted the SPIR-V tensor dispatch
+   (`items = n/(16·R·64)·32` → 4096 workgroups of 32) while the PTX
+   image decodes `ctaid.x` into an `mw·32 × nw·64` CTA tile
+   (needs 1024 blocks of 256) → half coverage, and the grid/smem
+   mismatch compounded the fault.
+
+The SPIR-V-only and naive/reduction dual-image programs were unaffected
+(their contracts are shared) — hence 64³ passing while 4096³ f16 faulted.
+
+**Fix (2026-09-30, this session):** three coordinated changes, all
+reversible together —
+- `src/compile.rs`: the merge now also copies `shared_bytes` and
+  `ptx_tensor` (the grid contract travels with the blob);
+- `src/backend/spirv/runner.rs`: `dispatch_geometry_stmt` splits dual-image
+  `ptx_tensor` kernels per lane — `if (briev_accel_cuda_lane()) { PTX
+  geometry } else { SPIR-V geometry }`; single-image programs emit the
+  pre-fix statement byte-for-byte;
+- `src/accel_rt.rs` + `lib/runtime/briev_accel_rt.h`: new
+  `briev_accel_cuda_lane()` — reports the already-made `select_driver`
+  decision (no second selection logic).
+
+**Verification (4096³, RTX 3060, both lanes):** all-ones gate exact,
+f64-exact verify maxrel 0.045 ≤ 6% PASS, 5-point coverage probes OK,
+batched timing CUDA **4.995 ms/iter = 27.5 TFLOPS** (near the
+29.3 TF documented PTX-tier figure), Vulkan unchanged at 11.2 ms /
+12.2 TF (the driver-bound lane — see the 615.71.09 entry). Runner
+end-to-end exits 0 on both lanes. Pinned by `dispatch_tests` in
+`src/backend/spirv/runner.rs` (5 emission-contract tests) +
+`test_cuda_lane_reports_inactive_without_driver`.
+
+**Repro of the fixed state (guards against regression):**
 ```
 brievc build examples/gpu/gemm_h.abv --out /tmp/g
-# harness: seed a,b; all-ones gate; verify y==K; time. (see session)
-BRIEV_ACCEL_DEVICE=vulkan ./harness 4096 4096 4096 5 64 ones   # PASS, 11.6 TF
-./harness 4096 4096 4096 5 64 ones                              # IMA (CUDA auto-select)
+# harness: seed a,b; all-ones gate; verify y==K; coverage; batched time.
+BRIEV_ACCEL_DEVICE=vulkan ./harness 4096 4096 4096 20 64 ones   # PASS, 12.2 TF
+./harness 4096 4096 4096 20 64 ones                             # PASS, 27.5 TF (CUDA)
 ```
-**Fix direction:** bisect the PTX emitter's large-shape indexing (tile
-stride / SSBO pointer arithmetic for K=4096), or the CUDA driver's
-`launch_dev2d`/prime at 128MB; confirm with `cuobjdump --dump-sass` on
-the 4096³ cubin vs a 64³ cubin. Until fixed, the 4096³ GEMM lane is
-Vulkan/SPIR-V; the CUDA lane is IMA.
+If this entry ever re-opens: the gate that failed first was
+`cuLaunchKernel` rc 700 at 4096³ on the auto-selected CUDA lane —
+check the desc's `shared_bytes` (was 0 pre-fix) and whether the runner
+still contains the `briev_accel_cuda_lane()` split for `ptx_tensor`
+kernels before suspecting the emitter.
 
 ## briev_accel_download clobbered host-managed scalars — FIXED 2026-09-30
 
