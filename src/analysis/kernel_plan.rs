@@ -357,6 +357,31 @@ impl KernelPlan {
     }
 }
 
+/// 2026-09-30 (Phase 1 observability): build + dump the plan for every
+/// eligible accel node, sorted by name (deterministic). The caller supplies
+/// the module consts (frontend helper) and the device profile, so this
+/// stays within the analysis layer.
+pub fn dump_program_plans(
+    items: &[TopLevel],
+    entries: &std::collections::HashMap<String, crate::analysis::accel::AccelEntry>,
+    consts: &std::collections::HashMap<String, Expr>,
+    hw: &GpuHardware,
+) -> String {
+    let mut names: Vec<&String> = entries
+        .iter()
+        .filter(|(_, e)| e.shape.eligible)
+        .map(|(n, _)| n)
+        .collect();
+    names.sort();
+    let mut out = String::new();
+    for n in names {
+        let p = KernelPlan::from_shape(n, &entries[n].shape, items, consts, hw);
+        out.push_str(&p.dump());
+        out.push('\n');
+    }
+    out
+}
+
 fn dump_mem(m: &MemRef) -> String {
     let sp = match m.space {
         MemSpace::Global => "global",

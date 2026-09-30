@@ -1730,6 +1730,21 @@ fn codegen(
             // (same emit_kernel inputs). Entries stay "main": the device
             // drivers hardcode pName "main" — the runner path and the file
             // artifacts must never disagree.
+            // 2026-09-30 (KernelPlan Phase 1 observability): when
+            // BRIEV_DUMP_PLANS is set, print the target-independent plan for
+            // every eligible accel node (frontend facts + shape selection).
+            if std::env::var_os("BRIEV_DUMP_PLANS").is_some() {
+                let kp_consts = briev_compiler::backend::ptx::module_expr_consts(items);
+                eprint!(
+                    "{}",
+                    briev_compiler::analysis::kernel_plan::dump_program_plans(
+                        items,
+                        &analysis.accel,
+                        &kp_consts,
+                        &briev_compiler::analysis::gpu_strategy::GpuHardware::SM86,
+                    )
+                );
+            }
             let reuse_map = if briev_compiler::config_tuning::ir_lowering()
                 .gpu_schedule_buffer_reuse
             {
