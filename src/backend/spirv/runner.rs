@@ -1185,30 +1185,12 @@ fn emit_kernel_node(
         "      fired = 1;\n      long long n_{} = {};\n",
         ci, count_c
     ));
-    let combine = (k.split > 1)
-        .then(|| {
-            ctx.kernels
-                .iter()
-                .position(|x| x.name == format!("{}__combine", name))
-        })
-        .flatten();
-    match combine {
-        Some(cidx) => out.push_str(&split_dispatch(k, kidx, cidx, &ci)),
-        None => out.push_str(&dispatch_geometry_stmt(k, kidx, &ci)),
-    }
+    // A split node's kernels are CudaOnly projections → it takes the
+    // multi-kernel lane path above; every remaining single-Shared kernel
+    // dispatches with its plain geometry.
+    out.push_str(&dispatch_geometry_stmt(k, kidx, &ci));
     out.push_str(&format!("      S_{} = n_{};\n", c_ident(&k.index_var), ci));
     out.push_str("    }\n");
-}
-
-/// 2026-09-30 (general reduction-split): the two ordered launches of a
-/// split node — the partial kernel over `count * S` work items (one CTA per
-/// `(work_item, slice)`), then the combine companion over `count`. The
-/// combine blob is the sibling RunnerKernel named `<node>__combine`.
-fn split_dispatch(k: &RunnerKernel, kidx: usize, combine_idx: usize, ci: &str) -> String {
-    format!(
-        "      if (n_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, n_{ci} * {s})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n      if (n_{ci} > 0 && !briev_accel_launch_resident({combine_idx}, state, n_{ci})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n",
-        s = k.split
-    )
 }
 
 /// 2026-09-30 (Phase 2): one kernel's launch, honouring a split factor. A
@@ -1643,25 +1625,5 @@ mod dispatch_tests {
             "S3b arm: {s}"
         );
         assert!(s.contains("briev_accel_cuda_lane"), "split: {s}");
-    }
-
-    #[test]
-    fn split_dispatch_launches_partial_then_combine() {
-        // 2026-09-30 (general reduction-split): a split node emits two
-        // ordered launches — the partial over count*S, the combine over count.
-        let mut k = kernel(&mut |_| {});
-        k.split = 3;
-        let s = split_dispatch(&k, 0, 1, "fattn");
-        assert!(
-            s.contains("launch_resident(0, state, n_fattn * 3)"),
-            "partial gets count*S: {s}"
-        );
-        assert!(
-            s.contains("launch_resident(1, state, n_fattn)"),
-            "combine gets count: {s}"
-        );
-        let pi = s.find("launch_resident(0,").unwrap();
-        let ci = s.find("launch_resident(1,").unwrap();
-        assert!(pi < ci, "partial must launch before combine: {s}");
     }
 }
