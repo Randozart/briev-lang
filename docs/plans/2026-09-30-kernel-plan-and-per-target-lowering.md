@@ -4,7 +4,10 @@
 **Doctrine:** `docs/architecture/abv-gpu-doctrine.md` §4 (per-vendor
 *projections* of one plan), `proof-vs-shape.md` (Rule 24: the plan is the
 general machinery; shapes are temporal), `backend-contracts.md`
-(analysis-once → plan-once), `gpu-backend-strategy.md` (route evaluation).
+(analysis-once → plan-once), `gpu-backend-strategy.md` (route evaluation),
+and **`docs/architecture/derivation-not-recognition.md`** — the governing
+obligation: the programmer declares intent, the compiler **derives**, and
+**recognition is the cardinal sin**.
 
 ## 1. Goal and refined thesis
 
@@ -238,3 +241,26 @@ field retired).
 4. **Split / 5a**: folded into the plan as a rewrite — the throwaway
    lane-conditional patch is NOT taken.
 5. **Scope**: GPU (PTX + SPIR-V) first; CPU/LLVM as later lowerings.
+
+## Governance — derivation, not recognition (2026-09-30)
+
+This plan is governed by `docs/architecture/derivation-not-recognition.md`.
+Binding consequences:
+
+1. `KernelPlan` is a **derivation target** — the record of the shape the
+   compiler *invented* for the declared intent. It is **not** a catalogue of
+   recognised shapes, and it is internal (never a user surface).
+2. Plan construction and every lowering branch only on **structural facts
+   and proofs**, never on an algorithm name or a one-algorithm op sequence
+   (the **recognition gate**, §7 of the doctrine).
+3. Every matcher admitted as an interim (the deferred-region detector, the
+   GEMM structural matcher) is admissible **as a fact derivation** and
+   carries a Rule 24 **retirement gate**.
+4. The **coverage ledger** (declared construct × proof class → exploiting
+   pass → test) is the auditable form of "optimise everything declared"; the
+   **acceptance test** (delete stdlib algorithms; year-two algorithm hits
+   the ceiling, zero compiler changes) is the bar.
+5. The strategic prize this plan enables is **fact-exploitation passes**
+   (disjointness→vectorisation, associativity→split, lifetime→reuse,
+   bounds→unroll); the plan + lowerings are the substrate they write into.
+
