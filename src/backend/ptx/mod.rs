@@ -1449,6 +1449,28 @@ fn strategy_to_mwnw(
     Some((mw, nw, s.stages as usize))
 }
 
+/// Resolve the effective tensor-GEMM pipeline depth.
+///
+/// 2026-09-30 (stage-5 5b): the 2026-09-16 shape-strategy model returns its
+/// own `stages`, which used to override an EXPLICIT `ptx_tensor_stages`
+/// silently — the knob went inert at every shape the model maps (e.g. 4096³,
+/// where it always chose 3). `set_ir_lowering_from_dir` documents the
+/// opposite contract: "a silently ignored override would compile with the
+/// wrong tier and poison every measurement downstream". An explicit nonzero
+/// config now wins; the auto default (0) still defers to the model, keeping
+/// ship behavior byte-identical.
+fn resolve_eff_stages(
+    config_stages: u32,
+    strategy_stages: usize,
+    config_or_auto_stages: usize,
+) -> usize {
+    if config_stages != 0 {
+        config_or_auto_stages
+    } else {
+        strategy_stages
+    }
+}
+
 /// Build the PTX kernel set for an `.abv` — one kernel per eligible accel
 /// entry. GEMM-shaped entries lower to the naive PTX kernel; anything else
 /// is a hard error (the S2a surface gate — GEMM family ONLY until S5).
@@ -1943,8 +1965,18 @@ pub fn build_ptx_kernels(
         // f32-acc keeps 4 stages (deep pipeline, 1-2 CTAs by config).
         // 2026-09-14 (parity probe P1): stages=3 at the f16acc (2,4) tile
         // (24KB, still 4 CTAs/SM) measured +1.0-1.8% at every large square
-        // shape — the auto default. `ptx_tensor_stages` overrides (2|3).
-        let stages = match crate::config_tuning::ir_lowering().ptx_tensor_stages {
+        // shape — the auto default (0). `ptx_tensor_stages` overrides (2|3).
+        // 2026-09-30 (stage-5 5b): the 2026-09-16 strategy model began
+        // returning its own `stages`, which SILENTLY overrode an explicit
+        // `ptx_tensor_stages` — the knob went inert at every shape the
+        // cost model maps (e.g. 4096³). That violates the override
+        // contract (`config_tuning::set_ir_lowering_from_dir`: "a silently
+        // ignored override would compile with the wrong tier and poison
+        // every measurement"). An EXPLICIT nonzero config now wins over
+        // the model; the auto default (0) still lets the model choose,
+        // preserving ship behavior byte-for-byte.
+        let stages_cfg = crate::config_tuning::ir_lowering().ptx_tensor_stages;
+        let stages = match stages_cfg {
             0 => {
                 if f16_acc {
                     3usize
@@ -1980,7 +2012,7 @@ pub fn build_ptx_kernels(
             let (mw, nw, eff_stages) = match strategy
                 .and_then(|s| strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, thread_cap))
             {
-                Some((mw, nw, st)) => (mw, nw, st),
+                Some((mw, nw, st)) => (mw, nw, resolve_eff_stages(stages_cfg, st, stages)),
                 None => {
                     let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
                     (mw, nw, stages)
@@ -2095,6 +2127,17 @@ mod tests {
         // mhr=2 tiles 96 rows (96%32==0), so nw grows to its cap.
         assert_eq!(select_mw_nw(96, 4096, 512, 4), (1, 1));
         assert_eq!(select_mw_nw(96, 4096, 512, 2), (1, 8));
+    }
+
+    #[test]
+    fn explicit_stage_override_beats_strategy_choice() {
+        // 2026-09-30 (stage-5 5b): an explicit ptx_tensor_stages must win
+        // over the shape-strategy model's own choice (the knob went inert
+        // at 4096³ before this). Auto (0) defers to the model.
+        assert_eq!(resolve_eff_stages(0, 3, 3), 3, "auto defers to strategy");
+        assert_eq!(resolve_eff_stages(0, 2, 3), 2, "auto defers to strategy=2");
+        assert_eq!(resolve_eff_stages(2, 3, 2), 2, "explicit 2 wins over model 3");
+        assert_eq!(resolve_eff_stages(3, 2, 3), 3, "explicit 3 wins over model 2");
     }
 
     #[test]

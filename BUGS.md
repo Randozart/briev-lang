@@ -33,6 +33,34 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## `ptx_tensor_stages` silently ignored on the strategy path — FIXED 2026-09-30
+
+**Symptom:** setting `ptx_tensor_stages` (2 or 3) via `--config-dir` had
+NO effect at 4096³ — the emitted kernel's `shared_bytes` stayed 24576
+(stages=3) and timing was identical (27.1 TF) for 0/2/3. Found while
+re-baselining stage 5b (`benchmarks/results/2026-09-30-5b-cuda-s5-ladder.md`).
+
+**Root cause:** the 2026-09-16 shape-strategy model
+(`strategy_to_mwnw`, `src/backend/ptx/mod.rs`) returns its own `stages`,
+and the dispatch used it verbatim — overriding an explicit
+`ptx_tensor_stages` — at every shape the model maps. The config knob was
+only consulted on the legacy `select_mw_nw` fallback. This violates the
+documented override contract (`config_tuning::set_ir_lowering_from_dir`:
+"a silently ignored override would compile with the wrong tier and poison
+every measurement downstream").
+
+**Fix:** `resolve_eff_stages` — an explicit nonzero `ptx_tensor_stages`
+wins over the model's choice; the auto default (0) still defers to the
+model, so ship emission is byte-identical. Regression test:
+`explicit_stage_override_beats_strategy_choice`.
+
+**How to undo:** revert to `Some((mw,nw,st)) => (mw,nw,st)` — the knob
+goes inert at mapped shapes again (sweep stages 2 vs 3 at 4096³, watch
+`shared_bytes` not move).
+
+**Status:** FIXED 2026-09-30 (knob now live; depth proven perf-neutral on
+driver 615, so the immediate impact is contract correctness, not speed).
+
 ## LLVM IR emission nondeterminism (three §4 violations) — FIXED 2026-09-30
 
 **Symptom:** compiling the SAME source twice with the SAME compiler

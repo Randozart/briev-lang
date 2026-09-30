@@ -21,15 +21,40 @@ now-healthy CUDA lane.
   (installed 2026-09-17) regressed the workgroup-smem + barrier fill
   path; isolation probes in
   `benchmarks/results/2026-09-30-gemm-4096-gates.md` show mma-ceiling
-  and GEMV unchanged. Correction to the re-rank note
-  (`2026-09-24-followup-stages.md`, `1cca9df4` wording): the
-  "vendor-blocked" caveat applies to **Vulkan absolute claims only** —
-  the CUDA lane's path was never in the regression, so **27.5 → 38 TF
-  on CUDA is a valid same-machine target with no vendor dependency**.
+  and GEMV unchanged.
+  **CORRECTION (Phase 1, `2026-09-30-5b-cuda-s5-ladder.md`):** an
+  earlier revision of this plan claimed the CUDA lane was free of the
+  vendor regression and 27.5 → 38 was chaseable with no vendor
+  dependency. That was **unproven** and is retracted. The 35.5 TF "ship
+  E4c" figure was a `ptx_gemm_bench`-protocol number on a
+  pre-shape-strategy kernel; today's 27.1 TF is the **first working
+  CUDA-lane E2E measurement** (the lane emitted a bad grid contract →
+  IMA until the 2026-09-30 dual-image fix). CUDA-vs-580 attribution is
+  unresolved (the same cp.async + `bar.sync` + smem-fill class is what
+  the driver regressed, so it is plausible but not proven). Treat
+  "→38 TF" as a **chase with no same-protocol baseline**, not a
+  recovery.
 - **Not front-end work**: S3a/S3b/S3b+/S4/S5-rungs already shipped
   (mma.sync exact, smem staged, K-major swizzled B, 4-stage cp.async,
   register scheduling). 5b = squeezing the remaining ~1.4× on the
   shipped kernel.
+
+## Phase 0–1 status (2026-09-30)
+
+Full measurements + attribution in
+`benchmarks/results/2026-09-30-5b-cuda-s5-ladder.md`. Summary:
+
+- Both-lane 4096³ correctness PASS; CUDA E2E = **27.1 TF / 5.07 ms**
+  (stable ±0.2%), first working CUDA-lane E2E point.
+- `ptx_tensor_stages` was **silently inert** on the strategy path
+  (2016-09-16 model override) — **FIXED** (`resolve_eff_stages`, explicit
+  config wins, auto byte-identical; `explicit_stage_override_beats_strategy_choice`).
+- Depth is perf-neutral on 615 (auto/S2/S3 all ≈27.1). f16acc decisive
+  (27.2 vs 20.6). The config-level lever is exhausted and now honest.
+- H3 (depth) refuted-by-direct-measurement; H2/H6 blocked on a
+  same-protocol rig (`ptx_gemm_bench` no longer drives the current
+  kernel). The live lever is the documented structural smem round-trip
+  (E-series: no-fill KLOOP 46.2 TF vs smem-fed ship).
 
 ## Baseline (Rule 12 — measured BEFORE any change)
 
