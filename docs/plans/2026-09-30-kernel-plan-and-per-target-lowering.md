@@ -199,7 +199,17 @@ field retired).
 ## 12. Sequencing
 
 1. **Phase 0** IR + `TargetProfile` + serde/dump + golden inspect test.
+   **DONE** (`1edbf037`, refined `828395d1`).
 2. **Phase 1** construction, GEMM first, byte-identical.
+   - 1a **DONE** (`bb655c3a`): `KernelPlan::from_shape` for the
+     `ReductionInfo` nodes (Dot/Softmax) + golden dump.
+   - 1b(a) **DONE** (`2b3fbd44`): the deferred region's reduce span
+     (`reduce_end` = the accumulator loop's range end) is now an analysis
+     fact; `from_shape` builds the deferred `SoftmaxNormalize` plan.
+   - 1b(b) **NEXT**: relocate `GemmPlan`'s structural detection from
+     `backend/spirv/gemm.rs` into analysis (`analysis-once`), enrich the
+     plan with `Tile`/`Mma`/`Stage`/`AsyncCopy`, then golden plans for
+     every `.abv` node.
 3. **Phase 2** PTX lowering adapters → (B) runner/desc projection
    (absorb tensor case, delete S1 `split`).
 4. **Split as `ReduceTree::Split`** → device-validate (unblocks 5a).
