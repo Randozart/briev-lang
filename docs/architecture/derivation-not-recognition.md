@@ -7,7 +7,9 @@ efficient default); Rule 9 (tests or it doesn't exist).
 `briev-capability-frontier.md` (expressiveness closure),
 `briev-vs-cuda-thesis.md` (why the whole-program contract surface beats
 the kernel-as-unit model), `abv-gpu-doctrine.md` (§4 one plan, per-vendor
-projections), `docs/plans/2026-09-30-kernel-plan-and-per-target-lowering.md`
+projections), `keyword-taxonomy.md` (strategy vs ambiguity keywords vs
+intrinsics — what a keyword may ever do),
+`docs/plans/2026-09-30-kernel-plan-and-per-target-lowering.md`
 (the machinery this governs).
 
 ---
@@ -163,9 +165,7 @@ A construct with no row, or a row with no exploiting pass, or a pass with
 no test, is an open compiler gap. The ledger is the concrete form of the
 obligation in §5.1.
 
-## 9. The language/compiler split
-
-The **language** owns the temporal — algorithm shapes, canonical bodies,
+## 9. The language/compiler splitThe **language** owns the temporal — algorithm shapes, canonical bodies,
 composites, metaprogramming (`proof-vs-shape.md`). The **compiler** owns
 the eternal — proofs, proof-licensed rewrites, general lowering, the
 derivation machinery. The programmer declares through the *language*; the
