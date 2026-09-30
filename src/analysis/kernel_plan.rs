@@ -16,8 +16,9 @@
 //! Serializable (serde) + a stable textual [`KernelPlan::dump`] so plans
 //! are inspectable, golden-testable, and usable by the A/B harnesses.
 
+use crate::analysis::gemm_shape::detect_gemm_shape;
 use crate::analysis::gpu_strategy::GpuHardware;
-use crate::ast::Expr;
+use crate::ast::{Expr, TopLevel};
 use serde::{Deserialize, Serialize};
 
 /// Which memory an operand lives in.
@@ -177,7 +178,9 @@ impl KernelPlan {
     pub fn from_shape(
         name: &str,
         shape: &crate::analysis::accel::KernelShape,
+        items: &[TopLevel],
         consts: &std::collections::HashMap<String, Expr>,
+        hw: &GpuHardware,
     ) -> KernelPlan {
         use crate::analysis::accel::ReductionKind;
         let resolve = |e: &Expr| -> Option<u64> {
@@ -192,18 +195,95 @@ impl KernelPlan {
         };
         let has_deferred = shape.deferred_normalize.is_some();
         let has_reduce = shape.reduction.is_some();
+        let gemm = detect_gemm_shape(shape, items);
         let proofs = PlanProofs {
             disjoint_workitems: shape.eligible,
-            associative_reduce: has_reduce || has_deferred,
+            associative_reduce: has_reduce || has_deferred || gemm.is_some(),
             single_writer: shape.write_buffers.len() <= 1,
         };
-        let work = if has_reduce || has_deferred {
+        let work = if has_reduce || has_deferred || gemm.is_some() {
             WorkItem::PerItem
         } else {
             WorkItem::Strided
         };
         let mut ops = Vec::new();
-        if let Some(dn) = &shape.deferred_normalize {
+        let mut plan_shape = PlanShape {
+            tile_m: 1,
+            tile_n: 1,
+            stages: 1,
+        };
+        if let Some(g) = &gemm {
+            // GEMM: tile + stage + async copies + fragment loads + mma +
+            // store. Shape selection goes through the shared cost model.
+            let st = crate::analysis::gpu_strategy::select(
+                g.m as u64, g.n as u64, g.k as u64, hw,
+            );
+            let (tm, tn, stages) = st
+                .map(|s| (s.tile_m, s.tile_n, s.stages))
+                .unwrap_or((128, 128, 3));
+            plan_shape = PlanShape {
+                tile_m: tm,
+                tile_n: tn,
+                stages,
+            };
+            let a = MemRef {
+                buf: g.a_field.clone(),
+                space: MemSpace::Global,
+                elem_bytes: 2,
+            };
+            let b = MemRef {
+                buf: g.b_field.clone(),
+                space: MemSpace::Global,
+                elem_bytes: 2,
+            };
+            ops.push(PlanOp::Tile {
+                region: g.a_field.clone(),
+                tile_m: tm,
+                tile_n: tn,
+            });
+            ops.push(PlanOp::Stage { depth: stages });
+            ops.push(PlanOp::AsyncCopy {
+                src: a.clone(),
+                dst: MemRef {
+                    buf: format!("{}_smem", g.a_field),
+                    space: MemSpace::Shared,
+                    elem_bytes: 2,
+                },
+                bytes: tm * g.k as u64 * 2,
+            });
+            ops.push(PlanOp::AsyncCopy {
+                src: b.clone(),
+                dst: MemRef {
+                    buf: format!("{}_smem", g.b_field),
+                    space: MemSpace::Shared,
+                    elem_bytes: 2,
+                },
+                bytes: g.k as u64 * tn * 2,
+            });
+            let fa = FragLayout::new(16, 16, 2, false);
+            let fb = FragLayout::new(16, 8, 2, false);
+            let fcy = FragLayout::new(16, 16, 4, false);
+            ops.push(PlanOp::LoadMatrix {
+                src: a,
+                frag: fa,
+            });
+            ops.push(PlanOp::LoadMatrix {
+                src: b,
+                frag: fb,
+            });
+            ops.push(PlanOp::Mma {
+                a: fa,
+                b: fb,
+                acc: fcy,
+            });
+            ops.push(PlanOp::Store {
+                dst: MemRef {
+                    buf: g.y_field.clone(),
+                    space: MemSpace::Global,
+                    elem_bytes: 4,
+                },
+            });
+        } else if let Some(dn) = &shape.deferred_normalize {
             // Deferred/softmax region (takes precedence, as in the emitter):
             // the reduction span is the accumulator loop's range end.
             ops.push(PlanOp::Reduce {
@@ -230,24 +310,22 @@ impl KernelPlan {
                 scope: Scope::Workgroup,
             });
         }
-        if let Some(buf) = shape.write_buffers.first() {
-            ops.push(PlanOp::Store {
-                dst: MemRef {
-                    buf: buf.clone(),
-                    space: MemSpace::Global,
-                    elem_bytes: 4,
-                },
-            });
+        if gemm.is_none() {
+            if let Some(buf) = shape.write_buffers.first() {
+                ops.push(PlanOp::Store {
+                    dst: MemRef {
+                        buf: buf.clone(),
+                        space: MemSpace::Global,
+                        elem_bytes: 4,
+                    },
+                });
+            }
         }
         KernelPlan {
             node: name.to_string(),
             work,
             ops,
-            shape: PlanShape {
-                tile_m: 1,
-                tile_n: 1,
-                stages: 1,
-            },
+            shape: plan_shape,
             proofs,
         }
     }
@@ -528,7 +606,7 @@ mod tests {
                 reduce_end: Expr::Identifier("NKV".into()),
             }),
         };
-        let d = KernelPlan::from_shape("fattn", &shape, &consts).dump();
+        let d = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86).dump();
         assert!(d.contains("node fattn"), "{d}");
         assert!(
             d.contains("op reduce softmax span=4096 tree=linear"),
@@ -576,7 +654,7 @@ mod tests {
             }),
             deferred_normalize: None,
         };
-        let p = KernelPlan::from_shape("dot", &shape, &consts);
+        let p = KernelPlan::from_shape("dot", &shape, &[], &consts, &GpuHardware::SM86);
         let d = p.dump();
         assert!(d.contains("node dot"), "{d}");
         assert!(d.contains("work per_item"), "{d}");

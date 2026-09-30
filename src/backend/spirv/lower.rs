@@ -2806,20 +2806,11 @@ fn aligned_div4(
 /// Replace const identifiers with their literal values (the unroll alignment
 /// proof needs coefficients as literals; emit-time const resolution happens
 /// later).
-pub(crate) fn fold_consts(e: &Expr, consts: &std::collections::HashMap<String, i64>) -> Expr {
-    match e {
-        Expr::Identifier(n) => match consts.get(n) {
-            Some(v) => Expr::Decimal(*v),
-            None => e.clone(),
-        },
-        Expr::BinaryOp(k, l, r) => Expr::BinaryOp(
-            *k,
-            Box::new(fold_consts(l, consts)),
-            Box::new(fold_consts(r, consts)),
-        ),
-        other => other.clone(),
-    }
-}
+// 2026-09-30 (KernelPlan Phase 1b): `fold_consts` moved to the frontend
+// (`analysis::gemm_shape`) so the structural GEMM matcher and this
+// lowering share one AST const-folder. Re-exported to keep the existing
+// `lower::fold_consts` call sites and path working.
+pub(crate) use crate::analysis::gemm_shape::fold_consts;
 
 pub(crate) fn div4(e: &Expr) -> Option<Expr> {
     match e {

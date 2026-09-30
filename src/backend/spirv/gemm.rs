@@ -20,7 +20,6 @@
 //! compiler picks — never a keyword the user writes.
 
 use super::kernel::{begin_structured_loop, end_structured_loop, CoopLoopSig};
-use super::lower::fold_consts;
 use crate::ast::{Expr, Statement, TopLevel, Type};
 use rspirv::dr::{Instruction, Operand};
 use rspirv::spirv::{self, StorageClass, Word};
@@ -44,102 +43,6 @@ pub(crate) struct GemmPlan {
     pub a_field: String,
     pub b_field: String,
     pub y_field: String,
-}
-
-/// Resolve a literal expression: Decimal, a const identifier, or a pure
-/// arithmetic combination of those (`M * N` bounds, `0..K` ends). The
-/// module-level consts are the .abv metadata that makes the tiled shape
-/// statically checkable at all.
-fn lit(e: &Expr, consts: &HashMap<String, i64>) -> Option<i64> {
-    match e {
-        Expr::Decimal(d) => Some(*d),
-        Expr::Identifier(name) => consts.get(name).copied(),
-        Expr::BinaryOp(kind, l, r) => {
-            let (a, b) = (lit(l, consts)?, lit(r, consts)?);
-            match kind {
-                crate::ast::BinaryOpKind::Add => Some(a.checked_add(b)?),
-                crate::ast::BinaryOpKind::Sub => Some(a.checked_sub(b)?),
-                crate::ast::BinaryOpKind::Mul => Some(a.checked_mul(b)?),
-                crate::ast::BinaryOpKind::Div if b != 0 => Some(a.checked_div(b)?),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-/// `mul(ident, literal)` — either operand order.
-fn linear_term_of(e: &Expr, name: &str) -> Option<i64> {
-    match e {
-        Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) => {
-            if let Expr::Identifier(n) = l.as_ref() {
-                if n == name {
-                    if let Some(v) = lit(r, &HashMap::new()) {
-                        return Some(v);
-                    }
-                }
-            }
-            if let Expr::Identifier(n) = r.as_ref() {
-                if n == name {
-                    if let Some(v) = lit(l, &HashMap::new()) {
-                        return Some(v);
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// `a_idx` must be `m*K + k` or `k + m*K` (row-major, k coefficient 1).
-/// Returns K. Callers fold the expr with the const map first so `K` (an
-/// identifier const in the .abv) arrives as a Decimal.
-fn match_a_index(e: &Expr, m: &str, k: &str) -> Option<i64> {
-    match e {
-        Expr::BinaryOp(crate::ast::BinaryOpKind::Add, l, r) => {
-            if let Some(v) = linear_term_of(l, m) {
-                if let Expr::Identifier(k1) = r.as_ref() {
-                    if k1 == k {
-                        return Some(v);
-                    }
-                }
-            }
-            if let Some(v) = linear_term_of(r, m) {
-                if let Expr::Identifier(k1) = l.as_ref() {
-                    if k1 == k {
-                        return Some(v);
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// `b_idx` must be `k*N + n` or `n + k*N`. Returns N.
-fn match_b_index(e: &Expr, k: &str, n: &str) -> Option<i64> {
-    match e {
-        Expr::BinaryOp(crate::ast::BinaryOpKind::Add, l, r) => {
-            if let Some(v) = linear_term_of(l, k) {
-                if let Expr::Identifier(n1) = r.as_ref() {
-                    if n1 == n {
-                        return Some(v);
-                    }
-                }
-            }
-            if let Some(v) = linear_term_of(r, k) {
-                if let Expr::Identifier(n1) = l.as_ref() {
-                    if n1 == n {
-                        return Some(v);
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
 }
 
 impl GemmPlan {
@@ -284,197 +187,18 @@ impl GemmPlan {
         shape: &crate::analysis::accel::KernelShape,
         items: &[TopLevel],
     ) -> Option<GemmPlan> {
-        let consts = module_const_map(items);
-        let iv = shape.index_var.clone();
-
-        let bound_v = lit(&fold_consts(shape.count_expr.as_ref()?, &consts), &consts)?;
-        let lets = collect_let_table(&shape.kernel_stmts, &consts);
-        let (m_name, n_name, n) = match_decomposition(&lets, &consts, &iv)?;
-        let m = bound_v.checked_div(n)?;
-
-        let (k_item, k, fbody) = match_foreach(&shape.kernel_stmts, &consts)?;
-        let decomp = Decomp {
-            m_name: &m_name,
-            n_name: &n_name,
-            k_item: &k_item,
-            k,
-            n,
-        };
-        let (acc, a_field, b_field) = match_reduction(&fbody, &decomp, &consts)?;
-        let y_field = match_y_store(&shape.kernel_stmts, &iv, &acc)?;
-
-        if m <= 0 || n <= 0 || k <= 0 {
-            return None;
-        }
-        if m % TILE as i64 != 0 || n % TILE as i64 != 0 || k % TILE as i64 != 0 {
-            return None;
-        }
+        // 2026-09-30 (KernelPlan Phase 1b): the structural matcher lives in
+        // the frontend (`analysis::gemm_shape`) — one decision shared by
+        // every lowering. This wrapper only re-shapes it into `GemmPlan`.
+        let g = crate::analysis::gemm_shape::detect_gemm_shape(shape, items)?;
         Some(GemmPlan {
-            m,
-            n,
-            k,
-            a_field,
-            b_field,
-            y_field,
+            m: g.m,
+            n: g.n,
+            k: g.k,
+            a_field: g.a_field,
+            b_field: g.b_field,
+            y_field: g.y_field,
         })
-    }
-}
-
-/// Module-level `const` literals — the .abv metadata that makes the tiled
-/// shape statically checkable at all.
-fn module_const_map(items: &[TopLevel]) -> HashMap<String, i64> {
-    let mut consts = HashMap::new();
-    for item in items {
-        if let TopLevel::Constant(c) = item {
-            if let Expr::Decimal(d) = &c.expr {
-                consts.insert(c.name.clone(), *d);
-            }
-        }
-    }
-    consts
-}
-
-/// The node's let table (name → const-folded initializer).
-fn collect_let_table(stmts: &[Statement], consts: &HashMap<String, i64>) -> HashMap<String, Expr> {
-    let mut lets = HashMap::new();
-    for stmt in stmts {
-        if let Statement::Let { name, expr: Some(e), .. } = stmt {
-            lets.insert(name.clone(), fold_consts(e, consts));
-        }
-    }
-    lets
-}
-
-/// The flattened-2D decomposition: m = i / DN, n = i % DN (same divisor).
-fn match_decomposition(
-    lets: &HashMap<String, Expr>,
-    consts: &HashMap<String, i64>,
-    iv: &str,
-) -> Option<(String, String, i64)> {
-    let mut m_name: Option<String> = None;
-    let mut n_name: Option<String> = None;
-    let mut div: Option<i64> = None;
-    for (name, e) in lets {
-        if let Expr::BinaryOp(kind, l, r) = e {
-            if !matches!(l.as_ref(), Expr::Identifier(x) if x == iv) {
-                continue;
-            }
-            let d = lit(r, consts)?;
-            match kind {
-                crate::ast::BinaryOpKind::Div => {
-                    m_name = Some(name.clone());
-                    div = Some(d);
-                }
-                crate::ast::BinaryOpKind::Mod => {
-                    n_name = Some(name.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-    let n = div?;
-    Some((m_name?, n_name?, n))
-}
-
-/// The reduction foreach: item name, literal trip count K, body clone.
-fn match_foreach(
-    stmts: &[Statement],
-    consts: &HashMap<String, i64>,
-) -> Option<(String, i64, Vec<Statement>)> {
-    for stmt in stmts {
-        if let Statement::Foreach { item, list, body } = stmt {
-            if let Expr::Range { end, .. } = list.as_ref() {
-                let end = fold_consts(end, consts);
-                if let Some(k) = lit(&end, consts) {
-                    return Some((item.clone(), k, body.clone()));
-                }
-            }
-        }
-    }
-    None
-}
-
-/// The decomposition names + literal strides the reduction match needs.
-struct Decomp<'a> {
-    m_name: &'a str,
-    n_name: &'a str,
-    k_item: &'a str,
-    k: i64,
-    n: i64,
-}
-
-/// The reduction statement: acc = acc + A[m*K + k] * B[k*N + n].
-fn match_reduction(
-    fbody: &[Statement],
-    d: &Decomp,
-    consts: &HashMap<String, i64>,
-) -> Option<(String, String, String)> {
-    if fbody.len() != 1 {
-        return None;
-    }
-    let Statement::Assign(lhs, rhs) = &fbody[0] else {
-        return None;
-    };
-    let Expr::Identifier(acc) = lhs else {
-        return None;
-    };
-    let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, a, b) = rhs else {
-        return None;
-    };
-    if !matches!(a.as_ref(), Expr::Identifier(x) if x == acc) {
-        return None;
-    }
-    let Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) = b.as_ref() else {
-        return None;
-    };
-    let a_idx_f = fold_consts(match_index_of(l.as_ref())?, consts);
-    let b_idx_f = fold_consts(match_index_of(r.as_ref())?, consts);
-    let a_field = match_field_of(l.as_ref())?;
-    let b_field = match_field_of(r.as_ref())?;
-    let a_row_stride = match_a_index(&a_idx_f, d.m_name, d.k_item)?;
-    let b_col_stride = match_b_index(&b_idx_f, d.k_item, d.n_name)?;
-    if a_row_stride != d.k || b_col_stride != d.n {
-        return None;
-    }
-    Some((acc.clone(), a_field, b_field))
-}
-
-/// The store: y[i] = acc (LHS index is the BARE counter).
-fn match_y_store(stmts: &[Statement], iv: &str, acc: &str) -> Option<String> {
-    for stmt in stmts {
-        let Statement::Assign(lhs, Expr::Identifier(v)) = stmt else {
-            continue;
-        };
-        if v != acc {
-            continue;
-        }
-        let Expr::Index(of, idx) = lhs else {
-            continue;
-        };
-        if !matches!(idx.as_ref(), Expr::Identifier(x) if x == iv) {
-            continue;
-        }
-        if let Expr::Identifier(f) = of.as_ref() {
-            return Some(f.clone());
-        }
-    }
-    None
-}
-
-fn match_index_of(e: &Expr) -> Option<&Expr> {
-    match e {
-        Expr::Index(_, idx) => Some(idx),
-        _ => None,
-    }
-}
-
-fn match_field_of(e: &Expr) -> Option<String> {
-    match e {
-        Expr::Index(of, _) => match of.as_ref() {
-            Expr::Identifier(f) => Some(f.clone()),
-            _ => None,
-        },
-        _ => None,
     }
 }
 
