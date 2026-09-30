@@ -38,6 +38,26 @@ softmax (41 µs) are secondary.
   parallel NKV reduction / lane-mapped reduction per `0051d920`/`05c`), to
   bring the composite from ~2478 µs toward 125 µs.
 
+## MEASUREMENT CAVEAT (added after clock probing)
+
+The composite launch latency is **bimodal**: over 200 reps, **p10 =
+200.8 µs, p50 = 2470.5 µs, p90 = 2527.8 µs**. The p10 is consistent with
+a ramped clock; the p50 with a capped one — the same small-grid clock
+cap found in the GEMM campaign (a 20-CTA kernel sitting at ~210 MHz).
+So the "20× off target" figure is **partly a rig artifact**: the ramped
+latency is ~200 µs (≈1.6× off the 125 µs target), not 2478 µs.
+
+This makes a **reliable sustained/clock-controlled decode measurement the
+prerequisite** before any kernel optimization — the current per-step
+microbench (host push between launches) lets clocks fall between
+samples. Also note the 3-kernel pv p50 = 3179 µs is confounded the same
+way.
+
+Revised reading: decode attention is ~200 µs ramped vs ≤125 µs target
+and ~58 µs ggml — a ~1.6× gap to the target (3.4× to ggml), driven by
+the `grid = H` underfill (no split-K) plus per-`j` pass overhead — NOT a
+20× defect.
+
 ## Recommendation
 
 Re-scope 5a: (1) gate the decode path by shape (prefill → composite,
