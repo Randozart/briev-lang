@@ -196,6 +196,10 @@ landing the CUDA lane at 27.5 TF; both recorded in
 Re-rank outputs a single committed plan for the chosen stage (this umbrella
 plan's stage 5 entry points at it).
 
+**Re-rank (2026-09-30, B4):** order confirmed 5c → 5b → 5a → 5d from the
+B1/gates numbers; 5c selected and planned in
+`docs/plans/2026-09-30-stage5-re-rank-and-5c.md`.
+
 ---
 
 ## Standing gates (every stage)

@@ -311,14 +311,36 @@ fn elem_bytes_of(layout: &SsboLayout, name: &str) -> Result<u64, String> {
 /// 2026-09-19 (M1 warp-sliced reductions, plan general-machinery):
 /// detect a top-level serial foreach-reduce long enough to split across
 /// the block's warps: the body matches the serial-unroll shape (single
-/// accumulator, loads linear in the item), the span is ≥ 512, and
-/// span % 4 == 0 (4 warps per 128-thread block, exact slices, no tail).
+/// accumulator, loads linear in the item), the span meets the
+/// `ptx_warp_slice_min_span` threshold, and it divides the
+/// `ptx_warp_slice_warps` count exactly (exact slices, no tail).
 /// Used by both the emitter (lowering choice) and the runner
-/// (block-per-workitem dispatch, block_threads 128). Structural match,
-/// same discipline as has_lane_reduction.
+/// (block-per-workitem dispatch, block_threads warps*32). Structural
+/// match, same discipline as has_lane_reduction. Thresholds come from
+/// config since 2026-09-30 (stage-5 5c) — one predicate
+/// (`warp_slice_span_ok`) shared with the emission gate.
 pub fn has_warp_slice(
     kernel_stmts: &[Statement],
     consts: &std::collections::HashMap<String, Expr>,
+) -> bool {
+    let cfg = crate::config_tuning::ir_lowering();
+    has_warp_slice_with(
+        kernel_stmts,
+        consts,
+        cfg.ptx_warp_slice_min_span,
+        cfg.ptx_warp_slice_warps,
+    )
+}
+
+/// The detector with explicit thresholds — testable without mutating the
+/// process-wide config (the CLI installs overrides via a OnceLock that
+/// must not be poisoned by unit tests). `has_warp_slice` is the config
+/// reading wrapper.
+pub fn has_warp_slice_with(
+    kernel_stmts: &[Statement],
+    consts: &std::collections::HashMap<String, Expr>,
+    min_span: u32,
+    warps: u32,
 ) -> bool {
     for stmt in kernel_stmts {
         let Statement::Foreach {
@@ -347,7 +369,7 @@ pub fn has_warp_slice(
             continue;
         };
         let span = e - s;
-        if span < 512 || span % 4 != 0 {
+        if !warp_slice_span_ok(span, min_span, warps) {
             continue;
         }
         let ctx = UnrollCtx {
@@ -361,6 +383,39 @@ pub fn has_warp_slice(
         }
     }
     false
+}
+
+/// 2026-09-30 (stage-5 5c, plan 2026-09-30-stage5-re-rank-and-5c): THE
+/// warp-slice eligibility predicate — one source for the detector
+/// (`has_warp_slice_with`) and the emission gate (the foreach arm),
+/// which previously duplicated `span >= 512 && span % 4 == 0`. `min_span`
+/// and `warps` come from config/ir-lowering.dbvl; defaults reproduce the
+/// original constants byte-identically. `warps == 0` is guarded even
+/// though the config loader clamps to 1..=8 (defensive against a future
+/// caller passing raw values — a zero divisor would panic).
+fn warp_slice_span_ok(span: i64, min_span: u32, warps: u32) -> bool {
+    span >= min_span as i64 && warps > 0 && span % warps as i64 == 0
+}
+
+/// The warp-sliced dispatch block size: warps*32 threads (warp = 32 is a
+/// hardware fact and stays in the backend). Single source for the
+/// emitter's `block_threads` arm and the mod.rs dispatch desc — they
+/// must lockstep or the runtime launches the wrong geometry (bug-14
+/// class).
+pub(crate) fn warp_slice_block_threads(warps: u32) -> u32 {
+    warps * 32
+}
+
+/// 2026-09-30 (stage-5 5c): the warp-slice emission inputs, bundled
+/// (plan + decl + body — 4 parameters; the pre-5c signature was already
+/// over the house limit at 7). `warps` derives from config
+/// (`ptx_warp_slice_warps`); `start`/`span` come from the matched range.
+struct WarpSliceEmit<'a> {
+    body_stmts: &'a [Statement],
+    item: &'a str,
+    start: i64,
+    span: i64,
+    warps: u32,
 }
 
 /// 2026-09-18 (P1 lane-coverage fix): detect whether `kernel_stmts`
@@ -942,7 +997,7 @@ impl<'a> Gen<'a> {
         self.block_threads = if region.is_some() {
             1024
         } else if has_warp_slice(&shape.kernel_stmts, self.consts) {
-            128
+            warp_slice_block_threads(crate::config_tuning::ir_lowering().ptx_warp_slice_warps)
         } else {
             64
         };
@@ -1107,14 +1162,20 @@ impl<'a> Gen<'a> {
                 }
                 // 2026-09-19 (M1 warp-sliced reductions, plan
                 // general-machinery): a LONG serial reduction splits across
-                // the block's 4 warps (P1 block-per-workitem dispatch,
-                // smem partial merge). Parallelism beats the unroll's MLP,
-                // so the slice takes priority; the unroll stays the
-                // fallback for short or non-divisible loops.
-                if crate::config_tuning::ir_lowering().ptx_warp_slice
+                // the block's warps (P1 block-per-workitem dispatch, smem
+                // partial merge). Parallelism beats the unroll's MLP, so
+                // the slice takes priority; the unroll stays the
+                // fallback for short or non-divisible loops. Eligibility
+                // is the shared predicate (2026-09-30 stage-5 5c) — the
+                // detector and this gate used to duplicate the literals.
+                let ws = crate::config_tuning::ir_lowering();
+                if ws.ptx_warp_slice
                     && matches!(lane_plan, None)
-                    && ctx.end >= ctx.start + 512
-                    && (ctx.end - ctx.start) % 4 == 0
+                    && warp_slice_span_ok(
+                        ctx.end - ctx.start,
+                        ws.ptx_warp_slice_min_span,
+                        ws.ptx_warp_slice_warps,
+                    )
                 {
                     let slice_ctx = UnrollCtx {
                         item,
@@ -1126,10 +1187,13 @@ impl<'a> Gen<'a> {
                         .is_some()
                     {
                         return self.emit_warp_sliced(
-                            loop_body,
-                            item,
-                            ctx.start,
-                            ctx.end - ctx.start,
+                            WarpSliceEmit {
+                                body_stmts: loop_body,
+                                item,
+                                start: ctx.start,
+                                span: ctx.end - ctx.start,
+                                warps: ws.ptx_warp_slice_warps,
+                            },
                             decl,
                             body,
                         );
@@ -1521,16 +1585,25 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     /// contract as the butterflies and the unroll pass.
     fn emit_warp_sliced(
         &mut self,
-        body_stmts: &[Statement],
-        item: &str,
-        start: i64,
-        span: i64,
+        plan: WarpSliceEmit<'_>,
         decl: &mut String,
         body: &mut String,
     ) -> Result<(), String> {
+        let WarpSliceEmit {
+            body_stmts,
+            item,
+            start,
+            span,
+            warps,
+        } = plan;
         let acc_name = Self::slice_acc_name(body_stmts)
             .ok_or_else(|| "ptx general: warp slice without a scalar accumulator".to_string())?;
-        let quarter = (span / 4) as u32;
+        // 2026-09-30 (stage-5 5c): every warp-count constant below
+        // derives from `warps` (config `ptx_warp_slice_warps`, default 4
+        // = the original hardcoded shape). The constants that stay
+        // literal are hardware facts: warp = 32 lanes (`shr 5`), f32
+        // slot = 4 bytes (smem addressing), `bar.sync`.
+        let quarter = (span / warps as i64) as u32;
         let r_warp = self.fresh_r();
         let r_lo = self.fresh_r();
         let r_hi = self.fresh_r();
@@ -1544,7 +1617,11 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         decl.push_str(&format!("    .reg .pred {};\n", pred));
         decl.push_str(&format!("    .reg .f32 {};\n", f_t));
         decl.push_str(&format!("    .reg .b64 {};\n", rd_part));
-        decl.push_str("    .shared .align 4 .b8 wpart[16];\n");
+        // One f32 partial slot per warp (warps * 4 bytes).
+        decl.push_str(&format!(
+            "    .shared .align 4 .b8 wpart[{}];\n",
+            warps * 4
+        ));
 
         let acc_reg = self.regs.get(&acc_name).cloned().ok_or_else(|| {
             format!("ptx general: warp slice accumulator '{acc_name}' is not bound")
@@ -1590,10 +1667,11 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         ));
         body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_part, acc_reg));
         body.push_str("    bar.sync 0;\n");
-        // merge: the accumulator becomes the sum of the four warp partials.
+        // merge: the accumulator becomes the sum of the warp partials
+        // (warps of them; default 4 = the original shape).
         body.push_str(&format!("    mov.u64 {}, wpart;\n", rd_part));
         body.push_str(&format!("    ld.shared.f32 {}, [{}+0];\n", acc_reg, rd_part));
-        for k in 1..4 {
+        for k in 1..warps {
             body.push_str(&format!(
                 "    ld.shared.f32 {}, [{}+{}];\n",
                 f_t, rd_part, k * 4
@@ -2498,8 +2576,18 @@ mod tests {
                 ),
             ),
         )];
-        g.emit_warp_sliced(&body_stmts, "j", 0, 4096, &mut decl, &mut body)
-            .expect("emits");
+        g.emit_warp_sliced(
+            WarpSliceEmit {
+                body_stmts: &body_stmts,
+                item: "j",
+                start: 0,
+                span: 4096,
+                warps: 4,
+            },
+            &mut decl,
+            &mut body,
+        )
+        .expect("emits");
         let ptx = format!("{decl}{body}");
         // Warp id, exact quarter slices (4096/4), smem partials, barrier.
         assert!(ptx.contains("shr.u32"), "warp id: {ptx}");
@@ -2510,6 +2598,119 @@ mod tests {
         assert_eq!(ptx.matches("ld.shared.f32").count(), 4, "4 partial reads");
         // has_warp_slice agrees at the shape level (mod.rs dispatch reads it).
         assert!(has_warp_slice(&shape.kernel_stmts, &consts));
+    }
+
+    #[test]
+    fn warp_slice_emission_derives_geometry_from_warp_count() {
+        // 2026-09-30 (stage-5 5c): warps=2 must re-derive EVERY count —
+        // smem slots, quarter, merge reads — while the hardware facts
+        // (32-lane warp id, 4-byte f32 slot, barrier) stay literal.
+        let layout = pv_layout();
+        let consts = consts();
+        let universe = crate::type_universe::TypeUniverse::new();
+        let mut g = Gen::new(&layout, &consts, 2560, &universe, 32);
+        g.block_work_item = true;
+        g.regs.insert("acc".into(), "%f0".into());
+        let mut decl = String::from("    .reg .b64  %rd1;\n");
+        let mut body = String::from("    mov.u32 %r1, %ctaid.x;\n");
+        let body_stmts = vec![Statement::Assign(
+            id("acc"),
+            bin(Add, id("acc"), bin(Mul, idx("o1", id("j")), idx("v", id("j")))),
+        )];
+        g.emit_warp_sliced(
+            WarpSliceEmit {
+                body_stmts: &body_stmts,
+                item: "j",
+                start: 0,
+                span: 4096,
+                warps: 2,
+            },
+            &mut decl,
+            &mut body,
+        )
+        .expect("emits");
+        let ptx = format!("{decl}{body}");
+        assert!(ptx.contains(".shared .align 4 .b8 wpart[8];"), "smem = warps*4: {ptx}");
+        assert!(ptx.contains(", 2048, "), "quarter = span/2: {ptx}");
+        assert_eq!(
+            ptx.matches("ld.shared.f32").count(),
+            2,
+            "1 + (warps - 1) partial reads: {ptx}"
+        );
+        assert!(ptx.contains("bar.sync 0;"), "merge barrier: {ptx}");
+        assert!(ptx.contains("shr.u32"), "warp id stays a hardware fact: {ptx}");
+    }
+
+    #[test]
+    fn warp_slice_span_predicate_edges() {
+        // The shared predicate reproduces the original literals at the
+        // default config pair (512 / 4)…
+        assert!(!warp_slice_span_ok(511, 512, 4), "below min_span");
+        assert!(warp_slice_span_ok(512, 512, 4), "exact min_span");
+        assert!(!warp_slice_span_ok(513, 512, 4), "not divisible by warps");
+        // …and each tunable moves the decision independently.
+        assert!(warp_slice_span_ok(256, 64, 4), "min_span 64 admits 256");
+        assert!(!warp_slice_span_ok(256, 512, 4), "same span, default min");
+        assert!(warp_slice_span_ok(4096, 512, 8), "warps 8 divides 4096");
+        assert!(!warp_slice_span_ok(514, 512, 8), "warps 8 rejects 514");
+        // Defensive: warps=0 never divides (the config loader clamps to
+        // 1..=8; this guards non-config callers from a modulo panic).
+        assert!(!warp_slice_span_ok(512, 512, 0), "zero warps reject");
+        // Dispatch geometry derives from the warp count.
+        assert_eq!(warp_slice_block_threads(4), 128, "default geometry");
+        assert_eq!(warp_slice_block_threads(2), 64);
+        assert_eq!(warp_slice_block_threads(8), 256);
+    }
+
+    #[test]
+    fn has_warp_slice_with_applies_configured_thresholds() {
+        // 2026-09-30 (stage-5 5c): explicit-threshold detector — the
+        // unit-testable path (the config wrapper reads a process-wide
+        // OnceLock the CLI owns; unit tests must not poison it).
+        // Default shape (span 4096): non-divisor warp counts reject —
+        // detector and emission gate share this predicate, so a config
+        // the emitter's exact-slice arithmetic could not serve is never
+        // half-selected.
+        let shape = pv_shape();
+        let full_span_consts = consts();
+        assert!(has_warp_slice_with(
+            &shape.kernel_stmts,
+            &full_span_consts,
+            512,
+            4
+        ));
+        assert!(has_warp_slice_with(
+            &shape.kernel_stmts,
+            &full_span_consts,
+            512,
+            8
+        ));
+        assert!(!has_warp_slice_with(
+            &shape.kernel_stmts,
+            &full_span_consts,
+            512,
+            3
+        ));
+
+        // Span 256 (NKV pinned): rejected at default min_span, admitted
+        // when the configured threshold drops.
+        let mut shape = pv_shape();
+        let mut short_span_consts = full_span_consts;
+        short_span_consts.insert("NKV".into(), num(256));
+        if let Some(Statement::Foreach { list, .. }) = shape
+            .kernel_stmts
+            .iter_mut()
+            .find(|s| matches!(s, Statement::Foreach { .. }))
+        {
+            *list = Box::new(Expr::Range {
+                start: Box::new(num(0)),
+                end: Box::new(num(256)),
+                inclusive: false,
+            });
+        }
+        assert!(!has_warp_slice_with(&shape.kernel_stmts, &short_span_consts, 512, 4));
+        assert!(has_warp_slice_with(&shape.kernel_stmts, &short_span_consts, 64, 4));
+        assert!(!has_warp_slice_with(&shape.kernel_stmts, &short_span_consts, 64, 3), "256 % 3 != 0");
     }
 
     #[test]

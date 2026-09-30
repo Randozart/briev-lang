@@ -230,6 +230,18 @@ pub struct IrLoweringSettings {
     /// expected at bitnet geometry). false keeps the 1-wide/unrolled
     /// serial form.
     pub ptx_warp_slice: bool,
+    /// 2026-09-30 (stage-5 5c, plan 2026-09-30-stage5-re-rank-and-5c):
+    /// smallest reduction span the warp-slice detector/emitter splits
+    /// (was the hardcoded 512 shared by both sites). Tuning knee — M1
+    /// record `docs/plans/2026-09-19-general-machinery.md`. Clamped
+    /// 0..=65536.
+    pub ptx_warp_slice_min_span: u32,
+    /// 2026-09-30 (stage-5 5c): warps per block for warp-sliced
+    /// reductions (was the hardcoded 4). Geometry derives from it:
+    /// block threads = warps*32, slice quarter = span/warps, smem
+    /// partials = warps*4 bytes; warp=32 and the f32 slot stay backend
+    /// hardware facts. Clamped 1..=8 (block ≤ 256 threads).
+    pub ptx_warp_slice_warps: u32,
     /// 2026-09-19 (M1-finish): the deferred-softmax region lowering
     /// (head-mapped 2-pass node → 1024-thread warp-sliced kernel). 2026-09-20:
     /// NaN bugs fixed (m_init negation, dot-body inlining, l butterfly, acc
@@ -348,6 +360,8 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_fused_attention: false,
     ptx_serial_unroll: 4,
     ptx_warp_slice: false,
+    ptx_warp_slice_min_span: 512,
+    ptx_warp_slice_warps: 4,
     ptx_deferred_region: false,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
@@ -609,6 +623,14 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_warp_slice", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_warp_slice),
+        ptx_warp_slice_min_span: db
+            .field_int("ptx_warp_slice_min_span", 0)
+            .map(|v| v.max(0).min(65536) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_warp_slice_min_span),
+        ptx_warp_slice_warps: db
+            .field_int("ptx_warp_slice_warps", 0)
+            .map(|v| v.max(1).min(8) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_warp_slice_warps),
         ptx_deferred_region: db
             .field_int("ptx_deferred_region", 0)
             .map(|v| v != 0)
@@ -759,6 +781,28 @@ vector_min_width = 0
         assert_eq!(s.max_fields_per_alloca as i64, i64_of("max_fields_per_alloca"));
         assert_eq!(s.sso_max_bytes as i64, i64_of("sso_max_bytes"));
         assert_eq!(s.callable_inline_weight_threshold as i64, i64_of("callable_inline_weight_threshold"));
+    }
+
+    #[test]
+    fn test_ir_lowering_warp_slice_tunables_parse_and_clamp() {
+        // 2026-09-30 (stage-5 5c): the warp-slice pair — defaults
+        // reproduce the historical hardcoded 512 / 4 (shipped config
+        // asserted), absent fields fall back, explicit values parse,
+        // clamps bound the geometry knobs.
+        let d = parse_ir_lowering("");
+        assert_eq!(d.ptx_warp_slice_min_span, 512, "absent → default");
+        assert_eq!(d.ptx_warp_slice_warps, 4, "absent → default");
+        let shipped = ir_lowering();
+        assert_eq!(shipped.ptx_warp_slice_min_span, 512, "shipped config");
+        assert_eq!(shipped.ptx_warp_slice_warps, 4, "shipped config");
+        let e = parse_ir_lowering("ptx_warp_slice_min_span: 64;\nptx_warp_slice_warps: 8;\n");
+        assert_eq!(e.ptx_warp_slice_min_span, 64);
+        assert_eq!(e.ptx_warp_slice_warps, 8);
+        let lo = parse_ir_lowering("ptx_warp_slice_min_span: -5;\nptx_warp_slice_warps: 0;\n");
+        assert_eq!(lo.ptx_warp_slice_min_span, 0, "clamped low");
+        assert_eq!(lo.ptx_warp_slice_warps, 1, "zero warps → 1 (no modulo panic)");
+        let hi = parse_ir_lowering("ptx_warp_slice_warps: 99;\n");
+        assert_eq!(hi.ptx_warp_slice_warps, 8, "clamped high (block ≤ 256)");
     }
 
     #[test]

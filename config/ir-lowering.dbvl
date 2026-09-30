@@ -104,6 +104,18 @@ ptx_serial_unroll: 4;
 // blocks). fp reassociation via slice sums — gated by the a_err contract.
 // false keeps the 1-wide/unrolled serial form.
 ptx_warp_slice: 0;
+// 2026-09-30 (stage-5 5c, plan 2026-09-30-stage5-re-rank-and-5c): the
+// warp-slice tuning pair, extracted from the two hardcoded sites in
+// src/backend/ptx/general.rs (the detector and the emission gate
+// duplicated `span >= 512 && span % 4 == 0` — one decision, two
+// sources). min_span = smallest reduction span that splits (M1 knee:
+// shorter loops keep the serial unroll's MLP). warps = warps per block
+// for the slice; ALL geometry derives from it: block = warps*32 threads
+// (warp = 32 stays a backend hardware fact), quarter = span/warps,
+// smem partials = warps*4 bytes. Defaults = the original 512 / 4
+// constants — byte-identical IR at default config. warps clamped 1..=8.
+ptx_warp_slice_min_span: 512;
+ptx_warp_slice_warps: 4;
 
 // 2026-09-20: CUBIN emission (normal production mode).
 ptx_emit_cubin: 1;

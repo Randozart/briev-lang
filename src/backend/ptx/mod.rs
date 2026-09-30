@@ -1802,7 +1802,12 @@ pub fn build_ptx_kernels(
             let block_threads = if deferred {
                 1024
             } else if warp_sliced {
-                128
+                // 2026-09-30 (stage-5 5c): derive from the config warp
+                // count — the emitter's block_threads arm uses the same
+                // helper, so desc and emission cannot desync.
+                general::warp_slice_block_threads(
+                    crate::config_tuning::ir_lowering().ptx_warp_slice_warps,
+                )
             } else {
                 64
             };
