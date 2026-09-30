@@ -213,8 +213,16 @@ field retired).
      byte-identical to pre-relocation.
    - observability **DONE** (`e71742eb`): `BRIEV_DUMP_PLANS` prints every
      eligible node's plan.
-3. **Phase 2** PTX lowering adapters → (B) runner/desc projection
-   (absorb tensor case, delete S1 `split`). **NEXT.**
+3. **Phase 2** PTX lowering adapters → (B) runner/desc projection.
+   - 2.1 **DONE** (`a61cda7c`): `RunnerKernel.owner`/`domain` +
+     `emit_kernel_node` per-lane grouping (single-Shared fast path,
+     byte-identical).
+   - 2.2 **DONE** (`b89b750c`): compile.rs carries PTX companions as
+     `CudaOnly` projections; the split-enabled build emits
+     `fattn__combine` + the lane branch.
+   - **NEXT**: primary-as-`CudaOnly` for a split node + the multi-path
+     split factor (so `ptx_deferred_split` is correct/enableable), then
+     the PTX/SPIR-V lowering adapters, then delete S1's `split` field.
 4. **Split as `ReduceTree::Split`** → device-validate (unblocks 5a).
 5. SPIR-V lowering; Vulkan consumes `gpu_strategy`.
 6. Phase 3 retirements.
