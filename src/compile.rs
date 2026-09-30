@@ -1173,6 +1173,29 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 /// Code generation: dispatch to the selected backend, run Post/Back
 /// plugin IR stages, and return (output_text, extension).
 /// 2026-07-15: Phase 2 — Extracted from compile_source for flat flow.
+/// 2026-09-30 (KernelPlan Phase 2, item (B)): carry PTX companion kernels
+/// (those with no SPIR-V twin — e.g. a split combine) as `CudaOnly`
+/// projections so the runner's per-lane dispatch launches them. No ship
+/// kernel is `CudaOnly` today, so the emitted runner is unchanged.
+fn append_ptx_companions(
+    kernels: &mut Vec<briev_compiler::backend::spirv::runner::RunnerKernel>,
+    ptx_kernels: Vec<briev_compiler::backend::spirv::runner::RunnerKernel>,
+) {
+    use briev_compiler::backend::spirv::runner::KernelDomain;
+    for p in ptx_kernels {
+        if p.domain != KernelDomain::CudaOnly {
+            continue;
+        }
+        if kernels.iter().any(|k| k.name == p.name) {
+            continue;
+        }
+        let mut pc = p;
+        pc.ptx = pc.spirv.clone();
+        pc.spirv = Vec::new();
+        kernels.push(pc);
+    }
+}
+
 fn codegen(
     items: &[briev_compiler::ast::TopLevel],
     universe: &mut TypeUniverse,
@@ -1807,6 +1830,10 @@ fn codegen(
                             k.ptx_tensor = p.ptx_tensor;
                         }
                     }
+                    // 2026-09-30 (Phase 2, item (B)): PTX companion kernels
+                    // (e.g. a split combine) have no SPIR-V twin — carry
+                    // them as CudaOnly projections.
+                    append_ptx_companions(&mut kernels, ptx_kernels);
                 }
                 Err(e) => {
                     println!("note: PTX images unavailable for this program ({e}); CUDA lane skipped");
