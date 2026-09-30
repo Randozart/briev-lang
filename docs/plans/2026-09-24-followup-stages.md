@@ -197,8 +197,18 @@ Re-rank outputs a single committed plan for the chosen stage (this umbrella
 plan's stage 5 entry points at it).
 
 **Re-rank (2026-09-30, B4):** order confirmed 5c → 5b → 5a → 5d from the
-B1/gates numbers; 5c selected and planned in
+B1/gates numbers; 5c planned in
 `docs/plans/2026-09-30-stage5-re-rank-and-5c.md`.
+
+**5c DONE (2026-09-30, `8c0ece90`):** warp-slice geometry now derives
+from `config/ir-lowering.dbvl` (`ptx_warp_slice_min_span` /
+`ptx_warp_slice_warps`), shared predicate for detector + emission
+gate, defaults byte-identical end-to-end; on-device 4096³ all-ones
+PASS both lanes; gate results recorded in the plan doc. The pre-B
+gate also surfaced (and fixed, `aaaa1d6e`) three house-rule-§4
+nondeterminism defects + the `async_counters_idio` C-companion
+mismatch — see BUGS.md. **Next: 5b** (S3b cp.async GEMM; same-driver
+relative A/B — absolute 38+ TF stays vendor-blocked on driver 615).
 
 ---
 
