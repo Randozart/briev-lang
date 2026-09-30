@@ -200,6 +200,19 @@ plan's stage 5 entry points at it).
 B1/gates numbers; 5c planned in
 `docs/plans/2026-09-30-stage5-re-rank-and-5c.md`.
 
+**5a RE-SCOPED (2026-09-30, measurement):** the "retire the fused family,
+composite already landed" premise is **refuted at decode geometry**.
+Measured (bitnet D=128/H=20/HKV=5/NKV=4096, CUDA): composite
+**2478 µs**, 3-kernel **3443 µs** (pv 3179 µs dominates), vs the ≤125 µs
+target and ggml ~58 µs — the M=1 single-query pv serialises over NKV. The
+plan's own target table lists "Flash decode (hand-PTX)" at 125/91 µs, ~20×
+*faster* than the composite here, so the composite wins only for prefill.
+**Do NOT delete `fused_attention_*` until the composite reaches decode
+parity** (Rule 24 retirement gate). Real 5a work = a parallel decode
+reduction (split-K / lane-mapped over NKV) + shape-gating prefill→composite
+/decode→fast path. Full data:
+`benchmarks/results/2026-09-30-5a-attention-decode.md`.
+
 **5c DONE (2026-09-30, `8c0ece90`):** warp-slice geometry now derives
 from `config/ir-lowering.dbvl` (`ptx_warp_slice_min_span` /
 `ptx_warp_slice_warps`), shared predicate for detector + emission
