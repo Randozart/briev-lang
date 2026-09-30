@@ -1725,6 +1725,24 @@ fn split_eligible(kv: i64, dim: i64, s: u64) -> bool {
         && (kv / s as i64) % 32 == 0
 }
 
+/// 2026-09-30 (Phase 2/3, general reduction-split): the (name, domain) of a
+/// deferred node's PTX primary. A split node's PTX image is a *partial*
+/// kernel with a different grid contract than the SPIR-V full image — give
+/// it a distinct name + CudaOnly domain so compile.rs does not merge it
+/// (the full image becomes Vulkan-only). Non-split keeps the plain name as
+/// `Shared`.
+fn deferred_primary_identity(
+    name: &str,
+    def_split: u32,
+) -> (String, crate::backend::spirv::runner::KernelDomain) {
+    use crate::backend::spirv::runner::KernelDomain;
+    if def_split > 1 {
+        (format!("{name}__partial"), KernelDomain::CudaOnly)
+    } else {
+        (name.to_string(), KernelDomain::Shared)
+    }
+}
+
 /// 2026-09-30 (general reduction-split): the split factor for a deferred
 /// node plus `(dim, acc_buf, out_buf)` for the combine kernel. `(1, None)`
 /// when the split is off, the region does not map, or the emitter
@@ -1972,8 +1990,9 @@ pub fn build_ptx_kernels(
             } else {
                 ptx.into_bytes()
             };
+            let (kname, kdomain) = deferred_primary_identity(&name, def_split);
             out.push(RunnerKernel {
-                name: name.clone(),
+                name: kname,
                 spirv: blob,
                 image_plans: Vec::new(),
                 index_var: e.shape.index_var.clone(),
@@ -2004,7 +2023,7 @@ pub fn build_ptx_kernels(
                 ),
                 split: def_split,
                 owner: name.clone(),
-                domain: crate::backend::spirv::runner::KernelDomain::Shared,
+                domain: kdomain,
             });
             // 2026-09-30 (general reduction-split): the combine companion.
             if def_split > 1 {

@@ -1165,14 +1165,14 @@ fn emit_kernel_node(
             .iter()
             .filter(|(_, x)| x.domain != KernelDomain::VulkanOnly)
         {
-            out.push_str(&dispatch_geometry_stmt(x, *i, &ci));
+            out.push_str(&dispatch_with_split(x, *i, &ci));
         }
         out.push_str("      } else {\n");
         for (i, x) in node_ks
             .iter()
             .filter(|(_, x)| x.domain != KernelDomain::CudaOnly)
         {
-            out.push_str(&dispatch_geometry_stmt(x, *i, &ci));
+            out.push_str(&dispatch_with_split(x, *i, &ci));
         }
         out.push_str("      }\n");
         out.push_str(&format!("      S_{} = n_{};\n", c_ident(&k.index_var), ci));
@@ -1209,6 +1209,19 @@ fn split_dispatch(k: &RunnerKernel, kidx: usize, combine_idx: usize, ci: &str) -
         "      if (n_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, n_{ci} * {s})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n      if (n_{ci} > 0 && !briev_accel_launch_resident({combine_idx}, state, n_{ci})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n",
         s = k.split
     )
+}
+
+/// 2026-09-30 (Phase 2): one kernel's launch, honouring a split factor. A
+/// split partial kernel (block-per-workitem) is dispatched over `count * S`
+/// work items; every other kernel uses its plain geometry.
+fn dispatch_with_split(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
+    if k.split > 1 {
+        return format!(
+            "      if (n_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, n_{ci} * {})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n",
+            k.split
+        );
+    }
+    dispatch_geometry_stmt(k, kidx, ci)
 }
 
 /// The C dispatch statement for one kernel node, by blob geometry

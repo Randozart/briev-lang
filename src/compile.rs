@@ -1182,11 +1182,22 @@ fn append_ptx_companions(
     ptx_kernels: Vec<briev_compiler::backend::spirv::runner::RunnerKernel>,
 ) {
     use briev_compiler::backend::spirv::runner::KernelDomain;
-    for p in ptx_kernels {
-        if p.domain != KernelDomain::CudaOnly {
-            continue;
+    // Nodes that have a CudaOnly PTX projection no longer share their grid
+    // contract with the SPIR-V image → that image becomes Vulkan-only.
+    let cuda_owners: std::collections::HashSet<String> = ptx_kernels
+        .iter()
+        .filter(|p| p.domain == KernelDomain::CudaOnly)
+        .map(|p| p.owner.clone())
+        .collect();
+    for k in kernels.iter_mut() {
+        if k.domain == KernelDomain::Shared && cuda_owners.contains(&k.owner) {
+            k.domain = KernelDomain::VulkanOnly;
         }
-        if kernels.iter().any(|k| k.name == p.name) {
+    }
+    let existing: std::collections::HashSet<String> =
+        kernels.iter().map(|k| k.name.clone()).collect();
+    for p in ptx_kernels {
+        if p.domain != KernelDomain::CudaOnly || existing.contains(&p.name) {
             continue;
         }
         let mut pc = p;
