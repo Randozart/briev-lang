@@ -207,8 +207,13 @@ gate, defaults byte-identical end-to-end; on-device 4096³ all-ones
 PASS both lanes; gate results recorded in the plan doc. The pre-B
 gate also surfaced (and fixed, `aaaa1d6e`) three house-rule-§4
 nondeterminism defects + the `async_counters_idio` C-companion
-mismatch — see BUGS.md. **Next: 5b** (S3b cp.async GEMM; same-driver
-relative A/B — absolute 38+ TF stays vendor-blocked on driver 615).
+mismatch — see BUGS.md. **Next: 5b** — planned in
+`docs/plans/2026-09-30-stage5b-cuda-gemm-s5.md`. Scope correction to
+the `1cca9df4` wording: the "absolute 38+ TF vendor-blocked" caveat is
+**Vulkan/SPIR-V-only** (driver 615 regressed the workgroup-smem+barrier
+fill path there); the CUDA lane was never in that regression, so
+5b's 27.5 → 38 TF target at 4096³ is a valid same-machine chase with
+no vendor dependency.
 
 ---
 
