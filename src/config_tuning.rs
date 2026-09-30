@@ -207,6 +207,12 @@ pub struct IrLoweringSettings {
     /// 3 = skip B only; 4 = fills ON but the wait_group/membar/bar.sync
     /// suppressed (isolates the wait+barrier cost from the fill-byte cost).
     pub ptx_tensor_nofill: u32,
+    /// 2026-09-30 (stage-5 5b Phase 2'): tensor-GEMM CTA rasterization
+    /// order. The kernel is DRAM-bound on operand re-reads (A re-read per
+    /// n-tile, B per m-tile); the CTA launch order decides which operand
+    /// stays L2-resident. 0 = row-major (ship: `ctaid = m_cta·n_tiles +
+    /// n_cta`, concurrent CTAs share A) ; 1 = column-major (share B).
+    pub ptx_gemm_grid_order: u32,
     /// 2026-09-13 (E8a, plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec):
     /// warp specialization — the CTA grows to 10 warps (8 consumers keep the
     /// exact ship compute + y pass; 2 producer warps run the cp.async fill
@@ -366,6 +372,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_ksteps_per_stage: 1,
     ptx_tensor_stages: 0,
     ptx_tensor_nofill: 0,
+    ptx_gemm_grid_order: 0,
     ptx_tensor_warp_spec: false,
     ptx_fused_attention: false,
     ptx_serial_unroll: 4,
@@ -621,6 +628,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_tensor_nofill", 0)
             .map(|v| v.max(0).min(4) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_nofill),
+        ptx_gemm_grid_order: db
+            .field_int("ptx_gemm_grid_order", 0)
+            .map(|v| v.max(0).min(1) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_gemm_grid_order),
         ptx_tensor_warp_spec: db
             .field_int("ptx_tensor_warp_spec", 0)
             .map(|v| v != 0)

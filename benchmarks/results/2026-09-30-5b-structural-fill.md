@@ -91,3 +91,32 @@ L2-resident / microbench regime, not this one.)
 Phase 2 (register-staging) is therefore closed REJECTED, and the campaign
 pivots to the reuse/L2 axis (a new phase; see the plan).
 
+## Phase 2' — CTA rasterization — partial: column-major REJECTED
+
+`ptx_gemm_grid_order` (0 = row-major ship, 1 = column-major), all-ones
+PASS everywhere, steady-state:
+
+| shape | row-major (0) | column-major (1) |
+|---|---|---|
+| 4096³ | **27.1** | 11.4 |
+| 8192³ | **25.7** | 9.5 |
+| 2048³ | ~26 (noisy) | 11.4 |
+
+Column-major is **2.4× worse**: it shares the B slab across concurrent
+CTAs but destroys A locality, and A locality dominates (A re-read ×32
+with row-major already L2-served). So the ship order is already the best
+*single-axis* order; sharing B alone is a regression.
+
+Remaining L2 candidate: a **2D (m_group × n_group) swizzle** that keeps a
+few A and B slabs co-resident. Constraint: a slab is ~1 MB (A tile
+128×K=4096×2), so L2 (3 MB) holds only ~3 slabs — 2D grouping can only
+use tiny groups. Expected gain is therefore bounded; measure before
+building.
+
+## Open question (recorded)
+
+The 2048³ steady numbers are noisy on this rig (27.7 → 13.5 → 12.2 in one
+window) while 4096³/8192³ are stable — likely the unclocked DVFS caveat
+plus possible shared-GPU contention. Any future A/B must interleave
+reference/candidate and discard the first run.
+

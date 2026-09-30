@@ -1629,9 +1629,20 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // mma accumulator init, which no multi-tile future can inherit.)
     out.push_str("    mov.u32 %r1, %ctaid.x;\n");
     out.push_str(&acc_zero);
-    out.push_str(&format!("    mov.u32 %r2, {};\n", n / (8 * gr as i64 * nw as i64)));
-    out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
-    out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
+    if crate::config_tuning::ir_lowering().ptx_gemm_grid_order == 1 {
+        // Column-major rasterization: ctaid = n_cta·m_tiles + m_cta, so
+        // concurrent CTAs share the B slab in L2 (ship row-major shares A).
+        out.push_str(&format!(
+            "    mov.u32 %r2, {};\n",
+            m / (16 * mhr as i64 * mw as i64)
+        ));
+        out.push_str("    rem.u32 %r3, %r1, %r2;  // m_cta\n");
+        out.push_str("    div.u32 %r4, %r1, %r2;  // n_cta\n");
+    } else {
+        out.push_str(&format!("    mov.u32 %r2, {};\n", n / (8 * gr as i64 * nw as i64)));
+        out.push_str("    div.u32 %r3, %r1, %r2;  // m_cta\n");
+        out.push_str("    rem.u32 %r4, %r1, %r2;  // n_cta\n");
+    }
 
     out.push_str("    mov.u32 %r2, %r3;\n");
     out.push_str(&format!("    mul.lo.u32 %r2, %r2, {};\n", 16 * mhr as i64 * mw as i64 * a_row));
