@@ -437,15 +437,25 @@ pub fn has_lane_reduction(
     false
 }
 
+/// 2026-09-30: emit options (keeps [`emit_general_ptx`] within the
+/// parameter budget).
+pub struct GeneralEmitOpts {
+    pub int_bits: u64,
+    /// Deferred-region CTA split factor (1 = none) — the general
+    /// reduction-split pass.
+    pub deferred_split: u64,
+}
+
 pub fn emit_general_ptx(
     shape: &KernelShape,
     count: i64,
     layout: &SsboLayout,
     consts: &std::collections::HashMap<String, Expr>,
     universe: &crate::type_universe::TypeUniverse,
-    int_bits: u64,
+    opts: GeneralEmitOpts,
 ) -> Result<String, String> {
-    let mut g = Gen::new(layout, consts, count, universe, int_bits);
+    let mut g = Gen::new(layout, consts, count, universe, opts.int_bits);
+    g.deferred_split = opts.deferred_split.max(1);
     g.emit(shape)
 }
 
@@ -864,6 +874,14 @@ struct Gen<'a> {
     /// warp-sliced 128, lane-reduction 64); the two sites are the one
     /// contract.
     block_threads: u32,
+    /// 2026-09-30 (general reduction-split): the deferred-region CTA split
+    /// factor `S` (1 = none). When `> 1`, `emit` decodes
+    /// `(h = ctaid/S, slice = ctaid%S)` and `emit_deferred_region` reduces
+    /// the slice's `j` sub-span and writes per-slice partials.
+    deferred_split: u64,
+    /// The register holding `slice = ctaid % S` while a split deferred
+    /// region is emitted (`None` when no split).
+    split_slice_reg: Option<String>,
 }
 
 impl<'a> Gen<'a> {
@@ -894,6 +912,8 @@ impl<'a> Gen<'a> {
             block_threads: 64,
             strip_acc: None,
             active_strip: 0,
+            deferred_split: 1,
+            split_slice_reg: None,
         }
     }
 
@@ -1009,6 +1029,11 @@ impl<'a> Gen<'a> {
             // The guard kills entire blocks (r1 >= count → ret) — uniform
             // per block, safe for the warp-wide butterfly.
             body.push_str("    mov.u32 %r1, %ctaid.x;\n");
+            // 2026-09-30 (general reduction-split): with a split, the grid
+            // is count*S — decode slice = ctaid % S and h = ctaid / S into
+            // %r1, so the existing guard (%r1 >= count) still kills only
+            // out-of-range blocks.
+            self.decode_split_ctaid(&mut body);
             body.push_str(&format!(
                 "    setp.ge.u32 %p1, %r1, {};\n",
                 self.count
@@ -2738,7 +2763,7 @@ mod tests {
             &pv_layout(),
             &consts,
             &crate::type_universe::TypeUniverse::new(),
-            32,
+            GeneralEmitOpts { int_bits: 32, deferred_split: 1 },
         )
         .expect("emits");
         assert!(!has_warp_slice(&shape.kernel_stmts, &consts));
@@ -2754,6 +2779,39 @@ mod tests {
             ptx.lines().any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 4;")),
             "counter steps by 4: {ptx}"
         );
+    }
+
+    #[test]
+    fn deferred_combine_emits_online_softmax_merge() {
+        use crate::backend::spirv::runner::{RunnerField, SsboLayout};
+        let f = |name: &str, proj: u64| RunnerField {
+            name: name.into(),
+            offset: proj,
+            proj_offset: proj,
+            elem_bytes: 4,
+            count: 65536,
+            is_array: true,
+            type_is_float: true,
+        };
+        let layout = SsboLayout {
+            fields: vec![f("o1", 0), f("a_out", 262144)],
+            images: vec![],
+            state_bytes: 524288,
+            program_bytes: 524288,
+        };
+        let ptx = emit_deferred_combine_ptx(
+            &layout,
+            "o1",
+            "a_out",
+            CombineSpec { count: 32, dim: 128, split: 4 },
+        )
+        .expect("combine emits");
+        assert!(ptx.contains("ex2.approx.f32"), "exp merge: {ptx}");
+        assert!(ptx.contains("max.f32"), "running max: {ptx}");
+        assert!(ptx.contains("div.rn.f32"), "normalize: {ptx}");
+        assert!(ptx.contains("mul.lo.u32 %r3, %r3, 4;"), "split stride: {ptx}");
+        assert!(ptx.contains("setp.ge.u32 %p1, %r1, 32;"), "count guard: {ptx}");
+        assert!(ptx.contains("setp.ge.u32 %p2, %r2, 128;"), "dim guard: {ptx}");
     }
 }
 
@@ -3092,6 +3150,16 @@ struct DeferredRegionParts {
     l_name: String,
 }
 
+/// 2026-09-30 (general reduction-split): per-CTA context for
+/// [`Gen::emit_deferred_partial_store`].
+struct PartialStore<'a> {
+    parts: &'a DeferredRegionParts,
+    a_regs: &'a [String],
+    r_lane: &'a str,
+    m_reg: &'a str,
+    l_tot: &'a str,
+}
+
 /// The dot statement shape: `sc = sc + a * b` (either mul order), where at
 /// least one side is an index expression mentioning the loop item.
 fn dot_shape(stmt: &Statement, sc: &str, d_item: &str) -> bool {
@@ -3193,6 +3261,81 @@ impl Gen<'_> {
     /// butterfly-reduced per KV position. Every index expression, scale
     /// and call is emitted verbatim from the source with d bound to strip
     /// registers and sc bound to the butterfly total.
+    /// 2026-09-30 (general reduction-split): decode `slice = ctaid % S` and
+    /// `h = ctaid / S` into `%r1` for a split block-per-work-item kernel;
+    /// no-op when the split is off.
+    fn decode_split_ctaid(&mut self, body: &mut String) {
+        if self.deferred_split <= 1 {
+            return;
+        }
+        let slice_reg = self.fresh_r();
+        body.push_str(&format!(
+            "    rem.u32 {}, %r1, {};\n",
+            slice_reg, self.deferred_split
+        ));
+        body.push_str(&format!("    div.u32 %r1, %r1, {};\n", self.deferred_split));
+        self.split_slice_reg = Some(slice_reg);
+    }
+
+    /// 2026-09-30 (general reduction-split): write the per-slice partial
+    /// `(m, l, acc[dim])` for one work item into the accumulator buffer.
+    /// Layout: `partial[h*S + slice] = {m, l, acc[0..dim]}` (`dim+2` floats),
+    /// read by [`emit_deferred_combine_ptx`]. `m`/`l` are CTA-uniform (lane 0
+    /// stores them); the `acc` strips are per-lane.
+    fn emit_deferred_partial_store(
+        &mut self,
+        s: &PartialStore<'_>,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let split = self.deferred_split;
+        let dim = self.const_int(&s.parts.lc_end)?;
+        let acc_off = self.field_off(&s.parts.acc_buf).ok_or_else(|| {
+            format!(
+                "ptx general: split partial buffer '{}' not in layout",
+                s.parts.acc_buf
+            )
+        })?;
+        let slice = self
+            .split_slice_reg
+            .clone()
+            .ok_or("ptx general: split slice register missing")?;
+        let h = self.gid.to_string();
+        let rt = self.fresh_r();
+        let rda = self.fresh_rd();
+        let rdb = self.fresh_rd();
+        let p1 = self.fresh_p();
+        decl.push_str(&format!("    .reg .u32 {};\n", rt));
+        decl.push_str(&format!("    .reg .b64 {}, {};\n", rda, rdb));
+        decl.push_str(&format!("    .reg .pred {};\n", p1));
+        let stride = 2 + dim;
+        body.push_str(&format!("    mul.lo.u32 {}, {}, {};\n", rt, h, split));
+        body.push_str(&format!("    add.u32 {}, {}, {};\n", rt, rt, slice));
+        body.push_str(&format!("    mul.lo.u32 {}, {}, {};\n", rt, rt, stride));
+        body.push_str(&format!("    mul.wide.u32 {}, {}, 4;\n", rda, rt));
+        body.push_str(&format!("    mov.u64 {}, {};\n", rdb, acc_off));
+        body.push_str(&format!("    add.u64 {}, %rd1, {};\n", rdb, rdb));
+        body.push_str(&format!("    add.u64 {}, {}, {};\n", rdb, rdb, rda));
+        // m, l — CTA-uniform, lane 0 writes.
+        body.push_str(&format!("    setp.eq.u32 {}, {}, 0;\n", p1, s.r_lane));
+        body.push_str(&format!(
+            "    @{} st.global.f32 [{}+0], {};\n",
+            p1, rdb, s.m_reg
+        ));
+        body.push_str(&format!(
+            "    @{} st.global.f32 [{}+4], {};\n",
+            p1, rdb, s.l_tot
+        ));
+        // acc strips — per-lane d.
+        body.push_str(&format!("    mul.wide.u32 {}, {}, 4;\n", rda, s.r_lane));
+        body.push_str(&format!("    add.u64 {}, {}, {};\n", rda, rdb, rda));
+        body.push_str(&format!("    add.u64 {}, {}, 8;\n", rda, rda));
+        for (i, a) in s.a_regs.iter().enumerate() {
+            body.push_str(&format!("    st.global.f32 [{}+{}], {};\n", rda, 128 * i, a));
+        }
+        Ok(())
+    }
+
     fn emit_deferred_region(
         &mut self,
         parts: &DeferredRegionParts,
@@ -3207,7 +3350,17 @@ impl Gen<'_> {
             ));
         }
         let strips = (dim / 32) as usize;
-        let jslice = (kv / 32) as u32;
+        // 2026-09-30 (general reduction-split): with S > 1 each CTA reduces a
+        // KV/S sub-span (further split across the 32 warps) and writes
+        // per-slice partials; the combine kernel merges them.
+        let split = self.deferred_split;
+        if split > 1 && (kv % split as i64 != 0 || (kv / split as i64) % 32 != 0) {
+            return Err(format!(
+                "ptx general: deferred split {split} needs KV {kv} divisible by 32*S"
+            ));
+        }
+        let per_slice = if split > 1 { kv / split as i64 } else { kv };
+        let jslice = (per_slice / 32) as u32;
         let warps = 32u32;
 
         // leading let: kh through the normal path (h is bound to ctaid).
@@ -3223,6 +3376,22 @@ impl Gen<'_> {
         let r_lo = self.fresh_r();
         let r_hi = self.fresh_r();
         let r_w = self.fresh_r();
+        // 2026-09-30 (split): the slice's base `j` offset = slice * per_slice.
+        let sbase = if split > 1 {
+            let sb = self.fresh_r();
+            let slice = self
+                .split_slice_reg
+                .clone()
+                .ok_or("ptx general: split slice register missing")?;
+            decl.push_str(&format!("    .reg .u32 {};\n", sb));
+            body.push_str(&format!(
+                "    mul.lo.u32 {}, {}, {};\n",
+                sb, slice, per_slice
+            ));
+            Some(sb)
+        } else {
+            None
+        };
         let pred = self.fresh_p();
         let f_t = self.fresh_f();
         let sc_lane = self.fresh_f();
@@ -3280,6 +3449,9 @@ impl Gen<'_> {
             "    mad.lo.u32 {}, {}, {}, {};\n",
             r_lo, r_warp, jslice, r_lo
         ));
+        if let Some(sb) = &sbase {
+            body.push_str(&format!("    add.u32 {}, {}, {};\n", r_lo, r_lo, sb));
+        }
         body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
         body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
         let saved_j = self.regs.insert(parts.j_name.clone(), r_cnt.clone());
@@ -3357,6 +3529,9 @@ impl Gen<'_> {
             "    mad.lo.u32 {}, {}, {}, {};\n",
             r_lo, r_warp, jslice, r_lo
         ));
+        if let Some(sb) = &sbase {
+            body.push_str(&format!("    add.u32 {}, {}, {};\n", r_lo, r_lo, sb));
+        }
         body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
         body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
         let h2h = format!("L{}_b", lab);
@@ -3514,18 +3689,30 @@ impl Gen<'_> {
         body.push_str(&format!("    bra {};\n", a_loop));
         body.push_str(&format!("{}:\n", a_done));
 
-        // ── deferred normalize: strips own d; l broadcast; global stores ──
-        let saved_l2 = self.regs.insert(parts.l_name.clone(), l_tot.clone());
-        self.strip_acc = Some((parts.acc_buf.clone(), parts.dc.clone(), a_regs.clone()));
-        for i in 0..strips {
-            self.active_strip = i;
-            self.regs.insert(parts.dc.clone(), d_regs[i].clone());
-            self.emit_stmt(&parts.norm_stmt, decl, body)?;
-        }
-        self.strip_acc = None;
-        match saved_l2 {
-            Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
-            None => { self.regs.remove(&parts.l_name); }
+        if split > 1 {
+            // Split: write per-slice partials; the combine kernel merges.
+            let spec = PartialStore {
+                parts,
+                a_regs: &a_regs,
+                r_lane: &r_lane,
+                m_reg: &m_reg,
+                l_tot: &l_tot,
+            };
+            self.emit_deferred_partial_store(&spec, decl, body)?;
+        } else {
+            // ── deferred normalize: strips own d; l broadcast; global stores ──
+            let saved_l2 = self.regs.insert(parts.l_name.clone(), l_tot.clone());
+            self.strip_acc = Some((parts.acc_buf.clone(), parts.dc.clone(), a_regs.clone()));
+            for i in 0..strips {
+                self.active_strip = i;
+                self.regs.insert(parts.dc.clone(), d_regs[i].clone());
+                self.emit_stmt(&parts.norm_stmt, decl, body)?;
+            }
+            self.strip_acc = None;
+            match saved_l2 {
+                Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
+                None => { self.regs.remove(&parts.l_name); }
+            }
         }
         let _ = warps;
         match saved_j {
@@ -3541,4 +3728,124 @@ impl Gen<'_> {
 /// (32 warp slices of the KV dimension).
 pub fn has_deferred_region(stmts: &[Statement], index_var: &str) -> bool {
     detect_deferred_region(stmts, index_var).is_some()
+}
+
+/// 2026-09-30 (general reduction-split): `(kv, dim, acc_buf, out_buf)` of a
+/// deferred region, or `None` when no region matches — the dispatch uses it
+/// to size the split factor (`gpu_strategy::reduction_split_factor`) and to
+/// build the combine kernel.
+pub fn deferred_region_info(
+    stmts: &[Statement],
+    index_var: &str,
+) -> Option<(Expr, Expr, String, String)> {
+    detect_deferred_region(stmts, index_var)
+        .map(|(_, _, p)| (p.la_end, p.lc_end, p.acc_buf, p.out_buf))
+}
+
+/// 2026-09-30 (general reduction-split): the combine kernel's parameters.
+pub struct CombineSpec {
+    pub count: i64,
+    pub dim: i64,
+    pub split: u64,
+}
+
+/// 2026-09-30 (general reduction-split): the combine kernel for a split
+/// deferred region. Grid = `count` blocks of `dim` threads; each block
+/// merges its work item's `split` partials (written by
+/// `emit_deferred_partial_store`) via the online-softmax algebra:
+///   `m* = max_s m_s ; acc = Σ_s acc_s·exp(m_s−m*) ; l = Σ_s l_s·exp(m_s−m*)`
+///   `out[d] = acc / l`.
+pub fn emit_deferred_combine_ptx(
+    layout: &SsboLayout,
+    acc_buf: &str,
+    out_buf: &str,
+    spec: CombineSpec,
+) -> Result<String, String> {
+    let CombineSpec { count, dim, split } = spec;
+    let off = |name: &str| -> Result<u64, String> {
+        layout
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.proj_offset)
+            .ok_or_else(|| format!("ptx combine: buffer '{name}' not in layout"))
+    };
+    let acc_off = off(acc_buf)?;
+    let out_off = off(out_buf)?;
+    let stride = 2 + dim;
+    let log2e = "0f3FB8AA3B"; // 1.4426950408889634
+    let neg_inf = "0ff800000";
+    let mut out = String::new();
+    out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
+    out.push_str(".visible .entry main (.param .b64 proj_param)\n{\n");
+    out.push_str("    .reg .b64 %rd1, %rd2, %rd3, %rd4, %rd5, %rd6;\n");
+    out.push_str("    .reg .u32 %r1, %r2, %r3, %r4, %r5;\n");
+    out.push_str("    .reg .f32 %f1, %f2, %f3, %f4, %f5, %f6;\n");
+    out.push_str("    .reg .pred %p1, %p2;\n");
+    out.push_str("    ld.param.u64 %rd1, [proj_param];\n");
+    out.push_str("    mov.u32 %r1, %ctaid.x;\n");
+    out.push_str(&format!("    setp.ge.u32 %p1, %r1, {count};\n"));
+    out.push_str("    @%p1 ret;\n");
+    out.push_str("    mov.u32 %r2, %tid.x;\n");
+    out.push_str(&format!("    setp.ge.u32 %p2, %r2, {dim};\n"));
+    out.push_str("    @%p2 ret;\n");
+    // partial base: %rd3 = proj + acc_off + (w·S)·stride·4
+    out.push_str("    mov.u32 %r3, %r1;\n");
+    out.push_str(&format!("    mul.lo.u32 %r3, %r3, {split};\n"));
+    out.push_str(&format!("    mul.lo.u32 %r3, %r3, {stride};\n"));
+    out.push_str("    mul.wide.u32 %rd2, %r3, 4;\n");
+    out.push_str(&format!("    mov.u64 %rd3, {acc_off};\n"));
+    out.push_str("    add.u64 %rd3, %rd1, %rd3;\n");
+    out.push_str("    add.u64 %rd3, %rd3, %rd2;\n");
+    // pass 1: m* = max_s m_s
+    out.push_str(&format!("    mov.f32 %f1, {neg_inf};\n"));
+    out.push_str("    mov.u32 %r4, 0;\n");
+    out.push_str("CM:\n");
+    out.push_str(&format!("    setp.ge.u32 %p1, %r4, {split};\n"));
+    out.push_str("    @%p1 bra CMD;\n");
+    out.push_str("    mov.u32 %r5, %r4;\n");
+    out.push_str(&format!("    mul.lo.u32 %r5, %r5, {stride};\n"));
+    out.push_str("    mul.wide.u32 %rd4, %r5, 4;\n");
+    out.push_str("    add.u64 %rd5, %rd3, %rd4;\n");
+    out.push_str("    ld.global.f32 %f2, [%rd5+0];\n");
+    out.push_str("    max.f32 %f1, %f1, %f2;\n");
+    out.push_str("    add.u32 %r4, %r4, 1;\n");
+    out.push_str("    bra CM;\n");
+    out.push_str("CMD:\n");
+    // pass 2: acc, l
+    out.push_str("    mov.f32 %f3, 0f00000000;\n");
+    out.push_str("    mov.f32 %f4, 0f00000000;\n");
+    out.push_str("    mov.u32 %r4, 0;\n");
+    out.push_str("CS:\n");
+    out.push_str(&format!("    setp.ge.u32 %p1, %r4, {split};\n"));
+    out.push_str("    @%p1 bra CSD;\n");
+    out.push_str("    mov.u32 %r5, %r4;\n");
+    out.push_str(&format!("    mul.lo.u32 %r5, %r5, {stride};\n"));
+    out.push_str("    mul.wide.u32 %rd4, %r5, 4;\n");
+    out.push_str("    add.u64 %rd5, %rd3, %rd4;\n");
+    out.push_str("    ld.global.f32 %f2, [%rd5+0];\n"); // m_s
+    out.push_str("    sub.f32 %f5, %f2, %f1;\n");
+    out.push_str(&format!("    mul.f32 %f5, %f5, {log2e};\n"));
+    out.push_str("    ex2.approx.f32 %f5, %f5;\n"); // exp(m_s - m*)
+    out.push_str("    ld.global.f32 %f6, [%rd5+4];\n"); // l_s
+    out.push_str("    fma.rn.f32 %f4, %f6, %f5, %f4;\n");
+    out.push_str("    mul.wide.u32 %rd6, %r2, 4;\n");
+    out.push_str("    add.u64 %rd6, %rd5, %rd6;\n");
+    out.push_str("    ld.global.f32 %f6, [%rd6+8];\n"); // acc_s[d]
+    out.push_str("    fma.rn.f32 %f3, %f6, %f5, %f3;\n");
+    out.push_str("    add.u32 %r4, %r4, 1;\n");
+    out.push_str("    bra CS;\n");
+    out.push_str("CSD:\n");
+    out.push_str("    div.rn.f32 %f6, %f3, %f4;\n");
+    // out[w*dim + d] = acc/l
+    out.push_str("    mov.u32 %r5, %r1;\n");
+    out.push_str(&format!("    mul.lo.u32 %r5, %r5, {dim};\n"));
+    out.push_str("    add.u32 %r5, %r5, %r2;\n");
+    out.push_str("    mul.wide.u32 %rd6, %r5, 4;\n");
+    out.push_str(&format!("    mov.u64 %rd5, {out_off};\n"));
+    out.push_str("    add.u64 %rd5, %rd1, %rd5;\n");
+    out.push_str("    add.u64 %rd5, %rd5, %rd6;\n");
+    out.push_str("    st.global.f32 [%rd5], %f6;\n");
+    out.push_str("    ret;\n}\n");
+    Ok(out)
 }

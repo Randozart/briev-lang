@@ -272,6 +272,12 @@ pub struct IrLoweringSettings {
     /// flash2p fixture; dispatch requires the M2 frontend proof
     /// (`KernelShape.deferred_normalize`). Default off pending a perf A/B.
     pub ptx_deferred_region: bool,
+    /// 2026-09-30 (general reduction-split, plan
+    /// 2026-09-30-general-reduction-split.md): split an underfilled
+    /// deferred-region reduction across `S` CTAs (the general underfill
+    /// estimator) + a combine pass. 0 = off (S = 1, ship). 1 = auto (use
+    /// `gpu_strategy::reduction_split_factor`).
+    pub ptx_deferred_split: u32,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -390,6 +396,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_warp_slice_min_span: 512,
     ptx_warp_slice_warps: 4,
     ptx_deferred_region: false,
+    ptx_deferred_split: 0,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -678,6 +685,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_deferred_region", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_deferred_region),
+        ptx_deferred_split: db
+            .field_int("ptx_deferred_split", 0)
+            .map(|v| v.max(0).min(1) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_deferred_split),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)

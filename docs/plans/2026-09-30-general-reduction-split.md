@@ -87,11 +87,28 @@ node**, so the change spans four surfaces:
 
 **Ordered implementation (each committed + device-gated):**
 - **S1** `RunnerKernel` split metadata + runner two-launch codegen (no
-  math change — verify a two-kernel node launches in order).
-- **S2** Combine emitter + a synthetic-region unit test.
+  math change — verify a two-kernel node launches in order). **DONE**
+  (`7d3441d0`).
+- **S2** Combine emitter + a synthetic-region unit test. **DONE** —
+  `emit_deferred_combine_ptx` (online-softmax merge), unit-tested. Ships
+  inside S3's commit.
 - **S3** Partial emitter behind a default-off knob; validate the merge
-  against the `S = 1` path on-device (`m3_attention_harness.sh`) **before**
-  any timing claim.
+  against the `S = 1` path on-device **before** any timing claim.
+  **IMPLEMENTED, DEFAULT OFF** (`ptx_deferred_split: 0`): `emit_deferred_region`
+  decodes the slice, restricts the `j` sub-span, writes per-slice partials;
+  `mod.rs` computes `S = reduction_split_factor(count, kv)`, pushes the
+  `<node>__combine` kernel. Default-off byte-identical (verified).
+
+**ENABLEMENT PREREQUISITE (found while wiring S3).** The `.abv` build is
+dual-image (one desc carries both the SPIR-V and PTX blobs, selected per
+driver at runtime). A split makes the PTX image a *partial* kernel with a
+different grid contract than the SPIR-V image — but the two share one desc
+and one runner dispatch, so enabling `ptx_deferred_split` would break the
+Vulkan lane (no SPIR-V combine). Enablement therefore needs either (a) a
+SPIR-V combine emitter, or (b) a lane-conditional dispatch so only the CUDA
+lane takes the two-launch path. **Device validation of S2+S3 is pending
+behind this.**
+
 
 
 ## Phasing (each increment = Rule-20 pre-B + A/B + both-lane correctness)

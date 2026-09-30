@@ -1698,6 +1698,117 @@ fn fold_side(e: &Expr, consts: &std::collections::HashMap<String, Expr>) -> Resu
     }
 }
 
+/// Resolve an expression to a literal i64 through the module consts.
+fn expr_const_i64(e: &Expr, consts: &std::collections::HashMap<String, Expr>) -> Option<i64> {
+    match e {
+        Expr::Decimal(v) => Some(*v),
+        Expr::Identifier(n) => match consts.get(n) {
+            Some(Expr::Decimal(v)) => Some(*v),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Can the deferred region `(kv, dim)` be split by `s`? (emitter
+/// preconditions: 32-divisible slices, a combine block `dim ≤ 1024`).
+fn split_eligible(kv: i64, dim: i64, s: u64) -> bool {
+    s > 1
+        && dim > 0
+        && dim <= 1024
+        && dim % 32 == 0
+        && kv % s as i64 == 0
+        && (kv / s as i64) % 32 == 0
+}
+
+/// 2026-09-30 (general reduction-split): the split factor for a deferred
+/// node plus `(dim, acc_buf, out_buf)` for the combine kernel. `(1, None)`
+/// when the split is off, the region does not map, or the emitter
+/// preconditions fail.
+fn deferred_split_for(
+    shape: &crate::analysis::accel::KernelShape,
+    deferred: bool,
+    count: i64,
+    consts: &std::collections::HashMap<String, Expr>,
+) -> (u32, Option<(i64, String, String)>) {
+    if !(deferred && crate::config_tuning::ir_lowering().ptx_deferred_split == 1) {
+        return (1, None);
+    }
+    let Some((kve, dime, acc_buf, out_buf)) =
+        general::deferred_region_info(&shape.kernel_stmts, &shape.index_var)
+    else {
+        return (1, None);
+    };
+    let (Some(kv), Some(dim)) = (
+        expr_const_i64(&kve, consts),
+        expr_const_i64(&dime, consts),
+    ) else {
+        return (1, None);
+    };
+    let s = crate::analysis::gpu_strategy::reduction_split_factor(count as u64, kv as u64);
+    if split_eligible(kv, dim, s) {
+        (s as u32, Some((dim, acc_buf, out_buf)))
+    } else {
+        (1, None)
+    }
+}
+
+/// 2026-09-30 (general reduction-split): the combine-push context.
+struct CombinePush<'a> {
+    name: &'a str,
+    layout: &'a crate::backend::spirv::runner::SsboLayout,
+    shape: &'a crate::analysis::accel::KernelShape,
+    count: i64,
+    info: (i64, String, String),
+    split: u32,
+}
+
+/// 2026-09-30 (general reduction-split): emit + push the `<node>__combine`
+/// companion RunnerKernel (dispatched after the partial by the runner).
+fn push_deferred_combine(
+    out: &mut Vec<RunnerKernel>,
+    cp: CombinePush<'_>,
+) -> Result<(), String> {
+    let (dim, acc_buf, out_buf) = cp.info;
+    let combine = general::emit_deferred_combine_ptx(
+        cp.layout,
+        &acc_buf,
+        &out_buf,
+        general::CombineSpec {
+            count: cp.count,
+            dim,
+            split: cp.split as u64,
+        },
+    )?;
+    let cblob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
+        compile_cubin(&combine, 64).unwrap_or_else(|| combine.into_bytes())
+    } else {
+        combine.into_bytes()
+    };
+    out.push(RunnerKernel {
+        name: format!("{}__combine", cp.name),
+        spirv: cblob,
+        image_plans: Vec::new(),
+        index_var: cp.shape.index_var.clone(),
+        count_expr: cp.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+        work_cols: None,
+        cooperative: false,
+        tiled: false,
+        tensor: false,
+        tensor_tile_rows: 1,
+        ptx_tensor: false,
+        fused_mma: false,
+        fused_mma_blocks_div: 0,
+        block_threads: dim as u32,
+        shared_bytes: 0,
+        touched_fields: crate::backend::spirv::runner::kernel_touched_fields(cp.shape),
+        ptx: Vec::new(),
+        block_per_workitem: true,
+        split: 1,
+    });
+    Ok(())
+}
+
 pub fn build_ptx_kernels(
     program: &[TopLevel],
     universe: &TypeUniverse,
@@ -1807,9 +1918,6 @@ pub fn build_ptx_kernels(
             // attention decode live here).
             let consts = module_expr_consts(program);
             let count = fold_count(&e.shape, &consts)?;
-            let ptx = general::emit_general_ptx(
-                &e.shape, count, &layout, &consts, universe, int_bits,
-            )?;
             // 2026-09-19 (M1 warp-sliced reductions, plan general-machinery):
             // a sliced kernel is a 128-thread block-per-workitem dispatch
             // (4 warp slices + shared-memory merge) — the desc carries the
@@ -1823,6 +1931,20 @@ pub fn build_ptx_kernels(
             let deferred = crate::config_tuning::ir_lowering().ptx_deferred_region
                 && e.shape.deferred_normalize.is_some()
                 && general::has_deferred_region(&e.shape.kernel_stmts, &e.shape.index_var);
+            // 2026-09-30 (general reduction-split, plan
+            // 2026-09-30-general-reduction-split.md): split an underfilled
+            // deferred region across S CTAs + a combine pass. DEFAULT OFF
+            // (`ptx_deferred_split: 0`); see the plan for the dual-lane
+            // enablement prerequisite.
+            let (def_split, def_info) = deferred_split_for(&e.shape, deferred, count, &consts);
+            let ptx = general::emit_general_ptx(
+                &e.shape,
+                count,
+                &layout,
+                &consts,
+                universe,
+                general::GeneralEmitOpts { int_bits, deferred_split: def_split as u64 },
+            )?;
             let block_threads = if deferred {
                 1024
             } else if warp_sliced {
@@ -1874,8 +1996,24 @@ pub fn build_ptx_kernels(
                     || general::has_lane_reduction(
                     &e.shape.kernel_stmts, &consts,
                 ),
-                split: 1,
+                split: def_split,
             });
+            // 2026-09-30 (general reduction-split): the combine companion.
+            if def_split > 1 {
+                if let Some(info) = def_info {
+                    push_deferred_combine(
+                        &mut out,
+                        CombinePush {
+                            name: &name,
+                            layout: &layout,
+                            shape: &e.shape,
+                            count,
+                            info,
+                            split: def_split,
+                        },
+                    )?;
+                }
+            }
             continue;
         }
         let plan = plan.unwrap();
