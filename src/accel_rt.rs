@@ -290,14 +290,50 @@ fn env_preferred(chain: &[*const BrievDeviceDriver], env: &str) -> *const BrievD
     std::ptr::null()
 }
 
-fn select_driver() -> *const BrievDeviceDriver {
-    // 2026-09-08 (S1): CUDA first — the perf tier (PTX tensor cores). Falls
-    // to Vulkan when libcuda is absent.
-    let chain = [
-        addr_of!(briev_dev_cuda),
-        addr_of!(briev_dev_vulkan),
-        addr_of!(briev_dev_opencl),
-    ];
+/// Whether any kernel in the descriptor set carries a PTX image (the CUDA
+/// tier's input). A PTX-free set (SPIR-V only) has nothing to feed the CUDA
+/// driver's JIT — picking it there wastes the launch and dies with a clean
+/// "no ptx image" CPU fallback for every kernel.
+fn any_kernel_has_ptx(descs: *const BrievKernelDesc, n: u32) -> bool {
+    if descs.is_null() || n == 0 {
+        return false;
+    }
+    for i in 0..n as usize {
+        let k = unsafe { &*descs.add(i) };
+        if k.ptx_size > 0 {
+            return true;
+        }
+    }
+    false
+}
+
+fn select_driver(descs: *const BrievKernelDesc, n: u32) -> *const BrievDeviceDriver {
+    // 2026-09-08 (S1): CUDA is the perf tier (PTX tensor cores).
+    // 2026-09-28 (most-efficient selection): CUDA is chosen ONLY when the
+    // kernel set actually carries a PTX image AND libcuda is present. A
+    // SPIR-V-only set (the default for .abv/.bv) has no PTX to JIT, so CUDA
+    // would reject every kernel and the whole chain would die with a silent
+    // "dispatch failed" — even on a box whose Vulkan lane could run the
+    // SPIR-V. The pick is now image-driven: PTX present → CUDA (perf tier);
+    // else the first SPIR-V-capable driver (Vulkan, then OpenCL). This is
+    // "most efficient" per the program's actual blobs, not a global
+    // "is libcuda loaded" guess.
+    let has_ptx = any_kernel_has_ptx(descs, n);
+    let chain = if has_ptx {
+        [
+            addr_of!(briev_dev_cuda),
+            addr_of!(briev_dev_vulkan),
+            addr_of!(briev_dev_opencl),
+        ]
+    } else {
+        // No PTX: the CUDA driver has nothing to JIT. Vulkan first (the
+        // SPIR-V lane), then OpenCL.
+        [
+            addr_of!(briev_dev_vulkan),
+            addr_of!(briev_dev_opencl),
+            addr_of!(briev_dev_cuda),
+        ]
+    };
     if let Ok(env) = std::env::var("BRIEV_ACCEL_DEVICE") {
         if !env.is_empty() {
             let picked = env_preferred(&chain, &env);
@@ -331,7 +367,7 @@ pub extern "C" fn briev_accel_init(descs: *const BrievKernelDesc, n: u32) -> i32
     }
     let r = rt();
     if !r.init_done {
-        r.driver = init_driver(verbose);
+        r.driver = init_driver(verbose, descs, n);
         r.init_done = true;
     }
     r.descs = descs;
@@ -489,8 +525,12 @@ fn setup_images(
 
 /// One-time device selection + init. NULL → CPU fallback (reason printed
 /// when verbose).
-fn init_driver(verbose: bool) -> *const BrievDeviceDriver {
-    let selected = select_driver();
+fn init_driver(
+    verbose: bool,
+    descs: *const BrievKernelDesc,
+    n: u32,
+) -> *const BrievDeviceDriver {
+    let selected = select_driver(descs, n);
     if selected.is_null() {
         if verbose {
             eprintln!("[briev_accel] no device driver available — CPU fallback");
@@ -981,6 +1021,20 @@ pub extern "C" fn briev_accel_download(idx: u32, state: *mut core::ffi::c_void) 
     }
     for i in 0..k.n_fields as usize {
         let f = unsafe { &*k.fields.add(i) };
+        // 2026-09-28 (probe: gemm_small standalone runner printed `i = 0`
+        // instead of `i = 4096`): scalars are host-owned — GPU kernels never
+        // write state scalars (state-scalar writes stay on the CPU host,
+        // src/analysis/accel.rs `assign_is_kernel`), so the device's scalar
+        // slots hold only the seed-time value. The runner fast-forwards its
+        // counters host-side AFTER the launch; copying the stale device slot
+        // back clobbered them (silent wrong observables for every generated
+        // runner). `briev_accel_download_written` and the legacy C runtime
+        // both skip unwritten fields — the full pull must too. Undo: drop
+        // this guard and re-run `brievc build examples/gpu/gemm_small.abv`
+        // + the standalone runner to see the counter revert to 0.
+        if f.is_write == 0 {
+            continue;
+        }
         unsafe {
             std::ptr::copy_nonoverlapping(
                 mapped.add(f.proj_offset as usize),

@@ -8,45 +8,15 @@
 //! UNSAFE boundary: all FFI lives here; callers use the safe `run_program`.
 
 pub use crate::backend::spirv::runner::{RunDispatch, RunProgram};
-
-/// BRIEV_FIELD_ARRAY (lib/runtime/briev_accel_rt.c).
-const FIELD_ARRAY: u32 = 1;
-/// BRIEV_FIELD_SCALAR.
-const FIELD_SCALAR: u32 = 2;
-
-/// The C `BrievField` layout (abi: name, kind, host_offset, elem_bytes,
-/// count, is_write, proj_offset — the 2026-09-01 declared-proj-offset ABI).
-#[repr(C)]
-pub(super) struct FfiField {
-    name: *const std::os::raw::c_char,
-    kind: u32,
-    host_offset: u64,
-    elem_bytes: u64,
-    count: u64,
-    is_write: u32,
-    proj_offset: u64,
-}
-
-/// The C `BrievKernelDesc` layout — MUST match briev_accel_rt.c exactly
-/// (tail fields: images, block_threads, shared_bytes, program_bytes,
-/// seed_fields, n_seed_fields). The 2026-09-15 fix: previously only the
-/// first five fields were declared, so the runtime read garbage for every
-/// tail field.
-#[repr(C)]
-pub(super) struct FfiKernelDesc {
-    txn_name: *const std::os::raw::c_char,
-    spirv: *const u8,
-    spirv_size: u32,
-    n_fields: u32,
-    fields: *const FfiField,
-    n_images: u32,
-    images: *const std::os::raw::c_void,
-    block_threads: u32,
-    shared_bytes: u32,
-    program_bytes: u64,
-    seed_fields: *const FfiField,
-    n_seed_fields: u32,
-}
+/// Single source of truth for the C descriptor ABI: the canonical
+/// `#[repr(C)]` mirrors in `accel_rt` (pinned against
+/// `lib/runtime/briev_accel_rt.h` by `test_briev_kernel_desc_abi_pinned`).
+/// Re-exported here so the in-process runner can never drift from the
+/// C struct — the 2026-09-28 fix: this module previously kept a SECOND,
+/// shorter `FfiKernelDesc` missing the `ptx`/`ptx_size`/`block_per_workitem`
+/// tail, so the runtime read past the Rust allocation and
+/// `briev_dev_cuda_create_kernel` segfaulted on a garbage blob pointer.
+use crate::accel_rt::{BrievField as FfiField, BrievKernelDesc as FfiKernelDesc};
 
 unsafe extern "C" {
     fn briev_accel_init(descs: *const FfiKernelDesc, n: u32) -> i32;
@@ -80,7 +50,6 @@ pub fn run_program(prog: &RunProgram) -> Result<Vec<i64>, String> {
 const RUN_GUARD: i64 = 2_000_000_000;
 
 mod ffi {
-    use super::{FIELD_ARRAY, FIELD_SCALAR};
     use crate::backend::spirv::runner::{RunDispatch, RunProgram};
     use super::RUN_GUARD;
     use super::{FfiField, FfiKernelDesc};
@@ -104,7 +73,11 @@ mod ffi {
             .zip(c_names.iter())
             .map(|(f, name)| FfiField {
                 name: name.as_ptr(),
-                kind: if f.is_array { FIELD_ARRAY } else { FIELD_SCALAR },
+                kind: if f.is_array {
+                    crate::accel_rt::BRIEV_FIELD_ARRAY
+                } else {
+                    crate::accel_rt::BRIEV_FIELD_SCALAR
+                },
                 host_offset: f.offset,
                 elem_bytes: f.elem_bytes as u64,
                 count: f.count,
@@ -160,6 +133,12 @@ mod ffi {
                 program_bytes: prog.program_bytes,
                 seed_fields: seed_ffi.as_ptr(),
                 n_seed_fields: seed_ffi.len() as u32,
+                // The in-process runner emits SPIR-V only — no PTX image.
+                // Zero-fill the CUDA tail exactly as the C positional
+                // initializers do, so the CUDA driver sees ptx_size == 0.
+                ptx: std::ptr::null(),
+                ptx_size: 0,
+                block_per_workitem: 0,
             });
         }
 

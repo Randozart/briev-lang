@@ -33,6 +33,76 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## GEMM 4096³: SPIR-V/Vulkan correct, CUDA/cubin IMA — OPEN (cubin tier) 2026-09-30
+
+**Context:** GEMM 4096³ correctness+timing session (plan
+`2026-09-28-daily-use-sweep-and-gpu-session.md`, Phase B2). Two lanes:
+the `.abv` SPIR-V image (Vulkan) and the hand-emitted PTX→cubin image
+(CUDA, `src/backend/ptx/`, offline `ptxas`, `compile_cubin` sm_86).
+
+**Finding 1 (SPIR-V/Vulkan — CORRECT):** the 4096³ tensor-tier kernel
+runs on Vulkan at 11.6–12.0 ms/iter (11.4–11.6 TF). The all-ones
+addressing gate (seed a=b=1.0, so y[m][n] must equal K=4096 EXACTLY for
+every cell) PASSES: 64×64 = 4096/4096 cells exact, maxrel=0. So the
+kernel's addressing is correct at 4096³. A naive f64 reference shows a
+uniform ~4.5% per-cell error — that is the kernel's declared
+`acc: Float16` accumulator (gemm_h.abv), NOT an addressing bug. Verify
+the GEMM kernel with an all-ones (or other f16-exact) seed, not a
+f64-exact reference.
+
+**Finding 2 (CUDA/cubin — IMA, OPEN):** the SAME 4096³ kernel, when the
+runner carries the PTX/cubin image, is auto-selected to the CUDA lane
+(`select_driver` image-aware: a PTX-bearing desc → CUDA) and FAULTS:
+`cuLaunchKernel` + `cuStreamSynchronize` → `an illegal memory access
+(rc 700)`. The 128MB prime H2D succeeds (no "HtoD failed"); the fault is
+in the kernel execution. 64³ (gemm_small) runs on CUDA fine, so the
+cubin is shape-dependent: correct at 64³, IMA at 4096³. The SPIR-V
+artifact is proven correct, so this is a bug in the hand-emitted PTX /
+ptxas-cubin tier (or the CUDA driver's large-shape launch), NOT in the
+kernel logic. Pre-existing (this session's changes — ABI alignment,
+image-aware driver select, download scalar-skip — do not touch the PTX
+emitter or the CUDA driver).
+
+**Repro:**
+```
+brievc build examples/gpu/gemm_h.abv --out /tmp/g
+# harness: seed a,b; all-ones gate; verify y==K; time. (see session)
+BRIEV_ACCEL_DEVICE=vulkan ./harness 4096 4096 4096 5 64 ones   # PASS, 11.6 TF
+./harness 4096 4096 4096 5 64 ones                              # IMA (CUDA auto-select)
+```
+**Fix direction:** bisect the PTX emitter's large-shape indexing (tile
+stride / SSBO pointer arithmetic for K=4096), or the CUDA driver's
+`launch_dev2d`/prime at 128MB; confirm with `cuobjdump --dump-sass` on
+the 4096³ cubin vs a 64³ cubin. Until fixed, the 4096³ GEMM lane is
+Vulkan/SPIR-V; the CUDA lane is IMA.
+
+## briev_accel_download clobbered host-managed scalars — FIXED 2026-09-30
+
+**Symptom:** the standalone generated runner printed `i = 0` instead of
+`i = 4096` for gemm_small (and would print stale values for ANY host
+scalar observable). The in-process runner (gpu_rt.rs) was unaffected —
+it tracks counters in its own vec.
+
+**Root cause:** `briev_accel_download` (src/accel_rt.rs, the end-of-run
+FULL projection pull) copied EVERY field back from the device, including
+state SCALARS (`is_write == 0`). But GPU kernels never write state
+scalars ("state-scalar writes (loop counters, bookkeeping) belong to the
+CPU host" — src/analysis/accel.rs `assign_is_kernel`); the device scalar
+slots hold only the seed-time value. The runner fast-forwards its
+counters host-side AFTER the launch (`S_i = n_gemm`), so the full pull
+copied the stale seed (0) back over the host's 4096 → silent wrong
+observables. `briev_accel_download_written` and the legacy C runtime
+(`examples/gpu/run_abv/briev_accel_rt.c:252`) both skip `is_write == 0`;
+the Rust full pull had dropped the guard.
+
+**Fix:** `briev_accel_download`'s field loop now `continue`s on
+`f.is_write == 0` (host-authoritative scalars), matching
+`download_written`. Verified: gemm_small standalone runner prints
+`i = 4096`.
+
+**Undo:** delete the `if f.is_write == 0 { continue; }` guard in
+`briev_accel_download`; the standalone runner's counter reverts to 0.
+
 ## f16 tensor epilogue — VERIFIED CORRECT; f32-acc silently dropped the scale — RESOLVED 2026-09-15
 
 **Date:** 2026-09-15 (gpu_schedule Phase 4a follow-up)
