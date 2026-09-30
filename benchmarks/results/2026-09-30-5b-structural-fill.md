@@ -48,12 +48,46 @@ negative blocks all schedule-side follow-ons.)
 | mode 4 (fills, no sync) | 23.6 |
 | `kps=2` | 27.1 |
 
-## Phase 2 — register-staging one operand — NEXT
+## Phase 2 — register-staging — REFUTED by scaling + bandwidth analysis
 
-Target: feed the mma A- or B-fragments directly from global registers,
-removing that operand's cp.async + smem write + ldmatrix (and its share
-of the wait). Projected ~38.5 TF (E-series E1f ≈ 42.5 on 580; here the
-no-A / no-B points bound it). Gate on `ptxas -v`: reject any candidate
-that drops below the 4-CTA/SM occupancy sweet spot. Correctness gate
-(all-ones exact + f64 ref ≤6%) before any timing. Record per-shape
-verdicts here; REJECTED paths stand.
+Before implementing, a shape-scaling A/B (ship vs no-fill A+B) was run to
+locate the cost. Steady-state (first cold run discarded — unclocked DVFS
+adds a slow first dispatch), 4096³-class rig, f16/tensor tier:
+
+| shape | operands | ship | no-fill | gap |
+|---|---|---|---|---|
+| 2048³ | 8 MB | 26.0 TF | 36.4 | 10.4 |
+| 4096³ | 32 MB | 27.1 | 45.7 | 18.6 |
+| 8192³ | 128 MB | 25.7 | 47.3 | 21.6 |
+| 4096×4096×512 | 4 MB | 25.6 | ~27 | **~0** |
+
+The gap appears **only when the operands exceed L2 (3 MB)**; at thin-K
+(4 MB, largely L2-resident) there is no fill cost. Effective bandwidth at
+4096³: A re-read N/128 = 32× plus B re-read M/128 = 32× ⇒ ≈2.1 GB of
+operand traffic in the 5 ms kernel → **≈420 GB/s, at the 360 GB/s DRAM
+limit** (L2 supplies the rest). 8192³: ≈17 GB / 42.8 ms ≈ 397 GB/s.
+
+**Conclusion: the "fill cost" is DRAM traffic from operand re-reads; the
+kernel is memory-bound at large square shapes.** The no-fill ceiling
+(45.9) removes those reads and is therefore **unreachable** — it is a
+compute-only bound, not an achievable target.
+
+**Register-staging is REFUTED.** Staging an operand per-warp changes the
+smem round-trip for *extra global reads*: with the (2,4) tile, A is
+shared by the 4 nw warps (4× redundant reads) and B by the 2 mw warps
+(2×). At 4096³ that would push A traffic from ~1 GB to ~4 GB — strictly
+worse, bandwidth-doomed. (The E-series E1f 42.5 must have been an
+L2-resident / microbench regime, not this one.)
+
+**Correct lever: increase reuse / L2 locality, not remove the fill.**
+- Larger CTA tile (fewer operand re-reads) — the E-series rejected big
+  tiles on *occupancy* grounds under a compute-bound assumption; under a
+  memory-bound reality the trade flips and must be re-measured.
+- **L2-friendly CTA rasterization** (swizzle the 1D `ctaid.x` → tile
+  decode so concurrent CTAs share B slabs in L2) — cheap, no kernel
+  body change, directly targets the re-read traffic.
+- Split-K for underfilled shapes (unchanged from the findings ledger).
+
+Phase 2 (register-staging) is therefore closed REJECTED, and the campaign
+pivots to the reuse/L2 axis (a new phase; see the plan).
+

@@ -71,32 +71,24 @@ mode 4 (fills ON, commit/wait/membar/bar suppressed) = 23.6 TF, *below*
 ship. The cost is the fill work itself, not the schedule. No schedule
 follow-ons.
 
-**Phase 2 — register-staging one operand (the big lever).**
-- H-R1 A-register, H-R2 B-register, H-R3 hybrid (model picks).
-- Prototype behind a knob; gate on `ptxas -v` (reject if CTAs/SM < 4).
-- **Keep** if it beats the Phase-1 winner on target shapes with canaries
-  green; compare against the no-fill ceiling to size the recovery.
+**Phase 2 — register-staging — REFUTED (2026-09-30).** Scaling the
+ship-vs-no-fill gap across shapes
+(`benchmarks/results/2026-09-30-5b-structural-fill.md`) shows it appears
+only when operands exceed L2, and the kernel sits at the ~360 GB/s DRAM
+limit: the "fill cost" is **operand re-read DRAM traffic**, and the
+no-fill ceiling is unreachable (it removes necessary reads).
+Register-staging would ADD redundant reads (A shared ×nw, B ×mw) —
+bandwidth-doomed; the E-series E1f regime does not apply here.
 
-Design notes (from the emitter read, 2026-09-30):
-- The only direct-global tensor kernel (`tensor.rs::tensor_gemm_ptx`) is
-  the unused correctness-first 32×16/f32 path — no optimized
-  register-staged emitter exists; H-R1/R2 are new code.
-- A-resident (H-R1): drop `emit_a_fill` + the A `ldmatrix.x4`, load the
-  A fragment per mh directly with `ld.global.u32` (2 adjacent f16 each).
-  Locked fragment map (`g = lane/4`, `t = lane%4`, 16×16 mma tile):
-  `reg0={A[g][2t],A[g][2t+1]}`, `reg1={A[g+8][2t],A[g+8][2t+1]}`,
-  `reg2={A[g][2t+8],A[g][2t+9]}`, `reg3={A[g+8][2t+8],A[g+8][2t+9]}`;
-  global addr `a_base + (cta_m + mh·16 + row)·a_row + (kstep+col)·2`.
-  Load per-mh (4 live u32) to hold the 64-reg budget. Risk: coalescing
-  (a warp's 32 loads span 8 rows × 16 B) — measure, don't assume.
-- B-resident (H-R2): B fragment `reg0={B[2t][g],B[2t+1][g]}`,
-  `reg1={B[2t+8][g],B[2t+9][g]}` — B is per-warp already; direct loads
-  are column-strided (worse coalescing) but no cross-warp duplication.
-- Correctness: all-ones exact + f64 ref ≤6%; verify the direct fragment
-  map reproduces the ldmatrix output before timing.
-- Only if a variant wins: wire the load path into `gpu_strategy`
-  (replace the dead `staged` flag) and gate per shape × device
-  (Phase 3).
+**Phase 2' — reuse / L2 locality (the correct lever).**
+- Larger CTA tile → fewer re-reads; the E-series rejected big tiles under
+  a *compute-bound* assumption — re-measure under memory-bound reality.
+- **L2-friendly CTA rasterization**: swizzle the 1D `ctaid.x`→tile decode
+  so concurrent CTAs share a B slab in L2 (cheap; no kernel-body change).
+- Small-K/decode: the L4 family (unchanged).
+Each behind a knob, measured before/after, canaries (64³–256³) gated,
+recorded in the same results file.
+
 
 **Phase 3 — model gating (winners only).**
 - Load-path axis in `gpu_strategy` + per-device calibration parameter;
