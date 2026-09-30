@@ -4,6 +4,11 @@
 captures a design discussion; it does not yet amend the Golden Rules. It
 exists so the decisions are made deliberately, not by drift.
 
+> **Update (2026-09-30, later):** the open questions below were decided in
+> `gpu-syntax-decision-record.md` (§6 D1–D27). Read that for the resolved
+> syntax; this document remains as the reasoning record of the three
+> categories and the resolution rule.
+
 **Companions:** `proof-vs-shape.md` (eternal vs temporal),
 `derivation-not-recognition.md` (the compiler's obligation),
 `briev-capability-frontier.md` (expressiveness closure),

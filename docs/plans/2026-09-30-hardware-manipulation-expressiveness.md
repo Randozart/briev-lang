@@ -1,6 +1,7 @@
 # Hardware-manipulation expressiveness — plan
 
-**2026-09-30.** Status: **active plan — decisions pending** (see §7). To be
+**2026-09-30.** Status: **active plan — syntax decisions resolved** in
+`docs/architecture/gpu-syntax-decision-record.md` (D1–D27, A1–A10). To be
 able to beat hand-written CUDA, Briev must be able to **manipulate the
 hardware** as directly as CUDA/CUTLASS and beyond — while preserving the
 derivation doctrine.
@@ -62,15 +63,18 @@ Genuine execution contracts, not derivable from the DAG. **All in scope.**
 Each is **derived** where the compiler can decide, **expressed** where it
 must be declared — never silently guessed.
 
-### L3 — Shape/schedule layer (explicit control where the model is uncertain)
+### L3 — Shape layer (explicit control where the model is uncertain)
 CUTLASS exists because the tensor-core path must be hand-shaped. Briev
 needs the same: **tile, stage depth, pipeline, fragment layout, swizzle,
-loop→fundamental binding, unroll**.
-- Per `keyword-taxonomy.md`, these are **ambiguity keywords** (declared at
-  the site of confusion) *or* metaprogrammed schedules — **not strategy
-  keywords**, and **not speed keywords**: legitimate only where the
-  compiler's effectiveness model is uncertain. Where it can derive the
-  shape, a declaration is redundant and the default must win.
+loop→fundamental binding, unroll, split**.
+- This is **shape**, not scheduling (preconditions are the scheduler —
+  `gpu-syntax-decision-record.md` §1.5). Declared as **source node-level
+  parametric modifiers** (D1): `tile<M,N>`, `stage<N>`, `unroll<N>`,
+  `split<N>`, `vector<N>`, `swizzle<…>`, `fragment<…>` (D14).
+- Per `keyword-taxonomy.md`, these are **ambiguity** declarations (legal
+  only where the compiler's effectiveness model is uncertain); where it
+  can derive the shape, the declaration is redundant and the default must
+  win (a redundancy **warning**, D2).
 
 ### L4 — Fundamental-binding layer
 The target profile carries **fundamentals** (instruction + structural
@@ -113,29 +117,24 @@ is won.
   keyword-beaten default is a bug.
 - **Closure** — every capability reachable; a gap is a bug, not a limit.
 
-## 6. The central fork
+## 6. The central fork — RESOLVED
 
-- **Derivation-first** (doctrine): the default derives; the escape
-  (L1/L3) reaches anything the default can't; explicit control is the
-  exception. Briev's "beat CUDA" lives in L5.
-- **Control-first**: the author shapes the kernel explicitly (CUTLASS/Exo
-  style); the compiler derives/assists. "Beat CUDA" lives in the author's
-  control.
+**Derivation-first** (doctrine): the default derives; the escape (L1/L3)
+reaches anything the default can't; explicit control is the exception
+(and, for shape, an *ambiguity* declared at the site). Briev's "beat CUDA"
+lives in L5, with the disclosed escapes of §6 syntax.
 
-The rest of the plan's ordering depends on this choice.
+## 7. Open questions — RESOLVED by the decision record
 
-## 7. Open questions (decisions pending)
+All six were decided in `docs/architecture/gpu-syntax-decision-record.md`:
 
-1. **Derivation-first or control-first?** (the fork in §6 — the central
-   decision).
-2. **L3 form**: ambiguity keywords at the site, metaprogramming
-   composites (`$defn`), or a first-class scheduling sublanguage
-   (Exo/CUTLASS-meta)?
-3. **L2 derive-vs-express** for grid sync, persistent, clusters, dynamic
-   parallelism, multi-GPU — derive by default where possible, or always
-   declare (semantics)?
-4. **L1 target scope**: which ISAs bound "everything" — NVIDIA
-   (sm_80/86/90/100), SPIR-V, AMD, Intel, others?
-5. **Priority**: L1 audit + L2 features, or L3 control surface, or L5
-   derivation — which first?
-6. **Syntax**: the concrete surface for L2/L3 (the next discussion).
+1. **Derivation-first** (A4, §6).
+2. **L3 form** → renamed **shape**; declared as **source node-level
+   parametric modifiers** (D1), broad vocabulary (D14).
+3. **L2 form** → **scope blocks** `scope<kind[, size]>` (D3/D5), with
+   `persistent` a separate derived-by-default lifetime (D6/D9); sync via
+   extended `sync<…>` (D4/D7).
+4. **L1 target scope** → NVIDIA PTX + SPIR-V first (D27); primitive path
+   layered (D26).
+5. **Priority** → L1/L5 first (implementation plan, §4).
+6. **Syntax** → the full D1–D27 record; open details listed there §10.
