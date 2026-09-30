@@ -63,6 +63,37 @@ only when the fill gain beats the partial writes + second kernel.
 - **Combine**: general reduction-combine, scheduled after the partial
   kernel; combine kind derived from the reduction kind, not a benchmark.
 
+### ARCHITECTURAL PREREQUISITE (found 2026-09-30): two kernels per node
+
+The generated runner dispatches **one kernel per accel node**
+(`// kernel node 'fattn'` → one `briev_accel_launch_resident`;
+`src/backend/spirv/runner.rs:1233` for the deferred-region geometry). A
+split phase needs `partial → combine` **two ordered launches for one
+node**, so the change spans four surfaces:
+
+1. **Runner codegen** (`runner.rs`, dispatch cases ~L1106–1240): a new
+   geometry case emitting two ordered launches; the `RunnerKernel` must
+   carry the split metadata (factor + combine kernel index).
+2. **Combine emitter** (new, `general.rs`): per work item, merge `S`
+   partials via the online-softmax algebra
+   (`acc = Σ acc_s·exp(m_s − m*)`, `l = Σ l_s·exp(m_s − m*)`,
+   `out = acc/l`) or plain sum for `Dot`.
+3. **Partial emitter** (`emit_deferred_region`, `S > 1`): decode
+   `(h = cid/S, slice = cid%S)`, reduce the slice's `j` sub-span, write
+   per-slice `(m_s, l_s, acc_s)`.
+4. **Workspace**: the accumulator buffer (`acc_buf`, e.g. `o1` sized
+   `H·NKV`) holds the `S·(2+D)` partials per work item — no layout change,
+   gated on `NKV ≥ S·(2+D)` (else `S = 1`).
+
+**Ordered implementation (each committed + device-gated):**
+- **S1** `RunnerKernel` split metadata + runner two-launch codegen (no
+  math change — verify a two-kernel node launches in order).
+- **S2** Combine emitter + a synthetic-region unit test.
+- **S3** Partial emitter behind a default-off knob; validate the merge
+  against the `S = 1` path on-device (`m3_attention_harness.sh`) **before**
+  any timing claim.
+
+
 ## Phasing (each increment = Rule-20 pre-B + A/B + both-lane correctness)
 
 1. **Cost estimator** (`reduction_split_factor`, pure + tests) — this commit.
