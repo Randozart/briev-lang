@@ -193,5 +193,34 @@ yet. A controlled re-measurement (cool-downs, per-round process restart,
 ideally GPU 0 with the display) is required before locking the exact
 calibration constants.
 
+## Controlled re-measurement (2026-09-30, post-hazard)
+
+Protocol: fresh process per rep (fresh CUDA context), 6 reps per variant,
+all TF values recorded + median, forced `(mw,nw)` configs (auto / narrow
+(2,4) / wide (2,8)), CUDA on GPU 1, clock-sampled with `nvidia-smi`.
+
+| shape | narrow (2,4) | wide (2,8) | verdict |
+|---|---|---|---|
+| 4096³ | 27.0 [26.7–27.0] | **31.0 [30.9–31.2]** | wide **+15%**, tight ✓ |
+| 8192³ | 25.7 [25.6–26.0] | **31.7 [31.7]** | wide **+23%**, tight ✓ |
+| K=1024 (4096²) | 27.2 [26.8–27.5] | **29.7 [29.5–30.0]** | wide **+9%**, tight ✓ |
+| 2048³ | 11.9 [11.5–12.0] | 10.3 [8.7–16.0] | both low — rig-limited |
+| thin-K K=512 | 19.2 [15.8–20.8] | 19.8 [17.1–21.1] | both low — rig-limited |
+
+**Root cause of the small-shape instability (isolated):** during a 500-iter
+2048³ run the GPU sat at **225 MHz / 13.8 W at 100 % utilisation**, while
+the 4096³ kernel ramps to ~1800 MHz / 100 W. So *short/small-grid kernels
+run clock-capped on this rig* — their absolute TF is a lower bound and
+must not drive decisions. The large-shape numbers (4096³/8192³/K=1024)
+ramp normally and are the trustworthy basis for the wide-tile win.
+
+**Decision:** the wide-tile default stands (the win is large, tight, and
+clock-confirmed at the ramping shapes). The `K ≥ 1024 ∧ ≥ 256 CTAs` guard
+is kept — it is principled (underfill) and the 2048³/thin-K evidence,
+while rig-limited, never shows the wide tile *better*. The 2048³ "wide
+regression" seen earlier (10–15 vs 26) is **retracted as a rig artifact**:
+in the controlled run the *narrow* tile also measured ~12.
+
+
 
 
