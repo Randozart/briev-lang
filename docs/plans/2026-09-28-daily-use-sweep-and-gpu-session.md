@@ -54,7 +54,15 @@ then Phase A daily-use sweep, then Phase C.
 
 Per umbrella Phase 3 (`3a`–`3e`).
 
-### B1. 3a Re-baseline (Rule 12)
+### B1. 3a Re-baseline (Rule 12) — DONE 2026-09-30
+Record: `benchmarks/results/2026-09-30-b1-rebaseline.md` (full runtime
++ optimizer tables; raw logs `/tmp/opencode/b1_runtime.log`,
+`b1_optimizer.log`). Sweep's one FAIL (`nbody_newton_accel`) was a
+harness telemetry false positive — fixed in `build_and_bench.sh`
+(`^# ` stderr filter); post-fix MATCH 11.19x. No Briev-side runtime
+regressions vs 2026-09-25; `async_counters_idio` MISMATCH +
+`UTF8_ops` SKIP both pre-existing (details in the record). Step 5
+landed: followup-stages Stage 1 verdict + Stage 5 corrections.
 1. Clean `cargo build --release`.
 2. `bash benchmarks/build_and_bench.sh --runtime` (throughput category).
 3. `bash benchmarks/build_and_bench.sh --optimizer` (compile-time
@@ -74,7 +82,12 @@ Per umbrella Phase 3 (`3a`–`3e`).
 3. The `dispatch failed (A)` gap from the last attempt must be cleared —
    if it persists on a clean GPU, diagnose before any timing claim.
 
-### B3. compare_baseline
+### B3. compare_baseline — DONE 2026-09-30
+Only `float_math` worsened while the machine was otherwise faster
+(Briev 0.0424→0.0458 vs broad improvements): A/B
+`compare_baseline.sh float_math` → baseline `5d1d7e45` 0.4150s vs
+current `6dca75b0` 0.4116s = 0.9918, within tolerance. No other
+Briev-side time regressed. (Protocol as written:)
 `bash benchmarks/compare_baseline.sh <name>` for any benchmark that moved
 vs the baseline worktree (`../briv-compiler-baseline`, main-only,
 untouched). Never excuse a regression as "noise" without this A/B.

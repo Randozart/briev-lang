@@ -23,8 +23,18 @@ GPU performance backlog.
 
 ## Stage 1 — Front D: the deferred emitter retires
 
-Formal milestone (`metaprogrammed-composites.md:92`). The backend's
-deferred-region structural matcher is a loan; repay it.
+**Status (2026-09-25): retirement REJECTED — stage closed with the FAIL
+outcome recorded.** The A/B ran both lanes correct: plain general path
+10 792–10 850 µs p50 vs deferred 407–422 µs (26× behind), so the
+matcher stays, the knob stays at `1`, and the deferred numbers are now
+settled — Stage 5's 5a dependency is satisfied. Full protocol:
+`benchmarks/results/2026-09-25-front-d-ab.md`.
+
+The plan as written below is kept as the record of the procedure that
+was executed (formal milestone: `metaprogrammed-composites.md:92`);
+the deferred-region structural matcher's repayment is reopened only
+when the GENERAL path grows its own multi-warp j-slicing (see the
+A/B verdict's closing condition).
 
 **Mechanism.** The composite 1-launch path already matches the chain on
 correctness and timing (both lanes PASS; 198–200 µs vs 202 µs —
@@ -158,15 +168,30 @@ declared/temporal).
 
 ## Stage 5 — re-rank session (GPU performance backlog)
 
-Run a controlled re-rank AFTER stages 1–4, with a fresh full baseline
-(Rule 12 + Rule 12b worktree A/B). Candidates, in current order:
+Run a controlled re-rank, with a fresh full baseline (Rule 12 + Rule 12b
+worktree A/B). Ordering: the umbrella `2026-09-24` order said "after
+stages 1–4", but the active session plan
+(`2026-09-28-daily-use-sweep-and-gpu-session.md` Phase B4) runs the
+re-rank now from the B1 re-baseline — GPU-first was approved 2026-09-28
+(D4); stages 2–4 (interop waves) follow in Phase C. Candidates:
 
 | # | Stage | Prize | Dependency |
 |---|-------|-------|------------|
-| 5a | **B — attention 198→125 µs** | Closes the deferred-target row; retires the fused-attention family (~1400-line matcher) behind a composite-parity gate | Stage 1 done (deferred numbers settled) |
+| 5a | **B — attention 198→125 µs** | Closes the deferred-target row; retires the fused-attention family (~1400-line matcher, `src/backend/ptx/mod.rs` `fused_attention_*`, gated OFF since `0229d9e2`) behind a composite-parity gate | Stage 1 SETTLED (2026-09-25 A/B: deferred stays — `front-d-ab.md`). Composite path already landed: Front C binding `dd70f144`, adaptive span-arm `0051d920`; the string-built softmax_chain synthesis was deleted per Rule 24 (`b1730dd7`, `7ee9597a`) — 5a is the perf A/B + dead-family deletion, not composite construction |
 | 5b | **S3b — cp.async GEMM pipeline** | 4096³ 23→38 TF; unlocks S4 correctness + S5 perf + S6 auto-tune | S3a proven (mma.sync exact) |
 | 5c | **Warp-slice threshold retirement** | `has_warp_slice` (`general.rs:319`) span≥512 / span%4==0 are TUNING heuristics → `config/targets.toml` or composite params; hardware facts (warp=32, `shfl`) stay in the backend | none — mechanical |
 | 5d | **M4 ladder remainder** | `detect_row_softmax` → `detect_reduction` → `GemmPlan` retire in that order, each behind a perf A/B gate (`gpu-dialect-beyond-cuda.md:204-211`) | 5a first (fused-attention already at table row 1) |
+
+Landed since first draft (corrections per B1 step 5, 2026-09-30):
+softmax-chain retirement `b1730dd7`/`7ee9597a` (2026-09-20/21 — no
+`softmax_chain` symbol remains in `src/`), composite attention path
+`0051d920`/`dd70f144` (2026-09-21), Front D verdict
+`2026-09-25-front-d-ab.md` (rejected). Also: re-derive 5b's base from
+the current numbers — the 4096³ landscape changed twice since this
+table was written (vendor driver 615 regression isolating the
+workgroup-smem+barrier fill path, and the dual-image dispatch fix
+landing the CUDA lane at 27.5 TF; both recorded in
+`benchmarks/results/2026-09-30-gemm-4096-gates.md`).
 
 Re-rank outputs a single committed plan for the chosen stage (this umbrella
 plan's stage 5 entry points at it).

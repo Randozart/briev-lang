@@ -441,10 +441,21 @@ check_correctness() {
     # "match" the C reference (deep_recursion printed a divide-by-zero and
     # reported MATCH). A non-empty stderr / non-zero exit is now FAIL, never
     # MATCH.
+    #
+    # 2026-09-30: the device runtime emits performance TELEMETRY on stderr
+    # with the `# ` line prefix (`# gpu_time: …`, per-launch Vulkan
+    # timestamps) — that is data for the timing sessions, not an error.
+    # Crash diagnostics never use the `# ` prefix (`briev: dispatch
+    # failed`, driver `[briev_accel/…]` messages, panics), so filtering
+    # `^# ` keeps Bug 5's guarantee while GPU-engaged benchmarks (e.g.
+    # nbody_newton_accel, which started dispatching Vulkan kernels after
+    # the image-aware driver select) no longer false-FAIL on telemetry.
     env ${BENCH_ENV[$name]:-} BOUND=5 timeout 10 "$briev_bin" >"$tdir/briev.out" 2>"$tdir/briev.err"
     briev_rc=$?
     briev_out=$(cat "$tdir/briev.out" 2>/dev/null)
-    briev_err=$(cat "$tdir/briev.err" 2>/dev/null)
+    # `|| true`: grep exits 1 when stderr is telemetry-only — under
+    # pipefail that must not abort the harness (empty err = PASS path).
+    briev_err=$(grep -v '^# ' "$tdir/briev.err" 2>/dev/null | head -c 200 || true)
     if [ "$name" != "$ref_name" ] && [ -f "$ref_c_bin" ]; then
         env ${BENCH_ENV[$name]:-} BOUND=5 timeout 10 "$ref_c_bin" >"$tdir/c.out" 2>"$tdir/c.err"
     else
