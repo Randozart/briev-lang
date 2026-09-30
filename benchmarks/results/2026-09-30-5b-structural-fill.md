@@ -221,6 +221,25 @@ while rig-limited, never shows the wide tile *better*. The 2048³ "wide
 regression" seen earlier (10–15 vs 26) is **retracted as a rig artifact**:
 in the controlled run the *narrow* tile also measured ~12.
 
+## GPU-suite correctness under the new default (2026-09-30)
+
+The default GEMM tile changed, so the composite paths were gated:
+
+- Attention composite (`bash benchmarks/m3_attention_harness.sh`), both
+  device lanes, max rel err gate < 1e-3:
+  - NKV=256 (D=128): CUDA **PASS** (s 1.68e-5, o1 2.38e-7, a 1.23e-5),
+    Vulkan **PASS**.
+  - NKV=4096 (deep-K PV → exercises the tile selection): CUDA **PASS**
+    (s 4.29e-5, o1 3.11e-7, a 1.63e-5), Vulkan **PASS**.
+- GEMM matrix all-ones at real shapes: 2048³, 4096³, 8192³, K=1024,
+  thin-K K=512 — all PASS (tables above).
+
+Remaining (noted, not done): a full `gemm_chain`/elementwise-fusion
+correctness sweep and a `cargo`-level end-to-end GPU run — low risk since
+the changed surface is the GEMM tile geometry (covered above) and the
+attention composite already emits the fused chain (2–3 kernels).
+
+
 
 
 
