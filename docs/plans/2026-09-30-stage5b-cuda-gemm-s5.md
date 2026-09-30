@@ -78,6 +78,9 @@ recover it (`kps=2` 27.1, `stages=2` 27.0, `b_lookahead` 5.7, kps2+s2
 3. **`gpu_schedule` DAG fusion** — amortize the round-trip across a
    multi-GEMM graph (architectural, separate scope).
 
+Execution campaign + reach/gating analysis:
+`docs/plans/2026-09-30-stage5b-structural-fill-campaign.md`.
+
 ## Baseline (Rule 12 — measured BEFORE any change)
 
 All numbers RTX 3060 (sm_86), driver 615.71.09, batched protocol
