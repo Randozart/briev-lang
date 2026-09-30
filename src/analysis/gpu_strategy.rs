@@ -272,6 +272,42 @@ fn occupancy_factor(compute_bound: bool, s: &Strategy, k: u64, hw: &GpuHardware)
     }
 }
 
+/// Minimum inner-span chunk per split slice. Below this the per-slice work
+/// is too small to amortize the combine pass.
+const MIN_SPLIT_CHUNK: u64 = 32;
+
+/// Reduction-split factor for an underfilled work-item kernel.
+///
+/// General underfill physics, shared with the GEMM tile model: the grid
+/// should hold ~4 CTAs/SM (`sm_count * 4`). When a kernel's work-item count
+/// (rows/heads/CTA-tiles) is below that, the SMs sit idle; splitting the
+/// inner reduction span across `S` slices multiplies the grid by `S` at the
+/// cost of a combine pass. The caller supplies the work-item count and the
+/// inner span — **no op/type/shape knowledge** (Rule 23).
+///
+/// Returns `S >= 1` (1 = no split), bounded so every slice keeps at least
+/// [`MIN_SPLIT_CHUNK`] inner iterations.
+pub fn reduction_split_factor(work_items: u64, inner: u64) -> u64 {
+    reduction_split_factor_for(work_items, inner, &GpuHardware::SM86)
+}
+
+/// [`reduction_split_factor`] against an explicit device profile.
+pub fn reduction_split_factor_for(work_items: u64, inner: u64, hw: &GpuHardware) -> u64 {
+    const CTAS_PER_SM_TARGET: u64 = 4;
+    if work_items == 0 || inner < MIN_SPLIT_CHUNK * 2 {
+        return 1;
+    }
+    let desired = hw.sm_count * CTAS_PER_SM_TARGET;
+    if work_items >= desired {
+        return 1;
+    }
+    let mut s = desired.div_ceil(work_items);
+    while s > 1 && inner / s < MIN_SPLIT_CHUNK {
+        s -= 1;
+    }
+    s.max(1)
+}
+
 /// Select the best strategy for a GEMM shape.
 pub fn select(m: u64, n: u64, k: u64, hw: &GpuHardware) -> Option<Strategy> {
     let cands = candidate_strategies(m, n, k, hw);
@@ -460,4 +496,26 @@ mod tests {
                 s.tile_m, s.tile_n
 );
         }
+    }
+
+    #[test]
+    fn reduction_split_fires_only_on_underfill() {
+        let hw = GpuHardware::SM86; // 28 SMs, desired = 112 CTAs
+        // Underfilled: the decode pv (H=20 heads, NKV=4096) → fill to ~112.
+        assert_eq!(reduction_split_factor_for(20, 4096, &hw), 6);
+        assert_eq!(reduction_split_factor_for(32, 4096, &hw), 4);
+        // At/above the target, or a tiny span, → no split.
+        assert_eq!(reduction_split_factor_for(112, 4096, &hw), 1);
+        assert_eq!(reduction_split_factor_for(1024, 4096, &hw), 1);
+        assert_eq!(reduction_split_factor_for(20, 32, &hw), 1);
+        assert_eq!(reduction_split_factor_for(0, 4096, &hw), 1);
+    }
+
+    #[test]
+    fn reduction_split_respects_min_chunk() {
+        let hw = GpuHardware::SM86;
+        // inner=128: naive S=6 → chunk 21 < 32, so back off to S=4 (chunk 32).
+        assert_eq!(reduction_split_factor_for(20, 128, &hw), 4);
+        // inner=256: S=6 → chunk 42 ≥ 32 → S=6.
+        assert_eq!(reduction_split_factor_for(20, 256, &hw), 6);
     }
