@@ -1076,6 +1076,11 @@ fn tensor_gemm_ptx_smem_mw_opt(
     ws_debug: bool,
     epilogue_scale: Option<f64>,
 ) -> String {
+    // 2026-09-30 (stage-5 5b diagnostic): when set, skip the K-loop A/B
+    // cp.async strip fills (the prologue still fills stage 0 once). Keeps
+    // ldmatrix + mma + barriers, drops global→smem traffic and the smem
+    // WRITE half — isolates the smem-fed mma ceiling. Timing-only.
+    let nofill = crate::config_tuning::ir_lowering().ptx_tensor_nofill;
     // Warp tiling (2026-09-11 double-pump plan): the warp covers
     // warp_mh 16-row blocks x (16/warp_mh) 8-col groups — mma count per
     // kstep is invariant (16), so accumulators stay at 32 b32 (f16acc)
@@ -2097,7 +2102,8 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // rung per a_fill_rung above — identical address decomposition, fewer
     // copies). Source offset advances by the prefetch distance
     // kstep + 16*kps*(stages-1); the strip loop walks the kps 16-k blocks.
-    for strip in 0..kps {
+    let fill_strips = if nofill { 0usize } else { kps };
+    for strip in 0..fill_strips {
         let koff_src_off = {
             let mut s = String::from("    mov.u32 %r16, %r2;\n");
             s.push_str(&format!(
@@ -2122,7 +2128,7 @@ fn tensor_gemm_ptx_smem_mw_opt(
     ));
     out.push_str("    add.u32 %r12, %r12, %r18;\n");
     // global: (kstep+16*kps*(S-1)+k)*b_row
-    for strip in 0..kps {
+    for strip in 0..fill_strips {
         let koff_r18_prelude = {
             let mut s = String::from("    mov.u32 %r18, %r2;\n");
             s.push_str(&format!(

@@ -83,3 +83,41 @@ correct same-protocol rig. The live lever remains the documented
 structural gap — the smem round-trip (E-series: no-fill KLOOP 46.2 TF vs
 smem-fed ship). Work continues there; the config-level lever is now
 honestly exhausted and correctly wired.
+
+## Phase 3 — structural probe (smem round-trip is the wall on 615)
+
+Instrument: `ptx_tensor_nofill` (default off) — the mw emitter skips the
+K-loop A/B `cp.async` strip fills (the prologue still fills stage 0 once),
+keeping ldmatrix + mma + barriers. Timing-only (output garbage). Measured
+through the same E2E rig, 4096³, 30 iters:
+
+| variant | TF (×3) |
+|---|---|
+| ship (fills on) | 27.1 |
+| **no-fill** | **42.3, 45.4, 45.4** |
+
+**The fill path costs 18.3 TF (27.1 → 45.4).** And the compute/ldmatrix
+side is intact on 615: no-fill 45.4 ≈ the 580-era 46.2. So the driver
+degradation (27.1 vs 580's 35.5 smem-fed) is entirely on the
+fill/smem-round-trip path, not the mma schedule — consistent with the
+Vulkan lane's proven smem+barrier regression.
+
+Existing fill-side knobs cannot recover it (same rig, 615):
+
+| knob | TF |
+|---|---|
+| `ptx_tensor_ksteps_per_stage: 2` | 27.1 (neutral) |
+| `ptx_tensor_stages: 2` (16 KB) | 27.0 (neutral) |
+| `ptx_tensor_b_lookahead: 1` | **5.7** (4× slower on 615) |
+| kps=2 + stages=2 | 27.0 |
+
+Note the fill cost is NOT DRAM bandwidth: 4096³ is compute-bound
+(2·4096³ ≈ 137 GFLOP vs ≤64 MB of A/B reads). It is the cp.async issue +
+smem-write + barrier cadence mechanism.
+
+**Verdict: the structural direction is the correct one** — reduce or
+bypass the smem round-trip. Candidate approaches (design next):
+A-resident register staging (E-series E1f measured 42.5 on 580),
+producer/consumer warp specialization (E8a, parked), or
+`gpu_schedule` DAG fusion that amortizes the round-trip across a
+multi-GEMM graph. The config/pipeline lever is exhausted.
