@@ -114,6 +114,13 @@ pub struct RunnerKernel {
     /// count by `block_threads` so the driver's `gx = ceil(n*bx/bx) = n`.
     /// False for every non-lane-reduction kernel (zero-fill contract).
     pub block_per_workitem: bool,
+    /// 2026-09-30 (general reduction-split, plan
+    /// 2026-09-30-general-reduction-split.md): the partial-kernel split
+    /// factor `S`. 1 = none (every ship kernel). For `S > 1` the runner
+    /// dispatches this kernel with `count * S` work items (one CTA per
+    /// `(work_item, slice)`), then its `<name>__combine` companion with
+    /// `count` — two ordered launches of one logical node.
+    pub split: u32,
 }
 
 /// The SSBO layout EXACTLY as the kernel sees it (name-sorted, real element
@@ -814,7 +821,13 @@ pub fn emit_runner(
         if let Some(k) = kidx.map(|i| &kernels[i]) {
             // KERNEL node: dispatch + counter fast-forward (the pass covers
             // every work item, so `i = N` makes the pre false next pass).
-            emit_kernel_node(&mut out, t, k, kidx.unwrap(), &fields, &consts);
+            emit_kernel_node(
+                &mut out,
+                t,
+                k,
+                kidx.unwrap(),
+                &KernelCtx { fields: &fields, consts: &consts, kernels },
+            );
             continue;
         }
         // HOST node: scalar body.
@@ -969,7 +982,7 @@ pub fn build_kernels(
             // 2026-09-17 (M2.0): the SPIR-V producer carries no CUDA image;
             // compile.rs merges build_ptx_kernels blobs in by node name.
             ptx: Vec::new(),
-            block_per_workitem: false,
+            block_per_workitem: false, split: 1,
         });
     }
     Ok(out)
@@ -1053,7 +1066,13 @@ fn try_emit_chain_fusion(
     if t.name == cf.producer {
         let fname = format!("{}__{}_{}", cf.producer, cf.middle, cf.consumer);
         if let Some(ki) = kernels.iter().position(|k| k.name == fname) {
-            emit_kernel_node(out, t, &kernels[ki], ki, fields, consts);
+            emit_kernel_node(
+                out,
+                t,
+                &kernels[ki],
+                ki,
+                &KernelCtx { fields, consts, kernels },
+            );
             return Ok(true);
         }
         return Ok(false);
@@ -1076,20 +1095,27 @@ fn try_emit_chain_fusion(
 }
 
 
+/// Read-only ambient context for the kernel-dispatch emitters (keeps the
+/// per-node emitter within the parameter budget).
+struct KernelCtx<'a> {
+    fields: &'a [RunnerField],
+    consts: &'a std::collections::HashMap<String, Expr>,
+    kernels: &'a [RunnerKernel],
+}
+
 fn emit_kernel_node(
     out: &mut String,
     t: &crate::ast::top::Transaction,
     k: &RunnerKernel,
     kidx: usize,
-    fields: &[RunnerField],
-    consts: &std::collections::HashMap<String, Expr>,
+    ctx: &KernelCtx<'_>,
 ) {
     let name = &t.name;
     let mut pre = String::new();
-    emit_scalar_read(&t.contract.pre_condition, fields, consts, &mut pre)
+    emit_scalar_read(&t.contract.pre_condition, ctx.fields, ctx.consts, &mut pre)
         .expect("kernel pre-condition lowers");
     let mut count_c = String::new();
-    emit_scalar_read(&k.count_expr, fields, consts, &mut count_c)
+    emit_scalar_read(&k.count_expr, ctx.fields, ctx.consts, &mut count_c)
         .expect("kernel count lowers");
     let ci = c_ident(name);
     out.push_str(&format!("    // kernel node '{}'\n", name));
@@ -1098,9 +1124,30 @@ fn emit_kernel_node(
         "      fired = 1;\n      long long n_{} = {};\n",
         ci, count_c
     ));
-    out.push_str(&dispatch_geometry_stmt(k, kidx, &ci));
+    let combine = (k.split > 1)
+        .then(|| {
+            ctx.kernels
+                .iter()
+                .position(|x| x.name == format!("{}__combine", name))
+        })
+        .flatten();
+    match combine {
+        Some(cidx) => out.push_str(&split_dispatch(k, kidx, cidx, &ci)),
+        None => out.push_str(&dispatch_geometry_stmt(k, kidx, &ci)),
+    }
     out.push_str(&format!("      S_{} = n_{};\n", c_ident(&k.index_var), ci));
     out.push_str("    }\n");
+}
+
+/// 2026-09-30 (general reduction-split): the two ordered launches of a
+/// split node — the partial kernel over `count * S` work items (one CTA per
+/// `(work_item, slice)`), then the combine companion over `count`. The
+/// combine blob is the sibling RunnerKernel named `<node>__combine`.
+fn split_dispatch(k: &RunnerKernel, kidx: usize, combine_idx: usize, ci: &str) -> String {
+    format!(
+        "      if (n_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, n_{ci} * {s})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n      if (n_{ci} > 0 && !briev_accel_launch_resident({combine_idx}, state, n_{ci})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n",
+        s = k.split
+    )
 }
 
 /// The C dispatch statement for one kernel node, by blob geometry
@@ -1418,6 +1465,7 @@ mod dispatch_tests {
             touched_fields: Vec::new(),
             ptx: Vec::new(),
             block_per_workitem: false,
+            split: 1,
         };
         overrides(&mut k);
         k
@@ -1519,5 +1567,25 @@ mod dispatch_tests {
             "S3b arm: {s}"
         );
         assert!(s.contains("briev_accel_cuda_lane"), "split: {s}");
+    }
+
+    #[test]
+    fn split_dispatch_launches_partial_then_combine() {
+        // 2026-09-30 (general reduction-split): a split node emits two
+        // ordered launches — the partial over count*S, the combine over count.
+        let mut k = kernel(&mut |_| {});
+        k.split = 3;
+        let s = split_dispatch(&k, 0, 1, "fattn");
+        assert!(
+            s.contains("launch_resident(0, state, n_fattn * 3)"),
+            "partial gets count*S: {s}"
+        );
+        assert!(
+            s.contains("launch_resident(1, state, n_fattn)"),
+            "combine gets count: {s}"
+        );
+        let pi = s.find("launch_resident(0,").unwrap();
+        let ci = s.find("launch_resident(1,").unwrap();
+        assert!(pi < ci, "partial must launch before combine: {s}");
     }
 }

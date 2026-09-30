@@ -1336,6 +1336,7 @@ fn build_fused_attention_kernel(
         // during the dual-image merge.
         ptx: Vec::new(),
         block_per_workitem: false,
+        split: 1,
     }))
 }
 
@@ -1625,6 +1626,7 @@ fn emit_cooperative_reduction_ptx(
         touched_fields: crate::backend::spirv::runner::kernel_touched_fields(shape),
         ptx: Vec::new(),
         block_per_workitem: false,
+        split: 1,
     }))
 }
 
@@ -1872,6 +1874,7 @@ pub fn build_ptx_kernels(
                     || general::has_lane_reduction(
                     &e.shape.kernel_stmts, &consts,
                 ),
+                split: 1,
             });
             continue;
         }
@@ -2112,6 +2115,7 @@ pub fn build_ptx_kernels(
             touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
             ptx: Vec::new(),
             block_per_workitem: false,
+        split: 1,
         });
     }
     Ok(out)
