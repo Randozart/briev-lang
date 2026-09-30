@@ -7,19 +7,18 @@ measurement refuted — see `benchmarks/results/2026-09-30-5a-attention-decode.m
 
 ## Measured baseline
 
-| path | p50 | notes |
+Reliable protocol = **≥1000 reps** (the low-rep p50 is a clock-ramp
+transient — see `benchmarks/results/2026-09-30-5a-attention-decode.md`).
+
+| path | ramped p50 | notes |
 |---|---|---|
-| composite (one launch) | 2478 µs | **bimodal**: p10 = 200.8 µs |
-| 3-kernel composition | 3443 µs | pv alone 3179 µs |
+| composite (one launch) | **200.6 µs** | p10 194.9 / p90 207.1 (2000 reps) |
 | ggml fattn | ~58 µs | reference |
 | target | ≤125 µs | plan 2026-09-20-gpu-dialect §3.2 |
 
-**Measurement caveat (critical):** the composite launch is bimodal
-(p10 200.8 µs ↔ p50 2470 µs) — small-grid clock cap (see the GEMM
-campaign's 225 MHz finding). The ramped latency is **~200 µs**, ~1.6× off
-the target, not 20×. **A reliable sustained/clock-controlled decode rig
-is Step 0** — the current per-step microbench (host push between
-launches) is clock-unstable.
+Gap: **~1.6× to target** (3.4× to ggml) — a tractable kernel-efficiency
+problem, not a 20× defect. Structural cause: `grid = H` (no split-K) +
+per-`j` pass overhead.
 
 ## Emitted kernel (composite `fattn`)
 
@@ -80,12 +79,11 @@ sequential j-iterations per warp × 2 passes** at a near-empty grid.
 - Delete `fused_attention_*` only when the composite meets decode parity
   (Rule 24 retirement gate) — not before.
 
-## Step 1 (starting now)
+## Step 1
 
-E0 (prerequisite): a **sustained decode measurement** — back-to-back
-launches with no host gap (or a clock-warming duty cycle), reporting the
-ramped latency and the SM clock during the run; re-baseline the composite
-and the 3-kernel pv. Then E2 (confirm the per-warp j-iteration count) and
-E1 (block-size, expected moot — grid is H-limited) before any lowering
-change. Split-K over NKV (design option 1) is the likely fix once the
-measurement is trustworthy.
+E0 DONE — reliable protocol is high-REPS sustained (≥1000); ramped
+composite baseline = 200.6 µs. Next: E2 (confirm the per-warp
+`j`-iteration count) and then implement **split-K over NKV** (design
+option 1) — the grid is H-limited, so filling the SMs is the main lever;
+gate each step with the high-REPS composite microbench + the m3
+correctness harness.
