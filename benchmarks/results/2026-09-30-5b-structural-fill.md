@@ -154,4 +154,44 @@ The fix must model the DRAM-bandwidth *floor* (`max(compute, bytes/BW)`)
 and apply the occupancy penalty only when compute-bound. That is a
 calibration change requiring the model tests — do it as its own step.
 
+## Phase 3 — model gating (implemented 2026-09-30)
+
+`src/analysis/gpu_strategy.rs`:
+- **Roofline floor**: `seconds = max(compute_s, memory_s)/ilp_bonus`
+  (was `compute + memory/stages`, which hid the DRAM-bound cost).
+- **Occupancy penalty only when compute-bound** — when DRAM-bound the
+  SMs saturate memory regardless of CTAs/SM.
+- **Candidate cap 256 → 512 threads**, so the wide tiles are candidates.
+- **Guards** (both measured): wide tiles (`area > 128×128`) require
+  `K ≥ 1024` AND `≥ 256 CTAs`. Thin-K (K=512) and underfilled 2048³ stay
+  on 128×128.
+
+On-device (auto, default config), all-ones PASS:
+| shape | tile | TF | vs pre-change |
+|---|---|---|---|
+| 4096³ | wide | 30.7–31.4 | 26.9 → **+16%** |
+| 8192³ | wide | 31.7–31.9 | 25.7 → **+24%** |
+| 2048³ | narrow | 27.9 | ~26 (no regression) |
+| 4096×4096×512 | narrow | (unstable) | guarded to narrow |
+
+Model tests updated: `e4c_tile_preserved_at_4096` → `dram_bound_shapes_
+get_wide_tile` (4096/8192 wide); added `thin_k_keeps_narrow_tile`,
+`underfilled_2048_keeps_narrow_tile`. Full lib suite 2779 green.
+
+## MEASUREMENT HAZARD (must fix before trusting fine A/B)
+
+This rig's GPU numbers became unreliable over long sessions: the SAME
+narrow thin-K kernel measured **25.8 TF early and 12.5 TF later in one
+session** (2048³/4096³/8192³ measured fine in the same loop), and
+multi-round loops degrade monotonically (e.g. 2048³ 17.9→8.6). Temps are
+low (~40–47 °C) and the GPU idles at 210 MHz between runs, so this is not
+simple thermal throttle — likely DVFS/clock-state or a second user of
+GPU 1. **Conclusions in this file are drawn only from values reproduced
+across ≥3 runs in a clean window**; the wide-tile win (+16/24%) and the
+2048³/narrow figures satisfy that. Fine thin-K and K=1024 numbers do NOT
+yet. A controlled re-measurement (cool-downs, per-round process restart,
+ideally GPU 0 with the display) is required before locking the exact
+calibration constants.
+
+
 

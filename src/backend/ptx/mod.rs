@@ -1993,6 +1993,10 @@ pub fn build_ptx_kernels(
         // (4,4)@512T x2 point on every large square shape (nw-first walker
         // lands (2,4)@256T; see select_mw_nw for the A/B numbers).
         let thread_cap = 256;
+        // 2026-09-30 (5b Phase 3): the shape model may now choose 512-thread
+        // wide tiles (e.g. (2,8)=128×256) for DRAM-bound shapes; the legacy
+        // `select_mw_nw` fallback keeps its historical 256 cap.
+        let strategy_thread_cap = 512;
         let (ptx, ptx_tensor, count_expr, block_threads, shared_bytes) = if tensor {
             let warp_mh = ptx_warp_mh(f16_acc);
             let gr = 16 / warp_mh;
@@ -2016,7 +2020,7 @@ pub fn build_ptx_kernels(
                     (fmw, fnw, stages)
                 } else {
                     match strategy
-                        .and_then(|s| strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, thread_cap))
+                        .and_then(|s| strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, strategy_thread_cap))
                     {
                         Some((mw, nw, st)) => (mw, nw, resolve_eff_stages(stages_cfg, st, stages)),
                         None => {

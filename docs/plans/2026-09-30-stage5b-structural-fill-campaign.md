@@ -95,22 +95,15 @@ gives **+16% @4096³, +24% @8192³** (deep-K, operands > L2), all-ones
 PASS; thin-K `4096×4096×512` regresses (not DRAM-bound) → gate by shape.
 The model (`estimate_time`) under-rates this: it divides `memory_s` by
 `stages` and applies the occupancy penalty unconditionally, so it picks
-(2,4). **Phase 3 fix (own step, model calibration + tests):** model the
-DRAM-bandwidth floor `max(compute, bytes/BW)` and apply the occupancy
-penalty only when compute-bound, so the wider tile is chosen
-automatically for DRAM-bound shapes (Golden Rule 2 — no keyword needed).
-
-**Phase 3 caveat (must not regress thin-K).** A naive roofline swap is
-NOT sufficient: for thin-K `4096×4096×512` the model would then still
-prefer the wide tile (less modelled memory), but the measurement shows
-the wide tile is *worse* there (15–20 vs 25.7 TF) — thin-K is short on
-ksteps (32), so the wider tile's occupancy/prologue cost dominates and
-the DRAM saving is small. The fix therefore needs an explicit short-K /
-under-fill term, not just `max(compute, memory)`. Validate the model
-against the full measured matrix (64³…8192³, thin-K, K=1024) before it
-drives dispatch; the existing calibration tests (`e4c_tile_preserved_at_4096`
-etc.) encode the old compute-bound answer and must be updated with the new
-evidence.
+(2,4). **Phase 3 — model gating — IMPLEMENTED (2026-09-30).** `gpu_strategy.rs`:
+roofline `max(compute, memory)` floor (was `compute + memory/stages`),
+occupancy penalty only when compute-bound, candidate cap 256→512 threads,
+and measured guards (wide tile needs `K ≥ 1024` AND `≥ 256 CTAs`). Auto
+now picks the wide tile at 4096³/8192³ (+16/24% on-device) and stays
+128×128 at thin-K/2048³. Model tests updated + added; suite 2779 green.
+See the results file `2026-09-30-5b-structural-fill.md` for the
+measurement and the **measurement-hazard** note (fine A/B unreliable in
+long sessions — re-measure controlled before locking constants).
 
 
 **Phase 3 — model gating (winners only).**

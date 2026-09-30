@@ -78,14 +78,24 @@ pub fn candidate_strategies(m: u64, n: u64, k: u64, hw: &GpuHardware) -> Vec<Str
     let mut out = Vec::new();
     // Warp-tile shapes from the tensor tier: mhr (rows per warp) and the
     // derived warp_n. mhr=4 → warp tile 64×32 (E4c), mhr=2 → 32×64. The
-    // warp grid is (mw×nw) with mw·nw·32 ≤ 256 threads and mw,nw ≤ 8 —
+    // warp grid is (mw×nw) with mw·nw·32 ≤ 512 threads and mw,nw ≤ 8 —
     // bounded enumeration (constant, not data-dependent).
+    // 2026-09-30 (5b Phase 3): the thread cap rose 256 → 512 so the
+    // DRAM-bound wide tiles (e.g. (2,8)=128×256, (4,4)=256×128) are
+    // candidates; the roofline + short-K guard decide per shape.
+    // 2026-09-30 short-K + underfill guard (5b Phase 3): the wide tile
+    // (area > 128×128) halves occupancy (2 CTAs/SM), so it pays only with
+    // a long K AND enough CTAs to keep the SMs busy. Measured 4096×4096:
+    // K=512 never favours it; K=1024 +12%; 4096³/8192³ +16–24%. But at
+    // 2048³ the wide tile yields only 128 CTAs (≈2.3 waves at 2 CTAs/SM)
+    // and regressed to ~10–15 TF vs the narrow ~26 — underfill, not K.
+    // Require K ≥ 1024 AND ≥ 256 CTAs (≈4.5 waves) for a wide tile.
     for (warp_m, warp_n) in [(64u64, 32u64), (32u64, 64u64)] {
         for pair in 1u64..=64u64 {
             let mw = pair / 8 + 1;
             let nw = pair % 8 + 1;
             let tile = (warp_m * mw, warp_n * nw);
-            if mw * nw * 32 <= 256 && m % tile.0 == 0 && n % tile.1 == 0 {
+            if mw * nw * 32 <= 512 && tile_candidate_ok(tile, m, n, k) {
                 push_stages(&mut out, m, n, k, hw, tile);
             }
         }
@@ -93,6 +103,26 @@ pub fn candidate_strategies(m: u64, n: u64, k: u64, hw: &GpuHardware) -> Vec<Str
     out.sort_by_key(|s| (s.tile_m * s.tile_n, s.stages));
     out.dedup();
     out
+}
+
+/// Is `tile` a feasible candidate for `(m, n, k)`?
+///
+/// Divisibility always applies. 2026-09-30 (5b Phase 3): a *wide* tile
+/// (area > 128×128) halves occupancy (2 CTAs/SM), so it pays only with a
+/// long K AND enough CTAs to keep the SMs busy. Measured at 4096×4096:
+/// K=512 never favours it; K=1024 +12%; 4096³/8192³ +16–24%. At 2048³ a
+/// wide tile yields only 128 CTAs (≈2.3 waves) and regressed to ~10–15 TF
+/// vs the narrow ~26 — underfill, not K. Require K ≥ 1024 AND ≥ 256 CTAs.
+fn tile_candidate_ok(tile: (u64, u64), m: u64, n: u64, k: u64) -> bool {
+    let (tm, tn) = tile;
+    if m % tm != 0 || n % tn != 0 {
+        return false;
+    }
+    if tm * tn <= 128 * 128 {
+        return true;
+    }
+    let ctas = (m / tm) * (n / tn);
+    k >= 1024 && ctas >= 256
 }
 
 /// Push the stage variants of a divisible tile that fit the smem cap.
@@ -180,15 +210,18 @@ pub fn estimate_time(m: u64, n: u64, k: u64, s: &Strategy, hw: &GpuHardware) -> 
     let memory_s = total_bytes / (hw.dram_gbps * 1e9);
 
     let compute_bound = compute_s >= memory_s;
-    // Pipeline model: cp.async overlap hides memory behind compute. With
-    // `stages` K-slabs, only ~memory/stages is exposed (the prologue fill);
-    // the rest overlaps the mma. Time = compute + exposed memory.
-    // 2026-09-17: deeper pipelines also improve instruction-level parallelism
-    // (ILP) by overlapping MMA instructions from different K-slabs — even
-    // when memory is L2-resident. Measured: stages=3 vs stages=1 at 512³
-    // (near-zero DRAM) gives ~1.7% ILP benefit. Model as ~1% per stage.
+    // 2026-09-30 (stage-5 5b Phase 3, DRAM-bound reframe): the kernel is
+    // bandwidth-bound on operand re-reads at large shapes (measured: the
+    // ship-vs-no-fill gap equals the DRAM traffic time; effective bw ≈
+    // 360 GB/s at 4096³/8192³). The pipeline overlaps compute with the
+    // fill, so the achievable time is the roofline MAX of the two, not
+    // `compute + memory/stages` — that older form under-counted DRAM
+    // (divided away by `stages`) and therefore hid the wide-tile win.
+    // 2026-09-17 ILP: deeper pipelines interleave MMA from different
+    // K-slabs — ~1% per stage.
     let ilp_bonus = 1.0 + 0.01 * (s.stages - 1) as f64;
-    let mut seconds = (compute_s + memory_s / s.stages as f64) / ilp_bonus;
+    let mut seconds = compute_s.max(memory_s) / ilp_bonus;
+
 
     // Underfill: when the grid has fewer CTAs than the SM count, the GPU
     // sits partially idle — scale by the unused-SM fraction.
@@ -207,21 +240,35 @@ pub fn estimate_time(m: u64, n: u64, k: u64, s: &Strategy, hw: &GpuHardware) -> 
         seconds *= 1.0 + (waves - 2.0) * 0.08;
     }
 
-    // Occupancy (2026-09-16 Stage 3 calibration): deeper pipelines cost
-    // smem, and dropping below 4 CTAs/SM loses latency hiding — the E4c
-    // measured sweet spot (16KB stages=2 → 4 CTAs/SM; 24KB stages=3 still
-    // 4 CTAs/SM; 32KB stages=4 → 3 CTAs/SM loses ~1%). Penalize smem that
-    // pins the CTA count below the 4-CTA optimum.
-    let cta_smem = smem_for(s.tile_m, s.tile_n, k, s.stages).max(1);
-    let ctas_per_sm = hw.smem_per_sm / cta_smem;
-    if ctas_per_sm < 4 {
-        seconds *= 4.0 / ctas_per_sm as f64;
-    }
+    // Occupancy (2026-09-16 Stage 3 calibration, amended 2026-09-30 5b
+    // Phase 3): deeper pipelines cost smem and can pin CTAs/SM below the
+    // 4-CTA sweet spot. That penalty models lost *latency hiding*, which
+    // matters only when the kernel is compute/latency-bound; when it is
+    // DRAM-bandwidth-bound the SMs saturate the memory system regardless
+    // of CTAs/SM (the measured 4096³/8192³ wide-tile win).
+    seconds *= occupancy_factor(compute_bound, s, k, hw);
 
     Estimate {
         seconds,
         compute_bound,
         occupancy_ctas: ctas,
+    }
+}
+
+/// Occupancy multiplier for a strategy. Below the 4-CTA/SM sweet spot the
+/// lost latency hiding costs throughput — but ONLY when the kernel is
+/// compute/latency-bound (2026-09-30, 5b Phase 3). When DRAM-bound the SMs
+/// saturate memory regardless of CTAs/SM, so no penalty applies.
+fn occupancy_factor(compute_bound: bool, s: &Strategy, k: u64, hw: &GpuHardware) -> f64 {
+    if !compute_bound {
+        return 1.0;
+    }
+    let cta_smem = smem_for(s.tile_m, s.tile_n, k, s.stages).max(1);
+    let ctas_per_sm = hw.smem_per_sm / cta_smem;
+    if ctas_per_sm < 4 {
+        4.0 / ctas_per_sm as f64
+    } else {
+        1.0
     }
 }
 
@@ -329,11 +376,50 @@ mod tests {
     }
 
     #[test]
-    fn e4c_tile_preserved_at_4096() {
+    fn dram_bound_shapes_get_wide_tile() {
         let hw = GpuHardware::SM86;
-        let s = select(4096, 4096, 4096, &hw).expect("candidate");
-        // E4c: 128x128 tile (the (2,4)@256T f16acc point).
-        assert_eq!((s.tile_m, s.tile_n), (128, 128), "4096³ must keep E4c tile: {:?}", s);
+        // 2026-09-30 (stage-5 5b Phase 3): at DRAM-bound deep-K square
+        // shapes the model picks the wide tile 128×256 — measured +16%
+        // @4096³ and +24% @8192³ (the E4c (2,4) 128×128 answer held only
+        // under the old compute-bound model; see
+        // benchmarks/results/2026-09-30-5b-structural-fill.md).
+        for shape in [4096u64, 8192] {
+            let s = select(shape, shape, shape, &hw).expect("candidate");
+            // The 256×128-area family (128×256 or 256×128 — measured tied:
+            // 31.5 vs 30.7 @4096³, 31.8 vs 31.7 @8192³).
+            assert_eq!(
+                s.tile_m * s.tile_n,
+                32768,
+                "{shape}³: DRAM-bound wide tile (32 KiB area) expected: {s:?}"
+            );
+            assert_eq!(s.stages, 3, "{shape}³ stages: {s:?}");
+        }
+    }
+
+    #[test]
+    fn thin_k_keeps_narrow_tile() {
+        let hw = GpuHardware::SM86;
+        // Measured: at K=512 the wide tile is never better than the
+        // 128×128 narrow tile and can collapse — the short-K guard
+        // (k < 1024) must keep tile area ≤ 128×128.
+        let s = select(4096, 4096, 512, &hw).expect("candidate");
+        assert!(
+            s.tile_m * s.tile_n <= 128 * 128,
+            "thin-K 4096×4096×512 must stay ≤128×128: {s:?}"
+        );
+    }
+
+    #[test]
+    fn underfilled_2048_keeps_narrow_tile() {
+        // Measured: the wide tile at 2048³ yields only 128 CTAs (≈2.3 waves
+        // at 2 CTAs/SM) and regressed to ~10–15 TF vs the narrow ~26 — an
+        // underfill loss, not a K effect. The CTA-count guard (≥256) must
+        // keep 2048³ on the 128×128 tile.
+        let s = select(2048, 2048, 2048, &GpuHardware::SM86).expect("candidate");
+        assert!(
+            s.tile_m * s.tile_n <= 128 * 128,
+            "2048³ must stay narrow (underfill): {s:?}"
+        );
     }
 
     #[test]
