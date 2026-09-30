@@ -77,6 +77,27 @@ follow-ons.
 - **Keep** if it beats the Phase-1 winner on target shapes with canaries
   green; compare against the no-fill ceiling to size the recovery.
 
+Design notes (from the emitter read, 2026-09-30):
+- The only direct-global tensor kernel (`tensor.rs::tensor_gemm_ptx`) is
+  the unused correctness-first 32×16/f32 path — no optimized
+  register-staged emitter exists; H-R1/R2 are new code.
+- A-resident (H-R1): drop `emit_a_fill` + the A `ldmatrix.x4`, load the
+  A fragment per mh directly with `ld.global.u32` (2 adjacent f16 each).
+  Locked fragment map (`g = lane/4`, `t = lane%4`, 16×16 mma tile):
+  `reg0={A[g][2t],A[g][2t+1]}`, `reg1={A[g+8][2t],A[g+8][2t+1]}`,
+  `reg2={A[g][2t+8],A[g][2t+9]}`, `reg3={A[g+8][2t+8],A[g+8][2t+9]}`;
+  global addr `a_base + (cta_m + mh·16 + row)·a_row + (kstep+col)·2`.
+  Load per-mh (4 live u32) to hold the 64-reg budget. Risk: coalescing
+  (a warp's 32 loads span 8 rows × 16 B) — measure, don't assume.
+- B-resident (H-R2): B fragment `reg0={B[2t][g],B[2t+1][g]}`,
+  `reg1={B[2t+8][g],B[2t+9][g]}` — B is per-warp already; direct loads
+  are column-strided (worse coalescing) but no cross-warp duplication.
+- Correctness: all-ones exact + f64 ref ≤6%; verify the direct fragment
+  map reproduces the ldmatrix output before timing.
+- Only if a variant wins: wire the load path into `gpu_strategy`
+  (replace the dead `staged` flag) and gate per shape × device
+  (Phase 3).
+
 **Phase 3 — model gating (winners only).**
 - Load-path axis in `gpu_strategy` + per-device calibration parameter;
   model selects smem vs register-staged per shape × device. No
