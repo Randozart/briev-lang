@@ -1083,6 +1083,9 @@ fn tensor_gemm_ptx_smem_mw_opt(
     let nofill = crate::config_tuning::ir_lowering().ptx_tensor_nofill;
     let no_fill_a = nofill == 1 || nofill == 2;
     let no_fill_b = nofill == 1 || nofill == 3;
+    // Mode 4: fills ON, wait/membar/bar suppressed — separates the
+    // wait+barrier cost from the fill-byte cost (timing-only).
+    let no_wait = nofill == 4;
     // Warp tiling (2026-09-11 double-pump plan): the warp covers
     // warp_mh 16-row blocks x (16/warp_mh) 8-col groups — mma count per
     // kstep is invariant (16), so accumulators stay at 32 b32 (f16acc)
@@ -2153,7 +2156,9 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // At K > 16·(stages-1) the guard only fires on the final ksteps, whose
     // empty commits were harmless — the emission for those ksteps is
     // instruction-identical, only the label moved after the commit.
-    out.push_str("    cp.async.commit_group;\n");
+    if !no_wait {
+        out.push_str("    cp.async.commit_group;\n");
+    }
     out.push_str("FILL_DONE:\n");
 
     // === Compute on CURRENT buffer (overlaps with async fill above) ===
@@ -2188,17 +2193,19 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // in flight) + async-write visibility (see the prologue note). kps>1:
     // only stage-boundary iterations wait — mid-stage ksteps consume the
     // same, already-visible stage.
-    if kps > 1 {
-        out.push_str("    add.u32 %r19, %r2, 16;\n");
-        out.push_str(&format!("    and.b32 %r19, %r19, {};\n", 16 * kps - 1));
-        out.push_str("    setp.ne.u32 %p1, %r19, 0;\n");
-        out.push_str("    @%p1 bra WAIT_DONE;\n");
-    }
-    out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
-    out.push_str("    membar.cta;\n");
-    out.push_str("    bar.sync 0;\n");
-    if kps > 1 {
-        out.push_str("WAIT_DONE:\n");
+    if !no_wait {
+        if kps > 1 {
+            out.push_str("    add.u32 %r19, %r2, 16;\n");
+            out.push_str(&format!("    and.b32 %r19, %r19, {};\n", 16 * kps - 1));
+            out.push_str("    setp.ne.u32 %p1, %r19, 0;\n");
+            out.push_str("    @%p1 bra WAIT_DONE;\n");
+        }
+        out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
+        out.push_str("    membar.cta;\n");
+        out.push_str("    bar.sync 0;\n");
+        if kps > 1 {
+            out.push_str("WAIT_DONE:\n");
+        }
     }
 
     // E5a tail prefetch: the barrier above makes the NEXT stage's smem

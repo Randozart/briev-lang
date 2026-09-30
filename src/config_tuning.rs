@@ -204,7 +204,8 @@ pub struct IrLoweringSettings {
     /// mma + barriers — timing-only (output garbage). Isolates the smem-fed
     /// mma ceiling (E7b semantics) and separates the A vs B fill cost.
     /// 0 = off (byte-identical); 1 = skip A+B fills; 2 = skip A only;
-    /// 3 = skip B only.
+    /// 3 = skip B only; 4 = fills ON but the wait_group/membar/bar.sync
+    /// suppressed (isolates the wait+barrier cost from the fill-byte cost).
     pub ptx_tensor_nofill: u32,
     /// 2026-09-13 (E8a, plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec):
     /// warp specialization — the CTA grows to 10 warps (8 consumers keep the
@@ -618,7 +619,7 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_stages),
         ptx_tensor_nofill: db
             .field_int("ptx_tensor_nofill", 0)
-            .map(|v| v.max(0).min(3) as u32)
+            .map(|v| v.max(0).min(4) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_nofill),
         ptx_tensor_warp_spec: db
             .field_int("ptx_tensor_warp_spec", 0)

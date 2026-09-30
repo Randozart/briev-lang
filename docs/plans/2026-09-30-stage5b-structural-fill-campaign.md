@@ -65,12 +65,11 @@ model replacing the dead `staged` flag, calibrated per device profile
 
 ## Phases
 
-**Phase 1 — schedule/de-burst (cheap, low risk).**
-- H-D1: separate A/B `cp.async` commit groups + progressive waits so B's
-  fill can overlap A's ldmatrix.
-- H-D2: interleave A/B fill issue (A0,B0,A1,B1…) vs blocked A…B.
-- Mode on the existing nofill-style knob; default off.
-- **Keep** if correctness holds, ≥3% at 2048³/4096³, no canary >1%.
+**Phase 1 — schedule/de-burst — REJECTED (2026-09-30).** Evidence in
+`benchmarks/results/2026-09-30-5b-structural-fill.md`: `kps=2` neutral;
+mode 4 (fills ON, commit/wait/membar/bar suppressed) = 23.6 TF, *below*
+ship. The cost is the fill work itself, not the schedule. No schedule
+follow-ons.
 
 **Phase 2 — register-staging one operand (the big lever).**
 - H-R1 A-register, H-R2 B-register, H-R3 hybrid (model picks).
