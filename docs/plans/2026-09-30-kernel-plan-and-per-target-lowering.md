@@ -233,7 +233,20 @@ field retired).
      `softmax_gate.sh` on BOTH lanes (CUDA 5.91e-06, Vulkan 2.06e-05);
      the multi-path split factor is per-kernel (partial S=8, SPIR-V full
      S=1, combine S=1) and both grids validated on device.
-   - **NEXT**: the PTX/SPIR-V lowering adapters (§7), then delete S1's
+   - 2.4 **DONE** (2026-10-01): the strangler seam — new module
+     `backend::gpu_lowering` (`GpuLowering` trait, `GeneralNodeCtx`,
+     `PtxGeneralLowering`) and the general family's emission extracted to
+     `ptx::emit_general_node` (legacy arm `plan: None`, adapter arm
+     `plan: Some`, ONE body). The `ptx_plan_lowering` knob (default 0,
+     D30-wired) routes flag-1 builds through the adapter; the parity test
+     `plan_lowering_parity_with_legacy` pins both arms node-for-node,
+     blob-for-blob (it flushed out the `compile_cubin` shared-workdir race
+     — BUGS.md). Stage-1 plan consumption: node identity + the
+     `disjoint_workitems` proof, gated by `check_profile` (kind + warp 32)
+     and `check_family` (no `Mma`). Flag-off builds are byte-identical;
+     suite 2814.
+   - **NEXT**: the SPIR-V lowering adapter + the tensor (`GemmPlan`)
+     adapter (§7), then `ReduceTree::Split` (item 4), then delete S1's
      `split` field.
 4. **Split as `ReduceTree::Split`** → device-validate (unblocks 5a).
    **Device validation DONE** (`68e5acfa`: declared `split<8>` fixture +

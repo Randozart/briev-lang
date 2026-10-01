@@ -99,6 +99,30 @@ Pinned by `assert_ptx_well_formed`'s 8-digit immediate check.
 **How to undo:** re-hardcode the string — cubin emission fails open to
 text and the on-device split gate fails again.
 
+## Concurrent `compile_cubin` calls shared one workdir — FIXED 2026-10-01
+
+**Symptom:** under the parallel test suite,
+`plan_lowering_parity_with_legacy` flaked: the legacy arm shipped PTX
+text (1804 B) while the plan arm shipped an ELF cubin (7208 B) for the
+SAME node — byte-identical emission, opposite blob forms. Solo runs
+passed 8/8.
+
+**Root cause:** `compile_cubin` used ONE workdir per process
+(`{temp}/briev-ptx-{pid}/kernel.ptx`). Concurrent calls overwrote each
+other's input, and one call's `remove_dir_all` deleted another's
+in-flight files — ptxas then failed (fallback to text) or, worse, could
+pair input A with output B. Production compiles are single-call, so it
+only bit the multi-threaded suite.
+
+**Fix:** `cubin_workdir(pid, call_seq)` — a unique directory per call
+from a static `AtomicU64` sequence (+ pid for cross-process). Tests:
+`compile_cubin_workdirs_are_unique_per_call`,
+`compile_cubin_parallel_calls_do_not_clobber_each_other`.
+
+**How to undo:** restore the single `{pid}` dir — suite flakes return as
+ELF-vs-text mismatches (and cross-kernel blob pairing stays possible).
+
+**Status:** FIXED 2026-10-01 (found by the Phase-2.4 parity test).
 ## `ptx_tensor_stages` silently ignored on the strategy path — FIXED 2026-09-30
 
 **Symptom:** setting `ptx_tensor_stages` (2 or 3) via `--config-dir` had

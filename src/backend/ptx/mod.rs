@@ -36,6 +36,7 @@
 
 use crate::ast::{Expr, Statement, TopLevel, Type};
 use crate::backend::spirv::gemm::GemmPlan;
+use crate::backend::gpu_lowering::{GeneralNodeCtx, GpuLowering};
 use crate::backend::spirv::runner::RunnerKernel;
 use crate::type_universe::TypeUniverse;
 
@@ -1486,9 +1487,22 @@ fn resolve_eff_stages(
 /// contract; ptxas honors it, so no extra flags. Returns None when ptxas
 /// is unavailable or fails — the caller ships PTX text and the runtime
 /// JITs (historical path).
+///
+/// 2026-10-01 (BUGS.md): the workdir is unique per call — concurrent
+/// callers previously shared `{pid}/kernel.ptx`, so one call's
+/// `remove_dir_all` deleted another's in-flight input (spurious ptxas
+/// failure → text fallback) and ptxas could pair input A with output B.
+/// The (pid, call-sequence) pair makes the race impossible; production
+/// compiles are single-call, but the suite builds in parallel threads.
+fn cubin_workdir(pid: u32, seq: u64) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("briev-ptx-{}-{}", pid, seq))
+}
+
 pub(crate) fn compile_cubin(ptx: &str, maxnreg: u32) -> Option<Vec<u8>> {
     use std::process::Command;
-    let dir = std::env::temp_dir().join(format!("briev-ptx-{}", std::process::id()));
+    static CUBIN_CALL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = CUBIN_CALL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = cubin_workdir(std::process::id(), seq);
     std::fs::create_dir_all(&dir).ok()?;
     let in_path = dir.join("kernel.ptx");
     let out_path = dir.join("kernel.cubin");
@@ -2058,6 +2072,210 @@ fn tile_size_warnings(
     out
 }
 
+/// Plan admission for the strangler arm (2026-10-01, Phase 2.4): the plan
+/// must BE this node's plan and must carry the disjoint-work-item proof —
+/// emission never starts without both.
+fn plan_admission_gates(
+    name: &str,
+    plan: Option<&crate::analysis::kernel_plan::KernelPlan>,
+) -> Result<(), String> {
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    if plan.node != name {
+        return Err(format!(
+            "node '{}': plan is for node '{}' — Fix: build the plan from this node's shape.",
+            name, plan.node
+        ));
+    }
+    if !plan.proofs.disjoint_workitems {
+        return Err(format!(
+            "node '{}': the plan carries no disjoint-work-item proof (overlapping work items would race) — Fix: make the iteration disjoint.",
+            name
+        ));
+    }
+    Ok(())
+}
+
+/// Dispatch geometry + ptxas register cap for a general node.
+/// 2026-09-30 (stage-5 5c): the warp-sliced thread count derives from the
+/// config warp count — the emitter's block_threads arm uses the same
+/// helper, so desc and emission cannot desync. The second
+/// `compile_cubin` argument is -maxrregcount (NOT the block size): the
+/// 1024-thread deferred region needs ≤ 64 regs per thread to fit an SM's
+/// register file (M1-finish).
+fn general_node_geometry(deferred: bool, warp_sliced: bool) -> (u32, u32) {
+    let block_threads = if deferred {
+        1024
+    } else if warp_sliced {
+        general::warp_slice_block_threads(
+            crate::config_tuning::ir_lowering().ptx_warp_slice_warps,
+        )
+    } else {
+        64
+    };
+    let maxnreg = if deferred { 64 } else { block_threads };
+    (block_threads, maxnreg)
+}
+
+/// Cubin-or-text blob: offline ptxas when the config asks for it, the PTX
+/// text itself otherwise (the runtime JITs it — historical path).
+fn general_blob(ptx: String, maxnreg: u32) -> Vec<u8> {
+    if crate::config_tuning::ir_lowering().ptx_emit_cubin {
+        compile_cubin(&ptx, maxnreg).unwrap_or_else(|| ptx.into_bytes())
+    } else {
+        ptx.into_bytes()
+    }
+}
+
+/// The emission-time parts of a general node's desc (2026-10-01): the
+/// runner-kernel literal lives in `general_kernel` so the emission body
+/// stays flat.
+struct GeneralKernelParts {
+    kname: String,
+    kdomain: crate::backend::spirv::runner::KernelDomain,
+    blob: Vec<u8>,
+    block_threads: u32,
+    /// 2026-09-18 (P1 lane-coverage fix): lane-mapped reduction kernels
+    /// treat each block as one work item — dispatch multiplies count by
+    /// block_threads so the CUDA driver launches `count` blocks of 64
+    /// threads. 2026-09-19 (M1): warp-sliced serial reductions use the
+    /// same dispatch model at block_threads 128 (4 warp slices + shared-
+    /// memory merge — plan general-machinery).
+    block_per_workitem: bool,
+    def_split: u32,
+}
+
+/// Assemble the general node's primary RunnerKernel from ctx + parts.
+fn general_kernel(ctx: &GeneralNodeCtx<'_>, p: GeneralKernelParts) -> RunnerKernel {
+    let shape = ctx.shape;
+    RunnerKernel {
+        name: p.kname,
+        spirv: p.blob,
+        image_plans: Vec::new(),
+        index_var: shape.index_var.clone(),
+        count_expr: shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+        work_cols: None,
+        cooperative: false,
+        tiled: false,
+        tensor: false,
+        tensor_tile_rows: 1,
+        ptx_tensor: false,
+        fused_mma: false,
+        fused_mma_blocks_div: 0,
+        block_threads: p.block_threads,
+        shared_bytes: 0,
+        touched_fields: crate::backend::spirv::runner::kernel_touched_fields(shape),
+        ptx: Vec::new(),
+        block_per_workitem: p.block_per_workitem,
+        split: p.def_split,
+        owner: ctx.name.clone(),
+        domain: p.kdomain,
+    }
+}
+
+/// 2026-09-30 (general reduction-split): the combine companion, from ctx.
+fn push_combine(
+    out: &mut Vec<RunnerKernel>,
+    ctx: &GeneralNodeCtx<'_>,
+    count: i64,
+    info: (i64, String, String),
+    split: u32,
+) -> Result<(), String> {
+    push_deferred_combine(
+        out,
+        CombinePush {
+            name: &ctx.name,
+            layout: ctx.layout,
+            shape: ctx.shape,
+            count,
+            info,
+            split,
+        },
+    )
+}
+
+/// 2026-10-01 (KernelPlan Phase 2.4, plan
+/// 2026-09-30-kernel-plan-and-per-target-lowering.md §7): the general
+/// family's emission, extracted from `build_ptx_kernels`. Two arms, one
+/// body: `plan: None` is the legacy inline path (flag 0, byte-identical);
+/// `plan: Some(..)` is the strangler adapter arm (flag 1) — the plan gates
+/// emission on its identity and proofs before the same emitter runs.
+/// Wiring: `backend::gpu_lowering::PtxGeneralLowering::lower`.
+pub(crate) fn emit_general_node(
+    ctx: &crate::backend::gpu_lowering::GeneralNodeCtx<'_>,
+    plan: Option<&crate::analysis::kernel_plan::KernelPlan>,
+) -> Result<(Vec<RunnerKernel>, Vec<String>), String> {
+    let int_bits = ctx.int_bits;
+    let irr_free = ctx.irr_free;
+    let GeneralNodeCtx { name, shape, program, layout, universe, .. } = ctx;
+    plan_admission_gates(name, plan)?;
+    let mut out = Vec::new();
+    let mut size_warnings = Vec::new();
+    // Non-reduction eligible nodes are elementwise/loop kernels — the
+    // general 1D PTX emitter (the row-ops between GEMMs in an attention
+    // decode live here).
+    let consts = module_expr_consts(program);
+    let count = fold_count(shape, &consts)?;
+    // 2026-09-19 (M1 warp-sliced reductions, plan general-machinery): a
+    // sliced kernel is a 128-thread block-per-workitem dispatch (4 warp
+    // slices + shared-memory merge) — the desc carries the geometry so
+    // the runtime dispatches `count` blocks of 128.
+    let warp_sliced = general::has_warp_slice(&shape.kernel_stmts, &consts);
+    // 2026-09-20 (M2 deferred normalizer): the deferred-region dispatch
+    // is a FRONTEND decision — `deferred_normalize` proves the
+    // deferrable-normalize structure in analysis. The backend's detailed
+    // matcher only extracts emission parts; without the frontend proof it
+    // never takes this path.
+    let deferred = crate::config_tuning::ir_lowering().ptx_deferred_region
+        && shape.deferred_normalize.is_some()
+        && general::has_deferred_region(&shape.kernel_stmts, &shape.index_var);
+    // 2026-09-30 (general reduction-split, plan
+    // 2026-09-30-general-reduction-split.md): split an underfilled
+    // deferred region across S CTAs + a combine pass. DEFAULT OFF
+    // (`ptx_deferred_split: 0`); see the plan for the dual-lane
+    // enablement prerequisite.
+    let node_split = node_split_modifier(program, name);
+    let (def_split, def_info, split_warn) =
+        enforce_split_workspace(deferred_split_for(shape, deferred, count, &consts, node_split), count, node_split, &layout);
+    // 2026-09-30 (D28/D29): a declared split that ends up unapplied is
+    // warned, not silent — `irr` silences site-locally.
+    if let Some(why) = split_warn.filter(|_| irr_free) {
+        size_warnings.push(format!("node '{}': {}", name, why));
+    }
+    let ptx = general::emit_general_ptx(
+        shape,
+        count,
+        &layout,
+        &consts,
+        universe,
+        general::GeneralEmitOpts { int_bits, deferred_split: def_split as u64 },
+    )?;
+    let (block_threads, maxnreg) = general_node_geometry(deferred, warp_sliced);
+    let blob = general_blob(ptx, maxnreg);
+    let (kname, kdomain) = deferred_primary_identity(name, def_split);
+    out.push(general_kernel(
+        ctx,
+        GeneralKernelParts {
+            kname,
+            kdomain,
+            blob,
+            block_threads,
+            block_per_workitem: deferred
+                || warp_sliced
+                || general::has_lane_reduction(&shape.kernel_stmts, &consts),
+            def_split,
+        },
+    ));
+    // 2026-09-30 (general reduction-split): the combine companion.
+    if def_split > 1 {
+        if let Some(info) = def_info {
+            push_combine(&mut out, ctx, count, info, def_split)?;
+        }
+    }
+    Ok((out, size_warnings))
+}
+
 pub fn build_ptx_kernels(
     program: &[TopLevel],
     universe: &TypeUniverse,
@@ -2169,117 +2387,41 @@ pub fn build_ptx_kernels(
         }
         let plan = GemmPlan::match_stmts(&e.shape, program);
         if plan.is_none() {
-            // Non-reduction eligible nodes are elementwise/loop kernels —
-            // the general 1D PTX emitter (the row-ops between GEMMs in an
-            // attention decode live here).
-            let consts = module_expr_consts(program);
-            let count = fold_count(&e.shape, &consts)?;
-            // 2026-09-19 (M1 warp-sliced reductions, plan general-machinery):
-            // a sliced kernel is a 128-thread block-per-workitem dispatch
-            // (4 warp slices + shared-memory merge) — the desc carries the
-            // geometry so the runtime dispatches `count` blocks of 128.
-            let warp_sliced = general::has_warp_slice(&e.shape.kernel_stmts, &consts);
-            // 2026-09-20 (M2 deferred normalizer): the deferred-region
-            // dispatch is a FRONTEND decision — `deferred_normalize` proves
-            // the deferrable-normalize structure in analysis. The backend's
-            // detailed matcher only extracts emission parts; without the
-            // frontend proof it never takes this path.
-            let deferred = crate::config_tuning::ir_lowering().ptx_deferred_region
-                && e.shape.deferred_normalize.is_some()
-                && general::has_deferred_region(&e.shape.kernel_stmts, &e.shape.index_var);
-            // 2026-09-30 (general reduction-split, plan
-            // 2026-09-30-general-reduction-split.md): split an underfilled
-            // deferred region across S CTAs + a combine pass. DEFAULT OFF
-            // (`ptx_deferred_split: 0`); see the plan for the dual-lane
-            // enablement prerequisite.
-            let node_split = node_split_modifier(program, name);
-            let (def_split, def_info, split_warn) =
-                enforce_split_workspace(deferred_split_for(&e.shape, deferred, count, &consts, node_split), count, node_split, &layout);
-            // 2026-09-30 (D28/D29): a declared split that ends up
-            // unapplied is warned, not silent — `irr` silences site-locally.
-            if let Some(why) = split_warn.filter(|_| irr_free) {
-                size_warnings.push(format!("node '{}': {}", name, why));
-            }
-            let ptx = general::emit_general_ptx(
-                &e.shape,
-                count,
-                &layout,
-                &consts,
+            // 2026-10-01 (KernelPlan Phase 2.4, plan
+            // 2026-09-30-kernel-plan-and-per-target-lowering.md §7): the
+            // general family lowers through `backend::gpu_lowering` when
+            // `ptx_plan_lowering: 1` — plan as decision record, proofs as
+            // gate, the same emitter underneath (strangler; the parity
+            // test pins both arms node-for-node, blob-for-blob). Flag 0
+            // keeps the legacy inline arm, byte-identical.
+            let ctx = crate::backend::gpu_lowering::GeneralNodeCtx {
+                name: name.clone(),
+                shape: &e.shape,
+                program,
+                layout: &layout,
                 universe,
-                general::GeneralEmitOpts { int_bits, deferred_split: def_split as u64 },
-            )?;
-            let block_threads = if deferred {
-                1024
-            } else if warp_sliced {
-                // 2026-09-30 (stage-5 5c): derive from the config warp
-                // count — the emitter's block_threads arm uses the same
-                // helper, so desc and emission cannot desync.
-                general::warp_slice_block_threads(
-                    crate::config_tuning::ir_lowering().ptx_warp_slice_warps,
-                )
-            } else {
-                64
+                int_bits,
+                irr_free,
             };
-            // The second compile_cubin argument is -maxrregcount (NOT the
-            // block size): the 1024-thread deferred region needs ≤ 64 regs
-            // per thread to fit an SM's register file (M1-finish).
-            let maxnreg = if deferred { 64 } else { block_threads };
-            let blob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
-                compile_cubin(&ptx, maxnreg).unwrap_or_else(|| ptx.into_bytes())
+            let (ks, ws) = if crate::config_tuning::ir_lowering().ptx_plan_lowering == 1 {
+                let consts = module_expr_consts(program);
+                let kplan = crate::analysis::kernel_plan::KernelPlan::from_shape(
+                    name,
+                    &e.shape,
+                    program,
+                    &consts,
+                    &crate::analysis::gpu_strategy::GpuHardware::SM86,
+                );
+                let node = crate::backend::gpu_lowering::PtxGeneralLowering { ctx }.lower(
+                    &kplan,
+                    &crate::analysis::kernel_plan::TargetProfile::ptx_sm86(),
+                )?;
+                (node.kernels, node.warnings)
             } else {
-                ptx.into_bytes()
+                emit_general_node(&ctx, None)?
             };
-            let (kname, kdomain) = deferred_primary_identity(&name, def_split);
-            out.push(RunnerKernel {
-                name: kname,
-                spirv: blob,
-                image_plans: Vec::new(),
-                index_var: e.shape.index_var.clone(),
-                count_expr: e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
-                work_cols: None,
-                cooperative: false,
-                tiled: false,
-                tensor: false,
-                tensor_tile_rows: 1,
-                ptx_tensor: false,
-        fused_mma: false,
-        fused_mma_blocks_div: 0,
-                block_threads,
-                shared_bytes: 0,
-                touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
-                ptx: Vec::new(),
-                // 2026-09-18 (P1 lane-coverage fix): lane-mapped reduction
-                // kernels treat each block as one work item — dispatch
-                // multiplies count by block_threads so the CUDA driver
-                // launches `count` blocks of 64 threads.
-                // 2026-09-19 (M1): warp-sliced serial reductions use the
-                // same dispatch model at block_threads 128 (4 warp slices
-                // + shared-memory merge — plan general-machinery).
-                block_per_workitem: deferred
-                    || warp_sliced
-                    || general::has_lane_reduction(
-                    &e.shape.kernel_stmts, &consts,
-                ),
-                split: def_split,
-                owner: name.clone(),
-                domain: kdomain,
-            });
-            // 2026-09-30 (general reduction-split): the combine companion.
-            if def_split > 1 {
-                if let Some(info) = def_info {
-                    push_deferred_combine(
-                        &mut out,
-                        CombinePush {
-                            name: &name,
-                            layout: &layout,
-                            shape: &e.shape,
-                            count,
-                            info,
-                            split: def_split,
-                        },
-                    )?;
-                }
-            }
+            out.extend(ks);
+            size_warnings.extend(ws);
             continue;
         }
         let plan = plan.unwrap();
@@ -2704,8 +2846,17 @@ mod tests {
     /// `split<8>` deferred node, from source text to emitted kernels.
     /// The two tests below pin both sides of the S4 workspace gate; the
     /// on-device gate (softmax_gate.sh, both lanes) remains the semantic
-    /// authority.
-    fn build_sfused(acc_size: &str) -> (Vec<RunnerKernel>, Vec<String>) {
+    /// authority. Split: `sfused_pipeline` (parse → schedule) feeds both
+    /// `build_ptx_kernels` and the plan-gate tests that need the ctx
+    /// pieces outside the builder.
+    fn sfused_pipeline(
+        acc_size: &str,
+    ) -> (
+        Vec<crate::ast::TopLevel>,
+        TypeUniverse,
+        std::collections::HashMap<String, crate::analysis::accel::AccelEntry>,
+        crate::analysis::gpu_schedule::GpuSchedule,
+    ) {
         use crate::ast::PropertyValue;
         let user = format!(
             "const D: Int = 128;
@@ -2757,6 +2908,11 @@ split<8> async node sfused [h < H][h == H] {{
         );
         let schedule =
             crate::analysis::gpu_schedule::build_schedule(&items, &accel, &Default::default(), false);
+        (items, universe, accel, schedule)
+    }
+
+    fn build_sfused(acc_size: &str) -> (Vec<RunnerKernel>, Vec<String>) {
+        let (items, universe, accel, schedule) = sfused_pipeline(acc_size);
         build_ptx_kernels(&items, &universe, 64, &accel, &schedule).expect("ptx lane")
     }
 
@@ -2833,5 +2989,146 @@ split<8> async node sfused [h < H][h == H] {{
             crate::backend::spirv::runner::KernelDomain::CudaOnly,
             "partial is the CUDA-lane projection"
         );
+    }
+
+    /// 2026-10-01 (Phase 2.4 strangler, plan
+    /// 2026-09-30-kernel-plan-and-per-target-lowering.md §7/§8):
+    /// `ptx_plan_lowering: 1` routes the general family through
+    /// `backend::gpu_lowering` (plan as decision record, proofs as gate,
+    /// the same emitter underneath) — the output must match the legacy
+    /// arm node-for-node, blob-for-blob. This parity is what licenses the
+    /// eventual default flip. Installs the flag for the duration with a
+    /// Drop-guarded restore; a concurrent test routed through the plan
+    /// arm during the window is benign BY this very parity.
+    #[test]
+    fn plan_lowering_parity_with_legacy() {
+        struct FlagGuard(u32);
+        impl Drop for FlagGuard {
+            fn drop(&mut self) {
+                let mut s = *crate::config_tuning::ir_lowering();
+                s.ptx_plan_lowering = self.0;
+                crate::config_tuning::install_ir_lowering(s);
+            }
+        }
+        let legacy = build_sfused("16384");
+        let prev = crate::config_tuning::ir_lowering().ptx_plan_lowering;
+        let _g = FlagGuard(prev);
+        let mut s = *crate::config_tuning::ir_lowering();
+        s.ptx_plan_lowering = 1;
+        crate::config_tuning::install_ir_lowering(s);
+        let planned = build_sfused("16384");
+        assert_eq!(
+            legacy.0.len(),
+            planned.0.len(),
+            "node count: legacy {:?} planned {:?}",
+            legacy.0.iter().map(|k| &k.name).collect::<Vec<_>>(),
+            planned.0.iter().map(|k| &k.name).collect::<Vec<_>>()
+        );
+        for (a, b) in legacy.0.iter().zip(planned.0.iter()) {
+            assert_eq!(a.name, b.name, "node name");
+            assert_eq!(a.owner, b.owner, "owner of {}", a.name);
+            assert_eq!(a.spirv, b.spirv, "blob of {} (byte-for-byte)", a.name);
+            assert_eq!(a.split, b.split, "split factor of {}", a.name);
+            assert_eq!(a.block_threads, b.block_threads, "threads of {}", a.name);
+            assert_eq!(
+                a.block_per_workitem, b.block_per_workitem,
+                "dispatch model of {}",
+                a.name
+            );
+            assert_eq!(a.domain, b.domain, "lane domain of {}", a.name);
+        }
+        assert_eq!(legacy.1, planned.1, "size warnings");
+    }
+
+    /// 2026-10-01 (Phase 2.4): the plan arm's gates — a plan built for a
+    /// different node, or one whose disjoint-work-item proof failed, must
+    /// refuse emission with what/why/fix; a valid plan must emit.
+    #[test]
+    fn plan_arm_gates_wrong_node_and_missing_proof() {
+        let (items, universe, accel, schedule) = sfused_pipeline("16384");
+        let reuse = crate::backend::spirv::runner::gated_reuse_map(Some(&schedule));
+        let layout = crate::backend::spirv::runner::ssbo_layout(
+            &items,
+            &universe,
+            64,
+            &std::collections::HashMap::new(),
+            reuse.as_ref(),
+        )
+        .expect("layout");
+        let shape = &accel["sfused"].shape;
+        let ctx = GeneralNodeCtx {
+            name: "sfused".into(),
+            shape,
+            program: &items,
+            layout: &layout,
+            universe: &universe,
+            int_bits: 64,
+            irr_free: true,
+        };
+        let consts = module_expr_consts(&items);
+        let plan = crate::analysis::kernel_plan::KernelPlan::from_shape(
+            "sfused",
+            shape,
+            &items,
+            &consts,
+            &crate::analysis::gpu_strategy::GpuHardware::SM86,
+        );
+        let (kernels, _) = emit_general_node(&ctx, Some(&plan)).expect("valid plan emits");
+        assert!(
+            kernels.iter().any(|k| k.name == "sfused__partial"),
+            "plan arm emits the split primary: {:?}",
+            kernels.iter().map(|k| &k.name).collect::<Vec<_>>()
+        );
+        let mut wrong = plan.clone();
+        wrong.node = "other".into();
+        let Err(e) = emit_general_node(&ctx, Some(&wrong)) else {
+            panic!("a plan built for another node must refuse emission");
+        };
+        assert!(e.contains("is for node") && e.contains("Fix:"), "{e}");
+        let mut unproved = plan.clone();
+        unproved.proofs.disjoint_workitems = false;
+        let Err(e) = emit_general_node(&ctx, Some(&unproved)) else {
+            panic!("a plan without the disjoint-work-item proof must refuse emission");
+        };
+        assert!(e.contains("disjoint-work-item") && e.contains("Fix:"), "{e}");
+    }
+
+    /// 2026-10-01 (BUGS.md): every concurrent `compile_cubin` call gets
+    /// its own workdir — a shared one let one call's cleanup delete
+    /// another's in-flight PTX (spurious fallback) or pair input A with
+    /// output B.
+    #[test]
+    fn compile_cubin_workdirs_are_unique_per_call() {
+        let mut seen = std::collections::HashSet::new();
+        for seq in 0..128u64 {
+            assert!(seen.insert(cubin_workdir(42, seq)), "seq {seq} reused a workdir");
+        }
+        assert_ne!(cubin_workdir(42, 0), cubin_workdir(43, 0), "pid separates");
+    }
+
+    /// 2026-10-01 (BUGS.md): parallel `compile_cubin` calls all succeed —
+    /// the clobbering race this pins flaked as ELF-vs-text blob
+    /// mismatches in `plan_lowering_parity_with_legacy`. Skips when ptxas
+    /// is unavailable (nothing to prove without the toolchain).
+    #[test]
+    fn compile_cubin_parallel_calls_do_not_clobber_each_other() {
+        let ptx = ".version 8.0\n.target sm_86\n.address_size 64\n\
+                   .visible .entry main(.param .b64 p) { ret; }\n";
+        if compile_cubin(ptx, 64).is_none() {
+            return;
+        }
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let src = ptx.to_string();
+                std::thread::spawn(move || compile_cubin(&src, 64))
+            })
+            .collect();
+        for h in handles {
+            let blob = h
+                .join()
+                .expect("thread")
+                .unwrap_or_else(|| panic!("concurrent compile_cubin failed"));
+            assert!(blob.starts_with(b"\x7fELF"), "cubin is an ELF image");
+        }
     }
 }

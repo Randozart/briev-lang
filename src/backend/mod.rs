@@ -11,6 +11,7 @@ pub mod vm;
 pub mod webstack;
 pub mod spirv;
 pub mod ptx;
+pub mod gpu_lowering;
 
 use crate::analysis::call_graph::CallGraph;
 use crate::analysis::dependency_graph::DependencyGraph;

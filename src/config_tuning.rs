@@ -278,6 +278,13 @@ pub struct IrLoweringSettings {
     /// estimator) + a combine pass. 0 = off (S = 1, ship). 1 = auto (use
     /// `gpu_strategy::reduction_split_factor`).
     pub ptx_deferred_split: u32,
+    /// 2026-10-01 (KernelPlan Phase 2, plan
+    /// 2026-09-30-kernel-plan-and-per-target-lowering.md §7/§8): the
+    /// strangler switch for per-target lowering — 1 = lower general-family
+    /// nodes through `backend::gpu_lowering` (plan-routed, proof-gated),
+    /// 0 = the legacy inline path. Default 0 until parity licenses the
+    /// flip; per-node, not global behaviour.
+    pub ptx_plan_lowering: u32,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -397,6 +404,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_warp_slice_warps: 4,
     ptx_deferred_region: false,
     ptx_deferred_split: 0,
+    ptx_plan_lowering: 0,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -436,7 +444,10 @@ pub fn ir_lowering() -> &'static IrLoweringSettings {
 }
 
 /// Install a new settings generation (leak-on-swap; see IR_LOWERING_OVERRIDE).
-fn install_ir_lowering(settings: IrLoweringSettings) {
+/// `pub(crate)` (2026-10-01): the Phase-2.4 strangler parity test installs
+/// `ptx_plan_lowering` for the duration of one build and restores it on
+/// drop — no production caller.
+pub(crate) fn install_ir_lowering(settings: IrLoweringSettings) {
     let ptr = Box::into_raw(Box::new(settings));
     IR_LOWERING_OVERRIDE.store(ptr, std::sync::atomic::Ordering::Release);
 }
@@ -513,6 +524,7 @@ const IR_LOWERING_KEYS: &[(&str, bool)] = &[
     ("ptx_warp_slice_warps", false),
     ("ptx_deferred_region", false),
     ("ptx_deferred_split", false),
+    ("ptx_plan_lowering", false),
     ("ptx_emit_cubin", false),
 ];
 
@@ -590,6 +602,7 @@ fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
     push("ptx_warp_slice_warps", s.ptx_warp_slice_warps.to_string());
     push("ptx_deferred_region", b(s.ptx_deferred_region));
     push("ptx_deferred_split", s.ptx_deferred_split.to_string());
+    push("ptx_plan_lowering", s.ptx_plan_lowering.to_string());
     push("ptx_emit_cubin", b(s.ptx_emit_cubin));
     rows.iter()
         .map(|(k, v)| format!("{k}: {v};"))
@@ -933,6 +946,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_deferred_split", 0)
             .map(|v| v.max(0).min(1) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_deferred_split),
+        ptx_plan_lowering: db
+            .field_int("ptx_plan_lowering", 0)
+            .map(|v| v.max(0).min(1) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_plan_lowering),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)
