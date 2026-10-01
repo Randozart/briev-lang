@@ -275,12 +275,12 @@ mod tests {
     }
 
     fn eligible_shape<'a>(
-        analysis: &'a crate::backend::AnalysisResults,
+        analysis: &'a crate::backend::AnalysisResults, name: &str,
     ) -> &'a crate::analysis::accel::KernelShape {
         let entry = analysis
             .accel
-            .get("scale")
-            .expect("fixture txn must be accel-analyzed");
+            .get(name)
+            .unwrap_or_else(|| panic!("fixture txn '{name}' must be accel-analyzed"));
         assert!(entry.shape.eligible, "fixture must be eligible: {:?}", entry.shape.reasons);
         &entry.shape
     }
@@ -290,7 +290,7 @@ mod tests {
     fn test_scale_kernel_lowers_real_body() {
         let program = scale_kernel_program();
         let analysis = analyze(&program);
-        let shape = eligible_shape(&analysis).clone();
+        let shape = eligible_shape(&analysis, "scale").clone();
         let mut builder = SpirvBuilder::new();
         emit_kernel(&mut builder, "scale", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default())
             .expect("kernel with real body must compile");
@@ -328,6 +328,91 @@ mod tests {
         assert!(ssbo, "indexed state must lower to a StorageBuffer variable");
     }
 
+    /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md` A4): the
+    /// element-addressed atomic lowers to ONE OpAtomicIAdd on the
+    /// SSBO element (scope Device, SequentiallyConsistent), the module
+    /// carries the Int64Atomics capability, and spirv-val accepts it.
+    #[test]
+    fn test_atomic_add_at_lowers_to_op_atomic_iadd() {
+        if !std::process::Command::new("spirv-val").arg("--version").output().is_ok() {
+            eprintln!("spirv-val not found — skipping");
+            return;
+        }
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "accel".into(),
+            crate::ast::PropertyValue::String("try_all".into()),
+        );
+        let program = vec![
+            TopLevel::ModuleMetadata(meta),
+            TopLevel::StateDecl(StateDecl {
+                name: "i".into(),
+                ty: Type::int(),
+                span: None,
+            }),
+            state_decl("total", 8),
+            TopLevel::Transaction(Transaction {
+                name: "acc".into(),
+                is_reactive: true,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: Contract {
+                    pre_condition: Expr::BinaryOp(
+                        BinaryOpKind::Lt,
+                        Box::new(Expr::Identifier("i".into())),
+                        Box::new(Expr::Decimal(64)),
+                    ),
+                    post_condition: Expr::Bool(true),
+                    watchdog: None,
+                    explicit: false,
+                    span: None,
+                post_authority: false},
+                body: vec![
+                    Statement::Let {
+                        name: "old".into(),
+                        names: vec![],
+                        ty: Some(Type::int()),
+                        expr: Some(Expr::Call(
+                            "AtomicAddAt#".into(),
+                            vec![
+                                Expr::Identifier("total".into()),
+                                Expr::Decimal(0),
+                                Expr::Decimal(1),
+                            ],
+                            None,
+                        )),
+                        modifiers: vec![],
+                    },
+                    Statement::Assign(
+                        Expr::Identifier("i".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("i".into())),
+                            Box::new(Expr::Decimal(1)),
+                        ),
+                    ),
+                ],
+                metadata: std::collections::HashMap::new(),
+                derivation: None,
+                modifiers: vec![],
+                span: None,
+                doc: None,
+            }),
+        ];
+        let analysis = analyze(&program);
+        let shape = eligible_shape(&analysis, "acc").clone();
+        assert!(shape.eligible, "reasons: {:?}", shape.reasons);
+        let mut builder = SpirvBuilder::new();
+        emit_kernel(&mut builder, "acc", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
+        let binary = builder.build().unwrap();
+        let dis = validate_and_disassemble(&binary, "atomic_at");
+        assert!(dis.contains("OpAtomicIAdd"), "the atomic:\n{dis}");
+        assert!(dis.contains("Int64Atomics"), "capability:\n{dis}");
+    }
+
     /// §2.5: spirv-val validation — typed-emission refactor closed the
     /// assembly bug (BUGS.md 2026-08-23 CLOSED).
     #[test]
@@ -338,7 +423,7 @@ mod tests {
         }
         let program = scale_kernel_program();
         let analysis = analyze(&program);
-        let shape = eligible_shape(&analysis).clone();
+        let shape = eligible_shape(&analysis, "scale").clone();
         let mut builder = SpirvBuilder::new();
         emit_kernel(&mut builder, "scale", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         let binary = builder.build().unwrap();
@@ -1111,7 +1196,7 @@ mod tests {
         }
         let program = scale_kernel_program();
         let analysis = analyze(&program);
-        let shape = eligible_shape(&analysis).clone();
+        let shape = eligible_shape(&analysis, "scale").clone();
         let mut builder = SpirvBuilder::new();
         emit_kernel(&mut builder, "scale", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         let asm = validate_and_disassemble(&builder.build().unwrap(), "harness_scale");

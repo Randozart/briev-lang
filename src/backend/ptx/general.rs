@@ -2165,6 +2165,51 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     }
 
     /// 2026-10-01 (L1 primitive-coverage audit, gap #4): work-id names
+    /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md` A3):
+    /// `AtomicAddAt#(buf, i, v[, ordering]) -> old` — the element
+    /// address comes from the SAME math as a `buf[i]` access
+    /// (`array_addr`: `mul.wide` + `add.u64` off the `%rd1` state base),
+    /// then one true i64 atomic on global memory:
+    /// `atom.acq_rel.gpu.global.add.u64` (seq_cst equivalent; sm_60+).
+    /// Values flatten through f32 (the lane's Int convention — exact for
+    /// kernel-realistic magnitudes, `cvt.rni` for the round-trip); the
+    /// RMW itself never touches an f32 register.
+    fn emit_atomic_add_at(
+        &mut self, args: &[Expr], out: &str,
+    ) -> Result<(String, String), String> {
+        if args.len() < 3 {
+            return Err("AtomicAddAt# takes (buf, i, v)".into());
+        }
+        let mut d = String::new();
+        let mut b = String::new();
+        let buf_name = self.field_of(&args[0])?;
+        let off = self
+            .field_off(&buf_name)
+            .ok_or_else(|| format!("ptx general: atomic target '{buf_name}' not in layout"))?;
+        let elem = self.elem_bytes(&buf_name)?;
+        if elem != 8 {
+            return Err(format!(
+                "ptx general: AtomicAddAt# is Int-arrays-only - '{buf_name}' has \
+                 {elem}-byte elements (GPU Float arrays are f32 storage; Int is i64)"
+            ));
+        }
+        let addr = self.array_addr(buf_name.clone(), off, elem, &args[1], &mut d, &mut b)?;
+        let v = self.fresh_f();
+        d.push_str(&format!("    .reg .f32 {};\n", v));
+        self.emit_expr(&args[2], &v, &mut d, &mut b)?;
+        let v64 = self.fresh_rd();
+        let old = self.fresh_rd();
+        d.push_str(&format!("    .reg .b64 {v64};\n"));
+        d.push_str(&format!("    .reg .b64 {old};\n"));
+        b.push_str(&format!("    cvt.rni.s64.f32 {}, {};\n", v64, v));
+        b.push_str(&format!(
+            "    atom.acq_rel.gpu.global.add.u64 {}, [{}], {};\n",
+            old, addr, v64
+        ));
+        b.push_str(&format!("    cvt.rn.f32.s64 {}, {};\n", out, old));
+        Ok((d, b))
+    }
+
     /// over the structural ids. Contract mirrors the SPIR-V lane
     /// (spirv/lower.rs: a CONSTANT dim 0..=2, integer value); this lane
     /// flattens Ints to f32 (emit_expr's own convention — Decimal
@@ -2239,6 +2284,14 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                 self.emit_expr(&args[1], &breg, decl, body)?;
                 let op = if name == "Max#" { "max" } else { "min" };
                 body.push_str(&format!("    {}.f32 {}, {}, {};\n", op, out, areg, breg));
+                Ok(())
+            }
+            // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md A3): the
+            // element-addressed atomic — see `emit_atomic_add_at`.
+            "AtomicAddAt#" => {
+                let (d, b) = self.emit_atomic_add_at(args, out)?;
+                decl.push_str(&d);
+                body.push_str(&b);
                 Ok(())
             }
             // 2026-10-01 (L1 primitive-coverage audit, gap #4): work-id
@@ -2902,6 +2955,106 @@ mod tests {
             "-inf immediate: {ptx}"
         );
         assert_ptx_well_formed(&ptx);
+    }
+
+    /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md` A3): the
+    /// element-addressed atomic lowers to the element-address math +
+    /// ONE true i64 `atom.acq_rel.gpu.global.add.u64`. The Int field
+    /// (8-byte elements) is addressed like any buffer; the ptxas smoke
+    /// (when present) proves the instruction syntax.
+    #[test]
+    fn atomic_add_at_lowers_to_true_i64_atomic() {
+        use crate::backend::spirv::runner::{RunnerField, SsboLayout};
+        let int_field = RunnerField {
+            name: "total".into(),
+            offset: 4096,
+            proj_offset: 4096,
+            elem_bytes: 8,
+            count: 8,
+            is_array: true,
+            type_is_float: false,
+        };
+        let f_field = RunnerField {
+            name: "a".into(),
+            offset: 0,
+            proj_offset: 0,
+            elem_bytes: 4,
+            count: 1024,
+            is_array: true,
+            type_is_float: true,
+        };
+        let layout = SsboLayout {
+            fields: vec![f_field, int_field.clone()],
+            images: vec![],
+            state_bytes: 8192,
+            program_bytes: 8192,
+        };
+        let shape = crate::analysis::accel::KernelShape {
+            index_var: "i".into(),
+            count_expr: Some(Expr::Decimal(1024)),
+            kernel_stmts: vec![
+                Statement::Let {
+                    name: "old".into(),
+                    names: vec![],
+                    ty: None,
+                    expr: Some(Expr::Call(
+                        "AtomicAddAt#".into(),
+                        vec![
+                            Expr::Identifier("total".into()),
+                            Expr::Decimal(0),
+                            Expr::Decimal(1),
+                        ],
+                        None,
+                    )),
+                    modifiers: vec![],
+                },
+                Statement::Assign(idx("res", id("i")), id("old")),
+                Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
+            ],
+            host_stmts: vec![],
+            read_buffers: vec![],
+            write_buffers: vec!["res".into()],
+            scalar_ins: vec![],
+            eligible: true,
+            reasons: vec![],
+            work_cols: None,
+            reduction: None,
+            deferred_normalize: None,
+        };
+        let mut layout2 = layout;
+        layout2.fields.insert(1, RunnerField {
+            name: "res".into(),
+            offset: 4096,
+            proj_offset: 4096,
+            elem_bytes: 4,
+            count: 1024,
+            is_array: true,
+            type_is_float: true,
+        });
+        let consts = std::collections::HashMap::new();
+        let universe = crate::type_universe::TypeUniverse::new();
+        let ptx = emit_general_ptx(
+            &shape,
+            1024,
+            &layout2,
+            &consts,
+            &universe,
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+        )
+        .unwrap_or_else(|e| panic!("atomic emits: {e}"));
+        assert!(
+            ptx.contains("atom.acq_rel.gpu.global.add.u64"),
+            "the true i64 atomic:\n{ptx}"
+        );
+        assert!(ptx.contains("cvt.rni.s64.f32"), "value flatten:\n{ptx}");
+        assert!(ptx.contains("cvt.rn.f32.s64"), "old flatten:\n{ptx}");
+        assert!(ptx.contains("mul.wide.u32"), "element addressing:\n{ptx}");
+        assert_ptx_well_formed(&ptx);
+        // ptxas smoke: the instruction syntax must assemble.
+        if std::process::Command::new("ptxas").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            let blob = crate::backend::ptx::compile_cubin(&ptx, 0);
+            assert!(blob.is_some(), "ptxas must accept the atomic PTX");
+        }
     }
 
     /// 2026-10-01 (L1 primitive-coverage audit, gap #4): work-id names

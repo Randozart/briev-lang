@@ -47,6 +47,12 @@ impl SpirvBuilder {
         let mut b = Builder::new();
         b.capability(spirv::Capability::Shader);
         b.capability(spirv::Capability::Int64);
+        // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md A4): 64-bit
+        // atomic RMW on storage-buffer elements (AtomicAddAt#). Unused-
+        // capability is legal, so declaring it unconditionally costs
+        // nothing for kernels without atomics. The RUNTIME half is the
+        // shaderBufferInt64Atomics feature in the C probe chain.
+        b.capability(spirv::Capability::Int64Atomics);
         b.capability(spirv::Capability::Float64);
         // Cooperative row kernels (plan 2026-09-01-cooperative-row-kernels):
         // subgroup arithmetic for the dot-product reduction.
@@ -657,6 +663,34 @@ impl SpirvBuilder {
     }
 
     /// Load from pointer into fresh id of result type.
+    /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md` A4): an
+    /// atomic RMW on a storage-buffer element pointer. GLSL450 memory
+    /// model (the plain kernel path): classic encodings — scope
+    /// `Device` (1), semantics `SequentiallyConsistent` (0x10). The
+    /// VulkanMemoryModel coopmat path re-encodes; atomics there are
+    /// future work and would need the 0x40 constant.
+    pub fn atomic_rmw(
+        &mut self, result_ty: Word, ptr: Word, val: Word,
+    ) -> Word {
+        // scope Device (1), semantics SequentiallyConsistent (0x10,
+        // GLSL450 model — see the doc above). Scope and semantics are
+        // OBJECT operands: 32-bit OpConstants, not literals (spirv-val
+        // caught the literal form: "Operand '1[%void]' cannot be a type").
+        let scope = self.u32_const(1);
+        let semantics = self.u32_const(0x10);
+        self.instr(
+            spirv::Op::AtomicIAdd,
+            Some(result_ty),
+            None,
+            vec![
+                rspirv::dr::Operand::IdRef(ptr),
+                rspirv::dr::Operand::IdRef(scope),
+                rspirv::dr::Operand::IdRef(semantics),
+                rspirv::dr::Operand::IdRef(val),
+            ],
+        )
+    }
+
     pub fn load(&mut self, result_ty: Word, ptr: Word) -> Word {
         self.instr(spirv::Op::Load, Some(result_ty), None, vec![
             rspirv::dr::Operand::IdRef(ptr),

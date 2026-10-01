@@ -613,6 +613,13 @@ static int briev_dev_vulkan_init(void) {
     // VkPhysicalDeviceCooperativeMatrixFeaturesKHR { sType=1000246000,
     // pNext, cooperativeMatrix } — chained via pNext.
     struct { uint32_t sType; void* pNext; uint32_t cooperativeMatrix; } coop_features = {0};
+    // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md A4):
+    // VkPhysicalDeviceShaderAtomicInt64Features { sType=1000500000 } —
+    // 64-bit atomic RMW on storage buffers (AtomicAddAt#). Chained into
+    // the same probe: vkGetPhysicalDeviceFeatures2 fills SUPPORTED
+    // values; the create-request uses them verbatim.
+    struct { uint32_t sType; void* pNext; uint32_t shaderBufferInt64Atomics;
+             uint32_t shaderSharedInt64Atomics; } atomic64_features = {0};
     vmm_features.sType = 1000211000u;
     // 2026-09-02: the sTypes were WRONG across the board (the probe
     // filled whatever struct each value named on this driver: 1000146000
@@ -647,7 +654,9 @@ static int briev_dev_vulkan_init(void) {
         probe.pNext = &f16_storage_features;
         f16_storage_features.pNext = &f16int8_features;
         f16int8_features.pNext = &coop_features;
-        coop_features.pNext = NULL;
+        atomic64_features.sType = 1000500000u;
+        coop_features.pNext = &atomic64_features;
+        atomic64_features.pNext = NULL;
         vkGetPhysicalDeviceFeatures2(vk_physical_device, &probe);
         if (verbose) fprintf(stderr, "[briev_accel/vulkan] probe: 16bit=%u uniform16=%u f16=%u coop=%u\n",
             f16_storage_features.storageBuffer16BitAccess,
