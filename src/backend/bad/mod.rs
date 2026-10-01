@@ -144,6 +144,85 @@ fn prepare_bad_source(body: &str, name: &str, bootstrap: bool) -> Result<BadProg
     parse_bad(&wrapped).map_err(|e| format!("bad fn body: line {}: {}", e.line, e.message))
 }
 
+/// 2026-10-01 (bad-ptx-family plan M3, `2026-10-01-bad-ptx-family.md`):
+/// compile a `bad<ptx> fn` body into a GPU kernel unit. The family wraps
+/// the lowered body in the lane's kernel ABI — verified facts:
+/// ONE `.param .b64` (the state pointer, `briev_dev_cuda.c:414`) and the
+/// entry name is hardcoded `main` (the drivers' pName). The wrapper also
+/// pre-declares the family-reserved temps the ISA rows may reference
+/// (`%p1` pred, `%rt1` u32 — the PTX analogue of x86 rows' physical
+/// `%rax`; PTX has no undeclared physical registers). Geometry
+/// directives (`.blockthreads`/`.sharedbytes`) travel with the unit.
+/// Blob: cubin via `ptx::compile_cubin` when ptxas is available, else
+/// the PTX text itself (the lane's existing JIT-text fallback).
+#[derive(Debug)]
+pub struct BadKernel {
+    pub blob: Vec<u8>,
+    pub block_threads: Option<u32>,
+    pub shared_bytes: Option<u32>,
+    /// The full PTX text (diagnostics + the text fallback blob).
+    pub ptx_text: String,
+}
+
+pub struct BadKernelReq<'a> {
+    /// The `bad<ptx> fn` body (raw text between the braces).
+    pub body: &'a str,
+    /// The (single) state-pointer parameter name.
+    pub param: &'a str,
+    /// Root for `import` resolution.
+    pub base_dir: Option<std::path::PathBuf>,
+}
+
+pub fn generate_bad_kernel(req: BadKernelReq<'_>) -> Result<BadKernel, String> {
+    // Leading `import` lines hoist above everything, same rule as
+    // `prepare_bad_source`: an import closes the current owner, so a
+    // directive after it would orphan the following lines.
+    let mut imports = String::new();
+    let rest: Vec<&str> = req
+        .body
+        .trim()
+        .lines()
+        .skip_while(|l| {
+            let t = l.trim();
+            if t.starts_with("import ") {
+                imports.push_str(l);
+                imports.push('\n');
+                true
+            } else {
+                false
+            }
+        })
+        .collect();
+    let mut src = imports;
+    src.push_str(&rest.join("\n"));
+    src.push('\n');
+    let program = parse_bad(&src).map_err(|e| format!("bad ptx fn body: line {}: {}", e.line, e.message))?;
+    let (isa, regs) = registries();
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        req.param.to_string(),
+        lower::Bound::Token("%rd1".to_string()),
+    );
+    let mut lw = lower::Lowerer::new(&isa, &regs, "ptx").with_param_env(env);
+    if let Some(d) = &req.base_dir {
+        lw = lw.with_base_dir(Some(d.clone()));
+    }
+    let text = lw.run(&program)?;
+    let (block_threads, shared_bytes) = lw.kernel_geometry();
+    let ptx = format!(
+        ".version 8.0\n.target sm_86\n.address_size 64\n.visible .entry main (.param .b64 {})\n{{\n    .reg .pred %p1;\n    .reg .u32 %rt1;\n    ld.param.b64 %rd1, [{}];\n{}\n    ret;\n}}\n",
+        req.param, req.param, text
+    );
+    let blob = crate::backend::ptx::compile_cubin(&ptx, 0)
+        .unwrap_or_else(|| ptx.as_bytes().to_vec());
+    Ok(BadKernel {
+        blob,
+        block_threads,
+        shared_bytes,
+        ptx_text: ptx,
+    })
+}
+
 /// Whether the cross toolchain for `family` is installed — the cross_as
 /// bin, or (thumb/arm) clang's integrated assembler fallback.
 pub fn toolchain_available(family: &str) -> bool {
@@ -292,6 +371,128 @@ mod tests {
 
     pub(crate) fn lower_ok(src: &str, triple: &str) -> String {
         generate(src, triple).unwrap_or_else(|e| panic!("generate failed: {}", e))
+    }
+
+    // ── bad<ptx> kernel units (2026-10-01, bad-ptx-family plan M3) ──
+
+    fn kernel(body: &str) -> BadKernel {
+        generate_bad_kernel(BadKernelReq {
+            body,
+            param: "state",
+            base_dir: None,
+        })
+        .unwrap_or_else(|e| panic!("kernel generate failed: {}", e))
+    }
+
+    /// The wrapper pins the lane ABI — ONE `.param .b64` (the state
+    /// pointer, `briev_dev_cuda.c:414`), entry name hardcoded `main`
+    /// (the drivers' pName), family-reserved temps declared. Core ops
+    /// lower through the `ptx:` ISA rows with the per-line `;` suffix
+    /// the generic splitter does not emit; `ptx =>` exception rows flow
+    /// the same pipeline. Registers land through the bad-registers
+    /// tokens (`%rd<N>`); immediates carry the (empty) ptx prefix.
+    #[test]
+    fn ptx_kernel_lowers_core_ops_abi_and_exceptions() {
+        let k = kernel(
+            "start:\n    mov r2, 8\n    rdtid r3\n    add r2, r2, r3\n    ptx => mul.lo.u64 %rd2, %rd2, 4\n    store r2, r1\n    jmp start\n",
+        );
+        let x = &k.ptx_text;
+        assert!(x.contains(".visible .entry main (.param .b64 state)"), "{x}");
+        assert!(x.contains("ld.param.b64 %rd1, [state];"), "{x}");
+        assert!(x.contains(".reg .pred %p1;"), "{x}");
+        // mov imm: shared form + empty imm prefix + suffix `;`.
+        assert!(x.contains("mov.u64 %rd2, 8;"), "{x}");
+        // rdtid: reserved temp + widen.
+        assert!(x.contains("mov.u32 %rt1, %tid.x;"), "{x}");
+        assert!(x.contains("cvt.u64.u32 %rd3, %rt1;"), "{x}");
+        // exception row: raw text, same suffix.
+        assert!(x.contains("mul.lo.u64 %rd2, %rd2, 4;"), "{x}");
+        // store: dialect value-then-address order preserved.
+        assert!(x.contains("st.global.u64 [%rd1], %rd2;"), "{x}");
+        // jmp: label operand literal, `bra` + suffix.
+        assert!(x.contains("bra start;"), "{x}");
+        assert!(x.contains("start:"), "{x}");
+        // The wrapper's own ret closes the entry.
+        assert!(x.trim_end().ends_with("}"), "{x}");
+        // Blob: cubin when ptxas is present, else the PTX text itself —
+        // both are valid desc images (the lane's JIT-text fallback).
+        assert!(
+            k.blob.starts_with(b"\x7fELF") || k.blob.starts_with(b".version"),
+            "blob must be cubin or PTX text"
+        );
+    }
+
+    /// Geometry directives ride the unit into the bridge; duplicates
+    /// and non-u32 payloads are loud.
+    #[test]
+    fn ptx_kernel_geometry_directives() {
+        let k = kernel(".blockthreads 128\n.sharedbytes 2048\nentry:\n    mov r2, 0\n");
+        assert_eq!(k.block_threads, Some(128));
+        assert_eq!(k.shared_bytes, Some(2048));
+        let dup = generate_bad_kernel(BadKernelReq {
+            body: ".blockthreads 1\n.blockthreads 2\nentry:\n    mov r2, 0\n",
+            param: "state",
+            base_dir: None,
+        });
+        assert!(dup.is_err(), "duplicate directive must error");
+        let bad = generate_bad_kernel(BadKernelReq {
+            body: ".blockthreads many\nentry:\n    mov r2, 0\n",
+            param: "state",
+            base_dir: None,
+        });
+        assert!(bad.is_err(), "non-u32 payload must error");
+    }
+
+    /// A geometry directive is ptx-family-only — on a GAS family it is
+    /// meaningless text to that assembler: loud error, never silent.
+    #[test]
+    fn geometry_directive_rejected_off_family() {
+        let src = "section .text\nglobal _start\n.blockthreads 128\n_start:\n    mov r0, 42\n    ret\n";
+        let err = generate(src, "x86_64").unwrap_err();
+        assert!(err.contains("ptx-family kernel directive"), "{err}");
+    }
+
+    /// A universal op with no `ptx:` row errors loudly (capability
+    /// doctrine) — e.g. `halt` (no GPU meaning).
+    #[test]
+    fn missing_ptx_row_is_loud() {
+        let err = generate_bad_kernel(BadKernelReq {
+            body: "    halt\n",
+            param: "state",
+            base_dir: None,
+        })
+        .unwrap_err();
+        assert!(
+            err.to_lowercase().contains("ptx"),
+            "error must name the family: {err}"
+        );
+    }
+
+    /// `bad<ptx> fn` parses the explicit target marker (D26
+    /// disclosure); a plain `bad fn` keeps `target: None`.
+    #[test]
+    fn bad_target_marker_parses() {
+        use crate::ast::top::TopLevel;
+        let parse = |src: &str| {
+            let tokens = crate::lexer::tokenize(src).expect("lex");
+            let mut p = crate::parser::Parser::new(tokens, src);
+            p.parse_program().expect("parse")
+        };
+        let program = parse(
+            "bad<ptx> scale(state: Ptr) -> Int [true] { mov r2, 0 }\n",
+        );
+        match program.first() {
+            Some(TopLevel::BadFn(bf)) => {
+                assert_eq!(bf.target.as_deref(), Some("ptx"), "marker");
+                assert_eq!(bf.name, "scale");
+            }
+            other => panic!("expected BadFn, got {other:?}"),
+        }
+        let plain = parse("bad addem(a: Int, b: Int) -> Int [true] { Add r0, r5, r4 }\n");
+        match plain.first() {
+            Some(TopLevel::BadFn(bf)) => assert_eq!(bf.target, None, "no marker"),
+            other => panic!("expected BadFn, got {other:?}"),
+        }
     }
 
     const THREE_WAY: &str = "section .text\nglobal _start\n_start:\n    mov r0, 42\n    ret\n";

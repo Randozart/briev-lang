@@ -2922,6 +2922,15 @@ impl<'a> Parser<'a> {
     fn parse_bad_fn(&mut self, bootstrap: bool) -> Result<BadFn, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'bad'
+        // 2026-10-01 (bad-ptx-family plan M2): `bad<ptx> fn` — the
+        // explicit target marker (D26 disclosure); absent = host triple.
+        let target = if self.eat(&Token::Lt) {
+            let t = self.expect_identifier()?;
+            self.expect(Token::Gt)?;
+            Some(t)
+        } else {
+            None
+        };
         let name = self.expect_identifier()?;
         self.expect(Token::LParen)?;
         let params = self.parse_parameter_list()?;
@@ -2971,7 +2980,7 @@ impl<'a> Parser<'a> {
             .and_then(|(_, s1)| self.tokens.get(self.pos - 1).map(|(_, s2)| (s1, s2)))
             .map(|(s1, s2)| Span::new(s1.start, s2.end, 0, 0))
             .unwrap_or(Span::new(0, 0, 0, 0));
-        Ok(BadFn { name, params, ret_type, contract, body, bootstrap, span })
+        Ok(BadFn { name, params, ret_type, contract, body, bootstrap, target, span })
     }
 
     fn parse_derivation_block(&mut self) -> Result<Option<DerivationBlock>, SyntaxError> {

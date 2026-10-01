@@ -1484,6 +1484,11 @@ pub struct BadFn {
     /// one is present; the author owns sp, `.bss`, the vector table, and
     /// the handoff (`call main` / park / jump). 2026-09-22.
     pub bootstrap: bool,
+    /// 2026-10-01 (bad-ptx-family plan M2): an explicit target marker —
+    /// `bad<ptx> fn` authors a GPU kernel unit. `None` = the host triple
+    /// (every pre-existing form). A targeted fn is NOT a host object: the
+    /// accel bridge consumes it (compile.rs), keyed by the fn name.
+    pub target: Option<String>,
     pub span: Span,
 }
 

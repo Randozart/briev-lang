@@ -2219,6 +2219,13 @@ fn compile_bad_fn_objects(
             TopLevel::BadFn(bf) => bf,
             _ => continue,
         };
+        // 2026-10-01 (bad-ptx-family plan M2/M4): a `bad<ptx> fn` is a
+        // GPU kernel unit, not a host object — the accel bridge compiles
+        // it for the ptx family and merges it by node name. Compiling it
+        // here would emit a dead host function with the same symbol.
+        if bf.target.is_some() {
+            continue;
+        }
         // Build param_env: each .bv param name → Bound::Token(register).
         // See bad_param_env for the ABI index rules (bootstrap = no
         // params; .bv-called fns start at register index 1 — the LLVM

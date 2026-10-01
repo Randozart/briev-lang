@@ -90,6 +90,13 @@ pub struct Lowerer<'a> {
     /// 2026-09-22: W-tier probable-error notices (never restrictive —
     /// acknowledged with `^`/`^^`/`^^^`, recorded, never silent).
     notices: Vec<crate::backend::bad::notices::Notice>,
+    /// 2026-10-01 (bad-ptx-family plan M3): per-line instruction suffix —
+    /// the generic template splitter eats the `;` separators, and PTX
+    /// needs one per instruction. Empty for every GAS family.
+    instr_suffix: &'static str,
+    /// `.blockthreads` / `.sharedbytes` kernel geometry (ptx family).
+    block_threads: Option<u32>,
+    shared_bytes: Option<u32>,
 }
 
 /// One `.field name, size[, align]` inside a `.struct` block.
@@ -134,7 +141,19 @@ impl<'a> Lowerer<'a> {
             sheet_aliases: std::collections::HashSet::new(),
             param_env: HashMap::new(),
             notices: Vec::new(),
+            // Family key matching is the registries' own convention
+            // (starts_with checks throughout); the suffix is a property
+            // of the TARGET TEXT FORMAT, not of a vocabulary.
+            instr_suffix: if family == "ptx" { ";" } else { "" },
+            block_threads: None,
+            shared_bytes: None,
         }
+    }
+
+    /// 2026-10-01 (bad-ptx-family plan M3): the declared kernel
+    /// geometry, for the bridge (`.blockthreads` / `.sharedbytes`).
+    pub fn kernel_geometry(&self) -> (Option<u32>, Option<u32>) {
+        (self.block_threads, self.shared_bytes)
     }
 
     /// Enable per-instruction lowering traces on stderr.
@@ -504,6 +523,50 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// 2026-10-01 (bad-ptx-family plan M3): `.blockthreads`/`.sharedbytes`
+    /// — the kernel geometry the bridge carries into the runner desc. A
+    /// geometry directive outside the ptx family is meaningless text to
+    /// that assembler — loud error, never silent.
+    fn collect_geometry(&mut self, d: &BadDirective) {
+        if self.family != "ptx" {
+            self.errors.push(format!(
+                "`.{name} {args}` (line {line}) is a ptx-family kernel directive — the \
+                 {fam} family assembles CPU text and has no kernel geometry",
+                name = d.name.trim_start_matches('.'),
+                args = d.args,
+                line = d.span.line,
+                fam = self.family,
+            ));
+            return;
+        }
+        let value = match d.args.trim().parse::<u32>() {
+            Ok(v) => v,
+            Err(_) => {
+                self.errors.push(format!(
+                    "`.{} {}` (line {}) needs a u32 thread/byte count",
+                    d.name.trim_start_matches('.'),
+                    d.args,
+                    d.span.line
+                ));
+                return;
+            }
+        };
+        let slot = if d.name == ".blockthreads" {
+            &mut self.block_threads
+        } else {
+            &mut self.shared_bytes
+        };
+        if slot.is_some() {
+            self.errors.push(format!(
+                "`.{} {}` (line {}) is declared twice - remove one",
+                d.name.trim_start_matches('.'),
+                d.args,
+                d.span.line
+            ));
+        }
+        *slot = Some(value);
+    }
+
     fn collect_directive(&mut self, d: &BadDirective) {
         let bare_name: &str = d.name.trim_start_matches('.');
         match bare_name {
@@ -523,6 +586,9 @@ impl<'a> Lowerer<'a> {
                     ));
                 }
             }
+            // 2026-10-01 (bad-ptx-family plan M3): kernel geometry —
+            // consumed here, carried to the bridge via `kernel_geometry`.
+            "blockthreads" | "sharedbytes" => self.collect_geometry(d),
             "struct" => {
                 let (name, _) = split_ws(&d.args);
                 if name.is_empty() {
@@ -1049,7 +1115,13 @@ impl<'a> Lowerer<'a> {
         if line.ends_with(',') {
             line.pop();
         }
-        self.push_line(&line);
+        // Same suffix rule as `emit_mapped` — the ptx family needs the
+        // per-instruction `;` on exception rows too.
+        if self.instr_suffix.is_empty() {
+            self.push_line(&line);
+        } else {
+            self.push_line(&format!("{line}{}", self.instr_suffix));
+        }
     }
 
     /// Resolve one raw-instruction operand: env bindings first, then the
@@ -1252,7 +1324,11 @@ impl<'a> Lowerer<'a> {
         for part in text.split(';') {
             let part = part.trim();
             if !part.is_empty() {
-                self.push_line(part);
+                if self.instr_suffix.is_empty() {
+                    self.push_line(part);
+                } else {
+                    self.push_line(&format!("{part}{}", self.instr_suffix));
+                }
             }
         }
     }
