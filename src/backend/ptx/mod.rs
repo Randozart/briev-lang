@@ -1833,6 +1833,34 @@ fn push_deferred_combine(
     Ok(())
 }
 
+/// 2026-09-30 (gpu-syntax-decision-record D1/D2): the declared `stage<N>`
+/// pipeline depth of a node, if any. Source declarations override the cost
+/// model and the config knob (precedence: source > config > model).
+fn node_stage_modifier(program: &[TopLevel], name: &str) -> Option<usize> {
+    fn from_txn(t: &crate::ast::top::Transaction) -> Option<usize> {
+        t.modifiers.iter().find(|m| m.name == "stage").and_then(|m| {
+            match &m.value {
+                Some(Expr::Decimal(n)) if *n > 0 => Some(*n as usize),
+                _ => None,
+            }
+        })
+    }
+    for item in program {
+        match item {
+            TopLevel::Transaction(t) if t.name == name => return from_txn(t),
+            TopLevel::SyncGroup { item, .. } => {
+                if let TopLevel::Transaction(t) = item.as_ref() {
+                    if t.name == name {
+                        return from_txn(t);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 pub fn build_ptx_kernels(
     program: &[TopLevel],
     universe: &TypeUniverse,
@@ -2143,7 +2171,13 @@ pub fn build_ptx_kernels(
         // every measurement"). An EXPLICIT nonzero config now wins over
         // the model; the auto default (0) still lets the model choose,
         // preserving ship behavior byte-for-byte.
-        let stages_cfg = crate::config_tuning::ir_lowering().ptx_tensor_stages;
+        // 2026-09-30 (D2): precedence source > config > model. A declared
+        // `stage<N>` (node modifier) strengthens the effective config value,
+        // so `resolve_eff_stages` below lets it win over the strategy model
+        // exactly as an explicit `ptx_tensor_stages` does.
+        let stage_source = node_stage_modifier(program, name).map(|n| n as u32);
+        let stages_cfg = stage_source
+            .unwrap_or(crate::config_tuning::ir_lowering().ptx_tensor_stages);
         let stages = match stages_cfg {
             0 => {
                 if f16_acc {
@@ -2291,6 +2325,18 @@ pub fn build_ptx_kernels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_stage_modifier_reads_declared_stage() {
+        // 2026-09-30 (D1/D2): `stage<N>` on a node is read as the effective
+        // pipeline depth (source > config > model).
+        let src = "stage<2> node gemm [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let program = p.parse_program().expect("parse");
+        assert_eq!(node_stage_modifier(&program, "gemm"), Some(2));
+        assert_eq!(node_stage_modifier(&program, "absent"), None);
+    }
 
     #[test]
     fn select_mw_nw_respects_warp_aspect() {

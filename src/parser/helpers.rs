@@ -168,10 +168,74 @@ impl<'a> Parser<'a> {
                         value: Some(Expr::Quoted(payload.into_bytes())),
                     });
                 }
+                Some(Token::Identifier(s))
+                    if (s == "stage" || s == "tile")
+                        && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
+                {
+                    // 2026-09-30 (gpu-syntax-decision-record D1/D14): shape
+                    // declarations — contextual identifiers with a `<...>`
+                    // integer payload, legal on node/txn only (validated by
+                    // the dispatcher). `stage<N>` = pipeline depth,
+                    // `tile<M,N>` = CTA tile. Recorded as an annotation; the
+                    // backend consumes it as an ambiguity override of the
+                    // cost model (D2).
+                    let keyword = s.clone();
+                    if prefix.annotations.iter().any(|a| a.name == keyword) {
+                        return Err(self.dup_modifier(&keyword));
+                    }
+                    self.pos += 1;
+                    let value = self.parse_shape_modifier_payload(&keyword)?;
+                    prefix.annotations.push(Annotation {
+                        name: keyword,
+                        value: Some(value),
+                    });
+                }
                 _ => break,
             }
         }
         Ok(prefix)
+    }
+
+    /// `stage<N>` / `tile<M,N>` — integer shape parameters.
+    fn parse_shape_modifier_payload(&mut self, keyword: &str) -> Result<Expr, SyntaxError> {
+        self.expect(Token::Lt)?;
+        let mut nums: Vec<Expr> = Vec::new();
+        loop {
+            match self.peek() {
+                Some(Token::Integer(n)) => {
+                    let n = *n;
+                    self.pos += 1;
+                    nums.push(Expr::Decimal(n));
+                }
+                _ => {
+                    return Err(SyntaxError::InvalidStatement {
+                        reason: format!(
+                            "`{keyword}<...>` expects integer shape parameters"
+                        ),
+                        span: Span::dummy(),
+                    })
+                }
+            }
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        self.expect(Token::Gt)?;
+        let want = if keyword == "stage" { 1 } else { 2 };
+        if nums.len() != want {
+            return Err(SyntaxError::InvalidStatement {
+                reason: format!(
+                    "`{keyword}<...>` expects {want} integer(s), got {}",
+                    nums.len()
+                ),
+                span: Span::dummy(),
+            });
+        }
+        Ok(if nums.len() == 1 {
+            nums.pop().unwrap()
+        } else {
+            Expr::Tuple(nums)
+        })
     }
 
     /// Consume the current modifier token and record its annotation, or error

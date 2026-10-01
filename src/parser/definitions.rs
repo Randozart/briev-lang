@@ -183,7 +183,11 @@ impl<'a> Parser<'a> {
             // <name>`. Modifiers compose in any order before a node/txn/let/
             // defn; the shared scanner consumes the run and the dispatch
             // below validates the structural identifier against the set.
-            Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => {
+            // 2026-09-30 (D1/D14): a modifier run can start with a reserved
+            // modifier token, a `net<>`/`stdnet<>` identifier, or a
+            // `stage<>`/`tile<>` shape identifier (the latter two only when
+            // directly followed by `<`).
+            Some(_) if self.starts_modifier_run() => {
                 self.parse_modifier_prefixed()
             }
             Some(Token::Cell) => self.parse_cell().map(TopLevel::Cell),
@@ -1368,6 +1372,19 @@ impl<'a> Parser<'a> {
         matches!(t, Token::Identifier(s) if s == "net" || s == "stdnet")
     }
 
+    /// 2026-09-30 (D1/D14): does a modifier run start here? Reserved
+    /// modifier tokens, `net<>`/`stdnet<>`, or the `stage<>`/`tile<>` shape
+    /// identifiers — the latter only when directly followed by `<`.
+    fn starts_modifier_run(&self) -> bool {
+        match self.peek() {
+            Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => true,
+            Some(Token::Identifier(s)) if s == "stage" || s == "tile" => {
+                matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt))
+            }
+            _ => false,
+        }
+    }
+
     /// 2026-09-22 (order-free-modifiers plan): dispatch a declaration whose
     /// modifier prefix was consumed. Validates the structural identifier
     /// against the collected modifiers:
@@ -1402,6 +1419,7 @@ impl<'a> Parser<'a> {
                         "`accel` applies to a node/txn only — a let has no GPU-deferral surface",
                     );
                 }
+                self.reject_shape_modifiers(&prefix, "a let")?;
                 let mut stmt = self.parse_let_statement()?;
                 if let Statement::Let { modifiers, .. } = &mut stmt {
                     modifiers.extend(prefix.annotations);
@@ -1423,6 +1441,7 @@ impl<'a> Parser<'a> {
                     );
                 }
                 self.reject_net_names(&prefix, "a defn")?;
+                self.reject_shape_modifiers(&prefix, "a defn")?;
                 let mut defn = self.parse_definition()?;
                 defn.modifiers.extend(prefix.annotations);
                 Ok(TopLevel::Definition(defn))
@@ -1437,6 +1456,26 @@ impl<'a> Parser<'a> {
         if prefix.annotations.iter().any(|a| a.name == "net" || a.name == "stdnet") {
             self.error_at_current(&format!(
                 "`net<>`/`stdnet<>` names a let's supply net — {what} has no supply pins"
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// 2026-09-30 (gpu-syntax-decision-record D1/D14): `stage<>`/`tile<>`
+    /// are GPU-kernel shape declarations — node/txn only.
+    fn reject_shape_modifiers(
+        &self,
+        prefix: &ModifierPrefix,
+        what: &str,
+    ) -> Result<(), SyntaxError> {
+        if prefix
+            .annotations
+            .iter()
+            .any(|a| a.name == "stage" || a.name == "tile")
+        {
+            self.error_at_current(&format!(
+                "`stage<>`/`tile<>` declare a GPU kernel shape — {what} is not a node/txn"
             ))
         } else {
             Ok(())
@@ -7169,6 +7208,49 @@ mod tests {
         } else {
             panic!("expected Transaction, got {item:?}");
         }
+    }
+
+    #[test]
+    fn test_stage_and_tile_shape_modifiers_recorded() {
+        // 2026-09-30 (gpu-syntax-decision-record D1/D14): `stage<N>` /
+        // `tile<M,N>` are node/txn shape declarations, recorded as
+        // annotations (integer / tuple payloads).
+        let src = "stage<3> node n [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let item = p.parse_top_level().unwrap();
+        if let crate::ast::TopLevel::Transaction(t) = item {
+            let stage = t.modifiers.iter().find(|m| m.name == "stage").expect("stage recorded");
+            assert!(matches!(stage.value, Some(crate::ast::Expr::Decimal(3))), "stage value: {:?}", stage.value);
+        } else {
+            panic!("expected Transaction, got {item:?}");
+        }
+
+        let src2 = "tile<128,256> node m [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens2 = tokenize(src2).unwrap();
+        let mut p2 = Parser::new(tokens2, src2);
+        let item2 = p2.parse_top_level().unwrap();
+        if let crate::ast::TopLevel::Transaction(t) = item2 {
+            let tile = t.modifiers.iter().find(|m| m.name == "tile").expect("tile recorded");
+            match tile.value {
+                Some(crate::ast::Expr::Tuple(ref v)) => {
+                    assert_eq!(v, &vec![crate::ast::Expr::Decimal(128), crate::ast::Expr::Decimal(256)]);
+                }
+                ref other => panic!("tile value: {other:?}"),
+            }
+        } else {
+            panic!("expected Transaction, got {item2:?}");
+        }
+    }
+
+    #[test]
+    fn test_shape_modifier_rejected_on_defn() {
+        // 2026-09-30: shape modifiers are node/txn only.
+        let src = "stage<3> defn f(x: Int) -> Int { term x; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err();
+        assert!(err.to_string().contains("node/txn"), "expected helpful diagnostic, got: {err}");
     }
 
     #[test]
