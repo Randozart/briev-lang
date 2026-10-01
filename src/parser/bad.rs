@@ -103,6 +103,16 @@ impl<'s> Parser<'s> {
                 continue;
             }
 
+            // `site [target =>] ... end site` — anonymous branch site
+            // (2026-10-01, plan 2026-10-01-bad-site-blocks.md). A body
+            // item: the owner STAYS open (unlike raw blocks). The head
+            // may carry the first row header (`site ptx => ...`) — the
+            // `raw <target>` head convention. Unconditional call: the
+            // fn early-returns for non-site lines.
+            if self.try_site(content, line, span.clone(), &owner)?.is_some() {
+                continue;
+            }
+
             // Top-level shapes always close the current owner.
             if let Some(item) = self.try_top_level(content, line, span)? {
                 match &item {
@@ -127,9 +137,8 @@ impl<'s> Parser<'s> {
             if let Some(branch) = self.try_branch_row(content, line, span)? {
                 let owner = owner.as_mut().ok_or_else(|| BadParseError {
                     message: format!(
-                        "`{content}` is a target exception row but no instruction \
-                         precedes it - exceptions replace the nearest preceding \
-                         instruction, or form a defn's branch table"
+                        "`{content}` is a target row but nothing is open - target rows \
+                         belong in branch defns or `site ... end site` blocks"
                     ),
                     line,
                     span,
@@ -250,84 +259,252 @@ impl<'s> Parser<'s> {
         Ok(())
     }
 
-    /// Route a `target => ...` row to its owner (defn table or last
-    /// instruction of a label).
+    /// Route a `target => ...` row to its owner. 2026-10-01
+    /// (plan `2026-10-01-bad-site-blocks.md`): the inline-exception
+    /// attachment was retired — target rows now belong ONLY in branch
+    /// defns; everywhere else the parser points at `site`.
     fn push_branch_row(
         &mut self, owner: &mut Owner, branch: BadBranch, lc: &LineCtx,
     ) -> Result<(), BadParseError> {
         let (content, line, span) = (lc.content, lc.line, lc.span);
         match owner {
             Owner::Defn { branch_rows, seq_body, .. } => {
-                // After sequence lines, a `target =>` row is a
-                // PER-INSTRUCTION exception (same as in label bodies) —
-                // not a branch row. `default =>` here is a category
-                // error: the body IS the default.
                 if *seq_body {
-                    if branch.is_default {
-                        return Err(BadParseError {
-                            message: format!(
-                                "`default =>` rows belong in branch defns - the sequence \
-                                 body of `{}` already lowers universally",
-                                self.defn_name_hint()
-                            ),
-                            line,
-                            span,
-                        });
-                    }
-                    if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {
-                        if let BadDefnShape::Sequence(items) = &mut d.shape {
-                            match items.last_mut() {
-                                Some(BadBodyItem::Instr(last)) => {
-                                    last.exceptions.push(branch);
-                                }
-                                _ => {
-                                    return Err(BadParseError {
-                                        message: format!(
-                                            "`{content}` follows a local label - exceptions \
-                                             replace the nearest preceding instruction"
-                                        ),
-                                        line,
-                                        span,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    return Ok(());
-                }
-                *branch_rows = true;
-                if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {
-                    if let BadDefnShape::Branch(rows) = &mut d.shape {
-                        rows.push(branch);
-                    }
-                }
-            }
-            Owner::Label(i) => {
-                let attached = match self.items.get_mut(*i) {
-                    Some(BadTopLevel::Label(l)) => l.body.last_mut().and_then(|last| {
-                        match last {
-                            BadBodyItem::Instr(i) => {
-                                i.exceptions.push(branch);
-                                Some(())
-                            }
-                            BadBodyItem::Local(_) => None,
-                        }
-                    }),
-                    _ => None,
-                };
-                if attached.is_none() {
+                    let why = if branch.is_default {
+                        "the sequence body of a defn already lowers universally"
+                    } else {
+                        "attached exceptions were retired - write a `site ... end site` block"
+                    };
                     return Err(BadParseError {
-                        message: format!(
-                            "`{content}` follows a label with no instruction - \
-                             exceptions replace the nearest preceding instruction"
-                        ),
+                        message: format!("`{content}` in a defn sequence body - {why}"),
                         line,
                         span,
                     });
                 }
+                // A site already pushed turned the defn into a Sequence —
+                // a branch row after it would silently drop.
+                if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {
+                    match &mut d.shape {
+                        BadDefnShape::Branch(rows) => {
+                            *branch_rows = true;
+                            rows.push(branch);
+                        }
+                        BadDefnShape::Sequence(_) => {
+                            return Err(BadParseError {
+                                message: format!(
+                                    "`{content}` mixes a branch row into the sequence body \
+                                     of `{}` - a defn is either a sequence (with sites) or \
+                                     a branch table",
+                                    d.name
+                                ),
+                                line,
+                                span,
+                            });
+                        }
+                    }
+                }
+            }
+            Owner::Label(_) => {
+                return Err(BadParseError {
+                    message: format!(
+                        "`{content}` - attached exceptions were retired; a target row now \
+                         belongs in a branch defn or a `site ... end site` block"
+                    ),
+                    line,
+                    span,
+                });
             }
         }
         Ok(())
+    }
+
+    /// 2026-10-01 (plan `2026-10-01-bad-site-blocks.md`): `site ... end
+    /// site` — the anonymous branch site. Rows dispatch by target
+    /// header in any order; leading bare instruction lines are the
+    /// default row; `default =>` is the explicit spelling. Duplicate
+    /// rows and nesting are loud. Consumes its own lines.
+    fn try_site(
+        &mut self, content: &str, line: usize, span: Span,
+        owner: &Option<Owner>,
+    ) -> Result<Option<()>, BadParseError> {
+        let (head, head_rest) = match content.split_once(char::is_whitespace) {
+            Some((h, r)) => (h, Some(r)),
+            None => (content, None),
+        };
+        if head != "site" {
+            return Ok(None);
+        }
+        // Owner check BEFORE consuming: a site is a body item.
+        let owner_ok = match owner {
+            Some(Owner::Label(_)) => true,
+            Some(Owner::Defn { branch_rows, .. }) => !*branch_rows,
+            None => false,
+        };
+        if !owner_ok {
+            return Err(BadParseError {
+                message: "`site` needs an owner - sites live in label bodies or \
+                          defn sequence bodies"
+                    .to_string(),
+                line,
+                span,
+            });
+        }
+        // `site <target> => instr; instr` — the head may open the first
+        // row (the `raw <target>` head convention). Parsed BEFORE
+        // consuming the head line — `parse_row_body` reads the current
+        // line's offset.
+        let mut open = self.parse_site_head_row(content, head_rest, line, &span)?;
+        self.pos += 1; // consume the `site` head (after its row parsed)
+        let mut rows: Vec<BadBranch> = Vec::new();
+        loop {
+            let Some((off, row_content, lno)) = self.lines.get(self.pos).cloned() else {
+                return Err(BadParseError {
+                    message: format!(
+                        "`site` (line {line}) is not terminated - add an `end site` line"
+                    ),
+                    line,
+                    span,
+                });
+            };
+            let trimmed = row_content.trim();
+            if trimmed == "end site" {
+                self.pos += 1;
+                break;
+            }
+            let sline = SiteLine {
+                raw_content: row_content,
+                trimmed,
+                lno,
+                off,
+            };
+            if self.site_row_line(sline, &mut open, &mut rows)?.is_some() {
+                continue;
+            }
+            let sp = Span::new(off, off + row_content.len(), lno, 0);
+            let instrs = self.parse_instr_line(row_content, lno, sp)?;
+            open
+                .as_mut()
+                .expect("default row seeded before instruction fill")
+                .body.extend(instrs);
+            self.pos += 1;
+        }
+        if let Some(prev) = open.take() {
+            rows.push(prev);
+        }
+        if rows.is_empty() {
+            return Err(BadParseError {
+                message: format!("`site` (line {line}) has no rows - write a `default =>` \
+                                  row, a `target =>` row, or leading default lines"),
+                line,
+                span,
+            });
+        }
+        site_check_dups(&rows, line, span)?;
+        let site = BadSite { rows, span };
+        self.push_site(site, owner);
+        Ok(Some(()))
+    }
+
+    /// The `site <target> => instr; instr` head row (the `raw <target>`
+    /// head convention). Bare default lines belong on their own lines —
+    /// a head rest without `=>` is an error.
+    fn parse_site_head_row(
+        &mut self, content: &str, head_rest: Option<&str>, line: usize, span: &Span,
+    ) -> Result<Option<BadBranch>, BadParseError> {
+        let Some(rest) = head_rest else {
+            return Ok(None);
+        };
+        let Some((target, instrs)) = rest.split_once("=>") else {
+            return Err(BadParseError {
+                message: format!(
+                    "`{content}` - the site head takes no arguments; write `site`, or \
+                     `site <target> =>` to open the first row"
+                ),
+                line,
+                span: span.clone(),
+            });
+        };
+        let target = target.trim();
+        let is_default = target == "default";
+        if !is_default {
+            validate_ident(target, line, span.clone())?;
+        }
+        let body = self.parse_row_body(instrs, line, span.clone())?;
+        Ok(Some(BadBranch {
+            target: target.to_string(),
+            is_default,
+            body,
+            span: span.clone(),
+        }))
+    }
+
+    /// One line inside a site body: a row header (the open row flushes
+    /// first) or the fall-through bare instruction line (fills the open
+    /// row — seeding the implicit default when none is open).
+    /// `Ok(None)` = fall through; `Ok(Some(()))` = line consumed.
+    fn site_row_line(
+        &mut self, line: SiteLine<'_>, open: &mut Option<BadBranch>,
+        rows: &mut Vec<BadBranch>,
+    ) -> Result<Option<()>, BadParseError> {
+        if let Some(err) = site_line_error(line.trimmed, line.lno, line.off) {
+            return Err(err);
+        }
+        let Some((target, rest)) = line.trimmed.split_once("=>") else {
+            if open.is_none() {
+                let sp = Span::new(line.off, line.off + line.raw_content.len(), line.lno, 0);
+                *open = Some(BadBranch {
+                    target: "default".to_string(),
+                    is_default: true,
+                    body: Vec::new(),
+                    span: sp,
+                });
+            }
+            return Ok(None);
+        };
+        if let Some(prev) = open.take() {
+            rows.push(prev);
+        }
+        let sp = Span::new(line.off, line.off + line.raw_content.len(), line.lno, 0);
+        let target = target.trim();
+        let is_default = target == "default";
+        if !is_default {
+            validate_ident(target, line.lno, sp.clone())?;
+        }
+        let body = self.parse_row_body(rest, line.lno, sp.clone())?;
+        *open = Some(BadBranch {
+            target: target.to_string(),
+            is_default,
+            body,
+            span: sp,
+        });
+        self.pos += 1;
+        Ok(Some(()))
+    }
+
+    /// Push a parsed site into its owner's body (label body, or a defn
+    /// sequence body — converting the provisional Branch shape).
+    fn push_site(&mut self, site: BadSite, owner: &Option<Owner>) {
+        match owner {
+            Some(Owner::Label(i)) => {
+                if let Some(BadTopLevel::Label(l)) = self.items.get_mut(*i) {
+                    l.body.push(BadBodyItem::Site(site));
+                }
+            }
+            Some(Owner::Defn { .. }) => {
+                if let Some(BadTopLevel::Defn(d)) = self.items.last_mut() {
+                    match &mut d.shape {
+                        BadDefnShape::Branch(rows) if rows.is_empty() => {
+                            d.shape = BadDefnShape::Sequence(vec![BadBodyItem::Site(site)]);
+                        }
+                        BadDefnShape::Sequence(items) => {
+                            items.push(BadBodyItem::Site(site));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            None => {}
+        }
     }
 
     /// Route an instruction line to its owner (label body or defn
@@ -501,7 +678,7 @@ impl<'s> Parser<'s> {
         // A bare `raw` with no target is a clear error, not an instruction.
         if content.trim() == "raw" {
             return Err(BadParseError {
-                message: "`raw` needs a target - write `raw x86_64` ... `end`".to_string(),
+                message: "`raw` needs a target - write `raw x86_64` ... `end raw`".to_string(),
                 line,
                 span,
             });
@@ -528,16 +705,27 @@ impl<'s> Parser<'s> {
                 return Err(BadParseError {
                     message: format!(
                         "raw block `raw {target}` (line {line}) is not terminated - add an \
-                         `end` line before the end of the file"
+                         `end raw` line before the end of the file"
                     ),
                     line,
                     span,
                 });
             };
             let trimmed = content.trim();
-            if trimmed == "end" {
+            if trimmed == "end raw" {
                 self.pos += 1;
                 break;
+            }
+            if trimmed == "end" {
+                return Err(BadParseError {
+                    message: format!(
+                        "`end` (line {}) inside `raw {target}` (line {line}) - the close is \
+                         `end raw`",
+                        self.lines[self.pos].2
+                    ),
+                    line,
+                    span,
+                });
             }
             lines.push(trimmed.to_string());
             self.pos += 1;
@@ -557,6 +745,16 @@ impl<'s> Parser<'s> {
         if !is_default {
             validate_ident(target, line, span)?;
         }
+        let body = self.parse_row_body(rest, line, span.clone())?;
+        Ok(Some(BadBranch { target: target.to_string(), is_default, body, span }))
+    }
+
+    /// The instruction text after a `target =>` on the same line —
+    /// `;`-separated segments, ack-prefixed. Shared by branch rows and
+    /// site rows.
+    fn parse_row_body(
+        &mut self, rest: &str, line: usize, span: Span,
+    ) -> Result<Vec<BadInstr>, BadParseError> {
         let mut body = Vec::new();
         let mut line_ack: Option<Ack> = None;
         for piece in split_semicolons(rest) {
@@ -576,7 +774,7 @@ impl<'s> Parser<'s> {
             instr.ack = ack;
             body.push(instr);
         }
-        Ok(Some(BadBranch { target: target.to_string(), is_default, body, span }))
+        Ok(body)
     }
 
     /// `mnemonic ops` — a plain instruction line. A leading `^` / `^^` /
@@ -635,7 +833,6 @@ impl<'s> Parser<'s> {
             mnemonic: mnemonic.to_string(),
             operands,
             contract: None,
-            exceptions: Vec::new(),
             ack: None,
             span: Span::new(off, off + text.len(), line, 0),
         })
@@ -924,6 +1121,56 @@ fn is_ident(s: &str) -> bool {
         && s.chars().all(is_ident_char)
 }
 
+/// One physical line inside a site body (borrowed view).
+struct SiteLine<'a> {
+    raw_content: &'a str,
+    trimmed: &'a str,
+    lno: usize,
+    off: usize,
+}
+
+/// The site-body lines that are never instructions — each is a loud,
+/// self-explaining error. `None` = the line may be a row header or a
+/// bare instruction.
+fn site_line_error(trimmed: &str, lno: usize, off: usize) -> Option<BadParseError> {
+    let sp = Span::new(off, off + trimmed.len(), lno, 0);
+    let err = |message: String| BadParseError { message, line: lno, span: sp };
+    if trimmed == "end" {
+        return Some(err(format!(
+            "`end` (line {lno}) inside a site - the close is `end site`"
+        )));
+    }
+    if trimmed == "site" {
+        return Some(err(format!("nested `site` (line {lno}) - sites do not nest")));
+    }
+    if trimmed.starts_with('[') {
+        return Some(err(format!(
+            "contract line (line {lno}) inside a site - site rows carry no \
+             contracts (v1); put contracts on the surrounding label"
+        )));
+    }
+    None
+}
+
+/// Duplicate site rows are ambiguous (which one wins?) — loud.
+fn site_check_dups(rows: &[BadBranch], line: usize, span: Span) -> Result<(), BadParseError> {
+    let mut seen: Vec<&str> = Vec::new();
+    for r in rows {
+        let key: &str = if r.is_default { "default" } else { &r.target };
+        if seen.contains(&key) {
+            return Err(BadParseError {
+                message: format!(
+                    "duplicate `{key} =>` row in `site` (line {line}) - remove one"
+                ),
+                line,
+                span,
+            });
+        }
+        seen.push(key);
+    }
+    Ok(())
+}
+
 fn validate_ident(s: &str, line: usize, span: Span) -> Result<(), BadParseError> {
     if is_ident(s) {
         Ok(())
@@ -1070,21 +1317,108 @@ mod tests {
     }
 
     #[test]
-    fn parses_inline_exception_and_contract() {
+    fn parses_site_with_implicit_default_and_override() {
+        // 2026-10-01 (bad-site-blocks plan): leading bare lines are the
+        // default row; `ptx =>` opens a target row; `end site` closes.
         let p = parse_ok(
-            "_start:\n    [sp % 16 == 0]\n    add r0, r0, 1\n    \
-             x86_64 => lea r0, [r1 + 1]\n    ret\n",
+            "_start:\n    site\n    mov r2, 8\n    ptx => mov.u64 %rd2, 8\n    \
+             st.global.u64 [%rd2], %rd3\n    end site\n    ret\n",
         );
         let BadTopLevel::Label(l) = &p.items[0] else { panic!("expected label") };
-        assert_eq!(l.body.len(), 2);
-        let BadBodyItem::Instr(add) = &l.body[0] else { panic!("expected instr") };
-        assert!(add.contract.is_some(), "inline contract attaches to next instruction");
-        assert_eq!(add.exceptions.len(), 1);
-        assert_eq!(add.exceptions[0].target, "x86_64");
-        assert_eq!(add.exceptions[0].body[0].mnemonic, "lea");
+        assert_eq!(l.body.len(), 2, "site + ret");
+        let BadBodyItem::Site(site) = &l.body[0] else { panic!("expected site") };
+        assert_eq!(site.rows.len(), 2);
+        assert!(site.rows[0].is_default, "leading bare lines = default row");
+        assert_eq!(site.rows[0].body.len(), 1);
+        assert_eq!(site.rows[1].target, "ptx");
+        assert_eq!(site.rows[1].body.len(), 2, "same-line `;` segments");
         let BadBodyItem::Instr(ret_i) = &l.body[1] else { panic!("expected instr") };
-        assert_eq!(ret_i.mnemonic, "ret");
-        assert!(ret_i.exceptions.is_empty(), "exception binds to the add, not ret");
+        assert_eq!(ret_i.mnemonic, "ret", "owner stays open after the site");
+    }
+
+    #[test]
+    fn parses_site_with_explicit_default_and_no_default() {
+        let p = parse_ok(
+            "f:\n    site\n    default => mov r2, 0\n    x86_64 => movq $0, %r2\n    \
+             end site\n",
+        );
+        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
+        let BadBodyItem::Site(site) = &l.body[0] else { panic!("site") };
+        assert!(site.rows[0].is_default, "explicit `default =>` row");
+        assert_eq!(site.rows[1].target, "x86_64");
+        // No default at all is legal — the capability error fires at the
+        // lowerer only when an unmatched family actually reaches it.
+        let only = parse_ok("f:\n    site\n    ptx => bar.sync 0\n    end site\n");
+        let BadTopLevel::Label(l2) = &only.items[0] else { panic!("label") };
+        let BadBodyItem::Site(s2) = &l2.body[0] else { panic!("site") };
+        assert_eq!(s2.rows.len(), 1);
+        assert!(!s2.rows[0].is_default);
+    }
+
+    #[test]
+    fn site_head_may_open_the_first_row() {
+        // `site ptx =>` — the `raw <target>` head convention: the head
+        // line carries the first row header (2026-10-01 design session).
+        let p = parse_ok(
+            "f:\n    site ptx =>\n    ld.global.f32 %fs1, [%rd6]\n    \
+             st.global.f32 [%rd5], %fs1\n    end site\n",
+        );
+        let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
+        let BadBodyItem::Site(site) = &l.body[0] else { panic!("site") };
+        assert_eq!(site.rows.len(), 1);
+        assert_eq!(site.rows[0].target, "ptx");
+        assert_eq!(site.rows[0].body.len(), 2);
+        // Same-line instructions after the head arrow, too.
+        let one = parse_ok("f:\n    site ptx => bar.sync 0\n    end site\n");
+        let BadTopLevel::Label(l2) = &one.items[0] else { panic!("label") };
+        let BadBodyItem::Site(s2) = &l2.body[0] else { panic!("site") };
+        assert_eq!(s2.rows[0].body.len(), 1);
+        // `default =>` on the head is legal.
+        let d = parse_ok("f:\n    site default => nop\n    ptx => bar.sync 0\n    end site\n");
+        let BadTopLevel::Label(l3) = &d.items[0] else { panic!("label") };
+        let BadBodyItem::Site(s3) = &l3.body[0] else { panic!("site") };
+        assert!(s3.rows[0].is_default);
+        assert_eq!(s3.rows[1].target, "ptx");
+        // Head rest that is not a row header is an error.
+        let err = parse_bad("f:\n    site mov r2, 8\n    end site\n").unwrap_err();
+        assert!(err.message.contains("site head takes no arguments"), "{}", err.message);
+    }
+
+    #[test]
+    fn site_error_rows() {
+        // Attached exceptions are retired — the parser points at site.
+        let err = parse_bad("l:\n    add r0, r0, 1\n    x86_64 => nop\n").unwrap_err();
+        assert!(err.message.contains("retired"), "{}", err.message);
+        // Orphan target row: same pointer.
+        let err = parse_bad("x86_64 => lea r0, [r1]\n").unwrap_err();
+        assert!(err.message.contains("target rows"), "{}", err.message);
+        // Sequence body of a defn: same pointer.
+        let err = parse_bad("defn f a\n    push a\n    x86_64 => pop a\n").unwrap_err();
+        assert!(err.message.contains("retired"), "{}", err.message);
+        // Duplicate rows are loud.
+        let err = parse_bad(
+            "l:\n    site\n    ptx => nop\n    ptx => nop\n    end site\n",
+        )
+        .unwrap_err();
+        assert!(err.message.contains("duplicate"), "{}", err.message);
+        // Bare `end` inside a site points at `end site`.
+        let err = parse_bad("l:\n    site\n    nop\n    end\n").unwrap_err();
+        assert!(err.message.contains("end site"), "{}", err.message);
+        // Nesting is loud.
+        let err = parse_bad(
+            "l:\n    site\n    site\n    end site\n    end site\n",
+        )
+        .unwrap_err();
+        assert!(err.message.contains("do not nest"), "{}", err.message);
+        // Contract lines carry no meaning in site rows (v1) — loud.
+        let err = parse_bad(
+            "l:\n    site\n    [r0 valid]\n    nop\n    end site\n",
+        )
+        .unwrap_err();
+        assert!(err.message.contains("site rows"), "{}", err.message);
+        // Unterminated site.
+        let err = parse_bad("l:\n    site\n    nop\n").unwrap_err();
+        assert!(err.message.contains("not terminated"), "{}", err.message);
     }
 
     #[test]
@@ -1113,11 +1447,7 @@ mod tests {
         assert_eq!(d.directive.args, "\"a//b\"");
     }
 
-    #[test]
-    fn errors_on_orphan_exception() {
-        let err = parse_bad("x86_64 => lea r0, [r1]\n").unwrap_err();
-        assert!(err.message.contains("no instruction precedes it"), "{}", err.message);
-    }
+
 
     #[test]
     fn errors_on_ownerless_instruction() {
@@ -1126,26 +1456,29 @@ mod tests {
     }
 
     #[test]
-    fn seq_defn_inline_exceptions_attach_to_last() {
-        // A `target =>` row after sequence lines is a per-instruction
-        // exception, NOT a shape mix (the design-session gap, fixed).
-        let p = parse_ok("defn f a\n    push a\n    x86_64 => pop a\n");
+    fn site_inside_a_defn_sequence_body() {
+        // A site is a body item — legal inside defn sequence bodies, and
+        // it converts the provisional Branch shape like any sequence line.
+        let p = parse_ok(
+            "defn f a\n    push a\n    site\n    x86_64 => pop a\n    \
+             riscv64 => pop a\n    end site\n",
+        );
         let BadTopLevel::Defn(d) = &p.items[0] else { panic!("defn") };
         let BadDefnShape::Sequence(body) = &d.shape else { panic!("sequence") };
-        let BadBodyItem::Instr(push) = &body[0] else { panic!("push") };
-        assert_eq!(push.exceptions.len(), 1, "exception binds to push");
+        assert_eq!(body.len(), 2, "push + site");
+        let BadBodyItem::Site(site) = &body[1] else { panic!("site") };
+        assert_eq!(site.rows.len(), 2);
+        assert!(site.rows.iter().all(|r| !r.is_default));
     }
 
     #[test]
-    fn default_row_after_sequence_body_is_a_category_error() {
-        let err = parse_bad("defn f a\n    push a\n    default => pop a\n").unwrap_err();
-        assert!(err.message.contains("belong in branch defns"), "{}", err.message);
-    }
-
-    #[test]
-    fn errors_on_exception_after_empty_label() {
-        let err = parse_bad("l:\n    x86_64 => nop\n").unwrap_err();
-        assert!(err.message.contains("no instruction"), "{}", err.message);
+    fn branch_row_after_site_in_defn_is_a_shape_mix_error() {
+        let err = parse_bad(
+            "defn f a\n    site\n    x86_64 => pop a\n    end site\n    \
+             aarch64 => pop a\n",
+        )
+        .unwrap_err();
+        assert!(err.message.contains("branch row into the sequence"), "{}", err.message);
     }
 }
 
@@ -1215,17 +1548,15 @@ mod semicolon_tests {
     }
 
     #[test]
-    fn contract_binds_first_exception_binds_last() {
+    fn contract_binds_first_instruction_of_a_packed_line() {
         let p = parse_ok(
-            "t:\n    [sp % 16 == 0]\n    push r0; call f\n    x86_64 => nop\n    \
-             ret\n\ndefn f\n    ret\n",
+            "t:\n    [sp % 16 == 0]\n    push r0; call f\n    ret\n\ndefn f\n    ret\n",
         );
         let BadTopLevel::Label(l) = &p.items[0] else { panic!("label") };
         let BadBodyItem::Instr(push) = &l.body[0] else { panic!("push") };
         let BadBodyItem::Instr(call) = &l.body[1] else { panic!("call") };
         assert!(push.contract.is_some(), "contract binds to the FIRST packed");
         assert!(call.contract.is_none());
-        assert_eq!(call.exceptions.len(), 1, "exception binds to the LAST");
     }
 
     #[test]
@@ -1279,7 +1610,7 @@ mod semicolon_tests {
     #[test]
     fn raw_block_captures_verbatim_and_terminates() {
         let p = parse_ok(
-            "raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend\n",
+            "raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend raw\n",
         );
         let BadTopLevel::RawBlock(b) = &p.items[0] else { panic!("raw block") };
         assert_eq!(b.target, "x86_64");
@@ -1294,7 +1625,15 @@ mod semicolon_tests {
 
     #[test]
     fn raw_block_head_needs_a_target() {
-        let err = parse_bad("raw\n    cli\nend\n").unwrap_err();
+        let err = parse_bad("raw\n    cli\nend raw\n").unwrap_err();
         assert!(err.message.contains("needs a target"), "{}", err.message);
+    }
+
+    #[test]
+    fn raw_block_bare_end_is_a_loud_hint() {
+        // 2026-10-01 (bad-site-blocks plan): named closes — the bare
+        // `end` points at `end raw`, it never silently closes.
+        let err = parse_bad("raw x86_64\n    cli\nend\n").unwrap_err();
+        assert!(err.message.contains("end raw"), "{}", err.message);
     }
 }

@@ -1250,27 +1250,30 @@ mod tests {
 /// defns carry them; branch defns and directives carry none).
 fn bad_instructions_of(item: crate::ast::bad::BadTopLevel) -> Vec<crate::ast::bad::BadInstr> {
     use crate::ast::bad::{BadBodyItem, BadDefnShape, BadTopLevel};
-    match item {
-        BadTopLevel::Label(l) => l
-            .body
-            .iter()
-            .filter_map(|i| match i {
-                BadBodyItem::Instr(x) => Some(x.clone()),
-                BadBodyItem::Local(_) => None,
-            })
-            .collect(),
-        BadTopLevel::Defn(d) => {
-            if let BadDefnShape::Sequence(seq) = &d.shape {
-                seq.iter()
-                    .filter_map(|i| match i {
-                        BadBodyItem::Instr(x) => Some(x.clone()),
-                        BadBodyItem::Local(_) => None,
-                    })
-                    .collect()
-            } else {
-                Vec::new()
+    fn from_body<'a>(
+        items: impl Iterator<Item = &'a BadBodyItem>,
+    ) -> Vec<crate::ast::bad::BadInstr> {
+        let mut out = Vec::new();
+        for i in items {
+            match i {
+                BadBodyItem::Instr(x) => out.push(x.clone()),
+                BadBodyItem::Local(_) => {}
+                // 2026-10-01 (bad-site-blocks plan): a site lowers ONE
+                // row per family; liveness is family-agnostic, so every
+                // row's instructions count conservatively.
+                BadBodyItem::Site(s) => out.extend(
+                    s.rows.iter().flat_map(|r| r.body.iter().cloned()),
+                ),
             }
         }
+        out
+    }
+    match item {
+        BadTopLevel::Label(l) => from_body(l.body.iter()),
+        BadTopLevel::Defn(d) => match &d.shape {
+            BadDefnShape::Sequence(seq) => from_body(seq.iter()),
+            _ => Vec::new(),
+        },
         _ => Vec::new(),
     }
 }

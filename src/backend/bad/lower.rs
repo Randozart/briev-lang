@@ -504,8 +504,11 @@ impl<'a> Lowerer<'a> {
 
     fn emit_directive(&mut self, d: &BadDirective) {
         match d.name.as_str() {
-            // Consumed in pass 1 — never emitted.
+            // Consumed in pass 1 — never emitted. The geometry pair too:
+            // emitting it verbatim fed ptxas an unknown directive
+            // (the M3 leak — plan `2026-10-01-bad-ptx-family.md` §2).
             ".const" | ".struct" | ".field" | ".end" => {}
+            ".blockthreads" | ".sharedbytes" => {}
             "section" => self.push_line(&format!(".section {}", d.args)),
             "global" => self.push_line(&format!(".global {}", d.args.trim())),
             "export" => {
@@ -743,8 +746,48 @@ impl<'a> Lowerer<'a> {
                 BadBodyItem::Local(local) => {
                     self.push_line(&self.local_label_name(&l.name, &local.name));
                 }
+                BadBodyItem::Site(site) => {
+                    if let Err(e) = self.emit_site(site) {
+                        self.errors.push(e);
+                    }
+                }
             }
         }
+    }
+
+    /// 2026-10-01 (plan `2026-10-01-bad-site-blocks.md`): lower a site —
+    /// exactly one row: the matching `target =>` row (raw emission), else
+    /// the default row (core pipeline, validated like ordinary code).
+    /// Neither = a loud capability error naming the family AND the
+    /// available targets. This is the branch-defn row-pick, anonymous.
+    fn emit_site(&mut self, site: &crate::ast::bad::BadSite) -> Result<(), String> {
+        let row = site
+            .rows
+            .iter()
+            .find(|r| r.target == self.family)
+            .or_else(|| site.rows.iter().find(|r| r.is_default));
+        let Some(row) = row else {
+            let mut targets: Vec<String> =
+                site.rows.iter().map(|r| r.target.clone()).collect();
+            targets.sort();
+            targets.dedup();
+            return Err(format!(
+                "site (line {}) has no `{} =>` row and no default - the site lowers only \
+                 on: {} - add a `{} =>` row or a default row",
+                site.span.line, self.family, targets.join(", "), self.family
+            ));
+        };
+        let env = HashMap::new();
+        if row.is_default {
+            for instr in &row.body {
+                self.emit_instr(instr, &env, 0)?;
+            }
+        } else {
+            for instr in &row.body {
+                self.emit_raw_instr(instr, &env);
+            }
+        }
+        Ok(())
     }
 
     /// Local label `.name` inside global label `parent` → unique symbol.
@@ -752,24 +795,6 @@ impl<'a> Lowerer<'a> {
     /// with `.` inside the same parent), so `.loop` and `jnz .loop` meet.
     fn local_label_name(&self, parent: &str, name: &str) -> String {
         format!("L{parent}__{name}:")
-    }
-
-    /// Step 2 of the dispatch: a target-matched exception emits raw.
-    fn emit_exception(
-        &mut self, instr: &BadInstr, branch: &BadBranch, env: &HashMap<String, Bound>,
-    ) {
-        if self.trace {
-            eprintln!(
-                "trace: `{mn}` (line {ln}) -> {fam} EXCEPTION `{tgt}`",
-                mn = instr.mnemonic,
-                ln = instr.span.line,
-                fam = self.family,
-                tgt = branch.target
-            );
-        }
-        for raw in &branch.body {
-            self.emit_raw_instr(raw, env);
-        }
     }
 
     /// The `Arg d, n` routine — uniform across targets, driven entirely
@@ -814,7 +839,6 @@ impl<'a> Lowerer<'a> {
                     mnemonic: "mov".to_string(),
                     operands: vec![instr.operands[0].clone(), BadOperand::Name(src)],
                     contract: None,
-                    exceptions: Vec::new(),
                     ack: None,
                     span: instr.span,
                 },
@@ -834,7 +858,6 @@ impl<'a> Lowerer<'a> {
                     BadOperand::Int(off),
                 ],
                 contract: None,
-                exceptions: Vec::new(),
                 ack: None,
                 span: instr.span,
             }
@@ -930,22 +953,9 @@ impl<'a> Lowerer<'a> {
             return self.emit_arg(instr, env);
         }
 
-        // 2. Attached exception matching this target → raw emission.
-        if let Some(branch) = instr.exceptions.iter().find(|b| b.target == self.family) {
-            self.emit_exception(instr, branch, env);
-            return Ok(());
-        }
-        // A `default =>` row on an inline exception is a category error —
-        // the instruction itself IS the default.
-        if let Some(d) = instr.exceptions.iter().find(|b| b.is_default) {
-            return Err(format!(
-                "`default =>` rows belong in branch defns - instruction `{}` at line {} \
-                 already lowers universally; write `{} => ...` for a target override",
-                instr.mnemonic, instr.span.line, self.family
-            ));
-        }
-
-        // 3. Universal core lowering.
+        // 2. Universal core lowering. (The attached-exception step was
+        // retired 2026-10-01 — plan `2026-10-01-bad-site-blocks.md`;
+        // target dispatch now lives in `site` blocks and branch defns.)
         self.check_call_shape(instr)?;
 
         let lowering = match self.isa.lookup(&instr.mnemonic, &self.family) {
@@ -1057,17 +1067,7 @@ impl<'a> Lowerer<'a> {
 
         match &d.shape {
             BadDefnShape::Sequence(items) => {
-                for item in items {
-                    match item {
-                        BadBodyItem::Instr(instr) => {
-                            self.emit_instr(instr, &env, depth + 1)?;
-                        }
-                        BadBodyItem::Local(local) => {
-                            let s = self.local_scope.clone().unwrap_or_default();
-                            self.push_line(&format!("{}__{}:", s, local.name));
-                        }
-                    }
-                }
+                self.emit_sequence_body(items, &env, depth)?;
             }
             BadDefnShape::Branch(rows) => {
                 let row = rows.iter().find(|r| r.target == self.family)
@@ -1091,6 +1091,64 @@ impl<'a> Lowerer<'a> {
             }
         }
         self.local_scope = prev_scope;
+        Ok(())
+    }
+
+    /// Emit a defn sequence body (instructions, hygienic local labels,
+    /// sites). Defn-param bindings flow through — site rows substitute
+    /// params like any other body line.
+    fn emit_sequence_body(
+        &mut self, items: &[BadBodyItem], env: &HashMap<String, Bound>, depth: usize,
+    ) -> Result<(), String> {
+        for item in items {
+            match item {
+                BadBodyItem::Instr(instr) => {
+                    self.emit_instr(instr, env, depth + 1)?;
+                }
+                BadBodyItem::Local(local) => {
+                    let s = self.local_scope.clone().unwrap_or_default();
+                    self.push_line(&format!("{}__{}:", s, local.name));
+                }
+                BadBodyItem::Site(site) => {
+                    self.emit_site_in_defn(site, env, depth)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Site dispatch inside a defn expansion — the same row-pick as
+    /// `emit_site`, with the defn's param `env` and expansion `depth`
+    /// (default rows re-enter `emit_instr` at depth+1).
+    fn emit_site_in_defn(
+        &mut self, site: &crate::ast::bad::BadSite, env: &HashMap<String, Bound>,
+        depth: usize,
+    ) -> Result<(), String> {
+        let row = site
+            .rows
+            .iter()
+            .find(|r| r.target == self.family)
+            .or_else(|| site.rows.iter().find(|r| r.is_default));
+        let Some(row) = row else {
+            let mut targets: Vec<String> =
+                site.rows.iter().map(|r| r.target.clone()).collect();
+            targets.sort();
+            targets.dedup();
+            return Err(format!(
+                "site (line {}) has no `{} =>` row and no default - the site lowers only \
+                 on: {} - add a `{} =>` row or a default row",
+                site.span.line, self.family, targets.join(", "), self.family
+            ));
+        };
+        if row.is_default {
+            for instr in &row.body {
+                self.emit_instr(instr, env, depth + 1)?;
+            }
+        } else {
+            for instr in &row.body {
+                self.emit_raw_instr(instr, env);
+            }
+        }
         Ok(())
     }
 

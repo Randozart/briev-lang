@@ -1240,6 +1240,148 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 /// plugin IR stages, and return (output_text, extension).
 /// 2026-07-15: Phase 2 — Extracted from compile_source for flat flow.
 /// 2026-09-30 (KernelPlan Phase 2, item (B)): carry PTX companion kernels
+/// 2026-10-01 (bad-ptx-family plan M4, `2026-10-01-bad-ptx-family.md`):
+/// the bridge — a `bad<ptx> fn` whose name equals an accel node's name
+/// overrides that node's CUDA-lane image with the authored unit
+/// (`generate_bad_kernel`: the lane ABI wraps the body, ptxas makes the
+/// cubin, PTX-text is the fallback). The derived SPIR-V image keeps
+/// serving the Vulkan lane — the same dual-image contract the tensor
+/// path established. Loud on: non-single/non-Ptr parameter (the ABI is
+/// one state pointer), duplicate units for one node, unknown node name
+/// (the name IS the key — typos must not silently drop a unit), and
+/// split partial/combine sets (overriding one kernel of a two-launch
+/// contract would corrupt the node's CUDA semantics).
+fn apply_bad_ptx_overrides(
+    items: &[briev_compiler::ast::TopLevel],
+    kernels: &mut Vec<briev_compiler::backend::spirv::runner::RunnerKernel>,
+    base_dir: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    use briev_compiler::ast::top::TopLevel;
+    let mut units: Vec<&briev_compiler::ast::top::BadFn> = items
+        .iter()
+        .filter_map(|i| match i {
+            TopLevel::BadFn(bf) if bf.target.as_deref() == Some("ptx") => Some(bf),
+            _ => None,
+        })
+        .collect();
+    if units.is_empty() {
+        return Ok(());
+    }
+    units.sort_by(|a, b| a.name.cmp(&b.name));
+    // Duplicate bridge keys are ambiguous (which unit wins?) — loud.
+    for pair in units.windows(2) {
+        if pair[0].name == pair[1].name {
+            return Err(format!(
+                "bad<ptx> fn `{}`: two kernel units share one node name - remove one",
+                pair[0].name
+            ));
+        }
+    }
+    for bf in units {
+        validate_bad_ptx_unit(bf, kernels)?;
+        let k = kernels
+            .iter_mut()
+            .find(|k| k.name == bf.name)
+            .ok_or_else(|| {
+                format!(
+                    "bad<ptx> fn `{}`: no eligible accel node with this name - the fn name \
+                     is the bridge key and must match a node",
+                    bf.name
+                )
+            })?;
+        let unit = briev_compiler::backend::bad::generate_bad_kernel(
+            briev_compiler::backend::bad::BadKernelReq {
+                body: &bf.body,
+                param: &bf.params[0].0,
+                base_dir: base_dir.clone(),
+            },
+        )?;
+        dump_bad_ptx_unit(&bf.name, &unit.ptx_text);
+        announce_bad_ptx_unit(&bf.name, &unit);
+        apply_unit_geometry(k, &unit);
+    }
+    Ok(())
+}
+
+/// `BRIEV_DUMP_BAD_PTX` — write the unit's full PTX text for inspection
+/// (the ptxas-rejection debugging path).
+fn dump_bad_ptx_unit(name: &str, text: &str) {
+    if std::env::var_os("BRIEV_DUMP_BAD_PTX").is_some() {
+        let p = std::path::PathBuf::from(format!("/tmp/bad_unit_{name}.ptx"));
+        let _ = std::fs::write(&p, text);
+        println!("[bad<ptx>] wrote {}", p.display());
+    }
+}
+
+fn announce_bad_ptx_unit(
+    name: &str,
+    unit: &briev_compiler::backend::bad::BadKernel,
+) {
+    let kind = if unit.blob.starts_with(b"\x7fELF") {
+        "cubin"
+    } else {
+        "ptx text"
+    };
+    println!(
+        "[bad<ptx>] node '{name}' CUDA image overridden by the kernel unit ({} {}, \
+         block_threads {:?}, shared {:?})",
+        unit.blob.len(),
+        kind,
+        unit.block_threads,
+        unit.shared_bytes
+    );
+}
+
+fn apply_unit_geometry(
+    k: &mut briev_compiler::backend::spirv::runner::RunnerKernel,
+    unit: &briev_compiler::backend::bad::BadKernel,
+) {
+    k.ptx = unit.blob.clone();
+    if let Some(bt) = unit.block_threads {
+        k.block_threads = bt;
+    }
+    if let Some(sb) = unit.shared_bytes {
+        k.shared_bytes = sb;
+    }
+}
+
+/// One unit's pre-merge checks: the ABI (one `Ptr` state pointer) and
+/// the split-set refusal (overriding one kernel of a two-launch
+/// contract would corrupt the node's CUDA semantics).
+fn validate_bad_ptx_unit(
+    bf: &briev_compiler::ast::top::BadFn,
+    kernels: &[briev_compiler::backend::spirv::runner::RunnerKernel],
+) -> Result<(), String> {
+    if bf.params.len() != 1 {
+        return Err(format!(
+            "bad<ptx> fn `{}`: a kernel unit takes exactly one `Ptr` parameter (the \
+             state pointer the runner passes per launch), got {}",
+            bf.name,
+            bf.params.len()
+        ));
+    }
+    if !matches!(bf.params[0].1, briev_compiler::ast::Type::Ptr(_)) {
+        return Err(format!(
+            "bad<ptx> fn `{}`: the parameter must be `Ptr<...>` (the state pointer), \
+             got `{}`",
+            bf.name, bf.params[0].1
+        ));
+    }
+    let split_set = kernels.iter().any(|k| {
+        k.name.strip_prefix(bf.name.as_str()) == Some("__partial")
+            || k.name.strip_prefix(bf.name.as_str()) == Some("__combine")
+    });
+    if split_set {
+        return Err(format!(
+            "bad<ptx> fn `{}`: the node CUDA image is a split partial/combine set — \
+             overriding one kernel of the two-launch contract would corrupt the node - \
+             author the split units themselves or drop the override",
+            bf.name
+        ));
+    }
+    Ok(())
+}
+
 /// (those with no SPIR-V twin — e.g. a split combine) as `CudaOnly`
 /// projections so the runner's per-lane dispatch launches them. No ship
 /// kernel is `CudaOnly` today, so the emitted runner is unchanged.
@@ -1919,6 +2061,17 @@ fn codegen(
                     println!("note: PTX images unavailable for this program ({e}); CUDA lane skipped");
                 }
             }
+            // 2026-10-01 (bad-ptx-family plan M4): `bad<ptx> fn` kernel
+            // units override the matched node's CUDA-lane image (the fn
+            // name is the bridge key); the derived SPIR-V emission keeps
+            // serving the Vulkan lane. Default-inert with no units.
+            apply_bad_ptx_overrides(
+                items,
+                &mut kernels,
+                std::path::Path::new(&opts.file_path)
+                    .parent()
+                    .map(|p| p.to_path_buf()),
+            )?;
             let out = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?;
             let out_path = out.replace(".ll", ".spv");
             if kernels.len() == 1 {

@@ -40,4 +40,4 @@ msg:
 len = . - msg
     .org 510
     .byte 0x55, 0xAA
-end
+end raw

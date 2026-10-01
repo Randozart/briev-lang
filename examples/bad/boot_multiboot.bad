@@ -51,7 +51,7 @@ gdt32_end:
     ljmp $0x08, $_start64
     .code64
     .align 8
-end
+end raw
 _start64: [r0 valid]
     // 64-bit core body — portable ops (VGA text memory 0xB8000).
     mov r0, 0xB8000

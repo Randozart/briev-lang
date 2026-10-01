@@ -44,4 +44,4 @@ raw x86_64 read_sectors
     popw %bx
     popw %ax
     ret
-end
+end raw

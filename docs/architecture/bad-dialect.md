@@ -29,10 +29,15 @@ _start: [r10 preserved]
     mov r5, 0
     syscall
 
-// Inline exception: the add below is replaced on x86_64 only.
+// Site: exactly one row lowers per family — the matching `target =>`
+// row, else the default (leading bare lines; `default =>` is the
+// explicit spelling). No default row = no fallback: an unmatched family
+// is a loud capability error.
 opt_add: [r0 valid]
+    site
     add r0, r0, r1
     x86_64 => lea r0, [r1 + 1]
+    end site
     ret
 
 // Branch defn: default row = universal core syntax; rows are inlined as-is.
@@ -51,16 +56,17 @@ msg: .asciz "hello from .bad\n"
 |---|---|
 | `mnemonic operands` | instruction — belongs to nearest preceding label/defn |
 | `mnemonic a, b; mnemonic c` | `;` is the universal instruction separator — any instruction line is a sequence (label bodies, defn bodies, branch rows, exception rows, `.bv` bad bodies alike) |
-| `target => instr; instr` | exception — attaches to nearest preceding instruction (or whole defn in branch-defn) |
-| `default => ...` | branch-defn default row (universal core syntax) |
+| `target => instr; instr` | target row — inside a `site` block or a branch defn (2026-10-01: the attached-exception form was retired; `target =>` after an instruction is a parse error pointing at `site`) |
+| `default => ...` | default row (universal core syntax) — in a site or a branch defn |
+| `site` ... `end site` | anonymous branch site — exactly one row lowers per family: the matching target row, else the default; leading bare lines are the default row; no default = loud capability error on unmatched families (see Sites) |
 | `name: [c] [c]` | code label — contract groups are POSITIONAL: one group = postcondition, two groups = pre then post. No `pre:`/`post:` keywords (see Contracts) |
 | `defn name params` | defn head — owns following lines until next top-level line |
 | `section .x` / `global n` / `.dir args` | top-level directives |
 | `msg: .asciz "..."` | data label + directive |
 | `[expr]` | inline contract for the next instruction |
 | `^` / `^^` / `^^^` + instruction | acknowledge prefix — silences W-tier warnings for its scope; `^^^` overrides predicted errors (see the acknowledge tier) |
-| `raw <target>` ... `end` | verbatim assembly block for ONE target — lines pass through unparsed; emitted only when the active family matches (see Raw blocks) |
-| `raw <target> <name>` ... `end` | NAMED raw block — also emits a callable `<name>:` label on the matching family (per-arch stdlib entries) |
+| `raw <target>` ... `end raw` | verbatim assembly block for ONE target — lines pass through unparsed; emitted only when the active family matches (see Raw blocks) |
+| `raw <target> <name>` ... `end raw` | NAMED raw block — also emits a callable `<name>:` label on the matching family (per-arch stdlib entries) |
 | `alias x = r0` | register, mnemonic, or label alias — resolved in that order |
 
 Friendly mnemonic aliases (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load
@@ -68,6 +74,39 @@ by default from `std/bad/friendly.bad` (the prelude); `brievc bad --raw`
 opts out. Raw core names always work — aliases are additive and
 self-describing. `_start` is the one genuinely universal name and has NO
 alias.
+## Sites — anonymous target dispatch (2026-10-01)
+
+Plan: `docs/plans/2026-10-01-bad-site-blocks.md`. A `site` is the
+branch-defn switch without the defn ceremony: exactly one row lowers
+per family — the matching `target =>` row, else the default row. The
+default row re-enters the core pipeline (contracts, register checks,
+ISA rows — validated like ordinary code); target rows are raw
+(target-owned text, register-token substitution, the `;`-split rule).
+
+- Rows dispatch by header in any order. Leading bare instruction lines
+  are the default row; `default =>` is the explicit spelling; duplicate
+  rows and nested sites are loud errors.
+- **No default row = no fallback, loudly**: on a family with no row the
+  compile fails naming the family and the available targets — the
+  use-site capability doctrine. A ptx-only sequence (e.g. f32 global
+  access) has no portable lowering to write, and omission says so.
+- Legal in label bodies and defn sequence bodies (defn-param bindings
+  flow into site rows). Not in branch-defn rows (those are raw text);
+  sites do not nest; contract lines inside sites are a v1 error.
+- The attached-exception syntax this replaces is GONE: `target =>`
+  after an instruction parses as an error with a pointer to `site`.
+  The old form anchored backwards on the nearest preceding instruction
+  — invisible coupling, and a second same-target row on the same anchor
+  was silently dead.
+
+## Sites vs raw blocks vs branch defns vs data rows
+
+| Need | Form |
+|---|---|
+| One reusable sequence, portable with per-target overrides | branch defn (named, parameterized) |
+| Inline per-target dispatch at one point | `site` |
+| A whole verbatim section for one target (top level), optionally callable | `raw <target> [name] ... end raw` |
+| A reusable op that exists on ONE family | a data row in `bad-isa.dbvl` with only that family's field (loud capability error elsewhere) |
 
 Disambiguation is pure token shape — no indentation sensitivity, no block
 tracking. Blank lines are inert. `//` comments (respecting string literals).
@@ -246,7 +285,7 @@ bootstrap bad Reset_Handler() [true] {
 
 ## Raw blocks — verbatim assembly for one target
 
-`raw <target>` ... `end` emits its lines VERBATIM (no mnemonic
+`raw <target>` ... `end raw` emits its lines VERBATIM (no mnemonic
 classification — directives like `.code32` work) for the target whose
 family prefix matches, and skips them for every other target. The
 ergonomic escape hatch for text the portable core ISA cannot express:
@@ -275,7 +314,7 @@ or an unterminated block before EOF is a loud error.
 
 ## Per-arch stdlib boot entries (named raw blocks)
 
-A NAMED raw block — `raw <target> <name>` ... `end` — emits a callable
+A NAMED raw block — `raw <target> <name>` ... `end raw` — emits a callable
 `<name>:` label on the matching family (and nothing elsewhere), so the
 portable core can `call uart_init` / `jmp uart_init` and the matching
 family's block runs. Same name across families is fine: one build = one
@@ -508,5 +547,7 @@ bad<ptx> fn scale(state: Ptr) [post: result-valid] {
 - Geometry: `.blockthreads <N>` / `.sharedbytes <N>` directives
   (defaults 64 / 0); the bridge carries them into the kernel desc.
 - Portable core ops are `bad-isa.dbvl` `ptx:` data rows (D26: adding a
-  primitive is a data row); anything beyond is a `ptx =>` exception row
-  — the raw escape, author owns fallout.
+  primitive is a data row); anything beyond is a `ptx =>` row inside a
+  `site ... end site` block — the raw escape, author owns fallout.
+  Sites need no default row: a ptx-only site is a loud capability
+  error on every other family, which is the point.

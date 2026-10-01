@@ -120,3 +120,24 @@ rows; device check at M4.
   after the existing merge and refuses (loud) to override a node whose
   PTX image is a split partial/combine set (companions are per-kernel
   blobs; overriding a partial would break the two-launch contract).
+
+## Amendment 2026-10-01 (M4 gate findings)
+
+The device gate surfaced two M3 defects, both fixed the same day:
+
+1. **Geometry-directive emit leak** — `.blockthreads`/`.sharedbytes`
+   were consumed in pass 1 but `emit_directive`'s default arm pushed
+   them verbatim into the PTX; ptxas rejected the unknown directive and
+   the bridge silently fell back to text. Fixed: emit-side skip arm +
+   `ptx_unit_with_geometry_compiles_to_cubin` regression test.
+2. **Undeclared virtual registers** — the §1 "ptxas allocates" note was
+   wrong: ptxas allocates PHYSICAL registers only for DECLARED virtuals.
+   Fixed data-driven: the `declare` row (bad-registers.dbvl) carries the
+   per-family register-bank declarations (`.reg .b64 %rd<16>;` bank
+   form; `%p1`/`%rt1`/`%fs1` reserved temps), emitted by the kernel
+   wrapper. Also: the dialect `mul` row needed `mul.lo.u64` (PTX integer
+   multiply requires the `.lo/.hi` qualifier; `mul.u64` is invalid).
+
+Bridge device gate: `benchmarks/bad_ptx_gate.sh` — authored CUDA unit
+vs derived SPIR-V image of the same copy node, BOTH lanes PASS with
+exact equality (0.00e+00).

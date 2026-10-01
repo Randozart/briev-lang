@@ -209,9 +209,19 @@ pub fn generate_bad_kernel(req: BadKernelReq<'_>) -> Result<BadKernel, String> {
     }
     let text = lw.run(&program)?;
     let (block_threads, shared_bytes) = lw.kernel_geometry();
+    // Register declarations come from the `declare` row (bad-registers
+    // .dbvl) — PTX virtual registers must be declared; GAS families
+    // declare nothing. The family-reserved temps the ISA rows reference
+    // (%p1 pred, %rt1 u32) are declared there too.
+    let mut decls = String::new();
+    for line in regs.declare_lines("ptx") {
+        decls.push_str("    ");
+        decls.push_str(&line);
+        decls.push('\n');
+    }
     let ptx = format!(
-        ".version 8.0\n.target sm_86\n.address_size 64\n.visible .entry main (.param .b64 {})\n{{\n    .reg .pred %p1;\n    .reg .u32 %rt1;\n    ld.param.b64 %rd1, [{}];\n{}\n    ret;\n}}\n",
-        req.param, req.param, text
+        ".version 8.0\n.target sm_86\n.address_size 64\n.visible .entry main (.param .b64 {})\n{{\n{}    ld.param.b64 %rd1, [{}];\n{}\n    ret;\n}}\n",
+        req.param, decls, req.param, text
     );
     let blob = crate::backend::ptx::compile_cubin(&ptx, 0)
         .unwrap_or_else(|| ptx.as_bytes().to_vec());
@@ -394,7 +404,8 @@ mod tests {
     #[test]
     fn ptx_kernel_lowers_core_ops_abi_and_exceptions() {
         let k = kernel(
-            "start:\n    mov r2, 8\n    rdtid r3\n    add r2, r2, r3\n    ptx => mul.lo.u64 %rd2, %rd2, 4\n    store r2, r1\n    jmp start\n",
+            "start:\n    mov r2, 8\n    rdtid r3\n    add r2, r2, r3\n    site\n    \
+             ptx => mul.lo.u64 %rd2, %rd2, 4\n    end site\n    store r2, r1\n    jmp start\n",
         );
         let x = &k.ptx_text;
         assert!(x.contains(".visible .entry main (.param .b64 state)"), "{x}");
@@ -420,6 +431,30 @@ mod tests {
             k.blob.starts_with(b"\x7fELF") || k.blob.starts_with(b".version"),
             "blob must be cubin or PTX text"
         );
+    }
+
+    /// 2026-10-01 (bad-site-blocks plan §2): the M3 leak regression —
+    /// geometry directives consumed in pass 1 leaked verbatim into the
+    /// emitted PTX, ptxas rejected the unknown directive, and the bridge
+    /// silently fell back to PTX text. With ptxas available the unit
+    /// must be a real cubin.
+    #[test]
+    fn ptx_unit_with_geometry_compiles_to_cubin() {
+        let k = kernel(".blockthreads 64\nstart:\n    mov r2, 0\n");
+        let ptxas = std::process::Command::new("ptxas")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ptxas {
+            assert!(
+                k.blob.starts_with(b"\x7fELF"),
+                "ptxas present: the unit must be a cubin (len {})",
+                k.blob.len()
+            );
+        } else {
+            assert!(k.blob.starts_with(b".version"));
+        }
     }
 
     /// Geometry directives ride the unit into the bridge; duplicates
@@ -523,14 +558,39 @@ mod tests {
     }
 
     #[test]
-    fn inline_exception_swaps_only_on_matching_target() {
-        let src = "_start:\n    add r0, r0, 1\n    x86_64 => lea r0, [r1 + 1]\n    ret\n";
+    fn site_row_swaps_only_on_matching_target() {
+        // 2026-10-01 (bad-site-blocks plan): the retired attached
+        // exception, rewritten as a site — one row lowers per family,
+        // and the default row validates through the core pipeline.
+        let src = "_start:\n    site\n    add r0, r0, 1\n    \
+                   x86_64 => lea r0, [r1 + 1]\n    end site\n    ret\n";
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("leal") || x86.contains("lea"), "{}", x86);
         assert!(!x86.contains("addl") && !x86.contains("addq"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
         assert!(arm.contains("add x0, x0, #1"), "{}", arm);
         assert!(!arm.contains("lea"), "{}", arm);
+    }
+
+    #[test]
+    fn site_without_default_is_a_loud_capability_error() {
+        let src = "_start:\n    site\n    ptx => bar.sync 0\n    end site\n    ret\n";
+        let err = generate(src, "x86_64").unwrap_err();
+        assert!(
+            err.contains("no `x86_64 =>` row and no default") && err.contains("ptx"),
+            "{err}"
+        );
+        // The matching family lowers it.
+        let ptx = lower_ok(src, "ptx");
+        assert!(ptx.contains("bar.sync 0;"), "{ptx}");
+    }
+
+    #[test]
+    fn site_inside_a_defn_sequence_lowers_with_param_binding() {
+        let src = "defn poke v\n    site\n    x86_64 => movq $7, v\n    end site\n\n\
+                   _start:\n    poke r2\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $7,"), "{x86}");
     }
 
     #[test]
@@ -1579,7 +1639,7 @@ mod raw_block_tests {
 
     #[test]
     fn raw_block_emits_on_matching_family_and_skips_otherwise() {
-        let src = "raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend\n";
+        let src = "raw x86_64\n    .code32\n    cli\n    movl $0x1000, %eax\nend raw\n";
         let asm = generate(src, "x86_64-unknown-linux-gnu").unwrap();
         assert!(asm.contains(".code32"), "{asm}");
         assert!(asm.contains("movl $0x1000, %eax"), "{asm}");
@@ -1593,7 +1653,7 @@ mod raw_block_tests {
         // The multiboot failure mode: .code32 in an exception row was an
         // unknown-mnemonic error. A raw block passes it verbatim.
         let asm = generate(
-            "raw x86_64\n    .code32\n    cli\n    .code64\nend\n",
+            "raw x86_64\n    .code32\n    cli\n    .code64\nend raw\n",
             "x86_64-unknown-linux-gnu",
         )
         .unwrap();
@@ -1616,7 +1676,7 @@ mod named_raw_block_tests {
 
     #[test]
     fn named_raw_block_emits_label_and_is_callable() {
-        let src = "raw riscv64 uart_init\n    li a2, 0x10000000\nend\n\
+        let src = "raw riscv64 uart_init\n    li a2, 0x10000000\nend raw\n\
                    _start:\n    call uart_init\n    halt\n";
         let asm = generate(src, "riscv64-unknown-none").unwrap();
         assert!(asm.contains("uart_init:"), "{asm}");
@@ -1626,8 +1686,8 @@ mod named_raw_block_tests {
 
     #[test]
     fn two_families_one_name_no_collision() {
-        let src = "raw riscv64 uart_init\n    li a2, 1\nend\n\
-                   raw thumbv7m uart_init\n    ldr r2, =2\nend\n\
+        let src = "raw riscv64 uart_init\n    li a2, 1\nend raw\n\
+                   raw thumbv7m uart_init\n    ldr r2, =2\nend raw\n\
                    _start:\n    call uart_init\n    halt\n";
         let rv = generate(src, "riscv64-unknown-none").unwrap();
         assert!(rv.contains("li a2, 1"), "riscv block only: {rv}");
@@ -1640,7 +1700,7 @@ mod named_raw_block_tests {
     #[test]
     fn anonymous_raw_block_still_works() {
         let asm = generate(
-            "raw x86_64\n    .code32\n    cli\nend\n",
+            "raw x86_64\n    .code32\n    cli\nend raw\n",
             "x86_64-unknown-linux-gnu",
         )
         .unwrap();
@@ -1712,7 +1772,7 @@ mod disk_tests {
 
     #[test]
     fn read_sectors_is_x86_real_mode_raw() {
-        let src = "raw x86_64 read_sectors\n    .code16\n    int $0x13\nend\n\
+        let src = "raw x86_64 read_sectors\n    .code16\n    int $0x13\nend raw\n\
                    _start:\n    call read_sectors\n    halt\n";
         let asm = generate(src, "x86_64-unknown-linux-gnu").unwrap();
         assert!(asm.contains("read_sectors:"), "{asm}");

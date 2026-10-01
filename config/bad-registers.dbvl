@@ -159,3 +159,11 @@ cross_ld: "thumb:arm-none-eabi-ld"; "x86_64:ld"; "aarch64:aarch64-linux-gnu-ld";
 // addressing — freestanding .bad programs have no crt to initialize gp,
 // so relaxation produces faulting code. `--no-relax` keeps it literal.
 cross_ld_flags: "riscv64:--no-relax";
+// 2026-10-01 (bad-ptx-family plan M3 fix): per-family register-bank
+// declarations, emitted by the kernel wrapper between the entry `{` and
+// the body. PTX virtual registers must be DECLARED — ptxas allocates
+// physical registers only for declared virtuals (the x86 analogue of
+// this row is empty: GAS declares nothing). `;` splits lines. The
+// family-reserved temps the ISA rows and sites reference (%p1 pred,
+// %rt1 u32, %fs1 f32) are declared here too.
+declare: "ptx:.reg .b64 %rd<16>; .reg .f64 %f<16>; .reg .f32 %fs1; .reg .pred %p1; .reg .u32 %rt1;";

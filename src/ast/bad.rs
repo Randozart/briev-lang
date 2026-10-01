@@ -35,13 +35,14 @@ pub enum BadTopLevel {
     Defn(BadDefn),
     /// `alias result = r0` — source-level register sugar.
     Alias(BadAlias),
-    /// `raw x86_64 ... end` — target-verbatim assembly block (2026-09-22).
-    /// Lines pass through UNPARSED, emitted only when the active family
-    /// matches the target; skipped otherwise.
+    /// `raw x86_64 ... end raw` — target-verbatim assembly block
+    /// (2026-09-22; named close 2026-10-01). Lines pass through
+    /// UNPARSED, emitted only when the active family matches the
+    /// target; skipped otherwise.
     RawBlock(BadRawBlock),
 }
 
-/// `raw x86_64` ... `end` — verbatim assembly for one target.
+/// `raw x86_64` ... `end raw` — verbatim assembly for one target.
 /// `name` (optional) makes it callable: `raw riscv64 uart_init` emits a
 /// `uart_init:` label on the matching family, so portable code can
 /// `call`/`jmp` it (2026-09-22, per-arch stdlib boot entries).
@@ -50,7 +51,8 @@ pub struct BadRawBlock {
     pub target: String,
     /// Callable name emitted as a label on the matching family.
     pub name: Option<String>,
-    /// Verbatim line text (trimmed), excluding the `raw` head and `end`.
+    /// Verbatim line text (trimmed), excluding the `raw` head and the
+    /// `end raw` close.
     pub lines: Vec<String>,
     pub span: Span,
 }
@@ -86,12 +88,17 @@ pub struct BadLabel {
     pub span: Span,
 }
 
-/// One item inside a label body: an instruction or an intermediate local
-/// label (`.loop:` between instructions).
+/// One item inside a label body: an instruction, an intermediate local
+/// label (`.loop:` between instructions), or an anonymous branch site.
 #[derive(Debug, Clone)]
 pub enum BadBodyItem {
     Instr(BadInstr),
     Local(BadLocal),
+    /// `site … end site` — an inline target dispatch (2026-10-01,
+    /// plan `2026-10-01-bad-site-blocks.md`): exactly one row lowers per
+    /// family — the matching `target =>` row, else the default row. The
+    /// replacement for the retired attached-exception syntax.
+    Site(BadSite),
 }
 
 /// A local label definition inside a label body: `.loop:`.
@@ -133,17 +140,13 @@ pub struct BadDefn {
     pub span: Span,
 }
 
-/// One instruction line plus any `target => ...` exception lines that
-/// follow it.
+/// One instruction line.
 #[derive(Debug, Clone)]
 pub struct BadInstr {
     pub mnemonic: String,
     pub operands: Vec<BadOperand>,
     /// Inline contract (`[sp % 16 == 0]`) written BEFORE this instruction.
     pub contract: Option<BadContract>,
-    /// `x86_64 => lea ...` lines attached to this instruction. Empty =
-    /// universal only.
-    pub exceptions: Vec<BadBranch>,
     /// The `^` / `^^` / `^^^` acknowledge prefix, if written. Silences the
     /// W-tier probable-error warnings for this line; `^^^` also overrides
     /// predicted errors. Recorded, never silent.
@@ -174,15 +177,32 @@ pub struct Ack {
     pub span: Span,
 }
 
-/// A `target => body` row. In an instruction's `exceptions`, the body is
-/// target-owned assembly (the mnemonic need not be core ISA). In a branch
-/// defn, the body is core-syntax instructions; `target == "default"` with
+/// A `target => body` row. In a site or a branch defn, the body is
+/// target-owned assembly (the mnemonic need not be core ISA); the
+/// `default` row re-enters the core pipeline. `target == "default"` with
 /// `is_default` marks the universal row.
 #[derive(Debug, Clone)]
 pub struct BadBranch {
     pub target: String,
     pub is_default: bool,
     pub body: Vec<BadInstr>,
+    pub span: Span,
+}
+
+/// `site … end site` (2026-10-01, plan
+/// `2026-10-01-bad-site-blocks.md`) — an anonymous branch site: the
+/// branch-defn switch without the defn ceremony. Rows dispatch by
+/// target header in any order; leading bare instruction lines (before
+/// any header) are the default row, `default =>` is the explicit
+/// spelling. Exactly one row lowers per family — the matching target
+/// row, else the default; neither = a loud capability error naming the
+/// family and the available targets. This replaces the retired
+/// attached-exception syntax (`target =>` after an instruction), whose
+/// backwards attachment read as unrelated lines and silently stacked
+/// same-target rows on one anchor.
+#[derive(Debug, Clone)]
+pub struct BadSite {
+    pub rows: Vec<BadBranch>,
     pub span: Span,
 }
 

@@ -51,7 +51,7 @@ sub: "3"; "thumb:subs $1, $2, $3|subs $1, $2, $3"; "x86_64:movq $2, $1; subq $3,
 // mul/div are register-only on aarch64 and riscv64 (no immediate forms in
 // the hardware) — an immediate operand there is a loud capability error.
 // x86_64 div clobbers %rax/%rdx (caller-saved); the imm form borrows %rcx.
-mul: "3"; "thumb:muls $1, $2, $3|-"; "x86_64:imulq $3, $2; movq $2, $1"; "aarch64:mul $1, $2, $3|-"; "riscv64:mul $1, $2, $3|-"; "ptx:mul.u64 $1, $2, $3";
+mul: "3"; "thumb:muls $1, $2, $3|-"; "x86_64:imulq $3, $2; movq $2, $1"; "aarch64:mul $1, $2, $3|-"; "riscv64:mul $1, $2, $3|-"; "ptx:mul.lo.u64 $1, $2, $3";
 div: "3"; "thumb:sdiv $1, $2, $3|-"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rax, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rax, $1"; "aarch64:sdiv $1, $2, $3|-"; "riscv64:div $1, $2, $3|-"; "ptx:div.u64 $1, $2, $3";
 
 // ── Memory ───────────────────────────────────────────────────────────
@@ -69,7 +69,7 @@ jnz: "3"; "thumb:cmp $1, $2; bne $3"; "x86_64:cmpq $2, $1; jne $3"; "aarch64:cmp
 // using cmp under a riscv64 target is a loud capability error. Use jz/jnz.
 cmp: "2"; "thumb:cmp $1, $2"; "x86_64:cmpq $2, $1"; "aarch64:cmp $1, $2";
 call: "1"; "thumb:bl $1"; "x86_64:call $1"; "aarch64:bl $1"; "riscv64:call $1"; "sym";
-ret: "0"; "thumb:bx lr"; "x86_64:ret"; "aarch64:ret"; "riscv64:ret";
+ret: "0"; "thumb:bx lr"; "x86_64:ret"; "aarch64:ret"; "riscv64:ret"; "ptx:ret;";
 
 // ── Stack ────────────────────────────────────────────────────────────
 // aarch64 has no push/pop: 16-byte pre/post-index keeps sp aligned.
@@ -131,8 +131,8 @@ neg: "2"; "thumb:negs $1, $2|-"; "x86_64:movq $2, $1; negq $1|-"; "aarch64:neg $
 mod: "3"; "thumb:sdiv $1, $2, $3; muls $1, $1, $3; subs $1, $2, $1|-"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rdx, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rdx, $1"; "aarch64:sdiv x9, $2, $3; msub $1, x9, $3, $2|-"; "riscv64:rem $1, $2, $3|li t0, $3; rem $1, $2, t0";
 // High-multiplies (fixed-point workhorse): smulh/umulh/riscv mulh(u);
 // x86 = 128-bit imul/mul, high half in %rdx (rax/rdx clobber disclosed).
-mulhi: "3"; "x86_64:movq $2, %rax; imulq $3; movq %rdx, $1"; "aarch64:smulh $1, $2, $3|-"; "riscv64:mulh $1, $2, $3|-";
-mulhiu: "3"; "x86_64:movq $2, %rax; mulq $3; movq %rdx, $1"; "aarch64:umulh $1, $2, $3|-"; "riscv64:mulhu $1, $2, $3|-";
+mulhi: "3"; "x86_64:movq $2, %rax; imulq $3; movq %rdx, $1"; "aarch64:smulh $1, $2, $3|-"; "riscv64:mulh $1, $2, $3|-"; "ptx:mul.hi.s64 $1, $2, $3";
+mulhiu: "3"; "x86_64:movq $2, %rax; mulq $3; movq %rdx, $1"; "aarch64:umulh $1, $2, $3|-"; "riscv64:mulhu $1, $2, $3|-"; "ptx:mul.hi.u64 $1, $2, $3";
 // Compare-into-register (flags-free on riscv): x86 setcc through %al
 // (rax clobber disclosed), aarch64 cset, riscv slt(u)/slti(u).
 slt: "3"; "x86_64:xorq %rax, %rax; cmpq $3, $2; setl %al; movzbq %al, $1"; "aarch64:cmp $2, $3; cset $1, lt"; "riscv64:slt $1, $2, $3|slti $1, $2, $3"; "ptx:setp.lt.s64 %p1, $2, $3; selp.u64 $1, 1, 0, %p1";

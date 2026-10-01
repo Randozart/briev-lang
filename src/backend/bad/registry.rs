@@ -207,6 +207,7 @@ impl BadRegisters {
         const SCALAR_ROWS: &[&str] = &[
             "imm",
             "comment",
+            "declare",
             "abi_args",
             "push_width",
             "dynamic_linker",
@@ -379,6 +380,22 @@ impl BadRegisters {
     }
 
     /// GAS comment prefix per target.
+    /// 2026-10-01 (bad-ptx-family plan M3 fix): the per-family register
+    /// declaration lines for the kernel wrapper (PTX virtual registers
+    /// must be declared; GAS families need none). `;`-split, trimmed.
+    pub fn declare_lines(&self, family: &str) -> Vec<String> {
+        // The `;` row separator is eaten by the split — PTX wants it
+        // back on every declaration line.
+        self.scalar("declare", family)
+            .map(|s| {
+                s.split(';')
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| format!("{};", p.trim()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn comment_prefix(&self, family: &str) -> &'static str {
         match self.scalar("comment", family) {
             Some(p) => leak_static(p),

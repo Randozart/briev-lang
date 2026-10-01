@@ -42,6 +42,10 @@ pub fn check_label_contracts(
     let instrs: Vec<&BadInstr> = label.body.iter().filter_map(|item| match item {
         BadBodyItem::Instr(i) => Some(i),
         BadBodyItem::Local(_) => None,
+        // 2026-10-01 (bad-site-blocks plan): site rows carry no
+        // contracts (the parser rejects `[` lines inside sites); the
+        // default row's instructions are checked in emit_instr.
+        BadBodyItem::Site(_) => None,
     }).collect();
     for pred in preds {
         check_pred(pred, &instrs, &ctx, errors, &mut proven);

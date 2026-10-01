@@ -1,0 +1,40 @@
+// bad_override.abv — bad<ptx> bridge fixture (plans 2026-10-01-bad-ptx-family.md,
+// 2026-10-01-bad-site-blocks.md). The node `scale` is a plain copy; its
+// CUDA-lane image is authored here as a bad<ptx> kernel unit (the bridge
+// overrides it by name). The derived SPIR-V emission keeps serving the
+// Vulkan lane. Kernel addressing uses the PROJECTION offsets from the
+// generated desc (a@16, res@4128 — see k0_fields in the runner output).
+import "std/numeric.bv";
+
+const N: Int = 1024;
+
+let i: Int = 0;
+let a: Float[1024];
+let res: Float[1024];
+
+async node scale [i < N][i == N] {
+    res[i] = a[i];
+    i = i + 1;
+    term;
+};
+
+bad<ptx> scale(state: Ptr) -> Int [true] {
+    .blockthreads 64
+start:
+    rdctaid r2
+    mul r2, r2, 64
+    rdtid r3
+    add r2, r2, r3
+    jge r2, 1024, done
+    mul r4, r2, 4
+    add r5, r1, 4128
+    add r5, r5, r4
+    add r6, r1, 16
+    add r6, r6, r4
+site ptx =>
+    ld.global.f32 %fs1, [%rd6]
+    st.global.f32 [%rd5], %fs1
+end site
+done:
+    ret
+}
