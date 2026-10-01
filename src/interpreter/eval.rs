@@ -55,7 +55,17 @@ pub fn eval_expr(
             .ok_or_else(|| RuntimeError::UndefinedVariable { name: name.clone() }),
 
         // ── Calls ───────────────────────────────────────────────
-        Expr::Call(name, args, _) => eval_call(name, args, heap, bindings, functions),
+        Expr::Call(name, args, _) => {
+            // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): the
+            // element-addressed atomic family mutates the BINDING in
+            // place — reference semantics (the generic by-value call
+            // path would mutate a clone and silently drop the effect;
+            // this is the same store the element-assign path mutates).
+            if name.starts_with("Atomic") && name.ends_with("At#") {
+                return eval_atomic_at(name, args, heap, bindings);
+            }
+            eval_call(name, args, heap, bindings, functions)
+        }
 
         // ── Binary operators ─────────────────────────────────────
         Expr::BinaryOp(kind, lhs, rhs) => eval_binary_op(kind, lhs, rhs, heap, &mut EvalScope { bindings: &mut *bindings, functions: functions }),
@@ -579,6 +589,79 @@ fn eval_call(
 /// 2026-08-06 (Slice B): Index a value. A `Product` is indexed by element
 /// position; raw `Bits` by byte offset (String/Data content). Out-of-bounds
 /// or non-indexable values are errors — no placeholder, no silent `zero_bits`.
+/// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`): the
+/// element-addressed atomic family. `AtomicAddAt#(buf, i, v) -> old` —
+/// the target must be an ARRAY VARIABLE (an Identifier binding); the RMW
+/// lands in the binding itself (clone-mutate-reinsert, the exact store
+/// the `buf[i] = v` assignment path uses). Single-threaded check mode:
+/// ordering is moot, the read-modify-write pairing is the contract.
+fn eval_atomic_at(
+    name: &str,
+    args: &[Expr],
+    heap: &mut VirtualHeap,
+    bindings: &mut HashMap<String, Value>,
+) -> Result<Value, RuntimeError> {
+    let unsupported = || {
+        RuntimeError::TypeError {
+            expected: format!("{name}(buf, i, v) - buf is an Int array variable, i and v Ints"),
+            found: "argument shape".into(),
+        }
+    };
+    if args.len() < 3 {
+        return Err(unsupported());
+    }
+    let Expr::Identifier(buf_name) = &args[0] else {
+        return Err(RuntimeError::TypeError {
+            expected: format!("{name} target is an array variable"),
+            found: "compound expression - element-addressed atomics name the binding"
+                .into(),
+        });
+    };
+    let iv = eval_expr(&args[1], heap, bindings, &HashMap::new())?;
+    let i = iv.as_i64().ok_or_else(|| RuntimeError::TypeError {
+        expected: "an integer index".into(),
+        found: "non-integer index".into(),
+    })?;
+    let vv = eval_expr(&args[2], heap, bindings, &HashMap::new())?;
+    let v = vv.as_i64().ok_or_else(|| RuntimeError::TypeError {
+        expected: "an Int value".into(),
+        found: "non-integer value".into(),
+    })?;
+    let cur = bindings.get(buf_name).cloned().ok_or_else(|| {
+        RuntimeError::UndefinedVariable { name: buf_name.clone() }
+    })?;
+    let mut fields = match cur {
+        Value::Product { fields, .. } => fields,
+        other => {
+            return Err(RuntimeError::TypeError {
+                expected: format!("an Int array binding for '{buf_name}'"),
+                found: format!("{}", describe_value(&other)),
+            })
+        }
+    };
+    let len = fields.len() as i64;
+    if i < 0 || i >= len {
+        return Err(RuntimeError::HeapError(format!(
+            "index {} out of bounds for '{}' ({} elements)",
+            i, buf_name, len
+        )));
+    }
+    let old = fields[i as usize].as_i64().unwrap_or(0);
+    match name {
+        "AtomicAddAt#" => {
+            fields[i as usize] = Value::int(old.wrapping_add(v));
+        }
+        other => {
+            return Err(RuntimeError::TypeError {
+                expected: "an implemented At-family atomic".into(),
+                found: format!("{other} - only AtomicAddAt# exists (v1)"),
+            })
+        }
+    }
+    bindings.insert(buf_name.clone(), Value::product(fields));
+    Ok(Value::int(old))
+}
+
 fn eval_index(
     obj: &Expr,
     index: &Expr,
@@ -3279,6 +3362,49 @@ defn go() -> Int {
         let call = Expr::Call("f".into(), vec![Expr::Decimal(41)], None);
         let r = eval_expr(&call, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(r.as_i64(), Some(42));
+    }
+
+    #[test]
+    fn atomic_add_at_rmw_the_binding_in_place() {
+        // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md A1): reference
+        // semantics — the RMW lands in the BINDING (the same store the
+        // `buf[i] = v` path mutates), and the old value returns.
+        let mut heap = VirtualHeap::new();
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "total".to_string(),
+            Value::product(vec![Value::int(0), Value::int(0)]),
+        );
+        let call = Expr::Call(
+            "AtomicAddAt#".into(),
+            vec![
+                Expr::Identifier("total".into()),
+                Expr::Decimal(0),
+                Expr::Decimal(5),
+            ],
+            None,
+        );
+        let old = eval_expr(&call, &mut heap, &mut bindings, &HashMap::new()).unwrap();
+        assert_eq!(old.as_i64(), Some(0), "first add returns the old value");
+        let old2 = eval_expr(&call, &mut heap, &mut bindings, &HashMap::new()).unwrap();
+        assert_eq!(old2.as_i64(), Some(5), "second add returns the accumulated value");
+        match bindings.get("total") {
+            Some(Value::Product { fields, .. }) => {
+                assert_eq!(fields[0].as_i64(), Some(10), "the binding holds the sum");
+            }
+            other => panic!("binding shape {:?}", other.is_some()),
+        }
+        // A non-variable target is a loud contract error.
+        let bad = Expr::Call(
+            "AtomicAddAt#".into(),
+            vec![
+                Expr::Index(Box::new(Expr::Identifier("total".into())), Box::new(Expr::Decimal(0))),
+                Expr::Decimal(0),
+                Expr::Decimal(1),
+            ],
+            None,
+        );
+        assert!(eval_expr(&bad, &mut heap, &mut bindings, &HashMap::new()).is_err());
     }
 
     #[test]

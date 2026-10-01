@@ -351,6 +351,19 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
             observable: true,
             variadic: false,
         }),
+        // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): the
+        // element-addressed atomic family — the kernel idiom (atomic_ref
+        // vs raw-pointer fetch_add). `AtomicAddAt#(buf, i, v) -> old`.
+        // Int-only: GPU Float arrays are f32 storage vs CPU f64; Int is
+        // i64 in both worlds. Optional trailing ordering argument, same
+        // vocabulary as the pointer family.
+        "AtomicAddAt#" => Some(Signature {
+            name: "AtomicAddAt#",
+            parameters: vec![],
+            return_kind: ReturnKind::Native("Int"),
+            observable: true,
+            variadic: false,
+        }),
         // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): the RMW family
         // completion + width-parameterized load. All accept a trailing
         // ordering argument (relaxed/acquire/release/bartered/seq).
@@ -538,6 +551,9 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     // (registered, emitted by both GPU lanes) and Environ# were missing
     // from this completion list.
     "Fma#", "Environ#",
+    // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): element-
+    // addressed atomics (the kernel family).
+    "AtomicAddAt#",
     "Print#",
     "Malloc#", "Alloc#", "Free#", "Load#", "Store#",
     "VolatileLoad#", "VolatileStore#", "Copy#", "Fill#",

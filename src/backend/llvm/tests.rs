@@ -1947,6 +1947,42 @@ fn test_inline_directive_absent_no_extra_attr() {
 
 
 #[test]
+fn test_atomic_add_at_lowers_to_element_atomicrmw() {
+    // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md A1): the
+    // element-addressed atomic — state-GEP + element GEP + one atomicrmw
+    // at the slot. Int-arrays-only v1 (the storage-split note lives in
+    // the panic message).
+    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    backend.ctx.field_index_map.insert("total".to_string(), 0);
+    backend.ctx.field_types.push("[8 x i64]".to_string());
+    backend.ctx.field_briev_types.push(Type::Vector(
+        Box::new(Type::Custom("Int".to_string())),
+        vec![crate::ast::Dimension::Anonymous(8)],
+    ));
+    let mut out = String::new();
+    let reg = crate::backend::llvm::intrinsics::emit_intrinsic_call(
+        &mut backend,
+        &mut out,
+        "%out",
+        "AtomicAddAt#",
+        &[
+            Expr::Identifier("total".to_string()),
+            Expr::Decimal(0),
+            Expr::Decimal(1),
+        ],
+        None,
+        "  ",
+    );
+    assert_eq!(reg.ty, Type::int());
+    assert!(out.contains("getelementptr [8 x i64]"), "element GEP:\n{out}");
+    assert!(
+        out.contains("atomicrmw add ptr"),
+        "the atomic is the WHOLE op:\n{out}"
+    );
+    assert!(out.contains("seq_cst"), "default ordering:\n{out}");
+}
+
+#[test]
 fn test_accel_descriptors_emit() {
     // 2026-08-06 (accel plan): the descriptor table + ABI declares are emitted
     // with each field's HOST offset (kernel field order), so the runtime's

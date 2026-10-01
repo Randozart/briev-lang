@@ -222,6 +222,9 @@ pub fn emit_intrinsic_call(
         "AtomicCas#" => return emit_atomic_cas(backend, out, v, args, indent),
         "AtomicXchg#" => return emit_atomic_xchg(backend, out, v, args, indent),
         "AtomicAdd#" => return emit_atomic_add(backend, out, v, args, indent),
+        // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): the
+        // element-addressed family — GEP the element, atomicrmw in place.
+        "AtomicAddAt#" => return emit_atomic_add_at(backend, out, v, args, indent),
         // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): RMW family
         "AtomicSub#" => return emit_atomic_rmw(backend, out, v, args, indent, "sub"),
         "AtomicOr#" => return emit_atomic_rmw(backend, out, v, args, indent, "or"),
@@ -1723,6 +1726,61 @@ fn emit_atomic_add(
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
     emit_atomic_rmw(backend, out, v, args, indent, "add")
+}
+
+/// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`):
+/// `AtomicAddAt#(buf, i, v[, ordering]) -> old` — the element-addressed
+/// family. The target must be an Int ARRAY STATE FIELD (`field_index_map`,
+/// `[N x i64]`) — the same addressing `buf[i] = x` uses
+/// (`emit_state_gep` + element GEP) — then one `atomicrmw` at the
+/// element. Reference semantics: interpreter `eval_atomic_at`.
+fn emit_atomic_add_at(
+    backend: &mut LlvmBackend, out: &mut String, v: &str,
+    args: &[Expr], indent: &str,
+) -> BTypedRegister {
+    let ord = ordering_arg(args, 3).unwrap_or("seq_cst");
+    let Some(Expr::Identifier(name)) = args.first() else {
+        panic!(
+            "AtomicAddAt#: the target must be an array variable - element-addressed \
+             atomics name the binding (line-scoped contract, interpreter: \
+             eval_atomic_at)"
+        );
+    };
+    let Some(&fidx) = backend.ctx.field_index_map.get(name) else {
+        panic!(
+            "AtomicAddAt#: '{}' is not a state field - the element-addressed family \
+             targets Int arrays declared in the program state",
+            name
+        );
+    };
+    let field_ty = backend.ctx.field_types[fidx].clone();
+    if !field_ty.starts_with('[') {
+        panic!(
+            "AtomicAddAt#: '{}' is not an array (v1 is Int-arrays-only: GPU Float \
+             arrays are f32 storage while CPU Float is f64 — Int is i64 in both \
+             worlds)",
+            name
+        );
+    }
+    let idx_reg = backend.emit_expr(out, &args[1], indent);
+    let base = backend.emit_state_gep(out, indent, "f", "%state", fidx);
+    let gep_idx = backend.gep_index(out, indent, &idx_reg);
+    let elem = backend.fun.gen_reg();
+    writeln!(
+        out,
+        "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}",
+        indent, elem, field_ty, base, gep_idx
+    )
+    .ok();
+    let val = backend.emit_expr(out, &args[2], indent);
+    let val_i64 = backend.adapt_to_i64(out, indent, &val);
+    writeln!(
+        out,
+        "{}{} = atomicrmw add ptr {}, i64 {} {}",
+        indent, v, elem, val_i64, ord
+    )
+    .ok();
+    BTypedRegister { name: v.to_string(), ty: Type::int() }
 }
 
 /// 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): the atomicrmw family
