@@ -282,7 +282,7 @@ Generative op-member forms (dispatch to declared `op` members):
 
 Element-addressed (the kernel family — target is an Int array
 variable; v1 Int-only, plan `2026-10-01-atomic-element-rmw.md`):
-`AtomicAddAt#(buf, i, v)` — returns the old value
+`AtomicAddAt#` — `(buf, i, v)`, returns the old value
 
 ### Portable SIMD (memory-to-memory element-wise)
 
