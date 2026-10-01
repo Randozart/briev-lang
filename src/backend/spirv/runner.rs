@@ -22,6 +22,7 @@ use crate::analysis::accel::AccelDecision;
 use crate::analysis::accel::AccelEntry;
 use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Transaction, Type, UnaryOpKind};
 use crate::backend::spirv::lower::collect_state_fields;
+use crate::backend::gpu_lowering::GpuLowering;
 use crate::backend::spirv::SpirvBuilder;
 use crate::type_universe::TypeUniverse;
 use std::collections::HashMap;
@@ -905,6 +906,102 @@ pub fn emit_runner(
     Ok(out)
 }
 
+/// 2026-10-01 (KernelPlan Phase 2.4, plan
+/// 2026-09-30-kernel-plan-and-per-target-lowering.md §7/§12 item 5): one
+/// eligible node → its runner kernel, extracted from `build_kernels`.
+/// Two arms, one body: `kplan: None` is the legacy inline path (flag 0,
+/// byte-identical); `Some(..)` is the strangler adapter arm — the plan
+/// gates emission on node identity and its disjoint-work-item proof
+/// before the same emitter runs. Wiring:
+/// `backend::gpu_lowering::SpirvLowering`. The GemmPlan / cooperative /
+/// tensor probes stay inside: the SPIR-V emitter derives them itself
+/// (codegen decisions the plan does not yet carry — plan §7 narrowing).
+/// Named `emit_node_kernel` — `emit_kernel_node` is already the runner
+/// transaction emitter below.
+pub(crate) fn emit_node_kernel(
+    ctx: &crate::backend::gpu_lowering::SpirvNodeCtx<'_>,
+    kplan: Option<&crate::analysis::kernel_plan::KernelPlan>,
+) -> Result<RunnerKernel, String> {
+    crate::backend::gpu_lowering::admission_gates(&ctx.name, kplan)?;
+    let int_bits = ctx.int_bits;
+    let reuse_map = ctx.reuse_map;
+    let crate::backend::gpu_lowering::SpirvNodeCtx { name, shape, program, universe, kplans, .. } = ctx;
+    let mut sb = SpirvBuilder::new().with_universe(universe, int_bits);
+    let cooperative = crate::backend::spirv::kernel::is_cooperative_shape(shape);
+    let plan = crate::backend::spirv::gemm::GemmPlan::match_stmts(shape, program);
+    let tiled = plan.is_some();
+    let tensor = tiled
+        && crate::config_tuning::ir_lowering().spirv_coopmat
+        && plan.as_ref().map_or(false, |p| p.tensor_tier_eligible())
+        && {
+            // f16 operands (same shape_of check as the kernel hook —
+            // rule 19: through the casting graph, never a name match).
+            let mut sb = crate::backend::spirv::SpirvBuilder::new()
+                .with_universe(universe, int_bits);
+            let sfields = crate::backend::spirv::lower::collect_state_fields(program);
+            let elem = |name: &str| -> Option<Type> {
+                sfields.iter().find(|f| f.name == name)
+                    .and_then(|f| match &f.ty {
+                        Type::Vector(inner, _) => Some((**inner).clone()),
+                        other => Some(other.clone()),
+                    })
+            };
+            match (elem("a"), elem("b"), elem("y")) {
+                (Some(ae), Some(be), Some(ye)) => crate::backend::spirv::gemm::fields_are_f16(&mut sb, &ae, &be, &ye),
+                _ => false,
+            }
+        };
+    // Phase 3 enablement: the kernel's touched field set — read/write
+    // buffers + scalar inputs + the index counter. Drives the per-kernel
+    // BrievField table (no foreign field packed, no alias clobber).
+    let touched = kernel_touched_fields(shape);
+    let surface = crate::backend::spirv::kernel::KernelSurface {
+        images: kplans,
+        reuse_map,
+    };
+    crate::backend::spirv::kernel::emit_kernel(
+        &mut sb, "main", shape, program, cooperative, &surface,
+    )?;
+    let kernel = RunnerKernel {
+        name: name.clone(),
+        spirv: sb.build()?,
+        image_plans: kplans.clone(),
+        index_var: shape.index_var.clone(),
+        count_expr: shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
+        work_cols: shape.work_cols,
+        cooperative,
+        tiled,
+        tensor,
+        // The same clamp the kernel emitter used — one source of truth.
+        tensor_tile_rows: if tensor {
+            plan.as_ref()
+                .map(|p| crate::backend::spirv::gemm::GemmPlan::coopmat_tile_rows(p.m))
+                .unwrap_or(1)
+        } else {
+            1
+        },
+        ptx_tensor: false,
+    fused_mma: false,
+    fused_mma_blocks_div: 0,
+        // 2026-09-17 (M2a): cooperative row kernels run 32-lane blocks —
+        // the descriptor's block_threads is what the CUDA lane launches
+        // with (the Vulkan lane parses the module's LocalSize). 64 here
+        // made the CUDA lane run cooperative row kernels as one
+        // 256-thread block stuck on row 0 (ctaid.y = 0 for the single
+        // over-sized block... with gx = ceil(32/256) = 1, gy = rows but
+        // every block's warps strided across row 0 only — rows 1..n
+        // never written).
+        block_threads: if cooperative { 32 } else { 64 },
+        shared_bytes: 0,
+        touched_fields: touched,
+        // 2026-09-17 (M2.0): the SPIR-V producer carries no CUDA image;
+        // compile.rs merges build_ptx_kernels blobs in by node name.
+        ptx: Vec::new(), block_per_workitem: false, split: 1,
+        owner: name.clone(), domain: KernelDomain::Shared,
+    };
+Ok(kernel)
+}
+
 /// Build the per-kernel list for emit_runner: one module per eligible node
 /// (entry "main"), plus its index var and work-item count.
 pub fn build_kernels(
@@ -919,6 +1016,12 @@ pub fn build_kernels(
     // decision (a .bv offload concept — it compares against a CPU lane) does
     // not apply to a standalone volume with no CPU.
     let _ = AccelDecision::Cpu;
+    // 2026-10-01 (Phase 2.4, plan §7/§12 item 5): the per-node
+    // strangler switch — 1 routes every eligible node through
+    // `backend::gpu_lowering` (plan as decision record, identity/proofs
+    // as gates); 0 is the legacy inline arm (byte-identical, default
+    // until parity licenses the flip).
+    let plan_lowering = crate::config_tuning::ir_lowering().spirv_plan_lowering == 1;
     let entries = &analysis.accel;
     let image_plans = &analysis.image_storage;
     let mut names: Vec<&String> = entries
@@ -929,81 +1032,34 @@ pub fn build_kernels(
     names.sort();
     for name in names {
         let e = &entries[name];
-        let mut sb = SpirvBuilder::new().with_universe(universe, int_bits);
-        let cooperative = crate::backend::spirv::kernel::is_cooperative_shape(&e.shape);
-        let plan = crate::backend::spirv::gemm::GemmPlan::match_stmts(&e.shape, program);
-        let tiled = plan.is_some();
-        let tensor = tiled
-            && crate::config_tuning::ir_lowering().spirv_coopmat
-            && plan.as_ref().map_or(false, |p| p.tensor_tier_eligible())
-            && {
-                // f16 operands (same shape_of check as the kernel hook —
-                // rule 19: through the casting graph, never a name match).
-                let mut sb = crate::backend::spirv::SpirvBuilder::new()
-                    .with_universe(universe, int_bits);
-                let sfields = crate::backend::spirv::lower::collect_state_fields(program);
-                let elem = |name: &str| -> Option<Type> {
-                    sfields.iter().find(|f| f.name == name)
-                        .and_then(|f| match &f.ty {
-                            Type::Vector(inner, _) => Some((**inner).clone()),
-                            other => Some(other.clone()),
-                        })
-                };
-                match (elem("a"), elem("b"), elem("y")) {
-                    (Some(ae), Some(be), Some(ye)) => crate::backend::spirv::gemm::fields_are_f16(&mut sb, &ae, &be, &ye),
-                    _ => false,
-                }
-            };
-        let kplans: Vec<crate::analysis::image_storage::ImageStoragePlan> =
-            image_plans.get(name).cloned().unwrap_or_default();
-        // Phase 3 enablement: the kernel's touched field set — read/write
-        // buffers + scalar inputs + the index counter. Drives the per-kernel
-        // BrievField table (no foreign field packed, no alias clobber).
-        let touched = kernel_touched_fields(&e.shape);
-        let surface = crate::backend::spirv::kernel::KernelSurface {
-            images: &kplans,
-            reuse_map,
-        };
-        crate::backend::spirv::kernel::emit_kernel(
-            &mut sb, "main", &e.shape, program, cooperative, &surface,
-        )?;
-        out.push(RunnerKernel {
+        let ctx = crate::backend::gpu_lowering::SpirvNodeCtx {
             name: name.clone(),
-            spirv: sb.build()?,
-            image_plans: kplans,
-            index_var: e.shape.index_var.clone(),
-            count_expr: e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
-            work_cols: e.shape.work_cols,
-            cooperative,
-            tiled,
-            tensor,
-            // The same clamp the kernel emitter used — one source of truth.
-            tensor_tile_rows: if tensor {
-                plan.as_ref()
-                    .map(|p| crate::backend::spirv::gemm::GemmPlan::coopmat_tile_rows(p.m))
-                    .unwrap_or(1)
-            } else {
-                1
-            },
-            ptx_tensor: false,
-        fused_mma: false,
-        fused_mma_blocks_div: 0,
-            // 2026-09-17 (M2a): cooperative row kernels run 32-lane blocks —
-            // the descriptor's block_threads is what the CUDA lane launches
-            // with (the Vulkan lane parses the module's LocalSize). 64 here
-            // made the CUDA lane run cooperative row kernels as one
-            // 256-thread block stuck on row 0 (ctaid.y = 0 for the single
-            // over-sized block... with gx = ceil(32/256) = 1, gy = rows but
-            // every block's warps strided across row 0 only — rows 1..n
-            // never written).
-            block_threads: if cooperative { 32 } else { 64 },
-            shared_bytes: 0,
-            touched_fields: touched,
-            // 2026-09-17 (M2.0): the SPIR-V producer carries no CUDA image;
-            // compile.rs merges build_ptx_kernels blobs in by node name.
-            ptx: Vec::new(), block_per_workitem: false, split: 1,
-            owner: name.clone(), domain: KernelDomain::Shared,
-        });
+            shape: &e.shape,
+            program,
+            universe,
+            kplans: image_plans.get(name).cloned().unwrap_or_default(),
+            reuse_map,
+            int_bits,
+        };
+        let kernel = if plan_lowering {
+            let kp = crate::analysis::kernel_plan::KernelPlan::from_shape(
+                name,
+                &e.shape,
+                program,
+                &crate::backend::ptx::module_expr_consts(program),
+                &crate::analysis::gpu_strategy::GpuHardware::SM86,
+            );
+            let node = crate::backend::gpu_lowering::SpirvLowering { ctx }.lower(
+                &kp,
+                &crate::analysis::kernel_plan::TargetProfile::spirv_vulkan(),
+            )?;
+            node.kernels.into_iter().next().ok_or_else(|| {
+                format!("node '{}': the SPIR-V lowering emitted no kernel", name)
+            })?
+        } else {
+            emit_node_kernel(&ctx, None)?
+        };
+        out.push(kernel);
     }
     Ok(out)
 }

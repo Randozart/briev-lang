@@ -36,7 +36,7 @@
 
 use crate::ast::{Expr, Statement, TopLevel, Type};
 use crate::backend::spirv::gemm::GemmPlan;
-use crate::backend::gpu_lowering::{GeneralNodeCtx, GpuLowering};
+use crate::backend::gpu_lowering::{GeneralNodeCtx, GemmNodeCtx, GpuLowering};
 use crate::backend::spirv::runner::RunnerKernel;
 use crate::type_universe::TypeUniverse;
 
@@ -2072,31 +2072,6 @@ fn tile_size_warnings(
     out
 }
 
-/// Plan admission for the strangler arm (2026-10-01, Phase 2.4): the plan
-/// must BE this node's plan and must carry the disjoint-work-item proof —
-/// emission never starts without both.
-fn plan_admission_gates(
-    name: &str,
-    plan: Option<&crate::analysis::kernel_plan::KernelPlan>,
-) -> Result<(), String> {
-    let Some(plan) = plan else {
-        return Ok(());
-    };
-    if plan.node != name {
-        return Err(format!(
-            "node '{}': plan is for node '{}' — Fix: build the plan from this node's shape.",
-            name, plan.node
-        ));
-    }
-    if !plan.proofs.disjoint_workitems {
-        return Err(format!(
-            "node '{}': the plan carries no disjoint-work-item proof (overlapping work items would race) — Fix: make the iteration disjoint.",
-            name
-        ));
-    }
-    Ok(())
-}
-
 /// Dispatch geometry + ptxas register cap for a general node.
 /// 2026-09-30 (stage-5 5c): the warp-sliced thread count derives from the
 /// config warp count — the emitter's block_threads arm uses the same
@@ -2209,7 +2184,7 @@ pub(crate) fn emit_general_node(
     let int_bits = ctx.int_bits;
     let irr_free = ctx.irr_free;
     let GeneralNodeCtx { name, shape, program, layout, universe, .. } = ctx;
-    plan_admission_gates(name, plan)?;
+    crate::backend::gpu_lowering::admission_gates(name, plan)?;
     let mut out = Vec::new();
     let mut size_warnings = Vec::new();
     // Non-reduction eligible nodes are elementwise/loop kernels — the
@@ -2276,6 +2251,396 @@ pub(crate) fn emit_general_node(
     Ok((out, size_warnings))
 }
 
+/// 2026-10-01 (KernelPlan Phase 2.4, plan
+/// 2026-09-30-kernel-plan-and-per-target-lowering.md §7): the tensor
+/// family's emission, extracted from `build_ptx_kernels`. Two arms, one
+/// body: `kplan: None` is the legacy inline path (flag 0,
+/// byte-identical); `Some(..)` is the strangler adapter arm (flag 1) —
+/// the plan gates emission on its identity and proofs before the same
+/// emitter runs. Wiring: `backend::gpu_lowering::PtxTensorLowering`.
+/// The `GemmPlan` (field names, m/n/k) is structural material the plan
+/// does not yet carry — derived by the same matcher on both arms.
+pub(crate) fn emit_gemm_node(
+    ctx: &crate::backend::gpu_lowering::GemmNodeCtx<'_>,
+    gemm: crate::backend::spirv::gemm::GemmPlan,
+    kplan: Option<&crate::analysis::kernel_plan::KernelPlan>,
+) -> Result<(RunnerKernel, Vec<String>), String> {
+    let irr_free = ctx.irr_free;
+    let GemmNodeCtx { name, shape, program, layout, universe, schedule, .. } = ctx;
+    crate::backend::gpu_lowering::admission_gates(name, kplan)?;
+    let plan = gemm;
+    let mut size_warnings = Vec::new();
+    // 2026-09-14 (Matrix type plan): when the a/b/y fields carry
+    // Matrix<T,R,C> types, validate that the type-shape M/N/K matches
+    // the body-derived shape. The type is the contract (Rule 1).
+    gemm_check_matrix_types(name, &plan, program, universe)?;
+    let find_off = |field: &str| -> Result<u64, String> {
+        layout
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .map(|f| f.proj_offset)
+            .ok_or_else(|| format!("ptx: node '{}': field '{}' not in layout", name, field))
+    };
+    let a_off = find_off(&plan.a_field)?;
+    let b_off = find_off(&plan.b_field)?;
+    let y_off = find_off(&plan.y_field)?;
+    // 2026-09-14 (gpu_schedule Phase 4a): epilogue fusion — if this GEMM
+    // is the producer of a pure-scale consumer, write the consumer's
+    // output field with the scale applied, and drop the consumer node.
+    // 2026-09-15: the f16 tensor epilogue (packed f16x2 mul) is verified
+    // correct on the f16-acc tier; f32 naive always fuses. The schedule
+    // gates f16 fusions on f16_acc, so a fusion here is always
+    // applicable.
+    let fusion = schedule.fusions.iter().find(|f| f.producer == *name);
+    let a_elem = layout
+        .fields
+        .iter()
+        .find(|fl| fl.name == plan.a_field)
+        .map(|fl| fl.elem_bytes)
+        .unwrap_or(4);
+    let (y_off, epilogue_scale) = match fusion {
+        Some(f) => (find_off(&f.out_field)?, Some(f.scale)),
+        _ => (y_off, None),
+    };
+
+    // f16 a/b → the tensor tier (S3b mma kernel); f32 → the naive tier.
+    // The tensor tier needs M%32, N%16, K%16 (warp-tile geometry).
+    let a_elem = layout
+        .fields
+        .iter()
+        .find(|f| f.name == plan.a_field)
+        .map(|f| f.elem_bytes)
+        .unwrap_or(4);
+    let y_elem = layout
+        .fields
+        .iter()
+        .find(|f| f.name == plan.y_field)
+        .map(|f| f.elem_bytes)
+        .unwrap_or(4);
+    let tensor = a_elem == 2
+        && plan.m % 32 == 0
+        && plan.n % 16 == 0
+        && plan.k % 16 == 0;
+
+    let f16_acc = crate::config_tuning::ir_lowering().ptx_tensor_f16acc;
+    let (stages, stages_cfg, stage_warn) = gemm_stage_plan(program, name, f16_acc);
+    // 2026-09-30 (D28/D29): a declared stage that defeats the pipeline
+    // is warned, not silent — unless the site declares `irr`.
+    if let Some(w) = stage_warn.filter(|_| irr_free) {
+        size_warnings.push(w);
+    }
+    let count_expr = shape.count_expr.clone().unwrap_or(Expr::Decimal(0));
+    let tin = GemmTierIn {
+        name,
+        plan: &plan,
+        program,
+        a_off,
+        b_off,
+        y_off,
+        a_elem,
+        y_elem,
+        epilogue_scale,
+        f16_acc,
+        stages,
+        stages_cfg,
+        irr_free,
+    };
+    let (ptx, ptx_tensor, block_threads, shared_bytes) =
+        gemm_codegen(&tin, tensor, &mut size_warnings)?;
+    let blob = gemm_blob(ptx, f16_acc);
+    let kernel = gemm_runner_kernel(
+        name,
+        shape,
+        GemmKernelOut { blob, count_expr, ptx_tensor, block_threads, shared_bytes },
+    );
+    Ok((kernel, size_warnings))
+}
+
+/// 2026-10-01 (Phase 2.4 decomposition, Praetor fn ≤100 / cog ≤15): the
+/// Matrix-shape contract check extracted from `emit_gemm_node` — same
+/// three checks, same errors, one loop instead of three copies (DRY).
+fn gemm_check_matrix_types(
+    name: &str,
+    plan: &crate::backend::spirv::gemm::GemmPlan,
+    program: &[TopLevel],
+    universe: &TypeUniverse,
+) -> Result<(), String> {
+    let ftypes = field_type_map(program);
+    let checks: [(&str, (i64, i64), (&str, &str)); 3] = [
+        (&plan.a_field, (plan.m, plan.k), ("M", "K")),
+        (&plan.b_field, (plan.k, plan.n), ("K", "N")),
+        (&plan.y_field, (plan.m, plan.n), ("M", "N")),
+    ];
+    for (field, expect, labels) in checks {
+        let Some(ty) = ftypes.get(field) else {
+            continue;
+        };
+        let Some((rows, cols, _)) = universe.matrix_shape(ty) else {
+            continue;
+        };
+        if expect.0 != rows as i64 || expect.1 != cols as i64 {
+            return Err(format!(
+                "ptx: node '{}': Matrix shape mismatch on '{}': type is {}×{} but body implies {}={}, {}={}",
+                name, field, rows, cols, labels.0, expect.0, labels.1, expect.1
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 2026-10-01 (Phase 2.4 decomposition): pipeline-stage selection,
+/// extracted from `emit_gemm_node`. Returns
+/// (stages, stages_cfg, pipeline-warning); the D28/D29 irr gate stays
+/// at the push site in `emit_gemm_node`.
+fn gemm_stage_plan(
+    program: &[TopLevel],
+    name: &str,
+    f16_acc: bool,
+) -> (usize, u32, Option<String>) {
+    // f16-acc halves the accumulator registers (64 f32 -> 32 f16x2),
+    // funding 64-reg/256T kernels: 4 CTAs/SM at 16KB smem (E4c, 2026-09-13).
+    // f32-acc keeps 4 stages (deep pipeline, 1-2 CTAs by config).
+    // 2026-09-14 (parity probe P1): stages=3 at the f16acc (2,4) tile
+    // (24KB, still 4 CTAs/SM) measured +1.0-1.8% at every large square
+    // shape — the auto default (0). `ptx_tensor_stages` overrides (2|3).
+    // 2026-09-30 (stage-5 5b): the 2026-09-16 strategy model began
+    // returning its own `stages`, which SILENTLY overrode an explicit
+    // `ptx_tensor_stages` — the knob went inert at every shape the
+    // cost model maps (e.g. 4096³). That violates the override
+    // contract (`config_tuning::set_ir_lowering_from_dir`: "a silently
+    // ignored override would compile with the wrong tier and poison
+    // every measurement"). An EXPLICIT nonzero config now wins over
+    // the model; the auto default (0) still lets the model choose,
+    // preserving ship behavior byte-for-byte.
+    // 2026-09-30 (D2): precedence source > config > model. A declared
+    // `stage<N>` (node modifier) strengthens the effective config value,
+    // so `resolve_eff_stages` lets it win over the strategy model
+    // exactly as an explicit `ptx_tensor_stages` does.
+    let stage_source = node_stage_modifier(program, name).map(|n| n as u32);
+    let stages_cfg = stage_source
+        .unwrap_or(crate::config_tuning::ir_lowering().ptx_tensor_stages);
+    let stages = match stages_cfg {
+        0 => {
+            if f16_acc {
+                3usize
+            } else {
+                4usize
+            }
+        }
+        v => v as usize,
+    };
+    let warn = stage_source.and_then(|n| stage_pipeline_warning(name, n));
+    (stages, stages_cfg, warn)
+}
+
+/// Borrowed inputs for the tensor-tier helpers (Praetor param cap ≤6).
+struct GemmTierIn<'a> {
+    name: &'a str,
+    plan: &'a crate::backend::spirv::gemm::GemmPlan,
+    program: &'a [TopLevel],
+    a_off: u64,
+    b_off: u64,
+    y_off: u64,
+    a_elem: u32,
+    y_elem: u32,
+    epilogue_scale: Option<f64>,
+    f16_acc: bool,
+    stages: usize,
+    stages_cfg: u32,
+    irr_free: bool,
+}
+
+/// 2026-10-01 (Phase 2.4 decomposition): the tensor tier's grid/stage
+/// selection — declared `tile<M,N>` / force knobs (D2) ahead of the cost
+/// model (2026-09-16 Stage 1) ahead of the legacy walker — plus the
+/// D28/D29 declared-tile warnings. Returns (mw, nw, eff_stages, mw_ok,
+/// warnings).
+fn gemm_select_grid(
+    tin: &GemmTierIn<'_>,
+    warp_mh: usize,
+    gr: usize,
+) -> (usize, usize, usize, bool, Vec<String>) {
+    // On-device sweep (2026-09-10, 4096^3): the f32 kernel's best is
+    // (4,2)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
+    // 2026-09-13 (E4c): the f16acc cap drops to 256 — the 8-warp CTA
+    // with 4 co-resident CTAs/SM (16KB smem, 64 regs) beats the
+    // (4,4)@512T x2 point on every large square shape (nw-first walker
+    // lands (2,4)@256T; see select_mw_nw for the A/B numbers).
+    let thread_cap = 256;
+    // 2026-09-30 (5b Phase 3): the shape model may now choose 512-thread
+    // wide tiles (e.g. (2,8)=128×256) for DRAM-bound shapes; the legacy
+    // `select_mw_nw` fallback keeps its historical 256 cap.
+    let strategy_thread_cap = 512;
+    // Select mw/nw for multi-warp CTA. The mw kernel needs
+    // M%(16*mhr*mw)==0 and N%(8*gr*nw)==0; fall back to single-warp
+    // smem kernel when the shape doesn't tile cleanly.
+    // 2026-09-16 (shape strategy selector Stage 1): prefer the cost
+    // model's strategy (tile + stages chosen from shape evidence,
+    // calibrated against cuBLAS); fall back to the legacy walker
+    // when the strategy doesn't map (or the model has no candidate).
+    let strategy = crate::analysis::gpu_strategy::select(
+        tin.plan.m as u64,
+        tin.plan.n as u64,
+        tin.plan.k as u64,
+        &crate::analysis::gpu_strategy::GpuHardware::SM86,
+    );
+    // 2026-09-30 (D1/D2): a declared `tile<M,N>` (elements) wins over
+    // the config force knobs and the strategy model. Non-divisible
+    // tiles fall through to the model.
+    let node_tile = node_tile_modifier(tin.program, tin.name);
+    // 2026-09-30 (D28/D29): a declared tile that is not an mma-atom
+    // multiple never silently falls through to the model.
+    let (mw, nw, eff_stages) = {
+        let fmw = crate::config_tuning::ir_lowering().ptx_tensor_force_mw as usize;
+        let fnw = crate::config_tuning::ir_lowering().ptx_tensor_force_nw as usize;
+        // A declared `tile<M,N>` or an explicit force pins the grid;
+        // both are source/config overrides ahead of the model (D2).
+        // A non-divisible declared tile falls through to the model.
+        let forced = tile_to_mw_nw(node_tile, warp_mh, gr)
+            .or_else(|| (fmw > 0 && fnw > 0).then_some((fmw, fnw)));
+        match forced {
+            Some((m, n)) => (m, n, tin.stages),
+            None => match strategy.and_then(|s| {
+                strategy_to_mwnw(&s, warp_mh, tin.plan.m, tin.plan.n, strategy_thread_cap)
+            }) {
+                Some((mw, nw, st)) => {
+                    (mw, nw, resolve_eff_stages(tin.stages_cfg, st, tin.stages))
+                }
+                None => {
+                    let (mw, nw) =
+                        select_mw_nw(tin.plan.m, tin.plan.n, thread_cap, warp_mh);
+                    (mw, nw, tin.stages)
+                }
+            },
+        }
+    };
+    let mw_ok = tin.plan.m % ((16 * warp_mh * mw) as i64) == 0
+        && tin.plan.n % ((8 * gr * nw) as i64) == 0;
+    // 2026-09-30 (D28/D29): both declared-tile warnings — the atom
+    // check and the grid-divisibility fallback — collected here.
+    let warnings = tile_size_warnings(
+        tin.name,
+        node_tile.filter(|_| tin.irr_free),
+        (16 * warp_mh, 8 * gr),
+        (tin.plan.m, tin.plan.n),
+        mw_ok,
+    );
+    (mw, nw, eff_stages, mw_ok, warnings)
+}
+
+/// 2026-10-01 (Phase 2.4 decomposition): the codegen decision — tensor
+/// tier (multi-warp mw / single-warp smem) vs the f32 naive tier, with
+/// the unsupported-element error verbatim. Returns
+/// (ptx, ptx_tensor, block_threads, shared_bytes).
+fn gemm_codegen(
+    tin: &GemmTierIn<'_>,
+    tensor: bool,
+    size_warnings: &mut Vec<String>,
+) -> Result<(String, bool, u32, u32), String> {
+    if !tensor {
+        if tin.a_elem != 4 {
+            return Err(format!(
+                "ptx: node '{}': element size {} bytes — the PTX tier supports \
+                 f32 (naive) or f16 with M%32=N%16=K%16=0 (tensor). f16 shapes \
+                 that do not tile are not supported yet.\n  why: the tensor \
+                 warp-tile geometry fixes M%32, N%16, K%16\n  fix: pad the \
+                 shape to multiples of 32/16/16, or use --backend spirv",
+                tin.name, tin.a_elem
+            ));
+        }
+        let ptx = naive_gemm_ptx(
+            tin.plan.m, tin.plan.n, tin.plan.k, tin.a_elem,
+            tin.a_off, tin.b_off, tin.y_off, tin.epilogue_scale,
+        );
+        return Ok((ptx, false, 64, 0));
+    }
+    let warp_mh = ptx_warp_mh(tin.f16_acc);
+    let gr = 16 / warp_mh;
+    let (mw, nw, eff_stages, mw_ok, grid_warnings) = gemm_select_grid(tin, warp_mh, gr);
+    size_warnings.extend(grid_warnings);
+    if mw_ok && (mw > 1 || nw > 1) {
+        // 2026-09-15 (repro): wire the epilogue variant when a
+        // fused scale applies (the f16 packed-f16x2 mul path).
+        let ptx = match tin.epilogue_scale {
+            Some(s) => tensor::tensor_gemm_ptx_smem_mw_epilogue(
+                tin.plan.m, tin.plan.n, tin.plan.k, tin.a_off, tin.b_off,
+                tin.y_off, tin.y_elem, mw, nw, tin.f16_acc, eff_stages, warp_mh, s,
+            ),
+            None => tensor::tensor_gemm_ptx_smem_mw(
+                tin.plan.m, tin.plan.n, tin.plan.k, tin.a_off, tin.b_off,
+                tin.y_off, tin.y_elem, mw, nw, tin.f16_acc, eff_stages, warp_mh,
+            ),
+        };
+        return Ok((
+            ptx,
+            true,
+            (mw * nw * 32) as u32,
+            ((mw * warp_mh * 512 + nw * gr * 256) * eff_stages) as u32,
+        ));
+    }
+    // Single-warp smem kernel (32×16 tile, 1 warp).
+    let ptx = tensor::tensor_gemm_ptx_smem(
+        tin.plan.m, tin.plan.n, tin.plan.k, tin.a_off, tin.b_off, tin.y_off, tin.y_elem,
+    );
+    Ok((ptx, true, 64, 0))
+}
+
+/// 2026-10-01 (Phase 2.4 decomposition): offline ptxas cubin bytes —
+/// 2026-09-11 (cubin shipping): prefer cubin; the driver JIT ignores the
+/// register cap (166 vs 128 → 1 CTA/SM) and wedges after fault storms.
+/// Fallback = PTX text (JIT path).
+fn gemm_blob(ptx: String, f16_acc: bool) -> Vec<u8> {
+    if crate::config_tuning::ir_lowering().ptx_emit_cubin {
+        match compile_cubin(&ptx, if f16_acc { 64 } else { 128 }) {
+            Some(bytes) => bytes,
+            None => ptx.into_bytes(),
+        }
+    } else {
+        ptx.into_bytes()
+    }
+}
+
+/// Descriptor assembly for the tensor family (2026-10-01 decomposition).
+struct GemmKernelOut {
+    blob: Vec<u8>,
+    count_expr: Expr,
+    ptx_tensor: bool,
+    block_threads: u32,
+    shared_bytes: u32,
+}
+
+/// 2026-10-01 (Phase 2.4 decomposition): the RunnerKernel literal, verbatim.
+fn gemm_runner_kernel(
+    name: &str,
+    shape: &crate::analysis::accel::KernelShape,
+    out: GemmKernelOut,
+) -> RunnerKernel {
+    RunnerKernel {
+        name: name.to_string(),
+        spirv: out.blob,
+        image_plans: Vec::new(),
+        index_var: shape.index_var.clone(),
+        count_expr: out.count_expr,
+        work_cols: None,
+        cooperative: false,
+        tiled: false,
+        tensor: false,
+        tensor_tile_rows: 1,
+        ptx_tensor: out.ptx_tensor,
+        fused_mma: false,
+        fused_mma_blocks_div: 0,
+        block_threads: out.block_threads,
+        shared_bytes: out.shared_bytes,
+        touched_fields: crate::backend::spirv::runner::kernel_touched_fields(shape),
+        ptx: Vec::new(),
+        block_per_workitem: false,
+        split: 1,
+        owner: name.to_string(),
+        domain: crate::backend::spirv::runner::KernelDomain::Shared,
+    }
+}
+
 pub fn build_ptx_kernels(
     program: &[TopLevel],
     universe: &TypeUniverse,
@@ -2293,6 +2658,10 @@ pub fn build_ptx_kernels(
     // shape modifier the tier cannot honor is never silent (D28); `irr`
     // (D29) silences site-locally, warnings only.
     let mut size_warnings: Vec<String> = Vec::new();
+    // 2026-10-01 (Phase 2.4): the per-node strangler switch — 1 routes
+    // both PTX families through `backend::gpu_lowering` (parity-tested),
+    // 0 is the legacy inline path (byte-identical, default).
+    let plan_lowering = crate::config_tuning::ir_lowering().ptx_plan_lowering == 1;
 
     // The ONE layout rule — the same `ssbo_layout` the runner uses, so the
     // hardcoded PTX offsets and the runner's field table agree by
@@ -2403,7 +2772,7 @@ pub fn build_ptx_kernels(
                 int_bits,
                 irr_free,
             };
-            let (ks, ws) = if crate::config_tuning::ir_lowering().ptx_plan_lowering == 1 {
+            let (ks, ws) = if plan_lowering {
                 let consts = module_expr_consts(program);
                 let kplan = crate::analysis::kernel_plan::KernelPlan::from_shape(
                     name,
@@ -2424,280 +2793,41 @@ pub fn build_ptx_kernels(
             size_warnings.extend(ws);
             continue;
         }
-        let plan = plan.unwrap();
-        // 2026-09-14 (Matrix type plan): when the a/b/y fields carry
-        // Matrix<T,R,C> types, validate that the type-shape M/N/K matches
-        // the body-derived shape. The type is the contract (Rule 1).
-        let ftypes = field_type_map(program);
-        if let Some(a_ty) = ftypes.get(&plan.a_field) {
-            if let Some((m, k, _)) = universe.matrix_shape(a_ty) {
-                if plan.m != m as i64 || plan.k != k as i64 {
-                    return Err(format!(
-                        "ptx: node '{}': Matrix shape mismatch on '{}': type is {}×{} but body implies M={}, K={}",
-                        name, plan.a_field, m, k, plan.m, plan.k
-                    ));
-                }
-            }
-        }
-        if let Some(b_ty) = ftypes.get(&plan.b_field) {
-            if let Some((b_rows, n, _)) = universe.matrix_shape(b_ty) {
-                if plan.k != b_rows as i64 || plan.n != n as i64 {
-                    return Err(format!(
-                        "ptx: node '{}': Matrix shape mismatch on '{}': type is {}×{} but body implies K={}, N={}",
-                        name, plan.b_field, b_rows, n, plan.k, plan.n
-                    ));
-                }
-            }
-        }
-        if let Some(y_ty) = ftypes.get(&plan.y_field) {
-            if let Some((m, n, _)) = universe.matrix_shape(y_ty) {
-                if plan.m != m as i64 || plan.n != n as i64 {
-                    return Err(format!(
-                        "ptx: node '{}': Matrix shape mismatch on '{}': type is {}×{} but body implies M={}, N={}",
-                        name, plan.y_field, m, n, plan.m, plan.n
-                    ));
-                }
-            }
-        }
-        let find_off = |field: &str| -> Result<u64, String> {
-            layout
-                .fields
-                .iter()
-                .find(|f| f.name == field)
-                .map(|f| f.proj_offset)
-                .ok_or_else(|| format!("ptx: node '{}': field '{}' not in layout", name, field))
+        // 2026-10-01 (Phase 2.4, plan §7): the tensor family lowers
+        // through `backend::gpu_lowering` when `ptx_plan_lowering: 1`
+        // (plan as decision record, identity/proofs as gates); flag 0
+        // keeps the legacy inline arm, byte-identical.
+        let gemm_plan = plan.unwrap();
+        let gctx = crate::backend::gpu_lowering::GemmNodeCtx {
+            name: name.clone(),
+            shape: &e.shape,
+            program,
+            layout: &layout,
+            universe,
+            schedule,
+            irr_free,
         };
-        let a_off = find_off(&plan.a_field)?;
-        let b_off = find_off(&plan.b_field)?;
-        let y_off = find_off(&plan.y_field)?;
-        // 2026-09-14 (gpu_schedule Phase 4a): epilogue fusion — if this GEMM
-        // is the producer of a pure-scale consumer, write the consumer's
-        // output field with the scale applied, and drop the consumer node.
-        // 2026-09-15: the f16 tensor epilogue (packed f16x2 mul) is verified
-        // correct on the f16-acc tier; f32 naive always fuses. The schedule
-        // gates f16 fusions on f16_acc, so a fusion here is always
-        // applicable.
-        let fusion = schedule.fusions.iter().find(|f| f.producer == *name);
-        let a_elem = layout
-            .fields
-            .iter()
-            .find(|fl| fl.name == plan.a_field)
-            .map(|fl| fl.elem_bytes)
-            .unwrap_or(4);
-        let (y_off, epilogue_scale) = match fusion {
-            Some(f) => (find_off(&f.out_field)?, Some(f.scale)),
-            _ => (y_off, None),
-        };
-
-        // f16 a/b → the tensor tier (S3b mma kernel); f32 → the naive tier.
-        // The tensor tier needs M%32, N%16, K%16 (warp-tile geometry).
-        let a_elem = layout
-            .fields
-            .iter()
-            .find(|f| f.name == plan.a_field)
-            .map(|f| f.elem_bytes)
-            .unwrap_or(4);
-        let y_elem = layout
-            .fields
-            .iter()
-            .find(|f| f.name == plan.y_field)
-            .map(|f| f.elem_bytes)
-            .unwrap_or(4);
-        let tensor = a_elem == 2
-            && plan.m % 32 == 0
-            && plan.n % 16 == 0
-            && plan.k % 16 == 0;
-
-        let f16_acc = crate::config_tuning::ir_lowering().ptx_tensor_f16acc;
-        // f16-acc halves the accumulator registers (64 f32 -> 32 f16x2),
-        // funding 64-reg/256T kernels: 4 CTAs/SM at 16KB smem (E4c, 2026-09-13).
-        // f32-acc keeps 4 stages (deep pipeline, 1-2 CTAs by config).
-        // 2026-09-14 (parity probe P1): stages=3 at the f16acc (2,4) tile
-        // (24KB, still 4 CTAs/SM) measured +1.0-1.8% at every large square
-        // shape — the auto default (0). `ptx_tensor_stages` overrides (2|3).
-        // 2026-09-30 (stage-5 5b): the 2026-09-16 strategy model began
-        // returning its own `stages`, which SILENTLY overrode an explicit
-        // `ptx_tensor_stages` — the knob went inert at every shape the
-        // cost model maps (e.g. 4096³). That violates the override
-        // contract (`config_tuning::set_ir_lowering_from_dir`: "a silently
-        // ignored override would compile with the wrong tier and poison
-        // every measurement"). An EXPLICIT nonzero config now wins over
-        // the model; the auto default (0) still lets the model choose,
-        // preserving ship behavior byte-for-byte.
-        // 2026-09-30 (D2): precedence source > config > model. A declared
-        // `stage<N>` (node modifier) strengthens the effective config value,
-        // so `resolve_eff_stages` below lets it win over the strategy model
-        // exactly as an explicit `ptx_tensor_stages` does.
-        let stage_source = node_stage_modifier(program, name).map(|n| n as u32);
-        let stages_cfg = stage_source
-            .unwrap_or(crate::config_tuning::ir_lowering().ptx_tensor_stages);
-        let stages = match stages_cfg {
-            0 => {
-                if f16_acc {
-                    3usize
-                } else {
-                    4usize
-                }
-            }
-            v => v as usize,
-        };
-        // 2026-09-30 (D28/D29): a declared stage that defeats the pipeline
-        // is warned, not silent — unless the site declares `irr`.
-        if let Some(w) = stage_source
-            .and_then(|n| stage_pipeline_warning(name, n))
-            .filter(|_| irr_free)
-        {
-            size_warnings.push(w);
-        }
-        // On-device sweep (2026-09-10, 4096^3): the f32 kernel's best is
-        // (4,2)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
-        // 2026-09-13 (E4c): the f16acc cap drops to 256 — the 8-warp CTA
-        // with 4 co-resident CTAs/SM (16KB smem, 64 regs) beats the
-        // (4,4)@512T x2 point on every large square shape (nw-first walker
-        // lands (2,4)@256T; see select_mw_nw for the A/B numbers).
-        let thread_cap = 256;
-        // 2026-09-30 (5b Phase 3): the shape model may now choose 512-thread
-        // wide tiles (e.g. (2,8)=128×256) for DRAM-bound shapes; the legacy
-        // `select_mw_nw` fallback keeps its historical 256 cap.
-        let strategy_thread_cap = 512;
-        let (ptx, ptx_tensor, count_expr, block_threads, shared_bytes) = if tensor {
-            let warp_mh = ptx_warp_mh(f16_acc);
-            let gr = 16 / warp_mh;
-            // Select mw/nw for multi-warp CTA. The mw kernel needs
-            // M%(16*mhr*mw)==0 and N%(8*gr*nw)==0; fall back to single-warp
-            // smem kernel when the shape doesn't tile cleanly.
-            // 2026-09-16 (shape strategy selector Stage 1): prefer the cost
-            // model's strategy (tile + stages chosen from shape evidence,
-            // calibrated against cuBLAS); fall back to the legacy walker
-            // when the strategy doesn't map (or the model has no candidate).
-            let strategy = crate::analysis::gpu_strategy::select(
-                plan.m as u64,
-                plan.n as u64,
-                plan.k as u64,
+        let (kernel, ws) = if plan_lowering {
+            let kp = crate::analysis::kernel_plan::KernelPlan::from_shape(
+                name,
+                &e.shape,
+                program,
+                &module_expr_consts(program),
                 &crate::analysis::gpu_strategy::GpuHardware::SM86,
             );
-            // 2026-09-30 (D1/D2): a declared `tile<M,N>` (elements) wins over
-            // the config force knobs and the strategy model. Non-divisible
-            // tiles fall through to the model.
-            let node_tile = node_tile_modifier(program, name);
-            // 2026-09-30 (D28/D29): a declared tile that is not an mma-atom
-            // multiple never silently falls through to the model.
-            let (mw, nw, eff_stages) = {
-                let fmw = crate::config_tuning::ir_lowering().ptx_tensor_force_mw as usize;
-                let fnw = crate::config_tuning::ir_lowering().ptx_tensor_force_nw as usize;
-                // A declared `tile<M,N>` or an explicit force pins the grid;
-                // both are source/config overrides ahead of the model (D2).
-                // A non-divisible declared tile falls through to the model.
-                let forced = tile_to_mw_nw(node_tile, warp_mh, gr)
-                    .or_else(|| (fmw > 0 && fnw > 0).then_some((fmw, fnw)));
-                match forced {
-                    Some((m, n)) => (m, n, stages),
-                    None => match strategy.and_then(|s| {
-                        strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, strategy_thread_cap)
-                    }) {
-                        Some((mw, nw, st)) => (mw, nw, resolve_eff_stages(stages_cfg, st, stages)),
-                        None => {
-                            let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
-                            (mw, nw, stages)
-                        }
-                    },
-                }
-            };
-            let mw_ok = plan.m % ((16 * warp_mh * mw) as i64) == 0
-                && plan.n % ((8 * gr * nw) as i64) == 0;
-            // 2026-09-30 (D28/D29): both declared-tile warnings — the atom
-            // check and the grid-divisibility fallback — collected here.
-            size_warnings.extend(tile_size_warnings(
-                name,
-                node_tile.filter(|_| irr_free),
-                (16 * warp_mh, 8 * gr),
-                (plan.m, plan.n),
-                mw_ok,
-            ));
-            if mw_ok && (mw > 1 || nw > 1) {
-                // 2026-09-15 (repro): wire the epilogue variant when a
-                // fused scale applies (the f16 packed-f16x2 mul path).
-                let ptx = match epilogue_scale {
-                    Some(s) => tensor::tensor_gemm_ptx_smem_mw_epilogue(
-                        plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
-                        f16_acc, eff_stages, warp_mh, s,
-                    ),
-                    None => tensor::tensor_gemm_ptx_smem_mw(
-                        plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem, mw, nw,
-                        f16_acc, eff_stages, warp_mh,
-                    ),
-                };
-                (
-                    ptx,
-                    true,
-                    e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
-                    (mw * nw * 32) as u32,
-                    ((mw * warp_mh * 512 + nw * gr * 256) * eff_stages) as u32,
-                )
-            } else {
-                // Single-warp smem kernel (32×16 tile, 1 warp).
-                (
-                    tensor::tensor_gemm_ptx_smem(plan.m, plan.n, plan.k, a_off, b_off, y_off, y_elem),
-                    true,
-                    e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
-                    64,
-                    0,
-                )
-            }
+            let node = crate::backend::gpu_lowering::PtxTensorLowering { ctx: gctx }.lower(
+                &kp,
+                &crate::analysis::kernel_plan::TargetProfile::ptx_sm86(),
+            )?;
+            let k = node.kernels.into_iter().next().ok_or_else(|| {
+                format!("node '{}': the tensor lowering emitted no kernel", name)
+            })?;
+            (k, node.warnings)
         } else {
-            if a_elem != 4 {
-                return Err(format!(
-                    "ptx: node '{}': element size {} bytes — the PTX tier supports \
-                     f32 (naive) or f16 with M%32=N%16=K%16=0 (tensor). f16 shapes \
-                     that do not tile are not supported yet.\n  why: the tensor \
-                     warp-tile geometry fixes M%32, N%16, K%16\n  fix: pad the \
-                     shape to multiples of 32/16/16, or use --backend spirv",
-                    name, a_elem
-                ));
-            }
-            (
-                naive_gemm_ptx(plan.m, plan.n, plan.k, a_elem, a_off, b_off, y_off, epilogue_scale),
-                false,
-                e.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
-                64,
-                0,
-            )
+            emit_gemm_node(&gctx, gemm_plan, None)?
         };
-
-        // 2026-09-11 (cubin shipping): prefer offline-ptxas cubin bytes;
-        // the driver JIT ignores the register cap (166 vs 128 → 1 CTA/SM)
-        // and wedges after fault storms. Fallback = PTX text (JIT path).
-        let blob: Vec<u8> = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
-            match compile_cubin(&ptx, if f16_acc { 64 } else { 128 }) {
-                Some(bytes) => bytes,
-                None => ptx.into_bytes(),
-            }
-        } else {
-            ptx.into_bytes()
-        };
-        out.push(RunnerKernel {
-            name: name.clone(),
-            spirv: blob,
-            image_plans: Vec::new(),
-            index_var: e.shape.index_var.clone(),
-            count_expr,
-            work_cols: None,
-            cooperative: false,
-            tiled: false,
-            tensor: false,
-            tensor_tile_rows: 1,
-            ptx_tensor,
-            fused_mma: false,
-        fused_mma_blocks_div: 0,
-            block_threads,
-            shared_bytes,
-            touched_fields: crate::backend::spirv::runner::kernel_touched_fields(&e.shape),
-            ptx: Vec::new(),
-            block_per_workitem: false,
-        split: 1,
-        owner: name.clone(),
-        domain: crate::backend::spirv::runner::KernelDomain::Shared,
-        });
+        out.push(kernel);
+        size_warnings.extend(ws);
     }
     Ok((out, size_warnings))
 }
@@ -2991,32 +3121,12 @@ split<8> async node sfused [h < H][h == H] {{
         );
     }
 
-    /// 2026-10-01 (Phase 2.4 strangler, plan
-    /// 2026-09-30-kernel-plan-and-per-target-lowering.md §7/§8):
-    /// `ptx_plan_lowering: 1` routes the general family through
-    /// `backend::gpu_lowering` (plan as decision record, proofs as gate,
-    /// the same emitter underneath) — the output must match the legacy
-    /// arm node-for-node, blob-for-blob. This parity is what licenses the
-    /// eventual default flip. Installs the flag for the duration with a
-    /// Drop-guarded restore; a concurrent test routed through the plan
-    /// arm during the window is benign BY this very parity.
-    #[test]
-    fn plan_lowering_parity_with_legacy() {
-        struct FlagGuard(u32);
-        impl Drop for FlagGuard {
-            fn drop(&mut self) {
-                let mut s = *crate::config_tuning::ir_lowering();
-                s.ptx_plan_lowering = self.0;
-                crate::config_tuning::install_ir_lowering(s);
-            }
-        }
-        let legacy = build_sfused("16384");
-        let prev = crate::config_tuning::ir_lowering().ptx_plan_lowering;
-        let _g = FlagGuard(prev);
-        let mut s = *crate::config_tuning::ir_lowering();
-        s.ptx_plan_lowering = 1;
-        crate::config_tuning::install_ir_lowering(s);
-        let planned = build_sfused("16384");
+    /// 2026-10-01: the strangler parity contract — legacy arm and plan
+    /// arm produce the same node set, blobs, and dispatch geometry.
+    fn assert_parity(
+        legacy: (Vec<RunnerKernel>, Vec<String>),
+        planned: (Vec<RunnerKernel>, Vec<String>),
+    ) {
         assert_eq!(
             legacy.0.len(),
             planned.0.len(),
@@ -3038,6 +3148,98 @@ split<8> async node sfused [h < H][h == H] {{
             assert_eq!(a.domain, b.domain, "lane domain of {}", a.name);
         }
         assert_eq!(legacy.1, planned.1, "size warnings");
+    }
+
+    /// 2026-10-01 (Phase 2.4 strangler, plan
+    /// 2026-09-30-kernel-plan-and-per-target-lowering.md §7/§8):
+    /// `ptx_plan_lowering: 1` routes the general family through
+    /// `backend::gpu_lowering` (plan as decision record, proofs as gate,
+    /// the same emitter underneath) — the output must match the legacy
+    /// arm node-for-node, blob-for-blob. This parity is what licenses the
+    /// eventual default flip.
+    #[test]
+    fn plan_lowering_parity_with_legacy() {
+        let legacy = build_sfused("16384");
+        let _g = crate::config_tuning::SettingsGuard::install_with(|s| {
+            s.ptx_plan_lowering = 1
+        });
+        let planned = build_sfused("16384");
+        assert_parity(legacy, planned);
+    }
+
+    /// 2026-10-01 (Phase 2.4): the same parity contract for the TENSOR
+    /// family — `PtxTensorLowering` over the `GemmPlan` branch (naive f32
+    /// tier here; the f16 mma tier shares the extracted emitter).
+    #[test]
+    fn plan_lowering_parity_with_legacy_gemm() {
+        let (items, universe, accel, schedule) = gemm_pipeline();
+        let legacy =
+            build_ptx_kernels(&items, &universe, 64, &accel, &schedule).expect("legacy gemm lane");
+        assert!(
+            legacy.0.iter().any(|k| k.name == "g"),
+            "gemm fixture emits its node: {:?}",
+            legacy.0.iter().map(|k| &k.name).collect::<Vec<_>>()
+        );
+        let _g = crate::config_tuning::SettingsGuard::install_with(|s| {
+            s.ptx_plan_lowering = 1
+        });
+        let planned =
+            build_ptx_kernels(&items, &universe, 64, &accel, &schedule).expect("plan gemm lane");
+        assert_parity(legacy, planned);
+    }
+
+    /// 2026-10-01: a tiny f32 GEMM (64³, naive tier) through the full
+    /// parse → normalize → analyze → schedule pipeline — the tensor
+    /// family's parity fixture.
+    fn gemm_pipeline() -> (
+        Vec<crate::ast::TopLevel>,
+        TypeUniverse,
+        std::collections::HashMap<String, crate::analysis::accel::AccelEntry>,
+        crate::analysis::gpu_schedule::GpuSchedule,
+    ) {
+        use crate::ast::PropertyValue;
+        let src = "const M: Int = 64;
+const N: Int = 64;
+const K: Int = 64;
+
+let i: Int = 0;
+let a: Float[4096];
+let b: Float[4096];
+let y: Float[4096];
+
+async node g [i < M * N][i == M * N] {
+    let acc: Float = 0.0;
+    let m: Int = i / N;
+    let n: Int = i % N;
+    foreach k in 0..K {
+        acc = acc + a[m * K + k] * b[k * N + n];
+    }
+    y[i] = acc;
+    i = i + 1;
+    term;
+};";
+        let tokens = crate::lexer::tokenize(src).expect("lex");
+        let mut items = crate::parser::Parser::new(tokens, src)
+            .parse_program()
+            .expect("parse");
+        let mut universe = TypeUniverse::new();
+        crate::backend::spirv::normalizer::normalize(&mut items, &mut universe, 64)
+            .expect("normalize");
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("accel".to_string(), PropertyValue::Identifier("try_all".into()));
+        let accel = crate::analysis::accel::analyze(&items, &meta, Some(&universe));
+        assert!(
+            accel.get("g").map(|e| e.shape.eligible).unwrap_or(false),
+            "g is an eligible kernel: {:?}",
+            accel.get("g").map(|e| &e.shape.reasons)
+        );
+        assert!(
+            crate::backend::spirv::gemm::GemmPlan::match_stmts(&accel["g"].shape, &items).is_some(),
+            "g matches the GEMM structure"
+        );
+        let schedule =
+            crate::analysis::gpu_schedule::build_schedule(&items, &accel, &Default::default(), false);
+        (items, universe, accel, schedule)
     }
 
     /// 2026-10-01 (Phase 2.4): the plan arm's gates — a plan built for a

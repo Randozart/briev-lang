@@ -2051,6 +2051,125 @@ async node gemm [i < M * N][i == M * N] {
             "b stays at offset 4096: {:?}", member_offsets);
     }
 
+    /// 2026-10-01 (Phase 2.4 strangler, plan
+    /// 2026-09-30-kernel-plan-and-per-target-lowering.md §7/§12 item 5):
+    /// `spirv_plan_lowering: 1` routes every eligible node through
+    /// `backend::gpu_lowering::SpirvLowering` (plan as decision record,
+    /// identity/proofs as gates, the same emitter underneath) — the
+    /// output must match the legacy arm kernel-for-kernel,
+    /// blob-for-blob. This parity licenses the eventual default flip.
+    /// The guard's install/restore window is benign BY this parity.
+    #[test]
+    fn plan_lowering_parity_with_legacy() {
+        let program = scale_kernel_program();
+        let analysis = analyze(&program);
+        let legacy = crate::backend::spirv::runner::build_kernels(
+            &program,
+            &test_universe(),
+            64,
+            &analysis,
+            None,
+        )
+        .expect("legacy lane");
+        assert!(!legacy.is_empty(), "fixture emits kernels");
+        let _g = crate::config_tuning::SettingsGuard::install_with(|s| {
+            s.spirv_plan_lowering = 1
+        });
+        let planned = crate::backend::spirv::runner::build_kernels(
+            &program,
+            &test_universe(),
+            64,
+            &analysis,
+            None,
+        )
+        .expect("plan arm");
+        assert_eq!(legacy.len(), planned.len(), "kernel count");
+        for (a, b) in legacy.iter().zip(planned.iter()) {
+            assert_eq!(a.name, b.name, "kernel name");
+            assert_eq!(a.owner, b.owner, "owner of {}", a.name);
+            assert_eq!(a.spirv, b.spirv, "blob of {} (byte-for-byte)", a.name);
+            assert_eq!(a.image_plans, b.image_plans, "image plans of {}", a.name);
+            assert_eq!(a.index_var, b.index_var, "index var of {}", a.name);
+            assert_eq!(a.count_expr, b.count_expr, "count expr of {}", a.name);
+            assert_eq!(a.work_cols, b.work_cols, "work cols of {}", a.name);
+            assert_eq!(a.cooperative, b.cooperative, "cooperative of {}", a.name);
+            assert_eq!(a.tiled, b.tiled, "tiled of {}", a.name);
+            assert_eq!(a.tensor, b.tensor, "tensor of {}", a.name);
+            assert_eq!(
+                a.tensor_tile_rows, b.tensor_tile_rows,
+                "tile rows of {}",
+                a.name
+            );
+            assert_eq!(a.block_threads, b.block_threads, "threads of {}", a.name);
+            assert_eq!(a.split, b.split, "split of {}", a.name);
+            assert_eq!(a.domain, b.domain, "lane domain of {}", a.name);
+            assert_eq!(
+                a.touched_fields, b.touched_fields,
+                "touched fields of {}",
+                a.name
+            );
+        }
+    }
+
+    /// 2026-10-01 (Phase 2.4): the SPIR-V arm's admission gates — a plan
+    /// built for a different node refuses emission with what/why/fix;
+    /// the right plan emits.
+    #[test]
+    fn spirv_plan_arm_gates_wrong_node() {
+        use crate::backend::gpu_lowering::{GpuLowering, SpirvLowering, SpirvNodeCtx};
+        let program = scale_kernel_program();
+        let analysis = analyze(&program);
+        let universe = test_universe();
+        let e = &analysis.accel["scale"];
+        let ctx = SpirvNodeCtx {
+            name: "scale".into(),
+            shape: &e.shape,
+            program: &program,
+            universe: &universe,
+            kplans: Vec::new(),
+            reuse_map: None,
+            int_bits: 64,
+        };
+        let profile = crate::analysis::kernel_plan::TargetProfile::spirv_vulkan();
+        // Right plan emits.
+        let kp = crate::analysis::kernel_plan::KernelPlan::from_shape(
+            "scale",
+            &e.shape,
+            &program,
+            &crate::backend::ptx::module_expr_consts(&program),
+            &crate::analysis::gpu_strategy::GpuHardware::SM86,
+        );
+        SpirvLowering { ctx: SpirvNodeCtx {
+            name: "scale".into(),
+            shape: &e.shape,
+            program: &program,
+            universe: &universe,
+            kplans: Vec::new(),
+            reuse_map: None,
+            int_bits: 64,
+        } }
+        .lower(&kp, &profile)
+        .expect("right plan lowers");
+        // A plan for a different node refuses with a Fix.
+        let wrong = crate::analysis::kernel_plan::KernelPlan::from_shape(
+            "nosuch",
+            &e.shape,
+            &program,
+            &crate::backend::ptx::module_expr_consts(&program),
+            &crate::analysis::gpu_strategy::GpuHardware::SM86,
+        );
+        let lowered = SpirvLowering { ctx }.lower(&wrong, &profile);
+        let Err(err) = lowered else {
+            panic!("wrong-node plan must be refused");
+        };
+        assert!(
+            err.contains("Fix:"),
+            "diagnostic carries the fix: {}",
+            err
+        );
+        assert!(err.contains("nosuch"), "names the plan's node: {}", err);
+    }
+
 }
 pub mod runner;
 

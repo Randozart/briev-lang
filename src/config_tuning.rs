@@ -285,6 +285,11 @@ pub struct IrLoweringSettings {
     /// 0 = the legacy inline path. Default 0 until parity licenses the
     /// flip; per-node, not global behaviour.
     pub ptx_plan_lowering: u32,
+    /// 2026-10-01 (KernelPlan Phase 2, plan §7/§12 item 5): the SPIR-V
+    /// lane's strangler switch — 1 = lower every eligible node through
+    /// `backend::gpu_lowering::SpirvLowering`, 0 = the legacy inline
+    /// path. Default 0 until parity licenses the flip.
+    pub spirv_plan_lowering: u32,
     /// 2026-09-11 (cubin shipping): compile the emitted PTX through offline
     /// ptxas and ship cubin bytes as the kernel blob. The driver JIT is
     /// avoided entirely: its CU_JIT_MAX_REGISTERS is ignored (166 vs the
@@ -405,6 +410,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_deferred_region: false,
     ptx_deferred_split: 0,
     ptx_plan_lowering: 0,
+    spirv_plan_lowering: 0,
     ptx_emit_cubin: true,
     spirv_coopmat_stages: 1,
 
@@ -444,12 +450,34 @@ pub fn ir_lowering() -> &'static IrLoweringSettings {
 }
 
 /// Install a new settings generation (leak-on-swap; see IR_LOWERING_OVERRIDE).
-/// `pub(crate)` (2026-10-01): the Phase-2.4 strangler parity test installs
-/// `ptx_plan_lowering` for the duration of one build and restores it on
-/// drop — no production caller.
+/// `pub(crate)` (2026-10-01): the Phase-2.4 strangler parity tests install
+/// the plan-lowering flags for the duration of one build and restore them
+/// on drop — no production caller.
 pub(crate) fn install_ir_lowering(settings: IrLoweringSettings) {
     let ptr = Box::into_raw(Box::new(settings));
     IR_LOWERING_OVERRIDE.store(ptr, std::sync::atomic::Ordering::Release);
+}
+
+/// 2026-10-01 (Phase-2.4 strangler parity tests): apply a settings edit
+/// for one test's duration; Drop restores the full previous generation.
+/// The window's concurrency with other tests is benign BY the parity the
+/// guard exists to prove (identical output under either flag value).
+pub(crate) struct SettingsGuard(IrLoweringSettings);
+
+impl SettingsGuard {
+    pub(crate) fn install_with(edit: impl FnOnce(&mut IrLoweringSettings)) -> Self {
+        let prev = *ir_lowering();
+        let mut s = prev;
+        edit(&mut s);
+        install_ir_lowering(s);
+        Self(prev)
+    }
+}
+
+impl Drop for SettingsGuard {
+    fn drop(&mut self) {
+        install_ir_lowering(self.0);
+    }
 }
 
 /// 2026-09-30 (D30): how the module treats a site-local `irr` (D29).
@@ -525,6 +553,7 @@ const IR_LOWERING_KEYS: &[(&str, bool)] = &[
     ("ptx_deferred_region", false),
     ("ptx_deferred_split", false),
     ("ptx_plan_lowering", false),
+    ("spirv_plan_lowering", false),
     ("ptx_emit_cubin", false),
 ];
 
@@ -603,6 +632,7 @@ fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
     push("ptx_deferred_region", b(s.ptx_deferred_region));
     push("ptx_deferred_split", s.ptx_deferred_split.to_string());
     push("ptx_plan_lowering", s.ptx_plan_lowering.to_string());
+    push("spirv_plan_lowering", s.spirv_plan_lowering.to_string());
     push("ptx_emit_cubin", b(s.ptx_emit_cubin));
     rows.iter()
         .map(|(k, v)| format!("{k}: {v};"))
@@ -950,6 +980,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_plan_lowering", 0)
             .map(|v| v.max(0).min(1) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_plan_lowering),
+        spirv_plan_lowering: db
+            .field_int("spirv_plan_lowering", 0)
+            .map(|v| v.max(0).min(1) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.spirv_plan_lowering),
         ptx_emit_cubin: db
             .field_int("ptx_emit_cubin", 0)
             .map(|v| v != 0)

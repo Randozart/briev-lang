@@ -14,8 +14,11 @@
 //! Contract (B) — the runner/desc projection — will narrow [`KernelBlob`]
 //! to the §7 `{name, domain, bytes, geometry}` shape and carry
 //! `LoweredNode::dispatch`; until then the runner kernel is the honest
-//! currency of both arms. The tensor family (op `Mma`) lowers through a
-//! sibling adapter once the general arm proves out; see the plan's §12
+//! currency of both arms. PTX has one adapter per family —
+//! [`PtxGeneralLowering`] (flag-routed via `ptx_plan_lowering`) and
+//! [`PtxTensorLowering`] (the `GemmPlan` branch) — because the PTX
+//! builder routes families through separate emission paths; the SPIR-V
+//! lane's single adapter follows with its own knob. See the plan's §12
 //! sequencing.
 
 use crate::analysis::accel::KernelShape;
@@ -60,10 +63,10 @@ pub trait GpuLowering {
 }
 
 /// 2026-10-01: the pre-flight contract shared by every lowering — the
-/// profile must BE the target, and the general PTX family emits 32-wide
-/// warp-synchronous code (lane reductions, warp slices), so a profile
-/// declaring a different warp width is out of surface for it.
-/// Capabilities: declare before emitting.
+/// profile must BE the target, and the PTX/SPIR-V families this seam
+/// serves emit 32-wide warp-synchronous code (lane reductions, warp
+/// slices, subgroup ops), so a profile declaring a different warp width
+/// is out of surface for them. Capabilities: declare before emitting.
 fn check_profile(plan: &KernelPlan, kind: TargetKind, p: &TargetProfile) -> Result<(), String> {
     if p.kind != kind {
         return Err(format!(
@@ -73,19 +76,52 @@ fn check_profile(plan: &KernelPlan, kind: TargetKind, p: &TargetProfile) -> Resu
     }
     if p.warp_width != 32 {
         return Err(format!(
-            "plan '{}' needs 32-wide warps (the general PTX family emits warp-synchronous code) but the profile declares {} — Fix: use a warp-32 profile.",
+            "plan '{}' needs 32-wide warps (the PTX/SPIR-V families emit warp-synchronous code) but the profile declares {} — Fix: use a warp-32 profile.",
             plan.node, p.warp_width
         ));
     }
     Ok(())
 }
 
-/// The family contract: the general lowering realizes elementwise, loop,
-/// and reduction plans — matrix multiplication lowers through the tensor
-/// adapter. Rejecting here (before any emission material is touched) is
-/// "declare before emitting" applied to families.
-fn check_family(plan: &KernelPlan) -> Result<(), String> {
-    if plan.ops.iter().any(|o| matches!(o, PlanOp::Mma { .. })) {
+/// Plan admission for every strangler arm (2026-10-01, Phase 2.4): a
+/// `Some(plan)` must BE this node's plan and must carry the
+/// disjoint-work-item proof — emission never starts without both. `None`
+/// is the legacy arm (flag 0): no plan, no gates.
+pub(crate) fn admission_gates(
+    name: &str,
+    plan: Option<&KernelPlan>,
+) -> Result<(), String> {
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    if plan.node != name {
+        return Err(format!(
+            "node '{}': plan is for node '{}' — Fix: build the plan from this node's shape.",
+            name, plan.node
+        ));
+    }
+    if !plan.proofs.disjoint_workitems {
+        return Err(format!(
+            "node '{}': the plan carries no disjoint-work-item proof (overlapping work items would race) — Fix: make the iteration disjoint.",
+            name
+        ));
+    }
+    Ok(())
+}
+
+/// The family contract: each adapter realizes exactly one family — the
+/// general lowering refuses matrix plans, the tensor lowering refuses
+/// plans without them. Rejecting here (before any emission material is
+/// touched) is "declare before emitting" applied to families.
+fn check_family(plan: &KernelPlan, tensor: bool) -> Result<(), String> {
+    let has_mma = plan.ops.iter().any(|o| matches!(o, PlanOp::Mma { .. }));
+    if tensor && !has_mma {
+        return Err(format!(
+            "plan '{}' carries no matrix ops — the tensor lowering only lowers the GEMM family — Fix: route it to the general lowering.",
+            plan.node
+        ));
+    }
+    if !tensor && has_mma {
         return Err(format!(
             "plan '{}' carries matrix ops — the general lowering does not lower the tensor family — Fix: route it to the tensor lowering.",
             plan.node
@@ -107,11 +143,94 @@ impl GpuLowering for PtxGeneralLowering<'_> {
 
     fn lower(&self, plan: &KernelPlan, p: &TargetProfile) -> Result<LoweredNode, String> {
         check_profile(plan, TargetKind::Ptx, p)?;
-        check_family(plan)?;
+        check_family(plan, false)?;
         let (kernels, warnings) = crate::backend::ptx::emit_general_node(&self.ctx, Some(plan))?;
         Ok(LoweredNode {
             kernels,
             warnings,
+        })
+    }
+}
+
+/// Everything the PTX tensor-family emission needs beside the plan —
+/// same rule as [`GeneralNodeCtx`]: the plan is ISA-neutral, the material
+/// travels with it. (`int_bits` is not part of this family: the tensor
+/// tier's emitters take fixed-width fragment types.)
+pub struct GemmNodeCtx<'a> {
+    pub name: String,
+    pub shape: &'a KernelShape,
+    pub program: &'a [TopLevel],
+    pub layout: &'a SsboLayout,
+    pub universe: &'a TypeUniverse,
+    pub schedule: &'a crate::analysis::gpu_schedule::GpuSchedule,
+    pub irr_free: bool,
+}
+
+/// PTX lowering for the tensor (GEMM) family: the naive tier and the
+/// mma/`mma.sync` tier behind `ptx::emit_gemm_node`. Emits exactly one
+/// kernel per node (epilogue fusions folded in by the schedule).
+pub struct PtxTensorLowering<'a> {
+    pub ctx: GemmNodeCtx<'a>,
+}
+
+impl GpuLowering for PtxTensorLowering<'_> {
+    fn target(&self) -> TargetKind {
+        TargetKind::Ptx
+    }
+
+    fn lower(&self, plan: &KernelPlan, p: &TargetProfile) -> Result<LoweredNode, String> {
+        check_profile(plan, TargetKind::Ptx, p)?;
+        check_family(plan, true)?;
+        // The legacy branch already routed on `GemmPlan::match_stmts` —
+        // the same structural matcher `from_shape` enriches from, so the
+        // derivation cannot fail here; Err only on a plan/shape mismatch.
+        let gemm = crate::backend::spirv::gemm::GemmPlan::match_stmts(self.ctx.shape, self.ctx.program)
+            .ok_or_else(|| {
+                format!(
+                    "plan '{}' claims matrix ops but the node's body does not match the GEMM structure — Fix: rebuild the plan from this node's shape.",
+                    plan.node
+                )
+            })?;
+        let (kernel, warnings) = crate::backend::ptx::emit_gemm_node(&self.ctx, gemm, Some(plan))?;
+        Ok(LoweredNode {
+            kernels: vec![kernel],
+            warnings,
+        })
+    }
+}
+
+/// Everything the SPIR-V lowering needs beside the plan. The SPIR-V
+/// lane has ONE emission hook for every eligible node (`spirv::kernel::
+/// emit_kernel` — cooperative/tiled/tensor are flags inside it), so
+/// there is one adapter and no family gate: `kplans`/`reuse_map` are the
+/// image/alias material the hook binds.
+pub struct SpirvNodeCtx<'a> {
+    pub name: String,
+    pub shape: &'a KernelShape,
+    pub program: &'a [TopLevel],
+    pub universe: &'a TypeUniverse,
+    pub kplans: Vec<crate::analysis::image_storage::ImageStoragePlan>,
+    pub reuse_map: Option<&'a std::collections::HashMap<String, String>>,
+    pub int_bits: u64,
+}
+
+/// SPIR-V lowering for every eligible node — one adapter, one emission
+/// hook (the mirror of the PTX lane's two-family split; plan §12 item 5).
+pub struct SpirvLowering<'a> {
+    pub ctx: SpirvNodeCtx<'a>,
+}
+
+impl GpuLowering for SpirvLowering<'_> {
+    fn target(&self) -> TargetKind {
+        TargetKind::Spirv
+    }
+
+    fn lower(&self, plan: &KernelPlan, p: &TargetProfile) -> Result<LoweredNode, String> {
+        check_profile(plan, TargetKind::Spirv, p)?;
+        let kernel = crate::backend::spirv::runner::emit_node_kernel(&self.ctx, Some(plan))?;
+        Ok(LoweredNode {
+            kernels: vec![kernel],
+            warnings: Vec::new(),
         })
     }
 }
@@ -168,8 +287,13 @@ mod tests {
             b: FragLayout::new(16, 8, 2, false),
             acc: FragLayout::new(16, 16, 4, false),
         });
-        let e = check_family(&p).unwrap_err();
+        let e = check_family(&p, false).unwrap_err();
         assert!(e.contains("tensor family") && e.contains("Fix:"), "{e}");
-        assert!(check_family(&plan("g")).is_ok());
+        assert!(check_family(&plan("g"), false).is_ok());
+        // The tensor lowering is the mirror image: it refuses plans
+        // without matrix ops.
+        let e = check_family(&plan("g"), true).unwrap_err();
+        assert!(e.contains("no matrix ops") && e.contains("general lowering"), "{e}");
+        assert!(check_family(&p, true).is_ok());
     }
 }

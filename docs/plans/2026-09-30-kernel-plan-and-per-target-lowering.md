@@ -245,9 +245,29 @@ field retired).
      `disjoint_workitems` proof, gated by `check_profile` (kind + warp 32)
      and `check_family` (no `Mma`). Flag-off builds are byte-identical;
      suite 2814.
-   - **NEXT**: the SPIR-V lowering adapter + the tensor (`GemmPlan`)
-     adapter (§7), then `ReduceTree::Split` (item 4), then delete S1's
-     `split` field.
+   - 2.5 **DONE** (2026-10-01): the remaining lowering adapters —
+     `PtxTensorLowering` (the GEMM branch extracted to
+     `ptx::emit_gemm_node`, then decomposed under Praetor's fn ≤100 /
+     cog ≤15 / cyclo ≤15 / params ≤6 caps into `gemm_check_matrix_types`,
+     `gemm_stage_plan`, `gemm_select_grid`, `gemm_codegen`, `gemm_blob`,
+     `gemm_runner_kernel` + the `GemmTierIn`/`GemmKernelOut` parts
+     structs) and `SpirvLowering` (the SPIR-V loop extracted to
+     `spirv::runner::emit_node_kernel`, named to avoid the pre-existing
+     transaction emitter `emit_kernel_node`). The `spirv_plan_lowering`
+     knob (mirror of `ptx_plan_lowering`, default 0) routes flag-1
+     builds; plan admission is now ONE shared helper
+     (`gpu_lowering::admission_gates`) called by all three emitters, and
+     flag-1 tests share `config_tuning::SettingsGuard::install_with`.
+     Parity: `plan_lowering_parity_with_legacy_gemm` (tensor, naive f32
+     64³) and `spirv::tests::plan_lowering_parity_with_legacy` — flag 0
+     vs 1, kernel-for-kernel, blob-for-blob; gate tests
+     `spirv_plan_arm_gates_wrong_node` + the existing PTX pair. Flag-off
+     builds byte-identical (runner.c + .spv); suite 2817; Praetor: no
+     new violation rows (metric drift on the pre-existing
+     `build_ptx_kernels` rows is improvement: cog 126→34, fn 425→190).
+   - **NEXT**: `ReduceTree::Split` (item 4), then delete S1's `split`
+     field, then L1 primitive audit / D14 remainder / B4 per the
+     daily-use sweep umbrella.
 4. **Split as `ReduceTree::Split`** → device-validate (unblocks 5a).
    **Device validation DONE** (`68e5acfa`: declared `split<8>` fixture +
    knob fixture, both lanes). Remaining: fold the split decision into the

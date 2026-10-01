@@ -72,10 +72,25 @@ pub struct GeneralNodeCtx<'a> {   // material the emitters need beside the
 }
 ```
 
-- **`PtxGeneralLowering`** — the first adapter (Phase 2.4): pre-flight
-  `check_profile` (profile must BE the target; general PTX family needs
-  warp 32), `check_family` (no `Mma` — the tensor family goes to its own
-  adapter), then `ptx::emit_general_node(ctx, Some(plan))`.
+Adapters (all landed 2026-10-01, Phase 2.4):
+
+- **`PtxGeneralLowering`** — pre-flight `check_profile` (profile must BE
+  the target; the warp-synchronous families need warp 32),
+  `check_family(plan, tensor: false)` (no `Mma`), then
+  `ptx::emit_general_node(ctx, Some(plan))`.
+- **`PtxTensorLowering`** — same pre-flight with `check_family(plan,
+  true)` (requires `Mma`), derives `GemmPlan::match_stmts` on the arm,
+  then `ptx::emit_gemm_node(&GemmNodeCtx, gemm, Some(plan))` — ONE body,
+  two arms, like the general family. `GemmPlan` (field names, m/n/k) is
+  structural material the plan does not yet carry — derived by the same
+  matcher on both arms.
+- **`SpirvLowering`** — one adapter for every eligible node (the SPIR-V
+  lane's `emit_kernel` hook covers all families via cooperative/tiled/
+  tensor flags, so no family gate): `spirv::runner::emit_node_kernel(
+  &SpirvNodeCtx, Some(plan))`.
+- Plan admission is ONE shared helper — `gpu_lowering::admission_gates`
+  (node identity + `proofs.disjoint_workitems`); both PTX emitters and
+  the SPIR-V emitter call it (a `None` plan skips gates: the legacy arm).
 - **`LoweredNode { kernels, warnings }`** — warnings are the D28
   size-modifier notices; `KernelBlob` is currently `type KernelBlob =
   RunnerKernel` and narrows to the §7 `{name, domain, bytes, geometry}`
@@ -92,17 +107,23 @@ two arms:
 
 Routing: `build_ptx_kernels` reads the **`ptx_plan_lowering`** knob
 (`config_tuning`, default **0**, D30-writable via `### ptx_plan_lowering:
-1;`). Flag 1 constructs `KernelPlan::from_shape` per eligible general
-node and lowers through the trait; flag 0 never touches the plan.
+1;`) ONCE and gates both PTX families (general → `emit_general_node`,
+GEMM branch → `emit_gemm_node`); `build_kernels` (SPIR-V) reads the
+mirror **`spirv_plan_lowering`** knob the same way. Flag 1 constructs
+`KernelPlan::from_shape` per eligible node and lowers through the trait;
+flag 0 never touches the plan.
 
-**Parity is the license to flip the default**:
-`backend::ptx::tests::plan_lowering_parity_with_legacy` builds the
-`split<8>` deferred fixture with the flag 0 and 1 and pins both arms
-node-for-node, blob-for-blob (names, owners, blobs, split factors,
-block geometry, dispatch model, lane domain, warnings). Plan-gate
-coverage: `plan_arm_gates_wrong_node_and_missing_proof`; trait-level
-coverage: `gpu_lowering` tests (profile/kind/warp gates, tensor-family
-refusal).
+**Parity is the license to flip the default** (three tests, one
+contract): `ptx::tests::plan_lowering_parity_with_legacy` (general,
+`split<8>` deferred fixture), `plan_lowering_parity_with_legacy_gemm`
+(tensor, naive f32 64³ GEMM), and `spirv::tests::
+plan_lowering_parity_with_legacy` — flag 0 vs flag 1 pinned kernel-for-
+kernel, blob-for-blob. Plan-gate coverage: `plan_arm_gates
+_wrong_node_and_missing_proof` (PTX) and `spirv_plan_arm_gates
+_wrong_node` (SPIR-V); trait-level coverage: `gpu_lowering` tests
+(profile/kind/warp gates, family refusal). Test installs share
+`config_tuning::SettingsGuard::install_with` (Drop restores the full
+settings generation).
 
 The same parity test flushed out the `compile_cubin` shared-workdir race
 (BUGS.md, fixed: `cubin_workdir(pid, call_seq)` — unique dir per call).
@@ -118,12 +139,14 @@ land:
 2. warp-slicing has no plan fact yet;
 3. the split factor lives in `deferred_split_for` (source > config >
    model) until item 4 populates `ReduceTree::Split` at construction;
-4. the tensor family (`GemmPlan` nodes) still routes through the legacy
-   GEMM branch — its adapter is NEXT (§7).
+4. the tensor family now lowers through `PtxTensorLowering` — but the
+   adapter still derives `GemmPlan` itself; when the plan carries gemm
+   fields (§7), the derivation moves to plan construction (still one
+   matcher, both arms).
 
 ## Sequencing pointer
 
-See plan §12: 2.4 DONE (this seam) → SPIR-V adapter + tensor adapter →
-`ReduceTree::Split` (item 4) → delete S1's `split` field → Phase 3
-retirements (Rule 24 existence proofs retire when general machinery
-reaches their numbers).
+See plan §12: 2.4 DONE (this seam) → SPIR-V adapter + tensor adapter
+DONE (2026-10-01) → `ReduceTree::Split` (item 4) → delete S1's `split`
+field → Phase 3 retirements (Rule 24 existence proofs retire when
+general machinery reaches their numbers).
