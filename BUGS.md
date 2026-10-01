@@ -33,6 +33,72 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Split OOB partial writes poisoned the reference — FIXED 2026-10-01
+
+**Symptom:** the declared-`split<8>` softmax fixture failed
+`softmax_gate.sh` on the CUDA lane with `max_rel=9.02` while the `S = 1`
+baseline passed at 7.03e-06. The gate's bad samples showed the
+*reference* disagreeing with the device — yet an independent f64
+recomputation matched the DEVICE output exactly for every sampled
+element.
+
+**Root cause:** the plan's workspace gate
+(`docs/plans/2026-09-30-general-reduction-split.md`, §4) was specified
+but never implemented. The S partials materialize in the accumulator
+buffer as `count*S*(2+dim)` floats (8·8·130 = 8320); the fixture's `acc`
+was `Float[1024]`, so partial writes ran past the buffer into the next
+projection field (`k` begins at byte 8224, `acc` ends at 8208) —
+corrupting `k`, and with it the gate reference's inputs. The merge math
+was correct all along.
+
+**Fix:** `enforce_split_workspace` (`src/backend/ptx/mod.rs`) — after
+eligibility, `count*S*(2+dim)` must fit the accumulator's declared
+element count, else fall back to `S = 1`. A declared `split<N>` gets a
+why-string naming the shortfall (D28); the config knob falls back
+silently like every other knob ineligibility. Regression tests:
+`split_deferred_refuses_undersized_workspace` and
+`split_deferred_emits_well_formed_partial_and_combine_ptx`. Gate now
+passes both lanes (CUDA 5.91e-06, Vulkan 2.06e-05).
+
+**How to undo:** delete the gate and build the old `Float[1024]`
+fixture — `softmax_gate.sh` fails at ~9e0 while the device output still
+matches an independent recomputation (the reference reads clobbered
+inputs).
+
+## Split partial used an undeclared slice register — FIXED 2026-10-01
+
+**Symptom:** every CUDA-lane build of a split node died with
+`briev: no GPU device available` — `cuModuleLoadData` failed
+(`a PTX JIT compilation failed (rc 218)`); `briev_accel_init` returned 0.
+
+**Root cause:** `decode_split_ctaid` (`src/backend/ptx/general.rs`)
+allocated the slice register through `fresh_r()` but never emitted its
+`.reg` declaration — the JIT rejects the whole module for one
+undeclared operand. Shape-string tests could not see it.
+
+**Fix:** the function now pushes `.reg .u32 {slice};` into the
+declaration block. Pinned statically by `assert_ptx_well_formed`'s
+undeclared-register check.
+
+**How to undo:** drop the declaration push — the CUDA lane dies at init
+again while every unit test stays green.
+
+## Combine `-inf` literal one hex nibble short — FIXED 2026-10-01
+
+**Symptom:** `ptxas` fatals (`line 24; fatal: Parsing error near
+'ff800000'`) whenever cubin emission runs; `compile_cubin` fell back to
+PTX text, which the CUDA JIT then rejected at load.
+
+**Root cause:** `emit_deferred_combine_ptx` hardcoded the negative
+infinity immediate as `"0ff800000"` — seven hex digits after `0f`
+instead of eight (`0f` + `FF800000`).
+
+**Fix:** `f32_imm(f32::NEG_INFINITY)` (the shared `0f{:08X}` formatter).
+Pinned by `assert_ptx_well_formed`'s 8-digit immediate check.
+
+**How to undo:** re-hardcode the string — cubin emission fails open to
+text and the on-device split gate fails again.
+
 ## `ptx_tensor_stages` silently ignored on the strategy path — FIXED 2026-09-30
 
 **Symptom:** setting `ptx_tensor_stages` (2 or 3) via `--config-dir` had

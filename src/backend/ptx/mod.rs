@@ -1804,6 +1804,56 @@ fn deferred_split_for(
     }
 }
 
+/// 2026-10-01 (general reduction-split plan, S4 workspace gate): the S
+/// partials materialize in the accumulator buffer as count*S*(2+dim)
+/// floats — past the buffer's declared count they clobber the following
+/// projection fields (observed: `k` poisoned, so the on-device
+/// reference's inputs — not the merge math — were wrong). The plan's
+/// gate (`capacity >= count*S*(2+D)`, else S = 1) is enforced here for
+/// BOTH the declared modifier and the config knob; only a declared
+/// `split<N>` gets the why-string (D28), a knob refusal stays silent
+/// like every other knob ineligibility. Undo only alongside an equally
+/// sound bound — the OOB must stay impossible.
+fn enforce_split_workspace(
+    outcome: (u32, Option<(i64, String, String)>, Option<String>),
+    count: i64,
+    node_split: Option<u32>,
+    layout: &crate::backend::spirv::runner::SsboLayout,
+) -> (u32, Option<(i64, String, String)>, Option<String>) {
+    let (split, info, warn) = outcome;
+    let Some((dim, acc_buf, out_buf)) = info else {
+        return (split, info, warn);
+    };
+    let declared = node_split.filter(|n| *n > 1);
+    let needed = (count as u64)
+        .saturating_mul(split as u64)
+        .saturating_mul((2i64.saturating_add(dim)) as u64);
+    let Some(acc_cap) = layout
+        .fields
+        .iter()
+        .find(|f| f.name == acc_buf)
+        .map(|f| f.count)
+    else {
+        let w = declared.map(|n| {
+            format!(
+                "split<{}> not applied — accumulator '{}' has no storage in the kernel layout, so partials cannot be materialized. Fix: keep '{}' a written buffer of at least {} floats, use a smaller N, or `irr`.",
+                n, acc_buf, acc_buf, needed
+            )
+        });
+        return (1, None, w);
+    };
+    if needed > acc_cap {
+        let w = declared.map(|n| {
+            format!(
+                "split<{}> not applied — the workspace needs {} floats ({} work items x {} slices x (2 + {})) but accumulator '{}' has {}. Fix: size '{}' to at least {} floats, use a smaller N, or `irr`.",
+                n, needed, count, n, dim, acc_buf, acc_cap, acc_buf, needed
+            )
+        });
+        return (1, None, w);
+    }
+    (split, Some((dim, acc_buf, out_buf)), warn)
+}
+
 /// 2026-09-30 (general reduction-split): the combine-push context.
 struct CombinePush<'a> {
     name: &'a str,
@@ -2144,7 +2194,7 @@ pub fn build_ptx_kernels(
             // enablement prerequisite.
             let node_split = node_split_modifier(program, name);
             let (def_split, def_info, split_warn) =
-                deferred_split_for(&e.shape, deferred, count, &consts, node_split);
+                enforce_split_workspace(deferred_split_for(&e.shape, deferred, count, &consts, node_split), count, node_split, &layout);
             // 2026-09-30 (D28/D29): a declared split that ends up
             // unapplied is warned, not silent — `irr` silences site-locally.
             if let Some(why) = split_warn.filter(|_| irr_free) {
@@ -2648,5 +2698,140 @@ mod tests {
         // Scale folds into phase 1 (f32 on the accumulator).
         assert!(ptx.contains("5e-1"), "the middle scale folds into phase 1");
         assert!(ptx.contains("%ctaid.y"), "m_tile decodes from ctaid.y (the 2D block grid)");
+    }
+
+    /// 2026-10-01 (split device-validation): the whole PTX lane for a
+    /// `split<8>` deferred node, from source text to emitted kernels.
+    /// The two tests below pin both sides of the S4 workspace gate; the
+    /// on-device gate (softmax_gate.sh, both lanes) remains the semantic
+    /// authority.
+    fn build_sfused(acc_size: &str) -> (Vec<RunnerKernel>, Vec<String>) {
+        use crate::ast::PropertyValue;
+        let user = format!(
+            "const D: Int = 128;
+const H: Int = 8;
+const NKV: Int = 256;
+
+let h: Int = 0;
+let q: Float[1024];
+let k: Float[262144];
+let v: Float[262144];
+let acc: Float[{acc_size}];
+let a_out: Float[1024];
+
+split<8> async node sfused [h < H][h == H] {{
+    softmax_fused!(
+        q[h * D + d] * k[h * (D * NKV) + j * D + d],
+        v[h * (D * NKV) + j * D + d],
+        NKV, D,
+        acc, a_out,
+        h * D, h * D
+    );
+    h = h + 1;
+    term;
+}};"
+        );
+        let lib = std::fs::read_to_string("lib/std/numeric.bv").expect("read numeric.bv");
+        let parse = |src: &str| {
+            let tokens = crate::lexer::tokenize(src).expect("lex");
+            crate::parser::Parser::new(tokens, src)
+                .parse_program()
+                .expect("parse")
+        };
+        let mut items = parse(&user);
+        items.extend(parse(&lib));
+        let mut pm = crate::plugin::PluginManager::new();
+        crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
+        let expanded = crate::plugin::composite::expand_composites(&mut items, &pm)
+            .expect("composite expansion");
+        assert_eq!(expanded, 1, "softmax_fused! expands once");
+        let mut universe = TypeUniverse::new();
+        crate::backend::spirv::normalizer::normalize(&mut items, &mut universe, 64)
+            .expect("normalize");
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("accel".to_string(), PropertyValue::Identifier("try_all".into()));
+        let accel = crate::analysis::accel::analyze(&items, &meta, Some(&universe));
+        assert!(
+            accel.get("sfused").map(|e| e.shape.eligible).unwrap_or(false),
+            "sfused is an eligible kernel"
+        );
+        let schedule =
+            crate::analysis::gpu_schedule::build_schedule(&items, &accel, &Default::default(), false);
+        build_ptx_kernels(&items, &universe, 64, &accel, &schedule).expect("ptx lane")
+    }
+
+    /// 2026-10-01 (S4 workspace gate): partials need count*S*(2+D) =
+    /// 8*8*130 = 8320 floats — Float[1024] must refuse with the numbers.
+    /// The OOB that poisoned `k` (and with it the on-device reference)
+    /// must stay impossible.
+    #[test]
+    fn split_deferred_refuses_undersized_workspace() {
+        let (kernels, warns) = build_sfused("1024");
+        assert!(
+            !kernels.iter().any(|k| k.name.ends_with("__partial")),
+            "undersized workspace must not split: {:?}",
+            kernels.iter().map(|k| &k.name).collect::<Vec<_>>()
+        );
+        let refusal = warns
+            .iter()
+            .find(|w| w.contains("not applied"))
+            .unwrap_or_else(|| panic!("refusal warned: {warns:?}"));
+        assert!(
+            refusal.contains("workspace needs 8320 floats")
+                && refusal.contains("'acc' has 1024"),
+            "refusal names the shortfall: {refusal}"
+        );
+    }
+
+    /// 2026-10-01 (split device-validation): Float[16384] >= 8320 — the
+    /// split<8> engages: partial + combine emitted, no "not applied"
+    /// refusal, and BOTH blobs statically well-formed (undeclared
+    /// registers / malformed immediates are exactly what the CUDA JIT
+    /// rejects; shape-string tests could see neither).
+    #[test]
+    fn split_deferred_emits_well_formed_partial_and_combine_ptx() {
+        let (kernels, warns) = build_sfused("16384");
+        let names: Vec<&str> = kernels.iter().map(|k| k.name.as_str()).collect();
+        assert!(names.contains(&"sfused__partial"), "partial: {names:?}");
+        assert!(names.contains(&"sfused__combine"), "combine: {names:?}");
+        assert!(
+            !warns.iter().any(|w| w.contains("not applied")),
+            "split<8> applied cleanly: {warns:?}"
+        );
+        // Blob forms: ELF (ptxas accepted the PTX during compile_cubin —
+        // ITS success is the static validation) or PTX text (cubin emit
+        // off/unavailable — then assert_ptx_well_formed applies). Either
+        // way a JIT-rejecting blob cannot pass: pre-fix it was rejected
+        // text, post-fix it only reaches ELF through ptxas.
+        let mut checked = 0;
+        for k in &kernels {
+            if k.spirv.is_empty() {
+                continue;
+            }
+            checked += 1;
+            if k.spirv.starts_with(b"\x7fELF") {
+                continue;
+            }
+            let ptx = std::str::from_utf8(&k.spirv)
+                .unwrap_or_else(|_| panic!("kernel '{}' blob is PTX text or ELF", k.name));
+            assert!(
+                ptx.starts_with(".version"),
+                "kernel '{}' unrecognized blob: {:?}",
+                k.name,
+                &ptx[..ptx.len().min(40)]
+            );
+            general::assert_ptx_well_formed(ptx);
+            if k.name == "sfused__partial" {
+                assert!(ptx.contains("rem.u32"), "split decodes ctaid mod S: {ptx}");
+            }
+        }
+        assert!(checked >= 2, "partial + combine blobs checked: {checked}");
+        let partial = &kernels.iter().find(|k| k.name == "sfused__partial").unwrap();
+        assert_eq!(partial.split, 8, "split factor on the partial");
+        assert_eq!(
+            partial.domain,
+            crate::backend::spirv::runner::KernelDomain::CudaOnly,
+            "partial is the CUDA-lane projection"
+        );
     }
 }

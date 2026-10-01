@@ -1033,7 +1033,7 @@ impl<'a> Gen<'a> {
             // is count*S — decode slice = ctaid % S and h = ctaid / S into
             // %r1, so the existing guard (%r1 >= count) still kills only
             // out-of-range blocks.
-            self.decode_split_ctaid(&mut body);
+            self.decode_split_ctaid(&mut decl, &mut body);
             body.push_str(&format!(
                 "    setp.ge.u32 %p1, %r1, {};\n",
                 self.count
@@ -2812,6 +2812,14 @@ mod tests {
         assert!(ptx.contains("mul.lo.u32 %r3, %r3, 4;"), "split stride: {ptx}");
         assert!(ptx.contains("setp.ge.u32 %p1, %r1, 32;"), "count guard: {ptx}");
         assert!(ptx.contains("setp.ge.u32 %p2, %r2, 128;"), "dim guard: {ptx}");
+        // 2026-10-01 (split device-validation): the merge's running-max init
+        // must be the -inf immediate the JIT accepts (a one-nibble-short
+        // literal was a parse error on-device; shape strings cannot see it).
+        assert!(
+            ptx.contains(&f32_imm(f32::NEG_INFINITY)),
+            "-inf immediate: {ptx}"
+        );
+        assert_ptx_well_formed(&ptx);
     }
 }
 
@@ -3235,6 +3243,131 @@ fn f32_imm(v: f32) -> String {
     format!("0f{:08X}", v.to_bits())
 }
 
+/// 2026-10-01 (split device-validation): every `.reg` declaration in the
+/// PTX, as `%name` tokens.
+#[cfg(test)]
+fn collect_declared_regs(ptx: &str) -> std::collections::HashSet<String> {
+    ptx.lines()
+        .filter(|line| line.trim_start().starts_with(".reg"))
+        .flat_map(|line| line.split(','))
+        .flat_map(|part| part.split_whitespace())
+        .filter_map(|tok| tok.strip_prefix('%'))
+        .map(|name| name.trim_matches(|c: char| c == ';' || c == ','))
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("%{name}"))
+        .collect()
+}
+
+/// 2026-10-01: from `lb[start..]`, the end of the alphabetic run and the
+/// end of the full `%alpha<digits>` token (`%r3` → (alpha_end, tok_end)).
+/// Iterator positions, not nested scans — a byte-pair walk is enough.
+#[cfg(test)]
+fn reg_token_parts(lb: &[u8], start: usize) -> (usize, usize) {
+    let alpha_end = lb[start..]
+        .iter()
+        .position(|b| !b.is_ascii_alphabetic())
+        .map_or(lb.len(), |p| start + p);
+    let tok_end = lb[alpha_end..]
+        .iter()
+        .position(|b| !b.is_ascii_digit())
+        .map_or(lb.len(), |p| alpha_end + p);
+    (alpha_end, tok_end)
+}
+
+/// 2026-10-01: the numeric register operand at a `%` position — `%rN`/
+/// `%rdN`/`%fN`/`%pN` with at least one digit. Declarations on `.reg`
+/// lines are filtered by the caller.
+#[cfg(test)]
+fn numeric_reg_at(line: &str, pct: usize) -> Option<&str> {
+    let (alpha_end, tok_end) = reg_token_parts(line.as_bytes(), pct + 1);
+    let alpha = &line[pct + 1..alpha_end];
+    if tok_end > alpha_end && matches!(alpha, "r" | "rd" | "f" | "p") {
+        return Some(&line[pct..tok_end]);
+    }
+    None
+}
+
+/// 2026-10-01: register uses that no `.reg` line declares — the CUDA JIT
+/// rejects the module for a single one.
+#[cfg(test)]
+fn undeclared_regs(ptx: &str, declared: &std::collections::HashSet<String>) -> Vec<String> {
+    ptx.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with(".reg"))
+        .flat_map(|(li, line)| line.match_indices('%').map(move |(pct, _)| (li, line, pct)))
+        .filter_map(|(li, line, pct)| numeric_reg_at(line, pct).map(|reg| (li, reg)))
+        .filter(|(_, reg)| !declared.contains(*reg))
+        .map(|(li, reg)| format!("line {}: {reg}", li + 1))
+        .collect()
+}
+
+/// 2026-10-01: end of the hexdigit run starting at `start`.
+#[cfg(test)]
+fn hex_run_end(lb: &[u8], start: usize) -> usize {
+    lb[start..]
+        .iter()
+        .position(|b| !b.is_ascii_hexdigit())
+        .map_or(lb.len(), |p| start + p)
+}
+
+/// 2026-10-01: byte positions where a `0f`/`0F` float immediate starts
+/// (token boundary: start of line or space/comma/equals/bracket/tab
+/// before the `0`).
+#[cfg(test)]
+fn imm0f_starts(lb: &[u8]) -> Vec<usize> {
+    lb.windows(2)
+        .enumerate()
+        .filter(|(_, w)| w[0] == b'0' && (w[1] == b'f' || w[1] == b'F'))
+        .filter(|(i, _)| *i == 0 || matches!(lb[i - 1], b' ' | b',' | b'=' | b'[' | b'\t'))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// 2026-10-01: `0f`/`0F` float immediates whose hex run is not exactly 8
+/// digits (a seven-digit run parses as garbage — ptxas fatals near it).
+/// The run stops at the token end by construction, so only the length is
+/// in question.
+#[cfg(test)]
+fn malformed_float_immediates(ptx: &str) -> Vec<String> {
+    ptx.lines()
+        .enumerate()
+        .flat_map(|(li, line)| imm0f_starts(line.as_bytes()).into_iter().map(move |i| (li, line, i)))
+        .filter_map(|(li, line, i)| {
+            let end = hex_run_end(line.as_bytes(), i + 2);
+            if end <= i + 2 || end - (i + 2) == 8 {
+                return None;
+            }
+            Some(format!("line {}: '0f{}'", li + 1, &line[i + 2..end]))
+        })
+        .collect()
+}
+
+/// 2026-10-01 (split device-validation): static PTX well-formedness —
+/// every numeric register operand (`%rN`/`%rdN`/`%fN`/`%pN`) is declared,
+/// and every `0f` immediate carries exactly 8 hex digits. These are the
+/// two defect classes `ptxas`/the CUDA JIT reject (the split's undeclared
+/// `%r3` slice register; a one-nibble-short `-inf` literal in the combine
+/// kernel) — both shipped because shape-string tests cannot see them.
+/// Toolkit-free so it runs anywhere; the on-device gate (softmax_gate.sh,
+/// both lanes) remains the semantic authority.
+#[cfg(test)]
+pub(crate) fn assert_ptx_well_formed(ptx: &str) {
+    let declared = collect_declared_regs(ptx);
+    let undeclared = undeclared_regs(ptx, &declared);
+    let bad_imm = malformed_float_immediates(ptx);
+    assert!(
+        undeclared.is_empty(),
+        "PTX uses undeclared registers: {:?}",
+        &undeclared[..undeclared.len().min(8)]
+    );
+    assert!(
+        bad_imm.is_empty(),
+        "PTX has malformed float immediates: {:?}",
+        &bad_imm[..bad_imm.len().min(8)]
+    );
+}
+
+
 fn fold_f32(
     e: &Expr,
     consts: &std::collections::HashMap<String, Expr>,
@@ -3264,11 +3397,17 @@ impl Gen<'_> {
     /// 2026-09-30 (general reduction-split): decode `slice = ctaid % S` and
     /// `h = ctaid / S` into `%r1` for a split block-per-work-item kernel;
     /// no-op when the split is off.
-    fn decode_split_ctaid(&mut self, body: &mut String) {
+    fn decode_split_ctaid(&mut self, decl: &mut String, body: &mut String) {
         if self.deferred_split <= 1 {
             return;
         }
         let slice_reg = self.fresh_r();
+        // 2026-10-01 (split device-validation): every fresh register must
+        // land in the declaration block — the slice register was allocated
+        // here but never declared, and the CUDA JIT rejected the whole
+        // partial kernel for the undeclared `%r3` (the device gate found
+        // it; shape-string tests could not).
+        decl.push_str(&format!("    .reg .u32 {};\n", slice_reg));
         body.push_str(&format!(
             "    rem.u32 {}, %r1, {};\n",
             slice_reg, self.deferred_split
@@ -3774,7 +3913,11 @@ pub fn emit_deferred_combine_ptx(
     let out_off = off(out_buf)?;
     let stride = 2 + dim;
     let log2e = "0f3FB8AA3B"; // 1.4426950408889634
-    let neg_inf = "0ff800000";
+    // 2026-10-01 (split device-validation): derived via `f32_imm` — the
+    // hand-written "0ff800000" was one hex nibble short of `-inf`
+    // (`0fFF800000`), a PTX parse error the CUDA lane died on. Immediates
+    // are never hand-typed; `assert_ptx_well_formed` pins the digit count.
+    let neg_inf = f32_imm(f32::NEG_INFINITY);
     let mut out = String::new();
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
     out.push_str(".visible .entry main (.param .b64 proj_param)\n{\n");

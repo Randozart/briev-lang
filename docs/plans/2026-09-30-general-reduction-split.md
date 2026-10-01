@@ -83,7 +83,15 @@ node**, so the change spans four surfaces:
    per-slice `(m_s, l_s, acc_s)`.
 4. **Workspace**: the accumulator buffer (`acc_buf`, e.g. `o1` sized
    `H·NKV`) holds the `S·(2+D)` partials per work item — no layout change,
-   gated on `NKV ≥ S·(2+D)` (else `S = 1`).
+   gated on `NKV ≥ S·(2+D)` (else `S = 1`). **Gate implemented
+   2026-10-01** (`enforce_split_workspace`, `src/backend/ptx/mod.rs`):
+   `count·S·(2+dim)` must fit the accumulator's declared element count,
+   for both the declared modifier (D28 why-string, numbers included) and
+   the config knob (silent fallback). Found while device-validating S3 —
+  an undersized accumulator (`Float[1024]` vs the needed 8320) had been
+   clobbering the following projection field (`k`) with OOB partial
+   writes, which poisoned the *reference's* inputs rather than the merge
+   math (BUGS.md, 2026-10-01).
 
 **Ordered implementation (each committed + device-gated):**
 - **S1** `RunnerKernel` split metadata + runner two-launch codegen (no
@@ -98,16 +106,28 @@ node**, so the change spans four surfaces:
   decodes the slice, restricts the `j` sub-span, writes per-slice partials;
   `mod.rs` computes `S = reduction_split_factor(count, kv)`, pushes the
   `<node>__combine` kernel. Default-off byte-identical (verified).
+  **Device validation DONE 2026-10-01**: declared `split<8>` fixture
+  (`examples/gpu/softmax_composite_s8.abv`, accumulator sized for the
+  workspace) passes `softmax_gate.sh` on both lanes — CUDA 5.91e-06,
+  Vulkan 2.06e-05; the `S = 1` baseline fixture passes at 7.03e-06 /
+  2.06e-05. Two emission defects found and fixed en route (undeclared
+  slice register `%r3` → CUDA JIT rc 218; a seven-hex-digit `-inf`
+  literal → ptxas parse fatal — both in BUGS.md 2026-10-01, both now
+  pinned statically by `assert_ptx_well_formed`).
 
-**ENABLEMENT PREREQUISITE (found while wiring S3).** The `.abv` build is
+**ENABLEMENT PREREQUISITE (found while wiring S3) — RESOLVED 2026-09-30
+with option (b), validated 2026-10-01.** The `.abv` build is
 dual-image (one desc carries both the SPIR-V and PTX blobs, selected per
 driver at runtime). A split makes the PTX image a *partial* kernel with a
 different grid contract than the SPIR-V image — but the two share one desc
 and one runner dispatch, so enabling `ptx_deferred_split` would break the
 Vulkan lane (no SPIR-V combine). Enablement therefore needs either (a) a
 SPIR-V combine emitter, or (b) a lane-conditional dispatch so only the CUDA
-lane takes the two-launch path. **Device validation of S2+S3 is pending
-behind this.**
+lane takes the two-launch path. **(b) shipped**: partial/combine kernels
+are `KernelDomain::CudaOnly`, the runner dispatches them on the CUDA lane
+only, the Vulkan lane keeps the Shared dual-image full kernel; a declared
+`split<N>` modifier enables the split per site (D2/D28/D29).
+**Device validation of S2+S3 DONE 2026-10-01** — see the S3 entry above.
 
 
 
