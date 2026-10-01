@@ -123,3 +123,34 @@ diagnostics).
 
 Suite green; warnings 19; gemm_h byte-identity; Praetor no new rows;
 device gate both lanes at A5; docs same commit.
+
+## 6. Status
+
+**A1–A5 DONE 2026-10-01** (commits 29fc25ad, ce05a0a1, e19ea501 + this):
+- A1 CPU truth: registry + interpreter (RMW in the binding — the value-
+  model question resolved: arrays are `Value::Product`, the arm mutates
+  the same store the element-assign path mutates) + LLVM (state-GEP →
+  element GEP → atomicrmw).
+- A2 analysis: purity admission; the At-target classified read+write
+  (before: invisible to collect_expr_buffers entirely); the disjoint-
+  write proof bypassed BY SHAPE (the call inspects no Assign — the call
+  IS the Rule-22 classification).
+- A3 PTX: element address via the buf[i] math, ONE true
+  `atom.acq_rel.gpu.global.add.u64`; Int-Let routing fixed (calls yield
+  f32-flattened Ints, cvt into the u32 local); ptxas smoke in the test.
+- A4 SPIR-V: (buf,i) synthesizes the buf[i] address expression, reuses
+  emit_addr, ONE OpAtomicIAdd; Int64Atomics declared ATOMIC-SITE-ONLY
+  (unconditional form broke gemm_h byte-identity — the gate caught it);
+  scope/semantics as OpConstant OBJECT operands (spirv-val caught the
+  literal form); shaderBufferInt64Atomics in the C probe chain.
+- A5 device gate: `benchmarks/atomic_gate.sh` + `atomic_inc.abv` —
+  1024 work items × 1 atomic add, `total[0] == 1024` on BOTH lanes
+  (zero lost updates). PTX and SPIR-V agree bit-for-bit with the CPU
+  contract.
+
+**A6 remainder (follow-ups, each an I-arm per the ledger):** the At-
+family expansion (Sub/Cas/Xchg/And/Or/Xor), Float-at on f32 (SPIR-V
+needs the atomic-float extension), the pointer-based Atomic* family on
+GPU lanes, non-default orderings on SPIR-V (PTX carries them via the
+scope qualifier), and a stdlib wrapper (blocked: no size-generic array
+params in .bv defn signatures).

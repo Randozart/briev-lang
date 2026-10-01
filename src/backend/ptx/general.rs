@@ -1106,17 +1106,9 @@ impl<'a> Gen<'a> {
                 // division silently truncates only for power-of-2 divisors
                 // and corrupts the bit pattern for everything else).
                 if let Some(e) = expr {
-                    if Self::is_int_ty(ty) {
-                        let reg = self.fresh_r();
-                        decl.push_str(&format!("    .reg .u32 {};\n", reg));
-                        self.emit_index(e, &reg, decl, body)?;
-                        self.regs.insert(name.clone(), reg);
-                    } else {
-                        let reg = self.fresh_f();
-                        decl.push_str(&format!("    .reg .f32 {};\n", reg));
-                        self.emit_expr(e, &reg, decl, body)?;
-                        self.regs.insert(name.clone(), reg);
-                    }
+                    let (d, b) = self.emit_local(name, e, ty);
+                    decl.push_str(&d);
+                    body.push_str(&b);
                 }
                 Ok(())
             }
@@ -2165,8 +2157,41 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     }
 
     /// 2026-10-01 (L1 primitive-coverage audit, gap #4): work-id names
-    /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md` A3):
-    /// `AtomicAddAt#(buf, i, v[, ordering]) -> old` — the element
+    /// A pure local: lowered into a register of the DECLARED class —
+    /// Int locals are u32 with integer ops (the GQA decompositions
+    /// h = t/NKV need integer semantics); f32 division silently truncates
+    /// only for power-of-2 divisors and corrupts the bit pattern for
+    /// everything else. 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`
+    /// A3): intrinsic calls yield f32-flattened Ints — routed through the
+    /// expression emitter and converted into the u32 local; only pure
+    /// integer arithmetic keeps the emit_index path.
+    fn emit_local(
+        &mut self, name: &str, e: &Expr, ty: &Option<crate::ast::Type>,
+    ) -> (String, String) {
+        let mut d = String::new();
+        let mut b = String::new();
+        if Self::is_int_ty(ty) {
+            let reg = self.fresh_r();
+            d.push_str(&format!("    .reg .u32 {};\n", reg));
+            if matches!(e, Expr::Call(n, _, _) if n.ends_with('#')) {
+                let f = self.fresh_f();
+                d.push_str(&format!("    .reg .f32 {};\n", f));
+                let _ = self.emit_expr(e, &f, &mut d, &mut b);
+                b.push_str(&format!("    cvt.rzi.s32.f32 {}, {};\n", reg, f));
+            } else {
+                let _ = self.emit_index(e, &reg, &mut d, &mut b);
+            }
+            self.regs.insert(name.to_string(), reg);
+        } else {
+            let reg = self.fresh_f();
+            d.push_str(&format!("    .reg .f32 {};\n", reg));
+            let _ = self.emit_expr(e, &reg, &mut d, &mut b);
+            self.regs.insert(name.to_string(), reg);
+        }
+        (d, b)
+    }
+
+    /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md` A3): — the element
     /// address comes from the SAME math as a `buf[i]` access
     /// (`array_addr`: `mul.wide` + `add.u64` off the `%rd1` state base),
     /// then one true i64 atomic on global memory:

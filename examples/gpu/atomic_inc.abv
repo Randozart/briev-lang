@@ -1,0 +1,16 @@
+// atomic_inc.abv — AtomicAddAt# device-validation fixture (plan
+// 2026-10-01-atomic-element-rmw.md A5). N work items each increment
+// total[0] atomically; the gate asserts total[0] == N on BOTH lanes —
+// a lost update (non-atomic lowering) shows up as a short count.
+import "std/numeric.bv";
+
+const N: Int = 1024;
+
+let i: Int = 0;
+let total: Int[8];
+
+async node inc [i < N][i == N] {
+    let old: Int = AtomicAddAt#(total, 0, 1);
+    i = i + 1;
+    term;
+};
