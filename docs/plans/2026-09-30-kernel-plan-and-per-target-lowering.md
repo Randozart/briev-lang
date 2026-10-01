@@ -265,14 +265,39 @@ field retired).
      builds byte-identical (runner.c + .spv); suite 2817; Praetor: no
      new violation rows (metric drift on the pre-existing
      `build_ptx_kernels` rows is improvement: cog 126→34, fn 425→190).
-   - **NEXT**: `ReduceTree::Split` (item 4), then delete S1's `split`
-     field, then L1 primitive audit / D14 remainder / B4 per the
-     daily-use sweep umbrella.
+   - 2.6 **DONE** (2026-10-01): the split intent is plan-level —
+     `ReduceTree::Split` (item 4 below).
+   - **NEXT**: delete S1's `split` field, then L1 primitive audit / D14
+     remainder / B4 per the daily-use sweep umbrella.
 4. **Split as `ReduceTree::Split`** → device-validate (unblocks 5a).
    **Device validation DONE** (`68e5acfa`: declared `split<8>` fixture +
-   knob fixture, both lanes). Remaining: fold the split decision into the
-   plan IR as `ReduceTree::Split` (the §7 rewrite) so both lanes consume
-   one plan-level decision.
+   knob fixture, both lanes). **PLAN IR DONE** (2026-10-01): the split
+   decision now rides in the plan. Analysis (`kernel_plan.rs`) owns the
+   full decision chain moved verbatim from `backend::ptx` —
+   `fold_count`, `split_eligible`, the `split<N>` modifier parse
+   (`declared_split_factor`), plus `deferred_split_tree` which records
+   the INTENT at construction: source (`split<N>`) > model
+   (`reduction_split_factor_for`, hardware-parametric), gated by the
+   deferred facts (`reduce_end`/`normalize_end`, pinned equal to the
+   emitter matcher by `deferred_facts_agree_between_plan_and_matcher`)
+   and the emitter preconditions — ineligible or unresolvable ⇒
+   `ReduceTree::Linear`, never a split the emitter could not lower.
+   `KernelPlan::split_tree_factor()` is the accessor. The PTX lowering
+   consumes it (`deferred_split_for` gains `SplitFactors { declared,
+   plan }`; gates/enablement/warnings still run on both arms from the
+   same legacy inputs — a plan factor can restate, never enable),
+   config knobs (`ptx_deferred_region`/`ptx_deferred_split`) and the
+   workspace gate remain DOWN-SELECTS at lowering (the plan never reads
+   them — Rule 2), and SPIR-V lowers `Split` linearly for now (documented
+   capability gap on `SpirvLowering::lower`, no silent semantic change).
+   Parity: model path (`plan_lowering_parity_model_split_knob`), refusal
+   path (`plan_lowering_parity_declared_split_refusal`), workspace
+   refusal on both arms, the existing declared-split parity now flows
+   through the plan factor. Flag-off byte-identical (runner.c + .spv);
+   suite 2822; warnings 19; Praetor no new rows (numeric drift only);
+   `softmax_gate.sh` s8 + knob fixtures both lanes PASS (5.91e-06 /
+   2.06e-05, matching the recorded device baseline). Remaining: delete
+   S1's `RunnerKernel.split` field (contract B runner/desc projection).
 5. SPIR-V lowering; Vulkan consumes `gpu_strategy`.
 6. Phase 3 retirements.
 7. (Future) CPU/LLVM lowerings.

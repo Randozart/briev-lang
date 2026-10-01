@@ -225,6 +225,14 @@ impl GpuLowering for SpirvLowering<'_> {
         TargetKind::Spirv
     }
 
+    /// 2026-10-01 (plan §12 item 4): capability note — a plan whose
+    /// reduce op carries `ReduceTree::Split` lowers LINEARLY on this
+    /// lane: SPIR-V emission does not yet realize the partial/combine
+    /// combine split (the PTX `dispatch_with_split` has no SPIR-V
+    /// analogue). The intent is recorded, admission/gates run, but the
+    /// emission degrades to one full-image kernel — a capability gap,
+    /// never a silent semantic change. Closing it (a SPIR-V split
+    /// lowering) is the same general-lowering work, not a new codepath.
     fn lower(&self, plan: &KernelPlan, p: &TargetProfile) -> Result<LoweredNode, String> {
         check_profile(plan, TargetKind::Spirv, p)?;
         let kernel = crate::backend::spirv::runner::emit_node_kernel(&self.ctx, Some(plan))?;

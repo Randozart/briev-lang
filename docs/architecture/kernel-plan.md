@@ -137,8 +137,16 @@ land:
 1. deferred dispatch still probes `shape.deferred_normalize` (op-set
    ambiguity, see above);
 2. warp-slicing has no plan fact yet;
-3. the split factor lives in `deferred_split_for` (source > config >
-   model) until item 4 populates `ReduceTree::Split` at construction;
+3. **RESOLVED 2026-10-01 (item 4)**: the split intent is recorded at
+   construction — the deferred reduce op carries `ReduceTree::Split`
+   (source `split<N>` > model, gated by the emitter preconditions; the
+   matcher/frontend fact equivalence is pinned by test). The lowering
+   reads `plan.split_tree_factor()` instead of recomputing; the enablement
+   gates (declared / deferred+knob) and the workspace capacity gate stay
+   at lowering on BOTH arms (down-selects only — the plan never reads a
+   config knob). Capability note: the SPIR-V lane lowers `Split` linearly
+   (no partial/combine combine emission yet) — see the gap note on
+   `SpirvLowering::lower`;
 4. the tensor family now lowers through `PtxTensorLowering` — but the
    adapter still derives `GemmPlan` itself; when the plan carries gemm
    fields (§7), the derivation moves to plan construction (still one
@@ -147,6 +155,6 @@ land:
 ## Sequencing pointer
 
 See plan §12: 2.4 DONE (this seam) → SPIR-V adapter + tensor adapter
-DONE (2026-10-01) → `ReduceTree::Split` (item 4) → delete S1's `split`
-field → Phase 3 retirements (Rule 24 existence proofs retire when
-general machinery reaches their numbers).
+DONE (2026-10-01) → `ReduceTree::Split` (item 4) DONE (2026-10-01) →
+delete S1's `split` field → Phase 3 retirements (Rule 24 existence
+proofs retire when general machinery reaches their numbers).

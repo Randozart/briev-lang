@@ -166,6 +166,144 @@ pub struct KernelPlan {
     pub proofs: PlanProofs,
 }
 
+/// 2026-10-01 (plan §12 item 4): resolve a non-negative expression
+/// through the module consts — the shared resolver for plan spans and
+/// the split intent (was the `resolve` closure in `from_shape`).
+fn resolve_nonneg(e: &Expr, consts: &std::collections::HashMap<String, Expr>) -> Option<u64> {
+    match e {
+        Expr::Decimal(v) if *v >= 0 => Some(*v as u64),
+        Expr::Identifier(n) => match consts.get(n) {
+            Some(Expr::Decimal(v)) if *v >= 0 => Some(*v as u64),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Fold a work-item count expression through the module consts.
+/// 2026-10-01 (item 4): moved from `backend::ptx` verbatim (the plan's
+/// split model needs the same fold; DRY — one implementation). Error
+/// strings kept verbatim for diagnostic byte-identity.
+pub(crate) fn fold_count(
+    shape: &crate::analysis::accel::KernelShape,
+    consts: &std::collections::HashMap<String, Expr>,
+) -> Result<i64, String> {
+    let e = shape.count_expr.clone().unwrap_or(Expr::Decimal(0));
+    match e {
+        Expr::Decimal(n) => Ok(n),
+        Expr::Identifier(s) => match consts.get(&s) {
+            Some(Expr::Decimal(n)) => Ok(*n),
+            _ => Err(format!("ptx general: count '{}' is not a constant", s)),
+        },
+        Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) => {
+            let lv = fold_side(&l, consts)?;
+            let rv = fold_side(&r, consts)?;
+            Ok(lv * rv)
+        }
+        other => Err(format!(
+            "ptx general: count expression {:?} not foldable",
+            other
+        )),
+    }
+}
+
+fn fold_side(e: &Expr, consts: &std::collections::HashMap<String, Expr>) -> Result<i64, String> {
+    match e {
+        Expr::Decimal(n) => Ok(*n),
+        Expr::Identifier(s) => match consts.get(s) {
+            Some(Expr::Decimal(n)) => Ok(*n),
+            _ => Err(format!("ptx general: count operand '{}' is not a constant", s)),
+        },
+        other => Err(format!("ptx general: count operand {:?} not foldable", other)),
+    }
+}
+
+/// Can the deferred region `(kv, dim)` be split by `s`? (emitter
+/// preconditions: 32-divisible slices, a combine block `dim ≤ 1024`).
+/// 2026-10-01 (item 4): moved from `backend::ptx` verbatim — the plan's
+/// split intent applies the SAME preconditions the emitter enforces.
+pub(crate) fn split_eligible(kv: i64, dim: i64, s: u64) -> bool {
+    s > 1
+        && dim > 0
+        && dim <= 1024
+        && dim % 32 == 0
+        && kv % s as i64 == 0
+        && (kv / s as i64) % 32 == 0
+}
+
+/// The declared `split<N>` reduction-split factor of a node (D1/D2),
+/// if any. `N > 1` (1 is no split).
+/// 2026-10-01 (item 4): the modifier parse moved here from
+/// `backend::ptx::node_split_modifier` so plan construction and the
+/// lowering read ONE declaration (DRY, rule 17/18).
+pub(crate) fn declared_split_factor(items: &[TopLevel], name: &str) -> Option<u32> {
+    fn from_txn(t: &crate::ast::top::Transaction) -> Option<u32> {
+        let expr = t
+            .modifiers
+            .iter()
+            .find(|m| m.name == "split")
+            .and_then(|m| m.value.as_ref())?;
+        match expr {
+            Expr::Decimal(n) if *n > 1 => Some(*n as u32),
+            _ => None,
+        }
+    }
+    for item in items {
+        match item {
+            TopLevel::Transaction(t) if t.name == name => return from_txn(t),
+            TopLevel::SyncGroup { item, .. } => {
+                if let TopLevel::Transaction(t) = item.as_ref() {
+                    if t.name == name {
+                        return from_txn(t);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 2026-10-01 (plan §12 item 4): the split INTENT recorded in the plan —
+/// source (`split<N>`) > model (`reduction_split_factor_for`), gated by
+/// the deferred proof and the emitter preconditions (`split_eligible`).
+/// Config knobs are LOWERING decisions: they may down-select
+/// Split → Linear at emission, never up-invent; workspace capacity is a
+/// materialization fact and stays at lowering. The plan therefore
+/// records what the cost model wants (Rule 2: most efficient default).
+/// `resolve` mirrors the plan-span resolver; an unfolded count degrades
+/// to `Linear` here — the emitter propagates the same fold error later.
+fn deferred_split_tree(
+    declared: Option<u32>,
+    count: Option<i64>,
+    dn: &crate::analysis::accel::DeferredNormalization,
+    consts: &std::collections::HashMap<String, Expr>,
+    hw: &GpuHardware,
+) -> ReduceTree {
+    let (Some(count), Some(kv), Some(dim)) = (
+        count,
+        resolve_nonneg(&dn.reduce_end, consts),
+        resolve_nonneg(&dn.normalize_end, consts),
+    ) else {
+        return ReduceTree::Linear;
+    };
+    let kv = kv as i64;
+    let dim = dim as i64;
+    let s = match declared {
+        Some(n) => n as u64,
+        None => crate::analysis::gpu_strategy::reduction_split_factor_for(
+            count as u64,
+            kv as u64,
+            hw,
+        ),
+    };
+    if split_eligible(kv, dim, s) {
+        ReduceTree::Split { factor: s }
+    } else {
+        ReduceTree::Linear
+    }
+}
+
 impl KernelPlan {
     /// Derive the plan for an eligible kernel shape (Phase 1).
     ///
@@ -183,16 +321,7 @@ impl KernelPlan {
         hw: &GpuHardware,
     ) -> KernelPlan {
         use crate::analysis::accel::ReductionKind;
-        let resolve = |e: &Expr| -> Option<u64> {
-            match e {
-                Expr::Decimal(v) if *v >= 0 => Some(*v as u64),
-                Expr::Identifier(n) => match consts.get(n) {
-                    Some(Expr::Decimal(v)) if *v >= 0 => Some(*v as u64),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
+        let resolve = |e: &Expr| resolve_nonneg(e, consts);
         let has_deferred = shape.deferred_normalize.is_some();
         let has_reduce = shape.reduction.is_some();
         let gemm = detect_gemm_shape(shape, items);
@@ -286,10 +415,19 @@ impl KernelPlan {
         } else if let Some(dn) = &shape.deferred_normalize {
             // Deferred/softmax region (takes precedence, as in the emitter):
             // the reduction span is the accumulator loop's range end.
+            // 2026-10-01 (item 4): the reduce op carries the split
+            // INTENT (`ReduceTree::Split`) instead of hardcoded Linear —
+            // see `deferred_split_tree`.
             ops.push(PlanOp::Reduce {
                 op: ReduceOp::SoftmaxNormalize,
                 span: resolve(&dn.reduce_end).unwrap_or(0),
-                tree: ReduceTree::Linear,
+                tree: deferred_split_tree(
+                    declared_split_factor(items, name),
+                    fold_count(shape, consts).ok(),
+                    dn,
+                    consts,
+                    hw,
+                ),
                 frag: None,
             });
             ops.push(PlanOp::Barrier {
@@ -333,6 +471,20 @@ impl KernelPlan {
     /// A stable, line-oriented textual dump for golden tests and A/B
     /// harnesses. Format is part of the test contract — extend, don't
     /// reorder.
+    /// 2026-10-01 (plan §12 item 4): the plan's split factor —
+    /// `Some(S)` when the reduce op carries [`ReduceTree::Split`],
+    /// `None` for linear. The lowering consumes this instead of
+    /// recomputing the source/model decision (plan as decision record).
+    pub fn split_tree_factor(&self) -> Option<u64> {
+        self.ops.iter().find_map(|op| match op {
+            PlanOp::Reduce {
+                tree: ReduceTree::Split { factor },
+                ..
+            } => Some(*factor),
+            _ => None,
+        })
+    }
+
     pub fn dump(&self) -> String {
         let mut s = String::new();
         s.push_str(&format!("node {}\n", self.node));
@@ -633,11 +785,89 @@ mod tests {
         };
         let d = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86).dump();
         assert!(d.contains("node fattn"), "{d}");
+        // 2026-10-01 (item 4): the plan records the split INTENT —
+        // no declared modifier, so the model decides: count 32, KV 4096,
+        // SM86 (112 CTAs targeted → ceil(112/32) = 4) = split(4).
         assert!(
-            d.contains("op reduce softmax span=4096 tree=linear"),
-            "deferred span is the accumulator loop end: {d}"
+            d.contains("op reduce softmax span=4096 tree=split(4)"),
+            "deferred span + model split intent: {d}"
         );
         assert!(d.contains("op store a_out:global:4"), "{d}");
+        let p = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86);
+        assert_eq!(p.split_tree_factor(), Some(4), "accessor reads the intent");
+    }
+
+    /// 2026-10-01 (item 4): the split intent degrades to Linear when an
+    /// emitter precondition fails (dim must be a warp multiple) — the
+    /// plan never records a split the emitter could not lower.
+    #[test]
+    fn from_shape_refuses_ineligible_split() {
+        use crate::analysis::accel::{DeferredNormalization, KernelShape};
+        let mut consts = std::collections::HashMap::new();
+        consts.insert("NKV".to_string(), Expr::Decimal(4096));
+        consts.insert("D".to_string(), Expr::Decimal(100));
+        let shape = KernelShape {
+            index_var: "h".into(),
+            count_expr: Some(Expr::Decimal(32)),
+            kernel_stmts: vec![],
+            host_stmts: vec![],
+            read_buffers: vec!["q".into()],
+            write_buffers: vec!["a_out".into()],
+            scalar_ins: vec![],
+            eligible: true,
+            reasons: vec![],
+            work_cols: None,
+            reduction: None,
+            deferred_normalize: Some(DeferredNormalization {
+                denominator: "l".into(),
+                acc_buf: "o1".into(),
+                out_buf: "a_out".into(),
+                normalize_var: "d".into(),
+                normalize_end: Expr::Identifier("D".into()),
+                reduce_end: Expr::Identifier("NKV".into()),
+            }),
+        };
+        let p = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86);
+        assert_eq!(p.split_tree_factor(), None, "D=100 is not warp-multiple");
+        assert!(p.dump().contains("tree=linear"), "{}", p.dump());
+    }
+
+    /// 2026-10-01 (item 4): the declared `split<N>` modifier is read by
+    /// plan construction (source > model).
+    #[test]
+    fn declared_split_factor_reads_source() {
+        use crate::ast::{Annotation, Transaction};
+        let mk = |mods: Vec<Annotation>| {
+            vec![TopLevel::Transaction(Transaction {
+                name: "red".into(),
+                is_reactive: true,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: crate::ast::top::Contract::new(Expr::Decimal(1), Expr::Decimal(1)),
+                body: vec![],
+                metadata: std::collections::HashMap::new(),
+                derivation: None,
+                span: None,
+                modifiers: mods,
+                doc: None,
+            })]
+        };
+        let declared = mk(vec![Annotation {
+            name: "split".into(),
+            value: Some(Expr::Decimal(8)),
+        }]);
+        assert_eq!(declared_split_factor(&declared, "red"), Some(8));
+        assert_eq!(declared_split_factor(&declared, "other"), None);
+        let none = mk(vec![]);
+        assert_eq!(declared_split_factor(&none, "red"), None);
+        let one = mk(vec![Annotation {
+            name: "split".into(),
+            value: Some(Expr::Decimal(1)),
+        }]);
+        assert_eq!(declared_split_factor(&one, "red"), None, "1 is no split");
     }
 
     #[test]

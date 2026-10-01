@@ -1596,7 +1596,7 @@ fn emit_cooperative_reduction_ptx(
             ))
         }
     };
-    let rows = fold_count(shape, &consts)? as u64;
+    let rows = crate::analysis::kernel_plan::fold_count(shape, &consts)? as u64;
     let what = match red.kind {
         ReductionKind::Softmax => "softmax",
         ReductionKind::Dot => "dot",
@@ -1681,30 +1681,6 @@ fn field_type_map(program: &[TopLevel]) -> std::collections::HashMap<String, Typ
         .collect()
 }
 
-/// Fold an accel node's work-item count expression to a constant.
-fn fold_count(
-    shape: &crate::analysis::accel::KernelShape,
-    consts: &std::collections::HashMap<String, Expr>,
-) -> Result<i64, String> {
-    let e = shape.count_expr.clone().unwrap_or(Expr::Decimal(0));
-    match e {
-        Expr::Decimal(n) => Ok(n),
-        Expr::Identifier(s) => match consts.get(&s) {
-            Some(Expr::Decimal(n)) => Ok(*n),
-            _ => Err(format!("ptx general: count '{}' is not a constant", s)),
-        },
-        Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) => {
-            let lv = fold_side(&l, consts)?;
-            let rv = fold_side(&r, consts)?;
-            Ok(lv * rv)
-        }
-        other => Err(format!(
-            "ptx general: count expression {:?} not foldable",
-            other
-        )),
-    }
-}
-
 fn fold_side(e: &Expr, consts: &std::collections::HashMap<String, Expr>) -> Result<i64, String> {
     match e {
         Expr::Decimal(n) => Ok(*n),
@@ -1726,17 +1702,6 @@ fn expr_const_i64(e: &Expr, consts: &std::collections::HashMap<String, Expr>) ->
         },
         _ => None,
     }
-}
-
-/// Can the deferred region `(kv, dim)` be split by `s`? (emitter
-/// preconditions: 32-divisible slices, a combine block `dim ≤ 1024`).
-fn split_eligible(kv: i64, dim: i64, s: u64) -> bool {
-    s > 1
-        && dim > 0
-        && dim <= 1024
-        && dim % 32 == 0
-        && kv % s as i64 == 0
-        && (kv / s as i64) % 32 == 0
 }
 
 /// 2026-09-30 (Phase 2/3, general reduction-split): the (name, domain) of a
@@ -1761,19 +1726,30 @@ fn deferred_primary_identity(
 /// node plus `(dim, acc_buf, out_buf)` for the combine kernel. `(1, None)`
 /// when the split is off, the region does not map, or the emitter
 /// preconditions fail.
+/// 2026-10-01 (plan §12 item 4): the two split-factor SOURCES —
+/// `declared` is the source `split<N>` (also the enablement gate),
+/// `plan` is the plan's recorded intent (flag-1 only; `None` on the
+/// legacy arm). Bundled to keep `deferred_split_for` under the
+/// six-parameter cap (Praetor datalog rule 4).
+#[derive(Default)]
+struct SplitFactors {
+    declared: Option<u32>,
+    plan: Option<u64>,
+}
+
 fn deferred_split_for(
     shape: &crate::analysis::accel::KernelShape,
     deferred: bool,
     count: i64,
     consts: &std::collections::HashMap<String, Expr>,
-    node_split: Option<u32>,
+    factors: SplitFactors,
 ) -> (u32, Option<(i64, String, String)>, Option<String>) {
     // 2026-09-30 (D2): a declared `split<N>` (source) enables the split and
     // pins the factor; otherwise it needs the deferred region + the config
     // knob. Source > config > model. (D28/D29): a declared split that ends
     // up unapplied is returned as a bare why-string — the call site names
     // the node, and `irr` silences site-locally.
-    let declared = node_split.filter(|n| *n > 1);
+    let declared = factors.declared.filter(|n| *n > 1);
     if declared.is_none() && !(deferred && crate::config_tuning::ir_lowering().ptx_deferred_split == 1)
     {
         return (1, None, None);
@@ -1801,11 +1777,22 @@ fn deferred_split_for(
         });
         return (1, None, w);
     };
-    let s = match declared {
-        Some(n) => n as u64,
-        None => crate::analysis::gpu_strategy::reduction_split_factor(count as u64, kv as u64),
+    // 2026-10-01 (plan §12 item 4): the plan's recorded intent wins
+    // when present (flag-1 arm: `ReduceTree::Split` lowered here); the
+    // legacy arm passes None and computes source > model inline. The
+    // gates above (declared/deferred/knob) run first on BOTH arms, so a
+    // plan factor can only restate a decision the legacy gates already
+    // permit — never enable a split the legacy path would refuse.
+    let s = match factors.plan {
+        Some(p) => p,
+        None => match declared {
+            Some(n) => n as u64,
+            None => {
+                crate::analysis::gpu_strategy::reduction_split_factor(count as u64, kv as u64)
+            }
+        },
     };
-    if split_eligible(kv, dim, s) {
+    if crate::analysis::kernel_plan::split_eligible(kv, dim, s) {
         (s as u32, Some((dim, acc_buf, out_buf)), None)
     } else {
         let w = declared.map(|n| {
@@ -1969,15 +1956,6 @@ fn node_tile_modifier(program: &[TopLevel], name: &str) -> Option<(u64, u64)> {
             }
             _ => None,
         },
-        _ => None,
-    }
-}
-
-/// The declared `split<N>` reduction-split factor of a node (D1/D2), if any.
-/// `N > 1` (1 is no split).
-fn node_split_modifier(program: &[TopLevel], name: &str) -> Option<u32> {
-    match node_shape_annotation(program, name, "split") {
-        Some(Expr::Decimal(n)) if *n > 1 => Some(*n as u32),
         _ => None,
     }
 }
@@ -2191,7 +2169,7 @@ pub(crate) fn emit_general_node(
     // general 1D PTX emitter (the row-ops between GEMMs in an attention
     // decode live here).
     let consts = module_expr_consts(program);
-    let count = fold_count(shape, &consts)?;
+    let count = crate::analysis::kernel_plan::fold_count(shape, &consts)?;
     // 2026-09-19 (M1 warp-sliced reductions, plan general-machinery): a
     // sliced kernel is a 128-thread block-per-workitem dispatch (4 warp
     // slices + shared-memory merge) — the desc carries the geometry so
@@ -2210,9 +2188,25 @@ pub(crate) fn emit_general_node(
     // deferred region across S CTAs + a combine pass. DEFAULT OFF
     // (`ptx_deferred_split: 0`); see the plan for the dual-lane
     // enablement prerequisite.
-    let node_split = node_split_modifier(program, name);
-    let (def_split, def_info, split_warn) =
-        enforce_split_workspace(deferred_split_for(shape, deferred, count, &consts, node_split), count, node_split, &layout);
+    let node_split = crate::analysis::kernel_plan::declared_split_factor(program, name);
+    // 2026-10-01 (item 4): flag-1 lowers the plan's split intent;
+    // flag 0 passes None (legacy source > model, byte-identical).
+    let plan_factor = plan.and_then(|p| p.split_tree_factor());
+    let (def_split, def_info, split_warn) = enforce_split_workspace(
+        deferred_split_for(
+            shape,
+            deferred,
+            count,
+            &consts,
+            SplitFactors {
+                declared: node_split,
+                plan: plan_factor,
+            },
+        ),
+        count,
+        node_split,
+        &layout,
+    );
     // 2026-09-30 (D28/D29): a declared split that ends up unapplied is
     // warned, not silent — `irr` silences site-locally.
     if let Some(why) = split_warn.filter(|_| irr_free) {
@@ -2857,7 +2851,12 @@ mod tests {
         let tokens3 = crate::lexer::tokenize(src3).expect("tokenize");
         let mut p3 = crate::parser::Parser::new(tokens3, src3);
         let program3 = p3.parse_program().expect("parse");
-        assert_eq!(node_split_modifier(&program3, "redu"), Some(8));
+        // 2026-10-01 (item 4): the modifier parse moved to the plan
+        // (source of truth for both lanes) — same declaration, same value.
+        assert_eq!(
+            crate::analysis::kernel_plan::declared_split_factor(&program3, "redu"),
+            Some(8)
+        );
     }
 
     #[test]
@@ -2987,6 +2986,21 @@ mod tests {
         std::collections::HashMap<String, crate::analysis::accel::AccelEntry>,
         crate::analysis::gpu_schedule::GpuSchedule,
     ) {
+        sfused_pipeline_decl(acc_size, "split<8> ")
+    }
+
+    /// 2026-10-01 (item 4): `split_mod` selects the node's split
+    /// modifier — `""` exercises the model path (source > model has no
+    /// source), `"split<7> "` an ineligible declaration (refusal parity).
+    fn sfused_pipeline_decl(
+        acc_size: &str,
+        split_mod: &str,
+    ) -> (
+        Vec<crate::ast::TopLevel>,
+        TypeUniverse,
+        std::collections::HashMap<String, crate::analysis::accel::AccelEntry>,
+        crate::analysis::gpu_schedule::GpuSchedule,
+    ) {
         use crate::ast::PropertyValue;
         let user = format!(
             "const D: Int = 128;
@@ -3000,7 +3014,7 @@ let v: Float[262144];
 let acc: Float[{acc_size}];
 let a_out: Float[1024];
 
-split<8> async node sfused [h < H][h == H] {{
+{split_mod}async node sfused [h < H][h == H] {{
     softmax_fused!(
         q[h * D + d] * k[h * (D * NKV) + j * D + d],
         v[h * (D * NKV) + j * D + d],
@@ -3042,7 +3056,11 @@ split<8> async node sfused [h < H][h == H] {{
     }
 
     fn build_sfused(acc_size: &str) -> (Vec<RunnerKernel>, Vec<String>) {
-        let (items, universe, accel, schedule) = sfused_pipeline(acc_size);
+        build_sfused_decl(acc_size, "split<8> ")
+    }
+
+    fn build_sfused_decl(acc_size: &str, split_mod: &str) -> (Vec<RunnerKernel>, Vec<String>) {
+        let (items, universe, accel, schedule) = sfused_pipeline_decl(acc_size, split_mod);
         build_ptx_kernels(&items, &universe, 64, &accel, &schedule).expect("ptx lane")
     }
 
@@ -3066,6 +3084,22 @@ split<8> async node sfused [h < H][h == H] {{
             refusal.contains("workspace needs 8320 floats")
                 && refusal.contains("'acc' has 1024"),
             "refusal names the shortfall: {refusal}"
+        );
+        // 2026-10-01 (item 4): the plan arm refuses identically — the
+        // workspace gate is a lowering materialization fact on BOTH
+        // arms, never invented by the plan.
+        let _f = crate::config_tuning::SettingsGuard::install_with(|s| {
+            s.ptx_plan_lowering = 1
+        });
+        let (kernels2, warns2) = build_sfused("1024");
+        assert!(
+            !kernels2.iter().any(|k| k.name.ends_with("__partial")),
+            "plan arm refuses too: {:?}",
+            kernels2.iter().map(|k| &k.name).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            warns, warns2,
+            "flag 0 / flag 1 refusal warnings identical"
         );
     }
 
@@ -3165,6 +3199,80 @@ split<8> async node sfused [h < H][h == H] {{
         });
         let planned = build_sfused("16384");
         assert_parity(legacy, planned);
+    }
+
+    /// 2026-10-01 (plan §12 item 4): MODEL path parity — no declared
+    /// modifier, both knobs on: the plan records the cost-model intent
+    /// (`reduction_split_factor_for`) and the legacy arm computes it
+    /// inline; flag 1 must emit the identical split. The plan never
+    /// reads the knobs (they down-select at lowering only).
+    #[test]
+    fn plan_lowering_parity_model_split_knob() {
+        let _k = crate::config_tuning::SettingsGuard::install_with(|s| {
+            s.ptx_deferred_region = true;
+            s.ptx_deferred_split = 1;
+        });
+        let legacy = build_sfused_decl("16384", "");
+        assert!(
+            legacy.0.iter().any(|k| k.name.ends_with("__partial")),
+            "model path engages the split: {:?}",
+            legacy.0.iter().map(|k| &k.name).collect::<Vec<_>>()
+        );
+        let _f = crate::config_tuning::SettingsGuard::install_with(|s| {
+            s.ptx_plan_lowering = 1
+        });
+        let planned = build_sfused_decl("16384", "");
+        assert_parity(legacy, planned);
+    }
+
+    /// 2026-10-01 (plan §12 item 4): REFUSAL parity — a declared
+    /// `split<7>` is ineligible (256 % 7 != 0): both arms emit no
+    /// partial and carry the SAME warning, whether the decision comes
+    /// from the plan's intent (degraded to Linear) or inline.
+    #[test]
+    fn plan_lowering_parity_declared_split_refusal() {
+        let legacy = build_sfused_decl("16384", "split<7> ");
+        assert!(
+            !legacy.0.iter().any(|k| k.name.ends_with("__partial")),
+            "ineligible declaration must not split: {:?}",
+            legacy.0.iter().map(|k| &k.name).collect::<Vec<_>>()
+        );
+        let _f = crate::config_tuning::SettingsGuard::install_with(|s| {
+            s.ptx_plan_lowering = 1
+        });
+        let planned = build_sfused_decl("16384", "split<7> ");
+        assert_parity(legacy, planned);
+    }
+
+    /// 2026-10-01 (plan §12 item 4): the split facts the PLAN consumes
+    /// (`DeferredNormalization::reduce_end`/`normalize_end`, buffers)
+    /// must equal the facts the EMITTER matcher resolves
+    /// (`deferred_region_info` → la_end/lc_end). If these ever diverge,
+    /// the plan's intent would describe a different region than the
+    /// one lowered — this pins the equivalence on a real fused fixture.
+    #[test]
+    fn deferred_facts_agree_between_plan_and_matcher() {
+        let (items, _universe, accel, _schedule) = sfused_pipeline("16384");
+        let shape = &accel["sfused"].shape;
+        let dn = shape
+            .deferred_normalize
+            .as_ref()
+            .expect("deferred proof present");
+        let info = general::deferred_region_info(&shape.kernel_stmts, &shape.index_var)
+            .expect("matcher region present");
+        let consts = module_expr_consts(&items);
+        assert_eq!(
+            expr_const_i64(&dn.reduce_end, &consts),
+            expr_const_i64(&info.0, &consts),
+            "kv fact (reduce_end vs la_end)"
+        );
+        assert_eq!(
+            expr_const_i64(&dn.normalize_end, &consts),
+            expr_const_i64(&info.1, &consts),
+            "dim fact (normalize_end vs lc_end)"
+        );
+        assert_eq!(dn.acc_buf, info.2, "accumulator buffer");
+        assert_eq!(dn.out_buf, info.3, "output buffer");
     }
 
     /// 2026-10-01 (Phase 2.4): the same parity contract for the TENSOR
