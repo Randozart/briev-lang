@@ -1752,8 +1752,14 @@ fn deferred_split_for(
     deferred: bool,
     count: i64,
     consts: &std::collections::HashMap<String, Expr>,
+    node_split: Option<u32>,
 ) -> (u32, Option<(i64, String, String)>) {
-    if !(deferred && crate::config_tuning::ir_lowering().ptx_deferred_split == 1) {
+    // 2026-09-30 (D2): a declared `split<N>` (source) enables the split and
+    // pins the factor; otherwise it needs the deferred region + the config
+    // knob. Source > config > model.
+    let declared = node_split.filter(|n| *n > 1);
+    if declared.is_none() && !(deferred && crate::config_tuning::ir_lowering().ptx_deferred_split == 1)
+    {
         return (1, None);
     }
     let Some((kve, dime, acc_buf, out_buf)) =
@@ -1767,7 +1773,10 @@ fn deferred_split_for(
     ) else {
         return (1, None);
     };
-    let s = crate::analysis::gpu_strategy::reduction_split_factor(count as u64, kv as u64);
+    let s = match declared {
+        Some(n) => n as u64,
+        None => crate::analysis::gpu_strategy::reduction_split_factor(count as u64, kv as u64),
+    };
     if split_eligible(kv, dim, s) {
         (s as u32, Some((dim, acc_buf, out_buf)))
     } else {
@@ -1876,6 +1885,15 @@ fn node_tile_modifier(program: &[TopLevel], name: &str) -> Option<(u64, u64)> {
             }
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// The declared `split<N>` reduction-split factor of a node (D1/D2), if any.
+/// `N > 1` (1 is no split).
+fn node_split_modifier(program: &[TopLevel], name: &str) -> Option<u32> {
+    match node_shape_annotation(program, name, "split") {
+        Some(Expr::Decimal(n)) if *n > 1 => Some(*n as u32),
         _ => None,
     }
 }
@@ -2020,7 +2038,9 @@ pub fn build_ptx_kernels(
             // deferred region across S CTAs + a combine pass. DEFAULT OFF
             // (`ptx_deferred_split: 0`); see the plan for the dual-lane
             // enablement prerequisite.
-            let (def_split, def_info) = deferred_split_for(&e.shape, deferred, count, &consts);
+            let node_split = node_split_modifier(program, name);
+            let (def_split, def_info) =
+                deferred_split_for(&e.shape, deferred, count, &consts, node_split);
             let ptx = general::emit_general_ptx(
                 &e.shape,
                 count,
@@ -2382,6 +2402,12 @@ mod tests {
         let mut p2 = crate::parser::Parser::new(tokens2, src2);
         let program2 = p2.parse_program().expect("parse");
         assert_eq!(node_tile_modifier(&program2, "gemm"), Some((128, 128)));
+
+        let src3 = "split<8> node redu [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens3 = crate::lexer::tokenize(src3).expect("tokenize");
+        let mut p3 = crate::parser::Parser::new(tokens3, src3);
+        let program3 = p3.parse_program().expect("parse");
+        assert_eq!(node_split_modifier(&program3, "redu"), Some(8));
     }
 
     #[test]

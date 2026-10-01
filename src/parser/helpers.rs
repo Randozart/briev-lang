@@ -169,7 +169,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 Some(Token::Identifier(s))
-                    if (s == "stage" || s == "tile")
+                    if (s == "stage" || s == "tile" || s == "split")
                         && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
                 {
                     // 2026-09-30 (gpu-syntax-decision-record D1/D14): shape
@@ -221,7 +221,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(Token::Gt)?;
-        let want = if keyword == "stage" { 1 } else { 2 };
+        let want = if keyword == "tile" { 2 } else { 1 };
         if nums.len() != want {
             return Err(SyntaxError::InvalidStatement {
                 reason: format!(

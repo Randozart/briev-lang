@@ -1378,7 +1378,7 @@ impl<'a> Parser<'a> {
     fn starts_modifier_run(&self) -> bool {
         match self.peek() {
             Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => true,
-            Some(Token::Identifier(s)) if s == "stage" || s == "tile" => {
+            Some(Token::Identifier(s)) if s == "stage" || s == "tile" || s == "split" => {
                 matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt))
             }
             _ => false,
