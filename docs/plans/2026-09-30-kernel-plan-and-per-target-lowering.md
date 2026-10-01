@@ -223,10 +223,23 @@ field retired).
    - 2.2 **DONE** (`b89b750c`): compile.rs carries PTX companions as
      `CudaOnly` projections; the split-enabled build emits
      `fattn__combine` + the lane branch.
-   - **NEXT**: primary-as-`CudaOnly` for a split node + the multi-path
-     split factor (so `ptx_deferred_split` is correct/enableable), then
-     the PTX/SPIR-V lowering adapters, then delete S1's `split` field.
+   - 2.3 **DONE** (`68e5acfa`): primary-as-`CudaOnly` for a split node
+     was already in `deferred_primary_identity`; the missing half was the
+     S4 workspace gate (`enforce_split_workspace`) — without it
+     `ptx_deferred_split` corrupted memory. With the gate, the knob is
+     **correct and enableable**: in-source `### ptx_deferred_split: 1;`
+     on a workspace-sized fixture (`examples/gpu/softmax_composite_knob.abv`)
+     emits `sfused__partial` + `sfused__combine` and passes
+     `softmax_gate.sh` on BOTH lanes (CUDA 5.91e-06, Vulkan 2.06e-05);
+     the multi-path split factor is per-kernel (partial S=8, SPIR-V full
+     S=1, combine S=1) and both grids validated on device.
+   - **NEXT**: the PTX/SPIR-V lowering adapters (§7), then delete S1's
+     `split` field.
 4. **Split as `ReduceTree::Split`** → device-validate (unblocks 5a).
+   **Device validation DONE** (`68e5acfa`: declared `split<8>` fixture +
+   knob fixture, both lanes). Remaining: fold the split decision into the
+   plan IR as `ReduceTree::Split` (the §7 rewrite) so both lanes consume
+   one plan-level decision.
 5. SPIR-V lowering; Vulkan consumes `gpu_strategy`.
 6. Phase 3 retirements.
 7. (Future) CPU/LLVM lowerings.

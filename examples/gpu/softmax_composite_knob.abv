@@ -1,0 +1,32 @@
+###
+ptx_deferred_split: 1;
+###
+// softmax_composite_s8.abv — split<8> device-validation fixture (plan
+// 2026-09-30-general-reduction-split.md): the same softmax_fused! shape as
+// softmax_composite.abv with a declared split<8>. The accumulator carries
+// the partials workspace (S4 gate): count*S*(2+D) = 8*8*130 = 8320 floats
+// <= Float[16384] — an undersized accumulator is refused at compile time.
+import "std/numeric.bv";
+
+const D: Int = 128;
+const H: Int = 8;
+const NKV: Int = 256;
+
+let h: Int = 0;
+let q: Float[1024];
+let k: Float[262144];
+let v: Float[262144];
+let acc: Float[16384];
+let a_out: Float[1024];
+
+async node sfused [h < H][h == H] {
+    softmax_fused!(
+        q[h * D + d] * k[h * (D * NKV) + j * D + d],
+        v[h * (D * NKV) + j * D + d],
+        NKV, D,
+        acc, a_out,
+        h * D, h * D
+    );
+    h = h + 1;
+    term;
+};

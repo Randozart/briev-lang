@@ -128,6 +128,11 @@ are `KernelDomain::CudaOnly`, the runner dispatches them on the CUDA lane
 only, the Vulkan lane keeps the Shared dual-image full kernel; a declared
 `split<N>` modifier enables the split per site (D2/D28/D29).
 **Device validation of S2+S3 DONE 2026-10-01** — see the S3 entry above.
+**Knob validation DONE 2026-10-01**: `ptx_deferred_split: 1` (in-source
+`###` block) on `examples/gpu/softmax_composite_knob.abv` engages the
+split without any source modifier and passes `softmax_gate.sh` on both
+lanes (CUDA 5.91e-06, Vulkan 2.06e-05) — the knob is correct and
+enableable; its default stays `0` until a timing A/B licenses a flip.
 
 
 
