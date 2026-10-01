@@ -468,6 +468,10 @@ fn expr_is_pure(expr: &Expr) -> bool {
                 || name == "Min#"
                 || name == "GetGlobalId#"
                 || name == "GetLocalId#"
+                // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): the
+                // element-addressed atomic family — order-nondeterministic
+                // BY CONTRACT (the author named an atomic); offload-safe.
+                || name == "AtomicAddAt#"
                 || name == "Exp#"
                 || name == "Sqrt#"
                 || name == "Fabs#" =>
@@ -1471,6 +1475,28 @@ fn collect_expr_buffers(
             collect_expr_buffers(l, info, reads, writes, scalars);
             collect_expr_buffers(r, info, reads, writes, scalars);
         }
+        Expr::Call(name, call_args, _) => {
+            // 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`): the
+            // element-addressed atomic family — args[0] is a whole-array
+            // RMW target: read AND write. The atomic call IS the explicit
+            // Rule-22 classification (concurrent shared write, race-free
+            // at the instruction level); the disjoint-write proof does
+            // not see it — it inspects `Assign` statements, and an atomic
+            // target is deliberately exempt from affine-index disjointness.
+            if name.starts_with("Atomic") && name.ends_with("At#") {
+                if let Some(Expr::Identifier(n)) = call_args.first() {
+                    reads.insert(n.clone());
+                    writes.insert(n.clone());
+                }
+                for a in call_args.iter().skip(1) {
+                    collect_expr_buffers(a, info, reads, writes, scalars);
+                }
+                return;
+            }
+            for a in call_args {
+                collect_expr_buffers(a, info, reads, writes, scalars);
+            }
+        }
         Expr::UnaryOp(_, e) => collect_expr_buffers(e, info, reads, writes, scalars),
         Expr::Cast(e, _) => collect_expr_buffers(e, info, reads, writes, scalars),
         Expr::Tuple(items) | Expr::List(items) => {
@@ -1760,6 +1786,56 @@ mod tests {
         assert!(entry(&map, "affine").shape.eligible);
         assert!(!entry(&map, "const_slot").shape.eligible);
         assert!(!entry(&map, "free_j").shape.eligible);
+    }
+
+    // ── element-addressed atomics (plan 2026-10-01-atomic-element-rmw.md) ──
+
+    #[test]
+    fn atomic_target_is_read_write_and_eligible() {
+        let mut items = vec![];
+        state(&mut items);
+        items.push(TopLevel::StateDecl(StateDecl {
+            name: "total".into(),
+            ty: Type::Vector(Box::new(Type::Custom("Int".into())), vec![]),
+            span: None,
+        }));
+        // A constant-slot atomic — the SAME slot written by every work
+        // item. The disjoint-write proof does not apply: the call IS the
+        // Rule-22 classification (concurrent by contract).
+        let body = vec![
+            Statement::Let {
+                name: "acc_old".into(),
+                names: vec![],
+                ty: None,
+                expr: Some(Expr::Call(
+                    "AtomicAddAt#".into(),
+                    vec![
+                        Expr::Identifier("total".into()),
+                        Expr::Decimal(0),
+                        Expr::Decimal(1),
+                    ],
+                    None,
+                )),
+                modifiers: vec![],
+            },
+            inc_i(),
+        ];
+        items.push(txn_with("acc", pre_lt("i", Expr::Identifier("nb".into())), body));
+        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let e = entry(&map, "acc");
+        assert!(e.shape.eligible, "reasons: {:?}", e.shape.reasons);
+        assert!(
+            e.shape.read_buffers.contains(&"total".to_string())
+                && e.shape.write_buffers.contains(&"total".to_string()),
+            "the target is BOTH read and write: reads {:?} writes {:?}",
+            e.shape.read_buffers,
+            e.shape.write_buffers
+        );
+        assert!(
+            !e.shape.scalar_ins.contains(&"total".to_string()),
+            "the target must not leak into scalar inputs: {:?}",
+            e.shape.scalar_ins
+        );
     }
 
     #[test]
