@@ -470,3 +470,43 @@ blocks it). No silent remaps, no silent substitutions.
 
 To undo: delete those files, revert `BackendKind::Bad`, the targets row,
 and the doc sections.
+
+## GPU targets — the `ptx` family (2026-10-01)
+
+Plan: `docs/plans/2026-10-01-bad-ptx-family.md` (decision: `.bad` is the
+primary kernel-level GPU escape; `Asm#` stays CPU/LLVM — see
+`primitive-coverage.md` gap #1). A `spirv` family is **future, not
+implemented**: SPIR-V assembly text is SSA-id/type-explicit, a poor fit
+for the line-oriented dialect; the derived SPIR-V emission owns the
+Vulkan lane.
+
+### Authoring
+
+```text
+bad<ptx> fn scale(state: Ptr) [post: result-valid] {
+    .blockthreads 64
+    s2r r1, tid.x
+    // ... universal core ops; `ptx =>` exception rows for raw text
+}
+```
+
+- The fn name must equal an accel node's name — that is the BRIDGE KEY:
+  the compiled unit replaces the node's CUDA-lane image (the derived
+  SPIR-V emission keeps serving the Vulkan lane, exactly the dual-image
+  contract).
+- The family emits the module header (`.version 8.0 / .target sm_86 /
+  .address_size 64`) and `.visible .entry main` ALWAYS — the device
+  drivers hardcode the entry name `main`; the fn name is bridge
+  metadata, not the cubin entry.
+- Kernel ABI (first slice): exactly one `Ptr` param — `.param .b64
+  <name>`, prologue `ld.param.b64 %rd1, [<name>];`, the name bound to
+  `%rd1`. Other signatures error loudly naming the ABI.
+- Registers are PTX VIRTUAL registers: dialect registers lower to fresh
+  vregs by width class (Int/Ptr → `%rd<N>`, Float → `%f<N>`, predicates
+  → `%p<N>`); ptxas allocates. No physical mapping rows — this is the
+  documented divergence from the CPU families.
+- Geometry: `.blockthreads <N>` / `.sharedbytes <N>` directives
+  (defaults 64 / 0); the bridge carries them into the kernel desc.
+- Portable core ops are `bad-isa.dbvl` `ptx:` data rows (D26: adding a
+  primitive is a data row); anything beyond is a `ptx =>` exception row
+  — the raw escape, author owns fallout.
