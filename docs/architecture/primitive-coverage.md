@@ -35,8 +35,7 @@ manipulation.
 - `get_intrinsic_signature`: **127 arms**; `REGISTERED_INTRINSICS`: **125
   entries**. The diff found two arms missing from the list — `Environ#`,
   `Fma#` — fixed in the audit commit (data hygiene: the list feeds vocab
-  completion and the const→signature test was one-directional). A new
-  test pins both directions.
+  completion; the const→signature direction is the tested one).
 - Group counts (registered): arithmetic/bitwise/comparison, math
   (`Sqrt# Sin# Cos# Fabs# Ceil# Floor# Exp# Pow# Max# Min# Fma#`), pointer
   + memory (`Deref# … Load# Store# VolatileLoad# VolatileStore# Copy# Fill#`),
@@ -60,14 +59,21 @@ manipulation.
   (`ptx/general.rs:2215`, `spirv/lower.rs:1244`). The disclosed escape
   hatch of D26 therefore does not exist on the GPU lanes — the single
   most doctrine-critical gap in this audit.
-  - **PTX fill (this audit):** lane `Asm#` dispatcher — raw mode emits
-    the template verbatim (author owns fallout, per the table header);
-    abstract mode looks up `ASM_LOWERING.lookup(op, "ptx")` so `ptx:`
-    rows become the D26 data-row path.
-  - **SPIR-V fill: OPEN.** Raw templates are *text*; this lane emits
-    binary SPIR-V with no assembler (spirv-as) in the build path, so the
-    raw form has no honest target yet. Design needed (word-list form vs
-    assembler dependency) before the abstract rows mean anything.
+  - **ROUTE DECIDED 2026-10-01** (plan
+    `2026-10-01-bad-ptx-family.md`; dialect GPU section in
+    `bad-dialect.md`): the kernel-level GPU escape is the `.bad`
+    dialect gaining a `ptx` family — whole authored units assemble via
+    `ptxas` (on PATH, also probed by `compile_cubin`) and override the
+    node CUDA-lane image by name (the dual-image merge contract); the
+    derived SPIR-V emission keeps the Vulkan lane. A `spirv` `.bad`
+    family is future (SSA-id text model vs line-oriented asm).
+  - **`Asm#` on GPU lanes: stays OPEN** ("both eventually"): a PTX-only
+    dispatcher arm alone is unreachable (`.abv` is pure dual-lane,
+    `spirv/runner.rs:1038` hard-errors per node; the accel purity gate
+    `accel.rs:452-469` does not admit `Asm#`) — rule 7 forbids the dead
+    arm. It can only land together with an honest SPIR-V fragment
+    story, which remains unresolved (binary emission, no assembler).
+    Revisit after the `.bad ptx` family proves out.
 
 ## 3. NVIDIA PTX surface (sm_80/86/90/100)
 
@@ -79,7 +85,7 @@ manipulation.
 | integer redux (`redux.sync`) | X | comment-only; sm_100 arm for the reduction trio is an **I-fill** (profile-gated) |
 | `elect.sync` (sm_90+) | X | no emission; vote-based derivable → **I-fill** (profile-gated) |
 | math Exp/Max/Min/Fma | I | `general.rs:2158-2205` (`ex2.approx` composite for `Exp#`) |
-| math Sqrt/Fabs (and friends) | X | not in the PTX dispatcher though `Sqrt#`/`Fabs#` are registered and SPIR-V supports them (`spirv/lower.rs:1102/1114`) → **I-fill** (`sqrt.rn.f32`, `abs.f32`) — parity gap |
+| math Sqrt/Fabs (and friends) | I | **filled 2026-10-01**: `sqrt.rn.f32` / `abs.f32` arms in the lane dispatcher (parity with the SPIR-V lane's GLSL.std.450 lowering); locked by instruction-text tests + the well-formedness guard |
 | barriers (named) | S+X | `bar.sync 0` structural in the combine (`general.rs:1694`); named `Barrier#` unsupported → **I-fill** |
 | fences (named) | X | `Fence#` no arm → **I-fill** (`fence.acq_rel.gpu`/`barrier` scope decision: L2 scopes refine later) |
 | atomics | X | **no `atom.`/`red.` emission anywhere in `src/backend/ptx/`** while `lib/std/atomic.bv` advertises "supported by all backends" → **I-fill, HIGH**: `AtomicAdd/Sub/Or/And/Xor/Cas/Xchg#` → `atom.global`/`red.global` (+ `.acq_rel/.release` per scope) |
@@ -93,7 +99,7 @@ manipulation.
 | cluster / DSMEM (`mapa`, cluster launch) | X | **L2** per plan §3 (execution model), not a primitive row |
 | TMA (tensormap, `cp.async.bulk.tensor`) | X | `gpu-backend-strategy.md` async-pipeline lever → structural + L2 hybrid; fill when the S4-class pipeline lands |
 | L2 prefetch (`prefetch.global.L2`) | X | tensor.rs "prefetch" is the E5a register lookahead, not L2 → **A-fill**: first `ptx:` dbvl row candidate (`Prefetch` extension or a new op) |
-| `Asm#` raw / abstract | X → **filled** | was LLVM-only (`llvm/intrinsics.rs:171`); PTX lane dispatcher added in the audit follow-up commit (raw verbatim + `ptx:` abstract lookup) |
+| `Asm#` raw / abstract | X | LLVM-only (`llvm/intrinsics.rs:171`); GPU route = `.bad ptx` family (§2, in flight); the `Asm#` arm itself stays OPEN pending an honest SPIR-V fragment story |
 
 ## 4. SPIR-V surface (Vulkan 1.1–1.3 baseline + extensions)
 
