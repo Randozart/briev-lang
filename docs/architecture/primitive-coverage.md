@@ -82,7 +82,7 @@ manipulation.
 
 | Capability | Class | Evidence / gap |
 |---|---|---|
-| work ids (lane/cta ids) | S | structural: `mov.u32 %r1, %ctaid.y` etc. (`ptx/general.rs:113-116`); named `GetGlobalId#`/`GetLocalId#`/`WorkgroupSize#` **not** in the lane dispatcher (`general.rs:2183-2218`) → **I-fill**: small arm mapping to `%ctaid.x*BLOCK+%tid.x` and friends |
+| work ids (lane/cta ids) | I | **filled 2026-10-01**: `GetGlobalId#`/`GetLocalId#` arms over the structural ids (dim 0 = the prologue's flat `%r1`, dims 1/2 stage `%tid.y/z` through a declared u32 temp; `cvt.rn.f32.u32` — the lane's Int-flatten convention). Contract matches the SPIR-V lane (constant dim 0..=2). Device gate: `benchmarks/workid_gate.sh` — `res[i] == a[i] + GetGlobalId#(0)`, BOTH lanes exact equality. `WorkgroupSize#` stays an X-row (needs the count as a value — follow-up) |
 | subgroup shuffles/broadcast/ballot | I | `ShuffleDown# ShuffleXor# SubgroupBallot# SubgroupBroadcast#` → `shfl.sync.*`/`vote.sync.ballot` (`general.rs:2206`, `emit_lane_intrinsic` `general.rs:2226`, ptxas-verified) |
 | warp float reductions | I | `SubgroupFAdd/FMax/FMin#` → butterfly tree (`emit_warp_reduce`, `general.rs:2291`; `redux.sync` is integer-only until sm_100 — comment `general.rs:2286`) |
 | integer redux (`redux.sync`) | X | comment-only; sm_100 arm for the reduction trio is an **I-fill** (profile-gated) |
@@ -131,7 +131,7 @@ manipulation.
 | 1 | `Asm#` unreachable on GPU lanes (escape hatch missing) | route LANDED: `.bad ptx` family + bridge (device-gated); the `Asm#` arm itself stays OPEN pending an honest SPIR-V fragment story | closed-by-route 2026-10-01 |
 | 2 | atomics on both lanes (`atomic.bv` overclaims) | I-arms: `atom.*`/`red.*`, `OpAtomic*` | I, HIGH |
 | 3 | `Sqrt#`/`Fabs#` PTX parity | I-arm (**filled 2026-10-01**, `4ce9b6d7`) | I |
-| 4 | work-id names on PTX | I-arm over structural ids | I |
+| 4 | work-id names on PTX | I-arm (**filled 2026-10-01**, device-gated both lanes) | I |
 | 5 | `Barrier#`/`Fence#` named on both lanes | I-arms (bar.sync / OpControlBarrier + scopes) | I (+L2 scopes) |
 | 6 | `VolatileLoad#/Store#`, `Load#/Store#` on PTX | I-arms | I |
 | 7 | L2 prefetch, elect, int redux (sm_100) | dbvl `ptx:` row / I-arms, profile-gated | A/I |

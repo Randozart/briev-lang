@@ -1,0 +1,16 @@
+// workid.abv — GetGlobalId# device-validation fixture (primitive-coverage
+// gap #4). The node's explicit work-id must equal the structural index
+// (res[i] == a[i] + i on every lane).
+import "std/numeric.bv";
+
+const N: Int = 1024;
+
+let i: Int = 0;
+let a: Float[1024];
+let res: Float[1024];
+
+async node wid [i < N][i == N] {
+    res[i] = a[i] + (GetGlobalId#(0) as Float);
+    i = i + 1;
+    term;
+};

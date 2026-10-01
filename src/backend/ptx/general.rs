@@ -838,6 +838,8 @@ struct Gen<'a> {
     count: i64,
     out: String,
     freg: u32,
+    /// Fresh u32-temp counter (work-id staging, `fresh_named_u32`).
+    n_u32: u32,
     rreg: u32,
     rdreg: u32,
     preg: u32,
@@ -898,6 +900,7 @@ impl<'a> Gen<'a> {
             count,
             out: String::new(),
             freg: 0,
+            n_u32: 0,
             rreg: 3,
             rdreg: 2,
             preg: 2,
@@ -915,6 +918,13 @@ impl<'a> Gen<'a> {
             deferred_split: 1,
             split_slice_reg: None,
         }
+    }
+
+    /// A fresh named u32 virtual register (`%u<N>`) — for staging
+    /// special-register reads through typed temps.
+    fn fresh_named_u32(&mut self) -> String {
+        self.n_u32 += 1;
+        format!("%u{}", self.n_u32)
     }
 
     fn fresh_f(&mut self) -> String {
@@ -2154,6 +2164,46 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         Ok(())
     }
 
+    /// 2026-10-01 (L1 primitive-coverage audit, gap #4): work-id names
+    /// over the structural ids. Contract mirrors the SPIR-V lane
+    /// (spirv/lower.rs: a CONSTANT dim 0..=2, integer value); this lane
+    /// flattens Ints to f32 (emit_expr's own convention — Decimal
+    /// literals already emit as mov.f32), so the id lands via
+    /// `cvt.rn.f32.u32` — identical for every f32 use. dim 0 is the flat
+    /// gid the prologue computed (ctaid.x*BLOCK+tid.x); dims 1/2 see
+    /// ctaid 0 (1D launches), so the global id is the raw tid.
+    fn emit_work_id(
+        &mut self, name: &str, args: &[Expr], out: &str,
+    ) -> Result<(String, String), String> {
+        let Some(Expr::Decimal(dim)) = args.first() else {
+            return Err(format!(
+                "{name} takes a constant dimension 0..=2 - Fix: \
+                 write the dimension as a literal, e.g. {name}(0)"
+            ));
+        };
+        if *dim < 0 || *dim > 2 {
+            return Err(format!("{name} dimension must be 0..=2, got {dim}"));
+        }
+        let src: &str = match (name, dim) {
+            ("GetGlobalId#", 0) => self.gid,
+            ("GetGlobalId#", 1) => "%tid.y",
+            ("GetGlobalId#", 2) => "%tid.z",
+            ("GetLocalId#", 0) => "%tid.x",
+            ("GetLocalId#", 1) => "%tid.y",
+            _ => "%tid.z",
+        };
+        let mut d = String::new();
+        let mut b = String::new();
+        if src.starts_with('%') && src[1..].starts_with("tid") {
+            // A special register: stage through a declared u32 temp.
+            let tmp = self.fresh_named_u32();
+            d.push_str(&format!("    .reg .u32 {};\n", tmp));
+            b.push_str(&format!("    mov.u32 {}, {};\n", tmp, src));
+        }
+        b.push_str(&format!("    cvt.rn.f32.u32 {}, {};\n", out, src));
+        Ok((d, b))
+    }
+
     fn emit_intrinsic_call(
         &mut self,
         name: &str,
@@ -2189,6 +2239,14 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                 self.emit_expr(&args[1], &breg, decl, body)?;
                 let op = if name == "Max#" { "max" } else { "min" };
                 body.push_str(&format!("    {}.f32 {}, {}, {};\n", op, out, areg, breg));
+                Ok(())
+            }
+            // 2026-10-01 (L1 primitive-coverage audit, gap #4): work-id
+            // names over the structural ids — see `emit_work_id`.
+            "GetGlobalId#" | "GetLocalId#" => {
+                let (d, b) = self.emit_work_id(name, args, out)?;
+                decl.push_str(&d);
+                body.push_str(&b);
                 Ok(())
             }
             // 2026-10-01 (L1 primitive-coverage audit, primitive-coverage.md
@@ -2844,6 +2902,94 @@ mod tests {
             "-inf immediate: {ptx}"
         );
         assert_ptx_well_formed(&ptx);
+    }
+
+    /// 2026-10-01 (L1 primitive-coverage audit, gap #4): work-id names
+    /// lower over the structural ids — dim 0 is the prologue's flat gid,
+    /// dims 1/2 stage the tid special registers through a declared u32
+    /// temp. The f32 flatten matches the lane's Int convention.
+    #[test]
+    fn work_ids_lower_over_structural_ids() {
+        use crate::backend::spirv::runner::{RunnerField, SsboLayout};
+        let field = |name: &str, off: u64| RunnerField {
+            name: name.into(),
+            offset: off,
+            proj_offset: off,
+            elem_bytes: 4,
+            count: 1024,
+            is_array: true,
+            type_is_float: true,
+        };
+        let layout = SsboLayout {
+            fields: vec![field("a", 0), field("res", 4096)],
+            images: vec![],
+            state_bytes: 8192,
+            program_bytes: 8192,
+        };
+        let shape_for = |call: Expr| crate::analysis::accel::KernelShape {
+            index_var: "i".into(),
+            count_expr: Some(Expr::Decimal(1024)),
+            kernel_stmts: vec![
+                Statement::Assign(
+                    idx("res", id("i")),
+                    bin(Add, idx("a", id("i")), call),
+                ),
+                Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
+            ],
+            host_stmts: vec![],
+            read_buffers: vec!["a".into()],
+            write_buffers: vec!["res".into()],
+            scalar_ins: vec![],
+            eligible: true,
+            reasons: vec![],
+            work_cols: None,
+            reduction: None,
+            deferred_normalize: None,
+        };
+        let consts = std::collections::HashMap::new();
+        let universe = crate::type_universe::TypeUniverse::new();
+        for (call, needle) in [
+            (
+                Expr::Call("GetGlobalId#".into(), vec![Expr::Decimal(0)], None),
+                "cvt.rn.f32.u32 ",
+            ),
+            (
+                Expr::Call("GetLocalId#".into(), vec![Expr::Decimal(1)], None),
+                "mov.u32 %u1, %tid.y;",
+            ),
+        ] {
+            let ptx = emit_general_ptx(
+                &shape_for(call),
+                1024,
+                &layout,
+                &consts,
+                &universe,
+                GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+            )
+            .unwrap_or_else(|e| panic!("work-id emits: {e}"));
+            assert!(ptx.contains(needle), "expected `{needle}`:\n{ptx}");
+            if needle.starts_with("cvt") {
+                assert!(
+                    ptx.contains("cvt.rn.f32.u32") && ptx.contains(", %r1;"),
+                    "dim 0 reads the flat gid (%r1):\n{ptx}"
+                );
+            }
+            assert_ptx_well_formed(&ptx);
+        }
+        // Non-constant dim = loud (the SPIR-V lane's contract).
+        let bad = emit_general_ptx(
+            &shape_for(Expr::Call(
+                "GetGlobalId#".into(),
+                vec![idx("a", id("i"))],
+                None,
+            )),
+            1024,
+            &layout,
+            &consts,
+            &universe,
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+        );
+        assert!(bad.is_err(), "non-constant dim must error");
     }
 
     /// 2026-10-01 (L1 primitive-coverage audit, primitive-coverage.md
