@@ -24,7 +24,7 @@ syntax lowers through), `proof-vs-shape.md`,
 - **Part I (§1–§3)** is *why*: the philosophy and the starting point.
 - **Part II (§4–§5)** is *what*: the problem (what GPU code needs that
   Briev cannot say) and the architecture that answers it.
-- **Part III (§6–§8)** is *how*: every syntax decision (D1–D27) and
+- **Part III (§6–§8)** is *how*: every syntax decision (D1–D30) and
   architectural decision (A1–A10) in full, plus worked examples.
 - **Part IV (§9–§13)** is the *contract*: invariants, roadmap, open
   items, glossary, references.
@@ -509,7 +509,7 @@ by default" is won.
 Each decision below gives **context · problem · alternatives · decision ·
 rationale · grammar · semantics · examples · interactions**.
 
-## 6. Syntax decisions (D1–D27)
+## 6. Syntax decisions (D1–D30)
 
 ### D1 — Shape declarations are node-level parametric modifiers. **DECIDED**
 
@@ -824,6 +824,87 @@ it.
 **Decision.** Audit and cover the active targets first; AMD/Intel later as
 projections of the same plan.
 
+### D28 — Size warnings (alignment-quantum basis). **DECIDED**
+
+**Context.** A declared size may be *legal* yet still poor for the
+hardware. We want to nudge the author without firing on legitimate,
+sometimes-optimal irregular sizes.
+
+**Alternatives.** (i) literal power-of-two; (ii) cost-model
+"worse-than-derived" (A6); (iii) alignment-quantum; (iv) both (ii)+(iii).
+
+**Decision.** **Alignment-quantum.** Warn when a declared size violates
+alignment to the relevant hardware quantum — the warp (32), the vector
+width (4, target max), the cache line (128 B), the mma tile-atomic
+`16·mh × 8·gr`, or the shared bank width. **Never** a bare "not a power of
+two" (many optimal sizes are not powers of two; e.g. `N=96` = 3×32). The
+message is house-style (what / why / fix), naming the quantum and the
+derived default. Calibrated: fire only on a concrete quantum violation, or
+it devalues the `G001`-class warnings.
+
+**Scope.** **All declared sizes** (W3): `tile<M,N>`, `stage<N>`,
+`vector<N>`, `scope<…, size>`, `swizzle<…>`, `fragment<…>`.
+
+**Boundary.** Divisibility/legality violations stay **errors** (D2);
+alignment is a **warning** only.
+
+### D29 — `irr` silencer (site-local, warnings-only). **DECIDED**
+
+**Decision.** A **contextual modifier** on a declaration, exactly like
+`net<>`/`stage<>`: `irr tile<128,96> node gemm …` acknowledges an
+intentional irregular size and suppresses the size/alignment warnings
+**for that declaration only**.
+
+**Category.** `irr` is **meta-control** — it changes *diagnostics*, not
+observable behaviour — so it sits **outside** the three keyword categories
+(strategy / ambiguity / intrinsic). It must be **disclosed** (a lexical
+marker) so readers see the acknowledgement. It silences **warnings only**,
+**never errors** (soundness).
+
+**Doctrine caution.** Silencing is not the first resort: where the model
+estimates a *better* shape, the preferred fix is to **delete the
+declaration** and let the compiler derive. `irr` is for when the author
+knows the hardware better than the model.
+
+### D30 — `###` module override block (full in-source config). **DECIDED**
+
+**Context.** Overrides/policies (warning policy, target, shape defaults,
+cfg tunables) live today in `config/*.dbvl` + `--config-dir`. A
+prominent, in-source surface lets a file pin them without a config
+directory — and, being a compiler reconfiguration, it must **stand out**
+(Rule 3 disclosure).
+
+**Alternatives.** (i) extend `!>`; (ii) a keyword block (`declare { … }`);
+(iii) a new marker (`#!`/`##!`); (iv) a symmetric `###` fence.
+
+**Decision.** A top-of-file, **single** block fenced `###` … `###`,
+holding `.dbvl`-style `key: value;` directives:
+
+```text
+###
+warn: irr;              // D29 module policy (irr | allow | deny)
+target: sm_90;
+tile_default: (128, 256);
+ptx_tensor_stages: 3;
+###
+```
+
+**Rationale.** The symmetric banner is unmistakable (disclosure), and its
+content is the familiar config grammar. The `###` **fence** is a new `#`
+load; it is accepted and documented as *the* module-config fence (the `#`
+identifier regex `[a-zA-Z_#$][a-zA-Z0-9_#$]*` means `###` needs a token
+matched before it, like `#Lh`).
+
+**Discipline.** Precedence **`###` block > `--config-dir` > built-in
+`include_str!` default** (mirrors D2's source > config > model). An unknown
+key is an **error** (as `spec`/`.dbvl` enforce). The effective config is
+**reported**, so an override is never silently ignored (the config-dir
+contract).
+
+**Interaction.** `irr` (D29) is the **site-local** acknowledgement; the
+`###` block holds the **global** policy and config. This resolves the
+warning-policy OPEN item (§11.3).
+
 ## 7. Architectural decisions (A1–A10)
 
 - **A1 — One frontend plan, per-target projections** (doctrine §4). The
@@ -973,8 +1054,9 @@ The syntax lowers *through* the `KernelPlan` machinery. Recommended order
 2. **OPEN — exact `lemma_properties` vocabulary**: which laws
    (`associative`, `commutative`, `idempotent`, `injective`, `distributive`,
    `monotone`, `bounded`, …), their arities/forms, and validation.
-3. **OPEN — ambiguity warning policy**: per-module control
-   (`!> ambiguity: allow|warn|deny;`)? Errors never silenceable.
+3. **RESOLVED — warning policy** (D29/D30): site-local `irr` modifier +
+   the top-level `###` override block (`warn: irr|allow|deny;`). Errors
+   never silenceable.
 4. **OPEN — cost-model uncertainty signal (A6)**: the exact margin /
    calibration-range test that turns a shape choice into a warning.
 5. **OPEN — multi-node scope → runner/desc mapping (A2/A9)**: how fused
