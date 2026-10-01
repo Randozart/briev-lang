@@ -168,32 +168,52 @@ impl<'a> Parser<'a> {
                         value: Some(Expr::Quoted(payload.into_bytes())),
                     });
                 }
-                Some(Token::Identifier(s))
-                    if (s == "stage" || s == "tile" || s == "split")
-                        && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
-                {
-                    // 2026-09-30 (gpu-syntax-decision-record D1/D14): shape
-                    // declarations — contextual identifiers with a `<...>`
-                    // integer payload, legal on node/txn only (validated by
-                    // the dispatcher). `stage<N>` = pipeline depth,
-                    // `tile<M,N>` = CTA tile. Recorded as an annotation; the
-                    // backend consumes it as an ambiguity override of the
-                    // cost model (D2).
-                    let keyword = s.clone();
-                    if prefix.annotations.iter().any(|a| a.name == keyword) {
-                        return Err(self.dup_modifier(&keyword));
-                    }
-                    self.pos += 1;
-                    let value = self.parse_shape_modifier_payload(&keyword)?;
-                    prefix.annotations.push(Annotation {
-                        name: keyword,
-                        value: Some(value),
-                    });
-                }
+            Some(Token::Identifier(s))
+                if (s == "stage" || s == "tile" || s == "split")
+                    && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
+            {
+                // 2026-09-30 (gpu-syntax-decision-record D1/D14): shape
+                // declarations — contextual identifiers with a `<...>`
+                // integer payload, legal on node/txn only (validated by
+                // the dispatcher). `stage<N>` = pipeline depth,
+                // `tile<M,N>` = CTA tile. Recorded as an annotation; the
+                // backend consumes it as an ambiguity override of the
+                // cost model (D2).
+                let keyword = s.clone();
+                self.pos += 1;
+                let value = self.parse_shape_modifier_payload(&keyword)?;
+                self.record_shape_modifier(&mut prefix, &keyword, Some(value))?;
+            }
+            Some(Token::Identifier(s)) if s == "irr" => {
+                // 2026-09-30 (D29): `irr` — the site-local silencer for
+                // declared-size alignment warnings. Payload-less; warnings
+                // only, never errors (D29). Recorded as a value-less
+                // annotation; the size checks consult it per node.
+                self.pos += 1;
+                self.record_shape_modifier(&mut prefix, "irr", None)?;
+            }
                 _ => break,
             }
         }
         Ok(prefix)
+    }
+
+    /// 2026-09-30 (D1/D14/D29): record one shape declaration or the
+    /// payload-less `irr` silencer — duplicates are an error.
+    fn record_shape_modifier(
+        &mut self,
+        prefix: &mut ModifierPrefix,
+        keyword: &str,
+        value: Option<Expr>,
+    ) -> Result<(), SyntaxError> {
+        if prefix.annotations.iter().any(|a| a.name == keyword) {
+            return Err(self.dup_modifier(keyword));
+        }
+        prefix.annotations.push(Annotation {
+            name: keyword.to_string(),
+            value,
+        });
+        Ok(())
     }
 
     /// `stage<N>` / `tile<M,N>` — integer shape parameters.

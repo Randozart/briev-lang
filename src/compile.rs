@@ -1806,7 +1806,10 @@ fn codegen(
                 &analysis.accel,
                 &analysis.gpu_schedule,
             ) {
-                Ok(ptx_kernels) => {
+                Ok((ptx_kernels, ptx_warnings)) => {
+                    // 2026-09-30 (D28/D29): declared-size alignment warnings
+                    // surface with the other advisory diagnostics.
+                    ptx_warnings.iter().for_each(|w| eprintln!("warning: {w}"));
                     for k in &mut kernels {
                         if let Some(p) = ptx_kernels.iter().find(|p| p.name == k.name) {
                             k.ptx = p.spirv.clone();
@@ -1932,13 +1935,15 @@ fn codegen(
             // and `emit_runner`/`prepare_run` dispatch — the CUDA driver
             // JITs the PTX via cuModuleLoadData. S2a surface: GEMM-shaped
             // kernels only (see build_ptx_kernels' error).
-            let kernels = briev_compiler::backend::ptx::build_ptx_kernels(
+            let (kernels, ptx_warnings) = briev_compiler::backend::ptx::build_ptx_kernels(
                 items,
                 universe,
                 opts.int_bits,
                 &analysis.accel,
                 &analysis.gpu_schedule,
             )?;
+            // 2026-09-30 (D28/D29): declared-size alignment warnings.
+            ptx_warnings.iter().for_each(|w| eprintln!("warning: {w}"));
             let out = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?;
             let out_path = out.replace(".ll", ".ptx");
             if kernels.len() == 1 {

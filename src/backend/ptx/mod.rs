@@ -1753,34 +1753,54 @@ fn deferred_split_for(
     count: i64,
     consts: &std::collections::HashMap<String, Expr>,
     node_split: Option<u32>,
-) -> (u32, Option<(i64, String, String)>) {
+) -> (u32, Option<(i64, String, String)>, Option<String>) {
     // 2026-09-30 (D2): a declared `split<N>` (source) enables the split and
     // pins the factor; otherwise it needs the deferred region + the config
-    // knob. Source > config > model.
+    // knob. Source > config > model. (D28/D29): a declared split that ends
+    // up unapplied is returned as a bare why-string — the call site names
+    // the node, and `irr` silences site-locally.
     let declared = node_split.filter(|n| *n > 1);
     if declared.is_none() && !(deferred && crate::config_tuning::ir_lowering().ptx_deferred_split == 1)
     {
-        return (1, None);
+        return (1, None, None);
     }
     let Some((kve, dime, acc_buf, out_buf)) =
         general::deferred_region_info(&shape.kernel_stmts, &shape.index_var)
     else {
-        return (1, None);
+        let w = declared.map(|n| {
+            format!(
+                "split<{}> not applied — the node has no deferred reduction region (an accumulator folded over the index var); split applies to that form. Fix: declare the split on the reducing node, or `irr`.",
+                n
+            )
+        });
+        return (1, None, w);
     };
     let (Some(kv), Some(dim)) = (
         expr_const_i64(&kve, consts),
         expr_const_i64(&dime, consts),
     ) else {
-        return (1, None);
+        let w = declared.map(|n| {
+            format!(
+                "split<{}> not applied — the reduction bounds are not compile-time constants. Fix: constant bounds, or `irr`.",
+                n
+            )
+        });
+        return (1, None, w);
     };
     let s = match declared {
         Some(n) => n as u64,
         None => crate::analysis::gpu_strategy::reduction_split_factor(count as u64, kv as u64),
     };
     if split_eligible(kv, dim, s) {
-        (s as u32, Some((dim, acc_buf, out_buf)))
+        (s as u32, Some((dim, acc_buf, out_buf)), None)
     } else {
-        (1, None)
+        let w = declared.map(|n| {
+            format!(
+                "split<{}> not applied — the reduction length {} must divide by N and the partial length {}/{} must be a warp multiple (32); dims {}. Fix: an N dividing {} with a warp-multiple partial, or `irr`.",
+                n, kv, kv, n, dim, kv
+            )
+        });
+        (1, None, w)
     }
 }
 
@@ -1901,6 +1921,22 @@ fn node_split_modifier(program: &[TopLevel], name: &str) -> Option<u32> {
 /// A declared `tile<M,N>` (elements) → the warp grid `(mw, nw)`, when the
 /// element tile divides the warp tile `(16·mh) × (8·gr)`. `None` otherwise
 /// (the caller falls back to the cost model).
+/// 2026-09-30 (D29): is the site-local `irr` silencer declared on the node?
+/// Warnings-only (D29): it never suppresses errors, and never changes what
+/// the tier emits — only whether a declared-size warning is reported.
+fn node_irr(program: &[TopLevel], name: &str) -> bool {
+    fn txn_has(t: &crate::ast::top::Transaction) -> bool {
+        t.modifiers.iter().any(|m| m.name == "irr")
+    }
+    program.iter().any(|item| match item {
+        TopLevel::Transaction(t) => t.name == name && txn_has(t),
+        TopLevel::SyncGroup { item, .. } => {
+            matches!(item.as_ref(), TopLevel::Transaction(t) if t.name == name && txn_has(t))
+        }
+        _ => false,
+    })
+}
+
 fn tile_to_mw_nw(tile: Option<(u64, u64)>, warp_mh: usize, gr: usize) -> Option<(usize, usize)> {
     let (tm, tn) = tile?;
     let (row, col) = (16 * warp_mh, 8 * gr);
@@ -1911,19 +1947,84 @@ fn tile_to_mw_nw(tile: Option<(u64, u64)>, warp_mh: usize, gr: usize) -> Option<
     (m > 0 && n > 0).then_some((m, n))
 }
 
+/// 2026-09-30 (D28): the declared tile is not an mma-atom multiple — the
+/// model tile is used instead. Pure; `irr` is checked by the caller.
+fn tile_atom_warning(name: &str, tm: u64, tn: u64, row: usize, col: usize) -> Option<String> {
+    (tm as usize % row != 0 || tn as usize % col != 0).then(|| {
+        format!(
+            "node '{}': tile<{},{}> not applied — tile rows must be a multiple of {} and columns of {} (the mma atom); the model tile is used instead. Fix: declare a multiple (e.g. tile<128,128>) or mark the site `irr`.",
+            name, tm, tn, row, col
+        )
+    })
+}
+
+/// 2026-09-30 (D28): the declared tile is an atom multiple but the program
+/// shape does not divide into that grid — the single-warp kernel is used.
+fn tile_shape_warning(
+    name: &str,
+    tile: (u64, u64),
+    shape: (i64, i64),
+    quantum: (usize, usize),
+) -> String {
+    let (tm, tn) = tile;
+    let (m, n) = shape;
+    let (row, col) = quantum;
+    format!(
+        "node '{}': tile<{},{}> not applied — the shape ({}x{}) does not divide into {}-element warp rows / {}-element columns at this grid; the single-warp kernel is used. Fix: a tile matching the shape's divisibility, or `irr`.",
+        name, tm, tn, m, n, row, col
+    )
+}
+
+/// 2026-09-30 (D28): stage<1> disables the software pipeline.
+fn stage_pipeline_warning(name: &str, n: u32) -> Option<String> {
+    (n < 2).then(|| {
+        format!(
+            "node '{}': stage<{}> disables the software pipeline (no cross-stage overlap of the global-to-shared loads); the model pipelines them. Fix: stage<2> or more, or drop the modifier.",
+            name, n
+        )
+    })
+}
+
+/// 2026-09-30 (D28/D29): the declared-tile warnings — mma-atom alignment
+/// plus grid divisibility. `tile` is None when undeclared or when the site
+/// declares `irr` (the caller filters); None yields no warnings.
+fn tile_size_warnings(
+    name: &str,
+    tile: Option<(u64, u64)>,
+    quantum: (usize, usize),
+    plan: (i64, i64),
+    mw_ok: bool,
+) -> Vec<String> {
+    let Some((tm, tn)) = tile else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(w) = tile_atom_warning(name, tm, tn, quantum.0, quantum.1) {
+        out.push(w);
+    }
+    if !mw_ok {
+        out.push(tile_shape_warning(name, (tm, tn), plan, quantum));
+    }
+    out
+}
+
 pub fn build_ptx_kernels(
     program: &[TopLevel],
     universe: &TypeUniverse,
     int_bits: u64,
     entries: &std::collections::HashMap<String, crate::analysis::accel::AccelEntry>,
     schedule: &crate::analysis::gpu_schedule::GpuSchedule,
-) -> Result<Vec<RunnerKernel>, String> {
+) -> Result<(Vec<RunnerKernel>, Vec<String>), String> {
     let mut names: Vec<&String> = entries
         .iter()
         .filter(|(_, e)| e.shape.eligible)
         .map(|(n, _)| n)
         .collect();
     names.sort();
+    // 2026-09-30 (D28/D29): declared-size alignment warnings. A declared
+    // shape modifier the tier cannot honor is never silent (D28); `irr`
+    // (D29) silences site-locally, warnings only.
+    let mut size_warnings: Vec<String> = Vec::new();
 
     // The ONE layout rule — the same `ssbo_layout` the runner uses, so the
     // hardcoded PTX offsets and the runner's field table agree by
@@ -1965,6 +2066,9 @@ pub fn build_ptx_kernels(
         if chain_skip.contains(name) {
             continue;
         }
+        // 2026-09-30 (D29): the site-local `irr` silencer, resolved once
+        // per node — the D28 size checks consult it.
+        let irr_free = !node_irr(program, name);
         let e = &entries[name];
         // 2026-09-14 (gpu_schedule Phase 4a): a fused consumer's work is done
         // by its producer's epilogue — no kernel is emitted for it. The
@@ -2039,8 +2143,13 @@ pub fn build_ptx_kernels(
             // (`ptx_deferred_split: 0`); see the plan for the dual-lane
             // enablement prerequisite.
             let node_split = node_split_modifier(program, name);
-            let (def_split, def_info) =
+            let (def_split, def_info, split_warn) =
                 deferred_split_for(&e.shape, deferred, count, &consts, node_split);
+            // 2026-09-30 (D28/D29): a declared split that ends up
+            // unapplied is warned, not silent — `irr` silences site-locally.
+            if let Some(why) = split_warn.filter(|_| irr_free) {
+                size_warnings.push(format!("node '{}': {}", name, why));
+            }
             let ptx = general::emit_general_ptx(
                 &e.shape,
                 count,
@@ -2240,6 +2349,14 @@ pub fn build_ptx_kernels(
             }
             v => v as usize,
         };
+        // 2026-09-30 (D28/D29): a declared stage that defeats the pipeline
+        // is warned, not silent — unless the site declares `irr`.
+        if let Some(w) = stage_source
+            .and_then(|n| stage_pipeline_warning(name, n))
+            .filter(|_| irr_free)
+        {
+            size_warnings.push(w);
+        }
         // On-device sweep (2026-09-10, 4096^3): the f32 kernel's best is
         // (4,2)@256T (16.6) — 2 CTAs/SM beat the 1-CTA wide tile.
         // 2026-09-13 (E4c): the f16acc cap drops to 256 — the 8-warp CTA
@@ -2271,6 +2388,8 @@ pub fn build_ptx_kernels(
             // the config force knobs and the strategy model. Non-divisible
             // tiles fall through to the model.
             let node_tile = node_tile_modifier(program, name);
+            // 2026-09-30 (D28/D29): a declared tile that is not an mma-atom
+            // multiple never silently falls through to the model.
             let (mw, nw, eff_stages) = {
                 let fmw = crate::config_tuning::ir_lowering().ptx_tensor_force_mw as usize;
                 let fnw = crate::config_tuning::ir_lowering().ptx_tensor_force_nw as usize;
@@ -2294,6 +2413,15 @@ pub fn build_ptx_kernels(
             };
             let mw_ok = plan.m % ((16 * warp_mh * mw) as i64) == 0
                 && plan.n % ((8 * gr * nw) as i64) == 0;
+            // 2026-09-30 (D28/D29): both declared-tile warnings — the atom
+            // check and the grid-divisibility fallback — collected here.
+            size_warnings.extend(tile_size_warnings(
+                name,
+                node_tile.filter(|_| irr_free),
+                (16 * warp_mh, 8 * gr),
+                (plan.m, plan.n),
+                mw_ok,
+            ));
             if mw_ok && (mw > 1 || nw > 1) {
                 // 2026-09-15 (repro): wire the epilogue variant when a
                 // fused scale applies (the f16 packed-f16x2 mul path).
@@ -2379,7 +2507,7 @@ pub fn build_ptx_kernels(
         domain: crate::backend::spirv::runner::KernelDomain::Shared,
         });
     }
-    Ok(out)
+    Ok((out, size_warnings))
 }
 
 #[cfg(test)]
@@ -2408,6 +2536,33 @@ mod tests {
         let mut p3 = crate::parser::Parser::new(tokens3, src3);
         let program3 = p3.parse_program().expect("parse");
         assert_eq!(node_split_modifier(&program3, "redu"), Some(8));
+    }
+
+    #[test]
+    fn node_irr_read_and_silence_helpers_pure() {
+        // 2026-09-30 (D29): `irr` is read per node; the D28 helpers warn
+        // only on legal-but-misaligned declarations.
+        let src = "irr tile<100,100> node g [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let program = p.parse_program().expect("parse");
+        assert!(node_irr(&program, "g"));
+        assert!(!node_irr(&program, "other"));
+
+        // f32 quanta: rows 16, cols 16. tile<100,100> misses both.
+        let w = tile_atom_warning("g", 100, 100, 16, 16).expect("misaligned tile warns");
+        assert!(w.contains("tile<100,100>") && w.contains("multiple of 16"), "{w}");
+        // Aligned tiles are silent.
+        assert!(tile_atom_warning("g", 128, 128, 16, 16).is_none());
+
+        // Shape fallback warning names the actual shape.
+        let w2 = tile_shape_warning("g", (128, 128), (192, 256), (16, 16));
+        assert!(w2.contains("(192x256)") && w2.contains("single-warp"), "{w2}");
+
+        // stage<1> defeats the pipeline; stage<2> does not.
+        let w3 = stage_pipeline_warning("g", 1).expect("stage<1> warns");
+        assert!(w3.contains("stage<1>") && w3.contains("pipeline"), "{w3}");
+        assert!(stage_pipeline_warning("g", 2).is_none());
     }
 
     #[test]

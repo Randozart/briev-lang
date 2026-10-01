@@ -1378,8 +1378,14 @@ impl<'a> Parser<'a> {
     fn starts_modifier_run(&self) -> bool {
         match self.peek() {
             Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => true,
-            Some(Token::Identifier(s)) if s == "stage" || s == "tile" || s == "split" => {
-                matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt))
+            Some(Token::Identifier(s))
+                if s == "stage" || s == "tile" || s == "split" || s == "irr" =>
+            {
+                if s == "irr" {
+                    true
+                } else {
+                    matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt))
+                }
             }
             _ => false,
         }
@@ -1472,10 +1478,10 @@ impl<'a> Parser<'a> {
         if prefix
             .annotations
             .iter()
-            .any(|a| a.name == "stage" || a.name == "tile")
+            .any(|a| a.name == "stage" || a.name == "tile" || a.name == "split" || a.name == "irr")
         {
             self.error_at_current(&format!(
-                "`stage<>`/`tile<>` declare a GPU kernel shape — {what} is not a node/txn"
+                "`stage<>`/`tile<>`/`split<>`/`irr` declare a GPU kernel shape — {what} is not a node/txn"
             ))
         } else {
             Ok(())
@@ -7241,6 +7247,45 @@ mod tests {
         } else {
             panic!("expected Transaction, got {item2:?}");
         }
+    }
+
+    #[test]
+    fn test_irr_modifier_recorded_payloadless() {
+        // 2026-09-30 (D29): `irr` — the site-local warning silencer,
+        // payload-less, recorded as a value-less annotation.
+        let src = "irr node n [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let item = p.parse_top_level().unwrap();
+        if let crate::ast::TopLevel::Transaction(t) = item {
+            let irr = t.modifiers.iter().find(|m| m.name == "irr").expect("irr recorded");
+            assert!(irr.value.is_none(), "irr is payload-less: {:?}", irr.value);
+        } else {
+            panic!("expected Transaction, got {item:?}");
+        }
+
+        // `irr` composes with the shape declarations.
+        let src2 = "tile<128,128> irr node m [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens2 = tokenize(src2).unwrap();
+        let mut p2 = Parser::new(tokens2, src2);
+        let item2 = p2.parse_top_level().unwrap();
+        if let crate::ast::TopLevel::Transaction(t) = item2 {
+            assert!(t.modifiers.iter().any(|m| m.name == "tile"));
+            assert!(t.modifiers.iter().any(|m| m.name == "irr"));
+        } else {
+            panic!("expected Transaction, got {item2:?}");
+        }
+    }
+
+    #[test]
+    fn test_irr_rejected_on_defn() {
+        // 2026-09-30 (D29): `irr` is node/txn only, like the shape
+        // declarations it silences.
+        let src = "irr defn f(x: Int) -> Int { term x; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err();
+        assert!(err.to_string().contains("node/txn"), "expected helpful diagnostic, got: {err}");
     }
 
     #[test]
