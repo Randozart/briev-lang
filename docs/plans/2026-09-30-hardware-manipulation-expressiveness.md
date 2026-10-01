@@ -100,7 +100,11 @@ is won.
    classes: I-arms, A data rows, L2/L4/L5, and the one OPEN design — the
    SPIR-V `Asm#` form that blocks the escape hatch on GPU lanes). First
    fills: PTX `Sqrt#`/`Fabs#` parity arms; remaining fills land per the
-   ledger's leverage order.
+   ledger's leverage order. **Escape route LANDED same day**: the `.bad`
+   dialect's `ptx` family + the accel image-override bridge (whole-unit
+   GPU escape, `benchmarks/bad_ptx_gate.sh` both-lanes PASS) — ledger
+   gap #1 closed by route; the `Asm#`-on-GPU arm itself stays OPEN
+   pending an honest SPIR-V fragment story.
 2. **L2 execution-model features** — per feature: spec the semantics,
    decide *derive vs express*, add the primitive/declaration, gate it.
 3. **L3 schedule/shape surface** — design the site-local control form

@@ -132,6 +132,20 @@ Everything else in the registry errors at the lane dispatcher
 (`ptx/general.rs emit_intrinsic_call`). Coverage ledger:
 `docs/architecture/primitive-coverage.md`.
 
+### .bad (the Briev Assembly Dialect — CPU families + the `ptx` GPU family)
+Portable core ISA rows per family (`config/bad-isa.dbvl`): mov/add/sub/
+mul(lo)/div, load/store (+off), the branch families, bitwise/shifts,
+slt/sltu, the f64 family, `arg` ABI materialization; GPU-only rows
+`rdtid`/`rdctaid`/`barrier` (loud capability error on CPU families).
+Kernel units (`bad<ptx> fn`): the lane ABI wraps the body (one
+`.param .b64` state pointer, entry `main`, declared register banks via
+the `declare` row, reserved temps `%p1`/`%rt1`/`%fs1`), target dispatch
+via `site ... end site` blocks, geometry via `.blockthreads`/
+`.sharedbytes`, cubin via ptxas (PTX-text JIT fallback). The bridge
+overrides the matched node's CUDA-lane image by name (device gate:
+`benchmarks/bad_ptx_gate.sh`). `brievc bad x.bad --emit-asm` covers the
+CPU families; contracts prove register preservation per family.
+
 ### CIRCT
 `Abs#`, `AddressOf#` (from `address_resolver`), `Size#` (constant 64). All
 other intrinsics → recorded error.

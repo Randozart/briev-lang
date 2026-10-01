@@ -59,14 +59,17 @@ manipulation.
   (`ptx/general.rs:2215`, `spirv/lower.rs:1244`). The disclosed escape
   hatch of D26 therefore does not exist on the GPU lanes — the single
   most doctrine-critical gap in this audit.
-  - **ROUTE DECIDED 2026-10-01** (plan
-    `2026-10-01-bad-ptx-family.md`; dialect GPU section in
+  - **LANDED 2026-10-01** (plans `2026-10-01-bad-ptx-family.md`,
+    `2026-10-01-bad-site-blocks.md`; dialect GPU section in
     `bad-dialect.md`): the kernel-level GPU escape is the `.bad`
-    dialect gaining a `ptx` family — whole authored units assemble via
-    `ptxas` (on PATH, also probed by `compile_cubin`) and override the
-    node CUDA-lane image by name (the dual-image merge contract); the
-    derived SPIR-V emission keeps the Vulkan lane. A `spirv` `.bad`
-    family is future (SSA-id text model vs line-oriented asm).
+    dialect's `ptx` family — whole authored units assemble via
+    `ptxas` into real cubins and override the node CUDA-lane image by
+    name (the dual-image merge contract); the derived SPIR-V emission
+    keeps the Vulkan lane. Device gate: `benchmarks/bad_ptx_gate.sh`
+    — both lanes, exact equality. Target rows inside units are
+    `site ... end site` blocks (the anonymous dispatch form; the
+    attached-exception syntax was retired with it). A `spirv` `.bad`
+    family remains future (SSA-id text model vs line-oriented asm).
   - **`Asm#` on GPU lanes: stays OPEN** ("both eventually"): a PTX-only
     dispatcher arm alone is unreachable (`.abv` is pure dual-lane,
     `spirv/runner.rs:1038` hard-errors per node; the accel purity gate
@@ -125,7 +128,7 @@ manipulation.
 
 | # | Gap | Fill | Class |
 |---|---|---|---|
-| 1 | `Asm#` unreachable on GPU lanes (escape hatch missing) | route: `.bad ptx` family (primary, in flight); the `Asm#` arm stays OPEN pending an honest SPIR-V fragment story | re-routed 2026-10-01 |
+| 1 | `Asm#` unreachable on GPU lanes (escape hatch missing) | route LANDED: `.bad ptx` family + bridge (device-gated); the `Asm#` arm itself stays OPEN pending an honest SPIR-V fragment story | closed-by-route 2026-10-01 |
 | 2 | atomics on both lanes (`atomic.bv` overclaims) | I-arms: `atom.*`/`red.*`, `OpAtomic*` | I, HIGH |
 | 3 | `Sqrt#`/`Fabs#` PTX parity | I-arm (**filled 2026-10-01**, `4ce9b6d7`) | I |
 | 4 | work-id names on PTX | I-arm over structural ids | I |
@@ -145,8 +148,9 @@ manipulation.
    `intrinsic_signatures.rs` + entry in `REGISTERED_INTRINSICS` + an arm
    in **each** lane dispatcher that should support it + interpreter arm
    (reference: rule 5) + tests.
-2. **No name?** → raw `Asm#` template (author owns fallout) — PTX lane
-   now, SPIR-V lane once §2 OPEN resolves.
+2. **No name?** → a whole-kernel unit: `bad<ptx>` (author owns
+   fallout) — `site <target> =>` rows for target-only text; `Asm#`
+   stays CPU/LLVM (its GPU arm is OPEN, §2).
 3. **Same op, several targets?** → one `asm-lowering.dbvl` data row per
    family (`"ptx:…"`), no Rust.
 4. **Execution semantics (sync/ordering/lifetime)?** → L2 declaration

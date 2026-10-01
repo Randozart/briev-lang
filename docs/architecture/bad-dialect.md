@@ -522,12 +522,28 @@ Vulkan lane.
 ### Authoring
 
 ```text
-bad<ptx> fn scale(state: Ptr) [post: result-valid] {
+bad<ptx> scale(state: Ptr) -> Int [true] {
     .blockthreads 64
-    s2r r1, tid.x
-    // ... universal core ops; `ptx =>` exception rows for raw text
+start:
+    rdctaid r2
+    mul r2, r2, 64
+    rdtid r3
+    add r2, r2, r3
+    jge r2, 1024, done
+    mul r4, r2, 4
+    add r5, r1, 4128        // res base + i*4
+    add r6, r1, 16          // a base + i*4
+site ptx =>
+    ld.global.f32 %fs1, [%rd6]
+    st.global.f32 [%rd5], %fs1
+end site
+done:
+    ret
 }
 ```
+
+(Working fixture: `examples/gpu/bad_override.abv`; device gate:
+`benchmarks/bad_ptx_gate.sh` — both lanes, exact equality.)
 
 - The fn name must equal an accel node's name — that is the BRIDGE KEY:
   the compiled unit replaces the node's CUDA-lane image (the derived
