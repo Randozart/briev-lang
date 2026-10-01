@@ -651,10 +651,15 @@ fn eval_atomic_at(
         "AtomicAddAt#" => {
             fields[i as usize] = Value::int(old.wrapping_add(v));
         }
+        // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): the family
+        // expansion — Sub (the pattern is repeatable derivation).
+        "AtomicSubAt#" => {
+            fields[i as usize] = Value::int(old.wrapping_sub(v));
+        }
         other => {
             return Err(RuntimeError::TypeError {
                 expected: "an implemented At-family atomic".into(),
-                found: format!("{other} - only AtomicAddAt# exists (v1)"),
+                found: format!("{other} - Add and Sub exist"),
             })
         }
     }
@@ -3391,6 +3396,24 @@ defn go() -> Int {
         match bindings.get("total") {
             Some(Value::Product { fields, .. }) => {
                 assert_eq!(fields[0].as_i64(), Some(10), "the binding holds the sum");
+            }
+            other => panic!("binding shape {:?}", other.is_some()),
+        }
+        // 2026-10-01: the family expansion — Sub.
+        let sub = Expr::Call(
+            "AtomicSubAt#".into(),
+            vec![
+                Expr::Identifier("total".into()),
+                Expr::Decimal(0),
+                Expr::Decimal(3),
+            ],
+            None,
+        );
+        let old3 = eval_expr(&sub, &mut heap, &mut bindings, &HashMap::new()).unwrap();
+        assert_eq!(old3.as_i64(), Some(10), "sub returns the pre-value");
+        match bindings.get("total") {
+            Some(Value::Product { fields, .. }) => {
+                assert_eq!(fields[0].as_i64(), Some(7), "10 - 3");
             }
             other => panic!("binding shape {:?}", other.is_some()),
         }

@@ -364,6 +364,13 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
             observable: true,
             variadic: false,
         }),
+        "AtomicSubAt#" => Some(Signature {
+            name: "AtomicSubAt#",
+            parameters: vec![],
+            return_kind: ReturnKind::Native("Int"),
+            observable: true,
+            variadic: false,
+        }),
         // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): the RMW family
         // completion + width-parameterized load. All accept a trailing
         // ordering argument (relaxed/acquire/release/bartered/seq).
@@ -553,7 +560,7 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     "Fma#", "Environ#",
     // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): element-
     // addressed atomics (the kernel family).
-    "AtomicAddAt#",
+    "AtomicAddAt#", "AtomicSubAt#",
     "Print#",
     "Malloc#", "Alloc#", "Free#", "Load#", "Store#",
     "VolatileLoad#", "VolatileStore#", "Copy#", "Fill#",

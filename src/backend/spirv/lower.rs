@@ -1248,7 +1248,7 @@ impl<'a> FnLowerer<'a> {
             // Int-arrays-only: GPU Float arrays are f32 storage; Int is
             // i64 in both worlds. GLSL450 model scope/semantics — see
             // `SpirvBuilder::atomic_rmw`.
-            "AtomicAddAt#" => {
+            "AtomicAddAt#" | "AtomicSubAt#" => {
                 if args.len() < 3 {
                     return self.err("AtomicAddAt# takes (buf, i, v)");
                 }
@@ -1279,7 +1279,13 @@ impl<'a> FnLowerer<'a> {
                     ));
                 }
                 let res_ty = self.builder.lower_type(&Type::int())?;
-                let old = self.builder.atomic_rmw(res_ty, ptr, val);
+                // 2026-10-01: the family expansion — Sub rides the same
+                // address/semantics shape (OpAtomicISub, core).
+                let op = match name {
+                    "AtomicSubAt#" => spirv::Op::AtomicISub,
+                    _ => spirv::Op::AtomicIAdd,
+                };
+                let old = self.builder.atomic_rmw(res_ty, ptr, val, op);
                 Ok((old, Type::int()))
             }
             other => self.err(format!("unsupported intrinsic '{}'", other)),

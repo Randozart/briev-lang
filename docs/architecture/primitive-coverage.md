@@ -91,7 +91,7 @@ manipulation.
 | math Sqrt/Fabs (and friends) | I | **filled 2026-10-01**: `sqrt.rn.f32` / `abs.f32` arms in the lane dispatcher (parity with the SPIR-V lane's GLSL.std.450 lowering); locked by instruction-text tests + the well-formedness guard |
 | barriers (named) | S+X | `bar.sync 0` structural in the combine (`general.rs:1694`); named `Barrier#` unsupported → **I-fill** |
 | fences (named) | X | `Fence#` no arm → **I-fill** (`fence.acq_rel.gpu`/`barrier` scope decision: L2 scopes refine later) |
-| atomics | I (first slice) | **`AtomicAddAt#` filled 2026-10-01** (plan `2026-10-01-atomic-element-rmw.md`): the element-addressed family — `atom.acq_rel.gpu.global.add.u64` / `OpAtomicIAdd` (Int64Atomics + `shaderBufferInt64Atomics` runtime feature) / LLVM `atomicrmw` / interpreter — ONE reference semantics, device-gated (`benchmarks/atomic_gate.sh`: 1024 atomic increments, BOTH lanes exact). Family remainder (Sub/Cas/Xchg/And/Or/Xor At-variants, Float-at on f32 via the atomic-float extension, the pointer-based family on GPU lanes) stays X and tracks per-op |
+| atomics | I (first slice) | **`AtomicAddAt#` filled 2026-10-01** (plan `2026-10-01-atomic-element-rmw.md`): the element-addressed family — `atom.acq_rel.gpu.global.add.u64` / `OpAtomicIAdd` (Int64Atomics + `shaderBufferInt64Atomics` runtime feature) / LLVM `atomicrmw` / interpreter — ONE reference semantics, device-gated (`benchmarks/atomic_gate.sh`: 1024 atomic increments, BOTH lanes exact). Family: `AtomicAddAt#` + `AtomicSubAt#` filled (Sub lowers to neg+add on PTX — no atomic sub exists; identical wrapping RMW). Remainder (Cas/Xchg/And/Or/Xor At-variants, Float-at on f32 via the atomic-float extension, the pointer-based family on GPU lanes) stays X and tracks per-op |
 | volatile | X | `VolatileLoad#/VolatileStore#` no lane arm → **I-fill** (`ld.volatile`/`st.volatile`) |
 | Load#/Store# (named) | X | elementwise stores are structural; an explicit `Store#` call errors → **I-fill** |
 | `mma.sync` | S | tensor family (`ptx/tensor.rs`, warp-tile emitters); no named intrinsic — correct: structure, not escape |
@@ -129,7 +129,7 @@ manipulation.
 | # | Gap | Fill | Class |
 |---|---|---|---|
 | 1 | `Asm#` unreachable on GPU lanes (escape hatch missing) | route LANDED: `.bad ptx` family + bridge (device-gated); the `Asm#` arm itself stays OPEN pending an honest SPIR-V fragment story | closed-by-route 2026-10-01 |
-| 2 | atomics on both lanes (`atomic.bv` overclaims) | first slice **filled**: `AtomicAddAt#` all four backends, device-gated; the RMW-family remainder + Float-at + pointer-family-on-GPU track per-op | I, HIGH (in progress) |
+| 2 | atomics on both lanes (`atomic.bv` overclaims) | `AtomicAddAt#`/`AtomicSubAt#` all four backends, device-gated; the RMW-family remainder + Float-at + pointer-family-on-GPU track per-op | I, HIGH (in progress) |
 | 3 | `Sqrt#`/`Fabs#` PTX parity | I-arm (**filled 2026-10-01**, `4ce9b6d7`) | I |
 | 4 | work-id names on PTX | I-arm (**filled 2026-10-01**, device-gated both lanes) | I |
 | 5 | `Barrier#`/`Fence#` named on both lanes | I-arms (bar.sync / OpControlBarrier + scopes) | I (+L2 scopes) |

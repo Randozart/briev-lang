@@ -664,7 +664,7 @@ impl SpirvBuilder {
     /// VulkanMemoryModel coopmat path re-encodes; atomics there are
     /// future work and would need the 0x40 constant.
     pub fn atomic_rmw(
-        &mut self, result_ty: Word, ptr: Word, val: Word,
+        &mut self, result_ty: Word, ptr: Word, val: Word, op: spirv::Op,
     ) -> Word {
         // 64-bit buffer atomics capability — declared HERE (not in new())
         // so kernels without atomics keep byte-identical modules (the
@@ -681,7 +681,7 @@ impl SpirvBuilder {
         let scope = self.u32_const(1);
         let semantics = self.u32_const(0x10);
         self.instr(
-            spirv::Op::AtomicIAdd,
+            op,
             Some(result_ty),
             None,
             vec![

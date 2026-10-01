@@ -1980,6 +1980,25 @@ fn test_atomic_add_at_lowers_to_element_atomicrmw() {
         "the atomic is the WHOLE op:\n{out}"
     );
     assert!(out.contains("seq_cst"), "default ordering:\n{out}");
+    // 2026-10-01: the family expansion — Sub rides the same shape.
+    let mut out2 = String::new();
+    crate::backend::llvm::intrinsics::emit_intrinsic_call(
+        &mut backend,
+        &mut out2,
+        "%out",
+        "AtomicSubAt#",
+        &[
+            Expr::Identifier("total".to_string()),
+            Expr::Decimal(0),
+            Expr::Decimal(1),
+        ],
+        None,
+        "  ",
+    );
+    assert!(
+        out2.contains("atomicrmw sub ptr"),
+        "sub is the same shape:\n{out2}"
+    );
 }
 
 #[test]

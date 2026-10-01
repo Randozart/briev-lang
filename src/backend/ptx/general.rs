@@ -2199,11 +2199,11 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     /// Values flatten through f32 (the lane's Int convention — exact for
     /// kernel-realistic magnitudes, `cvt.rni` for the round-trip); the
     /// RMW itself never touches an f32 register.
-    fn emit_atomic_add_at(
-        &mut self, args: &[Expr], out: &str,
+    fn emit_atomic_at(
+        &mut self, args: &[Expr], out: &str, negate: bool,
     ) -> Result<(String, String), String> {
         if args.len() < 3 {
-            return Err("AtomicAddAt# takes (buf, i, v)".into());
+            return Err("the At-family atomics take (buf, i, v)".into());
         }
         let mut d = String::new();
         let mut b = String::new();
@@ -2227,6 +2227,9 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         d.push_str(&format!("    .reg .b64 {v64};\n"));
         d.push_str(&format!("    .reg .b64 {old};\n"));
         b.push_str(&format!("    cvt.rni.s64.f32 {}, {};\n", v64, v));
+        if negate {
+            b.push_str(&format!("    neg.s64 {}, {v64};\n", v64));
+        }
         b.push_str(&format!(
             "    atom.acq_rel.gpu.global.add.u64 {}, [{}], {};\n",
             old, addr, v64
@@ -2314,7 +2317,16 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
             // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md A3): the
             // element-addressed atomic — see `emit_atomic_add_at`.
             "AtomicAddAt#" => {
-                let (d, b) = self.emit_atomic_add_at(args, out)?;
+                let (d, b) = self.emit_atomic_at(args, out, false)?;
+                decl.push_str(&d);
+                body.push_str(&b);
+                Ok(())
+            }
+            "AtomicSubAt#" => {
+                // PTX has no atomic sub — add of the negated value is
+                // the identical wrapping-i64 RMW (the same route LLVM's
+                // atomicrmw sub takes through negation on some targets).
+                let (d, b) = self.emit_atomic_at(args, out, true)?;
                 decl.push_str(&d);
                 body.push_str(&b);
                 Ok(())
@@ -3079,6 +3091,50 @@ mod tests {
         if std::process::Command::new("ptxas").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
             let blob = crate::backend::ptx::compile_cubin(&ptx, 0);
             assert!(blob.is_some(), "ptxas must accept the atomic PTX");
+        }
+        // 2026-10-01: the family expansion — Sub lowers to neg + atom.add
+        // (PTX has no atomic sub; the wrapping-i64 RMW is identical).
+        let sub_shape = crate::analysis::accel::KernelShape {
+            kernel_stmts: vec![
+                Statement::Let {
+                    name: "old".into(),
+                    names: vec![],
+                    ty: None,
+                    expr: Some(Expr::Call(
+                        "AtomicSubAt#".into(),
+                        vec![
+                            Expr::Identifier("total".into()),
+                            Expr::Decimal(0),
+                            Expr::Decimal(1),
+                        ],
+                        None,
+                    )),
+                    modifiers: vec![],
+                },
+                Statement::Assign(idx("res", id("i")), id("old")),
+                Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
+            ],
+            ..shape
+        };
+        let ptx_sub = emit_general_ptx(
+            &sub_shape,
+            1024,
+            &layout2,
+            &consts,
+            &universe,
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+        )
+        .unwrap_or_else(|e| panic!("sub emits: {e}"));
+        assert!(ptx_sub.contains("neg.s64"), "the negation:\n{ptx_sub}");
+        assert!(
+            ptx_sub.contains("atom.acq_rel.gpu.global.add.u64"),
+            "the same atomic:\n{ptx_sub}"
+        );
+        if std::process::Command::new("ptxas").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            assert!(
+                crate::backend::ptx::compile_cubin(&ptx_sub, 0).is_some(),
+                "ptxas must accept the sub PTX"
+            );
         }
     }
 

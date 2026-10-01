@@ -411,6 +411,43 @@ mod tests {
         let dis = validate_and_disassemble(&binary, "atomic_at");
         assert!(dis.contains("OpAtomicIAdd"), "the atomic:\n{dis}");
         assert!(dis.contains("Int64Atomics"), "capability:\n{dis}");
+        // 2026-10-01: the family expansion — Sub emits OpAtomicISub.
+        let mut sub_txn = program[3].clone();
+        if let TopLevel::Transaction(ref mut tx) = sub_txn {
+            tx.name = "acc_sub".into();
+            tx.body = vec![
+                Statement::Let {
+                    name: "old".into(),
+                    names: vec![],
+                    ty: Some(Type::int()),
+                    expr: Some(Expr::Call(
+                        "AtomicSubAt#".into(),
+                        vec![
+                            Expr::Identifier("total".into()),
+                            Expr::Decimal(0),
+                            Expr::Decimal(1),
+                        ],
+                        None,
+                    )),
+                    modifiers: vec![],
+                },
+                Statement::Assign(
+                    Expr::Identifier("i".into()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("i".into())),
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                ),
+            ];
+        }
+        let sub_program = vec![program[0].clone(), program[1].clone(), program[2].clone(), sub_txn];
+        let sub_analysis = analyze(&sub_program);
+        let sub_shape = eligible_shape(&sub_analysis, "acc_sub").clone();
+        let mut sub_builder = SpirvBuilder::new();
+        emit_kernel(&mut sub_builder, "acc_sub", &sub_shape, &sub_program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
+        let sub_dis = validate_and_disassemble(&sub_builder.build().unwrap(), "atomic_sub_at");
+        assert!(sub_dis.contains("OpAtomicISub"), "the sub atomic:\n{sub_dis}");
     }
 
     /// §2.5: spirv-val validation — typed-emission refactor closed the

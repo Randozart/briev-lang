@@ -224,7 +224,8 @@ pub fn emit_intrinsic_call(
         "AtomicAdd#" => return emit_atomic_add(backend, out, v, args, indent),
         // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): the
         // element-addressed family — GEP the element, atomicrmw in place.
-        "AtomicAddAt#" => return emit_atomic_add_at(backend, out, v, args, indent),
+        "AtomicAddAt#" => return emit_atomic_at(backend, out, v, args, indent, "add"),
+        "AtomicSubAt#" => return emit_atomic_at(backend, out, v, args, indent, "sub"),
         // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): RMW family
         "AtomicSub#" => return emit_atomic_rmw(backend, out, v, args, indent, "sub"),
         "AtomicOr#" => return emit_atomic_rmw(backend, out, v, args, indent, "or"),
@@ -1734,9 +1735,9 @@ fn emit_atomic_add(
 /// `[N x i64]`) — the same addressing `buf[i] = x` uses
 /// (`emit_state_gep` + element GEP) — then one `atomicrmw` at the
 /// element. Reference semantics: interpreter `eval_atomic_at`.
-fn emit_atomic_add_at(
+fn emit_atomic_at(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    args: &[Expr], indent: &str, rmw_op: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 3).unwrap_or("seq_cst");
     let Some(Expr::Identifier(name)) = args.first() else {
@@ -1776,8 +1777,8 @@ fn emit_atomic_add_at(
     let val_i64 = backend.adapt_to_i64(out, indent, &val);
     writeln!(
         out,
-        "{}{} = atomicrmw add ptr {}, i64 {} {}",
-        indent, v, elem, val_i64, ord
+        "{}{} = atomicrmw {} ptr {}, i64 {} {}",
+        indent, v, rmw_op, elem, val_i64, ord
     )
     .ok();
     BTypedRegister { name: v.to_string(), ty: Type::int() }

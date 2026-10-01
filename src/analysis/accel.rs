@@ -471,7 +471,9 @@ fn expr_is_pure(expr: &Expr) -> bool {
                 // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): the
                 // element-addressed atomic family — order-nondeterministic
                 // BY CONTRACT (the author named an atomic); offload-safe.
-                || name == "AtomicAddAt#"
+                // The FAMILY shape, not per-op names (the family grows;
+                // unknown At ops error loudly at the lane dispatchers).
+                || (name.starts_with("Atomic") && name.ends_with("At#"))
                 || name == "Exp#"
                 || name == "Sqrt#"
                 || name == "Fabs#" =>
