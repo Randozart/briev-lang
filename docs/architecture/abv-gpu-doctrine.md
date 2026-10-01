@@ -7,7 +7,9 @@ machine code is the compiler's own. This document is the durable
 statement; `docs/plans/2026-09-04-beyond-coopmat.md` is the staged
 campaign that realizes it.
 
-Read together with: `gpu-model.md` (borrowing-not-barriers thesis),
+Read together with: `ptxas-contract.md` (the assembler boundary —
+what the pipeline decides below our text), `gpu-model.md`
+(borrowing-not-barriers thesis),
 `backend-contracts.md` (analysis-once + capability matrix),
 `benchmark-strategy.md` (anti-overfit doctrine, VERDICT discipline),
 `spec/SPEC.md` §9.8 (kernel synthesis tiers).

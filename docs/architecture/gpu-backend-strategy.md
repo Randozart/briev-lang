@@ -72,6 +72,8 @@ So the analysis's core architectural moves (direct PTX, `mma.sync`, driver JIT)
 are validated and largely landed. The sections below cover what is NOT yet
 built: the async memory pipeline, the Briev-specific fusion lever, the
 emitter-route tradeoff, occupancy tuning, and the multi-vendor matrix.
+The ptxas boundary conditions (what the assembler decides vs what
+survives the text) are pinned in `ptxas-contract.md`.
 
 ---
 
