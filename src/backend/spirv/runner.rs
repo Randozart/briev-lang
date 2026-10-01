@@ -44,6 +44,27 @@ pub struct RunnerField {
 
 /// A kernel the runner dispatches: node name, embedded SPIR-V, the index
 /// variable to fast-forward, and the work-item count expression.
+/// 2026-10-01 (contract (B) increment, plan
+/// `2026-09-30-kernel-plan-and-per-target-lowering.md` §7/§12): how the
+/// runner launches one kernel. S1's `split: u32` field (2026-09-30,
+/// `7d3441d0`) carried the partial's factor BESIDE the geometry flags —
+/// one fact, two homes. The geometry is the single carrier: contract (B)
+/// narrows `KernelBlob` to `{name, domain, bytes, geometry}`, and this
+/// enum is that slot (the runner kernel remains the honest currency
+/// until the narrowing lands). Undo: fold the variants back into fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchGeometry {
+    /// Launch `n` items; the kernel's flags (fused_mma / ptx_tensor /
+    /// block-per-workitem / coop) pick the arm inside
+    /// `dispatch_geometry_stmt`. Every ship kernel, and a split node's
+    /// `__combine` companion.
+    Plain,
+    /// Split partial: flat launch of `n * factor` work items (one CTA
+    /// per `(work_item, slice)`), then the companion takes `Plain` —
+    /// two ordered launches of one logical node.
+    Split { factor: u32 },
+}
+
 pub struct RunnerKernel {
     pub name: String,
     pub spirv: Vec<u8>,
@@ -115,13 +136,13 @@ pub struct RunnerKernel {
     /// count by `block_threads` so the driver's `gx = ceil(n*bx/bx) = n`.
     /// False for every non-lane-reduction kernel (zero-fill contract).
     pub block_per_workitem: bool,
-    /// 2026-09-30 (general reduction-split, plan
-    /// 2026-09-30-general-reduction-split.md): the partial-kernel split
-    /// factor `S`. 1 = none (every ship kernel). For `S > 1` the runner
-    /// dispatches this kernel with `count * S` work items (one CTA per
-    /// `(work_item, slice)`), then its `<name>__combine` companion with
-    /// `count` — two ordered launches of one logical node.
-    pub split: u32,
+    /// 2026-10-01 (contract (B) increment, plan
+    /// `2026-09-30-kernel-plan-and-per-target-lowering.md` §7/§12): the
+    /// launch geometry — contract (B)'s `{name, domain, bytes, geometry}`
+    /// slot carried on today's honest currency (the full RunnerKernel).
+    /// Absorbs S1's bare `split: u32` (2026-09-30): the split knowledge
+    /// lives HERE, beside the launch shape, not as a field apart from it.
+    pub geometry: DispatchGeometry,
     /// 2026-09-30 (per-lane projections, plan
     /// 2026-09-30-kernel-plan-and-per-target-lowering.md Phase 2): the node
     /// this kernel dispatches for. Equals `name` for a primary kernel; a
@@ -996,7 +1017,9 @@ pub(crate) fn emit_node_kernel(
         touched_fields: touched,
         // 2026-09-17 (M2.0): the SPIR-V producer carries no CUDA image;
         // compile.rs merges build_ptx_kernels blobs in by node name.
-        ptx: Vec::new(), block_per_workitem: false, split: 1,
+        ptx: Vec::new(),
+        block_per_workitem: false,
+        geometry: DispatchGeometry::Plain,
         owner: name.clone(), domain: KernelDomain::Shared,
     };
 Ok(kernel)
@@ -1221,14 +1244,14 @@ fn emit_kernel_node(
             .iter()
             .filter(|(_, x)| x.domain != KernelDomain::VulkanOnly)
         {
-            out.push_str(&dispatch_with_split(x, *i, &ci));
+            out.push_str(&dispatch_geometry_stmt(x, *i, &ci));
         }
         out.push_str("      } else {\n");
         for (i, x) in node_ks
             .iter()
             .filter(|(_, x)| x.domain != KernelDomain::CudaOnly)
         {
-            out.push_str(&dispatch_with_split(x, *i, &ci));
+            out.push_str(&dispatch_geometry_stmt(x, *i, &ci));
         }
         out.push_str("      }\n");
         out.push_str(&format!("      S_{} = n_{};\n", c_ident(&k.index_var), ci));
@@ -1249,19 +1272,6 @@ fn emit_kernel_node(
     out.push_str("    }\n");
 }
 
-/// 2026-09-30 (Phase 2): one kernel's launch, honouring a split factor. A
-/// split partial kernel (block-per-workitem) is dispatched over `count * S`
-/// work items; every other kernel uses its plain geometry.
-fn dispatch_with_split(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
-    if k.split > 1 {
-        return format!(
-            "      if (n_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, n_{ci} * {})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n",
-            k.split
-        );
-    }
-    dispatch_geometry_stmt(k, kidx, ci)
-}
-
 /// The C dispatch statement for one kernel node, by blob geometry
 /// (plan 2026-08-31-gpu-next §2b + 2026-09-01-cooperative-row-kernels):
 /// cooperative rows (32 lanes × rows), 2D cols×rows, or the flat 1D
@@ -1279,6 +1289,14 @@ fn dispatch_with_split(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
 /// blob the statement splits per lane (`briev_accel_cuda_lane()`); every
 /// other program emits exactly the pre-fix statement.
 fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
+    // 2026-10-01 (contract (B)): the geometry slot decides the launch
+    // shape FIRST — a split partial takes the flat `n * factor` path,
+    // exactly what the retired `dispatch_with_split` emitted.
+    if let DispatchGeometry::Split { factor } = k.geometry {
+        return format!(
+            "      if (n_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, n_{ci} * {factor})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
+        );
+    }
     if k.fused_mma {
         // Phase 4b mma rung: one 16-row block per 32·nwarps lanes; the count
         // expr is the WORK count (M·N); ny = count / (16·on) blocks.
@@ -1577,7 +1595,7 @@ mod dispatch_tests {
             touched_fields: Vec::new(),
             ptx: Vec::new(),
             block_per_workitem: false,
-            split: 1,
+            geometry: DispatchGeometry::Plain,
             owner: "k".into(),
             domain: KernelDomain::Shared,
         };

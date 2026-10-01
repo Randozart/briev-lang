@@ -156,5 +156,7 @@ land:
 
 See plan §12: 2.4 DONE (this seam) → SPIR-V adapter + tensor adapter
 DONE (2026-10-01) → `ReduceTree::Split` (item 4) DONE (2026-10-01) →
-delete S1's `split` field → Phase 3 retirements (Rule 24 existence
-proofs retire when general machinery reaches their numbers).
+S1's `split` field deleted, absorbed into the §7 `geometry` slot
+(`DispatchGeometry`, 2026-10-01) → L1 primitive audit / D14 remainder /
+B4 → Phase 3 retirements (Rule 24 existence proofs retire when general
+machinery reaches their numbers).

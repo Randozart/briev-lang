@@ -2101,7 +2101,7 @@ async node gemm [i < M * N][i == M * N] {
                 a.name
             );
             assert_eq!(a.block_threads, b.block_threads, "threads of {}", a.name);
-            assert_eq!(a.split, b.split, "split of {}", a.name);
+            assert_eq!(a.geometry, b.geometry, "geometry of {}", a.name);
             assert_eq!(a.domain, b.domain, "lane domain of {}", a.name);
             assert_eq!(
                 a.touched_fields, b.touched_fields,

@@ -267,8 +267,21 @@ field retired).
      `build_ptx_kernels` rows is improvement: cog 126→34, fn 425→190).
    - 2.6 **DONE** (2026-10-01): the split intent is plan-level —
      `ReduceTree::Split` (item 4 below).
-   - **NEXT**: delete S1's `split` field, then L1 primitive audit / D14
-     remainder / B4 per the daily-use sweep umbrella.
+   - 2.7 **DONE** (2026-10-01): contract (B) increment — S1's bare
+     `RunnerKernel.split: u32` field is deleted; the split knowledge now
+     lives in the §7 geometry slot (`RunnerKernel.geometry:
+     DispatchGeometry::{Plain, Split { factor }}`). `dispatch_with_split`
+     is retired — `dispatch_geometry_stmt` opens with the geometry arm
+     (byte-identical emission: the `n * factor` flat launch is the same
+     statement). The enum is the FIRST resident of contract (B)'s
+     `{name, domain, bytes, geometry}` narrowing (the runner kernel
+     stays the honest currency until that lands — gpu_lowering.rs module
+     doc). Suite 2822, warnings 19, byte-identical (runner.c + .spv),
+     Praetor no new rows, `softmax_gate.sh` split fixture PASS both
+     lanes (5.91e-06 / 2.06e-05).
+   - **NEXT**: L1 primitive audit / D14 remainder / B4 per the daily-use
+     sweep umbrella (then the rest of contract (B): KernelBlob narrowing
+     + `LoweredNode::dispatch`).
 4. **Split as `ReduceTree::Split`** → device-validate (unblocks 5a).
    **Device validation DONE** (`68e5acfa`: declared `split<8>` fixture +
    knob fixture, both lanes). **PLAN IR DONE** (2026-10-01): the split

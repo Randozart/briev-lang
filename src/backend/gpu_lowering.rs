@@ -14,7 +14,9 @@
 //! Contract (B) — the runner/desc projection — will narrow [`KernelBlob`]
 //! to the §7 `{name, domain, bytes, geometry}` shape and carry
 //! `LoweredNode::dispatch`; until then the runner kernel is the honest
-//! currency of both arms. PTX has one adapter per family —
+//! currency of both arms. First increment landed 2026-10-01: the `split`
+//! field is gone, its knowledge in the `geometry` slot
+//! (`spirv::runner::DispatchGeometry`). PTX has one adapter per family —
 //! [`PtxGeneralLowering`] (flag-routed via `ptx_plan_lowering`) and
 //! [`PtxTensorLowering`] (the `GemmPlan` branch) — because the PTX
 //! builder routes families through separate emission paths; the SPIR-V

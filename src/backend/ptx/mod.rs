@@ -1337,7 +1337,7 @@ fn build_fused_attention_kernel(
         // during the dual-image merge.
         ptx: Vec::new(),
         block_per_workitem: false,
-        split: 1,
+        geometry: crate::backend::spirv::runner::DispatchGeometry::Plain,
         owner: cf.producer.clone(),
         domain: crate::backend::spirv::runner::KernelDomain::Shared,
     }))
@@ -1642,7 +1642,7 @@ fn emit_cooperative_reduction_ptx(
         touched_fields: crate::backend::spirv::runner::kernel_touched_fields(shape),
         ptx: Vec::new(),
         block_per_workitem: false,
-        split: 1,
+        geometry: crate::backend::spirv::runner::DispatchGeometry::Plain,
         owner: name,
         domain: crate::backend::spirv::runner::KernelDomain::Shared,
     }))
@@ -1906,7 +1906,7 @@ fn push_deferred_combine(
         touched_fields: crate::backend::spirv::runner::kernel_touched_fields(cp.shape),
         ptx: Vec::new(),
         block_per_workitem: true,
-        split: 1,
+        geometry: crate::backend::spirv::runner::DispatchGeometry::Plain,
         owner: cp.name.to_string(),
         domain: crate::backend::spirv::runner::KernelDomain::CudaOnly,
     });
@@ -2121,7 +2121,11 @@ fn general_kernel(ctx: &GeneralNodeCtx<'_>, p: GeneralKernelParts) -> RunnerKern
         touched_fields: crate::backend::spirv::runner::kernel_touched_fields(shape),
         ptx: Vec::new(),
         block_per_workitem: p.block_per_workitem,
-        split: p.def_split,
+        geometry: if p.def_split > 1 {
+            crate::backend::spirv::runner::DispatchGeometry::Split { factor: p.def_split }
+        } else {
+            crate::backend::spirv::runner::DispatchGeometry::Plain
+        },
         owner: ctx.name.clone(),
         domain: p.kdomain,
     }
@@ -2629,7 +2633,7 @@ fn gemm_runner_kernel(
         touched_fields: crate::backend::spirv::runner::kernel_touched_fields(shape),
         ptx: Vec::new(),
         block_per_workitem: false,
-        split: 1,
+        geometry: crate::backend::spirv::runner::DispatchGeometry::Plain,
         owner: name.to_string(),
         domain: crate::backend::spirv::runner::KernelDomain::Shared,
     }
@@ -3147,7 +3151,11 @@ let a_out: Float[1024];
         }
         assert!(checked >= 2, "partial + combine blobs checked: {checked}");
         let partial = &kernels.iter().find(|k| k.name == "sfused__partial").unwrap();
-        assert_eq!(partial.split, 8, "split factor on the partial");
+        assert_eq!(
+            partial.geometry,
+            crate::backend::spirv::runner::DispatchGeometry::Split { factor: 8 },
+            "split geometry on the partial"
+        );
         assert_eq!(
             partial.domain,
             crate::backend::spirv::runner::KernelDomain::CudaOnly,
@@ -3172,7 +3180,7 @@ let a_out: Float[1024];
             assert_eq!(a.name, b.name, "node name");
             assert_eq!(a.owner, b.owner, "owner of {}", a.name);
             assert_eq!(a.spirv, b.spirv, "blob of {} (byte-for-byte)", a.name);
-            assert_eq!(a.split, b.split, "split factor of {}", a.name);
+            assert_eq!(a.geometry, b.geometry, "geometry of {}", a.name);
             assert_eq!(a.block_threads, b.block_threads, "threads of {}", a.name);
             assert_eq!(
                 a.block_per_workitem, b.block_per_workitem,
