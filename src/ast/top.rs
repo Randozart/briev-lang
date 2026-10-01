@@ -151,6 +151,19 @@ pub enum TopLevel {
     /// [ cells ];`. A compile-time named binding of integer cells in row-major
     /// order, usable in instance `value`/`package` positions by index.
     Data(DataTable),
+    /// 2026-09-30 (gpu-syntax-decision-record D30): the single top-of-file
+    /// `### … ###` module-config block, held as its raw `.dbvl`-style text.
+    /// config_tuning parses it with the config grammar and applies it with
+    /// block > `--config-dir` > built-in precedence (D30); unknown keys are
+    /// errors there, so the AST stays grammar-agnostic.
+    ModuleConfig(ModuleConfig),
+}
+
+/// 2026-09-30 (D30): the raw text between the `###` fences. A single block
+/// per file, first item only (enforced by the parser).
+#[derive(Debug, Clone)]
+pub struct ModuleConfig {
+    pub source: String,
 }
 
 /// 2026-09-27 (E2, design record D1): a named constant data table. `dims` is

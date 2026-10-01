@@ -127,6 +127,66 @@ pub fn copy_extern_companions(
 }
 
 /// 2026-08-31 (plan abv-gpu-by-default B3): an Accelerator Briev Volume
+/// 2026-09-30 (gpu-syntax-decision-record D30): apply the `###` module-config
+/// block. The block is extracted from the AST (the item never reaches a
+/// downstream pass), applied over the installed config (block >
+/// `--config-dir` > built-in), its overrides reported on stderr, and its
+/// `warn:` policy enforced module-wide: `deny` refuses any `irr`, `warn`
+/// announces each use, `allow` (the default) is silent. Errors are never
+/// silenceable (D29). To undo: delete this fn and its call in compile_source.
+fn enforce_module_config(items: &mut Vec<briev_compiler::ast::TopLevel>) -> Result<(), String> {
+    use briev_compiler::ast::TopLevel;
+    use briev_compiler::config_tuning::{IrrPolicy, apply_module_config};
+    let Some(pos) = items
+        .iter()
+        .position(|i| matches!(i, TopLevel::ModuleConfig(_)))
+    else {
+        return Ok(());
+    };
+    let TopLevel::ModuleConfig(cfg) = items.remove(pos) else {
+        return Ok(());
+    };
+    let applied = apply_module_config(&cfg.source)?;
+    // D30: the effective config is reported — an override is never silent.
+    if !applied.keys.is_empty() {
+        eprintln!("note: module config overrides: {}", applied.keys.join(", "));
+    }
+    if applied.irr_policy == IrrPolicy::Allow {
+        return Ok(());
+    }
+    let irr_sites: Vec<&str> = items
+        .iter()
+        .filter_map(|item| match item {
+            TopLevel::Transaction(t) => {
+                t.modifiers.iter().any(|m| m.name == "irr").then_some(t.name.as_str())
+            }
+            TopLevel::SyncGroup { item, .. } => match item.as_ref() {
+                TopLevel::Transaction(t) => {
+                    t.modifiers.iter().any(|m| m.name == "irr").then_some(t.name.as_str())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    for name in irr_sites {
+        match applied.irr_policy {
+            IrrPolicy::Deny => {
+                return Err(format!(
+                    "node '{name}': `irr` is denied by this module's ### config (`warn: deny;`) — the site must resolve its declared-size warning instead. Fix: align the declared size, or remove `irr`."
+                ));
+            }
+            IrrPolicy::Warn => {
+                eprintln!(
+                    "warning: node '{name}': `irr` silences declared-size warnings here (module policy: warn)"
+                );
+            }
+            IrrPolicy::Allow => {}
+        }
+    }
+    Ok(())
+}
+
 /// (`.abv`) assumes GPU by default — the extension IS the accel intent, so
 /// the module accel policy defaults to `try_all` with no `!> accel:`
 /// metadata and no per-node `accel` keyword required. An explicit
@@ -204,6 +264,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // ── Parse ─────────────────────────────────────────────────────────
     let tokens = lex_for_path(file_path, &source)?;
     let mut items = parse(file_path, &tokens, &source)?;
+
+    // 2026-09-30 (D30): the `###` module-config block — extracted, applied
+    // with block > --config-dir > built-in precedence (after the CLI's dir
+    // install), reported, and its `warn:` policy enforced. Removed from the
+    // AST immediately: no downstream pass ever sees a config item.
+    enforce_module_config(&mut items)?;
 
     // ── .abv assumes GPU (2026-08-31, plan abv-gpu-by-default B3) ────
     // The extension IS the accel intent; see apply_abv_accel_default.

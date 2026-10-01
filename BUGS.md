@@ -7429,3 +7429,22 @@ never touched timing loops or device code. Present since `c122ead2`
 fix; with it, the f64-exact reference passes at maxrel 0.045.
 **Class:** a reference bug masquerading as a kernel bug — always
 isolate which side of the gate moved before believing a failure.
+
+## `ptx_tensor_ksteps_per_stage` read config field 1 — the knob was inert (fixed 2026-09-30)
+
+**Found:** 2026-09-30, while building the D30 `###` module-config block's
+per-key liveness test (every key must move its settings field alone).
+**Symptom:** a config row `ptx_tensor_ksteps_per_stage: 2;` had no effect —
+`parse_ir_lowering` read field index 1 of the row (`field_int(..., 1)`);
+the shipped single-field row leaves index 1 absent, so the default applied.
+**Cause:** wrong field index in the parse (every other scalar reads index 0).
+**Impact:** the E6-P3 kdepth cadence could never be enabled from config —
+the knob was dead since it landed. No shipped path used it (the row is
+absent from `config/ir-lowering.dbvl`), so no measurement is tainted.
+**Fix:** index 1 → 0 in `parse_ir_lowering` (this commit). The D30 liveness
+test (`module_config_keys_are_live_not_inert`) now guards every key against
+exactly this failure — per-key, because a whole-struct comparison hides one
+dead row behind the others.
+**Class:** dead-knob overrides violate the config contract ("a silently
+ignored override compiles with the wrong tier") — the D30 block makes every
+key's liveness a tested invariant.

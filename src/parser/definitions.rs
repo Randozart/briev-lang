@@ -715,6 +715,18 @@ impl<'a> Parser<'a> {
             // cannot flow through the single-item parse_top_level. Handle it
             // here so the desugared nodes splice into the program directly
             // (the chain never reaches the AST as a variant).
+            // 2026-09-30 (gpu-syntax-decision-record D30): the `### … ###`
+            // module-config block — a single top-of-file fence pair holding
+            // `.dbvl`-style directives. Captured as raw text (config_tuning
+            // re-parses it with the config grammar); never a second time,
+            // never after the first declaration.
+            if self.check(&Token::HashFence) {
+                match self.parse_module_config_block(items.is_empty()) {
+                    Ok(cfg) => items.push(TopLevel::ModuleConfig(cfg)),
+                    Err(e) => errors.push(e),
+                }
+                continue;
+            }
             if self.check_identifier("chain") {
                 match self.parse_chain() {
                     Ok(nodes) => items.extend(nodes),
@@ -746,6 +758,54 @@ impl<'a> Parser<'a> {
         // 2026-08-01 (Phase 4): implicit entry wrapping is owned by the script
         // plugin (script_plugin.rs) — it synthesizes the one-shot opening node.
         Ok(items)
+    }
+
+    /// 2026-09-30 (D30): capture the `### … ###` module-config block as raw
+    /// text between the fences. The block is single and must lead the file;
+    /// every error path still consumes the offending fence so the program
+    /// loop makes progress (F3 recovery).
+    fn parse_module_config_block(&mut self, first: bool) -> Result<ModuleConfig, String> {
+        let (_, open_span) = self.tokens[self.pos].clone();
+        self.pos += 1;
+        // Every error path consumes the whole fence region so the program
+        // loop makes progress without re-parsing the block's innards as
+        // top-level items (F3 recovery).
+        if !first {
+            self.skip_through_closing_fence();
+            return Err(
+                "the ### module-config block is single and must be the first item in the file — a later block cannot reconfigure declarations already parsed. Fix: move it to the top of the file, or drop the extra block.".into(),
+            );
+        }
+        let close_idx = self.tokens[self.pos..]
+            .iter()
+            .position(|(t, _)| *t == Token::HashFence)
+            .map(|i| i + self.pos);
+        let Some(close_idx) = close_idx else {
+            self.pos = self.tokens.len();
+            return Err(
+                "unterminated ### module-config block — the opening ### has no closing ###. Fix: close the block with ### (the directives between the fences are `.dbvl`-style `key: value;` rows).".into(),
+            );
+        };
+        let start = open_span.end.min(self.source.len());
+        let end = self.tokens[close_idx].1.start.min(self.source.len());
+        let source = if start <= end {
+            self.source[start..end].to_string()
+        } else {
+            String::new()
+        };
+        self.pos = close_idx + 1;
+        Ok(ModuleConfig { source })
+    }
+
+    /// Advance past the next `###` fence (or to EOF when unterminated).
+    fn skip_through_closing_fence(&mut self) {
+        match self.tokens[self.pos..]
+            .iter()
+            .position(|(t, _)| *t == Token::HashFence)
+        {
+            Some(i) => self.pos += i + 1,
+            None => self.pos = self.tokens.len(),
+        }
     }
 
     /// 2026-09-23 (E1): true when the current position starts an instance-array
@@ -7275,6 +7335,45 @@ mod tests {
         } else {
             panic!("expected Transaction, got {item2:?}");
         }
+    }
+
+    #[test]
+    fn test_module_config_block_captured() {
+        // 2026-09-30 (D30): the `### … ###` block is a single first item
+        // holding its raw `.dbvl`-style text; the config grammar applies it.
+        let src = "###\nptx_tensor_stages: 2;\nwarn: deny;\n###\nnode n [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let items = p.parse_program().unwrap();
+        assert_eq!(items.len(), 2, "block + node: {items:?}");
+        match &items[0] {
+            crate::ast::TopLevel::ModuleConfig(cfg) => {
+                assert!(cfg.source.contains("ptx_tensor_stages: 2;"), "{}", cfg.source);
+                assert!(cfg.source.contains("warn: deny;"), "{}", cfg.source);
+            }
+            other => panic!("expected ModuleConfig first, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_module_config_block_must_be_first_and_single() {
+        // A later block is refused, and the refusal consumes the block so
+        // the innards never re-parse as top-level items (F3 recovery).
+        let src = "node n [i < 1][i == 1] { i = i + 1; term; };\n###\nwarn: deny;\n###";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_program().unwrap_err().to_string();
+        assert!(err.contains("single and must be the first item"), "{err}");
+        assert!(!err.contains("'warn'"), "block innards leaked: {err}");
+    }
+
+    #[test]
+    fn test_module_config_block_unterminated() {
+        let src = "###\nptx_tensor_stages: 2;\nnode n [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_program().unwrap_err().to_string();
+        assert!(err.contains("unterminated"), "{err}");
     }
 
     #[test]

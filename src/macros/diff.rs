@@ -64,6 +64,8 @@ fn item_key(tl: &TopLevel) -> String {
         ModuleMetadata(_) => "module-metadata".into(),
         Init(i) => format!("init:{}", i.name),
         Data(t) => format!("data:{}", t.name),
+        // 2026-09-30 (D30): single per file, keyed by position.
+        ModuleConfig(_) => "module-config".to_string(),
     }
 }
 
@@ -119,6 +121,8 @@ pub fn item_summary(tl: &TopLevel) -> String {
         ModuleMetadata(meta) => format!("module metadata ({} keys)", meta.len()),
         Init(i) => format!("init {}", i.name),
         Data(t) => format!("data {}", t.name),
+        // 2026-09-30 (D30): the module-config block summary.
+        ModuleConfig(_) => "### module config".to_string(),
     }
 }
 

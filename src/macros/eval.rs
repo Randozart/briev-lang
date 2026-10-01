@@ -2221,6 +2221,9 @@ fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(
         TopLevel::Unpop(_) | TopLevel::ShortCircuit(_) => Ok(()),
         // 2026-09-27 (E2): data tables hold integer literals only — no $-refs.
         TopLevel::Data(_) => Ok(()),
+        // 2026-09-30 (D30): the module-config block is raw config text —
+        // no $-refs to resolve.
+        TopLevel::ModuleConfig(_) => Ok(()),
         // 2026-09-22 (Slice C): the static when law — resolve $-refs in its
         // guard and facts.
         TopLevel::WhenLaw(w) => {

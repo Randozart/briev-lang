@@ -379,6 +379,14 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             }
             out.push_str("];");
         }
+        // 2026-09-30 (D30): the module-config block round-trips as its
+        // fenced raw text.
+        TopLevel::ModuleConfig(cfg) => {
+            indent(out, level);
+            out.push_str("###\n");
+            out.push_str(cfg.source.trim());
+            out.push_str("\n###;");
+        }
         TopLevel::ResourceDecl(_)
         | TopLevel::ForeignBinding(_)
         | TopLevel::Codec(_)

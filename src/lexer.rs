@@ -451,6 +451,13 @@ ExclaimArrow,
     #[token("#Self")]
     HashSelf,
 
+    // 2026-09-30 (gpu-syntax-decision-record D30): the `###` module-config
+    // fence — opens and closes the single top-of-file override block. An
+    // exact token matched before the identifier regex (whose class includes
+    // `#`), same priority rule as `#Lh`.
+    #[token("###")]
+    HashFence,
+
     // ── Punctuation ───────────────────────────────────────────
     #[token(";")]
     Semicolon,
@@ -735,6 +742,7 @@ impl std::fmt::Display for Token {
             Token::HashR => write!(f, "#Rh"),
             Token::HashT => write!(f, "#T"),
             Token::HashSelf => write!(f, "#Self"),
+            Token::HashFence => write!(f, "###"),
         }
     }
 }
@@ -1001,6 +1009,31 @@ mod tests {
         assert_eq!(
             lexer.next(),
             Some(Ok(Token::Identifier("foo#bar".to_string())))
+        );
+        assert_eq!(lexer.next(), None);
+    }
+
+    #[test]
+    fn test_hash_fence_lexes_before_identifier() {
+        // 2026-09-30 (D30): the `###` module-config fence is an exact token
+        // matched before the identifier regex (whose class includes `#`).
+        let mut lexer = Token::lexer("###\nwarn: deny;\n###");
+        assert_eq!(lexer.next(), Some(Ok(Token::HashFence)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::Colon)));
+        assert!(matches!(lexer.next(), Some(Ok(Token::Identifier(_)))));
+        assert_eq!(lexer.next(), Some(Ok(Token::Semicolon)));
+        assert_eq!(lexer.next(), Some(Ok(Token::HashFence)));
+        assert_eq!(lexer.next(), None);
+    }
+
+    #[test]
+    fn test_hash_fence_not_split_inside_identifier() {
+        // `a###b` is one identifier (the fence only fires at a token start).
+        let mut lexer = Token::lexer("a###b");
+        assert_eq!(
+            lexer.next(),
+            Some(Ok(Token::Identifier("a###b".to_string())))
         );
         assert_eq!(lexer.next(), None);
     }

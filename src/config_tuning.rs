@@ -413,17 +413,262 @@ static TARGET_SETTINGS: LazyLock<HashMap<String, TargetSettings>> =
 static IR_LOWERING: LazyLock<IrLoweringSettings> = LazyLock::new(load_ir_lowering);
 
 /// 2026-09-11: `--config-dir` runtime override (same pattern as the targets
-/// config). Set once, before the first `ir_lowering()` access — the compile
-/// pipeline reads tuning lazily, so installing it during CLI arg handling is
-/// always early enough.
-static IR_LOWERING_OVERRIDE: OnceLock<IrLoweringSettings> = OnceLock::new();
+/// config). 2026-09-30 (D30): also patched by the `###` module-config block,
+/// AFTER the dir install — block > dir > default. Each generation is a fully
+/// formed, never-mutated settings leaked via `install_ir_lowering`; the
+/// atomic swap means readers always see one complete generation (the CLI is
+/// single-threaded; tests use the pure `*_to` APIs and never install).
+static IR_LOWERING_OVERRIDE: std::sync::atomic::AtomicPtr<IrLoweringSettings> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
-/// Return the global IR-lowering settings.
+/// The effective IR-lowering settings: the installed override generation,
+/// or the baked-in default.
 pub fn ir_lowering() -> &'static IrLoweringSettings {
-    match IR_LOWERING_OVERRIDE.get() {
-        Some(o) => o,
-        None => &IR_LOWERING,
+    let ptr = IR_LOWERING_OVERRIDE.load(std::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() {
+        &IR_LOWERING
+    } else {
+        // SAFETY: the pointer came from Box::into_raw in install_ir_lowering
+        // and is never freed or mutated in place — every install leaks a new
+        // immutable generation, so the reference is valid for 'static.
+        unsafe { &*ptr }
     }
+}
+
+/// Install a new settings generation (leak-on-swap; see IR_LOWERING_OVERRIDE).
+fn install_ir_lowering(settings: IrLoweringSettings) {
+    let ptr = Box::into_raw(Box::new(settings));
+    IR_LOWERING_OVERRIDE.store(ptr, std::sync::atomic::Ordering::Release);
+}
+
+/// 2026-09-30 (D30): how the module treats a site-local `irr` (D29).
+/// `Allow` (default) = silent suppression; `Warn` = each use announces
+/// itself; `Deny` = any `irr` is a compile error. Warnings-only policy —
+/// errors are never silenceable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrrPolicy {
+    Allow,
+    Warn,
+    Deny,
+}
+
+/// 2026-09-30 (D30): the result of applying a `###` module-config block.
+#[derive(Debug)]
+pub struct ModuleConfigApplied {
+    /// The patched settings (block > base precedence, per key).
+    pub settings: IrLoweringSettings,
+    /// The applied overrides, sorted by key, `key=value` rendered.
+    pub keys: Vec<String>,
+    /// The module's `irr` policy (`warn:` row; Allow when absent).
+    pub irr_policy: IrrPolicy,
+}
+
+/// 2026-09-30 (D30): every `ir-lowering` key the compiler consumes, with its
+/// row kind for `render_ir_lowering`. The `###` block validates its keys
+/// against this list (unknown = error); the `render_parse_roundtrip` test
+/// keeps this table and `parse_ir_lowering` in lockstep.
+const IR_LOWERING_KEYS: &[(&str, bool)] = &[
+    ("arena_min_budget", false),
+    ("circt.firmem_min_depth", false),
+    ("circt.firmem_max_ports", false),
+    ("circt.clock_hz", false),
+    ("arena_initial_size", false),
+    ("stack_threshold", false),
+    ("max_fields_per_alloca", false),
+    ("sso_max_bytes", false),
+    ("callable_inline_weight_threshold", false),
+    ("accel_probe_k", false),
+    ("accel_probe_tolerance", true),
+    ("accel_probe_margin", true),
+    ("spirv_unroll", false),
+    ("gpu_schedule_buffer_reuse", false),
+    ("ptx_fused_staged", false),
+    ("spirv_row_cooperative", false),
+    ("spirv_coopmat", false),
+    ("spirv_coopmat_tile_rows", false),
+    ("spirv_image_storage", false),
+    ("spirv_coopmat_f16acc", false),
+    ("spirv_coopmat_subgroups", false),
+    ("spirv_coopmat_smem", false),
+    ("spirv_coopmat_fill_pairs", false),
+    ("spirv_coopmat_fill_quad", false),
+    ("spirv_coopmat_fill_prefetch", false),
+    ("spirv_coopmat_stagger", false),
+    ("spirv_coopmat_panels_per_stage", false),
+    ("spirv_coopmat_stages", false),
+    ("ptx_tensor_f16acc", false),
+    ("ptx_tensor_b_lookahead", false),
+    ("ptx_tensor_bsmem_pad", false),
+    ("ptx_tensor_ksteps_per_stage", false),
+    ("ptx_tensor_stages", false),
+    ("ptx_tensor_nofill", false),
+    ("ptx_gemm_grid_order", false),
+    ("ptx_tensor_force_mw", false),
+    ("ptx_tensor_force_nw", false),
+    ("ptx_tensor_warp_spec", false),
+    ("ptx_fused_attention", false),
+    ("ptx_serial_unroll", false),
+    ("ptx_warp_slice", false),
+    ("ptx_warp_slice_min_span", false),
+    ("ptx_warp_slice_warps", false),
+    ("ptx_deferred_region", false),
+    ("ptx_deferred_split", false),
+    ("ptx_emit_cubin", false),
+];
+
+/// 2026-09-30 (D30): render every known key of `s` as `.dbvl` rows (the
+/// inverse image of `parse_ir_lowering`). Values are emitted raw — the
+/// parser re-applies its clamps, which are idempotent on parsed values.
+fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
+    let mut rows: Vec<(&str, String)> = Vec::new();
+    let mut push = |k: &'static str, v: String| {
+        if !skip.iter().any(|sk| sk == k) {
+            rows.push((k, v));
+        }
+    };
+    let b = |v: bool| if v { "1".to_string() } else { "0".to_string() };
+    push("arena_min_budget", s.arena_min_budget.to_string());
+    push("circt.firmem_min_depth", s.firmem_min_depth.to_string());
+    push("circt.firmem_max_ports", s.firmem_max_ports.to_string());
+    push("circt.clock_hz", s.clock_hz.to_string());
+    push("arena_initial_size", s.arena_initial_size.to_string());
+    push("stack_threshold", s.stack_threshold.to_string());
+    push("max_fields_per_alloca", s.max_fields_per_alloca.to_string());
+    push("sso_max_bytes", s.sso_max_bytes.to_string());
+    push(
+        "callable_inline_weight_threshold",
+        s.callable_inline_weight_threshold.to_string(),
+    );
+    push("accel_probe_k", s.accel_probe_k.to_string());
+    push("accel_probe_tolerance", s.accel_probe_tolerance.to_string());
+    push("accel_probe_margin", s.accel_probe_margin.to_string());
+    push("spirv_unroll", s.spirv_unroll.to_string());
+    push("gpu_schedule_buffer_reuse", b(s.gpu_schedule_buffer_reuse));
+    push("ptx_fused_staged", b(s.ptx_fused_staged));
+    push("spirv_row_cooperative", b(s.spirv_row_cooperative));
+    push("spirv_coopmat", b(s.spirv_coopmat));
+    push("spirv_coopmat_tile_rows", s.spirv_coopmat_tile_rows.to_string());
+    push("spirv_image_storage", b(s.spirv_image_storage));
+    push("spirv_coopmat_f16acc", b(s.spirv_coopmat_f16acc));
+    push(
+        "spirv_coopmat_subgroups",
+        s.spirv_coopmat_subgroups.to_string(),
+    );
+    push("spirv_coopmat_smem", b(s.spirv_coopmat_smem));
+    push("spirv_coopmat_fill_pairs", b(s.spirv_coopmat_fill_pairs));
+    push("spirv_coopmat_fill_quad", b(s.spirv_coopmat_fill_quad));
+    push(
+        "spirv_coopmat_fill_prefetch",
+        b(s.spirv_coopmat_fill_prefetch),
+    );
+    push("spirv_coopmat_stagger", b(s.spirv_coopmat_stagger));
+    push(
+        "spirv_coopmat_panels_per_stage",
+        s.spirv_coopmat_panels_per_stage.to_string(),
+    );
+    push("spirv_coopmat_stages", s.spirv_coopmat_stages.to_string());
+    push("ptx_tensor_f16acc", b(s.ptx_tensor_f16acc));
+    push("ptx_tensor_b_lookahead", b(s.ptx_tensor_b_lookahead));
+    push("ptx_tensor_bsmem_pad", s.ptx_tensor_bsmem_pad.to_string());
+    push(
+        "ptx_tensor_ksteps_per_stage",
+        s.ptx_tensor_ksteps_per_stage.to_string(),
+    );
+    push("ptx_tensor_stages", s.ptx_tensor_stages.to_string());
+    push("ptx_tensor_nofill", s.ptx_tensor_nofill.to_string());
+    push("ptx_gemm_grid_order", s.ptx_gemm_grid_order.to_string());
+    push("ptx_tensor_force_mw", s.ptx_tensor_force_mw.to_string());
+    push("ptx_tensor_force_nw", s.ptx_tensor_force_nw.to_string());
+    push("ptx_tensor_warp_spec", b(s.ptx_tensor_warp_spec));
+    push("ptx_fused_attention", b(s.ptx_fused_attention));
+    push("ptx_serial_unroll", s.ptx_serial_unroll.to_string());
+    push("ptx_warp_slice", b(s.ptx_warp_slice));
+    push(
+        "ptx_warp_slice_min_span",
+        s.ptx_warp_slice_min_span.to_string(),
+    );
+    push("ptx_warp_slice_warps", s.ptx_warp_slice_warps.to_string());
+    push("ptx_deferred_region", b(s.ptx_deferred_region));
+    push("ptx_deferred_split", s.ptx_deferred_split.to_string());
+    push("ptx_emit_cubin", b(s.ptx_emit_cubin));
+    rows.iter()
+        .map(|(k, v)| format!("{k}: {v};"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 2026-09-30 (D30): parse a `warn:` policy row's value.
+fn parse_irr_policy(key: &str, raw: &str) -> Result<IrrPolicy, String> {
+    match raw {
+        "allow" => Ok(IrrPolicy::Allow),
+        "warn" | "irr" => Ok(IrrPolicy::Warn),
+        "deny" => Ok(IrrPolicy::Deny),
+        other => Err(format!(
+            "### module-config block: '{key}: {other};' — the policy is `allow`, `warn` (or `irr`), or `deny`. Fix: `warn: allow;` to permit `irr` silently (the default), `warn: warn;` to announce each use, `warn: deny;` to refuse `irr` outright."
+        )),
+    }
+}
+
+/// 2026-09-30 (D30): the pure core of the `###` module-config application.
+/// Parses the block text with the config grammar, refuses unknown keys, and
+/// patches `base` with block > base precedence (per key; the base rows minus
+/// the block's keys are re-parsed ahead of the block rows). Tests use this
+/// directly — the global store stays CLI/compile-owned.
+pub fn apply_module_config_to(
+    base: &IrLoweringSettings,
+    source: &str,
+) -> Result<ModuleConfigApplied, String> {
+    let db = crate::dbriev::config_db::ConfigDb::from_str(source)
+        .map_err(|e| format!("### module-config block: {e}"))?;
+    let block_keys = db.keys();
+    let mut applied = Vec::new();
+    let mut irr_policy = IrrPolicy::Allow;
+    for key in &block_keys {
+        if key == "warn" {
+            let raw = db.field_string(key, 0).unwrap_or("");
+            irr_policy = parse_irr_policy(key, raw)?;
+            applied.push(format!("{key}={raw}"));
+            continue;
+        }
+        if !IR_LOWERING_KEYS.iter().any(|(k, _)| k == key) {
+            return Err(format!(
+                "### module-config block: unknown key '{key}'. Fix: name an ir-lowering key (the rows of config/ir-lowering.dbvl) or the `warn` policy; unknown overrides are refused so a mistuned tier is never silent."
+            ));
+        }
+        let value = match db.field(key, 0) {
+            Some(crate::dbriev::v2::DataValue::Int(n)) => n.to_string(),
+            Some(crate::dbriev::v2::DataValue::Float(f)) => f.to_string(),
+            Some(crate::dbriev::v2::DataValue::String(s)) => s.to_string(),
+            // Bool/List/Map rows aren't ir-lowering scalars; the block
+            // validation already refused non-keys, so render them bare.
+            Some(other) => format!("{other:?}"),
+            None => String::new(),
+        };
+        applied.push(format!("{key}={value}"));
+    }
+    // Block > base, per key: the base rows minus the block's keys re-parse
+    // ahead of the block text; ConfigDb's last-wins index hands the block
+    // rows to parse_ir_lowering.
+    let text = format!(
+        "{}\n{}",
+        render_ir_lowering(base, &block_keys),
+        source
+    );
+    let settings = parse_ir_lowering(&text);
+    Ok(ModuleConfigApplied {
+        settings,
+        keys: applied,
+        irr_policy,
+    })
+}
+
+/// 2026-09-30 (D30): apply the module's `###` block to the global settings.
+/// Called after the `--config-dir` install so the block wins (D30
+/// precedence); returns the applied overrides + the module's `irr` policy.
+pub fn apply_module_config(source: &str) -> Result<ModuleConfigApplied, String> {
+    let applied = apply_module_config_to(ir_lowering(), source)?;
+    install_ir_lowering(applied.settings.clone());
+    Ok(applied)
 }
 
 /// Load `ir-lowering.dbvl` from `dir`, overriding the baked-in config.
@@ -436,9 +681,8 @@ pub fn set_ir_lowering_from_dir(dir: &std::path::Path) -> Result<(), String> {
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
     let settings = parse_ir_lowering(&content);
-    IR_LOWERING_OVERRIDE
-        .set(settings)
-        .map_err(|_| "ir-lowering override installed twice".to_string())
+    install_ir_lowering(settings);
+    Ok(())
 }
 
 /// Resolve tuning settings for a target triple by longest-prefix match.
@@ -634,7 +878,7 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .map(|v| v.max(0).min(992) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_bsmem_pad),
         ptx_tensor_ksteps_per_stage: db
-            .field_int("ptx_tensor_ksteps_per_stage", 1)
+            .field_int("ptx_tensor_ksteps_per_stage", 0)
             .map(|v| v.clamp(1, 2) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_ksteps_per_stage),
         ptx_tensor_stages: db
@@ -808,6 +1052,107 @@ vector_min_width = 0
 # 2026-09-14 (rv64-finish plan Phase 5): ARM Cortex-M joins the golden the
 # same way — isr_mechanism arm_cortex_m, no TOML heritage.
 "#;
+
+    #[test]
+    fn module_config_render_parse_roundtrip() {
+        // 2026-09-30 (D30): render_ir_lowering is the inverse image of
+        // parse_ir_lowering — every known key round-trips its value, so the
+        // IR_LOWERING_KEYS table and the parser cannot drift apart silently.
+        let s = load_ir_lowering();
+        assert_eq!(parse_ir_lowering(&render_ir_lowering(&s, &[])), s);
+    }
+
+    #[test]
+    fn module_config_keys_are_live_not_inert() {
+        // 2026-09-30 (D30): every key in IR_LOWERING_KEYS, applied ALONE,
+        // must reach its settings field — a table row the parser ignores
+        // would make the block's override silently inert (the D30 sin).
+        // Per-key, because a whole-struct comparison can mask one dead row
+        // behind the other 44 moving fields.
+        let base = load_ir_lowering();
+        for (key, is_float) in IR_LOWERING_KEYS {
+            let blocks: Vec<String> = if *is_float {
+                vec![format!("{key}: {};\n", base.accel_probe_tolerance * 2.0 + 0.25)]
+            } else {
+                let current = base_int_field(&base, key);
+                let bumped = (current + 1).to_string();
+                let flipped = if current == 0 { "1".to_string() } else { "0".to_string() };
+                // Each sentinel applies ALONE (rows in one block would be
+                // last-wins); the key is live if EITHER changes the settings.
+                vec![
+                    format!("{key}: {bumped};\n"),
+                    format!("{key}: {flipped};\n"),
+                ]
+            };
+            let changed = blocks.iter().any(|block| {
+                let applied = apply_module_config_to(&base, block)
+                    .unwrap_or_else(|e| panic!("key {key} refused: {e}"));
+                applied.settings != base
+            });
+            assert!(
+                changed,
+                "key {key} is inert: a block restating it changed nothing"
+            );
+        }
+    }
+
+    /// The integer/bool current value of `key` via a re-render — the same
+    /// table render_ir_lowering uses, so this test cannot drift from it.
+    fn base_int_field(base: &IrLoweringSettings, key: &str) -> i64 {
+        let row = render_ir_lowering(base, &[])
+            .lines()
+            .find(|l| l.starts_with(key))
+            .unwrap_or_else(|| panic!("key {key} missing from render"))
+            .to_string();
+        let value = row
+            .split(':')
+            .nth(1)
+            .and_then(|v| v.trim_end_matches(';').trim().parse::<i64>().ok());
+        value.unwrap_or_else(|| panic!("key {key} renders a non-int value"))
+    }
+
+    #[test]
+    fn module_config_block_overrides_base() {
+        // 2026-09-30 (D30): block > base, per key; untouched keys keep the
+        // base (dir/built-in) values.
+        let base = load_ir_lowering();
+        let applied = apply_module_config_to(
+            &base,
+            "ptx_tensor_stages: 2;\naccel_probe_margin: 0.5;\n",
+        )
+        .expect("valid block");
+        assert_eq!(applied.settings.ptx_tensor_stages, 2);
+        assert!((applied.settings.accel_probe_margin - 0.5).abs() < 1e-12);
+        assert_eq!(applied.settings.arena_min_budget, base.arena_min_budget);
+        assert_eq!(
+            applied.keys,
+            vec!["accel_probe_margin=0.5".to_string(), "ptx_tensor_stages=2".to_string()]
+        );
+    }
+
+    #[test]
+    fn module_config_unknown_key_refused() {
+        let base = load_ir_lowering();
+        let err = apply_module_config_to(&base, "ptx_tensor_stagez: 2;\n").unwrap_err();
+        assert!(err.contains("unknown key 'ptx_tensor_stagez'"), "{err}");
+    }
+
+    #[test]
+    fn module_config_warn_policy_rows() {
+        let base = load_ir_lowering();
+        for (raw, want) in [
+            ("allow", IrrPolicy::Allow),
+            ("warn", IrrPolicy::Warn),
+            ("irr", IrrPolicy::Warn),
+            ("deny", IrrPolicy::Deny),
+        ] {
+            let applied = apply_module_config_to(&base, &format!("warn: {raw};\n"))
+                .unwrap_or_else(|e| panic!("warn: {raw}; rejected: {e}"));
+            assert_eq!(applied.irr_policy, want, "warn: {raw};");
+        }
+        let err = apply_module_config_to(&base, "warn: sometimes;\n").unwrap_err();
+        assert!(err.contains("`allow`, `warn`"), "{err}");
+    }
 
     #[test]
     fn test_ir_lowering_defaults_match_hardcoded() {

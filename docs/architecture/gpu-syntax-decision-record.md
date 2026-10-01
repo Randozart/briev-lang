@@ -901,6 +901,16 @@ key is an **error** (as `spec`/`.dbvl` enforce). The effective config is
 **reported**, so an override is never silently ignored (the config-dir
 contract).
 
+**Implemented** (2026-09-30): `HashFence` lexer token (exact `###`, matched
+before the `#`-in-identifier regex); the parser captures the block as raw
+text (single, first item; error paths consume the fence region); config_tuning
+applies it via `apply_module_config_to` — the base settings render back to
+`.dbvl` rows (`render_ir_lowering`, minus the block's keys) and re-parse
+ahead of the block through the one `parse_ir_lowering` mapping, so the key
+table cannot drift (round-trip + per-key liveness tests). All 45 ir-lowering
+keys + the `warn:` policy row are accepted; overrides are reported on stderr;
+`deny`/`warn` policies are enforced module-wide at compile time.
+
 **Interaction.** `irr` (D29) is the **site-local** acknowledgement; the
 `###` block holds the **global** policy and config. This resolves the
 warning-policy OPEN item (§11.3).
