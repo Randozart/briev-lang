@@ -119,9 +119,9 @@ manipulation.
 
 | # | Gap | Fill | Class |
 |---|---|---|---|
-| 1 | `Asm#` unreachable on GPU lanes (escape hatch missing) | PTX lane dispatcher (raw + `ptx:` abstract); SPIR-V form OPEN | **this audit** |
+| 1 | `Asm#` unreachable on GPU lanes (escape hatch missing) | route: `.bad ptx` family (primary, in flight); the `Asm#` arm stays OPEN pending an honest SPIR-V fragment story | re-routed 2026-10-01 |
 | 2 | atomics on both lanes (`atomic.bv` overclaims) | I-arms: `atom.*`/`red.*`, `OpAtomic*` | I, HIGH |
-| 3 | `Sqrt#`/`Fabs#` PTX parity | I-arm | I |
+| 3 | `Sqrt#`/`Fabs#` PTX parity | I-arm (**filled 2026-10-01**, `4ce9b6d7`) | I |
 | 4 | work-id names on PTX | I-arm over structural ids | I |
 | 5 | `Barrier#`/`Fence#` named on both lanes | I-arms (bar.sync / OpControlBarrier + scopes) | I (+L2 scopes) |
 | 6 | `VolatileLoad#/Store#`, `Load#/Store#` on PTX | I-arms | I |
