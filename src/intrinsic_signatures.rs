@@ -533,6 +533,11 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     "Deref#", "Index#", "Ptr#", "PtrAdd#", "PtrSub#", "PtrDiff#", "PtrEq#", "PtrLt#",
     "Capacity#", "Resize#", "EnsureCap#", "TrimCap#",
     "Sqrt#", "Sin#", "Cos#", "Fabs#", "Ceil#", "Floor#", "Exp#", "Pow#", "Max#", "Min#",
+    // 2026-10-01 (L1 primitive-coverage audit, primitive-coverage.md:
+    // section 1): both names below predate their list entries — Fma#
+    // (registered, emitted by both GPU lanes) and Environ# were missing
+    // from this completion list.
+    "Fma#", "Environ#",
     "Print#",
     "Malloc#", "Alloc#", "Free#", "Load#", "Store#",
     "VolatileLoad#", "VolatileStore#", "Copy#", "Fill#",

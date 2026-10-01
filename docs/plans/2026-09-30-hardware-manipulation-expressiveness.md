@@ -93,7 +93,14 @@ is won.
 
 1. **L1 primitive-completeness audit** — enumerate each target ISA surface;
    diff vs the intrinsic registry + `asm-lowering.dbvl`; fill via data rows
-   + emitters.
+   + emitters. **Audit DONE 2026-10-01**: the ledger is
+   `docs/architecture/primitive-coverage.md` (PTX + SPIR-V surfaces,
+   registry diff — 127 signature arms vs 125 listed, `Fma#`/`Environ#`
+   hygiene fixed — the dbvl state, and a 13-row gap ledger with fill
+   classes: I-arms, A data rows, L2/L4/L5, and the one OPEN design — the
+   SPIR-V `Asm#` form that blocks the escape hatch on GPU lanes). First
+   fills: PTX `Sqrt#`/`Fabs#` parity arms; remaining fills land per the
+   ledger's leverage order.
 2. **L2 execution-model features** — per feature: spec the semantics,
    decide *derive vs express*, add the primitive/declaration, gate it.
 3. **L3 schedule/shape surface** — design the site-local control form

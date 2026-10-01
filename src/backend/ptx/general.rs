@@ -2191,6 +2191,30 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                 body.push_str(&format!("    {}.f32 {}, {}, {};\n", op, out, areg, breg));
                 Ok(())
             }
+            // 2026-10-01 (L1 primitive-coverage audit, primitive-coverage.md
+            // section 3): parity with the SPIR-V lane (spirv/lower.rs lowers
+            // both via GLSL.std.450) — the registry and the accel purity
+            // gate already admit these; only the PTX arm was missing.
+            "Sqrt#" => {
+                if args.len() != 1 {
+                    return Err("Sqrt# takes exactly 1 argument".into());
+                }
+                let xreg = self.fresh_f();
+                decl.push_str(&format!("    .reg .f32 {};\n", xreg));
+                self.emit_expr(&args[0], &xreg, decl, body)?;
+                body.push_str(&format!("    sqrt.rn.f32 {}, {};\n", out, xreg));
+                Ok(())
+            }
+            "Fabs#" => {
+                if args.len() != 1 {
+                    return Err("Fabs# takes exactly 1 argument".into());
+                }
+                let xreg = self.fresh_f();
+                decl.push_str(&format!("    .reg .f32 {};\n", xreg));
+                self.emit_expr(&args[0], &xreg, decl, body)?;
+                body.push_str(&format!("    abs.f32 {}, {};\n", out, xreg));
+                Ok(())
+            }
             "Fma#" => {
                 if args.len() != 3 {
                     return Err("Fma# takes (a, b, c)".into());
@@ -2820,6 +2844,76 @@ mod tests {
             "-inf immediate: {ptx}"
         );
         assert_ptx_well_formed(&ptx);
+    }
+
+    /// 2026-10-01 (L1 primitive-coverage audit, primitive-coverage.md
+    /// §3): `Sqrt#`/`Fabs#` reach the PTX lane with the same admission
+    /// the SPIR-V lane already had (registry + accel purity both admit
+    /// them; only the PTX arm was missing) — a parity fill, locked by
+    /// the instruction text and the well-formedness guard.
+    #[test]
+    fn sqrt_and_fabs_lower_to_ptx_instructions() {
+        use crate::backend::spirv::runner::{RunnerField, SsboLayout};
+        let field = |name: &str, off: u64| RunnerField {
+            name: name.into(),
+            offset: off,
+            proj_offset: off,
+            elem_bytes: 4,
+            count: 1024,
+            is_array: true,
+            type_is_float: true,
+        };
+        let layout = SsboLayout {
+            fields: vec![field("a", 0), field("out", 4096)],
+            images: vec![],
+            state_bytes: 8192,
+            program_bytes: 8192,
+        };
+        let body_for = |intrinsic: &str| {
+            vec![
+                Statement::Assign(
+                    idx("out", id("i")),
+                    Expr::Call(
+                        intrinsic.to_string(),
+                        vec![idx("a", id("i"))],
+                        None,
+                    ),
+                ),
+                Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
+            ]
+        };
+        for (intrinsic, instr) in [("Sqrt#", "sqrt.rn.f32"), ("Fabs#", "abs.f32")] {
+            let shape = crate::analysis::accel::KernelShape {
+                index_var: "i".into(),
+                count_expr: Some(Expr::Decimal(1024)),
+                kernel_stmts: body_for(intrinsic),
+                host_stmts: vec![],
+                read_buffers: vec!["a".into()],
+                write_buffers: vec!["out".into()],
+                scalar_ins: vec![],
+                eligible: true,
+                reasons: vec![],
+                work_cols: None,
+                reduction: None,
+                deferred_normalize: None,
+            };
+            let consts = std::collections::HashMap::new();
+            let universe = crate::type_universe::TypeUniverse::new();
+            let ptx = emit_general_ptx(
+                &shape,
+                1024,
+                &layout,
+                &consts,
+                &universe,
+                GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+            )
+            .unwrap_or_else(|e| panic!("{intrinsic} emits: {e}"));
+            assert!(
+                ptx.contains(&format!("    {instr} ")),
+                "{intrinsic} must lower to `{instr}`:\n{ptx}"
+            );
+            assert_ptx_well_formed(&ptx);
+        }
     }
 }
 

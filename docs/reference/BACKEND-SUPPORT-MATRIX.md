@@ -118,6 +118,20 @@ host-service call; tamer rejects unknown host ids at runtime.
 Add#…` but emitter rejects them; emitter handles `GetGlobalId# Load# Store#`
 that the normalizer doesn't allow (kernel.rs bypasses for builtins).
 
+### PTX (kernel-scoped, the .abv CUDA lane)
+`Exp#` (`ex2.approx` composite — there is no `exp.approx.f32`), `Max#
+Min# Fma#`, `Sqrt#` (`sqrt.rn.f32`) `Fabs#` (`abs.f32`, 2026-10-01 L1
+parity fill), `ShuffleDown# ShuffleXor#` (`shfl.sync.*`, constant lane
+selector), `SubgroupBallot#` (`vote.sync.ballot`),
+`SubgroupBroadcast#` (`shfl.sync.idx`), `SubgroupFAdd#/FMax#/FMin#`
+(butterfly tree — `redux.sync` is integer-only until sm_100).
+Structural (not source-callable): work-item ids (the node's index var
+binds `ctaid*BLOCK+tid`), `bar.sync` (the split combine),
+`mma.sync`/`ldmatrix` (the tensor family), the deferred-softmax region.
+Everything else in the registry errors at the lane dispatcher
+(`ptx/general.rs emit_intrinsic_call`). Coverage ledger:
+`docs/architecture/primitive-coverage.md`.
+
 ### CIRCT
 `Abs#`, `AddressOf#` (from `address_resolver`), `Size#` (constant 64). All
 other intrinsics → recorded error.

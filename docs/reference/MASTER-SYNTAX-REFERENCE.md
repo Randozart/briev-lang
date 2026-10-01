@@ -254,7 +254,8 @@ Generative op-member forms (dispatch to declared `op` members):
 
 ### Process & environment
 
-`Spawn#` `SpawnWithOutput#` `SetEnv#` `GetCwd#` `ChDir#`
+`Spawn#` `SpawnWithOutput#` `SetEnv#` `GetCwd#` `ChDir#` — `Environ#`
+(the C `environ` base pointer, an `Int`)
 
 ### Compile-time address
 
