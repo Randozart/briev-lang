@@ -1833,25 +1833,23 @@ fn push_deferred_combine(
     Ok(())
 }
 
-/// 2026-09-30 (gpu-syntax-decision-record D1/D2): the declared `stage<N>`
-/// pipeline depth of a node, if any. Source declarations override the cost
-/// model and the config knob (precedence: source > config > model).
-fn node_stage_modifier(program: &[TopLevel], name: &str) -> Option<usize> {
-    fn from_txn(t: &crate::ast::top::Transaction) -> Option<usize> {
-        t.modifiers.iter().find(|m| m.name == "stage").and_then(|m| {
-            match &m.value {
-                Some(Expr::Decimal(n)) if *n > 0 => Some(*n as usize),
-                _ => None,
-            }
-        })
+/// 2026-09-30 (gpu-syntax-decision-record D1/D2): a node's declared shape
+/// annotation value (`stage`/`tile`), if any. Source declarations override
+/// the cost model and the config knobs (precedence: source > config > model).
+fn node_shape_annotation<'a>(program: &'a [TopLevel], name: &str, key: &str) -> Option<&'a Expr> {
+    fn from_txn<'a>(t: &'a crate::ast::top::Transaction, key: &str) -> Option<&'a Expr> {
+        t.modifiers
+            .iter()
+            .find(|m| m.name == key)
+            .and_then(|m| m.value.as_ref())
     }
     for item in program {
         match item {
-            TopLevel::Transaction(t) if t.name == name => return from_txn(t),
+            TopLevel::Transaction(t) if t.name == name => return from_txn(t, key),
             TopLevel::SyncGroup { item, .. } => {
                 if let TopLevel::Transaction(t) = item.as_ref() {
                     if t.name == name {
-                        return from_txn(t);
+                        return from_txn(t, key);
                     }
                 }
             }
@@ -1859,6 +1857,40 @@ fn node_stage_modifier(program: &[TopLevel], name: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// The declared `stage<N>` pipeline depth of a node (D1/D2), if any.
+fn node_stage_modifier(program: &[TopLevel], name: &str) -> Option<usize> {
+    match node_shape_annotation(program, name, "stage") {
+        Some(Expr::Decimal(n)) if *n > 0 => Some(*n as usize),
+        _ => None,
+    }
+}
+
+/// The declared `tile<M,N>` CTA tile of a node (D1/D2), in elements.
+fn node_tile_modifier(program: &[TopLevel], name: &str) -> Option<(u64, u64)> {
+    match node_shape_annotation(program, name, "tile") {
+        Some(Expr::Tuple(v)) if v.len() == 2 => match (&v[0], &v[1]) {
+            (Expr::Decimal(a), Expr::Decimal(b)) if *a > 0 && *b > 0 => {
+                Some((*a as u64, *b as u64))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A declared `tile<M,N>` (elements) → the warp grid `(mw, nw)`, when the
+/// element tile divides the warp tile `(16·mh) × (8·gr)`. `None` otherwise
+/// (the caller falls back to the cost model).
+fn tile_to_mw_nw(tile: Option<(u64, u64)>, warp_mh: usize, gr: usize) -> Option<(usize, usize)> {
+    let (tm, tn) = tile?;
+    let (row, col) = (16 * warp_mh, 8 * gr);
+    if tm as usize % row != 0 || tn as usize % col != 0 {
+        return None;
+    }
+    let (m, n) = (tm as usize / row, tn as usize / col);
+    (m > 0 && n > 0).then_some((m, n))
 }
 
 pub fn build_ptx_kernels(
@@ -2215,21 +2247,29 @@ pub fn build_ptx_kernels(
                 plan.k as u64,
                 &crate::analysis::gpu_strategy::GpuHardware::SM86,
             );
+            // 2026-09-30 (D1/D2): a declared `tile<M,N>` (elements) wins over
+            // the config force knobs and the strategy model. Non-divisible
+            // tiles fall through to the model.
+            let node_tile = node_tile_modifier(program, name);
             let (mw, nw, eff_stages) = {
                 let fmw = crate::config_tuning::ir_lowering().ptx_tensor_force_mw as usize;
                 let fnw = crate::config_tuning::ir_lowering().ptx_tensor_force_nw as usize;
-                if fmw > 0 && fnw > 0 {
-                    (fmw, fnw, stages)
-                } else {
-                    match strategy
-                        .and_then(|s| strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, strategy_thread_cap))
-                    {
+                // A declared `tile<M,N>` or an explicit force pins the grid;
+                // both are source/config overrides ahead of the model (D2).
+                // A non-divisible declared tile falls through to the model.
+                let forced = tile_to_mw_nw(node_tile, warp_mh, gr)
+                    .or_else(|| (fmw > 0 && fnw > 0).then_some((fmw, fnw)));
+                match forced {
+                    Some((m, n)) => (m, n, stages),
+                    None => match strategy.and_then(|s| {
+                        strategy_to_mwnw(&s, warp_mh, plan.m, plan.n, strategy_thread_cap)
+                    }) {
                         Some((mw, nw, st)) => (mw, nw, resolve_eff_stages(stages_cfg, st, stages)),
                         None => {
                             let (mw, nw) = select_mw_nw(plan.m, plan.n, thread_cap, warp_mh);
                             (mw, nw, stages)
                         }
-                    }
+                    },
                 }
             };
             let mw_ok = plan.m % ((16 * warp_mh * mw) as i64) == 0
@@ -2336,6 +2376,12 @@ mod tests {
         let program = p.parse_program().expect("parse");
         assert_eq!(node_stage_modifier(&program, "gemm"), Some(2));
         assert_eq!(node_stage_modifier(&program, "absent"), None);
+
+        let src2 = "tile<128,128> node gemm [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens2 = crate::lexer::tokenize(src2).expect("tokenize");
+        let mut p2 = crate::parser::Parser::new(tokens2, src2);
+        let program2 = p2.parse_program().expect("parse");
+        assert_eq!(node_tile_modifier(&program2, "gemm"), Some((128, 128)));
     }
 
     #[test]
