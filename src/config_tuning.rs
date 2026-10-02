@@ -212,6 +212,11 @@ pub struct IrLoweringSettings {
     /// pass A (max), 2 = skip pass B (accumulate). WRONG numerics by
     /// design — timing evidence only, default 0.
     pub ptx_deferred_skip_pass: u32,
+    /// 2026-10-01 (5a lever 2, second half): the FUSED online j loop —
+    /// one sweep (dot, running max + rescale, p, l, acc) replacing the
+    /// two passes. 0 = the two-pass form (default until the A/B
+    /// measurement flips it), 1 = fused.
+    pub ptx_deferred_online: u32,
     /// 2026-09-30 (stage-5 5b Phase 2'): tensor-GEMM CTA rasterization
     /// order. The kernel is DRAM-bound on operand re-reads (A re-read per
     /// n-tile, B per m-tile); the CTA launch order decides which operand
@@ -404,6 +409,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_stages: 0,
     ptx_tensor_nofill: 0,
     ptx_deferred_skip_pass: 0,
+    ptx_deferred_online: 0,
     ptx_gemm_grid_order: 0,
     ptx_tensor_force_mw: 0,
     ptx_tensor_force_nw: 0,
@@ -548,6 +554,7 @@ const IR_LOWERING_KEYS: &[(&str, bool)] = &[
     ("ptx_tensor_stages", false),
     ("ptx_tensor_nofill", false),
     ("ptx_deferred_skip_pass", false),
+    ("ptx_deferred_online", false),
     ("ptx_gemm_grid_order", false),
     ("ptx_tensor_force_mw", false),
     ("ptx_tensor_force_nw", false),
@@ -625,6 +632,7 @@ fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
     push("ptx_tensor_stages", s.ptx_tensor_stages.to_string());
     push("ptx_tensor_nofill", s.ptx_tensor_nofill.to_string());
     push("ptx_deferred_skip_pass", s.ptx_deferred_skip_pass.to_string());
+    push("ptx_deferred_online", s.ptx_deferred_online.to_string());
     push("ptx_gemm_grid_order", s.ptx_gemm_grid_order.to_string());
     push("ptx_tensor_force_mw", s.ptx_tensor_force_mw.to_string());
     push("ptx_tensor_force_nw", s.ptx_tensor_force_nw.to_string());
@@ -944,6 +952,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_deferred_skip_pass", 0)
             .map(|v| v.max(0).min(2) as u32)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_deferred_skip_pass),
+        ptx_deferred_online: db
+            .field_int("ptx_deferred_online", 0)
+            .map(|v| v.max(0).min(1) as u32)
+            .unwrap_or(DEFAULT_IR_LOWERING.ptx_deferred_online),
         ptx_gemm_grid_order: db
             .field_int("ptx_gemm_grid_order", 0)
             .map(|v| v.max(0).min(1) as u32)
