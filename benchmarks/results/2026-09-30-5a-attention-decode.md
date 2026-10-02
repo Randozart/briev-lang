@@ -194,3 +194,32 @@ of softmax_fused!); the span threshold exists because of the
 acc-in-REGISTERS assumption. The lever: the deferred emitter learns
 the fused form for smem-resident acc — a j-loop restructure gated by
 the m3 harness (both lanes) before timing.
+
+## Lever 2 (second half): the fused online j loop — 2026-10-01
+
+**The target is beaten.** The pass-split probe showed the dot computed
+twice; the fused online form computes it once. `ptx_deferred_online`
+(default 1 after the A/B) — one j sweep: dot, running max + rescale,
+p, l, acc; per-warp running max merged with rescale
+(l_tot = Σ redl[w]·exp(redm[w]−m_glob), same for acc strips).
+
+**Timing (decode geometry, 1200 reps, same session):**
+
+| variant | p10 | p50 | p90 |
+|---|---|---|---|
+| two-pass (pre-change) | 183.7 | 320.2 | 326.7 |
+| **fused online** | **72.0** | **72.5** | **75.5** |
+
+**2.77× faster; the 125 µs target is BEATEN (72.5 µs)** — ggml
+reference ~58 µs now 1.25× away. The p90/p50 ratio collapsed (1.04 —
+the short kernel keeps the clock ramped; the clock-cap tail is gone).
+
+Correctness: softmax_gate s8 + knob PASS both lanes — the CUDA lane
+*improved* to max_rel = 0.00e+00 (the online rescale algebra matches
+the combine exactly); Vulkan 2.06e-05 (pre-change value). m3 harness
+at the attention geometry: PASS both lanes (a_err 1.63e-05/1.34e-05).
+Suite 2845; gemm_h byte-identical (the deferred change doesn't touch
+the tensor path).
+
+The two-pass form remains behind `ptx_deferred_online: 0` (the A/B
+fallback); `ptx_deferred_skip_pass` stays diagnostic-only.

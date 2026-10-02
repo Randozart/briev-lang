@@ -214,8 +214,10 @@ pub struct IrLoweringSettings {
     pub ptx_deferred_skip_pass: u32,
     /// 2026-10-01 (5a lever 2, second half): the FUSED online j loop —
     /// one sweep (dot, running max + rescale, p, l, acc) replacing the
-    /// two passes. 0 = the two-pass form (default until the A/B
-    /// measurement flips it), 1 = fused.
+    /// two passes. DEFAULT 1 (the A/B measured 2.77×: 320.2 → 72.5 µs
+    /// p50 at the decode geometry; the m3 harness + softmax fixtures
+    /// PASS both lanes at pre-change residuals). 0 = the two-pass form
+    /// (the A/B fallback).
     pub ptx_deferred_online: u32,
     /// 2026-09-30 (stage-5 5b Phase 2'): tensor-GEMM CTA rasterization
     /// order. The kernel is DRAM-bound on operand re-reads (A re-read per
@@ -409,7 +411,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_stages: 0,
     ptx_tensor_nofill: 0,
     ptx_deferred_skip_pass: 0,
-    ptx_deferred_online: 0,
+    ptx_deferred_online: 1,
     ptx_gemm_grid_order: 0,
     ptx_tensor_force_mw: 0,
     ptx_tensor_force_nw: 0,

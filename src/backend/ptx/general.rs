@@ -464,6 +464,7 @@ pub fn emit_general_ptx(
     let mut g = Gen::new(layout, consts, count, universe, opts.int_bits);
     g.deferred_split = opts.deferred_split.max(1);
     g.skip_pass = crate::config_tuning::ir_lowering().ptx_deferred_skip_pass;
+    g.online = crate::config_tuning::ir_lowering().ptx_deferred_online;
     g.unroll_override = opts.unroll_override;
     g.emit(shape)
 }
@@ -910,6 +911,7 @@ struct Gen<'a> {
     /// deferred pass for the wall-split measurement — WRONG numerics by
     /// design, timing evidence only.
     skip_pass: u32,
+    online: u32,
 }
 
 impl<'a> Gen<'a> {
@@ -945,6 +947,7 @@ impl<'a> Gen<'a> {
             deferred_split: 1,
             split_slice_reg: None,
             skip_pass: 0,
+            online: 0,
         }
     }
 
@@ -4342,6 +4345,353 @@ impl Gen<'_> {
         Ok(())
     }
 
+    /// 2026-10-01 (5a): the split-store / normalize tail — shared by the
+    /// two-pass path and the fused online path. `l_tot`/`a_regs`/`m_reg`
+    /// arrive from whichever pass structure produced them.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_deferred_softmax_tail(
+        &mut self,
+        parts: &DeferredRegionParts,
+        d_regs: &[String],
+        a_regs: &[String],
+        l_tot: &str,
+        m_reg: &str,
+        split: u64,
+        r_lane: &str,
+        strips: usize,
+        warps: u32,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        if split > 1 {
+            // Split: write per-slice partials; the combine kernel merges.
+            let spec = PartialStore {
+                parts,
+                a_regs: &a_regs,
+                r_lane: &r_lane,
+                m_reg: &m_reg,
+                l_tot: &l_tot,
+            };
+            self.emit_deferred_partial_store(&spec, decl, body)?;
+        } else {
+            // ── deferred normalize: strips own d; l broadcast; global stores ──
+            let saved_l2 = self.regs.insert(parts.l_name.clone(), l_tot.to_string());
+            self.strip_acc = Some((parts.acc_buf.clone(), parts.dc.clone(), a_regs.to_vec()));
+            for i in 0..strips {
+                self.active_strip = i;
+                self.regs.insert(parts.dc.clone(), d_regs[i].clone());
+                self.emit_stmt(&parts.norm_stmt, decl, body)?;
+            }
+            self.strip_acc = None;
+            match saved_l2 {
+                Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
+                None => { self.regs.remove(&parts.l_name); }
+            }
+        }
+        let _ = warps;
+        Ok(())
+    }
+
+    /// 2026-10-01 (5a lever 2, second half): the FUSED online softmax —
+    /// ONE j sweep (dot, running max + rescale, p, l, acc) instead of
+    /// the two passes. Called from `emit_deferred_region` after the
+    /// strip/hoist setup; the split-store/normalize tail is shared.
+    /// The per-warp running max feeds the rescaled merge (each warp's
+    /// l/acc partials live under its own max; the merge rescales by
+    /// exp(redm[w] − m_glob)).
+    #[allow(clippy::too_many_arguments)]
+    fn emit_deferred_region_online(
+        &mut self,
+        parts: &DeferredRegionParts,
+        hoisted: &[(usize, Expr)],
+        d_regs: &[String],
+        a_regs: &[String],
+        l_reg: String,
+        m_reg: String,
+        sc_lane: String,
+        sc_w: String,
+        r_cnt: String,
+        r_warp: String,
+        r_lane: String,
+        pred: String,
+        r_lo: String,
+        r_hi: String,
+        r_w: String,
+        p_reg: String,
+        l_tot: String,
+        jslice: u32,
+        warps: u32,
+        sbase: &Option<String>,
+        strips: usize,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let lab = self.label;
+        self.label += 5;
+        let h2h = format!("L{}_b", lab);
+        let h2e = format!("L{}_bx", lab);
+        let l_loop = format!("L{}_l", lab);
+        let l_done = format!("L{}_ld", lab);
+        let a_loop = format!("L{}_s", lab);
+        let a_done = format!("L{}_sd", lab);
+        let m_loop = format!("L{}_m", lab);
+        let m_done = format!("L{}_md", lab);
+        let rsc = lab + 40;
+        let f_t = self.fresh_f();
+        decl.push_str(&format!("    .reg .f32 {};\n", f_t));
+        let strip_name = |strip: usize, idx: usize| format!("__dqh{}_{}", strip, idx);
+        let rsc_r = format!("L{}_r", rsc);
+        let rsc_e = format!("L{}_re", rsc);
+        let saved_j = self.regs.insert(parts.j_name.clone(), r_cnt.to_string());
+        // per-strip hoisted lets (registers — j-invariant q reads).
+        for i in 0..strips {
+            self.regs.insert(parts.da.clone(), d_regs[i].clone());
+            for (jdx, (_, expr)) in hoisted.iter().enumerate() {
+                let stmt = Statement::Let {
+                    name: format!("__dqh{}_{}", i, jdx),
+                    names: vec![],
+                    ty: Some(crate::ast::Type::float()),
+                    expr: Some(expr.clone()),
+                    modifiers: vec![],
+                };
+                self.emit_stmt(&stmt, decl, body)?;
+            }
+        }
+        // j loop bounds.
+        body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
+        body.push_str(&format!(
+            "    mad.lo.u32 {}, {}, {}, {};\n",
+            r_lo, r_warp, jslice, r_lo
+        ));
+        if let Some(sb) = sbase {
+            body.push_str(&format!("    add.u32 {}, {}, {};\n", r_lo, r_lo, sb));
+        }
+        body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
+        body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
+        body.push_str(&format!("{}:\n", h2h));
+        body.push_str(&format!(
+            "    setp.ge.u32 {}, {}, {};\n",
+            pred, r_cnt, r_hi
+        ));
+        body.push_str(&format!("    @{} bra {};\n", pred, h2e));
+        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
+        let saved_d = self.regs.insert(parts.db.clone(), d_regs[0].clone());
+        for i in 0..strips {
+            self.active_strip = i;
+            self.regs.insert(parts.db.clone(), d_regs[i].clone());
+            self.regs.insert(parts.sc_b.clone(), sc_lane.clone());
+            let mut body_b = parts.dot_b_body.clone();
+            let pairs_b: Vec<(String, Expr)> = hoisted.iter().enumerate()
+                .map(|(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
+                .collect();
+            rewrite_j_stmts(&mut body_b, &pairs_b);
+            for s in &body_b {
+                self.emit_stmt(s, decl, body)?;
+            }
+        }
+        match saved_d {
+            Some(v) => { self.regs.insert(parts.db.clone(), v); }
+            None => { self.regs.remove(&parts.db); }
+        }
+        self.emit_butterfly_add(sc_lane.to_string(), sc_w.to_string(), decl, body)?;
+        // running-max update: if z_w > m, rescale acc/l to the new max.
+        body.push_str(&format!(
+            "    setp.gt.f32 {}, {}, {};\n",
+            pred, sc_w, m_reg
+        ));
+        body.push_str(&format!("    @{} bra {};\n", pred, rsc_r));
+        body.push_str(&format!("    bra {};\n", rsc_e));
+        body.push_str(&format!("{}:\n", rsc_r));
+        {
+            let df = self.fresh_f();
+            let tf = self.fresh_f();
+            let ff = self.fresh_f();
+            decl.push_str(&format!("    .reg .f32 {}, {}, {};\n", df, tf, ff));
+            body.push_str(&format!("    sub.f32 {}, {}, {};\n", df, m_reg, sc_w));
+            body.push_str(&format!("    mul.f32 {}, {}, 0f3FB8AA3B;\n", tf, df));
+            body.push_str(&format!("    ex2.approx.f32 {}, {};\n", ff, tf));
+            for a in a_regs {
+                body.push_str(&format!("    mul.f32 {}, {}, {};\n", a, a, ff));
+            }
+            body.push_str(&format!("    mul.f32 {}, {}, {};\n", l_reg, l_reg, ff));
+            body.push_str(&format!("    mov.f32 {}, {};\n", m_reg, sc_w));
+        }
+        body.push_str(&format!("{}:\n", rsc_e));
+        // p = exp(z − m) — 1 when the rescale fired, <1 otherwise.
+        let saved_sc1 = self.regs.insert(parts.sc_b.clone(), sc_w.to_string());
+        let saved_m1 = self.regs.insert(parts.m_name.clone(), m_reg.to_string());
+        self.emit_expr(&parts.p_expr, &p_reg, decl, body)?;
+        let saved_l = self.regs.insert(parts.l_name.clone(), l_reg.to_string());
+        let saved_p = self.regs.insert(parts.p_name.clone(), p_reg.to_string());
+        self.emit_stmt(
+            &Statement::Assign(
+                Expr::Identifier(parts.l_name.clone()),
+                parts.l_rhs.clone(),
+            ),
+            decl,
+            body,
+        )?;
+        self.strip_acc = Some((parts.acc_buf.clone(), parts.dc2.clone(), a_regs.to_vec()));
+        for i in 0..strips {
+            self.active_strip = i;
+            self.regs.insert(parts.dc2.clone(), d_regs[i].clone());
+            for s in &parts.acc_stmts {
+                self.emit_stmt(s, decl, body)?;
+            }
+        }
+        self.strip_acc = None;
+        match saved_p {
+            Some(v) => { self.regs.insert(parts.p_name.clone(), v); }
+            None => { self.regs.remove(&parts.p_name); }
+        }
+        match saved_l {
+            Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
+            None => { self.regs.remove(&parts.l_name); }
+        }
+        match saved_m1 {
+            Some(v) => { self.regs.insert(parts.m_name.clone(), v); }
+            None => { self.regs.remove(&parts.m_name); }
+        }
+        match saved_sc1 {
+            Some(v) => { self.regs.insert(parts.sc_b.clone(), v); }
+            None => { self.regs.remove(&parts.sc_b); }
+        }
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_cnt, r_cnt));
+        body.push_str(&format!("    bra {};\n", h2h));
+        body.push_str(&format!("{}:\n", h2e));
+        match saved_j {
+            Some(v) => { self.regs.insert(parts.j_name.clone(), v); }
+            None => { self.regs.remove(&parts.j_name); }
+        }
+        // per-warp running max → redm (the merge's rescale baseline).
+        let rd_m = self.fresh_rd();
+        decl.push_str(&format!("    .reg .b64 {};\n", rd_m));
+        body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_m, r_warp, rd_m
+        ));
+        body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_m, m_reg));
+        body.push_str("    bar.sync 0;\n");
+        // global max over the warp running maxes.
+        body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
+        body.push_str(&format!("{}:\n", l_loop));
+        body.push_str(&format!(
+            "    setp.ge.u32 {}, {}, {};\n",
+            pred, r_w, warps
+        ));
+        body.push_str(&format!("    @{} bra {};\n", pred, l_done));
+        body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_m, r_w, rd_m
+        ));
+        body.push_str(&format!("    ld.shared.f32 {}, [{}];\n", f_t, rd_m));
+        body.push_str(&format!(
+            "    max.f32 {}, {}, {};\n",
+            m_reg, m_reg, f_t
+        ));
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
+        body.push_str(&format!("    bra {};\n", l_loop));
+        body.push_str(&format!("{}:\n", l_done));
+        // l merge with rescale: l_tot = Σ redl[w]·exp(redm[w]−m).
+        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", l_tot));
+        body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
+        body.push_str(&format!("{}:\n", a_loop));
+        body.push_str(&format!(
+            "    setp.ge.u32 {}, {}, {};\n",
+            pred, r_w, warps
+        ));
+        body.push_str(&format!("    @{} bra {};\n", pred, a_done));
+        body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_m, r_w, rd_m
+        ));
+        body.push_str(&format!("    ld.shared.f32 {}, [{}];\n", f_t, rd_m));
+        {
+            let df = self.fresh_f();
+            let tf = self.fresh_f();
+            let ff = self.fresh_f();
+            decl.push_str(&format!("    .reg .f32 {}, {}, {};\n", df, tf, ff));
+            body.push_str(&format!("    sub.f32 {}, {}, {};\n", df, f_t, m_reg));
+            body.push_str(&format!("    mul.f32 {}, {}, 0f3FB8AA3B;\n", tf, df));
+            body.push_str(&format!("    ex2.approx.f32 {}, {};\n", ff, tf));
+            let rd_l = self.fresh_rd();
+            decl.push_str(&format!("    .reg .b64 {};\n", rd_l));
+            body.push_str(&format!("    mov.u64 {}, redl;\n", rd_l));
+            body.push_str(&format!(
+                "    mad.wide.u32 {}, {}, 4, {};\n",
+                rd_l, r_w, rd_l
+            ));
+            let lv = self.fresh_f();
+            decl.push_str(&format!("    .reg .f32 {};\n", lv));
+            body.push_str(&format!("    ld.shared.f32 {}, [{}];\n", lv, rd_l));
+            body.push_str(&format!("    mul.f32 {}, {}, {};\n", lv, lv, ff));
+            body.push_str(&format!("    add.f32 {}, {}, {};\n", l_tot, l_tot, lv));
+        }
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
+        body.push_str(&format!("    bra {};\n", a_loop));
+        body.push_str(&format!("{}:\n", a_done));
+        // acc merge with rescale: a = Σ smacc[w]·exp(redm[w]−m).
+        let rd_a = self.fresh_rd();
+        decl.push_str(&format!("    .reg .b64 {};\n", rd_a));
+        for i in 0..strips {
+            body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", a_regs[i]));
+        }
+        body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
+        body.push_str(&format!("{}:\n", m_loop));
+        body.push_str(&format!(
+            "    setp.ge.u32 {}, {}, {};\n",
+            pred, r_w, warps
+        ));
+        body.push_str(&format!("    @{} bra {};\n", pred, m_done));
+        body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_m, r_w, rd_m
+        ));
+        body.push_str(&format!("    ld.shared.f32 {}, [{}];\n", f_t, rd_m));
+        {
+            let df = self.fresh_f();
+            let tf = self.fresh_f();
+            let ff = self.fresh_f();
+            decl.push_str(&format!("    .reg .f32 {}, {}, {};\n", df, tf, ff));
+            body.push_str(&format!("    sub.f32 {}, {}, {};\n", df, f_t, m_reg));
+            body.push_str(&format!("    mul.f32 {}, {}, 0f3FB8AA3B;\n", tf, df));
+            body.push_str(&format!("    ex2.approx.f32 {}, {};\n", ff, tf));
+            body.push_str(&format!("    mov.u64 {}, smacc;\n", rd_a));
+            body.push_str(&format!(
+                "    mad.wide.u32 {}, {}, 512, {};\n",
+                rd_a, r_w, rd_a
+            ));
+            body.push_str(&format!(
+                "    mad.wide.u32 {}, {}, 4, {};\n",
+                rd_a, r_lane, rd_a
+            ));
+            for i in 0..strips {
+                body.push_str(&format!(
+                    "    ld.shared.f32 {}, [{}+{}];\n",
+                    f_t,
+                    rd_a,
+                    i * 128
+                ));
+                body.push_str(&format!(
+                    "    mul.f32 {}, {}, {};\n",
+                    f_t, f_t, ff
+                ));
+                body.push_str(&format!(
+                    "    add.f32 {}, {}, {};\n",
+                    a_regs[i], a_regs[i], f_t
+                ));
+            }
+        }
+        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
+        body.push_str(&format!("    bra {};\n", m_loop));
+        body.push_str(&format!("{}:\n", m_done));
+        Ok(())
+    }
+
     fn emit_deferred_region(
         &mut self,
         parts: &DeferredRegionParts,
@@ -4493,6 +4843,37 @@ impl Gen<'_> {
                 hoisted.iter().enumerate().map(move |(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
             })
             .collect();
+
+        // 2026-10-01 (5a lever 2, second half): the FUSED online path —
+        // one j sweep instead of two. Everything after this point (the
+        // two passes + the smem merges) is the two-pass form.
+        if self.online != 0 {
+            return self.emit_deferred_region_online(
+                parts,
+                &hoisted,
+                &d_regs,
+                &a_regs,
+                l_reg,
+                m_reg,
+                sc_lane,
+                sc_w,
+                r_cnt,
+                r_warp,
+                r_lane,
+                pred,
+                r_lo,
+                r_hi,
+                r_w,
+                p_reg,
+                l_tot,
+                jslice,
+                warps,
+                &sbase,
+                strips,
+                decl,
+                body,
+            );
+        }
 
         // ── pass A: row max (dot per j, butterfly, per-warp max) ──
         // 2026-10-01 (5a probe): the skip_pass diagnostic — the pass
@@ -4758,36 +5139,13 @@ impl Gen<'_> {
         body.push_str(&format!("    bra {};\n", a_loop));
         body.push_str(&format!("{}:\n", a_done));
 
-        if split > 1 {
-            // Split: write per-slice partials; the combine kernel merges.
-            let spec = PartialStore {
-                parts,
-                a_regs: &a_regs,
-                r_lane: &r_lane,
-                m_reg: &m_reg,
-                l_tot: &l_tot,
-            };
-            self.emit_deferred_partial_store(&spec, decl, body)?;
-        } else {
-            // ── deferred normalize: strips own d; l broadcast; global stores ──
-            let saved_l2 = self.regs.insert(parts.l_name.clone(), l_tot.clone());
-            self.strip_acc = Some((parts.acc_buf.clone(), parts.dc.clone(), a_regs.clone()));
-            for i in 0..strips {
-                self.active_strip = i;
-                self.regs.insert(parts.dc.clone(), d_regs[i].clone());
-                self.emit_stmt(&parts.norm_stmt, decl, body)?;
-            }
-            self.strip_acc = None;
-            match saved_l2 {
-                Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
-                None => { self.regs.remove(&parts.l_name); }
-            }
-        }
+        // 2026-10-01 (5a): the split-store / normalize tail — shared by
+        // the two-pass path and the fused online path.
+        self.emit_deferred_softmax_tail(
+            parts, &d_regs, &a_regs, &l_tot, &m_reg, split, &r_lane, strips, warps,
+            decl, body,
+        )?;
         let _ = warps;
-        match saved_j {
-            Some(v) => { self.regs.insert(parts.j_name.clone(), v); }
-            None => { self.regs.remove(&parts.j_name); }
-        }
         Ok(())
     }
 }
