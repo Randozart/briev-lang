@@ -439,11 +439,18 @@ pub fn has_lane_reduction(
 
 /// 2026-09-30: emit options (keeps [`emit_general_ptx`] within the
 /// parameter budget).
+#[derive(Default)]
 pub struct GeneralEmitOpts {
     pub int_bits: u64,
     /// Deferred-region CTA split factor (1 = none) — the general
     /// reduction-split pass.
     pub deferred_split: u64,
+    /// 2026-10-01 (D14 remainder): the declared `unroll<N>` node
+    /// modifier — the D2 override of the derived serial-unroll factor
+    /// (`ptx_serial_unroll`). Resolved in the FRONTEND
+    /// (`declared_modifier`) and read here; `None` = the derived
+    /// default, byte-identical behavior.
+    pub unroll_override: Option<u64>,
 }
 
 pub fn emit_general_ptx(
@@ -456,6 +463,7 @@ pub fn emit_general_ptx(
 ) -> Result<String, String> {
     let mut g = Gen::new(layout, consts, count, universe, opts.int_bits);
     g.deferred_split = opts.deferred_split.max(1);
+    g.unroll_override = opts.unroll_override;
     g.emit(shape)
 }
 
@@ -850,6 +858,9 @@ struct Gen<'a> {
     freg: u32,
     /// Fresh u32-temp counter (work-id staging, `fresh_named_u32`).
     n_u32: u32,
+    /// 2026-10-01 (D14 remainder): the declared `unroll<N>` override
+    /// (None = the derived `ptx_serial_unroll` default).
+    unroll_override: Option<u64>,
     rreg: u32,
     rdreg: u32,
     preg: u32,
@@ -911,6 +922,7 @@ impl<'a> Gen<'a> {
             out: String::new(),
             freg: 0,
             n_u32: 0,
+            unroll_override: None,
             rreg: 3,
             rdreg: 2,
             preg: 2,
@@ -1163,7 +1175,13 @@ impl<'a> Gen<'a> {
                 // coalescing comes from neighbouring gids, so lane-mapping
                 // is wrong here; the win is issue rate. Try the unroll
                 // before falling back to the plain 1-wide loop.
-                let unroll = crate::config_tuning::ir_lowering().ptx_serial_unroll as usize;
+                // 2026-10-01 (D14 remainder): the declared `unroll<N>`
+                // overrides the derived factor (D2) — resolved from the
+                // node modifiers in the frontend, read here.
+                let unroll = self
+                    .unroll_override
+                    .unwrap_or(crate::config_tuning::ir_lowering().ptx_serial_unroll as u64)
+                    as usize;
                 let ctx = UnrollCtx {
                     item,
                     start: start_v,
@@ -2985,6 +3003,48 @@ mod tests {
     }
 
     #[test]
+    /// 2026-10-01 (D14 remainder): the declared `unroll<N>` overrides
+    /// the derived factor (D2) — 2 slots instead of the config default's
+    /// 4: half the back-to-back loads, the counter steps by 2.
+    #[test]
+    fn declared_unroll_overrides_the_derived_factor() {
+        let mut consts = consts();
+        consts.insert("NKV".into(), num(256));
+        let mut shape = pv_shape();
+        if let Some(Statement::Foreach { list, .. }) = shape
+            .kernel_stmts
+            .iter_mut()
+            .find(|s| matches!(s, Statement::Foreach { .. }))
+        {
+            *list = Box::new(Expr::Range {
+                start: Box::new(num(0)),
+                end: Box::new(num(256)),
+                inclusive: false,
+            });
+        }
+        let ptx = emit_general_ptx(
+            &shape,
+            2560,
+            &pv_layout(),
+            &consts,
+            &crate::type_universe::TypeUniverse::new(),
+            GeneralEmitOpts {
+                int_bits: 32,
+                deferred_split: 1,
+                unroll_override: Some(2),
+                ..Default::default()
+            },
+        )
+        .expect("emits");
+        // 2 slots x 2 sites = 4 loads (the default 4x gives 8).
+        let loads: Vec<&str> = ptx.lines().filter(|l| l.contains("ld.global.f32")).collect();
+        assert_eq!(loads.len(), 4, "2x unroll x 2 sites: {ptx}");
+        assert!(
+            ptx.lines().any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 2;")),
+            "counter steps by 2: {ptx}"
+        );
+    }
+
     fn serial_unroll_fires_when_the_slice_does_not_apply() {
         // NKV=256: span 256 < 512 -> below the slice threshold, the unroll
         // keeps the loop (MLP within one warp).
@@ -3009,7 +3069,7 @@ mod tests {
             &pv_layout(),
             &consts,
             &crate::type_universe::TypeUniverse::new(),
-            GeneralEmitOpts { int_bits: 32, deferred_split: 1 },
+            GeneralEmitOpts { int_bits: 32, deferred_split: 1, ..Default::default() },
         )
         .expect("emits");
         assert!(!has_warp_slice(&shape.kernel_stmts, &consts));
@@ -3150,7 +3210,7 @@ mod tests {
             &layout2,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
         )
         .unwrap_or_else(|e| panic!("atomic emits: {e}"));
         assert!(
@@ -3196,7 +3256,7 @@ mod tests {
             &layout2,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
         )
         .unwrap_or_else(|e| panic!("sub emits: {e}"));
         assert!(ptx_sub.contains("neg.s64"), "the negation:\n{ptx_sub}");
@@ -3239,7 +3299,7 @@ mod tests {
             &layout2,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
         )
         .unwrap_or_else(|e| panic!("xchg emits: {e}"));
         assert!(
@@ -3282,7 +3342,7 @@ mod tests {
             &layout2,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
         )
         .unwrap_or_else(|e| panic!("cas emits: {e}"));
         assert!(
@@ -3357,7 +3417,7 @@ mod tests {
                 &layout,
                 &consts,
                 &universe,
-                GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+                GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
             )
             .unwrap_or_else(|e| panic!("work-id emits: {e}"));
             assert!(ptx.contains(needle), "expected `{needle}`:\n{ptx}");
@@ -3380,7 +3440,7 @@ mod tests {
             &layout,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
         );
         assert!(bad.is_err(), "non-constant dim must error");
     }
@@ -3444,7 +3504,7 @@ mod tests {
                 &layout,
                 &consts,
                 &universe,
-                GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+                GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
             )
             .unwrap_or_else(|e| panic!("{intrinsic} emits: {e}"));
             assert!(

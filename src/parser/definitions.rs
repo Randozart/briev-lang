@@ -1439,11 +1439,25 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => true,
             Some(Token::Identifier(s))
-                if s == "stage" || s == "tile" || s == "split" || s == "irr" =>
+                if s == "stage"
+                    || s == "tile"
+                    || s == "split"
+                    || s == "unroll"
+                    || s == "vector"
+                    || s == "swizzle"
+                    || s == "fragment"
+                    || s == "irr" =>
             {
                 if s == "irr" {
                     true
                 } else {
+                    // 2026-10-01 (D14 remainder): the full D14 shape
+                    // vocabulary parses as a modifier head — `unroll`,
+                    // `vector`, `swizzle`, `fragment` join `stage`/
+                    // `tile`/`split`. Whether the LOWERING honors the
+                    // declaration is a per-lane decision (unroll: PTX
+                    // serial-unroll override; the rest: capability
+                    // errors at the dispatchers until filled).
                     matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt))
                 }
             }

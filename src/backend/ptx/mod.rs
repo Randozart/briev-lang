@@ -1737,6 +1737,28 @@ struct SplitFactors {
     plan: Option<u64>,
 }
 
+/// 2026-10-01 (D14 remainder): the declared `unroll<N>` node modifier
+/// (frontend-resolved; the lowering reads it — D2).
+fn declared_unroll_override(program: &[TopLevel], name: &str) -> Option<u64> {
+    crate::analysis::kernel_plan::declared_modifier(program, name, "unroll")
+}
+
+/// 2026-10-01 (D14 remainder, D2): an applied `unroll<N>` override is
+/// DISCLOSED — the derived factor is the default; the declaration is the
+/// author taking responsibility for the schedule choice.
+fn warn_unroll_override(program: &[TopLevel], name: &str, warnings: &mut Vec<String>) {
+    let Some(n) = declared_unroll_override(program, name) else {
+        return;
+    };
+    let cfg = crate::config_tuning::ir_lowering().ptx_serial_unroll as u64;
+    if n != cfg {
+        warnings.push(format!(
+            "node '{name}': unroll<{n}> overrides the derived serial-unroll \
+             factor {cfg}"
+        ));
+    }
+}
+
 fn deferred_split_for(
     shape: &crate::analysis::accel::KernelShape,
     deferred: bool,
@@ -2222,8 +2244,16 @@ pub(crate) fn emit_general_node(
         &layout,
         &consts,
         universe,
-        general::GeneralEmitOpts { int_bits, deferred_split: def_split as u64 },
+        // 2026-10-01 (D14 remainder): the declared `unroll<N>` rides the
+        // opts (frontend-resolved); the override disclosure (D2) rides
+        // the kernel warnings below.
+        general::GeneralEmitOpts {
+            int_bits,
+            deferred_split: def_split as u64,
+            unroll_override: declared_unroll_override(program, name),
+        },
     )?;
+    warn_unroll_override(program, name, &mut size_warnings);
     let (block_threads, maxnreg) = general_node_geometry(deferred, warp_sliced);
     let blob = general_blob(ptx, maxnreg);
     let (kname, kdomain) = deferred_primary_identity(name, def_split);
@@ -3356,6 +3386,61 @@ async node g [i < M * N][i == M * N] {
         let schedule =
             crate::analysis::gpu_schedule::build_schedule(&items, &accel, &Default::default(), false);
         (items, universe, accel, schedule)
+    }
+
+    /// 2026-10-01 (D14 remainder): the declared `unroll<N>` rides the
+    /// opts and the override is DISCLOSED (D2) — a `unroll<2>` node
+    /// halves the serial-unroll against the config default's 4 and the
+    /// warning names both factors. No modifier = no warning.
+    #[test]
+    fn declared_unroll_override_warns_and_takes() {
+        use crate::ast::PropertyValue;
+        let src = "const K: Int = 64;
+const M: Int = 64;
+let i: Int = 0;
+let a: Float[4096];
+let y: Float[4096];
+
+unroll<2> async node u [i < M][i == M] {
+    let acc: Float = 0.0;
+    let m: Int = i / 64;
+    foreach k in 0..K {
+        acc = acc + a[m * 64 + k];
+    }
+    y[i] = acc;
+    i = i + 1;
+    term;
+};";
+        let tokens = crate::lexer::tokenize(src).expect("lex");
+        let items = crate::parser::Parser::new(tokens, src)
+            .parse_program()
+            .expect("parse");
+        let mut universe = TypeUniverse::new();
+        crate::backend::spirv::normalizer::normalize(&mut { items.clone() }, &mut universe, 64)
+            .expect("normalize");
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("accel".to_string(), PropertyValue::Identifier("try_all".into()));
+        let accel = crate::analysis::accel::analyze(&items, &meta, Some(&universe));
+        assert!(
+            accel.get("u").map(|e| e.shape.eligible).unwrap_or(false),
+            "u is an eligible kernel: {:?}",
+            accel.get("u").map(|e| &e.shape.reasons)
+        );
+        let schedule =
+            crate::analysis::gpu_schedule::build_schedule(&items, &accel, &Default::default(), false);
+        let (kernels, warnings) =
+            build_ptx_kernels(&items, &universe, 64, &accel, &schedule).expect("ptx lane");
+        assert!(
+            warnings.iter().any(|w| {
+                w.contains("unroll<2>") && w.contains("overrides") && w.contains("factor 4")
+            }),
+            "the D2 disclosure: {warnings:?}"
+        );
+        // The emission behavior (2 slots x 1 site = 2 loads vs the
+        // default 4x's 4) is covered at the emit_general_ptx level
+        // (declared_unroll_overrides_the_derived_factor) — the runner
+        // kernel's ptx bytes are merged later, in compile.rs.
+        assert!(kernels.iter().any(|k| k.name == "u"), "the u kernel emits");
     }
 
     /// 2026-10-01 (Phase 2.4): the plan arm's gates — a plan built for a

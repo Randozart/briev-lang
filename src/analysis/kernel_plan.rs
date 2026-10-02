@@ -231,30 +231,24 @@ pub(crate) fn split_eligible(kv: i64, dim: i64, s: u64) -> bool {
         && (kv / s as i64) % 32 == 0
 }
 
-/// The declared `split<N>` reduction-split factor of a node (D1/D2),
-/// if any. `N > 1` (1 is no split).
-/// 2026-10-01 (item 4): the modifier parse moved here from
-/// `backend::ptx::node_split_modifier` so plan construction and the
-/// lowering read ONE declaration (DRY, rule 17/18).
-pub(crate) fn declared_split_factor(items: &[TopLevel], name: &str) -> Option<u32> {
-    fn from_txn(t: &crate::ast::top::Transaction) -> Option<u32> {
-        let expr = t
-            .modifiers
-            .iter()
-            .find(|m| m.name == "split")
-            .and_then(|m| m.value.as_ref())?;
-        match expr {
-            Expr::Decimal(n) if *n > 1 => Some(*n as u32),
-            _ => None,
-        }
-    }
+/// The declared `<N>`-valued node modifier (D14 shape vocabulary:
+/// `tile`/`stage`/`unroll`/`split`/`vector`/`swizzle`/`fragment`).
+/// 2026-10-01 (D14 remainder): the ONE parse for every shape modifier —
+/// the lowering reads the decision, the analysis owns the declaration.
+pub(crate) fn declared_modifier(
+    items: &[TopLevel],
+    name: &str,
+    key: &str,
+) -> Option<u64> {
     for item in items {
         match item {
-            TopLevel::Transaction(t) if t.name == name => return from_txn(t),
+            TopLevel::Transaction(t) if t.name == name => {
+                return declared_modifier_on(t, key);
+            }
             TopLevel::SyncGroup { item, .. } => {
                 if let TopLevel::Transaction(t) = item.as_ref() {
                     if t.name == name {
-                        return from_txn(t);
+                        return declared_modifier_on(t, key);
                     }
                 }
             }
@@ -262,6 +256,31 @@ pub(crate) fn declared_split_factor(items: &[TopLevel], name: &str) -> Option<u3
         }
     }
     None
+}
+
+fn declared_modifier_on(t: &crate::ast::top::Transaction, key: &str) -> Option<u64> {
+    let expr = t
+        .modifiers
+        .iter()
+        .find(|m| m.name == key)
+        .and_then(|m| m.value.as_ref())?;
+    match expr {
+        Expr::Decimal(n) if *n > 0 => Some(*n as u64),
+        _ => None,
+    }
+}
+
+/// The declared `split<N>` reduction-split factor of a node (D1/D2),
+/// if any. `N > 1` (1 is no split).
+/// 2026-10-01 (item 4): the modifier parse moved here from
+/// `backend::ptx::node_split_modifier` so plan construction and the
+/// lowering read ONE declaration (DRY, rule 17/18).
+pub(crate) fn declared_split_factor(items: &[TopLevel], name: &str) -> Option<u32> {
+    // 2026-10-01 (D14 remainder): migrated onto `declared_modifier` —
+    // one parse for every shape modifier (rule 17/18).
+    declared_modifier(items, name, "split")
+        .filter(|n| *n > 1)
+        .map(|n| n as u32)
 }
 
 /// 2026-10-01 (plan §12 item 4): the split INTENT recorded in the plan —
@@ -830,6 +849,45 @@ mod tests {
         let p = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86);
         assert_eq!(p.split_tree_factor(), None, "D=100 is not warp-multiple");
         assert!(p.dump().contains("tree=linear"), "{}", p.dump());
+    }
+
+    /// 2026-10-01 (D14 remainder): the ONE modifier parse serves every
+    /// D14 shape name — `unroll<N>` reads through the same helper.
+    #[test]
+    fn declared_modifier_reads_any_shape_name() {
+        use crate::ast::{Annotation, Transaction};
+        let mk = |mods: Vec<Annotation>| {
+            vec![TopLevel::Transaction(Transaction {
+                name: "u".into(),
+                is_reactive: true,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: crate::ast::top::Contract::new(Expr::Decimal(1), Expr::Decimal(1)),
+                body: vec![],
+                metadata: std::collections::HashMap::new(),
+                derivation: None,
+                span: None,
+                modifiers: mods,
+                doc: None,
+            })]
+        };
+        let declared = mk(vec![Annotation {
+            name: "unroll".into(),
+            value: Some(Expr::Decimal(2)),
+        }]);
+        assert_eq!(declared_modifier(&declared, "u", "unroll"), Some(2));
+        assert_eq!(declared_modifier(&declared, "u", "split"), None);
+        assert_eq!(declared_modifier(&declared, "other", "unroll"), None);
+        let zero = mk(vec![Annotation {
+            name: "unroll".into(),
+            value: Some(Expr::Decimal(0)),
+        }]);
+        assert_eq!(declared_modifier(&zero, "u", "unroll"), None, "N must be > 0");
+        let none = mk(vec![]);
+        assert_eq!(declared_modifier(&none, "u", "unroll"), None);
     }
 
     /// 2026-10-01 (item 4): the declared `split<N>` modifier is read by

@@ -106,6 +106,25 @@ impl<'a> Parser<'a> {
     /// what was seen. Stops at the first non-modifier token (the structural
     /// identifier). Duplicate modifiers are a hard error. `bootstrap` is a
     /// FIXED compound (`bootstrap node`) and is NOT consumed here.
+    /// 2026-10-01 (D14 remainder): the D14 shape-modifier vocabulary —
+    /// contextual identifiers that head a `<...>` payload in a
+    /// declaration prefix.
+    fn is_shape_modifier(s: &str) -> bool {
+        matches!(
+            s,
+            "stage" | "tile" | "split" | "unroll" | "vector" | "swizzle" | "fragment"
+        )
+    }
+
+    /// Consume `<keyword><payload>` in a modifier run and record it.
+    fn consume_shape_modifier(
+        &mut self, prefix: &mut ModifierPrefix, keyword: &str,
+    ) -> Result<(), SyntaxError> {
+        self.pos += 1;
+        let value = self.parse_shape_modifier_payload(keyword)?;
+        self.record_shape_modifier(prefix, keyword, Some(value))
+    }
+
     pub fn consume_modifier_prefix(&mut self) -> Result<ModifierPrefix, SyntaxError> {
         let mut prefix = ModifierPrefix::default();
         loop {
@@ -168,21 +187,20 @@ impl<'a> Parser<'a> {
                         value: Some(Expr::Quoted(payload.into_bytes())),
                     });
                 }
-            Some(Token::Identifier(s))
-                if (s == "stage" || s == "tile" || s == "split")
-                    && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
+            Some(Token::Identifier(s)) if Self::is_shape_modifier(s)
+                && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
             {
+                let keyword = s.clone();
                 // 2026-09-30 (gpu-syntax-decision-record D1/D14): shape
                 // declarations — contextual identifiers with a `<...>`
-                // integer payload, legal on node/txn only (validated by
-                // the dispatcher). `stage<N>` = pipeline depth,
-                // `tile<M,N>` = CTA tile. Recorded as an annotation; the
-                // backend consumes it as an ambiguity override of the
-                // cost model (D2).
-                let keyword = s.clone();
-                self.pos += 1;
-                let value = self.parse_shape_modifier_payload(&keyword)?;
-                self.record_shape_modifier(&mut prefix, &keyword, Some(value))?;
+                // payload, legal on node/txn only (validated by the
+                // dispatcher). 2026-10-01 (D14 remainder): the full D14
+                // vocabulary (see `is_shape_modifier`). Recorded as an
+                // annotation; the backend consumes it as an ambiguity
+                // override of the cost model (D2). Whether a lane HONORS
+                // a declaration is the dispatcher's decision — an
+                // unimplemented one errors loudly there, never silently.
+                self.consume_shape_modifier(&mut prefix, &keyword)?;
             }
             Some(Token::Identifier(s)) if s == "irr" => {
                 // 2026-09-30 (D29): `irr` — the site-local silencer for

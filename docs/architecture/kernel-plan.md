@@ -139,7 +139,13 @@ land:
 2. warp-slicing has no plan fact yet;
 3. **RESOLVED 2026-10-01 (item 4)**: the split intent is recorded at
    construction — the deferred reduce op carries `ReduceTree::Split`
-   (source `split<N>` > model, gated by the emitter preconditions; the
+   (source `split<N>` > model, gated by the emitter preconditions;
+   the modifier parse is now the SHARED `declared_modifier` — every D14
+   shape name (`tile`/`stage`/`unroll`/`split`/`vector`/`swizzle`/
+   `fragment`) parses through it; `unroll<N>` is the first override
+   consumer: the PTX serial-unroll factor, D2 override+disclose;
+   the other names parse and error loudly at their dispatchers until
+   their consumers land;
    matcher/frontend fact equivalence is pinned by test). The lowering
    reads `plan.split_tree_factor()` instead of recomputing; the enablement
    gates (declared / deferred+knob) and the workspace capacity gate stay
