@@ -106,10 +106,29 @@ measurement and the **measurement-hazard** note (fine A/B unreliable in
 long sessions — re-measure controlled before locking constants).
 
 
-**Phase 3 — model gating (winners only).**
-- Load-path axis in `gpu_strategy` + per-device calibration parameter;
-  model selects smem vs register-staged per shape × device. No
-  unconditional application.
+**Phase 3 — model gating (winners only) — STATUS 2026-10-01.**
+- ~~Load-path axis~~ **OPEN, deferred with cost note.** No
+  register-staged emitter exists in the tree (the E1f references are
+  diagnostic microbench modes; `ptx_tensor_nofill` is
+  diagnostic-only). Building it = new fragment-packing engineering
+  (direct global→register, no ldmatrix) + the model axis + a Rule 20
+  campaign. Expected value is NEGATIVE in the band Phase 2' already
+  measured: register-staging was REFUTED for deep-K (DRAM re-read
+  math), and the band where it could win (small shapes, operands
+  L2/-register resident) is ALREADY at/above parity
+  (`gpu-strategy-selection.md`: 64³–256³ beat cuBLAS). Re-open only if
+  a shape class appears where the smem round-trip provably dominates
+  AND the operands fit registers — with a Rule 20 pre-B on the actual
+  IR.
+- **5b headline result banked:** the DRAM-bound wide-tile default
+  (`3ff5ed49`, model gating) — +16% @4096³, +24% @8192³ on-device,
+  gated by K ≥ 1024 AND ≥ 256 CTAs; B1 --runtime re-run discharged
+  (`benchmarks/results/2026-10-01-b1-rerun-after-5b-phase3.md`):
+  39/39 MATCH after the default change + the ~66 commits since.
+- The B1 re-baseline gate + the 5c/5b commits close 5b's
+  measurement obligations. 5a (attention decode, 200.6 µs baseline vs
+  the 125 µs target, parallel-decode reduction) is the next campaign —
+  it needs the full Rule 12 protocol and free GPUs.
 
 **Phase 4 — adjacent surfaces (own experiments, not assumed).**
 - PTX general reducers; Vulkan/SPIR-V coopmat (proven-regressed lane,
