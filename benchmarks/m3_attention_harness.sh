@@ -167,6 +167,7 @@ tail = (
     "            if (acc > mx) mx = acc;\n"
     + ("" if COMPOSITE else
     "            double se = __builtin_fabs((double)S[h*NKV_+j] - (double)acc) / (__builtin_fabs((double)acc) + 1e-3);\n"
+    "            if (__builtin_isnan(se) || __builtin_isnan((double)S[h*NKV_+j])) se = 1e300;\n"
     "            if (se > s_err) { s_err = se; ws_i = h*NKV_+j; ws_dev = S[h*NKV_+j]; ws_ref = acc; }\n")
     + "        }\n"
     "        double sum = 0.0;\n"
@@ -176,6 +177,7 @@ tail = (
     "            double ref_ = 0.0;\n"
     "            for (int j = 0; j < NKV_; j++) ref_ += Pref[h*NKV_+j] * V[kh*NKV_*D_ + j*D_ + d];\n"
     "            double err = __builtin_fabs((double)A[h*D_+d] - (double)ref_) / (__builtin_fabs((double)ref_) + 1e-3);\n"
+    "            if (__builtin_isnan(err) || __builtin_isnan((double)A[h*D_+d])) err = 1e300;\n"
     "            if (err > max_err) max_err = err;\n"
     "            if (err > 0.05 && n_bad < 5) { if (n_bad == 0) printf(\"BAD: \"); printf(\"[h=%d,d=%d] A=%.5f ref=%.5f  \", h, d, A[h*D_+d], ref_); n_bad++; }\n"
     "            if (h == 0 && d == 0) { dump_a0 = A[0]; dump_ref0 = ref_; }\n"

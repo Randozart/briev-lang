@@ -20,7 +20,7 @@ D=$4
 OUT=$(mktemp -d /tmp/opencode/sfgate.XXXXXX)
 NAME=$(basename "${FIXTURE%.abv}")
 
-./target/release/brievc build "$FIXTURE" --out "$OUT" >/dev/null || {
+./target/release/brievc build "$FIXTURE" ${BRIEVC_FLAGS:-} --out "$OUT" >/dev/null || {
     echo "build failed: $FIXTURE"; exit 1;
 }
 RUNNER="$OUT/${NAME}_runner.c"

@@ -35,6 +35,7 @@ tail = f'''
         double ref_ = (double)((float)a[i] + (float)i);
         double got = (double)r[i];
         double err = fabs(got - ref_);
+        if (isnan(err) || isnan(got)) err = 1e300;
         if (err > max_abs) max_abs = err;
         if (err > 1e-6 && bad < 3) {{ printf("  bad i=%d got=%g ref=%g\\n", i, got, ref_); bad++; }}
     }}

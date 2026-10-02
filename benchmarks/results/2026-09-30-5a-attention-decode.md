@@ -329,3 +329,21 @@ normalize stores). Next session: resolve with the m3 harness at the
 decode geometry (it honors BRIEVC_FLAGS) and a fresh reading of the
 normalize addressing (the o1 write offset vs the probe's read offset —
 GQA kvh indexing is the first suspect).
+
+## RESOLVED (2026-10-01, the variant-diff gate) — the decode probe was plumbing
+
+`deferred_ab_gate.sh` (the P1 harness) ran both variants at the decode
+geometry with fresh runners: **two-pass vs online agree at max_rel_diff
+= 5.894e-06** — the fused online kernel IS correct at the decode
+geometry. The earlier `got=0` probe was an artifact: the probe's
+printf was re-spliced across multiple attempts (real newlines inside
+the C string), mangling the injected runner — the DEC-PROBE read was
+untrustworthy while the reference loop read seeded data.
+
+**The 72.5 µs decode claim is now variant-verified**: timing shape AND
+variant agreement at the target geometry. The trusted instruments for
+every future deferred-path change: `deferred_ab_gate.sh` (variant
+diff) + the m3 harness (live reference, honors BRIEFC_FLAGS) — never a
+hand-spliced probe again.
+
+Shipped-best decode config: fused + split=4 — 72.2 µs p50.

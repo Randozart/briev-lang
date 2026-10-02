@@ -298,6 +298,15 @@ contracts.
 - **Regression guard**: inspect every match arm (silent regressions come from
   removed arms); verify optimized IR, not just tests; update architecture
   comments; never delete rationale comments — rewrite them.
+- **Timing needs same-geometry correctness**: a timing number enters a
+  results file only with a same-commit, same-geometry, same-config
+  correctness gate (the fused online softmax shipped "72.5 µs" two
+  commits before anyone ran the decode probe — got=0; NaN slipped the
+  gate metric). Provisional timings are marked provisional in the
+  results file itself. Kernel-selecting knobs (e.g.
+  `ptx_deferred_online`) are A/B'd with the variant-diff gate
+  (`benchmarks/deferred_ab_gate.sh`), never single-arm reference
+  checks.
 - **Kernel index math needs the on-device gate**: any commit touching
   generated-kernel addressing, masks, swizzles, or decode runs the device
   correctness check at a real shape (e.g. gemm_h_bench 4096³) before push —

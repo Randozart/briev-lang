@@ -149,6 +149,26 @@ or dropped. Examples from this session:
    helper takes a primitive in a literal position, audit its call sites
    and prefer taking the const's Word instead; the guard test now pins
    the emitted output.
+10. **NaN silences every `>`-based error metric.** The fused online
+    softmax shipped as "PASS 0.00e+00" because `err = |NaN − ref|/…`
+    is NaN and `NaN > max_rel` is false — the max never moved. Every
+    gate metric needs an explicit `isnan → FAIL` before the compare
+    (gate-hardening plan P2), and a probe that contradicts the gates
+    means the GATES are broken, not the probe (the probe caught it).
+11. **A config knob that changes the kernel must change which gates
+    apply.** `ptx_deferred_online: 1` swapped the kernel body while
+    `softmax_gate.sh` (which ignores `BRIEFC_FLAGS`) kept verifying the
+    two-pass path — the A/B ran timing on the new kernel and correctness
+    on the old one. Every gate harness expands `BRIEVC_FLAGS`; every
+    kernel-selecting knob is A/B'd with the variant-diff gate
+    (`deferred_ab_gate.sh`), never with a reference check on one arm
+    only.
+12. **Timing numbers are provisional until same-geometry correctness.**
+    The 72.5 µs headline landed in a results file two commits before
+    anyone ran the decode-geometry probe (got=0). Rule: a timing number
+    enters a results file only with a same-commit, same-geometry,
+    same-config correctness gate; otherwise it is marked provisional in
+    the results file itself.
 
 ## 4. The discipline in one paragraph
 
