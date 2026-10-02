@@ -448,6 +448,43 @@ mod tests {
         emit_kernel(&mut sub_builder, "acc_sub", &sub_shape, &sub_program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         let sub_dis = validate_and_disassemble(&sub_builder.build().unwrap(), "atomic_sub_at");
         assert!(sub_dis.contains("OpAtomicISub"), "the sub atomic:\n{sub_dis}");
+        // 2026-10-01: Xchg emits OpAtomicExchange.
+        let mut xchg_txn = program[3].clone();
+        if let TopLevel::Transaction(ref mut tx) = xchg_txn {
+            tx.name = "acc_xchg".into();
+            tx.body = vec![
+                Statement::Let {
+                    name: "old".into(),
+                    names: vec![],
+                    ty: Some(Type::int()),
+                    expr: Some(Expr::Call(
+                        "AtomicXchgAt#".into(),
+                        vec![
+                            Expr::Identifier("total".into()),
+                            Expr::Decimal(0),
+                            Expr::Decimal(1),
+                        ],
+                        None,
+                    )),
+                    modifiers: vec![],
+                },
+                Statement::Assign(
+                    Expr::Identifier("i".into()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("i".into())),
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                ),
+            ];
+        }
+        let xchg_program = vec![program[0].clone(), program[1].clone(), program[2].clone(), xchg_txn];
+        let xchg_analysis = analyze(&xchg_program);
+        let xchg_shape = eligible_shape(&xchg_analysis, "acc_xchg").clone();
+        let mut xchg_builder = SpirvBuilder::new();
+        emit_kernel(&mut xchg_builder, "acc_xchg", &xchg_shape, &xchg_program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
+        let xchg_dis = validate_and_disassemble(&xchg_builder.build().unwrap(), "atomic_xchg_at");
+        assert!(xchg_dis.contains("OpAtomicExchange"), "the xchg atomic:\n{xchg_dis}");
     }
 
     /// §2.5: spirv-val validation — typed-emission refactor closed the

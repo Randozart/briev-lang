@@ -226,6 +226,7 @@ pub fn emit_intrinsic_call(
         // element-addressed family — GEP the element, atomicrmw in place.
         "AtomicAddAt#" => return emit_atomic_at(backend, out, v, args, indent, "add"),
         "AtomicSubAt#" => return emit_atomic_at(backend, out, v, args, indent, "sub"),
+        "AtomicXchgAt#" => return emit_atomic_at(backend, out, v, args, indent, "xchg"),
         // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): RMW family
         "AtomicSub#" => return emit_atomic_rmw(backend, out, v, args, indent, "sub"),
         "AtomicOr#" => return emit_atomic_rmw(backend, out, v, args, indent, "or"),

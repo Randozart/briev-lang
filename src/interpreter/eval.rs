@@ -656,10 +656,14 @@ fn eval_atomic_at(
         "AtomicSubAt#" => {
             fields[i as usize] = Value::int(old.wrapping_sub(v));
         }
+        // 2026-10-01: Xchg — plain store-return-old (the exchange RMW).
+        "AtomicXchgAt#" => {
+            fields[i as usize] = Value::int(v);
+        }
         other => {
             return Err(RuntimeError::TypeError {
                 expected: "an implemented At-family atomic".into(),
-                found: format!("{other} - Add and Sub exist"),
+                found: format!("{other} - Add, Sub and Xchg exist"),
             })
         }
     }
@@ -3414,6 +3418,24 @@ defn go() -> Int {
         match bindings.get("total") {
             Some(Value::Product { fields, .. }) => {
                 assert_eq!(fields[0].as_i64(), Some(7), "10 - 3");
+            }
+            other => panic!("binding shape {:?}", other.is_some()),
+        }
+        // 2026-10-01: Xchg — store-return-old.
+        let xchg = Expr::Call(
+            "AtomicXchgAt#".into(),
+            vec![
+                Expr::Identifier("total".into()),
+                Expr::Decimal(0),
+                Expr::Decimal(99),
+            ],
+            None,
+        );
+        let old4 = eval_expr(&xchg, &mut heap, &mut bindings, &HashMap::new()).unwrap();
+        assert_eq!(old4.as_i64(), Some(7), "xchg returns the pre-value");
+        match bindings.get("total") {
+            Some(Value::Product { fields, .. }) => {
+                assert_eq!(fields[0].as_i64(), Some(99), "the slot holds the new value");
             }
             other => panic!("binding shape {:?}", other.is_some()),
         }

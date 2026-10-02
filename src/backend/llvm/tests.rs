@@ -1999,6 +1999,25 @@ fn test_atomic_add_at_lowers_to_element_atomicrmw() {
         out2.contains("atomicrmw sub ptr"),
         "sub is the same shape:\n{out2}"
     );
+    // 2026-10-01: Xchg — the exchange RMW.
+    let mut out3 = String::new();
+    crate::backend::llvm::intrinsics::emit_intrinsic_call(
+        &mut backend,
+        &mut out3,
+        "%out",
+        "AtomicXchgAt#",
+        &[
+            Expr::Identifier("total".to_string()),
+            Expr::Decimal(0),
+            Expr::Decimal(1),
+        ],
+        None,
+        "  ",
+    );
+    assert!(
+        out3.contains("atomicrmw xchg ptr"),
+        "xchg is the same shape:\n{out3}"
+    );
 }
 
 #[test]

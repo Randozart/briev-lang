@@ -805,6 +805,16 @@ fn collect_operand_loads(e: &Expr) -> Vec<Expr> {
     out
 }
 
+/// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`): the PTX
+/// atomic-op selector for the At family. `add.u64` for arithmetic
+/// (Sub rides it negated), `exch.b64` for the exchange (the type
+/// suffix differs — exch takes the untyped .b64 form).
+#[derive(Clone, Copy)]
+enum AtomicAtOp {
+    Add,
+    Exch,
+}
+
 /// Does the statement mention this identifier anywhere (shallow but sound
 /// for the consumption check: assignments and lets cover the surface).
 fn stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
@@ -2200,7 +2210,7 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     /// kernel-realistic magnitudes, `cvt.rni` for the round-trip); the
     /// RMW itself never touches an f32 register.
     fn emit_atomic_at(
-        &mut self, args: &[Expr], out: &str, negate: bool,
+        &mut self, args: &[Expr], out: &str, op: AtomicAtOp, negate: bool,
     ) -> Result<(String, String), String> {
         if args.len() < 3 {
             return Err("the At-family atomics take (buf, i, v)".into());
@@ -2230,8 +2240,12 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         if negate {
             b.push_str(&format!("    neg.s64 {}, {v64};\n", v64));
         }
+        let (ptx_op, ty) = match op {
+            AtomicAtOp::Add => ("add", "u64"),
+            AtomicAtOp::Exch => ("exch", "b64"),
+        };
         b.push_str(&format!(
-            "    atom.acq_rel.gpu.global.add.u64 {}, [{}], {};\n",
+            "    atom.acq_rel.gpu.global.{ptx_op}.{ty} {}, [{}], {};\n",
             old, addr, v64
         ));
         b.push_str(&format!("    cvt.rn.f32.s64 {}, {};\n", out, old));
@@ -2317,7 +2331,7 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
             // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md A3): the
             // element-addressed atomic — see `emit_atomic_add_at`.
             "AtomicAddAt#" => {
-                let (d, b) = self.emit_atomic_at(args, out, false)?;
+                let (d, b) = self.emit_atomic_at(args, out, AtomicAtOp::Add, false)?;
                 decl.push_str(&d);
                 body.push_str(&b);
                 Ok(())
@@ -2326,7 +2340,13 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                 // PTX has no atomic sub — add of the negated value is
                 // the identical wrapping-i64 RMW (the same route LLVM's
                 // atomicrmw sub takes through negation on some targets).
-                let (d, b) = self.emit_atomic_at(args, out, true)?;
+                let (d, b) = self.emit_atomic_at(args, out, AtomicAtOp::Add, true)?;
+                decl.push_str(&d);
+                body.push_str(&b);
+                Ok(())
+            }
+            "AtomicXchgAt#" => {
+                let (d, b) = self.emit_atomic_at(args, out, AtomicAtOp::Exch, false)?;
                 decl.push_str(&d);
                 body.push_str(&b);
                 Ok(())
@@ -3114,7 +3134,7 @@ mod tests {
                 Statement::Assign(idx("res", id("i")), id("old")),
                 Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
             ],
-            ..shape
+            ..shape.clone()
         };
         let ptx_sub = emit_general_ptx(
             &sub_shape,
@@ -3134,6 +3154,48 @@ mod tests {
             assert!(
                 crate::backend::ptx::compile_cubin(&ptx_sub, 0).is_some(),
                 "ptxas must accept the sub PTX"
+            );
+        }
+        // 2026-10-01: Xchg — exch.b64 (the exchange type suffix).
+        let xchg_shape = crate::analysis::accel::KernelShape {
+            kernel_stmts: vec![
+                Statement::Let {
+                    name: "old".into(),
+                    names: vec![],
+                    ty: None,
+                    expr: Some(Expr::Call(
+                        "AtomicXchgAt#".into(),
+                        vec![
+                            Expr::Identifier("total".into()),
+                            Expr::Decimal(0),
+                            Expr::Decimal(1),
+                        ],
+                        None,
+                    )),
+                    modifiers: vec![],
+                },
+                Statement::Assign(idx("res", id("i")), id("old")),
+                Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
+            ],
+            ..shape
+        };
+        let ptx_xchg = emit_general_ptx(
+            &xchg_shape,
+            1024,
+            &layout2,
+            &consts,
+            &universe,
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+        )
+        .unwrap_or_else(|e| panic!("xchg emits: {e}"));
+        assert!(
+            ptx_xchg.contains("atom.acq_rel.gpu.global.exch.b64"),
+            "the exchange:\n{ptx_xchg}"
+        );
+        if std::process::Command::new("ptxas").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            assert!(
+                crate::backend::ptx::compile_cubin(&ptx_xchg, 0).is_some(),
+                "ptxas must accept the xchg PTX"
             );
         }
     }

@@ -1248,7 +1248,7 @@ impl<'a> FnLowerer<'a> {
             // Int-arrays-only: GPU Float arrays are f32 storage; Int is
             // i64 in both worlds. GLSL450 model scope/semantics — see
             // `SpirvBuilder::atomic_rmw`.
-            "AtomicAddAt#" | "AtomicSubAt#" => {
+            "AtomicAddAt#" | "AtomicSubAt#" | "AtomicXchgAt#" => {
                 if args.len() < 3 {
                     return self.err("AtomicAddAt# takes (buf, i, v)");
                 }
@@ -1283,6 +1283,7 @@ impl<'a> FnLowerer<'a> {
                 // address/semantics shape (OpAtomicISub, core).
                 let op = match name {
                     "AtomicSubAt#" => spirv::Op::AtomicISub,
+                    "AtomicXchgAt#" => spirv::Op::AtomicExchange,
                     _ => spirv::Op::AtomicIAdd,
                 };
                 let old = self.builder.atomic_rmw(res_ty, ptr, val, op);
