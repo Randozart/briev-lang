@@ -106,3 +106,28 @@ Findings:
   softmax_gate fixtures (5.91e-06 both lanes); the decode-geometry
   split correctness gate rides the next increment (lever 2 lands with
   its own m3-harness gate).
+
+## E2/E3 — the j-iteration body composition (2026-10-01, spy-ptxas dump)
+
+The split=2 partial's PTX (pre-ptxas, 832 lines / 21178 bytes, dumped
+via a saving-ptxas wrapper) shows the per-j body is NOT load- or
+butterfly-bound — it is **address-arithmetic bound**:
+
+- 4 strips × (q, k, v) = 12 `ld.global` per j-iteration.
+- EACH load's address is recomputed from scratch per iteration: ~10
+  integer ops (`mul r,h,128` + `mul r30,128,4096` + `mul.wide` + two
+  `add.u64` + the const offset) — including CONSTANT-FOLDABLE products
+  (`128*4096 = 524288` emitted as two muls!) and the loop-INVARIANT q
+  base (`h*128` + the const buffer offset).
+- The butterflies are already inline (0 `call` in the pre-ptxas text —
+  the out-of-line `CALL.REL.NOINC` figures were post-ptxas SASS
+  artifacts; 10 `shfl` total per kernel = one butterfly set per pass,
+  NOT per strip).
+- 3 `bar.sync`, 1 `ex2` — secondary.
+
+**Lever 2 re-sized:** strength-reduce the deferred-region j loop —
+hoist the q base, carry k/v addresses by stride increment (`+= 4096*4`
+per j), and let the emitter's index emission skip recomputing
+loop-invariant sub-expressions. This is an index-emission change in
+`emit_deferred_region`'s j loop → the kernel-rule on-device gate
+applies (m3 harness, both lanes) before any timing claim.
