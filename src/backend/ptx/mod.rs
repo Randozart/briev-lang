@@ -280,6 +280,14 @@ pub(crate) fn compile_cubin(ptx: &str, maxnreg: u32) -> Option<Vec<u8>> {
     let in_path = dir.join("kernel.ptx");
     let out_path = dir.join("kernel.cubin");
     std::fs::write(&in_path, ptx).ok()?;
+    // BRIEV_DEBUG_PTX=<dir>: keep every emitted kernel PTX for inspection.
+    if let Ok(dst) = std::env::var("BRIEV_DEBUG_PTX") {
+        let _ = std::fs::create_dir_all(&dst);
+        let _ = std::fs::copy(
+            &in_path,
+            format!("{}/kernel_{}_{}.ptx", dst, std::process::id(), seq),
+        );
+    }
 
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(p) = std::env::var("TRITON_PTXAS") {

@@ -4183,6 +4183,9 @@ fn expr_references(e: &Expr, name: &str) -> bool {
             expr_references(a, name) || expr_references(b, name)
         }
         Expr::UnaryOp(_, a) => expr_references(a, name),
+        // 2026-10-02 (float4): a cast around an index expression carries
+        // the references of its operand (`(k[..j..] as Float)` mentions j).
+        Expr::Cast(x, _) => expr_references(x, name),
         Expr::Call(_, args, _) => args.iter().any(|a| expr_references(a, name)),
         _ => false,
     }
@@ -4239,6 +4242,9 @@ fn rewrite_j_expr(e: &mut Expr, pairs: &[(String, Expr)]) -> bool {
     match e {
         Expr::BinaryOp(_, a, b) => rewrite_j_expr(a, pairs) | rewrite_j_expr(b, pairs),
         Expr::Index(a, b) => rewrite_j_expr(a, pairs) | rewrite_j_expr(b, pairs),
+        // 2026-10-02 (float4): see through casts — the composite reads
+        // `(k[..] as Float)`; the cast must not hide the site.
+        Expr::Cast(x, _) => rewrite_j_expr(x, pairs),
         Expr::UnaryOp(_, a) => rewrite_j_expr(a, pairs),
         Expr::Call(_, args, _) => {
             let mut any = false;
@@ -4312,6 +4318,7 @@ fn expr_count(e: &Expr, name: &str) -> u32 {
             expr_count(a, name) + expr_count(b, name)
         }
         Expr::UnaryOp(_, a) => expr_count(a, name),
+        Expr::Cast(x, _) => expr_count(x, name),
         Expr::Call(_, args, _) => args.iter().map(|a| expr_count(a, name)).sum(),
         _ => 0,
     }
@@ -4396,6 +4403,10 @@ fn v4_first_d_idx(stmts: &[Statement], buf: &str, d: &str) -> Option<Expr> {
                 walk_expr(a, buf, d, out);
                 walk_expr(b, buf, d, out);
             }
+            // 2026-10-02 (float4): the composite reads `(k[..] as Float)` —
+            // the cast wraps the Index; see through it (dot_buffers
+            // precedent).
+            Expr::Cast(x, _) => walk_expr(x, buf, d, out),
             Expr::UnaryOp(_, a) => walk_expr(a, buf, d, out),
             Expr::Call(_, args, _) => {
                 for a in args {
@@ -4428,6 +4439,7 @@ fn v4_all_d_idxs(stmts: &[Statement], buf: &str, d: &str) -> Vec<Expr> {
                 walk_expr(a, buf, d, out);
                 walk_expr(b, buf, d, out);
             }
+            Expr::Cast(x, _) => walk_expr(x, buf, d, out),
             Expr::UnaryOp(_, a) => walk_expr(a, buf, d, out),
             Expr::Call(_, args, _) => {
                 for a in args {
@@ -4910,12 +4922,31 @@ impl Gen<'_> {
             "    @{} st.global.f32 [{}+4], {};\n",
             p1, rdb, s.l_tot
         ));
-        // acc strips — per-lane d.
-        body.push_str(&format!("    mul.wide.u32 {}, {}, 4;\n", rda, s.r_lane));
+        // acc strips — per-lane d. The slot for strip i's acc IS d: the
+        // strip→d mapping is the emitter's, and BOTH the lane base and
+        // the strip stride follow it — flipped quads: d = lane·4+i, lane
+        // base lane·16 B, strips +4 B (contiguous per lane); original
+        // scalar strips: d = lane+32·i, lane base lane·4 B, strips
+        // +128 B. Either way the 32 lanes × 4 strips cover the dim slots
+        // exactly once (overlapping stores would race the record).
+        let (lane_bytes, strip_stride): (u64, u64) = if self.deferred_v4.is_some() {
+            (16, 4)
+        } else {
+            (4, 128)
+        };
+        body.push_str(&format!(
+            "    mul.wide.u32 {}, {}, {};\n",
+            rda, s.r_lane, lane_bytes
+        ));
         body.push_str(&format!("    add.u64 {}, {}, {};\n", rda, rdb, rda));
         body.push_str(&format!("    add.u64 {}, {}, 8;\n", rda, rda));
         for (i, a) in s.a_regs.iter().enumerate() {
-            body.push_str(&format!("    st.global.f32 [{}+{}], {};\n", rda, 128 * i, a));
+            body.push_str(&format!(
+                "    st.global.f32 [{}+{}], {};\n",
+                rda,
+                strip_stride * i as u64,
+                a
+            ));
         }
         Ok(())
     }
@@ -6184,3 +6215,4 @@ pub fn emit_deferred_combine_ptx(
     out.push_str("    ret;\n}\n");
     Ok(out)
 }
+

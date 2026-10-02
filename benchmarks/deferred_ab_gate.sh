@@ -50,6 +50,14 @@ def field(src, name):
     m = re.search(r'\{ "%s", 1, (\d+), (\d+),' % name, src)
     return int(m.group(1))
 
+def field_count(src, name):
+    # The declared element count from the runner's field table — the seed
+    # must write EXACTLY the buffer (the s8 fixture's k/v are H·NKV·D, but
+    # a GQA decode fixture's k/v are HKV·NKV·D: seeding H·NKV·D overruns
+    # the static state and glibc aborts the run before the dumps).
+    m = re.search(r'\{ "%s", 1, \d+, \d+, (\d+),' % name, src)
+    return int(m.group(1))
+
 H, NKV, D, OUTFIELD = int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]), sys.argv[6]
 main_bodies = []
 for i, rp in enumerate(sys.argv[1:3]):
@@ -57,14 +65,15 @@ for i, rp in enumerate(sys.argv[1:3]):
     if '#include <math.h>' not in src:
         src = src.replace('#include', '#include <math.h>\n#include', 1)
     Q, K, V, O = field(src, 'q'), field(src, 'k'), field(src, 'v'), field(src, OUTFIELD)
+    QN, KN, VN = (field_count(src, n) for n in ('q', 'k', 'v'))
     seed = f'''
   {{ unsigned rng = 20260101;
     float* q = (float*)(state + {Q});
     float* k = (float*)(state + {K});
     float* v = (float*)(state + {V});
-    for (int i = 0; i < {H*D}; i++) {{ rng = rng*1103515245u + 12345u; q[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}
-    for (int i = 0; i < {H*NKV*D}; i++) {{ rng = rng*1103515245u + 12345u; k[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}
-    for (int i = 0; i < {H*NKV*D}; i++) {{ rng = rng*1103515245u + 12345u; v[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}
+    for (int i = 0; i < {QN}; i++) {{ rng = rng*1103515245u + 12345u; q[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}
+    for (int i = 0; i < {KN}; i++) {{ rng = rng*1103515245u + 12345u; k[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}
+    for (int i = 0; i < {VN}; i++) {{ rng = rng*1103515245u + 12345u; v[i] = (float)((rng>>16)%997)/997.0f - 0.5f; }}
   }}
 '''
     tail = f'''
