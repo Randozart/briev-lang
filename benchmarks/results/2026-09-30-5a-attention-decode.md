@@ -68,3 +68,41 @@ decode → the fast path); (2) implement the parallel decode reduction; (3)
 delete `fused_attention_*` only once the composite meets decode parity,
 per Rule 24's retirement gate. The measurement rig is the m4 +
 composite_decode microbenches above.
+
+## Split-K sweep (2026-10-01) — design option 1 measured
+
+`benchmarks/composite_decode_split_sweep.sh` (1200 reps, ramped, the
+two-launch CUDA contract: partial n*S + combine n). Same session, same
+rig — compare rows to each other:
+
+| variant | p10 | p50 | p90 |
+|---|---|---|---|
+| no-split | 218.9 | 220.8 | 339.1 |
+| split=2 | 222.3 | 223.5 | 232.0 |
+| **split=4** | **200.4** | **202.5** | **210.2** |
+| split=8 | 250.6 | 252.0 | 260.9 |
+| split=16 | 318.5 | 324.1 | 336.6 |
+
+Findings:
+- **split=4 wins**: −8% p50 (220.8 → 202.5) and the tail TIGHTENS
+  1.6× (p90 339 → 210 — the combine stabilizes what the no-split
+  single-launch leaves to clock-cap variance).
+- **S > 4 regresses**: per-CTA work shrinks below the two-pass
+  overhead and the combine's merge cost grows with S. 4 is the model
+  factor (`reduction_split_factor(20, 4096)` = 4) — the cost model
+  and the measurement agree.
+- The grid-underfill lever is worth ~8%, NOT the 1.6×: with S=4 the
+  grid is 80 CTAs (fills 28 SMs) yet latency barely moves — the
+  residual cost is the PER-J WORK (2 passes × 128 j-iterations/warp ×
+  strips + 11 butterflies + Exp# + div slowpath). Lever 2 (fuse the
+  two passes, inline the butterfly, hoist q) is the remaining path to
+  125 µs.
+- Harness fixes landed: `composite_decode_microbench.sh` (the split
+  contract drive + BRIEVC_FLAGS default) and the sweep script (the
+  two-launch drive parsed from the runner's own sequence; the first
+  plain launch after the partial is the combine — later plain launches
+  are other lanes' full images).
+- Correctness: the split machinery's numerics are device-proven at the
+  softmax_gate fixtures (5.91e-06 both lanes); the decode-geometry
+  split correctness gate rides the next increment (lever 2 lands with
+  its own m3-harness gate).

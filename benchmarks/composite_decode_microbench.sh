@@ -27,7 +27,7 @@ python3 benchmarks/attn_instantiate.py \
     --d "$D" --h "$H" --hkv "$HKV" --nkv "$NKV" \
     --template "$TEMPLATE" \
     --out examples/gpu/cmpbench_tmp.abv
-"$BRIEVC" build examples/gpu/cmpbench_tmp.abv $BRIEVC_FLAGS --out "$OUT" >/dev/null
+"$BRIEVC" build examples/gpu/cmpbench_tmp.abv ${BRIEVC_FLAGS:-} --out "$OUT" >/dev/null
 mv "$OUT/cmpbench_tmp_runner.c" "$OUT/cmp_runner.c"
 rm -f examples/gpu/cmpbench_tmp.abv
 
@@ -43,7 +43,24 @@ fields = {}
 for m in re.finditer(r'\{ "(\w+)", (\d+), (\d+), (\d+), (\d+), ([01]), (\d+) \}', src):
     fields[m.group(1)] = {"host": int(m.group(3)), "proj": int(m.group(7))}
 kernels = re.findall(r'\{ "(\w+)", k\d+,', src)
-assert len(kernels) == 1, f"composite must be one kernel, found {kernels}"
+# 2026-10-01 (5a split sweep): a declared `split<S>` produces the
+# two-launch contract (partial + combine companions, CudaOnly) — the
+# drive below launches kernel 0 per step either way (the desc's
+# per-node sequence covers the companions).
+assert len(kernels) >= 1, f"no kernels found: {kernels}"
+# 2026-10-01 (5a split sweep): a declared `split<S>` produces the
+# two-launch CUDA contract — partial at n*S, combine at n (the exact
+# sequence the generated runner emits). Parse the pair + factor; the
+# single-kernel drive stays the default.
+partial_idx = None
+combine_idx = None
+split_factor = None
+for _m in re.finditer(r'briev_accel_launch_resident\((\d+), state, n_\w+(?: \* (\d+))?\)', src):
+    if _m.group(2):
+        partial_idx, split_factor = _m.group(1), int(_m.group(2))
+    else:
+        combine_idx = _m.group(1)
+is_split = partial_idx is not None and split_factor is not None
 QOFF, QPROJ = fields["q"]["host"], fields["q"]["proj"]
 ROFF, RPROJ = fields["r"]["host"], fields["r"]["proj"]
 QLEN = H * D
@@ -75,7 +92,12 @@ int main(void) {{
     }}
     /* warmup: one real step triggers the program-level seed (full push) */
     *(long long*)(state + {ROFF}) = 0;
+    if (is_split) {{
+        if (!briev_accel_launch_resident({PI}, state, {H} * {S})) {{ fprintf(stderr, "warmup failed\\n"); return 1; }}
+        if (!briev_accel_launch_resident({CI}, state, {H})) {{ fprintf(stderr, "warmup failed\\n"); return 1; }}
+    }} else {
     if (!briev_accel_launch_resident(0, state, {H})) {{ fprintf(stderr, "warmup failed\\n"); return 1; }}
+    }}
 
     double* push_t = malloc(sizeof(double) * {REPS});
     double* launch_t = malloc(sizeof(double) * {REPS});
@@ -95,7 +117,12 @@ int main(void) {{
         double t0 = cmp_now();
         if (!briev_accel_push_ranges(state, ranges, 2)) {{ fprintf(stderr, "push failed\\n"); return 1; }}
         double t1 = cmp_now();
+        if (is_split) {{
+            if (!briev_accel_launch_resident({PI}, state, {H} * {S})) {{ fprintf(stderr, "launch failed\\n"); return 1; }}
+            if (!briev_accel_launch_resident({CI}, state, {H})) {{ fprintf(stderr, "launch failed\\n"); return 1; }}
+        }} else {
         if (!briev_accel_launch_resident(0, state, {H})) {{ fprintf(stderr, "launch failed\\n"); return 1; }}
+        }}
         double t2 = cmp_now();
         push_t[step] = t1 - t0;
         launch_t[step] = t2 - t1;
@@ -116,7 +143,7 @@ int main(void) {{
     return 0;
 }}
 '''
-main = main.format(NK=N_KERNELS, QLEN=QLEN, QOFF=QOFF, QPROJ=QPROJ,
+main = main.format(PI=partial_idx if partial_idx is not None else 0, CI=combine_idx if combine_idx is not None else 0, S=split_factor if split_factor is not None else 1, NK=N_KERNELS, QLEN=QLEN, QOFF=QOFF, QPROJ=QPROJ,
                    ROFF=ROFF, RPROJ=RPROJ, H=H, D=D, HKV=HKV, NKV=NKV, REPS=REPS)
 prefix = src.split('int main(void) {')[0]
 open(out_path, 'w').write(prefix + main)
