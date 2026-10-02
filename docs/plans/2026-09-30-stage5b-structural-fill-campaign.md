@@ -106,6 +106,23 @@ measurement and the **measurement-hazard** note (fine A/B unreliable in
 long sessions — re-measure controlled before locking constants).
 
 
+**The correctness license for the pipelined fill (2026-10-01, from an
+external-analysis triage):** the cp.async pipeline REORDERS loads the
+composite's algebra says are position-independent — that proof IS the
+license. Concretely: the fused softmax's rescale algebra makes acc/l
+composition associative under rescale (the online form's
+`exp(m_w − m_glob)` merge), and the GEMM's k-loop accumulation is
+assoc-order-free per tile. The campaign's correctness gate (m3 harness
++ softmax fixtures, both lanes) validates the licensed rewrite; the
+licensing statement belongs in the commit that lands the pipeline, not
+just the harness run.
+
+**Look-item (host dispatch):** are provably-never-firing reactive
+nodes dropped from the reactor dispatch, or enumerated-and-skipped?
+`defn_liveness.rs` does this for defns (dead defns never emitted);
+node-level is unverified. If enumerated, the skip is a small host-side
+win for node-heavy programs — bounded investigation, not a workstream.
+
 **Phase 3 — model gating (winners only) — STATUS 2026-10-01.**
 - ~~Load-path axis~~ **OPEN, deferred with cost note.** No
   register-staged emitter exists in the tree (the E1f references are
