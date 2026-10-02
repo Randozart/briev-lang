@@ -113,9 +113,16 @@ smem-resident). The composite's dlen≤32 online branch exists — the
 lever is the deferred emitter learning the fused form for
 smem-resident acc.
 
-Next: **the fused j loop** — one sweep (dot, running max, rescale
-acc/l on update) replacing the two passes, gated by the m3 harness
-(both lanes) + the softmax fixtures before timing. Then the div
-slowpath and shape-gating (prefill -> composite / decode -> the
-measured-best config). Correctness gates: softmax_gate s8 + knob PASS
-both lanes at pre-hoist residuals.
+**The fused j loop DONE 2026-10-01** (`dab3bb9a`): the 125 µs target
+is BEATEN — decode composite **72.5 µs p50** (two-pass 320.2 same
+session; 2.77×; from the 200.6 µs baseline 2.77×; ggml ~58 µs now
+1.25× away). `ptx_deferred_online` default 1 (two-pass behind 0).
+Correctness: softmax fixtures PASS both lanes (CUDA lane IMPROVED to
+0.00e+00 — the rescale algebra matches the combine); m3 PASS both
+lanes; suite 2845; gemm_h byte-identical.
+
+Remaining 5a: 5d-class retirements stay gated on the Rule 24 gate
+(revisit with the fused numbers); shape-gating is MOOT (the fused form
+is best across the measured sweep — no config split needed); the div
+slowpath and any further µs are polish. The fused-kernel numbers go to
+the re-rank table.
