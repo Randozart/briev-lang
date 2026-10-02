@@ -1,9 +1,11 @@
 // stack_push_pop — Stack<T, N> push/pop cycle benchmark
 //
 // Tests: the generic obj Stack via std/collections.bv — op Init construction,
-// '<-' InsertAt dispatch (self-bound push member), '<-' ExtractFrom pop.
-// The counter is runtime-determined (get_env_int) so the compiler cannot
-// precompute the loop.
+// '<-' InsertAt dispatch (self-bound push member), '~<-' ExtractFrom pop.
+// 2026-10-01 (A2 design rule): '<-' on a Stack is now COPY-FROM
+// (non-destructive peek, via op CopyFrom) — the pop cycle uses '~<-'
+// (ExtractFrom) honestly. The counter is runtime-determined
+// (get_env_int) so the compiler cannot precompute the loop.
 //
 // C reference: stack_push_pop_c.c
 
@@ -14,7 +16,7 @@ let count: Int = 0;
 
 node work [count < N][count == N] {
     st <- count;
-    <- st;
+    ~<- st;
     count = count + 1;
 
     when count % 5000000 == 0 {

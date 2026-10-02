@@ -3,6 +3,15 @@
 // Protocol bindings let the <- operator work for any collection
 // via op InsertAt: fn(#Lh, #Rh) and op ExtractFrom: fn(#Rh).
 // op Init: fn(#Lh, #Rh) handles let x: T = val initialization.
+//
+// 2026-10-01 (design rule, user decision): CopyFrom and ExtractFrom
+// are OP-BINDING NAMES, never author surface. `<-` IS the copy-from —
+// its default behaviour, dispatched to the type's `op CopyFrom`
+// member; `~<-` IS the extract-from (`op ExtractFrom`). Every
+// collection that supports `<-` MUST therefore declare `op CopyFrom`
+// (the non-destructive read); a collection declaring only ExtractFrom
+// makes `<-` destructive, which breaks the arrow's meaning. Stack
+// declares CopyFrom: peek as of this rule (the sweep item A2).
 
 // ── Stack<T, N> — fixed-size stack ──────────────────────────────────
 
@@ -12,6 +21,10 @@ obj Stack<T, N> {
 
     op InsertAt: push(#Lh, #Rh);
     op ExtractFrom: pop(#Rh);
+    // 2026-10-01 (design rule, A2): `<-` is COPY-FROM by default — a
+    // Stack must read non-destructively. Declaring only ExtractFrom
+    // made `<-` pop, breaking the arrow's meaning.
+    op CopyFrom: peek(#Rh);
     op Init: init(#Lh, #Rh);
 
     txn init(val: T) [true][len == 1] {
@@ -27,6 +40,10 @@ obj Stack<T, N> {
     txn pop() -> T [len > 0][len >= 0] {
         len = len - 1;
         term data[len];
+    };
+
+    txn peek() -> T [len > 0][len >= 0] {
+        term data[len - 1];
     };
 };
 

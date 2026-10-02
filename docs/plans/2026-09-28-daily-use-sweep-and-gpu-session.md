@@ -126,7 +126,31 @@ Execute the top-ranked lane; A/B before/after; record.
 4. **Tests.** Behavioral: push/peek/pop read-back correct with colliding
    local names; regression per capture class. `cargo test --lib`.
 
-### A2. Stack `op CopyFrom: peek` (D2)
+### A2. Stack `op CopyFrom: peek` (D2) — **DONE 2026-10-01**
+
+- `lib/std/collections.bv`: `obj Stack` gains `op CopyFrom: peek(#Rh)`
+  + `txn peek() -> T [len > 0][len >= 0]` (mirrors pop non-destructive).
+- `benchmarks/stack_push_pop.bv`: the discard read becomes `~<- st;`
+  (the benchmark IS a push/pop cycle — `~<-` names it honestly).
+- Behavioral proof: `tests/tier1/stack_peek_pop.bv` (brievc run):
+  peek-ok + pop-then-peek-ok — peek reads 99 without consuming, the
+  pop removes it, a second peek reads 42 (impossible if `<-` popped).
+- A/B `compare_baseline.sh stack_push_pop`: ratio 1.0092 — neutral
+  (the same ExtractFrom member-call shape).
+- Sweep: the only Stack `<-` read in the tree was the benchmark;
+  daily_use_smoke uses `<-` pushes only; test_collections.bv is the
+  D5 repair (separate).
+
+**Design rule (2026-10-01, user decision, documented in
+`lib/std/collections.bv` header):** `CopyFrom`/`ExtractFrom` are
+op-binding names, never author surface — `<-` IS copy-from (its
+default behaviour, via the type's `op CopyFrom` binding), `~<-` IS
+extract-from. Every `<-`-supporting collection MUST declare
+`op CopyFrom`; declaring only ExtractFrom makes `<-` destructive,
+which breaks the arrow's meaning. The fix is stdlib DATA (the
+binding), never a new keyword; the internal `txn peek()` is the
+binding's implementation target (stdlib-internal, same grammar as
+RingBuffer's `read(#Rh)`), not author surface.
 1. `lib/std/collections.bv`: add `op CopyFrom: peek(#Rh)` +
    `txn peek() -> T [len > 0][len > 0] { term data[len - 1]; }` to
    `obj Stack` (mirror RingBuffer `read` precedent; check its guards).

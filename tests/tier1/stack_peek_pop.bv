@@ -1,0 +1,29 @@
+// stack_peek_pop — the A2 design rule, behavioral (plan
+// 2026-09-28-daily-use-sweep-and-gpu-session.md, D5 companion).
+//
+// `<-` on a Stack is COPY-FROM (non-destructive peek, via
+// `op CopyFrom: peek`); `~<-` is the ExtractFrom pop. The sequence
+// proves both: peek reads 99 without consuming, the pop removes it,
+// and a second peek then reads 42 — impossible if `<-` popped.
+import { Stack } from "std/collections.bv";
+
+let st: Stack<Int, 256> = 0;
+let a: Int = 0;
+let b: Int = 0;
+let done: Int = 0;
+
+node main [done == 0][done == 1] {
+    st <- 42;
+    st <- 99;
+    a <- st;
+    ~<- st;
+    b <- st;
+    when a == 99 {
+        println!("peek-ok");
+    };
+    when b == 42 {
+        println!("pop-then-peek-ok");
+    };
+    done = 1;
+    term;
+};
