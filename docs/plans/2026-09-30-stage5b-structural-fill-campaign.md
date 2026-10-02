@@ -117,11 +117,16 @@ assoc-order-free per tile. The campaign's correctness gate (m3 harness
 licensing statement belongs in the commit that lands the pipeline, not
 just the harness run.
 
-**Look-item (host dispatch):** are provably-never-firing reactive
-nodes dropped from the reactor dispatch, or enumerated-and-skipped?
-`defn_liveness.rs` does this for defns (dead defns never emitted);
-node-level is unverified. If enumerated, the skip is a small host-side
-win for node-heavy programs — bounded investigation, not a workstream.
+**Look-item (host dispatch) — RESOLVED 2026-10-01, no action.** The
+reactor dispatch has NO table to prune: each node's pre-check is
+INLINED into the flat SSA loop (the fixture's `[done == 0]` compiles
+to one load + icmp + branch per node per iteration — no enumeration).
+A compile-time-false pre gets the node body DCE'd by LLVM (the txn is
+`internal alwaysinline` — inlined + dead-branch eliminated for free);
+runtime-false pres cost one predicated branch. Never-firing nodes
+already cost zero. Verified on the test_collections fixture IR
+(pre_main emitted but its check inlined at the dispatch; 0 calls to
+the standalone evaluator).
 
 **Phase 3 — model gating (winners only) — STATUS 2026-10-01.**
 - ~~Load-path axis~~ **OPEN, deferred with cost note.** No
