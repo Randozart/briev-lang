@@ -76,6 +76,11 @@ tail = f'''
             for (int j = 0; j < {NKV}; j++) ref_ += (sc[j]/sum) * (double)v[h*{NKV}*{D} + j*{D} + d];
             double got = (double)A[h*{D}+d];
             double err = fabs(got - ref_) / (fabs(ref_) + 1e-3);
+            // 2026-10-01: NaN must FAIL — NaN > x is false, so a NaN
+            // output silently passed the max_rel metric (the fused
+            // online kernel's missing smem stores shipped as "PASS
+            // 0.00e+00" before this hardening).
+            if (isnan(err) || isnan(got)) err = 1e300;
             if (err > max_rel) max_rel = err;
             if (err > 1e-3 && bad < 3) {{ printf("  bad h=%d d=%d got=%g ref=%g\\n", h, d, got, ref_); bad++; }}
         }}

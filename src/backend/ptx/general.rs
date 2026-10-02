@@ -4572,6 +4572,38 @@ impl Gen<'_> {
             rd_m, r_warp, rd_m
         ));
         body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_m, m_reg));
+        // l + acc strips → this warp's smem rows (the merges below read
+        // ALL warps' rows — 2026-10-01 fix: the stores were missing, the
+        // merges read zero-initialized smem → l_tot = 0 → NaN outputs;
+        // the NaN slipped past the gate's `err > max_rel` metric because
+        // NaN comparisons are always false. Gates hardened too.)
+        let rd_lw = self.fresh_rd();
+        decl.push_str(&format!("    .reg .b64 {};\n", rd_lw));
+        body.push_str(&format!("    mov.u64 {}, redl;\n", rd_lw));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_lw, r_warp, rd_lw
+        ));
+        body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_lw, l_reg));
+        let rd_aw = self.fresh_rd();
+        decl.push_str(&format!("    .reg .b64 {};\n", rd_aw));
+        body.push_str(&format!("    mov.u64 {}, smacc;\n", rd_aw));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 512, {};\n",
+            rd_aw, r_warp, rd_aw
+        ));
+        body.push_str(&format!(
+            "    mad.wide.u32 {}, {}, 4, {};\n",
+            rd_aw, r_lane, rd_aw
+        ));
+        for i in 0..strips {
+            body.push_str(&format!(
+                "    st.shared.f32 [{}+{}], {};\n",
+                rd_aw,
+                i * 128,
+                a_regs[i]
+            ));
+        }
         body.push_str("    bar.sync 0;\n");
         // global max over the warp running maxes.
         body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
@@ -4689,6 +4721,14 @@ impl Gen<'_> {
         body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
         body.push_str(&format!("    bra {};\n", m_loop));
         body.push_str(&format!("{}:\n", m_done));
+        // 2026-10-01 (5a fix): the split-store / normalize TAIL runs here —
+        // the early return in emit_deferred_region skips it otherwise, and
+        // a_out is never written (the got=0 probe). The merge results
+        // (l_tot/a_regs/m_reg) feed the tail's split-store or normalize.
+        self.emit_deferred_softmax_tail(
+            parts, d_regs, a_regs, &l_tot, &m_reg, self.deferred_split, &r_lane,
+            strips, warps, decl, body,
+        )?;
         Ok(())
     }
 

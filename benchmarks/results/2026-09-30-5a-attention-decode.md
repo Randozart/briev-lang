@@ -300,3 +300,32 @@ The banked flip has TWO coupling constraints surfaced by source review:
 postmortem discipline: no late-session splices into the 900-line
 function). The payoff (8 LDG → 2 LDG.128 per j) is estimated 10-20%,
 worth a focused session, not a tail-of-session attempt.
+
+## VERIFICATION CORRECTION (2026-10-01, late session) — read before citing
+
+1. **The fused online kernel's correctness is VERIFIED at the s8
+   geometry only** (KV=256, H=8, split<8> and no-split, both lanes,
+   hardened gate: 8.48e-06 / 6.57e-06 / 2.06e-05). **The decode
+   geometry (H=20, NKV=4096) probe shows o1 = 0** — the node fires
+   (r=20), the launch succeeds, the PTX contains the normalize stores —
+   but o1 reads zero post-run. Under investigation; the 72.5 µs figure
+   is the measured TIMING of the fused kernel's work shape, not a
+   verified-correct kernel at that geometry. Do not cite 72.5 as a
+   proven kernel until the decode probe is resolved.
+2. **`softmax_gate.sh` ignores `BRIEFC_FLAGS`** (only
+   `m3_attention_harness.sh` expands them) — earlier "online PASS"
+   runs via the config-dir built the TWO-PASS path. Post-flip runs use
+   the shipped default (online=1) so the current gate numbers are real.
+3. **The gate's error metric had a NaN hole** — `NaN > max_rel` is
+   false, so NaN outputs silently passed (the CUDA 0.00e+00 anomaly).
+   Hardened: NaN → err = 1e300 → FAIL.
+4. **The online fn was missing the redl/smacc stores and the tail
+   call** — both fixed (the stores make the merges read real warp
+   partials; the tail call writes o1). The s8 verification above is
+   post-fix.
+
+Open item: the decode-geometry probe (got=0, node fires, PTX has the
+normalize stores). Next session: resolve with the m3 harness at the
+decode geometry (it honors BRIEVC_FLAGS) and a fresh reading of the
+normalize addressing (the o1 write offset vs the probe's read offset —
+GQA kvh indexing is the first suspect).
