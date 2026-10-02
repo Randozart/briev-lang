@@ -1401,6 +1401,155 @@ mod tests {
     /// scalar access to them goes through AccessChain(member, idx>>2, idx&3).
     /// Locks: OpTypeVector present, the shifted AccessChain shape, and the
     /// binary passes spirv-val.
+    /// The axpy FMA-loop fixture for the `vector<1>` decline test —
+    /// `modifier` names the D14 shape declaration (`Some("vector")` =
+    /// `vector<1>`), `None` = the derived default. The decl carries an
+    /// `i` counter (the counter-advance arm needs it).
+    fn vector_decline_fixture(modifier: Option<&str>) -> Vec<TopLevel> {
+        let float_state = |name: &str, n: i64| TopLevel::StateDecl(StateDecl {
+            name: name.into(),
+            ty: Type::Vector(Box::new(Type::float()), vec![Dimension::Anonymous(n as usize)]),
+            span: None,
+        });
+        let modifiers = match modifier {
+            Some(k) => vec![Annotation {
+                name: k.into(),
+                value: Some(Expr::Decimal(1)),
+            }],
+            None => vec![],
+        };
+        vec![
+            TopLevel::StateDecl(StateDecl {
+                name: "i".into(),
+                ty: Type::int(),
+                span: None,
+            }),
+            float_state("a", 4096),
+            float_state("out", 4096),
+            TopLevel::Transaction(Transaction {
+                name: "axpy".into(),
+                is_reactive: true,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: Contract {
+                    pre_condition: Expr::Bool(true),
+                    post_condition: Expr::Bool(true),
+                    watchdog: None,
+                    explicit: false,
+                    span: None,
+                    post_authority: false,
+                },
+                body: vec![
+                    Statement::Let {
+                        name: "acc".into(),
+                        names: vec![],
+                        ty: Some(Type::float()),
+                        expr: Some(Expr::Decimal(0)),
+                        modifiers: vec![],
+                    },
+                    Statement::Foreach {
+                        item: "k".into(),
+                        list: Box::new(Expr::Range {
+                            start: Box::new(Expr::Decimal(0)),
+                            end: Box::new(Expr::Decimal(4096)),
+                            inclusive: false,
+                        }),
+                        body: vec![Statement::Assign(
+                            Expr::Identifier("acc".into()),
+                            Expr::BinaryOp(
+                                BinaryOpKind::Add,
+                                Box::new(Expr::Identifier("acc".into())),
+                                Box::new(Expr::BinaryOp(
+                                    BinaryOpKind::Mul,
+                                    Box::new(Expr::Index(
+                                        Box::new(Expr::Identifier("a".into())),
+                                        Box::new(Expr::Identifier("k".into())),
+                                    )),
+                                    Box::new(Expr::Float(2.0)),
+                                )),
+                            ),
+                        )],
+                    },
+                    Statement::Assign(
+                        Expr::Index(
+                            Box::new(Expr::Identifier("out".into())),
+                            Box::new(Expr::Identifier("i".into())),
+                        ),
+                        Expr::Identifier("acc".into()),
+                    ),
+                    Statement::Assign(
+                        Expr::Identifier("i".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("i".into())),
+                            Box::new(Expr::Decimal(1)),
+                        ),
+                    ),
+                ],
+                metadata: std::collections::HashMap::new(),
+                derivation: None,
+                modifiers,
+                span: None,
+                doc: None,
+            }),
+        ]
+    }
+
+    /// 2026-10-01 (D14 remainder): a declared `vector<1>` node modifier
+    /// declines the derived vec4 group lowering (D2) — the same axpy
+    /// loop emits ZERO vector-type loads where the default emits them.
+    #[test]
+    fn test_vector1_declines_the_vec4_group() {
+        let vec_loads = |program: &[TopLevel]| -> usize {
+            let txn_stmts = match program.last().unwrap() {
+                TopLevel::Transaction(t) => t.body.clone(),
+                other => panic!("expected transaction, got {other:?}"),
+            };
+            let shape = crate::analysis::accel::KernelShape {
+                index_var: "i".into(),
+                count_expr: Some(Expr::Decimal(4096)),
+                kernel_stmts: txn_stmts,
+                host_stmts: vec![],
+                read_buffers: vec!["a".into()],
+                write_buffers: vec!["out".into()],
+                scalar_ins: vec![],
+                eligible: true,
+                reasons: vec![],
+                work_cols: None,
+                reduction: None,
+                deferred_normalize: None,
+            };
+            let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
+            emit_kernel(&mut builder, "axpy", &shape, program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
+            let m = builder.module_ref();
+            // A vec4-type Load: the wide-load form the scalar loop never
+            // emits.
+            m.functions.iter()
+                .flat_map(|f| f.blocks.iter())
+                .flat_map(|b| b.instructions.iter())
+                .filter(|i| i.class.opcode == rspirv::spirv::Op::Load)
+                .filter(|i| {
+                    i.result_type.map(|rt| {
+                        m.types_global_values.iter().any(|ti| {
+                            ti.result_id == Some(rt)
+                                && ti.class.opcode == rspirv::spirv::Op::TypeVector
+                        })
+                    }).unwrap_or(false)
+                })
+                .count()
+        };
+        let default_v = vec_loads(&vector_decline_fixture(None));
+        let declined_v = vec_loads(&vector_decline_fixture(Some("vector")));
+        assert_eq!(declined_v, 0, "vector<1> must decline the wide loads");
+        assert!(
+            default_v > 0,
+            "the fixture must vectorize by default, else the decline assert is vacuous"
+        );
+    }
+
     #[test]
     fn test_vec4_member_typing_and_shifted_access() {
         use crate::ast::*;

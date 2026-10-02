@@ -109,6 +109,32 @@ pub fn emit_kernel(
             Vec::new()
         }
     };
+    // 2026-10-01 (D14 remainder): the declared `vector<N>` node
+    // modifier — `vector<1>` declines the derived vec4 group lowering
+    // (D2 override, disclosed); `vector<4>` restates the default; any
+    // other width = loud capability error (this lane lowers 4-wide
+    // groups only). The SSBO packing stays program-wide; the decline is
+    // emission-side, threaded to the BODY lowerer (the warm instance
+    // only pre-computes module globals — its fields do not survive).
+    let vector_declined =
+        match crate::analysis::kernel_plan::declared_modifier(items, kernel_name, "vector") {
+            Some(1) => {
+                println!(
+                    "[D2] node '{kernel_name}': vector<1> declines the derived vec4 \
+                     group lowering (scalar loop)"
+                );
+                true
+            }
+            Some(4) => false,
+            Some(n) => {
+                return Err(format!(
+                    "node '{kernel_name}': vector<{n}> is not implemented on the SPIR-V \
+                     lane - the lane lowers vector<4> groups only; declare vector<4> or \
+                     vector<1>"
+                ));
+            }
+            None => false,
+        };
     let (ssbo_var, global_id_var, local_id_var, workgroup_id_var, vec4_fields, state_fields_sorted, image_vars, image_types, alias_map) = {
         let mut warm = FnLowerer::new(builder, state_fields.clone());
         warm.set_image_plans(surface.images);
@@ -549,6 +575,7 @@ pub fn emit_kernel(
     }
 
     let mut lower = FnLowerer::new(builder, state_fields);
+    lower.vector_declined = vector_declined;
     lower.set_image_plans(surface.images);
     lower.image_vars = image_vars.clone();
     lower.image_types = image_types;

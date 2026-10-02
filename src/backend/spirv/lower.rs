@@ -101,6 +101,12 @@ pub struct FnLowerer<'a> {
     /// aliased field is skipped in the SSBO struct; AccessChain remaps
     /// to the target's member index. Both kernel and runner agree.
     pub alias_map: HashMap<String, String>,
+    /// 2026-10-01 (D14 remainder): a declared `vector<1>` node modifier
+    /// DECLINES the derived vec4 group lowering (D2) — the O3 wide-load
+    /// FMA groups lower as the scalar loop. The LAYOUT stays shared
+    /// (the SSBO packing is program-wide); the decline is emission-side
+    /// only. Resolved by kernel.rs from the node modifiers.
+    pub vector_declined: bool,
     /// Array name → the emitted image variable id (UniformConstant).
     pub image_vars: HashMap<String, Word>,
     /// Array name → the OpTypeImage id (the OpLoad result type — the
@@ -131,6 +137,7 @@ impl<'a> FnLowerer<'a> {
             alias_map: HashMap::new(),
             image_vars: HashMap::new(),
             image_types: HashMap::new(),
+            vector_declined: false,
         }
     }
 
@@ -346,8 +353,14 @@ impl<'a> FnLowerer<'a> {
                     // Unrolled prefix: `unrolled` inlined copies. O3: when
                     // the next four iterations form an aligned group with a
                     // vec4-typed field, ONE wide load covers k..k+3.
-                    let group_match =
-                        match_vec4_fma(body, &item, &self.vec4_fields, &self.const_int_values);
+                    // 2026-10-01 (D14 remainder): a declared `vector<1>`
+                    // declines the derived vec4 group (D2) — the scalar
+                    // loop is the honest lowering.
+                    let group_match = if self.vector_declined {
+                        None
+                    } else {
+                        match_vec4_fma(body, &item, &self.vec4_fields, &self.const_int_values)
+                    };
                     while k < s0 + unrolled {
                         if k % 4 == 0
                             && s0 + unrolled - k >= 4

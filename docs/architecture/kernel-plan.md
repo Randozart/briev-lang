@@ -144,7 +144,10 @@ land:
    shape name (`tile`/`stage`/`unroll`/`split`/`vector`/`swizzle`/
    `fragment`) parses through it; `unroll<N>` is the first override
    consumer: the PTX serial-unroll factor, D2 override+disclose;
-   the other names parse and error loudly at their dispatchers until
+   `vector<N>` is the second consumer: `vector<1>` DECLINES the
+   derived vec4 group lowering on the SPIR-V lane (D2, disclosed —
+   emission-side only, the SSBO packing stays program-wide);
+   swizzle/fragment parse and error loudly at their dispatchers until
    their consumers land;
    matcher/frontend fact equivalence is pinned by test). The lowering
    reads `plan.split_tree_factor()` instead of recomputing; the enablement
