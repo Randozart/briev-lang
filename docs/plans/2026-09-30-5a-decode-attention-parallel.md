@@ -104,9 +104,18 @@ lets (registers). Decode composite: no-split p50 220.8 -> 191.5 us
 Two gate-caught defects fixed (strip-collapse; all-strips rewrite
 pairs). Full data in the results file.
 
-Next: lever 2 second half — pass fusion re-examined (the online
-algebra at dlen=128 makes the rescale cost per-j, likely net-negative;
-needs the E3-style probe before any generator change) and the div
-slowpath; then the decode-geometry m3-harness gate + shape-gating
-(prefill -> composite / decode -> the measured-best config). Correctness
-gates: softmax_gate s8 + knob PASS both lanes at pre-hoist residuals.
+**Pass-split probe DONE 2026-10-01** (`9f97c72b`,
+`ptx_deferred_skip_pass`): the dot is computed TWICE (pass A for max,
+pass B for the accumulate); the online form computes it ONCE —
+projected ~125-140 µs from the measured 255/125/77 split. The rescale
+counter-cost is negligible (~ln(4096) updates; the acc is
+smem-resident). The composite's dlen≤32 online branch exists — the
+lever is the deferred emitter learning the fused form for
+smem-resident acc.
+
+Next: **the fused j loop** — one sweep (dot, running max, rescale
+acc/l on update) replacing the two passes, gated by the m3 harness
+(both lanes) + the softmax fixtures before timing. Then the div
+slowpath and shape-gating (prefill -> composite / decode -> the
+measured-best config). Correctness gates: softmax_gate s8 + knob PASS
+both lanes at pre-hoist residuals.
