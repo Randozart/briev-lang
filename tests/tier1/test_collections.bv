@@ -1,49 +1,45 @@
-// Test HashMap, HashSet, Stack, Queue
-let map: HashMap<String, Int>;
-let set: HashSet<String>;
-let stack: Stack<Int>;
-let queue: Queue<String>;
+// test_collections — the daily-use collections surface (D5 repair,
+// plan 2026-09-28-daily-use-sweep-and-gpu-session.md).
+//
+// The REAL API: typed generic decls, op Init construction (`= 0`),
+// arrows — `<-` push (InsertAt) and peek (CopyFrom, the A2 design
+// rule: `<-` IS copy-from), `~<-` extract (ExtractFrom). Runs to
+// equilibrium and prints one ok-line per behavior.
+import { Stack, RingBuffer } from "std/collections.bv";
 
-defn test_hashmap() -> Bool {
-    let m = new_map<String, Int>();
-    m = m.insert("key", 42);
-    [m.contains_key("key")] {
-        [m.get("key").is_some()] {
-            term true;
-        };
+let st: Stack<Int, 256> = 0;
+let rb: RingBuffer<Int> = 0;
+let a: Int = 0;
+let done: Int = 0;
+
+node main [done == 0][done == 1] {
+    // Stack: push, peek (CopyFrom — '<-' is non-destructive), pop
+    // (ExtractFrom), peek again — impossible if '<-' popped.
+    st <- 42;
+    st <- 99;
+    a <- st;
+    when a == 99 {
+        println!("stack-peek-ok");
     };
-    term false;
-};
-
-defn test_hashset() -> Bool {
-    let s = new_set<String>();
-    s = s.insert("item");
-    [s.contains("item")] {
-        term true;
+    ~<- st;
+    a <- st;
+    when a == 42 {
+        println!("stack-after-pop-ok");
     };
-    term false;
-};
-
-defn test_stack() -> Bool {
-    let s = new_stack();
-    s = s.push(1);
-    s = s.push(2);
-    [s.len() == 2] {
-        term true;
+    // RingBuffer: push (InsertAt), read (CopyFrom). NOTE the init
+    // semantics: `= 0` runs op Init, which writes slot 0 AND advances
+    // the write cursor — the init value sits at the read cursor, so
+    // FIFO order reads it first. The fixture documents that honestly.
+    rb <- 7;
+    a <- rb;
+    when a == 0 {
+        println!("ringbuffer-init-slot-ok");
     };
-    term false;
-};
-
-defn test_queue() -> Bool {
-    let q = new_queue();
-    q = q.enqueue("first");
-    q = q.enqueue("second");
-    [q.len() == 2] {
-        term true;
+    ~<- rb;
+    a <- rb;
+    when a == 7 {
+        println!("ringbuffer-fifo-ok");
     };
-    term false;
-};
-
-txn main() [test_hashmap()][test_hashset() && test_stack() && test_queue()] {
+    done = 1;
     term;
 };

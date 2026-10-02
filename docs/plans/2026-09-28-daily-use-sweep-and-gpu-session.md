@@ -126,6 +126,16 @@ Execute the top-ranked lane; A/B before/after; record.
 4. **Tests.** Behavioral: push/peek/pop read-back correct with colliding
    local names; regression per capture class. `cargo test --lib`.
 
+### D5. `test_collections.bv` repair — **DONE 2026-10-01**
+
+Rewritten to the real API (the old form was aspirational: untyped
+generic decls, `new_stack`/`new_map`, `[guard] { }` blocks): typed
+generic decls, op Init construction (`= 0`), arrows per the A2 rule
+(`<-` push/peek, `~<-` extract). Verified via brievc run: stack-peek-ok,
+stack-after-pop-ok, ringbuffer-init-slot-ok, ringbuffer-fifo-ok (the
+RingBuffer init semantics — the init value sits at the read cursor —
+now documented in the fixture).
+
 ### A2. Stack `op CopyFrom: peek` (D2) — **DONE 2026-10-01**
 
 - `lib/std/collections.bv`: `obj Stack` gains `op CopyFrom: peek(#Rh)`
