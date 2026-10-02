@@ -74,7 +74,7 @@ pub struct IrLoweringSettings {
     /// kernel. Measured 3.9× SLOWER (the full-width staging crushes
     /// occupancy; the per-step barriers serialize) — experimental until a
     /// small multi-stage pipeline lands.
-    pub ptx_fused_staged: bool,
+    
     /// 2026-09-01 (plan 2026-09-01-cooperative-row-kernels): cooperative row
     /// kernels (lane-strided accumulation + OpGroupNonUniformFAdd). OFF by
     /// default: the emitted kernel passes spirv-val and the minimal subgroup
@@ -243,13 +243,6 @@ pub struct IrLoweringSettings {
     /// f16acc-only; requires stages=2, kps=1, no lookahead. 0 = the
     /// cooperative-fill ship schedule.
     pub ptx_tensor_warp_spec: bool,
-    /// 2026-09-16 (shape strategy selector Stage 0a): the ONE-kernel fused
-    /// attention emitter (`fused_attention_mma_*`). Measured 10× SLOWER than
-    /// the 2-kernel tensor-tier composition (0.752 vs 0.073 ms @512²) — the
-    /// 16-row m-tile gives zero Kt/V reuse. Default OFF; the composition is
-    /// the correct default until the cost model gates fusion on "beats the
-    /// composition".
-    pub ptx_fused_attention: bool,
     /// 2026-09-19 (serial-loop unroll, plan flash-decode-gate): unroll
     /// factor for serial reduction foreach loops in the general PTX
     /// emitter (the work-item-decomposed shape — pv/qk attention kernels).
@@ -391,7 +384,6 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     accel_probe_margin: 0.05,
     spirv_unroll: 16,
     gpu_schedule_buffer_reuse: false,
-    ptx_fused_staged: false,
     spirv_row_cooperative: false,
     spirv_coopmat: false,
     spirv_coopmat_tile_rows: 4,
@@ -416,7 +408,6 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     ptx_tensor_force_mw: 0,
     ptx_tensor_force_nw: 0,
     ptx_tensor_warp_spec: false,
-    ptx_fused_attention: false,
     ptx_serial_unroll: 4,
     ptx_warp_slice: false,
     ptx_warp_slice_min_span: 512,
@@ -535,7 +526,6 @@ const IR_LOWERING_KEYS: &[(&str, bool)] = &[
     ("accel_probe_margin", true),
     ("spirv_unroll", false),
     ("gpu_schedule_buffer_reuse", false),
-    ("ptx_fused_staged", false),
     ("spirv_row_cooperative", false),
     ("spirv_coopmat", false),
     ("spirv_coopmat_tile_rows", false),
@@ -561,7 +551,6 @@ const IR_LOWERING_KEYS: &[(&str, bool)] = &[
     ("ptx_tensor_force_mw", false),
     ("ptx_tensor_force_nw", false),
     ("ptx_tensor_warp_spec", false),
-    ("ptx_fused_attention", false),
     ("ptx_serial_unroll", false),
     ("ptx_warp_slice", false),
     ("ptx_warp_slice_min_span", false),
@@ -601,7 +590,6 @@ fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
     push("accel_probe_margin", s.accel_probe_margin.to_string());
     push("spirv_unroll", s.spirv_unroll.to_string());
     push("gpu_schedule_buffer_reuse", b(s.gpu_schedule_buffer_reuse));
-    push("ptx_fused_staged", b(s.ptx_fused_staged));
     push("spirv_row_cooperative", b(s.spirv_row_cooperative));
     push("spirv_coopmat", b(s.spirv_coopmat));
     push("spirv_coopmat_tile_rows", s.spirv_coopmat_tile_rows.to_string());
@@ -639,7 +627,6 @@ fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
     push("ptx_tensor_force_mw", s.ptx_tensor_force_mw.to_string());
     push("ptx_tensor_force_nw", s.ptx_tensor_force_nw.to_string());
     push("ptx_tensor_warp_spec", b(s.ptx_tensor_warp_spec));
-    push("ptx_fused_attention", b(s.ptx_fused_attention));
     push("ptx_serial_unroll", s.ptx_serial_unroll.to_string());
     push("ptx_warp_slice", b(s.ptx_warp_slice));
     push(
@@ -870,10 +857,6 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("gpu_schedule_buffer_reuse", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.gpu_schedule_buffer_reuse),
-        ptx_fused_staged: db
-            .field_int("ptx_fused_staged", 0)
-            .map(|v| v != 0)
-            .unwrap_or(DEFAULT_IR_LOWERING.ptx_fused_staged),
         spirv_row_cooperative: db
             .field_int("spirv_row_cooperative", 0)
             .map(|v| v != 0)
@@ -974,10 +957,6 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("ptx_tensor_warp_spec", 0)
             .map(|v| v != 0)
             .unwrap_or(DEFAULT_IR_LOWERING.ptx_tensor_warp_spec),
-        ptx_fused_attention: db
-            .field_int("ptx_fused_attention", 0)
-            .map(|v| v != 0)
-            .unwrap_or(DEFAULT_IR_LOWERING.ptx_fused_attention),
         ptx_serial_unroll: db
             .field_int("ptx_serial_unroll", 0)
             .map(|v| v.max(0).min(16) as u32)
