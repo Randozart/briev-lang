@@ -273,3 +273,30 @@ Payoff: 8 scalar LDG → 2 v4 LDG per j per thread (4× fewer load
 instructions; the loads are the residual cost after the hoist + fusion).
 Kernel-index-math change → the m3 + softmax gates (both lanes) are
 mandatory before any timing claim. Fixture offsets verified 16-aligned.
+
+## Float4 implementation findings (2026-10-01) — design refined, deferred to fresh session
+
+The banked flip has TWO coupling constraints surfaced by source review:
+
+1. **The flip without v4 fusion is neutral-to-negative.** Current
+   mapping (d = lane + 32·strip): every strip load is 100%-coalesced
+   (one 128B sector). Flipped without v4: stride-4 accesses, 25%
+   per-transaction efficiency — 3 of 4 strips become L1 re-read hits
+   (DRAM traffic identical, but 12 extra L1-latency loads per j set,
+   pipelined). No win without the fusion; the two are inseparable.
+2. **The fusion vehicle exists but has a key-collision subtlety.** The
+   `pipelined` map (M3, general.rs:879 — the lane-reduction's
+   preload/consume pattern) is the right mechanism: the schedule owns
+   the loads, the body consumes registers via the expr's Debug key.
+   But the k expr's Debug form is STRIP-INVARIANT (it contains the `d`
+   binder, swapped per strip at emit time) — one pipelined entry would
+   serve all four strips the SAME register. The fix: the per-strip
+   rewrite substitutes unique binder names (d_regs have unique reg
+   names) making the keys strip-unique — plus the v4 raw loads
+   addressed off the row term (the `Add(row, d_binder)` shape, scalar
+   fallback otherwise) and the compile-time 16-byte field-offset check.
+
+**Verdict: real work — whole-function treatment, fresh session** (the
+postmortem discipline: no late-session splices into the 900-line
+function). The payoff (8 LDG → 2 LDG.128 per j) is estimated 10-20%,
+worth a focused session, not a tail-of-session attempt.
