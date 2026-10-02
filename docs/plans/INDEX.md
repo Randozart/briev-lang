@@ -1,7 +1,26 @@
 # Plan Index — START HERE (current status)
 
-**2026-09-28.** `main` tip `5f666996`. 430+ files in `docs/plans/`; historical
+**2026-10-02.** `main` tip `ab667667`. 430+ files in `docs/plans/`; historical
 plans are reference-only (never retroactively edited — AGENTS.md Rule 13).
+
+**Suite state at tip:** `cargo test --lib` 2843 green; 19 pre-existing
+warnings; `gemm_h` byte-identical; Praetor improved vs baseline.
+
+**GPU standing state:** fused online softmax (`ptx_deferred_online: 1`) is
+the shipped default — composite + fused online decode = **72.5 µs p50
+variant-verified** (two-pass ≡ online at decode geometry,
+max_rel 5.894e-06; s8 gate hardened 8.48e-06/6.57e-06/2.06e-05). Shipped-best
+decode config: fused + split=4. `ptx_fused_attention`/`ptx_fused_staged`
+knobs deleted with the family; `ptx_deferred_skip_pass` diagnostic-only.
+
+**Trusted GPU instruments** (never a hand-spliced probe — a probe
+contradicting these means the gates are broken):
+`benchmarks/deferred_ab_gate.sh` (variant diff, the A/B instrument),
+`benchmarks/m3_attention_harness.sh` (live reference, honors
+`BRIEFC_FLAGS`), `benchmarks/softmax_gate.sh` (NaN-hardened, honors
+`BRIEFC_FLAGS`), atomic/workid/bad_ptx gates. Late-session kernel work
+needs gates re-run at the TARGET geometry — s8 passing says nothing
+about decode.
 
 This index is the fresh-session orientation: the live foreign lanes, the
 active umbrella, every workstream's remaining work with pointers, the open
@@ -25,10 +44,17 @@ never touch; all baselines/gates measure **main only**.
 
 ## The active umbrella
 
-`docs/plans/2026-09-24-followup-stages.md` — the post-metaprogramming queue.
+`docs/plans/2026-09-24-followup-stages.md` — the post-metacomputing queue.
 Declared order: **1 Front D → 2 Wave 1 (done) → 3 Wave 2 → 4 Wave 3 → 5 GPU
-re-rank.** Interop Wave 2 has run ahead of stage 1 (independent lanes), so
-**Stage 1 Front D is still untouched** despite the ordering.
+re-rank.** Interop Wave 2 ran ahead of stage 1 (independent lanes).
+Stage verdicts: **Stage 1 Front D A/B-REJECTED 2026-09-25** (deferred
+emitter stays; plain path 26× slower on composite @4096;
+`benchmarks/results/2026-09-25-front-d-ab.md` — settled, no re-run).
+**Stage 5 GPU re-rank executed 2026-09-30/10-01**: 5c ✅ (`8c0ece90`),
+5a ✅ (72.5 µs, target 125 beaten; family retired `a7871a27`),
+5d headline ✅ (GemmPlan remainder behind its own A/B), 5b remainder =
+the GEMM fill-pipeline campaign (see Workstream 3). Stage table:
+`2026-09-30-stage5-re-rank-and-5c.md`.
 
 ---
 
@@ -53,25 +79,48 @@ C2 findings + tolerance-site options A–D: tail of `2026-09-27-wave2-sbv-ebv-ex
 
 ## Workstream 2 — Front D: retire the deferred emitter (umbrella stage 1)
 
-NOT started. A/B whether the plain general path holds the composite number
-(~198 µs) without the structural matcher; retire if pass, rebuild on current
-analysis if fail. Full procedure + gates: `2026-09-24-followup-stages.md` §1.
-Ties to the **matcher retirement ledger** (`proof-vs-shape.md`: every
-structural matcher is a loan with a repayment gate) — other loans: fused
-attention family (~1400 lines), `has_warp_slice`, `detect_row_softmax`.
+**SETTLED — A/B REJECTED 2026-09-25** (`benchmarks/results/
+2026-09-25-front-d-ab.md`): the deferred emitter stays; the plain
+general path is 26× slower on composite @4096. Retirement effort moved
+to the matcher ledger instead: fused-attention family retired
+(`a7871a27`, ~1300 lines); remaining loans: `has_warp_slice` (retired
+to config, 5c `8c0ece90`), `detect_row_softmax`, `GemmPlan` (each
+behind a perf A/B — 5d remainder).
 
 ---
 
-## Workstream 3 — GPU performance (umbrella stage 5, re-rank)
+## Workstream 3 — GPU performance (umbrella stage 5, re-rank EXECUTED)
 
-Re-rank AFTER stages 1–4 with a fresh baseline. Current ordered candidates
-(`2026-09-24-followup-stages.md` §5): **5a** attention 198→125 µs (retire
-fused-attention behind composite parity) · **5b** S3b `cp.async` GEMM 4096³
-23→38 TF · **5c** warp-slice threshold → config/composite params (mechanical)
-· **5d** M4 ladder (`detect_row_softmax`→`detect_reduction`→`GemmPlan`).
+Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
+(5c ✅ 5b-active 5a ✅ 5d-headline ✅). Session record:
+`benchmarks/results/2026-09-30-5a-attention-decode.md`.
 
-Also not started: **M3** producer-consumer chain fusion; **M4** `numeric.bv`
-declarations + vocabulary retirement (`2026-09-20-gpu-dialect-beyond-cuda.md`).
+**Current queue (in order):**
+
+1. **Attention float4 k/v loads** (72.5 → ~60 µs est.) — design +
+   constraints banked in the 5a results file (last two sections):
+   transposed d-mapping flip (`lane + 32·i` → `lane·4 + i`) + v4 fusion
+   are INSEPARABLE; the pipelined map is the vehicle but the k-expr
+   Debug key is strip-invariant (fix: per-strip unique binder
+   substitution); fixture offsets 16-aligned; scalar fallback on the
+   `Add(row, d_binder)` shape miss. Whole-function treatment — no
+   splices into `emit_deferred_region` (postmortem:
+   `2026-10-01-5a-fused-j-loop.md`). Gates at decode geometry
+   (m3 + softmax + deferred_ab_gate, both lanes) BEFORE timing.
+2. **div slowpath** — one sizing probe first.
+3. **GEMM fill-pipeline campaign** (32 → 42 TF @4096³) —
+   `2026-09-30-stage5b-structural-fill-campaign.md`; the
+   contract-licensed pipelining note (fill reorders loads the
+   shape proves safe); no-fill evidence bounds the prize (compute
+   intact at 45.4 TF); Rule 12 protocol.
+4. **Re-rank table fold-in** — fold fused-attention numbers into the
+   stage-5 table (row 3 already marked DONE).
+5. **GemmPlan retirement** (5d remainder) — behind its own A/B, not
+   yet gated.
+
+Also open (post-5 ladder): **M3** producer-consumer chain fusion;
+**M4** `numeric.bv` declarations + vocabulary retirement
+(`2026-09-20-gpu-dialect-beyond-cuda.md`).
 
 **OPEN correctness**: shallow-K emitter race (K≤128, M·N≥1024²) — dispatch
 gates those shapes to the slow race-free kernel; the emitter race itself is
@@ -165,13 +214,14 @@ From this index's 2026-09-08 pass — **verify freshness before starting**:
 
 ## Recommended starting points (no foreign-lane overlap)
 
-1. **GPU re-baseline + re-rank** (umbrella stage 5) — stage 1 (Front D) is
-   settled REJECTED; the stage-5 candidate list needs a fresh baseline at
-   the current tip before picking 5a/5b/5c/5d.
-2. **Wave 2b runtime pairs / alias binding** — approved design, biggest interop value.
-3. **Quick wins** — `hardware_validator` hookup (stale-binary guard now
+1. **Attention float4 k/v loads** (Workstream 3 queue item 1) — design
+   fully banked, fresh-session whole-function treatment, est. 10-20%.
+2. **GEMM fill-pipeline campaign** (Workstream 3 queue item 3) — the
+   biggest absolute prize (32 → 42 TF), plan + correctness license
+   written (`2026-09-30-stage5b-structural-fill-campaign.md`).
+3. **Wave 2b runtime pairs / alias binding** — approved design, biggest interop value.
+4. **Quick wins** — `hardware_validator` hookup (stale-binary guard now
    shipped: `brievc freshness`).
-4. **C4 pinout records** — self-contained `.dbv` grammar + validator + `--fab`.
 5. **Runtime families H/I/J** — finish `briev_rt.c` (511 lines remain:
    async/event machine, spawn/setenv, Tamer HCALL, string-bitop helpers).
 
@@ -200,6 +250,8 @@ stage/execution plans are the concrete campaigns.
 
 | Plan | Closure |
 |------|---------|
+| `2026-09-28-daily-use-sweep-and-gpu-session.md` | Phase B GPU (B1–B4) DONE; Phase A core DONE 2026-10-01 (A1 name-capture fix, A2 Stack peek, D5 test_collections repair); A3 executable gate + A5 audit + A6 probe REMAIN |
+| `2026-09-30-stage5-re-rank-and-5c.md` | 5c DONE (`8c0ece90`, byte-identical IR gate + determinism fixes); 5a DONE (72.5 µs); session record `2026-09-30-5a-attention-decode.md` |
 | `2026-09-08-master-workstream.md` | Phases 1-6 DONE; Phase 7 optional, Phase 8 verified done |
 | `2026-09-08-gemm-occupancy-campaign.md` | CLOSED — 0.708ms = 24.3 TFLOP/s (95% HW peak) |
 | `2026-09-08-hashmap-rehash-and-foreach-fix.md` | COMPLETE |
