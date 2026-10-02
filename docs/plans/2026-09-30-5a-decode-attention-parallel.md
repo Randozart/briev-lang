@@ -82,8 +82,19 @@ sequential j-iterations per warp × 2 passes** at a near-empty grid.
 ## Step 1
 
 E0 DONE — reliable protocol is high-REPS sustained (≥1000); ramped
-composite baseline = 200.6 µs. Next: E2 (confirm the per-warp
-`j`-iteration count) and then implement **split-K over NKV** (design
-option 1) — the grid is H-limited, so filling the SMs is the main lever;
-gate each step with the high-REPS composite microbench + the m3
-correctness harness.
+composite baseline = 200.6 µs.
+
+**Split-K sweep DONE 2026-10-01** (`0a1a2b38`,
+`benchmarks/composite_decode_split_sweep.sh`): the declared `split<S>`
+deferred modifier (the EXISTING partial+combine machinery — no new
+lowering needed) measured at 1200 reps. split=4 (the cost model's own
+factor) wins: p50 220.8 → 202.5 µs (−8%), p90 339 → 210 µs (the
+combine stabilizes the clock-cap tail). S>4 regresses. Conclusion: the
+grid-underfill lever is worth ~8% — the residual gap to 125 µs is the
+PER-J COST (two passes × 128 j-iters/warp + butterflies + Exp# + div
+slowpath). Next: lever 2 — fuse the max/accumulate passes where the
+algebra permits, inline the butterfly (drop the out-of-line CALL),
+hoist the loop-invariant q[d] — behind E3 (a hand-patched PTX probe)
+before any generator change. Correctness gates: the softmax_gate split
+fixtures prove the machinery; the decode-geometry m3-harness gate rides
+lever 2's commit.
