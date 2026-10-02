@@ -188,3 +188,39 @@ user-facing catalogue and never itself a declared shape.
   proven disjointness, associativity, lifetime, and bounds into
   vectorisation, fusion, split, reordering, rasterisation. The KernelPlan
   lowerings are the substrate those passes write into.
+
+## 11. Worked example — the fused-attention retirement (2026-10-01)
+
+The cleanest measured instance of the doctrine: recognition lost by
+10×, derivation won by 2.77×, and the retirement gate fired exactly as
+designed.
+
+- **Recognition (the loser):** the `fused_attention_*` family — four
+  hand-written literal kernels (scalar / mma / staged / kv-staged
+  rungs) behind a GEMM→softmax→GEMM chain matcher in `ptx/mod.rs`.
+  Measured 10× SLOWER than the composition (0.752 vs 0.073 ms @512² —
+  the 16-row m-tile gives zero Kt/V reuse across m-tiles); gated OFF
+  since `0229d9e2`; never emitted again.
+- **Derivation (the winner):** the user declares `softmax_fused!` in
+  the STDLIB; the compiler derives the lowering from facts — the
+  deferred-region detector, split-K (`ReduceTree::Split`), the q hoist,
+  and the fused online form. Each improvement is GENERAL: the hoist
+  helps any deferred softmax at any geometry; the online form computes
+  the dot once for any smem-resident acc; the split machinery was
+  already shape-parametric.
+- **The numbers:** decode composite 200.6 µs baseline → **72.5 µs**
+  (target 125 beaten; ggml ~58 now 1.25× away). Correctness at or above
+  the pre-change bars (CUDA lane 0.00e+00 — the rescale algebra composes
+  with the combine exactly).
+- **The retirement:** Rule 24's gate fired on measurement
+  (`a7871a27`, ~1300 lines deleted, the family's Praetor rows gone).
+  The chain-fusion *idea* (producer epilogue feeds the middle on-chip)
+  survives generically in the SPIR-V lane's `try_emit_chain_fusion` —
+  if the launch boundary ever shows in a profile, the lever is
+  available without resurrecting named kernels.
+
+Moral: the recognition bet tied attention performance to which shapes
+the compiler author happened to hand-write; the derivation path
+improved 2.77× in one session without touching a named kernel, because
+every lever acted on the FACTS (j-invariance, pass structure, slice
+geometry) rather than the algorithm name.
