@@ -165,3 +165,32 @@ kernel are gone (12 → 16 total loads incl. the 4 pre-loop hoists).
 
 Correctness: softmax_gate s8 + knob fixtures PASS both lanes
 (5.91e-06 / 2.06e-05 — the pre-hoist numbers exactly); suite 2845.
+
+## Pass-split probe (2026-10-01) — the fusion case measured
+
+`ptx_deferred_skip_pass` (diagnostic, the nofill precedent; config-dir
+with the full ir-lowering + the key). Decode geometry, n=800:
+
+| variant | p10 | p50 | p90 |
+|---|---|---|---|
+| full (both passes) | 252.8 | 255.1 | 302.6 |
+| pass B only (skip A) | 124.1 | 124.8 | 128.1 |
+| pass A only (skip B) | 76.8 | 77.3 | 78.7 |
+
+(The config-dir file must carry the FULL ir-lowering — a one-key file
+resets every unset knob to its parse default and the kernel degrades to
+~10.7 ms; the 255 µs full row is the honest baseline.)
+
+**The dot is computed TWICE** (pass A for max, pass B for the
+accumulate) — that is 2× the loads and 2× the FMA work for one
+softmax. The online form (one sweep: dot, running max, rescale acc/l
+on update) computes the dot ONCE: projected ~125-140 µs. The rescale
+counter-cost is negligible — max updates occur ~ln(4096) ≈ 8 times
+over the sweep, and the 128-float acc is already smem-resident
+(smacc[16384]).
+
+The composite ALREADY has the online structure (the `dlen ≤ 32` branch
+of softmax_fused!); the span threshold exists because of the
+acc-in-REGISTERS assumption. The lever: the deferred emitter learns
+the fused form for smem-resident acc — a j-loop restructure gated by
+the m3 harness (both lanes) before timing.

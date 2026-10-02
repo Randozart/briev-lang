@@ -463,6 +463,7 @@ pub fn emit_general_ptx(
 ) -> Result<String, String> {
     let mut g = Gen::new(layout, consts, count, universe, opts.int_bits);
     g.deferred_split = opts.deferred_split.max(1);
+    g.skip_pass = crate::config_tuning::ir_lowering().ptx_deferred_skip_pass;
     g.unroll_override = opts.unroll_override;
     g.emit(shape)
 }
@@ -905,6 +906,10 @@ struct Gen<'a> {
     /// The register holding `slice = ctaid % S` while a split deferred
     /// region is emitted (`None` when no split).
     split_slice_reg: Option<String>,
+    /// 2026-10-01 (5a lever 2 probe, the nofill precedent): skip a
+    /// deferred pass for the wall-split measurement — WRONG numerics by
+    /// design, timing evidence only.
+    skip_pass: u32,
 }
 
 impl<'a> Gen<'a> {
@@ -939,6 +944,7 @@ impl<'a> Gen<'a> {
             active_strip: 0,
             deferred_split: 1,
             split_slice_reg: None,
+            skip_pass: 0,
         }
     }
 
@@ -4489,6 +4495,13 @@ impl Gen<'_> {
             .collect();
 
         // ── pass A: row max (dot per j, butterfly, per-warp max) ──
+        // 2026-10-01 (5a probe): the skip_pass diagnostic — the pass
+        // emits nothing; m/l stay at their inits (WRONG numerics, the
+        // timing shape is the question).
+        let lab = self.label;
+        let saved_j = self.regs.insert(parts.j_name.clone(), r_cnt.clone());
+        self.label += 3;
+        if self.skip_pass != 1 {
         body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
         body.push_str(&format!(
             "    mad.lo.u32 {}, {}, {}, {};\n",
@@ -4499,9 +4512,7 @@ impl Gen<'_> {
         }
         body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
         body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
-        let saved_j = self.regs.insert(parts.j_name.clone(), r_cnt.clone());
-        let lab = self.label;
-        self.label += 3;
+
         let h1h = format!("L{}_a", lab);
         let h1e = format!("L{}_ax", lab);
         let m_loop = format!("L{}_m", lab);
@@ -4572,8 +4583,16 @@ impl Gen<'_> {
         body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
         body.push_str(&format!("    bra {};\n", m_loop));
         body.push_str(&format!("{}:\n", m_done));
+        } // skip_pass != 1
 
         // ── pass B: unnormalized accumulation (dot recompute, p, l, acc strips) ──
+        let h2h = format!("L{}_b", lab);
+        let h2e = format!("L{}_bx", lab);
+        let l_loop = format!("L{}_l", lab);
+        let l_done = format!("L{}_ld", lab);
+        let a_loop = format!("L{}_s", lab);
+        let a_done = format!("L{}_sd", lab);
+        if self.skip_pass != 2 {
         body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
         body.push_str(&format!(
             "    mad.lo.u32 {}, {}, {}, {};\n",
@@ -4584,12 +4603,6 @@ impl Gen<'_> {
         }
         body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
         body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
-        let h2h = format!("L{}_b", lab);
-        let h2e = format!("L{}_bx", lab);
-        let l_loop = format!("L{}_l", lab);
-        let l_done = format!("L{}_ld", lab);
-        let a_loop = format!("L{}_s", lab);
-        let a_done = format!("L{}_sd", lab);
         body.push_str(&format!("{}:\n", h2h));
         body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_cnt, r_hi));
         body.push_str(&format!("    @{} bra {};\n", pred, h2e));
@@ -4655,6 +4668,7 @@ impl Gen<'_> {
         body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_cnt, r_cnt));
         body.push_str(&format!("    bra {};\n", h2h));
         body.push_str(&format!("{}:\n", h2e));
+        } // skip_pass != 2
 
         // ── merges: l (warp-direct smem sum), acc strips (smem sum) ──
         // 2026-09-20 (M1-finish NaN fix): l is warp-uniform (all 32 lanes
