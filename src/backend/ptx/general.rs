@@ -2166,6 +2166,52 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         Ok(())
     }
 
+    /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`): the
+    /// compare-exchange — `atom.cas.b64 old, [addr], cmp, val` (TWO
+    /// value operands; the compare rides the instruction, no setp).
+    /// Same element addressing as the RMW family; swap iff equal,
+    /// ALWAYS returns old.
+    fn emit_atomic_cas_at(
+        &mut self, args: &[Expr], out: &str,
+    ) -> Result<(String, String), String> {
+        if args.len() < 4 {
+            return Err("AtomicCasAt# takes (buf, i, cmp, v)".into());
+        }
+        let mut d = String::new();
+        let mut b = String::new();
+        let buf_name = self.field_of(&args[0])?;
+        let off = self
+            .field_off(&buf_name)
+            .ok_or_else(|| format!("ptx general: atomic target '{buf_name}' not in layout"))?;
+        let elem = self.elem_bytes(&buf_name)?;
+        if elem != 8 {
+            return Err(format!(
+                "ptx general: AtomicCasAt# is Int-arrays-only - '{buf_name}' has \
+                 {elem}-byte elements"
+            ));
+        }
+        let addr = self.array_addr(buf_name.clone(), off, elem, &args[1], &mut d, &mut b)?;
+        let cmp_f = self.fresh_f();
+        let val_f = self.fresh_f();
+        d.push_str(&format!("    .reg .f32 {cmp_f};\n"));
+        d.push_str(&format!("    .reg .f32 {val_f};\n"));
+        self.emit_expr(&args[2], &cmp_f, &mut d, &mut b)?;
+        self.emit_expr(&args[3], &val_f, &mut d, &mut b)?;
+        let cmp = self.fresh_rd();
+        let val = self.fresh_rd();
+        let old = self.fresh_rd();
+        d.push_str(&format!("    .reg .b64 {cmp};\n"));
+        d.push_str(&format!("    .reg .b64 {val};\n"));
+        d.push_str(&format!("    .reg .b64 {old};\n"));
+        b.push_str(&format!("    cvt.rni.s64.f32 {cmp}, {cmp_f};\n"));
+        b.push_str(&format!("    cvt.rni.s64.f32 {val}, {val_f};\n"));
+        b.push_str(&format!(
+            "    atom.acq_rel.gpu.global.cas.b64 {old}, [{addr}], {cmp}, {val};\n"
+        ));
+        b.push_str(&format!("    cvt.rn.f32.s64 {out}, {old};\n"));
+        Ok((d, b))
+    }
+
     /// 2026-10-01 (L1 primitive-coverage audit, gap #4): work-id names
     /// A pure local: lowered into a register of the DECLARED class —
     /// Int locals are u32 with integer ops (the GQA decompositions
@@ -2347,6 +2393,14 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
             }
             "AtomicXchgAt#" => {
                 let (d, b) = self.emit_atomic_at(args, out, AtomicAtOp::Exch, false)?;
+                decl.push_str(&d);
+                body.push_str(&b);
+                Ok(())
+            }
+            "AtomicCasAt#" => {
+                // atom.cas takes TWO value operands (cmp, new) — its own
+                // emitter; the same element addressing.
+                let (d, b) = self.emit_atomic_cas_at(args, out)?;
                 decl.push_str(&d);
                 body.push_str(&b);
                 Ok(())
@@ -3177,7 +3231,7 @@ mod tests {
                 Statement::Assign(idx("res", id("i")), id("old")),
                 Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
             ],
-            ..shape
+            ..shape.clone()
         };
         let ptx_xchg = emit_general_ptx(
             &xchg_shape,
@@ -3196,6 +3250,49 @@ mod tests {
             assert!(
                 crate::backend::ptx::compile_cubin(&ptx_xchg, 0).is_some(),
                 "ptxas must accept the xchg PTX"
+            );
+        }
+        // 2026-10-01: Cas — atom.cas with TWO value operands.
+        let cas_shape = crate::analysis::accel::KernelShape {
+            kernel_stmts: vec![
+                Statement::Let {
+                    name: "old".into(),
+                    names: vec![],
+                    ty: None,
+                    expr: Some(Expr::Call(
+                        "AtomicCasAt#".into(),
+                        vec![
+                            Expr::Identifier("total".into()),
+                            Expr::Decimal(0),
+                            Expr::Decimal(5),
+                            Expr::Decimal(50),
+                        ],
+                        None,
+                    )),
+                    modifiers: vec![],
+                },
+                Statement::Assign(idx("res", id("i")), id("old")),
+                Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
+            ],
+            ..shape.clone()
+        };
+        let ptx_cas = emit_general_ptx(
+            &cas_shape,
+            1024,
+            &layout2,
+            &consts,
+            &universe,
+            GeneralEmitOpts { int_bits: 32, deferred_split: 0 },
+        )
+        .unwrap_or_else(|e| panic!("cas emits: {e}"));
+        assert!(
+            ptx_cas.contains("atom.acq_rel.gpu.global.cas.b64"),
+            "the compare-exchange:\n{ptx_cas}"
+        );
+        if std::process::Command::new("ptxas").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            assert!(
+                crate::backend::ptx::compile_cubin(&ptx_cas, 0).is_some(),
+                "ptxas must accept the cas PTX"
             );
         }
     }

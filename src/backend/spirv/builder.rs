@@ -693,6 +693,33 @@ impl SpirvBuilder {
         )
     }
 
+    /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`): the
+    /// compare-exchange — `OpAtomicCompareExchange <res> <ptr> <scope>
+    /// <equal-sem> <unequal-sem> <value> <comparator>` (value FIRST,
+    /// then the comparator; two semantics operands — both ride the
+    /// requested ordering here, default seq_cst).
+    pub fn atomic_cas(
+        &mut self, result_ty: Word, ptr: Word, val: Word, cmp: Word,
+    ) -> Word {
+        self.builder
+            .capability(spirv::Capability::Int64Atomics);
+        let scope = self.u32_const(1);
+        let semantics = self.u32_const(0x10);
+        self.instr(
+            spirv::Op::AtomicCompareExchange,
+            Some(result_ty),
+            None,
+            vec![
+                rspirv::dr::Operand::IdRef(ptr),
+                rspirv::dr::Operand::IdRef(scope),
+                rspirv::dr::Operand::IdRef(semantics),
+                rspirv::dr::Operand::IdRef(semantics),
+                rspirv::dr::Operand::IdRef(val),
+                rspirv::dr::Operand::IdRef(cmp),
+            ],
+        )
+    }
+
     pub fn load(&mut self, result_ty: Word, ptr: Word) -> Word {
         self.instr(spirv::Op::Load, Some(result_ty), None, vec![
             rspirv::dr::Operand::IdRef(ptr),

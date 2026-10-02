@@ -2018,6 +2018,26 @@ fn test_atomic_add_at_lowers_to_element_atomicrmw() {
         out3.contains("atomicrmw xchg ptr"),
         "xchg is the same shape:\n{out3}"
     );
+    // 2026-10-01: Cas — cmpxchg (not an rmw op), extract the old.
+    let mut out4 = String::new();
+    crate::backend::llvm::intrinsics::emit_intrinsic_call(
+        &mut backend,
+        &mut out4,
+        "%out",
+        "AtomicCasAt#",
+        &[
+            Expr::Identifier("total".to_string()),
+            Expr::Decimal(0),
+            Expr::Decimal(5),
+            Expr::Decimal(50),
+        ],
+        None,
+        "  ",
+    );
+    assert!(
+        out4.contains("cmpxchg ptr") && out4.contains("extractvalue { i64, i1 }"),
+        "the compare-exchange:\n{out4}"
+    );
 }
 
 #[test]

@@ -227,6 +227,7 @@ pub fn emit_intrinsic_call(
         "AtomicAddAt#" => return emit_atomic_at(backend, out, v, args, indent, "add"),
         "AtomicSubAt#" => return emit_atomic_at(backend, out, v, args, indent, "sub"),
         "AtomicXchgAt#" => return emit_atomic_at(backend, out, v, args, indent, "xchg"),
+        "AtomicCasAt#" => return emit_atomic_cas_at(backend, out, v, args, indent),
         // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): RMW family
         "AtomicSub#" => return emit_atomic_rmw(backend, out, v, args, indent, "sub"),
         "AtomicOr#" => return emit_atomic_rmw(backend, out, v, args, indent, "or"),
@@ -1728,6 +1729,70 @@ fn emit_atomic_add(
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
     emit_atomic_rmw(backend, out, v, args, indent, "add")
+}
+
+/// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`):
+/// `AtomicCasAt#(buf, i, cmp, v[, ordering]) -> old` — the compare-
+/// exchange is NOT an atomicrmw (LLVM has no cas rmw op): `cmpxchg`
+/// returns the {old, flag} aggregate and we extract the old — the same
+/// contract as the pointer-family AtomicCas# (swap iff equal, always
+/// return old). The success/failure orderings both ride the requested
+/// ordering (default seq_cst).
+fn emit_atomic_cas_at(
+    backend: &mut LlvmBackend, out: &mut String, v: &str,
+    args: &[Expr], indent: &str,
+) -> BTypedRegister {
+    let ord = ordering_arg(args, 4).unwrap_or("seq_cst");
+    let Some(Expr::Identifier(name)) = args.first() else {
+        panic!(
+            "AtomicCasAt#: the target must be an array variable - element-addressed \
+             atomics name the binding"
+        );
+    };
+    let Some(&fidx) = backend.ctx.field_index_map.get(name) else {
+        panic!(
+            "AtomicCasAt#: '{}' is not a state field - the element-addressed family \
+             targets Int arrays declared in the program state",
+            name
+        );
+    };
+    let field_ty = backend.ctx.field_types[fidx].clone();
+    if !field_ty.starts_with('[') {
+        panic!(
+            "AtomicCasAt#: '{}' is not an array (v1 is Int-arrays-only: GPU Float \
+             arrays are f32 storage while CPU Float is f64 — Int is i64 in both \
+             worlds)",
+            name
+        );
+    }
+    let idx_reg = backend.emit_expr(out, &args[1], indent);
+    let base = backend.emit_state_gep(out, indent, "f", "%state", fidx);
+    let gep_idx = backend.gep_index(out, indent, &idx_reg);
+    let elem = backend.fun.gen_reg();
+    writeln!(
+        out,
+        "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}",
+        indent, elem, field_ty, base, gep_idx
+    )
+    .ok();
+    let cmp = backend.emit_expr(out, &args[2], indent);
+    let cmp_i64 = backend.adapt_to_i64(out, indent, &cmp);
+    let val = backend.emit_expr(out, &args[3], indent);
+    let val_i64 = backend.adapt_to_i64(out, indent, &val);
+    let pair = backend.fun.gen_reg();
+    writeln!(
+        out,
+        "{}{} = cmpxchg ptr {}, i64 {}, i64 {} {} {}",
+        indent, pair, elem, cmp_i64, val_i64, ord, ord
+    )
+    .ok();
+    writeln!(
+        out,
+        "{}{} = extractvalue {{ i64, i1 }} {}, 0",
+        indent, v, pair
+    )
+    .ok();
+    BTypedRegister { name: v.to_string(), ty: Type::int() }
 }
 
 /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`):

@@ -1248,7 +1248,47 @@ impl<'a> FnLowerer<'a> {
             // Int-arrays-only: GPU Float arrays are f32 storage; Int is
             // i64 in both worlds. GLSL450 model scope/semantics — see
             // `SpirvBuilder::atomic_rmw`.
-            "AtomicAddAt#" | "AtomicSubAt#" | "AtomicXchgAt#" => {
+            "AtomicAddAt#" | "AtomicSubAt#" | "AtomicXchgAt#" | "AtomicCasAt#" => {
+                if name == "AtomicCasAt#" {
+                    // The compare-exchange: (buf, i, cmp, v[, ordering]).
+                    if args.len() < 4 {
+                        return self.err("AtomicCasAt# takes (buf, i, cmp, v)");
+                    }
+                    if args.len() > 4 {
+                        return self.err(
+                            "AtomicCasAt#: non-default ordering is not implemented on \
+                             this lane yet - drop the ordering argument (seq_cst is \
+                             the v1 semantics on every backend)",
+                        );
+                    }
+                    let addr_expr =
+                        Expr::Index(Box::new(args[0].clone()), Box::new(args[1].clone()));
+                    let (ptr, elem_ty) = self.emit_addr(&addr_expr)?;
+                    if elem_ty != Type::int() {
+                        return self.err(format!(
+                            "AtomicCasAt# is Int-arrays-only - the target element is \
+                             {:?} (GPU Float arrays are f32 storage; Int is i64)",
+                            elem_ty
+                        ));
+                    }
+                    let (cmp, cmp_ty) = self.emit_expr(&args[2])?;
+                    if cmp_ty != Type::int() {
+                        return self.err(format!(
+                            "AtomicCasAt# comparator must be Int, got {:?}",
+                            cmp_ty
+                        ));
+                    }
+                    let (val, val_ty) = self.emit_expr(&args[3])?;
+                    if val_ty != Type::int() {
+                        return self.err(format!(
+                            "AtomicCasAt# value must be Int, got {:?}",
+                            val_ty
+                        ));
+                    }
+                    let res_ty = self.builder.lower_type(&Type::int())?;
+                    let old = self.builder.atomic_cas(res_ty, ptr, val, cmp);
+                    return Ok((old, Type::int()));
+                }
                 if args.len() < 3 {
                     return self.err("AtomicAddAt# takes (buf, i, v)");
                 }

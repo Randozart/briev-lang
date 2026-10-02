@@ -485,6 +485,48 @@ mod tests {
         emit_kernel(&mut xchg_builder, "acc_xchg", &xchg_shape, &xchg_program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
         let xchg_dis = validate_and_disassemble(&xchg_builder.build().unwrap(), "atomic_xchg_at");
         assert!(xchg_dis.contains("OpAtomicExchange"), "the xchg atomic:\n{xchg_dis}");
+        // 2026-10-01: Cas emits OpAtomicCompareExchange (value first,
+        // then the comparator; two semantics operands).
+        let mut cas_txn = program[3].clone();
+        if let TopLevel::Transaction(ref mut tx) = cas_txn {
+            tx.name = "acc_cas".into();
+            tx.body = vec![
+                Statement::Let {
+                    name: "old".into(),
+                    names: vec![],
+                    ty: Some(Type::int()),
+                    expr: Some(Expr::Call(
+                        "AtomicCasAt#".into(),
+                        vec![
+                            Expr::Identifier("total".into()),
+                            Expr::Decimal(0),
+                            Expr::Decimal(5),
+                            Expr::Decimal(50),
+                        ],
+                        None,
+                    )),
+                    modifiers: vec![],
+                },
+                Statement::Assign(
+                    Expr::Identifier("i".into()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("i".into())),
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                ),
+            ];
+        }
+        let cas_program = vec![program[0].clone(), program[1].clone(), program[2].clone(), cas_txn];
+        let cas_analysis = analyze(&cas_program);
+        let cas_shape = eligible_shape(&cas_analysis, "acc_cas").clone();
+        let mut cas_builder = SpirvBuilder::new();
+        emit_kernel(&mut cas_builder, "acc_cas", &cas_shape, &cas_program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
+        let cas_dis = validate_and_disassemble(&cas_builder.build().unwrap(), "atomic_cas_at");
+        assert!(
+            cas_dis.contains("OpAtomicCompareExchange"),
+            "the cas atomic:\n{cas_dis}"
+        );
     }
 
     /// §2.5: spirv-val validation — typed-emission refactor closed the

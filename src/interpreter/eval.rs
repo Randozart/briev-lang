@@ -595,6 +595,34 @@ fn eval_call(
 /// lands in the binding itself (clone-mutate-reinsert, the exact store
 /// the `buf[i] = v` assignment path uses). Single-threaded check mode:
 /// ordering is moot, the read-modify-write pairing is the contract.
+/// The (comparator, new-value) operands of a CAS — args[2]/args[3]
+/// (args[2] is the prelude's value slot for the RMW family; CAS
+/// re-purposes it). 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`).
+fn eval_cas_operands(
+    args: &[Expr],
+    heap: &mut VirtualHeap,
+    bindings: &mut HashMap<String, Value>,
+) -> Result<(i64, i64), RuntimeError> {
+    let mut int_arg = |i: usize, what: &str| -> Result<i64, RuntimeError> {
+        let val = eval_expr(
+            args.get(i).ok_or_else(|| RuntimeError::TypeError {
+                expected: format!("AtomicCasAt#(buf, i, cmp, v) - missing {what}"),
+                found: "too few arguments".into(),
+            })?,
+            heap,
+            bindings,
+            &HashMap::new(),
+        )?;
+        val.as_i64().ok_or_else(|| RuntimeError::TypeError {
+            expected: format!("an Int {what}"),
+            found: "non-integer".into(),
+        })
+    };
+    let cmp = int_arg(2, "comparator")?;
+    let new_v = int_arg(3, "new value")?;
+    Ok((cmp, new_v))
+}
+
 fn eval_atomic_at(
     name: &str,
     args: &[Expr],
@@ -660,10 +688,20 @@ fn eval_atomic_at(
         "AtomicXchgAt#" => {
             fields[i as usize] = Value::int(v);
         }
+        // 2026-10-01: Cas — swap iff equal, ALWAYS return old (the same
+        // contract as the pointer-family AtomicCas#). Takes (buf, i,
+        // cmp, v): the comparator is args[2] (the prelude's `v` slot for
+        // the RMW family) and the NEW value is args[3].
+        "AtomicCasAt#" => {
+            let (cmp, new_v) = eval_cas_operands(args, heap, bindings)?;
+            if old == cmp {
+                fields[i as usize] = Value::int(new_v);
+            }
+        }
         other => {
             return Err(RuntimeError::TypeError {
                 expected: "an implemented At-family atomic".into(),
-                found: format!("{other} - Add, Sub and Xchg exist"),
+                found: format!("{other} - Add, Sub, Xchg and Cas exist"),
             })
         }
     }
@@ -3436,6 +3474,56 @@ defn go() -> Int {
         match bindings.get("total") {
             Some(Value::Product { fields, .. }) => {
                 assert_eq!(fields[0].as_i64(), Some(99), "the slot holds the new value");
+            }
+            other => panic!("binding shape {:?}", other.is_some()),
+        }
+        // A non-variable target is a loud contract error.
+    }
+
+    /// 2026-10-01: the compare-exchange — swap iff equal, ALWAYS
+    /// returns old (the pointer-family contract, element-addressed).
+    #[test]
+    fn atomic_cas_at_swaps_iff_equal() {
+        let mut heap = VirtualHeap::new();
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "total".to_string(),
+            Value::product(vec![Value::int(99), Value::int(0)]),
+        );
+        // A miss does not write; it still returns the current value.
+        let cas_miss = Expr::Call(
+            "AtomicCasAt#".into(),
+            vec![
+                Expr::Identifier("total".into()),
+                Expr::Decimal(0),
+                Expr::Decimal(5),
+                Expr::Decimal(50),
+            ],
+            None,
+        );
+        let old5 = eval_expr(&cas_miss, &mut heap, &mut bindings, &HashMap::new()).unwrap();
+        assert_eq!(old5.as_i64(), Some(99), "the miss still returns the current");
+        match bindings.get("total") {
+            Some(Value::Product { fields, .. }) => {
+                assert_eq!(fields[0].as_i64(), Some(99), "a miss does not write");
+            }
+            other => panic!("binding shape {:?}", other.is_some()),
+        }
+        let cas_hit = Expr::Call(
+            "AtomicCasAt#".into(),
+            vec![
+                Expr::Identifier("total".into()),
+                Expr::Decimal(0),
+                Expr::Decimal(99),
+                Expr::Decimal(0),
+            ],
+            None,
+        );
+        let old6 = eval_expr(&cas_hit, &mut heap, &mut bindings, &HashMap::new()).unwrap();
+        assert_eq!(old6.as_i64(), Some(99), "the hit returns the pre-value");
+        match bindings.get("total") {
+            Some(Value::Product { fields, .. }) => {
+                assert_eq!(fields[0].as_i64(), Some(0), "the hit writes the new value");
             }
             other => panic!("binding shape {:?}", other.is_some()),
         }
