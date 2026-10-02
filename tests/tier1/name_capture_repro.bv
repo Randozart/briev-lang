@@ -1,0 +1,21 @@
+// name_capture_repro — A1 isolation (plan 2026-09-28-daily-use-sweep).
+// A node local named `len` collides with the Stack obj field `len`.
+// Member bodies must resolve in MEMBER scope (receiver fields) — if
+// the caller local captures, `st <- 42` indexes data by the local and
+// the len-field store is lost, and the peek misreads.
+import { Stack } from "std/collections.bv";
+
+let st: Stack<Int, 256> = 0;
+let len: Int = 7;
+let a: Int = 0;
+let done: Int = 0;
+
+node main [done == 0][done == 1] {
+    st <- 42;
+    a <- st;
+    when a == 42 {
+        println!("peek-ok");
+    };
+    done = 1;
+    term;
+};

@@ -111,6 +111,32 @@ Execute the top-ranked lane; A/B before/after; record.
 
 ## Phase A — Daily-use correctness sweep
 
+### A1. Name-capture bug (silent wrong-code) — **DONE 2026-10-01**
+
+- Repro matrix: `len`/`read`/`write`/`count`/`cap` locals never
+  captured; the `data` local DID — Stack push silently wrong on the
+  LLVM lane.
+- Root cause (TWO resolution-layer leaks, both in
+  `llvm/emit_expr.rs`):
+  1. `emit_member_body` bound params into the CALLER's binding maps
+     without clearing them — the body's bare names resolved caller
+     locals (the 2026-08-17 cap-column fix removed the PREFIX leak;
+     this is the same bug class, bindings half).
+  2. The Index arm's field-identifier fallback resolved the base NAME
+     against the GLOBAL state columns without member-scope discipline —
+     mixing the receiver's array TYPE (`Stack.data`) with the caller
+     local's slot ADDRESS (`data`): `data[len - 1]` gep'd the caller's
+     scalar slot as an array ("invalid getelementptr indices").
+- Fix: member-scope discipline — the caller's binding maps are cleared
+  for the body duration (the receiver's caller-local NAME captured
+  first for the pregrown lookup), and the Index-arm global-field
+  fallback is skipped when member-scoped unless the name is a caller
+  binding. No codegen patch; resolution layer only, as planned.
+- Tests: the full matrix (len/read/write/count/cap/data locals ×
+  Stack push/peek/pop) all pass post-fix; the D5 collections fixture
+  unchanged; gemm_h byte-identical (no collisions → no emission
+  change); stack_push_pop A/B 0.9993 neutral.
+
 ### A1. Name-capture bug (silent wrong-code)
 1. **Isolation repro.** Minimal `.bv`: a node with a local named `len`
    + `st <- v` (Stack push) → confirm broken IR (data index = local

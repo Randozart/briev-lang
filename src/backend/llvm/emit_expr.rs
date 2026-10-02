@@ -272,7 +272,6 @@ impl LlvmBackend {
                 };
                 if let Some((prefix, row_reg)) = pooled_prefix {
                     let slot = format!("{}.{}", prefix, name);
-
                     if let Some(&idx) = self.ctx.field_index_map.get(&slot) {
                         let (row, row_ty, load_ty) = self.emit_instance_column_row(out, indent, idx, &row_reg);
                         if matches!(&row_ty, Type::Vector(_, _)) {
@@ -1191,7 +1190,21 @@ impl LlvmBackend {
                  // from a loaded aggregate; the whole-array load + extract
                  // path below is only valid for scalar fields.
                  if let Expr::Identifier(name) = obj.as_ref() {
-                     if let Some(&fidx) = self.ctx.field_index_map.get(name) {
+                    // 2026-10-01 (A1 name-capture fix): the same member-scope
+                    // discipline as the Identifier arm — inside a member body,
+                    // a bare name that is NOT a caller binding must resolve
+                    // through the RECEIVER (the pooled/self arms above already
+                    // did), never through the GLOBAL state columns. Without
+                    // this guard, a caller local named `data` (a global column)
+                    // mixed the receiver's array TYPE with the caller's slot
+                    // ADDRESS: `data[len - 1]` in the Stack peek gep'd the
+                    // caller's scalar slot as an array ("invalid getelementptr
+                    // indices").
+                    let member_scoped = self.fun.self_prefix.is_some()
+                        || self.fun.self_binding.is_some();
+                    let caller_scoped = self.fun.let_bindings.contains_key(name);
+                    let global_field_ok = !member_scoped || caller_scoped;
+                    if global_field_ok && let Some(&fidx) = self.ctx.field_index_map.get(name) {
                          if let Type::Vector(inner, dims) = &obj_reg.ty {
                              let base = self.emit_state_gep(out, indent, "f", "%state", fidx);
                              // 2026-07-31: The GEP source type must be the
@@ -3059,6 +3072,25 @@ impl LlvmBackend {
         let saved_orig = self.fun.let_original_types.clone();
         let saved_lvt = self.fun.last_val_temps.clone();
         let saved_lvt_types = self.fun.last_val_types.clone();
+        // 2026-10-01 (A1 name-capture fix, plan daily-use-sweep): the
+        // member body resolves in MEMBER scope — its params, its own
+        // locals, and the receiver's fields (self_binding/self_prefix).
+        // The CALLER's binding maps must not survive into the body: a
+        // caller local named `data` (a Stack field name) captured the
+        // push body's `data[len] = val` — silent wrong code (the A1
+        // repro: stack push with a local `data` never stored the slot).
+        // The 2026-08-17 cap-column-clobber fix removed the PREFIX leak;
+        // this completes it — the BINDINGS leak is the same bug class.
+        // The receiver's caller-local NAME is captured first: the
+        // pregrown lookup below reverse-locates it per-NAME.
+        let recv_local_name = self.fun.let_bindings.iter()
+            .find(|(_, v)| *v == &recv_reg.name)
+            .map(|(n, _)| n.clone());
+        self.fun.let_bindings = std::collections::HashMap::new();
+        self.fun.let_binding_types = std::collections::HashMap::new();
+        self.fun.let_original_types = std::collections::HashMap::new();
+        self.fun.last_val_temps = std::collections::HashMap::new();
+        self.fun.last_val_types = std::collections::HashMap::new();
         // 2026-07-31 (A5d): last_val_temps must NOT leak across emissions of
         // the same node body — the reactor emits a body more than once, and a
         // stale self-slot temp from the first pass would make the second
@@ -3180,9 +3212,11 @@ impl LlvmBackend {
         // name from the current let bindings and check the per-NAME fact —
         // keying on the coll name (not the base type) keeps two local `Q`s in
         // one txn from sharing a strip.
-        let pregrown = member_is_push && self.fun.let_bindings.iter()
-            .find(|(_, v)| *v == &recv_reg.name)
-            .is_some_and(|(n, _)| self.ctx.coll_pregrow.contains_key(&(txn_name, n.clone())));
+        // 2026-10-01 (A1): the receiver's caller-local name was captured
+        // BEFORE the binding maps were cleared for the body — the map no
+        // longer holds caller locals here.
+        let pregrown = member_is_push && recv_local_name.as_ref()
+            .is_some_and(|n| self.ctx.coll_pregrow.contains_key(&(txn_name, n.clone())));
         let mut body = body;
         if (proven || pregrown) && member_is_push && body.first().is_some_and(is_grow_guard) {
             body.remove(0);
