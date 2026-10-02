@@ -3820,6 +3820,174 @@ fn detect_deferred_region(
 
 use crate::ast::UnaryOpKind;
 
+/// Written-array names in a statement list (Assign targets that are
+/// Index expressions — the bases the loop mutates; their reads must
+/// never hoist).
+fn collect_written_arrays(stmts: &[Statement], out: &mut std::collections::HashSet<String>) {
+    for s in stmts {
+        match s {
+            Statement::Assign(lhs, _) => {
+                if let Expr::Index(base, _) = lhs {
+                    if let Expr::Identifier(n) = base.as_ref() {
+                        out.insert(n.clone());
+                    }
+                }
+            }
+            Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Term(Some(e)) | Statement::Gate(e) => {
+                collect_written_expr_arrays(e, out);
+            }
+            Statement::Guarded(_, body) | Statement::Block(body) => {
+                collect_written_arrays(body, out);
+            }
+            Statement::Foreach { body, .. } => collect_written_arrays(body, out),
+            _ => {}
+        }
+    }
+}
+
+fn collect_written_expr_arrays(e: &Expr, out: &mut std::collections::HashSet<String>) {
+    match e {
+        Expr::BinaryOp(_, a, b) | Expr::Index(a, b) => {
+            collect_written_expr_arrays(a, out);
+            collect_written_expr_arrays(b, out);
+        }
+        Expr::UnaryOp(_, a) => collect_written_expr_arrays(a, out),
+        Expr::Call(_, args, _) => {
+            for a in args {
+                collect_written_expr_arrays(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Does the expression reference `name` at all (the j-binder test)?
+fn expr_references(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Identifier(n) => n == name,
+        Expr::BinaryOp(_, a, b) | Expr::Index(a, b) => {
+            expr_references(a, name) || expr_references(b, name)
+        }
+        Expr::UnaryOp(_, a) => expr_references(a, name),
+        Expr::Call(_, args, _) => args.iter().any(|a| expr_references(a, name)),
+        _ => false,
+    }
+}
+
+fn gather_j_invariant_reads(stmts: &[Statement], j: &str, written: &std::collections::HashSet<String>, reads: &mut Vec<Expr>) {
+    fn walk(e: &Expr, j: &str, written: &std::collections::HashSet<String>, reads: &mut Vec<Expr>) {
+        if let Expr::Index(base, idx) = e {
+            if let Expr::Identifier(bn) = base.as_ref() {
+                if !written.contains(bn) && !expr_references(idx, j) {
+                    reads.push(e.clone());
+                }
+            }
+        }
+        match e {
+            Expr::BinaryOp(_, a, b) | Expr::Index(a, b) => {
+                walk(a, j, written, reads);
+                walk(b, j, written, reads);
+            }
+            Expr::UnaryOp(_, a) => walk(a, j, written, reads),
+            Expr::Call(_, args, _) => {
+                for a in args {
+                    walk(a, j, written, reads);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn ws(stmts: &[Statement], j: &str, written: &std::collections::HashSet<String>, reads: &mut Vec<Expr>) {
+        for s in stmts {
+            match s {
+                Statement::Assign(_, rhs) => walk(rhs, j, written, reads),
+                Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Gate(e) => walk(e, j, written, reads),
+                Statement::Term(Some(e)) => walk(e, j, written, reads),
+                Statement::Guarded(_, body) | Statement::Block(body) => ws(body, j, written, reads),
+                Statement::Foreach { list, body, .. } => {
+                    walk(list, j, written, reads);
+                    ws(body, j, written, reads);
+                }
+                _ => {}
+            }
+        }
+    }
+    ws(stmts, j, written, reads);
+}
+
+fn rewrite_j_expr(e: &mut Expr, pairs: &[(String, Expr)]) -> bool {
+    for (name, key) in pairs {
+        if *e == *key {
+            *e = Expr::Identifier(name.clone());
+            return true;
+        }
+    }
+    match e {
+        Expr::BinaryOp(_, a, b) => rewrite_j_expr(a, pairs) | rewrite_j_expr(b, pairs),
+        Expr::Index(a, b) => rewrite_j_expr(a, pairs) | rewrite_j_expr(b, pairs),
+        Expr::UnaryOp(_, a) => rewrite_j_expr(a, pairs),
+        Expr::Call(_, args, _) => {
+            let mut any = false;
+            for a in args.iter_mut() {
+                any |= rewrite_j_expr(a, pairs);
+            }
+            any
+        }
+        _ => false,
+    }
+}
+
+fn rewrite_j_stmts(stmts: &mut [Statement], pairs: &[(String, Expr)]) {
+    for s in stmts {
+        match s {
+            Statement::Assign(lhs, rhs) => {
+                rewrite_j_expr(lhs, pairs);
+                rewrite_j_expr(rhs, pairs);
+            }
+            Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Gate(e) | Statement::Term(Some(e)) => {
+                rewrite_j_expr(e, pairs);
+            }
+            Statement::Guarded(_, body) | Statement::Block(body) => rewrite_j_stmts(body, pairs),
+            Statement::Foreach { list, body, .. } => {
+                rewrite_j_expr(list, pairs);
+                rewrite_j_stmts(body, pairs);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 2026-10-01 (5a lever 2, E2/E3-sized): collect the j-INVARIANT array
+/// reads from the two pass bodies — `Index` reads whose index never
+/// references the j binder and whose base is never written in the loop —
+/// deduped structurally, capped at 32. Returns the (name, expr) pairs
+/// AND rewrites both bodies to read the hoisted names (the caller emits
+/// one immutable `let` per pair per strip; immutable lets resolve to
+/// REGISTERS — last_val_temps — so the loop body reads registers, not
+/// global memory).
+fn collect_j_invariant_reads(
+    dot_a: &[Statement],
+    dot_b: &[Statement],
+    parts: &DeferredRegionParts,
+) -> Vec<(usize, Expr)> {
+    let mut written = std::collections::HashSet::new();
+    collect_written_arrays(dot_a, &mut written);
+    collect_written_arrays(dot_b, &mut written);
+    let mut all: Vec<Expr> = Vec::new();
+    gather_j_invariant_reads(dot_a, &parts.j_name, &written, &mut all);
+    gather_j_invariant_reads(dot_b, &parts.j_name, &written, &mut all);
+    let mut uniq: Vec<Expr> = Vec::new();
+    for e in all {
+        if !uniq.contains(&e) {
+            uniq.push(e.clone());
+        }
+        if uniq.len() >= 32 {
+            break;
+        }
+    }
+    uniq.into_iter().enumerate().collect()
+}
+
 struct DeferredRegionParts {
     j_name: String,
     kh_stmt: Option<Statement>,
@@ -4275,6 +4443,51 @@ impl Gen<'_> {
             a_regs.push(a);
         }
 
+        // 2026-10-01 (5a lever 2, E2/E3-sized): hoist j-INVARIANT array
+        // reads out of the two j passes. The dot bodies re-load q
+        // (h·D+d — independent of the j counter) EVERY iteration; ptxas
+        // cannot hoist those loads (the state pointer's aliasing), and
+        // at 12 loads/j they are a third of the loop's memory traffic.
+        // Immutable lets resolve to REGISTERS (last_val_temps — the
+        // alloca path only takes mutated bindings), so a hoisted
+        // `let __dqh<N>: Float = q[..];` read per iteration is a
+        // register read. The hoistable set: Index reads whose index does
+        // not reference the j binder, whose base is never WRITTEN in
+        // either pass body, deduped structurally, capped at 32.
+        // The hoist is PER-STRIP: the d binder resolves differently in
+        // each strip, so strip i's reads hoist to names __dqh{i}_{j}.
+        // ONE shared name would collapse the strips (the last emitted
+        // let wins in last_val_temps — every strip would read the last
+        // strip's register: the CUDA-lane FAIL this fixed).
+        let hoisted = collect_j_invariant_reads(&parts.dot_a_body, &parts.dot_b_body, parts);
+        let strip_name = |strip: usize, idx: usize| format!("__dqh{}_{}", strip, idx);
+        if !hoisted.is_empty() {
+            let saved_j0 = self.regs.insert(parts.j_name.clone(), r_cnt.clone());
+            for i in 0..strips {
+                self.regs.insert(parts.da.clone(), d_regs[i].clone());
+                for (jdx, (_, expr)) in hoisted.iter().enumerate() {
+                    let stmt = Statement::Let {
+                        name: strip_name(i, jdx),
+                        names: vec![],
+                        ty: Some(crate::ast::Type::float()),
+                        expr: Some(expr.clone()),
+                        modifiers: vec![],
+                    };
+                    self.emit_stmt(&stmt, decl, body)?;
+                }
+            }
+            match saved_j0 {
+                Some(v) => { self.regs.insert(parts.j_name.clone(), v); }
+                None => { self.regs.remove(&parts.j_name); }
+            }
+        }
+
+        let strip_pairs: Vec<(String, Expr)> = (0..strips)
+            .flat_map(|i| {
+                hoisted.iter().enumerate().map(move |(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
+            })
+            .collect();
+
         // ── pass A: row max (dot per j, butterfly, per-warp max) ──
         body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
         body.push_str(&format!(
@@ -4306,7 +4519,12 @@ impl Gen<'_> {
             self.active_strip = i;
             self.regs.insert(parts.da.clone(), d_regs[i].clone());
             self.regs.insert(parts.sc_a.clone(), sc_lane.clone());
-            for s in &parts.dot_a_body {
+            let mut body_i = parts.dot_a_body.clone();
+            let pairs_i: Vec<(String, Expr)> = hoisted.iter().enumerate()
+                .map(|(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
+                .collect();
+            rewrite_j_stmts(&mut body_i, &pairs_i);
+            for s in &body_i {
                 self.emit_stmt(s, decl, body)?;
             }
         }
@@ -4381,7 +4599,12 @@ impl Gen<'_> {
             self.active_strip = i;
             self.regs.insert(parts.db.clone(), d_regs[i].clone());
             self.regs.insert(parts.sc_b.clone(), sc_lane.clone());
-            for s in &parts.dot_b_body {
+            let mut body_b = parts.dot_b_body.clone();
+            let pairs_b: Vec<(String, Expr)> = hoisted.iter().enumerate()
+                .map(|(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
+                .collect();
+            rewrite_j_stmts(&mut body_b, &pairs_b);
+            for s in &body_b {
                 self.emit_stmt(s, decl, body)?;
             }
         }

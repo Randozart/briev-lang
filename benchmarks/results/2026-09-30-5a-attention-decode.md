@@ -131,3 +131,37 @@ per j), and let the emitter's index emission skip recomputing
 loop-invariant sub-expressions. This is an index-emission change in
 `emit_deferred_region`'s j loop → the kernel-rule on-device gate
 applies (m3 harness, both lanes) before any timing claim.
+
+## Lever 2 (first half): the j-invariant load hoist — 2026-10-01
+
+The E3 composition (12 loads/j, each q reload j-invariant) sized the
+hoist; the implementation lifts j-invariant array reads out of BOTH
+deferred passes as immutable per-strip lets (registers — last_val_temps;
+the alloca path only takes mutated bindings).
+
+Two defects found by the gates on the way, both fixed:
+1. strip-collapse: one shared hoist name let the last strip's register
+   win in last_val_temps — every strip read strip-N's q element
+   (CUDA max_rel 4.48e+01). Per-strip names (`__dqh<strip>_<idx>`) +
+   per-strip rewrite pairs.
+2. the rewrite pairs passed to a strip were ALL strips' pairs — the
+   first match won, so every strip read strip 0. (The probe: got[d] ≈
+   ref[d−1].)
+
+**Timing (composite decode, 1200 reps, same session):**
+
+| variant | pre-hoist p50 | post-hoist p50 |
+|---|---|---|
+| no-split | 220.8 | **191.5** (−13%) |
+| split=2 | 223.5 | 212.8 |
+| split=4 | 202.5 | 198.8 |
+| split=8 | 252.0 | 249.1 |
+| split=16 | 324.1 | 317.8 |
+
+The no-split path gains most (128 j-iters/warp × 2 passes × 4 removed
+loads) and is now the best decode number: **191.5 µs** (from the
+200.6 µs baseline; target 125 µs — 1.53×). The 8 in-loop q loads per
+kernel are gone (12 → 16 total loads incl. the 4 pre-loop hoists).
+
+Correctness: softmax_gate s8 + knob fixtures PASS both lanes
+(5.91e-06 / 2.06e-05 — the pre-hoist numbers exactly); suite 2845.
