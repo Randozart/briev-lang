@@ -249,3 +249,27 @@ this sweep re-measures with the fused online kernel (`ptx_deferred_online: 1`,
 
 Shipped-best decode config: fused + split=4 — 72.2 µs p50, 74.5 p90
 (target 125; ggml ~58).
+
+## Next-increment design: float4 k/v loads (the ggml 1.25× gap)
+
+The fused loop per j per thread: 4 scalar k loads + 4 scalar v loads
+(one per strip, d = lane + 32·strip). The d-mapping is TRANSPOSED vs
+float4: `ld.global.v4.f32` needs 4 CONSECUTIVE elements per lane
+(d = lane·4 + c). The flip touches:
+
+1. **d_regs setup**: `lane + 32·i` → `lane·4 + i` (the strips become
+   per-lane contiguous quads).
+2. **k loads**: 4 scalar → 1 `ld.global.v4.f32` per j (the row base
+   `k_row + lane·16` — 16-byte alignment REQUIRED: the decode fixture's
+   offsets are 16-aligned ✓ but the emitter needs a runtime alignment
+   check with a scalar fallback — the general rule, not a fixture
+   assumption).
+3. **v loads in acc_stmts**: same v4 form.
+4. **The hoisted q reads**: 4 lets → 1 v4 load (q base + lane·16 ✓).
+5. **The smacc merge offsets**: the warp-row layout must match the new
+   d-mapping (currently `lane + 32·i` f32 within the row → `lane·4 + i`).
+
+Payoff: 8 scalar LDG → 2 v4 LDG per j per thread (4× fewer load
+instructions; the loads are the residual cost after the hoist + fusion).
+Kernel-index-math change → the m3 + softmax gates (both lanes) are
+mandatory before any timing claim. Fixture offsets verified 16-aligned.
