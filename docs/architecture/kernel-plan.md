@@ -147,8 +147,13 @@ land:
    `vector<N>` is the second consumer: `vector<1>` DECLINES the
    derived vec4 group lowering on the SPIR-V lane (D2, disclosed —
    emission-side only, the SSBO packing stays program-wide);
-   swizzle/fragment parse and error loudly at their dispatchers until
-   their consumers land;
+   `swizzle<N>`/`fragment<m,n,k>` are the third and fourth: the tensor
+   lane VALIDATES declarations against its device-verified recipes —
+   `swizzle<8>` (the XOR-8 pattern, 16B units, k&7) and
+   `fragment<16,8,16>` (the mma.m16n8k16 atom) restate the default and
+   pass; any other shape is a loud capability error naming the recipe
+   (a new swizzle/fragment pattern is a new fill+ldmatrix+store
+   CONTRACT gated by the kernel-rule device check, not a knob);
    matcher/frontend fact equivalence is pinned by test). The lowering
    reads `plan.split_tree_factor()` instead of recomputing; the enablement
    gates (declared / deferred+knob) and the workspace capacity gate stay

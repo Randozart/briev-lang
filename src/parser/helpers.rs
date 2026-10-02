@@ -259,7 +259,14 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(Token::Gt)?;
-        let want = if keyword == "tile" { 2 } else { 1 };
+        // 2026-10-01 (D14 remainder): `tile<M,N>` carries 2 parameters,
+        // `fragment<m,n,k>` carries 3 (the mma atom shape), every other
+        // shape name carries 1.
+        let want = match keyword {
+            "tile" => 2,
+            "fragment" => 3,
+            _ => 1,
+        };
         if nums.len() != want {
             return Err(SyntaxError::InvalidStatement {
                 reason: format!(

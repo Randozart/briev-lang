@@ -2484,6 +2484,46 @@ struct GemmTierIn<'a> {
 /// model (2026-09-16 Stage 1) ahead of the legacy walker — plus the
 /// D28/D29 declared-tile warnings. Returns (mw, nw, eff_stages, mw_ok,
 /// warnings).
+/// 2026-10-01 (D14 remainder): the declared `swizzle<N>` and
+/// `fragment<m,n,k>` validated against the lane's DEVICE-VERIFIED
+/// recipes — the XOR-8 swizzle (16B units, k&7) and the m16n8k16
+/// fragment atom. A restatement of the recipe is legal (None — nothing
+/// is overridden); any other shape returns a loud capability note
+/// naming the recipe (a new swizzle/fragment pattern is a new
+/// fill+ldmatrix+store CONTRACT, not a knob — the kernel-rule device
+/// gate applies before any such pattern ships).
+fn validate_swizzle_fragment_recipes(program: &[TopLevel], name: &str) -> Option<String> {
+    match node_shape_annotation(program, name, "swizzle") {
+        Some(Expr::Decimal(n)) if *n == 8 => {}
+        Some(other) => {
+            return Some(format!(
+                "node '{}': swizzle<{:?}> is not implemented on the tensor lane - the \
+                 lane lowers the XOR-8 swizzle (16B units, k&7) only; declare \
+                 swizzle<8> or drop the modifier",
+                name, other
+            ));
+        }
+        None => {}
+    }
+    match node_shape_annotation(program, name, "fragment") {
+        Some(Expr::Tuple(v))
+            if v.len() == 3
+                && matches!(&v[0], Expr::Decimal(16))
+                && matches!(&v[1], Expr::Decimal(8))
+                && matches!(&v[2], Expr::Decimal(16)) => {}
+        Some(other) => {
+            return Some(format!(
+                "node '{}': fragment<{:?}> is not implemented on the tensor lane - the \
+                 lane lowers the m16n8k16 fragment atom only; declare \
+                 fragment<16,8,16> or drop the modifier",
+                name, other
+            ));
+        }
+        None => {}
+    }
+    None
+}
+
 fn gemm_select_grid(
     tin: &GemmTierIn<'_>,
     warp_mh: usize,
@@ -2516,6 +2556,12 @@ fn gemm_select_grid(
     // 2026-09-30 (D1/D2): a declared `tile<M,N>` (elements) wins over
     // the config force knobs and the strategy model. Non-divisible
     // tiles fall through to the model.
+    // 2026-10-01 (D14 remainder): the declared `swizzle<N>` /
+    // `fragment<m,n,k>` validate against the lane's device-verified
+    // recipes (see `validate_swizzle_fragment_recipes`).
+    if let Some(note) = validate_swizzle_fragment_recipes(tin.program, tin.name) {
+        return (0, 0, 0, false, vec![note]);
+    }
     let node_tile = node_tile_modifier(tin.program, tin.name);
     // 2026-09-30 (D28/D29): a declared tile that is not an mma-atom
     // multiple never silently falls through to the model.
@@ -2865,6 +2911,46 @@ mod tests {
     use super::*;
 
     #[test]
+    /// 2026-10-01 (D14 remainder): the declared `swizzle<N>` and
+    /// `fragment<m,n,k>` validate against the lane's device-verified
+    /// recipes — a restatement is legal, any other shape warns (the
+    /// tensor-plan falls through to the model with the recipe note).
+    #[test]
+    fn declared_swizzle_and_fragment_validate_against_recipes() {
+        // Restatements parse and pass validation.
+        let src = "swizzle<8> fragment<16,8,16> node gemm [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let program = p.parse_program().expect("parse");
+        assert_eq!(
+            node_shape_annotation(&program, "gemm", "swizzle"),
+            Some(&Expr::Decimal(8))
+        );
+        match node_shape_annotation(&program, "gemm", "fragment") {
+            Some(Expr::Tuple(v)) => {
+                assert!(matches!(&v[..], [Expr::Decimal(16), Expr::Decimal(8), Expr::Decimal(16)]));
+            }
+            other => panic!("fragment payload: {other:?}"),
+        }
+        // validate_swizzle_fragment_recipes: a restatement returns None,
+        // a foreign shape carries the recipe note.
+        assert_eq!(validate_swizzle_fragment_recipes(&program, "gemm"), None);
+        let src_bad = "swizzle<4> node gemm [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens_bad = crate::lexer::tokenize(src_bad).expect("tokenize");
+        let mut pb = crate::parser::Parser::new(tokens_bad, src_bad);
+        let program_bad = pb.parse_program().expect("parse");
+        let note = validate_swizzle_fragment_recipes(&program_bad, "gemm")
+            .expect("a foreign swizzle notes");
+        assert!(note.contains("XOR-8") && note.contains("swizzle<8>"), "{note}");
+        let src_frag = "fragment<32,8,16> node gemm [i < 1][i == 1] { i = i + 1; term; };";
+        let tokens_frag = crate::lexer::tokenize(src_frag).expect("tokenize");
+        let mut pf = crate::parser::Parser::new(tokens_frag, src_frag);
+        let program_frag = pf.parse_program().expect("parse");
+        let fnote = validate_swizzle_fragment_recipes(&program_frag, "gemm")
+            .expect("a foreign fragment notes");
+        assert!(fnote.contains("m16n8k16"), "{fnote}");
+    }
+
     fn node_stage_modifier_reads_declared_stage() {
         // 2026-09-30 (D1/D2): `stage<N>` on a node is read as the effective
         // pipeline depth (source > config > model).
