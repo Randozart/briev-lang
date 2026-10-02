@@ -223,3 +223,29 @@ the tensor path).
 
 The two-pass form remains behind `ptx_deferred_online: 0` (the A/B
 fallback); `ptx_deferred_skip_pass` stays diagnostic-only.
+
+## Fused + split sweep (2026-10-01) — the shipped-best config
+
+The pass-split probe's sweep measured the TWO-PASS form under split;
+this sweep re-measures with the fused online kernel (`ptx_deferred_online: 1`,
+1200 reps):
+
+| variant | p10 | p50 | p90 |
+|---|---|---|---|
+| fused no-split | 71.8 | 75.9 | 383.4 |
+| fused split=2 | 86.1 | 86.6 | 90.4 |
+| **fused split=4** | **71.7** | **72.2** | **74.5** |
+| fused split=8 | 92.2 | 93.1 | 100.4 |
+
+- p50: split=4 (72.2) and no-split (75.9) are within noise — the fused
+  kernel is not grid-bound.
+- The TAIL is the difference: no-split p90 = 383 (the clock-cap
+  artifact on the 20-CTA grid) vs split=4 p90 = 74.5 (160 CTAs fill
+  the SMs; the clock stays ramped). split=4 is the STABLE config.
+- Correctness: the s8 gate fixture declares `split<8>` — its PASS with
+  the online config IS fused+split verified (CUDA 0.00e+00: the online
+  rescale + the combine rescale compose exactly). The combine handles
+  per-slice (m, l, acc) correctly under the fused form.
+
+Shipped-best decode config: fused + split=4 — 72.2 µs p50, 74.5 p90
+(target 125; ggml ~58).
