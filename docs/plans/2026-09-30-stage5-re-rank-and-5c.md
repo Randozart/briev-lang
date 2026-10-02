@@ -13,7 +13,7 @@ Front D verdict `benchmarks/results/2026-09-25-front-d-ab.md`.
 |------|------|-----|
 | 1 | **5c — warp-slice thresholds → config** (chosen) | Environment-independent (no GPU timing needed), mechanical, doctrine (Rule 2 / proof-vs-shape: tuning heuristics leave the backend). B1 gave no reason to reorder vs the umbrella's 3b-first order. |
 | 2 | **5b — S3b cp.async GEMM** | Biggest absolute prize, but gates measured while vendor driver 615 regression bounds the smem+barrier fill path (gates record). Relative same-driver A/B stays valid; absolute 38+ TF claims stay blocked on the vendor. Runs after 5c. |
-| 3 | **5a — attention 198→125 µs + dead-family deletion** | Composite path landed (`dd70f144`, `0051d920`); Front D settled (deferred stays); the `fused_attention_*` family (`src/backend/ptx/mod.rs`) is gated OFF since `0229d9e2` — deletion rides the perf gate. Independent of 5b. |
+| 3 | **5a — attention 198→125 µs + dead-family deletion** — **DONE 2026-10-01** | Composite + fused online: **72.5 µs p50** (target 125 BEATEN; ggml ~58 now 1.25× away). Dead-family deletion DONE (`a7871a27`, ~1300 lines; Rule 24 gate met). Remaining polish: float4 k/v loads, div slowpath. |
 | 4 | **5d — M4 ladder + M3 chain fusion** | Depends on 5a first (umbrella) and M3 not started. |
 
 Rule 12b pre-B check: no refuted hypothesis applies to 5c (it is
