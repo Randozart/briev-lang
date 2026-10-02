@@ -92,9 +92,21 @@ factor) wins: p50 220.8 → 202.5 µs (−8%), p90 339 → 210 µs (the
 combine stabilizes the clock-cap tail). S>4 regresses. Conclusion: the
 grid-underfill lever is worth ~8% — the residual gap to 125 µs is the
 PER-J COST (two passes × 128 j-iters/warp + butterflies + Exp# + div
-slowpath). Next: lever 2 — fuse the max/accumulate passes where the
-algebra permits, inline the butterfly (drop the out-of-line CALL),
-hoist the loop-invariant q[d] — behind E3 (a hand-patched PTX probe)
-before any generator change. Correctness gates: the softmax_gate split
-fixtures prove the machinery; the decode-geometry m3-harness gate rides
-lever 2's commit.
+slowpath). **Lever 2 first half DONE 2026-10-01** (`a06ef304`): the E3 dump
+re-sized the lever — the butterflies were ALREADY inline (post-ptxas
+SASS artifacts) and the address math already strength-reduced BY ptxas
+(the E3 PTX-level premise refuted at the SASS level); what survives is
+the Q RE-LOAD: 8 in-loop LDGs (4 strips x 2 passes) at a j-invariant
+address ptxas cannot hoist (state-pointer aliasing). The deferred
+emission now lifts j-invariant array reads into immutable per-strip
+lets (registers). Decode composite: no-split p50 220.8 -> 191.5 us
+(-13%, the shipped default; from the 200.6 baseline — 1.53x to target).
+Two gate-caught defects fixed (strip-collapse; all-strips rewrite
+pairs). Full data in the results file.
+
+Next: lever 2 second half — pass fusion re-examined (the online
+algebra at dlen=128 makes the rescale cost per-j, likely net-negative;
+needs the E3-style probe before any generator change) and the div
+slowpath; then the decode-geometry m3-harness gate + shape-gating
+(prefill -> composite / decode -> the measured-best config). Correctness
+gates: softmax_gate s8 + knob PASS both lanes at pre-hoist residuals.
