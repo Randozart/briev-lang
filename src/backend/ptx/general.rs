@@ -451,6 +451,12 @@ pub struct GeneralEmitOpts {
     /// (`declared_modifier`) and read here; `None` = the derived
     /// default, byte-identical behavior.
     pub unroll_override: Option<u64>,
+    /// 2026-10-02 (float4): emit-option override of the two deferred
+    /// knobs — the unit tests pin exact flag states without touching the
+    /// process-wide settings (parallel tests race the global). `None`
+    /// (every production caller) reads the shipped config.
+    pub online_override: Option<u32>,
+    pub deferred_region_override: Option<bool>,
 }
 
 pub fn emit_general_ptx(
@@ -464,7 +470,12 @@ pub fn emit_general_ptx(
     let mut g = Gen::new(layout, consts, count, universe, opts.int_bits);
     g.deferred_split = opts.deferred_split.max(1);
     g.skip_pass = crate::config_tuning::ir_lowering().ptx_deferred_skip_pass;
-    g.online = crate::config_tuning::ir_lowering().ptx_deferred_online;
+    g.online = opts
+        .online_override
+        .unwrap_or(crate::config_tuning::ir_lowering().ptx_deferred_online);
+    g.deferred_region_on = opts
+        .deferred_region_override
+        .unwrap_or(crate::config_tuning::ir_lowering().ptx_deferred_region);
     g.unroll_override = opts.unroll_override;
     g.emit(shape)
 }
@@ -912,6 +923,15 @@ struct Gen<'a> {
     /// design, timing evidence only.
     skip_pass: u32,
     online: u32,
+    /// 2026-10-02 (float4): the deferred-region gate as a Gen field —
+    /// set once in `emit_general_ptx` from the emit options (test seam)
+    /// or the shipped config; `emit` reads the field, never the global.
+    deferred_region_on: bool,
+    /// 2026-10-02 (float4): the fused-quad plan for the deferred region
+    /// being emitted (`None` = scalar strips). A Gen field, not a
+    /// parameter: `emit_deferred_region` computes it with the d_regs,
+    /// the online fn consumes it — without growing the 24-param row.
+    deferred_v4: Option<DeferredV4Plan>,
 }
 
 impl<'a> Gen<'a> {
@@ -948,6 +968,8 @@ impl<'a> Gen<'a> {
             split_slice_reg: None,
             skip_pass: 0,
             online: 0,
+            deferred_region_on: false,
+            deferred_v4: None,
         }
     }
 
@@ -1043,7 +1065,7 @@ impl<'a> Gen<'a> {
             || has_warp_slice(&shape.kernel_stmts, self.consts);
         // 2026-09-19 (M1-finish): the deferred-softmax region is a
         // block-per-workitem dispatch at 1024 threads (32 warp slices).
-        let region = if crate::config_tuning::ir_lowering().ptx_deferred_region {
+        let region = if self.deferred_region_on {
             detect_deferred_region(&shape.kernel_stmts, &shape.index_var)
         } else {
             None
@@ -3523,6 +3545,289 @@ mod tests {
             assert_ptx_well_formed(&ptx);
         }
     }
+
+    // ── 2026-10-02 (float4 k/v loads) ─────────────────────────────────
+
+    /// r*D + d — the q read of the decode composite.
+    fn v4_q_idx() -> Expr {
+        bin(Add, bin(Mul, id("r"), id("D")), id("d"))
+    }
+    /// kh*(D*NKV) + j*D + d — the k/v read.
+    fn v4_kv_idx() -> Expr {
+        bin(
+            Add,
+            bin(
+                Add,
+                bin(Mul, id("kh"), bin(Mul, id("D"), id("NKV"))),
+                bin(Mul, id("j"), id("D")),
+            ),
+            id("d"),
+        )
+    }
+
+    #[test]
+    fn v4_strip_d_removes_the_single_leaf() {
+        // any association: Add(Add(row, d)), Add(row, Add(d))…
+        for form in [
+            bin(Add, bin(Mul, id("kh"), id("D")), id("d")),
+            bin(Add, id("d"), bin(Mul, id("kh"), id("D"))),
+            bin(Add, bin(Add, id("row"), id("d")), id("x")),
+            bin(Add, id("row"), bin(Add, id("d"), id("x"))),
+        ] {
+            let row = v4_strip_d(&form, "d").expect("d-affine");
+            assert!(
+                !format!("{:?}", row).contains("\"d\""),
+                "row must be d-free: {row:?}"
+            );
+        }
+        // zero occurrences: not a quad site.
+        assert!(v4_strip_d(&id("row"), "d").is_none());
+        // two occurrences: not d-affine.
+        assert!(v4_strip_d(&bin(Add, id("d"), id("d")), "d").is_none());
+        // coefficient on d: keep the scalar strips.
+        assert!(v4_strip_d(&bin(Mul, id("d"), num(2)), "d").is_none());
+        // d nested in a non-Add op: scalar.
+        assert!(v4_strip_d(&idx("w", id("d")), "d").is_none());
+    }
+
+    fn v4_dot_body() -> Vec<Statement> {
+        vec![Statement::Assign(
+            id("sc2"),
+            bin(
+                Add,
+                id("sc2"),
+                bin(
+                    Mul,
+                    idx("q", v4_q_idx()),
+                    idx("k", v4_kv_idx()),
+                ),
+            ),
+        )]
+    }
+
+    #[test]
+    fn v4_first_d_idx_finds_the_k_site() {
+        let got = v4_first_d_idx(&v4_dot_body(), "k", "d").expect("k index");
+        assert_eq!(format!("{:?}", got), format!("{:?}", v4_kv_idx()));
+        assert!(v4_first_d_idx(&v4_dot_body(), "nope", "d").is_none());
+        // dedup: two identical v sites collapse to one plan entry.
+        let acc = vec![Statement::Assign(
+            idx("o1", v4_q_idx()),
+            bin(
+                Add,
+                idx("o1", v4_q_idx()),
+                bin(Mul, id("p"), idx("v", v4_kv_idx())),
+            ),
+        )];
+        let got = v4_all_d_idxs(&acc, "v", "d");
+        assert_eq!(got.len(), 1);
+        assert_eq!(format!("{:?}", got[0]), format!("{:?}", v4_kv_idx()));
+    }
+
+    /// The decode-composite shape (softmax_fused! expansion): m/l inits,
+    /// the max pass, the accumulate pass, the normalize loop — exactly
+    /// what `detect_deferred_region` matches.
+    fn v4_softmax_shape(dim: i64) -> crate::analysis::accel::KernelShape {
+        let j_range = || Expr::Range {
+            start: Box::new(num(0)),
+            end: Box::new(id("NKV")),
+            inclusive: false,
+        };
+        let d_range = || Expr::Range {
+            start: Box::new(num(0)),
+            end: Box::new(id("D")),
+            inclusive: false,
+        };
+        let dot = |sc: &str| {
+            Statement::Foreach {
+                item: "d".into(),
+                list: Box::new(d_range()),
+                body: vec![Statement::Assign(
+                    id(sc),
+                    bin(
+                        Add,
+                        id(sc),
+                        bin(Mul, idx("q", v4_q_idx()), idx("k", v4_kv_idx())),
+                    ),
+                )],
+            }
+        };
+        let pass_a = Statement::Foreach {
+            item: "j".into(),
+            list: Box::new(j_range()),
+            body: vec![
+                v4_let_f("sc", crate::ast::Expr::Decimal(0)),
+                dot("sc"),
+                Statement::Assign(
+                    id("m"),
+                    Expr::Call("Max#".into(), vec![id("m"), id("sc")], None),
+                ),
+            ],
+        };
+        let pass_b = Statement::Foreach {
+            item: "j".into(),
+            list: Box::new(j_range()),
+            body: vec![
+                v4_let_f("sc2", crate::ast::Expr::Decimal(0)),
+                dot("sc2"),
+                v4_let_f(
+                    "p",
+                    Expr::Call("Exp#".into(), vec![bin(Sub, id("sc2"), id("m"))], None),
+                ),
+                Statement::Assign(id("l"), bin(Add, id("l"), id("p"))),
+                Statement::Foreach {
+                    item: "d".into(),
+                    list: Box::new(d_range()),
+                    body: vec![Statement::Assign(
+                        idx("o1", v4_q_idx()),
+                        bin(
+                            Add,
+                            idx("o1", v4_q_idx()),
+                            bin(Mul, id("p"), idx("v", v4_kv_idx())),
+                        ),
+                    )],
+                },
+            ],
+        };
+        let norm = Statement::Foreach {
+            item: "d".into(),
+            list: Box::new(d_range()),
+            body: vec![Statement::Assign(
+                idx("a_out", v4_q_idx()),
+                bin(Div, idx("o1", v4_q_idx()), id("l")),
+            )],
+        };
+        v4_shape_kernel(vec![
+            v4_let("kh", "Int", bin(Div, id("r"), id("G"))),
+            v4_let_f("m", crate::ast::Expr::Float(-1e30)),
+            pass_a,
+            v4_let_f("l", crate::ast::Expr::Float(0.0)),
+            pass_b,
+            norm,
+        ])
+    }
+
+    fn v4_let(name: &str, ty: &str, e: Expr) -> Statement {
+        Statement::Let {
+            name: name.into(),
+            names: vec![],
+            ty: Some(crate::ast::Type::Custom(ty.into())),
+            expr: Some(e),
+            modifiers: vec![],
+        }
+    }
+
+    fn v4_let_f(name: &str, e: Expr) -> Statement {
+        Statement::Let {
+            name: name.into(),
+            names: vec![],
+            ty: Some(crate::ast::Type::float()),
+            expr: Some(e),
+            modifiers: vec![],
+        }
+    }
+
+    fn v4_shape_kernel(kernel_stmts: Vec<Statement>) -> crate::analysis::accel::KernelShape {
+        crate::analysis::accel::KernelShape {
+            index_var: "r".into(),
+            count_expr: Some(num(20)),
+            kernel_stmts,
+            host_stmts: vec![],
+            read_buffers: vec!["q".into(), "k".into(), "v".into(), "o1".into()],
+            write_buffers: vec!["o1".into(), "a_out".into()],
+            scalar_ins: vec![],
+            eligible: true,
+            reasons: vec![],
+            work_cols: None,
+            reduction: None,
+            deferred_normalize: None,
+        }
+    }
+
+    fn v4_layout() -> crate::backend::spirv::runner::SsboLayout {
+        // 16-aligned projected offsets (the quad-alignment precondition).
+        crate::backend::spirv::runner::SsboLayout {
+            fields: vec![
+                f64_field("q", 16, 2560),
+                f64_field("k", 10256, 2621440),
+                f64_field("v", 10486016, 2621440),
+                f64_field("o1", 20971776, 81920),
+                f64_field("a_out", 21004544, 2560),
+            ],
+            images: vec![],
+            state_bytes: 1 << 25,
+            program_bytes: 1 << 24,
+        }
+    }
+
+    fn v4_emit(dim: i64, online: u32) -> String {
+        let mut consts = consts();
+        consts.insert("D".into(), num(dim as i64));
+        emit_general_ptx(
+            &v4_softmax_shape(dim),
+            20,
+            &v4_layout(),
+            &consts,
+            &crate::type_universe::TypeUniverse::new(),
+            GeneralEmitOpts {
+                int_bits: 32,
+                deferred_split: 0,
+                online_override: Some(online),
+                deferred_region_override: Some(true),
+                ..Default::default()
+            },
+        )
+        .expect("deferred softmax emits")
+    }
+
+    #[test]
+    fn float4_quad_loads_replace_the_scalar_strips() {
+        let ptx = v4_emit(128, 1);
+        // ONE v4 load per buffer per j (q hoists above the loop; k/v at
+        // the loop top) — 8 scalar LDG → 3 LDG.128.
+        let quads: Vec<&str> = ptx.lines().filter(|l| l.contains("ld.global.v4.f32")).collect();
+        assert_eq!(quads.len(), 3, "q + k + v quads: {ptx}");
+        // The flip: d0 = lane*4 (not mov lane), strips step by 1.
+        assert!(
+            ptx.lines().any(|l| l.trim().starts_with("mul.lo.u32") && l.trim_end().ends_with(", 4;")),
+            "d0 = lane*4: {ptx}"
+        );
+        // No scalar f32 load survives — every global read rides a quad.
+        assert!(!ptx.contains("ld.global.f32"), "scalar loads remain: {ptx}");
+        assert_ptx_well_formed(&ptx);
+    }
+
+    #[test]
+    fn float4_fallbacks_keep_the_scalar_strips() {
+        // Two-pass (online=0) is the A/B fallback — scalar, original map.
+        let two_pass = v4_emit(128, 0);
+        assert!(
+            !two_pass.contains("ld.global.v4.f32"),
+            "two-pass must stay scalar: {two_pass}"
+        );
+        // No flip marker (d0 = lane*4) and the strips step by 32 — the
+        // original d mapping.
+        assert!(
+            !two_pass.lines().any(|l| l.trim().starts_with("mul.lo.u32") && l.trim_end().ends_with(", 4;")),
+            "two-pass must keep the original d map: {two_pass}"
+        );
+        assert!(
+            two_pass.lines().any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 96;")),
+            "strips at lane + 32·i: {two_pass}"
+        );
+        assert!(
+            two_pass.contains("ld.global.f32"),
+            "two-pass strips load scalar: {two_pass}"
+        );
+        assert_ptx_well_formed(&two_pass);
+        // D=32: one strip — no quad geometry, scalar online form.
+        let narrow = v4_emit(32, 1);
+        assert!(
+            !narrow.contains("ld.global.v4.f32"),
+            "strips < 4 must stay scalar: {narrow}"
+        );
+        assert_ptx_well_formed(&narrow);
+    }
 }
 
 #[cfg(test)]
@@ -3997,6 +4302,224 @@ fn collect_j_invariant_reads(
     uniq.into_iter().enumerate().collect()
 }
 
+/// 2026-10-02 (float4 k/v loads): occurrences of `name` in `e` — the
+/// single-leaf precondition for the quad rewrite (an index naming `d`
+/// twice, e.g. `d*d`, is not d-affine and must keep the scalar strips).
+fn expr_count(e: &Expr, name: &str) -> u32 {
+    match e {
+        Expr::Identifier(n) => u32::from(n == name),
+        Expr::BinaryOp(_, a, b) | Expr::Index(a, b) => {
+            expr_count(a, name) + expr_count(b, name)
+        }
+        Expr::UnaryOp(_, a) => expr_count(a, name),
+        Expr::Call(_, args, _) => args.iter().map(|a| expr_count(a, name)).sum(),
+        _ => 0,
+    }
+}
+
+/// 2026-10-02 (float4 k/v loads): remove the single `d` leaf from an
+/// additive tree — the row term of a d-affine load (`Add(row, d)` in any
+/// association). `Some(row)` iff `d` occurs exactly once; the returned
+/// row never references `d`. `None` = not d-affine (scalar fallback).
+fn v4_strip_d(e: &Expr, d: &str) -> Option<Expr> {
+    if expr_count(e, d) != 1 {
+        return None;
+    }
+    fn strip(e: &Expr, d: &str) -> Option<Expr> {
+        match e {
+            Expr::Identifier(n) if n == d => Some(Expr::Decimal(0)),
+            Expr::BinaryOp(crate::ast::BinaryOpKind::Add, a, b) => {
+                match (strip(a, d), strip(b, d)) {
+                    (Some(x), None) => Some(x),
+                    (None, Some(x)) => Some(x),
+                    (Some(x), Some(y)) => {
+                        Some(Expr::BinaryOp(crate::ast::BinaryOpKind::Add, Box::new(x), Box::new(y)))
+                    }
+                    (None, None) => None,
+                }
+            }
+            other => {
+                if expr_references(other, d) {
+                    None
+                } else {
+                    Some(other.clone())
+                }
+            }
+        }
+    }
+    strip(e, d)
+}
+
+/// 2026-10-02 (float4 k/v loads): the first d-affine `Index` read on
+/// `buf` in `stmts` — the plan's k-load site (the dot body holds exactly
+/// one).
+fn v4_first_d_idx(stmts: &[Statement], buf: &str, d: &str) -> Option<Expr> {
+    fn walk_stmts(stmts: &[Statement], buf: &str, d: &str, out: &mut Option<Expr>) {
+        for s in stmts {
+            if out.is_some() {
+                return;
+            }
+            match s {
+                Statement::Assign(lhs, rhs) => {
+                    walk_expr(lhs, buf, d, out);
+                    walk_expr(rhs, buf, d, out);
+                }
+                Statement::Let { expr: Some(e), .. }
+                | Statement::Expression(e)
+                | Statement::Gate(e)
+                | Statement::Term(Some(e)) => walk_expr(e, buf, d, out),
+                Statement::Guarded(_, body) | Statement::Block(body) => {
+                    walk_stmts(body, buf, d, out)
+                }
+                Statement::Foreach { list, body, .. } => {
+                    walk_expr(list, buf, d, out);
+                    walk_stmts(body, buf, d, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    fn walk_expr(e: &Expr, buf: &str, d: &str, out: &mut Option<Expr>) {
+        if out.is_some() {
+            return;
+        }
+        if let Expr::Index(b, idx) = e {
+            if matches!(b.as_ref(), Expr::Identifier(bn) if bn == buf)
+                && v4_strip_d(idx, d).is_some()
+            {
+                *out = Some((**idx).clone());
+                return;
+            }
+        }
+        match e {
+            Expr::BinaryOp(_, a, b) | Expr::Index(a, b) => {
+                walk_expr(a, buf, d, out);
+                walk_expr(b, buf, d, out);
+            }
+            Expr::UnaryOp(_, a) => walk_expr(a, buf, d, out),
+            Expr::Call(_, args, _) => {
+                for a in args {
+                    walk_expr(a, buf, d, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = None;
+    walk_stmts(stmts, buf, d, &mut out);
+    out
+}
+
+/// 2026-10-02 (float4 k/v loads): every DISTINCT d-affine `Index` read on
+/// `buf` in `stmts` (Debug-deduped, insertion order) — the plan's v-load
+/// sites (one per acc statement in the common shape).
+fn v4_all_d_idxs(stmts: &[Statement], buf: &str, d: &str) -> Vec<Expr> {
+    fn walk_expr(e: &Expr, buf: &str, d: &str, out: &mut Vec<Expr>) {
+        if let Expr::Index(b, idx) = e {
+            if matches!(b.as_ref(), Expr::Identifier(bn) if bn == buf)
+                && v4_strip_d(idx, d).is_some()
+                && !out.iter().any(|x| format!("{:?}", x) == format!("{:?}", idx))
+            {
+                out.push((**idx).clone());
+            }
+        }
+        match e {
+            Expr::BinaryOp(_, a, b) | Expr::Index(a, b) => {
+                walk_expr(a, buf, d, out);
+                walk_expr(b, buf, d, out);
+            }
+            Expr::UnaryOp(_, a) => walk_expr(a, buf, d, out),
+            Expr::Call(_, args, _) => {
+                for a in args {
+                    walk_expr(a, buf, d, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn walk_stmts(stmts: &[Statement], buf: &str, d: &str, out: &mut Vec<Expr>) {
+        for s in stmts {
+            match s {
+                Statement::Assign(lhs, rhs) => {
+                    walk_expr(lhs, buf, d, out);
+                    walk_expr(rhs, buf, d, out);
+                }
+                Statement::Let { expr: Some(e), .. }
+                | Statement::Expression(e)
+                | Statement::Gate(e)
+                | Statement::Term(Some(e)) => walk_expr(e, buf, d, out),
+                Statement::Guarded(_, body) | Statement::Block(body) => {
+                    walk_stmts(body, buf, d, out)
+                }
+                Statement::Foreach { list, body, .. } => {
+                    walk_expr(list, buf, d, out);
+                    walk_stmts(body, buf, d, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk_stmts(stmts, buf, d, &mut out);
+    out
+}
+
+/// 2026-10-02 (float4 k/v loads): the hoisted q reads (j-invariant) that
+/// take the quad hoist — the d-affine ones on `q_buf`; any other hoisted
+/// read stays per-strip scalar (correct under the flipped d mapping —
+/// d_regs[i] still names strip i's element).
+fn v4_plan_q_idxs(parts: &DeferredRegionParts, hoisted: &[(usize, Expr)]) -> Vec<Expr> {
+    let mut q_idxs: Vec<Expr> = Vec::new();
+    for (_, e) in hoisted {
+        if let Expr::Index(b, idx) = e {
+            if matches!(b.as_ref(), Expr::Identifier(bn) if bn == &parts.q_buf)
+                && v4_strip_d(idx, &parts.da).is_some()
+                && !q_idxs.iter().any(|x| format!("{:?}", x) == format!("{:?}", idx))
+            {
+                q_idxs.push((**idx).clone());
+            }
+        }
+    }
+    q_idxs
+}
+
+/// 2026-10-02 (float4 k/v loads): strip `i`'s planned k site reads quad
+/// element `i` — the per-strip unique register name keeps the rewrite
+/// strip-correct. Any k read outside the planned site keeps the scalar
+/// form (correct under the flipped mapping). `None` = scalar path.
+fn v4_k_subst(body: &mut [Statement], v4: Option<&DeferredV4Plan>, i: usize) {
+    let Some(plan) = v4 else { return };
+    let pairs = vec![(
+        format!("__vdqk_{}", i),
+        Expr::Index(
+            Box::new(Expr::Identifier(plan.k_buf.clone())),
+            Box::new(plan.k_idx.clone()),
+        ),
+    )];
+    rewrite_j_stmts(body, &pairs);
+}
+
+/// 2026-10-02 (float4 k/v loads): strip `i`'s planned v sites read quad
+/// element `i` (site pairs — exact-match substitution). `None` = scalar.
+fn v4_v_subst(acc: &mut [Statement], v4: Option<&DeferredV4Plan>, i: usize) {
+    let Some(plan) = v4 else { return };
+    let pairs: Vec<(String, Expr)> = plan
+        .v_idxs
+        .iter()
+        .enumerate()
+        .map(|(vi, ve)| {
+            (
+                format!("__vdqv{}_{}", vi, i),
+                Expr::Index(
+                    Box::new(Expr::Identifier(plan.v_buf.clone())),
+                    Box::new(ve.clone()),
+                ),
+            )
+        })
+        .collect();
+    rewrite_j_stmts(acc, &pairs);
+}
+
 struct DeferredRegionParts {
     j_name: String,
     kh_stmt: Option<Statement>,
@@ -4026,6 +4549,58 @@ struct DeferredRegionParts {
     lc_end: Expr,
     m_name: String,
     l_name: String,
+}
+
+/// 2026-10-02 (float4): the d strip register inputs — the
+/// [`Gen::deferred_d_regs`] spec (PartialStore precedent; keeps the
+/// method at 3 params).
+struct DRegs<'a> {
+    parts: &'a DeferredRegionParts,
+    hoisted: &'a [(usize, Expr)],
+    strips: usize,
+    r_lane: String,
+}
+
+/// 2026-10-02 (float4 k/v loads): the verified shape the fused-quad path lowers. Built BEFORE the d_regs
+/// setup (`Gen::deferred_v4_plan`); `None` keeps the scalar strips with
+/// the original d mapping (the flip alone is negative — every strip load
+/// drops to 25% per-transaction efficiency without the v4 fusion, so the
+/// two are inseparable and stand or fall together).
+#[derive(Clone)]
+struct DeferredV4Plan {
+    /// The k row's d-affine index (d binder inside), pass-B dot body.
+    k_idx: Expr,
+    k_buf: String,
+    /// Distinct d-affine v indices, acc statements (usually one).
+    v_idxs: Vec<Expr>,
+    v_buf: String,
+    /// Distinct d-affine q indices among the hoisted reads (usually one;
+    /// j-invariant, so the quad loads hoist above the j loop).
+    q_idxs: Vec<Expr>,
+    q_buf: String,
+    /// d binder of the hoisted q reads (pass-A/B dot item).
+    da: String,
+    /// The quad count per full pass: strips / 4 (strips % 4 == 0 checked).
+    quads: usize,
+}
+
+/// 2026-10-02 (float4): one quad-load site — the [`Gen::emit_deferred_quad_load`]
+/// spec (PartialStore precedent).
+struct QuadLoad<'a> {
+    buf: &'a str,
+    idx: &'a Expr,
+    d_binder: &'a str,
+    d_regs: &'a [String],
+    quad: usize,
+    prefix: String,
+}
+
+/// 2026-10-02 (float4): the per-strip hoisted-let inputs — the
+/// [`Gen::online_strip_lets`] spec.
+struct StripLets<'a> {
+    da: &'a str,
+    hoisted: &'a [(usize, Expr)],
+    d_regs: &'a [String],
 }
 
 /// 2026-09-30 (general reduction-split): per-CTA context for
@@ -4392,6 +4967,268 @@ impl Gen<'_> {
         Ok(())
     }
 
+    /// 2026-10-02 (float4 k/v loads): the fused-quad decision + the d
+    /// strip registers, as one self-contained step. `Some(plan)` flips
+    /// the mapping to per-lane contiguous quads (`lane·4 + i`); `None`
+    /// keeps the original `lane + 32·i` scalar strips. The flip and the
+    /// fusion are inseparable — d = lane + 32·i is 100% coalesced scalar
+    /// but stride-4 once flipped, so the quad loads must exist whenever
+    /// the mapping flips.
+    fn deferred_d_regs(
+        &mut self,
+        spec: &DRegs,
+        decl: &mut String,
+        body: &mut String,
+    ) -> (Vec<String>, Option<DeferredV4Plan>) {
+        let v4 = (self.online != 0)
+            .then(|| self.deferred_v4_plan(spec.parts, spec.hoisted, spec.strips))
+            .flatten();
+        let flipped = v4.is_some();
+        // strip 0: the quad base (lane·4 flipped, lane otherwise).
+        let d0 = self.fresh_r();
+        decl.push_str(&format!("    .reg .u32 {};\n", d0));
+        if flipped {
+            // flipped: per-lane contiguous quads (lane·4 + c).
+            body.push_str(&format!("    mul.lo.u32 {}, {}, 4;\n", d0, spec.r_lane));
+        } else {
+            body.push_str(&format!("    mov.u32 {}, {};\n", d0, spec.r_lane));
+        }
+        let mut d_regs = vec![d0];
+        // strips 1..: the stride IS the mapping (1 = quads, 32 = scalar).
+        let stride: u32 = if flipped { 1 } else { 32 };
+        for i in 1..spec.strips {
+            let d = self.fresh_r();
+            decl.push_str(&format!("    .reg .u32 {};\n", d));
+            body.push_str(&format!(
+                "    add.u32 {}, {}, {};\n",
+                d,
+                d_regs[0],
+                stride * i as u32
+            ));
+            d_regs.push(d);
+        }
+        (d_regs, v4)
+    }
+
+    /// 2026-10-02 (float4 k/v loads): verify ONE buffer takes quad
+    /// loads — f32 elements and a 16-byte-aligned field offset (a
+    /// `ld.global.v4.f32` address is base + off + row·4 + lane·16; D is
+    /// already a multiple of 32 so the row term keeps alignment). The
+    /// fixture offsets are 16-aligned; the check is the GENERAL rule,
+    /// not a fixture assumption — a misaligned field keeps the scalar
+    /// strips.
+    fn v4_buf_quad_ok(&self, buf: &str) -> bool {
+        self.elem_bytes(buf) == Ok(4) && self.field_off(buf).is_some_and(|o| o % 16 == 0)
+    }
+
+    /// 2026-10-02 (float4 k/v loads): verify the deferred shape takes the
+    /// fused-quad form. Every load the strips perform must be d-affine on
+    /// its buffer (single `d` leaf, d-free row).
+    fn deferred_v4_plan(
+        &self,
+        parts: &DeferredRegionParts,
+        hoisted: &[(usize, Expr)],
+        strips: usize,
+    ) -> Option<DeferredV4Plan> {
+        // The quad geometry: each v4 load covers exactly 4 strips.
+        if strips < 4 || strips % 4 != 0 {
+            return None;
+        }
+        let k_idx = v4_first_d_idx(&parts.dot_b_body, &parts.k_buf, &parts.db)?;
+        let v_idxs = v4_all_d_idxs(&parts.acc_stmts, &parts.v_buf, &parts.dc2);
+        if v_idxs.is_empty() {
+            return None;
+        }
+        let q_idxs = v4_plan_q_idxs(parts, hoisted);
+        // Alignment + element width for every buffer the quads touch.
+        if !self.v4_buf_quad_ok(&parts.k_buf) || !self.v4_buf_quad_ok(&parts.v_buf) {
+            return None;
+        }
+        if !q_idxs.is_empty() && !self.v4_buf_quad_ok(&parts.q_buf) {
+            return None;
+        }
+        Some(DeferredV4Plan {
+            k_idx,
+            k_buf: parts.k_buf.clone(),
+            v_idxs,
+            v_buf: parts.v_buf.clone(),
+            q_idxs,
+            q_buf: parts.q_buf.clone(),
+            da: parts.da.clone(),
+            quads: strips / 4,
+        })
+    }
+
+    /// 2026-10-02 (float4 k/v loads): ONE `ld.global.v4.f32` covering the
+    /// four strip elements `d0 .. d0+3` (the flipped d mapping makes the
+    /// strips per-lane contiguous quads). The address is the SAME
+    /// expression the scalar load for `d_regs[4·g]` would compute — the
+    /// index is emitted through the standard path with the d binder bound
+    /// to the quad-base register — and the four destinations are bound as
+    /// `<prefix>_<strip>` registers the per-strip bodies read.
+    fn emit_deferred_quad_load(
+        &mut self,
+        spec: &QuadLoad,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let QuadLoad { buf, idx, d_binder, d_regs, quad, prefix } = spec;
+        let off = self.field_off(buf).ok_or_else(|| {
+            format!("ptx general: quad load buffer '{}' not in layout", buf)
+        })?;
+        let elem = self.elem_bytes(buf)?;
+        if elem != 4 {
+            return Err(format!(
+                "ptx general: quad load needs f32 elements (got {} bytes in '{}')",
+                elem, buf
+            ));
+        }
+        let d0 = d_regs
+            .get(quad * 4)
+            .ok_or_else(|| "ptx general: quad base strip missing".to_string())?;
+        let saved = self.regs.insert((*d_binder).to_string(), d0.clone());
+        let addr = self.array_addr(buf.to_string(), off, elem, idx, decl, body);
+        match saved {
+            Some(v) => {
+                self.regs.insert((*d_binder).to_string(), v);
+            }
+            None => {
+                self.regs.remove(*d_binder);
+            }
+        }
+        let addr = addr?;
+        let mut q: Vec<String> = Vec::with_capacity(4);
+        for _ in 0..4 {
+            q.push(self.fresh_f());
+        }
+        decl.push_str(&format!(
+            "    .reg .f32 {}, {}, {}, {};\n",
+            q[0], q[1], q[2], q[3]
+        ));
+        body.push_str(&format!(
+            "    ld.global.v4.f32 {{{}, {}, {}, {}}}, [{}];\n",
+            q[0], q[1], q[2], q[3], addr
+        ));
+        for (c, reg) in q.iter().enumerate() {
+            self.regs
+                .insert(format!("{}_{}", prefix, quad * 4 + c), reg.clone());
+        }
+        Ok(())
+    }
+
+    /// 2026-10-02 (float4): the online path's q side — one quad load per
+    /// hoisted q read per quad (ABOVE the j loop: the reads are
+    /// j-invariant).
+    fn online_q_quads(
+        &mut self,
+        d_regs: &[String],
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let Some(plan) = self.deferred_v4.clone() else {
+            return Ok(());
+        };
+        for (gq, qe) in plan.q_idxs.iter().enumerate() {
+            for g in 0..plan.quads {
+                let spec = QuadLoad {
+                    buf: &plan.q_buf,
+                    idx: qe,
+                    d_binder: &plan.da,
+                    d_regs,
+                    quad: g,
+                    prefix: format!("__vdqq{}", gq),
+                };
+                self.emit_deferred_quad_load(&spec, decl, body)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 2026-10-02 (float4): the per-strip hoisted lets (registers): a
+    /// read covered by a quad reads its quad-element register, anything
+    /// else hoists scalar (correct under the flipped mapping — d_regs[i]
+    /// still names strip i's element).
+    fn online_strip_lets(
+        &mut self,
+        spec: &StripLets,
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let v4 = self.deferred_v4.clone();
+        for i in 0..spec.d_regs.len() {
+            self.regs.insert(spec.da.to_string(), spec.d_regs[i].clone());
+            for (jdx, (_, expr)) in spec.hoisted.iter().enumerate() {
+                let let_expr = match &v4 {
+                    // The hoisted entry is the FULL read `q[<idx>]`; the
+                    // plan keys the idx — match on the idx.
+                    Some(plan) => {
+                        let gq = plan.q_idxs.iter().position(|qe| match expr {
+                            Expr::Index(_, idx) => {
+                                format!("{:?}", idx.as_ref()) == format!("{:?}", qe)
+                            }
+                            _ => false,
+                        });
+                        match gq {
+                            Some(gq) => Expr::Identifier(format!("__vdqq{}_{}", gq, i)),
+                            None => expr.clone(),
+                        }
+                    }
+                    None => expr.clone(),
+                };
+                let stmt = Statement::Let {
+                    name: format!("__dqh{}_{}", i, jdx),
+                    names: vec![],
+                    ty: Some(crate::ast::Type::float()),
+                    expr: Some(let_expr),
+                    modifiers: vec![],
+                };
+                self.emit_stmt(&stmt, decl, body)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 2026-10-02 (float4): the online j loop's global traffic — ONE v4
+    /// load per quad per buffer per j (8 scalar LDG → 2 LDG.128 at 4
+    /// strips). The k quad is consumed by the dot strips; the v quad
+    /// after the rescale — the schedule owns both loads.
+    fn online_loop_quads(
+        &mut self,
+        parts: &DeferredRegionParts,
+        d_regs: &[String],
+        decl: &mut String,
+        body: &mut String,
+    ) -> Result<(), String> {
+        let Some(plan) = self.deferred_v4.clone() else {
+            return Ok(());
+        };
+        for g in 0..plan.quads {
+            let spec = QuadLoad {
+                buf: &plan.k_buf,
+                idx: &plan.k_idx,
+                d_binder: &parts.db,
+                d_regs,
+                quad: g,
+                prefix: "__vdqk".to_string(),
+            };
+            self.emit_deferred_quad_load(&spec, decl, body)?;
+        }
+        for (vi, ve) in plan.v_idxs.iter().enumerate() {
+            for g in 0..plan.quads {
+                let spec = QuadLoad {
+                    buf: &plan.v_buf,
+                    idx: ve,
+                    d_binder: &parts.dc2,
+                    d_regs,
+                    quad: g,
+                    prefix: format!("__vdqv{}", vi),
+                };
+                self.emit_deferred_quad_load(&spec, decl, body)?;
+            }
+        }
+        Ok(())
+    }
+
     /// 2026-10-01 (5a lever 2, second half): the FUSED online softmax —
     /// ONE j sweep (dot, running max + rescale, p, l, acc) instead of
     /// the two passes. Called from `emit_deferred_region` after the
@@ -4426,6 +5263,7 @@ impl Gen<'_> {
         decl: &mut String,
         body: &mut String,
     ) -> Result<(), String> {
+        let v4 = self.deferred_v4.clone();
         let lab = self.label;
         self.label += 5;
         let h2h = format!("L{}_b", lab);
@@ -4443,20 +5281,19 @@ impl Gen<'_> {
         let rsc_r = format!("L{}_r", rsc);
         let rsc_e = format!("L{}_re", rsc);
         let saved_j = self.regs.insert(parts.j_name.clone(), r_cnt.to_string());
-        // per-strip hoisted lets (registers — j-invariant q reads).
-        for i in 0..strips {
-            self.regs.insert(parts.da.clone(), d_regs[i].clone());
-            for (jdx, (_, expr)) in hoisted.iter().enumerate() {
-                let stmt = Statement::Let {
-                    name: format!("__dqh{}_{}", i, jdx),
-                    names: vec![],
-                    ty: Some(crate::ast::Type::float()),
-                    expr: Some(expr.clone()),
-                    modifiers: vec![],
-                };
-                self.emit_stmt(&stmt, decl, body)?;
-            }
-        }
+        // 2026-10-02 (float4): the q quad loads hoist ABOVE the j loop
+        // (j-invariant) and the per-strip lets read their quad elements —
+        // one self-contained step.
+        self.online_q_quads(d_regs, decl, body)?;
+        self.online_strip_lets(
+            &StripLets {
+                da: &parts.da,
+                hoisted,
+                d_regs,
+            },
+            decl,
+            body,
+        )?;
         // j loop bounds.
         body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
         body.push_str(&format!(
@@ -4475,6 +5312,11 @@ impl Gen<'_> {
         ));
         body.push_str(&format!("    @{} bra {};\n", pred, h2e));
         body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
+        // 2026-10-02 (float4): the loop's global traffic — ONE v4 load per
+        // quad per buffer per j (8 scalar LDG → 2 LDG.128 at 4 strips).
+        // The k quad is consumed by the dot strips below; the v quad is
+        // consumed after the rescale (the schedule owns both loads).
+        self.online_loop_quads(parts, d_regs, decl, body)?;
         let saved_d = self.regs.insert(parts.db.clone(), d_regs[0].clone());
         for i in 0..strips {
             self.active_strip = i;
@@ -4485,6 +5327,14 @@ impl Gen<'_> {
                 .map(|(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
                 .collect();
             rewrite_j_stmts(&mut body_b, &pairs_b);
+            // 2026-10-02 (float4): strip i's planned k site reads quad
+            // element i — the per-strip unique register name is what
+            // keeps the quad rewrite strip-correct (a single shared
+            // entry would serve every strip the same element). Any k
+            // read outside the planned site keeps the scalar form —
+            // correct under the flipped mapping (d_regs[i] still names
+            // strip i's element).
+            v4_k_subst(&mut body_b, v4.as_ref(), i);
             for s in &body_b {
                 self.emit_stmt(s, decl, body)?;
             }
@@ -4535,7 +5385,12 @@ impl Gen<'_> {
         for i in 0..strips {
             self.active_strip = i;
             self.regs.insert(parts.dc2.clone(), d_regs[i].clone());
-            for s in &parts.acc_stmts {
+            // 2026-10-02 (float4): strip i's planned v sites read quad
+            // element i (site pairs — exact-match substitution, unplanned
+            // reads keep the scalar form).
+            let mut acc_i = parts.acc_stmts.clone();
+            v4_v_subst(&mut acc_i, v4.as_ref(), i);
+            for s in &acc_i {
                 self.emit_stmt(s, decl, body)?;
             }
         }
@@ -4813,32 +5668,6 @@ impl Gen<'_> {
         body.push_str(&format!("    mov.u32 {}, %tid.x;\n", r_tid));
         body.push_str(&format!("    and.b32 {}, {}, 31;\n", r_lane, r_tid));
         body.push_str(&format!("    shr.u32 {}, {}, 5;\n", r_warp, r_tid));
-        let mut d_regs = Vec::new();
-        for i in 0..strips {
-            let d = self.fresh_r();
-            decl.push_str(&format!("    .reg .u32 {};\n", d));
-            if i == 0 {
-                body.push_str(&format!("    mov.u32 {}, {};\n", d, r_lane));
-            } else {
-                body.push_str(&format!("    add.u32 {}, {}, {};\n", d, d_regs[0], 32 * i));
-            }
-            d_regs.push(d);
-        }
-        // state init: m from the author's constant, everything else zero.
-        // 2026-09-20 (NaN fix): the detector extracts Float(1e30) from
-        // Neg(Float(1e30)), stripping the negation.  Negate here.
-        let m_init = fold_f32(&parts.m_init, self.consts)
-            .ok_or_else(|| "ptx general: deferred region max init is not a constant".to_string())?;
-        body.push_str(&format!("    mov.f32 {}, {};\n", m_reg, f32_imm(-m_init)));
-        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", l_reg));
-        let mut a_regs = Vec::new();
-        for _ in 0..strips {
-            let a = self.fresh_f();
-            decl.push_str(&format!("    .reg .f32 {};\n", a));
-            body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", a));
-            a_regs.push(a);
-        }
-
         // 2026-10-01 (5a lever 2, E2/E3-sized): hoist j-INVARIANT array
         // reads out of the two j passes. The dot bodies re-load q
         // (h·D+d — independent of the j counter) EVERY iteration; ptxas
@@ -4856,8 +5685,43 @@ impl Gen<'_> {
         // let wins in last_val_temps — every strip would read the last
         // strip's register: the CUDA-lane FAIL this fixed).
         let hoisted = collect_j_invariant_reads(&parts.dot_a_body, &parts.dot_b_body, parts);
+        // 2026-10-02 (float4 k/v loads): the fused-quad decision + the d
+        // strip registers — one self-contained step (the flip and the
+        // fusion are inseparable: d = lane + 32·i is 100% coalesced
+        // scalar but stride-4 once flipped, so the quad loads must exist
+        // whenever the mapping flips).
+        let (d_regs, v4) = self.deferred_d_regs(
+            &DRegs {
+                parts: &parts,
+                hoisted: &hoisted,
+                strips,
+                r_lane: r_lane.clone(),
+            },
+            decl,
+            body,
+        );
+        self.deferred_v4 = v4;
+        // state init: m from the author's constant, everything else zero.
+        // 2026-09-20 (NaN fix): the detector extracts Float(1e30) from
+        // Neg(Float(1e30)), stripping the negation.  Negate here.
+        let m_init = fold_f32(&parts.m_init, self.consts)
+            .ok_or_else(|| "ptx general: deferred region max init is not a constant".to_string())?;
+        body.push_str(&format!("    mov.f32 {}, {};\n", m_reg, f32_imm(-m_init)));
+        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", l_reg));
+        let mut a_regs = Vec::new();
+        for _ in 0..strips {
+            let a = self.fresh_f();
+            decl.push_str(&format!("    .reg .f32 {};\n", a));
+            body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", a));
+            a_regs.push(a);
+        }
+
         let strip_name = |strip: usize, idx: usize| format!("__dqh{}_{}", strip, idx);
-        if !hoisted.is_empty() {
+        // 2026-10-02 (float4): the lets feed the TWO-PASS strips; the
+        // online path emits its own (quad-aware) lets inside
+        // emit_deferred_region_online — emitting these too would leave
+        // 8 dead scalar q loads in the fused kernel.
+        if !hoisted.is_empty() && self.online == 0 {
             let saved_j0 = self.regs.insert(parts.j_name.clone(), r_cnt.clone());
             for i in 0..strips {
                 self.regs.insert(parts.da.clone(), d_regs[i].clone());

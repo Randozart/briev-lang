@@ -1024,6 +1024,8 @@ pub(crate) fn emit_general_node(
             int_bits,
             deferred_split: def_split as u64,
             unroll_override: declared_unroll_override(program, name),
+            online_override: None,          // overrides = test seam only
+            deferred_region_override: None,
         },
     )?;
     warn_unroll_override(program, name, &mut size_warnings);
