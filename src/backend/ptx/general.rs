@@ -6255,7 +6255,10 @@ mod probe_gemm_tmp {
                 }
                 let mut pm = crate::plugin::PluginManager::new();
                 crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
-                let _ = crate::plugin::composite::expand_composites(&mut items, &pm);
+                match crate::plugin::composite::expand_composites(&mut items, &pm) {
+                    Ok(n) => println!("{path}: expanded {n}"),
+                    Err(e) => println!("{path}: EXPANSION ERROR: {e}"),
+                }
             }
             let universe = crate::type_universe::TypeUniverse::new();
             let info = crate::analysis::accel::ProgramInfo::build(&items);
@@ -6266,7 +6269,8 @@ mod probe_gemm_tmp {
                         &t.name, &t.body, &t.contract, &info, &universe,
                     );
                     let g = crate::analysis::gemm_shape::detect_gemm_shape(&shape, &items);
-                    println!("{path} :: {} eligible={} gemm={g:?}", path, shape.eligible);
+                    let dm = crate::analysis::gemm_shape::declared_matmul(&shape);
+                    println!("{path} :: {} eligible={} declared_matmul={dm} gemm={g:?}", path, shape.eligible);
                     any = true;
                 }
             }
