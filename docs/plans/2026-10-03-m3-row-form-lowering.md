@@ -114,3 +114,42 @@ emitters retire.
   synthesize_softmax_stmts does on the SPIR-V side.
 - The tiny-shape guard: rows < 32 → the flat form (the row-form's
   tail waste dominates) — the strategy threshold.
+
+## The emitters' destination — bad<ptx> payloads, post-verdict (decided 2026-10-03)
+
+The hand-written PTX emitters' retirement home = **bad<ptx> payloads**
+(the kernel-level GPU escape: the fn name bridges by node, the derived
+SPIR-V keeps serving Vulkan). NOT before M3's verdict:
+
+1. The emitters are gated on this campaign anyway — M3 landing retires
+   them and the question dissolves.
+2. The parameterization ABI does not exist: the emitters bake the SSBO
+   projected offsets, the row count, and the row length per program;
+   bad<ptx> today = one `.param .b64` (the state pointer), offsets as
+   source literals — a shipped `lib/bad/softmax_rows.bad` would be
+   wrong for every other layout. The template/ABI extension gets built
+   against the KNOWN survivor set after the verdict.
+3. Moving now = per-program .bad sources + per-fixture bridges + new
+   machinery, for artifacts the campaign may delete.
+
+Post-verdict: the surviving emitters (if any) move to
+`lib/bad/*.bad` payloads with the ABI they need; M3's derived lowering
+races the payloads (the tier-3 floor per derivation-not-recognition).
+
+## Phase 1 — the implementation order (concrete)
+
+1. The row-form gate: `is_cooperative_shape` (declared + proven +
+   knob-independent NOW — the row form = the GENERAL lowering's own
+   decision, so the knob retires with the emitters) + the tiny-shape
+   guard (rows < 32 → the flat form).
+2. The work binding: row = ctaid.x, lane = tid.x, the row index_var =
+   ctaid.x, the block-wide guard.
+3. The column-loop remap: the inner foreach → the strided form
+   (kk = tid.x; kk < K; kk += 32) — mirroring
+   `synthesize_softmax_stmts` on the SPIR-V side.
+4. The reductions: Max# → the shfl butterfly fmax; the Exp#-sum /
+   dot-acc → the shfl butterfly add — the emitters' exact sequences
+   are the reference (redux.f32 = sm_100+, NOT available on sm_86).
+5. The gates: the unit tests (the PTX assertions), the conformance
+   sweep, blob A/B vs knob=off, `emitter_ab_gate.sh` correctness both
+   lanes, then the timing vs the emitters.
