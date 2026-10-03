@@ -201,6 +201,13 @@ pub struct CompilerContext {
     /// init_state.
     pub obj_instance_inits: std::collections::HashMap<String, (String, Expr)>,
     pub constants: HashMap<String, (Type, Expr)>,
+    /// 2026-10-03 (const-expression folding, LLVM parity with the GPU
+    /// readers — plan `2026-10-03-declared-dot-detect-reduction-rung.md`):
+    /// the program's const VALUES in declaration order, each init folded
+    /// against the consts before it (`const MN: Int = M * N;` resolves).
+    /// Populated alongside `constants`; read by the state-decl dim
+    /// resolution (`vector_array_llvm_type`).
+    pub const_values: HashMap<String, i64>,
     /// 2026-09-06 (Phase 8): the section(".name") placement per constant
     /// (the parser carries it on the Constant item; the @constant global
     /// emission reads it).
@@ -505,6 +512,7 @@ impl CompilerContext {
             instance_slots: std::collections::HashSet::new(),
             obj_instance_inits: std::collections::HashMap::new(),
             constants: HashMap::new(),
+            const_values: HashMap::new(),
             constant_sections: HashMap::new(),
             inits: HashMap::new(),
             struct_types: HashMap::new(),

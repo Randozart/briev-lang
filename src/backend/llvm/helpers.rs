@@ -1444,8 +1444,12 @@ impl LlvmBackend {
                 crate::ast::Dimension::Anonymous(n) => resolved.push(*n),
                 crate::ast::Dimension::Named(name, n) if *n > 0 => resolved.push(*n),
                 crate::ast::Dimension::Named(name, _) => {
-                    match self.ctx.constants.get(name) {
-                        Some((_, Expr::Decimal(v))) if *v > 0 => resolved.push(*v as usize),
+                    // 2026-10-03 (const-expression folding, LLVM parity):
+                    // resolve from the FOLDED const values — a derived
+                    // const (`const MN: Int = M * N;`) works like a
+                    // literal.
+                    match self.ctx.const_values.get(name) {
+                        Some(v) if *v > 0 => resolved.push(*v as usize),
                         _ => return None,
                     }
                 }

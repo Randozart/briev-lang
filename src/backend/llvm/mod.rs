@@ -2684,6 +2684,18 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 self.ctx
                     .constants
                     .insert(c.name.clone(), (c.ty.clone(), c.expr.clone()));
+                // 2026-10-03 (const-expression folding, LLVM parity): the
+                // folded VALUE feeds the dim resolution below
+                // (build_field_index) — declaration-ordered, chains compose.
+                if let Some(v) = crate::analysis::gemm_shape::lit(
+                    &crate::analysis::gemm_shape::fold_consts(
+                        &c.expr,
+                        &self.ctx.const_values,
+                    ),
+                    &self.ctx.const_values,
+                ) {
+                    self.ctx.const_values.insert(c.name.clone(), v);
+                }
                 // 2026-09-06 (Phase 8): the section(".name") placement rides
                 // a side map — the constants map stays (ty, expr).
                 if let Some(ref s) = c.section {
@@ -2838,6 +2850,18 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             match item {
                 TopLevel::Constant(c) => {
                     self.ctx.constants.insert(c.name.clone(), (c.ty.clone(), c.expr.clone()));
+                    // 2026-10-03 (const-expression folding, LLVM parity):
+                    // the folded VALUE, declaration-ordered — chains
+                    // compose; non-foldable inits contribute nothing.
+                    if let Some(v) = crate::analysis::gemm_shape::lit(
+                        &crate::analysis::gemm_shape::fold_consts(
+                            &c.expr,
+                            &self.ctx.const_values,
+                        ),
+                        &self.ctx.const_values,
+                    ) {
+                        self.ctx.const_values.insert(c.name.clone(), v);
+                    }
                 }
                 TopLevel::Init(i) => {
                     self.ctx.inits.insert(i.name.clone(), i.clone());
