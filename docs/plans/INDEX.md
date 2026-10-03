@@ -119,8 +119,9 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
    flat-PTX/tiled-SPIR-V pair (`e55103b2`, BUGS.md). Whole GEMM family
    all-ones EXACT both lanes (4096³ f32, 64³, f16 4096³/k1024/2048³/
    8192³). M4 remaining: `detect_reduction` rung; follow-up language
-   increment: const-expression folding for kernel readers (the
-   derive-the-counts gap, plan `2026-10-03-declared-matmul-gemmplan-retirement.md`).
+   increment: const-expression folding — **DONE 2026-10-03** (`82f7c135`:
+   `folded_const_map` feeds materialize_consts + the SSBO dim resolution;
+   the GEMM fixtures derive their counts; LLVM parity noted).
 
 Also open (post-5 ladder): **M3** producer-consumer chain fusion;
 **M4** `numeric.bv` declarations + vocabulary retirement

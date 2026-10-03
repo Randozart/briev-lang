@@ -146,18 +146,21 @@ timing claims (they were already blocked — 5b). No new timing table:
 the emitted kernels are proven identical to the pre-change ones, so the
 standing 5b numbers carry.
 
-## The derive-the-counts experiment (2026-10-03, REVERTED — gap recorded)
+## The derive-the-counts experiment (2026-10-03, LANDED same day)
 
-Attempted to derive the fixtures' flat counts (`const MN: Int = M * N;
-let a: Float[MN];`) — the composite comptime chain folds const
-expressions, but the KERNEL const readers demand literals
-(`spirv/lower.rs materialize_consts`: "kernels read literal consts
-only") and the parser accepts only literal-or-single-ident array dims.
-REVERTED to literals (all 8 fixtures byte-identical to HEAD). The
-follow-up is the parser/typechecker increment: fold const-expression
-inits in `materialize_consts` + the state-decl Named-dim resolution
-(~2 sites, `fold_consts` already exists). Until then the fixtures spell
-the counts — fixture hygiene deferred to that increment.
+First attempt REVERTED (the kernel const readers demanded literals).
+Closed the SAME session: `folded_const_map` (gemm_shape.rs — the
+program's const values in declaration order, each init folded against
+the consts before it) feeds the two GPU readers — `materialize_consts`
+(fold + EVALUATE: fold_consts substitutes, `lit` evaluates) and the
+SSBO Named-dim resolution. The 8 GEMM fixtures now derive their counts
+(`const MN: Int = M * N; let a: Float[MN];`) — the magic flat numbers
+are gone. Field tables identical literal-vs-derived; kernels
+semantically identical (one extra materialized const + id shift); the
+device gate PASSes on 4096³ f32, 4096³ f16, 4096×4096×512, 8192³
+(all-ones EXACT both lanes). LLVM parity
+(`vector_array_llvm_type` reads ctx.constants literal-only) = the noted
+follow-up; the CPU lane keeps literals until then.
 
 ## Status
 
