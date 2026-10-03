@@ -6279,3 +6279,81 @@ mod probe_gemm_tmp {
     }
 }
 
+
+#[cfg(test)]
+mod probe_float_defect_tmp {
+    use super::*;
+
+    fn check_items(src: &str, tag: &str) {
+        let tokens = crate::lexer::tokenize(src).expect("lex");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        let mut items = parser.parse_program().expect("parse");
+        let universe = crate::type_universe::TypeUniverse::new();
+        let errs = crate::typechecker::check_program(&mut items, &universe);
+        match errs {
+            Ok(()) => println!("{tag}: CHECK OK"),
+            Err(es) => {
+                for e in &es {
+                    println!("{tag}: ERR {}", e);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn probe_dot_row_check_stages() {
+        let fixture = std::fs::read_to_string("/tmp/opencode/dot_row_ref.abv").expect("fixture");
+        let float_bv = std::fs::read_to_string("lib/std/types/float.bv").expect("float.bv");
+        let numeric_bv = std::fs::read_to_string("lib/std/numeric.bv").expect("numeric.bv");
+        let tokens = crate::lexer::tokenize(&fixture).expect("lex");
+        let mut parser = crate::parser::Parser::new(tokens, &fixture);
+        let mut items = parser.parse_program().expect("parse");
+        for (src2, tag) in [(&float_bv, "float.bv"), (&numeric_bv, "numeric.bv")] {
+            let t2 = crate::lexer::tokenize(src2).expect("lex lib");
+            let mut p2 = crate::parser::Parser::new(t2, src2);
+            items.extend(p2.parse_program().expect("lib parse"));
+        }
+        let universe = crate::type_universe::TypeUniverse::new();
+        // stage 1: UNEXPANDED
+        {
+            let mut items = items.clone();
+            let errs = crate::typechecker::check_program(&mut items, &universe);
+            println!("UNEXPANDED: {}", if errs.is_ok() { "OK".into() } else { format!("{:?}", errs.unwrap_err()) });
+        }
+        // stage 2: EXPANDED
+        let mut pm = crate::plugin::PluginManager::new();
+        crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
+        match crate::plugin::composite::expand_composites(&mut items, &pm) {
+            Ok(n) => println!("expanded {n}"),
+            Err(e) => println!("EXPANSION ERROR: {e}"),
+        }
+        {
+            let errs = crate::typechecker::check_program(&mut items, &universe);
+            println!("EXPANDED: {}", if errs.is_ok() { "OK".into() } else { format!("{:?}", errs.unwrap_err()) });
+        }
+    }
+
+    #[test]
+    fn probe_prelex_dot_row() {
+        let fixture = std::fs::read_to_string("/tmp/opencode/dot_row_ref.abv").expect("fixture");
+        let mut pm = crate::plugin::PluginManager::new();
+        let opts = crate::pipeline::BuildOptions::default();
+        pm = crate::pipeline::build_plugin_manager("/tmp/opencode/dot_row_ref.abv", &opts);
+        let mut source = fixture.clone();
+        pm.run_source(crate::ast::StageKind::PreLex, &mut source)
+            .expect("prelex");
+        // The comment must survive intact.
+        for line in source.lines().filter(|l| l.trim_start().starts_with("//")) {
+            println!("COMMENT-LINE: {}", line.trim());
+        }
+    }
+
+    #[test]
+    fn probe_float_raise_item() {
+        let float_bv = std::fs::read_to_string("lib/std/types/float.bv").expect("float.bv");
+        let numeric_bv = std::fs::read_to_string("lib/std/numeric.bv").expect("numeric.bv");
+        check_items(&float_bv, "float.bv ALONE");
+        check_items(&numeric_bv, "numeric.bv ALONE");
+        check_items(&format!("{float_bv}\n{numeric_bv}"), "float.bv + numeric.bv");
+    }
+}

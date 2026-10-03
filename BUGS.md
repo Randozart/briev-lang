@@ -7653,12 +7653,33 @@ signal); `BRIEV_UNDEF_BT=1` appends a backtrace at DISPLAY time
 `Float` resolved as a value in a body that (per the AST dump) contains
 none.
 
-**Suspects:** the expander's `fold_stmt_list` typing of substituted
-`Custom` lets under the real comptime env; a second `check_types`
-invocation on the accel-PTX subset (compile.rs build_ptx_kernels path)
-with a different items slice; HashMap-iteration order in the checker's
-custom-type resolution (the 2026-07-31 SipHash rule — the error flips
-with file content that only changes HASH KEYS, e.g. the node name).
+**Mechanism (found 2026-10-03, late session):** the failure is NOT the
+checker's type resolution — **the composite expansion silently skips
+ENTIRELY**: at `expand_composites` the fn_registry = **0 composites**
+(the imported numeric.bv `$defn`s arrive as `TopLevel::Definition`,
+never `CompileTimeDefn`, so `extract_inline_stage_blocks` — which
+registers ONLY CompileTimeDefn — registers nothing), the `dot!`
+PluginIntercept survives, and the checker resolves the raw ARG
+`Float` (a type name in an expression position) → the error. The same
+fixture content expands fine when the registry is non-empty (softmax_
+composite_s8: registry = 5, identical import file).
+
+**The skip's trigger is absurd and content-deterministic** (6/6 vs 4/4
+across repeated builds — NOT hash nondeterminism): with the head
+`[w < 20]` or the node `mrow` the build PASSES (expansion runs); with
+head `[w < N_OUT]` AND a node name containing "dot"/"row" spelled
+`dot_row`/`row_dot` it FAILS; `dm9` (head N_OUT + node `mrow`) PASSES.
+The registry population (the resolver's module parse/inline of
+numeric.bv) flips on these deltas — the suspect is the resolver's
+per-module parse producing a DIFFERENT TopLevel form for the `$defn`
+(Definition vs CompileTimeDefn) keyed on accumulated module state.
+
+**Suspects (updated):** the resolver's per-module parse/inline of
+`$defn` (the form flip); `extract_inline_stage_blocks`'s
+CompileTimeDefn-only registration missing Definition-form composites
+(the registry gap — the registration should cover BOTH forms, or the
+resolver should preserve CompileTimeDefn); HashMap-iteration order in
+the resolver's module merge (the 2026-07-31 SipHash rule).
 
 **Workaround:** name the node `mrow` (or any short name) with D=4-era
 shapes — see dm9 in the session log; `dot_row.abv` currently ships with

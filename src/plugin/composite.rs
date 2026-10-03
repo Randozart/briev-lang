@@ -1055,6 +1055,37 @@ pub fn expand_composites(
             _ => None,
         })
         .collect();
+    // TEMP: 2026-10-03 — the dot_row hunt.
+    eprintln!(
+        "[REGISTRY] {} composites: {:?}",
+        registry.len(),
+        registry.keys().map(|k| k.as_str()).collect::<Vec<_>>()
+    );
+    {
+        use std::collections::BTreeMap;
+        let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut other_names: BTreeMap<String, String> = BTreeMap::new();
+        for item in items.iter() {
+            let k = match item {
+                TopLevel::CompileTimeDefn(_) => "CompileTimeDefn",
+                TopLevel::Constant(_) => "Constant",
+                TopLevel::Transaction(_) => "Transaction",
+                TopLevel::TypeDef(_) => "TypeDef",
+                TopLevel::StateDecl(_) => "StateDecl",
+                TopLevel::Statement(_) => "Statement",
+                TopLevel::Definition(_) => "Definition",
+                TopLevel::Import(_) => "Import",
+                other => {
+                    let n = "D".to_string();
+                    other_names.entry(n).or_insert_with(|| "D".to_string());
+                    "other2"
+                }
+            };
+            *kinds.entry(k).or_insert(0) += 1;
+        }
+        eprintln!("[ITEM-KINDS] {:?}", kinds);
+        eprintln!("[OTHER-KINDS] {:?}", other_names);
+    }
     if registry.is_empty() {
         return Ok(0);
     }
@@ -1173,6 +1204,8 @@ fn expand_top_level(
     comptime: &HashMap<String, ComptimeVal>,
     state_types: &HashMap<String, Type>,
 ) -> Result<(usize, Vec<Transaction>), String> {
+    // TEMP: 2026-10-03 — the dot_row expansion-skip hunt.
+    eprintln!("[WALK] item visited (registry {} composites)", registry.len());
     match item {
         TopLevel::Definition(d) | TopLevel::TypeDefOperator(d) => {
             let n = expand_stmt_list(&mut d.body, registry, comptime, state_types)?;
@@ -1180,6 +1213,8 @@ fn expand_top_level(
             Ok((n, nodes))
         }
         TopLevel::Transaction(t) => {
+            // TEMP: the hunt.
+            eprintln!("[WALK] txn '{}' stmts={}", t.name, t.body.len());
             let n = expand_stmt_list(&mut t.body, registry, comptime, state_types)?;
             let nodes = hoist_emit_nodes(&mut t.body)?;
             Ok((n, nodes))
@@ -1330,15 +1365,18 @@ fn expand_stmt_list(
         // enclosing splice never hides an inner call site.
         expand_nested(&mut stmts[i], registry, comptime, state_types)?;
         let call = match &stmts[i] {
-            Statement::Expression(Expr::PluginIntercept {
-                name,
-                args,
-                receiver: None,
-                ..
-            }) => Some((name.clone(), args.clone())),
+            Statement::Expression(Expr::PluginIntercept { name, args, receiver: None, .. }) => {
+                // TEMP: 2026-10-03 — the dot_row expansion-skip hunt.
+                eprintln!("[EXPANSION-SEE] '{}' in a statement (registry has it: {})", name, registry.contains_key(name));
+                Some((name.clone(), args.clone()))
+            }
             _ => None,
         };
         if let Some((name, args)) = call {
+            // TEMP: 2026-10-03 — the dot_row expansion-skip hunt.
+            if registry.get(&name).is_none() {
+                eprintln!("[EXPANSION-MISS] composite '{}' not in the registry ({} registered)", name, registry.len());
+            }
             if let Some(def) = registry.get(&name) {
                 let mut expanded =
                     expand_composite_invocation(def, &args, comptime, state_types)?;
