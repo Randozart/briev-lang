@@ -138,3 +138,43 @@ $defn softmax_fused_row(
         outbuf[outbase + d] = accbuf[accbase + d] / s_;
     }
 };
+
+// matmul! — the DECLARED matrix product (plan
+// 2026-10-03-declared-matmul-gemmplan-retirement.md): the canonical
+// row-per-work-item GEMM the tensor lowerings specialize on.
+//
+//   y[m*N + n] = Σ_k a[m*K + k] * b[k*N + n]   for m in 0..M, n in 0..N
+//
+// The declaration is what reaches the tensor path — the compiler never
+// recognizes a hand-written triple loop as a matmul (Rules 23/24): a
+// body with these facts but no declaration lowers through the general
+// path (correct, unspecialized).
+//
+// `expr` parameters (substituted at the call site):
+//   abuf / bbuf — the operand buffers (M×K and K×N, row-major)
+//   ybuf        — the product buffer (M×N)
+//   mlen / nlen / klen — the M, N, K spans (comptime consts)
+//   idx         — the node's work-item counter (`i < M*N`)
+//   acc_ty      — the accumulator element type (bare type name; the
+//                 operand buffers' element type — `Float`, `Float16`)
+//
+// `expr_item` parameters (bound by the body, never passed):
+//   acc (the running product), m / n (the row/col decomposition),
+//   kk (the K loop item)
+//
+// The declared body IS the specialization contract: the tensor lowerings
+// derive (M, N, K, the field names) from THIS structure — keep it
+// canonical.
+$defn matmul(
+    abuf: Expr, bbuf: Expr, ybuf: Expr,
+    mlen: Expr, nlen: Expr, klen: Expr, idx: Expr, acc_ty: Expr,
+    m: ExprItem, n: ExprItem, kk: ExprItem, acc: ExprItem
+) {
+    let acc: acc_ty = 0;
+    let m: Int = idx / nlen;
+    let n: Int = idx % nlen;
+    foreach kk in 0..klen {
+        acc = acc + abuf[m * klen + kk] * bbuf[kk * nlen + n];
+    }
+    ybuf[idx] = acc;
+};

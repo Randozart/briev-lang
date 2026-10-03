@@ -1,4 +1,5 @@
 import "std/types/float.bv";
+import "std/numeric.bv";
 
 // gemm_chain.abv — the gpu_schedule Phase 0 gate: two GEMM nodes chained
 // through an ARRAY dependency (gemm1's `c` feeds gemm2's A). This is
@@ -23,13 +24,7 @@ let e: Float16[16384];
 let d: Float16[16384];
 
 async node gemm1 [phase == 0 && i < M * N][i == M * N] {
-    let acc: Float16 = 0.0;
-    let m: Int = i / N;
-    let n: Int = i % N;
-    foreach k in 0..K {
-        acc = acc + a[m * K + k] * b[k * N + n];
-    }
-    c[i] = acc;
+    matmul!(a, b, c, M, N, K, i, Float16);
     i = i + 1;
     term;
 };
@@ -40,13 +35,7 @@ async node gemm1_done [phase == 0 && i == M * N][phase == 1] {
 };
 
 async node gemm2 [phase == 1 && j < M * N][j == M * N] {
-    let acc: Float16 = 0.0;
-    let m: Int = j / N;
-    let n: Int = j % N;
-    foreach k in 0..K {
-        acc = acc + c[m * K + k] * e[k * N + n];
-    }
-    d[j] = acc;
+    matmul!(c, e, d, M, N, K, j, Float16);
     j = j + 1;
     term;
 };

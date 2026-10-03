@@ -6216,3 +6216,61 @@ pub fn emit_deferred_combine_ptx(
     Ok(out)
 }
 
+
+#[cfg(test)]
+mod probe_gemm_tmp {
+    use super::*;
+    #[test]
+    fn probe_gemm_fixtures() {
+        fn walk(dir: &str, out: &mut Vec<String>) {
+            let Ok(rd) = std::fs::read_dir(dir) else { return };
+            for e in rd.flatten() {
+                let p = e.path().to_string_lossy().to_string();
+                if p.ends_with(".bv") || p.ends_with(".abv") {
+                    out.push(p);
+                } else if e.path().is_dir() {
+                    walk(&p, out);
+                }
+            }
+        }
+        let mut paths: Vec<String> = Vec::new();
+        for dir in ["examples", "benchmarks", "tests", "learn-briev"] {
+            walk(dir, &mut paths);
+        }
+        paths.sort();
+        for path in &paths {
+            let Ok(src) = std::fs::read_to_string(path) else { println!("{path}: unreadable"); continue };
+            let tokens = crate::lexer::tokenize(&src).expect("lex");
+            let mut parser = crate::parser::Parser::new(tokens, &src);
+            let Ok(mut items) = parser.parse_program() else { println!("{path}: PARSE FAIL"); continue };
+            // Declared composites expand before analysis — the probe sees
+            // what the compiler sees.
+            if src.contains("!(") {
+                if let Ok(lib) = std::fs::read_to_string("lib/std/numeric.bv") {
+                    let ltokens = crate::lexer::tokenize(&lib).expect("lex lib");
+                    let mut lparser = crate::parser::Parser::new(ltokens, &lib);
+                    if let Ok(litems) = lparser.parse_program() {
+                        items.extend(litems);
+                    }
+                }
+                let mut pm = crate::plugin::PluginManager::new();
+                crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
+                let _ = crate::plugin::composite::expand_composites(&mut items, &pm);
+            }
+            let universe = crate::type_universe::TypeUniverse::new();
+            let info = crate::analysis::accel::ProgramInfo::build(&items);
+            let mut any = false;
+            for item in &items {
+                if let crate::ast::TopLevel::Transaction(t) = item {
+                    let shape = crate::analysis::accel::prove_kernel_pub(
+                        &t.name, &t.body, &t.contract, &info, &universe,
+                    );
+                    let g = crate::analysis::gemm_shape::detect_gemm_shape(&shape, &items);
+                    println!("{path} :: {} eligible={} gemm={g:?}", path, shape.eligible);
+                    any = true;
+                }
+            }
+            if !any { println!("{path}: no transactions"); }
+        }
+    }
+}

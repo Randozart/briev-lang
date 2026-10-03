@@ -4,6 +4,7 @@
 // when the device exposes VK_KHR_cooperative_matrix and the spirv_coopmat
 // knob is on.
 import "std/types/float.bv";
+import "std/numeric.bv";
 
 const M: Int = 2048;
 const N: Int = 2048;
@@ -15,13 +16,7 @@ let b: Float16[4194304];
 let y: Float16[4194304];
 
 async node gemm [i < M * N][i == M * N] {
-    let acc: Float16 = 0.0;
-    let m: Int = i / N;
-    let n: Int = i % N;
-    foreach k in 0..K {
-        acc = acc + a[m * K + k] * b[k * N + n];
-    }
-    y[i] = acc;
+    matmul!(a, b, y, M, N, K, i, Float16);
     i = i + 1;
     term;
 };

@@ -2,6 +2,7 @@
 // M = N = K = 4096 (137 GFLOP). Naive expression — the compiler's job is
 // to see the GEMM shape and emit what a hand-tuned kernel would (plan
 // 2026-09-01-m2-gemm).
+import "std/numeric.bv";
 const M: Int = 4096;
 const N: Int = 4096;
 const K: Int = 4096;
@@ -12,13 +13,7 @@ let b: Float[16777216];
 let y: Float[16777216];
 
 async node gemm [i < M * N][i == M * N] {
-    let acc: Float = 0;
-    let m: Int = i / N;
-    let n: Int = i % N;
-    foreach k in 0..K {
-        acc = acc + a[m * K + k] * b[k * N + n];
-    }
-    y[i] = acc;
+    matmul!(a, b, y, M, N, K, i, Float);
     i = i + 1;
     term;
 };
