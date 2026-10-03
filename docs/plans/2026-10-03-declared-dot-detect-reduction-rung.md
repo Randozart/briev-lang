@@ -65,3 +65,26 @@ remaining canonical form the cooperative emitter serves: the N=1 row dot
   emitter + a `softmax_rows!` composite) — the ladder's row-2 residual,
   its own increment.
 - The LLVM-side const folding (queued separately).
+
+## Outcome (2026-10-03, LANDED — `8d7050ad`)
+
+All five changes landed as planned, plus:
+
+- **The f16 chain fixtures never built** — attn_s1/attn_decode_h were
+  committed broken at `327dda74` (the f16 scalar-width coerce had no
+  conversion path) and every blob-sweep since compared their EMPTY file
+  lists as "identical". `FnLowerer::coerce` now FConverts float-width
+  mismatches; the typechecker's explicit-cast ruling for bare literals
+  stands. BUGS.md carries the entry + the sweep-design lesson.
+- **attn_decode's qk/pv UPGRADED**: the hand-written (undeclared) bodies
+  routed the flat general kernel; the declared bodies reach the tiled
+  GEMM tier (3747-bound modules) — the doctrine working as intended:
+  declaration reaches the specialized channel.
+- gc_* kernels byte-identical (their lane — coopmat — unaffected by the
+  gate); attn_decode/scale identical; suite 2852; Praetor no new rows
+  (`from_shape` 27→33 across the two doctrine gates — the gemm/deferred/
+  reduce lanes extracted to helpers; the residual is the plan
+  construction's inherent branching).
+- Remaining (separate increments): the Softmax-branch rung
+  (`softmax_rows!` composite + detect_row_softmax's gate — the ladder's
+  row-2 residual) and the LLVM const-folding parity.

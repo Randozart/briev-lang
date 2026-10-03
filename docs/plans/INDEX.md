@@ -118,10 +118,15 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
    the flat CUDA kernel; the lane-split dispatch arm now covers the
    flat-PTX/tiled-SPIR-V pair (`e55103b2`, BUGS.md). Whole GEMM family
    all-ones EXACT both lanes (4096³ f32, 64³, f16 4096³/k1024/2048³/
-   8192³). M4 remaining: `detect_reduction` rung; follow-up language
-   increment: const-expression folding — **DONE 2026-10-03** (`82f7c135`:
-   `folded_const_map` feeds materialize_consts + the SSBO dim resolution;
-   the GEMM fixtures derive their counts; LLVM parity noted).
+   8192³). M4 remaining: `detect_reduction` rung — **DONE 2026-10-03**
+   (`8d7050ad`: the cooperative channel declaration-gated —
+   declared_matmul || declared dot; `dot!` in numeric.bv; the six chain
+   fixtures migrated; the f16 chain fixtures' never-built defect fixed
+   en route — the SPIR-V coerce now FConverts float-width mismatches,
+   BUGS.md). Softmax-branch residual: the 3-pass rows form lacks a
+   declared composite (`softmax_rows!`) — detect_row_softmax's own
+   ladder row. Const-expression folding — **DONE 2026-10-03** (`82f7c135`;
+   LLVM parity noted).
 
 Also open (post-5 ladder): **M3** producer-consumer chain fusion;
 **M4** `numeric.bv` declarations + vocabulary retirement
