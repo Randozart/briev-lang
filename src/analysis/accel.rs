@@ -2734,15 +2734,15 @@ mod resident_gate_tests {
 /// the row, the lanes are positions inside it. Coalescing and lane-mapping
 /// analyses must treat the two dimensions separately.
 pub fn is_cooperative_shape(shape: &KernelShape) -> bool {
-    crate::config_tuning::ir_lowering().spirv_row_cooperative
-        && shape.reduction.is_some()
-        // 2026-10-03 (declared dot rung — plan
-        // `2026-10-03-declared-dot-detect-reduction-rung.md`): the
-        // cooperative channel follows the DECLARATION, like the tensor
-        // channel — the fact (shape.reduction) stays for the general
-        // machinery's proofs; the specialization is declared. The
-        // declaration matches the reduction KIND: Dot → matmul!/dot!,
-        // Softmax → softmax_rows!.
+    // 2026-10-03 (M3, plan `2026-10-03-m3-row-form-lowering.md`): the knob
+    // conjunct RETIRED — the row form is the general lowering's own
+    // decision now (the cooperative emitters retired with it; the A/B
+    // verdicts in `benchmarks/results/2026-10-03-emitter-retirement-ab.md`
+    // measured the gap this lowering closes). The gate = the declaration
+    // (the kind-matched composites) + the fact + the flat counter: the
+    // reduction fact stays for the general machinery's proofs; the
+    // specialization is declared.
+    shape.reduction.is_some()
         && (match shape.reduction.as_ref().map(|r| &r.kind) {
             Some(ReductionKind::Softmax) => {
                 crate::analysis::gemm_shape::declared_composite(shape, "softmax_rows")

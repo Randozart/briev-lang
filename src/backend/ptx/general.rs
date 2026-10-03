@@ -53,252 +53,238 @@ const BLOCK: u32 = 64;
 /// twin of the SPIR-V `synthesize_softmax_stmts` lowering).
 ///
 /// Grid contract (matches the CUDA driver's launch_dev2d): block (32,1,1),
-/// grid (1, rows) — `ctaid.y` is the row, `tid.x` is the lane. Three
-/// strided passes (c = lane, lane+32, ... < inner; inner % 32 == 0 so
-/// every access is exactly in-bounds), with butterfly shuffle-tree
-/// reductions between them (redux.f32 is sm_100+; NOT available on sm_86).
-/// exp(x) = ex2(x * log2(e)) — there is no exp instruction in PTX.
-/// All ptxas-verified forms (2026-09-17 isolation sweep).
-pub fn emit_cooperative_softmax_ptx(
+/// 2026-10-03 (M3, plan `2026-10-03-m3-row-form-lowering.md`): the PTX
+/// row-form body synthesis — the DECLARED `softmax_rows!` body rewritten
+/// into the lane-chunked form the general emitter lowers: the lane =
+/// `GetLocalId#(0)` (the row form binds the row = `ctaid.y`, so the
+/// global id is the row, NOT the linearized lane — this is why the
+/// synthesis is PTX-local and not shared with the SPIR-V lane's
+/// `synthesize_softmax_stmts`, whose lane rides the global id).
+/// Mirrors that synthesis in structure: the tile rounds (t = 0..tiles,
+/// element = base + lane + t·32) with `SubgroupFMax#`/`SubgroupFAdd#`
+/// warp reductions between the phases — the generic emitter lowers both
+/// (the butterfly at general.rs `emit_warp_reduce`).
+pub(crate) fn synthesize_row_softmax(
+    shape: &crate::analysis::accel::KernelShape,
+    red: &crate::analysis::accel::ReductionInfo,
     inner: u64,
-    rows: u64,
-    row_buf: &str,
-    out_buf: &str,
-    layout: &SsboLayout,
-) -> Result<String, String> {
-    if inner == 0 || inner % 32 != 0 {
-        return Err(format!(
-            "cooperative softmax needs a row length divisible by 32 (got {inner})"
-        ));
-    }
-    if rows == 0 || rows > 65535 {
-        return Err(format!(
-            "cooperative softmax row count {rows} outside the CUDA gridDim.y range 1..=65535"
-        ));
-    }
-    let off = |name: &str| -> Result<u64, String> {
-        layout
-            .fields
-            .iter()
-            .find(|f| f.name == name)
-            .map(|f| f.proj_offset)
-            .ok_or_else(|| format!("ptx softmax: buffer '{name}' not in layout"))
+) -> crate::analysis::accel::KernelShape {
+    use crate::ast::BinaryOpKind::{Add, Div, Mul, Sub};
+    let mut out = shape.clone();
+    let tiles = (inner / 32) as i64;
+    let id = |n: &str| Expr::Identifier(n.into());
+    let lane = Expr::Call("GetLocalId#".into(), vec![Expr::Decimal(0)], None);
+    let base = Expr::BinaryOp(
+        Mul,
+        Box::new(Expr::Identifier(shape.index_var.clone())),
+        Box::new(Expr::Decimal(inner as i64)),
+    );
+    let elem = |t: Expr| -> Expr {
+        Expr::BinaryOp(
+            Add,
+            Box::new(base.clone()),
+            Box::new(Expr::BinaryOp(
+                Add,
+                Box::new(lane.clone()),
+                Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+            )),
+        )
     };
-    let off_row = off(row_buf)?;
-    let off_out = off(out_buf)?;
-    let elem = |name: &str| -> Result<u64, String> {
-        layout
-            .fields
-            .iter()
-            .find(|f| f.name == name)
-            .map(|f| f.elem_bytes as u64)
-            .ok_or_else(|| format!("ptx softmax: buffer '{name}' not in layout"))
+    let row_read = |t: Expr| -> Expr {
+        Expr::Index(Box::new(Expr::Identifier(red.row_buf.clone())), Box::new(elem(t)))
     };
-    if elem(row_buf)? != 4 || elem(out_buf)? != 4 {
-        return Err("cooperative softmax operates on f32 rows (elem_bytes 4)".into());
-    }
-
-    // Fixed register allocation — the kernel is small and straight-line
-    // per phase; numbered regs keep the emission readable.
-    let mut decl = String::new();
-    let mut body = String::new();
-    decl.push_str("    .reg .b64 %rd1, %rd2;\n");
-    decl.push_str("    .reg .u32 %r1, %r2, %r3, %r4, %r5;\n");
-    decl.push_str("    .reg .b32 %r6, %r7;\n");
-    decl.push_str("    .reg .pred %p1;\n");
-    decl.push_str("    .reg .f32 %f1, %f2, %f3, %f4, %f5;\n");
-
-    // row = ctaid.y; bounds; lane = tid.x; base = row * inner
-    body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
-    body.push_str("    mov.u32 %r1, %ctaid.y;\n");
-    body.push_str(&format!("    setp.ge.u32 %p1, %r1, {rows};\n"));
-    body.push_str("    @%p1 ret;\n");
-    body.push_str("    mov.u32 %r2, %tid.x;\n");
-    body.push_str(&format!("    mul.lo.u32 %r3, %r1, {inner};\n"));
-    // TEMP debug: out[base] = row + 1 (probe row execution)
-    body.push_str("    add.u32 %r5, %r3, %r2;\n");
-    body.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
-    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
-    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_out};\n"));
-    body.push_str("    cvt.rn.f32.s32 %f1, %r1;\n");
-    body.push_str("    add.f32 %f1, %f1, 0f3F800000;\n");
-    body.push_str("    st.global.f32 [%rd2], %f1;\n");
-
-    // addr(row_buf, base + c) → %rd2 — the shared load sequence.
-    let load_row = |body: &mut String| {
-        body.push_str("    add.u32 %r5, %r3, %r4;\n");
-        body.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
-        body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
-        body.push_str(&format!("    add.u64 %rd2, %rd2, {off_row};\n"));
-        body.push_str("    ld.global.f32 %f1, [%rd2];\n");
+    let out_write = |t: Expr| -> Expr {
+        Expr::Index(Box::new(Expr::Identifier(red.out_buf.clone())), Box::new(elem(t)))
     };
-
-    // Phase MAX — strided fold into %f2, init -inf.
-    body.push_str("    mov.f32 %f2, 0fFF800000;\n");
-    body.push_str("    mov.u32 %r4, %r2;\n");
-    body.push_str("Lmax0:\n");
-    body.push_str(&format!("    setp.ge.u32 %p1, %r4, {inner};\n"));
-    body.push_str("    @%p1 bra Lmax1;\n");
-    load_row(&mut body);
-    body.push_str("    max.f32 %f2, %f2, %f1;\n");
-    body.push_str("    add.u32 %r4, %r4, 32;\n");
-    body.push_str("    bra Lmax0;\n");
-    body.push_str("Lmax1:\n");
-
-    // Butterfly reduction (5 rounds) — op-selectable.
-    let mut butterfly = |body: &mut String, val: &str, op: &str| {
-        for offset in [16u32, 8, 4, 2, 1] {
-            body.push_str(&format!("    mov.b32 %r6, {};\n", val));
-            body.push_str(&format!(
-                "    shfl.sync.bfly.b32 %r7, %r6, {offset}, 0x1f, 0xffffffff;\n"
-            ));
-            body.push_str("    mov.b32 %f5, %r7;\n");
-            body.push_str(&format!("    {} {}, {}, %f5;\n", op, val, val));
-        }
+    let fty = Some(crate::ast::Type::float());
+    let range = |a: i64, b: i64| Expr::Range {
+        start: Box::new(Expr::Decimal(a)),
+        end: Box::new(Expr::Decimal(b)),
+        inclusive: false,
     };
-    butterfly(&mut body, "%f2", "max.f32");
+    let m = "briev_row_m";
+    let s = "briev_row_s";
+    let v = "briev_row_v";
+    let t = "briev_row_t";
 
-    // Phase SUM — s = Σ exp(v - m).
-    body.push_str("    mov.f32 %f3, 0f00000000;\n");
-    body.push_str("    mov.u32 %r4, %r2;\n");
-    body.push_str("Lsum0:\n");
-    body.push_str(&format!("    setp.ge.u32 %p1, %r4, {inner};\n"));
-    body.push_str("    @%p1 bra Lsum1;\n");
-    load_row(&mut body);
-    body.push_str("    sub.f32 %f4, %f1, %f2;\n");
-    body.push_str("    mul.f32 %f4, %f4, 0f3FB8AA3B;\n");
-    body.push_str("    ex2.approx.f32 %f1, %f4;\n");
-    body.push_str("    add.f32 %f3, %f3, %f1;\n");
-    body.push_str("    add.u32 %r4, %r4, 32;\n");
-    body.push_str("    bra Lsum0;\n");
-    body.push_str("Lsum1:\n");
-    butterfly(&mut body, "%f3", "add.f32");
+    let mut stmts: Vec<Statement> = Vec::new();
+    // Phase 1 — row max (the t=0 round duplicates the init; Max# idempotent).
+    stmts.push(Statement::Let {
+        name: m.into(),
+        names: vec![],
+        ty: fty.clone(),
+        expr: Some(row_read(Expr::Decimal(0))),
+        modifiers: vec![],
+    });
+    stmts.push(Statement::Foreach {
+        item: v.into(),
+        list: Box::new(range(0, tiles)),
+        body: vec![
+            Statement::Let {
+                name: v.to_string(),
+                names: vec![],
+                ty: fty.clone(),
+                expr: Some(row_read(id(&v))),
+                modifiers: vec![],
+            },
+            Statement::Assign(
+                id(m),
+                Expr::Call("Max#".into(), vec![id(m), id(&v)], None),
+            ),
+        ],
+    });
+    stmts.push(Statement::Assign(
+        id(m),
+        Expr::Call("SubgroupFMax#".into(), vec![id(m)], None),
+    ));
+    // Phase 2 — exp-sum.
+    stmts.push(Statement::Let {
+        name: s.into(),
+        names: vec![],
+        ty: fty.clone(),
+        expr: Some(Expr::Decimal(0)),
+        modifiers: vec![],
+    });
+    stmts.push(Statement::Foreach {
+        item: t.into(),
+        list: Box::new(range(0, tiles)),
+        body: vec![Statement::Assign(
+            id(s),
+            Expr::BinaryOp(
+                Add,
+                Box::new(id(s)),
+                Box::new(Expr::Call(
+                    "Exp#".into(),
+                    vec![Expr::BinaryOp(Sub, Box::new(row_read(id(&t))), Box::new(id(m)))],
+                    None,
+                )),
+            ),
+        )],
+    });
+    stmts.push(Statement::Assign(
+        id(s),
+        Expr::Call("SubgroupFAdd#".into(), vec![id(s)], None),
+    ));
+    // Phase 3 — normalize.
+    stmts.push(Statement::Foreach {
+        item: t.into(),
+        list: Box::new(range(0, tiles)),
+        body: vec![Statement::Assign(
+            out_write(id(&t)),
+            Expr::BinaryOp(
+                Div,
+                Box::new(Expr::Call(
+                    "Exp#".into(),
+                    vec![Expr::BinaryOp(Sub, Box::new(row_read(id(&t))), Box::new(id(m)))],
+                    None,
+                )),
+                Box::new(id(s)),
+            ),
+        )],
+    });
 
-    // Phase NORM — out[base + c] = exp(v - m) / s.
-    body.push_str("    mov.u32 %r4, %r2;\n");
-    body.push_str("Lnorm0:\n");
-    body.push_str(&format!("    setp.ge.u32 %p1, %r4, {inner};\n"));
-    body.push_str("    @%p1 bra Lnorm1;\n");
-    load_row(&mut body);
-    body.push_str("    sub.f32 %f4, %f1, %f2;\n");
-    body.push_str("    mul.f32 %f4, %f4, 0f3FB8AA3B;\n");
-    body.push_str("    ex2.approx.f32 %f1, %f4;\n");
-    body.push_str("    div.rn.f32 %f1, %f1, %f3;\n");
-    body.push_str("    add.u32 %r5, %r3, %r4;\n");
-    body.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
-    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
-    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_out};\n"));
-    body.push_str("    st.global.f32 [%rd2], %f1;\n");
-    body.push_str("    add.u32 %r4, %r4, 32;\n");
-    body.push_str("    bra Lnorm0;\n");
-    body.push_str("Lnorm1:\n");
-    body.push_str("    ret;\n");
-
-    Ok(format!(
-        ".version 8.0\n.target sm_86\n.address_size 64\n.visible .entry main (.param .b64 proj_param)\n{{\n{}\n{}\n}}\n",
-        decl, body
-    ))
+    out.kernel_stmts = stmts;
+    out
 }
+
+/// 2026-10-03 (M3): the DECLARED `dot!` body rewritten into the
+/// lane-chunked form — per-lane partial products over the tile rounds,
+/// one `SubgroupFAdd#` butterfly, the row write. The lane =
+/// `GetLocalId#(0)` (the row form: the row = `ctaid.y`).
+pub(crate) fn synthesize_row_dot(
+    shape: &crate::analysis::accel::KernelShape,
+    red: &crate::analysis::accel::ReductionInfo,
+    inner: u64,
+) -> crate::analysis::accel::KernelShape {
+    use crate::ast::BinaryOpKind::{Add, Mul};
+    let mut out = shape.clone();
+    let tiles = (inner / 32) as i64;
+    let id = |n: &str| Expr::Identifier(n.into());
+    let lane = Expr::Call("GetLocalId#".into(), vec![Expr::Decimal(0)], None);
+    let row_base = Expr::BinaryOp(
+        Mul,
+        Box::new(Expr::Identifier(shape.index_var.clone())),
+        Box::new(Expr::Decimal(inner as i64)),
+    );
+    let x_elem = |t: Expr| -> Expr {
+        Expr::BinaryOp(
+            Add,
+            Box::new(row_base.clone()),
+            Box::new(Expr::BinaryOp(
+                Add,
+                Box::new(lane.clone()),
+                Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+            )),
+        )
+    };
+    let y_elem = |t: Expr| -> Expr {
+        Expr::BinaryOp(
+            Add,
+            Box::new(lane.clone()),
+            Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+        )
+    };
+    let fty = Some(crate::ast::Type::float());
+    let range = |a: i64, b: i64| Expr::Range {
+        start: Box::new(Expr::Decimal(a)),
+        end: Box::new(Expr::Decimal(b)),
+        inclusive: false,
+    };
+    let acc = "briev_row_acc";
+    let t = "briev_row_t";
+
+    let mut stmts: Vec<Statement> = Vec::new();
+    stmts.push(Statement::Let {
+        name: acc.into(),
+        names: vec![],
+        ty: fty.clone(),
+        expr: Some(Expr::Decimal(0)),
+        modifiers: vec![],
+    });
+    stmts.push(Statement::Foreach {
+        item: t.into(),
+        list: Box::new(range(0, tiles)),
+        body: vec![Statement::Assign(
+            id(acc),
+            Expr::BinaryOp(
+                Add,
+                Box::new(id(acc)),
+                Box::new(Expr::BinaryOp(
+                    Mul,
+                    Box::new(Expr::Index(
+                        Box::new(Expr::Identifier(red.row_buf.clone())),
+                        Box::new(x_elem(id(&t))),
+                    )),
+                    Box::new(Expr::Index(
+                        Box::new(Expr::Identifier(red.col_buf.clone())),
+                        Box::new(y_elem(id(&t))),
+                    )),
+                )),
+            ),
+        )],
+    });
+    stmts.push(Statement::Assign(
+        id(acc),
+        Expr::Call("SubgroupFAdd#".into(), vec![id(acc)], None),
+    ));
+    stmts.push(Statement::Assign(
+        Expr::Index(
+            Box::new(Expr::Identifier(red.out_buf.clone())),
+            Box::new(Expr::Identifier(shape.index_var.clone())),
+        ),
+        id(acc),
+    ));
+
+    out.kernel_stmts = stmts;
+    out
+}
+
+
 
 /// Cooperative row dot-product PTX (2026-09-17, M2a) — `y[i] = Σ_k a[i*K+k]
 /// * x[k]`, the CUDA-lane twin of the SPIR-V cooperative dot lowering.
 /// Same grid contract as emit_cooperative_softmax_ptx: block (32,1,1),
 /// grid (1, rows), ctaid.y = row, tid.x = lane; one strided pass, one
-/// butterfly add-tree, one store per row.
-pub fn emit_cooperative_dot_ptx(
-    inner: u64,
-    rows: u64,
-    row_buf: &str,
-    col_buf: &str,
-    out_buf: &str,
-    layout: &SsboLayout,
-) -> Result<String, String> {
-    if inner == 0 || inner % 32 != 0 {
-        return Err(format!(
-            "cooperative dot needs a reduction length divisible by 32 (got {inner})"
-        ));
-    }
-    if rows == 0 || rows > 65535 {
-        return Err(format!(
-            "cooperative dot row count {rows} outside the CUDA gridDim.y range 1..=65535"
-        ));
-    }
-    let off = |name: &str| -> Result<u64, String> {
-        layout
-            .fields
-            .iter()
-            .find(|f| f.name == name)
-            .map(|f| f.proj_offset)
-            .ok_or_else(|| format!("ptx dot: buffer '{name}' not in layout"))
-    };
-    let (off_row, off_col, off_out) = (off(row_buf)?, off(col_buf)?, off(out_buf)?);
-    for name in [row_buf, col_buf, out_buf] {
-        if elem_bytes_of(layout, name)? != 4 {
-            return Err(format!(
-                "cooperative dot operates on f32 buffers ('{name}' is not)"
-            ));
-        }
-    }
-
-
-    let mut decl = String::new();
-    let mut body = String::new();
-    decl.push_str("    .reg .b64 %rd1, %rd2;\n");
-    decl.push_str("    .reg .u32 %r1, %r2, %r3, %r4, %r5;\n");
-    decl.push_str("    .reg .b32 %r6, %r7;\n");
-    decl.push_str("    .reg .pred %p1;\n");
-    decl.push_str("    .reg .f32 %f1, %f2, %f3, %f4, %f5;\n");
-
-    body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
-    body.push_str("    mov.u32 %r1, %ctaid.y;\n");
-    body.push_str(&format!("    setp.ge.u32 %p1, %r1, {rows};\n"));
-    body.push_str("    @%p1 ret;\n");
-    body.push_str("    mov.u32 %r2, %tid.x;\n");
-    body.push_str(&format!("    mul.lo.u32 %r3, %r1, {inner};\n"));
-
-    // acc = 0; strided mul-add over the row.
-    body.push_str("    mov.f32 %f2, 0f00000000;\n");
-    body.push_str("    mov.u32 %r4, %r2;\n");
-    body.push_str("Ldot0:\n");
-    body.push_str(&format!("    setp.ge.u32 %p1, %r4, {inner};\n"));
-    body.push_str("    @%p1 bra Ldot1;\n");
-    // a[base + c]
-    body.push_str("    add.u32 %r5, %r3, %r4;\n");
-    body.push_str("    mul.wide.u32 %rd2, %r5, 4;\n");
-    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
-    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_row};\n"));
-    body.push_str("    ld.global.f32 %f1, [%rd2];\n");
-    // x[c]
-    body.push_str("    mul.wide.u32 %rd2, %r4, 4;\n");
-    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
-    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_col};\n"));
-    body.push_str("    ld.global.f32 %f3, [%rd2];\n");
-    body.push_str("    fma.rn.f32 %f2, %f1, %f3, %f2;\n");
-    body.push_str("    add.u32 %r4, %r4, 32;\n");
-    body.push_str("    bra Ldot0;\n");
-    body.push_str("Ldot1:\n");
-    // Butterfly add-tree → every lane holds the row total.
-    for offset in [16u32, 8, 4, 2, 1] {
-        body.push_str("    mov.b32 %r6, %f2;\n");
-        body.push_str(&format!(
-            "    shfl.sync.bfly.b32 %r7, %r6, {offset}, 0x1f, 0xffffffff;\n"
-        ));
-        body.push_str("    mov.b32 %f5, %r7;\n");
-        body.push_str("    add.f32 %f2, %f2, %f5;\n");
-    }
-    // y[row] = acc
-    body.push_str("    mul.wide.u32 %rd2, %r1, 4;\n");
-    body.push_str("    add.u64 %rd2, %rd2, %rd1;\n");
-    body.push_str(&format!("    add.u64 %rd2, %rd2, {off_out};\n"));
-    body.push_str("    st.global.f32 [%rd2], %f2;\n");
-    body.push_str("    ret;\n");
-
-    Ok(format!(
-        ".version 8.0\n.target sm_86\n.address_size 64\n.visible .entry main (.param .b64 proj_param)\n{{\n{}\n{}\n}}\n",
-        decl, body
-    ))
-}
-
 fn elem_bytes_of(layout: &SsboLayout, name: &str) -> Result<u64, String> {
     layout
         .fields
@@ -457,6 +443,17 @@ pub struct GeneralEmitOpts {
     /// (every production caller) reads the shipped config.
     pub online_override: Option<u32>,
     pub deferred_region_override: Option<bool>,
+    /// 2026-10-03 (M3, plan `2026-10-03-m3-row-form-lowering.md`): the
+    /// ROW-FORM lowering for the declared row shapes (softmax_rows!/dot!)
+    /// — row = `ctaid.y` (one block per row), the lane = `tid.x`, the
+    /// body pre-synthesized into lane-chunked rounds with
+    /// `SubgroupFMax#`/`SubgroupFAdd#`. Set by the routing when the shape
+    /// is cooperative-eligible; the general emit path lowers the
+    /// synthesized body (no hand-written kernels).
+    pub row_form: bool,
+    /// The row-form's index variable (the shape's `index_var`) — the
+    /// binding arm inserts `ctaid.y` under it.
+    pub row_index_var: String,
 }
 
 pub fn emit_general_ptx(
@@ -476,6 +473,8 @@ pub fn emit_general_ptx(
     g.deferred_region_on = opts
         .deferred_region_override
         .unwrap_or(crate::config_tuning::ir_lowering().ptx_deferred_region);
+    g.row_form = opts.row_form;
+    g.row_index_var = opts.row_index_var.clone();
     g.unroll_override = opts.unroll_override;
     g.emit(shape)
 }
@@ -932,6 +931,10 @@ struct Gen<'a> {
     /// parameter: `emit_deferred_region` computes it with the d_regs,
     /// the online fn consumes it — without growing the 24-param row.
     deferred_v4: Option<DeferredV4Plan>,
+    /// 2026-10-03 (M3): the row-form work binding (row = ctaid.y).
+    row_form: bool,
+    /// The row-form index variable name (the shape's `index_var`).
+    row_index_var: String,
 }
 
 impl<'a> Gen<'a> {
@@ -970,6 +973,8 @@ impl<'a> Gen<'a> {
             online: 0,
             deferred_region_on: false,
             deferred_v4: None,
+            row_form: false,
+            row_index_var: String::new(),
         }
     }
 
@@ -1086,7 +1091,17 @@ impl<'a> Gen<'a> {
         };
 
         body.push_str("    ld.param.u64 %rd1, [proj_param];\n");
-        if self.block_work_item {
+        if self.row_form {
+            // 2026-10-03 (M3): the ROW-FORM binding — row = ctaid.y (one
+            // block per row, grid.y = rows), the lane = tid.x (block = 32
+            // — the runner's cooperative geometry). The whole-block guard:
+            // ctaid.y >= rows retires the row.
+            body.push_str("    mov.u32 %r1, %ctaid.y;\n");
+            body.push_str(&format!("    setp.ge.u32 %p1, %r1, {};\n", self.count));
+            body.push_str("    @%p1 ret;\n");
+            self.regs
+                .insert(self.row_index_var.clone(), self.gid.to_string());
+        } else if self.block_work_item {
             // Work item = BLOCK: w = ctaid.x.  Move the special register
             // to %r1 (a GPR) so it can be used in setp and address math.
             // The guard kills entire blocks (r1 >= count → ret) — uniform
@@ -2025,6 +2040,21 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
             }
             Expr::Decimal(n) => {
                 body.push_str(&format!("    mov.u32 {}, {};\n", out, n));
+                Ok(())
+            }
+            // 2026-10-03 (M3): the row-form index trees carry the lane
+            // selector (`GetLocalId#(0)` = tid.x — the lane chunk within
+            // the row) and the row selector (`GetGlobalId#(0)` = the row,
+            // bound to the index var by the row-form binding).
+            Expr::Call(name, args, _) if name == "GetLocalId#" || name == "GetGlobalId#" => {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "ptx general: index-space {} takes one dimension argument",
+                        name
+                    ));
+                }
+                let sel = if name == "GetLocalId#" { "%tid.x" } else { self.gid };
+                body.push_str(&format!("    mov.u32 {}, {};\n", out, sel));
                 Ok(())
             }
             Expr::BinaryOp(kind, l, r) => {

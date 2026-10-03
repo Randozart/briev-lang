@@ -350,85 +350,6 @@ pub(crate) fn compile_cubin(ptx: &str, maxnreg: u32) -> Option<Vec<u8>> {
 /// (is_cooperative_shape) claims these shapes and its own gates reject the
 /// same inputs, so a silent fall-through would pair a row-per-thread CUDA
 /// image with cooperative dispatch — the gemv rows-32+ bug. Returns None
-/// only for a reduction kind without a PTX emitter.
-fn emit_cooperative_reduction_ptx(
-    name: String,
-    shape: &crate::analysis::accel::KernelShape,
-    red: &crate::analysis::accel::ReductionInfo,
-    program: &[TopLevel],
-    layout: &crate::backend::spirv::runner::SsboLayout,
-) -> Result<Option<RunnerKernel>, String> {
-    use crate::analysis::accel::ReductionKind;
-    let consts = module_expr_consts(program);
-    let inner = match &red.inner {
-        Expr::Identifier(n) => match consts.get(n) {
-            Some(Expr::Decimal(v)) => *v as u64,
-            _ => {
-                return Err(format!(
-                    "reduction length '{}' is not a literal const",
-                    n
-                ))
-            }
-        },
-        Expr::Decimal(v) => *v as u64,
-        other => {
-            return Err(format!(
-                "reduction length {other:?} must be a literal const"
-            ))
-        }
-    };
-    let rows = crate::analysis::kernel_plan::fold_count(shape, &consts)? as u64;
-    let what = match red.kind {
-        ReductionKind::Softmax => "softmax",
-        ReductionKind::Dot => "dot",
-    };
-    let ptx = match red.kind {
-        ReductionKind::Softmax => general::emit_cooperative_softmax_ptx(
-            inner,
-            rows,
-            &red.row_buf,
-            &red.out_buf,
-            layout,
-        )?,
-        ReductionKind::Dot => general::emit_cooperative_dot_ptx(
-            inner,
-            rows,
-            &red.row_buf,
-            &red.col_buf,
-            &red.out_buf,
-            layout,
-        )?,
-    };
-    let blob = if crate::config_tuning::ir_lowering().ptx_emit_cubin {
-        compile_cubin(&ptx, 32).unwrap_or_else(|| ptx.into_bytes())
-    } else {
-        ptx.into_bytes()
-    };
-    Ok(Some(RunnerKernel {
-        name: name.clone(),
-        spirv: blob,
-        image_plans: Vec::new(),
-        index_var: shape.index_var.clone(),
-        count_expr: shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
-        work_cols: None,
-        cooperative: true,
-        tiled: false,
-        tensor: false,
-        tensor_tile_rows: 1,
-        ptx_tensor: false,
-        fused_mma: false,
-        fused_mma_blocks_div: 0,
-        block_threads: 32,
-        shared_bytes: 0,
-        touched_fields: crate::backend::spirv::runner::kernel_touched_fields(shape),
-        ptx: Vec::new(),
-        block_per_workitem: false,
-        geometry: crate::backend::spirv::runner::DispatchGeometry::Plain,
-        owner: name,
-        domain: crate::backend::spirv::runner::KernelDomain::Shared,
-    }))
-}
-
 pub fn module_expr_consts(program: &[TopLevel]) -> std::collections::HashMap<String, Expr> {
     let mut m = std::collections::HashMap::new();
     for item in program {
@@ -988,9 +909,50 @@ pub(crate) fn emit_general_node(
             g.a_field, g.b_field, g.y_field, shape.index_var,
         ));
     }
-    // Non-reduction eligible nodes are elementwise/loop kernels — the
-    // general 1D PTX emitter (the row-ops between GEMMs in an attention
-    // decode live here).
+    // 2026-10-03 (M3, plan `2026-10-03-m3-row-form-lowering.md`): the
+    // DECLARED row shapes (softmax_rows!/dot!) lower HERE, in the row
+    // form — the body synthesized into lane-chunked rounds with
+    // `SubgroupFMax#`/`SubgroupFAdd#`, the work binding = row = ctaid.y
+    // with the lane = tid.x (block 32; the runner's cooperative geometry
+    // = 32x rows, already keyed on is_cooperative_shape). This REPLACES
+    // the hand-written cooperative emitters (retired; the verdicts in
+    // `benchmarks/results/2026-10-03-emitter-retirement-ab.md`).
+    let cooperative = crate::backend::spirv::kernel::is_cooperative_shape(shape);
+    let shape_owned;
+    let shape = if cooperative {
+        let consts = module_expr_consts(program);
+        let red = shape.reduction.as_ref().expect("cooperative shape carries its reduction");
+        let inner = match &red.inner {
+            Expr::Identifier(n) => match consts.get(n) {
+                Some(Expr::Decimal(v)) => *v as u64,
+                _ => {
+                    return Err(format!(
+                        "row-form lowering: reduction length '{}' is not a literal const",
+                        n
+                    ))
+                }
+            },
+            Expr::Decimal(v) => *v as u64,
+            other => {
+                return Err(format!(
+                    "row-form lowering: reduction length {other:?} must be a literal const"
+                ))
+            }
+        };
+        use crate::analysis::accel::ReductionKind;
+        // The lane = `GetLocalId#(0)`: the PTX row form binds the row =
+        // `ctaid.y` (the global id is the ROW there, not the linearized
+        // lane), so both syntheses are PTX-local.
+        shape_owned = match red.kind {
+            ReductionKind::Softmax => {
+                general::synthesize_row_softmax(shape, red, inner)
+            }
+            ReductionKind::Dot => general::synthesize_row_dot(shape, red, inner),
+        };
+        &shape_owned
+    } else {
+        shape
+    };
     let consts = module_expr_consts(program);
     let count = crate::analysis::kernel_plan::fold_count(shape, &consts)?;
     // 2026-09-19 (M1 warp-sliced reductions, plan general-machinery): a
@@ -1050,10 +1012,20 @@ pub(crate) fn emit_general_node(
             unroll_override: declared_unroll_override(program, name),
             online_override: None,          // overrides = test seam only
             deferred_region_override: None,
+            row_form: cooperative,
+            row_index_var: shape.index_var.clone(),
         },
     )?;
     warn_unroll_override(program, name, &mut size_warnings);
-    let (block_threads, maxnreg) = general_node_geometry(deferred, warp_sliced);
+    // 2026-10-03 (M3): the row-form kernels dispatch 32 LANES per row
+    // (the synthesized body is written for the 32-lane chunk) — the
+    // general 64-thread geometry would double-cover the indices and read
+    // OOB past the row length.
+    let (block_threads, maxnreg) = if cooperative {
+        (32, 0)
+    } else {
+        general_node_geometry(deferred, warp_sliced)
+    };
     let blob = general_blob(ptx, maxnreg);
     let (kname, kdomain) = deferred_primary_identity(name, def_split);
     out.push(general_kernel(
@@ -1594,20 +1566,6 @@ pub fn build_ptx_kernels(
         // 1D dispatch; its reduction field is structural noise and the
         // general emitter handles it. Without this gate the cooperative
         // emitter's hard gates killed the whole PTX build.
-        if crate::backend::spirv::kernel::is_cooperative_shape(&e.shape) {
-            if let Some(red) = &e.shape.reduction {
-                if let Some(k) = emit_cooperative_reduction_ptx(
-                    name.clone(),
-                    &e.shape,
-                    red,
-                    program,
-                    &layout,
-                )? {
-                    out.push(k);
-                    continue;
-                }
-            }
-        }
         let plan = GemmPlan::match_stmts(&e.shape, program);
         if plan.is_none() {
             // 2026-10-01 (KernelPlan Phase 2.4, plan

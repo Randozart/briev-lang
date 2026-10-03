@@ -750,7 +750,7 @@ pub fn emit_kernel(
 /// collection/declaration, emit_stmt, the cooperative row binding) handles
 /// the rest. Requires inner % 32 == 0 (enforced by the caller) so strided
 /// accesses are exactly in-bounds — no bounds guards.
-fn synthesize_softmax_stmts(
+pub(crate) fn synthesize_softmax_stmts(
     shape: &KernelShape,
     red: &crate::analysis::accel::ReductionInfo,
     inner_len: u64,

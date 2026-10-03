@@ -83,12 +83,35 @@ gc_h128 blobs: knob ON = knob OFF (md5-identical) ✓ — the chain
 fixtures decompose their counters and never route cooperative; the knob
 is structurally incapable of affecting them.
 
-## The standing state
+## The standing state — SUPERSEDED by M3 (2026-10-03, late session)
 
-- The cooperative emitters stay (declared loans with MEASURED gaps:
-  softmax 1.8-2.5×).
-- The M3 scope: the row-form general lowering (the lane-mapped
-  cooperative pattern) — the campaign that would retire these emitters.
-- The knob `spirv_row_cooperative` stays (the loan's opt-in + the A/B
-  instrument).
-- The dot half: blocked on BUGS.md's `dot!` typecheck defect.
+**M3 LANED: the emitters RETIRED.** The general PTX lowering learned the
+row form (plan `2026-10-03-m3-row-form-lowering.md`): the declared row
+shapes synthesize into lane-chunked rounds (`GetLocalId#(0)` lanes, the
+row = ctaid.y, block 32) + `SubgroupFMax#`/`SubgroupFAdd#` butterfly
+lowering, through the GENERAL emitter — the hand-written
+`emit_cooperative_softmax_ptx`/`emit_cooperative_dot_ptx` and the
+routing claim DELETED (~200 lines). The knob `spirv_row_cooperative`
+retired from the gate (the row form = the general lowering's own
+decision; the SPIR-V lane's cooperative synthesis = unconditional like
+the PTX's).
+
+**The M3 row-form verdict vs the emitters' recorded warm numbers:**
+
+| shape | emitter (retired) | M3 row form (warm) |
+|---|---|---|
+| softmax 4×256 CUDA | 15-17 | 13.6-17.9 |
+| softmax 4×256 Vulkan | ~27 | 23.0-31.1 |
+| dot 20×128 CUDA | 12-15 | 12.4-15.5 |
+| dot 20×128 Vulkan | ~23 | 23.1-24.0 |
+
+**The retirement gate: MET** — the general-derived row kernels reach
+the emitters' numbers (within band, both lanes, both shapes).
+Correctness: EXACT every cell (the gate), the conformance sweep 7/7,
+suite 2855.
+
+The M3-era mid-campaign lesson: the first M3 dot kernel failed CUDA
+with o = 96 (= 128 − 32, one missing tile round) — the desc
+block_threads = 64 (the general geometry) while the synthesized body is
+written for 32 lanes: the double-covered indices + the OOB y reads. The
+row-form geometry = 32 lanes, enforced at the desc.
