@@ -1,0 +1,18 @@
+// dot_row.abv — the DECLARED row dot (plan 2026-10-03-emitter-retirement-ab):
+// out[w] = sum_d x[w*D + d] * y[d] — one work item per output row. The
+// fixture that routes the cooperative DOT emitter (the chain fixtures
+// decompose their counters -> the tiled tier; the kwab pair nests ->
+// general). All-ones seed: every output = D exactly.
+const D: Int = 128;
+const N_OUT: Int = 20;
+
+let w: Int = 0;
+let x: Float[2560];
+let y: Float[128];
+let o: Float[20];
+
+async node dot_row [w < 20][w == 20] {
+    dot!(x, y, o, D, Float, w);
+    w = w + 1;
+    term;
+};

@@ -198,10 +198,10 @@ $defn matmul(
 // `expr_item` binders: acc (the running sum), kk (the K loop item).
 $defn dot(
     xbuf: Expr, ybuf: Expr, obuf: Expr,
-    klen: Expr, widx: Expr, acc_ty: Expr,
+    klen: Expr, acc_ty: Expr, widx: Expr,
     kk: ExprItem, acc: ExprItem
 ) {
-    let acc: acc_ty = 0;
+    let acc: acc_ty = 0.0;
     foreach kk in 0..klen {
         acc = acc + xbuf[widx * klen + kk] * ybuf[kk];
     }

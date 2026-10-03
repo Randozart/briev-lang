@@ -6278,3 +6278,34 @@ mod probe_gemm_tmp {
         }
     }
 }
+
+#[cfg(test)]
+mod probe_dotexp_tmp {
+    use super::*;
+    #[test]
+    fn dump_dot_row_expansion() {
+        let src = std::fs::read_to_string("examples/gpu/dot_row.abv").expect("fixture");
+        let tokens = crate::lexer::tokenize(&src).expect("lex");
+        let mut parser = crate::parser::Parser::new(tokens, &src);
+        let mut items = parser.parse_program().expect("parse");
+        let lib = std::fs::read_to_string("lib/std/numeric.bv").expect("lib");
+        let ltokens = crate::lexer::tokenize(&lib).expect("lex");
+        let mut lparser = crate::parser::Parser::new(ltokens, &lib);
+        items.extend(lparser.parse_program().expect("lib parse"));
+        let mut pm = crate::plugin::PluginManager::new();
+        crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
+        match crate::plugin::composite::expand_composites(&mut items, &pm) {
+            Ok(n) => println!("expanded {n}"),
+            Err(e) => println!("EXPANSION ERROR: {e}"),
+        }
+        for item in &items {
+            if let crate::ast::TopLevel::Transaction(t) = item {
+                if t.name == "dot_row" {
+                    for (idx, s) in t.body.iter().enumerate() {
+                        println!("  [{idx}] {s:?}");
+                    }
+                }
+            }
+        }
+    }
+}

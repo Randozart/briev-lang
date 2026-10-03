@@ -1593,14 +1593,22 @@ fn substitute_param(s: &mut Statement, param: &str, arg: &Expr) {
             // bound to a bare type-name argument (`Float`, `Float16`).
             // Types were never substituted before; this is the composite
             // machinery's first type parameter, used by the declared
-            // matmul so the accumulator type follows the caller's
-            // buffers. Non-Custom types and non-identifier args are left
-            // untouched (a mismatching parameter is the typechecker's
-            // error to report, not the expander's).
+            // matmul/dot so the accumulator type follows the caller's
+            // buffers. 2026-10-03 (dot_row defect): the FUNDAMENTAL names
+            // must map to the BUILTIN types — `Type::Custom("Float")` is
+            // the string "Float", not `Type::float()`, and the checker's
+            // local-let path cannot resolve it (it fell through to the
+            // value bindings: "undefined variable 'Float'"). Non-Custom
+            // types and non-identifier args stay untouched.
             if let Some(Type::Custom(tname)) = ty {
                 if tname == param {
                     if let Expr::Identifier(aname) = arg {
-                        *ty = Some(Type::Custom(aname.clone()));
+                        *ty = Some(match aname.as_str() {
+                            "Float" | "Float32" | "F32" => Type::float(),
+                            "Float64" | "F64" | "Double" => Type::float64(),
+                            "Int" => Type::int(),
+                            other => Type::Custom(other.to_string()),
+                        });
                     }
                 }
             }
@@ -1610,7 +1618,12 @@ fn substitute_param(s: &mut Statement, param: &str, arg: &Expr) {
             if let Some(Type::Custom(tname)) = ty {
                 if tname == param {
                     if let Expr::Identifier(aname) = arg {
-                        *ty = Some(Type::Custom(aname.clone()));
+                        *ty = Some(match aname.as_str() {
+                            "Float" | "Float32" | "F32" => Type::float(),
+                            "Float64" | "F64" | "Double" => Type::float64(),
+                            "Int" => Type::int(),
+                            other => Type::Custom(other.to_string()),
+                        });
                     }
                 }
             }

@@ -7623,3 +7623,44 @@ paths that TYPECHECK reach the conversion.
 errors — a fixture that fails to build produces no files and compares
 "identical". The 65-fixture sweep ran green across four increments while
 two of its fixtures could not build at all.
+
+## Typechecker: `dot!` composite invocation — "undefined variable 'Float'" flips on shape/name [OPEN — 2026-10-03]
+
+**Found:** 2026-10-03, the emitter-retirement campaign's `dot_row.abv`
+fixture (declared `dot!`, D=128, 20 rows). The typecheck fails with
+`undefined variable 'Float'` — the `acc_ty: Expr` composite argument —
+while SEMANTICALLY IDENTICAL fixtures pass. Deterministic per file
+content (6/6 vs 4/4 across repeated builds), but the failing/passing
+boundary is absurd:
+
+- PASSES: node `mrow`, D=4 or D=128, head `[w < N_OUT]` or `[w < 16]`,
+  x-only or x+y operands.
+- FAILS: node `dot_row`/`row_dot`/`rowdot` with y + 20 rows + D=128 in
+  varying combinations; the same file flips with ONLY the parameter
+  order changed (acc_ty last = fatal, acc_ty 5th = pass) — but the
+  reorder does not fix dot_row itself.
+- The expanded AST is CORRECT in every case (probe dump: `let acc:
+  Custom("Float") = Float(0.0)` — and `Type::float()` IS
+  `Custom("Float")`, so the type is the builtin).
+
+**Instrumentation shipped for the hunt:** the four typechecker
+UndefinedVariable raise sites eprintln `[UNDEF] <site> '<name>'`
+(typechecker/mod.rs — the tolerated comptime-probe misses print too:
+`'i'`, `'kk'` are the expander's fail-open arg probes, noise not
+signal); `BRIEV_UNDEF_BT=1` appends a backtrace at DISPLAY time
+(errors.rs — TEMP, remove with the fix). The failing build raises at
+`ident-resolution` with NO tolerated-probe pair — a real expression
+`Float` resolved as a value in a body that (per the AST dump) contains
+none.
+
+**Suspects:** the expander's `fold_stmt_list` typing of substituted
+`Custom` lets under the real comptime env; a second `check_types`
+invocation on the accel-PTX subset (compile.rs build_ptx_kernels path)
+with a different items slice; HashMap-iteration order in the checker's
+custom-type resolution (the 2026-07-31 SipHash rule — the error flips
+with file content that only changes HASH KEYS, e.g. the node name).
+
+**Workaround:** name the node `mrow` (or any short name) with D=4-era
+shapes — see dm9 in the session log; `dot_row.abv` currently ships with
+head `[w < 20]` + the reordered call and STILL fails — the campaign's
+dot-emitter A/B is blocked on this; the softmax half proceeds.
