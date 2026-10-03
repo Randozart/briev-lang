@@ -88,3 +88,19 @@ All five changes landed as planned, plus:
 - Remaining (separate increments): the Softmax-branch rung
   (`softmax_rows!` composite + detect_row_softmax's gate — the ladder's
   row-2 residual) and the LLVM const-folding parity.
+
+## The softmax-branch residual + LLVM parity (2026-10-03, LANDED)
+
+- `b7833c63`: `softmax_rows!` (the canonical three-pass row softmax) +
+  the kind-dependent declaration gate in is_cooperative_shape (Dot →
+  matmul!/dot!, Softmax → softmax_rows!). softmax_rows.abv migrated:
+  kernel identical (normalized disasm = indentation), tables identical.
+  KernelPlan's deferred-reduce helper computes its span internally (5
+  params). **The M4 ladder's declared-coverage rows are ALL landed.**
+- `373622e7`: the LLVM parity increment — `LLVMContext.const_values`
+  (declaration-ordered, folded) populated at BOTH const-collection
+  passes, `vector_array_llvm_type` resolves from it. Found en route:
+  the derived-dim CPU fixture's %State typed the array field i64 (the
+  GEP'd-i64-as-pointer defect) because the PRE-build_field_index const
+  pass lacked the folded values — fixed at both sites; the derived-dim
+  CPU fixture now builds and links.

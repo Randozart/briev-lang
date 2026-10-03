@@ -123,10 +123,11 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
    declared_matmul || declared dot; `dot!` in numeric.bv; the six chain
    fixtures migrated; the f16 chain fixtures' never-built defect fixed
    en route — the SPIR-V coerce now FConverts float-width mismatches,
-   BUGS.md). Softmax-branch residual: the 3-pass rows form lacks a
-   declared composite (`softmax_rows!`) — detect_row_softmax's own
-   ladder row. Const-expression folding — **DONE 2026-10-03** (`82f7c135`;
-   LLVM parity noted).
+   BUGS.md). Softmax-branch residual: **DONE 2026-10-03** (`b7833c63`:
+   `softmax_rows!` declared, the cooperative-SOFTMAX channel
+   kind-gated, softmax_rows.abv migrated — kernel identical).
+   Const-expression folding — **DONE 2026-10-03** (`82f7c135` GPU +
+   `373622e7` LLVM parity: the CPU lane derives counts too).
 
 Also open (post-5 ladder): **M3** producer-consumer chain fusion;
 **M4** `numeric.bv` declarations + vocabulary retirement
