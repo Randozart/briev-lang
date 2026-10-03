@@ -343,7 +343,13 @@ impl KernelPlan {
         let resolve = |e: &Expr| resolve_nonneg(e, consts);
         let has_deferred = shape.deferred_normalize.is_some();
         let has_reduce = shape.reduction.is_some();
-        let gemm = detect_gemm_shape(shape, items);
+        // 2026-10-03 (declared matmul retirement): the plan records what
+        // the compiler will DO — the tensor channel follows the
+        // declaration, so an undeclared body's plan has no gemm lane
+        // (Rules 23/24).
+        let gemm = crate::analysis::gemm_shape::declared_matmul(shape)
+            .then(|| detect_gemm_shape(shape, items))
+            .flatten();
         let proofs = PlanProofs {
             disjoint_workitems: shape.eligible,
             associative_reduce: has_reduce || has_deferred || gemm.is_some(),

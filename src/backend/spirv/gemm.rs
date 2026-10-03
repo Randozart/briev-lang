@@ -187,6 +187,16 @@ impl GemmPlan {
         shape: &crate::analysis::accel::KernelShape,
         items: &[TopLevel],
     ) -> Option<GemmPlan> {
+        // 2026-10-03 (declared matmul retirement — plan
+        // `2026-10-03-declared-matmul-gemmplan-retirement.md`): the tensor
+        // channel follows the DECLARATION (`matmul!(...)`,
+        // lib/std/numeric.bv), never recognition of the body (Rules
+        // 23/24). A body with the matmul facts but no declaration lowers
+        // through the general path; the build advises (see the kernel_plan
+        // diagnostic).
+        if !crate::analysis::gemm_shape::declared_matmul(shape) {
+            return None;
+        }
         // 2026-09-30 (KernelPlan Phase 1b): the structural matcher lives in
         // the frontend (`analysis::gemm_shape`) — one decision shared by
         // every lowering. This wrapper only re-shapes it into `GemmPlan`.
@@ -719,13 +729,18 @@ mod tests {
         ];
 
         let kernel_stmts = vec![
-            // let acc: Float = 0;
+            // let acc: Float = 0; — marked `declared_composite` exactly as
+            // the matmul! expansion marks it (2026-10-03: the tensor
+            // channel follows the declaration).
             Statement::Let {
                 name: "acc".into(),
                 names: vec![],
                 ty: Some(Type::Custom("Float".into())),
                 expr: Some(num(0)),
-                modifiers: vec![],
+                modifiers: vec![crate::ast::top::Annotation {
+                    name: "declared_composite".into(),
+                    value: Some(idx("matmul")),
+                }],
             },
             // let m: Int = i / N;
             Statement::Let {

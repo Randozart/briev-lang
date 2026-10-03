@@ -30,9 +30,40 @@ pub struct GemmShape {
     pub y_field: String,
 }
 
+/// 2026-10-03 (declared matmul retirement — plan
+/// `2026-10-03-declared-matmul-gemmplan-retirement.md`): the DECLARATION
+/// gate. `matmul!(...)` (lib/std/numeric.bv) marks its expansion's first
+/// `let` with `declared_composite`; only a declared body takes the tensor
+/// GEMM channel. A body with the matmul FACTS but no declaration lowers
+/// through the general path — detection for advice, declaration for
+/// specialization (Rules 23/24). The scan keys the FIRST LET (host
+/// statements may precede the expansion — order never mattered here).
+pub fn declared_matmul(shape: &KernelShape) -> bool {
+    shape
+        .kernel_stmts
+        .iter()
+        .find_map(|s| match s {
+            Statement::Let { modifiers, .. } => Some(
+                modifiers.iter().any(|m| {
+                    m.name == "declared_composite"
+                        && matches!(&m.value, Some(Expr::Identifier(n)) if n == "matmul")
+                }),
+            ),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 /// Detect the canonical flattened-2D matmul in a kernel shape. `None` when
 /// the body does not match the canonical form or the shape is not
 /// tile-divisible (the caller falls back to the naive tier).
+///
+/// 2026-10-03 (declared matmul retirement — plan
+/// `2026-10-03-declared-matmul-gemmplan-retirement.md`): detection is a
+/// FACT derivation for ADVICE and the KernelPlan record; the
+/// SPECIALIZATION route is gated by [`declared_matmul`] — the compiler
+/// never recognizes a hand-written triple loop as a matmul (Rules 23/24),
+/// the author declares `matmul!(...)` (lib/std/numeric.bv).
 pub fn detect_gemm_shape(shape: &KernelShape, items: &[TopLevel]) -> Option<GemmShape> {
     let consts = module_const_map(items);
     let iv = shape.index_var.clone();

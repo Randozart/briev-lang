@@ -2149,10 +2149,13 @@ async node fill [i < N][i == N] {
     /// is a proper mask/shift constant.
     #[test]
     fn coopmat_fill_bitwise_rhs_are_mask_consts() {
-        let src = r#"
+        // 2026-10-03 (declared matmul): the fixture DECLARES — the tensor
+    // channel follows the declaration (Rules 23/24).
+    let src = r#"
 !> accel: try_all;
 
 import "std/types/float.bv";
+import "std/numeric.bv";
 
 const M: Int = 4096;
 const N: Int = 4096;
@@ -2164,13 +2167,7 @@ let b: Float16[16777216];
 let y: Float16[16777216];
 
 async node gemm [i < M * N][i == M * N] {
-    let acc: Float16 = 0.0;
-    let m: Int = i / N;
-    let n: Int = i % N;
-    foreach k in 0..K {
-        acc = acc + a[m * K + k] * b[k * N + n];
-    }
-    y[i] = acc;
+    matmul!(a, b, y, M, N, K, i, Float16);
     i = i + 1;
     term;
 };

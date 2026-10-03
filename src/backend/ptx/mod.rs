@@ -972,6 +972,22 @@ pub(crate) fn emit_general_node(
     crate::backend::gpu_lowering::admission_gates(name, plan)?;
     let mut out = Vec::new();
     let mut size_warnings = Vec::new();
+    // 2026-10-03 (declared matmul retirement — plan
+    // `2026-10-03-declared-matmul-gemmplan-retirement.md`): a body with
+    // the matmul facts but no declaration lowered through the general
+    // path — advise the declaration. Detection for ADVICE; the
+    // declaration is the specialization channel (Rules 23/24).
+    // Cooperative/deferred-claimed nodes never reach this emitter.
+    if let Some(g) = crate::analysis::gemm_shape::detect_gemm_shape(shape, program) {
+        size_warnings.push(format!(
+            "node '{name}': the body has the matmul facts (M={}, N={}, K={}, \
+             {} x {} -> {}) but the tensor path follows the declaration - \
+             call matmul!({}, {}, {}, M, N, K, {}, <elem type>) from \
+             std/numeric.bv to specialize",
+            g.m, g.n, g.k, g.a_field, g.b_field, g.y_field,
+            g.a_field, g.b_field, g.y_field, shape.index_var,
+        ));
+    }
     // Non-reduction eligible nodes are elementwise/loop kernels — the
     // general 1D PTX emitter (the row-ops between GEMMs in an attention
     // decode live here).
@@ -2153,8 +2169,10 @@ let a_out: Float[1024];
     }
 
     /// 2026-10-01: a tiny f32 GEMM (64³, naive tier) through the full
-    /// parse → normalize → analyze → schedule pipeline — the tensor
-    /// family's parity fixture.
+    /// parse → expand → normalize → analyze → schedule pipeline — the
+    /// tensor family's parity fixture. 2026-10-03 (declared matmul): the
+    /// body IS the `matmul!` declaration — the tensor channel follows the
+    /// declaration (Rules 23/24), so the fixture declares.
     fn gemm_pipeline() -> (
         Vec<crate::ast::TopLevel>,
         TypeUniverse,
@@ -2162,7 +2180,8 @@ let a_out: Float[1024];
         crate::analysis::gpu_schedule::GpuSchedule,
     ) {
         use crate::ast::PropertyValue;
-        let src = "const M: Int = 64;
+        let src = "import \"std/numeric.bv\";
+const M: Int = 64;
 const N: Int = 64;
 const K: Int = 64;
 
@@ -2172,20 +2191,23 @@ let b: Float[4096];
 let y: Float[4096];
 
 async node g [i < M * N][i == M * N] {
-    let acc: Float = 0.0;
-    let m: Int = i / N;
-    let n: Int = i % N;
-    foreach k in 0..K {
-        acc = acc + a[m * K + k] * b[k * N + n];
-    }
-    y[i] = acc;
+    matmul!(a, b, y, M, N, K, i, Float);
     i = i + 1;
     term;
 };";
-        let tokens = crate::lexer::tokenize(src).expect("lex");
-        let mut items = crate::parser::Parser::new(tokens, src)
-            .parse_program()
-            .expect("parse");
+        let parse = |s: &str| {
+            let tokens = crate::lexer::tokenize(s).expect("lex");
+            crate::parser::Parser::new(tokens, s)
+                .parse_program()
+                .expect("parse")
+        };
+        let mut items = parse(src);
+        items.extend(parse(
+            &std::fs::read_to_string("lib/std/numeric.bv").expect("numeric.bv"),
+        ));
+        let mut pm = crate::plugin::PluginManager::new();
+        crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
+        crate::plugin::composite::expand_composites(&mut items, &pm).expect("expand");
         let mut universe = TypeUniverse::new();
         crate::backend::spirv::normalizer::normalize(&mut items, &mut universe, 64)
             .expect("normalize");
