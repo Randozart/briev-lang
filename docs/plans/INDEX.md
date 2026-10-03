@@ -111,10 +111,14 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
    the stage-5 table (row 3 already marked DONE).
 5. ~~GemmPlan retirement~~ — **DECLARATION-GATED 2026-10-03** (increments
    1-4: the declared-composite channel, `matmul!` in numeric.bv, the
-   matcher gate + advice diagnostic, the device gate). Vulkan-proven;
-   CUDA-lane GEMM correctness = the inherited 5b defect (BUGS.md,
-   nondeterministic — uninitialized-smem/tile-race shape, now with
-   evidence). M4 remaining: `detect_reduction` rung; follow-up language
+   matcher gate + advice diagnostic, the device gate). **BOTH lanes
+   device-proven**: the CUDA GEMM correctness defect (the 5b ladder's
+   standing "ptx_gemm_bench FAILs correctness") was ROOT-CAUSED and
+   FIXED 2026-10-03 — the runner fed the SPIR-V tiled workgroup count to
+   the flat CUDA kernel; the lane-split dispatch arm now covers the
+   flat-PTX/tiled-SPIR-V pair (`e55103b2`, BUGS.md). Whole GEMM family
+   all-ones EXACT both lanes (4096³ f32, 64³, f16 4096³/k1024/2048³/
+   8192³). M4 remaining: `detect_reduction` rung; follow-up language
    increment: const-expression folding for kernel readers (the
    derive-the-counts gap, plan `2026-10-03-declared-matmul-gemmplan-retirement.md`).
 
