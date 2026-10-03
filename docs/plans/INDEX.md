@@ -138,9 +138,11 @@ softmax emitter KEEP-AS-LOAN at a MEASURED 1.8-2.5x gap; the dot
 emitter KEEP-AS-LOAN at 1.05-1.4x — BOTH verdicts in
 (`benchmarks/results/2026-10-03-emitter-retirement-ab.md`). The
 'Float' typecheck defect CLOSED as harness corruption (a corrupted
-reference file — BUGS.md, closed; the compiler innocent). M3's scope =
-closing the measured gaps via the lane-mapped row-form general
-lowering (the dot form = the cheaper first target).
+reference file — BUGS.md, closed; the compiler innocent). M3 LANDED (`b8f5d3f0`):
+the general PTX lowering learned the row form; the cooperative
+emitters RETIRED (~200 lines); the knob retired; the retirement gate
+MET (the M3 row-form kernels reach the emitters' numbers within band,
+both lanes — the results file's M3 table).
 
 **OPEN correctness**: shallow-K emitter race (K≤128, M·N≥1024²) — dispatch
 gates those shapes to the slow race-free kernel; the emitter race itself is
