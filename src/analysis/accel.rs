@@ -2740,9 +2740,18 @@ pub fn is_cooperative_shape(shape: &KernelShape) -> bool {
         // `2026-10-03-declared-dot-detect-reduction-rung.md`): the
         // cooperative channel follows the DECLARATION, like the tensor
         // channel — the fact (shape.reduction) stays for the general
-        // machinery's proofs; the specialization is declared.
-        && (crate::analysis::gemm_shape::declared_matmul(shape)
-            || crate::analysis::gemm_shape::declared_composite(shape, "dot"))
+        // machinery's proofs; the specialization is declared. The
+        // declaration matches the reduction KIND: Dot → matmul!/dot!,
+        // Softmax → softmax_rows!.
+        && (match shape.reduction.as_ref().map(|r| &r.kind) {
+            Some(ReductionKind::Softmax) => {
+                crate::analysis::gemm_shape::declared_composite(shape, "softmax_rows")
+            }
+            _ => {
+                crate::analysis::gemm_shape::declared_matmul(shape)
+                    || crate::analysis::gemm_shape::declared_composite(shape, "dot")
+            }
+        })
         && !kernel_stmts_decompose_counter(shape)
 }
 

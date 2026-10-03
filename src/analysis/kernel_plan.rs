@@ -338,12 +338,14 @@ impl KernelPlan {
     #[allow(clippy::too_many_arguments)]
     fn deferred_reduce_ops(
         dn: &crate::analysis::accel::DeferredNormalization,
-        span: u64,
         split_factor: Option<u32>,
         count: Option<i64>,
         consts: &std::collections::HashMap<String, Expr>,
         hw: &GpuHardware,
     ) -> Vec<PlanOp> {
+        // The reduction span: the accumulator loop's range end, folded
+        // (the same resolution `from_shape`'s `resolve` closure applies).
+        let span = resolve_nonneg(&dn.reduce_end, consts).unwrap_or(0);
         vec![
             PlanOp::Reduce {
                 op: ReduceOp::SoftmaxNormalize,
@@ -500,7 +502,6 @@ impl KernelPlan {
             // see `deferred_split_tree`.
             ops.extend(Self::deferred_reduce_ops(
                 dn,
-                resolve(&dn.reduce_end).unwrap_or(0),
                 declared_split_factor(items, name),
                 fold_count(shape, consts).ok(),
                 consts,

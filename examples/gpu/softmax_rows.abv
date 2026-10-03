@@ -2,6 +2,7 @@
 // Row-wise softmax: out[i, c] = Exp#(logits[i, c] - max_c) / sum_c(Exp#(...)).
 // Row-per-thread: work-item i = the row; each thread runs the three passes
 // serially over NKV. Zero-seeded logits → uniform 1/NKV = 0.125 expected.
+import "std/numeric.bv";
 const ROWS: Int = 4;
 const NKV: Int = 256;
 
@@ -10,21 +11,7 @@ let logits: Float[1024];
 let result: Float[1024];
 
 async node softmax_rows [i < ROWS][i == ROWS] {
-    // max pass
-    let m: Float = logits[i * NKV + 0];
-    foreach c in 0..NKV {
-        let v: Float = logits[i * NKV + c];
-        m = Max#(m, v);
-    }
-    // exp-sum pass
-    let s: Float = 0;
-    foreach c in 0..NKV {
-        s = s + Exp#(logits[i * NKV + c] - m);
-    }
-    // normalize pass
-    foreach c in 0..NKV {
-        result[i * NKV + c] = Exp#(logits[i * NKV + c] - m) / s;
-    }
+    softmax_rows!(logits, result, NKV, i * NKV, i);
     i = i + 1;
     term;
 };

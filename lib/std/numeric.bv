@@ -207,3 +207,41 @@ $defn dot(
     }
     obuf[widx] = acc;
 };
+
+// softmax_rows! — the DECLARED row-per-work-item softmax (plan
+// 2026-10-03-declared-dot-detect-reduction-rung.md, the softmax-branch
+// residual): the three-pass form — Max# fold, Exp# sum, normalize — one
+// work item per row, the canonical body the cooperative softmax lowering
+// specializes on.
+//
+//   out[rowbase + c] = Exp#(row[rowbase + c] - max) / Σ_c Exp#(...) 
+//
+// Like dot!/matmul!: the declaration reaches the specialized channel —
+// the compiler never recognizes a hand-written three-pass softmax.
+//
+// `expr` parameters:
+//   rowbuf  — the logits buffer (N_ROWS×RLEN, row-major)
+//   outbuf  — the result buffer (same shape)
+//   rlen    — the row length (comptime const; divisible by 32 for the
+//             cooperative lane)
+//   rowbase — the work item's row offset (rowidx * rlen)
+//   rowidx  — the node's work-item counter
+// `expr_item` binders: c (the column loop item), m (the running max),
+// s (the exp sum), v (the pass-1 read).
+$defn softmax_rows(
+    rowbuf: Expr, outbuf: Expr, rlen: Expr, rowbase: Expr, rowidx: Expr,
+    c: ExprItem, m: ExprItem, s: ExprItem, v: ExprItem
+) {
+    let m: Float = rowbuf[rowbase + 0];
+    foreach c in 0..rlen {
+        let v: Float = rowbuf[rowbase + c];
+        m = Max#(m, v);
+    }
+    let s: Float = 0;
+    foreach c in 0..rlen {
+        s = s + Exp#(rowbuf[rowbase + c] - m);
+    }
+    foreach c in 0..rlen {
+        outbuf[rowbase + c] = Exp#(rowbuf[rowbase + c] - m) / s;
+    }
+};
