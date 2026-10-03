@@ -347,3 +347,73 @@ diff) + the m3 harness (live reference, honors BRIEFC_FLAGS) — never a
 hand-spliced probe again.
 
 Shipped-best decode config: fused + split=4 — 72.2 µs p50.
+
+## Float4 k/v loads LANDED (2026-10-02) — the ggml-gap increment
+
+Commits `d21f61d8` (the quad path) + `6512ac86` (three gate-caught defects).
+Design as banked above; the two coupling constraints held: flip+v4 landed
+together; per-strip unique binder names (`__vdqk{i}`/`__vdqv{vi}_{i}`/
+`__vdqq{gq}_{i}`) keep the quad rewrite strip-correct. Fallbacks (D%128≠0,
+misaligned fields, f16, non-d-affine sites) keep the scalar strips — the
+scalar form also stays the two-pass A/B arm.
+
+**The gates caught three real defects before any timing claim:**
+
+1. **Split partial-store layout** (`6512ac86`): the per-slice partial
+   record baked the ORIGINAL d mapping (lane·4 B base, 128 B strip stride
+   = d lane+32·i). Under the flip the slots must follow the NEW mapping
+   (lane·16 B base, 4 B stride = d lane·4+i). First fix attempt changed
+   only the stride — the 16-byte stores then OVERLAPPED (lane L covered
+   floats 2+L..5+L; slots d≥35 zeroed by write races). The gate metrics
+   that caught it: softmax s8 CUDA 61.2 → 33.4 → 8.47e-06 PASS.
+2. **Cast-invisible k site**: the decode composite reads
+   `(k[..] as Float)`; the v4 walks + `rewrite_j_expr` did not descend
+   `Expr::Cast` — the decode kernel silently stayed scalar. All walks are
+   Cast-transparent now (dot_buffers precedent); the composite emits 3
+   quads (q hoist + k + v).
+3. **AB-gate GQA seed overrun** (`6512ac86`, instrument): the P1 gate
+   seeded k/v with H·NKV·D floats — 4× the GQA decode buffers
+   (HKV·NKV·D) — glibc aborted both variants pre-dump and the gate
+   compared STALE bins from a previous run. Today's first "PASS 5.894e-06"
+   was exactly the Oct-1 record value = stale-file comparison. Fixed: the
+   seed reads the declared counts from the runner field table.
+   **Rule for every gate consumer: delete the dump files before the run
+   and require fresh files — a PASS on pre-existing bins is void.**
+
+Also: `examples/gpu/attention_decode_composite_d20.abv` — the decode
+geometry as a PERMANENTLY named fixture. The three `_tmp.abv` files
+deleted earlier today (abdec/dec/decspy) were the Oct-1 session's decode
+fixtures — the committed composite is s8 geometry; "byte-identical to
+each other" made them look like strays. Lesson: an instantiation differs
+from its template by CONSTS ONLY — those consts are the geometry; check
+what a gate actually ran before deleting its fixtures.
+
+**Correctness gates (v4-active build, all PASS):** m3 decode H=20/NKV=4096
+both lanes (a_err 9.65e-06 CUDA / 1.02e-05 VK); softmax s8 both lanes
+(8.47e-06 CUDA / 2.06e-05 VK; record 8.48e-06/2.06e-05); AB variant-diff
+s8 9.466e-06 + decode 3.274e-06 (fresh bins, fixed instrument);
+gemm_h byte-identical (the Cast arm touches shared rewrite machinery);
+suite 2847.
+
+**Timing (Rule 12 interleave, base = worktree at `fec8b89a` built fresh,
+same machine window, 1200 reps):**
+
+| variant | base p10 | v4 p10 | Δ | base p50 | v4 p50 | Δ |
+|---|---|---|---|---|---|---|
+| no-split | 133.1 | **116.1** | **-12.8%** | 136.2 | 118.1 | **-13%** |
+| split=2 | 153.1 | 135.7 | -11.4% | 154.2 | 138.5 | -10.2% |
+| split=4 | 143.7 | 140.2 | -2.4% | 146.3 | 143.9 | -1.6% |
+| split=8 | 184.9 | 178.1 | -3.7% | 186.3 | 181.1 | -2.8% |
+| split=16 | 262.9 | 245.1 | -6.8% | 264.6 | 258.3 | -2.4% |
+
+(The morning pre-change sweep and the first post-change sweep sit in the
+same bands — the record's 2026-10-01 absolute ~72 µs remains unreachable
+in today's machine state; ALL absolute numbers here are same-session
+relative only. One v4 no-split run caught a transient spike — p90 741 —
+the table uses the clean interleaved runs.)
+
+**Shipped-best decode config UPDATE: fused v4, NO-SPLIT** — 118.1 µs p50
+/ 135.7 p90 clean. The split=4 recommendation above is superseded: with
+the loads fused, the 20-CTA no-split grid wins p50 AND tail in this
+window (v4 no-split p90 135.7 < split=4 p90 152.4). The estimate
+(72.5 → ~60, -17%) scoped the win correctly (-13% measured, same-session).

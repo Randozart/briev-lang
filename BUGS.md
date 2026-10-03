@@ -7538,3 +7538,23 @@ dead row behind the others.
 **Class:** dead-knob overrides violate the config contract ("a silently
 ignored override compiles with the wrong tier") — the D30 block makes every
 key's liveness a tested invariant.
+
+## deferred_ab_gate.sh compared STALE dump bins — PASS was void (fixed 2026-10-02)
+
+**Found:** 2026-10-02, the float4 decode-geometry gating. The P1 variant-diff
+gate (`benchmarks/deferred_ab_gate.sh`) injected its seed with FIXED sizes
+(`H*NKV*D` floats for q/k/v) — correct for the s8 fixture, but 4× the GQA
+decode buffers (`HKV*NKV*D`): the overrun smashed the heap, glibc aborted
+both variant binaries BEFORE the dumps, and the gate's comparison step then
+read whatever `/tmp/opencode/ab_out_{0,1}.bin` contained from a PREVIOUS
+run — reporting "PASS 5.894e-06" that was byte-for-byte the Oct-1 record
+value, i.e. a stale-file comparison, twice in one session.
+
+**Fix:** the seed reads the declared element counts from the runner's field
+table (`field_count`), and the run protocol deletes the dump files first —
+a PASS on pre-existing bins is void. Same class as the P-series lesson: an
+instrument that cannot fail loudly will silently certify yesterday's run.
+
+**Prevention:** always `rm` the gate's fixed-path dumps before invoking;
+any future gate that writes fixed-path artifacts must create them O_EXCL or
+under its own mktemp dir.
