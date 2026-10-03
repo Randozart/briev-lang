@@ -1297,6 +1297,25 @@ fn build_emit_node(args: &[Expr]) -> Result<Transaction, String> {
     })
 }
 
+/// 2026-10-03 (declared matmul, GemmPlan retirement — plan
+/// `2026-10-03-declared-matmul-gemmplan-retirement.md`): a
+/// statement-position expansion carries its DECLARATION — the first
+/// statement, when it is a `let`, gains the `declared_composite`
+/// annotation so analyses and lowerings gate specialization on the
+/// declaration, never on recognizing the body (Rules 23/24). The
+/// annotation is inert to every existing consumer (the `vol` Let-
+/// modifier precedent); bodies whose first statement is not a `let`
+/// stay unmarked (documented: the declared-lowering channel consumes
+/// Let-first declarations only).
+fn mark_declared(body: &mut [Statement], name: &str) {
+    if let Some(Statement::Let { modifiers, .. }) = body.first_mut() {
+        modifiers.push(Annotation {
+            name: "declared_composite".into(),
+            value: Some(Expr::Identifier(name.to_string())),
+        });
+    }
+}
+
 /// Expand statement-position composite invocations in one statement list.
 fn expand_stmt_list(
     stmts: &mut Vec<Statement>,
@@ -1321,7 +1340,9 @@ fn expand_stmt_list(
         };
         if let Some((name, args)) = call {
             if let Some(def) = registry.get(&name) {
-                let expanded = expand_composite_invocation(def, &args, comptime, state_types)?;
+                let mut expanded =
+                    expand_composite_invocation(def, &args, comptime, state_types)?;
+                mark_declared(&mut expanded, &def.name);
                 let tail = stmts.split_off(i + 1);
                 stmts.truncate(i);
                 stmts.extend(expanded);
@@ -1566,7 +1587,34 @@ fn splice_nested(body: Vec<Statement>, rest_name: &str, rest_args: &[Expr]) -> V
 /// inserted argument expressions are never re-walked).
 fn substitute_param(s: &mut Statement, param: &str, arg: &Expr) {
     match s {
-        Statement::Let { expr: Some(e), .. } => subst_expr(e, param, arg),
+        Statement::Let { ty, expr: Some(e), .. } => {
+            // 2026-10-03 (declared matmul): a type position may take a
+            // composite parameter — `let acc: acc_ty;` with `acc_ty`
+            // bound to a bare type-name argument (`Float`, `Float16`).
+            // Types were never substituted before; this is the composite
+            // machinery's first type parameter, used by the declared
+            // matmul so the accumulator type follows the caller's
+            // buffers. Non-Custom types and non-identifier args are left
+            // untouched (a mismatching parameter is the typechecker's
+            // error to report, not the expander's).
+            if let Some(Type::Custom(tname)) = ty {
+                if tname == param {
+                    if let Expr::Identifier(aname) = arg {
+                        *ty = Some(Type::Custom(aname.clone()));
+                    }
+                }
+            }
+            subst_expr(e, param, arg);
+        }
+        Statement::Let { expr: None, ty, .. } => {
+            if let Some(Type::Custom(tname)) = ty {
+                if tname == param {
+                    if let Expr::Identifier(aname) = arg {
+                        *ty = Some(Type::Custom(aname.clone()));
+                    }
+                }
+            }
+        }
         Statement::Assign(l, r) => {
             subst_expr(l, param, arg);
             subst_expr(r, param, arg);
@@ -3041,5 +3089,131 @@ async node s [h < 8][h == 8] {
             Err(e) => panic!("expansion failed: {e}"),
         }
         assert_eq!(n.unwrap(), 1);
+    }
+}
+
+#[cfg(test)]
+mod declared_channel_tests {
+    use super::*;
+    use crate::ast::top::Transaction;
+
+    fn parse_program(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::pipeline::lex_for_path("test.bv", src).expect("lex");
+        crate::pipeline::parse("test.bv", &tokens, src).expect("parse")
+    }
+
+    /// The canonical matmul declaration used by the declared-channel
+    /// tests — the same form `lib/std/numeric.bv` declares (the acc type
+    /// rides a TYPE parameter; the buffers/spans/index ride Expr params).
+    const MATMUL: &str = "\
+$defn matmul(
+    abuf: Expr, bbuf: Expr, ybuf: Expr,
+    mlen: Expr, nlen: Expr, klen: Expr, idx: Expr, acc_ty: Expr,
+    m: ExprItem, n: ExprItem, kk: ExprItem, acc: ExprItem
+) {
+    let acc: acc_ty = 0.0;
+    let m: Int = idx / nlen;
+    let n: Int = idx % nlen;
+    foreach kk in 0..klen {
+        acc = acc + abuf[m * klen + kk] * bbuf[kk * nlen + n];
+    }
+    ybuf[idx] = acc;
+};";
+
+    fn expand_user(user: &str) -> Vec<TopLevel> {
+        let mut items = parse_program(user);
+        items.extend(parse_program(MATMUL));
+        let mut pm = crate::plugin::PluginManager::new();
+        crate::plugin::loader::extract_inline_stage_blocks(&mut items, &mut pm);
+        let n = expand_composites(&mut items, &pm).expect("expansion");
+        assert_eq!(n, 1, "matmul! expands once");
+        items
+    }
+
+    #[test]
+    fn expansion_marks_the_declaration() {
+        let items = expand_user(
+            "const M: Int = 4; const N: Int = 4; const K: Int = 4;\n\
+             let i: Int = 0;\n\
+             let a: Float[16]; let b: Float[16]; let y: Float[16];\n\
+             async node g [i < M * N][i == M * N] {\n\
+             \x20 matmul!(a, b, y, M, N, K, i, Float);\n\
+             \x20 i = i + 1;\n\
+             \x20 term;\n\
+             };",
+        );
+        let Some(TopLevel::Transaction(t)) = items
+            .iter()
+            .find(|it| matches!(it, TopLevel::Transaction(x) if x.name == "g"))
+        else {
+            panic!("node g missing");
+        };
+        let Statement::Let { modifiers, .. } = &t.body[0] else {
+            panic!("first statement is not a let: {:?}", t.body[0]);
+        };
+        let marked = modifiers
+            .iter()
+            .find(|m| m.name == "declared_composite")
+            .and_then(|m| match &m.value {
+                Some(Expr::Identifier(n)) => Some(n.clone()),
+                _ => None,
+            });
+        assert_eq!(marked.as_deref(), Some("matmul"), "declaration marker");
+    }
+
+    #[test]
+    fn type_param_substitutes_in_type_position() {
+        let items = expand_user(
+            "const M: Int = 4; const N: Int = 4; const K: Int = 4;\n\
+             let i: Int = 0;\n\
+             let a: Float16[16]; let b: Float16[16]; let y: Float16[16];\n\
+             async node g [i < M * N][i == M * N] {\n\
+             \x20 matmul!(a, b, y, M, N, K, i, Float16);\n\
+             \x20 i = i + 1;\n\
+             \x20 term;\n\
+             };",
+        );
+        let Some(TopLevel::Transaction(t)) = items
+            .iter()
+            .find(|it| matches!(it, TopLevel::Transaction(x) if x.name == "g"))
+        else {
+            panic!("node g missing");
+        };
+        let Statement::Let { ty, modifiers, .. } = &t.body[0] else {
+            panic!("first statement is not a let");
+        };
+        assert_eq!(
+            ty.as_ref().map(|v| format!("{v:?}")),
+            Some("Custom(\"Float16\")".to_string()),
+            "acc type follows the caller's element type"
+        );
+        assert!(modifiers.iter().any(|m| m.name == "declared_composite"));
+    }
+
+    #[test]
+    fn plain_bodies_carry_no_marker() {
+        let items = parse_program(
+            "let i: Int = 0;\n\
+             let a: Float[4]; let y: Float[4];\n\
+             async node p [i < 4][i == 4] {\n\
+             \x20 let acc: Float = 0;\n\
+             \x20 y[i] = acc;\n\
+             \x20 i = i + 1;\n\
+             \x20 term;\n\
+             };",
+        );
+        let Some(TopLevel::Transaction(t)) = items
+            .iter()
+            .find(|it| matches!(it, TopLevel::Transaction(x) if x.name == "p"))
+        else {
+            panic!("node p missing");
+        };
+        let Statement::Let { modifiers, .. } = &t.body[0] else {
+            panic!("first statement is not a let");
+        };
+        assert!(
+            !modifiers.iter().any(|m| m.name == "declared_composite"),
+            "a hand-written body is undeclared"
+        );
     }
 }
