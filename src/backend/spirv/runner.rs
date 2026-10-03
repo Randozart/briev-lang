@@ -1288,6 +1288,12 @@ fn emit_kernel_node(
 /// (OOB smem writes → IMA rc 700). For `ptx_tensor` kernels with a PTX
 /// blob the statement splits per lane (`briev_accel_cuda_lane()`); every
 /// other program emits exactly the pre-fix statement.
+///
+/// 2026-10-03 (declared-matmul gate catch): the "naive shares the SPIR-V
+/// contract" assumption was WRONG for the GEMM family — its SPIR-V image
+/// is the TILED 64×64 kernel (workgroup geometry) while the PTX image is
+/// the flat naive kernel (work-item geometry); the second lane-split arm
+/// below handles that pair.
 fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
     // 2026-10-01 (contract (B)): the geometry slot decides the launch
     // shape FIRST — a split partial takes the flat `n * factor` path,
@@ -1319,6 +1325,21 @@ fn dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> String {
         let spirv = spirv_dispatch_geometry_stmt(k, kidx, ci);
         return format!(
             "      if (briev_accel_cuda_lane()) {{\n{ptx}      }} else {{\n{spirv}      }}\n"
+        );
+    }
+    // 2026-10-03 (declared-matmul gate catch, BUGS.md 2026-10-03): a
+    // dual-image kernel whose PTX blob is the FLAT general family (the
+    // naive GEMM: one thread per work item, r3 = ctaid·block_threads+tid)
+    // and whose SPIR-V image is the TILED kernel — the tiled workgroup
+    // geometry serves only Vulkan. Feeding it to the CUDA lane under-
+    // launched by the tile ratio (4096³: 1024 blocks → outputs ≥ 65536
+    // never written; 64³: 1 block → outputs ≥ 64). The CUDA lane launches
+    // the flat image with the WORK-ITEM count (the driver's
+    // gx = ceil(n / block_threads) covers every output).
+    if !k.ptx.is_empty() && k.tiled {
+        let spirv = spirv_dispatch_geometry_stmt(k, kidx, ci);
+        return format!(
+            "      if (briev_accel_cuda_lane()) {{\n        if (n_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, n_{ci})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n      }} else {{\n{spirv}      }}\n"
         );
     }
     spirv_dispatch_geometry_stmt(k, kidx, ci)

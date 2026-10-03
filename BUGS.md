@@ -7559,29 +7559,42 @@ instrument that cannot fail loudly will silently certify yesterday's run.
 any future gate that writes fixed-path artifacts must create them O_EXCL or
 under its own mktemp dir.
 
-## CUDA-lane f32 GEMM: nondeterministic wrong outputs at 4096³ [OPEN — inherited from the 5b ladder]
+## CUDA-lane f32 GEMM: outputs past a row boundary never written [ROOT-CAUSED + FIXED 2026-10-03]
 
 **Found:** 2026-10-03, by `benchmarks/declared_matmul_gate.sh` (the
-declared-matmul campaign's device gate). The f32 4096³ GEMM on the CUDA
-lane: all-ones is nondeterministically wrong at a varying row boundary
-(row 16 in one build, row 1 in another — same source), and the patterned
-seed produces garbage (max_rel up to 5e+40). The Vulkan lane is EXACT on
-the same build (all-ones 16777216/16777216).
+declared-matmul campaign's device gate). The f32 GEMM on the CUDA lane:
+all-ones exact up to a row boundary, zeros after — output 65536+ at
+4096³, output 64+ at 64³.
 
-**Pre-existing:** the gate fails IDENTICALLY on the pre-migration
-(`466f0e59`) fixture — the kernels are disassembly-identical across the
-declared-matmul change, so the channel is exonerated; the defect rides
-the PTX tensor tier. Consistent with the 5b ladder's standing note
-("`ptx_gemm_bench` FAILs correctness on the current kernel",
-`benchmarks/results/2026-09-30-5b-cuda-s5-ladder.md`); the new evidence
-adds NONDETERMINISM (run-to-run varying first-wrong-row at identical
-input) — smells like uninitialized smem or a tile-boundary race in the
-mw kernel, not a fixed addressing offset.
+**Root cause (not a race, not smem):** the generated runner's dispatch
+expression was emitted from the SPIR-V image's geometry ONLY — for the
+GEMM family that is the TILED 64×64 kernel's workgroup count
+(`(count/4096)·16`), while the merged CUDA blob is the FLAT naive kernel
+(one thread per work item, `r3 = ctaid·64 + tid`, needing
+`gx = ceil(count/64)`). `cuda_launch_grid` divides nx by block_threads:
+4096³ → 1024 blocks × 64 threads = outputs 0..65535 written, 65536+
+never; 64³ → 1 block = outputs 0..63. The "nondeterminism" in the first
+entry draft was two DIFFERENT fixtures — per shape it is fully
+deterministic. The 5b ladder's "ptx_gemm_bench FAILs correctness" note
+was this same defect.
 
-**Also:** the Vulkan f32 tiled kernel passes all-ones exactly but shows
-max_rel ≈ 0.12 on a patterned K=4096 seed — exact on ones, off on
-mixed-magnitude data — the f32 accumulation-order/slice question the
-5b Phase-2 analysis predicted. Bounded, recorded, separate from the
-CUDA garbage.
+**Fix** (`src/backend/spirv/runner.rs`, dispatch_geometry_stmt): the
+second lane-split arm — a dual-image kernel whose PTX blob is the flat
+general family and whose SPIR-V image is `tiled` dispatches the flat
+work-item count on `briev_accel_cuda_lane()` and the tiled workgroup
+geometry on Vulkan. (The first arm — `ptx_tensor` — already did this for
+the tensor tier.)
 
-**Repro:** `bash benchmarks/declared_matmul_gate.sh examples/gpu/gemm.abv 4096 4096 4096 f32`
+**Gate:** the whole GEMM family EXACT on both lanes
+(`declared_matmul_gate.sh`): 4096³ f32, 64³ f32, 4096³ f16, k1024 f16,
+2048³ f16, 8192³ f16 — all-ones EXACT over every element
+(16777216/16777216 at 4096³, 67108864/67108864 at 8192³); patterned
+seeds row-normalized ≤ 2.7e-06 (f32, both lanes identical).
+gemm_chain stays with the chain-schedule instrument (its second
+operand is the chain's intermediate — the single-matmul all-ones
+contract does not apply).
+
+**Also recorded:** the gate's first metric (raw per-element max_rel)
+exploded at near-zero references (cancellation) — replaced with the
+row-normalized error and a K-scaled f32 accumulation bound; the metric
+was measuring itself, not the kernel.
