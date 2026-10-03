@@ -62,3 +62,55 @@ retire (the deletions). Not → the remaining gap = the ledger.
 - The tensor-tier GEMM path (production, not a loan).
 - The chain-fusion M3 item (the OTHER M3 — the producer-consumer
   chains; separate).
+
+## Phase 0 — the decomposition (DONE 2026-10-03)
+
+The SPIR-V lane's cooperative path is ALREADY general machinery (the
+body synthesis + the generic lowering) — **the loans are the PTX-side
+hand-written emitters** (`emit_cooperative_softmax_ptx`,
+`emit_cooperative_dot_ptx` — complete hand-written kernels bypassing
+the general emit path).
+
+The measured structure (softmax_rows 4×256, dot_row 20×128):
+
+| | general (OFF) | cooperative (ON) |
+|---|---|---|
+| LocalSize | 256 (1 thread/row, rest idle) | 32 (lane = column chunk) |
+| work/row | serial O(K) in one thread | K/32 per lane + reduction |
+| reductions | serial accumulator | warp shuffle/butterfly |
+| softmax ops | 470 | 255 |
+| dot ops | 1 loop, 0 group ops | 3 FMA + 1 group op |
+
+The gap decomposition: (a) 32× the parallelism per row (the tiny-row
+shapes cap it at 1.8-2.5× measured — launch/wave bound), (b) the
+serial accumulator vs the shuffle tree.
+
+## Phase 1 — the design (scoped)
+
+The PTX general emitter learns the THIRD work binding — **row form**:
+- row = ctaid.x (one BLOCK per row), the row index_var = ctaid.x;
+- the column loops stride by the block width (tid.x + 32·i);
+- the accumulator reductions = the warp butterfly (`shfl.sync.bfly`)
+  — licensed by the associativity proof the shape already carries.
+
+Where: the general node emitter's work-binding branch (general.rs
+~:1085 — the `block_work_item` arm's sibling), keyed on
+`is_cooperative_shape` (declared + proven — the same gate the SPIR-V
+lane uses). The bodies lower through the generic emit_stmt — NO
+hand-written kernels.
+
+The retirement verdict then: the general-derived PTX row kernels vs
+the hand-written emitters (the emitter_ab_gate A/B). Reach → the
+emitters retire.
+
+## The implementation notes
+
+- The PTX shuffle: `shfl.sync.bfly.shfl.b32 %r, %r, 16, 0x1f;` halves —
+  5 steps for 32 lanes; the max = `OpGroupNonUniformFMax`-equivalent via
+  fmax + the butterfly on the fused pattern (the emitters' exact
+  sequences = the reference).
+- The inner-loop remap: the desugar'd `foreach kk in 0..K` → the
+  strided form (`kk = tid.x; kk < K; kk += 32`) — the same remap
+  synthesize_softmax_stmts does on the SPIR-V side.
+- The tiny-shape guard: rows < 32 → the flat form (the row-form's
+  tail waste dominates) — the strategy threshold.
