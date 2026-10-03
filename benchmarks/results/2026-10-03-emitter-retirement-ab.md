@@ -46,16 +46,36 @@ met. The measured gap = the M3 scope: general machinery must learn the
 lane-mapped row form (32 lanes × rows, the work-item id = the row, the
 subgroup reductions) to close 2×.
 
-## The dot emitter — BLOCKED on the typecheck defect
+## The dot emitter (cooperative vs flat general) — VERDICT: KEEP-AS-LOAN
 
-`dot_row.abv` (declared `dot!`, D=128, 20 rows) trips the typechecker's
-`undefined variable 'Float'` — a shape/name/param-order-sensitive
-checker defect, filed in BUGS.md with the instrumentation shipped
-(the four `[UNDEF]` raise-site probes + the `BRIEV_UNDEF_BT`
-display-time backtrace). The fixture is REMOVED from the tree — the
-conformance sweep caught it (the sweep works; the blob-sweeps didn't).
-The dot emitter's A/B waits for the defect's fix; the fixture content
-lives in the BUGS.md repro.
+**Unblocked the same session**: the "typecheck defect" was NOT a
+compiler defect — the campaign's reference file was CORRUPTED (a stale
+git-show path during the fixture's remove/restore cycle dropped its two
+import lines; the unexpanded `dot!` call's raw `Float` argument then
+hit the checker). BUGS.md's entry is rewritten to the closed form; the
+conformance sweep caught what the manual ref-file flow could not.
+
+`dot_row.abv` RESTORED (declared `dot!`, D=128, 20 rows, 20 outputs).
+The gate gained the `dot` kind: the all-ones seed (x = rows·K, y = K),
+every output = K exactly (20 outputs).
+
+Interleaved µs/launch (500 launches/cell, both lanes):
+
+| round | knob | CUDA | Vulkan |
+|---|---|---|---|
+| 1 | on | 27.8 | 23.0 |
+| 1 | off | 14.7 | 24.6 |
+| 2 | on | 12.2 | 23.1 |
+| 2 | off | 19.9 | 25.2 |
+| 3 | on | 15.0 | 23.2 |
+| 3 | off | 19.7 | 32.3 |
+
+Warm bands: **CUDA emitter 12-15 vs general 15-20 (≈1.3×); Vulkan
+emitter ~23 vs general ~25-32 (≈1.05-1.4×).**
+
+**Verdict: KEEP-AS-LOAN** — the emitter leads on both lanes; the gap is
+REAL but far smaller than the softmax's. The M3 scope covers BOTH row
+forms; the dot form's closure is the cheaper first target.
 
 ## Sanity cells
 

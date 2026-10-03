@@ -348,17 +348,7 @@ impl fmt::Display for TypeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TypeError::UndefinedVariable { name, .. } => {
-                write!(f, "undefined variable '{}'", name)?;
-                // 2026-10-03 (TEMP: the dot_row 'Float' hunt): raise-path
-                // backtrace under BRIEV_UNDEF_BT; remove with the fix.
-                if std::env::var_os("BRIEV_UNDEF_BT").is_some() {
-                    write!(
-                        f,
-                        "\n{}",
-                        std::backtrace::Backtrace::force_capture()
-                    )?;
-                }
-                Ok(())
+                write!(f, "undefined variable '{}'", name)
             }
             TypeError::TypeMismatch {
                 expected,

@@ -7624,6 +7624,66 @@ errors — a fixture that fails to build produces no files and compares
 "identical". The 65-fixture sweep ran green across four increments while
 two of its fixtures could not build at all.
 
+## dot_row 'Float' typecheck failure [CLOSED — NOT a compiler defect; the test harness corrupted itself]
+
+**Found:** 2026-10-03, the emitter-retirement campaign's `dot_row.abv`
+fixture. The typecheck failed `undefined variable 'Float'`, flipping on
+absurd content deltas (node name spellings, head forms, D values) while
+the expanded AST was correct in every probed case.
+
+**Root cause: THE REFERENCE FILE WAS CORRUPTED.** The campaign's
+`/tmp/opencode/dot_row_ref.abv` — created via `git show <rev>:...` during
+the fixture's remove/restore cycle — silently lost its two import lines
+(`import "std/types/float.bv"; import "std/numeric.bv";`). Without the
+numeric.bv import the `dot!` composite is unknown, the PluginIntercept
+survives to the typecheck, and the checker resolves the RAW ARGUMENT
+`Float` (a type name in an expression position) as a value. Every
+"absurd" flip = a comparison between the import-less ref and
+import-carrying hand-written variants. The compiler, the expander, the
+registry, and the resolver are ALL innocent — the final hunt confirmed
+the expanded AST is correct and the pipeline order is correct.
+
+**The instrumentation shipped during the hunt** (the four `[UNDEF]`
+raise-site eprintlns, the `BRIEV_UNDEF_BT` display-time backtrace, the
+`[REGISTRY]/[ITEM-KINDS]/[WALK]/[EXPANSION-SEE]` expander probes, the
+compile.rs body dump) was REMOVED with the closure. The durable
+lessons:
+1. A reference file must be VERIFIED after creation (the imports'
+   presence, a checksum) — a git-show into a moved/deleted path
+   silently writes a stale or empty file.
+2. The conformance sweep (`conformance_sweep_every_active_source`)
+   caught the broken fixture the manual flow kept re-corrupting —
+   trust the sweep over the manual repro.
+
+**Closed:** the fixture RESTORED with imports (`dot_row.abv`, the node
+`dot_row`), builds clean, routes the cooperative dot emitter, and the
+emitter A/B ran (the results file).
+
+## SPIR-V lane: f16 scalar × Float-typed const/literal lowered to a type error [FIXED 2026-10-03]
+
+**Found:** 2026-10-03, the declared-dot rung's fixture migration —
+`attn_s1.abv` / `attn_decode_h.abv` (f16 attention chains with
+`const SCALE: Float16 = 1.0` and `s2[j] = s[j] * SCALE`) NEVER BUILT —
+the fixtures were committed broken at their introduction (`327dda74`) and
+every blob-compare sweep since silently treated the build failure as an
+empty-but-identical file list.
+
+**Root cause:** `FnLowerer::coerce` errored on any float-width mismatch —
+the f16 buffer load vs the const/literal's materialized width had no
+conversion path. The const read itself was correctly typed (Float16);
+only the width mismatch had no lowering.
+
+**Fix:** `coerce` converts float-width mismatches with `OpFConvert`
+(either direction) instead of erroring. The typechecker's ruling stands
+unchanged — bare Float literals on f16 ops still demand an explicit
+`as` cast ("no implicit Int/Float coercion"); only the const/typed-const
+paths that TYPECHECK reach the conversion.
+
+**Lesson (sweep design):** a blob-compare sweep MUST fail loudly on build
+errors — a fixture that fails to build produces no files and compares
+"identical". The 65-fixture sweep ran green across four increments while
+two of its fixtures could not build at all.
+
 ## Typechecker: `dot!` composite invocation — "undefined variable 'Float'" flips on shape/name [OPEN — 2026-10-03]
 
 **Found:** 2026-10-03, the emitter-retirement campaign's `dot_row.abv`

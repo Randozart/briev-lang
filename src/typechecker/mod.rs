@@ -949,7 +949,6 @@ pub fn infer_expression(
                         })
                     })
                     .ok_or_else(|| {
-                        eprintln!("[UNDEF] ident-resolution '{}'", name);
                         TypeError::UndefinedVariable {
                             name: name.clone(),
                             available: ctx.bindings.keys().cloned().collect(),
@@ -3526,7 +3525,6 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // mutable (a constant cannot be freed), and must not already be
             // dead; afterward a read of `x` is a use-after-free compile error.
             let _ty = ctx.bindings.get(name).cloned().ok_or_else(|| {
-                eprintln!("[UNDEF] free-hint '{}'", name);
                 TypeError::UndefinedVariable {
                     name: name.clone(),
                     available: ctx.bindings.keys().cloned().collect(),
@@ -3551,7 +3549,6 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // 2026-08-01 (Phase 5): `keep x;` — suppress the scheduler's
             // auto-free. No type-level effect; the field must exist.
             if !ctx.bindings.contains_key(name) {
-                eprintln!("[UNDEF] field-access '{}'", name);
                 return Err(TypeError::UndefinedVariable {
                     name: name.clone(),
                     available: ctx.bindings.keys().cloned().collect(),
@@ -3855,7 +3852,6 @@ fn check_trait_assertion<'a>(
     errors: &mut Vec<TypeError>,
 ) {
     let Some(trait_def) = traits.get(trait_name) else {
-        eprintln!("[UNDEF] trait-assertion '{}' on '{}'", trait_name, t.name);
         errors.push(TypeError::UndefinedVariable {
             name: trait_name.to_string(),
             available: Vec::new(),

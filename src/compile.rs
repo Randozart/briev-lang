@@ -319,20 +319,6 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     }
     resolver.plugin_factory = Some(briev_compiler::pipeline::module_plugin_factory(opts));
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
-    // TEMP: 2026-10-03 — the dot_row hunt: kinds post-resolution.
-    {
-        let mut ctd = 0usize;
-        let mut def = 0usize;
-        for item in &items {
-            match item {
-                briev_compiler::ast::TopLevel::CompileTimeDefn(_) => ctd += 1,
-                briev_compiler::ast::TopLevel::Definition(_) => def += 1,
-                _ => {}
-            }
-        }
-        eprintln!("[POST-RESOLVE] CompileTimeDefn={} Definition={}", ctd, def);
-    }
-
     // 2026-07-24: Extract stage blocks from imported files. The first
     // extract_inline_stage_blocks ran before import resolution, so stage
     // blocks in imported modules were not captured.
@@ -388,59 +374,6 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                 .and_then(|e| e.target_triple.clone())
                 .and_then(|t| briev_compiler::config_tuning::target_settings_for(&t).isr_mechanism)
         });
-    // TEMP: 2026-10-03 — the dot_row 'Float' hunt; remove with the fix.
-    {
-        fn has_float_ident(e: &briev_compiler::ast::Expr) -> bool {
-            use briev_compiler::ast::Expr;
-            match e {
-                Expr::Identifier(n) => n == "Float",
-                Expr::BinaryOp(_, a, b) | Expr::Index(a, b) => has_float_ident(a) || has_float_ident(b),
-                Expr::UnaryOp(_, a) | Expr::Cast(a, _) => has_float_ident(a),
-                Expr::Call(_, args, _) => args.iter().any(has_float_ident),
-                _ => false,
-            }
-        }
-        fn scan_stmts(stmts: &[briev_compiler::ast::Statement], path: &str) {
-            use briev_compiler::ast::Statement;
-            for s in stmts {
-                let mut dump = String::new();
-                let hit = match s {
-                    Statement::Let { name, ty: Some(t), expr: Some(e), .. } => {
-                        dump = format!("let {name}: {:?} = ...", t);
-                        format!("{:?}", t).contains("Float") || has_float_ident(e)
-                    }
-                    Statement::Assign(lhs, rhs) => {
-                        dump = format!("assign {:?}", lhs);
-                        has_float_ident(lhs) || has_float_ident(rhs)
-                    }
-                    Statement::Expression(e) | Statement::Gate(e) => {
-                        dump = "expr".into();
-                        has_float_ident(e)
-                    }
-                    _ => false,
-                };
-                if hit {
-                    eprintln!("[FLOAT-HIT] {path}: {dump} :: {s:?}");
-                }
-                match s {
-                    Statement::Foreach { body, .. } | Statement::Block(body) | Statement::Guarded(_, body) => {
-                        scan_stmts(body, path);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        for item in &items {
-            if let briev_compiler::ast::TopLevel::Transaction(t) = item {
-                scan_stmts(&t.body, &t.name);
-                // TEMP: the full body dump for the 'Float' hunt.
-                eprintln!("[BODY-DUMP] node '{}':", t.name);
-                for (idx, s) in t.body.iter().enumerate() {
-                    eprintln!("  [{idx}] {s:?}");
-                }
-            }
-        }
-    }
     check_types(&mut items, &universe, check_isr_mechanism.as_deref())?;
     // 2026-08-04: term termination diagnostics — unreachable code after a
     // terminating `term <value>`/`term! <value>` and the bare-term-guard
