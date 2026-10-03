@@ -13,15 +13,16 @@ import "std/numeric.bv";
 const M: Int = 128;
 const N: Int = 128;
 const K: Int = 128;
+const MN: Int = 128 * 128;
 
 let i: Int = 0;
 let j: Int = 0;
 let phase: Int = 0;
-let a: Float16[16384];
-let b: Float16[16384];
-let c: Float16[16384];
-let e: Float16[16384];
-let d: Float16[16384];
+let a: Float16[MN];
+let b: Float16[MN];
+let c: Float16[MN];
+let e: Float16[MN];
+let d: Float16[MN];
 
 async node gemm1 [phase == 0 && i < M * N][i == M * N] {
     matmul!(a, b, c, M, N, K, i, Float16);

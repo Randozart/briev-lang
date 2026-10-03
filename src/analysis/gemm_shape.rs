@@ -119,7 +119,7 @@ pub fn fold_consts(e: &Expr, consts: &HashMap<String, i64>) -> Expr {
 
 /// Resolve a literal expression: Decimal, a const identifier, or a pure
 /// arithmetic combination of those (`M * N` bounds, `0..K` ends).
-fn lit(e: &Expr, consts: &HashMap<String, i64>) -> Option<i64> {
+pub fn lit(e: &Expr, consts: &HashMap<String, i64>) -> Option<i64> {
     match e {
         Expr::Decimal(d) => Some(*d),
         Expr::Identifier(name) => consts.get(name).copied(),
@@ -411,5 +411,57 @@ mod tests {
             Box::new(Expr::Identifier("N".into())),
         );
         assert_eq!(lit(&e, &c), Some(4096));
+    }
+}
+
+/// 2026-10-03 (const-expression folding — the derive-the-counts gap, plan
+/// `2026-10-03-declared-matmul-gemmplan-retirement.md`): the program's
+/// compile-time constant VALUES in declaration order, each init folded
+/// against the consts before it — `const MN: Int = M * N;` folds to the
+/// product, chains compose. Non-foldable inits contribute nothing
+/// (fail-open: the readers keep their literal-only errors for those).
+/// The kernel const readers (`materialize_consts`, the SSBO dim
+/// resolution) consume this so a DERIVED const is as good as a literal.
+pub fn folded_const_map(items: &[TopLevel]) -> HashMap<String, i64> {
+    let mut map: HashMap<String, i64> = HashMap::new();
+    for item in items {
+        if let TopLevel::Constant(c) = item {
+            if let Some(v) = lit(&fold_consts(&c.expr, &map), &map) {
+                map.insert(c.name.clone(), v);
+            }
+        }
+    }
+    map
+}
+
+#[cfg(test)]
+mod folded_const_tests {
+    use super::*;
+
+    #[test]
+    fn folded_const_map_folds_expressions_and_chains() {
+        let items = parse_items(
+            "const M: Int = 4096;\n\
+             const N: Int = 4096;\n\
+             const K: Int = 1024;\n\
+             const MN: Int = M * N;\n\
+             const MK: Int = M * K;\n\
+             const DEEP: Int = MN + MK + 2;\n\
+             const BAD: Int = M + missing;",
+        );
+        let map = folded_const_map(&items);
+        assert_eq!(map["M"], 4096);
+        assert_eq!(map["MN"], 4096 * 4096);
+        assert_eq!(map["MK"], 4096 * 1024);
+        assert_eq!(map["DEEP"], 4096 * 4096 + 4096 * 1024 + 2);
+        // fail-open: an init referencing an unknown name contributes nothing
+        assert!(!map.contains_key("BAD"));
+    }
+
+    fn parse_items(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("lex");
+        crate::parser::Parser::new(tokens, src)
+            .parse_program()
+            .expect("parse")
     }
 }

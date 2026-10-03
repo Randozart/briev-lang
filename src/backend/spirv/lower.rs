@@ -162,26 +162,34 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// 2026-08-31 (plan abv-gpu-by-default): materialize module consts as
-    /// SPIR-V constants for direct (no-load) reads in kernel bodies. Only
-    /// literal initializers (int/float/bool) are supported — anything else
-    /// errors naming the const, since kernels cannot evaluate host-side
-    /// expressions at module scope.
+    /// SPIR-V constants for direct (no-load) reads in kernel bodies.
+    /// 2026-10-03 (const-expression folding): integer initializers are
+    /// FOLDED in declaration order first — `const MN: Int = M * N;`
+    /// materializes like a literal; float/bool literals stay direct;
+    /// anything still non-literal errors naming the const, since kernels
+    /// cannot evaluate host-side expressions at module scope.
     pub fn materialize_consts(&mut self, items: &[crate::ast::TopLevel]) -> Result<(), String> {
+        let mut values: HashMap<String, i64> = HashMap::new();
         for item in items {
             let crate::ast::TopLevel::Constant(c) = item else { continue };
-            let (id, ty) = match &c.expr {
-                Expr::Decimal(n) => {
-                    let id = self.builder.i64_const(*n as u64);
+            let folded = crate::analysis::gemm_shape::fold_consts(&c.expr, &values);
+            // `lit` EVALUATES the folded tree (`M * N` → the product) —
+            // fold_consts alone only substitutes identifiers.
+            let folded_int = crate::analysis::gemm_shape::lit(&folded, &values);
+            let (id, ty) = match (&folded, folded_int) {
+                (_, Some(n)) => {
+                    let id = self.builder.i64_const(n as u64);
                     // O1 unrolling reads the VALUE, not just the constant id.
-                    self.const_int_values.insert(c.name.clone(), *n);
+                    self.const_int_values.insert(c.name.clone(), n);
+                    values.insert(c.name.clone(), n);
                     (id, Type::int())
                 }
-                Expr::Float(v) => {
+                (Expr::Float(v), _) => {
                     let bits = self.builder.float_bits_of(&c.ty)?;
                     let id = self.builder.float_const(bits, *v);
                     (id, c.ty.clone())
                 }
-                Expr::Bool(b) => {
+                (Expr::Bool(b), _) => {
                     let bool_ty = self.builder.lower_type(&Type::Bits(1))?;
                     let op = if *b { spirv::Op::ConstantTrue } else { spirv::Op::ConstantFalse };
                     let id = self.builder.gen_id();
@@ -193,11 +201,12 @@ impl<'a> FnLowerer<'a> {
                     ));
                     (id, Type::Bits(1))
                 }
-                other => {
+                (other, _) => {
                     return self.err(format!(
                         "const '{}' has a non-literal initializer ({:?}) — kernels \
                          read literal consts only; inline the expression",
-                        c.name, std::mem::discriminant(other)
+                        c.name,
+                        std::mem::discriminant(other)
                     ));
                 }
             };
@@ -2539,15 +2548,14 @@ mod __collect {
         // 2026-08-31 (plan abv-gpu-by-default): module consts for resolving
         // NAMED array dimensions (`Float[MAXB]` — the AST stores the name
         // with a 0 count; a 0-length OpTypeArray is invalid SPIR-V).
-        let consts: HashMap<String, usize> = items
+        // 2026-10-03 (const-expression folding): the consts are FOLDED in
+        // declaration order — `const MN: Int = M * N;` resolves the dim
+        // like a literal does (the derive-the-counts gap).
+        let consts_map = crate::analysis::gemm_shape::folded_const_map(items);
+        let consts: HashMap<String, usize> = consts_map
             .iter()
-            .filter_map(|i| match i {
-                crate::ast::TopLevel::Constant(c) => match &c.expr {
-                    Expr::Decimal(n) if *n >= 0 => Some((c.name.clone(), *n as usize)),
-                    _ => None,
-                },
-                _ => None,
-            })
+            .filter(|(_, v)| **v >= 0)
+            .map(|(k, v)| (k.clone(), *v as usize))
             .collect();
         let resolve_dims = |dims: &[crate::ast::Dimension]| -> Vec<crate::ast::Dimension> {
             dims.iter()

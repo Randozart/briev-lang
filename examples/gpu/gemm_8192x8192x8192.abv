@@ -9,11 +9,12 @@ import "std/numeric.bv";
 const M: Int = 8192;
 const N: Int = 8192;
 const K: Int = 8192;
+const MN: Int = 8192 * 8192;
 
 let i: Int = 0;
-let a: Float16[67108864];
-let b: Float16[67108864];
-let y: Float16[67108864];
+let a: Float16[MN];
+let b: Float16[MN];
+let y: Float16[MN];
 
 async node gemm [i < M * N][i == M * N] {
     matmul!(a, b, y, M, N, K, i, Float16);
