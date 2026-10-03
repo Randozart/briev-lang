@@ -131,7 +131,16 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
 
 Also open (post-5 ladder): **M3** producer-consumer chain fusion;
 **M4** `numeric.bv` declarations + vocabulary retirement
-(`2026-09-20-gpu-dialect-beyond-cuda.md`).
+(`2026-09-20-gpu-dialect-beyond-cuda.md`). **M4 status: the
+declared-coverage rows ALL landed (matmul!/dot!/softmax_rows!; the
+matcher gates); the emitters' retirement A/B RAN — the cooperative
+softmax emitter KEEP-AS-LOAN at a MEASURED 1.8-2.5x gap
+(`benchmarks/results/2026-10-03-emitter-retirement-ab.md`); the dot
+half is BLOCKED on the `dot!` expansion-skip defect (BUGS.md
+2026-10-03: the imported $defn arrives as Definition, the registry =
+0, the expansion silently skips — instrumentation shipped for the
+hunt). M3's scope = closing that measured gap via the lane-mapped
+row-form general lowering.
 
 **OPEN correctness**: shallow-K emitter race (K≤128, M·N≥1024²) — dispatch
 gates those shapes to the slow race-free kernel; the emitter race itself is
