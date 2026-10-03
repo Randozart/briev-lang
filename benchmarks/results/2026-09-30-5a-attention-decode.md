@@ -417,3 +417,13 @@ the table uses the clean interleaved runs.)
 the loads fused, the 20-CTA no-split grid wins p50 AND tail in this
 window (v4 no-split p90 135.7 < split=4 p90 152.4). The estimate
 (72.5 → ~60, -17%) scoped the win correctly (-13% measured, same-session).
+
+## div slowpath — SIZED, CLOSED (2026-10-02)
+
+The queue's "div slowpath" polish item was a misattribution: the line item
+sat in the PER-J decomposition (2026-10-01 record), but the decode kernel's
+divides are NOT per-j — 4 `div.rn.f32` (the normalize tail's per-strip
+`acc/l`, once per thread after the j loop) + 1 `div.u32` (kh = r/G, const,
+once). Sizing: ~4×20 cycles ≈ 80 cycles once against a ~10^5-cycle j loop
+< 0.5% of the 118 µs kernel — and `div.approx` would change the `/`
+semantics for a win below measurement noise. No change; item closed.
