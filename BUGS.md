@@ -7558,3 +7558,30 @@ instrument that cannot fail loudly will silently certify yesterday's run.
 **Prevention:** always `rm` the gate's fixed-path dumps before invoking;
 any future gate that writes fixed-path artifacts must create them O_EXCL or
 under its own mktemp dir.
+
+## CUDA-lane f32 GEMM: nondeterministic wrong outputs at 4096³ [OPEN — inherited from the 5b ladder]
+
+**Found:** 2026-10-03, by `benchmarks/declared_matmul_gate.sh` (the
+declared-matmul campaign's device gate). The f32 4096³ GEMM on the CUDA
+lane: all-ones is nondeterministically wrong at a varying row boundary
+(row 16 in one build, row 1 in another — same source), and the patterned
+seed produces garbage (max_rel up to 5e+40). The Vulkan lane is EXACT on
+the same build (all-ones 16777216/16777216).
+
+**Pre-existing:** the gate fails IDENTICALLY on the pre-migration
+(`466f0e59`) fixture — the kernels are disassembly-identical across the
+declared-matmul change, so the channel is exonerated; the defect rides
+the PTX tensor tier. Consistent with the 5b ladder's standing note
+("`ptx_gemm_bench` FAILs correctness on the current kernel",
+`benchmarks/results/2026-09-30-5b-cuda-s5-ladder.md`); the new evidence
+adds NONDETERMINISM (run-to-run varying first-wrong-row at identical
+input) — smells like uninitialized smem or a tile-boundary race in the
+mw kernel, not a fixed addressing offset.
+
+**Also:** the Vulkan f32 tiled kernel passes all-ones exactly but shows
+max_rel ≈ 0.12 on a patterned K=4096 seed — exact on ones, off on
+mixed-magnitude data — the f32 accumulation-order/slice question the
+5b Phase-2 analysis predicted. Bounded, recorded, separate from the
+CUDA garbage.
+
+**Repro:** `bash benchmarks/declared_matmul_gate.sh examples/gpu/gemm.abv 4096 4096 4096 f32`

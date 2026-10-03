@@ -115,3 +115,55 @@ pre-migration (same canonical body → same facts → same lowering).
   into emission (it lives in Let.modifiers — the emitters match
   specific modifier names; unknown ones ignored — verified by suite +
   the byte-identical fixture gate).
+
+## Increment 4 — device gates (2026-10-03, outcome)
+
+**Instrument:** `benchmarks/declared_matmul_gate.sh` — splices seed +
+verifier into the GENERATED runner (the compiler's own desc), runs
+all-ones (exact, full output) + a patterned LCG seed (16 spread rows vs
+a bit-exact C-side f64 reference) on BOTH lanes. Build notes: the seed
+must land AFTER `briev_accel_init` (the AB-gate anchor — the first
+resident launch seeds the projection from the authored bytes), the
+verifier is C-side (no cross-language LCG drift), and no `\n` inside
+injected C strings (the 2026-10-01 postmortem trap, hit and escaped).
+
+**Results (4096³ f32, `gemm.abv`):**
+- Vulkan lane: all-ones **EXACT PASS** (16777216/16777216) — the
+  declared channel computes the full product correctly end-to-end.
+- CUDA lane: nondeterministic wrong outputs (varying first-wrong-row,
+  patterned garbage to 5e+40) — **PRE-EXISTING**: the gate fails
+  identically on the pre-migration fixture, and the kernels are
+  disassembly-identical across the change. This is the 5b ladder's
+  standing open defect, now with the nondeterminism evidence —
+  BUGS.md 2026-10-03 (uninitialized smem / tile-boundary race shape).
+- Vulkan patterned max_rel ≈ 0.12 (exact on ones, off on mixed
+  magnitudes) — bounded, recorded in the same BUGS.md entry (the f32
+  accumulation-order question 5b Phase 2 predicted).
+
+**Verdict:** the declaration channel is exonerated and Vulkan-proven;
+the CUDA GEMM correctness defect is inherited 1:1 and blocks CUDA-lane
+timing claims (they were already blocked — 5b). No new timing table:
+the emitted kernels are proven identical to the pre-change ones, so the
+standing 5b numbers carry.
+
+## The derive-the-counts experiment (2026-10-03, REVERTED — gap recorded)
+
+Attempted to derive the fixtures' flat counts (`const MN: Int = M * N;
+let a: Float[MN];`) — the composite comptime chain folds const
+expressions, but the KERNEL const readers demand literals
+(`spirv/lower.rs materialize_consts`: "kernels read literal consts
+only") and the parser accepts only literal-or-single-ident array dims.
+REVERTED to literals (all 8 fixtures byte-identical to HEAD). The
+follow-up is the parser/typechecker increment: fold const-expression
+inits in `materialize_consts` + the state-decl Named-dim resolution
+(~2 sites, `fold_consts` already exists). Until then the fixtures spell
+the counts — fixture hygiene deferred to that increment.
+
+## Status
+
+- Increments 1-3: LANDED (`466f0e59`, `e2096a98`, `607e5a38`).
+- Increment 4: gate landed; Vulkan-proven; CUDA blocked on the inherited
+  5b defect (BUGS.md).
+- M4 remaining: `detect_reduction` retirement (separate rung);
+  GemmPlan itself is now declaration-gated — the matcher survives only
+  as the fact derivation for ADVICE + the declared channel.
