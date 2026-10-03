@@ -109,8 +109,14 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
    intact at 45.4 TF); Rule 12 protocol.
 4. **Re-rank table fold-in** — fold fused-attention + float4 numbers into
    the stage-5 table (row 3 already marked DONE).
-5. **GemmPlan retirement** (5d remainder) — behind its own A/B, not
-   yet gated.
+5. ~~GemmPlan retirement~~ — **DECLARATION-GATED 2026-10-03** (increments
+   1-4: the declared-composite channel, `matmul!` in numeric.bv, the
+   matcher gate + advice diagnostic, the device gate). Vulkan-proven;
+   CUDA-lane GEMM correctness = the inherited 5b defect (BUGS.md,
+   nondeterministic — uninitialized-smem/tile-race shape, now with
+   evidence). M4 remaining: `detect_reduction` rung; follow-up language
+   increment: const-expression folding for kernel readers (the
+   derive-the-counts gap, plan `2026-10-03-declared-matmul-gemmplan-retirement.md`).
 
 Also open (post-5 ladder): **M3** producer-consumer chain fusion;
 **M4** `numeric.bv` declarations + vocabulary retirement
