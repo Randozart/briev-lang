@@ -332,6 +332,128 @@ impl KernelPlan {
     /// backend emitter; relocating that fact into analysis (and the GEMM
     /// `Tile`/`Mma` enrichment) is the next Phase-1 increment — see
     /// `docs/plans/2026-09-30-kernel-plan-and-per-target-lowering.md`.
+    /// The deferred-softmax lane's plan op (2026-10-03: extracted with the
+    /// other lanes to keep `from_shape` within its complexity budget): the
+    /// softmax-normalize reduce carrying the split INTENT.
+    #[allow(clippy::too_many_arguments)]
+    fn deferred_reduce_ops(
+        dn: &crate::analysis::accel::DeferredNormalization,
+        span: u64,
+        split_factor: Option<u32>,
+        count: Option<i64>,
+        consts: &std::collections::HashMap<String, Expr>,
+        hw: &GpuHardware,
+    ) -> Vec<PlanOp> {
+        vec![
+            PlanOp::Reduce {
+                op: ReduceOp::SoftmaxNormalize,
+                span,
+                tree: deferred_split_tree(split_factor, count, dn, consts, hw),
+                frag: None,
+            },
+            PlanOp::Barrier {
+                scope: Scope::Workgroup,
+            },
+        ]
+    }
+
+    /// The cooperative channel's plan ops (2026-10-03, the declared dot
+    /// rung): the linear reduce + the workgroup barrier.
+    fn cooperative_reduce_ops(
+        red: &crate::analysis::accel::ReductionInfo,
+        span: u64,
+    ) -> Vec<PlanOp> {
+        use crate::analysis::accel::ReductionKind;
+        let op = match red.kind {
+            ReductionKind::Dot => ReduceOp::Add,
+            ReductionKind::Softmax => ReduceOp::SoftmaxNormalize,
+        };
+        vec![
+            PlanOp::Reduce {
+                op,
+                span,
+                tree: ReduceTree::Linear,
+                frag: None,
+            },
+            PlanOp::Barrier {
+                scope: Scope::Workgroup,
+            },
+        ]
+    }
+
+    /// The GEMM lane's plan ops (extracted 2026-10-03 to keep `from_shape`
+    /// within its complexity budget): the cost-model tile shape + the
+    /// tile/stage/async-copy/fragment/mma/store sequence.
+    fn gemm_lane_ops(
+        g: &crate::analysis::gemm_shape::GemmShape,
+        hw: &GpuHardware,
+    ) -> (PlanShape, Vec<PlanOp>) {
+        // GEMM: tile + stage + async copies + fragment loads + mma + store.
+        // Shape selection goes through the shared cost model.
+        let st = crate::analysis::gpu_strategy::select(g.m as u64, g.n as u64, g.k as u64, hw);
+        let (tm, tn, stages) = st
+            .map(|s| (s.tile_m, s.tile_n, s.stages))
+            .unwrap_or((128, 128, 3));
+        let plan_shape = PlanShape {
+            tile_m: tm,
+            tile_n: tn,
+            stages,
+        };
+        let a = MemRef {
+            buf: g.a_field.clone(),
+            space: MemSpace::Global,
+            elem_bytes: 2,
+        };
+        let b = MemRef {
+            buf: g.b_field.clone(),
+            space: MemSpace::Global,
+            elem_bytes: 2,
+        };
+        let mut ops: Vec<PlanOp> = Vec::new();
+        ops.push(PlanOp::Tile {
+            region: g.a_field.clone(),
+            tile_m: tm,
+            tile_n: tn,
+        });
+        ops.push(PlanOp::Stage { depth: stages });
+        ops.push(PlanOp::AsyncCopy {
+            src: a.clone(),
+            dst: MemRef {
+                buf: format!("{}_smem", g.a_field),
+                space: MemSpace::Shared,
+                elem_bytes: 2,
+            },
+            bytes: tm * g.k as u64 * 2,
+        });
+        ops.push(PlanOp::AsyncCopy {
+            src: b.clone(),
+            dst: MemRef {
+                buf: format!("{}_smem", g.b_field),
+                space: MemSpace::Shared,
+                elem_bytes: 2,
+            },
+            bytes: g.k as u64 * tn * 2,
+        });
+        let fa = FragLayout::new(16, 16, 2, false);
+        let fb = FragLayout::new(16, 8, 2, false);
+        let fcy = FragLayout::new(16, 16, 4, false);
+        ops.push(PlanOp::LoadMatrix { src: a, frag: fa });
+        ops.push(PlanOp::LoadMatrix { src: b, frag: fb });
+        ops.push(PlanOp::Mma {
+            a: fa,
+            b: fb,
+            acc: fcy,
+        });
+        ops.push(PlanOp::Store {
+            dst: MemRef {
+                buf: g.y_field.clone(),
+                space: MemSpace::Global,
+                elem_bytes: 4,
+            },
+        });
+        (plan_shape, ops)
+    }
+
     pub fn from_shape(
         name: &str,
         shape: &crate::analysis::accel::KernelShape,
@@ -367,111 +489,34 @@ impl KernelPlan {
             stages: 1,
         };
         if let Some(g) = &gemm {
-            // GEMM: tile + stage + async copies + fragment loads + mma +
-            // store. Shape selection goes through the shared cost model.
-            let st = crate::analysis::gpu_strategy::select(
-                g.m as u64, g.n as u64, g.k as u64, hw,
-            );
-            let (tm, tn, stages) = st
-                .map(|s| (s.tile_m, s.tile_n, s.stages))
-                .unwrap_or((128, 128, 3));
-            plan_shape = PlanShape {
-                tile_m: tm,
-                tile_n: tn,
-                stages,
-            };
-            let a = MemRef {
-                buf: g.a_field.clone(),
-                space: MemSpace::Global,
-                elem_bytes: 2,
-            };
-            let b = MemRef {
-                buf: g.b_field.clone(),
-                space: MemSpace::Global,
-                elem_bytes: 2,
-            };
-            ops.push(PlanOp::Tile {
-                region: g.a_field.clone(),
-                tile_m: tm,
-                tile_n: tn,
-            });
-            ops.push(PlanOp::Stage { depth: stages });
-            ops.push(PlanOp::AsyncCopy {
-                src: a.clone(),
-                dst: MemRef {
-                    buf: format!("{}_smem", g.a_field),
-                    space: MemSpace::Shared,
-                    elem_bytes: 2,
-                },
-                bytes: tm * g.k as u64 * 2,
-            });
-            ops.push(PlanOp::AsyncCopy {
-                src: b.clone(),
-                dst: MemRef {
-                    buf: format!("{}_smem", g.b_field),
-                    space: MemSpace::Shared,
-                    elem_bytes: 2,
-                },
-                bytes: g.k as u64 * tn * 2,
-            });
-            let fa = FragLayout::new(16, 16, 2, false);
-            let fb = FragLayout::new(16, 8, 2, false);
-            let fcy = FragLayout::new(16, 16, 4, false);
-            ops.push(PlanOp::LoadMatrix {
-                src: a,
-                frag: fa,
-            });
-            ops.push(PlanOp::LoadMatrix {
-                src: b,
-                frag: fb,
-            });
-            ops.push(PlanOp::Mma {
-                a: fa,
-                b: fb,
-                acc: fcy,
-            });
-            ops.push(PlanOp::Store {
-                dst: MemRef {
-                    buf: g.y_field.clone(),
-                    space: MemSpace::Global,
-                    elem_bytes: 4,
-                },
-            });
+            let (gemm_shape, gemm_ops) = Self::gemm_lane_ops(g, hw);
+            plan_shape = gemm_shape;
+            ops.extend(gemm_ops);
         } else if let Some(dn) = &shape.deferred_normalize {
             // Deferred/softmax region (takes precedence, as in the emitter):
             // the reduction span is the accumulator loop's range end.
             // 2026-10-01 (item 4): the reduce op carries the split
             // INTENT (`ReduceTree::Split`) instead of hardcoded Linear —
             // see `deferred_split_tree`.
-            ops.push(PlanOp::Reduce {
-                op: ReduceOp::SoftmaxNormalize,
-                span: resolve(&dn.reduce_end).unwrap_or(0),
-                tree: deferred_split_tree(
-                    declared_split_factor(items, name),
-                    fold_count(shape, consts).ok(),
-                    dn,
-                    consts,
-                    hw,
-                ),
-                frag: None,
-            });
-            ops.push(PlanOp::Barrier {
-                scope: Scope::Workgroup,
-            });
+            ops.extend(Self::deferred_reduce_ops(
+                dn,
+                resolve(&dn.reduce_end).unwrap_or(0),
+                declared_split_factor(items, name),
+                fold_count(shape, consts).ok(),
+                consts,
+                hw,
+            ));
         } else if let Some(red) = &shape.reduction {
-            let op = match red.kind {
-                ReductionKind::Dot => ReduceOp::Add,
-                ReductionKind::Softmax => ReduceOp::SoftmaxNormalize,
-            };
-            ops.push(PlanOp::Reduce {
-                op,
-                span: resolve(&red.inner).unwrap_or(0),
-                tree: ReduceTree::Linear,
-                frag: None,
-            });
-            ops.push(PlanOp::Barrier {
-                scope: Scope::Workgroup,
-            });
+            // 2026-10-03 (declared dot rung): the plan records the
+            // COOPERATIVE channel's intent — which follows the declaration
+            // (is_cooperative_shape). An undeclared body's plan records no
+            // cooperative reduce op; the general family lowers it.
+            if crate::analysis::accel::is_cooperative_shape(shape) {
+                ops.extend(Self::cooperative_reduce_ops(
+                    red,
+                    resolve(&red.inner).unwrap_or(0),
+                ));
+            }
         }
         if gemm.is_none() {
             if let Some(buf) = shape.write_buffers.first() {
@@ -953,26 +998,51 @@ mod tests {
         use crate::analysis::accel::{KernelShape, ReductionInfo, ReductionKind};
         let mut consts = std::collections::HashMap::new();
         consts.insert("K".to_string(), Expr::Decimal(4096));
-        let shape = KernelShape {
-            index_var: "i".into(),
-            count_expr: Some(Expr::Decimal(64)),
-            kernel_stmts: vec![],
-            host_stmts: vec![],
-            read_buffers: vec!["a".into()],
-            write_buffers: vec!["y".into()],
-            scalar_ins: vec![],
-            eligible: true,
-            reasons: vec![],
-            work_cols: None,
-            reduction: Some(ReductionInfo {
-                inner: Expr::Identifier("K".into()),
-                kind: ReductionKind::Dot,
-                row_buf: "a".into(),
-                col_buf: "x".into(),
-                out_buf: "y".into(),
-            }),
-            deferred_normalize: None,
+        // 2026-10-03 (declared dot rung): the shape DECLARES — the marker
+        // the dot! expansion writes; the twin below stays unmarked.
+        let make = || -> KernelShape {
+            KernelShape {
+                index_var: "i".into(),
+                count_expr: Some(Expr::Decimal(64)),
+                kernel_stmts: vec![crate::ast::Statement::Let {
+                    name: "acc".into(),
+                    names: vec![],
+                    ty: Some(crate::ast::Type::Custom("Float".into())),
+                    expr: Some(Expr::Decimal(0)),
+                    modifiers: vec![crate::ast::top::Annotation {
+                        name: "declared_composite".into(),
+                        value: Some(Expr::Identifier("dot".into())),
+                    }],
+                }],
+                host_stmts: vec![],
+                read_buffers: vec!["a".into()],
+                write_buffers: vec!["y".into()],
+                scalar_ins: vec![],
+                eligible: true,
+                reasons: vec![],
+                work_cols: None,
+                reduction: Some(ReductionInfo {
+                    inner: Expr::Identifier("K".into()),
+                    kind: ReductionKind::Dot,
+                    row_buf: "a".into(),
+                    col_buf: "x".into(),
+                    out_buf: "y".into(),
+                }),
+                deferred_normalize: None,
+            }
         };
+        let undeclared = {
+            let mut s = make();
+            s.kernel_stmts = vec![];
+            s
+        };
+        let pu = KernelPlan::from_shape("dot", &undeclared, &[], &consts, &GpuHardware::SM86);
+        assert!(
+            !pu.dump().contains("op reduce"),
+            "undeclared reduction plans have no cooperative reduce op: {}",
+            pu.dump()
+        );
+        let shape = make();
         let p = KernelPlan::from_shape("dot", &shape, &[], &consts, &GpuHardware::SM86);
         let d = p.dump();
         assert!(d.contains("node dot"), "{d}");

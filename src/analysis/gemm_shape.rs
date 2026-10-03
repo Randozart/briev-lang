@@ -30,6 +30,26 @@ pub struct GemmShape {
     pub y_field: String,
 }
 
+/// 2026-10-03 (declared dot rung): the GENERAL declaration check — the
+/// kernel's first `let` carries `declared_composite` naming `name` (the
+/// marker the composite expansion writes). `declared_matmul` is the
+/// matmul instance; the cooperative-reduction channel gates on "dot".
+pub fn declared_composite(shape: &KernelShape, name: &str) -> bool {
+    shape
+        .kernel_stmts
+        .iter()
+        .find_map(|s| match s {
+            Statement::Let { modifiers, .. } => Some(
+                modifiers.iter().any(|m| {
+                    m.name == "declared_composite"
+                        && matches!(&m.value, Some(Expr::Identifier(n)) if n == name)
+                }),
+            ),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
 /// 2026-10-03 (declared matmul retirement — plan
 /// `2026-10-03-declared-matmul-gemmplan-retirement.md`): the DECLARATION
 /// gate. `matmul!(...)` (lib/std/numeric.bv) marks its expansion's first
@@ -39,19 +59,7 @@ pub struct GemmShape {
 /// specialization (Rules 23/24). The scan keys the FIRST LET (host
 /// statements may precede the expansion — order never mattered here).
 pub fn declared_matmul(shape: &KernelShape) -> bool {
-    shape
-        .kernel_stmts
-        .iter()
-        .find_map(|s| match s {
-            Statement::Let { modifiers, .. } => Some(
-                modifiers.iter().any(|m| {
-                    m.name == "declared_composite"
-                        && matches!(&m.value, Some(Expr::Identifier(n)) if n == "matmul")
-                }),
-            ),
-            _ => None,
-        })
-        .unwrap_or(false)
+    declared_composite(shape, "matmul")
 }
 
 /// Detect the canonical flattened-2D matmul in a kernel shape. `None` when

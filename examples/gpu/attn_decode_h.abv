@@ -3,6 +3,7 @@
 // by the node DAG and FUSED (Phase 4a): the scale folds into qk's epilogue,
 // so the chain runs in TWO tensor kernels. o = (Q*K^T)*C*V.
 import "std/types/float.bv";
+import "std/numeric.bv";
 const M: Int = 128;
 const N: Int = 128;
 const K: Int = 128;
@@ -19,13 +20,7 @@ let v: Float16[16384];
 let o: Float16[16384];
 
 async node qk [i < M * N][i == M * N] {
-    let acc: Float16 = 0.0;
-    let m: Int = i / N;
-    let n: Int = i % N;
-    foreach k in 0..K {
-        acc = acc + q[m * K + k] * kt[k * N + n];
-    }
-    s[i] = acc;
+    matmul!(q, kt, s, M, N, K, i, Float16);
     i = i + 1;
     term;
 };
@@ -37,13 +32,7 @@ async node scale [j < M * N][j == M * N] {
 };
 
 async node pv [l < M * N][l == M * N] {
-    let acc: Float16 = 0.0;
-    let m: Int = l / N;
-    let n: Int = l % N;
-    foreach k in 0..K {
-        acc = acc + s2[m * K + k] * v[k * N + n];
-    }
-    o[l] = acc;
+    matmul!(s2, v, o, M, N, K, l, Float16);
     l = l + 1;
     term;
 };

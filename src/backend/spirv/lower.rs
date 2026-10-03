@@ -1684,12 +1684,31 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Zero-width mismatches are a lowering bug; identical types pass through.
+    /// 2026-10-03: a FLOAT-WIDTH mismatch converts (OpFConvert) instead of
+    /// erroring — `x[i] * 2.0` on an f16 buffer: the typechecker's
+    /// comptime-literal rule adapts the literal to the variable's type, and
+    /// the lowerer implements that ruling (the attn_s1/attn_decode_h f16
+    /// chain fixtures never built because of this).
     fn coerce(&mut self, id: Word, ty: &Type, other: &Type) -> Result<Word, String> {
         if self.type_id(ty)? == self.type_id(other)? {
-            Ok(id)
-        } else {
-            self.err(format!("operand type mismatch {:?} vs {:?}", ty, other))
+            return Ok(id);
         }
+        let ty_bits = self.builder.float_bits_of(ty).ok();
+        let other_bits = self.builder.float_bits_of(other).ok();
+        if let (Some(a), Some(b)) = (ty_bits, other_bits) {
+            if a != b {
+                let dst_id = self.type_id(other)?;
+                let res = self.builder.gen_id();
+                self.builder.emit(Instruction::new(
+                    spirv::Op::FConvert,
+                    Some(dst_id),
+                    Some(res),
+                    vec![Operand::IdRef(id)],
+                ));
+                return Ok(res);
+            }
+        }
+        self.err(format!("operand type mismatch {:?} vs {:?}", ty, other))
     }
 
 /// 2026-08-31 (plan abv-gpu-by-default): scalar cast opcode from the source

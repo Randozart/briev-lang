@@ -7598,3 +7598,28 @@ contract does not apply).
 exploded at near-zero references (cancellation) — replaced with the
 row-normalized error and a K-scaled f32 accumulation bound; the metric
 was measuring itself, not the kernel.
+
+## SPIR-V lane: f16 scalar × Float-typed const/literal lowered to a type error [FIXED 2026-10-03]
+
+**Found:** 2026-10-03, the declared-dot rung's fixture migration —
+`attn_s1.abv` / `attn_decode_h.abv` (f16 attention chains with
+`const SCALE: Float16 = 1.0` and `s2[j] = s[j] * SCALE`) NEVER BUILT —
+the fixtures were committed broken at their introduction (`327dda74`) and
+every blob-compare sweep since silently treated the build failure as an
+empty-but-identical file list.
+
+**Root cause:** `FnLowerer::coerce` errored on any float-width mismatch —
+the f16 buffer load vs the const/literal's materialized width had no
+conversion path. The const read itself was correctly typed (Float16);
+only the width mismatch had no lowering.
+
+**Fix:** `coerce` converts float-width mismatches with `OpFConvert`
+(either direction) instead of erroring. The typechecker's ruling stands
+unchanged — bare Float literals on f16 ops still demand an explicit
+`as` cast ("no implicit Int/Float coercion"); only the const/typed-const
+paths that TYPECHECK reach the conversion.
+
+**Lesson (sweep design):** a blob-compare sweep MUST fail loudly on build
+errors — a fixture that fails to build produces no files and compares
+"identical". The 65-fixture sweep ran green across four increments while
+two of its fixtures could not build at all.

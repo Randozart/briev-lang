@@ -178,3 +178,32 @@ $defn matmul(
     }
     ybuf[idx] = acc;
 };
+
+// dot! — the DECLARED row dot (plan
+// 2026-10-03-declared-dot-detect-reduction-rung.md): one work item per
+// output row, the canonical cooperative-reduction form.
+//
+//   out[i] = Σ_k x[i·K + k] * y[k]     for i in 0..N_OUT
+//
+// Like matmul!: the declaration is what reaches the specialized channel —
+// the compiler never recognizes a hand-written dot loop (Rules 23/24).
+//
+// `expr` parameters:
+//   xbuf  — the row-major operand (N_OUT×K); work item i reads its row
+//   ybuf  — the vector operand (K)
+//   obuf  — the output (N_OUT)
+//   klen  — the K span (comptime const)
+//   widx  — the node's work-item counter
+//   acc_ty — the accumulator element type (bare type name)
+// `expr_item` binders: acc (the running sum), kk (the K loop item).
+$defn dot(
+    xbuf: Expr, ybuf: Expr, obuf: Expr,
+    klen: Expr, widx: Expr, acc_ty: Expr,
+    kk: ExprItem, acc: ExprItem
+) {
+    let acc: acc_ty = 0;
+    foreach kk in 0..klen {
+        acc = acc + xbuf[widx * klen + kk] * ybuf[kk];
+    }
+    obuf[widx] = acc;
+};
