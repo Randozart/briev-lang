@@ -7,11 +7,13 @@ plans are reference-only (never retroactively edited — AGENTS.md Rule 13).
 warnings; `gemm_h` byte-identical; Praetor improved vs baseline.
 
 **GPU standing state:** fused online softmax (`ptx_deferred_online: 1`) is
-the shipped default — composite + fused online decode = **72.5 µs p50
-variant-verified** (two-pass ≡ online at decode geometry,
-max_rel 5.894e-06; s8 gate hardened 8.48e-06/6.57e-06/2.06e-05). Shipped-best
-decode config: fused + split=4. `ptx_fused_attention`/`ptx_fused_staged`
-knobs deleted with the family; `ptx_deferred_skip_pass` diagnostic-only.
+the shipped default. Composite decode: **float4 k/v loads landed
+2026-10-02** (`d21f61d8`+`6512ac86`) — interleaved A/B vs `fec8b89a`:
+**no-split -13% p50 (118.1 µs same-session)**; gates: m3 decode + softmax
+s8 both lanes, AB variant-diff s8 9.466e-06 + decode 3.274e-06, gemm_h
+byte-identical. Shipped-best decode config: **fused v4, NO-SPLIT**
+(split=4 superseded — see `benchmarks/results/2026-09-30-5a-attention-decode.md`
+last section). `ptx_deferred_skip_pass` diagnostic-only.
 
 **Trusted GPU instruments** (never a hand-spliced probe — a probe
 contradicting these means the gates are broken):
@@ -97,24 +99,16 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
 
 **Current queue (in order):**
 
-1. **Attention float4 k/v loads** (72.5 → ~60 µs est.) — design +
-   constraints banked in the 5a results file (last two sections):
-   transposed d-mapping flip (`lane + 32·i` → `lane·4 + i`) + v4 fusion
-   are INSEPARABLE; the pipelined map is the vehicle but the k-expr
-   Debug key is strip-invariant (fix: per-strip unique binder
-   substitution); fixture offsets 16-aligned; scalar fallback on the
-   `Add(row, d_binder)` shape miss. Whole-function treatment — no
-   splices into `emit_deferred_region` (postmortem:
-   `2026-10-01-5a-fused-j-loop.md`). Gates at decode geometry
-   (m3 + softmax + deferred_ab_gate, both lanes) BEFORE timing.
+1. ~~Attention float4 k/v loads~~ — **DONE 2026-10-02** (-13% no-split
+   p50; defects + lessons in the 5a results file's last section).
 2. **div slowpath** — one sizing probe first.
 3. **GEMM fill-pipeline campaign** (32 → 42 TF @4096³) —
    `2026-09-30-stage5b-structural-fill-campaign.md`; the
    contract-licensed pipelining note (fill reorders loads the
    shape proves safe); no-fill evidence bounds the prize (compute
    intact at 45.4 TF); Rule 12 protocol.
-4. **Re-rank table fold-in** — fold fused-attention numbers into the
-   stage-5 table (row 3 already marked DONE).
+4. **Re-rank table fold-in** — fold fused-attention + float4 numbers into
+   the stage-5 table (row 3 already marked DONE).
 5. **GemmPlan retirement** (5d remainder) — behind its own A/B, not
    yet gated.
 
@@ -214,15 +208,14 @@ From this index's 2026-09-08 pass — **verify freshness before starting**:
 
 ## Recommended starting points (no foreign-lane overlap)
 
-1. **Attention float4 k/v loads** (Workstream 3 queue item 1) — design
-   fully banked, fresh-session whole-function treatment, est. 10-20%.
-2. **GEMM fill-pipeline campaign** (Workstream 3 queue item 3) — the
-   biggest absolute prize (32 → 42 TF), plan + correctness license
-   written (`2026-09-30-stage5b-structural-fill-campaign.md`).
-3. **Wave 2b runtime pairs / alias binding** — approved design, biggest interop value.
-4. **Quick wins** — `hardware_validator` hookup (stale-binary guard now
+1. **div slowpath sizing probe** then the **GEMM fill-pipeline campaign**
+   (Workstream 3 queue items 2-3) — the fill campaign is the biggest
+   absolute prize (32 → 42 TF), plan + correctness license written
+   (`2026-09-30-stage5b-structural-fill-campaign.md`).
+2. **Wave 2b runtime pairs / alias binding** — approved design, biggest interop value.
+3. **Quick wins** — `hardware_validator` hookup (stale-binary guard now
    shipped: `brievc freshness`).
-5. **Runtime families H/I/J** — finish `briev_rt.c` (511 lines remain:
+4. **Runtime families H/I/J** — finish `briev_rt.c` (511 lines remain:
    async/event machine, spawn/setenv, Tamer HCALL, string-bitop helpers).
 
 ---
