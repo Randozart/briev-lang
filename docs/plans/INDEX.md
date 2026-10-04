@@ -112,9 +112,13 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
    collapse was an accidental 2× L2 reuse). The **quad fill landed as
    default (n ≥ 256 guard): 4096³ Vulkan = 19.9 TF, 2.09×** (`52a6f12d`;
    results ADDENDUM 3). The campaign now runs from a REAL 19.9 TF base.
-   **Rung 0 (blocks the guard drop): SPIR-V small-N defect** — f16 GEMM
-   miscomputes at N ≤ 128 (zero rows; CUDA exact; pre-existing;
-   BUGS.md). Then: pipelined fills, B-traffic levers toward 32 TF.
+   **Rung 0: SPIR-V small-N — ROOT-CAUSED + FIXED 2026-10-04** (`7f285b6f`:
+   the runner under-dispatched the naive tier 16× — the dispatch now keys
+   on the emitter's chosen body; 64³/128³ EXACT; the n≥256 quad guard
+   dropped as misattribution). **Residual rung 0b (OPEN)**: naive-lane
+   under-accumulation at (M·N ≤ 4096, K ≥ 128)-class shapes — IR reads
+   correct, needs a device-level probe (BUGS.md). Then: pipelined fills,
+   B-traffic levers toward 32 TF.
 4. **Re-rank table fold-in** — fold fused-attention + float4 numbers into
    the stage-5 table (row 3 already marked DONE).
 5. ~~GemmPlan retirement~~ — **DECLARATION-GATED 2026-10-03** (increments
