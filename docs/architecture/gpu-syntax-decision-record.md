@@ -915,6 +915,85 @@ keys + the `warn:` policy row are accepted; overrides are reported on stderr;
 `###` block holds the **global** policy and config. This resolves the
 warning-policy OPEN item (§11.3).
 
+### D31 — The freeze set: dropped, deferred, admission process. **DECIDED 2026-10-04**
+
+**Context.** Umbrella plan
+`docs/plans/2026-10-04-three-surfaces-functional.md` — the language must
+be usable by strangers, and every author-surface keyword is permanent
+cost. The audit question per decision: is it a genuine uncertainty escape
+(L3) or required semantics — or a speed knob the derivation owns
+(Golden Rule 2)? Removals are expensive after a freeze; additions are
+cheap — so the freeze is the **minimal closure set**: L1/L2/L4 + the
+proof facility + the escapes with *proven* need.
+
+**Dropped from the author surface (the derivation owns them):**
+
+- `fragment<mXnXk>` (D14) — subsumed by `Tensor<elem, M, N, K>` (D21):
+  two syntaxes for one concept; the type carries the fragment shape with
+  target validation.
+- `swizzle<Xor | N>` (D14) — bank-conflict-free smem layout is a solved
+  derivation (stride/access-driven synthesis, already a strategy lever).
+  An author-chosen swizzle is recognition performed by hand (Rule 23 in
+  keyword form). The general control survives as body-level index
+  arithmetic — three lines of plain indexing — flowing through the same
+  scoped-sharing/alignment proofs.
+- `unroll<N>` (D14) — a pure speed keyword (Rule 2); LLVM and ptxas own
+  unrolling and trip counts are known here. A derivation gap here is
+  fixed in the derivation, not escaped.
+- `vector<N>` (D14) — derivable from dtype × alignment × access pattern
+  (the float4 k/v loads were *derived*). Not an uncertainty.
+
+D14's author vocabulary is therefore **7 → 2: `tile`, `stage`**.
+
+**Deferred (admit on evidence, not now):**
+
+- `irr` (D29) — its warnings do not exist until L3 modifiers ship; the
+  `### warn:` module policy (D30) is the interim. Site-local silencing
+  added later costs nothing.
+- `persistent node` (D9's require-escape) — *derived* persistent (the
+  megakernel default) stays and is load-bearing; the author-require
+  modifier returns when a real author need is filed.
+- `split<N>` (D14) — until the reduction-split general machinery proves
+  it needs an author escape.
+
+**Kept (load-bearing — dropping any loses closure or the
+differentiator):** D2/D18 (the observability spine), scope blocks +
+`shared` (D3/D5/D8/D10/D15/D16/D23), persistent as orthogonal lifetime
+axis (D6), fundamentals-as-types (D11/D13/D21), `lemma_properties`
+(D17/D19/D20), authored megakernel fusion (D24/D25), `###` (D30,
+implemented), layered primitives (D26/D27), A1–A8/A10.
+
+**Open-item decisions (resolving §11.1, §11.2, §11.6, §11.7):**
+
+- §11.6 — the node-classification value is renamed **`sync<peer>`**; the
+  barrier domain stays `sync<workgroup|subgroup|cluster|grid>`. One
+  keyword, two domains (D7), now unambiguous at the use site.
+- §11.7 — declared `scope<…, size>` is a **hint**: the cost model may
+  override with a remark naming the derived size (the D2
+  redundancy-warning pattern). Workgroup size is implementation, not
+  semantics.
+- §11.1 — shape modifiers ride the **node** for single-node kernels and
+  the **`scope<…>`** for fused multi-node kernels (the fused shape is
+  one kernel's shape).
+- §11.2 — the exact `lemma_properties` vocabulary is decided at first
+  consumer: data-driven registration + parse validation; the facility
+  (D19) is frozen, its vocabulary is not.
+
+**The admission process (the clever-engineer safety valve).** Any new
+shape or keyword modifier requires: (a) a **filed derivation gap** — a
+coverage-ledger entry naming the derivation that fails without it;
+(b) a taxonomy category (strategy / ambiguity / intrinsic — never pure
+speed, Rule 2); (c) a disclosure marker (Rule 3). The escape ladder
+below any keyword: `tile`/`stage` at the shape level; body-level index
+arithmetic through the same proofs; `Asm#` + `asm-lowering.dbvl` data
+rows at the instruction level; `###` at module level.
+
+**Acceptance test (this plan's Phase 2):** a CUTLASS-class hand-tuned
+layout (swizzled smem) expressed WITHOUT the dropped keywords must
+compile, pass the scoped-sharing/alignment proofs, and hit the vendor
+kernel's numbers; failures are derivation gaps and trigger admissions
+under this process.
+
 ## 7. Architectural decisions (A1–A10)
 
 - **A1 — One frontend plan, per-target projections** (doctrine §4). The
@@ -1057,29 +1136,36 @@ The syntax lowers *through* the `KernelPlan` machinery. Recommended order
 
 ## 11. Open items (recorded, not dropped)
 
-1. **OPEN — shape on a multi-node scope**: D1 puts shape on the node; D24
-   fuses several nodes into one kernel with one shape. Rule: shape
-   modifiers on the node for single-node kernels, on the `scope<…>` for
-   fused multi-node kernels. (Refines D1/§9.1.)
-2. **OPEN — exact `lemma_properties` vocabulary**: which laws
-   (`associative`, `commutative`, `idempotent`, `injective`, `distributive`,
-   `monotone`, `bounded`, …), their arities/forms, and validation.
+1. **RESOLVED 2026-10-04 (D31) — shape on a multi-node scope**: shape
+   modifiers ride the node for single-node kernels, the `scope<…>` for
+   fused multi-node kernels (the fused shape is one kernel's shape).
+   (Refines D1/§9.1.)
+2. **RESOLVED 2026-10-04 (D31) — exact `lemma_properties` vocabulary**:
+   decided at first consumer; data-driven registration + parse validation.
+   The facility (D19) is frozen; the vocabulary is not.
 3. **RESOLVED — warning policy** (D29/D30): site-local `irr` modifier +
    the top-level `###` override block (`warn: irr|allow|deny;`). Errors
-   never silenceable.
+   never silenceable. *(D31 note: `irr` itself is deferred until L3
+   warnings exist — the `###` policy is the interim.)*
 4. **OPEN — cost-model uncertainty signal (A6)**: the exact margin /
    calibration-range test that turns a shape choice into a warning.
 5. **OPEN — multi-node scope → runner/desc mapping (A2/A9)**: how fused
    phases map to one `RunnerKernel`, block geometry, shared layout, and
    the launch.
-6. **OPEN — `sync<group>` vs `sync<workgroup>`**: rename the
-   node-classification value (`nodes`/`peer`) or keep the dual domain?
-7. **OPEN — `scope<…>` size semantics**: declared size = hard requirement
-   or a hint the cost model may override with a remark?
+6. **RESOLVED 2026-10-04 (D31) — `sync<group>` vs `sync<workgroup>`**:
+   the node-classification value is renamed `sync<peer>`; barriers keep
+   `sync<workgroup|subgroup|cluster|grid>`. One keyword, two domains
+   (D7), unambiguous at the use site.
+7. **RESOLVED 2026-10-04 (D31) — `scope<…>` size semantics**: a hint;
+   the cost model may override with a remark naming the derived size
+   (the D2 redundancy-warning pattern).
 8. **OPEN — `Tensor<…>` validation**: allowed elements, shape
    divisibility, interaction with `spec`.
 9. **OPEN — shape-modifier parameter grammar** beyond D14 (`swizzle<…>`
    semantics, `fragment<mXnXk>` layout space, `vector<N>` ceilings).
+   *(D31 note: `swizzle`/`fragment`/`vector` are dropped from the author
+   surface; this item now concerns only `tile`/`stage` parameter forms
+   and any admitted modifiers.)*
 10. **OPEN — dynamic parallelism / multi-GPU**: in scope (L2) but the
     declaration form is undecided.
 11. **OPEN — authored vs derived fusion** (`scope` vs `gpu_schedule`):
