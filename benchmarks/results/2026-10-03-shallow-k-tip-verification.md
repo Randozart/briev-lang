@@ -101,11 +101,24 @@ div-slowpath queue line marked SIZED+CLOSED 2026-10-02
 - 6707 (prime full-upload clobber, OPEN): needs a repro at the prime
   shape before closure; mitigation `02418f49`
   (src/accel_rt.rs snapshot/restore) still in place.
-- Re-verify the "4.5% @4096³ = f16acc" attribution
-  (`2026-09-30-gemm-4096-gates.md`) with non-dyadic data before trusting
-  it (patterned/dyadic seeds make f16acc exact — that number needs a
-  random-data rerun or a retraction).
 - CUDA 13.4 cuMemcpy2D driver issue (6740) stays OPEN (external).
 - GPU re-rank (Workstream 3) — the fill-pipeline campaign
   (`2026-09-30-stage5b-structural-fill-campaign.md`) is the next big
   absolute prize; the patterned gate is now a permanent lane check for it.
+
+## ADDENDUM 2026-10-03 (later session): the "4.5% = f16acc" attribution VERIFIED at 4096³
+
+A/B with the pre-fix compiler (worktree at `37772189`, today's gate):
+4096³ patterned16 max_rel = **4.436e-03 on ALL THREE** (pre-fix Vulkan,
+post-fix Vulkan, CUDA) — the fill-mask defect's residual at 4096³ on the
+periodic seeds is INVISIBLE: the product period of the seeds is 35 and
+4096 = 117·35 + 1, so full periods sum phase-independently (CRT) and the
+mask's −32 column substitution leaves ONE boundary term (≤ 5.7e-4 rel)
+under the f16acc rounding floor (4.4e-3 at y≈3072, ulp 2). At K=64 the
+partial period is 29/35 terms → residual 8.9e-2, plainly visible.
+Conclusion: the 2026-09-30 record's f16acc attribution at 4096³ is
+CORRECT and stands; the mask bug's manifestation is small-K (K not near
+a multiple of 35), which is exactly where the all-ones corpus was blind.
+No retraction needed. The 4.436e-03 number itself is the f16acc
+parallel-order rounding floor on periodic data (post-fix Vulkan == CUDA
+bitwise — a strong cross-lane equivalence check to keep in the gate).
