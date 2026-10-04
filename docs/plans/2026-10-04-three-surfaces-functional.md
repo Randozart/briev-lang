@@ -160,17 +160,26 @@ Gate: B1 MATCH + suite green per landing; hello-world from scratch works.
 
 ## Phase 2 — `.abv` perf credibility
 
-1. **Vulkan −16-22% regression** (the `c3115156` provisional note):
-   era-runtime A/B shim — build the era single-TU C runtime
-   (`lib/runtime/briev_accel_rt.c` at `5cbe5299` + its `briev_dev_vulkan.c`)
-   against today's `.spv`, same harness. If era-runtime + today-kernel
-   recovers ~11.6 ms, the C→Rust runtime port (`src/accel_rt.rs`) regressed
-   the lane → fix the submission/upload path; else bisect kernel/config
-   churn (17 files, +3425/−597 since the era).
+> **Status 2026-10-04 (same-day):** Phase 2.1 RESOLVED — the Vulkan
+> "regression" was the B-fill mask fix un-masking the true cost (the bug's
+> 32-column collapse was an accidental 2× L2 reuse; the 09-30 record's
+> 11.59 ms was measured on the buggy kernel). The quad fill
+> (`spirv_coopmat_fill_quad`) landed as DEFAULT with a `plan.n >= 256`
+> correctness guard: **4096³ Vulkan = 19.9 TF (was 9.5), 2.09×; exact ×3
+> both lanes; canaries safe**. Bisect + measurements:
+> `benchmarks/results/2026-10-03-shallow-k-tip-verification.md` ADDENDUM 3.
+> NEW rung 0 discovered by the quad matrix: a pre-existing SPIR-V-only
+> small-N defect (N ≤ 128 miscomputes; BUGS.md this session) — fix it,
+> drop the guard, then the levers below.
+
+1. **Small-N defect (rung 0, NEW)**: the SPIR-V tiled f16 kernel
+   miscomputes at N ≤ 128 (zero rows; CUDA exact; pre-existing — BUGS.md).
+   Fix + drop the quad guard + full matrix.
 2. **cuBLAS parity**: the fill campaign
    (`2026-09-30-stage5b-structural-fill-campaign.md` — the correctness
-   license for pipelined fills is already written); re-rank queue
-   (attention, warp-slice thresholds, M4 ladder).
+   license for pipelined fills is already written), recalibrated from the
+   19.9 TF post-quad baseline; re-rank queue (attention, warp-slice
+   thresholds, M4 ladder).
 3. **Vocabulary retirement**: every remaining Tier-2 recognized-vocabulary
    matcher → declared composites (each retirement = a generalisation
    proof, A10 ledger).

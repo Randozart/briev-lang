@@ -7798,3 +7798,41 @@ diagnostics vs HEAD. Results:
 **Lesson:** the all-ones corpus is blind to column-mapping errors — any
 f16 GEMM correctness claim needs the patterned mode (or the probe), not
 ones. The gate now ships both plus the probe (mode 2) permanently.
+
+## SPIR-V tiled f16 GEMM miscomputes at small N (n ≤ 128): zero rows, partial tiles [OPEN 2026-10-04 — pre-existing; SPIR-V-only; found by the patterned gate]
+
+**Found:** 2026-10-04, the quad-fill verification matrix
+(`docs/plans/2026-10-04-three-surfaces-functional.md` Phase 2.1 follow-on).
+Every f16 GEMM fixture with N ∈ {64, 128} fails on the Vulkan lane —
+pairs AND quad fill — while N ≥ 256 is exact. CUDA at 64³ is EXACT.
+
+**Symptoms:** whole output rows zero (probe2: m ∈ {47, 30, 13, …} got=0,
+cnt=0 — never written); all-ones fails at scattered cells (y[256]=0);
+mostly deterministic, one nondeterministic all-ones pass observed at 64³
+quad. 64×64×256: y[0] = 1.0 — exactly ONE k-term of 256 stored. The grid
+boundary: 64³ dispatches 32 workgroups, 128³ → 128, 256³ → 512 (works);
+the axis is N, not K (256×256×64 EXACT ×2, 64×64×256 BROKEN ×2).
+
+**NOT a regression:** the pre-mask-fix build (`b8f5d3f0`) fails at 64³
+identically (`max_rel=1.000`, y[0]=0) — the defect predates 2026-10-04
+entirely. It was invisible because every f16 correctness matrix to date
+used N ≥ 512, and all-ones at small N was never run. The patterned gate
+(mode 1) caught it on its first small-N sweep.
+
+**Suspect:** the wgid → tile decode in the SPIR-V tiled kernel at small
+tile counts (subgroups=2: tiles_n = n/(64·S) collapses to 0/1 at n=64/128;
+row = wgid/8 assumes the multi-tile layout) — OOB-tile behavior and/or
+missing partial-tile guards; the single-term store at 64×64×256 points at
+the k-loop/refill interaction with the degenerate grid. CUDA is exact
+(different emitter).
+
+**Impact:** any `.abv` f16 GEMM with N < 256 on Vulkan miscomputes (all
+lanes' dispatch defaults, both fills). The n ≥ 256 guard on the quad
+default (same day) routes around it for the quad knob only.
+
+**Fix path:** audit the grid decode + partial-tile/OOB guards in
+`src/backend/spirv/kernel.rs`/`gemm.rs`; gate = the three-mode
+declared-matmul gate at 64³/128³/192×… + the full matrix. This is rung 0
+of the fill campaign (`2026-09-30-stage5b-structural-fill-campaign.md`
+via `2026-10-04-three-surfaces-functional.md` Phase 2.2): the quad
+default drops its guard when this closes.

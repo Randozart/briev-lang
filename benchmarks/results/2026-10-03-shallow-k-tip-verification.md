@@ -155,3 +155,55 @@ compare. If era-runtime + today-kernel recovers ~11.6 ms, the port
 regressed the lane and the fix belongs in `src/accel_rt.rs`'s Vulkan
 submission path; if not, bisect kernel/config (M4/GemmPlan-era churn,
 17 files, +3425/-597 since the era).
+
+## ADDENDUM 3 (2026-10-04): the Vulkan "regression" resolved — the mask fix un-masked the true cost; the quad fill recovers 2.09×
+
+The provisional note (ADDENDUM above) is resolved by bisect + measurement:
+
+**Bisect** (worktree builds, era-runtime harness, 200-iter batched
+timestamps, Vulkan 4096³ f16): `1e76affb` 12.44 ms · `607e5a38` 12.43 ·
+`82f7c135` 12.08 · `b8f5d3f0` 12.03 · **`9da0c750` (the B-fill mask fix)
+14.4**. The correctness fix IS the delta — mechanically: the bug collapsed
+the B tile columns {0..3} → {0,1}, so every workgroup read only 32 of its
+64 B columns → an ACCIDENTAL 2× L2 reuse. Fixing it restored the true
+DRAM traffic. The 09-30 record's 11.59 ms was measured ON THE BUGGY
+KERNEL — that record's own "4.5% f64-ref" row was the bug's residual
+(retroactively explained). 11.59 was never a legitimate number.
+
+**Environment exonerations** (all measured): runtime port (era C runtime
+== today's Rust runtime on today's kernel: 13.3–14.7 both), clocks (fully
+boosted 1935 MHz / mem 7501 / 100% util / 100 W → still 14.43), card (GPU
+1: 13.62), config (no spirv_* key changed since the era), dispatch
+geometry (identical formula + R=4).
+
+**R=8 rejected**: `spirv_coopmat_tile_rows: 8` → 18.19 ms (occupancy/smem
+pressure on the SPIR-V lane; the wide-tile +16% was CUDA-only).
+
+**THE QUAD FILL (D3b, `spirv_coopmat_fill_quad`, default-off since
+09-11): 6.90 ms = 19.9 TF @4096³ — 2.09× over pairs**, EXACT (all-ones +
+patterned, both lanes, identical 4.436e-03 = cross-lane equivalence).
+Shape matrix (pairs → quad): 64³ 1.0× (canary, launch-bound) · 128³ ≥1× ·
+256³ 1.2× · 512³ 1.3× · 1024³ **2.26×** · 2048³ 2.06× · 4096³ 2.09×.
+
+**Landed:** `spirv_coopmat_fill_quad: 1` default + a correctness guard
+`plan.n >= 256` in `coopmat_fill_quad_active` (TEMP 2026-10-04
+provenance at the site). Below 256 the pairs fill runs.
+
+**Why the guard:** the quad verification matrix exposed a PRE-EXISTING,
+SPIR-V-only small-N defect (N ≤ 128: zero rows / single-term tiles; CUDA
+exact; present before today's fixes — BUGS.md, this session). Both fills
+fail there identically; the guard changes nothing for those shapes while
+keeping the quad default honest. Fixing small-N is rung 0 of the fill
+campaign; dropping the guard is its acceptance test.
+
+**f16acc floors** (patterned, dyadic seeds): exact ≤ 256³; ~1.6e-3 @512³,
+~3.7e-3 @1024³, ~4.4e-3 @2048³–4096³ — the parallel-order f16-accumulation
+rounding as y crosses ulp boundaries, matching the 09-30 analysis; the
+`BRIEV_GEMM_F16ACC=1` tol (1e-2) is the right gate for K ≥ 512 claims.
+
+**The fill campaign's updated prize structure** (Phase 2.2): rung 0 = fix
+small-N (BUGS.md) → drop the guard; rung 1 = quad everywhere (done for
+n ≥ 256); the 4096³ Vulkan lane now stands at **19.9 TF post-fix** vs the
+12.2 TF record-era figure — the campaign target (32→42 TF) recalibrates
+from a REAL 19.9 TF baseline. Provisional: single-day, single-card,
+unpinned-clock measurements; the claim matrix + suite gate every landing.
