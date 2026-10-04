@@ -1716,8 +1716,6 @@ struct SmemFillParams {
     /// Bitwise AND mask for b_stage_elems (b_stage_elems - 1, valid when
     /// b_stage_elems is power-of-two — always true: pps × 4 × 256).
     b_stage_elems_mask: Word,
-    /// Bitwise AND mask for b_stage_pairs (b_stage_elems/2 - 1).
-    b_stage_pairs_mask: Word,
     subgroups: u32,
     /// Compile-time tile element counts for the split A/B fill (S>1).
     a_stage_elems: u32,
@@ -2168,9 +2166,18 @@ fn emit_fill_pair_dram(
         u32_shr(builder, c14v, 1)
     };
     let b_flat = u32_binop(builder, spirv::Op::ISub, flat2, p.a_stage_elems_c);
-    // D4: b_flat_within = b_flat % b_stage_elems (pair units) — index
-    // within THIS subgroup's B slice for the DRAM source tile column.
-    let b_flat_within = u32_and(builder, b_flat, p.b_stage_pairs_mask);
+    // D4: b_flat_within = b_flat % b_stage_elems (index within THIS
+    // subgroup's B slice for the DRAM source tile column). 2026-10-03
+    // FIX: b_flat is in HALF units (flat2 halves − a_stage_elems halves),
+    // so the wrap mask must be b_stage_elems − 1 (1023). The pair-unit
+    // mask (b_stage_elems/2 − 1 = 511) wrapped b_flat ≥ 512 back to 0,
+    // collapsing b_tile_idx from {0..3} to {0..1}: B columns 32..63 of
+    // every 64-col tile loaded from columns 0..31 (patterned GEMM read
+    // y[m,n] = b[n−32] on Vulkan; all-ones data masks the error).
+    // b_tile_idx = b_flat_within >> 8 must yield j in 0..3 — 511 can
+    // never produce 2 or 3. Undo: swap back to b_stage_pairs_mask only
+    // if b_flat returns to pair units (it must not: flat2 is halves).
+    let b_flat_within = u32_and(builder, b_flat, p.b_stage_elems_mask);
     let b_tile_idx = u32_shr(builder, b_flat_within, 8);
     // A pair source: row2*(K/2) + kt*8 + col_pair (all even/2 exact).
     let a_src = {
@@ -2821,7 +2828,6 @@ fn emit_coopmat_smem(
     let prefetch = pairs && GemmPlan::coopmat_fill_prefetch();
     let b_stage_elems_c = u32_const(builder, b_stage_elems);
     let b_stage_elems_mask = u32_const(builder, b_stage_elems - 1);
-    let b_stage_pairs_mask = u32_const(builder, b_stage_elems / 2 - 1);
     let fill_params = SmemFillParams {
         smem_a, smem_b, f16_wg_ptr, f16_ssbo_ptr,
         a_stage_elems_c, a_member_c, b_member_c,
@@ -2834,7 +2840,6 @@ fn emit_coopmat_smem(
         tiles_x_c: tiles_x_c.clone(),
         b_stage_elems_c,
         b_stage_elems_mask,
-        b_stage_pairs_mask,
         subgroups,
         a_stage_elems,
         b_stage_elems,

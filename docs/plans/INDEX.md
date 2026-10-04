@@ -101,7 +101,7 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
 
 1. ~~Attention float4 k/v loads~~ — **DONE 2026-10-02** (-13% no-split
    p50; defects + lessons in the 5a results file's last section).
-2. **div slowpath** — one sizing probe first.
+2. ~~div slowpath~~ — **SIZED + CLOSED 2026-10-02** (`2026-09-30-5a-attention-decode.md`); the cost was a misattribution (<0.5%), no slowpath warranted.
 3. **GEMM fill-pipeline campaign** (32 → 42 TF @4096³) —
    `2026-09-30-stage5b-structural-fill-campaign.md`; the
    contract-licensed pipelining note (fill reorders loads the
@@ -144,9 +144,15 @@ emitters RETIRED (~200 lines); the knob retired; the retirement gate
 MET (the M3 row-form kernels reach the emitters' numbers within band,
 both lanes — the results file's M3 table).
 
-**OPEN correctness**: shallow-K emitter race (K≤128, M·N≥1024²) — dispatch
-gates those shapes to the slow race-free kernel; the emitter race itself is
-unfixed (needs the `ws_debug` position-encoded fill). BUGS.md ≈ line 6270.
+**shallow-K: RESOLVED** — the 2026-09-16 fix (`wait_depth = 0` at
+K ≤ 128, tensor.rs:1762) re-verified at tip 2026-10-03 (full matrix
+7 shapes × 3 runs × both lanes, all-ones + patterned + index probe, all
+EXACT). The re-verification's patterned gate exposed a REAL Vulkan-only
+f16 defect (coopmat B-fill pair mask, cols 32..63 of every 64-tile read
+from 0..31) — root-caused + fixed the same day (BUGS.md, last entry;
+`benchmarks/results/2026-10-03-shallow-k-tip-verification.md`). The
+all-ones-only corpus is blind to column-mapping errors — patterned mode
+is permanent now.
 
 Pointers: `2026-09-16-gpu-strategy-findings-and-levers.md` (lever ledger +
 the 64³–4096³ vs-cuBLAS map), `docs/architecture/gpu-backend-strategy.md`
@@ -210,7 +216,9 @@ From this index's 2026-09-08 pass — **verify freshness before starting**:
 ## Open bugs / known gaps (`BUGS.md`)
 
 - CIRCT `ExportVerilog` `hw.module.generated` — **OPEN** (toolchain).
-- GPU shallow-K emitter race — **OPEN, correctness-gated**.
+- ~~GPU shallow-K emitter race~~ — **RESOLVED 2026-09-16**, tip
+  re-verified 2026-10-03 (+ the Vulkan f16 fill-mask defect found and
+  fixed during it — BUGS.md last entry).
 - Baseline-harness defects — **PARTIAL**; protocol round-trip proofs — **PARTIAL**.
 - `json.bv` migration blocked on generic type inference + three language gaps.
 - `hardware_validator` dead code — OPEN (found in C2; unclaimed).

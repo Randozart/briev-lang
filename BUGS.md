@@ -6565,7 +6565,7 @@ entry. The asm-based attempt additionally hit the Asm# earlyclobber bug
   print Y; park`) so mid-body preemption is observable.
 - Gate: finite `BA21` (resume) vs continuous `BABABABA…` (restart).
 
-## 2026-09-16: tensor mw kernel corrupts m-tiles >= 1 at small-K (K=64/128), M>=512 [OPEN]
+## 2026-09-16: tensor mw kernel corrupts m-tiles >= 1 at small-K (K=64/128), M>=512 [RESOLVED 2026-09-16 — addendum below; header corrected 2026-10-03]
 
 Found during the L4 small-K sweep. The (2,4)-style mw tensor kernel returns
 WRONG results (max_rel up to 7e-2, rows 64+ corrupt) for shallow-K GEMMs at
@@ -6648,7 +6648,7 @@ the stages cap (1..=3) stays.
 
 Recorded while L4: docs/plans/2026-09-16-gpu-strategy-findings-and-levers.md.
 
-## 2026-09-16: f16 attention composition fails at 1024² (qk→pv aliased s2/s) [OPEN]
+## 2026-09-16: f16 attention composition fails at 1024² (qk→pv aliased s2/s) [RESOLVED — FALSE ALARM, addendum below; header corrected 2026-10-03]
 
 The 2-kernel f16 attention chain (qk with fused scale → pv) is correct at
 512² (max_rel 1.6e-3) but FAILS at 1024² (max_rel 5.4e24, o=+inf).
@@ -7659,7 +7659,7 @@ lessons:
 `dot_row`), builds clean, routes the cooperative dot emitter, and the
 emitter A/B ran (the results file).
 
-## SPIR-V lane: f16 scalar × Float-typed const/literal lowered to a type error [FIXED 2026-10-03]
+## SPIR-V lane: f16 scalar × Float-typed const/literal lowered to a type error [FIXED 2026-10-03 — DUPLICATE of the entry at :7602, recorded twice in the same session; no unique content]
 
 **Found:** 2026-10-03, the declared-dot rung's fixture migration —
 `attn_s1.abv` / `attn_decode_h.abv` (f16 attention chains with
@@ -7684,7 +7684,7 @@ errors — a fixture that fails to build produces no files and compares
 "identical". The 65-fixture sweep ran green across four increments while
 two of its fixtures could not build at all.
 
-## Typechecker: `dot!` composite invocation — "undefined variable 'Float'" flips on shape/name [OPEN — 2026-10-03]
+## Typechecker: `dot!` composite invocation — "undefined variable 'Float'" flips on shape/name [OPEN — 2026-10-03; SUPERSEDED 2026-10-03: CLOSED as harness corruption at :7627 — the corrupted reference file, not the compiler]
 
 **Found:** 2026-10-03, the emitter-retirement campaign's `dot_row.abv`
 fixture (declared `dot!`, D=128, 20 rows). The typecheck fails with
@@ -7745,3 +7745,56 @@ the resolver's module merge (the 2026-07-31 SipHash rule).
 shapes — see dm9 in the session log; `dot_row.abv` currently ships with
 head `[w < 20]` + the reordered call and STILL fails — the campaign's
 dot-emitter A/B is blocked on this; the softmax half proceeds.
+
+## SPIR-V coopmat GEMM: B-fill pair path masks half units with the pair-unit wrap — B cols 32..63 of every 64-col tile read from cols 0..31 [ROOT-CAUSED + FIXED 2026-10-03]
+
+**Found:** 2026-10-03, the shallow-K tip re-verification campaign (plan
+`docs/plans/2026-10-03-shallow-k-tip-verification-and-ledger-truth.md`).
+The declared-matmul gate's NEW patterned f16 mode (mode 1, seeds mirroring
+`benchmarks/gpu/gemm_h_bench.c`) failed on the Vulkan lane at every
+patterned f16 shape (512²×64 through 4096²×128): max_rel ≈ 8.9e-2 at
+tol 5e-3, ~45% of sampled cells, DETERMINISTIC across runs. The all-ones
+mode (mode 0) — the only verification the fixtures had before — PASSES
+(row-constant a × all-ones b is blind to which B column is read). The
+CUDA lane (PTX tensor kernel, different codegen) is exact (0.000e+00) on
+the same data. The stale "Vulkan patterned ≈ 0.12" record in the
+2026-10-03 retirement plan (line 139) is THIS bug, previously unexplained;
+the 2026-09-30 gates file's "4.5% at 4096³ attributed to f16acc" is
+suspect for the same reason (patterned seeds are dyadic eighth-multiples —
+f16 accumulation is EXACT on them; that attribution needs re-verification
+with random data before it is trusted again).
+
+**Symptoms decoded by the index/count probe (gate mode 2, row-constant a
+× col-constant b):** for every output row, columns [0,32) of each 64-col
+tile exact; columns [32,64) equal to the value of column n−32 (−32 ≡ +3
+mod 5 on the mod-5 column classes). Count intact (64 terms), a-index
+intact (row classes exact) — purely a B-column substitution.
+
+**Root cause:** `emit_fill_pair_dram` (src/backend/spirv/gemm.rs) computed
+the B DRAM source tile column from
+`b_flat = flat2 − a_stage_elems` — HALF units (flat2 = 2·pair) — then
+wrapped it with `b_stage_pairs_mask` = b_stage_elems/2 − 1 = 511, a
+PAIR-unit mask. b_flat ≥ 512 wrapped back to 0, so b_tile_idx =
+(b_flat & 511) >> 8 ∈ {0,1} where the sibling comment itself requires
+"j in 0..3": the two upper 16-col blocks of every 64-col B tile loaded
+the LOWER two blocks' data (−32 columns). The entry's own comment
+contradicts its mask — the mechanical tell. Unaffected paths: quad fill
+and scalar fill and the pair smem-destination all use `b_stage_elems_mask`
+(1023) on the same half-unit quantity; the CUDA/PTX tensor kernel shares
+no code with the SPIR-V fill.
+
+**Fix (2026-10-03):** `emit_fill_pair_dram` masks with
+`b_stage_elems_mask` (1023), matching every sibling path; the dead
+`b_stage_pairs_mask` field/def/param removed. One-line semantic change;
+provenance comment at the site.
+
+**Verification:** patterned f16 gate max_rel 0.000e+00 on BOTH lanes;
+index probe (mode 2) 0 mismatches both lanes; all-ones unchanged PASS;
+full claim matrix 7 shapes (512²×64 … 4096²×128) × 3 runs × 2 lanes ×
+2 modes = 21/21 EXACT; `cargo test --lib` 2855 green; Praetor: no new
+diagnostics vs HEAD. Results:
+`benchmarks/results/2026-10-03-shallow-k-tip-verification.md`.
+
+**Lesson:** the all-ones corpus is blind to column-mapping errors — any
+f16 GEMM correctness claim needs the patterned mode (or the probe), not
+ones. The gate now ships both plus the probe (mode 2) permanently.
