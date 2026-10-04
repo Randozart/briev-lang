@@ -122,3 +122,36 @@ a multiple of 35), which is exactly where the all-ones corpus was blind.
 No retraction needed. The 4.436e-03 number itself is the f16acc
 parallel-order rounding floor on periodic data (post-fix Vulkan == CUDA
 bitwise — a strong cross-lane equivalence check to keep in the gate).
+
+## ADDENDUM 2 (2026-10-03, PROVISIONAL): Vulkan coopmat lane ~16-22% below the 09-30 record — runtime-port era suspect
+
+Instrument: the generated 4096³ runner patched with a timed loop
+(2 separate warmup launches + ONE fence-waited `launch_resident_batch`
+×20, wall /20; `GATE_F16=1` verify EXACT after the timed loop, both
+lanes). Numbers are PROVISIONAL (wall-clock, no clock pinning — the
+record pinned 1927 MHz):
+
+| lane | today (post-fix tip `9da0c750`) | 09-30 record |
+|---|---|---|
+| Vulkan 4096³ f16 | **14.6-14.8 ms/iter ≈ 9.3-9.4 TF** (wall/50) | 11.59 ms gpu_time = 12.0-12.2 TF |
+| CUDA 4096³ f16 | 4.84-5.37 ms ≈ 25.6-28.4 TF | 4.995 ms = 27.5 TF ✓ |
+
+The gemm_h_bench's own device timestamps on today's runtime read
+13.83 ms for the same .spv — consistent with the wall number, so the
+gap is probably NOT a wall-clock artifact. Kernel + dispatch look
+unchanged (the SPIR-V kernel's only delta since 09-30 is today's
+mask-constant fix; the runner's dispatch line is identical at
+131072 flat / 2D n/64). PRIME SUSPECT: the runtime orchestration was
+ported C→Rust after 09-30 (`src/accel_rt.rs`, +1516 lines; the era
+`lib/runtime/briev_accel_rt.c` single-TU runtime replaced by Rust
++ cc-built driver bindings) — a submission/barrier/upload-semantics
+difference in the port would show exactly as a lane-wide, shape-wide
+percentage. The era worktree does not link at HEAD's layout (build.rs
+regime changed), so the direct era-runtime A/B needs a small shim.
+
+NEXT: build the era C runtime against today's .spv (the era rt is a
+self-contained TU; needs the desc types inlined into the bench) and
+compare. If era-runtime + today-kernel recovers ~11.6 ms, the port
+regressed the lane and the fix belongs in `src/accel_rt.rs`'s Vulkan
+submission path; if not, bisect kernel/config (M4/GemmPlan-era churn,
+17 files, +3425/-597 since the era).
