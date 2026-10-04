@@ -207,3 +207,24 @@ n ≥ 256); the 4096³ Vulkan lane now stands at **19.9 TF post-fix** vs the
 12.2 TF record-era figure — the campaign target (32→42 TF) recalibrates
 from a REAL 19.9 TF baseline. Provisional: single-day, single-card,
 unpinned-clock measurements; the claim matrix + suite gate every landing.
+
+## ADDENDUM 4 (2026-10-04, later): rung 0 — the small-N root cause (runner dispatch), fixed; one residual filed
+
+The small-N defect's ROOT CAUSE = the RUNNER, not the kernel: the naive
+tier's `tiled` dispatch flag keyed on plan existence and launched the
+64×64-tile geometry for the per-output naive body — 16× under-dispatch
+(64³: 1 of 16 workgroups). The fix plumbs the emitter's chosen body
+(`KernelSurface.gemm_body`) to the runner — one decision, no drift —
+and the tiled arm multiplies by the module's real LocalSize (THREADS²).
+The earlier "quad small-N nondeterminism" = misattribution (the quad
+fill never runs below the tensor tier); the `plan.n >= 256` guard is
+DROPPED (quad default unconditional on its divisibility gates).
+
+Verified after the fix: 64³, 128³ all-ones + patterned EXACT ×2; the
+tensor matrix (256³, 1024³, 4096³, 256×256×64) EXACT ×2; suite 2855.
+
+RESIDUAL (BUGS.md, new OPEN entry): a second, narrower defect —
+naive-lane under-accumulation (y = the k=0 term) at (M·N ≤ 4096, K ≥ 128)
+and the tensor tier's 128×128×256 — IR reads correct; needs a
+device-level probe. NOT fixed this session; the honest boundary is
+recorded so the next session starts at the probe, not the search.

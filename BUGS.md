@@ -7799,7 +7799,30 @@ diagnostics vs HEAD. Results:
 f16 GEMM correctness claim needs the patterned mode (or the probe), not
 ones. The gate now ships both plus the probe (mode 2) permanently.
 
-## SPIR-V tiled f16 GEMM miscomputes at small N (n ≤ 128): zero rows, partial tiles [OPEN 2026-10-04 — pre-existing; SPIR-V-only; found by the patterned gate]
+## SPIR-V tiled f16 GEMM miscomputes at small N (n ≤ 128): zero rows, partial tiles [ROOT-CAUSED + FIXED 2026-10-04 — the runner under-dispatched the naive tier 16×]
+
+**UPDATE 2026-10-04 (same day, later): ROOT CAUSE = the runner's dispatch,
+not the kernel.** The small shapes take the NAIVE tier
+(`tensor_tier_eligible`: workgroups ≥ 8 declines 64³/128³), whose body =
+one output per invocation (LocalSize 256, bounds-guarded) — but the
+runner's `tiled` flag keyed on PLAN EXISTENCE (`plan.is_some()`) and
+emitted the 64×64-tile arm: `items = (n/4096)·16`. Two faults: the ×16
+encoded a long-gone LocalSize.x of 16 (the module is THREADS² = 256), and
+the arm itself is wrong for the naive body. Net: 16× under-dispatch —
+64³ launched 1 of 16 workgroups (rows 0..3 of 64 written); 128³ 1 of 4.
+The "quad small-N nondeterminism" first blamed for this was
+misattribution: the quad fill never runs below the tensor tier; both
+fills failed identically because both builds took the same broken naive
+dispatch. Fixed: the kernel emitter now records the chosen body on the
+surface (`KernelSurface.gemm_body`, GemmBody::{Naive, TiledShared,
+Tensor}) and the runner's dispatch keys on it — naive shapes launch
+M·N work items through the default arm; the tiled arm multiplies by
+gemm::THREADS² and serves only a body that actually emits. Verified:
+64³/128³ all-ones + patterned EXACT ×2 (the earlier repros); the tensor
+matrix (256³–4096³, 256×256×64) unchanged EXACT.
+
+**Residual (separate entry, OPEN):** a narrower naive-lane defect remains
+at (M·N ≤ 4096, K ≥ 128)-class shapes — see the next entry.
 
 **Found:** 2026-10-04, the quad-fill verification matrix
 (`docs/plans/2026-10-04-three-surfaces-functional.md` Phase 2.1 follow-on).
@@ -7836,3 +7859,33 @@ declared-matmul gate at 64³/128³/192×… + the full matrix. This is rung 0
 of the fill campaign (`2026-09-30-stage5b-structural-fill-campaign.md`
 via `2026-10-04-three-surfaces-functional.md` Phase 2.2): the quad
 default drops its guard when this closes.
+
+## Naive-lane f16 GEMM under-accumulates at (M·N ≤ 4096, K ≥ 128): y = the k=0 term only [OPEN 2026-10-04 — residual of the small-N sweep; IR reads correct; needs a device-level probe]
+
+**Found:** 2026-10-04, re-verifying the runner-dispatch fix at cross
+shapes. After the dispatch fix (previous entry), 64³ and 128³ are EXACT,
+but 64×64×128, 64×64×256, 64×128×256, 128×128×256 fail: every output =
+its k=0 term only (all-ones y[0] = 1.0; patterned y[0,0] = 0 because
+a[0] = 0). Meanwhile 128×128×128 (naive) is EXACT and 128×128×256 (tensor
+tier) fails too — so the boundary is not tier-clean: (M·N=16384, K=128)
+naive PASSES, (M·N=4096, K=128) naive FAILS, (M·N=16384, K=256) tensor
+FAILS.
+
+**Confusing evidence, recorded honestly:** the emitted SPIR-V reads
+correct for the failing naive kernel — 4 unrolled prefix FMA-steps
+(spirv_unroll=4, budget-clamped) accumulating into the Function-storage
+acc (%28: load→Fma→store per step), then a structured remainder loop
+k=4..127 with correct load→Fma→accumulate and loop var — no loop-carried
+binding visible. A correct-looking IR producing "one term" on device is
+not reconciled yet. An earlier observation also resists the model: the
+PRE-FIX 64³ quad build passed all-ones 4096/4096 once, which the
+1-workgroup under-dispatch model says cannot happen. One of the two
+models (or the probe) is wrong; do not trust either until a
+device-level probe settles it.
+
+**Probe instrument:** the three-mode declared-matmul gate
+(all-ones/patterned/probe) at the cross shapes; SPIR-V = spirv-dis of the
+gate-built .spv. Next step: a minimal single-output kernel bisect
+(K-only sweep at fixed M·N=4096; then prefix-only vs remainder-only
+builds via spirv_unroll=1) to localize whether the loss is the unrolled
+prefix, the remainder loop, or the y-store handoff — on device, not in IR.

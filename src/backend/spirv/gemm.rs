@@ -119,21 +119,18 @@ impl GemmPlan {
     /// ÷4. Single definition: kernel.rs (member widths) and gemm.rs
     /// (fill + fragment loads) must agree.
     pub(crate) fn coopmat_fill_quad_active(plan: &GemmPlan) -> bool {
+        // 2026-10-04: the earlier `plan.n >= 256` guard here was
+        // misattribution — the small-N failures were the naive-tier
+        // runner under-dispatch (fixed in runner.rs the same day), and
+        // the quad fill never runs below the tensor tier's eligibility
+        // anyway. Quad is proven EXACT at every tensor-eligible shape
+        // tested (256³–4096³ ×3, 256×256×64 ×2). No shape guard.
         Self::coopmat_smem()
             && Self::coopmat_fill_pairs()
             && Self::coopmat_fill_quad()
             && plan.m % 4 == 0
             && plan.k % 4 == 0
             && plan.n % 4 == 0
-            // TEMP: 2026-10-04: the quad fill nondeterministically
-            // miscomputes at n ∈ {64, 128} — zero rows (64³, 128³) and
-            // single-panel stores (64×64×256: y[0] = one term of 256),
-            // all-ones-blind; the patterned gate catches it. Proven EXACT
-            // at n ≥ 256 (256³–4096³ ×3 runs, 256×256×64 ×2). The guard
-            // keeps those shapes on the pairs fill until the small-n
-            // defect is fixed. Undo: fix the defect (BUGS.md, the fill
-            // campaign's first rung) and drop this line.
-            && plan.n >= 256
     }
 
     /// D2 (beyond-coopmat Stage 1): the loop refill's DRAM loads

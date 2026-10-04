@@ -21,6 +21,7 @@
 use crate::analysis::accel::AccelDecision;
 use crate::analysis::accel::AccelEntry;
 use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, Transaction, Type, UnaryOpKind};
+use crate::backend::spirv::gemm;
 use crate::backend::spirv::lower::collect_state_fields;
 use crate::backend::gpu_lowering::GpuLowering;
 use crate::backend::spirv::SpirvBuilder;
@@ -950,8 +951,7 @@ pub(crate) fn emit_node_kernel(
     let mut sb = SpirvBuilder::new().with_universe(universe, int_bits);
     let cooperative = crate::backend::spirv::kernel::is_cooperative_shape(shape);
     let plan = crate::backend::spirv::gemm::GemmPlan::match_stmts(shape, program);
-    let tiled = plan.is_some();
-    let tensor = tiled
+    let tensor = plan.is_some()
         && crate::config_tuning::ir_lowering().spirv_coopmat
         && plan.as_ref().map_or(false, |p| p.tensor_tier_eligible())
         && {
@@ -979,10 +979,17 @@ pub(crate) fn emit_node_kernel(
     let surface = crate::backend::spirv::kernel::KernelSurface {
         images: kplans,
         reuse_map,
+        gemm_body: std::cell::Cell::new(
+            crate::backend::spirv::kernel::GemmBody::Naive,
+        ),
     };
     crate::backend::spirv::kernel::emit_kernel(
         &mut sb, "main", shape, program, cooperative, &surface,
     )?;
+    // The dispatch flag keys on the body the emitter CHOSE — one decision,
+    // never drifting between the kernel and the launch contract.
+    let tiled =
+        surface.gemm_body.get() == crate::backend::spirv::kernel::GemmBody::TiledShared;
     let kernel = RunnerKernel {
         name: name.clone(),
         spirv: sb.build()?,
@@ -1396,11 +1403,20 @@ fn spirv_dispatch_geometry_stmt(k: &RunnerKernel, kidx: usize, ci: &str) -> Stri
         );
     }
     if k.tiled {
-        // Tiled GEMM: workgroups = items / (64*64), nx items = workgroups*16
-        // (the driver's launch_dev2d divides nx by the module's local_x 16,
-        // restoring the workgroup count — see gemm.rs grid contract).
+        // Tiled GEMM (16×16 lanes, 64×64 outputs per workgroup):
+        // workgroups = items / (64*64), and the launch items must be
+        // workgroups × the kernel's LocalSize.x — the driver dispatches
+        // ceil(items / LocalSize.x) workgroups with LocalSize.x parsed
+        // from the blob (gemm::THREADS² = 256; kernel.rs emits
+        // THREADS×THREADS for this tier). 2026-10-04 FIX: the old `* 16`
+        // encoded a long-gone LocalSize.x of 16 — every naive-tier shape
+        // under-dispatched 16× (64³: 1 of 16 workgroups; the rest of the
+        // output never written). The tensor tier (n ≥ ~256) never
+        // touches this arm, which is why the matrix missed it until the
+        // small-N sweep (BUGS.md, the small-N entry).
+        let local_x = gemm::THREADS * gemm::THREADS;
         return format!(
-            "      long long g_{ci} = (n_{ci} / (64 * 64)) * 16;\n      if (g_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, g_{ci})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
+            "      long long g_{ci} = (n_{ci} / (64 * 64)) * {local_x};\n      if (g_{ci} > 0 && !briev_accel_launch_resident({kidx}, state, g_{ci})) {{ fprintf(stderr, \"briev: dispatch failed\\n\"); return 1; }}\n"
         );
     }
     if k.cooperative {

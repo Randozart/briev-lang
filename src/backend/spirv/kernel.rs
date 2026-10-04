@@ -30,6 +30,28 @@ const LOCAL_SIZE_X: u32 = 256;
 pub struct KernelSurface<'a> {
     pub images: &'a [crate::analysis::image_storage::ImageStoragePlan],
     pub reuse_map: Option<&'a std::collections::HashMap<String, String>>,
+    /// 2026-10-04: which GEMM body the emitter chose. The runner's
+    /// dispatch geometry must key on THIS — the emitted kernel and the
+    /// launch contract are one decision (the runner's `tiled` flag
+    /// previously keyed on plan existence and under-dispatched the naive
+    /// body 16×; BUGS.md, the small-N entry).
+    pub gemm_body: std::cell::Cell<GemmBody>,
+}
+
+/// The GEMM kernel-body variant `emit_kernel` selected (the dispatch
+/// geometry's source of truth; set by the emitter, read by the runner).
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GemmBody {
+    /// Per-output scalar body (bounds-guarded; LocalSize 256; the launch
+    /// contract is one work item per output).
+    #[default]
+    Naive,
+    /// M2.1 shared-memory 64×64 tile (LocalSize 16×16 = 256; one
+    /// workgroup computes 4096 outputs).
+    TiledShared,
+    /// The coopmat-smem tensor tier (LocalSize 32·subgroups; the runner's
+    /// tensor geometry).
+    Tensor,
 }
 
 /// Emit one GPU kernel from an analyzed shape. Returns the function id.
@@ -501,6 +523,7 @@ pub fn emit_kernel(
                 },
             };
             gemm::emit_coopmat(builder, plan, &coopmat_args, exit_bb)?;
+            surface.gemm_body.set(GemmBody::Tensor);
             builder.begin_block(Some(exit_bb));
             builder.ret();
             builder.end_function();
@@ -551,6 +574,7 @@ pub fn emit_kernel(
             exit_bb: builder.gen_id(),
         };
         gemm::emit_tiled(builder, &plan, &ctx)?;
+        surface.gemm_body.set(GemmBody::TiledShared);
         builder.begin_block(Some(ctx.exit_bb));
         builder.ret();
         builder.end_function();
