@@ -106,7 +106,15 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
    `2026-09-30-stage5b-structural-fill-campaign.md`; the
    contract-licensed pipelining note (fill reorders loads the
    shape proves safe); no-fill evidence bounds the prize (compute
-   intact at 45.4 TF); Rule 12 protocol.
+   intact at 45.4 TF); Rule 12 protocol. **STATUS 2026-10-04**: the
+   Vulkan lane recalibrated — the 09-30 "12.2 TF" record measured a
+   WRONG kernel (the B-fill mask bug, fixed `9da0c750`; its 32-column
+   collapse was an accidental 2× L2 reuse). The **quad fill landed as
+   default (n ≥ 256 guard): 4096³ Vulkan = 19.9 TF, 2.09×** (`52a6f12d`;
+   results ADDENDUM 3). The campaign now runs from a REAL 19.9 TF base.
+   **Rung 0 (blocks the guard drop): SPIR-V small-N defect** — f16 GEMM
+   miscomputes at N ≤ 128 (zero rows; CUDA exact; pre-existing;
+   BUGS.md). Then: pipelined fills, B-traffic levers toward 32 TF.
 4. **Re-rank table fold-in** — fold fused-attention + float4 numbers into
    the stage-5 table (row 3 already marked DONE).
 5. ~~GemmPlan retirement~~ — **DECLARATION-GATED 2026-10-03** (increments
@@ -157,6 +165,16 @@ is permanent now.
 Pointers: `2026-09-16-gpu-strategy-findings-and-levers.md` (lever ledger +
 the 64³–4096³ vs-cuBLAS map), `docs/architecture/gpu-backend-strategy.md`
 (full landscape), vitriol ledger (single-source benchmark ledger).
+
+**Three-surfaces umbrella (2026-10-04, ACTIVE)**:
+`2026-10-04-three-surfaces-functional.md` — `.bv`/`.abv`/`.rbv` functional
+for a stranger; the language invariant (surface vocabulary allowed, core
+never forks, stretch-graded register); Phase 0 = the syntax freeze set
+(D31 amendment landed `8fadfc2a`: D14 7→2 `tile`/`stage`, drops+defers,
+admission process) → 0.3 `Asm#` two-lane audit, 0.5 SPEC fold, 0.6
+promotion sweep (`[*]` backport, quantities+Time). Phase 1 = json.bv
+generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
+small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---
 
