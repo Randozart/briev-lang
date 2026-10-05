@@ -206,13 +206,23 @@ pub fn emit_intrinsic_call(
             return BTypedRegister { name: ptr.to_string(), ty: Type::int() };
         }
         "GetGlobalId#" => return emit_get_global_id(backend, out, v, args, indent),
-        "GetGlobalSize#" => return emit_external_call(backend, out, v, name, args, indent),
-        "GetLocalId#" => return emit_external_call(backend, out, v, name, args, indent),
+        // 2026-10-05 (Phase 0.6, gate-membership<->arm rule): GetGlobalSize#
+        // and GetLocalId# had NO lowering here - the removed arms fell
+        // through to `emit_external_call`, emitting a call to an undefined
+        // `@GetGlobalSize`/`@GetLocalId` that only clang rejected (BUGS.md,
+        // undefined-symbol class). They are de-listed from the supported set
+        // (llvm/normalizer.rs) so the gate names them instead. GPU builtins
+        // completion (which lanes declare which launch-dimension builtins)
+        // is Phase 2; a real arm + rt symbol re-admits a name.
         "AddressOf#" => return emit_address_of(backend, out, v, args, indent),
         "SysCall#" => return emit_syscall(backend, out, v, args, indent),
         "SysConf#" => return emit_sysconf(backend, out, v, args, indent),
         "Len#" | "Length#" => return emit_len(backend, out, v, args, indent),
-        "Concat#" => return emit_external_call(backend, out, v, name, args, indent),
+        // 2026-10-05: Concat# removed from the surface — string
+        // concatenation is the `++` OPERATOR (the interpreter's reference
+        // path); the intrinsic had no lowering anywhere and plain-called an
+        // undefined `@Concat` (BUGS.md, undefined-symbol class). Registry
+        // entry removed with it.
         "Length#" => return emit_external_call(backend, out, v, name, args, indent),
         "Get#" => return emit_external_call(backend, out, v, name, args, indent),
         "Insert#" => return emit_external_call(backend, out, v, name, args, indent),
@@ -245,8 +255,12 @@ pub fn emit_intrinsic_call(
         "DlOpen#" => return emit_dl_open(backend, out, v, args, indent),
         "DlSym#" => return emit_dl_sym(backend, out, v, args, indent),
         "DlClose#" => return emit_dl_close(backend, out, v, args, indent),
-        // 2026-07-15: Debugging intrinsics
-        "Backtrace#" => return emit_backtrace(backend, out, v, args, indent),
+        // 2026-07-15: Debugging intrinsics. 2026-10-05: Backtrace# de-listed
+        // from the LLVM lane — the arm emitted `call @briev_backtrace()` but
+        // no runtime defines that symbol since the runtime-elimination work
+        // began, so every caller died at link (BUGS.md, undefined-symbol
+        // class). The registry entry and the interpreter's check-mode stub
+        // remain; a CPU lowering is a Phase 2 runtime decision.
         // 2026-08-01 (audit): one generic `Print#` — dispatch the emission by
         // the argument's protocol category. The four special-cased print
         // intrinsics collapsed into this single type-dispatched intrinsic.
@@ -1963,15 +1977,6 @@ fn emit_dl_close(
 // ─── Backtrace intrinsic ─────────────────────────────────────────────
 // 2026-07-15: backtrace() walks the stack. Emits call to C runtime
 // function @briev_backtrace() which uses glibc's backtrace().
-
-fn emit_backtrace(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
-) -> BTypedRegister {
-    writeln!(out, "{}{} = call i64 @briev_backtrace()", indent, v).ok();
-    let narrowed = narrow_int_result(backend, out, v, indent);
-    BTypedRegister { name: narrowed, ty: Type::int() }
-}
 
 // 2026-07-18: Deref# — load through pointer. The pointee type is resolved
 // from the ptr argument's Type::Ptr(inner) and used as the LLVM load type.

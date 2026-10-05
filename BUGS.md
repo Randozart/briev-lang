@@ -8162,7 +8162,7 @@ representative per arity class + too-few shapes),
 `intrinsic_calls_at_min_arity_still_typecheck`. Probe re-run: 0 panics
 on both surfaces (was 34).
 
-## LLVM lane: gate-passes that emit UNDECLARED symbols — `Concat#`, `GetGlobalSize#`, `Backtrace#` [OPEN — 2026-10-05 audit]
+## LLVM lane: gate-passes that emit UNDECLARED symbols — `Concat#`, `GetGlobalSize#`, `GetLocalId#`, `Backtrace#` [FIXED 2026-10-05 — de-listed per the gate-membership⇔arm rule]
 
 **Symptom:** all three pass the LLVM gate and emit `.ll` that clang/ld
 rejects: `use of undefined value '@Concat'`, `use of undefined value
@@ -8178,6 +8178,25 @@ defn; GetGlobalSize/Backtrace = runtime declarations with the right
 `#Link`/rt wiring) or remove the names from the supported set — rule:
 gate membership ⇔ lowering arm (same rule as the SPIR-V entry above).
 Probe repro: `python3 /tmp/opencode/audit/probe.py`.
+
+**Fix (2026-10-05, Phase 0.6):** the probe's fourth member `GetLocalId#`
+had the same `emit_external_call` fallthrough. All four resolved by the
+rule, case by case: `Concat#` left the SURFACE entirely (string
+concatenation is the `++` operator — the interpreter's reference path —
+the intrinsic had no lowering on any lane; registry entry and LLVM arm
+removed, the interpreter's explicit `UnsupportedIntrinsic` arm stays);
+`GetGlobalSize#`/`GetLocalId#` de-listed from the LLVM supported set and
+their fallthrough arms removed (GPU builtins completion — which lanes
+declare which launch-dimension builtins, with real rt symbols — is
+Phase 2); `Backtrace#` de-listed from LLVM (the arm emitted
+`@briev_backtrace`, undefined since the runtime-elimination work began;
+registry entry and the interpreter's check-mode stub remain — a CPU
+lowering is a Phase 2 runtime decision). Tests:
+`delisted_names_are_gate_rejected` (four rejections + GetGlobalId#
+still admitted — it has a real arm),
+`test_all_intrinsics_have_signatures` updated. Probe re-run: zero
+undefined-symbol rows on either surface. Re-admitting a name = arm +
+gate entry together, never one alone.
 
 ## Electronics program under `.bv`/`.rbv`: component field access PANICS codegen instead of diagnosing [OPEN — 2026-10-05 grammar inventory]
 

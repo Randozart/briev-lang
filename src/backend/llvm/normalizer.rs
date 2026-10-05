@@ -126,8 +126,12 @@ fn build_supported_ops() -> HashSet<String> {
     for op_name in STANDARD_OPS {
         set.insert(format!("{}#", op_name));
     }
-    for name in &["GetEnv#", "GetEnvInt#", "GetGlobalId#", "GetGlobalSize#", "GetLocalId#",
-                   "ToInt#", "ToFloat#", "ToString#", "Concat#", "Length#",
+    // 2026-10-05 (gate-membership<->arm rule): GetGlobalSize#,
+    // GetLocalId#, Concat#, and Backtrace# are DE-LISTED — none had a
+    // lowering arm here, so admitted programs reached clang/link with
+    // undefined symbols (BUGS.md). Re-admit a name together with its arm.
+    for name in &["GetEnv#", "GetEnvInt#", "GetGlobalId#",
+                   "ToInt#", "ToFloat#", "ToString#", "Length#",
                    "AddressOf#", "SysCall#", "SysConf#",
                    // 2026-09-23 (frgn-elimination round 2): Environ#() loads
                    // the compiler-owned @__briev_environ global (env.bv
@@ -156,7 +160,7 @@ fn build_supported_ops() -> HashSet<String> {
                    // portable SIMD — memory-to-memory element-wise family.
                    "SimdAdd#", "SimdSub#", "SimdMul#", "SimdFma#",
                    "DlOpen#", "DlSym#", "DlClose#",
-                    "Backtrace#", "WorkgroupSize#",
+                    "WorkgroupSize#",
                     // 2026-08-12 (Iterable protocol): `CharCount#` is the
                     // computed UTF8 char count intrinsic (SPEC §17.1) — the
                     // stdlib's string.text functions call it from imported
@@ -199,6 +203,37 @@ const STANDARD_OPS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-10-05 (Phase 0.6, gate-membership<->arm rule): the de-listed
+    /// names must be gate-rejected on this lane, not plain-called into
+    /// undefined symbols (BUGS.md, undefined-symbol class). GetGlobalId#
+    /// stays admitted — it has a real arm.
+    #[test]
+    fn delisted_names_are_gate_rejected() {
+        let supported = build_supported_ops();
+        for name in ["Concat#", "GetGlobalSize#", "GetLocalId#", "Backtrace#"] {
+            let src = format!(
+                "node report [true][true] {{ let x: Int = {name}(); term; }};"
+            );
+            let tokens = crate::lexer::tokenize(&src).unwrap();
+            let mut p = crate::parser::Parser::new(tokens, &src);
+            let items = p.parse_program().unwrap();
+            let errs = crate::backend::normalizer::validate_intrinsics(&items, &supported);
+            assert!(
+                errs.iter().any(|e| e.contains(name)),
+                "{name} must be gate-rejected on the LLVM lane, got: {errs:?}"
+            );
+        }
+        let src = "node report [true][true] { let x: Int = GetGlobalId#(0); term; };";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let items = p.parse_program().unwrap();
+        let errs = crate::backend::normalizer::validate_intrinsics(&items, &supported);
+        assert!(
+            errs.is_empty(),
+            "GetGlobalId# must stay admitted (real arm), got: {errs:?}"
+        );
+    }
 
     #[test]
     fn test_validate_explicit_llvm_float() {

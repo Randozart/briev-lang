@@ -153,7 +153,6 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
         "Fill#"    => Some(Signature { name: "Fill#",    parameters: vec![], return_kind: ReturnKind::Exact(Type::void()), observable: true, variadic: false }),
 
         // ── String ───────────────────────────────────────────────────
-        "Concat#"    => Some(Signature { name: "Concat#",    parameters: vec![], return_kind: ReturnKind::Inferred, observable: false, variadic: false }),
         // ── Value-category semantics ──────────────────────────────────
         // 2026-08-12 (Iterable protocol): the UTF8 CHAR count of a String —
         // a COMPUTED property (the scan), so it is an intrinsic, not
@@ -650,7 +649,10 @@ mod tests {
     "Sqrt#", "Sin#", "Cos#", "Fabs#", "Ceil#", "Floor#", "Exp#", "Pow#", "Max#", "Min#", "Fma#",
             "Malloc#", "Alloc#", "Free#", "Load#", "Store#", "Copy#", "Fill#",
             "VolatileLoad#", "VolatileStore#",
-            "Concat#", "Length#", "ToInt#", "ToFloat#", "ToString#",
+            // 2026-10-05: Concat# left the registry — string concatenation
+            // is the `++` operator; the intrinsic had no lowering on any
+            // lane (BUGS.md, undefined-symbol class).
+            "Length#", "ToInt#", "ToFloat#", "ToString#",
             "CharCount#",
             "Get#", "Insert#",
             // 2026-08-14 (UOL §6b): the collection-op intrinsic forms.
@@ -696,6 +698,9 @@ mod tests {
 
     #[test]
     fn test_address_of_signature() {
+        // 2026-10-05: Concat# left the surface — string concatenation is
+        // the `++` operator; the intrinsic had no lowering on any lane.
+        assert!(get_intrinsic_signature("Concat#").is_none());
         let sig = get_intrinsic_signature("AddressOf#").unwrap();
         assert_eq!(sig.name, "AddressOf#");
         assert_eq!(sig.parameters.len(), 1);
