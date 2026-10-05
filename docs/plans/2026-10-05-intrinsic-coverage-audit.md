@@ -137,3 +137,28 @@ Inferred 52 / Native 51 / void 15 / Never 1 (`Error#`); variadic:
   membership⇔arm rule.
 - `scripts/intrinsic_probe.py` (new) — the reusable matrix probe.
 - Suite: **2863 green** (2856 baseline + 7 new).
+
+## Correction 2026-10-05 (later same day) — filed LLVM defects now CLOSED
+
+The two filed LLVM defect classes are fixed on `main`; `scripts/intrinsic_probe.py`
+re-run (release build, 131 names × 2 surfaces) confirms:
+
+- **Registry-arity panic class — CLOSED** (`2dcdf464`): `declared_min_arity`
+  (src/intrinsic_signatures.rs) supplies the minimum arity for
+  parameterless intrinsics, checked in the typechecker BEFORE any `args[i]`
+  indexing. Probe: **0 `.bv` panics**; `Load#()`, `Print#()`, `PtrAdd#()`,
+  `SimdAdd#()` all report a clean `expected at least N arguments` diagnostic.
+  (The fix path taken is a min-arity table, not filling `parameters` — the
+  registry keeps `parameters: vec![]` for polymorphic inference by design;
+  the table is the parallel source of truth for minimum arity.)
+- **Undefined-symbol class — CLOSED** (`6571c840`): `Concat#` de-listed from
+  the registry; `GetGlobalSize#`/`Backtrace#` now fail at the LLVM gate with
+  `intrinsic '…' is not supported by this backend`. Probe: **0 undefined-symbol
+  / clang-fail cells**.
+
+Current `.bv` probe classification: **49 ok / 44 clean gate rejects / 36
+clean arity typecheck rejects** (was 49/41/2 + 4 undefined + 34 panics).
+
+Still open (Phase 2, architecture — not defects): PTX has no independent
+normalizer gate; `Asm#` has no PTX/SPIR-V lowering table; the dispatch-only
+op-member gap (pre-existing, documented).

@@ -191,9 +191,11 @@ admission process) → 0.3 `Asm#` two-lane audit **DONE 2026-10-05**
 (`docs/plans/2026-10-05-intrinsic-coverage-audit.md`: Asm# = CPU/LLVM only,
 PTX zero-coverage + SPIR-V gate-reject filed for Phase 2; coverage matrix
 `scripts/intrinsic_probe.py`; fixed same-day: gate harvest bypass (new
-`src/ast/visit.rs`), volatile-arity panic, SPIR-V gate drift 28→37; filed:
-LLVM 34-name registry-arity panic class + undefined-symbol class → Phase
-0.6) → 0.5 SPEC fold **DONE 2026-10-05** (SPEC §2.4: three keyword
+`src/ast/visit.rs`), volatile-arity panic, SPIR-V gate drift 28→37; the
+two filed LLVM classes **CLOSED later 2026-10-05** (`2dcdf464`
+declared_min_arity; `6571c840` de-list — probe re-run: 0 panics, 0
+undefined-symbol; audit-plan correction appended) → 0.5 SPEC fold
+**DONE 2026-10-05** (SPEC §2.4: three keyword
 categories, observability razor, warn/error ambiguity resolution, admission
 process + D31 freeze note; SPEC §3.6: stretch-graded surface register
 (Tier A/B, per-Tier-B redefined concepts), language invariant +
@@ -206,8 +208,9 @@ core / surface-owned (.ebv .abv .rbv) / licensed-stretch (.sbv has NO
 exclusive grammar); probe found 2 new defect classes — electronics-under-.bv
 codegen panic (`emit_expr.rs:2575`) and GPU-under-.bv mislowering, both
 filed in BUGS.md; remaining: (a) `[*]` backport, (b) quantities Time, (c)
-mode audit, registry-params fill (34-name panic class) + gate⇔arm rule
-(undefined-symbol + GPU-leak classes)) → (c) `mode` audit **DONE 2026-10-05**
+mode audit, registry-params fill + gate⇔arm rule (both **CLOSED later
+2026-10-05**: `2dcdf464`/`6571c840` — probe 0 panics/0 undefined)) → (c)
+`mode` audit **DONE 2026-10-05**
 (`docs/plans/2026-10-05-mode-consumer-audit.md`: consumers = electronics
 laws engine only; KEEP electronics-owned, promotion path named for the
 first non-electronics type-state consumer) → (b) quantities **DONE 2026-10-05**
