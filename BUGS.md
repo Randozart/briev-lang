@@ -7937,9 +7937,41 @@ adds or an unsynchronized partial-sum write) on the CUDA tensor path
 (`ptx_tensor_f16acc: 1` since 2026-09-15, Phase 4b). Vulkan's order is
 fixed → stable.
 
-**Next probe:** dump the g1024 CUDA kernel PTX (`brievc` artifacts /
-`cuobjdump -sass`), locate the epilogue reduction for the patterned
-cells' tiles, and look for `red.`/atomics or missing `bar.sync`; then
-A/B the kernel with `ptx_tensor_f16acc: 0` (config sweep) — if variance
-collapses to the f32-acc floor, the race sits in the f16acc epilogue.
-Gate stays red on this shape until fixed — the gate is doing its job.
+**Probe results (2026-10-04, same session):**
+- Builds are byte-identical across compiler runs (md5 of .spv and
+  runner.c, 3 builds) — the compiler is NOT the nondeterminism source.
+- The SAME built gate binary run 12x: bad cells 0..60+ of 16384,
+  max_rel 4.7e-3..1.1e-2, 2 clean runs — pure RUNTIME nondeterminism.
+- all-ones (mode 0): EXACT 5/5 on the same binary — full coverage,
+  correct term counts; the corruption is value-selective.
+- SASS of the shipped cubin (`kp0` blob, sm_86): 352 instructions,
+  ZERO `RED`/`ATOM` — not atomic ordering. 6 barriers.
+- `ptx_tensor_f16acc: 0` A/B (config-dir sweep, 3 builds): variance
+  PERSISTS (bad up to 208, max_rel 7.48e-3) — the f16acc-epilogue
+  hypothesis is REFUTED; with f16acc off the deterministic floor drops
+  to 3.26e-4 (one f16 store ulp) while the erratic cells remain.
+  With f16acc on there is additionally a STABLE floor cell
+  (y[274,2] = 774 vs 768.5, rel 7.157e-3, every run) = the CUDA f16acc
+  floor at 1024³ (~7.2e-3, above the 5e-3 gate tol; the recorded 3.7e-3
+  floor is the VULKAN value — vulkan is stable at 3.748e-3 every run).
+- Spatial structure of the erratic cells (index dump, same binary):
+  they cluster in WHOLE tile-rows (tile rows 3/7/10/11 sampled),
+  in COLUMN RUNS OF STEP 5 (544/549, 320/325/330..., matching the
+  (flat%5) b-seed period), with a POSITIVE BIAS of +3.9..+4.9 ≈ ONE
+  wrong/extra k-term (terms max out ~4.4). Different rows/cols per run.
+
+**Working hypothesis (updated):** one k-slice of the b-tile is read
+stale/wrong for a subset of warps — the fill/pipeline-race family of
+BUGS.md 2026-09-16 (bug 6568), residual at K=1024 on the CUDA tensor
+path. The patterned mode's row/col structure makes it visible; ones
+sum identically regardless of WHICH term was wrong only if the wrong
+term equals one... (the ones-immunity says the corrupted read equals
+the correct value for all-ones input — i.e. the corruption is in a
+b-only pathway, consistent with a stale b-stage: ones-b == correct-b).
+
+**Next probe:** bisect the b-pipeline in the SASS k-loop of the cubin
+(cuobjdump -sass dump kept at the session), correlate the corrupted
+column-step-5 runs with the b-stage load pattern, and re-run the
+2026-09-16 stage-cap fix's assumptions at K=1024 (stage count vs k
+trip). Gate stays red on this shape until fixed — the gate is doing
+its job.
