@@ -2027,6 +2027,23 @@ fn infer_intrinsic_call(
             context: format!("call to '{}'", sig.name),
         });
     }
+    // 2026-10-05 (Phase 0.6, registry-arity panic class): empty parameters
+    // ALSO skips the count check, and the emitters index `args[i]` directly
+    // — a too-few-arguments call panicked the backend (BUGS.md). The
+    // declared minimum arity closes the hole; it runs before any argument
+    // inference so the diagnostic names the shape, never a downstream
+    // crash.
+    if !sig.variadic {
+        if let Some(min) = crate::intrinsic_signatures::declared_min_arity(sig.name) {
+            if args.len() < min {
+                return Err(TypeError::TypeMismatch {
+                    expected: format!("at least {min} arguments"),
+                    found: format!("{} arguments", args.len()),
+                    context: format!("call to '{}'", sig.name),
+                });
+            }
+        }
+    }
     for (i, (_, param_ty)) in sig.parameters.iter().enumerate() {
         let arg_ty = infer_type_only(&args[i], ctx)?;
         let arg_str = format!("{}", arg_ty);
@@ -6901,6 +6918,80 @@ node report [n > 0][n > 0] {
 };
 "#;
         check(src).expect("typed-pointer VolatileLoad# must typecheck");
+    }
+
+    /// 2026-10-05 (Phase 0.6, registry-arity panic class): a call with fewer
+    /// arguments than the emitter indexes must be a typecheck diagnostic —
+    /// the registry declares no parameters for these, so only the declared
+    /// minimum-arity table stands between the program and a backend panic
+    /// (BUGS.md). One representative per arity class plus too-few shapes.
+    #[test]
+    fn intrinsic_min_arity_is_a_diagnostic_not_a_backend_panic() {
+        let zero_arg: &[&str] = &[
+            // arity 1
+            "Capacity#", "TrimCap#", "Load#", "AtomicLoad#", "Length#",
+            "GetGlobalId#", "DlClose#", "Print#",
+            // arity 2
+            "EnsureCap#", "Resize#", "Store#", "AtomicStore#",
+            "AtomicXchg#", "AtomicAdd#", "AtomicLoadN#", "DlOpen#",
+            "DlSym#",
+            // arity 3
+            "Copy#", "Fill#", "AtomicCas#", "AtomicStoreN#", "SimdAdd#",
+            // arity 4
+            "SimdFma#",
+            // pointer family (arity 2)
+            "PtrAdd#", "PtrEq#", "PtrLt#",
+        ];
+        for name in zero_arg {
+            let src = format!(
+                "node report [true][true] {{ let x: Int = {name}(); term; }};"
+            );
+            let errs = check(&src)
+                .expect_err(&format!("zero-arg {name} must be rejected"));
+            let text: Vec<String> = errs.iter().map(|e| format!("{e:?}")).collect();
+            assert!(
+                text.iter().any(|t| t.contains("at least")),
+                "{name} must report the arity diagnostic, got: {text:?}"
+            );
+        }
+        // Too-few (but nonzero) shapes.
+        let too_few: &[(&str, usize)] = &[
+            ("AtomicCas#", 2),   // needs 3
+            ("Copy#", 2),        // needs 3
+            ("SimdFma#", 3),     // needs 4
+            ("AtomicStoreN#", 2) // needs 3
+        ];
+        for (name, n) in too_few {
+            let args = vec!["1"; *n].join(", ");
+            let src = format!(
+                "node report [true][true] {{ let x: Int = {name}({args}); term; }};"
+            );
+            let errs = check(&src)
+                .expect_err(&format!("{name} with {n} args must be rejected"));
+            let text: Vec<String> = errs.iter().map(|e| format!("{e:?}")).collect();
+            assert!(
+                text.iter().any(|t| t.contains("at least")),
+                "{name}({args}) must report the arity diagnostic, got: {text:?}"
+            );
+        }
+    }
+
+    /// 2026-10-05: calls at exactly the declared minimum arity still
+    /// typecheck — the guard closes only the arity hole, not the lanes.
+    #[test]
+    fn intrinsic_calls_at_min_arity_still_typecheck() {
+        let src = r#"
+let addr: Int = 0;
+let n: Int = 1;
+node report [n > 0][n > 0] {
+    let a: Int = Load#(addr);
+    Store#(addr, a);
+    let c: Int = Capacity#(addr);
+    let d: Int = PtrAdd#(addr, 8);
+    term;
+};
+"#;
+        check(src).expect("min-arity intrinsic calls must typecheck");
     }
 
     /// 2026-08-12 (Iterable protocol, op-as-member): an obj with operator

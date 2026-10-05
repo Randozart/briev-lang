@@ -598,6 +598,45 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     "Backtrace#",
 ];
 
+/// Declared MINIMUM arity for intrinsics the registry declares with no
+/// parameters (`parameters: vec![]` = "type-inferred", which also skips the
+/// arity check). The LLVM emitters index `args[i]` directly, so a call with
+/// fewer arguments PANICKED the backend (BUGS.md, the 34-name
+/// registry-arity panic class, found by the Phase 0.3 audit probes).
+///
+/// 2026-10-05 (three-surfaces plan Phase 0.6): minimum arities read from
+/// the LLVM emit arms — the evidence standard is the emitter's own `args`
+/// indexing, never a guess. Optional trailing arguments (byte widths,
+/// memory orderings, the SIMD element count) sit ABOVE the minimum and are
+/// not listed. When an intrinsic's `parameters` gain real types (the
+/// ongoing registry completion), the typechecker's exact-type check makes
+/// the row redundant — delete the row then, not before.
+///
+/// Rule: an intrinsic joins this table together with its emitter arm, and
+/// the arity must equal what the emitter indexes. Undo: remove the row;
+/// the backend panic class returns with it.
+pub fn declared_min_arity(name: &str) -> Option<usize> {
+    let arity = match name {
+        // Pointer arithmetic / comparison — (ptr, offset | ptr).
+        "PtrAdd#" | "PtrSub#" | "PtrDiff#" | "PtrEq#" | "PtrLt#" => 2,
+        // Collection block handles — (handle[, n]).
+        "Capacity#" | "TrimCap#" | "Load#" | "AtomicLoad#" | "Len#"
+        | "Length#" | "GetGlobalId#" | "DlClose#" | "Print#" => 1,
+        // (handle, n) / (addr, value[, ordering | width]).
+        "EnsureCap#" | "Resize#" | "Store#" | "AtomicStore#"
+        | "AtomicXchg#" | "AtomicAdd#" | "AtomicSub#" | "AtomicOr#"
+        | "AtomicAnd#" | "AtomicXor#" | "AtomicLoadN#" | "DlOpen#"
+        | "DlSym#" => 2,
+        // (dst, src, len) / (addr, expected, desired[, ord]) / (dst, a, b[, count]).
+        "Copy#" | "Fill#" | "AtomicCas#" | "AtomicStoreN#" | "SimdAdd#"
+        | "SimdSub#" | "SimdMul#" => 3,
+        // (dst, a, b, c[, count]).
+        "SimdFma#" => 4,
+        _ => return None,
+    };
+    Some(arity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

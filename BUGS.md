@@ -8124,7 +8124,7 @@ diagnostics (`Exp# needs an operand`, `AtomicAddAt# takes (buf, i, v)`,
 `builtins take a constant dimension`) are honest shape errors for
 malformed zero-arg probes, not gate gaps.
 
-## LLVM lane: registry `parameters: vec![]` lets 34 intrinsics reach emitters unarity-checked — compiler panics on `NAME()` input [OPEN — Phase 0.6]
+## LLVM lane: registry `parameters: vec![]` lets 34 intrinsics reach emitters unarity-checked — compiler panics on `NAME()` input [FIXED 2026-10-05 — declared minimum-arity table; full `parameters` completion still Phase 0.6]
 
 **Symptom:** the audit probe (zero-arg call per registry-empty intrinsic)
 still panics the LLVM backend — 34 names: `PtrAdd# PtrSub# PtrDiff#
@@ -8146,6 +8146,21 @@ arity + types; the registry is the source of truth), so the typechecker
 rejects `NAME()` before the backend. Interim: no fixture or stdlib
 program triggers it — only malformed input does. Probe repro:
 `python3 /tmp/opencode/audit/probe.py` (bv PANIC class).
+
+**Fix (2026-10-05, Phase 0.6):** `declared_min_arity()` in
+`src/intrinsic_signatures.rs` — minimum arities read from the LLVM emit
+arms' own `args` indexing (optional trailing widths/orderings/counts sit
+above the minimum and are not listed), enforced in
+`infer_intrinsic_call` BEFORE any argument inference, so
+`Load#()`/`Print#()`/`AtomicCas#(a, b)` produce the arity
+`TypeError::TypeMismatch` diagnostic instead of a backend panic. Rule
+in-code: an intrinsic joins the table together with its emitter arm,
+arity = what the emitter indexes; when `parameters` gain real types the
+row becomes redundant and is deleted. Tests:
+`intrinsic_min_arity_is_a_diagnostic_not_a_backend_panic` (one
+representative per arity class + too-few shapes),
+`intrinsic_calls_at_min_arity_still_typecheck`. Probe re-run: 0 panics
+on both surfaces (was 34).
 
 ## LLVM lane: gate-passes that emit UNDECLARED symbols — `Concat#`, `GetGlobalSize#`, `Backtrace#` [OPEN — 2026-10-05 audit]
 
