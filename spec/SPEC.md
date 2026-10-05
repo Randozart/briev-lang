@@ -113,6 +113,35 @@ Examples:
 - CIRCT may realize the same operation as registers, memories, or parallel paths.
 - SPIR-V may select target-appropriate storage classes and vector operations.
 
+### 2.4 Keyword categories, ambiguity resolution, and the admission process
+
+The compiler reads the whole program — the reactive node DAG, the contracts, the proofs, the iteration structure — and derives the execution. **Every determinate choice is the compiler's to make, and the compiler's default must be the fastest code for the declared semantics.** A keyword is legitimate only where something is genuinely not determinate. Three categories of compiler-known names exist; they must not be conflated.
+
+**Strategy keywords** — `seq`, `vol`, `pack`, `async`, `sync<…>`, `atomic`, `union`, `trap`. They express intended behaviour that plain efficient codegen would otherwise choose differently: a *constraint*, never a selection. A strategy keyword may never produce faster code than the default for the same semantics — requiring a keyword to win is a failing default, and a keyword that is faster only because the default was deficient is a bug, not a feature.
+
+**Ambiguity keywords** — declared at the site of confusion, when a strategy must be chosen whose effectiveness is uncertain and up to intent (canonical class: memory ownership — `store` vs `free`). They say "this is what I meant" where the compiler has no determinate basis to rank the strategies. Because no ranking exists, no fastest default leaks; any speed difference is a consequence of the author's declared intent. *Staged:* the category and its resolution machinery are normative; individual ambiguity keywords are admitted through the process below.
+
+**Intrinsics and fundamentals** — `Sqrt#`, `Mmap#`, `SubgroupFAdd#`, … and the fundamental types of §2.1. They name hardware machinery, not behaviour or ambiguity. Author-facing access to one is legitimate only for a *required hardware semantics* or as a *retirement-gated derivation gap* — never as a speed lever.
+
+**The observability razor.** A keyword is legitimate if and only if removing it changes observable behaviour. Speed is never the argument — at most a consequence. A keyword whose removal preserves all observable behaviour is a performance hint in disguise: fix the default, never keyword it. A keyword for a choice the contracts already determine is redundant: the compiler derives it, and the keyword is a bug.
+
+**The ambiguity resolution rule.** The compiler never resolves an ambiguity silently.
+
+- *Benign* (a defensible default exists): the compiler picks the default and **warns**, disclosing the pick and the keyword that would override it.
+- *Material* (no defensible default, or the wrong pick is unsound — a race, a use-after-free, an observing reorder): the compiler **errors**, demanding the decision.
+
+Severity is soundness, not taste. The concurrency classification of §12 is the material arm made law: an unclassified eligible pair is a compile error.
+
+**The admission process (the freeze policy).** Every author-surface keyword is permanent cost; the frozen surface is the **minimal closure set** — removals after a freeze are expensive, additions are cheap. A new keyword or shape modifier is admitted only with all of:
+
+1. a **filed derivation gap** — a coverage-ledger entry naming the derivation that fails without it;
+2. a **taxonomy category** from the three above — never pure speed;
+3. a **disclosure marker** (§4.3) where the behaviour is compiler-known.
+
+Below any keyword sits the escape ladder: shape-level modifiers where the surface declares them; body-level arithmetic through the same proofs; instruction-level `Asm#` with `asm-lowering.dbvl` data rows; module-level `###` configuration. **One rulebook for every surface** — a web keyword is admitted by the same process as a GPU one.
+
+> **2026-10-04 (D31 freeze, GPU surface).** The derivation owns bank-conflict-free layout, vectorization, and unrolling: `fragment`, `swizzle`, `unroll`, and `vector` are **dropped** from the author surface (the shape-modifier vocabulary is now `tile`, `stage`); `irr`, `persistent node`, and `split<N>` are **deferred** until a filed need. The full keep/drop/defer record and the admission decisions: `docs/architecture/gpu-syntax-decision-record.md` (D31). The reasoning record behind the three categories and the razor: `docs/architecture/keyword-taxonomy.md`.
+
 ## 3. Source files and target profiles
 
 ### 3.1 Base variants
@@ -647,13 +676,44 @@ to the pre-hierarchy emitter (regression guard).
 > are implemented — see above. `chain`/`into` left this list 2026-09-22:
 > implemented in the core — see §11.4.2.)
 
+### 3.6 The stretch-graded surface register
+
+One language, surface vocabulary allowed. Three things are shared and **never fork**:
+
+1. the grammar *forms* — `node`/`txn [pre][post]`, `{}` = grouping, `<>` = compile-time specialization, `[]` = bound, `let`/`const`, contracts (§5, §10);
+2. the semantic core — the reactor, contracts and proofs, derivation-not-recognition (§2);
+3. the rules governing new names — the three-category taxonomy and the admission process (§2.4).
+
+Surface-owned vocabulary may mean nothing elsewhere (`.abv` `scope<…>`/`shared`/`Tensor<…>`; `.rbv` `render`). The register grades every execution surface by its relation to the core:
+
+| Surface | Relation to the core | Tier | Core concepts it redefines |
+|---|---|---|---|
+| `.bv` | the core itself — hosted and freestanding | — | none |
+| `.abv` | projection: same reactor and contracts; the backend lowers to GPU kernels | A | none |
+| `.rbv` | core + presentation layer through the declared `.rbv`→`.bv` edge | A | none |
+| `.ebv` | **execution-model stretch** | B | **entry** (machine entry = authored reset; `node @ vector` = machine-vectored), **time** (reactor time becomes hardware time), **state** (MMIO `@addr`, register shims, wake sets) |
+| `.sbv` | **backend-is-synthesis stretch** | B | **backend** (lowering = hardware; timing/placement semantics have no `.bv` analogue) |
+
+`.dbv`/`.dbvl` are data formats, not execution surfaces, and carry no stretch.
+
+**Checkability rules** (the conformance test for "one language"):
+
+1. every name is locatable to its surface — the file surface or a disclosure marker (`#` for intrinsics);
+2. surface names never alter core semantics: stripping the surface-specific parts of any program leaves valid `.bv` (the declared `.rbv`→`.bv` edge already guarantees this for `.rbv`);
+3. new names go through the one admission process of §2.4;
+4. this SPEC is organized core → projections, and the conformance sweep typechecks every active surface under one grammar (§23).
+
+**Tier B admissibility.** Tier B surface semantics are admissible only as *required semantics from the hardware's own model* — MMIO touching the register *is* the program; machine-vectored entry *is* the machine's reset reality. Same rulebook, different license class: never speed, never convenience. A Tier B surface requires its own decision record before any freeze claim touches it.
+
+> **2026-10-05 (Phase 0.5 register).** Source of the invariant and grading: the three-surfaces umbrella plan (`docs/plans/2026-10-04-three-surfaces-functional.md`, "The language invariant"). `.ebv` execution-model semantics: §3.5, §12, `docs/architecture/machine-entry.md`. `.sbv` synthesis: §3.1 and `docs/architecture/backend-contracts.md`.
+
 ## 4. Lexical conventions
 
 ### 4.1 Keywords and identifiers
 
 Keywords are lowercase and case-sensitive. Wrong spelling or casing of compiler-known vocabulary is an error with a suggested correction.
 
-Compiler-known hashwords, intrinsics, and syntactic operation identities also require exact spelling.
+Compiler-known hashwords, intrinsics, and syntactic operation identities also require exact spelling. Every compiler-known keyword belongs to exactly one of the three categories of §2.4, and new vocabulary is admitted only through that process.
 
 User-declared casing is advisory:
 

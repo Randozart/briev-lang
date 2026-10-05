@@ -193,7 +193,12 @@ PTX zero-coverage + SPIR-V gate-reject filed for Phase 2; coverage matrix
 `scripts/intrinsic_probe.py`; fixed same-day: gate harvest bypass (new
 `src/ast/visit.rs`), volatile-arity panic, SPIR-V gate drift 28→37; filed:
 LLVM 34-name registry-arity panic class + undefined-symbol class → Phase
-0.6) → 0.5 SPEC fold, 0.6 promotion sweep (`[*]` backport, quantities+Time,
+0.6) → 0.5 SPEC fold **DONE 2026-10-05** (SPEC §2.4: three keyword
+categories, observability razor, warn/error ambiguity resolution, admission
+process + D31 freeze note; SPEC §3.6: stretch-graded surface register
+(Tier A/B, per-Tier-B redefined concepts), language invariant +
+checkability rules; §4.1 cross-ref; no surface syntax changed →
+tutorial/highlighter untouched) → 0.6 promotion sweep (`[*]` backport, quantities+Time,
 registry-params completion). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
