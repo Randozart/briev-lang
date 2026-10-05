@@ -1418,6 +1418,28 @@ impl LlvmBackend {
                         writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
                             if self.fun.volatile_read { "volatile " } else { "" }, "i64", gep).ok();
                     }
+                } else if self.is_string_operand(&obj_reg.ty) {
+                    // 2026-10-05 (json.bv): String indexing `s[i]` — the
+                    // [len: i64][bytes…] layout (B0), byte i at offset 8+i,
+                    // zero-extended to Int (a String index yields the byte
+                    // code, matching std/cast_lanes byte_at). Without this a
+                    // String receiver fell through to `extractelement` on a
+                    // scalar ptr — invalid IR (`char_at` was unusable).
+                    let recv_llvm = self.llvm_type(&obj_reg.ty);
+                    let base = if recv_llvm == "ptr" {
+                        obj_reg.name.clone()
+                    } else {
+                        let p = self.fun.gen_reg();
+                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, recv_llvm, obj_reg.name).ok();
+                        p
+                    };
+                    let off = self.fun.gen_reg();
+                    writeln!(out, "{}{} = add i64 {}, 8", indent, off, idx_reg.name).ok();
+                    let gep = self.fun.gen_reg();
+                    writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, base, off).ok();
+                    let byte = self.fun.gen_reg();
+                    writeln!(out, "{}{} = load i8, ptr {}", indent, byte, gep).ok();
+                    writeln!(out, "{}{} = zext i8 {} to i64", indent, v, byte).ok();
                 } else {
                     writeln!(
                         out,
@@ -4684,6 +4706,29 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         self.ctx.variant_ctor.get(name).cloned()
     }
 
+    /// Resolve a match variant's declared payload type against the concrete
+    /// scrutinee. `scrut_ty` is the enum's instance type (`Result<Frame,String>`
+    /// or bare `Box`); `vname` may be qualified. Generic enum params are
+    /// substituted with the scrutinee's concrete args — the same substitution
+    /// `resolve_field_type` performs for struct members. 2026-10-05 (json.bv):
+    /// variant bindings previously hardcoded Int.
+    pub(crate) fn enum_payload_type(&self, scrut_ty: &Type, vname: &str) -> Option<Type> {
+        let declared = self.ctx.variant_payload.get(vname).cloned().or_else(|| {
+            let bare = vname.rsplit("::").next().unwrap_or(vname);
+            self.ctx.variant_payload.get(bare).cloned()
+        })?;
+        let Type::Applied(base, args) = scrut_ty else {
+            return Some(declared);
+        };
+        let params = self.ctx.obj_type_params.get(base).cloned().unwrap_or_default();
+        if params.is_empty() {
+            return Some(declared);
+        }
+        let subst: std::collections::HashMap<String, Type> =
+            params.iter().cloned().zip(args.iter().cloned()).collect();
+        Some(crate::typechecker::substitute_type(&declared, &subst))
+    }
+
     /// Emit a variant constructor: box {tag, payload} → i64 handle.
     pub(crate) fn emit_enum_construct(
         &mut self,
@@ -4723,34 +4768,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 let tv = self.fun.gen_reg();
                 self.emit_tuple(out, &tv, args, indent)
             };
-            let llvm_ty = self.llvm_type(&preg.ty);
-            match llvm_ty.as_str() {
-                "ptr" => {
-                    let c = self.fun.gen_reg();
-                    writeln!(
-                        out,
-                        "{}{} = ptrtoint {} {} to i64",
-                        indent, c, llvm_ty, preg.name
-                    )
-                    .ok();
-                    c
-                }
-                "double" => {
-                    let c = self.fun.gen_reg();
-                    writeln!(out, "{}{} = bitcast double {} to i64", indent, c, preg.name)
-                        .ok();
-                    c
-                }
-                "float" => {
-                    let c = self.fun.gen_reg();
-                    let w = self.fun.gen_reg();
-                    writeln!(out, "{}{} = bitcast float {} to i32", indent, c, preg.name)
-                        .ok();
-                    writeln!(out, "{}{} = zext i32 {} to i64", indent, w, c).ok();
-                    w
-                }
-                _ => preg.name.clone(),
-            }
+            // 2026-10-05 (json.bv match-binding): box through the shared
+            // adapter. The old inline match keyed on `llvm_type`, which
+            // reports "ptr" for a struct handle whose register is ALREADY an
+            // i64 (struct literals box to i64) — emitting `ptrtoint ptr <i64>`
+            // and breaking clang. adapt_to_i64 is the protocol-driven source
+            // of truth (pass-through for handles, bitcast for Float, …).
+            self.adapt_to_i64(out, indent, &preg)
         };
         let payload_slot = self.fun.gen_reg();
         writeln!(
@@ -5131,12 +5155,29 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let probe_types: Vec<crate::ast::Type> = {
             let saved_alloca_len = self.fun.pending_struct_allocas.len();
             let saved_block = self.fun.cur_block.clone();
+            // 2026-10-05 (json.bv): the probe MUST bind each arm's patterns
+            // before emitting its body — otherwise `frame.value` (a field
+            // access on a payload binding) resolves `frame` to an unbound
+            // Int default and panics in emit_field_access. Bindings live in
+            // the function's name maps, so snapshot and restore them around
+            // the probe (the real arm emission re-binds for real).
+            let saved_temps = self.fun.last_val_temps.clone();
+            let saved_temp_types = self.fun.last_val_types.clone();
+            let saved_bind = self.fun.let_bindings.clone();
+            let saved_bind_types = self.fun.let_binding_types.clone();
+            let saved_orig_types = self.fun.let_original_types.clone();
             let mut sink = String::new();
             let mut tys = Vec::with_capacity(n);
             for arm in arms {
+                self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, &mut sink, indent);
                 let reg = self.emit_expr(&mut sink, &arm.body, indent);
                 tys.push(reg.ty);
             }
+            self.fun.last_val_temps = saved_temps;
+            self.fun.last_val_types = saved_temp_types;
+            self.fun.let_bindings = saved_bind;
+            self.fun.let_binding_types = saved_bind_types;
+            self.fun.let_original_types = saved_orig_types;
             self.fun.pending_struct_allocas.truncate(saved_alloca_len);
             self.fun.cur_block = saved_block;
             tys
@@ -5473,9 +5514,15 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 .ok();
                 let raw = self.fun.gen_reg();
                 writeln!(out, "{}{} = load i64, ptr {}", indent, raw, slot).ok();
+                // 2026-10-05 (json.bv match-binding): the payload binding takes
+                // the VARIANT'S declared payload type (generic params resolved
+                // against the scrutinee), not a hardcoded Int. Without this a
+                // struct payload (`Ok(frame)`) bound an Int-typed register and
+                // `frame.value` panicked in emit_field_access.
+                let declared = self.enum_payload_type(scrut_ty, vname);
                 if subpats.len() <= 1 {
                     // Single/zero payload: slot 1 IS the value.
-                    let bound_ty = Type::int();
+                    let bound_ty = declared.unwrap_or(Type::int());
                     for sp in subpats {
                         if let crate::ast::Pattern::Binding(bn) = sp {
                             self.fun.last_val_temps.insert(bn.clone(), raw.clone());
@@ -5490,10 +5537,15 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 } else {
                     // Multi payload: `raw` is a tuple-image handle
                     // ([count, e0, e1, …]); element j lives at slot j+1.
+                    let elems: Vec<Type> = match declared {
+                        Some(Type::Tuple(es)) => es,
+                        _ => Vec::new(),
+                    };
                     for (j, sp) in subpats.iter().enumerate() {
                         let crate::ast::Pattern::Binding(bn) = sp else {
                             continue; // wildcard — nothing to bind
                         };
+                        let et = elems.get(j).cloned().unwrap_or(Type::int());
                         let tbase = self.fun.gen_reg();
                         writeln!(
                             out,
@@ -5511,10 +5563,10 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         let ev = self.fun.gen_reg();
                         writeln!(out, "{}{} = load i64, ptr {}", indent, ev, eslot).ok();
                         self.fun.last_val_temps.insert(bn.clone(), ev.clone());
-                        self.fun.last_val_types.insert(bn.clone(), Type::int());
+                        self.fun.last_val_types.insert(bn.clone(), et.clone());
                         self.fun.let_bindings.insert(bn.clone(), ev);
-                        self.fun.let_binding_types.insert(bn.clone(), Type::int());
-                        self.fun.let_original_types.insert(bn.clone(), Type::int());
+                        self.fun.let_binding_types.insert(bn.clone(), et.clone());
+                        self.fun.let_original_types.insert(bn.clone(), et);
                     }
                 }
             }

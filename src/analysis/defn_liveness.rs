@@ -583,7 +583,7 @@ impl<'a> Builder<'a> {
                     self.keep_all = true;
                 }
             }
-            Expr::BinaryOp(_, l, r) => {
+            Expr::BinaryOp(kind, l, r) => {
                 // `==` on `#String` values lowers to `briev_str_eq` when
                 // defined; the pass is type-agnostic — any Eq may be one.
                 // Coarse-sound: root on every binary op (only fires when
@@ -595,6 +595,14 @@ impl<'a> Builder<'a> {
                 // Type-agnostic — any Add may be a String concat. Same
                 // coarse-sound over-approx as briev_str_eq above.
                 self.mark("__briev_free", queue);
+                // 2026-10-05 (json.bv): `+` on two COLLECTIONS concatenates,
+                // growing the target through the runtime realloc-or-copy
+                // helper. Type-agnostic — any Add may be a collection concat;
+                // root it so the emitted `__briev_coll_resize` call passes the
+                // soundness net (BUGS.md). Same coarse-sound over-approx.
+                if matches!(kind, crate::ast::BinaryOpKind::Add) {
+                    self.mark("__briev_coll_resize", queue);
+                }
                 self.walk_expr(l, queue);
                 self.walk_expr(r, queue);
             }
@@ -684,7 +692,30 @@ impl<'a> Builder<'a> {
                 }
             }
             Expr::Lambda(_, body) => self.walk_expr(body, queue),
-            Expr::Cast(inner, _) | Expr::IsType(inner, _) => self.walk_expr(inner, queue),
+            Expr::Cast(inner, ty) => {
+                // 2026-10-05 (json.bv): `x as String` lowers through a cast
+                // lane (src/casting/graph.rs) that calls a pure-Briev helper —
+                // `c as String` → char_to_str, `n as String` → int_to_str, …
+                // The pass is type-agnostic, but the cast TARGET is on the
+                // node; root the string-producing lane family only for a
+                // String target (bounded over-approx — mark is a no-op for
+                // defns absent from the unit). Without this, a String cast in
+                // a reachable stdlib defn (string_builder's append_char)
+                // tripped the soundness net (BUGS.md).
+                if matches!(ty, crate::ast::Type::Custom(n) if n == "String") {
+                    for h in [
+                        "int_to_str",
+                        "uint_to_str",
+                        "bool_to_str",
+                        "float_to_str",
+                        "char_to_str",
+                    ] {
+                        self.mark(h, queue);
+                    }
+                }
+                self.walk_expr(inner, queue);
+            }
+            Expr::IsType(inner, _) => self.walk_expr(inner, queue),
             Expr::Within(a, b) => {
                 self.walk_expr(a, queue);
                 self.walk_expr(b, queue);

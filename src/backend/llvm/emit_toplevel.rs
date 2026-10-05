@@ -2942,8 +2942,24 @@ impl LlvmBackend {
             self.fun.let_binding_types.insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
             self.fun.let_original_types.insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
         }
-        for s in &d.body {
+        let body_len = d.body.len();
+        for (idx, s) in d.body.iter().enumerate() {
             if self.fun.terminated { break; }
+            // 2026-10-05 (json.bv tail-match): a value-returning defn whose
+            // body ENDS in a bare `match` must emit the EXPRESSION match —
+            // the phi merges arm values and last_expr_reg points at the
+            // merge. The void statement-match path (.smt_*) is for matches
+            // used as statements; routed here it left last_expr_reg citing an
+            // arm-local register, producing non-dominating `ret` IR that
+            // clang rejected (silent miscompile). Void defns keep the
+            // statement path (their arms may be void txn calls).
+            if idx + 1 == body_len && ll_ret_ty != "void" {
+                if let crate::ast::Statement::Expression(e @ crate::ast::Expr::Match(..)) = s {
+                    let reg = self.emit_expr(out, e, "  ");
+                    self.fun.last_expr_reg = Some(reg.name);
+                    continue;
+                }
+            }
             emit_statement(self, out, s, "  ");
         }
         // 2026-08-09 (Phase 10): a fallthrough exit runs registered defers.

@@ -858,6 +858,82 @@ node report [n > 0][n > 0] {
     assert_no_i64_in_float_positions(&ir);
 }
 
+/// 2026-10-05 (json.bv): a match binding a STRUCT payload (`Wrap(frame)`)
+/// must type `frame` as the struct — not a hardcoded Int — so `frame.value`
+/// lowers to a field load instead of panicking "field access '.value' on
+/// non-struct type 'Int'". A bare tail match in a value-returning defn must
+/// ALSO emit the EXPRESSION match (phi + value), not the void statement-match
+/// (`.smt_*`, whose arm-local register produced non-dominating `ret` IR).
+#[test]
+fn test_enum_struct_payload_match_binding_and_tail_match() {
+    let src = r#"
+struct Frame { value: Int; pos: Int; };
+enum Box { Wrap(Frame), Nothing };
+defn mk() -> Box { term Wrap(Frame { value: 7, pos: 1 }); };
+defn f() -> Int {
+    match mk() {
+        Wrap(frame) => frame.value,
+        Nothing => 0,
+    }
+};
+let sink: Int[2];
+node report [true][true] {
+    sink[0] = f();
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    assert!(
+        ir.contains(".match_end_"),
+        "a tail match must emit the expression form (phi):\n{ir}"
+    );
+    assert!(
+        !ir.contains(".smt_"),
+        "a value-returning tail match must NOT use the void statement-match:\n{ir}"
+    );
+    // frame.value lowered to a field load; a codegen panic fails here first.
+    assert!(
+        ir.contains("getelementptr i8"),
+        "struct-payload field access must GEP, not panic:\n{ir}"
+    );
+}
+
+/// 2026-10-05 (json.bv): String indexing `s[i]` loads the byte at offset 8+i
+/// of the [len][bytes] layout and zero-extends to Int — it must never emit
+/// `extractelement` on a scalar ptr (invalid IR; `char_at` was unusable).
+#[test]
+fn test_string_index_loads_byte() {
+    let src = r#"
+defn first(s: String) -> Int {
+    term s[0];
+};
+let sink: Int[2];
+node report [true][true] {
+    sink[0] = first("abc");
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    assert!(
+        ir.contains("getelementptr i8"),
+        "String index must GEP into the byte buffer:\n{ir}"
+    );
+    assert!(
+        !ir.contains("extractelement"),
+        "String index must NOT extractelement a scalar:\n{ir}"
+    );
+}
+
 /// Mini-verifier (BUGS.md int-literal-float-init), per FUNCTION: a register
 /// defined as i64 may never feed a float-typed operand or store. Register
 /// names repeat across functions, so defs reset at each `define`.

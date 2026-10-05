@@ -8360,3 +8360,57 @@ tests `keyword_duration_unit_parses_as_quantity`,
 2880 green. Quantity literals are now core-legal (parse + typecheck on
 all five surfaces; the grammar inventory previously classified them
 `.ebv`-owned — correction appended there).
+
+## json.bv migration (Phase 1) surfaced six codegen/liveness defects — five FIXED, two OPEN 2026-10-05
+
+Restoring the archived pure-Briev JSON parser (`lib/std/json.bv`,
+migrated from `docs/archive/legacy-stdlib/json_bv_legacy.bv`) exercised
+paths no tested program reached. The migration itself was mechanical
+(use stdlib `char_at`; rename the local `parse_int_digits` — it collided
+with `std/cast_lanes`; tuple access `.0`/`.1` not `[0]`; `Err` for the
+undefined `err_char`; single-wrap the Array/Object frames; list append via
+`list <- elem` not `list + [elem]`). The compiler defects it uncovered:
+
+**FIXED (suite 2882 green):**
+1. **Enum STRUCT-payload match binding typed `Int`.** `match r { Ok(f) =>
+   f.value }` bound `f` with a hardcoded `Type::int()`, so `f.value`
+   panicked "field access '.value' on non-struct type 'Int'". Fix:
+   `bind_pattern` resolves the variant's declared payload type
+   (`variant_payload`, populated at both enum-registration sites) and
+   substitutes generic params against the scrutinee's concrete args
+   (`obj_type_params` now registered for enums too). Also fixed the
+   `emit_match` type-probe, which emitted arm bodies BEFORE binding
+   patterns (now snapshots + binds + restores).
+2. **Bare tail `match` emitted invalid IR.** `defn f() -> Int { match … }`
+   (no `term`) routed through the void statement-match (`.smt_*`); its
+   `last_expr_reg` cited an arm-local register, producing non-dominating
+   `ret` IR clang rejected. Fix: `emit_definition` emits a value-returning
+   defn's tail `Expr::Match` via the expression match (phi).
+3. **`List + List` emitted an unrooted `__briev_coll_resize`.** Liveness
+   roots helpers by AST shape; collection concat has no intrinsic node.
+   Fix: root `__briev_coll_resize` on any `Add` (coarse-sound).
+4. **`x as String` cast lanes unrooted.** `string_builder`'s
+   `append_char` does `c as String` → `char_to_str`; the pass rooted no
+   cast-lane helper. Fix: on `Expr::Cast` to `String`, root the
+   string-lane family (int/uint/bool/float/char_to_str).
+5. **String indexing `s[i]` emitted `extractelement` on a scalar.** The
+   Index arm had no String path; a `String` receiver fell to the vector
+   fallback — invalid IR, `char_at` unusable. Fix: load the byte at
+   offset 8+i of the `[len][bytes]` layout, zext to Int (matches
+   `cast_lanes::byte_at`).
+6. (Consequence) `lib/std/json.bv` header + migration; not yet reachable.
+
+**OPEN:**
+- **`list_concat` intrinsic binding has no lowering.** The typechecker
+  resolves `List<T> + List<T>` to `OpBinding::Intrinsic("list_concat")`
+  (SPEC §2615) but nothing implements it — the backend falls through to
+  integer add, so `[1,2] + [3]` yields count 1. json.bv migrated to
+  `list <- elem`. Fix: a lowering (or a stdlib `list_concat` the binding
+  dispatches to).
+- **Char cast lane mis-typed.** `let c: Char = char_at(...); c as Int`
+  emits `trunc i64 <i32 reg> to i32` (invalid IR). Instrumented: the
+  cast sees `src_ty = Custom("Data")`, not `Custom("Char")` — the Char
+  binding/return resolves to the Data protocol variant, so the path
+  `Data→Char→Int` truncs a native i32. `char_at` is therefore unusable
+  from Briev code until the Char protocol's default variant / native
+  width is consistent. Blocks json.bv end-to-end.

@@ -271,6 +271,13 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// {tag,payload} images behind an i64 handle; llvm_type resolves them
     /// to the handle width, never to a struct/pointer ABI.
     pub enum_handle_types: std::collections::HashSet<String>,
+    /// 2026-10-05 (Phase 1, json.bv): variant name → declared payload type
+    /// from the enum's `__variant_<Name>` slot (before generic substitution).
+    /// `bind_pattern` needs it to type the payload binding — the old code
+    /// hardcoded Int, so a STRUCT payload (`Ok(frame)`) returned an
+    /// Int-typed register and `frame.value` panicked in codegen. Generic
+    /// params are substituted against the scrutinee's concrete args.
+    pub variant_payload: HashMap<String, crate::ast::Type>,
 
     // Optimization
     pub optimize_budget: u64,
@@ -530,6 +537,7 @@ impl CompilerContext {
             cell_trigger_bindings: Vec::new(),
             variant_disc: HashMap::new(),
             variant_ctor: HashMap::new(),
+            variant_payload: HashMap::new(),
             enum_handle_types: std::collections::HashSet::new(),
             optimize_budget: 256,
             // 2026-07-31: Phase 3 (§8.2) — arena/stack sizing comes from
