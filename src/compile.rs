@@ -380,7 +380,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                 .and_then(|e| e.target_triple.clone())
                 .and_then(|t| briev_compiler::config_tuning::target_settings_for(&t).isr_mechanism)
         });
-    check_types(&mut items, &universe, check_isr_mechanism.as_deref())?;
+    check_types(
+        &mut items,
+        &universe,
+        check_isr_mechanism.as_deref(),
+        file_path.ends_with(".ebv"),
+    )?;
     // 2026-08-04: term termination diagnostics — unreachable code after a
     // terminating `term <value>`/`term! <value>` and the bare-term-guard
     // hint. Runs here (typed AST, pre-normalizer) so the backend never sees

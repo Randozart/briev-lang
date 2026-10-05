@@ -910,7 +910,12 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
     // backends see the expanded body as if hand-written.
     crate::plugin::composite::expand_composites(&mut items, &pm)?;
     let mut universe = TypeUniverse::new();
-    check_types(&mut items, &universe, effective_isr_mechanism(opts).as_deref())?;
+    check_types(
+        &mut items,
+        &universe,
+        effective_isr_mechanism(opts).as_deref(),
+        opts.file_path.ends_with(".ebv"),
+    )?;
     pm.run_ast(StageKind::Typed, &mut items, &mut universe)?;
     Ok((items, universe))
 }
@@ -1025,7 +1030,12 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
         &mut universe,
         opts.int_bits,
     )?;
-    check_types(&mut items, &universe, effective_isr_mechanism(opts).as_deref())?;
+    check_types(
+        &mut items,
+        &universe,
+        effective_isr_mechanism(opts).as_deref(),
+        opts.file_path.ends_with(".ebv"),
+    )?;
     // 2026-08-01 (C4): watchdog contract checks also run on the `check` path
     // (parse_and_check) — `brievc check` must catch trigger/handler violations
     // and missing on-fire handlers the same way `brievc build` does.
@@ -1165,9 +1175,19 @@ fn effective_isr_mechanism(opts: &BuildOptions) -> Option<String> {
         .and_then(|t| crate::config_tuning::target_settings_for(&t).isr_mechanism)
 }
 
-pub fn check_types(items: &mut [crate::ast::TopLevel], universe: &TypeUniverse, isr_mechanism: Option<&str>) -> Result<(), String> {
+pub fn check_types(
+    items: &mut [crate::ast::TopLevel],
+    universe: &TypeUniverse,
+    isr_mechanism: Option<&str>,
+    surface_electronics: bool,
+) -> Result<(), String> {
     validate_constraints(items)?;
-    crate::typechecker::check_program_with_target(items, universe, isr_mechanism)
+    // 2026-10-05 (surface-capability gate): `surface_electronics` comes from
+    // the callers' file path (the same extension key the plugin filter
+    // uses). Only `.ebv` runs the electronics analysis that materializes
+    // component-pin layout; elsewhere a component-pin access is a boundary
+    // error at the typecheck, never a codegen panic (BUGS.md).
+    crate::typechecker::check_program_with_target(items, universe, isr_mechanism, surface_electronics)
         .map_err(|errors| {
             let msgs: Vec<String> = errors.iter().map(|e| format!("{}", e)).collect();
             format!("type errors:\n  {}", msgs.join("\n  "))

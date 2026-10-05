@@ -8198,7 +8198,7 @@ still admitted — it has a real arm),
 undefined-symbol rows on either surface. Re-admitting a name = arm +
 gate entry together, never one alone.
 
-## Electronics program under `.bv`/`.rbv`: component field access PANICS codegen instead of diagnosing [OPEN — 2026-10-05 grammar inventory]
+## Electronics program under `.bv`/`.rbv`: component field access PANICS codegen instead of diagnosing [FIXED 2026-10-05 — surface-capability gate]
 
 **Symptom:** building an electronics program (e.g.
 `examples/electronics/usb_sensor.ebv`) with a `.bv`/`.rbv` extension
@@ -8218,6 +8218,22 @@ type-name matching (Rules 15/19).
 with no field surface (protocol/metadata-driven, never name-keyed); keep
 the emitter guard as a backstop but make it a capability error, not a
 panic.
+
+**Fix (2026-10-05, Phase 0.6 surface-capability declarations):** the
+typechecker now knows the surface. COMPONENT pins (TypeDef `pin`
+declarations) split from CELL pins into their own table
+(`component_pins`); they resolve as fields only when
+`surface_electronics` — derived by the pipeline from the file extension
+(the same key the plugin filter uses; only `.ebv` runs the electronics
+analysis that materializes pin layout). Off-surface access is
+`TypeError::InvalidOperation` naming the boundary and the fix
+("component pins are electronics-surface state; build .ebv") at
+typecheck time — three clean diagnostics for the usb_sensor-as-.bv
+repro, zero panics. The intent-fact rule (`inst = true;` electronics
+facts) consults both tables, so `.ebv` programs are unchanged (sweep
+green). Cells stay core: cell pins resolve on every surface. Tests:
+`component_pin_access_off_electronics_is_a_boundary_error`,
+`component_pin_access_on_electronics_resolves`.
 
 ## GPU program under `.bv`: `.abv`-owned program mislowers to a clang failure instead of a gate diagnostic [OPEN — 2026-10-05 grammar inventory]
 

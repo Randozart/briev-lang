@@ -164,6 +164,16 @@ pub struct TypecheckContext<'a> {
     /// Sealing: external field access on a cell resolves ONLY through these;
     /// anything else names the ports-only rule.
     cell_ports: HashMap<String, Vec<(String, crate::ast::Type)>>,
+    /// 2026-10-05 (Phase 0.6, surface-capability gate): COMPONENT pins
+    /// (TypeDef `pin` declarations) — split from `type_pins`, which now
+    /// holds only CELL pins (core). Component pins resolve as fields only
+    /// on the electronics surface; elsewhere the access names the surface
+    /// boundary (the LLVM lane has no layout for a pin type — it used to
+    /// panic at codegen, BUGS.md).
+    component_pins: HashMap<String, Vec<crate::ast::top::PinDecl>>,
+    /// Whether the checking unit is on the electronics surface (`.ebv`) —
+    /// the only surface whose pipeline materializes component-pin layout.
+    surface_electronics: bool,
 }
 
 impl<'a> TypecheckContext<'a> {
@@ -203,6 +213,8 @@ impl<'a> TypecheckContext<'a> {
             variant_defs: HashMap::new(),
             ambiguous_variants: std::collections::HashSet::new(),
             trigger_pins: std::collections::HashSet::new(),
+            component_pins: HashMap::new(),
+            surface_electronics: false,
         }
     }
 
@@ -1049,6 +1061,13 @@ pub fn infer_expression(
         // 2026-07-31: Field access: p.name → the receiver's struct slot type.
         Expr::Field(obj, name) => {
             let (obj_ty, obj_prov) = infer_expression(obj, ctx)?;
+            // 2026-10-05 (surface-capability gate): a COMPONENT pin access
+            // off the electronics surface is a boundary error with the fix,
+            // not a generic missing-member (and never the old codegen
+            // panic — the LLVM lane has no layout for a pin type, BUGS.md).
+            if let Some(err) = component_pin_boundary_error(&obj_ty, name, ctx) {
+                return Err(err);
+            }
             let field_ty = resolve_field_type(&obj_ty, name, ctx).ok_or_else(|| {
                 // 2026-08-22 (Phase 7a, SPEC §9.6): a miss on a CELL receiver
                 // is a sealing violation, not a generic missing-member.
@@ -3415,10 +3434,10 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             let intent_fact = rhs_ty == Type::bool_()
                 && (lhs_ty == Type::Custom("Pin".to_string())
                     || match &lhs_ty {
-                        Type::Custom(n) => ctx
-                            .type_pins
-                            .get(n)
-                            .map_or(false, |pins| !pins.is_empty()),
+                        // The fact form covers cell AND component instances
+                        // (component pins moved to their own table with the
+                        // surface-capability gate).
+                        Type::Custom(n) => declares_pins(n, ctx),
                         _ => false,
                     });
             if !types_compatible(&lhs_ty, &rhs_ty, ctx) && !intent_fact {
@@ -4109,7 +4128,7 @@ fn check_coll_declarations(items: &[TopLevel], errors: &mut Vec<TypeError>) {
 }
 
 pub fn check_program(items: &mut [TopLevel], universe: &TypeUniverse) -> Result<(), Vec<TypeError>> {
-    check_program_with_target(items, universe, None)
+    check_program_with_target(items, universe, None, false)
 }
 
 /// 2026-09-06 (plan 2026-09-06-isr-handlers-and-sections.md): program
@@ -4121,6 +4140,7 @@ pub fn check_program_with_target(
     items: &mut [TopLevel],
     universe: &TypeUniverse,
     isr_mechanism: Option<&str>,
+    surface_electronics: bool,
 ) -> Result<(), Vec<TypeError>> {
     // 2026-08-22 (Phase 5, SPEC §8.5): the parser's relationship list is
     // SYNTACTIC — a bare name becomes the refinement parent whether or not
@@ -4454,6 +4474,10 @@ pub fn check_program_with_target(
     let mut all_type_slots: HashMap<String, Vec<crate::ast::top::TypeDefSlot>> = HashMap::new();
     // 2026-09-11 (Part C): first-class component pins by type name.
     let mut all_type_pins: HashMap<String, Vec<crate::ast::top::PinDecl>> = HashMap::new();
+    // 2026-10-05 (surface-capability gate): COMPONENT (TypeDef) pins —
+    // split from the cell-pin table; see the context field.
+    let mut all_component_pins: HashMap<String, Vec<crate::ast::top::PinDecl>> =
+        HashMap::new();
     // 2026-08-22 (Phase 5): explicit trait assertions per concrete type
     // (`type Meter: Int, Comparable<Meter>, Printable { … }` → traits list).
     let mut all_trait_assertions: HashMap<String, Vec<String>> = HashMap::new();
@@ -4586,8 +4610,13 @@ pub fn check_program_with_target(
             // and NO slots/ports — nesting this under the slots condition
             // left every pins-only type (Ldo, Mcu, Connector, …) without a
             // pin registration, so `inst.pin` field access failed in bodies.
+            // 2026-10-05 (surface-capability gate): COMPONENT pins register
+            // into their own table — cell pins stay in `all_type_pins`
+            // (cells are core and materialize everywhere); component pins
+            // resolve only on the electronics surface (see the
+            // `surface_electronics` field).
             if !td.body.pins.is_empty() {
-                all_type_pins.insert(td.name.clone(), td.body.pins.clone());
+                all_component_pins.insert(td.name.clone(), td.body.pins.clone());
             }
             // Trait assertions are type-level too — same unconditional rule.
             if !td.traits.is_empty() {
@@ -4746,6 +4775,8 @@ pub fn check_program_with_target(
         all_regular_bindings: &all_regular_bindings,
         all_type_slots: &all_type_slots,
         all_type_pins: &all_type_pins,
+        all_component_pins: all_component_pins.clone(),
+        surface_electronics,
         all_type_members: &all_type_members,
         all_type_params: &all_type_params,
         all_type_protocols: &all_type_protocols,
@@ -4780,6 +4811,8 @@ pub fn check_program_with_target(
         mctx.regular_bindings = all_regular_bindings.clone();
         mctx.type_slots = all_type_slots.clone();
         mctx.type_pins = all_type_pins.clone();
+        mctx.component_pins = all_component_pins.clone();
+        mctx.surface_electronics = surface_electronics;
         mctx.type_members = all_type_members.clone();
         mctx.type_params = all_type_params.clone();
         mctx.fn_param_types = fn_param_types.clone();
@@ -5420,8 +5453,13 @@ struct CheckEnv<'a> {
     all_regular_ops: &'a HashMap<String, Vec<crate::ast::top::OperatorDef>>,
     all_regular_bindings: &'a HashMap<String, Vec<crate::ast::top::OperatorBinding>>,
     all_type_slots: &'a HashMap<String, Vec<crate::ast::top::TypeDefSlot>>,
-    /// 2026-09-11 (Part C): component pins by type name (field-resolution only).
+    /// 2026-09-11 (Part C): CELL pins by type name (field-resolution only).
     all_type_pins: &'a HashMap<String, Vec<crate::ast::top::PinDecl>>,
+    /// 2026-10-05 (surface-capability gate): COMPONENT (TypeDef) pins —
+    /// resolve only on the electronics surface; see the context field.
+    all_component_pins: HashMap<String, Vec<crate::ast::top::PinDecl>>,
+    /// Whether the checking unit is on the electronics surface (`.ebv`).
+    surface_electronics: bool,
     all_type_members: &'a HashMap<String, Vec<TopLevel>>,
     all_type_params: &'a HashMap<String, Vec<String>>,
     all_type_protocols: &'a HashMap<String, String>,
@@ -5465,6 +5503,8 @@ fn make_typecheck_context<'a>(env: &CheckEnv<'a>, universe: &'a TypeUniverse) ->
     // 2026-07-31: Inject struct/obj slots and members for field/method access.
     ctx.type_slots = env.all_type_slots.clone();
     ctx.type_pins = env.all_type_pins.clone();
+    ctx.component_pins = env.all_component_pins.clone();
+    ctx.surface_electronics = env.surface_electronics;
     ctx.type_members = env.all_type_members.clone();
     ctx.type_params = env.all_type_params.clone();
     ctx.fn_param_types = env.fn_param_types.clone();
@@ -5913,6 +5953,87 @@ impl BinaryOpKind {
 
 /// 2026-07-31: Resolve `p.name` on a struct/obj/tuple receiver.
 /// Numeric field names (`.0`, `.1`) are tuple-element indices.
+/// Pin-field resolution for both pin tables.
+///
+/// COMPONENT pins (2026-10-05 surface-capability gate): TypeDef `pin`
+/// declarations resolve as fields only on the electronics surface — the
+/// only pipeline that materializes their layout; elsewhere the access
+/// stays unresolved and the Expr::Field arm names the boundary with the
+/// fix. CELL pins (2026-09-11 Part C): `mc.uart.tx.voltage` resolves to
+/// the prelude `Pin` type so the chains typecheck — on every surface
+/// (cells are core). Consulted ONLY for field access — struct-literal
+/// checking uses `type_slots` alone, so pins are never construction
+/// fields (they are type-level topology, not per-instance values). A pin
+/// ARRAY expands to `gpio[0]…`; access on the BASE name (`u2.gpio`) still
+/// resolves to Pin — the Index expr then selects the element (2026-09-23
+/// E11 companion).
+fn resolve_pin_field(
+    type_name: &str,
+    field: &str,
+    ctx: &TypecheckContext,
+) -> Option<Type> {
+    if let Some(pins) = ctx.component_pins.get(type_name) {
+        if pin_matches(pins, field) {
+            return if ctx.surface_electronics {
+                Some(Type::Custom("Pin".to_string()))
+            } else {
+                None
+            };
+        }
+    }
+    if let Some(pins) = ctx.type_pins.get(type_name) {
+        if pin_matches(pins, field) {
+            return Some(Type::Custom("Pin".to_string()));
+        }
+    }
+    None
+}
+
+/// Does `field` name one of `pins` (a bare pin or a pin-array base)?
+fn pin_matches(pins: &[crate::ast::top::PinDecl], field: &str) -> bool {
+    pins.iter()
+        .any(|p| p.name == field || p.name.starts_with(&format!("{}[", field)))
+}
+
+/// 2026-10-05 (surface-capability gate): the boundary diagnostic for a
+/// COMPONENT pin access off the electronics surface. `None` = not a
+/// component-pin access (or the surface resolves it).
+fn component_pin_boundary_error(
+    obj_ty: &Type,
+    name: &str,
+    ctx: &TypecheckContext,
+) -> Option<TypeError> {
+    if ctx.surface_electronics {
+        return None;
+    }
+    let tname = match obj_ty {
+        Type::Custom(n) | Type::Applied(n, _) => n.as_str(),
+        _ => return None,
+    };
+    let pins = ctx.component_pins.get(tname)?;
+    if !pin_matches(pins, name) {
+        return None;
+    }
+    Some(TypeError::InvalidOperation {
+        operation: format!(
+            "component pin access '.{}' — component pins are electronics-surface state; build .ebv so the electronics analysis materializes them",
+            name
+        ),
+        type_name: obj_ty.to_string(),
+    })
+}
+
+/// 2026-10-05: does the named type declare pins in EITHER table (cell or
+/// component)? The electronics intent-fact rule (`inst = true;`) consults
+/// both.
+fn declares_pins(n: &str, ctx: &TypecheckContext) -> bool {
+    ctx.type_pins.get(n).map_or(false, |pins| !pins.is_empty())
+        || ctx
+            .component_pins
+            .get(n)
+            .map_or(false, |pins| !pins.is_empty())
+}
+
 fn resolve_field_type(receiver: &Type, field: &str, ctx: &TypecheckContext) -> Option<Type> {
     if let Type::Tuple(elems) = receiver {
         return field
@@ -5936,21 +6057,8 @@ fn resolve_field_type(receiver: &Type, field: &str, ctx: &TypecheckContext) -> O
         Type::Applied(n, _) => n.as_str(),
         _ => return None,
     };
-    // 2026-09-11 (Part C, Electronics Briev): first-class component pins.
-    // `r1.a` resolves to the prelude `Pin` type so `.voltage`/`.current`
-    // chains typecheck. Consulted ONLY for field access — struct-literal
-    // checking uses `type_slots` alone, so pins are never construction
-    // fields (they are type-level topology, not per-instance values).
-    if let Some(pins) = ctx.type_pins.get(type_name) {
-        // 2026-09-23 (E11 companion): a pin ARRAY expands to `gpio[0]…`;
-        // field access on the BASE name (`u2.gpio`) still resolves to Pin —
-        // the Index expr then selects the element.
-        if pins
-            .iter()
-            .any(|p| p.name == field || p.name.starts_with(&format!("{}[", field)))
-        {
-            return Some(Type::Custom("Pin".to_string()));
-        }
+    if let Some(pin_ty) = resolve_pin_field(type_name, field, ctx) {
+        return Some(pin_ty);
     }
     let slots = ctx.type_slots.get(type_name)?;
     let slot_ty = slots.iter().find(|s| s.name == field).map(|s| s.ty.clone())?;
@@ -6918,6 +7026,54 @@ node report [n > 0][n > 0] {
 };
 "#;
         check(src).expect("typed-pointer VolatileLoad# must typecheck");
+    }
+
+    /// 2026-10-05 (Phase 0.6, surface-capability gate): a COMPONENT pin
+    /// access off the electronics surface is a boundary error naming the
+    /// fix — never the old codegen panic (BUGS.md, electronics-under-.bv).
+    #[test]
+    fn component_pin_access_off_electronics_is_a_boundary_error() {
+        let src = r#"
+type UsbMicro { pin vbus: Power; pin gnd: Ground; reference "U"; };
+let j1: UsbMicro;
+node report [true][true] {
+    let v: Int = j1.vbus;
+    term;
+};
+"#;
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        let errs = check_program(&mut items, &universe).expect_err("must reject off-surface");
+        let text: Vec<String> = errs.iter().map(|e| format!("{e}")).collect();
+        assert!(
+            text.iter().any(|t| t.contains("electronics-surface")),
+            "must name the surface boundary, got: {text:?}"
+        );
+    }
+
+    /// 2026-10-05: the SAME program on the electronics surface resolves the
+    /// pin (the Part C rule is unchanged there) — the gate closes only the
+    /// boundary, not the feature.
+    #[test]
+    fn component_pin_access_on_electronics_resolves() {
+        let src = r#"
+type UsbMicro { pin vbus: Power; pin gnd: Ground; reference "U"; };
+let j1: UsbMicro;
+let n: Int = 1;
+node report [n > 0][n > 0] {
+    let v: Pin = j1.vbus;
+    term;
+};
+"#;
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        // The electronics surface flag: the pipeline derives it from `.ebv`.
+        check_program_with_target(&mut items, &universe, None, true)
+            .expect("component pin access must resolve on the electronics surface");
     }
 
     /// 2026-10-05 (Phase 0.6, registry-arity panic class): a call with fewer
