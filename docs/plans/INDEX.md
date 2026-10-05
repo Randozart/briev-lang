@@ -198,8 +198,16 @@ categories, observability razor, warn/error ambiguity resolution, admission
 process + D31 freeze note; SPEC §3.6: stretch-graded surface register
 (Tier A/B, per-Tier-B redefined concepts), language invariant +
 checkability rules; §4.1 cross-ref; no surface syntax changed →
-tutorial/highlighter untouched) → 0.6 promotion sweep (`[*]` backport, quantities+Time,
-registry-params completion). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
+tutorial/highlighter untouched) → 0.6 promotion sweep **(d) mechanical
+inventory DONE 2026-10-05**
+(`docs/plans/2026-10-05-grammar-form-inventory.md` +
+`scripts/grammar_probe.py`: cross-surface matrix, classification table —
+core / surface-owned (.ebv .abv .rbv) / licensed-stretch (.sbv has NO
+exclusive grammar); probe found 2 new defect classes — electronics-under-.bv
+codegen panic (`emit_expr.rs:2575`) and GPU-under-.bv mislowering, both
+filed in BUGS.md; remaining: (a) `[*]` backport, (b) quantities Time, (c)
+mode audit, registry-params fill (34-name panic class) + gate⇔arm rule
+(undefined-symbol + GPU-leak classes)). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---

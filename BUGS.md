@@ -8163,3 +8163,46 @@ defn; GetGlobalSize/Backtrace = runtime declarations with the right
 `#Link`/rt wiring) or remove the names from the supported set — rule:
 gate membership ⇔ lowering arm (same rule as the SPIR-V entry above).
 Probe repro: `python3 /tmp/opencode/audit/probe.py`.
+
+## Electronics program under `.bv`/`.rbv`: component field access PANICS codegen instead of diagnosing [OPEN — 2026-10-05 grammar inventory]
+
+**Symptom:** building an electronics program (e.g.
+`examples/electronics/usb_sensor.ebv`) with a `.bv`/`.rbv` extension
+panics: `thread 'main' panicked at src/backend/llvm/emit_expr.rs:2575:
+field access '.vbus' on non-struct type 'UsbMicro' reached codegen`
+(rc=101). Repro: `python3 scripts/grammar_probe.py` (row
+`electronics`, column `.bv`).
+
+**Root cause:** the typechecker accepts the field access (the component's
+struct-ness is established by the electronics pipeline, which the `.bv`
+path does not run), and the emitter's guard is a panic rather than a
+diagnostic. A field access on a non-struct type should be rejected
+generically at the typechecker — no surface knowledge required, no
+type-name matching (Rules 15/19).
+
+**Fix path:** typechecker-level diagnostic for field access on a type
+with no field surface (protocol/metadata-driven, never name-keyed); keep
+the emitter guard as a backstop but make it a capability error, not a
+panic.
+
+## GPU program under `.bv`: `.abv`-owned program mislowers to a clang failure instead of a gate diagnostic [OPEN — 2026-10-05 grammar inventory]
+
+**Symptom:** building a GPU program (e.g. `examples/gpu/reduce.abv`) with
+a `.bv` extension parses (one grammar), runs the LLVM lane with the
+`.abv`-owned modifiers silently ignored, and fails at clang with a type
+mismatch in the emitted IR — the compiler never diagnoses. Repro:
+`python3 scripts/grammar_probe.py` (row `gpu`, column `.bv`).
+
+**Root cause:** same family as the `Concat#`/`GetGlobalSize#`/
+`Backtrace#` undefined-symbol class — the LLVM lane's plain-call
+fallthrough for names it has no arm for, plus GPU scope/shape modifiers
+being no-ops off the GPU backend. The checkability rule (SPEC §3.6:
+stripping surface-specific parts leaves valid `.bv`) means a
+surface-leaked program must be REJECTED with a diagnostic, not lowered
+ dishonestly.
+
+**Fix path:** the gate-membership⇔arm rule per lane (a name the LLVM
+lane cannot lower is a normalizer error — the SPIR-V lane already works
+this way), and a backend-surface declaration for scope/shape modifiers
+(`src/backend/capabilities.rs`) so `.abv` modifiers off the GPU backend
+error with the why/fix.
