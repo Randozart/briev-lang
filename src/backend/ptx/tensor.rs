@@ -2198,10 +2198,10 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // clean for ptxas's scheduling. The store-only pass overwrites every
     // element the fragments cover.)
 
-    // Wait until this iteration's stage is complete (stages-2 groups remain
-    // in flight) + async-write visibility (see the prologue note). kps>1:
-    // only stage-boundary iterations wait — mid-stage ksteps consume the
-    // same, already-visible stage.
+        // Wait until this iteration's stage is complete (stages-2 groups remain
+        // in flight) + async-write visibility (see the prologue note). kps>1:
+        // only stage-boundary iterations wait — mid-stage ksteps consume the
+        // same, already-visible stage.
     if !no_wait {
         if kps > 1 {
             out.push_str("    add.u32 %r19, %r2, 16;\n");
@@ -2220,16 +2220,20 @@ fn tensor_gemm_ptx_smem_mw_opt(
         // == correct slice for ones), step-5 columns = b's period-5 seed
         // pattern, run-varying, zero atomics. The guard fires only on the
         // final 16·kps·(stages-1) k, so the full drain costs 1-2 tail
-        // iterations. Scope: stages≥3 + k>128 in-loop waits (stages=2 and
-        // k≤128 already drain via wait_depth=0). Undo: drop the
-        // WAIT_DRAIN branch and restore the constant depth.
-        out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", fill_guard));
-        out.push_str("    @%p1 bra WAIT_DRAIN;\n");
-        out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
-        out.push_str("    bra.uni WAIT_JOIN;\n");
-        out.push_str("WAIT_DRAIN:\n");
-        out.push_str("    cp.async.wait_group 0;\n");
-        out.push_str("WAIT_JOIN:\n");
+        // iterations. wait_depth == 0 configs (k ≤ 128 or stages ≤ 2)
+        // already drain every iteration — branchless, byte-identical to the
+        // pre-fix emission. Undo: drop the WAIT_DRAIN branch.
+        if wait_depth > 0 {
+            out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", fill_guard));
+            out.push_str("    @%p1 bra WAIT_DRAIN;\n");
+            out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
+            out.push_str("    bra.uni WAIT_JOIN;\n");
+            out.push_str("WAIT_DRAIN:\n");
+            out.push_str("    cp.async.wait_group 0;\n");
+            out.push_str("WAIT_JOIN:\n");
+        } else {
+            out.push_str("    cp.async.wait_group 0;\n");
+        }
         out.push_str("    membar.cta;\n");
         out.push_str("    bar.sync 0;\n");
         if kps > 1 {
@@ -2423,6 +2427,13 @@ mod r16_dump {
             2,
             "fill guard and drain guard share the bound"
         );
+        // wait_depth == 0 (k ≤ 128 or stages ≤ 2) already drains every
+        // iteration — the branch would be dead weight; emission stays
+        // branchless (byte-identical to the pre-fix output).
+        let shallow = tensor_gemm_ptx_smem_mw(128, 128, 128, 0, 32768, 65544, 2, 1, 2, true, 3, 2);
+        assert!(!shallow.contains("WAIT_DRAIN"), "k≤128 depth-0 branchless");
+        let two_stage = tensor_gemm_ptx_smem_mw(1024, 1024, 1024, 0, 2097152, 4194328, 2, 2, 4, true, 2, 2);
+        assert!(!two_stage.contains("WAIT_DRAIN"), "stages=2 depth-0 branchless");
     }
 
     /// f32-tier warp_mh A/B artifacts (2026-09-12): the dispatch-true
