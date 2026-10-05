@@ -1448,7 +1448,9 @@ fn extract_numeric(expr: &Expr) -> Option<f64> {
     match expr {
         Expr::Float(f) => Some(*f),
         Expr::Decimal(d) => Some(*d as f64),
-        Expr::UnitLiteral { value, .. } => Some(*value),
+        Expr::UnitLiteral { value, unit } => {
+            Some(crate::parser::quantity::literal_si(*value, unit))
+        }
         _ => None,
     }
 }

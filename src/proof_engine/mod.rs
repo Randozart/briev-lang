@@ -323,7 +323,9 @@ fn comparison_contradicts(a: &Expr, b: &Expr) -> bool {
             Expr::BinaryOp(k, l, r) => {
                 let (val, neg) = match r.as_ref() {
                     Expr::Decimal(n) => (*n as f64, false),
-                    Expr::UnitLiteral { value, .. } => (*value, false),
+                    Expr::UnitLiteral { value, unit } => {
+                        (crate::parser::quantity::literal_si(*value, unit), false)
+                    }
                     Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => match inner.as_ref() {
                         Expr::Decimal(n) => (-(*n as f64), false),
                         _ => return None,
@@ -376,8 +378,14 @@ fn const_ne(a: &Expr, b: &Expr) -> bool {
     // is what lets the concurrency gate see two voltage-comparison guards
     // on the same pin as mutually exclusive (no false async/sync demand on
     // clock-sensitive electronics boards).
-    if let (Expr::UnitLiteral { value: va, .. }, Expr::UnitLiteral { value: vb, .. }) = (a, b) {
-        return (va - vb).abs() > f64::EPSILON;
+    if let (
+        Expr::UnitLiteral { value: va, unit: ua },
+        Expr::UnitLiteral { value: vb, unit: ub },
+    ) = (a, b)
+    {
+        let sa = crate::parser::quantity::literal_si(*va, ua);
+        let sb = crate::parser::quantity::literal_si(*vb, ub);
+        return (sa - sb).abs() > f64::EPSILON;
     }
     match (const_value(a), const_value(b)) {
         (Some(x), Some(y)) => x != y,

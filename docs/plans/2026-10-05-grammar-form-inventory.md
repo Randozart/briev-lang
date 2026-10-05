@@ -82,3 +82,25 @@ append.
   licensed-stretch (no exclusive grammar to freeze).
 - `scripts/grammar_probe.py` joins `scripts/intrinsic_probe.py` as a
   permanent regression probe for the surface register.
+
+## Correction 2026-10-05 (Phase 0.6b follow-up)
+
+The classification row puts quantity literals (`250mA`) in the
+`.ebv`-owned column ("ok only on `.ebv`"). That was inferred, not probed
+— no canonical probe program carries a bare quantity literal. Direct
+probe closes it:
+
+- `let x: Float = 250mA;` → `.bv` **builds**, prints `0.25` (correct SI).
+- `brievc check` on `let x: Float = 10ms;` → **OK on all five** surfaces
+  (`.bv/.ebv/.abv/.rbv/.sbv`).
+
+So the quantity-literal FORM is **core**, not electronics-owned: the
+dimension enum + suffix machinery live in the shared frontend
+(`src/parser/quantity.rs`), and the magnitude now scales to SI at every
+consumer (BUGS.md 2026-10-05). Electrical dimensions remain available;
+`QuantityDim::Time` was added 2026-10-05 (`c1f1fc9f`). What stays
+`.ebv`-owned is the electrical *analysis pipeline* that consumes spec
+quantities — not the literal syntax.
+
+**Undo:** revert this correction only if the literal form is re-gated off
+core surfaces; the parser/quantity.rs machinery has no surface branch.

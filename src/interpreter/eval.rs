@@ -384,7 +384,12 @@ pub fn eval_expr(
                     })?;
                 Ok(Value::Range { start: s, end: e, inclusive: *inclusive })
             }
-            Expr::UnitLiteral { value, .. } => Ok(f64_to_bits(*value)),
+            Expr::UnitLiteral { value, unit } => {
+                // 2026-10-05 (Phase 0.6b): the reference interpreter must
+                // agree with codegen on the physical magnitude — SI, not the
+                // raw stored number (Rule 5: the interpreter is the reference).
+                Ok(f64_to_bits(crate::parser::quantity::literal_si(*value, unit)))
+            }
             Expr::Capture { expr, name } => {
                 let val = eval_expr(expr, heap, bindings, functions)?;
                 bindings.insert(name.clone(), val.clone());
@@ -2381,6 +2386,15 @@ mod tests {
         .err()
         .unwrap_or_else(|| panic!("expected error for {expr:?}"))
         .to_string()
+    }
+
+    /// 2026-10-05 (Phase 0.6b): a quantity literal evaluates to its SI
+    /// magnitude, matching codegen — the reference must not hand back the
+    /// raw stored number (`10ms` is 0.01, not 10).
+    #[test]
+    fn unit_literal_evaluates_to_si() {
+        let v = eval1(&Expr::UnitLiteral { value: 10.0, unit: "ms".into() });
+        assert_eq!(v, f64_to_bits(0.01));
     }
 
     // 2026-09-16: chain back-references (`.N>>`) resolve to leading args.

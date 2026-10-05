@@ -210,10 +210,12 @@ mode audit, registry-params fill (34-name panic class) + gate⇔arm rule
 (undefined-symbol + GPU-leak classes)) → (c) `mode` audit **DONE 2026-10-05**
 (`docs/plans/2026-10-05-mode-consumer-audit.md`: consumers = electronics
 laws engine only; KEEP electronics-owned, promotion path named for the
-first non-electronics type-state consumer) → (b) quantities **Time
-dimension DONE 2026-10-05** (`c1f1fc9f`: QuantityDim::Time, ns/…/Second
-suffixes, additive — remaining half FILED: expression-position quantity
-literals need the Expr/Type::Quantity typing design + spec-key story)
+first non-electronics type-state consumer) → (b) quantities **DONE 2026-10-05**
+(`c1f1fc9f`: QuantityDim::Time, ns/…/Second suffixes, additive; then
+expression-position quantity literals: keyword-suffix parse (`ms` =
+`Token::Ms`) + SI magnitude at every consumer — codegen, reference
+interpreter, GPU admission gate, guard-equality proofs; `250mA`→0.25 on
+`.bv`, `check` OK all five surfaces; BUGS.md, grammar inventory corrected)
 → (a) `[*]` backport **DONE 2026-10-05** (plan-decided default
 landed: `analysis::desugar::rewrite_wildcard_lift` — AST-level explicit
 lift, declaration-order unroll, ONE implementation pre-typecheck so
@@ -221,8 +223,9 @@ interp/backends see only plain forms; v1 surface = assign-form lifts +
 broadcast, fail-closed elsewhere; SPEC §15 note + `examples/wildcard_lift.bv`;
 BONUS: closed the check/build desugar divergence — `brievc check`/sweep
 had missed BOTH desugars (multi-index markers typechecked as unknown
-calls since 2026-09-17); remaining 0.6: expression-position quantity
-literals, GPU-modifier boundary half (P2 modifier walk, BUGS.md).
+calls since 2026-09-17); expression-position quantity literals **DONE
+2026-10-05** (see (b) above); remaining 0.6: GPU-modifier boundary half
+(P2 modifier walk, BUGS.md).
 **Surface-capability gate LANDED 2026-10-05** (`8d4307ec` +
 `70685b18` + `03ec5883`): component-pin access off `.ebv` = typecheck
 boundary error (was a codegen panic; residual: stdlib-prelude
@@ -231,7 +234,8 @@ GetGlobalId# de-listed from LLVM; the P2 "GPU mislowering" root-caused
 to the int-literal-float-init IR bug — FIXED, `reduce.abv` builds on
 `.bv`, grammar probe now all-ok/all-diagnostics (zero panics but
 electronics-min, whose residual is filed). Remaining 0.6:
-expression-position quantity literals. Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
+GPU-modifier boundary half (P2 modifier walk, BUGS.md).
+Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---

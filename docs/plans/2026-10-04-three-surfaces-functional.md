@@ -139,7 +139,10 @@ Promotion-sweep investigation findings (2026-10-04):
   backends get it from one implementation; electronics expansion subsumed;
   recorded as a D-item. (b) quantities: add the Time dimension (Seconds +
   SI prefixes) and make quantity literals legal on all surfaces; electrical
-  dimensions retained. (c) `mode` consumer audit → promote or keep
+  dimensions retained. **DONE 2026-10-05**: Time dimension (`c1f1fc9f`);
+  expression-position quantity literals parse + scale to SI on all
+  consumers (BUGS.md 2026-10-05; `250mA`→0.25 on `.bv`, `check` OK on all
+  five surfaces; grammar inventory corrected). (c) `mode` consumer audit → promote or keep
   electronics-owned. (d) mechanical inventory of remaining one-surface
   grammar forms → classification table (promote / surface-own /
   licensed-stretch) as the first output.

@@ -2671,7 +2671,9 @@ fn float_literal_fits(
 fn expr_literal_f32(e: &Expr) -> Option<f32> {
     match e {
         Expr::Float(v) => Some(*v as f32),
-        Expr::UnitLiteral { value, .. } => Some(*value as f32),
+        Expr::UnitLiteral { value, unit } => {
+            Some(crate::parser::quantity::literal_si(*value, unit) as f32)
+        }
         _ => None,
     }
 }

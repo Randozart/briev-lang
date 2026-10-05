@@ -8342,10 +8342,21 @@ by luck (`Volt` scale is 1.0, and `Volt` lexes as an identifier).
 token to its spelling, accepting `Token::Ms` as well as `Identifier` —
 `peek_suffix` now consumes both. `literal_si` (parser/quantity.rs)
 applies the suffix's own scale dimension-agnostically (`Explicit`/
-`BarePrefix`/`Fraction`); both codegen arrival points (`emit_expr.rs`
-`Expr::UnitLiteral`, `mod.rs` `try_eval_cfloat`) call it.
+`BarePrefix`/`Fraction`), and EVERY magnitude consumer calls it: the two
+codegen arrival points (`emit_expr.rs` `Expr::UnitLiteral`, `mod.rs`
+`try_eval_cfloat`), the reference interpreter (`interpreter/eval.rs` —
+without this the fix would have made codegen (0.01) and the reference
+(10.0) disagree, a Rule 5 violation), the GPU admission gate
+(`typechecker/mod.rs` `expr_literal_f32`), the guard-equality proofs
+(`proof_engine/mod.rs` `as_comp` + the mutual-exclusion compare,
+`analysis/when_law.rs` `expr_may_equal`), and `analysis/electronics.rs`
+`extract_numeric`. Display (`literal_instance_field`) and macro `Int`
+coercion keep the raw form by design.
 
 **Verification:** `10ms`→0.01, `5s`→5, `3ns`→3e-9, `2mm`→0.002,
-`1cm`→0.01, `3.3Volt`→3.3, `1m`→1. New tests
-`keyword_duration_unit_parses_as_quantity` and
-`literal_si_applies_suffix_scale`; suite 2879 green.
+`1cm`→0.01, `3.3Volt`→3.3, `1m`→1; interpreter agrees (SI bits). New
+tests `keyword_duration_unit_parses_as_quantity`,
+`literal_si_applies_suffix_scale`, `unit_literal_evaluates_to_si`; suite
+2880 green. Quantity literals are now core-legal (parse + typecheck on
+all five surfaces; the grammar inventory previously classified them
+`.ebv`-owned — correction appended there).

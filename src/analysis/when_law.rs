@@ -190,8 +190,10 @@ fn expr_may_equal(a: &Expr, b: &Expr) -> bool {
         (Expr::Decimal(x), Expr::Decimal(y)) => x == y,
         (Expr::Float(x), Expr::Float(y)) => (x - y).abs() < f64::EPSILON,
         (Expr::Quoted(x), Expr::Quoted(y)) => x == y,
-        (Expr::UnitLiteral { value: x, .. }, Expr::UnitLiteral { value: y, .. }) => {
-            (x - y).abs() < f64::EPSILON
+        (Expr::UnitLiteral { value: x, unit: ux }, Expr::UnitLiteral { value: y, unit: uy }) => {
+            let sx = crate::parser::quantity::literal_si(*x, ux);
+            let sy = crate::parser::quantity::literal_si(*y, uy);
+            (sx - sy).abs() < f64::EPSILON
         }
         _ => true, // unknown shapes: assume compatible (conservative — only a
                    // proven-different constant is a contradiction)
