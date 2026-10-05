@@ -187,9 +187,14 @@ the 64³–4096³ vs-cuBLAS map), `docs/architecture/gpu-backend-strategy.md`
 for a stranger; the language invariant (surface vocabulary allowed, core
 never forks, stretch-graded register); Phase 0 = the syntax freeze set
 (D31 amendment landed `8fadfc2a`: D14 7→2 `tile`/`stage`, drops+defers,
-admission process) → 0.3 `Asm#` two-lane audit, 0.5 SPEC fold, 0.6
-promotion sweep (`[*]` backport, quantities+Time). Phase 1 = json.bv
-generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
+admission process) → 0.3 `Asm#` two-lane audit **DONE 2026-10-05**
+(`docs/plans/2026-10-05-intrinsic-coverage-audit.md`: Asm# = CPU/LLVM only,
+PTX zero-coverage + SPIR-V gate-reject filed for Phase 2; coverage matrix
+`scripts/intrinsic_probe.py`; fixed same-day: gate harvest bypass (new
+`src/ast/visit.rs`), volatile-arity panic, SPIR-V gate drift 28→37; filed:
+LLVM 34-name registry-arity panic class + undefined-symbol class → Phase
+0.6) → 0.5 SPEC fold, 0.6 promotion sweep (`[*]` backport, quantities+Time,
+registry-params completion). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---

@@ -8041,3 +8041,125 @@ overlapping `wait_group (stages−2)` — the drain costs only the final
   regression established. Raw protocol + numbers:
   `benchmarks/results/2026-10-05-cuda-tail-drain-fix.md` (provisional
   timing, machine-drift noted).
+
+## Backend gate missed every `let` initializer and NESTED expression — unsupported intrinsics reached emitters and panicked [FIXED 2026-10-05]
+
+**Symptom:** compiling programs like `let x: Int = Deref#();` or any
+intrinsic hidden inside call arguments, cast operands, or contract halves
+panicked the compiler with `index out of bounds: the len is 0 but the
+index is 0` at `src/backend/llvm/intrinsics.rs` (~45 sites: `:261`,
+`:866`, `:1044-1116`, `:1982-2117`, `:2430`). A mechanical
+intrinsic×surface probe (`/tmp/opencode/audit/probe.py`) reproduced the
+class on 45 names.
+
+**Root cause:** `backend::normalizer`'s harvester had no
+`Statement::Let` arm and only walked statement-ROOT expressions — a
+nested `Expr::Call` inside another call's arguments, a cast operand, or
+a contract half was never collected, so `validate_intrinsics` never saw
+it and the emitter's unguarded `args[0]` died on the zero-arg shape the
+typechecker also failed to reject (registry `parameters: vec![]`).
+
+**Fix (2026-10-05, three-surfaces plan Phase 0.3):**
+- New `src/ast/visit.rs` — the ONE exhaustive AST visitor (`walk_expr`,
+  `walk_stmts`, `walk_pattern`, `walk_contract`, `walk_definition`, no
+  `_` arms); a new `Expr`/`Statement` variant fails to compile there by
+  design.
+- `src/backend/normalizer.rs` rebuilt on it: `Harvester` now records
+  `Expr::Call` AND `Expr::MethodCall` (op-member dispatch), seeds every
+  liveness-unconditional surface (txns, ISR, top-level statements,
+  constants, cell/obj transactions, triggers, when-laws), and documents
+  the over-seed boundary (member/type-level/impl/trait definitions are
+  reached through call expansion, never seeded — the stdlib `PiggyBank`
+  sealed-op `Error#` members were the worked example of the over-seed).
+- Tests: `backend::normalizer::tests` (5) pin the let-initializer,
+  nested-argument, contract, method-dispatch, and dead-defn classes.
+
+**Verification:** `cargo test --lib` 2863 green; all 67
+`examples/gpu/*.abv` fixtures gate-clean; probe re-run shows zero
+harness-reachable panics outside the registry-arity class below.
+
+**Undo:** revert the visitor and the normalizer rewrite — but any
+replacement must keep the harvest exhaustive (Rule: no `_` arms in the
+AST walker).
+
+## Typechecker: zero-arg `VolatileLoad#()`/`VolatileStore#()` panicked instead of diagnosing [FIXED 2026-10-05]
+
+**Symptom:** `let x: Int = VolatileLoad#();` panicked at
+`src/typechecker/mod.rs:2050` with `index out of bounds` instead of a
+type error.
+
+**Root cause:** the registry declares NO parameters for the two volatile
+intrinsics (`parameters: vec![]` ⇒ the typechecker's arity loop is
+skipped as "type-inferred"), while the 2026-08-27 MMIO lane enforcement
+indexed `args[0]` unguarded to require a typed pointer.
+
+**Fix:** `args.first()` guard — missing address returns
+`TypeError::TypeMismatch` with the expected/fix text ("cast the address
+first, e.g. 'addr as Ptr\<Byte\>'"). Tests:
+`volatile_arity_gap_is_a_diagnostic_not_a_panic`,
+`volatile_typed_pointer_still_typechecks`.
+
+## SPIR-V gate was stale (28 names) vs the emitter's real surface (37 arms) [FIXED 2026-10-05]
+
+**Symptom:** with the fixed harvest, working fixtures failed closed:
+`examples/gpu/atomic_inc.abv` → `intrinsic 'AtomicAddAt#' is not
+supported by this backend`; `examples/gpu/workid.abv` → same for
+`GetGlobalId#`. Before the harvest fix they passed only because the
+`let`/nested expressions carrying those intrinsics were invisible to the
+gate.
+
+**Root cause:** `src/backend/spirv/normalizer.rs::build_supported_ops`
+still listed the 2026-07 surface (19 names + the 2026-09 subgroup batch)
+while `lower.rs` had grown the 2026-10-01 atomics and the kernel
+builtins. The gate ⊆ dispatch-arm invariant held by accident, then
+drifted.
+
+**Fix:** the declared set is now exactly the emitter's arm set (37:
++`AtomicAddAt#/AtomicSubAt#/AtomicXchgAt#/AtomicCasAt#`,
++`GetGlobalId#/GetLocalId#/WorkgroupSize#`, +`Load#/Store#`), with the
+rule in-code: an intrinsic joins the set together with its `lower.rs`
+arm and a device fixture — never one without the other. Probe
+classification after the sync: the 6 remaining SPIR-V `lowering`
+diagnostics (`Exp# needs an operand`, `AtomicAddAt# takes (buf, i, v)`,
+`builtins take a constant dimension`) are honest shape errors for
+malformed zero-arg probes, not gate gaps.
+
+## LLVM lane: registry `parameters: vec![]` lets 34 intrinsics reach emitters unarity-checked — compiler panics on `NAME()` input [OPEN — Phase 0.6]
+
+**Symptom:** the audit probe (zero-arg call per registry-empty intrinsic)
+still panics the LLVM backend — 34 names: `PtrAdd# PtrSub# PtrDiff#
+PtrEq# PtrLt# Capacity# EnsureCap# Resize# TrimCap# Print# Load# Store#
+Copy# Fill# Length# GetGlobalId# AtomicLoad# AtomicStore# AtomicCas#
+AtomicXchg# AtomicAdd# AtomicSub# AtomicOr# AtomicAnd# AtomicLoadN#
+AtomicXor# AtomicStoreN# SimdAdd# SimdMul# SimdFma# SimdSub# DlOpen#
+DlSym# DlClose#` (panic sites across `src/backend/llvm/intrinsics.rs`,
+e.g. `:866`, `:1116`, `:2430`).
+
+**Root cause:** same class as the volatile entry — the registry claims
+no parameters, the typechecker's "empty ⇒ type-inferred" rule skips the
+arity check, and the emitters index `args[i]` directly. The gate
+rightfully PASSES these (they are supported names with the wrong shape).
+
+**Fix path (Phase 0.6 promotion sweep):** complete the registry
+`parameters` entries for every intrinsic (read the emitter for the true
+arity + types; the registry is the source of truth), so the typechecker
+rejects `NAME()` before the backend. Interim: no fixture or stdlib
+program triggers it — only malformed input does. Probe repro:
+`python3 /tmp/opencode/audit/probe.py` (bv PANIC class).
+
+## LLVM lane: gate-passes that emit UNDECLARED symbols — `Concat#`, `GetGlobalSize#`, `Backtrace#` [OPEN — 2026-10-05 audit]
+
+**Symptom:** all three pass the LLVM gate and emit `.ll` that clang/ld
+rejects: `use of undefined value '@Concat'`, `use of undefined value
+'@GetGlobalSize'`, `undefined reference to 'briev_backtrace'`.
+
+**Root cause:** the emitter has no lowering arm for these names and
+falls through to a plain LLVM `call` of an undeclared function; the gate
+only checks name membership in `build_supported_ops`, not that an arm
+exists.
+
+**Fix path:** either add the arms (Concat = a real lowering or a stdlib
+defn; GetGlobalSize/Backtrace = runtime declarations with the right
+`#Link`/rt wiring) or remove the names from the supported set — rule:
+gate membership ⇔ lowering arm (same rule as the SPIR-V entry above).
+Probe repro: `python3 /tmp/opencode/audit/probe.py`.
