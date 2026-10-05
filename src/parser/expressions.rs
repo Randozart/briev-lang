@@ -17,6 +17,22 @@ fn is_unit_suffix(s: &str) -> bool {
     is_quantity_suffix(s)
 }
 
+/// Map a token to its unit-suffix spelling when the token is a legal
+/// quantity-suffix candidate. A plain identifier is its own spelling; the
+/// duration KEYWORD `ms` (Token::Ms) is the one unit that lexes as a keyword
+/// rather than a contextual identifier (the others — s, ns, min, mm, cm, m —
+/// are contextualized to Identifier by the lexer). 2026-10-05 (Phase 0.6b):
+/// without the Ms arm, `10ms` failed to parse because peek_suffix only
+/// accepted identifiers.
+fn unit_suffix_token(tok: &Token) -> Option<String> {
+    match tok {
+        Token::Identifier(s) => Some(s.clone()),
+        Token::Ms => Some("ms".to_string()),
+        _ => None,
+    }
+}
+
+
 impl<'a> Parser<'a> {
     /// Entry point: parse an expression at any precedence level.
     pub fn parse_expression(&mut self) -> Result<Expr, SyntaxError> {
@@ -740,14 +756,17 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
         let (next_tok, next_span) = &self.tokens[next_idx];
         // Check adjacency: next token starts right where current ends
         if next_span.start != end_pos { return None; }
-        match next_tok {
-            Token::Identifier(s) => {
-                // Consume the suffix token (skip past it)
-                self.pos = next_idx + 1;
-                Some(s.clone())
-            }
-            _ => None,
-        }
+        // A unit-suffix candidate is a plain identifier (Volt, ms-as-id, ns,
+        // s, mm, cm, m, min) OR a duration KEYWORD token. `ms` is the one
+        // duration unit with a dedicated keyword (Token::Ms) rather than a
+        // contextual identifier, so it must be accepted here too — without
+        // this arm `10ms` fails to parse as a quantity (0.6b). The mapping
+        // token -> suffix spelling lives in unit_suffix_token so the table
+        // has one home.
+        let suf = unit_suffix_token(next_tok)?;
+        // Consume the suffix token (skip past it)
+        self.pos = next_idx + 1;
+        Some(suf)
     }
 
     /// 2026-08-09 (Phase 5): parse `spawn Obj(args)` with a given storage
@@ -2019,6 +2038,26 @@ mod tests {
                 assert!(matches!(r.as_ref(), Expr::Decimal(3)));
             }
             other => panic!("expected shift after field, got {other:?}"),
+        }
+    }
+
+    /// 2026-10-05 (Phase 0.6b): a duration unit that lexes as a KEYWORD
+    /// (`ms` -> Token::Ms) must still parse as a quantity suffix. Before the
+    /// fix `peek_suffix` accepted only identifiers, so `10ms` split into
+    /// `Decimal(10)` + `Ms` and failed at the enclosing `)`. The other time
+    /// units (s/ns/us/min) lex as contextual identifiers and already worked.
+    #[test]
+    fn keyword_duration_unit_parses_as_quantity() {
+        for (src, want_value, want_unit) in
+            [("10ms", 10.0, "ms"), ("3.3Volt", 3.3, "Volt"), ("5s", 5.0, "s")]
+        {
+            match parse_expr(src).unwrap() {
+                Expr::UnitLiteral { value, unit } => {
+                    assert_eq!(unit, want_unit, "unit of `{src}`");
+                    assert!((value - want_value).abs() < 1e-12, "value of `{src}`");
+                }
+                other => panic!("`{src}`: expected UnitLiteral, got {other:?}"),
+            }
         }
     }
 }

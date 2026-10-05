@@ -1887,18 +1887,21 @@ impl LlvmBackend {
                     ty: Type::Custom(type_name.clone()),
                 }
             }
-            Expr::UnitLiteral { value, .. } => {
+            Expr::UnitLiteral { value, unit } => {
                 // 2026-10-05 (Phase 0.6b): quantity literals lower EXACTLY
                 // like Float literals — the SI value through the same
-                // bitcast path. The old `@__briev_f64_to_bits` call was
-                // undefined in every runtime (no C symbol) and its typed
-                // register lied (a `double` register labeled Float):
-                // `let v: Float = 3.3Volt;` produced a float-labeled
-                // i64 register that then failed at `__print_float` —
-                // the same declared-vs-register class as the int-literal
-                // float-init bug (BUGS.md).
+                // bitcast path. `literal_si` applies the suffix scale
+                // (`10ms` → 0.01), the same conversion the spec/analysis
+                // consumers perform; the old code emitted the raw number.
+                // The old `@__briev_f64_to_bits` call was undefined in every
+                // runtime (no C symbol) and its typed register lied (a
+                // `double` register labeled Float): `let v: Float =
+                // 3.3Volt;` produced a float-labeled i64 register that then
+                // failed at `__print_float` — the same declared-vs-register
+                // class as the int-literal float-init bug (BUGS.md).
+                let si = crate::parser::quantity::literal_si(*value, unit);
                 let reg = self.fun.gen_reg();
-                let h = crate::backend::llvm::float_to_llvm_hex(*value);
+                let h = crate::backend::llvm::float_to_llvm_hex(si);
                 writeln!(out, "{indent}{reg} = bitcast i32 {h} to float").ok();
                 TypedRegister { name: reg, ty: Type::float() }
             }

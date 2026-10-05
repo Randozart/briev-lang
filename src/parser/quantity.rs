@@ -179,6 +179,22 @@ pub(crate) fn quantity_si(
     }
 }
 
+/// Convert a raw unit literal to its SI magnitude, dimension-agnostic.
+/// The codegen surface has no expected dimension (the declared type is the
+/// consumer), so this applies the suffix's own scale: `10ms` → 0.01,
+/// `3.3Volt` → 3.3, `4k7` → 4700, `100n` → 1e-7. A non-unit suffix passes
+/// the value through. 2026-10-05 (Phase 0.6b): codegen lowered the RAW
+/// number, so `10ms` emitted 10.0 — every non-unit-1 quantity was off by
+/// its SI factor. Sites that already know the dimension use `quantity_si`.
+pub(crate) fn literal_si(value: f64, unit: &str) -> f64 {
+    match parse_unit_suffix(unit) {
+        Some(UnitSuffix::Explicit { scale, .. }) => value * scale,
+        Some(UnitSuffix::BarePrefix { scale }) => value * scale,
+        Some(UnitSuffix::Fraction { scale, frac }) => (value + frac) * scale,
+        None => value,
+    }
+}
+
 /// Does this suffix denote ohms in either surface spelling? `R`/`kR` and
 /// full-word `Ohm`/`kOhm` are explicit; `k7` is the E-series fraction whose
 /// dimension comes from the resistance key.
@@ -250,6 +266,24 @@ mod tests {
             }
             other => panic!("suffix m: expected Explicit Length, got {other:?}"),
         }
+    }
+
+    /// 2026-10-05 (Phase 0.6b): `literal_si` applies the suffix scale at the
+    /// codegen arrival point. The raw number is stored in the AST (all
+    /// spec/analysis consumers scale from `unit`), so lowering must convert
+    /// to SI exactly once. `ms` keys the phase: raw 10 previously emitted
+    /// 10.0, not 0.01.
+    #[test]
+    fn literal_si_applies_suffix_scale() {
+        use super::literal_si;
+        let close = |a: f64, b: f64, s: &str| assert!((a - b).abs() < 1e-12 * b.abs().max(1.0), "{s}: {a} != {b}");
+        close(literal_si(10.0, "ms"), 0.01, "10ms");
+        close(literal_si(3.3, "Volt"), 3.3, "3.3Volt");
+        close(literal_si(5.0, "s"), 5.0, "5s");
+        close(literal_si(3.0, "ns"), 3e-9, "3ns");
+        close(literal_si(100.0, "n"), 1e-7, "100n bare prefix");
+        close(literal_si(4.0, "k7"), 4700.0, "4k7 fraction");
+        close(literal_si(42.0, "Banana"), 42.0, "non-unit passthrough");
     }
 
     /// A non-unit identifier is not silently accepted as physics. Non-ASCII

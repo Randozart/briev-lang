@@ -288,8 +288,10 @@ fn try_eval_cfloat(
                 None
             }
         }
-        Expr::UnitLiteral { value, .. } => {
-            Some(*value)
+        Expr::UnitLiteral { value, unit } => {
+            // 2026-10-05 (Phase 0.6b): fold the SI magnitude, not the raw
+            // number — the same conversion emit_expr applies.
+            Some(crate::parser::quantity::literal_si(*value, unit))
         }
         _ => None,
     }

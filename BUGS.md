@@ -8315,3 +8315,37 @@ operand or store.
 
 **Verification:** `reduce.abv` as `.bv` now builds (was the grammar
 probe's clang failure); suite 2877 green; grammar probe gpu rows ok.
+
+## Quantity literal in expression position: keyword-suffix parse failure + raw-value codegen — FIXED 2026-10-05
+
+**Symptom:** `Print#(10ms);` failed to parse (`expected RParen, found
+'ms'`), and where a quantity DID parse (`let v: Float = 10ms;`) the wrong
+magnitude was emitted — `10.0` instead of `0.01`. `3.3Volt` worked only
+by luck (`Volt` scale is 1.0, and `Volt` lexes as an identifier).
+
+**Root cause (two layers):**
+1. **Lexer/keyword collision.** The canonical duration units (`cyc`/
+   `ms`/`s`/`ns`/`min`, SPEC §16.1) are minted inconsistently: `ms` gets
+   a dedicated `Token::Ms`, `cyc` gets `Token::Cyc`, while `s`/`ns`/
+   `min`/`mm`/`cm`/`m` fall through to plain `Identifier`. `peek_suffix`
+   accepted only `Token::Identifier`, so `10ms` split into `Decimal(10)` +
+   `Ms` and died at the enclosing `)`.
+2. **Scaling at the wrong layer.** The AST stores the RAW number + unit
+   (`UnitLiteral { value, unit }`); every spec/analysis consumer scales
+   from `unit` (`spec_quantity`, `extract_quantity`, `constant_quantity`).
+   Codegen was the lone arrival point that used `*value` directly, so
+   `10ms` emitted 10.0. (An initial fix scaled in the parser; that
+   DOUBLE-scaled the spec path — 9 electronics tests caught it — so the
+   scale was reverted out of the parser and put where it belongs.)
+
+**Fix:** `unit_suffix_token` (expressions.rs) maps a suffix candidate
+token to its spelling, accepting `Token::Ms` as well as `Identifier` —
+`peek_suffix` now consumes both. `literal_si` (parser/quantity.rs)
+applies the suffix's own scale dimension-agnostically (`Explicit`/
+`BarePrefix`/`Fraction`); both codegen arrival points (`emit_expr.rs`
+`Expr::UnitLiteral`, `mod.rs` `try_eval_cfloat`) call it.
+
+**Verification:** `10ms`→0.01, `5s`→5, `3ns`→3e-9, `2mm`→0.002,
+`1cm`→0.01, `3.3Volt`→3.3, `1m`→1. New tests
+`keyword_duration_unit_parses_as_quantity` and
+`literal_si_applies_suffix_scale`; suite 2879 green.
