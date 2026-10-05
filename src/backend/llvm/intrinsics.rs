@@ -205,15 +205,20 @@ pub fn emit_intrinsic_call(
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, env).ok();
             return BTypedRegister { name: ptr.to_string(), ty: Type::int() };
         }
-        "GetGlobalId#" => return emit_get_global_id(backend, out, v, args, indent),
-        // 2026-10-05 (Phase 0.6, gate-membership<->arm rule): GetGlobalSize#
-        // and GetLocalId# had NO lowering here - the removed arms fell
-        // through to `emit_external_call`, emitting a call to an undefined
-        // `@GetGlobalSize`/`@GetLocalId` that only clang rejected (BUGS.md,
-        // undefined-symbol class). They are de-listed from the supported set
-        // (llvm/normalizer.rs) so the gate names them instead. GPU builtins
-        // completion (which lanes declare which launch-dimension builtins)
-        // is Phase 2; a real arm + rt symbol re-admits a name.
+        // 2026-10-05 (Phase 0.6, gate-membership<->arm rule): the GPU
+        // launch-dimension builtins are DE-LISTED from this lane.
+        // GetGlobalSize#/GetLocalId# had NO lowering (the removed arms fell
+        // through to `emit_external_call`, emitting calls to undefined
+        // `@GetGlobalSize`/`@GetLocalId`); GetGlobalId# HAD an arm but it
+        // emitted `@__get_global_id`, a symbol the CPU runtime never
+        // defined - every caller died at link. All three now gate-reject
+        // (matching their already-rejected siblings GetGroupId#/
+        // GetNumGroups#/Barrier#): a launch dimension without a launch is
+        // not a CPU semantic, and a silent zero would be a miscompile.
+        // GPU builtins completion (which lanes declare which builtins,
+        // with real runtime support) is Phase 2; re-admitting a name = a
+        // real arm + rt symbol together. (BUGS.md, undefined-symbol
+        // class.)
         "AddressOf#" => return emit_address_of(backend, out, v, args, indent),
         "SysCall#" => return emit_syscall(backend, out, v, args, indent),
         "SysConf#" => return emit_sysconf(backend, out, v, args, indent),
@@ -1213,17 +1218,6 @@ fn emit_get_env_int(
 }
 
 // ─── GetGlobalId# ─────────────────────────────────────────────────────
-
-fn emit_get_global_id(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
-) -> BTypedRegister {
-    let dim = emit_arg(backend, out, &args[0], indent);
-    writeln!(out, "{}{} = call i32 @__get_global_id(i32 {})", indent, v, dim).ok();
-    let ext = backend.fun.gen_reg();
-    writeln!(out, "{}{} = zext i32 {} to i64", indent, ext, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
-}
 
 // ─── AddressOf# — compile-time address resolution ─────────────────────
 

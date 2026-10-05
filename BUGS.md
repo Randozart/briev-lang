@@ -8235,7 +8235,7 @@ green). Cells stay core: cell pins resolve on every surface. Tests:
 `component_pin_access_off_electronics_is_a_boundary_error`,
 `component_pin_access_on_electronics_resolves`.
 
-## GPU program under `.bv`: `.abv`-owned program mislowers to a clang failure instead of a gate diagnostic [OPEN — 2026-10-05 grammar inventory]
+## GPU program under `.bv`: `.abv`-owned program mislowers to a clang failure instead of a gate diagnostic [PARTIALLY FIXED 2026-10-05 — builtin member closed; scope/shared modifier half remains OPEN]
 
 **Symptom:** building a GPU program (e.g. `examples/gpu/reduce.abv`) with
 a `.bv` extension parses (one grammar), runs the LLVM lane with the
@@ -8256,3 +8256,17 @@ lane cannot lower is a normalizer error — the SPIR-V lane already works
 this way), and a backend-surface declaration for scope/shape modifiers
 (`src/backend/capabilities.rs`) so `.abv` modifiers off the GPU backend
 error with the why/fix.
+
+**Partial fix (2026-10-05, Phase 0.6):** the builtin member —
+`GetGlobalId#`, whose arm emitted `@__get_global_id`, a symbol the CPU
+runtime never defined — is de-listed from the LLVM lane like its
+already-rejected siblings (`GetGroupId#`/`GetNumGroups#`/`Barrier#`):
+a launch dimension without a launch is not a CPU semantic, and a silent
+zero would be a miscompile. `GetGlobalId#(0)` on `.bv` now produces the
+clean gate diagnostic. **Remaining (open):** the `scope<…>`/`shared`/
+shape-modifier half — GPU modifiers parse on every surface (one
+grammar) and the LLVM lane silently ignores them; the fix is a
+modifier-surface capability walk (the pattern is now proven by the
+component-pin surface gate, `surface_electronics`): a GPU-modifier
+declaration on a non-GPU surface is a boundary error naming the
+surface. `lib/std/gpu.bv` wrappers remain for the GPU lanes.

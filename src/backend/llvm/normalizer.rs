@@ -127,10 +127,13 @@ fn build_supported_ops() -> HashSet<String> {
         set.insert(format!("{}#", op_name));
     }
     // 2026-10-05 (gate-membership<->arm rule): GetGlobalSize#,
-    // GetLocalId#, Concat#, and Backtrace# are DE-LISTED — none had a
-    // lowering arm here, so admitted programs reached clang/link with
-    // undefined symbols (BUGS.md). Re-admit a name together with its arm.
-    for name in &["GetEnv#", "GetEnvInt#", "GetGlobalId#",
+    // GetLocalId#, GetGlobalId#, Concat#, and Backtrace# are DE-LISTED —
+    // none had a WORKING lowering here (the first two plain-called
+    // undefined symbols; GetGlobalId#'s arm emitted `@__get_global_id`,
+    // undefined in the CPU runtime), so admitted programs reached
+    // clang/link with undefined symbols (BUGS.md). Re-admit a name
+    // together with a working arm + runtime symbol.
+    for name in &["GetEnv#", "GetEnvInt#",
                    "ToInt#", "ToFloat#", "ToString#", "Length#",
                    "AddressOf#", "SysCall#", "SysConf#",
                    // 2026-09-23 (frgn-elimination round 2): Environ#() loads
@@ -207,11 +210,12 @@ mod tests {
     /// 2026-10-05 (Phase 0.6, gate-membership<->arm rule): the de-listed
     /// names must be gate-rejected on this lane, not plain-called into
     /// undefined symbols (BUGS.md, undefined-symbol class). GetGlobalId#
-    /// stays admitted — it has a real arm.
+    /// joined them — its arm emitted `@__get_global_id`, undefined in the
+    /// CPU runtime.
     #[test]
     fn delisted_names_are_gate_rejected() {
         let supported = build_supported_ops();
-        for name in ["Concat#", "GetGlobalSize#", "GetLocalId#", "Backtrace#"] {
+        for name in ["Concat#", "GetGlobalSize#", "GetLocalId#", "Backtrace#", "GetGlobalId#"] {
             let src = format!(
                 "node report [true][true] {{ let x: Int = {name}(); term; }};"
             );
@@ -224,14 +228,16 @@ mod tests {
                 "{name} must be gate-rejected on the LLVM lane, got: {errs:?}"
             );
         }
-        let src = "node report [true][true] { let x: Int = GetGlobalId#(0); term; };";
+        // A REAL arm with runtime backing stays admitted (Length# lowers
+        // through the collection protocol, no external symbol).
+        let src = "node report [true][true] { let x: Int = Length#(5); term; };";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let mut p = crate::parser::Parser::new(tokens, src);
         let items = p.parse_program().unwrap();
         let errs = crate::backend::normalizer::validate_intrinsics(&items, &supported);
         assert!(
             errs.is_empty(),
-            "GetGlobalId# must stay admitted (real arm), got: {errs:?}"
+            "Length# must stay admitted (real arm), got: {errs:?}"
         );
     }
 
