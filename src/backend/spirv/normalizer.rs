@@ -53,26 +53,45 @@ fn is_kernel_txn(txn: &crate::ast::top::Transaction) -> bool {
 }
 
 /// Build the set of supported intrinsic names.
+///
+/// THE declared SPIR-V-lane intrinsic surface. 2026-10-05 (three-surfaces
+/// plan Phase 0.3, two-lane audit): synced from 28 to 37 names — the gate
+/// was STALE relative to `lower.rs`'s dispatch arms, and only stayed green
+/// because the old harvest missed `Statement::Let` initializers and every
+/// NESTED expression, so real programs (atomic_inc's
+/// `let old = AtomicAddAt#(...)`, workid's `a[i] + (GetGlobalId#(0) ...)`)
+/// bypassed the gate entirely. Now that `backend::normalizer` harvests
+/// exhaustively (`ast::visit`), the list must equal the emitter's real
+/// arm set or working fixtures fail closed.
+///
+/// Rule: an intrinsic joins this set together with its `lower.rs` arm (+
+/// a fixture that exercises it on device) — never one without the other.
+/// Undo: remove a name here AND its arm to retire an intrinsic from the
+/// lane; adding a name alone never enables lowering.
 fn build_supported_ops() -> HashSet<String> {
-    let mut set = HashSet::new();
-    for name in &["Add#", "Sub#", "Mul#", "Div#", "Eq#", "Lt#", "Gt#",
-                   "BitAnd#", "BitOr#", "BitXor#", "Shl#", "Shr#",
-                   "Malloc#", "Free#", "Print#", "Exp#", "Sqrt#", "Fabs#"] {
-        set.insert(name.to_string());
-    }
-    // 2026-09-01 (plan 2026-09-01-cooperative-row-kernels): subgroup
-    // reduction — lowered to OpGroupNonUniformFAdd (Subgroup scope).
-    set.insert("SubgroupFAdd#".to_string());
-    set.insert("SubgroupFMax#".to_string());
-    set.insert("SubgroupFMin#".to_string());
-    set.insert("ShuffleDown#".to_string());
-    set.insert("ShuffleXor#".to_string());
-    set.insert("Fma#".to_string());
-    set.insert("Max#".to_string());
-    set.insert("Min#".to_string());
-    set.insert("SubgroupBallot#".to_string());
-    set.insert("SubgroupBroadcast#".to_string());
-    set
+    [
+        // ALU / comparison / bitwise (lower.rs elementwise).
+        "Add#", "Sub#", "Mul#", "Div#", "Eq#", "Lt#", "Gt#",
+        "BitAnd#", "BitOr#", "BitXor#", "Shl#", "Shr#",
+        // Scalar math + FMA.
+        "Exp#", "Sqrt#", "Fabs#", "Fma#", "Max#", "Min#",
+        // Memory / observability.
+        "Malloc#", "Free#", "Load#", "Store#", "Print#",
+        // Element-addressed atomics (plan 2026-10-01-atomic-element-rmw
+        // A4/A5 — atomic_inc.abv pins the lane).
+        "AtomicAddAt#", "AtomicSubAt#", "AtomicXchgAt#", "AtomicCasAt#",
+        // Lane coordination (2026-09-01 cooperative-row-kernels +
+        // warp-slice work): shuffles, ballot, broadcast, subgroup
+        // reductions — OpGroupNonUniform*/subgroup ops.
+        "ShuffleDown#", "ShuffleXor#", "SubgroupBallot#",
+        "SubgroupBroadcast#", "SubgroupFAdd#", "SubgroupFMax#",
+        "SubgroupFMin#",
+        // Kernel builtins + launch geometry.
+        "GetGlobalId#", "GetLocalId#", "WorkgroupSize#",
+    ]
+    .iter()
+    .map(|n| n.to_string())
+    .collect()
 }
 
 #[cfg(test)]

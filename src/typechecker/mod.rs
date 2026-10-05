@@ -2047,7 +2047,18 @@ fn infer_intrinsic_call(
     // raw i64 addresses belong to Load#/Store#. Enforced HERE (compile time)
     // so emitters never face a shape they can't lower honestly.
     if matches!(sig.name, "VolatileLoad#" | "VolatileStore#") {
-        let first = infer_type_only(&args[0], ctx)?;
+        // 2026-10-05: the registry declares no parameters for these two,
+        // so the arity loop above never rejects a call with ZERO arguments
+        // and `args[0]` below panicked (BUGS.md, volatile-arity panic).
+        // A missing address is a diagnostic, never a crash.
+        let Some(addr) = args.first() else {
+            return Err(TypeError::TypeMismatch {
+                expected: "1 argument of type Ptr<T> — cast the address first, e.g. 'addr as Ptr<Byte>'".into(),
+                found: "0 arguments".into(),
+                context: format!("address argument of '{}'", sig.name),
+            });
+        };
+        let first = infer_type_only(addr, ctx)?;
         let is_ptr = matches!(first, crate::ast::Type::Ptr(_));
         if !is_ptr {
             return Err(TypeError::TypeMismatch {
@@ -6855,6 +6866,41 @@ mod tests {
         let mut items = p.parse_program().unwrap();
         let universe = crate::type_universe::TypeUniverse::new();
         check_program(&mut items, &universe)
+    }
+
+    /// 2026-10-05 (three-surfaces plan Phase 0.3, intrinsic-coverage audit):
+    /// a ZERO-argument VolatileLoad#/VolatileStore# must be a diagnostic —
+    /// the registry declares no parameters for these two, so the arity loop
+    /// never rejects the call and the address check indexed `args[0]`
+    /// unguarded, panicking the compiler (BUGS.md, volatile-arity panic).
+    #[test]
+    fn volatile_arity_gap_is_a_diagnostic_not_a_panic() {
+        for call in ["VolatileLoad#()", "VolatileStore#()"] {
+            let src =
+                format!("node report [true][true] {{ let x: Int = {call}; term; }};");
+            let errs = check(&src)
+                .expect_err(&format!("zero-arg {call} must be rejected"));
+            let text: Vec<String> = errs.iter().map(|e| format!("{e:?}")).collect();
+            assert!(
+                text.iter().any(|t| t.contains("address argument")),
+                "{call} must report the missing-address diagnostic, got: {text:?}"
+            );
+        }
+    }
+
+    /// 2026-10-05: the real shape — a typed pointer — still typechecks, so
+    /// the new guard closes only the arity hole, not the lane itself.
+    #[test]
+    fn volatile_typed_pointer_still_typechecks() {
+        let src = r#"
+let addr: Ptr<Byte> = 0 as Ptr<Byte>;
+let n: Int = 1;
+node report [n > 0][n > 0] {
+    let x: Byte = VolatileLoad#(addr);
+    term;
+};
+"#;
+        check(src).expect("typed-pointer VolatileLoad# must typecheck");
     }
 
     /// 2026-08-12 (Iterable protocol, op-as-member): an obj with operator

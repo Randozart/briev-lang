@@ -16,6 +16,7 @@ mod expr;
 pub mod top;
 pub mod bad;
 mod types;
+pub mod visit;
 
 pub use canonical::*;
 pub use display::*;
