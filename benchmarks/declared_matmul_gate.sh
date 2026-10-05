@@ -46,13 +46,26 @@ assert K == (1 << K_LOG2), "f16 all-ones needs K = power of two"
 elem_f16 = 1 if ELEM == "f16" else 0
 src = open(runner).read()
 
-def field_off(name_):
-    m = re.search(r'\{ "%s", 1, (\d+), (\d+),' % name_, src)
+def field_desc(name_):
+    m = re.search(r'\{ "%s", 1, (\d+), (\d+), (\d+),' % name_, src)
     assert m, f"field {name_} not in table"
-    return int(m.group(1))  # host offset — the seed writes the host layout
+    # host offset (the seed writes the host layout), element size, count
+    return int(m.group(1)), int(m.group(3))
 
-off = {f: field_off(f) for f in ("a", "b", OUTFIELD)}
+off = {f: field_desc(f)[0] for f in ("a", "b", OUTFIELD)}
 count = {"a": M * K, "b": K * N, OUTFIELD: M * N}
+# A fixture whose fields are smaller than the shape (e.g. `Float16[MN]`
+# for a non-cube where M*K > M*N) makes the seed overflow into neighbor
+# fields — clobbering `i` stops the launch and the verifier then reads
+# seed garbage. Fail loudly with the fix instead.
+for f in ("a", "b", OUTFIELD):
+    _, desc_count = field_desc(f)
+    if desc_count < count[f]:
+        print(f"fixture field '{f}' holds {desc_count} elements but this shape "
+              f"needs {count[f]} — declare a[M*K], b[K*N], y[M*N] "
+              f"(M={M} N={N} K={K})", file=sys.stderr)
+        sys.exit(2)
+count = {f: field_desc(f)[1] if f != OUTFIELD else count[f] for f in count}
 
 if '#include <stdlib.h>' not in src:
     src = src.replace('#include', '#include <stdlib.h>\n#include', 1)

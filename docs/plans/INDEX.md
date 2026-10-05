@@ -115,9 +115,14 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
    **Rung 0: SPIR-V small-N — ROOT-CAUSED + FIXED 2026-10-04** (`7f285b6f`:
    the runner under-dispatched the naive tier 16× — the dispatch now keys
    on the emitter's chosen body; 64³/128³ EXACT; the n≥256 quad guard
-   dropped as misattribution). **Residual rung 0b (OPEN)**: naive-lane
-   under-accumulation at (M·N ≤ 4096, K ≥ 128)-class shapes — IR reads
-   correct, needs a device-level probe (BUGS.md). Then: pipelined fills,
+   dropped as misattribution). **Rung 0b RESOLVED (2026-10-04, same day)**: the
+   "naive-lane under-accumulation" was a GATE-HARNESS artifact — fixtures
+   sized `a/b: Float16[MN]` (cube-only) let the M·K/K·N seed overflow
+   into `i`, skipping the launch entirely; gemm_h.abv now sizes a[M*K],
+   b[K*N], y[M*N] and the gate fails loudly on undersized fixtures; all
+   non-cube shapes pass both lanes bit-exact. **OPEN**: CUDA f16 tensor
+   patterned nondeterminism at g1024 (run-varying cells, all-ones immune;
+   BUGS.md new entry — PTX reduction probe next). Then: pipelined fills,
    B-traffic levers toward 32 TF.
 4. **Re-rank table fold-in** — fold fused-attention + float4 numbers into
    the stage-5 table (row 3 already marked DONE).

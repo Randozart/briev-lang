@@ -228,3 +228,32 @@ naive-lane under-accumulation (y = the k=0 term) at (M·N ≤ 4096, K ≥ 128)
 and the tensor tier's 128×128×256 — IR reads correct; needs a
 device-level probe. NOT fixed this session; the honest boundary is
 recorded so the next session starts at the probe, not the search.
+
+## ADDENDUM 5 (2026-10-04, rung 0b resolution): the "naive-lane under-accumulation" was a harness artifact; plus a real CUDA nondeterminism find
+
+Rung 0b closed: the residual "y = the k=0 term" defect did not exist in
+the compiler. The fixtures sized `a/b: Float16[MN]` (correct only for
+cubes); the gate's `M*K`/`K*N` seed overflowed the desc fields into `i`;
+corrupted `i` skipped the launch; the verifier read seed-overflow
+garbage. Evidence: raw runner prints `i = 4096` (launch loop correct);
+old/new fixture builds byte-identical (diff); after sizing a[M*K],
+b[K*N], y[M*N] (gemm_h.abv) and adding a loud gate assert, ALL non-cube
+shapes — 64×64×128, 64×64×256, 64×128×256, 128×128×256 — pass BOTH
+lanes with max_rel = 0.000e+00; cube controls (64³, 128³, 256³,
+256×256×64) all PASS (g256 patterned exact 0.000e+00 on both lanes,
+6/6 runs).
+
+Correction to ADDENDUM note above (dated, not edited): the doc's line
+"ptx_tensor_f16acc default false" reflected the 2026-09-03 state — the
+config has been `ptx_tensor_f16acc: 1` since 2026-09-15 (Phase 4b
+commit 98d998b2). f16 tensor K≥512 patterned claims run under
+`BRIEV_GEMM_F16ACC=1` (tol 1e-2), as the protocol already says.
+
+Per-lane f16 patterned floor @1024³ measured today: VULKAN 3.748e-03
+stable across runs (== the recorded floor — the floor records were
+vulkan-stable values); CUDA varies run-to-run 3.748e-3 .. 1.041e-2 with
+scattered bad cells (2..88 of 16384), persists per pinned device (both
+RTX 3060), all-ones exact every run — filed as a new OPEN bug (BUGS.md):
+nondeterministic order-dependent accumulation on the CUDA tensor path
+(PTX reduction/atomic probe is the next step). The gate is red on this
+shape until fixed; no tolerance was raised to hide it.

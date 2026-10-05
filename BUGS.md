@@ -7860,7 +7860,7 @@ of the fill campaign (`2026-09-30-stage5b-structural-fill-campaign.md`
 via `2026-10-04-three-surfaces-functional.md` Phase 2.2): the quad
 default drops its guard when this closes.
 
-## Naive-lane f16 GEMM under-accumulates at (M·N ≤ 4096, K ≥ 128): y = the k=0 term only [OPEN 2026-10-04 — residual of the small-N sweep; IR reads correct; needs a device-level probe]
+## Naive-lane f16 GEMM under-accumulates at (M·N ≤ 4096, K ≥ 128): y = the k=0 term only [RESOLVED 2026-10-04 (same day) — harness artifact, not a compiler defect; header corrected 2026-10-04]
 
 **Found:** 2026-10-04, re-verifying the runner-dispatch fix at cross
 shapes. After the dispatch fix (previous entry), 64³ and 128³ are EXACT,
@@ -7883,9 +7883,63 @@ PRE-FIX 64³ quad build passed all-ones 4096/4096 once, which the
 models (or the probe) is wrong; do not trust either until a
 device-level probe settles it.
 
+**RESOLUTION 2026-10-04 (later, same day): NOT A COMPILER DEFECT.** The
+"one term" was never computed — the kernel never launched. Chain:
+1. The fixtures declared `a/b/y: Float16[MN]` — correct only for cubes
+   (M·K = K·N = M·N). At non-cube shapes (K > M or K > N) the fields are
+   undersized.
+2. The gate seeded `M*K`/`K*N` elements (argv) into the `MN`-sized desc
+   fields → the b-seed overflowed into `i` (state offset between b and y).
+3. Corrupted `i` ≥ M·N → the node guard `[i < M*N]` was false from the
+   start → the loop broke immediately → **no kernel launch** → the
+   verifier read seed-overflow garbage as "results" (the all-ones
+   "y = 1.0" was the b-tail of 0x3C00 halves sitting in y's region).
+
+Evidence: the raw (non-gated) runner for 64×64×128 prints `i = 4096` —
+the launch loop and naive kernel are correct; old-fixture vs new-fixture
+builds are byte-identical (diff of runner.c and .spv) proving the fixture
+edit cannot change numerics; after the fix ALL non-cube shapes
+(64×64×128, 64×64×256, 64×128×256, 128×128×256) pass both lanes with
+max_rel = 0 (bit-exact), as do all cube controls.
+
+Fixes landed (same session): `examples/gpu/gemm_h.abv` now sizes
+`a[M*K]`, `b[K*N]`, `y[M*N]` (shape-general); the gate fails loudly with
+what/why/fix if a fixture field cannot hold the shape instead of
+overflowing silently. The earlier boundary table ((M·N≤4096, K≥128)
+etc.) was an artifact map of seed overflow, not a defect map.
+
 **Probe instrument:** the three-mode declared-matmul gate
 (all-ones/patterned/probe) at the cross shapes; SPIR-V = spirv-dis of the
 gate-built .spv. Next step: a minimal single-output kernel bisect
 (K-only sweep at fixed M·N=4096; then prefix-only vs remainder-only
 builds via spirv_unroll=1) to localize whether the loss is the unrolled
 prefix, the remainder loop, or the y-store handoff — on device, not in IR.
+
+## CUDA f16 tensor patterned nondeterminism at g1024 — run-to-run varying cells [OPEN 2026-10-04 — found while re-gating the fixed harness]
+
+**Observed:** `examples/gpu/.tmp_quad/g1024.abv` (1024³, f16), gate mode 1
+(patterned), CUDA lane: identical binary + identical seeds produce
+different results run to run — bad cells 2 → 22 → 14 → 88 → 341 → 41 → 4
+out of 16384 sampled, max_rel 3.748e-3 .. 1.041e-2 (worst cells scattered,
+e.g. y[137,644], y[274,2], y[888,824], y[820,123]). Pinned per device
+(`CUDA_VISIBLE_DEVICES=0` and `=1`, both RTX 3060): variance persists
+per-device. Vulkan lane: stable at 3.748e-3 (== the recorded
+@1024³ floor) every run. All-ones (mode 0): EXACT every run on both
+lanes. The old vs new fixture A/B is byte-identical (runner.c + .spv
+diff), so neither the fixture nor the gate seeds cause this; it predates
+today's harness fix (earlier gate runs of this shape were lucky passes).
+
+**Working hypothesis (needs the PTX to confirm):** order-dependent
+accumulation — all-ones is integer-exact under ANY order (immune),
+while patterned f16 rounding varies with the order; scattered cells +
+varying counts say a nondeterministic reduction order (e.g. f16 atomic
+adds or an unsynchronized partial-sum write) on the CUDA tensor path
+(`ptx_tensor_f16acc: 1` since 2026-09-15, Phase 4b). Vulkan's order is
+fixed → stable.
+
+**Next probe:** dump the g1024 CUDA kernel PTX (`brievc` artifacts /
+`cuobjdump -sass`), locate the epilogue reduction for the patterned
+cells' tiles, and look for `red.`/atomics or missing `bar.sync`; then
+A/B the kernel with `ptx_tensor_f16acc: 0` (config sweep) — if variance
+collapses to the f32-acc floor, the race sits in the f16acc epilogue.
+Gate stays red on this shape until fixed — the gate is doing its job.

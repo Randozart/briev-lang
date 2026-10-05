@@ -9,11 +9,13 @@ import "std/numeric.bv";
 const M: Int = 4096;
 const N: Int = 4096;
 const K: Int = 4096;
-const MN: Int = 4096 * 4096;
+const MN: Int = M * N;
+const MK: Int = M * K;
+const KN: Int = K * N;
 
 let i: Int = 0;
-let a: Float16[MN];
-let b: Float16[MN];
+let a: Float16[MK];
+let b: Float16[KN];
 let y: Float16[MN];
 
 async node gemm [i < M * N][i == M * N] {
