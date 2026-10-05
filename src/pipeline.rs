@@ -1008,6 +1008,13 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     // `brievc check` and the conformance sweep must see the same ONE IR
     // the build path sees (the divergence class this fn's doc records).
     crate::plugin::composite::expand_composites(&mut items, &pm)?;
+    // 2026-10-05: the pre-typecheck DESUGARS run here too — the check path
+    // had missed them since their introduction (multi-index markers
+    // typechecked as unknown calls; wildcard lifts typechecked as Int),
+    // the exact divergence class this fn's doc records. `brievc check`
+    // and the conformance sweep now see the same IR `build` sees.
+    crate::analysis::desugar::rewrite_multi_index(&mut items)?;
+    crate::analysis::desugar::rewrite_wildcard_lift(&mut items)?;
 
     let mut universe = TypeUniverse::new();
     // 2026-09-26 (E15): declared typedefs registered before the typecheck —

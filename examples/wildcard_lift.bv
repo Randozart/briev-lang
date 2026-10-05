@@ -1,0 +1,18 @@
+// wildcard_lift.bv — `[*]` wildcard element access (2026-10-05, Phase 0.6a).
+// `[*]` ranges EVERY element of a fixed-size array; the desugar lifts the
+// statement once per element in declaration (row-major) order with the
+// wildcard index in scope. The interpreter and every backend see only the
+// plain per-element forms — one implementation, zero backend arms.
+// Full semantics: spec/SPEC.md §15 (Wildcard element lift).
+let a: Int[4];
+let b: Int[4];
+let d: Int[4];
+let wide: Int[8];
+let n: Int = 1;
+node lift_demo [n > 0][n > 0] {
+    // element-wise: d[i] = a[i] + b[i] for i in 0..4
+    d = a[*] + b[*];
+    // broadcast: wide[i] = n for all i (wildcard-free rhs)
+    wide[*] = n;
+    term;
+};

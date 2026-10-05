@@ -2712,6 +2712,24 @@ From highest to lowest:
 10. ranges;
 11. transfers and assignment.
 
+> **2026-10-05 (Wildcard element lift).** `[*]` selects *every* element of a
+> fixed-size array in an expression — the general form of the electronics
+> wildcard wiring of §3.5/§13, now on every surface. The meaning is the
+> **explicit lift**: the statement replicates once per element in
+> declaration (row-major) order with the wildcard index in scope, and every
+> `X[*]` in the statement shares that one index (the element-wise rule;
+> mixed extents are a hard error). `d = a[*] + b;` is exactly
+> `d[i] = a[i] + b` for each `i`; a wildcard-free right side is the
+> broadcast form (`wide[*] = n`). The lift is an AST-level desugar — one
+> implementation before the typecheck, so the interpreter and every backend
+> see only the plain per-element forms. Bounds: bases must be declared
+> fixed-size arrays (`T[N]`, extent ≤ 1024); a wildcard outside an
+> assignment to a declared array of the same extent is a compile error
+> naming the fix. Contract-half wildcards are not lifted — the electronics
+> netlist consumes them as wiring topology (§13). Implementation:
+> `analysis::desugar::rewrite_wildcard_lift`; worked example:
+> `examples/wildcard_lift.bv`.
+
 ## 16. Literals, ranges, and slicing
 
 ### 16.1 Numeric literals

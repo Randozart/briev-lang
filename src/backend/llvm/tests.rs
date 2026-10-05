@@ -825,6 +825,35 @@ node report [a < 0][true] {
     assert!(ir.contains("llvm.abs"), "Abs# must emit llvm.abs; got:\n{ir}");
 }
 
+/// 2026-10-05 (Phase 0.6a): `[*]` desugars to the declaration-order lift
+/// BEFORE the backend — the emitter sees plain per-element statements and
+/// the old wildcard panic (emit_expr, "not a codegen value") is
+/// unreachable for lifted programs. The composition (pass + generate) is
+/// what compile_source runs.
+#[test]
+fn test_wildcard_lift_reaches_codegen_as_plain_elements() {
+    let src = r#"
+let a: Int[4];
+let b: Int[4];
+let d: Int[4];
+let n: Int = 1;
+node report [n > 0][n > 0] {
+    d = a[*] + b[*];
+    term;
+};
+"#;
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = crate::parser::Parser::new(tokens, src);
+    let mut items = p.parse_program().unwrap();
+    crate::analysis::desugar::rewrite_wildcard_lift(&mut items).unwrap();
+    let mut backend = LlvmBackend::new();
+    let ir = backend.generate(&items, None);
+    // Four unrolled element adds (one per index), in declaration order.
+    let adds = ir.matches("add i64").count();
+    assert!(adds >= 4, "expected >= 4 unrolled adds, got {adds}:\n{ir}");
+    assert!(!ir.contains("Wildcard"), "no wildcard may reach the IR:\n{ir}");
+}
+
 /// A program with a `Int[2][3]` state field written and read at `[1][2]` —
 /// exercises the multi-dim array layout + row-view GEPs (2026-08-07, Phase 7).
 fn multidim_program() -> Vec<TopLevel> {

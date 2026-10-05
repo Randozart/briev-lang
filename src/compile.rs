@@ -350,6 +350,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // a parse artifact, not a resolvable call) and before every analysis —
     // the shape detectors and backends only ever see plain Expr::Index.
     briev_compiler::analysis::desugar::rewrite_multi_index(&mut items)?;
+    // 2026-10-05 (three-surfaces plan Phase 0.6a): `[*]` wildcard element
+    // access → the explicit declaration-order lift (plan-decided default).
+    // MUST run before check_types and every analysis/backend — they only
+    // ever see plain per-element statements. Fail closed: a wildcard that
+    // cannot lift is a compile error, never a silent miscompile.
+    briev_compiler::analysis::desugar::rewrite_wildcard_lift(&mut items)?;
     let mut universe = TypeUniverse::new();
     // 2026-09-26 (E15): register the declared typedefs BEFORE the typecheck —
     // imports (the electronics stdlib's Volt/Amp/Ohm) were previously absent

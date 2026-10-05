@@ -214,9 +214,15 @@ first non-electronics type-state consumer) → (b) quantities **Time
 dimension DONE 2026-10-05** (`c1f1fc9f`: QuantityDim::Time, ns/…/Second
 suffixes, additive — remaining half FILED: expression-position quantity
 literals need the Expr/Type::Quantity typing design + spec-key story)
-→ (a) `[*]`
-backport, surface-capability declarations (P1+P2 shared root:
-electronics-pin codegen panic + GPU-leak mislowering, BUGS.md). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
+→ (a) `[*]` backport **DONE 2026-10-05** (plan-decided default
+landed: `analysis::desugar::rewrite_wildcard_lift` — AST-level explicit
+lift, declaration-order unroll, ONE implementation pre-typecheck so
+interp/backends see only plain forms; v1 surface = assign-form lifts +
+broadcast, fail-closed elsewhere; SPEC §15 note + `examples/wildcard_lift.bv`;
+BONUS: closed the check/build desugar divergence — `brievc check`/sweep
+had missed BOTH desugars (multi-index markers typechecked as unknown
+calls since 2026-09-17); remaining 0.6: expression-position quantity
+literals, surface-capability declarations (P1+P2, BUGS.md). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---
