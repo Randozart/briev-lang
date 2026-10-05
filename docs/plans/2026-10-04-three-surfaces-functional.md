@@ -154,12 +154,16 @@ Promotion-sweep investigation findings (2026-10-04):
    language gaps — INDEX names but does not enumerate them), then implement.
    The generality test: a real stdlib module, not a toy.
    **IN PROGRESS 2026-10-05**: `lib/std/json.bv` migrated from the archive
-   (typechecks; inert, not prelude-loaded). The migration surfaced SIX
-   codegen/liveness defects — FIVE fixed (`734a8dac`: enum struct-payload
-   match binding, bare tail match, List+List liveness, String cast-lane
-   liveness, String indexing); TWO open: `list_concat` unimplemented and the
-   Char cast lane mis-typing the value as the Data variant (`char_at`
-   unusable). Both filed in BUGS.md. The generality test is doing its job.
+   (typechecks; inert, not prelude-loaded). The migration surfaced TWELVE
+   codegen/liveness defects. Round 1 (`734a8dac`): enum struct-payload match
+   binding, bare tail match, List+List liveness, String cast-lane liveness,
+   String indexing. Round 2 (`cf38ced2`): Char local cast, union-payload
+   struct handling, tuple String element, Float param unbox, `last_val_temps`
+   leak across callable txns, `let` rebinding invalidation, block-tail match.
+   json.bv now compiles to VALID IR. **ONE blocker remains**: callable `txn`
+   convergence is linear (parser loop txns return after one iteration →
+   segfault); `list_concat` is unimplemented (worked around with `<-`). Both
+   BUGS.md. The generality test is doing its job.
 2. Package/module v0: git-based registry; reuse macro-lock; `briev.toml`
    target profiles exist.
 3. Install story: single static binary; `brievc run hello.bv` < 5 min on
