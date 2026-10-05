@@ -7915,7 +7915,7 @@ gate-built .spv. Next step: a minimal single-output kernel bisect
 builds via spirv_unroll=1) to localize whether the loss is the unrolled
 prefix, the remainder loop, or the y-store handoff — on device, not in IR.
 
-## CUDA f16 tensor patterned nondeterminism at g1024 — run-to-run varying cells [OPEN 2026-10-04 — found while re-gating the fixed harness]
+## CUDA f16 tensor patterned nondeterminism at g1024 — run-to-run varying cells [RESOLVED 2026-10-05 — tail wait_group no-op; found while re-gating the fixed harness 2026-10-04]
 
 **Observed:** `examples/gpu/.tmp_quad/g1024.abv` (1024³, f16), gate mode 1
 (patterned), CUDA lane: identical binary + identical seeds produce
@@ -7975,3 +7975,69 @@ column-step-5 runs with the b-stage load pattern, and re-run the
 2026-09-16 stage-cap fix's assumptions at K=1024 (stage count vs k
 trip). Gate stays red on this shape until fixed — the gate is doing
 its job.
+
+**RESOLUTION (2026-10-05): root cause = the TAIL of the k-loop waits for
+nothing. Fixed in `src/backend/ptx/tensor.rs` (WAIT_DRAIN branch).**
+
+The SASS bisect was unnecessary — `BRIEV_DEBUG_PTX=<dir>` keeps the
+emitted PTX (`compile_cubin`, `src/backend/ptx/mod.rs`), and the 562-line
+g1024 kernel shows the whole 3-stage ring clean except the last two
+iterations:
+
+1. The fill guard (`kstep ≥ k − 16·kps·(stages−1)` = 992 at K=1024,
+   stages=3, kps=1) skips the `cp.async.commit_group` on the final
+   iterations (by design — the prefetch would read past K).
+2. The in-loop wait is `cp.async.wait_group 1` (= `stages−2`), which
+   waits for "all but the most recent group". At kstep=976 the last
+   commit lands (the stripe for k1008..1023); at kstep=992 and 1008
+   exactly ONE group is pending, so `wait_group 1` returns WITHOUT
+   waiting. Nothing ever drains it.
+3. The kstep=1008 read (the final k-stripe) therefore races its own
+   `cp.async`: stage 0 still holds k960's data (fully stale) or a
+   partially-written mix.
+
+Every observed symptom follows:
+- **ones immune**: for all-ones input the stale k960 stripe IS the
+  correct k1008 stripe → Δ = 0 exactly.
+- **step-5 columns**: Δ(n) inherits b's `flat%5` seed period.
+- **+3.9..+4.9 deltas**: partial 16B cp.async chunks = a few stale
+  k-elements inside the tile (a single whole-stale slice cannot exceed
+  ±3 = one term's max).
+- **run-varying, sparse**: the race usually wins (the copy lands within
+  the 2-iteration slack); timing decides how many threads lose.
+- **same binary, byte-identical builds, no atomics**: runtime-only,
+  exactly as probed.
+
+**Correction to the probe note above:** the "stable floor cell y[274,2]
+= 7.157e-3" was the race, not the accumulator. Post-fix CUDA measures
+3.748e-3 — the recorded @1024³ floor, identical to vulkan on both
+lanes; the recorded floor was CUDA too.
+
+**Fix:** at the wait site, when the fill guard has fired
+(`kstep ≥ fill_guard`), drain fully (`cp.async.wait_group 0`) instead of
+`wait_group (stages−2)`. This is the deep-K sibling of the 2026-09-16
+shallow-K drain documented at the prologue (`tensor.rs`, same family:
+`wait_depth` leaves a group in flight that a later read consumes).
+stages=2 and k≤128 already drain via `wait_depth = 0`; warp-spec forces
+stages=2 and is unaffected. The steady path (guard not fired) keeps the
+overlapping `wait_group (stages−2)` — the drain costs only the final
+1-2 iterations. Provenance comment in-code; undo = drop the branch.
+
+**Verification:**
+- g1024 patterned, CUDA, same binary ×12: max_rel = 3.748e-03 EVERY
+  run (zero variance), PASSES the default 5e-3 tol without
+  `BRIEV_GEMM_F16ACC`; all-ones EXACT ×3; both lanes identical.
+- Full fixture sweep, both lanes, both modes: g64/g128/g256/g512/
+  g1024/g2048/g4096 + all non-cube fixtures PASS (g192 still hits the
+  gate script's unconditional K-power-of-two assert — pre-existing,
+  script untouched).
+- `cargo test --lib`: 2856 green (new emission regression test
+  `mw_tail_drain_branch_keeps_last_stripe_wait` pins the branch, the
+  drain depth, and the shared 992 bound).
+- Perf (interleaved A/B, HEAD vs fix, CUDA GPU1, g256/g1024/g4096,
+  6-8 rounds × 30-40 batched launches): sign-flipping per-round deltas
+  under a ±5% DVFS envelope; min-convention parity (g1024: 1.9394 new
+  vs 1.9431 old; g4096 best window: 17.04 new vs 17.22 old). No >1%
+  regression established. Raw protocol + numbers:
+  `benchmarks/results/2026-10-05-cuda-tail-drain-fix.md` (provisional
+  timing, machine-drift noted).

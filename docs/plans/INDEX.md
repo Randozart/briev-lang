@@ -120,10 +120,17 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
    sized `a/b: Float16[MN]` (cube-only) let the M·K/K·N seed overflow
    into `i`, skipping the launch entirely; gemm_h.abv now sizes a[M*K],
    b[K*N], y[M*N] and the gate fails loudly on undersized fixtures; all
-   non-cube shapes pass both lanes bit-exact. **OPEN**: CUDA f16 tensor
-   patterned nondeterminism at g1024 (run-varying cells, all-ones immune;
-   BUGS.md new entry — PTX reduction probe next). Then: pipelined fills,
-   B-traffic levers toward 32 TF.
+    non-cube shapes pass both lanes bit-exact. **g1024 CUDA race
+    RESOLVED (2026-10-05)**: the run-varying patterned cells were the
+    k-loop's TAIL — the fill guard stops committing, so
+    `wait_group (stages−2)` no-ops with one pending group and the last
+    stripe's cp.async races the final reads (BUGS.md resolution; fix =
+    WAIT_DRAIN branch in `src/backend/ptx/tensor.rs`, deep-K sibling of
+    the 2026-09-16 shallow-K drain). Post-fix: g1024 deterministic
+    3.748e-3 ×12, full fixture sweep green both lanes, min-convention
+    perf parity (`benchmarks/results/2026-10-05-cuda-tail-drain-fix.md`).
+    Then: pipelined fills,
+    B-traffic levers toward 32 TF.
 4. **Re-rank table fold-in** — fold fused-attention + float4 numbers into
    the stage-5 table (row 3 already marked DONE).
 5. ~~GemmPlan retirement~~ — **DECLARATION-GATED 2026-10-03** (increments

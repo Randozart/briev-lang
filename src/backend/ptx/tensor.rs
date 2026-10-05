@@ -2103,10 +2103,8 @@ fn tensor_gemm_ptx_smem_mw_opt(
     // gate once). On the final iterations the prefetch would read past K, so
     // it is skipped. kps>1 adds the cadence guard: fills fire only on the
     // first strip of each stage (kstep % 16·kps == 0).
-    out.push_str(&format!(
-        "    setp.ge.u32 %p1, %r2, {};\n",
-        (k - (16 * kps as i64) * (stages as i64 - 1)).max(0)
-    ));
+    let fill_guard = (k - (16 * kps as i64) * (stages as i64 - 1)).max(0);
+    out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", fill_guard));
     out.push_str("    @%p1 bra FILL_DONE;\n");
     if kps > 1 {
         out.push_str(&format!("    and.b32 %r18, %r2, {};\n", 16 * kps - 1));
@@ -2211,7 +2209,27 @@ fn tensor_gemm_ptx_smem_mw_opt(
             out.push_str("    setp.ne.u32 %p1, %r19, 0;\n");
             out.push_str("    @%p1 bra WAIT_DONE;\n");
         }
+        // 2026-10-05 tail drain — the deep-K sibling of the 2026-09-16
+        // shallow-K drain above (same family: wait_depth leaves a group in
+        // flight that a later read consumes). Once the fill guard fires, no
+        // new group is committed, so the pending count settles at
+        // `wait_depth` and `cp.async.wait_group wait_depth` returns WITHOUT
+        // waiting: the final stripe's cp.async races the last reads.
+        // Observed on the g1024 patterned gate: 0..60 stale cells per run,
+        // +3.9..+4.9 deltas (partial k-slice), all-ones immune (stale slice
+        // == correct slice for ones), step-5 columns = b's period-5 seed
+        // pattern, run-varying, zero atomics. The guard fires only on the
+        // final 16·kps·(stages-1) k, so the full drain costs 1-2 tail
+        // iterations. Scope: stages≥3 + k>128 in-loop waits (stages=2 and
+        // k≤128 already drain via wait_depth=0). Undo: drop the
+        // WAIT_DRAIN branch and restore the constant depth.
+        out.push_str(&format!("    setp.ge.u32 %p1, %r2, {};\n", fill_guard));
+        out.push_str("    @%p1 bra WAIT_DRAIN;\n");
         out.push_str(&format!("    cp.async.wait_group {};\n", wait_depth));
+        out.push_str("    bra.uni WAIT_JOIN;\n");
+        out.push_str("WAIT_DRAIN:\n");
+        out.push_str("    cp.async.wait_group 0;\n");
+        out.push_str("WAIT_JOIN:\n");
         out.push_str("    membar.cta;\n");
         out.push_str("    bar.sync 0;\n");
         if kps > 1 {
@@ -2379,6 +2397,32 @@ mod r16_dump {
     fn dump_mw_8192_f16acc() {
         let ptx = tensor_gemm_ptx_smem_mw(8192, 8192, 8192, 0, 134217728, 268435464, 2, 4, 4, true, 2, 2);
         std::fs::write("/tmp/opencode/tgemm_mw_8192_f16acc.ptx", &ptx).unwrap();
+    }
+
+    #[test]
+    fn mw_tail_drain_branch_keeps_last_stripe_wait() {
+        // 2026-10-05 tail-race regression (BUGS.md 2026-10-05): with
+        // stages≥3 the fill guard stops committing on the final
+        // 16·(stages-1) k, so the pending count settles at wait_depth and
+        // `cp.async.wait_group wait_depth` returns without waiting — the
+        // final stripe's cp.async races the last reads (g1024 patterned:
+        // 0..60 stale cells/run, +3.9..4.9 deltas, all-ones immune). The
+        // WAIT_DRAIN branch must drain from the guard iteration on, and
+        // the fill guard and drain guard must share the same bound.
+        let ptx = tensor_gemm_ptx_smem_mw(1024, 1024, 1024, 0, 2097152, 4194328, 2, 2, 4, true, 3, 2);
+        assert!(ptx.contains("WAIT_DRAIN:"), "drain label emitted");
+        assert!(ptx.contains("cp.async.wait_group 0;"), "drain depth");
+        assert!(
+            ptx.contains("cp.async.wait_group 1;"),
+            "steady path keeps stages-2 overlap"
+        );
+        // k - 16·kps·(stages-1) = 1024 - 32 = 992, exactly twice: the fill
+        // guard and the drain guard.
+        assert_eq!(
+            ptx.matches("setp.ge.u32 %p1, %r2, 992;").count(),
+            2,
+            "fill guard and drain guard share the bound"
+        );
     }
 
     /// f32-tier warp_mh A/B artifacts (2026-09-12): the dispatch-true
