@@ -210,7 +210,11 @@ mode audit, registry-params fill (34-name panic class) + gate⇔arm rule
 (undefined-symbol + GPU-leak classes)) → (c) `mode` audit **DONE 2026-10-05**
 (`docs/plans/2026-10-05-mode-consumer-audit.md`: consumers = electronics
 laws engine only; KEEP electronics-owned, promotion path named for the
-first non-electronics type-state consumer) → (b) quantities Time, (a) `[*]`
+first non-electronics type-state consumer) → (b) quantities **Time
+dimension DONE 2026-10-05** (`c1f1fc9f`: QuantityDim::Time, ns/…/Second
+suffixes, additive — remaining half FILED: expression-position quantity
+literals need the Expr/Type::Quantity typing design + spec-key story)
+→ (a) `[*]`
 backport, surface-capability declarations (P1+P2 shared root:
 electronics-pin codegen panic + GPU-leak mislowering, BUGS.md). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
