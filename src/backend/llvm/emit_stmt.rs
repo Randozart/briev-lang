@@ -601,6 +601,15 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             let bind_ty = ty.clone().unwrap_or_else(|| val.ty.clone());
             backend.fun.let_binding_types.insert(name.clone(), bind_ty.clone());
             backend.fun.let_original_types.insert(name.clone(), bind_ty);
+            // 2026-10-05 (json.bv): a `let` REBINDING a name must invalidate
+            // the "just written" cache for it — a prior match arm / statement
+            // set `last_val_temps[name]` (bind_pattern writes it) and the
+            // identifier read prefers it over the fresh let binding. In
+            // parse_exponent_apply arm 0 binds `f`, arm 1's `let f = n as
+            // Float` did NOT override it, so arm 1 read arm 0's register
+            // (dominance violation: a register from a sibling match block).
+            backend.fun.last_val_temps.remove(name);
+            backend.fun.last_val_types.remove(name);
             // 2026-08-16 (three-track Phase 2, D2 pre-grow): a LOCAL coll whose
             // intra-firing peak exceeds the default cap gets ONE `EnsureCap#(q,
             // peak)` here — at construction, before ANY push. Emitted at the

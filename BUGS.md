@@ -8414,3 +8414,48 @@ undefined `err_char`; single-wrap the Array/Object frames; list append via
   `Data→Char→Int` truncs a native i32. `char_at` is therefore unusable
   from Briev code until the Char protocol's default variant / native
   width is consistent. Blocks json.bv end-to-end.
+
+## json.bv round 2 — callable `txn` convergence is linear (blocks json runtime) + 6 more codegen fixes 2026-10-05
+
+Continuing the json.bv migration (previous entry): after the first five
+fixes, json.bv compiled to **valid IR** but segfaulted at runtime. The
+runtime crash root-caused to a semantic gap:
+
+**OPEN — callable `txn` with contracts does not converge.** `json_int_digits`,
+`find_pair`, `parse_array_elems`, … are `txn`s whose body advances a counter
+and `term`s when the postcondition holds — the idiomatic Briev loop (see
+`lib/std/array.bv` `array_map`). The parser sets `is_reactive: false` for
+EVERY `txn` (`parse_transaction(false, …)`), and `emit_callable_txn` does
+`is_linear_defn = !txn.is_reactive` → the postcondition is emitted as an
+assertion (`br … .post_pass / .post_fail: unreachable`) and the body runs
+ONCE. A loop txn therefore returns after one iteration, and the next
+iteration's post-check hits `unreachable` → segfault. The reactive branch
+(`br %done, %loop`) exists but is unreachable for parsed txns. Fix: callable
+txns with a convergence contract must loop (or `array_map`-style stdlib
+loops are also broken — needs a decision + a test that actually runs one).
+
+**FIXED this round (suite 2884 green):**
+1. **Char local cast.** The else-branch Char unbox lacked the `ty == Int`
+   guard the String/obj branches have, so a NATIVE Char local
+   (`let c: Char = char_at(..)`) was `trunc i64 <i32 reg>` (invalid IR).
+   Guard added — `c as Int` is now `zext i32`.
+2. **`unwrap_union_payload` struct handling.** It inttoptr'd any
+   `llvm_type == "ptr"` payload, but a struct/obj handle also maps to "ptr"
+   and its box IS i64 — double-inttoptr on `f.value`. Now only String/Blob
+   inttoptr; Char/Bool unbox to i32/i8.
+3. **Tuple String element.** `pairs[i].0` (a String tuple element) loaded a
+   raw i64 into `briev_str_eq(ptr …)`. Element reads now inttoptr String/Data.
+4. **Float param unbox.** The alloca-param read branch handled String/Char/
+   Bool but not Float — a Float param read as i64 fed `fmul fast float <i64>`.
+5. **`last_val_temps` leaked across callable txns.** `emit_callable_txn`
+   cleared the let maps but not `last_val_temps`/`last_val_types`; a txn
+   param `e` resolved to a register defined in a PRIOR function (undefined
+   IR: `icmp sgt ptr %t256` for an Int param).
+6. **`let` rebinding did not invalidate `last_val_temps`.** In
+   `parse_exponent_apply` arm 0 binds `f`, arm 1's `let f = n as Float` left
+   the stale entry, so arm 1 read arm 0's register (dominance violation).
+   The `let` emitter now removes the name from the just-written caches.
+7. **Block tail `match`.** `Expr::Block` emitted a trailing
+   `Statement::Expression(Match)` via the void statement-match, returning an
+   undefined dummy register; it now emits the expression match (same rule as
+   the defn-tail fix).

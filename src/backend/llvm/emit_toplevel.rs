@@ -4511,6 +4511,14 @@ fn probe_ok_checks(
         self.fun.let_original_types.clear(); self.fun.reg_float_cache.clear();
         self.fun.reg_type_cache.clear();
         self.fun.expr_dedup_cache.clear();
+        // 2026-10-05 (json.bv): the "just written" caches are PER-FUNCTION too.
+        // A callable txn's parameter (`e`) resolved through a stale
+        // `last_val_temps["e"]` from a PRIOR function's match binding — the
+        // txn referenced a register defined in another function (undefined
+        // IR: `icmp sgt ptr %t256` for an Int param). clear_locals clears
+        // these; this reset must too.
+        self.fun.last_val_temps.clear();
+        self.fun.last_val_types.clear();
         // 2026-07-18: Detect bounded pre-condition (e.g. x < N) — enables
         // Alloca strategy for stack-allocated temporaries within the loop.
         self.fun.is_static_bound = matches!(&txn.contract.pre_condition,

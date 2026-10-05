@@ -934,6 +934,81 @@ node report [true][true] {
     );
 }
 
+/// 2026-10-05 (json.bv): a Char LOCAL read from a native-i32 register must
+/// NOT be truncated (`trunc i64 <i32>` is invalid IR). The else-branch Char
+/// unbox is only for boxed i64 params (`ty == Int`); a local typed Char is
+/// already i32, so `c as Int` is a plain zext.
+#[test]
+fn test_char_local_cast_is_zext_not_trunc() {
+    let src = r#"
+defn mkchar() -> Char { term 65 as Char; };
+defn widen() -> Int {
+    let c: Char = mkchar();
+    term c as Int;
+};
+let sink: Int[2];
+node report [true][true] {
+    sink[0] = widen();
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let widen = function_body(&ir, "@widen(");
+    assert!(widen.contains("zext i32"), "Char→Int must zext i32 to i64:\n{widen}");
+    assert!(
+        !widen.contains("trunc i64"),
+        "a native Char local must not be trunc'd from i64:\n{widen}"
+    );
+}
+
+/// Extract a function's IR body (`define … @name(…){ … }`).
+fn function_body(ir: &str, sig: &str) -> String {
+    let start = ir.find(sig).and_then(|p| ir[..p].rfind("define ")).unwrap_or(0);
+    let rest = &ir[start..];
+    let end = rest.find("\n}").map(|e| e + 2).unwrap_or(rest.len());
+    rest[..end].to_string()
+}
+
+/// 2026-10-05 (json.bv): an enum arm that BINDS a String payload (`Err(e)`)
+/// must unbox it to a ptr — a raw i64 typed String re-boxed as
+/// `ptrtoint ptr <i64>` (invalid IR).
+#[test]
+fn test_enum_string_payload_binds_ptr() {
+    let src = r#"
+import "std/result";
+defn rewrap(r: Result<Int, String>) -> Result<Int, String> {
+    match r {
+        Ok(n) => Ok(n),
+        Err(e) => Err(e),
+    }
+};
+let sink: Int[2];
+node report [true][true] {
+    let r = rewrap(Ok(5));
+    match r {
+        Ok(n) => { sink[0] = n; },
+        Err(e) => { sink[0] = 0; },
+    };
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let rewrap = function_body(&ir, "@rewrap(");
+    // The Err arm loads the String payload and inttoptr's it to a ptr before
+    // re-boxing; without the unbox it would `ptrtoint ptr <i64>` (invalid).
+    assert!(rewrap.contains("inttoptr"), "String payload must inttoptr:\n{rewrap}");
+}
+
 /// Mini-verifier (BUGS.md int-literal-float-init), per FUNCTION: a register
 /// defined as i64 may never feed a float-typed operand or store. Register
 /// names repeat across functions, so defs reset at each `define`.

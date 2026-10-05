@@ -1,11 +1,12 @@
 // JSON - Pure-Briev JSON parser (RFC 8259 subset)
 // Tier 2: String & Text Processing
 //
-// STATUS 2026-10-05: migrated and typechecks, but NOT yet usable — `char_at`
-// (String char access) lowers through a Char cast lane that mis-types the
-// value as the Data protocol variant, emitting invalid IR. Blocked on the
-// Char-protocol cast fix (BUGS.md "json.bv migration …"). Do not import
-// until that lands.
+// STATUS 2026-10-05: migrated, typechecks, and compiles to VALID IR, but
+// NOT yet usable — the parser loops are `txn`s and callable txn convergence
+// is currently linear (the postcondition is an assertion, so a loop txn
+// returns after one iteration and the next post-check hits `unreachable` →
+// segfault). Blocked on the callable-txn-convergence fix (BUGS.md "json.bv
+// round 2"). Do not import until that lands.
 //
 // 2026-08-23 (Leg 2, json.bv migration): restored from the archive and
 // migrated to current idioms — stdlib char_at/is_digit/is_hex_digit/
@@ -22,7 +23,7 @@ import "std/char";
 import "std/string_builder";
 import "std/result";
 
-struct ParseFrame {
+obj ParseFrame {
     value: JsonValue;
     pos: Int;
 };

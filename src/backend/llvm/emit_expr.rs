@@ -488,6 +488,23 @@ impl LlvmBackend {
                             let t = self.fun.gen_reg();
                             writeln!(out, "{}{} = trunc i64 {} to i8", indent, t, loaded).ok();
                             TypedRegister { name: t, ty }
+                        } else if self.is_protocol_member(&ty, "Float") {
+                            // 2026-10-05 (json.bv): a Float param is boxed into
+                            // its i64 slot (bitcast float→i32, zext to i64).
+                            // Unbox at the read — a raw i64 in a float operand
+                            // (`fmul fast float <i64>`) is invalid IR.
+                            let lt = self.llvm_type(&ty);
+                            if lt == "double" {
+                                let d = self.fun.gen_reg();
+                                writeln!(out, "{}{} = bitcast i64 {} to double", indent, d, loaded).ok();
+                                TypedRegister { name: d, ty }
+                            } else {
+                                let t = self.fun.gen_reg();
+                                let f = self.fun.gen_reg();
+                                writeln!(out, "{}{} = trunc i64 {} to i32", indent, t, loaded).ok();
+                                writeln!(out, "{}{} = bitcast i32 {} to float", indent, f, t).ok();
+                                TypedRegister { name: f, ty }
+                            }
                         } else {
                             // 2026-08-11 (Phase 2a2 fix): a narrow INTEGER
                             // param (`Int` on wasm32 is i32) is widened to the
@@ -520,16 +537,20 @@ impl LlvmBackend {
                             && let Some(cached) = self.fun.reg_float_cache.get(&reg)
                         {
                             TypedRegister { name: cached.clone(), ty }
-                        } else if self.is_protocol_member(&orig_ty, "Char") {
-                            // 2026-08-13: a Char param is boxed to i64 at
-                            // entry (emit_box_param "zext.i32.to.i64#") but its
-                            // native register is i32. A comparison against a
-                            // Char literal (`c >= ' '`) emits the literal as
-                            // i32, so the read must truncate the box to i32
-                            // (an `icmp eq i64 %ac0, i32 %t7` is a mismatch).
-                            // The register keeps the CHAR type (not the boxed
-                            // Int) so downstream casts dispatch to char_to_str
-                            // and Print# routes to __print_char.
+                        } else if ty == Type::int()
+                            && self.is_protocol_member(&orig_ty, "Char")
+                        {
+                            // 2026-08-13: a boxed Char param is registered in
+                            // let_binding_types as Int (the box) while
+                            // let_original_types keeps Char. Its register is a
+                            // boxed i64; truncate to the native i32 the literal
+                            // comparisons / casts expect.
+                            // 2026-10-05 (json.bv): the `ty == Int` guard is
+                            // REQUIRED — a NATIVE Char local (`let c: Char =
+                            // char_at(...)`, typed Char, register already i32)
+                            // must NOT be truncated (`trunc i64 <i32>` =
+                            // invalid IR; `c as Int` then mis-lowered). Mirrors
+                            // the String/obj branches' guard.
                             let t = self.fun.gen_reg();
                             writeln!(out, "{}{} = trunc i64 {} to i32", indent, t, reg).ok();
                             TypedRegister { name: t, ty: orig_ty }
@@ -859,7 +880,20 @@ impl LlvmBackend {
                     name: v.to_string(),
                     ty: Type::void(),
                 };
-                for stmt in stmts {
+                let n = stmts.len();
+                for (i, stmt) in stmts.iter().enumerate() {
+                    // 2026-10-05 (json.bv): a block whose VALUE is used and
+                    // whose last statement is a `match` must emit the
+                    // EXPRESSION match. Routing it to the void statement-match
+                    // (`.smt_*`) returned a dummy register — used as the arm
+                    // value it was undefined (`use of undefined value`). Same
+                    // rule as the defn-tail fix in emit_definition.
+                    if i + 1 == n {
+                        if let crate::ast::Statement::Expression(e @ crate::ast::Expr::Match(..)) = stmt {
+                            last = self.emit_expr(out, e, indent);
+                            continue;
+                        }
+                    }
                     last = self.emit_statement(out, stmt, indent);
                 }
                 last
@@ -983,7 +1017,22 @@ impl LlvmBackend {
                         let elem = self.fun.gen_reg();
                         writeln!(out, "{}{} = load i64, ptr {}", indent, elem, slot).ok();
                         let elem_ty = ts.get(n).cloned().unwrap_or_else(Type::int);
-                        return TypedRegister { name: elem, ty: elem_ty };
+                        // 2026-10-05 (json.bv): a String/Data tuple element is
+                        // stored as a boxed i64 handle — inttoptr it back to a
+                        // ptr so consumers (briev_str_eq, length, slice) see a
+                        // pointer, matching the Index String-element path.
+                        // Without this `pairs[i].0 == key` passed an i64 where
+                        // briev_str_eq expects a ptr.
+                        let name = if self.is_string_operand(&elem_ty)
+                            || self.is_blob_operand(&elem_ty)
+                        {
+                            let c = self.fun.gen_reg();
+                            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, elem).ok();
+                            c
+                        } else {
+                            elem
+                        };
+                        return TypedRegister { name, ty: elem_ty };
                     }
                 }
                 // 2026-07-14: Layout field access — #fieldname triggers bit-shift/mask
@@ -4643,26 +4692,37 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let raw = self.fun.gen_reg();
         writeln!(out, "{}{} = load i64, ptr {}", indent, raw, slot).ok();
         let llvm_ty = self.llvm_type(member_ty);
-        let name = match llvm_ty.as_str() {
-            "i64" => raw,
-            "ptr" => {
-                let c = self.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, raw).ok();
-                c
-            }
-            "double" => {
-                let c = self.fun.gen_reg();
-                writeln!(out, "{}{} = bitcast i64 {} to double", indent, c, raw).ok();
-                c
-            }
-            "float" => {
-                let t = self.fun.gen_reg();
-                let c = self.fun.gen_reg();
-                writeln!(out, "{}{} = trunc i64 {} to i32", indent, t, raw).ok();
-                writeln!(out, "{}{} = bitcast i32 {} to float", indent, c, t).ok();
-                c
-            }
-            _ => raw,
+        // 2026-10-05 (json.bv): the payload slot holds an i64 box. A real ptr
+        // payload is String/Blob ONLY — a struct/obj/enum handle ALSO maps to
+        // `llvm_type == "ptr"` but its box IS the i64 handle (adapt_to_i64
+        // passes it through). inttoptr'ing a struct handle produced
+        // `inttoptr i64 <ptr>` and double-inttoptr'd field access.
+        let name = if self.is_string_operand(member_ty) || self.is_blob_operand(member_ty) {
+            let c = self.fun.gen_reg();
+            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, raw).ok();
+            c
+        } else if llvm_ty == "double" {
+            let c = self.fun.gen_reg();
+            writeln!(out, "{}{} = bitcast i64 {} to double", indent, c, raw).ok();
+            c
+        } else if llvm_ty == "float" {
+            let t = self.fun.gen_reg();
+            let c = self.fun.gen_reg();
+            writeln!(out, "{}{} = trunc i64 {} to i32", indent, t, raw).ok();
+            writeln!(out, "{}{} = bitcast i32 {} to float", indent, c, t).ok();
+            c
+        } else if llvm_ty == "i32" || self.is_protocol_member(member_ty, "Char") {
+            // 2026-10-05 (json.bv): a Char payload is boxed i64; unbox to the
+            // native i32 (a raw i64 Char fed `append_char(.., i32)`).
+            let t = self.fun.gen_reg();
+            writeln!(out, "{}{} = trunc i64 {} to i32", indent, t, raw).ok();
+            t
+        } else if llvm_ty == "i8" || self.is_protocol_member(member_ty, "Bool") {
+            let t = self.fun.gen_reg();
+            writeln!(out, "{}{} = trunc i64 {} to i8", indent, t, raw).ok();
+            t
+        } else {
+            raw
         };
         TypedRegister { name, ty: member_ty.clone() }
     }
@@ -5503,17 +5563,6 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                          sub-patterns is staged — bind names or use `_`"
                     );
                 }
-                let base = self.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base, scrut).ok();
-                let slot = self.fun.gen_reg();
-                writeln!(
-                    out,
-                    "{}{} = getelementptr i64, ptr {}, i64 1",
-                    indent, slot, base
-                )
-                .ok();
-                let raw = self.fun.gen_reg();
-                writeln!(out, "{}{} = load i64, ptr {}", indent, raw, slot).ok();
                 // 2026-10-05 (json.bv match-binding): the payload binding takes
                 // the VARIANT'S declared payload type (generic params resolved
                 // against the scrutinee), not a hardcoded Int. Without this a
@@ -5521,20 +5570,35 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // `frame.value` panicked in emit_field_access.
                 let declared = self.enum_payload_type(scrut_ty, vname);
                 if subpats.len() <= 1 {
-                    // Single/zero payload: slot 1 IS the value.
-                    let bound_ty = declared.unwrap_or(Type::int());
+                    // Single/zero payload: slot 1 IS the value. Unbox through
+                    // the shared helper so the register's representation
+                    // matches the payload type — a String payload comes back
+                    // as a ptr, a Float as a native float, an obj/struct/List
+                    // handle as its i64 box. (A raw i64 typed `String` made
+                    // `Err(e)` re-box `ptrtoint ptr <i64>` — invalid IR.)
+                    let pty = declared.unwrap_or(Type::int());
+                    let payload = self.unwrap_union_payload(out, indent, scrut, &pty);
                     for sp in subpats {
                         if let crate::ast::Pattern::Binding(bn) = sp {
-                            self.fun.last_val_temps.insert(bn.clone(), raw.clone());
-                            self.fun.last_val_types.insert(bn.clone(), bound_ty.clone());
-                            self.fun.let_bindings.insert(bn.clone(), raw.clone());
-                            self.fun.let_binding_types.insert(bn.clone(), bound_ty.clone());
-                            self.fun
-                                .let_original_types
-                                .insert(bn.clone(), bound_ty.clone());
+                            self.fun.last_val_temps.insert(bn.clone(), payload.name.clone());
+                            self.fun.last_val_types.insert(bn.clone(), pty.clone());
+                            self.fun.let_bindings.insert(bn.clone(), payload.name.clone());
+                            self.fun.let_binding_types.insert(bn.clone(), pty.clone());
+                            self.fun.let_original_types.insert(bn.clone(), pty.clone());
                         }
                     }
                 } else {
+                    let base = self.fun.gen_reg();
+                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base, scrut).ok();
+                    let slot = self.fun.gen_reg();
+                    writeln!(
+                        out,
+                        "{}{} = getelementptr i64, ptr {}, i64 1",
+                        indent, slot, base
+                    )
+                    .ok();
+                    let raw = self.fun.gen_reg();
+                    writeln!(out, "{}{} = load i64, ptr {}", indent, raw, slot).ok();
                     // Multi payload: `raw` is a tuple-image handle
                     // ([count, e0, e1, …]); element j lives at slot j+1.
                     let elems: Vec<Type> = match declared {
