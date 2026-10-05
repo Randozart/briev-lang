@@ -207,7 +207,12 @@ exclusive grammar); probe found 2 new defect classes — electronics-under-.bv
 codegen panic (`emit_expr.rs:2575`) and GPU-under-.bv mislowering, both
 filed in BUGS.md; remaining: (a) `[*]` backport, (b) quantities Time, (c)
 mode audit, registry-params fill (34-name panic class) + gate⇔arm rule
-(undefined-symbol + GPU-leak classes)). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
+(undefined-symbol + GPU-leak classes)) → (c) `mode` audit **DONE 2026-10-05**
+(`docs/plans/2026-10-05-mode-consumer-audit.md`: consumers = electronics
+laws engine only; KEEP electronics-owned, promotion path named for the
+first non-electronics type-state consumer) → (b) quantities Time, (a) `[*]`
+backport, surface-capability declarations (P1+P2 shared root:
+electronics-pin codegen panic + GPU-leak mislowering, BUGS.md). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---
