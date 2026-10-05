@@ -238,7 +238,13 @@ to the int-literal-float-init IR bug — FIXED, `reduce.abv` builds on
 `.bv`, grammar probe now all-ok/all-diagnostics (zero panics but
 electronics-min, whose residual is filed). Remaining 0.6:
 GPU-modifier boundary half (P2 modifier walk, BUGS.md).
-Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
+Phase 1 = json.bv generics + package v0 + install.
+**Phase 1 IN PROGRESS 2026-10-05**: json.bv migrated (`lib/std/json.bv`,
+typechecks, inert); migration surfaced 6 codegen/liveness defects — 5 fixed
+(`734a8dac`: enum struct-payload match binding, bare tail match, List+List
+liveness, String cast-lane liveness, String indexing), 2 open
+(`list_concat` unimplemented; Char cast lane mis-types as Data — `char_at`
+unusable), both BUGS.md. Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---
