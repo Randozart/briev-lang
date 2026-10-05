@@ -224,9 +224,14 @@ had missed BOTH desugars (multi-index markers typechecked as unknown
 calls since 2026-09-17); remaining 0.6: expression-position quantity
 literals, GPU-modifier boundary half (P2 modifier walk, BUGS.md).
 **Surface-capability gate LANDED 2026-10-05** (`8d4307ec` +
-`70685b18`): component-pin access off `.ebv` = typecheck boundary error
-(was a codegen panic); GetGlobalId# de-listed from LLVM (arm's symbol
-undefined at link — fifth undefined-symbol member). Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
+`70685b18` + `03ec5883`): component-pin access off `.ebv` = typecheck
+boundary error (was a codegen panic; residual: stdlib-prelude
+components under the wrong surface — open-world typing, BUGS.md);
+GetGlobalId# de-listed from LLVM; the P2 "GPU mislowering" root-caused
+to the int-literal-float-init IR bug — FIXED, `reduce.abv` builds on
+`.bv`, grammar probe now all-ok/all-diagnostics (zero panics but
+electronics-min, whose residual is filed). Remaining 0.6:
+expression-position quantity literals. Phase 1 = json.bv generics + package v0 + install. Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---
