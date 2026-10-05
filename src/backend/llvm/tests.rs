@@ -825,6 +825,122 @@ node report [a < 0][true] {
     assert!(ir.contains("llvm.abs"), "Abs# must emit llvm.abs; got:\n{ir}");
 }
 
+/// 2026-10-05 (BUGS.md int-literal-float-init): a DECLARED-type let with an
+/// Int-literal init must CONVERT the register (sitofp) — the A5 binding
+/// label alone produced `store float %t_i64` / `fadd fast float %t_i64`,
+/// invalid IR clang alone rejected. The mini-verifier walks the IR: a
+/// register defined by `add i64`/`= add i64` may never feed a float-typed
+/// operand or store.
+#[test]
+fn test_float_let_int_init_converts_register() {
+    // The state store keeps the float math live (an unobserved acc folds).
+    let src = r#"
+let sink: Float[4];
+let n: Int = 1;
+node report [n > 0][n > 0] {
+    let acc: Float = 0;
+    acc = acc + 1.0;
+    sink[0] = acc;
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    // The pipeline registers the universe before generate; without it
+    // llvm_type(Custom("Float")) cannot resolve and the conversion
+    // degenerates to a no-op (the very bug this test pins).
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+
+    assert!(ir.contains("sitofp i64"), "init must convert: {ir}");
+    assert_no_i64_in_float_positions(&ir);
+}
+
+/// Mini-verifier (BUGS.md int-literal-float-init), per FUNCTION: a register
+/// defined as i64 may never feed a float-typed operand or store. Register
+/// names repeat across functions, so defs reset at each `define`.
+fn assert_no_i64_in_float_positions(ir: &str) {
+    let mut def_ty: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for line in ir.lines() {
+        let t = line.trim();
+        if t.starts_with("define ") {
+            def_ty.clear();
+            continue;
+        }
+        if !is_irs_statement(t) {
+            continue;
+        }
+        if is_float_position(t) {
+            check_float_operands(t, &def_ty);
+        }
+        record_reg_def(t, &mut def_ty);
+    }
+}
+
+/// A line the verifier inspects: not a label, comment, or function header.
+fn is_irs_statement(t: &str) -> bool {
+    !t.is_empty() && !t.starts_with(';') && !t.starts_with("define ")
+}
+
+/// Does the instruction constrain its operands to a float type?
+fn is_float_position(t: &str) -> bool {
+    let op = t.contains(" fast float ") || t.contains(" fast double ");
+    let store = t.starts_with("store float ") || t.starts_with("store double ");
+    op || store
+}
+
+/// Assert every register token on the line is not i64-defined.
+fn check_float_operands(t: &str, def_ty: &std::collections::HashMap<String, String>) {
+    t.split(&[' ', ',', '[', ']', '(', ')'][..])
+        .map(|tok| tok.trim_start_matches('%'))
+        .filter(|tok| {
+            !tok.is_empty()
+                && tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .for_each(|tok| check_one_operand(tok, t, def_ty));
+}
+
+fn check_one_operand(
+    tok: &str,
+    line: &str,
+    def_ty: &std::collections::HashMap<String, String>,
+) {
+    if let Some(def) = def_ty.get(tok) {
+        assert!(
+            def != "i64",
+            "i64-defined register %{tok} used in a float position: {line}"
+        );
+    }
+}
+
+/// Record one instruction's DEF type (`%reg = kind ...` → the result LLVM
+/// type) into the verifier map.
+fn record_reg_def(t: &str, def_ty: &mut std::collections::HashMap<String, String>) {
+    let Some((reg, rest)) = t.split_once(" = ") else { return };
+    let reg = reg.trim_start_matches('%').to_string();
+    let kind = rest.split_whitespace().next().unwrap_or("");
+    let def = match kind {
+        "load" => rest.split_whitespace().nth(1).unwrap_or("i64").to_string(),
+        "zext" | "trunc" | "sitofp" | "fptosi" | "sext" | "bitcast" | "fpext"
+        | "fptrunc" => rest
+            .rsplit(" to ")
+            .next()
+            .unwrap_or("i64")
+            .trim()
+            .to_string(),
+        "add" | "sub" | "mul" | "phi" | "fadd" | "fsub" | "fmul" | "select" => rest
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("i64")
+            .to_string(),
+        _ => return,
+    };
+    def_ty.insert(reg, def);
+}
+
 /// 2026-10-05 (Phase 0.6a): `[*]` desugars to the declaration-order lift
 /// BEFORE the backend — the emitter sees plain per-element statements and
 /// the old wildcard panic (emit_expr, "not a codegen value") is

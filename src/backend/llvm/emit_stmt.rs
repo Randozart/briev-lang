@@ -469,7 +469,16 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         None => backend.emit_expr(out, e, indent),
                     };
                     backend.fun.volatile_read = false;
-                    v
+                    // 2026-10-05 (BUGS.md int-literal-float-init): the
+                    // DECLARED type wins for the VALUE too, not just the
+                    // binding label (the A5 rule below retypes the binding).
+                    // An Int-literal init of a `Float` let bound the i64
+                    // register under a Float label; every later float-context
+                    // use (the demotion store, fadd) then emitted invalid IR.
+                    match ty {
+                        Some(declared) => backend.coerce_register_value(out, indent, &v, declared),
+                        None => v,
+                    }
                 }
                 None => {
                     let v = backend.fun.gen_reg();
@@ -861,8 +870,20 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             backend.fun.let_binding_allocas.insert(slot.clone());
                             slot
                         };
-                        let store_ty = backend.llvm_type(&val.ty);
-                        writeln!(out, "{}store {} {}, ptr {}", indent, store_ty, val.name, slot).ok();
+                        // 2026-10-05 (BUGS.md int-literal-float-init): the
+                        // slot type comes from the BINDING (declared Float);
+                        // the value register must match it — an Int rhs into
+                        // a Float local stores sitofp(value), never the raw
+                        // i64 register under a float store.
+                        let bind_ty = backend
+                            .fun
+                            .let_binding_types
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_else(|| val.ty.clone());
+                        let coerced = backend.coerce_register_value(out, indent, &val, &bind_ty);
+                        let store_ty = backend.llvm_type(&coerced.ty);
+                        writeln!(out, "{}store {} {}, ptr {}", indent, store_ty, coerced.name, slot).ok();
                     // 2026-07-14: Handle MMIO and regular state field assignments
                     } else if let Some(&addr) = backend.ctx.mmio_fields.get(name) {
                         let ptr = backend.fun.gen_reg();

@@ -2474,6 +2474,65 @@ impl LlvmBackend {
 
     /// Ensure the value register has the expected LLVM type, inserting
     /// trunc/zext/bitcast as needed. Returns the possibly-converted register name.
+    /// 2026-10-05 (BUGS.md int-literal-float-init): VALUE-semantic register
+    /// coercion to a declared scalar type. `ensure_typed_value` reinterprets
+    /// bit patterns (its (i64,float) arm bitcasts — right for `as`-cast
+    /// storage adaptation); a DECLARED binding needs the VALUE converted:
+    /// `let acc: Float = 0` must store sitofp(i64 0) = +0.0f, not the low
+    /// bits. Handles (Ptr / struct / coll registers that are i64 by ABI)
+    /// and unknown combos return the register unchanged — a visible clang
+    /// error, never a silent miscompile.
+    pub(crate) fn coerce_register_value(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        val: &crate::backend::llvm::TypedRegister,
+        want_ty: &Type,
+    ) -> crate::backend::llvm::TypedRegister {
+        // Handle-like declared types: the register IS the value (i64 handle
+        // ABI); no conversion exists or is wanted. The test is the STRUCT
+        // TABLES (ensure_typed_value's rule), never the bare variant —
+        // fundamental names surface as Custom("Float")/Custom("Int") and
+        // MUST convert.
+        let is_handle_ty = |t: &Type| match t {
+            Type::Custom(n) | Type::Applied(n, _) => {
+                self.ctx.struct_types.contains_key(n)
+                    || self.ctx.obj_types.contains(n)
+                    || self.ctx.coll_storage.contains_key(n)
+            }
+            Type::Ptr(_) | Type::Vector(_, _) => true,
+            _ => false,
+        };
+        if is_handle_ty(want_ty) || is_handle_ty(&val.ty) {
+            return val.clone();
+        }
+        let want_ll = self.llvm_type(want_ty);
+        let have_ll = self.llvm_type(&val.ty);
+        if have_ll == want_ll {
+            return val.clone();
+        }
+        let r = self.fun.gen_reg();
+        let emitted = match (have_ll.as_str(), want_ll.as_str()) {
+            ("i64", "float") => writeln!(out, "{}{} = sitofp i64 {} to float", indent, r, val.name).is_ok(),
+            ("i64", "double") => writeln!(out, "{}{} = sitofp i64 {} to double", indent, r, val.name).is_ok(),
+            ("float", "double") => writeln!(out, "{}{} = fpext float {} to double", indent, r, val.name).is_ok(),
+            ("double", "float") => writeln!(out, "{}{} = fptrunc double {} to float", indent, r, val.name).is_ok(),
+            ("float", "i64") | ("double", "i64") => writeln!(out, "{}{} = fptosi {} {} to i64", indent, r, have_ll, val.name).is_ok(),
+            ("i64", "i32") => writeln!(out, "{}{} = trunc i64 {} to i32", indent, r, val.name).is_ok(),
+            ("i64", "i8") => writeln!(out, "{}{} = trunc i64 {} to i8", indent, r, val.name).is_ok(),
+            ("i8", "i64") | ("i32", "i64") => writeln!(out, "{}{} = zext {} {} to i64", indent, r, have_ll, val.name).is_ok(),
+            ("i32", "float") => writeln!(out, "{}{} = sitofp i32 {} to float", indent, r, val.name).is_ok(),
+            ("float", "i32") => writeln!(out, "{}{} = fptosi float {} to i32", indent, r, val.name).is_ok(),
+            _ => false,
+        };
+        if !emitted {
+            // Unknown combo: leave the register; the type mismatch surfaces
+            // at clang (visible), never silently reinterpreted.
+            return val.clone();
+        }
+        crate::backend::llvm::TypedRegister { name: r.to_string(), ty: want_ty.clone() }
+    }
+
     pub(crate) fn ensure_typed_value(
         &mut self,
         out: &mut String,

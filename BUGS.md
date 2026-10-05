@@ -8235,6 +8235,16 @@ green). Cells stay core: cell pins resolve on every surface. Tests:
 `component_pin_access_off_electronics_is_a_boundary_error`,
 `component_pin_access_on_electronics_resolves`.
 
+**Residual (2026-10-05, probed):** the gate covers program-declared
+component types. A STDLIB component reached through the WRONG surface's
+prelude (led_blinker.ebv built as `.bv`: Connector lives in
+prelude-electronics, which does not load) passes the typecheck through
+unknown-Custom permissiveness and still ICEs at
+`emit_expr.rs:2575`. Fix path: unknown-Custom field access needs the
+open-world typing policy decision (diagnose unresolved-type field
+access instead of permissive success) — Phase 2, with the grammar
+probe (`scripts/grammar_probe.py`, row `electronics-min`) as the repro.
+
 ## GPU program under `.bv`: `.abv`-owned program mislowers to a clang failure instead of a gate diagnostic [PARTIALLY FIXED 2026-10-05 — builtin member closed; scope/shared modifier half remains OPEN]
 
 **Symptom:** building a GPU program (e.g. `examples/gpu/reduce.abv`) with
@@ -8263,10 +8273,45 @@ runtime never defined — is de-listed from the LLVM lane like its
 already-rejected siblings (`GetGroupId#`/`GetNumGroups#`/`Barrier#`):
 a launch dimension without a launch is not a CPU semantic, and a silent
 zero would be a miscompile. `GetGlobalId#(0)` on `.bv` now produces the
-clean gate diagnostic. **Remaining (open):** the `scope<…>`/`shared`/
-shape-modifier half — GPU modifiers parse on every surface (one
-grammar) and the LLVM lane silently ignores them; the fix is a
-modifier-surface capability walk (the pattern is now proven by the
-component-pin surface gate, `surface_electronics`): a GPU-modifier
-declaration on a non-GPU surface is a boundary error naming the
-surface. `lib/std/gpu.bv` wrappers remain for the GPU lanes.
+clean gate diagnostic. **Root found (2026-10-05, later):** the probe's clang type-mismatch was
+NOT modifier leakage — it was the int-literal-float-init codegen bug
+(below): `let acc: Float = 0;` in the reduction kernel emitted
+`store float %t_i64`. With that fixed, `reduce.abv`/`gemm_small.abv`
+BUILD clean on `.bv` (grammar probe rows `gpu`/`gpu-gemm`: ok).
+**Remaining (open):** the `scope<…>`/`shared`/shape-modifier boundary
+walk for programs that carry REAL GPU modifiers off the GPU backend
+(none in the corpus today) — the pattern is proven by the
+component-pin surface gate; file fixtures when a real program needs
+it.
+
+## `let x: Float = 0;` (Int-literal init of a declared-float let) emitted invalid IR — clang rejected what the compiler produced [FIXED 2026-10-05]
+
+**Symptom:** any program initializing a declared `Float`/`Double` local
+with an Int literal (`let acc: Float = 0;` — the standard accumulator
+shape, e.g. the reduction kernel in `examples/gpu/reduce.abv`) failed at
+clang: `%t18 defined with type 'i64' but expected 'float'` at a
+`store float` / `fadd fast float`. Found while closing the GPU-leak
+entry: the "GPU mislowering" clang failure was THIS bug, not modifier
+leakage.
+
+**Root cause (two layers):** the A5 binding rule (2026-07-31) retypes
+the BINDING to the declared type while the init REGISTER stays i64 (the
+literal emitter is int-native) — every later float-context use of the
+binding (the demotion store's initial store, float arithmetic through
+the binding) substituted an i64 register into float positions. The
+mixed-float operand adapter couldn't catch it: both sides were LABELED
+Float, so nothing looked mixed.
+
+**Fix:** `coerce_register_value` (helpers.rs) — VALUE-semantic register
+coercion at the declared-let site (sitofp for Int→Float/Double, trunc /
+zext / fpext / fptosi for the other scalar pairs; handle-like types by
+STRUCT-TABLE membership, never by the bare Custom variant — fundamental
+names surface as `Custom("Float")` and must convert), plus the same
+coercion on the demotion store (value must match the slot's binding
+type). Mini-verifier regression test
+(`test_float_let_int_init_converts_register`): per-function
+register-def typing; an i64-defined register may never feed a float
+operand or store.
+
+**Verification:** `reduce.abv` as `.bv` now builds (was the grammar
+probe's clang failure); suite 2877 green; grammar probe gpu rows ok.
