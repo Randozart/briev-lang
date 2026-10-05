@@ -30,6 +30,10 @@ fn compact_base_dim(c: char) -> Option<crate::ast::QuantityDim> {
         'H' => Some(crate::ast::QuantityDim::Henry),
         'W' => Some(crate::ast::QuantityDim::Watt),
         'K' => Some(crate::ast::QuantityDim::Kelvin),
+        // 2026-10-05 (Phase 0.6b): time. Lowercase `s` is safe as a
+        // compact base — it is not an SI prefix (`prefix_scale` has no
+        // 's'), so `5s`/`10ms`/`3ns` flow through the suffix dispatch.
+        's' => Some(crate::ast::QuantityDim::Time),
         _ => None,
     }
 }
@@ -61,6 +65,7 @@ fn full_base_dim(s: &str) -> Option<crate::ast::QuantityDim> {
         "Watt" => Some(crate::ast::QuantityDim::Watt),
         "Kelvin" => Some(crate::ast::QuantityDim::Kelvin),
         "Metre" | "Meter" => Some(crate::ast::QuantityDim::Length),
+        "Second" => Some(crate::ast::QuantityDim::Time),
         _ => None,
     }
 }
@@ -77,6 +82,7 @@ pub(crate) fn dimension_name(d: crate::ast::QuantityDim) -> &'static str {
         crate::ast::QuantityDim::Watt => "watts",
         crate::ast::QuantityDim::Kelvin => "kelvin",
         crate::ast::QuantityDim::Length => "length",
+        crate::ast::QuantityDim::Time => "seconds",
     }
 }
 
@@ -211,6 +217,39 @@ mod tests {
         expect("mVolt", 1e-3, crate::ast::QuantityDim::Volt);
         expect("mAmp", 1e-3, crate::ast::QuantityDim::Amp);
         expect("nFarad", 1e-9, crate::ast::QuantityDim::Farad);
+    }
+
+    /// 2026-10-05 (Phase 0.6b): time — the first non-electrical dimension.
+    /// Compact `s` and prefixed forms flow through the suffix dispatch; the
+    /// full word is `Second`. `s` is not an SI prefix, so there is no
+    /// milli/metre-style collision.
+    #[test]
+    fn time_units_resolve_to_si() {
+        let expect = |suffix: &str, scale: f64| {
+            match parse_unit_suffix(suffix) {
+                Some(UnitSuffix::Explicit { scale: got, dim: crate::ast::QuantityDim::Time }) => {
+                    assert!((got - scale).abs() < 1e-12, "suffix {suffix}: {got}");
+                }
+                other => panic!("suffix {suffix}: expected Explicit Time, got {other:?}"),
+            }
+        };
+        expect("s", 1.0);
+        expect("ms", 1e-3);
+        expect("us", 1e-6);
+        expect("ns", 1e-9);
+        expect("ps", 1e-12);
+        expect("ks", 1e3);
+        expect("Second", 1.0);
+        expect("mSecond", 1e-3);
+        expect("kSecond", 1e3);
+        // The metre spellings keep their own dimension — `m`/`mm` must not
+        // have been disturbed by the `s` addition.
+        match parse_unit_suffix("m") {
+            Some(UnitSuffix::Explicit { scale, dim: crate::ast::QuantityDim::Length }) => {
+                assert!((scale - 1.0).abs() < 1e-12);
+            }
+            other => panic!("suffix m: expected Explicit Length, got {other:?}"),
+        }
     }
 
     /// A non-unit identifier is not silently accepted as physics. Non-ASCII

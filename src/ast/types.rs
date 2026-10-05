@@ -233,6 +233,11 @@ pub enum QuantityDim {
     /// 2026-09-23 (fab plan): physical length — board coordinates, pad
     /// offsets. Base is the metre; `mm`/`cm` are the working suffixes.
     Length,
+    /// 2026-10-05 (three-surfaces plan Phase 0.6b): time — the first
+    /// non-electrical dimension, promoted with the quantities work so
+    /// quantity literals are legal wherever the machinery runs. Base is
+    /// the second; `ns`/`us`/`ms` are the working suffixes.
+    Time,
 }
 
 impl QuantityDim {
@@ -249,6 +254,7 @@ impl QuantityDim {
             QuantityDim::Watt => "watt",
             QuantityDim::Kelvin => "kelvin",
             QuantityDim::Length => "length",
+            QuantityDim::Time => "time",
         }
     }
 }
