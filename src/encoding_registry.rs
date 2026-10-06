@@ -53,11 +53,7 @@ pub struct EncodingInfo {
 
 /// Load config/encodings.dbvl. Returns empty map if file is missing.
 fn config_encodings() -> HashMap<String, EncodingInfo> {
-    let manifest_dir = match std::env::var("CARGO_MANIFEST_DIR") {
-        Ok(d) => d,
-        Err(_) => return HashMap::new(),
-    };
-    let path = Path::new(&manifest_dir).join("config/encodings.dbvl");
+    let path = crate::resource_root().join("config/encodings.dbvl");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return HashMap::new(),

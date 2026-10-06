@@ -3,10 +3,10 @@
 **2026-10-06.** 430+ files in `docs/plans/`; historical plans are
 reference-only (never retroactively edited — AGENTS.md Rule 13).
 
-**Suite state:** `cargo test --lib` 2895 green (2026-10-06, incl. the two
-normalizer-diagnostic tests, three `List + List` tests, and four json
-interpreter tests); conformance sweep green; `gemm_h` byte-identical; 19
-pre-existing warnings; Praetor no new diagnostics.
+**Suite state:** `cargo test --lib` 2901 green (2026-10-06, incl. the two
+normalizer-diagnostic tests, three `List + List` tests, four json interpreter
+tests, and five folio package tests); conformance sweep green; `gemm_h`
+byte-identical; 19 pre-existing warnings; Praetor no new diagnostics.
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
 unmarked BUGS entries verified, 4 open. Fixed during the sweep: the
 `List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
@@ -257,8 +257,14 @@ callable-`txn` convergence (backend + interpreter) and List<enum> append.
 three Rule-5 divergences fixed (`eval_match` arm writes, `&&`/`||`
 short-circuit, trailing-expression result); `json_parse("[1,2,3]")` → length 3
 in BOTH engines (BUGS.md FIXED). `list_concat` (`List + List`) now works — it
-elaborates to the stdlib `iter_chain` (BUGS.md FIXED). Remaining Phase 1:
-package v0 + install.
+elaborates to the stdlib `iter_chain` (BUGS.md FIXED).
+**Phase 1 package/install DONE 2026-10-06**: `folio.toml`/`folio.lock` (git +
+path deps, Cargo-style), `src/packages.rs`, import wiring in build + check,
+`brievc add/remove/update`; `brievc --version`, `brievc init` (runnable
+`node entry [beginprogram][true]` — no `Main`), `brievc run x.bv` executes the
+binary, relocatable `resource_root()`, installer ships `lib`/`config`/`plugins`,
+`scripts/folio-smoke.sh` passes. Plan: `docs/plans/2026-10-06-package-module-v0.md`;
+architecture: `docs/architecture/folio.md`.
 Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
@@ -385,10 +391,10 @@ Open-unverified (do not re-investigate; run the named instrument): BUGS.md
 
 ## Recommended starting points (no foreign-lane overlap)
 
-0. **`.bv` stranger blockers, in order** (2026-10-06 sweep): the
-   `List<T> + List<T>` silent miscompile, the json-interpreter array hang, and
-   the unfired-`txn` empty-program silence (BUGS.md:5698, now warns on build)
-   are FIXED; next is Phase 1.2/1.3 (package/module v0 + install story).
+0. **`.bv` stranger blockers** (2026-10-06 sweep): the `List<T> + List<T>`
+   silent miscompile, the json-interpreter array hang, the unfired-`txn`
+   empty-program silence (BUGS.md:5698), and Phase 1.2/1.3 (package v0 + install
+   story) are all DONE. Phase 1 is complete; next is Phase 2 (fill campaign).
 1. **div slowpath sizing probe** then the **GEMM fill-pipeline campaign**
    (Workstream 3 queue items 2-3) — the fill campaign is the biggest
    absolute prize (32 → 42 TF), plan + correctness license written

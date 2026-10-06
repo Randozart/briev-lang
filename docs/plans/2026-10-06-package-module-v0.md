@@ -1,10 +1,28 @@
 # Package/Module v0 + Install Story — the Folio
 
 **Date:** 2026-10-06
-**Status:** Active
+**Status:** DONE (1.2 + 1.3 landed 2026-10-06; `fa3c15ce` + the install commit)
 **Umbrella:** `docs/plans/2026-10-04-three-surfaces-functional.md` Phase 1.2/1.3
 **Predecessors:** Phase 1.1 json.bv (`734a8dac`, `cf38ced2`, `deacdf79`); ledger
 sweep (`docs/plans/2026-10-06-bugs-ledger-sweep.md`).
+
+## Results (2026-10-06)
+
+- **1.2 landed** (`fa3c15ce`): `folio.toml`/`folio.lock`, git + path deps,
+  `src/packages.rs`, import wiring in build + check, `brievc add/remove/update`.
+  5 new tests; verified end-to-end (path dep prints 42; git dep clones, locks
+  the commit, prints 7). Suite 2896 → 2901.
+- **1.3 landed**: `brievc --version`; `brievc init` scaffolds `folio.toml` +
+  a runnable `node entry [beginprogram][true]` (no `Main`); `brievc run x.bv`
+  now executes the linked binary; `scripts/briev-install` (+`.bat`) install
+  `brievc`/`briev` and the resources (`lib`, `config`, `plugins`);
+  `scripts/folio-smoke.sh` builds → installs → inits → runs from outside the
+  source tree (PASS, 0.61 s).
+- **Relocatable resources**: `briev_compiler::resource_root()` resolves `lib/`
+  at runtime (`BRIEV_HOME` → `<exe>/../share/briev` → dev `<exe>/../../` →
+  `CARGO_MANIFEST_DIR`). Config (`config_db`, `config.rs`, `config_resolver`,
+  `encoding_registry`), plugin discovery, `glue/config`, and the LLVM runtime
+  paths now use it; literal `import "std/…"` resolves against the stdlib root.
 
 ## Goal
 

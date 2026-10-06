@@ -219,7 +219,7 @@ fn resolve_glue_root() -> Option<PathBuf> {
             }
         }
     }
-    let baked = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib/glue");
+    let baked = crate::resource_root().join("lib/glue");
     if baked.is_dir() {
         return Some(baked);
     }

@@ -972,9 +972,9 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // staticlib (src/accel_rt.rs, built by build.rs alongside the
             // driver archive); --gc-sections drops it when the program has
             // no accel kernels.
-            let accel_lib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            let accel_lib = briev_compiler::resource_root()
                 .join("target/compiler-in-briv/libbriev_accel_rt.a");
-            let driver_lib = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            let driver_lib = briev_compiler::resource_root()
                 .join("target/compiler-in-briv/libbriev_gpu_rt.a");
             if accel_lib.exists() && driver_lib.exists() {
                 all_objects.push(accel_lib.clone());
@@ -998,6 +998,17 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                     bad_objects: &bad_fn_objects,
                     bootstrap_entry: bootstrap_entry.as_deref(),
                 })?;
+            }
+        }
+        // 2026-10-06 (install story, folio): `brievc run x.bv` executes the
+        // linked binary. The .abv/SPIR-V path handles `--run` in-process above;
+        // this is the native LLVM lane.
+        if opts.run && opts.backend == BackendKind::Llvm && !opts.no_link {
+            let status = std::process::Command::new(&binary_path)
+                .status()
+                .map_err(|e| format!("cannot run '{}': {e}", binary_path))?;
+            if !status.success() {
+                return Err(format!("program '{}' exited with {status}", binary_path));
             }
         }
         // 2026-09-22 (bootstrap-bad plan): --raw-bin extracts the flat
@@ -2170,7 +2181,7 @@ fn codegen(
                 .map_err(|e| format!("cannot write '{}': {}", runner_path, e))?;
             // The runner #includes the runtime (single TU) — copy the
             // runtime AND its device drivers beside it.
-            let rt_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            let rt_dir = briev_compiler::resource_root()
                 .join("lib/runtime");
             let rt_dir_out = std::path::Path::new(&runner_path)
                 .parent()
@@ -2179,7 +2190,7 @@ fn codegen(
             // 2026-09-21 (Family K): the header + the Rust-built
             // orchestration archive + the driver archive. Runner cc line:
             //   cc ... runner.c -I. -L. -lbriev_accel_rt -lbriev_gpu_rt -ldl -lpthread -lm
-            let briv_out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            let briv_out = briev_compiler::resource_root()
                 .join("target/compiler-in-briv");
             let rt_files = [
                 ("briev_accel_rt.h", rt_dir.as_path()),
@@ -2236,7 +2247,7 @@ fn codegen(
             let runner_path = out_path.replace(".ptx", "_runner.c");
             std::fs::write(&runner_path, &runner)
                 .map_err(|e| format!("cannot write '{}': {}", runner_path, e))?;
-            let rt_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            let rt_dir = briev_compiler::resource_root()
                 .join("lib/runtime");
             let rt_dir_out = std::path::Path::new(&runner_path)
                 .parent()
@@ -2245,7 +2256,7 @@ fn codegen(
             // 2026-09-21 (Family K): the header + the Rust-built
             // orchestration archive + the driver archive. Runner cc line:
             //   cc ... runner.c -I. -L. -lbriev_accel_rt -lbriev_gpu_rt -ldl -lpthread -lm
-            let briv_out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            let briv_out = briev_compiler::resource_root()
                 .join("target/compiler-in-briv");
             let rt_files = [
                 ("briev_accel_rt.h", rt_dir.as_path()),
@@ -2647,7 +2658,7 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>
         // the bitop lanes (briev_str_band/bor/bxor/bnot) still live there
         // and are emitted via hardcoded declares, so a program that uses
         // them must link the runtime even with no frgn pulling it.
-        let runtime_c = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let runtime_c = briev_compiler::resource_root()
             .join("lib/runtime/briev_rt.c");
         let needs_runtime = [
             "@briev_bits_to_str(",
@@ -2753,9 +2764,7 @@ fn apply_freestanding(
 /// Per-arch compiler-rt shims (unsigned division/modulo intrinsics LLVM
 /// emits; ARM's division entries are .S under the AEABI convention).
 fn add_compiler_rt(cmd: &mut Command, triple: &str) {
-    let workspace_root =
-        std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let root = std::path::PathBuf::from(&workspace_root);
+    let root = briev_compiler::resource_root();
     // 2026-09-13: riscv64 bare-metal needs compiler_rt_rv64.c (QEMU virt
     // medany addressing — see apply_freestanding).
     if triple.starts_with("riscv64") {
@@ -2817,7 +2826,7 @@ fn compile_ll_to_library(ll_path: &str, base: &str, _extra_objects: &[PathBuf]) 
     // can link (frgn-derived objects are LTO bitcode and cannot be read by
     // gcc). The .ll references the runtime transitively even when the bridge
     // declares no explicit frgn from briev_rt.c.
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = briev_compiler::resource_root();
     let rt_c = manifest.join("lib/runtime/briev_rt.c");
     let rt_o = format!("{}.briev_rt.o", base);
     let mut cc_rt = Command::new("cc");

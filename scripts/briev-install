@@ -3,17 +3,15 @@
 # Briev Compiler Installer
 # Usage: ./briev-install [--prefix <directory>]
 #
-# This script installs the Briev compiler to your local bin directory.
-# After installation, you can run: briev init <project-name>
-#
+# Installs the `brievc` compiler to <prefix>/brievc plus a `briev` alias, then
+# verifies it. Producing runnable programs additionally needs a system LLVM
+# toolchain (clang, llc, llvm-objcopy/objcopy) — checked and reported below.
 
 set -e
 
 INSTALL_PREFIX="${HOME}/.local/bin"
-BIN_NAME="briev"
-BINARY_NAME="briev-compiler"
+BINARY_NAME="brievc"
 
-# Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
         --prefix)
@@ -23,76 +21,93 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Briev Compiler Installer"
             echo ""
-            echo "Usage: $0 [--prefix <directory>]"
+            echo "Usage: $0 [--prefix <dir>]"
             echo ""
             echo "Options:"
             echo "  --prefix <dir>  Installation directory (default: ~/.local/bin)"
-            echo "  -h, --help      Show this help message"
-            echo ""
-            echo "After installation, add the following to your shell profile:"
-            echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
             exit 0
             ;;
         *)
-            echo "Unknown option: $1"
-            echo "Use --help for usage information"
+            echo "Unknown option: $1 (use --help)" >&2
             exit 1
             ;;
     esac
 done
 
-echo "Installing Briev compiler..."
-echo "  Target: ${INSTALL_PREFIX}/${BIN_NAME}"
+echo "Installing the Briev compiler (brievc)..."
+echo "  Target: ${INSTALL_PREFIX}/${BINARY_NAME}"
 
-# Find the script's directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Find the binary
+# 2026-10-06: the built artifact is `brievc` (Cargo [[bin]] name), not
+# `briev-compiler` — the old lookup never matched.
 BINARY_PATH=""
-if [ -f "${SCRIPT_DIR}/target/release/${BINARY_NAME}" ]; then
-    BINARY_PATH="${SCRIPT_DIR}/target/release/${BINARY_NAME}"
-elif [ -f "${SCRIPT_DIR}/target/debug/${BINARY_NAME}" ]; then
-    BINARY_PATH="${SCRIPT_DIR}/target/debug/${BINARY_NAME}"
-elif [ -f "${SCRIPT_DIR}/${BINARY_NAME}" ]; then
-    BINARY_PATH="${SCRIPT_DIR}/${BINARY_NAME}"
-else
-    echo ""
-    echo "Error: Could not find Briev compiler binary."
-    echo "Expected locations:"
-    echo "  - ${SCRIPT_DIR}/target/release/${BINARY_NAME}"
-    echo "  - ${SCRIPT_DIR}/target/debug/${BINARY_NAME}"
-    echo ""
-    echo "If you haven't built the compiler yet, run:"
-    echo "  cargo build --release"
+for candidate in \
+    "${SCRIPT_DIR}/target/release/${BINARY_NAME}" \
+    "${SCRIPT_DIR}/target/debug/${BINARY_NAME}" \
+    "${SCRIPT_DIR}/../target/release/${BINARY_NAME}" \
+    "${SCRIPT_DIR}/../target/debug/${BINARY_NAME}" \
+    "${SCRIPT_DIR}/${BINARY_NAME}"; do
+    if [ -f "${candidate}" ]; then
+        BINARY_PATH="${candidate}"
+        break
+    fi
+done
+
+if [ -z "${BINARY_PATH}" ]; then
+    echo "" >&2
+    echo "Error: could not find the '${BINARY_NAME}' binary." >&2
+    echo "Build it first:  cargo build --release" >&2
     exit 1
 fi
 
-# Create install directory if needed
 mkdir -p "${INSTALL_PREFIX}"
+cp "${BINARY_PATH}" "${INSTALL_PREFIX}/${BINARY_NAME}"
+chmod +x "${INSTALL_PREFIX}/${BINARY_NAME}"
+# Convenience alias: `briev` == `brievc`.
+ln -sf "${BINARY_NAME}" "${INSTALL_PREFIX}/briev"
 
-# Install the binary
-cp "${BINARY_PATH}" "${INSTALL_PREFIX}/${BIN_NAME}"
-chmod +x "${INSTALL_PREFIX}/${BIN_NAME}"
-
-# Verify installation
-if [ -f "${INSTALL_PREFIX}/${BIN_NAME}" ]; then
-    echo ""
-    echo "✓ Briev installed successfully!"
-    echo ""
-    echo "Next steps:"
-    echo "  1. Add to your PATH if needed:"
-    echo "       export PATH=\"\${HOME}/.local/bin:\${PATH}\""
-    echo ""
-    echo "  2. Create a new project:"
-    echo "       briev init my-app"
-    echo "       cd my-app"
-    echo ""
-    echo "  3. Run your app:"
-    echo "       briev run"
-    echo ""
-    echo "  4. Open http://localhost:8080 in your browser"
+# 2026-10-06: ship the resources (stdlib, runtime, targets) so the installed
+# compiler finds them without the source tree — resource_root() looks in
+# <exe>/../share/briev/lib.
+SHARE_DIR="$(cd "${INSTALL_PREFIX}/.." && pwd)/share/briev"
+LIB_SRC=""
+for c in "${SCRIPT_DIR}/lib" "${SCRIPT_DIR}/../lib"; do
+    if [ -d "${c}" ]; then LIB_SRC="${c}"; break; fi
+done
+if [ -n "${LIB_SRC}" ]; then
+    RES_ROOT="$(cd "$(dirname "${LIB_SRC}")" && pwd)"
+    mkdir -p "${SHARE_DIR}"
+    for d in lib config plugins; do
+        [ -d "${RES_ROOT}/${d}" ] && cp -R "${RES_ROOT}/${d}" "${SHARE_DIR}/"
+    done
+    echo "✓ Installed resources (lib, config, plugins) -> ${SHARE_DIR}"
 else
-    echo ""
-    echo "Error: Installation failed"
+    echo "Note: no 'lib/' beside the installer; set BRIEV_HOME to the source"
+    echo "      tree so the compiler can find the stdlib."
+fi
+
+if ! "${INSTALL_PREFIX}/${BINARY_NAME}" --version >/dev/null 2>&1; then
+    echo "Error: installed binary failed to run '--version'" >&2
     exit 1
 fi
+
+echo ""
+echo "✓ Installed: $("${INSTALL_PREFIX}/${BINARY_NAME}" --version) -> ${INSTALL_PREFIX}/${BINARY_NAME}"
+
+# Producing an executable shells out to the LLVM toolchain; warn, don't fail.
+missing=""
+for tool in clang llc; do
+    command -v "${tool}" >/dev/null 2>&1 || missing="${missing} ${tool}"
+done
+if [ -n "${missing}" ]; then
+    echo ""
+    echo "Note: '${missing# }' not found on PATH. The compiler runs, but building"
+    echo "      executables needs a system LLVM toolchain (clang, llc, objcopy)."
+fi
+
+echo ""
+echo "Next steps:"
+echo "  1. Add to PATH if needed:  export PATH=\"${INSTALL_PREFIX}:\$PATH\""
+echo "  2. Create a project:       brievc init my-app"
+echo "  3. Run it:                 cd my-app && brievc run src/main.bv"

@@ -59,6 +59,10 @@ fn main() {
         "install-highlighter" => run_install_highlighter(&args[2..]),
         "freshness" => run_freshness_check(),
         "help" | "--help" | "-h" => { print_usage(&args[0]); Ok(()) }
+        "version" | "--version" | "-V" => {
+            println!("brievc {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         _ => {
         // Default: compile the file
         if args[1].ends_with(".bv") || args[1].ends_with(".rbv") || args[1].ends_with(".abv") {
@@ -1495,13 +1499,21 @@ fn run_init(name: Option<&str>) -> Result<(), String> {
     let dir = Path::new(name);
     std::fs::create_dir_all(dir.join("src"))
         .map_err(|e| format!("cannot create project: {}", e))?;
-    let main_bv = format!(r#"defn main() -> Int {{
-    term 0;
-}};
-"#);
+    // 2026-10-06 (package/module v0, folio): scaffold a folio.toml and a
+    // RUNNABLE entry. The old `defn main` was never an entry (the backend
+    // filters a Briev defn named `main`, llvm/mod.rs:5380) and built to an
+    // empty program. The entry uses `beginprogram` (SPEC §11.5.1) — no
+    // compiler-special-cased `Main`.
+    let folio = format!(
+        "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\nentry = \"src/main.bv\"\n"
+    );
+    std::fs::write(dir.join("folio.toml"), folio)
+        .map_err(|e| format!("cannot write folio.toml: {}", e))?;
+    let main_bv = "node entry [beginprogram][true] {\n    println!(\"Hello, Briev!\");\n    term;\n};\n";
     std::fs::write(dir.join("src").join("main.bv"), main_bv)
         .map_err(|e| format!("cannot write main.bv: {}", e))?;
-    println!("Created project '{}'", name);
+    println!("Created project '{name}'");
+    println!("  next: cd {name} && brievc run src/main.bv");
     Ok(())
 }
 

@@ -437,9 +437,11 @@ impl ImportResolver {
                 if debug_p.exists() {
                     return Some(debug_p);
                 }
-                // Installed: ~/.local/bin/ -> ~/.local/share/briev/
-                let installed_p = exe_dir.join("../share/briev/");
-                if installed_p.join("std/core").exists() {
+                // Installed: ~/.local/bin/ -> ~/.local/share/briev/lib/
+                // (the installer copies the source `lib/` there). Probe `std/`
+                // — the old `std/core` directory no longer exists.
+                let installed_p = exe_dir.join("../share/briev/lib");
+                if installed_p.join("std").is_dir() {
                     return Some(installed_p);
                 }
             }
@@ -617,6 +619,16 @@ impl ImportResolver {
             let candidate = source_dir
                 .join(search_dir)
                 .join(format!("{}{}", module_path, ext));
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+        // 2026-10-06 (install story, folio): a literal `import "std/…"` must
+        // resolve against the stdlib ROOT — the prelude injects exactly those
+        // literal imports, and an installed compiler has no ancestor
+        // Cargo.toml/lib to walk to. Project-local paths above still win.
+        if let Some(std_root) = self.resolve_stdlib_root() {
+            let candidate = std_root.join(format!("{}{}", module_path, ext));
             if candidate.exists() {
                 return Some(candidate);
             }

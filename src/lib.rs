@@ -92,3 +92,41 @@ pub mod doc;
 pub mod optimizer;
 pub mod registry;
 
+/// 2026-10-06 (install story, folio): the base directory holding `lib/`
+/// (stdlib, runtime, targets). Resolved at RUNTIME so an installed compiler
+/// finds its resources without the source tree:
+///   1. `BRIEV_HOME` env var (explicit override)
+///   2. `<exe>/../share/briev` — the installed layout (`<prefix>/bin/brievc`
+///      + `<prefix>/share/briev/lib`)
+///   3. `<exe>/../../` — the dev layout (`<repo>/target/{debug,release}/brievc`)
+///   4. `CARGO_MANIFEST_DIR` (cargo test / cargo run)
+///   5. `.`
+pub fn resource_root() -> std::path::PathBuf {
+    use std::path::PathBuf;
+    if let Ok(home) = std::env::var("BRIEV_HOME") {
+        let p = PathBuf::from(home);
+        if p.join("lib").exists() {
+            return p;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let share = dir.join("../share/briev");
+            if share.join("lib").exists() {
+                return share;
+            }
+            let dev = dir.join("../../");
+            if dev.join("lib").exists() {
+                return dev;
+            }
+        }
+    }
+    if let Ok(m) = std::env::var("CARGO_MANIFEST_DIR") {
+        let p = PathBuf::from(m);
+        if p.join("lib").exists() {
+            return p;
+        }
+    }
+    PathBuf::from(".")
+}
+

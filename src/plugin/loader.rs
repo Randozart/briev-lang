@@ -141,7 +141,12 @@ const STAGE_DIRS: &[(&str, StageKind)] = &[
 /// blocks. The plugin name is derived from the filename and a block
 /// index to ensure uniqueness.
 pub fn discover_system_plugins(mgr: &mut PluginManager) {
-    let base = Path::new("plugins");
+    let cwd_base = Path::new("plugins");
+    let base = if cwd_base.is_dir() {
+        cwd_base.to_path_buf()
+    } else {
+        crate::resource_root().join("plugins")
+    };
     for (dir_name, stage) in STAGE_DIRS {
         let dir = base.join(dir_name);
         if !dir.is_dir() {

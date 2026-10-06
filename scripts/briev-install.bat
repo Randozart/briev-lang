@@ -1,14 +1,13 @@
 @echo off
 REM Briev Compiler Installer for Windows
-REM Usage: .\briev-install.bat [--prefix <directory>]
+REM Usage: briev-install.bat [--prefix <directory>]
+REM Installs `brievc.exe` plus a `briev.exe` alias, then verifies it.
 
 setlocal enabledelayedexpansion
 
 set "INSTALL_PREFIX=%LOCALAPPDATA%\briev"
-set "BIN_NAME=briev.exe"
-set "BINARY_NAME=briev-compiler.exe"
+set "BINARY_NAME=brievc.exe"
 
-REM Parse arguments
 :parse_args
 if "%~1"=="" goto :done_parsing
 if "%~1"=="--prefix" (
@@ -25,14 +24,6 @@ if "%~1"=="--help" (
     echo Options:
     echo   --prefix ^<dir^>  Installation directory (default: %LOCALAPPDATA%\briev)
     echo   --help           Show this help message
-    echo.
-    echo After installation, add the following to your PATH:
-    echo   Control Panel -^> System -^> Advanced -^> Environment Variables
-    echo.
-    echo Then run:
-    echo   briev init my-app
-    echo   cd my-app
-    echo   briev run
     exit /b 0
 )
 shift
@@ -40,61 +31,52 @@ goto :parse_args
 
 :done_parsing
 
-echo Installing Briev compiler...
-echo   Target: %INSTALL_PREFIX%\%BIN_NAME%
+echo Installing the Briev compiler (brievc)...
+echo   Target: %INSTALL_PREFIX%\%BINARY_NAME%
 
-REM Find the script's directory
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 
-REM Find the binary
+REM 2026-10-06: the built artifact is brievc.exe, not briev-compiler.exe.
 set "BINARY_PATH="
 if exist "%SCRIPT_DIR%\target\release\%BINARY_NAME%" (
     set "BINARY_PATH=%SCRIPT_DIR%\target\release\%BINARY_NAME%"
 ) else if exist "%SCRIPT_DIR%\target\debug\%BINARY_NAME%" (
     set "BINARY_PATH=%SCRIPT_DIR%\target\debug\%BINARY_NAME%"
+) else if exist "%SCRIPT_DIR%\..\target\release\%BINARY_NAME%" (
+    set "BINARY_PATH=%SCRIPT_DIR%\..\target\release\%BINARY_NAME%"
+) else if exist "%SCRIPT_DIR%\..\target\debug\%BINARY_NAME%" (
+    set "BINARY_PATH=%SCRIPT_DIR%\..\target\debug\%BINARY_NAME%"
 ) else if exist "%SCRIPT_DIR%\%BINARY_NAME%" (
     set "BINARY_PATH=%SCRIPT_DIR%\%BINARY_NAME%"
 ) else (
     echo.
-    echo Error: Could not find Briev compiler binary.
-    echo Expected locations:
-    echo   - %SCRIPT_DIR%\target\release\%BINARY_NAME%
-    echo   - %SCRIPT_DIR%\target\debug\%BINARY_NAME%
-    echo.
-    echo If you haven't built the compiler yet, download a release or run:
-    echo   cargo build --release
+    echo Error: could not find the compiler binary.
+    echo Build it first:  cargo build --release
     exit /b 1
 )
 
-REM Create install directory if needed
-if not exist "%INSTALL_PREFIX%" (
-    mkdir "%INSTALL_PREFIX%"
+if not exist "%INSTALL_PREFIX%" mkdir "%INSTALL_PREFIX%"
+
+copy /Y "%BINARY_PATH%" "%INSTALL_PREFIX%\%BINARY_NAME%" >nul
+copy /Y "%BINARY_PATH%" "%INSTALL_PREFIX%\briev.exe" >nul
+
+REM 2026-10-06: ship resources so the installed compiler finds the stdlib.
+set "SHARE_DIR=%INSTALL_PREFIX%\..\share\briev"
+set "LIB_SRC="
+if exist "%SCRIPT_DIR%\lib" set "LIB_SRC=%SCRIPT_DIR%\lib"
+if not defined LIB_SRC if exist "%SCRIPT_DIR%\..\lib" set "LIB_SRC=%SCRIPT_DIR%\..\lib"
+if defined LIB_SRC (
+    mkdir "%SHARE_DIR%" 2>nul
+    xcopy /E /I /Y "%LIB_SRC%" "%SHARE_DIR%\lib" >nul
 )
 
-REM Install the binary
-copy /Y "%BINARY_PATH%" "%INSTALL_PREFIX%\%BIN_NAME%" >nul
-
-REM Verify installation
-if exist "%INSTALL_PREFIX%\%BIN_NAME%" (
-    echo.
-    echo Briev installed successfully!
-    echo.
-    echo Next steps:
-    echo   1. Add to your PATH:
-    echo        %INSTALL_PREFIX%
-    echo      Open: Control Panel -^> System -^> Advanced -^> Environment Variables
-    echo.
-    echo   2. Create a new project:
-    echo        briev init my-app
-    echo        cd my-app
-    echo.
-    echo   3. Run your app:
-    echo        briev run
-    echo.
-    echo   4. Open http://localhost:8080 in your browser
-) else (
-    echo.
-    echo Error: Installation failed
-    exit /b 1
-)
+echo.
+echo Briev installed successfully!
+echo.
+echo Next steps:
+echo   1. Add to your PATH:  %INSTALL_PREFIX%
+echo   2. Create a project:  brievc init my-app
+echo   3. Run it:            cd my-app ^&^& brievc run src\main.bv
+echo.
+echo Note: building executables needs an LLVM toolchain (clang, llc) on PATH.

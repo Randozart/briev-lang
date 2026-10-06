@@ -215,7 +215,7 @@ pub fn init_profile(name: &str) -> Result<(), String> {
     std::fs::create_dir_all(&profile_dir)
         .map_err(|e| format!("cannot create '{}': {}", profile_dir.display(), e))?;
 
-    let baked_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("config");
+    let baked_dir = crate::resource_root().join("config");
     // 2026-08-03 (Phase 3): all six configs are Data Briev now — seed the
     // profile with the .dbvl forms so created profiles load through the DB
     // path. (The pre-migration TOMLs were deleted; nothing consumes them.)

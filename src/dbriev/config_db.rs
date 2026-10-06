@@ -184,7 +184,7 @@ impl ConfigDb {
 /// directory.
 pub fn resolve_config_file(config_dir: &Path, name: &str) -> Option<PathBuf> {
     let dir = if config_dir.to_string_lossy() == "__baked__" {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config")
+        crate::resource_root().join("config")
     } else {
         config_dir.to_path_buf()
     };

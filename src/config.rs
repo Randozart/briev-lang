@@ -38,7 +38,7 @@ impl AllocConfig {
     /// `<name>: "<template with \n escapes>"; [free];`. The .toml is deleted;
     /// the golden parity test bakes the pre-migration values.
     pub fn load() -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/alloc-strategies.dbvl");
+        let path = crate::resource_root().join("config/alloc-strategies.dbvl");
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => return AllocConfig { strategies: HashMap::new() },
@@ -189,7 +189,7 @@ pub struct AsmLowering {
 
 impl AsmLowering {
     pub fn load() -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config/asm-lowering.dbvl");
+        let path = crate::resource_root().join("config/asm-lowering.dbvl");
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => return AsmLowering { ops: HashMap::new() },
