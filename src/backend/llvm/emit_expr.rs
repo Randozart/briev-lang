@@ -4454,7 +4454,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             .collect();
         let ret_type = sig.result_type.return_type().unwrap_or(Type::int());
         let ret_llvm = self.llvm_ret_abi_type(&ret_type);
-        let bridge_name = format!("bridge_{}", sig.name);
+        // 2026-10-06 (web bridge ABI fix): the bridge symbol IS the foreign
+        // symbol — the generated shim provides it by that name and the declare
+        // loop already declares `@<sig.name>`. The old `bridge_` prefix produced
+        // `call ptr @bridge_location()` with no matching declare or shim key
+        // ("use of undefined value '@bridge_location'").
+        let bridge_name = sig.name.clone();
 
         if ret_type == Type::Void {
             writeln!(

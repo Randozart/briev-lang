@@ -6,20 +6,42 @@
 // `b-when` / `b-trigger`. This mirrors how the web language itself routes — a
 // library over the browser's location/history primitives, never the language.
 //
-// Usage (an app's `<view>`):
-//   <nav>
-//     <button b-trigger:click="go_home">Home</button>
-//     <button b-trigger:click="go_about">About</button>
-//   </nav>
-//   <section b-when="route == 'home'">...home...</section>
-//   <section b-when="route == 'about'">...about...</section>
+// The app owns the reactive state (a top-level `path`) and the navigation txn;
+// this module supplies the URL access and the route naming.
 //
-// where `route` is derived from the router's `path` by `route_name`.
+// Usage (an app):
+//
+//   import "std/web/router.bv";
+//
+//   let path: String = current_path();
+//
+//   txn go(url: String) [path != url][path == url] {
+//       path = url;
+//       navigate(url);
+//       term;
+//   };
+//
+//   <view>
+//     <button b-trigger:click="go">Home</button>
+//     <section b-when="route_name(path) == 'home'">...home...</section>
+//     <section b-when="route_name(path) != 'home'">...other...</section>
+//   </view>
+//
+// NOTE: a `Router` *obj* (state + `go` txn in one type) is the nicer shape but
+// is blocked by a codegen bug — an obj with a txn and a String field, held as a
+// top-level state var, is unpacked to `[1 x ptr]` and its literal initializer
+// emits invalid wasm IR (`store [1 x ptr] %ptr`). See BUGS.md 2026-10-06.
+// Until that lands, the framework is the free-function form above.
 
 import "std/types/bootstrap.bv";
 
 frgn location() -> String from #Web;
 frgn navigate(url: String) from #Web;
+
+// The current URL path, read from the host.
+defn current_path() -> String {
+    term location();
+};
 
 // The route NAME for a path — the app's mapping. Default: the root maps to
 // "home", every other path is returned verbatim (the app matches on it).
@@ -28,22 +50,4 @@ defn route_name(path: String) -> String {
         term "home";
     };
     term path;
-};
-
-// The current URL path, read from the host. Call once at start to seed the
-// router's `path`.
-defn current_path() -> String {
-    term location();
-};
-
-// A minimal router: the reactive `path` the view binds to, plus the navigation
-// transaction. `go` writes the URL (host) and the path (view).
-obj Router {
-    path: String;
-
-    txn go(url: String) [true][path == url] {
-        path = url;
-        navigate(url);
-        term;
-    };
 };

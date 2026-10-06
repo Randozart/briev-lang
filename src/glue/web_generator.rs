@@ -1379,7 +1379,11 @@ export async function createApp(wasmBytes) {{
     fn generate_imports(&self) -> String {
         let mut out = String::new();
         for fb in &self.frgn_decls {
-            let fn_name = fb.effective_briev_name();
+            // 2026-10-06 (web bridge ABI fix): the import key is the FOREIGN
+            // symbol — the wasm import name IS the LLVM symbol (`sig.name` =
+            // foreign_name), and the bridge call uses it. Using the Briev name
+            // here mismatched every aliased frgn (`frgn log(...) : console_log`).
+            let fn_name = fb.foreign_name.clone();
             let param_names = self.frgn_param_names(&fb.inputs);
             let (marshal_in, call_names) = self.frgn_marshal_in(&fb.inputs, &param_names);
             let marshal_out = self.frgn_marshal_out(&fb.success_output);

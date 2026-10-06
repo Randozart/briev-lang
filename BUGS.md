@@ -8678,12 +8678,23 @@ world → 0 warnings, values unchanged) and
 "never silent" contract survives for a genuinely unknown width and the message
 contains `spec Bits`, never `!>`).
 
-## Webstack (wasm32) codegen: `#Web` String-return bridge calls and String-field objs emit invalid IR — 2026-10-06 OPEN
+## Webstack (wasm32) codegen: `#Web` String-return bridge calls and String-field objs emit invalid IR — 2026-10-06 PARTIALLY FIXED
 
 **Date:** 2026-10-06 (found while smoke-testing the router framework,
 `lib/std/web/router.bv`, Part 4 of the web plan)
-**Status:** OPEN — blocks runtime use of the router and any `#Web` frgn that
-returns a String.
+**Status:** bridge-call half FIXED same day; the obj/String-field and
+runtime-string-compare halves are the two separate OPEN entries above.
+
+**Fix landed (2026-10-06):** the bridge-call half. The bridge symbol was
+`bridge_<sig.name>` while the declare loop declared `@<sig.name>` and the shim
+keyed its import by the Briev name — so any CALLED `#Web` frgn hit "use of
+undefined value '@bridge_location'". Now the FOREIGN symbol is canonical
+everywhere: `resolved_frgns` is keyed by `fb.foreign_name` (matching
+`emit_frgn_call`'s `sig.name` lookup), the bridge call drops the `bridge_`
+prefix, the shim import key is `fb.foreign_name`, and the GLUE `[web]`
+`host_fns` keys are the foreign names (`console_log`, `performance_now`, …).
+Verified: `frgn location() -> String from #Web; defn cp() -> String { term
+location(); }` now builds. Commits `aac37915` + the bridge-ABI commit.
 
 **Repro A — `#Web` frgn String return (`/tmp`-style fixture):**
 ```
@@ -8726,3 +8737,65 @@ defect is purely in wasm codegen, not the framework.
 pointer with the wasm32 pointer width (`int_bits = 32`), not an opaque `ptr`.
 Then re-check the String-field obj layout (`store [1 x ptr]`) under wasm32.
 Gate: `brievc build` of the router smoke fixture + the console/dom examples.
+
+## Webstack (wasm32): runtime string comparison emits hardcoded-i64 pointer casts — 2026-10-06 OPEN
+
+**Date:** 2026-10-06 (found fixing the router framework's runtime build)
+**Status:** OPEN — blocks runtime string comparison on wasm32, and therefore the
+router's route matching.
+
+**Repro** (the router smoke; `path` comes from the host, so the comparison is
+RUNTIME, not folded):
+```
+import "std/web/router.bv";
+let path: String = current_path();
+let route: String = route_name(path);
+txn go(url: String) [path != url][path == url] {
+    path = url; route = route_name(url); navigate(url); term;
+};
+<view><button b-trigger:click="go">Home</button>
+       <section b-when="route == 'home'">home</section></view>
+```
+`brievc build x.rbv` → `llc`:
+```
+%t5 = inttoptr i64 %t1 to ptr   ; %t1 is i32 (trunc i64 %t2 to i32)
+```
+inside the generated `@str_len_bytes`.
+
+**Root cause:** the String cast lanes (`lib/std/cast_lanes.bv`
+`str_len_bytes = Load#((s as Data) as Int, 8)`) lower pointer↔int with a
+HARDCODED `i64` (`ptrtoint ptr %s to i64`, `inttoptr i64 … to ptr`). On wasm32
+pointers are 32-bit, so the re-materialized pointer is width-wrong. Runtime
+string equality (`briev_str_eq` → `str_len_bytes`) therefore miscompiles.
+Compile-time-FOLDED comparisons (both args constant) DCE the helper and build
+fine — which is why simple `.rbv` string compares passed and this went unnoticed.
+
+`--int-bits 32` does NOT help: the width is hardcoded, not derived from the
+target.
+
+**Fix direction:** emit `ptrtoint`/`inttoptr` at the target POINTER width (i32
+on wasm32) in the cast-lane lowering and `Load#`/`Store#` address paths. Many
+sites hardcode `to i64` / `i64 …` in `src/backend/llvm/` (grep `ptrtoint ptr {}
+to i64`, `inttoptr i64`). Gate: this fixture + a runtime string-compare `.rbv`.
+
+## Webstack (wasm32): unpacked obj with a txn + String field emits invalid IR — 2026-10-06 OPEN
+
+**Repro:**
+```
+obj R {
+    path: String;
+    txn go(u: String) [true][path == u] { path = u; term; };
+};
+let r: R = R { path: "/" };
+<view><p b-text="r.path">.</p></view>
+```
+→ `store [1 x ptr] %t3, ptr %t1` (the value is a `ptr`, the field is the
+unpacked `[1 x ptr]`).
+
+**Root cause:** an obj that has a txn (a component/instance) and is held as a
+top-level state var is UNPACKED into state (`%State` field `[1 x ptr]` = the
+obj's inline fields), but its literal initializer stores the FIELD value (a
+`ptr`) with the AGGREGATE type annotation. A plain obj without a txn is boxed
+(`%State = { i64 }`) and builds fine. This blocks the nicer `Router` obj shape;
+the router ships as free functions (`current_path`/`route_name`/`navigate`)
+until this lands.

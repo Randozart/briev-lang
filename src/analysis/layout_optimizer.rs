@@ -65,7 +65,7 @@ pub fn optimize_layouts(
 
         // 2026-07-22: Only optimize bridge-path frgns (GLUE-mediated calls).
         // Inline frgns and unsupported ones are skipped.
-        let target = match resolved_frgns.get(fb.effective_briev_name()) {
+        let target = match resolved_frgns.get(&fb.foreign_name) {
             Some(ResolvedFrgn::Bridge { language, .. }) => {
                 match glue_targets.get(language) {
                     Some(t) => t,

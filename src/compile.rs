@@ -740,7 +740,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         let dispatch = briev_compiler::analysis::frgn_dispatch::resolve_single_frgn(
             fb, &ext, &glue_targets, opts.backend, Some(&universe),
         )?;
-        resolved_frgns.insert(fb.effective_briev_name().to_string(), dispatch);
+        // 2026-10-06 (web bridge ABI fix): key by the FOREIGN symbol — the
+        // backend's `emit_frgn_call` looks up `resolved_frgns.get(&sig.name)`
+        // where `sig.name` is the foreign name, and the declaration/shim use it
+        // too. Keying by the Briev name missed every aliased frgn
+        // (`frgn log(...) : console_log`).
+        resolved_frgns.insert(fb.foreign_name.clone(), dispatch);
     }
 
     // 2026-07-26: Collect protocol library names from resolved frgns
