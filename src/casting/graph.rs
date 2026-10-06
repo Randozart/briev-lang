@@ -69,7 +69,7 @@ pub struct CastStep {
 pub enum LlvmTypeResolver {
     /// Fixed LLVM type string (e.g., "double", "ptr", "{ i64, i64 }")
     Fixed(&'static str),
-    /// Width-parametric: !> bits → !> maxbits → !> minbits → int_bits
+    /// Width-parametric: bits → maxbits → minbits → int_bits (`spec Bits`)
     WidthParametric,
     /// 2026-08-03: the Float protocol's width semantics — derive the LLVM
     /// type from the type's `bits` metadata (16 → half/bfloat via disamb,
@@ -1113,9 +1113,9 @@ impl CastingGraph {
     /// Compiler constructs (Bits/Void/Ptr/Vector/Function) are NOT resolved
     /// here; callers handle them directly before consulting this method.
     ///
-    /// Width ladder per category:
-    /// - Int/UInt:  !> bits → !> maxbits → !> minbits → default_int_bits
-    /// - Float:     !> bits → !> maxbits → !> minbits → 32
+    /// Width ladder per category (keys written by `spec Bits: N;`, §8.2):
+    /// - Int/UInt:  bits → maxbits → minbits → default_int_bits
+    /// - Float:     bits → maxbits → minbits → 32
     ///
     /// Err carries the protocol CATEGORY and the concrete fix — this is a
     /// capability error, never a silent fallback.
@@ -1169,7 +1169,8 @@ impl CastingGraph {
                 match bits {
                     8 | 16 | 32 | 64 => SpirvShape::Int { bits: bits as u32, signed },
                     other => return Err(format!(
-                        "integer width {} is not a Vulkan compute width                          (8/16/32/64) — fix the type's bits metadata",
+                        "integer width {} is not a Vulkan compute width (8/16/32/64) — \
+                         declare `spec Bits: N;` on the type with a supported width",
                         other
                     )),
                 }
@@ -1185,7 +1186,9 @@ impl CastingGraph {
                 match bits {
                     16 | 32 | 64 => SpirvShape::Float { bits: bits as u32 },
                     other => return Err(format!(
-                        "float width {} is not a kernel float width                          (16/32/64) — declare the state field as                          Float {{ !> bits: 32 }} or Float {{ !> bits: 64 }}",
+                        "float width {} is not a kernel float width (16/32/64) — \
+                         declare the state field as `spec Bits: 32;` or \
+                         `spec Bits: 64;`",
                         other
                     )),
                 }
@@ -1202,10 +1205,12 @@ impl CastingGraph {
     /// the normalizer's three-phase llvm_type derivation and primordial
     /// llvm_type properties.
     ///
-    /// Width resolution priority (WidthParametric protocols):
-    /// 1. `!> bits: N` — exact width (hard contract)
-    /// 2. `!> maxbits: N` — upper bound
-    /// 3. `!> minbits: N` — lower bound
+    /// Width resolution priority (WidthParametric protocols). The canonical
+    /// declaration form is `spec Bits: N;` (§8.2); `!> bits: N;` writes the
+    /// same metadata key and is accepted, but diagnostics recommend `spec`.
+    /// 1. `bits` — exact width (hard contract)
+    /// 2. `maxbits` — upper bound
+    /// 3. `minbits` — lower bound
     /// 4. `int_bits` — target default (64 for x86_64, 32 for wasm32)
     pub fn resolve_llvm_type(&self, universe: &TypeUniverse, ty: &Type, int_bits: u64) -> String {
         // Compiler constructs handled directly

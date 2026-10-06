@@ -168,14 +168,33 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
         // conflicting with an outstanding immutable borrow of the universe.
         let primordial = universe.get(&td.name).cloned();
         // 2026-07-31: Phase 3 (§8.6) — a type with no primordial falls back to
-        // the TARGET int width (int_bits), not a hardcoded 64; a diagnostic is
-        // recorded so the fallback is never silent.
+        // the TARGET int width (int_bits), not a hardcoded 64.
+        //
+        // 2026-10-06 (BUGS.md ledger sweep): the diagnostic is gated on the
+        // width being GENUINELY unknown. A slot-bearing `obj`/struct derives
+        // its layout from its fields (§8.2), so the old unconditional push
+        // printed 12 lines on hello-world (Slice, Stack, RingBuffer, List,
+        // HashMap, PiggyBank ×2) and trained users to ignore normalizer
+        // output. The VALUE is unchanged (int_bits either way) — only the
+        // warning is gated. To restore the blanket warning, drop the
+        // `width_known` conjunct.
+        //
+        // The message names `spec Bits: N` — the canonical PHYSICAL metadata
+        // form (§8.2). `!>` is the semantic-metadata form (`!> ctd: Add;`) and
+        // is not a width declaration to recommend.
+        let width_known = exact_bits.is_some()
+            || ceiling.is_some()
+            || bytes_override.is_some()
+            || !td.body.slots.is_empty();
         let prim_max = primordial.as_ref().map(|p| p.max_bits).unwrap_or_else(|| {
-            universe.warnings.push(format!(
-                "normalizer: type '{}' has no primordial entry and no `!> bits` \
-                 metadata — defaulting max width to target int width ({})",
-                td.name, int_bits
-            ));
+            if !width_known {
+                universe.warnings.push(format!(
+                    "normalizer: type '{}' has no primordial entry and no width \
+                     metadata — defaulting max width to the target int width ({}); \
+                     declare `spec Bits: N;` if a specific width is required",
+                    td.name, int_bits
+                ));
+            }
             int_bits
         });
         let prim_min = primordial.as_ref().map(|p| p.min_bits).unwrap_or(0);
@@ -186,6 +205,12 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
             let c = ceiling.unwrap_or(prim_max);
             (f.min(c), c.max(f))
         };
+        // 2026-10-06 (BUGS.md ledger sweep): `size_fallback` records whether the
+        // 8-byte guess above actually fired, so the alignment diagnostic below
+        // reports ONLY the genuinely-unknowable case. A slot-derived size
+        // already yields a conservative alignment (min(bytes, 8) never
+        // under-aligns); warning on it was pure noise.
+        let mut size_fallback = false;
         let bytes = bytes_override
             .or_else(|| ceiling.map(|b| b.div_ceil(8)))
             .or_else(|| exact_bits.map(|b| b.div_ceil(8)))
@@ -215,9 +240,11 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
                 // the fallback so it is not silent.
                 universe.warnings.push(format!(
                     "normalizer: type '{}' has no size metadata and no primordial \
-                     entry — assuming 8 bytes",
+                     entry — assuming 8 bytes; declare `spec Bytes: N;` or \
+                     `spec Bits: N;` if the size matters",
                     td.name
                 ));
+                size_fallback = true;
                 8
             }));
         let alignment = td.body.metadata.get("alignment")
@@ -226,12 +253,16 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
             })
             .unwrap_or_else(|| primordial.as_ref().map(|p| p.alignment).unwrap_or_else(|| {
                 // 2026-07-31: Phase 3 (§8.6) — conservative alignment fallback
-                // (min(bytes, 8)); recorded so it is not silent.
-                universe.warnings.push(format!(
-                    "normalizer: type '{}' has no alignment metadata and no \
-                     primordial entry — assuming alignment {}",
-                    td.name, bytes.min(8)
-                ));
+                // (min(bytes, 8)). Gated 2026-10-06: only reported when the size
+                // itself was guessed, otherwise it duplicated the size warning on
+                // every slot-bearing type.
+                if size_fallback {
+                    universe.warnings.push(format!(
+                        "normalizer: type '{}' has no alignment metadata and no \
+                         primordial entry — assuming alignment {}",
+                        td.name, bytes.min(8)
+                    ));
+                }
                 bytes.min(8)
             }));
         let mut properties: std::collections::HashMap<String, PropertyValue> = td.body.metadata.clone();
@@ -556,5 +587,59 @@ mod tests {
         assert_eq!(rt.bytes, 16);
         assert_eq!(rt.alignment, 8);
         assert_eq!(rt.max_bits, 128);
+    }
+
+    // ── 2026-10-06 (BUGS.md ledger sweep): width-fallback diagnostics ────
+
+    #[test]
+    fn test_slot_bearing_type_without_spec_bits_is_silent() {
+        // §8.2: a struct's layout derives from its slots — `spec Bits` is not
+        // required, so registration must not warn. The old unconditional push
+        // emitted 2 warnings per generic obj (12 lines on hello-world: Slice,
+        // Stack, RingBuffer, List, HashMap, PiggyBank) which trained users to
+        // ignore normalizer output. The fallback VALUE is unchanged.
+        let mut u = TypeUniverse::new();
+        let items = vec![make_type_def(
+            "Point",
+            vec![("x", Type::int()), ("y", Type::int())],
+        )];
+        register_typedefs(&items, &mut u, 64).unwrap();
+        assert!(
+            u.warnings.is_empty(),
+            "slot-bearing type must not warn: {:?}",
+            u.warnings
+        );
+        let rt = u.get("Point").expect("registered");
+        assert_eq!(rt.max_bits, 64, "width fallback value unchanged");
+        assert_eq!(rt.bytes, 16, "layout unchanged");
+    }
+
+    #[test]
+    fn test_slotless_type_without_width_metadata_still_warns_spec_bits() {
+        // The Phase 3 §8.6 "fallback is never silent" contract survives for a
+        // type whose width is GENUINELY unknown, and the message teaches the
+        // canonical §8.2 form (`spec Bits: N;`) — never the `!>` spelling,
+        // which is semantic metadata (`!> ctd: Add;`), not a width.
+        let mut u = TypeUniverse::new();
+        let items = vec![make_type_def_meta("Mystery", vec![])];
+        register_typedefs(&items, &mut u, 64).unwrap();
+        assert!(
+            !u.warnings.is_empty(),
+            "an unknown-width type must still record its fallback"
+        );
+        let width = u
+            .warnings
+            .iter()
+            .find(|w| w.contains("'Mystery'") && w.contains("max width"))
+            .expect("width-fallback warning recorded");
+        assert!(
+            width.contains("spec Bits"),
+            "message must teach `spec Bits: N;` (§8.2): {width}"
+        );
+        assert!(
+            !width.contains("!>"),
+            "stale `!>` width syntax in: {width}"
+        );
+        assert_eq!(u.get("Mystery").expect("registered").max_bits, 64);
     }
 }

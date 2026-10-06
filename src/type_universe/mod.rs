@@ -92,10 +92,13 @@ pub struct TypeUniverse {
     pub types: HashMap<String, ResolvedType>,
     /// 2026-07-31: Phase 3 (§8.5-E6) — non-fatal diagnostics surfaced by the
     /// normalizer when a type's size/width/alignment falls back to a default
-    /// (e.g. a type with no primordial and no `!> bits` metadata). The LLVM
-    /// backend copies these into its warning report so the fallback is never
-    /// silent. The default VALUES are preserved (behavior unchanged); this
-    /// channel just makes them observable.
+    /// (e.g. a slot-less type with no primordial and no `spec Bits` metadata,
+    /// §8.2). The LLVM backend copies these into its warning report so the
+    /// fallback is never silent when it is a GUESS: a slot-bearing type's
+    /// layout is derived from its fields (§8.2) and does not warn (gated
+    /// 2026-10-06 — it was 2 lines per generic obj). The default VALUES are
+    /// preserved (behavior unchanged); this channel just makes the real
+    /// fallbacks observable.
     pub warnings: Vec<String>,
     /// 2026-08-17 (plan 2026-08-17-error-intrinsic-piggybank-hashmap-completion.md):
     /// usage-gated compile errors recorded by `Error#` in a MEMBER body. The
