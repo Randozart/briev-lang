@@ -5242,13 +5242,38 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             self.fun.cur_block = saved_block;
             tys
         };
+        // 2026-10-05 (json.bv): canonicalize enum-handle probe types. An enum
+        // CONSTRUCTOR (`Err(e)`) reports `Type::int()` (the i64 handle) while
+        // an enum-returning CALL (`finish_number(..)`) reports the declared
+        // `Applied("Result", …)`. Both are the SAME i64 handle, but the raw
+        // types differ → the match was judged heterogeneous and each arm was
+        // WRAPPED again (`Ok(<Result handle>)`), a double-box that segfaults
+        // on the nested tag read. Fold both to the handle type so a match
+        // mixing constructors and calls stays homogeneous (phi, no wrap).
+        let probe_types: Vec<Type> = probe_types
+            .into_iter()
+            .map(|t| match &t {
+                Type::Applied(n, _) | Type::Custom(n)
+                    if self.ctx.enum_handle_types.contains(n) =>
+                {
+                    Type::int()
+                }
+                _ => t,
+            })
+            .collect();
         let mut synth_members: Vec<Type> = Vec::new();
         for ty in &probe_types {
             if !synth_members.contains(ty) {
                 synth_members.push(ty.clone());
             }
         }
-        let heterogeneous = synth_members.len() > 1;
+        // 2026-10-05 (json.bv): a match with ANY void arm is statement-like —
+        // its value cannot be extracted (a void arm has no register). Without
+        // this, mixed void/Int arms were judged heterogeneous and the VOID arm
+        // was `wrap_union_value`d on an undefined register (`use of undefined
+        // value '%t295'`). The result is void; no boxing, no phi.
+        let has_void = probe_types.iter().any(|t| matches!(t, Type::Void));
+        let heterogeneous = !has_void && synth_members.len() > 1;
         let synth_ty = Type::Union(synth_members);
 
         // Phase 2: the arm blocks. Each tail flushes INLINE — every block
@@ -5259,6 +5284,10 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         for (i, arm) in arms.iter().enumerate() {
             writeln!(out, "{}:", arm_labels[i]).ok();
             self.fun.cur_block = Some(arm_labels[i].clone());
+            // 2026-10-05 (json.bv): reset per arm — an arm that `term`s sets
+            // `terminated`; without the reset every later arm inherits it and
+            // the merge is mis-emitted.
+            self.fun.terminated = false;
             self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, out, indent);
             let body_reg;
             if let Some(guard) = &arm.guard {
@@ -5276,6 +5305,15 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 body_reg = self.emit_expr(out, &arm.body, indent);
             } else {
                 body_reg = self.emit_expr(out, &arm.body, indent);
+            }
+            // 2026-10-05 (json.bv): an arm that TERMINATED (its body ran a
+            // `term` — a convergence checkpoint in a callable txn — branching
+            // to `post`) contributes NO phi edge and no `br %end`: the block
+            // already ended. Emitting them produced a double terminator and,
+            // when ALL arms terminate, an EMPTY end block (`expected
+            // instruction opcode`).
+            if self.fun.terminated {
+                continue;
             }
             // The phi edge comes from wherever the body emission actually
             // ended — a plain body stays in the arm/guard block, a nested
@@ -5295,6 +5333,19 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             phi_incoming.push((reg, pred, ty));
             writeln!(out, "  br label %{}", end_label).ok();
         }
+        // 2026-10-05 (json.bv): every arm terminated (each ran a `term`
+        // convergence checkpoint). The match never falls through — the end
+        // block's only structural predecessor is the no-match default, which
+        // is unreachable for an exhaustive match. Emit `unreachable` (no phi,
+        // no empty block). This is the `expected instruction opcode` case: a
+        // nested `match kv { Ok(f)=>…, Err(e)=>… }` whose arms all `term`.
+        if phi_incoming.is_empty() {
+            writeln!(out, "{}:", end_label).ok();
+            writeln!(out, "  unreachable").ok();
+            self.fun.terminated = true;
+            self.fun.cur_block = Some(end_label);
+            return TypedRegister { name: v.to_string(), ty: Type::void() };
+        }
         // Phase 3: the end block merges the arm results (and the default).
         // 2026-08-22 (spec-conformance Phase 1b): the merge takes the FIRST
         // arm's value type — the old `phi i64 [ 0, ... ]` hardcoded i64 and
@@ -5310,7 +5361,14 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         if heterogeneous {
             result_ty = synth_ty;
         }
-        let llvm_ty = self.llvm_type(&result_ty);
+        // 2026-10-05 (json.bv): a match with any void arm yields no value —
+        // force the void path (no phi, no boxing).
+        let llvm_ty = if has_void {
+            result_ty = Type::void();
+            "void".to_string()
+        } else {
+            self.llvm_type(&result_ty)
+        };
         // 2026-09-24 (BUGS.md void-match phi): a statement-position match
         // whose arms are all valueless (`match x { 0 => {hp[i]=3;}; _ => {};};`)
         // probes as Void — emitting `phi void` is invalid LLVM ("void type
@@ -5321,6 +5379,15 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // the invalid phi for all-void arms).
         if llvm_ty == "void" {
             writeln!(out, "{}:", end_label).ok();
+            // 2026-10-05 (json.bv): when NO arm fell through (every arm ran a
+            // `term` — a convergence checkpoint branching to `post`), the end
+            // block's only structural predecessor is the no-match default,
+            // which is unreachable for an exhaustive match. Emit `unreachable`
+            // rather than an empty block (`expected instruction opcode`).
+            if phi_incoming.is_empty() {
+                writeln!(out, "  unreachable").ok();
+                self.fun.terminated = true;
+            }
             self.fun.cur_block = Some(end_label);
             return TypedRegister { name: v.to_string(), ty: result_ty };
         }

@@ -934,6 +934,46 @@ node report [true][true] {
     );
 }
 
+/// 2026-10-05 (callable-txn convergence): a `txn` must emit the convergence
+/// loop — the postcondition gates done/loop. The 2026-09-14 linear branch
+/// (`is_linear_defn = !txn.is_reactive`) made every callable txn run once and
+/// assert its postcondition (`unreachable`), so loop txns returned after one
+/// iteration. A `defn` never reaches this path.
+#[test]
+fn test_callable_txn_converges() {
+    let src = r#"
+txn sum_to(n: Int, i: Int, acc: Int)
+    [i < n][i == n]
+    -> Int
+{
+    acc = acc + i;
+    i = i + 1;
+    term acc;
+};
+let sink: Int[2];
+node report [true][true] {
+    sink[0] = sum_to(5, 0, 0);
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let f = function_body(&ir, "@sum_to(");
+    assert!(f.contains("loop:"), "txn must have a convergence loop:\n{f}");
+    assert!(
+        f.contains("br i1") && f.contains("label %done, label %loop"),
+        "postcondition must gate done/loop:\n{f}"
+    );
+    assert!(
+        !f.contains(".post_fail"),
+        "txn must not use the linear assertion path:\n{f}"
+    );
+}
+
 /// 2026-10-05 (json.bv): a Char LOCAL read from a native-i32 register must
 /// NOT be truncated (`trunc i64 <i32>` is invalid IR). The else-branch Char
 /// unbox is only for boxed i64 params (`ty == Int`); a local typed Char is

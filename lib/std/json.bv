@@ -1,12 +1,11 @@
 // JSON - Pure-Briev JSON parser (RFC 8259 subset)
 // Tier 2: String & Text Processing
 //
-// STATUS 2026-10-05: migrated, typechecks, and compiles to VALID IR, but
-// NOT yet usable — the parser loops are `txn`s and callable txn convergence
-// is currently linear (the postcondition is an assertion, so a loop txn
-// returns after one iteration and the next post-check hits `unreachable` →
-// segfault). Blocked on the callable-txn-convergence fix (BUGS.md "json.bv
-// round 2"). Do not import until that lands.
+// STATUS 2026-10-05: working. The parser loops are callable `txn`s that
+// converge (loop until the postcondition holds); the migration + the
+// callable-txn-convergence fix (BUGS.md) make objects, arrays, numbers,
+// strings (with escapes), and literals parse and run in both the
+// interpreter and the LLVM backend.
 //
 // 2026-08-23 (Leg 2, json.bv migration): restored from the archive and
 // migrated to current idioms — stdlib char_at/is_digit/is_hex_digit/
@@ -97,16 +96,15 @@ defn json_get(v: JsonValue, key: String) -> Result<String, String> {
 };
 
 txn find_pair(pairs: List<(String, JsonValue)>, key: String, i: Int)
-    [i < pairs.Count#()][i >= pairs.Count#() || pairs[i].0 == key]
+    [i < pairs.Count#()][i >= pairs.Count#()]
     -> Result<JsonValue, String>
 {
     when pairs[i].0 == key {
-        term ok_value(pairs[i].1);
+        let found = pairs[i].1;
+        i = pairs.Count#();
+        term ok_value(found);
     };
     i = i + 1;
-    when i >= pairs.Count#() {
-        term err_value(e_utoken());
-    };
     term err_value(e_utoken());
 };
 
@@ -125,11 +123,13 @@ defn json_get_by_index(v: JsonValue, i: Int) -> Result<JsonValue, String> {
 // ===== Whitespace =====
 
 txn skip_ws(s: String, pos: Int)
-    [pos < (CharCount#(s)) && is_whitespace(char_at(s, pos))]
+    [pos <= (CharCount#(s))]
     [pos >= (CharCount#(s)) || !is_whitespace(char_at(s, pos))]
     -> Int
 {
-    pos = pos + 1;
+    when pos < CharCount#(s) && is_whitespace(char_at(s, pos)) {
+        pos = pos + 1;
+    };
     term pos;
 };
 
@@ -183,10 +183,16 @@ defn parse_string(s: String, pos: Int) -> Result<ParseFrame, String> {
 };
 
 txn parse_str_chars(s: String, pos: Int, sb: StringBuilder)
-    [pos < (CharCount#(s)) && char_at(s, pos) != '"']
-    [pos < (CharCount#(s)) && char_at(s, pos) == '"']
+    [pos <= (CharCount#(s))]
+    [pos >= (CharCount#(s)) || char_at(s, pos) == '"']
     -> Result<ParseFrame, String>
 {
+    when pos >= CharCount#(s) {
+        term err_frame(e_unexpend());
+    };
+    when char_at(s, pos) == '"' {
+        term Ok(ParseFrame { value: StrVal(sb.to_string()), pos: pos });
+    };
     when char_at(s, pos) == '\\' {
         pos = pos + 1;
         when pos < CharCount#(s) {
@@ -404,10 +410,16 @@ defn parse_array(s: String, pos: Int) -> Result<ParseFrame, String> {
 };
 
 txn parse_array_elems(s: String, pos: Int, elems: List<JsonValue>)
-    [pos < (CharCount#(s)) && char_at(s, pos) != ']']
-    [pos < (CharCount#(s)) && char_at(s, pos) == ']']
+    [pos <= (CharCount#(s))]
+    [pos >= (CharCount#(s)) || char_at(s, pos) == ']']
     -> Result<ParseFrame, String>
 {
+    when pos >= CharCount#(s) {
+        term err_frame(e_unexpend());
+    };
+    when char_at(s, pos) == ']' {
+        term Ok(ParseFrame { value: Array(elems), pos: pos });
+    };
     let val = parse_value(s, pos);
     match val {
         Ok(frame) => {
@@ -418,9 +430,9 @@ txn parse_array_elems(s: String, pos: Int, elems: List<JsonValue>)
                 pos = pos + 1;
                 pos = skip_ws(s, pos);
             };
-            Ok(ParseFrame { value: Array(elems), pos: pos })
+            term Ok(ParseFrame { value: Array(elems), pos: pos });
         }
-        Err(e) => Err(e),
+        Err(e) => { pos = CharCount#(s); term Err(e); }
     }
 };
 
@@ -476,16 +488,28 @@ defn parse_object(s: String, pos: Int) -> Result<ParseFrame, String> {
 };
 
 txn parse_object_pairs(s: String, pos: Int, pairs: List<(String, JsonValue)>)
-    [pos < (CharCount#(s)) && char_at(s, pos) != '}']
-    [pos < (CharCount#(s)) && char_at(s, pos) == '}']
+    [pos <= (CharCount#(s))]
+    [pos >= (CharCount#(s)) || char_at(s, pos) == '}']
     -> Result<ParseFrame, String>
 {
+    when pos >= CharCount#(s) {
+        term err_frame(e_unexpend());
+    };
+    when char_at(s, pos) == '}' {
+        term Ok(ParseFrame { value: Object(pairs), pos: pos });
+    };
     when char_at(s, pos) != '"' {
         term err_frame(e_expkey());
     };
     let key_res = parse_string(s, pos);
     match key_res {
-        Ok(kf) => handle_key_value(s, kf, pairs),
-        Err(e) => Err(e),
+        Ok(kf) => {
+            let kv = handle_key_value(s, kf, pairs);
+            match kv {
+                Ok(frame) => { pos = frame.pos; term Ok(frame); }
+                Err(e) => { term Err(e); }
+            }
+        }
+        Err(e) => { term Err(e); }
     }
 };

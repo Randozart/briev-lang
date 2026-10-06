@@ -48,6 +48,11 @@ pub struct FunctionDef {
     pub name: String,
     pub parameters: Vec<String>,
     pub body: Vec<Statement>,
+    /// 2026-10-05 (callable-txn convergence): a `txn` converges — its body
+    /// re-runs until the postcondition holds (BUGS.md "callable txn"
+    /// 2392/2423, SPEC §1776); the pre gates each entry. `None` for a `defn`
+    /// (linear). The reference must match codegen (Rule 5).
+    pub contract: Option<crate::ast::Contract>,
 }
 
 /// 2026-08-22 (Phase 7b, SPEC §9.5): an obj's PORT/FIELD surface for the
@@ -189,6 +194,7 @@ impl Interpreter {
                                 name: d.name.clone(),
                                 parameters: params,
                                 body: d.body.clone(),
+                                contract: None,
                             });
                         }
                         TopLevel::Transaction(t) => {
@@ -199,6 +205,7 @@ impl Interpreter {
                                 name: t.name.clone(),
                                 parameters: params,
                                 body: t.body.clone(),
+                                contract: Some(t.contract.clone()),
                             });
                         }
                         _ => {}
@@ -228,6 +235,7 @@ impl Interpreter {
                         name: t.name.clone(),
                         parameters: params,
                         body: t.body.clone(),
+                        contract: Some(t.contract.clone()),
                     });
                 }
                 for d in &c.definitions {
@@ -238,6 +246,7 @@ impl Interpreter {
                         name: d.name.clone(),
                         parameters: params,
                         body: d.body.clone(),
+                        contract: None,
                     });
                 }
             }
@@ -278,6 +287,7 @@ impl Interpreter {
                         name: d.name.clone(),
                         parameters: param_names,
                         body: d.body.clone(),
+                        contract: None,
                     });
                 }
             }
@@ -290,6 +300,7 @@ impl Interpreter {
                         name: d.name.clone(),
                         parameters: param_names,
                         body: d.body.clone(),
+                        contract: None,
                     });
                 }
                 TopLevel::Transaction(t) => {
@@ -298,6 +309,7 @@ impl Interpreter {
                         name: t.name.clone(),
                         parameters: param_names,
                         body: t.body.clone(),
+                        contract: Some(t.contract.clone()),
                     });
                 }
                 _ => {}
@@ -360,6 +372,20 @@ impl Interpreter {
         self.functions.get(name)
     }
 
+    /// 2026-10-05 (callable-txn convergence): run a callable's body ONCE,
+    /// returning the `term` value (or `None` on fall-through). Extracted so
+    /// the convergence loop in `call_function` stays loop-depth 1.
+    fn run_body_once(&mut self, body: &[Statement]) -> Result<Option<Value>, RuntimeError> {
+        for stmt in body {
+            match self.exec_stmt(stmt) {
+                Ok(_) => {}
+                Err(RuntimeError::TermReturn(v)) => return Ok(Some(v)),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(None)
+    }
+
     /// 2026-07-28: Phase B.1 — Call a function by name with pre-evaluated
     /// argument values. Binds parameters, executes body, returns result.
     /// Saves and restores any state keys that overlap with parameter names.
@@ -386,24 +412,38 @@ impl Interpreter {
             self.state.insert(name.clone(), args[i].clone());
         }
 
-        // Execute body statements
-        // 2026-07-28: Term with value signals early return via TermReturn error.
-        // 2026-08-09 (Phase 10): use exec_stmt so `defer` registers cleanup;
-        // flush the defer stack (LIFO) on normal termination and on term.
-        let mut result = Value::Void;
-        for stmt in &defn.body {
-            match self.exec_stmt(stmt) {
-                Ok(v) => result = v,
-                Err(RuntimeError::TermReturn(v)) => {
-                    result = v;
-                    break;
+        // 2026-10-05 (callable-txn convergence): a `txn` LOOPS until its
+        // postcondition holds (BUGS.md "callable txn" 2392/2423); the pre
+        // gates each entry. A `defn` (contract None) runs once. Mirrors the
+        // backend's convergence loop (Rule 5).
+        // 2026-07-28: Term with value signals early return via TermReturn.
+        // 2026-08-09 (Phase 10): use exec_stmt so `defer` registers cleanup.
+        let mut result = Value::Atom(Atom::Int(0));
+        loop {
+            if let Some(c) = &defn.contract {
+                if !matches!(c.pre_condition, Expr::Bool(true)) {
+                    let pv = self.eval_expr(&c.pre_condition)?;
+                    if !pv.is_true() {
+                        break;
+                    }
                 }
-                Err(e) => return Err(e),
+            }
+            if let Some(v) = self.run_body_once(&defn.body)? {
+                result = v;
+            }
+            // 2026-08-09 (Phase 10): deferred cleanup runs on EVERY exit —
+            // normal fall-through AND term (the firing completed either way).
+            let _ = self.flush_defers();
+            match &defn.contract {
+                Some(c) if !matches!(c.post_condition, Expr::Bool(true)) => {
+                    let qv = self.eval_expr(&c.post_condition)?;
+                    if qv.is_true() {
+                        break;
+                    }
+                }
+                _ => break,
             }
         }
-        // 2026-08-09 (Phase 10): deferred cleanup runs on EVERY exit — normal
-        // fall-through AND term (the firing completed either way).
-        let _ = self.flush_defers();
 
         // Restore saved state
         for (name, saved_val) in saved {
@@ -1202,6 +1242,37 @@ mod tests {
         let tokens = crate::lexer::tokenize(src).unwrap();
         let mut p = crate::parser::Parser::new(tokens, src);
         p.parse_program().unwrap()
+    }
+
+    /// 2026-10-05 (callable-txn convergence): a `txn` LOOPS until its
+    /// postcondition holds — the reference must match codegen (Rule 5). The
+    /// old registration ran the body once, so a loop txn returned after one
+    /// iteration.
+    #[test]
+    fn callable_txn_converges() {
+        let program = parse_program(
+            "txn sum_to(n: Int, i: Int, acc: Int)\n\
+                 [i < n][i == n]\n\
+                 -> Int\n\
+             {\n\
+                 acc = acc + i;\n\
+                 i = i + 1;\n\
+                 term acc;\n\
+             };\n",
+        );
+        let mut interp = Interpreter::new();
+        interp.load_program(&program);
+        let v = interp
+            .call_function(
+                "sum_to",
+                &[
+                    Value::Atom(Atom::Int(5)),
+                    Value::Atom(Atom::Int(0)),
+                    Value::Atom(Atom::Int(0)),
+                ],
+            )
+            .unwrap();
+        assert_eq!(v.as_i64(), Some(10), "sum_to(5,0,0) must converge to 10");
     }
 
     #[test]

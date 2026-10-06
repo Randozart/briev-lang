@@ -3250,6 +3250,17 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         // 2026-07-27: Set txn_name for per-function arena gating.
         self.fun.txn_name = name.to_string();
         self.fun.pending_cleanup.clear();
+        // 2026-10-05 (json.bv): the local-binding caches are PER-FUNCTION.
+        // A reactive node body resolved a match binding through a stale
+        // `last_val_temps`/`let_bindings` entry left by a PRIOR callable txn
+        // (parse_str_chars) — the node referenced a register defined in
+        // another function (`use of undefined value '%t295'`). clear_locals
+        // clears these; the reactive path must too.
+        self.fun.let_bindings.clear();
+        self.fun.let_binding_types.clear();
+        self.fun.let_original_types.clear();
+        self.fun.last_val_temps.clear();
+        self.fun.last_val_types.clear();
         self.ctx.range_bounds = Self::extract_ranges_with_constants(
             &txn.contract.pre_condition, &self.ctx.constants);
         self.ctx.field_to_meta_idx.clear();
@@ -4667,24 +4678,20 @@ fn probe_ok_checks(
             self.fun.param_slots.insert(n.clone(), slot);
         }
 
-        // 2026-09-14 (rv64-finish plan): defns are LINEAR — their body
-        // runs once, falls through to return. Convergence loops belong to
-        // reactive txns (reactor-dispatched transitions that must reach
-        // their postcondition). A defn's contracts are proof obligations,
-        // not convergence targets.
-        let is_linear_defn = !txn.is_reactive;
-        if is_linear_defn {
-            // Defn: no loop header, no convergence target. Parameters are
-            // loaded once from their slots (below) and the body executes
-            // linearly.
-            self.fun.convergence_target = None;
-        } else {
-            writeln!(out, "  br label %loop").ok();
-            writeln!(out, "loop:").ok();
-            // 2026-07-26: Set convergence target so [expr]; gates inside the txn
-            // body branch back to loop: when their condition is false.
-            self.fun.convergence_target = Some("loop".to_string());
-        }
+        // 2026-10-05 (callable-txn convergence): a `txn` LOOPS until its
+        // postcondition holds — the defining feature vs a linear `defn`
+        // (BUGS.md "callable txn" 2392/2423, SPEC §1776). The 2026-09-14
+        // linear branch keyed on `!txn.is_reactive`, but EVERY parsed txn is
+        // non-reactive (`parse_transaction(false, …)`), so it linearized all
+        // callable txns — `json_int_digits`/`array_map`-style loops ran once.
+        // Its stated target was a `defn` with contract brackets, but defns
+        // never reach this path (`emit_definition` has no convergence loop),
+        // so the loop here is unconditional.
+        writeln!(out, "  br label %loop").ok();
+        writeln!(out, "loop:").ok();
+        // 2026-07-26: Set convergence target so [expr]; gates inside the txn
+        // body branch back to loop: when their condition is false.
+        self.fun.convergence_target = Some("loop".to_string());
 
         for (i, (n, t)) in txn.parameters.iter().enumerate() {
             let slot = format!("%p{}_s", i);
@@ -4744,49 +4751,20 @@ fn probe_ok_checks(
             writeln!(out, "  br label %post").ok();
         }
         writeln!(out, "post:").ok();
-        // 2026-09-14 (rv64-finish plan): THE CONVERGENCE EXIT — split by
-        // dispatch class. Reactive txns: the postcondition gates done/loop
-        // (the body re-runs until the postcondition holds). Defns: the
-        // postcondition is a proof obligation, not a convergence target —
-        // the body ran once, fall through to return.
-        if is_linear_defn {
-            // Defn: contracts are documentation/proof obligations.
-            // Emit the postcondition as a debug assertion (unreachable on
-            // failure) but do NOT loop. The body ran once.
-            if !matches!(txn.contract.post_condition, Expr::Bool(true)) {
-                let cond = self.emit_expr(out, &txn.contract.post_condition, "  ");
-                let i1 = format!("%pc{}", self.fun.txn_counter); self.fun.txn_counter += 1;
-                if cond.ty == Type::bool_() {
-                    writeln!(out, "  {} = trunc i8 {} to i1", i1, cond).ok();
-                } else {
-                    writeln!(out, "  {} = icmp ne i64 {}, 0", i1, cond).ok();
-                }
-                // Postcondition failure = unreachable (contract violation).
-                // Postcondition success = fall through to done.
-                let pass = format!(".post_pass{}", self.fun.txn_counter); self.fun.txn_counter += 1;
-                let fail = format!(".post_fail{}", self.fun.txn_counter); self.fun.txn_counter += 1;
-                writeln!(out, "  br i1 {}, label %{}, label %{}", i1, pass, fail).ok();
-                writeln!(out, "{}:", fail).ok();
-                writeln!(out, "  unreachable").ok();
-                writeln!(out, "{}:", pass).ok();
-                self.fun.cur_block = Some(pass);
-            }
-            writeln!(out, "  br label %done").ok();
-        } else {
-            // Reactive txn: convergence loop — postcondition satisfied → done,
-            // else → loop (body re-runs).
-            if !matches!(txn.contract.post_condition, Expr::Bool(true)) {
-                let cond = self.emit_expr(out, &txn.contract.post_condition, "  ");
-                let i1 = format!("%pc{}", self.fun.txn_counter); self.fun.txn_counter += 1;
-                if cond.ty == Type::bool_() {
-                    writeln!(out, "  {} = trunc i8 {} to i1", i1, cond).ok();
-                } else {
-                    writeln!(out, "  {} = icmp ne i64 {}, 0", i1, cond).ok();
-                }
-                writeln!(out, "  br i1 {}, label %done, label %loop", i1).ok();
+        // 2026-10-05 (callable-txn convergence): the postcondition is the
+        // convergence GOAL — satisfied → done (return), else → loop (body
+        // re-runs). Unconditional for callable txns.
+        if !matches!(txn.contract.post_condition, Expr::Bool(true)) {
+            let cond = self.emit_expr(out, &txn.contract.post_condition, "  ");
+            let i1 = format!("%pc{}", self.fun.txn_counter); self.fun.txn_counter += 1;
+            if cond.ty == Type::bool_() {
+                writeln!(out, "  {} = trunc i8 {} to i1", i1, cond).ok();
             } else {
-                writeln!(out, "  br label %done").ok();
+                writeln!(out, "  {} = icmp ne i64 {}, 0", i1, cond).ok();
             }
+            writeln!(out, "  br i1 {}, label %done, label %loop", i1).ok();
+        } else {
+            writeln!(out, "  br label %done").ok();
         }
 
         writeln!(out, "done:").ok();

@@ -8459,3 +8459,52 @@ loops are also broken — needs a decision + a test that actually runs one).
    `Statement::Expression(Match)` via the void statement-match, returning an
    undefined dummy register; it now emits the expression match (same rule as
    the defn-tail fix).
+
+## Callable `txn` convergence — FIXED (backend + interpreter) 2026-10-05
+
+The "json.bv round 2" entry filed callable-txn convergence as OPEN. It is
+now fixed in BOTH engines (Rule 5 parity).
+
+**Root cause:** `emit_callable_txn` did `is_linear_defn = !txn.is_reactive`,
+but EVERY parsed `txn` is non-reactive (`parse_transaction(false, …)`), so
+all callable txns ran their body once and asserted the postcondition
+(`.post_fail: unreachable`) instead of looping. The linear branch was added
+by `c98b7189` for a `defn` with contract brackets — but `defn`s never reach
+`emit_callable_txn` (`emit_definition` has no convergence loop), so the
+change only broke txns. The interpreter registered a `Transaction` as a plain
+`FunctionDef` (no contract) and ran it once, too.
+
+**Fix:**
+- Backend (`emit_callable_txn`): always emit the convergence loop
+  (`br %loop; loop:` … post-check `br %done, %loop`). The linear branch is
+  gone. Verified: `txn sum_to(n,i,acc) [i<n][i==n]` → 10.
+- Interpreter: `FunctionDef` gains `contract: Option<Contract>` (set for
+  `Transaction`s); both `call_function` and `eval_call` loop — pre gates
+  entry, body runs, post gates exit. `Interpreter::call_function("sum_to",
+  [5,0,0]) == 10`.
+
+**Additional defects the json migration surfaced while exercising the loop
+(also fixed):**
+1. **`List<enum> <- value` was a silent rebind.** The push gate compared the
+   declared element type (`JsonValue`) to the constructor's `Type::int()`
+   handle and rejected the push, so the arrow fell through to a plain assign.
+   Enum-handle types are now canonicalized in the gate.
+2. **`Expr::Block` tail match with mixed void/value arms boxed an undefined
+   void register** (`use of undefined value`). A match with ANY void arm is
+   now void — no union boxing, no phi.
+3. **`emit_match` emitted a double terminator / empty end block when every
+   arm `term`ed.** Terminated arms now contribute no phi edge; an all-
+   terminated match emits `unreachable`.
+4. **`last_val_temps`/`let_bindings` leaked into a reactive node body.** The
+   reactive `emit_transaction` path did not clear them (a node resolved a
+   match binding to a register defined in a prior callable txn). Now cleared.
+
+**json.bv** rewritten to the convergence idiom: `txn` preconditions hold on
+entry (`[pos <= len]`, body handles the no-op/terminator); txn tail `match`
+arms `term` their value; `find_pair`'s post is `[i >= count]` (the old
+`|| pairs[i].0 == key` exited early on the post-increment); `skip_ws`,
+`parse_str_chars`, `parse_array_elems`, `parse_object_pairs` restructured.
+
+**Verified end-to-end** (codegen): objects (nested), arrays, numbers,
+strings with escapes, and `true` all parse and print correctly. Suite 2886
+green; new tests `callable_txn_converges` (interpreter + backend IR).

@@ -578,11 +578,37 @@ fn eval_call(
                     for (p, v) in fn_def.parameters.iter().zip(evaluated.into_iter()) {
                         local.insert(p.clone(), v);
                     }
-                    let block = Expr::Block(fn_def.body.clone());
-                    match eval_expr(&block, heap, &mut local, functions) {
-                        Err(RuntimeError::TermReturn(v)) => Ok(v),
-                        other => other,
+                    // 2026-10-05 (callable-txn convergence): a `txn` loops
+                    // until its postcondition holds; the pre gates each entry.
+                    // A `defn` (contract None) runs once. Mirrors the backend
+                    // (Rule 5).
+                    let mut result = Value::Atom(Atom::Int(0));
+                    loop {
+                        if let Some(c) = &fn_def.contract {
+                            if !matches!(c.pre_condition, Expr::Bool(true)) {
+                                let pv = eval_expr(&c.pre_condition, heap, &mut local, functions)?;
+                                if !pv.is_true() {
+                                    break;
+                                }
+                            }
+                        }
+                        let block = Expr::Block(fn_def.body.clone());
+                        match eval_expr(&block, heap, &mut local, functions) {
+                            Ok(v) => result = v,
+                            Err(RuntimeError::TermReturn(v)) => result = v,
+                            Err(e) => return Err(e),
+                        }
+                        match &fn_def.contract {
+                            Some(c) if !matches!(c.post_condition, Expr::Bool(true)) => {
+                                let qv = eval_expr(&c.post_condition, heap, &mut local, functions)?;
+                                if qv.is_true() {
+                                    break;
+                                }
+                            }
+                            _ => break,
+                        }
                     }
+                    Ok(result)
                 }
                 None => Err(RuntimeError::UndefinedFunction(name.into())),
                 }
@@ -3636,6 +3662,7 @@ defn go() -> Int {
             name: name.to_string(),
             parameters: params.into_iter().map(|p| p.to_string()).collect(),
             body: vec![Statement::Term(Some(body))],
+            contract: None,
         }
     }
 

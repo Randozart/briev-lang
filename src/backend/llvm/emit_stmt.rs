@@ -10,6 +10,16 @@ use crate::ast::top::StmtMatchArm;
 use crate::backend::llvm::{emit_expr::member_briev_name, LlvmBackend, TypedRegister};
 use std::fmt::Write;
 
+/// 2026-10-05 (json.bv): is `ty` a declared enum whose value is an i64 handle?
+/// An enum constructor reports `Type::int()` while the declared type is the
+/// enum name — the two must be treated as the same handle in type gates.
+fn is_enum_handle_type(backend: &LlvmBackend, ty: &Type) -> bool {
+    match ty {
+        Type::Custom(n) | Type::Applied(n, _) => backend.ctx.enum_handle_types.contains(n),
+        _ => false,
+    }
+}
+
 /// Emit LLVM IR for a statement. Returns the last expression's register.
 /// 2026-07-31 (A5): emit a sequence of statements (an obj member body).
 pub fn emit_statement_sequence(
@@ -1330,8 +1340,18 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         let tuple_arity_match = matches!((et, &val_ty),
                             (crate::ast::Type::Tuple(a), crate::ast::Type::Tuple(b))
                                 if a.len() == b.len());
+                        // 2026-10-05 (json.bv): an enum CONSTRUCTOR value
+                        // (`IntVal(5)`) reports `Type::int()` (the i64 handle)
+                        // while the declared element type is the enum
+                        // (`JsonValue`). Both are the same handle — a bare
+                        // `*et == val_ty` rejected the push and the arrow fell
+                        // through to a plain rebind (the list never grew).
+                        let enum_handle_ok = is_enum_handle_type(backend, et)
+                            && (is_enum_handle_type(backend, &val_ty)
+                                || matches!(&val_ty, crate::ast::Type::Custom(n) if n == "Int"));
                         bare_generic
                             || *et == val_ty
+                            || enum_handle_ok
                             || tuple_arity_match
                             || (matches!(et, crate::ast::Type::Custom(n) if n == "Int")
                                 && matches!(&val_ty, crate::ast::Type::Custom(n) if n == "Int"))
