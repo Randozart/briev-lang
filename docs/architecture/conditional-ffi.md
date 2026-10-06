@@ -119,10 +119,13 @@ branch and unwrapping the `term expr?` into a direct `term`.
 
 `from "c"` is replaced by `from #System`.
 
-**`#System` is the sole protocol.** There is no `#Win32`, `#WASI`, or any other
-protocol hashword. Platform-specific APIs use a direct `from "link/lib.so"` path.
-`#System` abstracts "the platform's standard system library" — it maps to
-different libraries per target but means the same thing to the compiler:
+**`#System` is the base protocol.** It abstracts "the platform's standard
+system library" — it maps to different libraries per target but means the same
+thing to the compiler. (2026-10-06: any other `#<Name>` protocol is a GLUE
+target resolved by name — `lib/glue/<name>/glue.dbv` — and links no system
+library.)
+
+`#System` resolves per target:
 
 | Target | `#System` resolves to |
 |--------|----------------------|

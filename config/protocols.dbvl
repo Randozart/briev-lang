@@ -12,12 +12,17 @@
 // keys are quoted because `#` is not an identifier char; parsed in quoted mode.
 // A protocol absent from the map is unavailable on that target.
 //
-// #System is the only protocol. It abstracts "the platform's standard
+// #System is the base protocol. It abstracts "the platform's standard
 // system library" — libc on Linux, libSystem on macOS, WASI preview1
-// on wasm. Platform-specific APIs use a direct `from "link/lib.so"` path.
+// on wasm.
+//
+// 2026-10-06 (#Web genericization, Option A): any OTHER `#<Name>` protocol is
+// a GLUE target resolved BY NAME (lib/glue/<name>/glue.dbv) and links no
+// system library, so it has no entry here. The compiler hardcodes no protocol
+// name but `#System`.
 
 x86_64-linux: { "#System": "c" };
 aarch64-linux: { "#System": "c" };
 x86_64-macos: { "#System": "System" };
 aarch64-macos: { "#System": "System" };
-wasm32-wasi: { "#System": "wasi_snapshot_preview1"; "#Web": "wasm_runtime" };
+wasm32-wasi: { "#System": "wasi_snapshot_preview1" };

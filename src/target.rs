@@ -125,11 +125,14 @@ impl ProtocolConfig {
         ProtocolConfig { per_target }
     }
 
-    /// Resolve a protocol name to a library name for the given target.
+    /// Resolve a protocol name to a system library for the given target.
     ///
-    /// `#System` and `#Web` are the two recognized protocols.
-    /// `#System` links against the platform's system library (libc, WASI).
-    /// `#Web` routes through the GLUE wasm_runtime bridge (valid on WASM targets only).
+    /// 2026-10-06 (#Web genericization, Option A): `#System` is the ONE base
+    /// protocol — the platform's standard system library (libc, libSystem,
+    /// WASI). Other `#<Name>` protocols are GLUE targets, resolved BY NAME in
+    /// `analysis::frgn_dispatch` (they never link a system library). This
+    /// function maps a protocol to a per-target system library from
+    /// `config/protocols.dbvl`; the compiler hardcodes no protocol names.
     ///
     /// Returns:
     /// - `Ok(Some(lib))` — protocol maps to library `lib`, link with `-l<lib>`.
@@ -137,13 +140,6 @@ impl ProtocolConfig {
     ///   (e.g., libc is linked by default with clang).
     /// - `Err(msg)` — protocol is unrecognized or unavailable on target.
     pub fn resolve(&self, target_triple: &str, protocol: &str) -> Result<Option<&str>, String> {
-        if protocol != "#System" && protocol != "#Web" {
-            return Err(format!(
-                "'{}' is not a valid protocol hashword. \
-                 #System and #Web are the supported protocols",
-                protocol
-            ));
-        }
         let target_map = self.per_target.get(target_triple).ok_or_else(|| {
             format!(
                 "target '{}' not found in config/protocols.dbvl. \
@@ -506,8 +502,10 @@ vector_min_width = 4
 
 [wasm32-wasi]
 "#System" = "wasi_snapshot_preview1"
-"#Web" = "wasm_runtime"
 "##;
+// 2026-10-06 (#Web genericization): the former `"#Web" = "wasm_runtime"` entry
+// is gone — `#Web` is a GLUE target resolved by name, not a per-target system
+// library. The golden tracks the dbvl's protocol→library map.
 
     #[test]
     fn test_target_config_loads() {
@@ -566,11 +564,14 @@ vector_min_width = 4
 
     #[test]
     fn test_protocol_config_resolve_unknown_protocol() {
+        // 2026-10-06 (#Web genericization): `resolve` maps a protocol to a
+        // per-target system library; an absent protocol is a config miss
+        // (other `#<Name>` protocols are GLUE targets, not system libraries).
         let config = ProtocolConfig::load();
         let err = config.resolve("x86_64-linux", "#SomethingElse")
             .unwrap_err();
-        assert!(err.contains("supported protocols"),
-            "error should mention supported protocols (got: '{}')", err);
+        assert!(err.contains("has no '#SomethingElse' entry"),
+            "error should name the missing protocol entry (got: '{}')", err);
     }
 
     #[test]
