@@ -8677,3 +8677,52 @@ world → 0 warnings, values unchanged) and
 `test_slotless_type_without_width_metadata_still_warns_spec_bits` (the §8.6
 "never silent" contract survives for a genuinely unknown width and the message
 contains `spec Bits`, never `!>`).
+
+## Webstack (wasm32) codegen: `#Web` String-return bridge calls and String-field objs emit invalid IR — 2026-10-06 OPEN
+
+**Date:** 2026-10-06 (found while smoke-testing the router framework,
+`lib/std/web/router.bv`, Part 4 of the web plan)
+**Status:** OPEN — blocks runtime use of the router and any `#Web` frgn that
+returns a String.
+
+**Repro A — `#Web` frgn String return (`/tmp`-style fixture):**
+```
+frgn location() -> String from #Web;
+defn cp() -> String { term location(); };
+let x: String = cp();
+<view><p b-text="x">.</p></view>
+```
+`brievc build x.rbv` → `llc` error:
+```
+%t0 = call ptr @bridge_location()
+             ^  (expected i32 on wasm32)
+```
+The bridge call is emitted with an opaque `ptr` return; wasm32's ABI wants
+i32 (the returned String is a `[len][bytes]` pointer). Every `#Web` frgn with a
+String return (`get_element_by_id` is fine — it returns a handle; `fetch` and
+the router's `location` are affected) miscompiles.
+
+**Repro B — an `obj` with a String field, imported:**
+```
+import "std/web/router.bv";
+let r: Router = Router { path: "/" };
+<view><p b-text="r.path">.</p></view>
+```
+→ `store [1 x ptr] %t3, ptr %t1` — invalid wasm32 IR.
+
+**Isolated OK (so the bug is narrow):** a plain `defn eq(p: String) -> Bool {
+term p == "/"; }` builds; a `when … || …` string matcher in a local defn builds;
+a `b-when="page == '/'"` view comparison builds. The failures are specific to
+(a) a `#Web` frgn String RETURN lowered through the bridge, and (b) a String
+field in an `obj` reached from the webstack backend.
+
+**Impact:** the web stdlib's String-returning `#Web` frgns and the router are
+unusable at runtime until fixed. The router framework itself typechecks
+(`brievc check lib/std/web/router.bv` → OK; conformance sweep green), so the
+defect is purely in wasm codegen, not the framework.
+
+**Fix direction:** audit the bridge-call ABI in the webstack/LLVM wasm32 path
+(`frgn_dispatch` Bridge → codegen): a String return must lower to an i32
+pointer with the wasm32 pointer width (`int_bits = 32`), not an opaque `ptr`.
+Then re-check the String-field obj layout (`store [1 x ptr]`) under wasm32.
+Gate: `brievc build` of the router smoke fixture + the console/dom examples.

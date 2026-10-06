@@ -1,0 +1,49 @@
+// lib/std/web/router.bv
+// 2026-10-06 (web plan, Part 4): routing as a STDLIB FRAMEWORK — standard
+// Briev only. No compiler keyword, no intrinsic, no new hashword: the URL is
+// reached through the web runtime's `#Web` host functions (`location` /
+// `navigate`, shipped in lib/glue/web/glue.dbv), and the view is driven by
+// `b-when` / `b-trigger`. This mirrors how the web language itself routes — a
+// library over the browser's location/history primitives, never the language.
+//
+// Usage (an app's `<view>`):
+//   <nav>
+//     <button b-trigger:click="go_home">Home</button>
+//     <button b-trigger:click="go_about">About</button>
+//   </nav>
+//   <section b-when="route == 'home'">...home...</section>
+//   <section b-when="route == 'about'">...about...</section>
+//
+// where `route` is derived from the router's `path` by `route_name`.
+
+import "std/types/bootstrap.bv";
+
+frgn location() -> String from #Web;
+frgn navigate(url: String) from #Web;
+
+// The route NAME for a path — the app's mapping. Default: the root maps to
+// "home", every other path is returned verbatim (the app matches on it).
+defn route_name(path: String) -> String {
+    when path == "/" || path == "" {
+        term "home";
+    };
+    term path;
+};
+
+// The current URL path, read from the host. Call once at start to seed the
+// router's `path`.
+defn current_path() -> String {
+    term location();
+};
+
+// A minimal router: the reactive `path` the view binds to, plus the navigation
+// transaction. `go` writes the URL (host) and the path (view).
+obj Router {
+    path: String;
+
+    txn go(url: String) [true][path == url] {
+        path = url;
+        navigate(url);
+        term;
+    };
+};
