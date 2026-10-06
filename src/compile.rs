@@ -1089,12 +1089,16 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             compile_wasm(&out_path, &wasm_path, &exports)?;
 
             // 2026-07-26: Phase 6b — Write app.css from <style> block content.
+            // 2026-10-06 (web bundling): bundle mode inlines the CSS into the
+            // single HTML; only --split writes a sibling .css.
             let style_css = opts.style_css.as_ref().or(preprocessed.style_css.as_ref());
-            if let Some(css) = style_css {
-                let css_path = format!("{}.css", binary_base);
-                std::fs::write(&css_path, css)
-                    .map_err(|e| format!("cannot write '{}': {}", css_path, e))?;
-                println!("wrote {}", css_path);
+            if opts.split {
+                if let Some(css) = style_css {
+                    let css_path = format!("{}.css", binary_base);
+                    std::fs::write(&css_path, css)
+                        .map_err(|e| format!("cannot write '{}': {}", css_path, e))?;
+                    println!("wrote {}", css_path);
+                }
             }
 
             // 2026-08-11 (Phase 1 view wiring): the view was compiled BEFORE
@@ -1111,31 +1115,36 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // relative so any static server (or file://) resolves them.
             // (Was: hardcoded `app.css` / `dom-shim.mjs` and an
             // absolute-path `fetch` — all 404'd.)
-            if let Some(html) = modified_view_html.as_ref() {
-                let index_path = format!("{}.html", binary_base);
-                let index_content = briev_compiler::glue::web_generator::render_index_html(
-                    html,
-                    binary_base,
-                    style_css.is_some(),
-                );
-                std::fs::write(&index_path, &index_content)
-                    .map_err(|e| format!("cannot write '{}': {}", index_path, e))?;
-                println!("wrote {}", index_path);
-
-                // 2026-07-26: Item 3 — SSR pass. If --ssr is set, replace
-                // the standard app.html with an SSR-enabled version that
-                // embeds initial state as JSON and pre-renders the view.
-                if opts.ssr {
-                    let ssr_out = briev_compiler::ssr::render_ssr(
+            //
+            // 2026-10-06 (web bundling): only --split writes this sibling-page
+            // html; the default bundle is written after the shim is generated.
+            if opts.split {
+                if let Some(html) = modified_view_html.as_ref() {
+                    let index_path = format!("{}.html", binary_base);
+                    let index_content = briev_compiler::glue::web_generator::render_index_html(
                         html,
-                        &items,
-                        style_css.map(|s| s.as_str()),
                         binary_base,
-                        opts.dev,
+                        style_css.is_some(),
                     );
-                    std::fs::write(&index_path, &ssr_out.full_html)
-                        .map_err(|e| format!("cannot write SSRed '{}': {}", index_path, e))?;
-                    println!("ssr {}", index_path);
+                    std::fs::write(&index_path, &index_content)
+                        .map_err(|e| format!("cannot write '{}': {}", index_path, e))?;
+                    println!("wrote {}", index_path);
+
+                    // 2026-07-26: Item 3 — SSR pass. If --ssr is set, replace
+                    // the standard app.html with an SSR-enabled version that
+                    // embeds initial state as JSON and pre-renders the view.
+                    if opts.ssr {
+                        let ssr_out = briev_compiler::ssr::render_ssr(
+                            html,
+                            &items,
+                            style_css.map(|s| s.as_str()),
+                            binary_base,
+                            opts.dev,
+                        );
+                        std::fs::write(&index_path, &ssr_out.full_html)
+                            .map_err(|e| format!("cannot write SSRed '{}': {}", index_path, e))?;
+                        println!("ssr {}", index_path);
+                    }
                 }
             }
             for w in &view_warnings {
@@ -1185,6 +1194,9 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                     }
                 })
                 .collect();
+            // 2026-10-06 (web bundling): the shim source is captured here so
+            // the default bundle can inline it.
+            let mut web_shim_src: Option<String> = None;
             if !frgn_decls.is_empty() || !view_bindings.is_empty() {
                 // 2026-08-10: use the real layout captured from the webstack
                 // codegen path when available; fall back to the historical
@@ -1218,18 +1230,48 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                 .with_collection_string_iterables(collection_string_iterables.clone());
                 match web_gen.generate() {
                     Ok(output) => {
-                        let mjs_path = format!("{}.mjs", binary_base);
-                        std::fs::write(&mjs_path, &output.dom_shim)
-                            .map_err(|e| format!("cannot write '{}': {}", mjs_path, e))?;
-                        println!("wrote {}", mjs_path);
-                        let dts_path = format!("{}.d.ts", binary_base);
-                        std::fs::write(&dts_path, &output.dts)
-                            .map_err(|e| format!("cannot write '{}': {}", dts_path, e))?;
-                        println!("wrote {}", dts_path);
+                        // 2026-10-06 (web bundling): keep the shim source for
+                        // the bundle; only --split writes the sibling assets.
+                        web_shim_src = Some(output.dom_shim.clone());
+                        if opts.split {
+                            let mjs_path = format!("{}.mjs", binary_base);
+                            std::fs::write(&mjs_path, &output.dom_shim)
+                                .map_err(|e| format!("cannot write '{}': {}", mjs_path, e))?;
+                            println!("wrote {}", mjs_path);
+                            let dts_path = format!("{}.d.ts", binary_base);
+                            std::fs::write(&dts_path, &output.dts)
+                                .map_err(|e| format!("cannot write '{}': {}", dts_path, e))?;
+                            println!("wrote {}", dts_path);
+                        }
                     }
                     Err(e) => {
                         return Err(format!("GlueWebGenerator failed: {}", e));
                     }
+                }
+            }
+
+            // 2026-10-06 (web bundling): the default output is ONE
+            // self-contained HTML — inline CSS, inline shim, inline wasm — so a
+            // .rbv compiles to a single file with no external references.
+            if !opts.split {
+                if let Some(html) = modified_view_html.as_ref() {
+                    let wasm_bytes = std::fs::read(&wasm_path)
+                        .map_err(|e| format!("cannot read '{}': {}", wasm_path, e))?;
+                    let shim_src = web_shim_src.clone().unwrap_or_default();
+                    let bundle = briev_compiler::glue::web_generator::render_bundle_html(
+                        html,
+                        binary_base,
+                        style_css.map(|s| s.as_str()),
+                        &shim_src,
+                        &wasm_bytes,
+                    );
+                    let bundle_path = format!("{}.html", binary_base);
+                    std::fs::write(&bundle_path, bundle)
+                        .map_err(|e| format!("cannot write '{}': {}", bundle_path, e))?;
+                    println!("wrote {}", bundle_path);
+                    // The intermediates are redundant in bundle mode.
+                    let _ = std::fs::remove_file(&wasm_path);
+                    let _ = std::fs::remove_file(&out_path);
                 }
             }
         }

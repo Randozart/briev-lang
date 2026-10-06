@@ -220,6 +220,11 @@ pub struct BuildOptions {
     /// Uses dev-shim.mjs instead of dom-shim.mjs.
     /// Only meaningful for webstack backend.
     pub dev: bool,
+    /// 2026-10-06 (web bundling): emit SEPARATE web assets
+    /// (`<stem>.html/.mjs/.css/.wasm/.d.ts`) instead of the default
+    /// single self-contained `<stem>.html` bundle. Only meaningful for the
+    /// webstack backend.
+    pub split: bool,
     /// 2026-07-23: Allow macros to read files (FileRead$).
     pub allow_read: bool,
     /// 2026-07-23: Allow macros to write files (FileWrite$).
@@ -311,7 +316,7 @@ impl Default for BuildOptions {
             all_targets: false, sysquery_pairs: vec![],
             sysquery_files: vec![], style_css: None,
             view_html: None, view_bindings: vec![],
-            ssr: false, dev: false,
+            ssr: false, dev: false, split: false,
             accel_cpu_fallback: None, isr_mechanism: None,
             triple_override: None, linker_script_override: None,
             entry_override: None, raw_bin: false,

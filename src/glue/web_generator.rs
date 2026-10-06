@@ -41,10 +41,7 @@ fn js_literal(s: &str) -> String {
 /// `stem` is the output basename (a full path is reduced to its file name).
 /// The CSS link is emitted only when a `<style>` block was compiled.
 pub fn render_index_html(view_html: &str, stem: &str, has_css: bool) -> String {
-    let stem = std::path::Path::new(stem)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(stem);
+    let stem = basename(stem);
     let css_link = if has_css {
         format!("<link rel=\"stylesheet\" href=\"{stem}.css\">\n")
     } else {
@@ -67,6 +64,66 @@ pub fn render_index_html(view_html: &str, stem: &str, has_css: bool) -> String {
          </body>\n\
          </html>\n"
     )
+}
+
+/// 2026-10-06 (web bundling): build a SINGLE self-contained HTML page — inline
+/// `<style>`, inline the shim module, and inline the wasm as base64. No
+/// external references, so it opens from `file://` and any static host. This is
+/// the default `.rbv` output; `--split` keeps the separate assets.
+pub fn render_bundle_html(
+    view_html: &str,
+    stem: &str,
+    css: Option<&str>,
+    shim_src: &str,
+    wasm_bytes: &[u8],
+) -> String {
+    let title = basename(stem);
+    let style = css.map(|c| format!("<style>\n{c}</style>\n")).unwrap_or_default();
+    let b64 = base64_encode(wasm_bytes);
+    format!(
+        "<!DOCTYPE html>\n\
+         <html lang=\"en\">\n\
+         <head>\n\
+         <meta charset=\"UTF-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
+         <title>{title}</title>\n\
+         {style}</head>\n\
+         <body>\n\
+         {view_html}\n\
+         <script type=\"module\">\n\
+         {shim_src}\n\
+         const __briev_wasm = Uint8Array.from(atob(\"{b64}\"), (c) => c.charCodeAt(0));\n\
+         createApp(__briev_wasm);\n\
+         </script>\n\
+         </body>\n\
+         </html>\n"
+    )
+}
+
+/// The file name of a path (or the input, if it has none).
+fn basename(s: &str) -> &str {
+    std::path::Path::new(s)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(s)
+}
+
+/// 2026-10-06 (web bundling): standard base64, padded. Kept local and
+/// dependency-free — the compiler's `encoding::base64_*` registry entries are
+/// no-op stubs (BUGS), so they must not be reused here.
+fn base64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let n = ((chunk[0] as u32) << 16)
+            | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { T[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    out
 }
 
 /// Descriptor for a single state field in WASM linear memory.
@@ -1486,6 +1543,33 @@ mod tests {
         let html = render_index_html("<div>x</div>", "/tmp/out/counter", true);
         assert!(html.contains("fetch('counter.wasm')"), "{html}");
         assert!(!html.contains("/tmp/out/counter.wasm"), "{html}");
+    }
+
+    /// 2026-10-06 (web bundling): the default output is ONE self-contained page
+    /// — inline CSS, inline shim, inline wasm — with zero external references.
+    #[test]
+    fn bundle_html_is_self_contained() {
+        let shim = "export function createApp(bytes) { return bytes; }\n";
+        let html = render_bundle_html("<div>x</div>", "counter", Some("body{color:red}"), shim, &[0, 1, 2, 3, 4]);
+        assert!(html.contains("<style>\nbody{color:red}</style>"), "{html}");
+        assert!(html.contains("createApp"), "shim must be inlined");
+        assert!(html.contains("atob(\""), "wasm must be inlined as base64");
+        assert!(html.contains("<title>counter</title>"), "{html}");
+        assert!(!html.contains("href=\""), "no external stylesheet: {html}");
+        assert!(!html.contains("src=\""), "no external script: {html}");
+        assert!(!html.contains("fetch("), "no fetch: {html}");
+        assert!(!html.contains(".wasm"), "no external wasm: {html}");
+    }
+
+    #[test]
+    fn base64_matches_rfc4648_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
     }
 
     fn make_empty_generator() -> GlueWebGenerator {

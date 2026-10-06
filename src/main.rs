@@ -94,6 +94,7 @@ fn print_usage(program: &str) {
     eprintln!("  {} build <file.bv> --config-dir <d>  Set config directory", name);
     eprintln!("  {} build <file.bv> --out <dir>      Set output directory", name);
     eprintln!("  {} build <file.bv> --backend <name> Select backend: llvm, circt, webstack, gpu", name);
+    eprintln!("  {} build <file.rbv> --split          Emit separate web assets (default: one bundled HTML)", name);
     eprintln!("  {} build <file.bv> --emit-beast [ast|mid|post|all]  Emit BEAST snapshots (default: all)", name);
     eprintln!("  {} build <file.bv> --no-std          Disable prelude (all prelude-family plugins)", name);
     eprintln!("  {} build <file.bv> --keep-all-defns  Emit every defn (diagnostic: liveness A/B)", name);
@@ -242,6 +243,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut backend_override: Option<String> = None;
     let mut no_stdlib = false;
     let mut run_flag = false;
+    // 2026-10-06 (web bundling): --split emits separate web assets instead of
+    // the default single self-contained HTML bundle.
+    let mut split_flag = false;
     let mut stdlib_path: Option<String> = None;
     let mut disable_plugins = Vec::new();
     let mut enable_plugins = Vec::new();
@@ -329,6 +333,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             i += 1;
         } else if arg == "--run" {
             run_flag = true;
+            i += 1;
+        } else if arg == "--split" {
+            split_flag = true;
             i += 1;
         } else if arg == "--stdlib-path" {
             let val = args.get(i + 1).ok_or("--stdlib-path requires a path argument")?;
@@ -507,6 +514,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         view_bindings: vec![],
         ssr: false,
         dev: false,
+        split: split_flag,
         accel_cpu_fallback,
         isr_mechanism: None,
         triple_override,
@@ -805,6 +813,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         view_bindings: vec![],
         ssr: false,
         dev: false,
+        split: false,
         accel_cpu_fallback: None,
         isr_mechanism: None,
         triple_override: None,
