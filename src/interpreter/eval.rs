@@ -1480,6 +1480,15 @@ fn reflect_element_code(v: &Value) -> i64 {
 /// in scope, then a `when` guard if present. The first arm whose pattern
 /// matches AND guard passes wins; its body runs with the pattern bindings.
 /// No arm matching is a non-exhaustive match error.
+///
+/// 2026-10-06 (BUGS.md "json.bv array parsing hangs in the interpreter"): the
+/// arm body used to be evaluated against a CLONE of `bindings`, so a
+/// block-bodied arm — the parser routes every `match` to `Expr::Match`, whose
+/// arms may hold `Expr::Block` of statements — discarded all of its writes.
+/// json's `parse_array_elems` therefore never advanced `pos` and its `txn`
+/// postcondition never held: the convergence loop spun forever. Pattern
+/// bindings are now installed on the LIVE map (arm-scoped via `PatternScope`)
+/// so the body's writes (`x = …`, `coll <- …`, `term`) reach the caller.
 fn eval_match(
     scrutinee: &Expr,
     arms: &[MatchArm],
@@ -1489,18 +1498,66 @@ fn eval_match(
 ) -> Result<Value, RuntimeError> {
     let val = eval_expr(scrutinee, heap, bindings, functions)?;
     for arm in arms {
-        let mut arm_bindings = bindings.clone();
-        if pattern_match(&arm.pattern, &val, &mut arm_bindings) {
-            if let Some(guard) = &arm.guard {
-                let gv = eval_expr(guard, heap, &mut arm_bindings, functions)?;
-                if !gv.is_true() {
-                    continue;
-                }
-            }
-            return eval_expr(&arm.body, heap, &mut arm_bindings, functions);
+        // Test the pattern against a SCRATCH map (a failed match may leave
+        // partial bindings). On success install its bindings on the live map.
+        let mut scratch = bindings.clone();
+        if !pattern_match(&arm.pattern, &val, &mut scratch) {
+            continue;
         }
+        let scope = PatternScope::install(bindings, &scratch);
+        if let Some(guard) = &arm.guard {
+            let gv = eval_expr(guard, heap, bindings, functions);
+            let passes = matches!(&gv, Ok(v) if v.is_true());
+            if !passes {
+                scope.restore(bindings);
+                gv?; // a guard ERROR propagates; Ok(false) tries the next arm
+                continue;
+            }
+        }
+        let out = eval_expr(&arm.body, heap, bindings, functions);
+        scope.restore(bindings);
+        return out;
     }
     Err(RuntimeError::NonExhaustiveMatch(describe_value(&val)))
+}
+
+/// 2026-10-06: arm-scoped pattern bindings for `eval_match`. `install` copies
+/// the names the pattern bound (the diff of the scratch map against the live
+/// map) onto the live map, remembering their prior values; `restore` puts the
+/// prior values back. This keeps pattern variables arm-scoped while letting the
+/// arm body's writes to OTHER names reach the caller.
+struct PatternScope {
+    saved: Vec<(String, Option<Value>)>,
+}
+
+impl PatternScope {
+    fn install(live: &mut HashMap<String, Value>, scratch: &HashMap<String, Value>) -> Self {
+        let mut names: Vec<&String> = scratch
+            .iter()
+            .filter(|(n, v)| live.get(*n) != Some(*v))
+            .map(|(n, _)| n)
+            .collect();
+        names.sort(); // deterministic restore order (HashMap iteration varies)
+        let mut saved = Vec::with_capacity(names.len());
+        for name in names {
+            let val = scratch.get(name).cloned().expect("key from scratch");
+            saved.push((name.clone(), live.insert(name.clone(), val)));
+        }
+        Self { saved }
+    }
+
+    fn restore(self, live: &mut HashMap<String, Value>) {
+        for (name, old) in self.saved {
+            match old {
+                Some(v) => {
+                    live.insert(name, v);
+                }
+                None => {
+                    live.remove(&name);
+                }
+            }
+        }
+    }
 }
 
 /// Match a pattern against a value, inserting pattern bindings into
@@ -1805,6 +1862,29 @@ fn eval_binary_op(
     scope: &mut EvalScope,
 ) -> Result<Value, RuntimeError> {
     let lv = eval_expr(lhs, heap, scope.bindings, scope.functions)?;
+    // 2026-10-06 (BUGS.md "json.bv array parsing hangs in the interpreter"):
+    // `&&`/`||` SHORT-CIRCUIT — the backend and the C reference do, and
+    // contracts rely on it (`[pos >= CharCount#(s) || !is_digit(char_at(s,pos))]`
+    // must not read past the end). Evaluating `rhs` eagerly made every such
+    // guard raise an index error in the reference (Rule 5). The And/Or arms in
+    // the match below are therefore unreachable and were removed.
+    match kind {
+        BinaryOpKind::And => {
+            if !lv.is_true() {
+                return Ok(Value::Atom(Atom::Bool(false)));
+            }
+            let rv = eval_expr(rhs, heap, scope.bindings, scope.functions)?;
+            return Ok(Value::Atom(Atom::Bool(rv.is_true())));
+        }
+        BinaryOpKind::Or => {
+            if lv.is_true() {
+                return Ok(Value::Atom(Atom::Bool(true)));
+            }
+            let rv = eval_expr(rhs, heap, scope.bindings, scope.functions)?;
+            return Ok(Value::Atom(Atom::Bool(rv.is_true())));
+        }
+        _ => {}
+    }
     let rv = eval_expr(rhs, heap, scope.bindings, scope.functions)?;
 
     match kind {
@@ -1903,16 +1983,6 @@ fn eval_binary_op(
                 (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a != b))),
                 _ => Ok(Value::Atom(Atom::Bool(lv.as_i64() != rv.as_i64()))),
             }
-        }
-        BinaryOpKind::And => {
-            let lb = lv.is_true();
-            let rb = rv.is_true();
-            Ok(Value::Atom(Atom::Bool(lb && rb)))
-        }
-        BinaryOpKind::Or => {
-            let lb = lv.is_true();
-            let rb = rv.is_true();
-            Ok(Value::Atom(Atom::Bool(lb || rb)))
         }
         BinaryOpKind::BitAnd | BinaryOpKind::BitOr | BinaryOpKind::BitXor => {
             // 2026-08-01 (B1): String bitwise defaults — operate on content

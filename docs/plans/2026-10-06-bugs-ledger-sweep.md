@@ -104,17 +104,21 @@ type-driven arrow cases (destructive extract, CopyFrom read, handle-valued
 collections like `Stack`/`PiggyBank`) still need the frontend-driven dispatch
 recorded on the AST — see the BUGS.md entry.
 
-### 1c. json.bv array parsing hangs in the interpreter — OPEN 2026-10-06
+### 1c. json.bv array parsing hangs in the interpreter — FIXED 2026-10-06
 
-`parse_value("[1]", 0)` and `parse_array_elems("[1]", 1, [])` hang (> 60 s) in
-the interpreter; `parse_value("1", 0)` errors on an end-of-input index;
-`parse_value("[]", 0)` is fine. The LLVM backend is correct (a program calling
-`json_parse("[1,2,3]")` + `json_length(v)` prints `3`). So the docs' "works in
-both the interpreter and the LLVM backend" holds only for the backend. Fix
-direction: guard the end-of-input reads in `parse_number`/`finish_number`, then
-root-cause the `parse_array_elems` txn non-termination (interpreter txn
-convergence and/or the flat-`state` local leak across nested `call_function`
-frames). Filed as its own BUGS.md entry.
+`parse_value("[1]", 0)` and `parse_array_elems("[1]", 1, [])` hung (> 60 s);
+`parse_value("1", 0)` errored on an end-of-input read. Three independent Rule-5
+divergences in `src/interpreter/`, all fixed the same day:
+(1) `eval_match` evaluated arm bodies against a CLONED bindings map, so a
+block-bodied arm's writes were discarded — `parse_array_elems` never advanced
+`pos` and its `txn` postcondition never held (the hang);
+(2) `eval_binary_op` evaluated both operands eagerly, so `&&`/`||` did not
+short-circuit and contract guards read past the end;
+(3) `run_body_once` dropped the trailing expression's value, so defns without
+`term` (json's `json_parse`/`json_length`) returned the initial `Int(0)`.
+The reference now parses `[1,2,3]` to length 3, matching the backend. Tests in
+`src/interpreter/mod.rs` (`json_interpreter_tests`); suite 2891 → 2895. Filed as
+its own BUGS.md entry (now FIXED).
 
 ### 2. BUGS.md:5698 — a program of only plain `txn`s builds to nothing (OPEN)
 
@@ -315,12 +319,12 @@ for `.bv` stranger-usability:
   conformance sweep is green at tip.
 - **Fixed during this sweep:** the `list_concat` silent miscompile (finding
   1), the interpreter's missing `<-` push that broke every list accumulator in
-  the reference (finding 1b), and the 12 stale normalizer warnings. Suite
-  2888 → 2891.
+  the reference (finding 1b), the json-interpreter array hang and its two
+  companion Rule-5 divergences (finding 1c), and the 12 stale normalizer
+  warnings. Suite 2888 → 2895.
 - **Blocking (remaining):** the empty-program diagnosis for unfired txns, then
   packaging (package/module v0) and the install story — the last two are
   Phase 1.2/1.3 of the three-surfaces plan and are pure infrastructure.
 - **Not blocking but real:** `lib/compiler` dogfood (10/12 fail), `dyn Trait`
-  LLVM lowering, `hardware_validator` dead gate, json array parsing hangs in
-  the interpreter (finding 1c; the backend is correct).
+  LLVM lowering, `hardware_validator` dead gate.
 

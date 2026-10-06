@@ -8594,33 +8594,50 @@ decision on the AST (frontend-driven dispatch) and consuming it in both engines.
 silently blesses wrong codegen and corrupts `derive/assert`, `pgo`, and
 `protocol_verify`, which run programs through it.
 
-## json.bv array parsing hangs in the interpreter — 2026-10-06 OPEN
+## json.bv array parsing hangs in the interpreter — 2026-10-06 FIXED
 
 **Date:** 2026-10-06 (found while adding the `List + List` Rule-5 parity test)
-**Status:** OPEN — the LLVM backend is correct; the interpreter is not.
+**Status:** FIXED same day — the LLVM backend was correct; the interpreter had
+three independent Rule-5 divergences.
 
 **Evidence** (interpreter, source importing `std/collections.bv`,
 `std/iterator.bv`, `std/json`):
-- `parse_value("[]", 0)` → `Ok(Array([]), pos 2)` (fine).
+- `parse_value("[]", 0)` → `Ok(Array([]), pos 2)` (fine — it returns via an
+  early `when` guard before the `match`).
 - `parse_value("1", 0)` → `Err(TypeError { expected: "an index in 0..1",
-  found: "index 1 (length 1)" })` — should parse the number 1; `parse_number`
-  reads `char_at(s, ipos)` with `ipos == len` unguarded (`lib/std/json.bv`).
-- `parse_value("[1]", 0)` and `parse_array_elems("[1]", 1, [])` **hang**
-  (> 60 s; the `parse_array_elems` txn loops without terminating).
-- Backend control: a program calling `json_parse("[1,2,3]")` +
-  `json_length(v)` builds and prints `3`.
+  found: "index 1 (length 1)" })`.
+- `parse_value("[1]", 0)` and `parse_array_elems("[1]", 1, [])` **hung** (> 60 s).
+- Backend control: `json_parse("[1,2,3]")` + `json_length(v)` printed `3`.
 
-**Impact:** the docs claim json.bv "works in both the interpreter and the LLVM
-backend" (`docs/plans/2026-10-04-three-surfaces-functional.md`); only the
-backend is verified. Any interpreter-run consumer of json arrays
-(`derive/assert`, tests) is affected.
+**Root cause (three divergences, all in `src/interpreter/`):**
+1. `eval_match` evaluated each arm body against a **clone** of the bindings
+   (`arm_bindings`), so a block-bodied arm — the parser routes EVERY `match` to
+   `Expr::Match`, whose arms may hold `Expr::Block` of statements — discarded
+   every write. json's `parse_array_elems` never advanced `pos`, so its `txn`
+   postcondition never held and the convergence loop spun forever. This was the
+   hang.
+2. `eval_binary_op` evaluated BOTH operands eagerly, so `&&`/`||` did not
+   short-circuit. Contracts rely on it — `[pos >= CharCount#(s) ||
+   !is_digit(char_at(s, pos))]` read past the end and raised the `parse_value("1")`
+   index error.
+3. `run_body_once` dropped the value of every `Ok(v)` and returned `None` unless
+   an explicit `term` fired, so a defn whose body ends in an expression returned
+   the initial `Int(0)`. json's `json_parse`/`json_length` have no `term` — they
+   are tail `match` expressions — so the reference returned `0` for every parse.
 
-**Fix direction:** guard the end-of-input reads in `parse_number`/`finish_number`
-(`lib/std/json.bv`), then root-cause the `parse_array_elems` non-termination —
-likely the interpreter's txn convergence (postcondition never observed true)
-and/or the flat-`state` local leak across nested `call_function` frames
-(`src/interpreter/mod.rs::call_function` restores only parameter names, not
-`let` locals). Do not "fix" by weakening the txn contract.
+**Fix:** (1) `eval_match` now installs the arm's pattern bindings on the LIVE
+map, arm-scoped via `PatternScope` (diff of the scratch match map against the
+live map, restored on exit), so the body's writes reach the caller while pattern
+variables stay scoped; (2) `&&`/`||` short-circuit (handled before `rhs` is
+evaluated); (3) `run_body_once` returns the trailing statement's value when no
+`term` fires. No contract was weakened and `lib/std/json.bv` needed no change.
+
+**Tests** (`src/interpreter/mod.rs` `json_interpreter_tests`):
+`json_arrays_parse_in_the_reference_interpreter` (`[1,2,3]` → length 3, idx 0
+`IntVal(1)`), `boolean_operators_short_circuit_in_the_reference`,
+`trailing_expression_is_the_reference_result`,
+`match_arm_writes_reach_the_enclosing_scope`. Suite 2891 → 2895; backend parity
+unchanged.
 
 
 ## normalizer printed 12 stale-`!> bits` warnings on hello-world — 2026-10-06 FIXED

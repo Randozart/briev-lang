@@ -376,14 +376,20 @@ impl Interpreter {
     /// returning the `term` value (or `None` on fall-through). Extracted so
     /// the convergence loop in `call_function` stays loop-depth 1.
     fn run_body_once(&mut self, body: &[Statement]) -> Result<Option<Value>, RuntimeError> {
+        // 2026-10-06 (BUGS.md "json.bv array parsing hangs in the interpreter"):
+        // a body's value is its TRAILING EXPRESSION when no `term` fires — the
+        // backend returns `json_parse`'s tail `match` (which has no `term`), so
+        // the reference must too. The old loop dropped every `Ok(v)`, so any
+        // defn without an explicit `term` returned the initial `Int(0)` (Rule 5).
+        let mut last: Option<Value> = None;
         for stmt in body {
             match self.exec_stmt(stmt) {
-                Ok(_) => {}
+                Ok(v) => last = Some(v),
                 Err(RuntimeError::TermReturn(v)) => return Ok(Some(v)),
                 Err(e) => return Err(e),
             }
         }
-        Ok(None)
+        Ok(last)
     }
 
     /// 2026-07-28: Phase B.1 — Call a function by name with pre-evaluated
@@ -2148,3 +2154,90 @@ defn concat_demo() -> List<Int> {
 }
 
 
+
+#[cfg(test)]
+mod json_interpreter_tests {
+    use super::*;
+
+    fn interp_with(src: &str) -> Interpreter {
+        let (items, _) = crate::library::parse_and_check("interp_json_test.bv", src)
+            .expect("must typecheck");
+        let mut interp = Interpreter::new();
+        interp.load_program(&items);
+        interp
+    }
+
+    /// 2026-10-06 (BUGS.md "json.bv array parsing hangs in the interpreter"):
+    /// the reference must parse arrays like the backend. Before the fix the
+    /// txn `parse_array_elems` spun forever (its match-arm writes were discarded
+    /// against a cloned binding map), `parse_value("1")` errored (eager `||`),
+    /// and a defn without `term` returned the initial `Int(0)`.
+    #[test]
+    fn json_arrays_parse_in_the_reference_interpreter() {
+        let mut interp = interp_with(
+            "import \"std/collections.bv\";\nimport \"std/iterator.bv\";\nimport \"std/json\";",
+        );
+        let s = Value::bits(b"[1,2,3]".to_vec());
+        let Ok(Value::Sum { name, payload }) = interp.call_function("json_parse", &[s]) else {
+            panic!("json_parse must return a Result");
+        };
+        assert_eq!(name, "Ok", "json_parse(\"[1,2,3]\") must succeed");
+        let v = payload.into_iter().next().unwrap();
+        assert_eq!(
+            interp.call_function("json_length", &[v.clone()]).unwrap().as_i64(),
+            Some(3),
+            "[1,2,3] must parse to a 3-element array"
+        );
+        let first = interp.call_function("json_get_by_index", &[v, Value::int(0)]).unwrap();
+        let Value::Sum { name, payload } = first else {
+            panic!("json_get_by_index must return a Result");
+        };
+        assert_eq!(name, "Ok");
+        let Value::Sum { name, payload } = &payload[0] else {
+            panic!("element must be a JsonValue");
+        };
+        assert_eq!(name, "IntVal");
+        assert_eq!(payload[0].as_i64(), Some(1));
+    }
+
+    /// 2026-10-06: `||`/`&&` SHORT-CIRCUIT — a guard must not read past the end
+    /// when the left side already decides (contracts rely on it).
+    #[test]
+    fn boolean_operators_short_circuit_in_the_reference() {
+        let mut interp = interp_with(
+            "import \"std/char\";\n\
+             defn safe(s: String, i: Int) -> Bool { term i >= CharCount#(s) || char_at(s, i) == ']'; };\n\
+             defn safe_and(s: String, i: Int) -> Bool { term i < CharCount#(s) && char_at(s, i) == '1'; };",
+        );
+        let s = Value::bits(b"1".to_vec());
+        assert_eq!(
+            interp.call_function("safe", &[s.clone(), Value::int(1)]).unwrap().as_bool(),
+            Some(true),
+            "i >= len must short-circuit before char_at(s, i)"
+        );
+        assert_eq!(
+            interp.call_function("safe_and", &[s, Value::int(5)]).unwrap().as_bool(),
+            Some(false),
+            "i < len false must short-circuit before char_at(s, i)"
+        );
+    }
+
+    /// 2026-10-06: a defn's TRAILING EXPRESSION is its value when no `term`
+    /// fires (json's `json_parse`/`json_length` have no `term`).
+    #[test]
+    fn trailing_expression_is_the_reference_result() {
+        let mut interp = interp_with("defn tail(n: Int) -> Int { match n { 1 => 10, _ => 20 } };");
+        assert_eq!(interp.call_function("tail", &[Value::int(1)]).unwrap().as_i64(), Some(10));
+        assert_eq!(interp.call_function("tail", &[Value::int(2)]).unwrap().as_i64(), Some(20));
+    }
+
+    /// 2026-10-06: a match arm's writes reach the enclosing scope (the arm body
+    /// is a Block of statements, not an isolated clone).
+    #[test]
+    fn match_arm_writes_reach_the_enclosing_scope() {
+        let mut interp = interp_with(
+            "defn arm(n: Int) -> Int { let acc: Int = 0; let _r = match n { 1 => { acc = 7; 0 } _ => 0 }; term acc; };",
+        );
+        assert_eq!(interp.call_function("arm", &[Value::int(1)]).unwrap().as_i64(), Some(7));
+    }
+}

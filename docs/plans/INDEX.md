@@ -3,16 +3,17 @@
 **2026-10-06.** 430+ files in `docs/plans/`; historical plans are
 reference-only (never retroactively edited — AGENTS.md Rule 13).
 
-**Suite state:** `cargo test --lib` 2891 green (2026-10-06, incl. the two
-normalizer-diagnostic tests + three `List + List` tests); conformance sweep
-green; `gemm_h` byte-identical; 19 pre-existing warnings; Praetor no new
-diagnostics.
+**Suite state:** `cargo test --lib` 2895 green (2026-10-06, incl. the two
+normalizer-diagnostic tests, three `List + List` tests, and four json
+interpreter tests); conformance sweep green; `gemm_h` byte-identical; 19
+pre-existing warnings; Praetor no new diagnostics.
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
-unmarked BUGS entries verified, 6 open. Fixed during the sweep: the
+unmarked BUGS entries verified, 5 open. Fixed during the sweep: the
 `List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
 the interpreter's missing `<-` push (every list accumulator was wrong in the
-reference), and the 12 stale normalizer warnings. Newly found open: json.bv
-array parsing hangs in the interpreter (backend correct).
+reference), the json-interpreter array hang + two more Rule-5 divergences
+(`&&`/`||` short-circuit, trailing-expression result), and the 12 stale
+normalizer warnings.
 
 **GPU standing state:** fused online softmax (`ptx_deferred_online: 1`) is
 the shipped default. Composite decode: **float4 k/v loads landed
@@ -251,12 +252,12 @@ Phase 1 = json.bv generics + package v0 + install.
 arrays, numbers, escaped strings, literals parse/print in the LLVM backend.
 ~18 defects fixed (`734a8dac`, `cf38ced2`, `deacdf79`), including
 callable-`txn` convergence (backend + interpreter) and List<enum> append.
-**2026-10-06 correction:** the interpreter does NOT parse arrays correctly —
-`parse_value("[1]")` hangs and `parse_value("1")` errors on an end-of-input
-read (BUGS.md "json.bv array parsing hangs in the interpreter", OPEN); the
-backend is verified correct (`json_parse("[1,2,3]")` → length 3).
-`list_concat` (`List + List`) now works — it elaborates to the stdlib
-`iter_chain` (BUGS.md FIXED). Remaining Phase 1: package v0 + install.
+**2026-10-06 interpreter parity:** json arrays now parse in the reference too —
+three Rule-5 divergences fixed (`eval_match` arm writes, `&&`/`||`
+short-circuit, trailing-expression result); `json_parse("[1,2,3]")` → length 3
+in BOTH engines (BUGS.md FIXED). `list_concat` (`List + List`) now works — it
+elaborates to the stdlib `iter_chain` (BUGS.md FIXED). Remaining Phase 1:
+package v0 + install.
 Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
@@ -330,6 +331,9 @@ Fixed during the sweep (suite 2888 → 2891):
   diagnostic (BUGS.md, 2026-10-06 FIXED).
 - **Interpreter `<-` never pushed** — every list accumulator was wrong in the
   reference (`iter_chain([1,2],[3])` → `Int(3)`); now pushes (BUGS.md, FIXED).
+- **json.bv array parsing hung in the interpreter** — three Rule-5 divergences
+  (`eval_match` arm writes, eager `&&`/`||`, dropped trailing expression); now
+  `json_parse("[1,2,3]")` → length 3 in BOTH engines (BUGS.md, FIXED).
 - 12 stale normalizer warnings on hello-world (BUGS.md, FIXED).
 
 Verified-open, in stranger-blocking order:
@@ -337,9 +341,6 @@ Verified-open, in stranger-blocking order:
 - **A program of only plain `txn`s builds to nothing** — no `@run`, silent
   exit 0; needs the "this txn never fires" diagnosis decision (BUGS.md:5698,
   re-verified 2026-10-06).
-- **json.bv array parsing hangs in the interpreter** — `parse_value("[1]")`
-  loops, `parse_value("1")` errors on an end-of-input read; the LLVM backend is
-  verified correct (`json_parse("[1,2,3]")` → 3). BUGS.md, 2026-10-06 OPEN.
 - **`lib/compiler/*.bv` dogfood: 10 of 12 fail `brievc check`** — the sweep's
   deliberate exclusion; a green sweep does NOT mean the self-hosting embryo
   parses (only `reader.bv`, `token.bv` pass).
@@ -384,10 +385,9 @@ Open-unverified (do not re-investigate; run the named instrument): BUGS.md
 ## Recommended starting points (no foreign-lane overlap)
 
 0. **`.bv` stranger blockers, in order** (2026-10-06 sweep): the
-   `List<T> + List<T>` silent miscompile is FIXED (now elaborates to stdlib
-   `iter_chain`); next is the "this txn never fires" diagnosis for
-   BUGS.md:5698, then the json-interpreter array hang (BUGS.md OPEN), then
-   Phase 1.2/1.3 (package/module v0 + install story).
+   `List<T> + List<T>` silent miscompile and the json-interpreter array hang
+   are FIXED; next is the "this txn never fires" diagnosis for BUGS.md:5698,
+   then Phase 1.2/1.3 (package/module v0 + install story).
 1. **div slowpath sizing probe** then the **GEMM fill-pipeline campaign**
    (Workstream 3 queue items 2-3) — the fill campaign is the biggest
    absolute prize (32 → 42 TF), plan + correctness license written
