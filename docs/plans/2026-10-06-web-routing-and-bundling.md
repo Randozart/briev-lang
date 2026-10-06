@@ -85,6 +85,24 @@ carry its host JS, emitted into the generated shim's import stub. The router's
 - Page mounting via `b-when`; nav via `b-trigger`; nav lists via `b-each`.
 - Pure standard Briev — no compiler keyword, no intrinsic, no new hashword.
 
+**Status 2026-10-06:** framework WRITTEN (`lib/std/web/router.bv`) and
+typechecks (conformance green), but BLOCKED at runtime by two wasm32 codegen
+bugs (BUGS.md, OPEN): a `#Web` frgn String RETURN lowers to an opaque `ptr`
+bridge call (`call ptr @bridge_location()`, needs i32), and an imported `obj`
+with a String field emits `store [1 x ptr]`. These are compiler defects; the
+router smoke fixture is their regression gate. Popstate (a callback frgn) is
+deferred until the String-return ABI is fixed.
+
+## Progress log
+
+- **Part 0** DONE `38ada64b` — serve-able base (sibling asset refs).
+- **Part 1** DONE `4e56121d` — `#Web` is a GLUE target by name.
+- **Part 2** DONE `033b2300` — bundle-by-default, `--split`.
+- **Part 3** DONE `a4bb0393` + `aac37915` — valid `#Web` stubs; host-JS
+  shipping from the GLUE `[web]` config.
+- **Part 4** framework written `3daa0d90`; blocked on wasm codegen (above).
+- **Part 5** not started.
+
 ## Part 5 — multi-page
 
 - **B2:** one bundled HTML per `.rbv`, `<a href>` between them. No router.
