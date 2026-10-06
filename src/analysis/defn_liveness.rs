@@ -91,6 +91,42 @@ impl DefnLiveness {
     }
 }
 
+/// 2026-10-06 (BUGS.md:5698 "Plain `txn` at top level compiles to an EMPTY
+/// program"): warn for user-declared NON-REACTIVE txns that liveness drops —
+/// never called and never fired, so the program silently compiles to nothing.
+/// `user_txns` are the txn names declared in the MAIN source file (captured
+/// before import resolution), so stdlib internals never warn; a user txn that
+/// IS reachable is silent. One message per txn, sorted for determinism.
+///
+/// The fix direction is diagnosis, not semantics: a plain `txn` is the
+/// CALLABLE form (only `node` is reactive), so the message tells the author
+/// how to fire it. To undo: delete this fn and its call in the build path.
+pub fn unfired_txn_warnings(
+    items: &[TopLevel],
+    user_txns: &HashSet<String>,
+    liveness: &DefnLiveness,
+) -> Vec<String> {
+    let mut names: Vec<&str> = items
+        .iter()
+        .filter_map(|item| match item {
+            TopLevel::Transaction(t) if !t.is_reactive => Some(t.name.as_str()),
+            _ => None,
+        })
+        .filter(|name| user_txns.contains(*name) && !liveness.is_live(name))
+        .collect();
+    names.sort_unstable();
+    names
+        .into_iter()
+        .map(|name| {
+            format!(
+                "txn '{name}' is never called or fired — nothing will run it. \
+                 Declare it as a `node` to fire it in the tick loop, or call it \
+                 from a live node/defn."
+            )
+        })
+        .collect()
+}
+
 /// Temporary diagnostic (2026-09-13): BRIEV_DEBUG_LIVENESS=1 dumps roots.
 /// To undo: delete this fn and its call in `build`.
 fn debug_dump(stage: &str, names: &[String]) {
@@ -1274,6 +1310,29 @@ mod tests {
         let l = DefnLiveness::build(&items);
         assert!(l.is_live("ready"), "precondition callee must be live");
         assert!(l.is_live("settled"), "postcondition callee must be live");
+    }
+
+    /// 2026-10-06 (BUGS.md:5698): only USER-declared, NON-REACTIVE, DEAD txns
+    /// warn. A reactive node, a txn a live node calls, and a non-user txn are
+    /// all silent.
+    #[test]
+    fn unfired_txn_warnings_flag_only_dead_user_nonreactive_txns() {
+        let items = vec![
+            txn("main_node", true, vec![call("called")]),
+            txn("called", false, vec![Statement::Term(None)]),
+            txn("orphan", false, vec![Statement::Term(None)]),
+            txn("stdlib_orphan", false, vec![Statement::Term(None)]),
+        ];
+        let l = DefnLiveness::build(&items);
+        let user: HashSet<String> =
+            ["main_node", "called", "orphan"].iter().map(|s| s.to_string()).collect();
+        let warnings = unfired_txn_warnings(&items, &user, &l);
+        assert_eq!(warnings.len(), 1, "only the dead user txn warns: {warnings:?}");
+        assert!(warnings[0].contains("orphan"), "{warnings:?}");
+        assert!(
+            warnings[0].contains("node") && warnings[0].contains("never called"),
+            "the message must state the problem and the fix: {warnings:?}"
+        );
     }
 }
 

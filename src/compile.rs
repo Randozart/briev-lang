@@ -312,6 +312,18 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // 2026-09-11 (Part B): bare targets (.b.bv) use the same .bv stdlib —
     // no separate .ebv stdlib variant remains.
 
+    // 2026-10-06 (BUGS.md:5698): the MAIN file's txn names, captured BEFORE
+    // imports merge — `unfired_txn_warnings` uses this to warn about user txns
+    // liveness drops (never called/fired) without ever warning about stdlib
+    // internals. Must stay before `resolve_imports` below.
+    let user_txns: std::collections::HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item {
+            briev_compiler::ast::TopLevel::Transaction(t) => Some(t.name.clone()),
+            _ => None,
+        })
+        .collect();
+
     // ── Resolved stage (after import resolution) ──────────────────────
     let mut resolver = briev_compiler::import_resolver::ImportResolver::new();
     if let Some(ref stdlib_path) = opts.stdlib_path {
@@ -845,6 +857,23 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     >> = None;
 
     let (codegen_output, ext) = codegen(&items, &mut universe, &pm, opts, alloc_strategies, needs_arena, resolved_frgns, enable_module_init, &mut web_layout, &view_signals, &collection_iterables, &mut bind_routes, &component_initializers)?;
+
+    // 2026-10-06 (BUGS.md:5698): a user-declared `txn` that liveness drops is
+    // never called and never fired — without this the program compiles to an
+    // empty binary and exits 0 silently. Diagnose, do not change semantics
+    // (a plain `txn` is the callable form; only `node` is reactive). Liveness
+    // is rebuilt here rather than threaded through `codegen` to avoid growing
+    // that already-long parameter list.
+    {
+        let liveness = briev_compiler::analysis::defn_liveness::DefnLiveness::build(&items);
+        for w in briev_compiler::analysis::defn_liveness::unfired_txn_warnings(
+            &items,
+            &user_txns,
+            &liveness,
+        ) {
+            eprintln!("warning: {w}");
+        }
+    }
 
     // BEAST/IR snapshot at Codegen stage
     emit_beast_snapshot(file_path, BeastStage::Codegen, BeastPosition::After, &items, &universe, opts)?;

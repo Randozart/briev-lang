@@ -120,15 +120,18 @@ The reference now parses `[1,2,3]` to length 3, matching the backend. Tests in
 `src/interpreter/mod.rs` (`json_interpreter_tests`); suite 2891 → 2895. Filed as
 its own BUGS.md entry (now FIXED).
 
-### 2. BUGS.md:5698 — a program of only plain `txn`s builds to nothing (OPEN)
+### 2. BUGS.md:5698 — a program of only plain `txn`s builds to nothing (FIXED 2026-10-06)
 
-Re-verified 2026-10-06: a file whose only item is a `txn` builds clean,
-emits 3 functions (`init_state`, `main`, `_start`), never defines the txn,
-runs, and exits 0 printing nothing. The only diagnostic is the generic
-"runtime loop has no observable side effects" warning — nothing says *your
-txn never fires*. Liveness (dead defns are not emitted) makes the missing
-symbol correct; what is missing is the diagnosis the entry itself proposes.
-Semantics decision still needed: diagnose unfired txns, or run-once-at-init.
+Re-verified 2026-10-06: a file whose only item is a `txn` built clean,
+emitted 3 functions (`init_state`, `main`, `_start`), never defined the txn,
+ran, and exited 0 printing nothing. Liveness (dead defns are not emitted) makes
+the missing symbol correct; what was missing is the diagnosis. **Fixed:** the
+build path now warns per user-declared, non-reactive, uncalled txn
+(`analysis::defn_liveness::unfired_txn_warnings`; the main file's txn names are
+captured before import resolution so stdlib internals never warn). Semantics
+are unchanged — a plain `txn` is the callable form, `node` is the fired form;
+this is diagnosis (option (a)), not run-once-at-init. Test added; suite
+2888 → 2896.
 
 ### 3. Other confirmed open
 
@@ -158,7 +161,7 @@ Semantics decision still needed: diagnose unfired txns, or run-once-at-init.
 |---:|---|---|---|
 | 632 | Pre-existing oddity (not a regression):** a node whose inserts are LET-BOUND | `OPEN` | repro gives PHI-mismatch IR (let & inline variants); pre-existing, unfixed |
 | 1704 | 2026-06-16 — LLVM Backend Audit — i64 Boxing Tax (Phase 0/1 Plan) | `OPEN` | i64 boxing deletion never done; `adapt_to_i64` live (helpers.rs:2223) |
-| 5698 | Plain `txn` at top level compiles to an EMPTY program via brievc build — 2026-08-26 OPEN | `OPEN` | repro 2026-10-06: txn-only program → 3 defines, no `@run`, silent exit 0; only a generic observability warning |
+| 5698 | Plain `txn` at top level compiles to an EMPTY program via brievc build — 2026-08-26 FIXED | `FIXED` | build now warns per user non-reactive uncalled txn (`unfired_txn_warnings`); semantics unchanged |
 | 5954 | 2026-09-07 — nbody_newton output drift (7th decimal) vs C reference [PRE-EXISTING, opened during noalias slice] | `OPEN` | re-ran 2026-10-06: -0.169207186 vs C -0.169208258 — 7th-decimal drift persists |
 | 6740 | 2026-09-18: CUDA 13.4 cuMemcpy2D silently no-ops under legacy-context dlopen [OPEN] | `OPEN` | briev_dev_cuda.c:614 `push_strided` still returns 0; quirk unresolved |
 | 7439 | 2026-09-28 — `hardware_validator` is dead code (the .sbv synthesizability gate never runs) | `OPEN` | src/lib.rs:57 sole reference; `hardware_validator::` has zero call sites |
@@ -320,11 +323,11 @@ for `.bv` stranger-usability:
 - **Fixed during this sweep:** the `list_concat` silent miscompile (finding
   1), the interpreter's missing `<-` push that broke every list accumulator in
   the reference (finding 1b), the json-interpreter array hang and its two
-  companion Rule-5 divergences (finding 1c), and the 12 stale normalizer
-  warnings. Suite 2888 → 2895.
-- **Blocking (remaining):** the empty-program diagnosis for unfired txns, then
-  packaging (package/module v0) and the install story — the last two are
-  Phase 1.2/1.3 of the three-surfaces plan and are pure infrastructure.
+  companion Rule-5 divergences (finding 1c), the empty-program silence for
+  unfired txns (finding 2), and the 12 stale normalizer warnings. Suite
+  2888 → 2896.
+- **Blocking (remaining):** packaging (package/module v0) and the install
+  story — Phase 1.2/1.3 of the three-surfaces plan, pure infrastructure.
 - **Not blocking but real:** `lib/compiler` dogfood (10/12 fail), `dyn Trait`
   LLVM lowering, `hardware_validator` dead gate.
 

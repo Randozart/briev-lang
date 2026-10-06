@@ -8,12 +8,13 @@ normalizer-diagnostic tests, three `List + List` tests, and four json
 interpreter tests); conformance sweep green; `gemm_h` byte-identical; 19
 pre-existing warnings; Praetor no new diagnostics.
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
-unmarked BUGS entries verified, 5 open. Fixed during the sweep: the
+unmarked BUGS entries verified, 4 open. Fixed during the sweep: the
 `List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
 the interpreter's missing `<-` push (every list accumulator was wrong in the
 reference), the json-interpreter array hang + two more Rule-5 divergences
-(`&&`/`||` short-circuit, trailing-expression result), and the 12 stale
-normalizer warnings.
+(`&&`/`||` short-circuit, trailing-expression result), the 12 stale
+normalizer warnings, and the unfired-`txn` empty-program silence (build now
+warns).
 
 **GPU standing state:** fused online softmax (`ptx_deferred_online: 1`) is
 the shipped default. Composite decode: **float4 k/v loads landed
@@ -324,7 +325,7 @@ tree — 6 OPEN, 5 OPEN-UNVERIFIED (instrument named), 118 stale/resolved/
 by-design/not-a-bug. Conformance sweep green at tip; 30/30 `lib/std` modules
 `brievc check` PASS. Headers carry `[LEDGER 2026-10-06: …]` tags.
 
-Fixed during the sweep (suite 2888 → 2891):
+Fixed during the sweep (suite 2888 → 2896):
 
 - **`List<T> + List<T>` silent miscompile** — now elaborates to the stdlib
   `iter_chain`; mismatched element types hit the ordinary `InvalidOperation`
@@ -334,13 +335,13 @@ Fixed during the sweep (suite 2888 → 2891):
 - **json.bv array parsing hung in the interpreter** — three Rule-5 divergences
   (`eval_match` arm writes, eager `&&`/`||`, dropped trailing expression); now
   `json_parse("[1,2,3]")` → length 3 in BOTH engines (BUGS.md, FIXED).
+- **A program of only plain `txn`s built to nothing** — the build path now warns
+  per user-declared, non-reactive, uncalled txn (BUGS.md:5698, FIXED — diagnosis
+  only; `node` remains the fired form).
 - 12 stale normalizer warnings on hello-world (BUGS.md, FIXED).
 
 Verified-open, in stranger-blocking order:
 
-- **A program of only plain `txn`s builds to nothing** — no `@run`, silent
-  exit 0; needs the "this txn never fires" diagnosis decision (BUGS.md:5698,
-  re-verified 2026-10-06).
 - **`lib/compiler/*.bv` dogfood: 10 of 12 fail `brievc check`** — the sweep's
   deliberate exclusion; a green sweep does NOT mean the self-hosting embryo
   parses (only `reader.bv`, `token.bv` pass).
@@ -385,9 +386,9 @@ Open-unverified (do not re-investigate; run the named instrument): BUGS.md
 ## Recommended starting points (no foreign-lane overlap)
 
 0. **`.bv` stranger blockers, in order** (2026-10-06 sweep): the
-   `List<T> + List<T>` silent miscompile and the json-interpreter array hang
-   are FIXED; next is the "this txn never fires" diagnosis for BUGS.md:5698,
-   then Phase 1.2/1.3 (package/module v0 + install story).
+   `List<T> + List<T>` silent miscompile, the json-interpreter array hang, and
+   the unfired-`txn` empty-program silence (BUGS.md:5698, now warns on build)
+   are FIXED; next is Phase 1.2/1.3 (package/module v0 + install story).
 1. **div slowpath sizing probe** then the **GEMM fill-pipeline campaign**
    (Workstream 3 queue items 2-3) — the fill campaign is the biggest
    absolute prize (32 → 42 TF), plan + correctness license written

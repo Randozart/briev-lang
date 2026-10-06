@@ -5695,7 +5695,7 @@ emitted companion `.sv`. Re-parse + export + verilator lint all verified.
 **Revisit:** toolchain rebuild with firtool-side memory emission, or CIRCT
 upstream change.
 
-## Plain `txn` at top level compiles to an EMPTY program via brievc build — 2026-08-26 OPEN [LEDGER 2026-10-06: OPEN]
+## Plain `txn` at top level compiles to an EMPTY program via brievc build — 2026-08-26 FIXED [LEDGER 2026-10-06: FIXED]
 
 **Symptom:** a program whose only logic is a plain top-level
 `txn run [...] [...] { ... }` builds clean, exits 0, prints nothing —
@@ -5707,14 +5707,26 @@ reactor dispatcher (dispatch.rs) both filter `t.is_reactive`; plain
 `txn` parses with is_reactive=false. Only `node` declarations are
 fired in the loop. Nothing warns that a whole txn was skipped.
 
-**Status:** pre-existing, orthogonal to Track B (surfaced while probing
-enum construction end-to-end). Workaround: use `node` for fired logic;
-plain `txn` remains the callable form.
+**Fix (2026-10-06, diagnosis — option (a)):** the build path now warns for
+every USER-declared non-reactive `txn` that liveness drops (never called and
+never fired):
+`warning: txn 'X' is never called or fired — nothing will run it. Declare it
+as a `node` to fire it in the tick loop, or call it from a live node/defn.`
+Implemented as `analysis::defn_liveness::unfired_txn_warnings(items,
+user_txns, liveness)`; `compile_source` captures the main file's txn names
+BEFORE `resolve_imports` so stdlib internals never warn, and emits after
+`codegen`. Semantics are unchanged: a plain `txn` is the callable form (only
+`node` is reactive) — this is diagnosis, not run-once-at-init. A txn reachable
+from any live root is silent, and a program with a fired `node` never warns
+about unused stdlib txns. Test:
+`analysis::defn_liveness::tests::unfired_txn_warnings_flag_only_dead_user_nonreactive_txns`.
 
-**Fix direction:** either (a) diagnose non-reactive txns that never fire
-anywhere ("this txn is unreachable — declare it as a node to fire it in
-the tick loop") or (b) define non-reactive firing semantics (run-once at
-init). Decision needed on intended semantics first.
+**Scope note:** the warning lives on the BUILD path (like the existing
+"runtime loop has no observable side effects" warning); `brievc check` does
+not yet report it, to avoid warning on every standalone stdlib-module check.
+
+**Workaround (pre-fix):** use `node` for fired logic; plain `txn` remains the
+callable form.
 
 ## Qualified enum paths (`Enum::Variant`) — 2026-08-26 RESOLVED
 
