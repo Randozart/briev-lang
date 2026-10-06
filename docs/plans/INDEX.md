@@ -239,12 +239,13 @@ to the int-literal-float-init IR bug — FIXED, `reduce.abv` builds on
 electronics-min, whose residual is filed). Remaining 0.6:
 GPU-modifier boundary half (P2 modifier walk, BUGS.md).
 Phase 1 = json.bv generics + package v0 + install.
-**Phase 1 IN PROGRESS 2026-10-05**: json.bv migrated (`lib/std/json.bv`,
-typechecks, inert) and now compiles to VALID IR; migration surfaced 12
-codegen/liveness defects, all fixed (`734a8dac` + `cf38ced2`). ONE blocker
-remains: callable `txn` convergence is linear (parser loop txns return after
-one iteration → segfault); `list_concat` unimplemented (worked around).
-Both BUGS.md. Phase 2 = fill campaign (rung 0 =
+**Phase 1 json.bv DONE 2026-10-05**: `lib/std/json.bv` works — objects,
+arrays, numbers, escaped strings, literals parse/print in both interpreter
+and backend. ~18 defects fixed (`734a8dac`, `cf38ced2`, `deacdf79`),
+including callable-`txn` convergence (backend + interpreter) and List<enum>
+append. `list_concat` (`List + List`) still unimplemented (worked around
+with `<-`); BUGS.md. Remaining Phase 1: package v0 + install.
+Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---

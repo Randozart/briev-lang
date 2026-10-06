@@ -153,17 +153,16 @@ Promotion-sweep investigation findings (2026-10-04):
 1. Scoping read of `json.bv`'s blockers (generic type inference + the three
    language gaps — INDEX names but does not enumerate them), then implement.
    The generality test: a real stdlib module, not a toy.
-   **IN PROGRESS 2026-10-05**: `lib/std/json.bv` migrated from the archive
-   (typechecks; inert, not prelude-loaded). The migration surfaced TWELVE
-   codegen/liveness defects. Round 1 (`734a8dac`): enum struct-payload match
-   binding, bare tail match, List+List liveness, String cast-lane liveness,
-   String indexing. Round 2 (`cf38ced2`): Char local cast, union-payload
-   struct handling, tuple String element, Float param unbox, `last_val_temps`
-   leak across callable txns, `let` rebinding invalidation, block-tail match.
-   json.bv now compiles to VALID IR. **ONE blocker remains**: callable `txn`
-   convergence is linear (parser loop txns return after one iteration →
-   segfault); `list_concat` is unimplemented (worked around with `<-`). Both
-   BUGS.md. The generality test is doing its job.
+   **DONE 2026-10-05**: `lib/std/json.bv` migrated from the archive and
+   WORKS — objects (nested), arrays, numbers, escaped strings, and literals
+   parse and print correctly in both the interpreter and the LLVM backend.
+   The migration surfaced ~18 codegen/liveness/interpreter defects, all
+   fixed (`734a8dac`, `cf38ced2`, `deacdf79`): enum struct-payload match
+   binding, bare/block tail match, String indexing, Char cast, tuple String
+   element, Float param unbox, `last_val_temps` leaks, List<enum> append,
+   void-match boxing, and **callable `txn` convergence** in both engines.
+   The generality test did its job. `list_concat` (`List + List`) remains
+   unimplemented (worked around with `<-`); BUGS.md.
 2. Package/module v0: git-based registry; reuse macro-lock; `briev.toml`
    target profiles exist.
 3. Install story: single static binary; `brievc run hello.bv` < 5 min on
