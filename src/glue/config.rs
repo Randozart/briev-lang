@@ -72,6 +72,13 @@ pub struct GlueTarget {
     /// language. Each command emits its value on stdout; None = absent.
     /// Keeps ALL toolchain knowledge out of the compiler (config-driven).
     pub native_include_cmd: Option<String>,
+    /// 2026-10-06 (web host-JS shipping): host function JS bodies for the
+    /// `wasm_runtime`/web target — `name -> JS function expression` (e.g.
+    /// `"log": "(msg) => console.log(msg)"`). The generated shim emits each at
+    /// MODULE SCOPE as `const <name> = <body>;` so a `#Web` frgn's import stub
+    /// (which calls `<name>(...)`) resolves. This is the web runtime's platform
+    /// surface, declared as data — the compiler carries no web vocabulary.
+    pub host_fns: HashMap<String, String>,
     /// Literal output suffix for the built extension (e.g. node: ".node").
     pub native_suffix: Option<String>,
     /// Command whose stdout is the output suffix (e.g. python's
@@ -361,6 +368,7 @@ fn glue_target_from_entry(
         native_suffix: str_field("native_suffix"),
         native_suffix_cmd: str_field("native_suffix_cmd"),
         native_link_cmd: str_field("native_link_cmd"),
+        host_fns: string_map("host_fns"),
         native_cc: str_field("native_cc"),
         native_prefix: str_field("native_prefix"),
     })

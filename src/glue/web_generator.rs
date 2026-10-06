@@ -255,6 +255,10 @@ pub struct GlueWebGenerator {
     /// 2026-08-12 (slice 4): the subset whose ELEMENT type is String — the
     /// shim decodes each snapshot word as a `[len][bytes]` string pointer.
     collection_string_iterables: HashSet<String>,
+    /// 2026-10-06 (web host-JS shipping): `name -> JS function expression` for
+    /// the web runtime's platform surface, from the GLUE `[web]` config. The
+    /// shim emits each at module scope so a `#Web` frgn import stub resolves.
+    host_fns: HashMap<String, String>,
 }
 
 /// JS marshalling category for a `b-bind:value` transaction parameter,
@@ -313,6 +317,7 @@ impl GlueWebGenerator {
             bind_routes: HashMap::new(),
             collection_iterables: HashSet::new(),
             collection_string_iterables: HashSet::new(),
+            host_fns: HashMap::new(),
         }
     }
 
@@ -339,6 +344,13 @@ impl GlueWebGenerator {
         self
     }
 
+    /// 2026-10-06 (web host-JS shipping): the web runtime's host functions
+    /// (`name -> JS function expression`) from the GLUE `[web]` config.
+    pub fn with_host_fns(mut self, host_fns: HashMap<String, String>) -> Self {
+        self.host_fns = host_fns;
+        self
+    }
+
     /// Generate the JS runtime shim and TS declarations.
     /// 2026-07-26: Phase 3 — Produces ES module with WasmDomRuntime class.
     pub fn generate(&self) -> Result<GlueWebOutput, String> {
@@ -354,11 +366,23 @@ impl GlueWebGenerator {
     fn generate_dom_shim(&self) -> String {
         let bindings_js = self.generate_binding_table();
         let imports_js = self.generate_imports();
+        // 2026-10-06 (web host-JS shipping): emit the platform host functions
+        // at MODULE SCOPE so the `#Web` frgn import stubs (which call them by
+        // name) resolve. Sorted for deterministic output.
+        let host_fns_js = {
+            let mut names: Vec<&String> = self.host_fns.keys().collect();
+            names.sort();
+            names
+                .iter()
+                .map(|n| format!("const {} = {};\n", n, self.host_fns[*n]))
+                .collect::<String>()
+        };
 
         format!(
             r#"// dom-shim.mjs — Auto-generated GLUE web runtime for {app_name}
 // Reads WASM linear memory at known state offsets.
 
+{host_fns_js}
 export class WasmDomRuntime {{
   constructor(wasmBytes) {{
     this._handles = [null];
@@ -2078,6 +2102,26 @@ mod tests {
         assert!(!shim.contains("foo(msg) =>"), "old invalid syntax must be gone: {shim}");
         assert!(shim.contains("const _msg = this._readString(msg);"), "no shadowing: {shim}");
         assert!(shim.contains("foo(_msg);"), "call the host with the decoded local: {shim}");
+    }
+
+    #[test]
+    fn host_fns_are_emitted_at_module_scope() {
+        // 2026-10-06 (web host-JS shipping): a `#Web` frgn stub calls its host
+        // function by name, so the shim must define it at module scope, before
+        // the class.
+        let mut hf = HashMap::new();
+        hf.insert("log".to_string(), "(msg) => console.log(msg)".to_string());
+        let g = GlueWebGenerator::new(
+            Vec::new(), Vec::new(),
+            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            HashMap::new(),
+            Vec::new(),
+        ).with_host_fns(hf);
+        let shim = g.generate().unwrap().dom_shim;
+        let fn_pos = shim.find("const log = (msg) => console.log(msg);")
+            .unwrap_or_else(|| panic!("host fn missing: {shim}"));
+        let class_pos = shim.find("export class").expect("class present");
+        assert!(fn_pos < class_pos, "host fns must be module-scope (before the class)");
     }
 
     #[test]

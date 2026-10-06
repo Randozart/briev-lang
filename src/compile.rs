@@ -1227,7 +1227,13 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                 )
                 .with_bind_routes(resolved_routes)
                 .with_collection_iterables(collection_iterables.clone())
-                .with_collection_string_iterables(collection_string_iterables.clone());
+                .with_collection_string_iterables(collection_string_iterables.clone())
+                // 2026-10-06 (web host-JS shipping): the web runtime's host
+                // functions come from the GLUE `[web]` config, so a `#Web` frgn
+                // stub resolves without user JS.
+                .with_host_fns(
+                    glue_targets.get("web").map(|t| t.host_fns.clone()).unwrap_or_default(),
+                );
                 match web_gen.generate() {
                     Ok(output) => {
                         // 2026-10-06 (web bundling): keep the shim source for
