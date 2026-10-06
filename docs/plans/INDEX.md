@@ -140,7 +140,13 @@ Stage table of record: `2026-09-30-stage5-re-rank-and-5c.md`
     3.748e-3 ×12, full fixture sweep green both lanes, min-convention
     perf parity (`benchmarks/results/2026-10-05-cuda-tail-drain-fix.md`).
     Then: pipelined fills,
-    B-traffic levers toward 32 TF.
+    B-traffic levers toward 32 TF. **2026-10-06 (Phase 2 start): rung 0
+    re-verified EXACT at tip (64³/128³ f16, both lanes); the 5b PTX/CUDA
+    timing rig is STALE/ephemeral — `gemm_h_bench` and the `--backend ptx`
+    runner both dispatch-fail on the current kernel. Next: reconstruct the
+    batched timing protocol as a committed script and validate against the
+    19.9 TF Vulkan record before measuring the L2/B-traffic lever
+    (`benchmarks/results/2026-10-06-rung0-verification.md`).**
 4. **Re-rank table fold-in** — fold fused-attention + float4 numbers into
    the stage-5 table (row 3 already marked DONE).
 5. ~~GemmPlan retirement~~ — **DECLARATION-GATED 2026-10-03** (increments
