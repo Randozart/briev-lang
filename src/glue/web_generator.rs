@@ -1357,7 +1357,7 @@ export async function createApp(wasmBytes) {{
         for fb in &self.frgn_decls {
             let fn_name = fb.effective_briev_name();
             let param_names = self.frgn_param_names(&fb.inputs);
-            let marshal_in = self.frgn_marshal_in(&fb.inputs, &param_names);
+            let (marshal_in, call_names) = self.frgn_marshal_in(&fb.inputs, &param_names);
             let marshal_out = self.frgn_marshal_out(&fb.success_output);
 
             // Build the JS stub body: unmarshal params, call native, marshal result
@@ -1368,25 +1368,23 @@ export async function createApp(wasmBytes) {{
             // If the function has a non-void return, capture the result
             if fb.success_output.is_empty()
                 || matches!(fb.success_output[0].1, crate::ast::Type::Void) {
-                body.push_str(&format!("        {}(", fn_name));
-                for (i, pn) in param_names.iter().enumerate() {
-                    if i > 0 { body.push_str(", "); }
-                    body.push_str(pn);
-                }
-                body.push_str(");\n");
+                body.push_str(&format!("        {}({});\n", fn_name, call_names.join(", ")));
             } else {
                 body.push_str(&format!(
                     "        const _result = {}({});\n",
                     fn_name,
-                    param_names.join(", "),
+                    call_names.join(", "),
                 ));
                 for line in &marshal_out {
                     body.push_str(&format!("        {}\n", line));
                 }
             }
 
+            // 2026-10-06: object-method shorthand is `name: (params) => {}` —
+            // `name(params) => {}` is a SYNTAX ERROR. Marshalled locals are
+            // `_name` so they never shadow the raw ABI parameter.
             out.push_str(&format!(
-                "      {}({}) => {{\n{}\n      }},\n",
+                "      {}: ({}) => {{\n{}\n      }},\n",
                 fn_name,
                 param_names.join(", "),
                 body,
@@ -1420,29 +1418,36 @@ export async function createApp(wasmBytes) {{
         }
     }
 
-    /// Generate marshal-in statements: convert WASM ABI values to JS values.
-    /// 2026-07-26: Phase 6 — Type-driven. Each parameter becomes a JS const
-    /// declaration if the type needs decoding (String → _readString, etc.).
+    /// Generate marshal-in statements and the argument names to call the host
+    /// function with. 2026-07-26: Phase 6 — Type-driven. Each parameter that
+    /// needs decoding (String → _readString, etc.) becomes a `_name` local so
+    /// it never shadows the raw ABI parameter; pass-through types keep `name`.
+    /// 2026-10-06: returns `(statements, call_argument_names)`.
     fn frgn_marshal_in(&self, inputs: &[(String, crate::ast::Type)], param_names: &[String])
-        -> Vec<String>
+        -> (Vec<String>, Vec<String>)
     {
         let mut stmts = Vec::new();
+        let mut call_names = Vec::new();
         for (i, (_, ty)) in inputs.iter().enumerate() {
             let pn = &param_names[i];
+            let local = format!("_{}", pn);
             match ty {
                 crate::ast::Type::Custom(s) if s == "String" => {
-                    stmts.push(format!("const {} = this._readString({});", pn, pn));
+                    stmts.push(format!("const {} = this._readString({});", local, pn));
+                    call_names.push(local);
                 }
                 crate::ast::Type::Custom(s) if s == "Bool" => {
-                    stmts.push(format!("const {} = {} !== 0;", pn, pn));
+                    stmts.push(format!("const {} = {} !== 0;", local, pn));
+                    call_names.push(local);
                 }
                 crate::ast::Type::Custom(s) if s == "Element" || s == "CanvasContext" => {
-                    stmts.push(format!("const {} = this._handles[{}];", pn, pn));
+                    stmts.push(format!("const {} = this._handles[{}];", local, pn));
+                    call_names.push(local);
                 }
-                _ => {} // Int, Float pass through as-is
+                _ => call_names.push(pn.clone()), // Int, Float pass through as-is
             }
         }
-        stmts
+        (stmts, call_names)
     }
 
     /// Generate marshal-out statements: convert JS return value to WASM ABI.
@@ -2051,6 +2056,30 @@ mod tests {
             "no DOM-specific names should appear in the compiler");
     }
 
+    /// 2026-10-06: the generated `#Web` frgn stub must be VALID JS — an object
+    /// property `name: (params) => {}` (the old `name(params) => {}` was a
+    /// syntax error) with the decoded local `_name` (the old code shadowed the
+    /// parameter: `const msg = this._readString(msg)`).
+    #[test]
+    fn web_frgn_stub_is_valid_js_syntax() {
+        let frgn = make_web_frgn(
+            "foo",
+            vec![("msg".to_string(), crate::ast::Type::string())],
+            vec![],
+        );
+        let g = GlueWebGenerator::new(
+            Vec::new(), Vec::new(),
+            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            HashMap::new(),
+            vec![frgn],
+        );
+        let shim = g.generate().unwrap().dom_shim;
+        assert!(shim.contains("foo: (msg) =>"), "object property syntax required: {shim}");
+        assert!(!shim.contains("foo(msg) =>"), "old invalid syntax must be gone: {shim}");
+        assert!(shim.contains("const _msg = this._readString(msg);"), "no shadowing: {shim}");
+        assert!(shim.contains("foo(_msg);"), "call the host with the decoded local: {shim}");
+    }
+
     #[test]
     fn test_frgn_element_creates_handle() {
         // frgn make_widget() -> Element from #Web
@@ -2178,7 +2207,7 @@ mod tests {
         assert!(out.dom_shim.contains("_readString"),
             "String param should use _readString");
         // count: Int passes through as raw value — no _readString in the stub body
-        let stub_start = out.dom_shim.find("update(").unwrap_or(0);
+        let stub_start = out.dom_shim.find("update: (").unwrap_or(0);
         let stub_end = out.dom_shim[stub_start..].find("},")
             .map(|e| stub_start + e + 2)
             .unwrap_or(out.dom_shim.len());
