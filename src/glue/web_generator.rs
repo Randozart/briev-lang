@@ -32,6 +32,43 @@ fn js_literal(s: &str) -> String {
     }
 }
 
+/// 2026-10-06 (Phase 3, `.rbv` servable): build the page wrapper for a
+/// compiled `<view>`. It references its SIBLING artifacts by BASENAME — the
+/// emitter writes `<stem>.mjs` / `<stem>.css` / `<stem>.wasm` beside the html
+/// — and the `fetch` is relative, so any static server (or `file://`) resolves
+/// them. Extracted from `compile.rs` so it is unit-testable (Rule 17).
+///
+/// `stem` is the output basename (a full path is reduced to its file name).
+/// The CSS link is emitted only when a `<style>` block was compiled.
+pub fn render_index_html(view_html: &str, stem: &str, has_css: bool) -> String {
+    let stem = std::path::Path::new(stem)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(stem);
+    let css_link = if has_css {
+        format!("<link rel=\"stylesheet\" href=\"{stem}.css\">\n")
+    } else {
+        String::new()
+    };
+    format!(
+        "<!DOCTYPE html>\n\
+         <html lang=\"en\">\n\
+         <head>\n\
+         <meta charset=\"UTF-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
+         {css_link}</head>\n\
+         <body>\n\
+         {view_html}\n\
+         <script type=\"module\">\n\
+         import {{ createApp }} from './{stem}.mjs';\n\
+         fetch('{stem}.wasm').then(r => r.arrayBuffer())\n\
+           .then(bytes => createApp(new Uint8Array(bytes)));\n\
+         </script>\n\
+         </body>\n\
+         </html>\n"
+    )
+}
+
 /// Descriptor for a single state field in WASM linear memory.
 /// 2026-07-26: Phase 3 — Emitted by the LLVM backend in state_layout export.
 #[derive(Debug, Clone)]
@@ -1423,6 +1460,33 @@ export function createApp(wasmBytes: Uint8Array): Promise<WebAssembly.Exports>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 2026-10-06 (Phase 3, `.rbv` servable): the page must reference its
+    /// emitted sibling artifacts by basename — never the old hardcoded
+    /// `app.css` / `dom-shim.mjs`, and never an absolute fetch path.
+    #[test]
+    fn index_html_references_sibling_artifacts() {
+        let html = render_index_html("<div>x</div>", "counter", true);
+        assert!(html.contains("href=\"counter.css\""), "{html}");
+        assert!(html.contains("from './counter.mjs'"), "{html}");
+        assert!(html.contains("fetch('counter.wasm')"), "{html}");
+        assert!(!html.contains("app.css"), "{html}");
+        assert!(!html.contains("dom-shim.mjs"), "{html}");
+    }
+
+    #[test]
+    fn index_html_omits_css_link_without_a_style_block() {
+        let html = render_index_html("<div>x</div>", "app", false);
+        assert!(!html.contains(".css"), "no css link when no <style>: {html}");
+        assert!(html.contains("from './app.mjs'"), "{html}");
+    }
+
+    #[test]
+    fn index_html_reduces_a_path_to_its_basename() {
+        let html = render_index_html("<div>x</div>", "/tmp/out/counter", true);
+        assert!(html.contains("fetch('counter.wasm')"), "{html}");
+        assert!(!html.contains("/tmp/out/counter.wasm"), "{html}");
+    }
 
     fn make_empty_generator() -> GlueWebGenerator {
         GlueWebGenerator::new(

@@ -1105,30 +1105,18 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // never the raw markup.
 
             // 2026-07-26: Phase 6b — Write index.html from the compiled view.
-            // Wraps the ID-injected HTML in a minimal HTML5 boilerplate that
-            // links app.css and loads dom-shim.mjs via ES module import.
+            // 2026-10-06 (Phase 3, .rbv servable): the page references its
+            // SIBLING artifacts by BASENAME — the emitter writes
+            // `<stem>.css/.mjs/.wasm` beside the html, and the fetch is
+            // relative so any static server (or file://) resolves them.
+            // (Was: hardcoded `app.css` / `dom-shim.mjs` and an
+            // absolute-path `fetch` — all 404'd.)
             if let Some(html) = modified_view_html.as_ref() {
                 let index_path = format!("{}.html", binary_base);
-                let index_content = format!(
-                    "<!DOCTYPE html>\n\
-                     <html lang=\"en\">\n\
-                     <head>\n\
-                     <meta charset=\"UTF-8\">\n\
-                     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
-                     <link rel=\"stylesheet\" href=\"app.css\">\n\
-                     <script type=\"module\" src=\"dom-shim.mjs\"></script>\n\
-                     </head>\n\
-                     <body>\n\
-                     {}\n\
-                     <script type=\"module\">\n\
-                     import {{ createApp }} from './dom-shim.mjs';\n\
-                     fetch('{}.wasm').then(r => r.arrayBuffer())\n\
-                       .then(bytes => createApp(new Uint8Array(bytes)));\n\
-                     </script>\n\
-                     </body>\n\
-                     </html>\n",
+                let index_content = briev_compiler::glue::web_generator::render_index_html(
                     html,
                     binary_base,
+                    style_css.is_some(),
                 );
                 std::fs::write(&index_path, &index_content)
                     .map_err(|e| format!("cannot write '{}': {}", index_path, e))?;

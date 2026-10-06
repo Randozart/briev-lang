@@ -61,22 +61,32 @@ fn extract_initial_state(items: &[crate::ast::TopLevel]) -> HashMap<String, Stri
 ///   view_html: raw HTML from the <view> block
 ///   items: compiled AST items (for state declaration analysis)
 ///   css_content: optional CSS to inline (or empty for external link)
-///   wasm_name: the WASM filename (without path)
-///   dev_mode: if true, emits dev-shim.mjs instead of dom-shim.mjs
+///   wasm_name: the WASM filename (with or without a directory — the stem is
+///     taken; sibling assets are referenced by basename)
+///   dev_mode: reserved; no dev shim is emitted yet, so both modes reference
+///     the emitted `<stem>.mjs`
 pub fn render_ssr(
     view_html: &str,
     items: &[crate::ast::TopLevel],
     css_content: Option<&str>,
     wasm_name: &str,
-    dev_mode: bool,
+    _dev_mode: bool,
 ) -> SsrOutput {
     let state = extract_initial_state(items);
     let state_json = serde_json::to_string(&state).unwrap_or_else(|_| "{}".to_string());
 
-    let shim_module = if dev_mode { "dev-shim.mjs" } else { "dom-shim.mjs" };
+    // 2026-10-06 (Phase 3, .rbv servable): reference the SIBLING artifacts by
+    // BASENAME — the emitter writes `<stem>.mjs`/`<stem>.css` beside the html
+    // and the fetch must be relative. (Was: hardcoded `dom-shim.mjs` /
+    // `app.css` and an absolute-path fetch — all 404'd.)
+    let stem = std::path::Path::new(wasm_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(wasm_name);
+    let shim_module = format!("{stem}.mjs");
     let css_link = match css_content {
         Some(css) => format!("<style>\n{}</style>\n", css),
-        None => "<link rel=\"stylesheet\" href=\"app.css\">\n".to_string(),
+        None => format!("<link rel=\"stylesheet\" href=\"{stem}.css\">\n"),
     };
 
     let full_html = format!(
@@ -95,7 +105,7 @@ pub fn render_ssr(
          </script>\n\
          <script type=\"module\">\n\
          import {{ createApp }} from './{shim_module}';\n\
-         fetch('{wasm_name}.wasm').then(r => r.arrayBuffer())\n\
+         fetch('{stem}.wasm').then(r => r.arrayBuffer())\n\
            .then(bytes => {{\n\
              const app = createApp(new Uint8Array(bytes), {{\n\
                ssrData: JSON.parse(document.getElementById('ssr-data').textContent),\n\
@@ -164,19 +174,25 @@ mod tests {
     }
 
     #[test]
-    fn test_render_ssr_uses_dom_shim_in_production() {
+    fn test_render_ssr_references_emitted_shim() {
+        // 2026-10-06 (Phase 3, .rbv servable): the page references the emitted
+        // `<stem>.mjs` / `<stem>.css` siblings, never the old hardcoded
+        // dom-shim.mjs / app.css (which the emitter never wrote).
         let result = render_ssr("<div></div>", &[], None, "app", false);
-        assert!(result.full_html.contains("dom-shim.mjs"),
-            "production should use dom-shim.mjs");
-        assert!(!result.full_html.contains("dev-shim.mjs"),
-            "production should NOT use dev-shim.mjs");
+        assert!(result.full_html.contains("app.mjs"), "must use the emitted shim");
+        assert!(result.full_html.contains("app.css"), "must link the emitted css");
+        assert!(!result.full_html.contains("dom-shim.mjs"), "no dead dom-shim name");
+        assert!(!result.full_html.contains("dev-shim.mjs"), "no dead dev-shim name");
     }
 
     #[test]
-    fn test_render_ssr_uses_dev_shim_in_dev() {
-        let result = render_ssr("<div></div>", &[], None, "app", true);
-        assert!(result.full_html.contains("dev-shim.mjs"),
-            "dev mode should use dev-shim.mjs");
+    fn test_render_ssr_takes_stem_from_a_path() {
+        // A full-path wasm_name must reduce to the basename (relative siblings).
+        let result = render_ssr("<div></div>", &[], None, "/tmp/out/app", false);
+        assert!(result.full_html.contains("fetch('app.wasm')"),
+            "fetch must be relative to the basename: {}", result.full_html);
+        assert!(!result.full_html.contains("/tmp/out/app.wasm"),
+            "must not embed an absolute path");
     }
 
     #[test]
