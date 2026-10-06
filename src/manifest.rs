@@ -43,11 +43,11 @@ pub enum ManifestError {
 pub struct Manifest {
     #[serde(default)]
     pub project: Project,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub dependencies: HashMap<String, Dependency>,
     /// 2026-07-23: Target profiles for multi-target compilation.
-    /// Defined as `[target.<name>]` sections in briev.toml.
-    #[serde(default)]
+    /// Defined as `[target.<name>]` sections in folio.toml.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub target: HashMap<String, TargetProfile>,
 }
 
@@ -217,6 +217,10 @@ impl Serialize for OverrideValue {
 pub enum Dependency {
     Path(PathDependency),
     Registry(RegistryDependency),
+    /// 2026-10-06 (package/module v0, folio): a git-sourced dependency.
+    /// Exactly one of `rev`/`tag`/`branch` may pin it; none = the default
+    /// branch, whose resolved commit is recorded in `folio.lock`.
+    Git(GitDependency),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +233,28 @@ pub struct RegistryDependency {
     pub registry: String,
     #[serde(default)]
     pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitDependency {
+    pub git: String,
+    #[serde(default)]
+    pub rev: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+impl GitDependency {
+    /// The git ref this dependency pins, if any. `rev` wins, then `tag`, then
+    /// `branch`; `None` means the remote's default branch.
+    pub fn pin(&self) -> Option<&str> {
+        self.rev
+            .as_deref()
+            .or(self.tag.as_deref())
+            .or(self.branch.as_deref())
+    }
 }
 
 impl Manifest {
@@ -274,6 +300,7 @@ impl Manifest {
                 }
             }
             Dependency::Registry(_) => None,
+            Dependency::Git(_) => None,
         }
     }
 
@@ -301,6 +328,9 @@ impl fmt::Display for Manifest {
                     Dependency::Registry(r) => {
                         write!(f, "{} v{}", r.registry, r.version.as_deref().unwrap_or("*"))?
                     }
+                    Dependency::Git(g) => {
+                        write!(f, "{}@{}", g.git, g.pin().unwrap_or("HEAD"))?
+                    }
                 }
             }
         }
@@ -312,7 +342,7 @@ pub fn find_manifest(start_dir: &Path) -> Option<PathBuf> {
     let mut current = start_dir.to_path_buf();
 
     loop {
-        let manifest_path = current.join("briev.toml");
+        let manifest_path = current.join("folio.toml");
         if manifest_path.exists() {
             return Some(manifest_path);
         }
@@ -373,7 +403,7 @@ utils = { path = "lib/utils.bv" }
         let project_dir = tmp.path();
 
         fs::create_dir(project_dir.join("src")).unwrap();
-        let manifest_path = project_dir.join("briev.toml");
+        let manifest_path = project_dir.join("folio.toml");
         fs::write(&manifest_path, "").unwrap();
 
         let found = find_manifest(&project_dir.join("src").join("main.bv"));

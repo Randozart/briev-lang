@@ -330,6 +330,17 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
     resolver.plugin_factory = Some(briev_compiler::pipeline::module_plugin_factory(opts));
+    // 2026-10-06 (package/module v0, folio): git/path dependencies declared in
+    // the project's folio.toml become import search roots. Build mode may write
+    // folio.lock (a no-op without git deps).
+    for root in briev_compiler::packages::project_dependency_roots(
+        file_path,
+        briev_compiler::packages::ResolveMode::Build,
+    )
+    .map_err(|e| e.to_string())?
+    {
+        resolver.add_search_path(root);
+    }
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
     // 2026-07-24: Extract stage blocks from imported files. The first
     // extract_inline_stage_blocks ran before import resolution, so stage

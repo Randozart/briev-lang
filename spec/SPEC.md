@@ -2439,7 +2439,7 @@ node timer_tick @ timer_irq [ticks >= 0] { ticks = ticks + 1; };  // board name
 ```
 
 - **Mechanism inference**: the active target profile's `isr_mechanism`
-  (briev.toml `[target.<name>]`) names the mechanism row
+  (folio.toml `[target.<name>]`) names the mechanism row
   (`config/isr-targets.dbvl`). The compiler never invents a layout — with no
   profile default the error names the profile key to set.
 - **Wiring classes** — the board-file namespace of the `@` reference decides
@@ -3289,7 +3289,7 @@ tail-calls (`jmp`) the named raw block; params bind at ABI index 1 (the
 bootstrapper disk primitive (`std/bad/disk.bad`) pairs a portable
 `load_image` copy-loop defn with per-arch raw disk sources (x86_64 INT
 13h `read_sectors`). `brievc build --all-targets` compiles the source
-for EVERY `[target.*]` profile in `briev.toml` in one invocation —
+for EVERY `[target.*]` profile in `folio.toml` in one invocation —
 profiles may carry `triple`, `linker_script`, and `entry` (the bootstrap
 bad symbol) as per-target overrides. Float literals ride a deduped `.rodata`
 literal pool; `syscall` takes a NAMED kernel call (`syscall write, ...`)

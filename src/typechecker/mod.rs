@@ -5724,7 +5724,7 @@ fn check_isr_handler(
                          will not invent a vector table layout. Name the \
                          mechanism explicitly (isr<arm_cortex_m> handler @ ...), \
                          or set isr_mechanism in the active [target.<name>] \
-                         profile of briev.toml"
+                         profile of folio.toml"
                         .into(),
                 });
             }

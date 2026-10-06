@@ -471,7 +471,7 @@ Three override sources, cascading precedence (low → high):
 
 | Source | Format | Priority |
 |--------|--------|----------|
-| `--target <name>` | briev.toml `[target.*]` profile | Lowest |
+| `--target <name>` | folio.toml `[target.*]` profile | Lowest |
 | `--sysquery-file <path>` | Plain text key=value file | Medium |
 | `--sysquery <key=value>` | CLI pairs (repeatable) | Highest |
 

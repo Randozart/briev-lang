@@ -356,7 +356,7 @@ handoff target is emitted. The console write goes through a per-arch
 stores, the virt 16550 a full-width store).
 
 `brievc build <file> --all-targets` builds one source for EVERY
-`[target.*]` profile in `briev.toml` in a single invocation — a profile
+`[target.*]` profile in `folio.toml` in a single invocation — a profile
 may carry `triple`, `linker_script`, and `entry` (the bootstrap bad
 symbol) as per-target overrides of the CLI defaults. One command → all
 binaries (`bin/<profile>/…`), each booting its family's prologue.

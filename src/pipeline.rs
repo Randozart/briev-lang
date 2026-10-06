@@ -243,13 +243,13 @@ pub struct BuildOptions {
     pub diff_mode: bool,
     /// 2026-07-23: Overrides for SysQuery$ results.
     /// Populated by --sysquery <key=value> and --sysquery-file <path> flags.
-    /// Also populated by --target <name> from briev.toml profiles.
+    /// Also populated by --target <name> from folio.toml profiles.
     /// Empty = query real host. Later values override earlier ones.
     pub sysquery_overrides: HashMap<String, String>,
     /// 2026-07-23: Target profile name (--target). None = default/single build.
-    /// Overrides are resolved from briev.toml and merged into sysquery_overrides.
+    /// Overrides are resolved from folio.toml and merged into sysquery_overrides.
     pub target: Option<String>,
-    /// 2026-09-22 (--all-targets): build every briev.toml [target.*] profile.
+    /// 2026-09-22 (--all-targets): build every folio.toml [target.*] profile.
     pub all_targets: bool,
     /// 2026-07-23: Raw --sysquery flag pairs (unresolved, for run_build).
     pub sysquery_pairs: Vec<(String, String)>,
@@ -261,7 +261,7 @@ pub struct BuildOptions {
     pub accel_cpu_fallback: Option<u64>,
     /// 2026-09-06 (ISR plan): the active target profile's ISR mechanism —
     /// the configured default behind mechanism-less `isr` declarations.
-    /// Populated from briev.toml [target.<name>] isr_mechanism.
+    /// Populated from folio.toml [target.<name>] isr_mechanism.
     pub isr_mechanism: Option<String>,
     /// 2026-09-13 (rv64 capability kernel): explicit LLVM target triple override.
     /// Set via --triple CLI flag. Takes precedence over dbvl target_triple.
@@ -270,7 +270,7 @@ pub struct BuildOptions {
     /// Set via --linker-script CLI flag. Takes precedence over dbvl linker_script.
     pub linker_script_override: Option<String>,
     /// 2026-09-22 (--all-targets): the per-target linker entry symbol (the
-    /// `bootstrap bad` name), carried from a briev.toml `[target.*]` profile.
+    /// `bootstrap bad` name), carried from a folio.toml `[target.*]` profile.
     pub entry_override: Option<String>,
     /// 2026-09-22 (bootstrap-bad plan): extract the flat loadable image
     /// (objcopy -O binary) after linking — the boot-sector / firmware blob
@@ -896,6 +896,16 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
     resolver.plugin_factory = Some(module_plugin_factory(opts));
+    // 2026-10-06 (package/module v0, folio): dependency import roots.
+    // Build mode may write folio.lock (a no-op without git deps).
+    for root in crate::packages::project_dependency_roots(
+        file_path,
+        crate::packages::ResolveMode::Build,
+    )
+    .map_err(|e| e.to_string())?
+    {
+        resolver.add_search_path(root);
+    }
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
     extract_inline_stage_blocks(&mut items, &mut pm);
     {
@@ -998,6 +1008,16 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
     resolver.plugin_factory = Some(module_plugin_factory(opts));
+    // 2026-10-06 (package/module v0, folio): dependency import roots.
+    // Check mode is read-only — it never writes folio.lock.
+    for root in crate::packages::project_dependency_roots(
+        file_path,
+        crate::packages::ResolveMode::Check,
+    )
+    .map_err(|e| e.to_string())?
+    {
+        resolver.add_search_path(root);
+    }
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))?;
     extract_inline_stage_blocks(&mut items, &mut pm);
     {

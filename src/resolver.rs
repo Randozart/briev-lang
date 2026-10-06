@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn test_resolve_from_manifest() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let manifest_path = tmp.path().join("briev.toml");
+        let manifest_path = tmp.path().join("folio.toml");
 
         let manifest = Manifest {
             project: crate::manifest::Project::default(),
@@ -253,7 +253,7 @@ mod tests {
         std::fs::create_dir(&lib_dir).unwrap();
         std::fs::write(lib_dir.join("utils.bv"), "").unwrap();
 
-        let manifest_path = tmp.path().join("briev.toml");
+        let manifest_path = tmp.path().join("folio.toml");
         let manifest = Manifest {
             project: crate::manifest::Project::default(),
             dependencies: std::collections::HashMap::new(),

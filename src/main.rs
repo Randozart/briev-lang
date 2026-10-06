@@ -8,7 +8,7 @@ mod deps;
 
 use std::collections::HashMap;
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use briev_compiler::library;
 use briev_compiler::target::{BackendKind, TargetConfig, get_extension};
@@ -44,6 +44,10 @@ fn main() {
         "ownership" => run_ownership_cmd(&args[2..]),
         "config" => run_config(&args[2..]),
         "init" => run_init(args.get(2).map(|s| s.as_str())),
+        // 2026-10-06 (package/module v0, folio): dependency management.
+        "update" => run_update(),
+        "add" => run_add(&args[2..]),
+        "remove" => run_remove(&args[2..]),
         "bounty" => run_bounty(&args[2..]),
         "bad" => run_bad(&args[2..]),
         "registry" => run_registry(&args[2..]),
@@ -101,7 +105,7 @@ fn print_usage(program: &str) {
     eprintln!("  {} build <file.bv> --dump-vfs               Print virtual filesystem contents after build", name);
     eprintln!("  {} build <file.bv> --dump-traces            Print macro expansion traces after build", name);
     eprintln!("  {} build <file.bv> --diff                   Show macro changes (dry-run, no output)", name);
-    eprintln!("  {} build <file.bv> --target <name>           Build for a specific target profile from briev.toml", name);
+    eprintln!("  {} build <file.bv> --target <name>           Build for a specific target profile from folio.toml", name);
     eprintln!("  {} build <file.bv> --accel-cpu-fallback <n>  Min work items for GPU dispatch; below n runs the CPU loop", name);
     eprintln!("  {} build <file.bv> --sysquery <key=value>    Override a SysQuery$ result (repeatable, highest priority)", name);
     eprintln!("  {} build <file.bv> --sysquery-file <path>    Load SysQuery$ overrides from a key=value file", name);
@@ -382,7 +386,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             i += 2;
         } else if arg == "--all-targets" {
             // 2026-09-22 (universal completion): build every target profile
-            // in briev.toml in one invocation — the universal bootstrapper
+            // in folio.toml in one invocation — the universal bootstrapper
             // produces all binaries from one source.
             all_targets = true;
             i += 1;
@@ -921,7 +925,7 @@ fn run_build(args: &[String]) -> Result<(), String> {
     };
 
     // 2026-07-23: Resolve SysQuery$ overrides from three sources (low→high):
-    //   1. --target <name> loads per-target overrides from briev.toml profiles
+    //   1. --target <name> loads per-target overrides from folio.toml profiles
     //   2. --sysquery-file <path> loads key=value pairs from a text file
     //   3. --sysquery <key=value> CLI flags (highest priority)
     // Each source merges over the previous. If no overrides from any source,
@@ -961,13 +965,13 @@ fn run_build(args: &[String]) -> Result<(), String> {
     let manifest = briev_compiler::manifest::find_manifest(&project_dir)
         .and_then(|p| briev_compiler::manifest::Manifest::load(&p).ok());
     let target_profiles: Vec<(String, HashMap<String, String>, Option<String>)> = if opts.all_targets {
-        // --all-targets: build EVERY profile in briev.toml — one command,
+        // --all-targets: build EVERY profile in folio.toml — one command,
         // all binaries, from one universal source.
         let manifest = manifest.as_ref().ok_or_else(|| {
-            "--all-targets requires a briev.toml with target profiles".to_string()
+            "--all-targets requires a folio.toml with target profiles".to_string()
         })?;
         if manifest.target.is_empty() {
-            return Err("--all-targets: briev.toml has no [target.*] profiles".to_string());
+            return Err("--all-targets: folio.toml has no [target.*] profiles".to_string());
         }
         let mut names: Vec<_> = manifest.target.keys().cloned().collect();
         names.sort();
@@ -976,12 +980,12 @@ fn run_build(args: &[String]) -> Result<(), String> {
             (n.clone(), p.sysquery_overrides(), p.isr_mechanism.clone())
         }).collect()
     } else if let Some(ref target_name) = opts.target {
-        // --target <name>: single target from briev.toml
+        // --target <name>: single target from folio.toml
         let manifest = manifest.as_ref().ok_or_else(|| {
-            format!("--target '{}' requires a briev.toml with target profiles", target_name)
+            format!("--target '{}' requires a folio.toml with target profiles", target_name)
         })?;
         let profile = manifest.target.get(target_name).ok_or_else(|| {
-            format!("target '{}' not found in briev.toml. Available targets: {}",
+            format!("target '{}' not found in folio.toml. Available targets: {}",
                 target_name, manifest.target.keys().cloned().collect::<Vec<_>>().join(", "))
         })?;
         vec![(target_name.clone(), profile.sysquery_overrides(), profile.isr_mechanism.clone())]
@@ -1372,6 +1376,117 @@ fn run_link(args: &[String]) -> Result<(), String> {
     briev_compiler::glue::link::print_link_summary(&result);
     let bridge_bv = briev_compiler::glue::link::generate_bridge_bv(&result);
     println!("{}", bridge_bv);
+    Ok(())
+}
+
+/// 2026-10-06 (package/module v0, folio): the nearest `folio.toml`.
+fn project_manifest_path() -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("cannot determine cwd: {e}"))?;
+    briev_compiler::manifest::find_manifest(&cwd)
+        .ok_or_else(|| "no folio.toml found in this directory or any parent".to_string())
+}
+
+/// `brievc update` — refresh unpinned git deps and rewrite `folio.lock`.
+fn run_update() -> Result<(), String> {
+    let path = project_manifest_path()?;
+    let manifest = briev_compiler::manifest::Manifest::load(&path).map_err(|e| e.to_string())?;
+    let root = path.parent().unwrap_or(Path::new("."));
+    let deps = briev_compiler::packages::resolve_dependencies(
+        &manifest,
+        root,
+        briev_compiler::packages::ResolveMode::Update,
+    )
+    .map_err(|e| e.to_string())?;
+    let git = deps.iter().filter(|d| d.rev.is_some()).count();
+    println!("updated {} dependencies ({git} git) — wrote folio.lock", deps.len());
+    Ok(())
+}
+
+/// Flags for `brievc add`.
+struct AddFlags {
+    git: Option<String>,
+    path: Option<String>,
+    tag: Option<String>,
+    rev: Option<String>,
+    branch: Option<String>,
+}
+
+fn parse_add_flags(args: &[String]) -> Result<AddFlags, String> {
+    let mut f = AddFlags { git: None, path: None, tag: None, rev: None, branch: None };
+    let mut i = 1;
+    while i < args.len() {
+        let next = args.get(i + 1).cloned();
+        match args[i].as_str() {
+            "--git" => f.git = Some(next.ok_or("--git needs a URL")?),
+            "--path" => f.path = Some(next.ok_or("--path needs a directory")?),
+            "--tag" => f.tag = Some(next.ok_or("--tag needs a ref")?),
+            "--rev" => f.rev = Some(next.ok_or("--rev needs a commit")?),
+            "--branch" => f.branch = Some(next.ok_or("--branch needs a name")?),
+            other => return Err(format!("unknown argument '{other}'")),
+        }
+        i += 2;
+    }
+    Ok(f)
+}
+
+/// `brievc add <name> --git <url> [--tag|--rev|--branch <r>] | --path <dir>`
+fn run_add(args: &[String]) -> Result<(), String> {
+    let name = args.first().ok_or(
+        "usage: brievc add <name> --git <url> [--tag|--rev|--branch <r>] | --path <dir>",
+    )?;
+    let flags = parse_add_flags(args)?;
+    let dep = match (flags.git, flags.path) {
+        (Some(url), None) => briev_compiler::manifest::Dependency::Git(
+            briev_compiler::manifest::GitDependency {
+                git: url,
+                rev: flags.rev,
+                tag: flags.tag,
+                branch: flags.branch,
+            },
+        ),
+        (None, Some(p)) => briev_compiler::manifest::Dependency::Path(
+            briev_compiler::manifest::PathDependency { path: PathBuf::from(p) },
+        ),
+        _ => return Err("specify exactly one of --git <url> or --path <dir>".to_string()),
+    };
+
+    let cwd = std::env::current_dir().map_err(|e| format!("cannot determine cwd: {e}"))?;
+    let path = briev_compiler::manifest::find_manifest(&cwd).unwrap_or_else(|| cwd.join("folio.toml"));
+    let mut manifest = if path.exists() {
+        briev_compiler::manifest::Manifest::load(&path).map_err(|e| e.to_string())?
+    } else {
+        briev_compiler::manifest::create_default_manifest(&path).map_err(|e| e.to_string())?
+    };
+    manifest.add_dependency(name.clone(), dep);
+    manifest.save(&path).map_err(|e| e.to_string())?;
+    let root = path.parent().unwrap_or(Path::new("."));
+    briev_compiler::packages::resolve_dependencies(
+        &manifest,
+        root,
+        briev_compiler::packages::ResolveMode::Build,
+    )
+    .map_err(|e| e.to_string())?;
+    println!("added '{name}' to {}", path.display());
+    Ok(())
+}
+
+/// `brievc remove <name>`
+fn run_remove(args: &[String]) -> Result<(), String> {
+    let name = args.first().ok_or("usage: brievc remove <name>")?;
+    let path = project_manifest_path()?;
+    let mut manifest = briev_compiler::manifest::Manifest::load(&path).map_err(|e| e.to_string())?;
+    if manifest.remove_dependency(name).is_none() {
+        return Err(format!("'{name}' is not a dependency in {}", path.display()));
+    }
+    manifest.save(&path).map_err(|e| e.to_string())?;
+    let root = path.parent().unwrap_or(Path::new("."));
+    briev_compiler::packages::resolve_dependencies(
+        &manifest,
+        root,
+        briev_compiler::packages::ResolveMode::Build,
+    )
+    .map_err(|e| e.to_string())?;
+    println!("removed '{name}'");
     Ok(())
 }
 

@@ -62,7 +62,7 @@ src/
 ├── interpreter.rs  # Reactive execution engine
 ├── reactor.rs      # Event-driven reactor loop
 ├── resolver.rs     # Import resolution
-├── manifest.rs     # Dependency management (briev.toml)
+├── manifest.rs     # Dependency management (folio.toml)
 ├── cache.rs        # Incremental compilation cache
 ├── watch.rs        # File watching
 └── main.rs         # CLI

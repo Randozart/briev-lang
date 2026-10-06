@@ -65,6 +65,7 @@ pub mod lifetime;
 pub mod linkage;
 pub mod lsp;
 pub mod manifest;
+pub mod packages;
 pub mod memory_spec;
 pub mod parser;
 pub mod pipeline;
