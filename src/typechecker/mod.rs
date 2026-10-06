@@ -403,22 +403,48 @@ impl<'a> TypecheckContext<'a> {
     /// dropping it. Declared ops (type-body `op Name: fn(...)`) resolve to
     /// `Function(fn)`; protocol bindings to the intrinsic. This is the single
     /// resolution chain for both typechecking and op elaboration.
+    /// 2026-10-06 (BUGS.md "List<T> + List<T> silently miscompiles"): the
+    /// `List<T> + List<T>` concatenation binding (SPEC §8.10). Both sides must
+    /// be `Applied("List", _)` with EQUAL element types; the result is the LHS
+    /// type (concatenation preserves the element type).
+    ///
+    /// This used to return `OpBinding::Intrinsic("list_concat")` — a name with
+    /// NO lowering in either engine. `elaborate_ops` rewrites only
+    /// `OpBinding::Function`, so the BinaryOp survived into codegen and lowered
+    /// as integer `add` over two list handles: `check` and `build` both
+    /// succeeded and the program printed garbage (count 1, element
+    /// 188769584955600). Binding to the stdlib `iter_chain` (which already
+    /// carries the exact postcondition `term.Count#() == a + b`) routes the op
+    /// through the declared-Function path, so a missing/renamed stdlib fn
+    /// becomes the existing `defined_fns` typecheck error instead of a wrong
+    /// answer. Mismatched element types fall through to the normal
+    /// `InvalidOperation` error rather than an unchecked rewrite.
+    ///
+    /// KNOWN RULE-15 DEBT: this still matches the type NAME "List". The
+    /// principled retirement is a declared concat op on the coll scaffold (like
+    /// `op InsertAt`), after which this helper is deleted. To undo: restore the
+    /// Intrinsic form and re-open the BUGS entry.
+    fn list_concat_binding(kind: &BinaryOpKind, lhs: &Type, rhs: &Type) -> Option<OpBinding> {
+        if *kind != BinaryOpKind::Add {
+            return None;
+        }
+        let (Type::Applied(ln, le), Type::Applied(rn, re)) = (lhs, rhs) else {
+            return None;
+        };
+        if ln == "List" && rn == "List" && le == re {
+            return Some(OpBinding::Function("iter_chain".to_string()));
+        }
+        None
+    }
+
     fn resolve_binary_op_binding(
         &self,
         kind: &BinaryOpKind,
         lhs: &Type,
         rhs: &Type,
     ) -> Option<OpBinding> {
-        // 2026-08-23: List<T> + List<T> concatenation — a built-in for the
-        // coll/List system (SPEC §8.10). Both sides must be Applied("List", _)
-        // with matching element types. Returns the LHS type (concatenation
-        // preserves the element type).
-        if *kind == BinaryOpKind::Add {
-            if let (Type::Applied(ln, _), Type::Applied(rn, _)) = (lhs, rhs) {
-                if ln == "List" && rn == "List" {
-                    return Some(OpBinding::Intrinsic("list_concat".to_string()));
-                }
-            }
+        if let Some(binding) = Self::list_concat_binding(kind, lhs, rhs) {
+            return Some(binding);
         }
         let rune = format!("{}", kind);
         let op_name = crate::type_universe::operators::rune_to_op_name(&rune)?;
@@ -8831,6 +8857,70 @@ node go [fired == 0][fired == 1] {
             err.iter().any(|e| format!("{}", e).contains("only on an `optional frgn`")),
             "non-optional ^^Available must error, got {:?}",
             err
+        );
+    }
+
+    /// 2026-10-06 (BUGS.md "List<T> + List<T> silently miscompiles"): `+` on
+    /// two lists must resolve to the stdlib `iter_chain` as a DECLARED Function
+    /// so `elaborate_ops` rewrites the operator into a call. The old binding was
+    /// `OpBinding::Intrinsic("list_concat")` — a name with no lowering in either
+    /// engine — so `elaborate_ops` (Function-only) left the `BinaryOp` in place,
+    /// codegen emitted integer `add` over two list handles, and `check` AND
+    /// `build` both succeeded on a program that printed count=1 and element
+    /// 188769584955600. Both halves are asserted here: the call appears AND no
+    /// `+` survives over the list operands.
+    #[test]
+    fn list_plus_list_elaborates_to_stdlib_iter_chain() {
+        let src = r#"
+import "std/collections.bv";
+import "std/iterator.bv";
+defn concat_demo() -> List<Int> {
+    let a: List<Int> = [1, 2];
+    let b: List<Int> = [3];
+    term a + b;
+};
+"#;
+        let (items, _universe) = crate::library::parse_and_check("list_concat_elab.bv", src)
+            .expect("List + List must typecheck and elaborate");
+        let mut calls: Vec<String> = Vec::new();
+        let mut add_ops: usize = 0;
+        for item in &items {
+            let TopLevel::Definition(d) = item else { continue };
+            if d.name != "concat_demo" {
+                continue;
+            }
+            crate::ast::visit::walk_stmts(&d.body, &mut |e| match e {
+                Expr::Call(name, _, _) => calls.push(name.clone()),
+                Expr::BinaryOp(crate::ast::BinaryOpKind::Add, _, _) => add_ops += 1,
+                _ => {}
+            });
+        }
+        assert!(
+            calls.iter().any(|c| c == "iter_chain"),
+            "`+` must elaborate into a call to the stdlib iter_chain, got calls: {calls:?}"
+        );
+        assert_eq!(add_ops, 0, "no `+` may survive over list operands");
+    }
+
+    /// 2026-10-06: the gate the rewrite must NOT open — mismatched element
+    /// types fall through to the ordinary `InvalidOperation` diagnostic instead
+    /// of reaching an unchecked call rewrite.
+    #[test]
+    fn list_plus_list_element_mismatch_is_an_error() {
+        let src = r#"
+import "std/collections.bv";
+import "std/iterator.bv";
+defn bad_concat() -> List<Int> {
+    let a: List<Int> = [1];
+    let b: List<String> = ["x"];
+    term a + b;
+};
+"#;
+        let err = crate::library::parse_and_check("list_concat_mismatch.bv", src)
+            .expect_err("element-type mismatch must be rejected");
+        assert!(
+            err.contains("invalid operation"),
+            "must report the operator error, got: {err}"
         );
     }
 }

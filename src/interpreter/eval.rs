@@ -2040,6 +2040,102 @@ fn run_foreach_body(
     Ok(true)
 }
 
+/// 2026-10-06 (BUGS.md "List<T> + List<T> silently miscompiles", Rule 5
+/// parity): the arrow's write half. The typechecker's dispatch
+/// (`infer_statement` → `push_element_type`) routes `collection <- element` to
+/// the target's `op InsertAt`; the backend emits the push (`emit_stmt`
+/// `find_insert_strategy`). The interpreter only rebound the binding, so EVERY
+/// list accumulator in the reference (`result <- list[i]` in iterator.bv,
+/// json.bv's `elems <- frame.value`, hashmap `acc <- keys[i]`) silently kept
+/// just the last element — `List + List` returned a count-1 scalar here while
+/// the backend returned the concatenated list.
+///
+/// The interpreter's model is deliberately dynamic (a collection IS a
+/// positional `Value::Product`; `Count#`/`At#`/`Slice#` already treat every
+/// Product that way), so push is keyed on the target's current VALUE: a
+/// positional Product grows, anything else is the plain assign. `&queue <- v`
+/// (the documented push form, SPEC) and bare `queue <- v` both unwrap to the
+/// identifier.
+///
+/// KNOWN LIMIT (BUGS.md, arrow-dispatch follow-up): the static type-driven
+/// cases the typechecker distinguishes are NOT yet modeled — the destructive
+/// extract (`~<-` into a non-Product target), the CopyFrom read
+/// (`dest <- queue`), and collection types whose interpreter value starts as a
+/// handle (`Stack` seeded `= 0`, `PiggyBank`). The principled fix is recording
+/// the typechecker's arrow decision on the AST (frontend-driven dispatch) and
+/// consuming it here. To undo: delete the push arm — the plain assign is the
+/// old behavior.
+fn arrow_write_target(
+    target: &Option<Box<Expr>>,
+    value: &Expr,
+    val: Value,
+    consume: bool,
+    bindings: &mut HashMap<String, Value>,
+) {
+    if let Some(name) = arrow_target_name(target) {
+        // 2026-08-22 (Phase 7b, SPEC §9.5): firing an event port first; else
+        // INSERT (a positional Product grows); else plain assign.
+        if !event_fire(&name, &val, bindings) {
+            let pushed = !consume && push_element(&name, &val, bindings);
+            if !pushed {
+                bindings.insert(name, val);
+            }
+        }
+    }
+    if consume {
+        // 2026-08-01 (Phase 3): a consumed value's local is dead after the
+        // statement — remove it so a later read errors.
+        if let Expr::Identifier(name) = value {
+            bindings.remove(name);
+        }
+    }
+}
+
+/// The arrow target's binding name: `queue <- v` or `&queue <- v` (the
+/// documented push form, SPEC) — `AddrOf` unwraps like the typechecker's
+/// `push_element_type`.
+fn arrow_target_name(target: &Option<Box<Expr>>) -> Option<String> {
+    match target.as_ref().map(|t| t.as_ref()) {
+        Some(Expr::Identifier(n)) => Some(n.clone()),
+        Some(Expr::AddrOf(inner)) => match inner.as_ref() {
+            Expr::Identifier(n) => Some(n.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 2026-08-22 (Phase 7b, SPEC §9.5): firing an event port — `died <- value;`
+/// where the binding holds an EventQ sets the shared slot (Ready + payload).
+/// The handle itself is never rebound, so every wired consumer observes it.
+/// 2026-08-26 (Phase B): firing also WAKES tasks blocked on this slot (drain
+/// waiters → Ready). `fire_slot_wake` mutates the slot after the borrow ends.
+fn event_fire(name: &str, val: &Value, bindings: &HashMap<String, Value>) -> bool {
+    let Some(Value::EventQ(q)) = bindings.get(name) else {
+        return false;
+    };
+    {
+        let mut slot = q.borrow_mut();
+        slot.ready = true;
+        slot.payload = Some(val.clone());
+    }
+    crate::interpreter::fire_slot_wake(q);
+    true
+}
+
+/// INSERT — a positional-product target grows by one element. The interpreter
+/// is dynamically typed, so the target's current VALUE decides (a collection
+/// is a positional `Value::Product`); anything else is the plain assign.
+fn push_element(name: &str, val: &Value, bindings: &mut HashMap<String, Value>) -> bool {
+    match bindings.get_mut(name) {
+        Some(Value::Product { fields, names: None }) => {
+            fields.push(val.clone());
+            true
+        }
+        _ => false,
+    }
+}
+
 pub fn eval_statement(
     stmt: &Statement,
     heap: &mut VirtualHeap,
@@ -2200,39 +2296,7 @@ pub fn eval_statement(
         Statement::Halt => Err(RuntimeError::Halt),
         Statement::ArrowAssign { target, value, consume } => {
             let val = eval_expr(value, heap, bindings, functions)?;
-            if let Some(t) = target.as_ref() {
-                if let Expr::Identifier(name) = t.as_ref() {
-                    // 2026-08-22 (Phase 7b, SPEC §9.5): FIRING an event port —
-                    // `died <- value;` where the binding holds an EventQ sets
-                    // the shared slot (Ready + payload). The handle itself is
-                    // never rebound, so every wired consumer observes it.
-                    // 2026-08-26 (Phase B): firing also WAKES tasks blocked on
-                    // this slot (drain waiters → Ready). The wake runs after
-                    // the slot borrow releases — fire_slot_wake mutates it.
-                    let fired_q = match bindings.get(name) {
-                        Some(Value::EventQ(q)) => {
-                            {
-                                let mut slot = q.borrow_mut();
-                                slot.ready = true;
-                                slot.payload = Some(val.clone());
-                            }
-                            crate::interpreter::fire_slot_wake(q);
-                            true
-                        }
-                        _ => false,
-                    };
-                    if !fired_q {
-                        bindings.insert(name.clone(), val);
-                    }
-                }
-            }
-            if *consume {
-                // 2026-08-01 (Phase 3): a consumed value's local is dead after
-                // the statement — remove it so a later read errors.
-                if let Expr::Identifier(name) = value.as_ref() {
-                    bindings.remove(name);
-                }
-            }
+            arrow_write_target(target, value, val, *consume, bindings);
             Ok(Value::Void)
         }
         Statement::Expression(expr) => eval_expr(expr, heap, bindings, functions),

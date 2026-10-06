@@ -1,10 +1,18 @@
 # Plan Index — START HERE (current status)
 
-**2026-10-02.** `main` tip `ab667667`. 430+ files in `docs/plans/`; historical
-plans are reference-only (never retroactively edited — AGENTS.md Rule 13).
+**2026-10-06.** 430+ files in `docs/plans/`; historical plans are
+reference-only (never retroactively edited — AGENTS.md Rule 13).
 
-**Suite state at tip:** `cargo test --lib` 2843 green; 19 pre-existing
-warnings; `gemm_h` byte-identical; Praetor improved vs baseline.
+**Suite state:** `cargo test --lib` 2891 green (2026-10-06, incl. the two
+normalizer-diagnostic tests + three `List + List` tests); conformance sweep
+green; `gemm_h` byte-identical; 19 pre-existing warnings; Praetor no new
+diagnostics.
+**Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
+unmarked BUGS entries verified, 6 open. Fixed during the sweep: the
+`List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
+the interpreter's missing `<-` push (every list accumulator was wrong in the
+reference), and the 12 stale normalizer warnings. Newly found open: json.bv
+array parsing hangs in the interpreter (backend correct).
 
 **GPU standing state:** fused online softmax (`ptx_deferred_online: 1`) is
 the shipped default. Composite decode: **float4 k/v loads landed
@@ -240,11 +248,15 @@ electronics-min, whose residual is filed). Remaining 0.6:
 GPU-modifier boundary half (P2 modifier walk, BUGS.md).
 Phase 1 = json.bv generics + package v0 + install.
 **Phase 1 json.bv DONE 2026-10-05**: `lib/std/json.bv` works — objects,
-arrays, numbers, escaped strings, literals parse/print in both interpreter
-and backend. ~18 defects fixed (`734a8dac`, `cf38ced2`, `deacdf79`),
-including callable-`txn` convergence (backend + interpreter) and List<enum>
-append. `list_concat` (`List + List`) still unimplemented (worked around
-with `<-`); BUGS.md. Remaining Phase 1: package v0 + install.
+arrays, numbers, escaped strings, literals parse/print in the LLVM backend.
+~18 defects fixed (`734a8dac`, `cf38ced2`, `deacdf79`), including
+callable-`txn` convergence (backend + interpreter) and List<enum> append.
+**2026-10-06 correction:** the interpreter does NOT parse arrays correctly —
+`parse_value("[1]")` hangs and `parse_value("1")` errors on an end-of-input
+read (BUGS.md "json.bv array parsing hangs in the interpreter", OPEN); the
+backend is verified correct (`json_parse("[1,2,3]")` → length 3).
+`list_concat` (`List + List`) now works — it elaborates to the stdlib
+`iter_chain` (BUGS.md FIXED). Remaining Phase 1: package v0 + install.
 Phase 2 = fill campaign (rung 0 =
 small-N defect) + vocabulary retirement + the escape-ladder test.
 
@@ -305,13 +317,50 @@ From this index's 2026-09-08 pass — **verify freshness before starting**:
 
 ## Open bugs / known gaps (`BUGS.md`)
 
-- CIRCT `ExportVerilog` `hw.module.generated` — **OPEN** (toolchain).
-- ~~GPU shallow-K emitter race~~ — **RESOLVED 2026-09-16**, tip
-  re-verified 2026-10-03 (+ the Vulkan f16 fill-mask defect found and
-  fixed during it — BUGS.md last entry).
+**2026-10-06 ledger sweep** (`docs/plans/2026-10-06-bugs-ledger-sweep.md`):
+all 152 previously-unmarked `BUGS.md` entries classified against the current
+tree — 6 OPEN, 5 OPEN-UNVERIFIED (instrument named), 118 stale/resolved/
+by-design/not-a-bug. Conformance sweep green at tip; 30/30 `lib/std` modules
+`brievc check` PASS. Headers carry `[LEDGER 2026-10-06: …]` tags.
+
+Fixed during the sweep (suite 2888 → 2891):
+
+- **`List<T> + List<T>` silent miscompile** — now elaborates to the stdlib
+  `iter_chain`; mismatched element types hit the ordinary `InvalidOperation`
+  diagnostic (BUGS.md, 2026-10-06 FIXED).
+- **Interpreter `<-` never pushed** — every list accumulator was wrong in the
+  reference (`iter_chain([1,2],[3])` → `Int(3)`); now pushes (BUGS.md, FIXED).
+- 12 stale normalizer warnings on hello-world (BUGS.md, FIXED).
+
+Verified-open, in stranger-blocking order:
+
+- **A program of only plain `txn`s builds to nothing** — no `@run`, silent
+  exit 0; needs the "this txn never fires" diagnosis decision (BUGS.md:5698,
+  re-verified 2026-10-06).
+- **json.bv array parsing hangs in the interpreter** — `parse_value("[1]")`
+  loops, `parse_value("1")` errors on an end-of-input read; the LLVM backend is
+  verified correct (`json_parse("[1,2,3]")` → 3). BUGS.md, 2026-10-06 OPEN.
+- **`lib/compiler/*.bv` dogfood: 10 of 12 fail `brievc check`** — the sweep's
+  deliberate exclusion; a green sweep does NOT mean the self-hosting embryo
+  parses (only `reader.bv`, `token.bv` pass).
+- `hardware_validator` dead code — the `.sbv` synthesizability gate never runs
+  (BUGS.md:7439; `src/lib.rs:57` is its only reference).
+- `dyn Trait` — interpreter dispatch complete, **LLVM backend still panics**
+  (`emit_toplevel.rs:754`; BUGS.md:5148 HALF-CLOSED).
+- `i64` boxing tax Phase 1 never executed (`adapt_to_i64`, helpers.rs:2223).
+- nbody_newton 7th-decimal drift — re-measured 2026-10-06 (BUGS.md:5954).
+- CIRCT `ExportVerilog` `hw.module.generated` — OPEN (toolchain; BUGS.md:5678).
+- `hardware_validator`/`.sbv` items and the CUDA `push_strided` quirk
+  (BUGS.md:6740) — vendor-side or hardware-gated.
+
+Open-unverified (do not re-investigate; run the named instrument): BUGS.md
+5827 (2–7-workgroup RTX 3060 dispatch), 6166 (`spirv_coopmat_subgroups=1`
+2048³), 6707 (m4 decode microbench), 7460 (driver 615 vs 580 triple).
+
+- ~~`json.bv` migration blocked on generic type inference + three language
+  gaps~~ — **CLOSED 2026-10-05** (json.bv works in the LLVM backend; the
+  interpreter's array path is OPEN, see above).
 - Baseline-harness defects — **PARTIAL**; protocol round-trip proofs — **PARTIAL**.
-- `json.bv` migration blocked on generic type inference + three language gaps.
-- `hardware_validator` dead code — OPEN (found in C2; unclaimed).
 - `2026-09-11-phase2b2-instance-state.md` — extracted housekeeping item, pending.
 
 **Closed 2026-09-28** (this session, umbrella
@@ -334,6 +383,11 @@ From this index's 2026-09-08 pass — **verify freshness before starting**:
 
 ## Recommended starting points (no foreign-lane overlap)
 
+0. **`.bv` stranger blockers, in order** (2026-10-06 sweep): the
+   `List<T> + List<T>` silent miscompile is FIXED (now elaborates to stdlib
+   `iter_chain`); next is the "this txn never fires" diagnosis for
+   BUGS.md:5698, then the json-interpreter array hang (BUGS.md OPEN), then
+   Phase 1.2/1.3 (package/module v0 + install story).
 1. **div slowpath sizing probe** then the **GEMM fill-pipeline campaign**
    (Workstream 3 queue items 2-3) — the fill campaign is the biggest
    absolute prize (32 → 42 TF), plan + correctness license written

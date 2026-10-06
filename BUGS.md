@@ -629,7 +629,7 @@ the dead mirror was DELETED from the HashMap (keys()/values()/entries()/foreach
 will scan columns in Phase E). hash_ops_idio re-measured 0.7203s vs C 0.6751s
 (1.06x, MATCH) with no dropped work.
 
-## Pre-existing oddity (not a regression):** a node whose inserts are LET-BOUND
+## Pre-existing oddity (not a regression):** a node whose inserts are LET-BOUND [LEDGER 2026-10-06: OPEN]
 (`let e1 = (1,10); m.insert(e1)`) and whose observables are ONLY inline gets
 (`vA_2get`) segfaults even on the pre-fix compiler: the SSA main emits the
 tuple materializations and insert bodies into the unused alwaysinline
@@ -1158,7 +1158,7 @@ programs fall through to the runtime loop, which executes the writes correctly.
 **E2E:** `a[i] = 1.5; sum += a[i]` over 4 iterations prints 6.0 (was 0).
 Regression test: `test_indexed_write_blocks_precompute`.
 
-## Accel Node Folds the Reactor to Nothing — RESOLVED BY DESIGN (Design A)
+## Accel Node Folds the Reactor to Nothing — RESOLVED BY DESIGN (Design A) [LEDGER 2026-10-06: RESOLVED]
 
 **Date:** 2026-08-06
 **Status:** Resolved (2026-08-06, Design A)
@@ -1227,7 +1227,7 @@ that made the captured baseline partially untrustworthy.
 
 ---
 
-## Protocol Round-Trip Proofs Silently Skipped — PARTIAL (interpreter side FIXED 2026-08-26)
+## Protocol Round-Trip Proofs Silently Skipped — PARTIAL (interpreter side FIXED 2026-08-26) [LEDGER 2026-10-06: RESOLVED]
 
 **Date:** 2026-08-09 (split from the harness-defects entry)
 **Status:** PARTIAL. 2026-08-26: the interpreter-side silent `Ok(())` paths in
@@ -1284,7 +1284,7 @@ again on main; 6/6 integration + 1469 lib tests green.
 
 ---
 
-## Vestigial `return` Statement Removed (was the "return divergence") — RESOLVED
+## Vestigial `return` Statement Removed (was the "return divergence") — RESOLVED [LEDGER 2026-10-06: RESOLVED]
 
 **Date:** 2026-08-04
 **Status:** Resolved by REMOVING the feature (branch `feat/term-termination-diagnostics`)
@@ -1588,7 +1588,7 @@ correctly. `term "Bits(" ++ n ++ ")";` produces `"Bits(42)"` as expected. & Mist
 - **Fix**: How it was resolved
 - **Lesson**: How to avoid next time
 
-## 2026-06-17 — `is_string_chain` missing `Expr::Call` arm (SIGSEGV crash)
+## 2026-06-17 — `is_string_chain` missing `Expr::Call` arm (SIGSEGV crash) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `draw_prompt` in officina-cli crashes with SIGSEGV when rendering
 the prompt. `int_to_str(23)` returns a garbage pointer (two string struct
@@ -1625,7 +1625,7 @@ cross-reference `is_string_chain` when adding new expression types.
 
 ---
 
-## 2026-06-17 — `\0` char escape not handled in lexer
+## 2026-06-17 — `\0` char escape not handled in lexer [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `'\0'` (null character literal) parsed as backslash character
 (ASCII 92). The precondition `[booted && keypress != '\0']]` became
@@ -1653,7 +1653,7 @@ When adding escape sequences, match the most common ones first: `\0`, `\n`,
 
 ---
 
-## 2026-06-17 — `done_{name}` SSA dispatch skips to exit instead of next txn
+## 2026-06-17 — `done_{name}` SSA dispatch skips to exit instead of next txn [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: After the `\0` fix, officina rendered output brievly then exited
 before the render txn could fire. The SSA dispatch loop's `done_process_input`
@@ -1685,7 +1685,7 @@ code (exit condition, tick loop) should decide whether to exit.
 
 ---
 
-## 2026-05-28 — Overriding `from "..."` location in typechecker
+## 2026-05-28 — Overriding `from "..."` location in typechecker [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `__read_file` FFI call failed with `location: <profile:__read_file>` instead of `"std::fs::read_to_string"`.
 
@@ -1701,7 +1701,7 @@ code (exit condition, tick loop) should decide whether to exit.
 
 **Lesson**: Always check before overwriting. The "new FFI syntax" (direct `from "..."`) and "old profile FFI" coexist — the typechecker assumed no `from` clause existed.
 
-## 2026-06-16 — LLVM Backend Audit — i64 Boxing Tax (Phase 0/1 Plan)
+## 2026-06-16 — LLVM Backend Audit — i64 Boxing Tax (Phase 0/1 Plan) [LEDGER 2026-10-06: OPEN]
 
 **Audit**: External audit of `src/backend/llvm/` found 4 bug classes:
 
@@ -1747,7 +1747,7 @@ Key changes:
 - Document enum alloca stack-safety limitation (Bug 2): add comment, fix later.
 - Track zero-stub expressions (Bug 3): add `todo!()` warnings in `--dev` mode.
 
-## 2026-05-28 — Adding built-in string matches for stdlib functions
+## 2026-05-28 — Adding built-in string matches for stdlib functions [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Added `is_digit`, `is_alpha`, `is_alphanumeric`, `is_upper`, `is_lower`, `is_space`, `char_to_string` as Rust string-match built-ins in the interpreter.
 
@@ -1757,7 +1757,7 @@ Key changes:
 
 **Lesson**: When the interpreter can't find a function, check if it's in the standard library first. The standard library IS the dependency source. Never add Rust string-match built-ins for things the standard library provides.
 
-## 2026-05-28 — Typechecker overwrites `from` location
+## 2026-05-28 — Typechecker overwrites `from` location [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `from "std::fs::read_to_string"` in `lib/std/io.bv` was being parsed correctly but then overwritten by typechecker.
 
@@ -1767,7 +1767,7 @@ Key changes:
 
 **Lesson**: Multiple FFI resolution paths coexist (profile-based + direct `from`). Don't assume one path overrides the other.
 
-## 2026-05-28 — Contract-after-arrow parser bug
+## 2026-05-28 — Contract-after-arrow parser bug [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `-> Type [pre][post]` syntax caused both pre and post conditions to parse as `Expr::Bool(true)`.
 
@@ -1777,7 +1777,7 @@ Key changes:
 
 **Lesson**: The contract-after-arrow path has a subtle lexer/parser interaction bug that's not yet fully understood. Always prefer contract-before-arrow.
 
-## 2026-05-28 — Keyword tokens can't appear in any variable position
+## 2026-05-28 — Keyword tokens can't appear in any variable position [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `txn`, `reg`, `from` used as variable names caused parse failures across multiple `.bv` files.
 
@@ -1787,7 +1787,7 @@ Key changes:
 
 **Lesson**: The lexer defines ~60 keyword tokens but only 22 were handled as identifiers. When dealing with keyword-as-identifier issues, fix the parser, not the `.bv` files.
 
-## 2026-05-28 — \u{D800} surrogate fails char::from_u32
+## 2026-05-28 — \u{D800} surrogate fails char::from_u32 [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `'\u{D800}'` in `lib/std/char.bv` caused parse error because logos `regex` callback returned `None` for surrogates, interpreted as a lex error.
 
@@ -1797,7 +1797,7 @@ Key changes:
 
 **Lesson**: Logos regex callbacks must never return `None` for valid lexer input. Handle all failure modes of `from_u32`, including surrogates.
 
-## 2026-05-28 — Unevaluated enum constructors (None, Some, Ok, Err)
+## 2026-05-28 — Unevaluated enum constructors (None, Some, Ok, Err) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Interpreter returned `UndefinedVariable("None")` and `UndefinedForeignFunction("Err")`.
 
@@ -1810,7 +1810,7 @@ Key changes:
 
 **Lesson**: Enum constructors must be loaded from actual declarations. Intrinsic types (Result, Option) need explicit handling since they lack `.bv` enum declarations.
 
-## 2026-05-29 — Method-call `x.foo(y)` drops all arguments except receiver
+## 2026-05-29 — Method-call `x.foo(y)` drops all arguments except receiver [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `UndefinedVariable("s")` when calling `output.append_str("...")`.
 
@@ -1829,7 +1829,7 @@ expr = Expr::Call(member_name, call_args);
 
 **Lesson**: Mental model matched the intent ("prepend receiver to args") but code used `vec![expr]` which discarded args. Always verify that all populated variables are actually consumed, especially when refactoring from a simpler implementation.
 
-## 2026-05-29 — Term statement inside nested blocks doesn't propagate return value
+## 2026-05-29 — Term statement inside nested blocks doesn't propagate return value [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `compile_file` returned `Value::Void` even though `term Ok(output)` was reached inside a `uni` block.
 
@@ -1856,7 +1856,7 @@ While `call_defn`'s top-level handler correctly stored `result`, it never checke
 
 **Lesson**: `term` in Briev is not merely a "function return" — it's a value-capture mechanism that can appear inside any nested scope (guards, unifications, blocks). The interpreter must capture ALL `term` values, not just top-level ones.
 
-## 2026-05-29 — Result field key mismatch between constructor and consumer
+## 2026-05-29 — Result field key mismatch between constructor and consumer [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `run_selfhost` in `main.rs` looked for field key `"result"` (from the specific Ok/Err path at line 878) but the generic enum constructor path at line 869 used field key `"value"`.
 
@@ -1870,7 +1870,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: When multiple construction paths exist for the same enum type, their field key conventions must be consistent. The generic path always uses `"value"` for single-field enum construction, but the specific Result path had its own convention. Prefer a single consistent convention.
 
-## 2026-05-29 — Briev-written lexer rejects all input with "Unexpected character"
+## 2026-05-29 — Briev-written lexer rejects all input with "Unexpected character" [LEDGER 2026-10-06: SUPERSEDED]
 
 **Issue**: Self-host pipeline tokenizes files via `lib/compiler/lexer.bv` (running inside the interpreter) but fails with `Lex error: Unexpected character: ` on all inputs.
 
@@ -1883,7 +1883,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: (pending investigation)
 
-## 2026-05-30 — `expand_implicit_terms_txn` injects `term true;` into void-returning transactions
+## 2026-05-30 — `expand_implicit_terms_txn` injects `term true;` into void-returning transactions [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `node handle_sigint [sigint] { term; };` produced `ret i64 1` in a `define void` function, causing LLVM verification to fail with "value doesn't match function result type 'void'". The `wake_triggers.bv` fixture exposed this.
 
@@ -1893,7 +1893,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: `term;` in transactions means "this transaction has no return value" (void-termination). `term;` in definitions means "terminate with the default postcondition value". These are semantically different — never unify the desugaring paths.
 
-## 2026-05-30 — `opt` new PM syntax: `-passes=verify` not `-verify`
+## 2026-05-30 — `opt` new PM syntax: `-passes=verify` not `-verify` [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Integration tests called `opt -verify` which failed silently on LLVM 18+ because the legacy pass manager was removed.
 
@@ -1903,7 +1903,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: Always verify LLVM tooling syntax matches the installed version. The new PM syntax is now canonical for LLVM 17+.
 
-## 2026-05-30 — `alwaysinline` must precede attribute group in LLVM 18
+## 2026-05-30 — `alwaysinline` must precede attribute group in LLVM 18 [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `define void @fn(...) local_unnamed_addr alwaysinline #0` was rejected by LLVM 18 verifier.
 
@@ -1913,7 +1913,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: LLVM 18 tightened the IR syntax for `alwaysinline`. The canonical position is `#N alwaysinline`.
 
-## 2026-05-29 — `dispatch_mode` lost during desugaring and import resolution
+## 2026-05-29 — `dispatch_mode` lost during desugaring and import resolution [LEDGER 2026-10-06: SUPERSEDED]
 
 - **Issue**: `#pragma dispatch(parallel)` was parsed correctly by the parser but silently ignored — the LLVM backend always emitted sequential reactor code regardless of the directive.
 
@@ -1923,7 +1923,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 - **Lesson**: Whenever a pipeline stage constructs a new `Program` from an existing one, all fields must be explicitly forwarded. This is a brittle pattern — consider a builder or `Clone` for `Program` that preserves metadata fields. Also add a test that verifies dispatch-mode propagation through the full pipeline from parse → resolve → desugar → backend.
 
-## 2026-05-30 — Contract-after-arrow `-> Type [pre][post]` steals first bracket as `Type::ContractBound`
+## 2026-05-30 — Contract-after-arrow `-> Type [pre][post]` steals first bracket as `Type::ContractBound` [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `-> Int [pre][post]` parsed both contract brackets incorrectly — `[pre]` was silently consumed as `Type::ContractBound(Int, pre)` on the output type, and `parse_contract()` only saw `[post]`, setting `pre_condition = post` and `post_condition = Bool(true)`.
 
@@ -1933,7 +1933,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: When parsing ordered syntax (`-> Type [contract]`), each parser component must be constrained to not consume tokens meant for later components. Greedy `[` consumption in `parse_type` was correct for standalone type parsing but wrong when types and contracts appear adjacent.
 
-## 2026-05-30 — `len()` infinite recursion in self-host interpreter
+## 2026-05-30 — `len()` infinite recursion in self-host interpreter [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: The self-host pipeline (`briev-compiler selfhost`) failed with a stack overflow / hang on any input. The Briev-written lexer (`lib/compiler/lexer.bv`) called `len(state.source)` which dispatched to `call_defn("len")`, causing infinite recursion through `lib/std/string.bv`'s `term s.len()`.
 
@@ -1945,7 +1945,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **2026-06-05 Update**: Fully resolved by `:>` projection operator migration. The `Expr::ListLen` magic node and the UFCS `resolve_len_calls` hack are both deleted. All length queries use `x :> Size` — unique syntax, first-class `Expr::Projection` node, zero shadowing risk. `defn len(x) { term x :> Size }` is now a pure stdlib convenience wrapper that cannot recurse because `:>` is parsed directly to `Projection`, not to a `Call`.
 
-## 2026-05-30 — Float result registers not tracked, causing compound float math to emit integer ops
+## 2026-05-30 — Float result registers not tracked, causing compound float math to emit integer ops [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Compound float arithmetic — `let x = 1.0 + 2.0; let z = x + y;` — silently corrupted results. The second addition emitted `add i64` instead of `fadd float` because `is_float_expr(x)` returned `false`.
 
@@ -1955,7 +1955,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: Every code path that produces a value of a particular type must register it in `register_types`. The existing pattern (literals do register, but compound expressions don't) is inconsistent and fragile.
 
-## 2026-05-30 — OnExit cleanup drained on first exit point, lost on subsequent exits
+## 2026-05-30 — OnExit cleanup drained on first exit point, lost on subsequent exits [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Functions with multiple exit points (multiple `term;` paths, `Escape`, or guarded blocks) only emitted cleanup code on the first exit. All subsequent exits generated zero cleanup, leaking resources.
 
@@ -1967,7 +1967,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: Shared state like `pending_cleanup` must not be mutably consumed at the first use site when multiple consumers exist. Clone the data for each consumer instead.
 
-## 2026-06-01 — `extract_bounded_pre` drops `And` preconditions, fold limit stuck at 0
+## 2026-06-01 — `extract_bounded_pre` drops `And` preconditions, fold limit stuck at 0 [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Benchmarks using `[io_pending && ops < N]` produced folded while-loops comparing against `add i64 0, 0` (limit = 0, loop never executes). Benchmarks hung forever doing zero iterations per tick, trapped in wake main loop.
 
@@ -1981,7 +1981,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: Fold analysis must recurse into logical operators in the precondition tree. Non-recursive extraction silently produces valid-looking LLVM IR with zero-iteration loops — the worst kind of silent failure because the binary doesn't crash, it hangs.
 
-## 2026-06-01 — Solo reactive txn auto-promoted to async, injects unnecessary thread pool + barrier
+## 2026-06-01 — Solo reactive txn auto-promoted to async, injects unnecessary thread pool + barrier [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `ring_buffer.bv` with a single `node work` (no `async` keyword) generated `@async_body_work`, `@llvm.thread_pool`, thread pool init, and barrier calls in the main loop — all for one transaction that does sequential work.
 
@@ -1995,7 +1995,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: "All elements satisfy predicate" is true for single-element collections. When "all" implies "there should be multiple things to distribute work across", the guard must explicitly check `len() >= 2`.
 
-## 2026-06-01 — Wake hybrid programs idle forever after convergence (no exit mechanism)
+## 2026-06-01 — Wake hybrid programs idle forever after convergence (no exit mechanism) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Wake hybrid programs with `@ link` triggers never terminate after convergence. Ring buffer completes 50M iterations then spins: `__rt_wait() → tick → switch (case_1) → done → __rt_wait() → ...` forever.
 
@@ -2011,7 +2011,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: Compile-time analysis data must propagate to ALL codegen paths that can use it. Convergence data is computed once and used for Path 3 (precompute) but Path 4/5 (enum/async dispatch) need it equally. The commit that added `is_fully_precomputable` should have wired it into `emit_enum_main` at the same time.
 
-## 2026-06-01 — `is_trigger_gated` only matches bare `Identifier`, misses `And(trigger, condition)`
+## 2026-06-01 — `is_trigger_gated` only matches bare `Identifier`, misses `And(trigger, condition)` [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `async_counters.bv` with precondition `[io_pending && counter < N]` was classified as async dispatch (Path 5) instead of enum dispatch (Path 4). The async path runs increments via `reactor_tick()` only, achieving ~1 increment per 100ms tick — 29 days for 25M iterations.
 
@@ -2025,7 +2025,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: When classification functions check preconditions for structural properties (trigger-gated, bounded-convergence), they must recurse into ALL expression types that can wrap the target pattern. The common pattern `trigger && counter < N` is an `And` node — a bare `Identifier` match will never see it.
 
-## 2026-06-01 — `emit_enum_main` single-txn `graph.nodes.len() == 1 && txns.len() == 1` guard prevents multi-txn folded loops
+## 2026-06-01 — `emit_enum_main` single-txn `graph.nodes.len() == 1 && txns.len() == 1` guard prevents multi-txn folded loops [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Even when multiple trigger-gated txns with bounded convergence enter the enum dispatch path, only one folded loop was emitted per case arm — the one corresponding to the first (and assumed-only) transaction. Multi-txn programs like `async_counters` (inc_a + inc_b) converged zero counters per tick.
 
@@ -2042,7 +2042,7 @@ Since `std.result` is imported, `Ok` IS in state, so path 1 always applies. But 
 
 **Lesson**: The enum dispatch path was designed for single-txn programs. Multi-txn programs with multiple bounded counters need per-txn folded loops. The `graph.nodes.len() == 1 && txns.len() == 1` guard was a premature optimization assumption that excluded valid multi-txn convergence programs. Always verify classification/path-selection logic handles N>1 inputs.
 
-## 2026-06-02 — Struct-SSA regression for non-pure bodies (Kalman filter 2× slowdown)
+## 2026-06-02 — Struct-SSA regression for non-pure bodies (Kalman filter 2× slowdown) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Kalman filter benchmark ran 0.28s at 10M iterations while the old code ran 0.143s (scaled from 0.716s at 50M) — exactly 2× slower. C reference ran 0.14s. Briev went from beating C to trailing by 2×.
 
@@ -2058,7 +2058,7 @@ The old (pre-struct-SSA) codegen used per-field `GEP + load/store` throughout, w
 
 **Lesson**: `llc -O2` and `opt -O2` run different pass pipelines. `llc` is the codegen backend (instruction selection, regalloc, scheduling). `opt` is the middle-end optimizer (SROA, mem2reg, GVN, loop opts, vectorization). Struct-SSA (`load %State`/`store %State` + insertvalue chains) requires SROA to decompose — always run `opt -O2` before `llc` for programs with struct values.
 
-## 2026-06-02 — `is_trigger_gated` misses `Expr::Eq`, enum dispatch invisible for `trigger == literal` preconditions
+## 2026-06-02 — `is_trigger_gated` misses `Expr::Eq`, enum dispatch invisible for `trigger == literal` preconditions [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Sparse dispatch benchmark preconditions like `t == 101` (Eq(Identifier, Integer)) never entered the enum dispatch optimizer path. The enum dispatch path correctly extracted keys via `extract_trigger_keys` (line 149-183) but `is_trigger_gated` (line 139-147) returned `false` for all `Expr::Eq` patterns, so no reactive txn was classified as an enum candidate.
 
@@ -2092,7 +2092,7 @@ Expr::Eq(l, r) => {
 
 **Lesson**: Whenever a classification function (`is_trigger_gated`) and a data-extraction function (`extract_trigger_keys`) operate on the same AST nodes for the same purpose, they must recognize the same expression patterns. `extract_trigger_keys` correctly handles `Expr::Eq` — `is_trigger_gated` must too. They were written at the same time for the same optimization path; the divergence was an oversight.
 
-## 2026-06-02 — `llvm.assume` before `br` in folded loops makes `opt` believe exit branch is dead
+## 2026-06-02 — `llvm.assume` before `br` in folded loops makes `opt` believe exit branch is dead [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `const_heavy.bv` compiled to a binary that immediately segfaulted. The `main()` function was optimized to `unreachable` by `opt -O2`, causing LLVM to emit invalid code.
 
@@ -2121,7 +2121,7 @@ Three code paths in `emit_folded_loop` (phi mode, SSA mode, call mode) all emitt
 **Files**: `src/backend/llvm.rs:2911-2912`, `src/backend/llvm.rs:2936-2937`, `src/backend/llvm.rs:2969-2970`
 
 **Lesson**: `llvm.assume(i1 %cond)` tells the optimizer that `%cond` is unconditionally true. Placing it BEFORE a conditional branch (`br i1 %cond, label %exit, label %loop`) makes the optimizer eliminate the branch's continuation as dead code. If the branch controls loop convergence, the result is an infinite loop. `llvm.assume` is correct when placed after a runtime panicking branch (`br i1 %cond, label %panic, label %safe` followed by `unreachable` then `call @llvm.assume(i1 %cond)`) — never before a convergence check.
-## 2026-06-04 — Exit expression Neg(Integer) not handled in emit_exit_expr
+## 2026-06-04 — Exit expression Neg(Integer) not handled in emit_exit_expr [LEDGER 2026-10-06: SUPERSEDED]
 
 **Issue**: Program with `#!exit cr >= -200` hung — exit condition never satisfied. The LLVM IR showed `%t599 = add i64 0, 0 ; unsupported exit expr` instead of `%t599 = sub i64 0, 200`.
 
@@ -2135,7 +2135,7 @@ Three code paths in `emit_folded_loop` (phi mode, SSA mode, call mode) all emitt
 
 **Lesson**: Negative literals in Briev are `Neg(Integer(n))`, not `Integer(-n)`. Any code path that pattern-matches on `Expr::Integer` for constants must also handle `Expr::Neg(Expr::Integer(_))`. The `emit_expr` function already handles `Neg` correctly — the fix delegates to it.
 
-## 2026-06-04 — Universal loop hangs with decreasing counter contract
+## 2026-06-04 — Universal loop hangs with decreasing counter contract [LEDGER 2026-10-06: SUPERSEDED]
 
 **Issue**: Programs with `node ... [count > 0][count == 0]` (decreasing counter) hang. Switching to `[count < N][count == N]` (increasing counter) works.
 
@@ -2144,7 +2144,7 @@ Three code paths in `emit_folded_loop` (phi mode, SSA mode, call mode) all emitt
 **Lesson**: The universal loop (unrolled fold) assumes strictly increasing counters. The `transition_graph` should detect decreasing counters and either invert the comparison in the codegen or fall back to the non-unrolled default path.
 
 
-## 2026-06-04 — Decreasing counter contracts hang or fall to O(N)
+## 2026-06-04 — Decreasing counter contracts hang or fall to O(N) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Programs with `node [count > 0][count == 0]` either hung (universal loop path) or ran O(N) tick-per-iteration (fallback path). Only `[count < N][count == N]` was fast.
 
@@ -2160,7 +2160,7 @@ Three code paths in `emit_folded_loop` (phi mode, SSA mode, call mode) all emitt
 
 **Tests**: Decreasing counter program (`[count > 0][count == 0]` with `count = count - 1`) compiles, emits `icmp sgt`, completes 50M iterations in <10s.
 
-## 2026-06-05 — Unused `io_pending` import forces reactive runtime on pure-state benchmarks
+## 2026-06-05 — Unused `io_pending` import forces reactive runtime on pure-state benchmarks [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `benchmarks/bit_clear.bv` and `benchmarks/queue_drain.bv` both imported `io_pending` from `std/briev_rt.bv` but never used it in any precondition. The import was dead weight but still triggered the reactive runtime path (`has_wake_triggers = true` → reactor with `__rt_wait()` 100ms blocking per tick), turning a 63-iteration burn (bit_clear) into a 6.3-second slog and a 10-iteration burn (queue_drain) into a 1-second slog.
 
@@ -2172,7 +2172,7 @@ Three code paths in `emit_folded_loop` (phi mode, SSA mode, call mode) all emitt
 
 **Also**: `queue_drain.bv` declared `const queue: List<Int> = [...]` but then tried to mutate it via `<- &queue`. `const` values are compile-time immutable. Changed to `let queue`.
 
-## 2026-06-05 — Low print modulo doesn't fire on short benchmarks
+## 2026-06-05 — Low print modulo doesn't fire on short benchmarks [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `bit_clear.bv` used `[reg % 1000000 == 0]` as the print guard, but the benchmark only runs 63 iterations (popcount of i64::MAX). No value of `reg` is divisible by 1,000,000 in that range, so the liveness `__print_int` never fires. The program compiled and ran correctly (no fold), but produced zero observable output.
 
@@ -2182,7 +2182,7 @@ Three code paths in `emit_folded_loop` (phi mode, SSA mode, call mode) all emitt
 
 **Lesson**: When adapting benchmark patterns to bounded-iteration designs (integer-width-bound patterns like popcount decay), verify the print guard threshold will actually fire within the available iteration space. A silent benchmark is a dead-code-elimination risk.
 
-## 2026-06-05 — `memory(argmem: write)` on FFI declarations lets LLVM eliminate IO calls
+## 2026-06-05 — `memory(argmem: write)` on FFI declarations lets LLVM eliminate IO calls [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `__print_int(i64)` calls inside small loops (10-iteration queue_drain) were eliminated by `opt -O3` during LTO. The binary contained a dead `__print_int` function that was never called.
 
@@ -2196,7 +2196,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 **Lesson**: Never assert `memory(argmem: write)` on FFI functions — the Briev compiler cannot verify this. The mathematically correct default is no memory restriction. LTO reveals actual function bodies and LLVM's FunctionAttrs pass infers correct attributes deterministically.
 
-## 2026-06-05 — Compile-time-known list size causes precomputation (correct behavior)
+## 2026-06-05 — Compile-time-known list size causes precomputation (correct behavior) [LEDGER 2026-10-06: NOT-A-BUG]
 
 **Issue**: `queue_drain.bv` used a compile-time list literal `[1..10]`. The compiler correctly precomputed all 10 iterations within the default budget (256) and emitted `main` as `xor eax; ret`. The benchmark produced zero output and ran trivially.
 
@@ -2210,7 +2210,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 ---
 
-## 2026-06-05 — Parser fails on `term! -> swan_song;` inside guarded blocks
+## 2026-06-05 — Parser fails on `term! -> swan_song;` inside guarded blocks [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `term! -> __print_int(checksum);` inside `[count == N] { ... }` caused parse error `expected identifier, found Arrow at 66:15`.
 
@@ -2222,7 +2222,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 ---
 
-## 2026-06-05 — LLVM `attributes #1` declared FFI functions as pure, letting optimizer eliminate I/O
+## 2026-06-05 — LLVM `attributes #1` declared FFI functions as pure, letting optimizer eliminate I/O [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `opt -O3` eliminated `__print_int` calls from merged bitcode. Benchmark binaries produced zero output.
 
@@ -2234,7 +2234,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 ---
 
-## 2026-06-05 — `__putchar` undefined at link time despite definition in runtime
+## 2026-06-05 — `__putchar` undefined at link time despite definition in runtime [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `__putchar` was declared in `fasta.bv` as `frgn` and present in `runtime/briev_rt.c`, but LTO link failed with `undefined reference to '__putchar'`.
 
@@ -2246,7 +2246,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 --- 
 
-## 2026-06-05 — `io_pending` used as liveness workaround in benchmarks
+## 2026-06-05 — `io_pending` used as liveness workaround in benchmarks [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Several benchmarks used `io_pending` (an FFI call) in their transaction guard to prevent pure-counter fold elimination. This was a relic from before `term! -> swan_song;` provided proper liveness semantics.
 
@@ -2258,7 +2258,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 --- 
 
-## 2026-06-05 — Accidental deletion of benchmark source files during cleanup
+## 2026-06-05 — Accidental deletion of benchmark source files during cleanup [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `rm -f benchmarks/fannkuch_redux*` matched and deleted both build artifacts AND source files (`fannkuch_redux.bv`, `fannkuch_redux_c.c`). Restored from git but lost uncommitted edits.
 
@@ -2268,7 +2268,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 ---
 
-## 2026-06-06 — Parser discards `from "..."` value in frgn declarations
+## 2026-06-06 — Parser discards `from "..."` value in frgn declarations [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `frgn __print_int(n: Int) -> Bool from "libruntime"` — the `"libruntime"` string was parsed but immediately thrown away. `ForeignSignature::location` was hardcoded to `String::new()` at construction.
 
@@ -2280,7 +2280,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 ---
 
-## 2026-06-06 — Hardcoded runtime declares in LLVM backend
+## 2026-06-06 — Hardcoded runtime declares in LLVM backend [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `emit_declares()` unconditionally emitted `declare void @__rt_init()`, `declare void @__rt_wait()`, `declare void @__rt_poll()`, `declare void @__exit()`, `declare void @briev_thread_pool_init()`, etc. Users couldn't opt out and these symbols were never declared in user code.
 
@@ -2292,7 +2292,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 ---
 
-## 2026-06-06 — `"None"`/`"Err"` discriminant magic in LLVM backend
+## 2026-06-06 — `"None"`/`"Err"` discriminant magic in LLVM backend [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `llvm.rs:508` hardcoded `"None" | "Err" => 0` for enum variant discriminants, assuming `None` and `Err` are always the first variant. Three other sites used `if name == "None"` as fallback logic.
 
@@ -2304,7 +2304,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 ---
 
-## 2026-06-06 — Interpreter built-in method dispatch is still name-based magic (deferred)
+## 2026-06-06 — Interpreter built-in method dispatch is still name-based magic (deferred) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: The E1-E3 refactor consolidated 544 lines of duplicated method blocks into a single `dispatch_method_by_type` function. However, the dispatch still matches on hardcoded function name strings (`"insert"`, `"get"`, `"push"`, `"HashMap::new"`, etc.) inside type-scoped match arms.
 
@@ -2324,7 +2324,7 @@ Without any `memory(...)` restriction, LLVM conservatively assumes the function 
 
 ---
 
-## 2026-06-07 — `term! -> swan_song` emits `ret void` inside `i32 @main` in folded loop path
+## 2026-06-07 — `term! -> swan_song` emits `ret void` inside `i32 @main` in folded loop path [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: When `term! -> __print_int(h)` is inside a guarded block in a transaction body that enters the folded struct-SSA loop path (Path 5), the backend emits `ret void` inside `define i32 @main()`. LLVM/llc rejects: "value doesn't match function result type 'i32'".
 
@@ -2341,7 +2341,7 @@ The `returns_i64` flag tracks whether the enclosing compute/txn function returns
 
 ---
 
-## 2026-06-07 — Guarded block handler restores `self.terminated` after `term!`, emits code after `ret`
+## 2026-06-07 — Guarded block handler restores `self.terminated` after `term!`, emits code after `ret` [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: When `term!` fires inside a guarded block, the Guarded handler at line 2587-2604 saves `self.terminated`, sets it to false, emits the guard body (which includes `term!` that sets `terminated = true`), then RESTORES `self.terminated` to the pre-guard value (false). The caller continues emitting code after the `ret` instruction, including subsequent unrolled iterations in `emit_folded_loop`.
 
@@ -2359,7 +2359,7 @@ If a terminating statement fired inside the guarded body, leave `self.terminated
 
 ---
 
-## 2026-06-07 — `-lm` missing in compiler driver link step (FIXED)
+## 2026-06-07 — `-lm` missing in compiler driver link step (FIXED) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `briev_rt.c` provides `float __sqrtf(float x) { return sqrtf(x); }` (line 392), which is actively used by `benchmarks/nbody_sqrt.bv` (24 call sites). The compiler driver at `main.rs:~2360` never passes `-lm` to the linker. The C reference gets `-lm` via the same clang invocation, creating asymmetry. Programs using `__sqrtf` get undefined reference at link time.
 
@@ -2371,7 +2371,7 @@ If a terminating statement fired inside the guarded body, leave `self.terminated
 
 ---
 
-## 2026-06-07 — `Statement::Guarded` is one-shot, not a loop — ~130 defns silently broken
+## 2026-06-07 — `Statement::Guarded` is one-shot, not a loop — ~130 defns silently broken [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Every `defn` in the standard library and compiler that uses `[guard] { ... &i = i + 1; }` for iteration only processes the first element. The guarded statement fires once, then falls through — there is no loop.
 
@@ -2428,7 +2428,7 @@ Concrete changes:
 
 **Fix**: Replaced `parse_expression()` with `parse_projection_source()` in both `<:` let-statement paths (tuple and non-tuple). This new function parses an identifier + postfix operations but stops before `{` and `[`, leaving them for `parse_subtype_ops()` to handle as the ops block or MATCH bracket syntax.
 
-## 2026-06-09 — Proof engine guard path three-bug cascade
+## 2026-06-09 — Proof engine guard path three-bug cascade [LEDGER 2026-10-06: STALE-FIXED]
 
 **Symptoms**: Benchmarks with a `[guard] { __print_*(...); };` inside an `node` fail P008 contract verification with 14+ identical-looking `guard` constraints in the path state.
 
@@ -2477,7 +2477,7 @@ After the above fixes, these benchmarks still fail P008 — all are convergence 
 
 ---
 
-## 2026-06-09 — fasta LCG broken in node (all output chars same)
+## 2026-06-09 — fasta LCG broken in node (all output chars same) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `benchmarks/fasta.bv` outputs `qqqqq` instead of `xqjqf` (C reference). All iterations produce the same character `q` (ASCII 113), meaning the LCG seed never changes.
 
@@ -2491,7 +2491,7 @@ The LLVM backend treats reactive writes as deferred (all reads see pre-tick stat
 
 ---
 
-## 2026-06-09 — LLVM backend emits `constant float 0` (needs `0.0`)
+## 2026-06-09 — LLVM backend emits `constant float 0` (needs `0.0`) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `benchmarks/iir_filter.ll` contains `@b2 = constant float 0`. Clang rejects: `error: integer constant must have integer type`.
 
@@ -2505,7 +2505,7 @@ The LLVM backend treats reactive writes as deferred (all reads see pre-tick stat
 
 ---
 
-## 2026-06-09 — LLVM backend emits undefined `@str.0` reference
+## 2026-06-09 — LLVM backend emits undefined `@str.0` reference [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `benchmarks/fasta.ll` contains `getelementptr inbounds [6 x i8], [6 x i8]* @str.0` but `@str.0` is never defined. Clang rejects: `use of undefined value '@str.0'`.
 
@@ -2519,7 +2519,7 @@ The LLVM backend treats reactive writes as deferred (all reads see pre-tick stat
 
 ---
 
-## 2026-06-09 — `precompute_sum.bv` emits infinite tick loop (no observable output)
+## 2026-06-09 — `precompute_sum.bv` emits infinite tick loop (no observable output) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `benchmarks/precompute_sum` binary never exits (timeout at BOUND=5). LLVM IR shows an infinite tick loop: `br label %tick` → `reactor_tick` → `br label %tick`. No observable side effect exists to prevent LLVM from eliminating the loop, but the loop remains because the `.o` linking path uses `cc -O2` (not `-O3`) and may not run the full SROA/mem2reg pipeline.
 
@@ -2531,7 +2531,7 @@ The LLVM backend treats reactive writes as deferred (all reads see pre-tick stat
 
 ---
 
-## 2026-06-10 — LLVM backend: negative float constants in init_state stored as i64 (8 bytes) instead of float (4 bytes)
+## 2026-06-10 — LLVM backend: negative float constants in init_state stored as i64 (8 bytes) instead of float (4 bytes) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `nbody_newton.bv` produced `-nan` instead of `-0.169203` at BOUND=5. All outer planets' Y and Z positions were zero instead of their correct negative values (by1=-1.16, bz1=-0.1036, by3=-15.11, etc.).
 
@@ -2567,7 +2567,7 @@ Some(Expr::Neg(ref inner)) => {
 
 **Lesson**: Always match the correct type when storing initial values. The LLVM IR must use `store float` for float fields — `store i64` writes 8 bytes, corrupting adjacent fields. Also, verify the AST uses `Literal(Float(…))` not bare `Float(…)` — the feature dispatch layer adds an `Expr::Literal` wrapper.
 
-## 2026-06-10 — LLVM backend: non-SSA state field loads return Type::Int for float fields
+## 2026-06-10 — LLVM backend: non-SSA state field loads return Type::Int for float fields [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: In non-SSA transaction mode (the default), float arithmetic on state fields used `add i64` on boxed bit patterns instead of `fadd` on native floats. This caused float computations like `sum + a + b` to produce garbage results when all operands were state fields (no Float-type constant in the expression tree).
 
@@ -2611,7 +2611,7 @@ If the C binary exits non-zero, `|| echo "__FAIL__"` fires and `c_out="__FAIL__"
 
 **Lesson**: C references for optimizer benchmarks must match Briev's output pattern exactly — if Briev uses periodic `__print_*` inside `[count % N == 0]`, the C reference must use the same periodic `fprintf` with the same format. Return-path-only results confuse the harness. Exit codes are truncated to 8 bits on Linux.
 
-## 2026-06-10: Benchmark Investigation After R2+R3
+## 2026-06-10: Benchmark Investigation After R2+R3 [LEDGER 2026-10-06: STALE-FIXED]
 
 ### Final Results (after all R2+R3 + copy elimination)
 
@@ -2754,7 +2754,7 @@ The arithmetic ops are the same between C and Briev for fannkuch. All the overhe
 from memory (load/store/GEP). If Briev used phi nodes like Clang, the gap would close
 to ~1.0×.
 
-## 2026-06-11 — fannkuch_redux: silent correctness failure + 3.85x performance gap
+## 2026-06-11 — fannkuch_redux: silent correctness failure + 3.85x performance gap [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: fannkuch_redux benchmark produces no output (empty stdout) while the C
 reference outputs `10` (to stderr). The benchmark harness reports MATCH because
@@ -2790,7 +2790,7 @@ or agree on an output channel. Guard conditions in `node` bodies always read
 pre-tick state — `[count == N]` is NEVER true at body start for `[count < N][count == N]`
 contracts. Use local `let` variables to compute values outside prior-state scope.
 
-## 2026-06-11 — float_math_nonzero: 1.09x prior-state overhead (accepted)
+## 2026-06-11 — float_math_nonzero: 1.09x prior-state overhead (accepted) [LEDGER 2026-10-06: BY-DESIGN]
 
 **Issue**: float_math_nonzero is 1.09x slower than C (0.183s vs 0.167s).
 
@@ -2806,7 +2806,7 @@ write-only within a tick), which is a future optimization target.
 **Before/After**: No fix applied — 1.09x is within acceptable noise for this
 benchmark type.
 
-## 2026-06-11 — Silent postcondition failure in callable txns
+## 2026-06-11 — Silent postcondition failure in callable txns [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `call_txn()` in `interpreter.rs` silently swallowed postcondition
 violations. When a callable `txn` completed its convergence loop but the
@@ -2829,7 +2829,7 @@ Postcondition failures in callable `txn`s now propagate as errors.
 **Lesson**: Runtime contract checks must always propagate failures. Silent
 swallowing defeats the purpose of contract verification.
 
-## 2026-06-11 — Convergence proof gated to reactive txns only
+## 2026-06-11 — Convergence proof gated to reactive txns only [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `check_convergence()` in `proof_engine.rs:1570` was only applied to
 reactive `node`, not callable `txn`. The documented iteration pattern
@@ -2847,7 +2847,7 @@ all txns.
 reactive txns are also applied. Don't gate structural proofs behind `is_reactive`
 unless there's a specific semantic reason.
 
-## 2026-06-11 — Tuple destructuring assignment `&(a, b) = expr` missing
+## 2026-06-11 — Tuple destructuring assignment `&(a, b) = expr` missing [LEDGER 2026-10-06: SUPERSEDED]
 
 **Issue**: `let (a, b) = expr;` worked for declaring new variables but
 `&(a, b) = expr;` failed with parser error "expected identifier, found '('".
@@ -2873,7 +2873,7 @@ Tuple-returning functions could not be destructured on the receiving end.
 **Lesson**: Tuple destructuring was only implemented for `let` declarations.
 The `&` assignment case requires parser + interpreter + typechecker changes.
 
-## 2026-06-11 — `<-` on txn parameters (NOT a bug)
+## 2026-06-11 — `<-` on txn parameters (NOT a bug) [LEDGER 2026-10-06: NOT-A-BUG]
 
 **Claim**: Inside a callable `txn`, `result <- items[i]` doesn't work.
 
@@ -2893,7 +2893,7 @@ followed by `term result;` if the accumulated value must survive the txn.
 including `<-` targets. Txn parameters are inputs; outputs flow through
 return values.
 
-## 2026-06-11 — `||` in `term` statements (NOT a bug)
+## 2026-06-11 — `||` in `term` statements (NOT a bug) [LEDGER 2026-10-06: NOT-A-BUG]
 
 **Claim**: `term word == "the" || word == "a" || word == "an";` gave parse
 error "expected ';', found '}'".
@@ -2911,7 +2911,7 @@ errors, or a typo in the specific file.
 reproduction, then check for preceding syntax issues that may cause cascaded
 errors.
 
-## 2026-06-13 — Bare label `%` prefix in LLVM IR (emit_expr.rs)
+## 2026-06-13 — Bare label `%` prefix in LLVM IR (emit_expr.rs) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `opt` failed with `expected '=' after instruction name` at `%mdef4:` in generated LLVM IR. All switch/match/slice label definitions used `%` prefix, which LLVM interprets as value references not label definitions.
 
@@ -2923,7 +2923,7 @@ errors.
 
 **Lesson**: LLVM IR distinguishes label definitions (`name:`) from value references (`%name`). The backend had been wrong since the match codegen was first written — the error was latent because `opt` was never run on the output before `briev build` was implemented.
 
-## 2026-06-13 — `terminated` flag leak in `Guarded` block (emit_stmt.rs)
+## 2026-06-13 — `terminated` flag leak in `Guarded` block (emit_stmt.rs) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: After a `Guarded` block whose body set `self.terminated = true` (e.g., via `term!`), the flag was not restored to `prev_terminated`. The next statement emitted after the guard would be in a terminated state, potentially suppressing terminators.
 
@@ -2933,7 +2933,7 @@ errors.
 
 **Lesson**: Any save/restore of control-flow flags must restore unconditionally. Conditional restore is correct for the immediate downstream code (phi merge) but the flag itself must always revert to its pre-guard value.
 
-## 2026-06-13 — Dead `br` after `unreachable` in match emission (emit_expr.rs)
+## 2026-06-13 — Dead `br` after `unreachable` in match emission (emit_expr.rs) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: When a `match` expression has no wildcard arm, the code emitted `unreachable` (a terminator) then immediately `br label %mmerge` (another terminator). The `br` after `unreachable` is dead code.
 
@@ -2943,7 +2943,7 @@ errors.
 
 **Lesson**: When a code path ends with `unreachable`, no control-flow instruction should follow. The `br` was an unconditional spill from the wildcard branch.
 
-## 2026-06-13 — `%state` SSA scoping bug in LLVM backend
+## 2026-06-13 — `%state` SSA scoping bug in LLVM backend [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Standalone functions (`defn`, callable `txn`) accessed global state
 through `%state`, but `%state` was only alloca'd in `main()`. LLVM IR SSA
@@ -2969,7 +2969,7 @@ The backend's design choice is (a) — but two of the six function types
 (defn, callable txn) were missing the parameter. Always audit ALL function
 emission paths when adding state field references to the backend.
 
-## 2026-06-13 — Duplicate import items: functions emitted once per import path
+## 2026-06-13 — Duplicate import items: functions emitted once per import path [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: The LLVM backend emitted the same function 4 times for modules
 imported through multiple paths (e.g., `understand.bv` imported directly
@@ -3005,7 +3005,7 @@ items (Stylesheet, Test, Assertion, Statement, etc.) pass through.
 into a flat list must deduplicate afterward. The fix is at the import
 resolver level so all compilation paths benefit.
 
-## 2026-06-13 — Unterminated basic block when Guarded then-path terminates (emit_toplevel.rs)
+## 2026-06-13 — Unterminated basic block when Guarded then-path terminates (emit_toplevel.rs) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Functions compiled via `emit_definition` ended with `}` and no
 `ret` terminator. LLVM opt rejects this with `expected '=' after instruction`
@@ -3039,7 +3039,7 @@ terminates but the else-path doesn't. Always emitting `ret` at function
 end is the simplest resolution — the extra `ret` is dead code that LLVM
 optimizes away.
 
-## 2026-06-13 — Unterminated `post:` label in `emit_callable_txn`
+## 2026-06-13 — Unterminated `post:` label in `emit_callable_txn` [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `toggle_record` function had an unterminated basic block before
 the `post:` label. A `store` instruction was followed directly by `post:`
@@ -3070,7 +3070,7 @@ rollback. Each must independently ensure every basic block has a
 terminator. The `post:` label pattern is unique to callable txns and
 was missed by the first 8-site pass.
 
-## 2026-06-17 — SSA extractvalue path missing return → duplicate register definitions
+## 2026-06-17 — SSA extractvalue path missing return → duplicate register definitions [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `mandelbrot.bv` and `knucleotide.bv` compiled to LLVM IR with
 duplicate register definitions (`%t207` defined twice: once as `add i64 0, %ev208`
@@ -3114,7 +3114,7 @@ have a `return` — especially the `_` default case.
 
 ---
 
-## 2026-06-13 — SSA dominance violations: values from guard then-path used in merge path
+## 2026-06-13 — SSA dominance violations: values from guard then-path used in merge path [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `opt` and `llc` reported "Instruction does not dominate all
 uses!" for values computed inside a Guarded block's then-path but
@@ -3149,7 +3149,7 @@ save/restore approach works because it effectively discards then-path
 bindings at the merge point, forcing re-evaluation in the correct
 dominating block.
 
-## 2026-06-14 — Stdlib files fail to parse with Rust parser (pre-existing)
+## 2026-06-14 — Stdlib files fail to parse with Rust parser (pre-existing) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: When implementing auto-core import (`import#` / `--no-std`),
 discovered that most Briev stdlib files in `lib/std/` fail to parse
@@ -3172,7 +3172,7 @@ interpreter. Auto-core must be conservative — only inject files that
 pass both parsing AND typechecking. Gradual expansion can happen as the
 parser improves.
 
-## 2026-06-14 — Parseable core files fail TypeChecker
+## 2026-06-14 — Parseable core files fail TypeChecker [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Several `std/core/*.bv` files parse correctly but fail the
 TypeChecker:
@@ -3201,7 +3201,7 @@ to the whitelist.
 
 ---
 
-## 2026-06-14 — `__print` doesn't flush stdout
+## 2026-06-14 — `__print` doesn't flush stdout [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: ANSI escape sequences (`"\x1b[2J\x1b[H"`) with no `\n` never reach the terminal. Line-buffered stdout (`_IOLBF`) only flushes on `\n` or buffer-full.
 
@@ -3213,7 +3213,7 @@ to the whitelist.
 
 ---
 
-## 2026-06-14 — `done_{name} → br label %done` exits main() after one reactive cycle
+## 2026-06-14 — `done_{name} → br label %done` exits main() after one reactive cycle [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: The first reactive txn whose precondition is false causes `main()` to return immediately. The program processes one cycle then exits.
 
@@ -3225,7 +3225,7 @@ to the whitelist.
 
 ---
 
-## 2026-06-14 — `@ link` for String loads pointer address, not content
+## 2026-06-14 — `@ link` for String loads pointer address, not content [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `trg keypress: String @ link tty_read_key` always evaluates `keypress != ""` as true. The trigger fires unconditionally, appending garbage to the input buffer on every tick.
 
@@ -3239,7 +3239,7 @@ to the whitelist.
 
 ---
 
-## 2026-06-22 — `.N|>` consumed as field access by `parse_postfix`
+## 2026-06-22 — `.N|>` consumed as field access by `parse_postfix` [LEDGER 2026-10-06: SUPERSEDED]
 
 **Issue**: `x |> f() .2|> g()` failed to parse. The error was "pipe target must be a function call" because `.2` was consumed as `FieldAccess(Call("f", []), "2")` before `parse_pipe_chain` could see it.
 
@@ -3258,7 +3258,7 @@ to the whitelist.
 
 ---
 
-## 2026-06-22 — Pipe skip overflow silently clamped to 0
+## 2026-06-22 — Pipe skip overflow silently clamped to 0 [LEDGER 2026-10-06: SUPERSEDED]
 
 **Issue**: `3 |> square() .2|> double()` silently returned `double(3) = 6` instead of flagging an error. Skip=2 but only 1 command precedes `.2|>`, so no value exists at that pipeline depth.
 
@@ -3276,7 +3276,7 @@ let read_idx = pos - 1 - step.skip;
 
 ---
 
-## 2026-06-22 — Examples used `frgn __print_int` instead of `print_int#` intrinsic
+## 2026-06-22 — Examples used `frgn __print_int` instead of `print_int#` intrinsic [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Example files (`examples/pipe-chain.bv`, `examples/pipe-skip.bv`) and architecture docs declared `frgn __print_int(n: Int) -> Bool;` instead of using the `print_int#` intrinsic.
 
@@ -3290,7 +3290,7 @@ let read_idx = pos - 1 - step.skip;
 
 ---
 
-## 2026-06-26 — nbody_newton energy output always 0.0 in SSA loop mode
+## 2026-06-26 — nbody_newton energy output always 0.0 in SSA loop mode [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `nbody_newton.bv` prints `0.000000000` for the energy computation
 regardless of BOUND value or iteration count. The C reference correctly prints
@@ -3342,7 +3342,7 @@ SSA-loop dispatch.
 
 ---
 
-## 2026-06-26 — queue_drain crashes at BOUND≥2 with realloc(): invalid pointer
+## 2026-06-26 — queue_drain crashes at BOUND≥2 with realloc(): invalid pointer [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `queue_drain.bv` with `BOUND=2` crashes with `realloc(): invalid pointer`.
 `BOUND=1` works. The crash is pre-existing — present in both the benchmark-script
@@ -3381,7 +3381,7 @@ output at BOUND≥2. Likely a list header encoding issue in the inop code.
 
 ---
 
-## 2026-06-26 — `setvbuf(stdout, NULL, _IOLBF, 0)` in briev_rt.c makes fputc 2.1× slower
+## 2026-06-26 — `setvbuf(stdout, NULL, _IOLBF, 0)` in briev_rt.c makes fputc 2.1× slower [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `benchmarks/fasta.bv` compiled by Briev runs at 2.1× wall-clock time
 vs the C reference (0.480s vs 0.230s at BOUND=50000000). The generated assembly
@@ -3424,7 +3424,7 @@ stdout (`_IOLBF`) imposes a significant performance penalty on bulk `fputc`
 output (~2.1× on glibc). The runtime should not set buffering policy — users
 should choose via explicit `frgn setvbuf` calls.
 
-## 2026-06-27 — `try_eval_cfloat` missing `Expr::BinaryOp` normalization (nbody 0.0 energy bug)
+## 2026-06-27 — `try_eval_cfloat` missing `Expr::BinaryOp` normalization (nbody 0.0 energy bug) [LEDGER 2026-10-06: STALE-FIXED]
 
 - **Issue**: All nbody benchmarks output `0.000000000` for total energy regardless
   of iteration count. C reference produces `-0.169152707`.
@@ -3449,7 +3449,7 @@ should choose via explicit `frgn setvbuf` calls.
   same pattern as `eval_const_expr` in the proof engine — the integer path was
   fixed but the float path was missed.
 
-## 2026-07-01 — `%dab2` prefix collides with `%dab` at counter offset 200
+## 2026-07-01 — `%dab2` prefix collides with `%dab` at counter offset 200 [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `opt -O2` on `queue_drain.ll` errors: "multiple definition of local
 value named 'dab263'". The `@main` function has `%dab263 = mul i64 ...` defined
@@ -3478,7 +3478,7 @@ edit distance. `prefix2{N}` is always dangerous because it's equivalent to
 is `prefix` + `_` + `suffix` + `{N}` (e.g., `%dab_al{N}` for alloc,
 `%dab_cp{N}` for copy).
 
-## 2026-07-01 — `emit_binop` Phase 7B double-emission O(2^depth) blowup
+## 2026-07-01 — `emit_binop` Phase 7B double-emission O(2^depth) blowup [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `benchmarks/const_heavy.bv` takes >60s to compile (20 constants in
 an addition chain). n=12 constants takes 11s, n=13 takes 37s — exponential
@@ -3517,7 +3517,7 @@ before the actual codegen path. If the pre-check can fall through, save its
 results and reuse them. The same pattern applies to any early-return + fallthrough
 pattern in codegen — save emitted registers, don't discard and re-emit.
 
-## 2026-07-01 — `expr_dedup_cache` leaks register names across function boundaries
+## 2026-07-01 — `expr_dedup_cache` leaks register names across function boundaries [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: nbody benchmarks (`nbody_newton`, `nbody_sqrt`, `nbody_sqrt_idio`)
 fail with "use of undefined value '%bfr{N}'" during `opt -O2`. The `%bfr{N}`
@@ -3543,7 +3543,7 @@ per-function or cleared at function boundaries. The `reg_float_cache` and
 `reg_type_cache` were already scoped correctly; `expr_dedup_cache` was the
 missed one.
 
-## 2026-07-01 — `let_original_types` not populated for custom types
+## 2026-07-01 — `let_original_types` not populated for custom types [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: queue_drain (RingBuffer path) crashes with `realloc(): invalid pointer`
 during benchmark runtime. The `<-` / discard operations fall through to the
@@ -3566,7 +3566,7 @@ logic unchanged.
 cache. Any code that needs to look up the declared type of a variable must
 find it there — especially strategy dispatch for custom collection types.
 
-## 2026-07-06 — Vector group backedge uses stale insertelement (nbody_sqrt MISMATCH)
+## 2026-07-06 — Vector group backedge uses stale insertelement (nbody_sqrt MISMATCH) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `nbody_sqrt` produced `-0.170945078` instead of C reference
 `-0.169288993` (0.17% energy drift per iteration — energy not conserved).
@@ -3584,7 +3584,7 @@ Example: if the backedge processed "vx0" first,
 carry element 0's update but elements 1-3 stagnate at initial values. Only
 the last-processed field (element 3) had ALL 4 elements correctly set.
 
-## 2026-07-08 — `emit_operator_call` double-wraps register + missing string impl handler
+## 2026-07-08 — `emit_operator_call` double-wraps register + missing string impl handler [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: All runtime benchmarks collapsed to "precomputed" because the LLVM IR was invalid:
 `%t%t8 = add i64 0, %t3`. LLVM rejects `%` inside register names, so `opt`/`llc` failed,
@@ -3614,7 +3614,7 @@ after adding operator bindings.
 
 ---
 
-## 2026-07-11 — No borrow checker (alias safety gap)
+## 2026-07-11 — No borrow checker (alias safety gap) [LEDGER 2026-10-06: BY-DESIGN]
 
 **Issue**: The compiler correctly injects `op Drop` destructor calls when variables
 go out of scope, but it does not prove the absence of dangling pointers. A user
@@ -3689,7 +3689,7 @@ but not the backend or interpreter.
 
 # ═══════════════════════════════════════════════════════════════════
 
-## 2026-07-18 — Missing binary bitwise operators in parser
+## 2026-07-18 — Missing binary bitwise operators in parser [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: Bitwise AND (`&`), OR (`|`), XOR (`^`), and shifts (`<<`, `>>`) parsed as
 different things or not at all. `&` was only handled as unary address-of; `|`, `^`,
@@ -3709,7 +3709,7 @@ vs infix position).
 
 **Files**: `src/parser/expressions.rs`, `src/type_universe/operators.rs`
 
-## 2026-07-18 — Missing builtin operator bindings for Int bitwise ops
+## 2026-07-18 — Missing builtin operator bindings for Int bitwise ops [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: After adding parser support for `&`, `|`, `^`, `<<`, `>>`, the typechecker
 rejected `lead & mask` with "invalid operation ''&'' on type Int".
@@ -3724,7 +3724,7 @@ codegen time regardless of the intrinsic name.
 
 **Files**: `src/type_universe/operators.rs`
 
-## 2026-07-18 — Dead `br` after `ret` in Guard/If codegen
+## 2026-07-18 — Dead `br` after `ret` in Guard/If codegen [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `when cond { term val; };` in a `defn` body generated LLVM IR with a
 `br label %guard.end` after `ret i64 %val` in the guard.then block. LLVM's
@@ -3742,7 +3742,7 @@ references it, so the next statement's code lands inside the end label.
 
 **Files**: `src/backend/llvm/emit_stmt.rs`
 
-## 2026-07-18 — node main loop never exits (test impact)
+## 2026-07-18 — node main loop never exits (test impact) [LEDGER 2026-10-06: BY-DESIGN]
 
 **Issue**: A test using `node run [true][term == 0] { term 0; };` compiles but
 the resulting binary hangs forever.
@@ -3761,7 +3761,7 @@ needed — this is architectural, not a bug.
 with the benchmark harness. `node` is fundamentally designed for perpetual
 reactive systems.
 
-## 2026-07-18 — `txn` return type not parsed
+## 2026-07-18 — `txn` return type not parsed [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `txn name(params) [pre][post] -> Type { body }` failed with "expected
 LBrace, found '->'". The `->` return type syntax was accepted by the user's
@@ -3777,7 +3777,7 @@ set to `None`.
 
 **Files**: `src/parser/definitions.rs`
 
-## 2026-07-18 — `__` prefix used for non-frgn functions
+## 2026-07-18 — `__` prefix used for non-frgn functions [LEDGER 2026-10-06: STALE-FIXED]
 
 **Issue**: `__memcmp`, `__UTF8_find`, `__UTF8_validate` used double-underscore prefix
 convention which is reserved for `frgn` (foreign) functions.
@@ -3789,7 +3789,7 @@ convention is: `__` prefix => `frgn` only.
 
 **Files**: `lib/std/types/UTF8view.bv`
 
-## 2026-07-18 — `else` keyword not supported
+## 2026-07-18 — `else` keyword not supported [LEDGER 2026-10-06: BY-DESIGN]
 
 **Issue**: `else if` chains and `if/else` expressions produce parse errors in
 Briev expressions.
@@ -4015,7 +4015,7 @@ i128-aligned type in the universe).
 
 ---
 
-## All Structs Disappear from LLVM IR After Casting Graph Refactoring — UNFIXED
+## All Structs Disappear from LLVM IR After Casting Graph Refactoring — UNFIXED [LEDGER 2026-10-06: STALE-FIXED]
 
 **Date:** 2026-07-30  
 **Status:** Unfixed — workaround in `declare_struct_types` needed  
@@ -4042,7 +4042,7 @@ successfully.
 
 ---
 
-## clang 18.1.3 LICM `sinkRegion` Segfault on Correctly-Aligned IR — UNFIXED
+## clang 18.1.3 LICM `sinkRegion` Segfault on Correctly-Aligned IR — UNFIXED [LEDGER 2026-10-06: STALE-FIXED]
 
 **Date:** 2026-07-30  
 **Status:** Unfixed — clang 18.1.3 bug  
@@ -4073,7 +4073,7 @@ the buggy pass doesn't choke on.
 
 ---
 
-## `String` Type LLVM Representation Changed from `{ i64, i64 }` to `i128` — UNFIXED
+## `String` Type LLVM Representation Changed from `{ i64, i64 }` to `i128` — UNFIXED [LEDGER 2026-10-06: STALE-FIXED]
 
 **Date:** 2026-07-30  
 **Status:** Unfixed — workaround in `protocol_llvm_type`  
@@ -4097,7 +4097,7 @@ kalman_filter_runtime all use `GetEnvInt!("BOUND")` and were affected.
 
 ---
 
-## ring_buffer: Baseline Compiler Produces No Output at 0.001s — UNFIXED (pre-existing)
+## ring_buffer: Baseline Compiler Produces No Output at 0.001s — UNFIXED (pre-existing) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Date:** 2026-07-30  
 **Status:** Pre-existing bug in baseline (commit `29921993`)  
@@ -4118,7 +4118,7 @@ merge. The actual baseline worktree binary produces no output.
 
 ---
 
-## mandelbrot: Briev Output Differs from C — UNFIXED (pre-existing)
+## mandelbrot: Briev Output Differs from C — UNFIXED (pre-existing) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Date:** 2026-07-30  
 **Status:** Pre-existing, not caused by our changes (verified by testing 4 commits
@@ -4134,7 +4134,7 @@ derivation-synthesis merge or the casting graph refactoring.
 
 ---
 
-## nbody_sqrt_idio: Cannot Compile — UNFIXED (pre-existing)
+## nbody_sqrt_idio: Cannot Compile — UNFIXED (pre-existing) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Date:** 2026-07-30  
 **Status:** Pre-existing — `Sqrt#` intrinsic call signature mismatch in
@@ -4143,7 +4143,7 @@ clang LTO linking, not during Briev compilation.
 
 ---
 
-## kalman_filter_runtime: Cannot Compile — UNFIXED (pre-existing)
+## kalman_filter_runtime: Cannot Compile — UNFIXED (pre-existing) [LEDGER 2026-10-06: STALE-FIXED]
 
 **Date:** 2026-07-30  
 **Status:** Pre-existing — same clang LICM sinkRegion crash as nbody_newton.
@@ -4228,7 +4228,7 @@ outlined guard param that is a FLOAT state field (e.g. accumulator_flush's
 **Fix:** the alloca uses the binding's Briev type (`let_binding_types` →
 `llvm_type`).
 
-## 2026-08-01 — queue_drain dispatches to version-DAG, not the countdown
+## 2026-08-01 — queue_drain dispatches to version-DAG, not the countdown [LEDGER 2026-10-06: STALE-FIXED]
 
 **Finding:** queue_drain (RingBuffer via `<-` ops) builds and runs, but its
 periodic print is off-by-one (prints count-1 at the boundary). Root cause: the
@@ -4785,7 +4785,7 @@ frgns (briev_str_substr) to Int-return where the pass only needs a length /
 char, minimizing allocation; (3) verify every frgn String arg is inttoptr'd to
 the buffer (not the boxed i64 handle) at the call site.
 
-## RESOLVED — "frgn String-return heap corruption" was a test-harness arity bug
+## RESOLVED — "frgn String-return heap corruption" was a test-harness arity bug [LEDGER 2026-10-06: RESOLVED]
 
 **Date:** 2026-08-04
 **Status:** Resolved (false alarm). The "nondeterministic heap corruption"
@@ -4849,7 +4849,7 @@ object). Regression tests: `test_webstack_ssa_precondition_emits_valid_bool_bran
 when the repro also drops `with_type_universe` (a test-config artifact, not a
 codegen path).
 
-## wasm32 webstack: %State i64 storage vs i{int_bits} arithmetic — RESOLVED
+## wasm32 webstack: %State i64 storage vs i{int_bits} arithmetic — RESOLVED [LEDGER 2026-10-06: RESOLVED]
 
 **Date:** 2026-08-10
 **Status:** Resolved 2026-08-10 (plan `2026-08-10-width-aware-loop-engines.md`).
@@ -4952,7 +4952,7 @@ type. Every `Type::bits(N)`-as-byte consumer had the same unit ambiguity.
 **Fix:** `Type::Bits(N)` is now exactly N bits; `Ptr<Bits(8)>` is a true i8
 (byte) pointer. No further action needed — logged to close the plan's DoD.
 
-## `!> IsZero:` / `!> IsOne:` stdlib metadata was dead — REMOVED 2026-08-13
+## `!> IsZero:` / `!> IsOne:` stdlib metadata was dead — REMOVED 2026-08-13 [LEDGER 2026-10-06: RESOLVED]
 
 **Date:** 2026-08-13 (layout-keywords plan DoD audit, Phase 7)
 **Status:** Removed — audited, no consumers.
@@ -5009,7 +5009,7 @@ ptrtoint) with a regression test asserting no `ptrtoint ptr %arg0` for String
 params (`tests.rs:3728`). Kept here as a tombstone pointing at the resolved
 entry; delete in a future BUGS.md sweep.
 
-## Bare collection literal as a function ARG crashes — KNOWN (string.bv unblock)
+## Bare collection literal as a function ARG crashes — KNOWN (string.bv unblock) [LEDGER 2026-10-06: RESOLVED]
 
 **Date:** 2026-08-13 — **known gap, workaround: bind the literal to a `let` first.**
 
@@ -5061,7 +5061,7 @@ fields) fired on these handles too, producing `ptrtoint ptr <i64 handle>`
 unchanged; the `("ptr", "i64")` arm now only fires for genuine String/Data
 registers.
 
-## Deferred dead surface — spec-conformance plan 2026-08-22
+## Deferred dead surface — spec-conformance plan 2026-08-22 [LEDGER 2026-10-06: N/A-RECORD]
 
 **Date:** 2026-08-22 (owner decision: fix opportunistically when touching these files)
 **Plan:** `docs/plans/2026-08-22-spec-conformance.md` § Deferred
@@ -5435,7 +5435,7 @@ Excludes: glue.dbv (own test suite) and lib/compiler/*.bv (tamer WIP).
 Any new file that fails parse/typecheck will be caught immediately by
 cargo test.
 
-## Conformance sweep: 67 active sources fail the real-pipeline gate (2026-08-23 update #8)
+## Conformance sweep: 67 active sources fail the real-pipeline gate (2026-08-23 update #8) [LEDGER 2026-10-06: N/A-RECORD]
 
 **Progress:** ... → 89 → **67**. Pass 7 was the @-era demo pass:
 migrated 7 demos to modern syntax (goal-based contracts, callable types,
@@ -5675,7 +5675,7 @@ places, proving the tier pays for itself:
 **To undo:** restore Phase-A-reads scheme — but that reintroduces
 interpreter divergence at guard bounds; do not.
 
-## CIRCT ExportVerilog rejects hw.module.generated (FIRRTL_Memory) — 2026-08-25 OPEN (toolchain)
+## CIRCT ExportVerilog rejects hw.module.generated (FIRRTL_Memory) — 2026-08-25 OPEN (toolchain) [LEDGER 2026-10-06: OPEN-UNVERIFIED]
 
 **Symptom:** `circt-opt --export-verilog` on IR containing a
 `hw.module.generated @..., @FIRRTLMem(...)` fails with "unknown operation"
@@ -5695,7 +5695,7 @@ emitted companion `.sv`. Re-parse + export + verilator lint all verified.
 **Revisit:** toolchain rebuild with firtool-side memory emission, or CIRCT
 upstream change.
 
-## Plain `txn` at top level compiles to an EMPTY program via brievc build — 2026-08-26 OPEN
+## Plain `txn` at top level compiles to an EMPTY program via brievc build — 2026-08-26 OPEN [LEDGER 2026-10-06: OPEN]
 
 **Symptom:** a program whose only logic is a plain top-level
 `txn run [...] [...] { ... }` builds clean, exits 0, prints nothing —
@@ -5765,7 +5765,7 @@ same hole (`test_circt_call_submodule` codified it).
 callee and the fix (inline or declare as cell). Test rewritten to lock the
 corrected contract.
 
-## Terminology tripwire: the five meanings of "Bits" — canonical spelling is `Bit<N>` — DOCUMENTED 2026-09-01
+## Terminology tripwire: the five meanings of "Bits" — canonical spelling is `Bit<N>` — DOCUMENTED 2026-09-01 [LEDGER 2026-10-06: N/A-RECORD]
 
 **Found:** while writing the M2.1/M2.2 unit tests, the working draft used
 `Bits(32)`/`Bits(N)` in test names and comments and would have propagated
@@ -5802,7 +5802,7 @@ the flexible width-0 form; `Type::Bits(N)` only inside compiler-internal
 code. A doc sweep for remaining user-visible `Bits<N>` aliases is
 deferred (they parse by design).
 
-## Tree-revert hazard executed — self-inflicted, 2026-09-01
+## Tree-revert hazard executed — self-inflicted, 2026-09-01 [LEDGER 2026-10-06: N/A-RECORD]
 
 While fixing pre-existing broken test files (briv_compiler typos in 9
 tests/ files — broken at HEAD before this session), a git checkout was
@@ -5824,7 +5824,7 @@ Track B gate's own negative test (a defn reading a[j] was invisible).
 Fixed with a Foreget arm (list + body walked like Guarded); regression
 tests in accel.rs resident_gate_tests (foreach_body_reads_reach_read_buffers).
 
-## 2026-09-02 — driver: small-dispatch store loss (2-7 workgroups), RTX 3060
+## 2026-09-02 — driver: small-dispatch store loss (2-7 workgroups), RTX 3060 [LEDGER 2026-10-06: OPEN-UNVERIFIED]
 
 **Symptom**: GPU kernels dispatched with 2-7 workgroups nondeterministically
 lose some (or all) workgroups' stores. The host view holds the pre-launch
@@ -5920,7 +5920,7 @@ and the C runner are unchanged. Regression guard:
 "main" entry each). End-to-end: two chained kernels (fill → scale) both
 validate and produce correct values via `brievc run`.
 
-## 2026-09-04 — NVIDIA coopmat compiler: three silent-optimization behaviors (INSTRUMENT FINDINGS)
+## 2026-09-04 — NVIDIA coopmat compiler: three silent-optimization behaviors (INSTRUMENT FINDINGS) [LEDGER 2026-10-06: N/A-RECORD]
 
 Stage-0 microkernel campaign (plan 2026-09-04-beyond-coopmat) — all three
 were hit while building the mma-ceiling instrument; each is a DRIVER
@@ -5951,7 +5951,7 @@ were out-of-range (dropped under robustness = silent zeros; faulting =
 fence-timeout "wedge"). Harness rule: n_fields MUST equal the table
 length; derive offsets from the generated runner (the authority).
 
-## 2026-09-07 — nbody_newton output drift (7th decimal) vs C reference [PRE-EXISTING, opened during noalias slice]
+## 2026-09-07 — nbody_newton output drift (7th decimal) vs C reference [PRE-EXISTING, opened during noalias slice] [LEDGER 2026-10-06: OPEN]
 
 **Symptom:** `BOUND=2048 BODYCOUNT=500` nbody_newton prints `-0.169207186`; the C
 reference prints `-0.169208214` (differs at the 7th decimal, one line of output).
@@ -6053,7 +6053,7 @@ correct values (20/true/false/5/10/100/10/10/4/9). `hash_ops_idio` parity
 restored (24999995000000). 2076 tests green. float_math/mandelbrot/
 linked_list compile clean.
 
-## 2026-09-10 — PTX mw kernel: three device-level traps (cp.async era)
+## 2026-09-10 — PTX mw kernel: three device-level traps (cp.async era) [LEDGER 2026-10-06: N/A-RECORD]
 
 **Symptoms:** the cp.async + double-buffer rewrite of
 `tensor_gemm_ptx_smem_mw` produced rc=700 (illegal memory access) or
@@ -6096,7 +6096,7 @@ IMA at runtime; natural allocation for the kernel is 136 regs. Never ship
 capped-register cubins for this kernel — size block_threads to the natural
 count instead (select_mw_nw caps at 256 threads).
 
-## 2026-09-11: SPIR-V coopmat fill silently corrupted for 3 days (u32_and id-as-mask)
+## 2026-09-11: SPIR-V coopmat fill silently corrupted for 3 days (u32_and id-as-mask) [LEDGER 2026-10-06: RESOLVED]
 
 **Symptom:** the SPIR-V coopmat tensor tier failed on-device at 4096³
 (max_rel_err 3.156e-01, deterministic) while all 2111 lib tests stayed
@@ -6129,7 +6129,7 @@ not verified. Any commit touching kernel index math needs the on-device
 correctness gate at a real shape (the cross-tier A/B harness now does
 this in one command).
 
-## 2026-09-11: fasta ~100× regression — unbuffered stdout after libc removal
+## 2026-09-11: fasta ~100× regression — unbuffered stdout after libc removal [LEDGER 2026-10-06: RESOLVED]
 
 **Symptom:** `benchmarks/fasta` at BOUND=10M: baseline 0.061 s, current
 6.6 s (identical output bytes). Sys-time dominant (~3.9 s) — one
@@ -6163,7 +6163,7 @@ landed wholly in stdlib.
 in the same stream — the sweep exists because "parity corpora green"
 says nothing about throughput.
 
-## 2026-09-11: coopmat S=1 (subgroups=1) kernel produces zero y at 2048³
+## 2026-09-11: coopmat S=1 (subgroups=1) kernel produces zero y at 2048³ [LEDGER 2026-10-06: OPEN-UNVERIFIED]
 
 **Symptom:** with `spirv_coopmat_subgroups: 1`, the coopmat f16acc
 GEMM at 2048³ stores nothing (max_rel_err 1.000e+00, y all zero) while
@@ -6180,7 +6180,7 @@ the fill/store decode against the S=2 module first.
 2048³ coopmat 27 TF reading — S=1 measures 1.30 ms vs S=2's 0.635 ms
 (S=2 is strictly faster; the reading is real work, not overlap).
 
-## 2026-09-12: reactive realization gap investigated — deferred; causal DAG proceeding
+## 2026-09-12: reactive realization gap investigated — deferred; causal DAG proceeding [LEDGER 2026-10-06: N/A-RECORD]
 
 **Investigation (2026-09-12):** the reactive dispatch ships the naive
 realization — `emit_ssa_main` (`src/backend/llvm/loop_engine/ssa.rs`)
@@ -6246,7 +6246,7 @@ refusals, the causality report, and future proof work (FSM
 reachability/deadlock). Fusion gets built only when a measured program
 class shows the backend failing — not before.
 
-## 2026-09-12: invalid A/B — dispatch constant edited, dump-test cubin benched
+## 2026-09-12: invalid A/B — dispatch constant edited, dump-test cubin benched [LEDGER 2026-10-06: N/A-RECORD]
 
 **Symptom:** the warp_mh=4 "rejection" (commit f1ea6e8b) concluded
 mh2 ≥ mh4 from an interleaved A/B that actually measured mh2 vs mh2.
@@ -6274,7 +6274,7 @@ contract.
 test's literals can drift from dispatch constants, make the dump read
 the dispatch constant — never edit one and measure the other.
 
-## 2026-09-14 — Equilibrium `wfi` park sleeps through address-wired eligibility
+## 2026-09-14 — Equilibrium `wfi` park sleeps through address-wired eligibility [LEDGER 2026-10-06: RESOLVED]
 
 **Where:** Phase 3 rv64 equilibrium (loop_engine/ssa.rs, `.end` park).
 
@@ -6305,7 +6305,7 @@ vectored/state-sequenced programs park. Verified end-to-end on QEMU MPS2-AN385
 closure (which preconditions a wake re-checks) remains a refinement; the
 correctness property — never sleep through an external frontier — ships.
 
-## 2026-09-14 — Statement match with void txn arms emits broken expression-match IR
+## 2026-09-14 — Statement match with void txn arms emits broken expression-match IR [LEDGER 2026-10-06: RESOLVED]
 
 **Where:** LLVM backend match lowering (statement `match` whose arm values
 are void txn calls mixed with an empty-block arm).
@@ -6325,7 +6325,7 @@ emission (`.smt_*` blocks) — never the boxed expression path.
 Phase 1): `Statement::Expression(Expr::Match(...))` converts to
 `Statement::Match` and routes through the `.smt_*` path.
 
-## 2026-09-14 — kernel_rv64 freezes entering the first U-mode task
+## 2026-09-14 — kernel_rv64 freezes entering the first U-mode task [LEDGER 2026-10-06: RESOLVED]
 
 **Where:** `examples/kernel_rv64.b.bv` — the Phase 4 micro-kernel demo
 (bootstrap → trap_service @ 7 → schedule → two U-mode tasks via ecall).
@@ -6384,7 +6384,7 @@ masked by the next. Resolution order:
 marker removal must be followed by a full clean run, not a build-only
 check (the removals themselves changed behavior — the dbg shim was
 dropping its own call).
-## 2026-09-13: E4c window — three traps that cost measurement time
+## 2026-09-13: E4c window — three traps that cost measurement time [LEDGER 2026-10-06: N/A-RECORD]
 
 **1. `MW_SMEM` unset = smem-0 launch = IMA storm.** `ptx_gemm_bench.c`
 defaults the dynamic-smem size to 0; the dump kernels allocate ALL working
@@ -6413,7 +6413,7 @@ hardcodes `false`. Rule: a BuildOptions field must be added to every
 initializer in the same commit — grep the struct name, not the field's
 last-known home.
 
-## 2026-09-13: SHIP PTX kernel — K≤32 with small M returns all-zero y
+## 2026-09-13: SHIP PTX kernel — K≤32 with small M returns all-zero y [LEDGER 2026-10-06: RESOLVED]
 
 Discovered while debugging E8a (whose stage-1 failure may share the root
 cause). The ship f16acc kernel (E4c, (2,4)@256T) FAILS the correctness
@@ -6446,7 +6446,7 @@ portfolio green post-fix; no perf regression beyond window noise. See
 docs/plans/2026-09-13-kle32-small-m-anomaly.md. E8a's stage-1 failure is
 independent and still open.
 
-## 2026-09-14 — defn with contract brackets compiles as a convergence loop
+## 2026-09-14 — defn with contract brackets compiles as a convergence loop [LEDGER 2026-10-06: RESOLVED]
 
 **Where:** the LLVM backend's callable-emission path — a `defn` carrying
 contract brackets `[pre][post]` receives the txn-style convergence
@@ -6475,7 +6475,7 @@ Phase 1): `emit_callable_txn()` detects `!txn.is_reactive` → skips the
 loop header + convergence loop, emits the body linearly + fallthrough.
 Contracts stay documentation/proof obligations; a violated postcondition
 is `unreachable` (contract violation), never a loop.
-## 2026-09-14 — Asm# output lacks earlyclobber: input aliased into output
+## 2026-09-14 — Asm# output lacks earlyclobber: input aliased into output [LEDGER 2026-10-06: RESOLVED]
 
 **Where:** `emit_asm_raw` in `src/backend/llvm/intrinsics.rs` — the
 constraint string `"=r,r,…,~{memory}"` had no earlyclobber `&` on the
@@ -6493,7 +6493,7 @@ reading an input, so the missing `&` was latent there.
 **Fix:** `"=&r"` (earlyclobber output). Regression test:
 `test_asm_raw_earlyclobber_constraint`.
 
-## 2026-09-14 — VolatileStore# narrowing emitted invalid `zext i64 to i32`
+## 2026-09-14 — VolatileStore# narrowing emitted invalid `zext i64 to i32` [LEDGER 2026-10-06: RESOLVED]
 
 **Where:** `emit_volatile_store` in `src/backend/llvm/intrinsics.rs` —
 the width-adapt compared Briev types via `resolve_arg_bytes`, which
@@ -6511,7 +6511,7 @@ the cast direction logic was wrong.
 `backend.llvm_type`) — ground truth at the IR-emission boundary.
 Regression test: `test_volatile_store_narrows_to_32_bit_pointee`.
 
-## 2026-09-14 — ARM bare-metal: .data never copied, begin_boot read 0
+## 2026-09-14 — ARM bare-metal: .data never copied, begin_boot read 0 [LEDGER 2026-10-06: RESOLVED]
 
 **Where:** bare-metal Cortex-M startup — `@briev_begin_boot = global i1
 1` lives in `.data` (VMA RAM, LMA in the code image). Nothing copied
@@ -6528,7 +6528,7 @@ canonical bare-metal init before `b _start`: copy `.data` from
 `_data_init` (LMA) to `_data_start.._data_end`, zero `.bss`
 (`_bss_start.._bss_end`). Board data, not compiler code.
 
-## 2026-09-14 — resume scheduler: ctx_save/ctx_restore misrouted the pc through the kernel-stack slot
+## 2026-09-14 — resume scheduler: ctx_save/ctx_restore misrouted the pc through the kernel-stack slot [LEDGER 2026-10-06: RESOLVED]
 
 **Where:** the resume-scheduling attempt in `examples/kernel_rv64.b.bv`
 (failed during the machine-entry era; stale IR preserved in
@@ -6704,7 +6704,7 @@ harness bugs caused the "failure":
 The full f16 attention composition is correct at 512² AND 1024². The
 earlier "o=+inf" and "s2=0" were the overflow + wrong-proj artifacts.
 
-## 2026-09-17: Multi-node resident programs — prime full-upload clobbers device arrays (OPEN)
+## 2026-09-17: Multi-node resident programs — prime full-upload clobbers device arrays (OPEN) [LEDGER 2026-10-06: OPEN-UNVERIFIED]
 
 **Symptom:** attention_decode.abv (qk → softmax → pv, 3 kernels) produces
 wrong A on both lanes; each kernel VERIFIED correct in isolation (gemv
@@ -6737,7 +6737,7 @@ end-of-program.
 both lanes post-fix (gemv 4096×4096 y=4096.0 exact; softmax_rows 4×256
 uniform 0.003906 exact). The composition awaits the prime fix.
 
-## 2026-09-18: CUDA 13.4 cuMemcpy2D silently no-ops under legacy-context dlopen [OPEN]
+## 2026-09-18: CUDA 13.4 cuMemcpy2D silently no-ops under legacy-context dlopen [OPEN] [LEDGER 2026-10-06: OPEN]
 
 **Context:** M2 strided append (plan 2026-09-18-coalesced-kv-memory-path) —
 the pitched-copy primitive (`briev_accel_push_strided` + driver
@@ -6824,7 +6824,7 @@ does not emit `.maxnreg`, so the driver's `cuModuleLoadData` JIT fails
 by the lane-coverage fix — the old binary (pre-fix) fails identically.
 Fix: emit `.maxnreg 128` in `general.rs`'s PTX output header.
 
-## 2026-09-19: `n_dirty == 0` triggered a full-projection HtoD on every launch
+## 2026-09-19: `n_dirty == 0` triggered a full-projection HtoD on every launch [LEDGER 2026-10-06: RESOLVED]
 
 **Symptom:** every launch of a scalar-free resident kernel re-uploaded the
 ENTIRE projection over PCIe (bitnet decode state: 21 MB ≈ 3.8 ms) — the
@@ -6846,7 +6846,7 @@ are unaffected.
 forensics #4); the gate kernel only ran fast once given a dummy scalar
 field, which exposed the real per-launch cost difference.
 
-## 2026-09-20: composite-expanded softmax body 2×es on the knob-off lane-reduction path [RESOLVED 2026-09-21 — runtime, not compiler]
+## 2026-09-20: composite-expanded softmax body 2×es on the knob-off lane-reduction path [RESOLVED 2026-09-21 — runtime, not compiler] [LEDGER 2026-10-06: RESOLVED]
 
 **Symptom:** the `softmax_fused!` composite expansion (Front B fixture,
 `examples/gpu/softmax_composite.abv`) validates at exactly 2× the
@@ -7436,7 +7436,7 @@ distinct body of work before "ERC-clean" can be claimed for them.
 **Undo:** revert the four emitter lines (uuid `{:012x}`→`{:012}`, the
 label justify, the `sheet_instances` block, the two `hide`→`hide yes`).
 
-## 2026-09-28 — `hardware_validator` is dead code (the .sbv synthesizability gate never runs)
+## 2026-09-28 — `hardware_validator` is dead code (the .sbv synthesizability gate never runs) [LEDGER 2026-10-06: OPEN]
 
 **Found:** Wave 2 C1 (die-graft work), while checking whether imported die
 items pass any hardware gate.
@@ -7457,7 +7457,7 @@ then, treat `.sbv` synthesizability as UNENFORCED.
 the failure mode is silent contract erosion, the exact thing the
 validator was written to prevent.
 
-## 2026-09-30 — NVIDIA driver 615.71.09 regressed the workgroup-smem + barrier compute path ~2.5× (RTX 3060, Vulkan) [OPEN — vendor]
+## 2026-09-30 — NVIDIA driver 615.71.09 regressed the workgroup-smem + barrier compute path ~2.5× (RTX 3060, Vulkan) [OPEN — vendor] [LEDGER 2026-10-06: OPEN-UNVERIFIED]
 
 **Found:** 2026-09-30, GEMM 4096³ investigation — the documented
 4.55 ms / 30.2 TF could not be reproduced by its own commit.
@@ -7624,7 +7624,7 @@ errors — a fixture that fails to build produces no files and compares
 "identical". The 65-fixture sweep ran green across four increments while
 two of its fixtures could not build at all.
 
-## dot_row 'Float' typecheck failure [CLOSED — NOT a compiler defect; the test harness corrupted itself]
+## dot_row 'Float' typecheck failure [CLOSED — NOT a compiler defect; the test harness corrupted itself] [LEDGER 2026-10-06: RESOLVED]
 
 **Found:** 2026-10-03, the emitter-retirement campaign's `dot_row.abv`
 fixture. The typecheck failed `undefined variable 'Float'`, flipping on
@@ -7684,7 +7684,7 @@ errors — a fixture that fails to build produces no files and compares
 "identical". The 65-fixture sweep ran green across four increments while
 two of its fixtures could not build at all.
 
-## Typechecker: `dot!` composite invocation — "undefined variable 'Float'" flips on shape/name [OPEN — 2026-10-03; SUPERSEDED 2026-10-03: CLOSED as harness corruption at :7627 — the corrupted reference file, not the compiler]
+## Typechecker: `dot!` composite invocation — "undefined variable 'Float'" flips on shape/name [OPEN — 2026-10-03; SUPERSEDED 2026-10-03: CLOSED as harness corruption at :7627 — the corrupted reference file, not the compiler] [LEDGER 2026-10-06: RESOLVED]
 
 **Found:** 2026-10-03, the emitter-retirement campaign's `dot_row.abv`
 fixture (declared `dot!`, D=128, 20 rows). The typecheck fails with
@@ -7860,7 +7860,7 @@ of the fill campaign (`2026-09-30-stage5b-structural-fill-campaign.md`
 via `2026-10-04-three-surfaces-functional.md` Phase 2.2): the quad
 default drops its guard when this closes.
 
-## Naive-lane f16 GEMM under-accumulates at (M·N ≤ 4096, K ≥ 128): y = the k=0 term only [RESOLVED 2026-10-04 (same day) — harness artifact, not a compiler defect; header corrected 2026-10-04]
+## Naive-lane f16 GEMM under-accumulates at (M·N ≤ 4096, K ≥ 128): y = the k=0 term only [RESOLVED 2026-10-04 (same day) — harness artifact, not a compiler defect; header corrected 2026-10-04] [LEDGER 2026-10-06: RESOLVED]
 
 **Found:** 2026-10-04, re-verifying the runner-dispatch fix at cross
 shapes. After the dispatch fix (previous entry), 64³ and 128³ are EXACT,
@@ -8415,7 +8415,7 @@ undefined `err_char`; single-wrap the Array/Object frames; list append via
   from Briev code until the Char protocol's default variant / native
   width is consistent. Blocks json.bv end-to-end.
 
-## json.bv round 2 — callable `txn` convergence is linear (blocks json runtime) + 6 more codegen fixes 2026-10-05
+## json.bv round 2 — callable `txn` convergence is linear (blocks json runtime) + 6 more codegen fixes 2026-10-05 [LEDGER 2026-10-06: RESOLVED]
 
 Continuing the json.bv migration (previous entry): after the first five
 fixes, json.bv compiled to **valid IR** but segfaulted at runtime. The
@@ -8508,3 +8508,143 @@ arms `term` their value; `find_pair`'s post is `[i >= count]` (the old
 **Verified end-to-end** (codegen): objects (nested), arrays, numbers,
 strings with escapes, and `true` all parse and print correctly. Suite 2886
 green; new tests `callable_txn_converges` (interpreter + backend IR).
+
+## `List<T> + List<T>` silently miscompiles — wrong answer, no diagnostic — 2026-10-06 FIXED
+
+**Date:** 2026-10-06 (found during the ledger sweep, `docs/plans/2026-10-06-bugs-ledger-sweep.md`)
+**Status:** FIXED same day — silent wrong-result class; reproduced on tip.
+
+**Repro** (`tmp_vs_lc2.bv`, LLVM backend):
+```
+let a: List<Int> = [1, 2];
+let b: List<Int> = [3];
+let c: List<Int> = a + b;
+println!(c.Count#());   // 1   (expected 3)
+println!(c[0]);         // 188769584955600 — garbage
+```
+`brievc check` and `brievc build` both succeed; the binary runs and exits 0.
+
+**Root cause:** `resolve_binary_op_binding` returned
+`OpBinding::Intrinsic("list_concat")` (`src/typechecker/mod.rs:419`) — the only
+reference to that name in the tree. `elaborate_ops` rewrites only
+`OpBinding::Function` (`mod.rs:2474`), so the `BinaryOp` survived into codegen
+and lowered as integer `add` over two list handles. Neither the LLVM backend nor
+the interpreter implemented `list_concat` (zero hits in `src/`). The binding also
+matched on the type NAME `ln == "List"` (`mod.rs:415-419`), which is the
+Rule-15 shape the codebase forbids.
+
+**Fix (2026-10-06):** the binding now returns the EXISTING stdlib
+`iter_chain` (`lib/std/iterator.bv:162`, which already carries the exact
+postcondition `term.Count#() == a.Count#() + b.Count#()`) as a declared
+`OpBinding::Function`, extracted to `TypecheckContext::list_concat_binding`
+(`src/typechecker/mod.rs`). `elaborate_ops` rewrites `a + b` into a call, so a
+missing/renamed stdlib fn is the existing `defined_fns` typecheck error instead
+of garbage, and mismatched element types fall through to the normal
+`InvalidOperation` diagnostic (no unchecked rewrite). `std/iterator.bv` is
+imported by the NATIVE prelude (`plugins/parsed/prelude-native.bv`, `.bv`
+target) so the operator resolves without a user import; it is deliberately NOT
+in the shared `prelude` because its `Count#` bodies are rejected by the SPIR-V
+normalizer (GPU/wasm targets keep the clean typecheck error, not a silent
+miscompile).
+
+Tests: `typechecker::tests::list_plus_list_elaborates_to_stdlib_iter_chain`,
+`typechecker::tests::list_plus_list_element_mismatch_is_an_error`,
+`interpreter::phase_c_probe_tests::list_plus_list_concatenates_in_the_reference_interpreter`.
+Backend repro now prints `2 1 3 1 2 3` (count 3, elements 1,2,3).
+
+**Residual (Rule-15 debt):** `list_concat_binding` still matches the type NAME
+`"List"`; the principled retirement is a declared concat op on the coll scaffold
+(like `op InsertAt`), after which the helper is deleted.
+
+**Why it matters:** this was a wrong-answer bug with zero diagnostics — the
+class the compiler must never ship.
+
+## Interpreter `<-` never pushed into a collection — every list accumulator wrong in the reference — 2026-10-06 FIXED
+
+**Date:** 2026-10-06 (found while adding the Rule-5 parity test for the
+`List<T> + List<T>` fix)
+**Status:** FIXED same day.
+
+**Symptom (Rule 5 violation):** the reference interpreter rebound the arrow
+target instead of pushing, so EVERY list accumulator in the interpreter kept
+only the last element while the backend pushed correctly. Concretely
+`iter_chain([1,2],[3])` returned `Int(3)` in the interpreter and `[1,2,3]` in
+the backend; `iter_chain_loop`, `HashMap.keys()`, and json's `elems <- …` were
+all affected. `src/interpreter/eval.rs` `Statement::ArrowAssign` did only
+`bindings.insert(name, val)` — no `op InsertAt` arm existed (the
+`InsertAt#`/`ExtractFrom#` intrinsics are documented no-ops that cannot mutate
+the receiver).
+
+**Fix (`src/interpreter/eval.rs`):** `arrow_write_target` now mirrors the
+typechecker's INSERT dispatch. The interpreter's model is deliberately dynamic
+(a collection IS a positional `Value::Product`; `Count#`/`At#`/`Slice#` already
+treat it that way), so a target whose current value is a positional Product
+grows by one element; `&queue <- v` (the documented push form) and bare
+`queue <- v` both unwrap; EventQ firing and plain assign keep their prior
+behavior. `consume` (`~<-`) never pushes.
+
+**Residual (BUGS.md arrow-dispatch follow-up):** the static, type-driven cases
+the typechecker distinguishes are not yet modeled — destructive extract
+(`~<-` into a non-Product target), the CopyFrom read (`dest <- queue`), and
+collection types whose interpreter value starts as a handle (`Stack` seeded
+`= 0`, `PiggyBank`). The principled fix is recording the typechecker's arrow
+decision on the AST (frontend-driven dispatch) and consuming it in both engines.
+
+**Why it matters:** the interpreter is the reference (Rule 5); a wrong reference
+silently blesses wrong codegen and corrupts `derive/assert`, `pgo`, and
+`protocol_verify`, which run programs through it.
+
+## json.bv array parsing hangs in the interpreter — 2026-10-06 OPEN
+
+**Date:** 2026-10-06 (found while adding the `List + List` Rule-5 parity test)
+**Status:** OPEN — the LLVM backend is correct; the interpreter is not.
+
+**Evidence** (interpreter, source importing `std/collections.bv`,
+`std/iterator.bv`, `std/json`):
+- `parse_value("[]", 0)` → `Ok(Array([]), pos 2)` (fine).
+- `parse_value("1", 0)` → `Err(TypeError { expected: "an index in 0..1",
+  found: "index 1 (length 1)" })` — should parse the number 1; `parse_number`
+  reads `char_at(s, ipos)` with `ipos == len` unguarded (`lib/std/json.bv`).
+- `parse_value("[1]", 0)` and `parse_array_elems("[1]", 1, [])` **hang**
+  (> 60 s; the `parse_array_elems` txn loops without terminating).
+- Backend control: a program calling `json_parse("[1,2,3]")` +
+  `json_length(v)` builds and prints `3`.
+
+**Impact:** the docs claim json.bv "works in both the interpreter and the LLVM
+backend" (`docs/plans/2026-10-04-three-surfaces-functional.md`); only the
+backend is verified. Any interpreter-run consumer of json arrays
+(`derive/assert`, tests) is affected.
+
+**Fix direction:** guard the end-of-input reads in `parse_number`/`finish_number`
+(`lib/std/json.bv`), then root-cause the `parse_array_elems` non-termination —
+likely the interpreter's txn convergence (postcondition never observed true)
+and/or the flat-`state` local leak across nested `call_function` frames
+(`src/interpreter/mod.rs::call_function` restores only parameter names, not
+`let` locals). Do not "fix" by weakening the txn contract.
+
+
+## normalizer printed 12 stale-`!> bits` warnings on hello-world — 2026-10-06 FIXED
+
+**Date:** 2026-10-06 (reported during the ledger sweep session)
+**Status:** FIXED same day.
+
+**Symptom:** `brievc build hello.bv` printed 12 `normalizer:` lines — two per
+generic obj (`Slice`, `Stack`, `RingBuffer`, `List`, `HashMap`, `PiggyBank`):
+`no primordial entry and no `!> bits` metadata` and `no alignment metadata`.
+The message named the retired `!>` width spelling (physical metadata is
+`spec Bits: N;`, §8.2), and the warnings fired on every slot-bearing type whose
+layout is *derived from its fields* — a guess only when there are no slots.
+
+**Fix** (`src/backend/register_types.rs`):
+- width warning gated on `width_known` = `bits`/`maxbits`/`spec Bytes`/slots —
+  a slot-bearing type no longer warns (value unchanged: `int_bits` either way);
+- alignment warning gated on the 8-byte size fallback actually having fired;
+- both messages now teach `spec Bits: N;` / `spec Bytes: N;`; the SPIR-V width
+  errors (`src/casting/graph.rs`) and the normalizer/register-types doc comments
+  were swept to the same spelling.
+
+Regression tests: `test_slot_bearing_type_without_spec_bits_is_silent` (hello
+world → 0 warnings, values unchanged) and
+`test_slotless_type_without_width_metadata_still_warns_spec_bits` (the §8.6
+"never silent" contract survives for a genuinely unknown width and the message
+contains `spec Bits`, never `!>`).

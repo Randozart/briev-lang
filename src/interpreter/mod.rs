@@ -2115,4 +2115,36 @@ mod phase_c_probe_tests {
             Err(e) => panic!("unexpected error: {e}"),
         }
     }
+
+    /// 2026-10-06 (BUGS.md "List<T> + List<T> silently miscompiles", Rule 5):
+    /// the reference runs the SAME elaboration, so `a + b` on lists must yield
+    /// the concatenated list here — and by Rule 5 the backend must agree. Before
+    /// the fix the operator survived into codegen as integer `add` over two list
+    /// handles and printed garbage while `check`/`build` both succeeded.
+    #[test]
+    fn list_plus_list_concatenates_in_the_reference_interpreter() {
+        let (items, _universe) = crate::library::parse_and_check(
+            "list_concat_interp.bv",
+            r#"
+import "std/collections.bv";
+import "std/iterator.bv";
+defn concat_demo() -> List<Int> {
+    let a: List<Int> = [1, 2];
+    let b: List<Int> = [3];
+    term a + b;
+};
+"#,
+        )
+        .expect("List + List must typecheck and elaborate");
+        let mut interp = Interpreter::new();
+        interp.load_program(&items);
+        let v = interp.call_function("concat_demo", &[]).expect("concat_demo must run");
+        let Value::Product { fields, .. } = &v else {
+            panic!("concat must return a list (product), got {v:?}");
+        };
+        let got: Vec<i64> = fields.iter().map(|f| f.as_i64().expect("Int elements")).collect();
+        assert_eq!(got, vec![1, 2, 3], "[1,2] + [3] must concatenate");
+    }
 }
+
+

@@ -19,6 +19,12 @@ $(Parsed @ highest) {
             // backend has no obj_members → tier2 iteration never fires and
             // foreach silently falls back to the hardcoded List layout.
             Import$("std/collections.bv"),
+            // 2026-10-06 (BUGS.md "List<T> + List<T> silently miscompiles"):
+            // `List + List` elaborates to a call to the stdlib `iter_chain`, so
+            // the concat operator resolves in every compilation unit without a
+            // user import. Dead defns are never emitted (defn-liveness), so this
+            // costs parse/typecheck time only, not binary size.
+            Import$("std/iterator.bv"),
             Import$("std/os/fs.bv"),
             Import$("std/os/net.bv"),
             Import$("std/os/signal.bv"),
@@ -50,6 +56,12 @@ $(Parsed @ highest) {
                 Import$("std/types/bootstrap.bv"),
                 // 2026-08-14 (slice-6 unblock): see the anchor branch note.
                 Import$("std/collections.bv"),
+                // 2026-10-06 (BUGS.md "List<T> + List<T> silently miscompiles"):
+                // `List + List` elaborates to a call to the stdlib `iter_chain`, so
+                // the concat operator resolves in every compilation unit without a
+                // user import. Dead defns are never emitted (defn-liveness), so this
+                // costs parse/typecheck time only, not binary size.
+                Import$("std/iterator.bv"),
                 Import$("std/os/fs.bv"),
                 Import$("std/os/net.bv"),
                 Import$("std/os/signal.bv"),
