@@ -58,4 +58,33 @@ fi
 OBJ_OUT="$(build_fixture "$ROOT/tests/fixtures/obj_init.rbv")" || exit 1
 check_ir "$OBJ_OUT" obj_init || exit 1
 
+# 3. Multi-page B2 — each .rbv bundles to ONE self-contained HTML with a
+#    plain <a href> cross-link (zero external refs).
+check_bundle() {
+    local fixture="$1" name="$2" expect_link="$3"
+    local out="$OUT_ROOT/bundle_$name"
+    mkdir -p "$out"
+    local err="$out/build.err"
+    "$BRIEVC" build "$fixture" --out "$out" >/dev/null 2>"$err" || {
+        echo "bundle build failed: $fixture" >&2; return 1;
+    }
+    # A view-trigger-bound no-param txn must NOT false-warn "never dispatched"
+    # (2026-10-07 fix: warn_undispatched_txns skips live txns).
+    if grep -q "never dispatched" "$err"; then
+        echo "false 'never dispatched' warning for $fixture:" >&2
+        grep "never dispatched" "$err" >&2; return 1
+    fi
+    local html="$out/$name.html"
+    [ -f "$html" ] || { echo "no bundle at $html" >&2; return 1; }
+    if grep -qE "<script[^>]*src=|<link[^>]*href=|fetch\(['\"]https?:" "$html"; then
+        echo "bundle has external refs: $html" >&2; return 1
+    fi
+    grep -q "<a href=\"$expect_link\"" "$html" || {
+        echo "missing cross-link '$expect_link' in $html" >&2; return 1;
+    }
+    echo "OK bundle $name (self-contained, links $expect_link)"
+}
+check_bundle "$ROOT/examples/multi_page_a.rbv" multi_page_a "multi_page_b.html" || exit 1
+check_bundle "$ROOT/examples/multi_page_b.rbv" multi_page_b "multi_page_a.html" || exit 1
+
 echo "rbv_gate: OK"

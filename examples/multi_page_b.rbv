@@ -1,0 +1,11 @@
+// examples/multi_page_b.rbv — multi-page B2 demo (page B).
+//
+// 2026-10-07 (plan 2026-10-07-web-surface-completion.md, W3/B2): the sibling
+// of page A; the two self-contained bundles cross-link by `<a href>`.
+let name: String = "world";
+
+<view>
+  <h1>Page B</h1>
+  <p>Hello, <span b-text="name">world</span>.</p>
+  <p><a href="multi_page_a.html">Back to page A</a></p>
+</view>

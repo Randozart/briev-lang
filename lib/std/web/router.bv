@@ -30,9 +30,12 @@
 // NOTE: a `Router` *obj* (state + `go` txn in one type) is now EXPRESSIBLE —
 // the unpacked-obj String-field init codegen bug is fixed (BUGS.md:8800,
 // 2026-10-07), so `let router: Router = Router { path: current_path() };`
-// builds. It is not yet USABLE for a view trigger: a member txn is not
-// emitted as a top-level wasm export, so `b-trigger:click="go"` resolves to
-// a missing export (BUGS.md, member-txn view binding). Until that lands, the
+// builds. It is not yet USABLE for a view trigger in this plain-var form: a
+// member txn on a top-level obj variable is not emitted as a top-level wasm
+// export, so `b-trigger:click="go"` resolves to a missing export (BUGS.md,
+// 2026-10-07). The `render <Obj> { … }` component form DOES emit and bind
+// member txns (`examples/counter.rbv`); expressing the router as a component
+// needs a `path` field initializer (`current_path()`). Until that lands, the
 // framework is the free-function form above.
 
 import "std/types/bootstrap.bv";

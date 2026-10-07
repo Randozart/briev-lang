@@ -89,5 +89,13 @@ Praetor no new diagnostics + docs in the same commit. Risk concentrates in W2
   2917 green; Praetor no new diagnostics. **Follow-up filed:** a member txn
   is not a top-level wasm export, so a view `b-trigger` cannot fire it — the
   `Router` obj is expressible but not yet view-bindable (BUGS.md, new entry).
-- **W3** not started.
+- **W3 DONE (B2)** — multi-page: `examples/multi_page_{a,b}.rbv` cross-link
+  by `<a href>`; each bundles to one self-contained HTML. `rbv_gate.sh`
+  asserts self-containment (zero external refs) + the cross-link. **B1** is
+  covered by the router fixture built in bundle mode (the SPA shape). **File-
+  based routing (folio `[pages]`) deferred** — a larger build/framework item.
+- **Bonus fix** — `warn_undispatched_txns` (backend) false-warned a
+  view-`b-trigger`-bound no-param txn ("never dispatched"); now skips live
+  txns (a live-but-uncalled txn is root-dispatched). Surfaced by the B2
+  example; gated in `rbv_gate.sh`.
 

@@ -117,6 +117,11 @@ deferred until the String-return ABI is fixed.
 - **File-based routing:** folio `[pages]` over multiple `.rbv` → route table
   (build/framework convention).
 
+**Status 2026-10-07** (plan `2026-10-07-web-surface-completion.md`): **B2
+DONE** — `examples/multi_page_{a,b}.rbv` cross-link; `benchmarks/rbv_gate.sh`
+asserts self-containment + the cross-link. **B1** covered by the router
+fixture in bundle mode. File-based routing deferred.
+
 ## Sequencing & gates
 
 0 → 1 → 2 → 3 → B2 → B1.

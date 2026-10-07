@@ -8918,31 +8918,37 @@ Added `lib/glue/node/types.bv`. Test:
 host-module path now; the `node`→`js` rename was reconsidered (Node-specific
 target, kept).
 
-## Webstack: a member txn is not emitted as a top-level wasm export — not view-bindable — 2026-10-07 OPEN
+## Webstack: a member txn on a plain top-level obj var is not emitted/bound — 2026-10-07 OPEN
 
 **Date:** 2026-10-07 (found after fixing BUGS.md:8800 — the unpacked-obj init)
-**Status:** OPEN.
+**Status:** OPEN (limitation).
 
 **Repro:**
 ```
 obj Router {
     path: String;
-    txn go(url: String) [true][path == url] { path = url; navigate(url); term; };
+    txn go(url: String) [path != url][path == url] { path = url; navigate(url); term; };
 };
 let router: Router = Router { path: current_path() };
 <view><button b-trigger:click="go">Home</button></view>
 ```
-The module builds and the IR is sound, but the generated shim binds the
-button to `this._txn("go")` while the wasm exports **no `go`** (no `@go`
-define) — the click resolves a missing export at runtime. A member txn on an
-obj is emitted only as part of the obj's member bodies, never as a top-level
-export; `pipeline::view_trigger_txns` roots only top-level trigger txns.
+The module builds and the IR is sound, but the shim binds the button to
+`this._txn("go")` while the wasm exports no `go` — the click resolves a
+missing export at runtime.
 
-**Impact:** the `Router` obj form is expressible (after 8800) but not
-view-bindable; the router ships the free-function form
-(`current_path`/`route_name`/`navigate`).
+**Scope:** a member txn reached through the `render <Obj> { … }` component
+form IS emitted (mangled `@<member>_<n>` / `@<member>_main`) and bound
+(`examples/counter.rbv`). The gap is specifically an obj held as a **plain
+top-level state variable** (no `render`): its member txns are never emitted as
+top-level exports, and `pipeline::view_trigger_txns` roots only top-level
+trigger txns.
 
-**Fix direction:** emit member txns that are view-bound as top-level exports
-(and root them in defn-liveness), or extend the view binding to invoke a
-member txn through the instance. Gate: an obj-form router fixture whose
-`b-trigger` fires the member txn (extend `benchmarks/rbv_gate.sh`).
+**Impact:** the `Router` obj (after 8800) is expressible but not
+view-bindable in the plain-var form; the router ships free functions. A
+`render Router` component needs a field initializer for `path`
+(`current_path()`), which is a separate question.
+
+**Fix direction:** either emit/bind member txns of a top-level obj instance, or
+express the router as a `render` component with a `path` initializer. Gate: an
+obj-form router fixture whose `b-trigger` fires the member txn (extend
+`benchmarks/rbv_gate.sh`).

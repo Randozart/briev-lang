@@ -1,0 +1,18 @@
+// examples/multi_page_a.rbv — multi-page B2 demo (page A).
+//
+// 2026-10-07 (plan 2026-10-07-web-surface-completion.md, W3/B2): each `.rbv`
+// bundles to ONE self-contained HTML; pages link to each other with a plain
+// `<a href>` to the sibling's `<stem>.html`. No router, no compiler keyword —
+// the browser's own navigation.
+let count: Int = 0;
+
+txn inc() [count < 100][true] {
+    count = count + 1;
+    term;
+};
+
+<view>
+  <h1>Page A</h1>
+  <button b-trigger:click="inc">clicked <span b-text="count">0</span> times</button>
+  <p><a href="multi_page_b.html">Go to page B</a></p>
+</view>

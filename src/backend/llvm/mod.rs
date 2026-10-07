@@ -128,11 +128,14 @@ fn collect_called_names_stmt(s: &Statement, out: &mut std::collections::HashSet<
 
 impl LlvmBackend {
     /// Warn once per plain txn that can never execute: non-reactive,
-    /// callable-shaped (no params/outputs), and referenced by no call in the
-    /// program. Fired logic belongs in `node` declarations.
+    /// callable-shaped (no params/outputs), referenced by no call in the
+    /// program, AND not live (a live-but-uncalled txn is dispatched
+    /// externally — a view `b-trigger`, or another liveness root). Fired
+    /// logic belongs in `node` declarations.
     pub(crate) fn warn_undispatched_txns(
         items: &[TopLevel],
         txns: &[(String, &crate::ast::Transaction)],
+        live: &std::collections::HashSet<String>,
         warnings: &mut Vec<String>,
     ) {
         let mut called: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -162,6 +165,11 @@ impl LlvmBackend {
                     && t.output_type.is_none()
                     && t.outputs.is_empty()
                     && !called.contains(n.as_str())
+                    // 2026-10-07: a live-but-uncalled txn is dispatched by a
+                    // liveness root (a view `b-trigger`, `__reset_*`, …) — not
+                    // dead. Without this a view-bound no-param txn (e.g.
+                    // examples/multi_page_a.rbv `inc`) false-warned.
+                    && !live.contains(n.as_str())
             })
             .map(|(n, _)| n.clone())
             .collect();
@@ -4430,7 +4438,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     && !self.ctx.is_shared_lib
                     && !txns.is_empty()
                 {
-                    Self::warn_undispatched_txns(items, &txns, &mut self.warnings);
+                    Self::warn_undispatched_txns(items, &txns, &self.ctx.live_defns, &mut self.warnings);
                 }
                 // A004: warn when a runtime loop has zero observability
                 if !txns.is_empty() {
