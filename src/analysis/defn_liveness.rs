@@ -10,9 +10,12 @@
 //! name, top-level AND nested in obj/cell bodies), exports, ISR handlers,
 //! asm functions, op members and obj/cell members (dispatch names are
 //! mangled at emission — conservative keep), spawn targets, cast-lane
-//! functions (seeded base lanes + proto/typedef binding functions), and
-//! every callee of top-level statements (the backend emits those directly
-//! into the init path).
+//! functions (seeded base lanes + proto/typedef binding functions), every
+//! callee of top-level statements (the backend emits those directly into
+//! the init path), compiler-generated `__reset_*` lifecycle txns (the DOM
+//! shim fires them by name — see `index_item`), and, via
+//! `build_with_roots`, the webstack view surface: trigger-bound txns and
+//! `b-bind:value` sole-writer routes (2026-10-07 view-surface liveness).
 //!
 //! Closure: explicit `Expr::Call` edges plus the intrinsic→helper table
 //! (`intrinsic_helpers`) — intrinsic lowerings may emit calls to pure-Briev
@@ -51,6 +54,20 @@ impl DefnLiveness {
     /// Compute the live set for a full program item list (post-import,
     /// post-typecheck — the same list `analyze_program` receives).
     pub fn build(items: &[TopLevel]) -> DefnLiveness {
+        Self::build_with_roots(items, &HashSet::new())
+    }
+
+    /// 2026-10-07 (view-surface liveness): `build` plus EXTERNAL roots —
+    /// names the DOM shim fires that never appear as a Briev call edge.
+    /// The compiled view's trigger-bound txns (`b-trigger`, `b-each` item
+    /// triggers) and the sole-writer txns of `b-bind:value` fields are
+    /// resolved by the webstack codegen path (`compile.rs`, which owns the
+    /// bindings and the transition graph) and passed here. Without them a
+    /// view-bound txn is dropped and the shim resolves a missing wasm
+    /// export at click time (dead button). Native programs pass an empty
+    /// set — same verdict as `build`. To undo: drop the webstack seeding
+    /// in `compile.rs` and this parameter collapses back to `build`.
+    pub fn build_with_roots(items: &[TopLevel], extra_roots: &HashSet<String>) -> DefnLiveness {
         let mut pass = Builder {
             defns: HashMap::new(),
             txns: HashMap::new(),
@@ -65,6 +82,7 @@ impl DefnLiveness {
         for item in items {
             pass.index_item(item);
         }
+        pass.roots.extend(extra_roots.iter().cloned());
 
         // Worklist closure. Roots seed the queue; every live callable's
         // body AND contract contribute explicit calls + intrinsic-implied
@@ -179,6 +197,34 @@ impl<'a> Builder<'a> {
         self.contracts.entry(t.name.clone()).or_insert(&t.contract);
     }
 
+    /// 2026-10-07 (view-surface liveness): dispatch-name roots for a txn.
+    /// Extracted from `index_item` (its cognitive complexity must stay in
+    /// bounds — the arm had grown to the cap). Three independent classes:
+    ///
+    /// - Reactive txns are reactor-dispatched by name — roots; callable
+    ///   txns enter via closure from live callers.
+    /// - Compiler-generated lifecycle txns (`__reset_*` — the b-when unmount
+    ///   reset and component-instance reset) fire from the DOM shim by name
+    ///   (`_txn('__reset_' + inst)` in web_generator), never from a Briev
+    ///   call edge. They are compiler-generated, never user dead code. The
+    ///   prefix rule matches the bind-route exclusion in pipeline.rs.
+    /// - An async txn makes the program reactive-unbounded — the main tail
+    ///   yields through `__wait_for_trigger__` (loop_engine's no-wake/no-exit
+    ///   branch). The call is backend-emitted, so liveness must root its
+    ///   helper alongside the txn (2026-09-17, same class as the
+    ///   stdout-flush gate fix).
+    fn root_txn_dispatch(&mut self, t: &crate::ast::Transaction) {
+        if t.is_reactive {
+            self.roots.insert(t.name.clone());
+        }
+        if t.name.starts_with("__reset_") {
+            self.roots.insert(t.name.clone());
+        }
+        if t.is_async {
+            self.roots.insert("__wait_for_trigger__".into());
+        }
+    }
+
     /// obj-like type bodies carry member txns/defns (`parse_obj_like`).
     /// Members are USAGE-ROOTED: registered under the type name and
     /// enqueued when live code constructs the type — prelude collection
@@ -257,19 +303,7 @@ impl<'a> Builder<'a> {
             TopLevel::Transaction(t) => {
                 self.txns.insert(t.name.clone(), &t.body);
                 self.contracts.entry(t.name.clone()).or_insert(&t.contract);
-                // Reactive txns are reactor-dispatched by name — roots.
-                // Callable txns enter via closure from live callers.
-                if t.is_reactive {
-                    self.roots.insert(t.name.clone());
-                }
-                // 2026-09-17 (same class as the stdout-flush gate fix): an
-                // async txn makes the program reactive-unbounded — the main
-                // tail yields through __wait_for_trigger__ (loop_engine's
-                // no-wake/no-exit branch). The call is backend-emitted, so
-                // liveness must root its helper alongside the txn.
-                if t.is_async {
-                    self.roots.insert("__wait_for_trigger__".into());
-                }
+                self.root_txn_dispatch(t);
             }
             TopLevel::Export(e) => {
                 // ABI surface: the exported defn/txn is always emitted.
@@ -286,12 +320,7 @@ impl<'a> Builder<'a> {
                 if let TopLevel::Transaction(t) = e.inner.as_ref() {
                     self.index_txn(t);
                     self.roots.insert(t.name.clone());
-                    if t.is_reactive {
-                        self.roots.insert(t.name.clone());
-                    }
-                    if t.is_async {
-                        self.roots.insert("__wait_for_trigger__".into());
-                    }
+                    self.root_txn_dispatch(t);
                 }
             }
             TopLevel::IsrHandler(isr) => {
@@ -1145,6 +1174,45 @@ mod tests {
         let l = DefnLiveness::build(&items);
         assert!(l.is_live("helper"));
         assert!(!l.is_live("unused_helper"));
+    }
+
+    #[test]
+    fn external_roots_resurrect_view_bound_txn() {
+        // 2026-10-07 (view-surface liveness): a b-trigger-bound callable txn
+        // has no Briev call edge — only the DOM shim fires it by name. The
+        // webstack path passes it as an external root; without the root it is
+        // dropped and the compiled button resolves a missing wasm export.
+        let items = vec![
+            txn("main_node", true, vec![Statement::Term(None)]),
+            txn("go", false, vec![Statement::Term(None)]),
+        ];
+        assert!(!DefnLiveness::build(&items).is_live("go"));
+        let mut extra = HashSet::new();
+        extra.insert("go".to_string());
+        assert!(DefnLiveness::build_with_roots(&items, &extra).is_live("go"));
+    }
+
+    #[test]
+    fn empty_extra_roots_matches_build() {
+        let items = vec![
+            txn("main_node", true, vec![Statement::Term(None)]),
+            defn("orphan", vec![Statement::Term(None)]),
+        ];
+        let a = DefnLiveness::build(&items);
+        let b = DefnLiveness::build_with_roots(&items, &HashSet::new());
+        assert_eq!(a.is_live("main_node"), b.is_live("main_node"));
+        assert_eq!(a.is_live("orphan"), b.is_live("orphan"));
+    }
+
+    #[test]
+    fn reset_lifecycle_txn_is_rooted() {
+        // 2026-10-07: `__reset_*` fires from the DOM shim by name, never from
+        // a Briev edge — root it unconditionally.
+        let items = vec![
+            txn("main_node", true, vec![Statement::Term(None)]),
+            txn("__reset_widget", false, vec![Statement::Term(None)]),
+        ];
+        assert!(DefnLiveness::build(&items).is_live("__reset_widget"));
     }
 
     #[test]

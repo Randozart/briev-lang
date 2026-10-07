@@ -13,6 +13,21 @@ use crate::ast::*;
 use crate::ast::{Expr, Statement, Type};
 use crate::backend::llvm::emit_stmt;
 
+/// 2026-10-07 (frgn void signature agreement): build the `call` line for a
+/// foreign symbol. A void callee emits `call void @sym(args)` (no result
+/// assignment); otherwise `%dst = call ret @sym(args)`. Shared by the direct
+/// (`emit_direct_frgn_call`) and bridge (`emit_bridge_frgn_call`) emitters so
+/// the call form can never disagree with the `declare` loop
+/// (`ResultType::is_void`, llvm/mod.rs). `dst`/`ret_llvm` are ignored when
+/// `is_void` — pass `""` for `dst` to make that explicit at the call site.
+fn frgn_call_line(is_void: bool, dst: &str, ret_llvm: &str, symbol: &str, args: &str) -> String {
+    if is_void {
+        format!("call void @{}({})", symbol, args)
+    } else {
+        format!("{} = call {} @{}({})", dst, ret_llvm, symbol, args)
+    }
+}
+
 /// 2026-08-07 (Phase 7): the source of a Boolean mask in `data[mask]` — a
 /// compile-time Boolean list literal, or a Bool[N] state field (by its %State
 /// field index).
@@ -4359,43 +4374,29 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             })
             .collect();
         let ret_type = sig.result_type.return_type().unwrap_or(Type::int());
+        let call_args = arg_strs.join(", ");
         // 2026-07-19: Void-returning functions must not have a name assignment.
-        let ret_llvm = self.llvm_ret_abi_type(&ret_type);
-        if ret_type == Type::Void {
-            writeln!(
-                out,
-                "{}call {} @{}({})",
-                indent,
-                ret_llvm,
-                symbol,
-                arg_strs.join(", ")
-            )
-            .ok();
-            TypedRegister {
-                name: v.to_string(),
-                ty: ret_type,
-            }
+        // 2026-10-07 (frgn void): a result OMITTED from the signature
+        // (`frgn navigate(url: String)`, no `->`) is void too — the old
+        // `return_type().unwrap_or(int)` fallback emitted `call i32 @navigate`
+        // against `declare void @navigate` (funcref signature mismatch; the
+        // wasm backend lowers it as a trap stub). Gate on the shared
+        // `ResultType::is_void` predicate the declare loop uses.
+        if sig.result_type.is_void() {
+            writeln!(out, "{}{}", indent, frgn_call_line(true, "", "", symbol, &call_args)).ok();
         } else {
-            writeln!(
-                out,
-                "{} {} = call {} @{}({})",
-                indent,
-                v,
-                ret_llvm,
-                symbol,
-                arg_strs.join(", ")
-            )
-            .ok();
-            // 2026-08-28 (Bug #5): the declared result type IS the ABI
-            // contract — a `-> String` frgn returns a Briev block (the
-            // compiler's runtime helpers), a `-> CStr` frgn returns a raw
-            // C string. No implicit conversion here: the caller crosses the
-            // variant boundary with an explicit cast (`v as String`), which
-            // the casting graph resolves to briev_cstr_to_briev.
-            TypedRegister {
-                name: v.to_string(),
-                ty: ret_type,
-            }
+            let ret_llvm = self.llvm_ret_abi_type(&ret_type);
+            writeln!(out, "{}{}", indent, frgn_call_line(false, v, &ret_llvm, symbol, &call_args)).ok();
+        }
+        // 2026-08-28 (Bug #5): the declared result type IS the ABI contract —
+        // a `-> String` frgn returns a Briev block (the compiler's runtime
+        // helpers), a `-> CStr` frgn returns a raw C string. No implicit
+        // conversion here: the caller crosses the variant boundary with an
+        // explicit cast (`v as String`), which the casting graph resolves to
+        // briev_cstr_to_briev. (Void callers never read the result.)
+        TypedRegister {
+            name: v.to_string(),
+            ty: ret_type,
         }
     }
 
@@ -4414,40 +4415,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         return_path: &Option<crate::analysis::frgn_dispatch::ProtocolStep>,
         indent: &str,
     ) -> TypedRegister {
-        // 2026-07-22: Emit argument expressions and apply protocol transforms.
-        let mut transformed_args: Vec<TypedRegister> = Vec::new();
-        for (i, arg) in args.iter().enumerate() {
-            let reg = self.emit_expr(out, arg, indent);
-            let path_for_arg = param_paths.get(i).map(|p| std::slice::from_ref(p)).unwrap_or(&[]);
-            let result_reg = crate::glue::bridge::emit_protocol_chain(
-                out, &reg.name, path_for_arg, &self.llvm_type(&reg.ty),
-                &mut || self.fun.gen_reg(),
-            ).unwrap_or_else(|_| reg.name.clone());
-            transformed_args.push(TypedRegister {
-                name: result_reg,
-                ty: reg.ty.clone(),
-            });
-        }
-
-        // 2026-07-22: Emit the foreign call through the bridge.
-        // For now, emit a direct call with a bridge_ prefix to distinguish.
-        // 2026-07-24: Convert i64 args to ptr when the frgn param expects Ptr.
-        let bridge_args: Vec<TypedRegister> = transformed_args
-            .iter()
-            .zip(sig.inputs.iter())
-            .map(|(arg, (_, param_ty))| {
-                if matches!(param_ty, Type::Ptr(_)) && arg.ty == Type::int() {
-                    let ptr_reg = self.fun.gen_reg();
-                    writeln!(out, "{}  {} = inttoptr i64 {} to ptr", indent, ptr_reg, arg.name).ok();
-                    TypedRegister {
-                        name: ptr_reg,
-                        ty: Type::Ptr(Box::new(Type::int())),
-                    }
-                } else {
-                    arg.clone()
-                }
-            })
-            .collect();
+        // 2026-07-22/2026-07-24: emit and protocol-transform the arguments
+        // (extracted so this function stays within its complexity budget).
+        let bridge_args = self.emit_bridge_args(out, indent, args, sig, param_paths);
         let arg_strs: Vec<String> = bridge_args
             .iter()
             .map(|reg| format!("{} {}", self.llvm_type(&reg.ty), reg.name))
@@ -4460,26 +4430,30 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // `call ptr @bridge_location()` with no matching declare or shim key
         // ("use of undefined value '@bridge_location'").
         let bridge_name = sig.name.clone();
+        let call_args = arg_strs.join(", ");
 
-        if ret_type == Type::Void {
-            writeln!(
-                out,
-                "{}call {} @{}({})",
-                indent, ret_llvm, bridge_name, arg_strs.join(", ")
-            ).ok();
-        } else {
-            writeln!(
-                out,
-                "{} {} = call {} @{}({})",
-                indent, v, ret_llvm, bridge_name, arg_strs.join(", ")
-            ).ok();
-        }
+        // 2026-10-07 (frgn void): a result omitted from the signature
+        // (`frgn navigate(url: String)`, no `->`) is VOID — the old
+        // `ret_type == Type::Void` gate never saw it (omission fell back to
+        // Int) and emitted `call i32 @navigate` against `declare void
+        // @navigate` (funcref signature mismatch → wasm trap stub). No
+        // result register, no return transform.
+        writeln!(
+            out,
+            "{}{}",
+            indent,
+            frgn_call_line(sig.result_type.is_void(), v, &ret_llvm, &bridge_name, &call_args)
+        ).ok();
 
         // 2026-07-22: Transform return value back to Briev type.
         // 2026-08-28 (Bug #5): without a protocol chain the declared result
         // type IS the ABI contract (String = block, CStr = raw C string);
         // the caller crosses variants with an explicit cast.
-        let final_reg = if let Some(ret_path) = return_path {
+        // 2026-10-07 (frgn void): no result register exists for a void
+        // call — never run the return transform off `v`.
+        let final_reg = if sig.result_type.is_void() {
+            v.to_string()
+        } else if let Some(ret_path) = return_path {
             crate::glue::bridge::emit_protocol_chain(
                 out, v, std::slice::from_ref(ret_path), &ret_llvm,
                 &mut || self.fun.gen_reg(),
@@ -4495,6 +4469,50 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             name: final_reg,
             ty: ret_type,
         }
+    }
+
+    /// 2026-07-22/2026-07-24 (extracted 2026-10-07): emit the bridge call's
+    /// argument expressions, apply the per-parameter protocol transform
+    /// (`param_paths`), then convert an i64 arg to `ptr` when the frgn
+    /// parameter expects a pointer. Extracted from `emit_bridge_frgn_call`
+    /// to keep that function within its complexity/length budget.
+    fn emit_bridge_args(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        args: &[Expr],
+        sig: &crate::ast::ForeignSignature,
+        param_paths: &[crate::analysis::frgn_dispatch::ProtocolStep],
+    ) -> Vec<TypedRegister> {
+        let mut transformed_args: Vec<TypedRegister> = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let reg = self.emit_expr(out, arg, indent);
+            let path_for_arg = param_paths.get(i).map(|p| std::slice::from_ref(p)).unwrap_or(&[]);
+            let result_reg = crate::glue::bridge::emit_protocol_chain(
+                out, &reg.name, path_for_arg, &self.llvm_type(&reg.ty),
+                &mut || self.fun.gen_reg(),
+            ).unwrap_or_else(|_| reg.name.clone());
+            transformed_args.push(TypedRegister {
+                name: result_reg,
+                ty: reg.ty.clone(),
+            });
+        }
+        transformed_args
+            .iter()
+            .zip(sig.inputs.iter())
+            .map(|(arg, (_, param_ty))| {
+                if matches!(param_ty, Type::Ptr(_)) && arg.ty == Type::int() {
+                    let ptr_reg = self.fun.gen_reg();
+                    writeln!(out, "{}  {} = inttoptr i64 {} to ptr", indent, ptr_reg, arg.name).ok();
+                    TypedRegister {
+                        name: ptr_reg,
+                        ty: Type::Ptr(Box::new(Type::int())),
+                    }
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect()
     }
 
     /// 2026-08-09 (Phase 10): `spawn defn(args)` — a TASK spawn. The reference
@@ -5023,12 +5041,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // `call void` and the result a fresh dummy (never the callee's
         // return register — a void/i64 prototype mismatch poisons the
         // inlined body's operands).
-        let callee_is_void = self
-            .ctx
-            .defn_return_types
-            .get(name)
-            .map(|types| types.is_empty())
-            .unwrap_or(false);
+        // 2026-10-07: shared predicate (defns + frgns) — see
+        // `callee_declares_void`.
+        let callee_is_void = self.callee_declares_void(name);
         if callee_is_void {
             let dummy = self.fun.gen_reg();
             writeln!(
@@ -6065,10 +6080,15 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     let eq = self.fun.gen_reg();
                     let lp = self.string_ptr(out, indent, l);
                     let rp = self.string_ptr(out, indent, r);
-                    writeln!(out, "{}{} = call i64 @briev_str_eq({}ptr {}, ptr {})", indent, eq,
+                    // 2026-10-07 (wasm32): call + icmp use the defn's actual
+                    // return width (i{int_bits}: i64 native, i32 wasm32) — the
+                    // hardcoded i64 mismatched `define i32 @briev_str_eq` and
+                    // LLVM lowered it to a funcref-bitcast trap stub at runtime.
+                    let eq_ll = self.defn_call_ret_ll("briev_str_eq");
+                    writeln!(out, "{}{} = call {} @briev_str_eq({}ptr {}, ptr {})", indent, eq, eq_ll,
                         if self.ctx.defn_takes_state("briev_str_eq") { "ptr %state, " } else { "" }, lp, rp).ok();
                     let icmp = self.fun.gen_reg();
-                    writeln!(out, "{}{} = icmp ne i64 {}, 0", indent, icmp, eq).ok();
+                    writeln!(out, "{}{} = icmp ne {} {}, 0", indent, icmp, eq_ll, eq).ok();
                     writeln!(out, "{}{} = zext i1 {} to i8", indent, v, icmp).ok();
                     return TypedRegister { name: v.to_string(), ty: Type::bool_() };
                 }
@@ -6104,10 +6124,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     let eq = self.fun.gen_reg();
                     let lp = self.string_ptr(out, indent, l);
                     let rp = self.string_ptr(out, indent, r);
-                    writeln!(out, "{}{} = call i64 @briev_str_eq({}ptr {}, ptr {})", indent, eq,
+                    // 2026-10-07 (wasm32): Neq mirrors Eq — defn return width,
+                    // not hardcoded i64 (see defn_call_ret_ll).
+                    let eq_ll = self.defn_call_ret_ll("briev_str_eq");
+                    writeln!(out, "{}{} = call {} @briev_str_eq({}ptr {}, ptr {})", indent, eq, eq_ll,
                         if self.ctx.defn_takes_state("briev_str_eq") { "ptr %state, " } else { "" }, lp, rp).ok();
                     let icmp = self.fun.gen_reg();
-                    writeln!(out, "{}{} = icmp eq i64 {}, 0", indent, icmp, eq).ok();
+                    writeln!(out, "{}{} = icmp eq {} {}, 0", indent, icmp, eq_ll, eq).ok();
                     writeln!(out, "{}{} = zext i1 {} to i8", indent, v, icmp).ok();
                     return TypedRegister { name: v.to_string(), ty: Type::bool_() };
                 }
@@ -6626,7 +6649,10 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     "Bool" => "i8".to_string(),
                     "Char" => "i32".to_string(),
                     "Float" => "float".to_string(),
-                    // Int / UInt / Data / Bit — the i64 handle domain.
+                    // Int / UInt / Data / Bit — the i64 handle domain
+                    // (2026-10-06: stays i64 even on wasm32 — i64 values are
+                    // legal there; only pointer↔int RE-MATERIALIZATION narrows
+                    // to the pointer width, in Load#/Store#).
                     _ => "i64".to_string(),
                 }
             };
@@ -6718,8 +6744,26 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     } else {
                         ""
                     };
-                    writeln!(out, "{}{} = call {} @{}({}{} {})",
-                        indent, dst, dst_ll, fn_name, st, arg_ll, arg).ok();
+                    // 2026-10-07 (frgn void): a void callee (result omitted
+                    // from the frgn, or a defn with no `->`) DECLAREs `void`;
+                    // emitting `call {dst_ll}` here produced `call i32
+                    // @navigate` against `declare void @navigate` — a
+                    // funcref signature mismatch the wasm backend lowers to
+                    // a trap stub. Emit `call void` and define the lane's
+                    // destination with a zero so later steps stay closed.
+                    if self.callee_declares_void(fname) {
+                        writeln!(out, "{}call void @{}({}{} {})",
+                            indent, fname, st, arg_ll, arg).ok();
+                        let zero_ll = if dst_ll.starts_with('i') && dst_ll.len() > 1 {
+                            dst_ll.as_str()
+                        } else {
+                            "i64"
+                        };
+                        writeln!(out, "{}{} = add {} 0, 0", indent, dst, zero_ll).ok();
+                    } else {
+                        writeln!(out, "{}{} = call {} @{}({}{} {})",
+                            indent, dst, dst_ll, fn_name, st, arg_ll, arg).ok();
+                    }
                 }
                 crate::casting::graph::LaneKind::ExtCallDyn(fn_name) => {
                     // 2026-08-03: proto-binding transform (owned function
@@ -6753,6 +6797,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 crate::casting::graph::LaneKind::PtrToInt => {
                     // 2026-08-28: identity when the register is already an
                     // integer (an earlier repr step resolved the pointer).
+                    // 2026-10-06: Data/Int are the i64 handle domain (Int is
+                    // i64 on every target; wasm32 supports i64 values) — the
+                    // pointer is zero-extended into that handle. Pointer WIDTH
+                    // only matters where an address is re-materialized
+                    // (`inttoptr` in Load#/Store#), which truncs to the target
+                    // pointer width first.
                     if cur_ll == "i64" {
                         writeln!(out, "{}{} = add i64 0, {}", indent, dst, cur).ok();
                     } else {

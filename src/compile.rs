@@ -34,7 +34,7 @@ use briev_compiler::pipeline::{
     build_plugin_manager, check_types, compile_view, effective_view_html,
     evaluate_pending_comptime, lex_for_path, load_target_config, parse,
     preprocess_source_for_path, resolve_bind_routes, resolve_comptime_refs,
-    view_root_signals, CompiledView, ViewMountSpecs,
+    view_external_roots, view_root_signals, CompiledView, ViewMountSpecs,
 };
 
 /// Pipeline stage at which to emit a BEAST snapshot or IR snapshot.
@@ -872,7 +872,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         Result<briev_compiler::glue::web_generator::BindRoute, String>,
     >> = None;
 
-    let (codegen_output, ext) = codegen(&items, &mut universe, &pm, opts, alloc_strategies, needs_arena, resolved_frgns, enable_module_init, &mut web_layout, &view_signals, &collection_iterables, &mut bind_routes, &component_initializers)?;
+    let (codegen_output, ext) = codegen(&items, &mut universe, &pm, opts, alloc_strategies, needs_arena, resolved_frgns, enable_module_init, &mut web_layout, &view_signals, &view_bindings, &collection_iterables, &mut bind_routes, &component_initializers)?;
 
     // 2026-10-06 (BUGS.md:5698): a user-declared `txn` that liveness drops is
     // never called and never fired — without this the program compiles to an
@@ -880,8 +880,18 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // (a plain `txn` is the callable form; only `node` is reactive). Liveness
     // is rebuilt here rather than threaded through `codegen` to avoid growing
     // that already-long parameter list.
+    // 2026-10-07 (view-surface liveness): the rebuild must see the SAME
+    // external roots codegen seeded (trigger txns + b-bind sole-writer
+    // routes from the now-resolved `bind_routes`), or a view-bound txn
+    // warns "never called or fired" while actually live.
     {
-        let liveness = briev_compiler::analysis::defn_liveness::DefnLiveness::build(&items);
+        let empty_routes = std::collections::HashMap::new();
+        let routes = bind_routes.as_ref().unwrap_or(&empty_routes);
+        let extra_roots = view_external_roots(&view_bindings, routes);
+        let liveness = briev_compiler::analysis::defn_liveness::DefnLiveness::build_with_roots(
+            &items,
+            &extra_roots,
+        );
         for w in briev_compiler::analysis::defn_liveness::unfired_txn_warnings(
             &items,
             &user_txns,
@@ -1528,6 +1538,7 @@ fn codegen(
     enable_module_init: bool,
     web_layout: &mut Option<briev_compiler::glue::web_generator::StateLayout>,
     view_signals: &std::collections::HashSet<String>,
+    view_bindings: &[briev_compiler::view_compiler::Binding],
     collection_iterables: &std::collections::HashSet<String>,
     bind_routes: &mut Option<std::collections::HashMap<
         String,
@@ -1668,7 +1679,7 @@ fn codegen(
     // mechanism-less `node @ vector` declarations).
     let effective_isr_mechanism = opts.isr_mechanism.clone()
         .or_else(|| briev_compiler::config_tuning::target_settings_for(&tuning_triple).isr_mechanism);
-    let analysis = briev_compiler::backend::analyze_program(
+    let mut analysis = briev_compiler::backend::analyze_program(
         items,
         false,
         briev_compiler::config_tuning::target_settings_for(&tuning_triple).vector_min_width,
@@ -1818,6 +1829,26 @@ fn codegen(
             // The old TS emitter path is deprecated. Phase 6 will also invoke
             // GlueWebGenerator to produce the JS shim from view bindings.
             // Phase 5: Extension is .ll — compile_wasm will produce .wasm from it.
+            // 2026-10-07 (view-surface liveness, BUGS.md view-handler drop):
+            // the DOM shim is an EXTERNAL caller — `_txn(name)` resolves
+            // trigger-bound txns and b-bind routes against the wasm export
+            // table. A view-bound txn that defn-liveness drops compiles to a
+            // dead button (missing export → click throws). Seed those roots
+            // BEFORE the analysis moves into the backend: trigger names come
+            // from the compiled view (threaded through codegen), routes from
+            // the same transition-graph write sets `resolve_bind_routes`
+            // uses later for the shim (deterministic — the early run and the
+            // post-generate run return the identical map).
+            let route_map = resolve_bind_routes(
+                &Some(analysis.transition_graph.clone()),
+                items,
+                universe,
+            );
+            let web_roots = view_external_roots(view_bindings, &route_map);
+            analysis.defn_liveness =
+                briev_compiler::analysis::defn_liveness::DefnLiveness::build_with_roots(
+                    items, &web_roots,
+                );
             let mut b = LlvmBackend::new()
                 .with_webstack(true)
                 .with_int_bits(32)

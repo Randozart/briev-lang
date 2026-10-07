@@ -791,6 +791,21 @@ impl ResultType {
             _ => None,
         }
     }
+
+    /// 2026-10-07 (frgn void signature agreement): does this result declare
+    /// `void` in LLVM? The frgn DECLARE loop (llvm/mod.rs) and every frgn
+    /// CALL site (`emit_direct_frgn_call`, cast-lane `ExtCall`) must use
+    /// this one predicate — `call i32 @f` against `declare void @f` is a
+    /// funcref signature mismatch. Omission of a result (`frgn f(x: Int)`,
+    /// no `->`) is void, as is an explicit `-> Void` projection.
+    pub fn is_void(&self) -> bool {
+        match self {
+            ResultType::VoidType | ResultType::TrueAssertion => true,
+            ResultType::Projection(ts) => {
+                ts.is_empty() || ts.iter().any(|t| matches!(t, Type::Void))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

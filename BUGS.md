@@ -8738,11 +8738,11 @@ pointer with the wasm32 pointer width (`int_bits = 32`), not an opaque `ptr`.
 Then re-check the String-field obj layout (`store [1 x ptr]`) under wasm32.
 Gate: `brievc build` of the router smoke fixture + the console/dom examples.
 
-## Webstack (wasm32): runtime string comparison emits hardcoded-i64 pointer casts — 2026-10-06 OPEN
+## Webstack (wasm32): runtime string comparison emits hardcoded-i64 pointer casts — 2026-10-06 FIXED
 
 **Date:** 2026-10-06 (found fixing the router framework's runtime build)
-**Status:** OPEN — blocks runtime string comparison on wasm32, and therefore the
-router's route matching.
+**Status:** FIXED (2026-10-07) — all hardcoded-width pointer/int sites migrated
+to the target pointer width; verified by the router smoke at runtime.
 
 **Repro** (the router smoke; `path` comes from the host, so the comparison is
 RUNTIME, not folded):
@@ -8778,6 +8778,19 @@ on wasm32) in the cast-lane lowering and `Load#`/`Store#` address paths. Many
 sites hardcode `to i64` / `i64 …` in `src/backend/llvm/` (grep `ptrtoint ptr {}
 to i64`, `inttoptr i64`). Gate: this fixture + a runtime string-compare `.rbv`.
 
+**Resolution (2026-10-07):** the width is now derived from the target
+(`int_bits` = pointer width; wasm32 → 32). `ptr_int_ty()` plus
+`adapt_to_ptr_width()`/`widen_to_i64()`/`narrow_int_result()` (intrinsics.rs)
+are threaded through the cast lanes, `emit_load`/`store`/`copy`/`fill`/`free`/
+`malloc`, and the `Eq`/`Neq` frgn-return sites. The router smoke now builds and
+passes the runtime gate: `node gate.mjs` → 11/11 (route matching, `briev_str_eq`
+equal/different/length-mismatch, `str_len_bytes`, plus the four view-surface
+checks). Mechanical sweep `check_calls.py` is clean on the router, view-
+directives, and view-bind-edge IR, and on 25 buildable native fixtures.
+Remaining hardcoded-`i64` call sites (separate latent class, same family):
+`emit_stmt.rs` `briev_str_next_char`, `helpers.rs` op-Identifier,
+`emit_toplevel.rs` `on_exit`, `intrinsics.rs` `__briev_coll_resize`.
+
 ## Webstack (wasm32): unpacked obj with a txn + String field emits invalid IR — 2026-10-06 OPEN
 
 **Repro:**
@@ -8799,3 +8812,64 @@ obj's inline fields), but its literal initializer stores the FIELD value (a
 (`%State = { i64 }`) and builds fine. This blocks the nicer `Router` obj shape;
 the router ships as free functions (`current_path`/`route_name`/`navigate`)
 until this lands.
+
+## Webstack (wasm32): a `frgn` with no result emits `call i32` against `declare void` — 2026-10-07 FIXED
+
+**Date:** 2026-10-07 (found sweeping the router smoke IR with a mechanical
+call-vs-declare checker)
+**Status:** FIXED same day.
+
+**Repro:** `frgn navigate(url: String) from #Web;` (router.bv — no `->`). The
+declare loop emits `declare void @navigate(ptr)` (a result omitted from the
+signature is void), but the CALL site emitted `call i32 @navigate(ptr %t25)`.
+On wasm32 a funcref signature mismatch lowers to an `unreachable` trap stub;
+`llc` ACCEPTS the module, so only a runtime probe or the IR checker catches it.
+
+**Root cause:** the void predicate was `ret_type == Type::Void` where
+`ret_type = result_type.return_type().unwrap_or(Type::int())`. An omitted
+result is `Projection([])` → `return_type()` = `None` → fell back to `Int`
+(`i32` on wasm32), so the void branch was never taken. Three call emitters
+shared the bug: `emit_direct_frgn_call`, the cast-lane `ExtCall` arm, and
+`emit_bridge_frgn_call`.
+
+**Fix:** one shared predicate `ResultType::is_void()` (ast/top.rs) —
+`VoidType | TrueAssertion`, or a `Projection` that is empty or contains
+`Void`. The declare loop and every call emitter now agree via it; a shared
+`frgn_call_line()` builds the `call`/`= call` text; `callee_declares_void()`
+(covers defns with an empty return list + frgns) unifies the user-call path.
+
+**Gate:** `grep @navigate rs_tmp.ll` → `call void @navigate(ptr %t25)` matches
+`declare void @navigate(ptr)`; `check_calls.py` OK; router runtime gate 11/11.
+
+## Webstack: a `b-trigger`-bound txn was dropped by defn-liveness — dead button — 2026-10-07 FIXED
+
+**Date:** 2026-10-07 (found wiring the router smoke's click handler)
+**Status:** FIXED same day.
+
+**Repro:** a view `<button b-trigger:click="go">` whose `go` is a callable
+(non-reactive) txn. `go` has no Briev call edge — only the DOM shim fires it by
+name (`_txn('go')` → `exports['go']`). Defn-liveness dropped it, so the compiled
+wasm exported no `go`, and the click threw a `TypeError` at runtime.
+
+**Root cause:** the shim's external dispatch names were not liveness roots.
+Trigger txns contribute no state-field signal (`view_root_signals` skips
+`Directive::Trigger`), and `b-bind:value` writers likewise have no call edge.
+The pre-function emission loop (`llvm/mod.rs`) was also ungated, so a dead txn's
+pre-fn emitted calls into dropped helpers, tripping the IR-scan safety net
+("unreached defn `briev_str_eq`").
+
+**Fix:** frontend-driven extra roots.
+`DefnLiveness::build_with_roots(items, extra_roots)` (native `build` = empty
+set). The webstack path in `compile.rs` seeds
+`pipeline::view_external_roots(bindings, routes)` — `b-trigger` handler txns
+(top-level and `b-each` item triggers) plus the sole-writer txn of each
+`b-bind:value` field. Only `b-bind` fields qualify: rooting EVERY sole writer
+over-roots (`cycle_color`) and mutes the unfired-txn warning. Compiler-generated
+`__reset_*` lifecycle txns are rooted unconditionally (the shim fires them by
+name). The pre-fn and async-body emission loops are now gated on `live_defns`.
+
+**Gate:** router smoke exports `go` (`define void @go`), gate.mjs 11/11
+including `go("/about")` fires `navigate` and commits a state flush;
+view-directives builds with exactly the three correct unfired warnings
+(`cycle_color`, `toggle_dark`, `toggle_sidebar`); view-bind-edge emits
+`set_greeting` with no false warning.

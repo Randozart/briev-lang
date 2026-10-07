@@ -742,6 +742,15 @@ impl LlvmBackend {
         }
     }
 
+    /// 2026-10-06 (wasm32 pointer width): the integer type for pointer↔integer
+    /// conversions and pointer-sized arithmetic. Derived from `int_bits` (the
+    /// data-layout pointer width — i32 on wasm32, i64 on native). NOT for
+    /// ABI-fixed 64-bit values (String `[len]` headers, f64 bit patterns,
+    /// Bits<64>), which stay i64.
+    pub(super) fn ptr_int_ty(&self) -> String {
+        format!("i{}", self.ctx.int_bits)
+    }
+
     pub(super) fn llvm_type(&self, ty: &Type) -> String {
         // 2026-08-22 (spec-conformance Phase 3b): a structural sum
         // (`Int | String`) is a TAGGED HANDLE — i64 pointing at a 16-byte
@@ -2492,6 +2501,13 @@ impl LlvmBackend {
     }
 
     pub(super) fn emit_init_state(&mut self, out: &mut String) {
+        // 2026-10-06: clear locals at function entry — same stale-binding leak
+        // as emit_persistent_cell_ticks (2026-06-28): let_bindings is shared
+        // across emissions, so a top-level `let path` whose name collides with
+        // an earlier defn's PARAMETER (router.bv `route_name(path: String)`)
+        // resolved to that defn's prologue register `%ac0` — an undefined
+        // value in @init_state (llc: "use of undefined value '%ac0'").
+        self.fun.clear_locals();
         writeln!(out, "define void @init_state({}) local_unnamed_addr #0 {{", self.ctx.state_ptr_param).ok();
         writeln!(out, "  entry:").ok();
         let mut fields: Vec<(String, usize, String)> = self.ctx.field_index_map.iter()
@@ -5192,6 +5208,44 @@ impl LlvmBackend {
         } else {
             self.llvm_type(ty)
         }
+    }
+
+    /// 2026-10-07 (wasm32 pointer width): LLVM call-site return type for a
+    /// Briev defn, matching the `define` line emitted by `emit_definition`
+    /// (which uses `llvm_ret_abi_type(output)`). A call site hardcoding
+    /// `call i64 @f(...)` against a `define i32 @f(...)` (Int = i{int_bits}
+    /// = i32 on wasm32) is a signature mismatch that LLVM lowers to a
+    /// funcref-bitcast trap stub at runtime (`..Lbriev_str_eq_bitcast_invalid`
+    /// in the web-router fixture) while llc still accepts the module.
+    /// Registered defns use their registered return type; unregistered
+    /// (extern/frgn C) symbols keep the legacy i64 — matches the user-call
+    /// path in `emit_user_call` (2026-07-14). Call sites for VOID defns must
+    /// use the explicit `callee_is_void` path, not this helper.
+    pub(super) fn defn_call_ret_ll(&self, name: &str) -> String {
+        match self.ctx.defn_return_types.get(name).and_then(|t| t.first()) {
+            Some(ty) => self.llvm_ret_abi_type(ty),
+            None => "i64".to_string(),
+        }
+    }
+
+    /// 2026-10-07 (frgn void signature agreement): does `name` declare
+    /// `void` in LLVM? Defns: an EMPTY registered return list. Frgns:
+    /// `ResultType::is_void` — the same predicate the declare loop uses
+    /// (`ResultType::is_void`, llvm/mod.rs). Every call site that emits
+    /// against a symbol's declare (user calls, cast-lane `ExtCall`,
+    /// frgn direct calls) consults this: `call i32 @navigate` vs
+    /// `declare void @navigate` is a funcref signature mismatch that the
+    /// wasm backend lowers to a trap stub (llc accepts the module, so
+    /// only the mechanical IR check or a runtime probe catches it).
+    pub(super) fn callee_declares_void(&self, name: &str) -> bool {
+        if let Some(types) = self.ctx.defn_return_types.get(name) {
+            return types.is_empty();
+        }
+        self.ctx
+            .frgn_map
+            .get(name)
+            .map(|sig| sig.result_type.is_void())
+            .unwrap_or(false)
     }
 
     pub(super) fn emit_library_shim(&mut self, out: &mut String, txns: &[(String, &crate::ast::Transaction)]) {

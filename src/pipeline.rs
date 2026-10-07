@@ -626,6 +626,63 @@ pub fn view_root_signals(
     set
 }
 
+/// 2026-10-07 (view-surface liveness, BUGS.md view-handler drop): the
+/// transaction names the DOM shim fires EXTERNALLY — `b-trigger` handlers
+/// at top level and inside `b-each` item templates. The shim resolves them
+/// against the wasm export table (`_txn(name)` → `exports[name] ||
+/// exports["txn_"+name]`), so a trigger-bound txn that defn-liveness drops
+/// compiles to a dead button: the export is missing and the click throws at
+/// runtime. Trigger txns contribute NO field signal, so `view_root_signals`
+/// cannot cover them (`Directive::Trigger { .. } => {}` above); they are
+/// roots exactly like reactor dispatch names. Computed from the PARSED
+/// bindings — never by re-scanning view HTML. Empty for non-view builds.
+pub fn view_trigger_txns(
+    bindings: &[crate::view_compiler::Binding],
+) -> std::collections::HashSet<String> {
+    use crate::view_compiler::{Directive, ItemDirective};
+    let mut set = std::collections::HashSet::new();
+    for b in bindings {
+        match &b.directive {
+            Directive::Trigger { txn, .. } => {
+                set.insert(txn.clone());
+            }
+            Directive::Each { item_bindings, .. } => {
+                for ib in item_bindings {
+                    if let ItemDirective::Trigger { txn, .. } = &ib.directive {
+                        set.insert(txn.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    set
+}
+
+/// 2026-10-07 (view-surface liveness): the full external-txn root set for
+/// the webstack shim = trigger txns (above) + the sole-writer txn of each
+/// `b-bind:value` field, looked up in `resolve_bind_routes`'s map. ONLY
+/// b-bind fields qualify — a display-only field (b-text/b-when/b-class)
+/// reads state but never fires its writer, so rooting every sole writer
+/// would silently keep dead txns alive and mute the unfired-txn warning.
+pub fn view_external_roots(
+    bindings: &[crate::view_compiler::Binding],
+    routes: &std::collections::HashMap<
+        String,
+        Result<crate::glue::web_generator::BindRoute, String>,
+    >,
+) -> std::collections::HashSet<String> {
+    use crate::view_compiler::Directive;
+    let mut roots = view_trigger_txns(bindings);
+    for b in bindings {
+        let Directive::Bind { target } = &b.directive else { continue };
+        if let Some(Ok(route)) = routes.get(target) {
+            roots.insert(route.txn.clone());
+        }
+    }
+    roots
+}
+
 pub fn resolve_bind_routes(
     graph: &Option<crate::analysis::transition_graph::ReactorTransitionGraph>,
     items: &[crate::ast::TopLevel],
@@ -1217,4 +1274,112 @@ pub fn check_types(
             let msgs: Vec<String> = errors.iter().map(|e| format!("{}", e)).collect();
             format!("type errors:\n  {}", msgs.join("\n  "))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::glue::web_generator::{BindRoute, ParamKind};
+    use crate::view_compiler::{Binding, Directive, ItemBinding, ItemDirective};
+
+    fn bind(element_id: &str, target: &str) -> Binding {
+        Binding {
+            element_id: element_id.to_string(),
+            directive: Directive::Bind {
+                target: target.to_string(),
+            },
+        }
+    }
+
+    fn trigger(element_id: &str, txn: &str) -> Binding {
+        Binding {
+            element_id: element_id.to_string(),
+            directive: Directive::Trigger {
+                event: "click".to_string(),
+                txn: txn.to_string(),
+                params: vec![],
+            },
+        }
+    }
+
+    fn routes(
+        entries: &[(&str, &str)],
+    ) -> std::collections::HashMap<String, Result<BindRoute, String>> {
+        entries
+            .iter()
+            .map(|(field, txn)| {
+                (
+                    field.to_string(),
+                    Ok(BindRoute {
+                        txn: txn.to_string(),
+                        param_kind: ParamKind::String,
+                    }),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn trigger_txns_are_collected() {
+        let bindings = vec![
+            trigger("btn1", "go"),
+            trigger("btn2", "toggle"),
+            bind("input", "name"),
+        ];
+        let set = view_trigger_txns(&bindings);
+        assert!(set.contains("go"));
+        assert!(set.contains("toggle"));
+        assert_eq!(set.len(), 2, "b-bind contributes no trigger root");
+    }
+
+    #[test]
+    fn each_item_trigger_txns_are_collected() {
+        let bindings = vec![Binding {
+            element_id: "list".to_string(),
+            directive: Directive::Each {
+                iterable: "items".to_string(),
+                item_name: "item".to_string(),
+                template_html: String::new(),
+                container_id: "list".to_string(),
+                item_bindings: vec![ItemBinding {
+                    marker: 0,
+                    directive: ItemDirective::Trigger {
+                        event: "click".to_string(),
+                        txn: "remove_item".to_string(),
+                    },
+                }],
+                key_expr: "item".to_string(),
+            },
+        }];
+        let set = view_trigger_txns(&bindings);
+        assert!(set.contains("remove_item"));
+    }
+
+    #[test]
+    fn external_roots_add_only_bind_routes() {
+        // Trigger txns + the sole-writer of each b-bind field; a display-only
+        // field present in `routes` is NOT rooted unless bound.
+        let bindings = vec![
+            trigger("btn", "go"),
+            bind("name_input", "name"),
+        ];
+        let routes = routes(&[("name", "set_name"), ("unbound_field", "set_unbound")]);
+        let roots = view_external_roots(&bindings, &routes);
+        assert!(roots.contains("go"));
+        assert!(roots.contains("set_name"));
+        assert!(!roots.contains("set_unbound"));
+    }
+
+    #[test]
+    fn external_roots_skip_unresolved_bind() {
+        // A b-bind whose field has no route (multiple/zero writers) adds
+        // nothing — the shim surfaces a diagnostic elsewhere.
+        let bindings = vec![bind("input", "ambiguous")];
+        let mut routes = std::collections::HashMap::new();
+        routes.insert(
+            "ambiguous".to_string(),
+            Err("multiple writers".to_string()),
+        );
+        assert!(view_external_roots(&bindings, &routes).is_empty());
+    }
 }

@@ -591,6 +591,33 @@ fn widen_to_i64(backend: &mut LlvmBackend, out: &mut String, reg: &str, indent: 
     r
 }
 
+/// 2026-10-06 (wasm32 pointer width): adapt an address/handle register to the
+/// target pointer width (`i{int_bits}`) before `inttoptr`/`free` — an i64
+/// Data/Alloc handle must narrow on wasm32, a chain-internal i64 must match
+/// the declared operand. Returns the (possibly fresh) register name.
+/// A no-op when the register's LLVM type already IS the pointer width.
+fn adapt_to_ptr_width(
+    backend: &mut LlvmBackend, out: &mut String, reg: &BTypedRegister, indent: &str,
+) -> String {
+    let ity = backend.ptr_int_ty();
+    let ity_bits = backend.ctx.int_bits as usize;
+    let have = backend.llvm_type(&reg.ty);
+    let have_bits = have.strip_prefix('i').and_then(|n| n.parse::<usize>().ok());
+    match have_bits {
+        Some(w) if w > ity_bits => {
+            let t = backend.fun.gen_reg();
+            writeln!(out, "{}{} = trunc {} {} to {}", indent, t, have, reg.name, ity).ok();
+            t
+        }
+        Some(w) if w < ity_bits => {
+            let t = backend.fun.gen_reg();
+            writeln!(out, "{}{} = zext {} {} to {}", indent, t, have, reg.name, ity).ok();
+            t
+        }
+        _ => reg.name.clone(),
+    }
+}
+
 // 2026-07-18: Alloc# — compiler-delegated allocation with triple dispatch.
 // Args:
 //   Alloc#(size)                        — compiler picks (scope-based)
@@ -823,19 +850,24 @@ fn emit_ring_buffer_alloc(
     BTypedRegister { name: v.to_string(), ty: Type::int() }
 }
 
-// 2026-07-18: Emit @malloc for a size register, returning ptrtoint'd i64.
+// 2026-07-18: Emit @malloc for a size register, returning the ptrtoint'd
+// handle. 2026-10-06 (wasm32): the size is an Int (i{int_bits}) — widen to
+// i64 for the C malloc ABI (`declare @malloc(i64)`), and box the resulting
+// address at the POINTER width (the handle lives in Int/Data registers,
+// which are i{int_bits} on wasm32). No-op on x86_64 (int_bits=64).
 fn emit_malloc_inline(
     backend: &mut LlvmBackend, out: &mut String, v: &str, size: &str, indent: &str,
 ) -> BTypedRegister {
     let name = v.trim_start_matches('%');
-    writeln!(out, "{}%{}_p = call ptr @malloc(i64 {})", indent, name, size).ok();
-    writeln!(out, "{}{} = ptrtoint ptr %{}_p to i64", indent, v, name).ok();
+    let size64 = widen_to_i64(backend, out, size, indent);
+    let ity = backend.ptr_int_ty();
+    writeln!(out, "{}%{}_p = call ptr @malloc(i64 {})", indent, name, size64).ok();
+    writeln!(out, "{}{} = ptrtoint ptr %{}_p to {}", indent, v, name, ity).ok();
     backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Malloc);
     let remaining_reg = backend.fun.gen_reg();
-    writeln!(out, "{} {} = add i64 {}, 0", indent, remaining_reg, size).ok();
+    writeln!(out, "{} {} = add {} {}, 0", indent, remaining_reg, ity, size).ok();
     backend.fun.fat_ptrs.insert(v.to_string(), (v.to_string(), "0".to_string(), remaining_reg));
-    // 2026-07-18: Alloc# returns i64 (ptrtroint), not ptr.
-    // The register already holds ptrtoint ptr %malloc_p to i64.
+    // 2026-07-18: Alloc# returns the ptrtoint'd handle, not ptr.
     BTypedRegister { name: v.to_string(), ty: Type::int() }
 }
 
@@ -846,22 +878,23 @@ fn emit_free(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
-    let ptr_reg = emit_arg(backend, out, &args[0], indent);
+    let ptr_reg = backend.emit_expr(out, &args[0], indent);
     // Look up the allocation strategy for the pointer register.
-    let strategy = backend.fun.alloc_strategies.get(&ptr_reg);
+    // (cloned: the Malloc arm needs `&mut backend` for width adaptation.)
+    let strategy = backend.fun.alloc_strategies.get(&ptr_reg.name).cloned();
     match strategy {
         // 2026-07-18: Inline, RingBuffer, Arena, Alloca — no Free# needed.
         Some(AllocStrategy::Arena) | Some(AllocStrategy::Alloca)
             | Some(AllocStrategy::Inline) | Some(AllocStrategy::RingBuffer) => {}
         // 2026-07-18: Config strategy — check the free field from config.
         Some(AllocStrategy::Config(name)) => {
-            match ALLOC_CONFIG.lookup_free(name) {
+            match ALLOC_CONFIG.lookup_free(&name) {
                 Some("none") => {}  // no-op
                 Some(fn_name) => {   // custom free function
-                    writeln!(out, "{}call void @{}(ptr {})", indent, fn_name, ptr_reg).ok();
+                    writeln!(out, "{}call void @{}(ptr {})", indent, fn_name, ptr_reg.name).ok();
                 }
                 None => {            // default → @free
-                    writeln!(out, "{}call void @free(ptr {})", indent, ptr_reg).ok();
+                    writeln!(out, "{}call void @free(ptr {})", indent, ptr_reg.name).ok();
                 }
             }
         }
@@ -869,8 +902,12 @@ fn emit_free(
             // Heap-allocated (Malloc) or unknown → emit @free.
             // 2026-08-01 (D2): a Ptr value is stored as an i64 handle (ptrtoint
             // at store); the handle must be inttoptr'd before the @free call.
+            // 2026-10-06 (wasm32): adapt the handle to the pointer width first
+            // (`inttoptr i64 <i32 reg>` is an operand-type mismatch).
+            let ity = backend.ptr_int_ty();
+            let h = adapt_to_ptr_width(backend, out, &ptr_reg, indent);
             let p = backend.fun.gen_reg();
-            writeln!(out, "{}  {} = inttoptr i64 {} to ptr", indent, p, ptr_reg).ok();
+            writeln!(out, "{}  {} = inttoptr {} {} to ptr", indent, p, ity, h).ok();
             writeln!(out, "{}call void @free(ptr {})", indent, p).ok();
         }
     }
@@ -882,18 +919,34 @@ fn emit_free(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
-    let addr = emit_arg(backend, out, &args[0], indent);
+    let addr_reg = backend.emit_expr(out, &args[0], indent);
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+    // 2026-10-06 (wasm32 pointer width): adapt the address register to the
+    // pointer width before `inttoptr` (an i64 Data/Alloc handle must narrow
+    // on wasm32 — `inttoptr i64 <i32 reg>` is an operand-type mismatch).
+    let ity = backend.ptr_int_ty();
+    let addr_op = adapt_to_ptr_width(backend, out, &addr_reg, indent);
+    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, ity, addr_op).ok();
     let bytes = args.get(1).and_then(|a| if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }).unwrap_or(8);
     writeln!(out, "{}{} = load i{}, ptr {}", indent, v, bytes * 8, ptr).ok();
-    // 2026-07-18: Narrow loads (< 8 bytes) are zero-extended to i64 so the
-    // result matches the declared return type (Int = i64). Without this,
-    // comparisons of loaded bytes fail (icmp expects i64, got i8).
-    if bytes < 8 {
-        let zext = backend.fun.gen_reg();
-        writeln!(out, "{}{} = zext i{} {} to i64", indent, zext, bytes * 8, v).ok();
-        return BTypedRegister { name: zext, ty: Type::int() };
+    // 2026-10-06 (wasm32): Load# declares `-> Int`, and Int is i{int_bits}
+    // (i32 on wasm32) — but the loaded slot width is ABI-fixed (the String
+    // `[len]` header is 8 bytes everywhere). Adapt the loaded value to the
+    // Int width: the return signature and every consumer are i{int_bits}.
+    // 2026-07-18: without the narrow-load extension, comparisons of loaded
+    // bytes fail (operand-type mismatch). On native (int_bits=64) this is
+    // the original zext-to-i64 / direct-return behaviour — a no-op diff.
+    let load_w = bytes * 8;
+    let int_w = backend.ctx.int_bits as usize;
+    if load_w < int_w {
+        let ext = backend.fun.gen_reg();
+        writeln!(out, "{}{} = zext i{} {} to i{}", indent, ext, load_w, v, int_w).ok();
+        return BTypedRegister { name: ext, ty: Type::int() };
+    }
+    if load_w > int_w {
+        let tr = backend.fun.gen_reg();
+        writeln!(out, "{}{} = trunc i{} {} to i{}", indent, tr, load_w, v, int_w).ok();
+        return BTypedRegister { name: tr, ty: Type::int() };
     }
     BTypedRegister { name: v.to_string(), ty: Type::int() }
 }
@@ -902,24 +955,42 @@ fn emit_store(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
-    let addr = emit_arg(backend, out, &args[0], indent);
-    let val = emit_arg(backend, out, &args[1], indent);
+    let addr_reg = backend.emit_expr(out, &args[0], indent);
+    let val = backend.emit_expr(out, &args[1], indent);
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
+    // 2026-10-06 (wasm32): the address is a pointer-sized Int — adapt the
+    // register's ACTUAL width before `inttoptr` (mirror emit_load).
+    let ity = backend.ptr_int_ty();
+    let addr_op = adapt_to_ptr_width(backend, out, &addr_reg, indent);
+    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, ity, addr_op).ok();
     let bytes = args.get(2).and_then(|a| if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }).unwrap_or(8);
     // 2026-09-09 (Family A): narrow stores must TRUNC the i64 value first —
     // `store i8 <i64 reg>` is invalid IR. (VolatileStore# already
     // width-adapts; plain Store# never hit a sub-word width until the
     // pure-Briev utf8_encode byte stores.) Loads already zext narrow
     // results (emit_load).
-    let stored = if bytes < 8 {
+    // 2026-10-06 (wasm32): generalize to BOTH directions against the slot
+    // width — Int is i32 on wasm32, so an 8-byte slot (the String `[len]`
+    // ABI) needs a WIDENING of the Int value, and the source type is the
+    // register's actual LLVM type, never a hardcoded i64.
+    let val_ty = backend.llvm_type(&val.ty);
+    let val_w = val_ty.strip_prefix('i').and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(backend.ctx.int_bits as usize);
+    let slot_w = bytes * 8;
+    let stored = if val_w > slot_w {
         let t = backend.fun.gen_reg();
-        writeln!(out, "{}{} = trunc i64 {} to i{}", indent, t, val, bytes * 8).ok();
+        writeln!(out, "{}{} = trunc {} {} to i{}", indent, t, val_ty, val.name, slot_w).ok();
+        t
+    } else if val_w < slot_w {
+        // Int is SIGNED — sext preserves the numeric value into the wider
+        // slot; Load# truncates back, so bit patterns round-trip.
+        let t = backend.fun.gen_reg();
+        writeln!(out, "{}{} = sext {} {} to i{}", indent, t, val_ty, val.name, slot_w).ok();
         t
     } else {
-        val.clone()
+        val.name.clone()
     };
-    writeln!(out, "{}store i{} {}, ptr {}", indent, bytes * 8, stored, ptr).ok();
+    writeln!(out, "{}store i{} {}, ptr {}", indent, slot_w, stored, ptr).ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
 }
@@ -992,14 +1063,20 @@ fn emit_copy(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
-    let dst = emit_arg(backend, out, &args[0], indent);
-    let src = emit_arg(backend, out, &args[1], indent);
+    let dst = backend.emit_expr(out, &args[0], indent);
+    let src = backend.emit_expr(out, &args[1], indent);
     let len = emit_arg(backend, out, &args[2], indent);
+    let ity = backend.ptr_int_ty();
     let dptr = backend.fun.gen_reg();
     let sptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, dptr, dst).ok();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, sptr, src).ok();
-    writeln!(out, "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", indent, dptr, sptr, len).ok();
+    // 2026-10-06 (wasm32): addresses adapt to the pointer width; the memcpy
+    // length is the intrinsic's i64 parameter — widen an Int length.
+    let d_op = adapt_to_ptr_width(backend, out, &dst, indent);
+    let s_op = adapt_to_ptr_width(backend, out, &src, indent);
+    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, dptr, ity, d_op).ok();
+    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, sptr, ity, s_op).ok();
+    let len64 = widen_to_i64(backend, out, &len, indent);
+    writeln!(out, "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", indent, dptr, sptr, len64).ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
 }
@@ -1008,14 +1085,40 @@ fn emit_fill(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
-    let ptr_arg = emit_arg(backend, out, &args[0], indent);
-    let val = emit_arg(backend, out, &args[1], indent);
+    let ptr_arg = backend.emit_expr(out, &args[0], indent);
+    let val = backend.emit_expr(out, &args[1], indent);
     let len = emit_arg(backend, out, &args[2], indent);
+    let ity = backend.ptr_int_ty();
     let p = backend.fun.gen_reg();
     let v8 = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, ptr_arg).ok();
-    writeln!(out, "{}{} = trunc i64 {} to i8", indent, v8, val).ok();
-    writeln!(out, "{}call void @llvm.memset.p0.i64(ptr {}, i8 {}, i64 {}, i1 false)", indent, p, v8, len).ok();
+    // 2026-10-06 (wasm32): address → pointer width; the fill value narrows
+    // from its OWN LLVM type to i8 (was a hardcoded `trunc i64`, which
+    // mismatches an i32 Int on wasm32); length widens to the intrinsic's i64.
+    let p_op = adapt_to_ptr_width(backend, out, &ptr_arg, indent);
+    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, ity, p_op).ok();
+    let val_ty = backend.llvm_type(&val.ty);
+    let val_w = val_ty.strip_prefix('i').and_then(|n| n.parse::<usize>().ok());
+    let val8 = match val_w {
+        Some(8) => val.name.clone(),
+        Some(w) if w > 8 => {
+            let t = backend.fun.gen_reg();
+            writeln!(out, "{}{} = trunc {} {} to i8", indent, t, val_ty, val.name).ok();
+            t
+        }
+        Some(w) if w < 8 => {
+            let t = backend.fun.gen_reg();
+            writeln!(out, "{}{} = zext {} {} to i8", indent, t, val_ty, val.name).ok();
+            t
+        }
+        // Non-integer value: the old contract boxes handles as i64.
+        _ => {
+            let t = backend.fun.gen_reg();
+            writeln!(out, "{}{} = trunc i64 {} to i8", indent, t, val.name).ok();
+            t
+        }
+    };
+    let len64 = widen_to_i64(backend, out, &len, indent);
+    writeln!(out, "{}call void @llvm.memset.p0.i64(ptr {}, i8 {}, i64 {}, i1 false)", indent, p, val8, len64).ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
 }

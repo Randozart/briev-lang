@@ -3548,16 +3548,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // served (frgn__getenv_* → __getenv_int/__getenv_briev) were
             // removed with lib/std/ffi/env.bv, so no frgn_map entry reaches
             // this loop with those symbols anymore.
-            let ret_ty: String = match sig.result_type {
-                crate::ast::ResultType::VoidType | crate::ast::ResultType::TrueAssertion => "void".into(),
-                crate::ast::ResultType::Projection(ref ts) => {
-                    if ts.is_empty() || ts.iter().any(|t| matches!(t, Type::Void)) { "void".into() }
-                    else {
-                        // 2026-07-26: Use protocol-driven LLVM type.
-                        let first_ret = &ts[0];
-                        protocol_llvm_type(first_ret, self.ctx.type_universe.as_ref())
-                    }
-                }
+            // 2026-10-07: single void predicate shared with frgn call sites
+            // (`ResultType::is_void`) — declare and call must agree.
+            let ret_ty: String = if sig.result_type.is_void() {
+                "void".into()
+            } else {
+                // 2026-07-26: Use protocol-driven LLVM type.
+                let first_ret = sig.result_type.return_type().expect("non-void frgn result");
+                protocol_llvm_type(&first_ret, self.ctx.type_universe.as_ref())
             };
             let param_tys: Vec<String> = sig.inputs.iter().map(|(_, t)| {
                 // 2026-07-26: Use protocol-driven LLVM type.
@@ -4128,11 +4126,30 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         for (name, txn) in &txns {
             let has_output = txn.output_type.is_some() || !txn.outputs.is_empty();
             if !txn.is_reactive && (!txn.parameters.is_empty() || has_output) { continue; }
+            // 2026-10-07 (view-surface liveness): the `pre_*` helper is
+            // emitted CODE of the txn — a dead txn's helper is dead too.
+            // This loop had no liveness gate while the main emission loop
+            // did, so a dead txn with no params/output (e.g. an unbound
+            // view-directives handler) still emitted its precondition —
+            // string-compare preconditions call `briev_str_eq`, tripping
+            // the IR-scan net ("emitted code calls unreached defns").
+            // Reactive txns are roots (always live), so gating here never
+            // drops a reactor-required helper.
+            if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(name.as_str()) {
+                continue;
+            }
             self.emit_pre_function(&mut out, txn, name);
         }
         // Async body functions — simple pre→fire wrapper for worker threads
         for (name, txn) in &txns {
             if self.async_txn_names.iter().any(|n| n.as_str() == name.as_str()) && !self.is_lightweight_async {
+                // 2026-10-07 (view-surface liveness): same gate as the main
+                // loop — a dead async txn's worker wrapper is dead code;
+                // async roots `__wait_for_trigger__`, not the txn name, so
+                // without this the wrapper body walked unclosed callees.
+                if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(name.as_str()) {
+                    continue;
+                }
                 self.emit_async_body(&mut out, txn, name);
                 writeln!(out).ok();
             }

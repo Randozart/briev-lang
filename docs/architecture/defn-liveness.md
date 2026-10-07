@@ -28,9 +28,16 @@ pillar, applied to functions instead of values).
 | cast/proto binding functions (named in `proto`/type metadata) | the casting graph calls them at emission |
 | every callee of top-level statements | their bodies join the closure from birth |
 | any defn, when live code uses `.^^` reflection | reflection reaches members by name |
+| compiler-generated `__reset_*` lifecycle txns | the DOM shim fires them by name (`_txn('__reset_' + inst)`), never from a Briev call edge |
+| **view-surface external roots** (webstack only) — `b-trigger` handler txns (top-level and `b-each` item triggers) + the sole-writer txn of each `b-bind:value` field | the DOM shim resolves them against the wasm export table; with no Briev call edge they are invisible to the call-graph closure. Supplied via `DefnLiveness::build_with_roots` — the webstack path in `compile.rs` computes them (`pipeline::view_external_roots`) from the parsed bindings + `resolve_bind_routes`. Only `b-bind` fields qualify — a display-only field (`b-text`/`b-when`/`b-class`) never fires its writer, so rooting every sole writer would mute the unfired-txn warning. |
 
 Everything else is live iff reachable through the call graph (explicit
 `Expr::Call` edges) plus the intrinsic→helper table.
+
+**Without the view-surface roots** a `b-trigger`-bound txn is dropped: the
+compiled button resolves a missing wasm export and the click throws at
+runtime (BUGS.md 2026-10-06 view-handler drop). `build` = `build_with_roots`
+with an empty set — native programs get the same verdict as before.
 
 ## The intrinsic→helper table
 

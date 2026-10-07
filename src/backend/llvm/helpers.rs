@@ -1131,7 +1131,6 @@ impl LlvmBackend {
         .ok();
         writeln!(out, "{}{}:", indent, fl).ok();
         let clean = self.emit_mask_tag(out, indent, boxed, &format!("cc{}", tag_prefix));
-        let free_ptr = self.emit_inttoptr_reg(out, indent, &format!("cf{}", tag_prefix), &clean);
         // 2026-09-10 (Family F): when the arena-aware __briev_free defn
         // exists (cast_lanes), route the temp free through it — a no-op that
         // keeps libc out of the symbol table for freestanding programs (the
@@ -1143,8 +1142,36 @@ impl LlvmBackend {
             // `term 0;` — it takes NO state. Gate on defn_takes_state so a
             // stateless caller does not reference an undefined %state.
             let st = if self.ctx.defn_takes_state("__briev_free") { "ptr %state, " } else { "" };
-            writeln!(out, "{}call i64 @__briev_free({}ptr {})", indent, st, free_ptr).ok();
+            // 2026-10-07 (wasm32): the defn is `(p: Int) -> Int` — param and
+            // return are i{int_bits} (i64 native, i32 wasm32). The old
+            // hardcoded `call i64 @__briev_free(ptr ...)` mismatched the
+            // wasm32 define (i32) in both positions; LLVM lowers a funcref
+            // signature mismatch to an unreachable trap stub.
+            let param_ll = self
+                .ctx
+                .defn_params
+                .get("__briev_free")
+                .and_then(|ps| ps.first())
+                .map(|t| self.llvm_type(t))
+                .unwrap_or_else(|| self.llvm_type(&Type::int()));
+            let ret_ll = self.defn_call_ret_ll("__briev_free");
+            // `clean` is the address as an i64 int (emit_mask_tag); adapt it
+            // to the defn's param LLVM type (i64 → no-op, ptr → inttoptr,
+            // narrower iN → trunc). i64 is the widest — never zext here.
+            let p = if param_ll == "i64" {
+                clean.clone()
+            } else {
+                let t = self.fun.gen_reg();
+                if param_ll == "ptr" {
+                    self.emit_inttoptr(out, indent, &t, &clean);
+                } else {
+                    writeln!(out, "{}{} = trunc i64 {} to {}", indent, t, clean, param_ll).ok();
+                }
+                t
+            };
+            writeln!(out, "{}call {} @__briev_free({}{} {})", indent, ret_ll, st, param_ll, p).ok();
         } else {
+            let free_ptr = self.emit_inttoptr_reg(out, indent, &format!("cf{}", tag_prefix), &clean);
             writeln!(out, "{}call void @free(ptr {})", indent, free_ptr).ok();
         }
         writeln!(out, "{}br label %{}", indent, afl).ok();
