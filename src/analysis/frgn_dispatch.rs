@@ -122,6 +122,18 @@ pub fn resolve_single_frgn(
         }
         // Generic: `#<Name>` -> the GLUE target named `<name>` (lowercased).
         let name = proto.trim_start_matches('#').to_lowercase();
+        // 2026-10-07 (host-boundary decision record, D1/D7): `#Web` is
+        // retired as a protocol. The browser is a library over the webstack
+        // target's host-import namespace — declare the host with a
+        // host-module path instead.
+        if name == "web" {
+            return Err(format!(
+                "frgn '{}': `#Web` is retired. Declare the browser host import \
+                 as a host-module path, e.g. `frgn {} from \"glue/web/web.js\";`.",
+                fb.effective_briev_name(),
+                fb.effective_briev_name(),
+            ));
+        }
         let target = glue_targets.get(&name).ok_or_else(|| {
             let mut available: Vec<&String> = glue_targets.keys().collect();
             available.sort();
@@ -134,18 +146,7 @@ pub fn resolve_single_frgn(
                 name,
             )
         })?;
-        let param_paths: Vec<ProtocolStep> = fb.inputs.iter()
-            .map(|(_, briev_type)| {
-                let foreign_type = lookup_foreign_type(briev_type, &target.protocols, universe);
-                compute_protocol_path(briev_type, &foreign_type, universe)
-                    .and_then(|steps| steps.into_iter().next().ok_or_else(|| "empty path".to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let return_path: Option<ProtocolStep> = fb.success_output.first()
-            .and_then(|(_, ty)| {
-                let foreign_type = lookup_foreign_type(ty, &target.protocols, universe);
-                compute_protocol_path(ty, &foreign_type, universe).ok()?.into_iter().next()
-            });
+        let (param_paths, return_path) = bridge_protocol_paths(fb, target, universe)?;
         return Ok(ResolvedFrgn::Bridge {
             language: target.language.clone(),
             param_paths,
@@ -161,6 +162,16 @@ pub fn resolve_single_frgn(
             compile_source: false,
             protocol_lib: Some(lib.clone()),
         });
+    }
+
+    // 2026-10-07 (host-boundary decision record, D7): a `.js` host-module
+    // path is a web host import. THE FILE IS THE HOST MODULE — its
+    // `export const` bodies are inlined into the generated shim and the frgn
+    // stub calls them by name (see `compile.rs` + `web_generator`). No
+    // protocol hashword, no GLUE language target: the browser is a library
+    // over the webstack target's host-import namespace.
+    if let Some(resolved) = resolve_host_module_frgn(fb, backend, glue_targets, universe) {
+        return resolved;
     }
 
     // 2026-07-22: Empty extension means the foreign path has no known type —
@@ -282,6 +293,62 @@ pub fn compute_protocol_path(
         target: _foreign_type.clone(),
         kind: TransformKind::Bitcast,
     }])
+}
+
+/// 2026-10-07 (host-boundary decision record, D7): resolve a `.js`
+/// host-module path — a web host import on the webstack backend. Returns
+/// `None` when `fb` is not such a path (so the caller falls through to the
+/// extension/GLUE resolution). The file's source is read + inlined by
+/// `compile.rs`; this resolves only the dispatch (ABI) side.
+fn resolve_host_module_frgn(
+    fb: &ForeignBinding,
+    backend: BackendKind,
+    glue_targets: &HashMap<String, GlueTarget>,
+    universe: Option<&crate::type_universe::TypeUniverse>,
+) -> Option<Result<ResolvedFrgn, String>> {
+    let FromSpec::Literal(path) = &fb.from else { return None };
+    let is_js = path.extension().and_then(|e| e.to_str()) == Some("js");
+    if !is_js || backend != BackendKind::Webstack {
+        return None;
+    }
+    // Transitional (Phase 1 moves these widths to a host profile): the web
+    // GLUE target still carries the wasm_import protocol map.
+    let Some(target) = glue_targets.get("web") else {
+        return Some(Err(format!(
+            "frgn '{}': the web host ABI is unavailable (lib/glue/web/glue.dbv missing)",
+            fb.effective_briev_name()
+        )));
+    };
+    Some(bridge_protocol_paths(fb, target, universe).map(|(param_paths, return_path)| {
+        ResolvedFrgn::Bridge {
+            language: "web".to_string(),
+            param_paths,
+            return_path,
+        }
+    }))
+}
+
+/// Compute the protocol transform chains for a bridge frgn against a GLUE
+/// target's protocol map. Shared by the `#<Name>` protocol branch and the
+/// `.js` host-module branch (host-boundary decision record D7).
+fn bridge_protocol_paths(
+    fb: &ForeignBinding,
+    target: &GlueTarget,
+    universe: Option<&crate::type_universe::TypeUniverse>,
+) -> Result<(Vec<ProtocolStep>, Option<ProtocolStep>), String> {
+    let param_paths: Vec<ProtocolStep> = fb.inputs.iter()
+        .map(|(_, briev_type)| {
+            let foreign_type = lookup_foreign_type(briev_type, &target.protocols, universe);
+            compute_protocol_path(briev_type, &foreign_type, universe)
+                .and_then(|steps| steps.into_iter().next().ok_or_else(|| "empty path".to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let return_path: Option<ProtocolStep> = fb.success_output.first()
+        .and_then(|(_, ty)| {
+            let foreign_type = lookup_foreign_type(ty, &target.protocols, universe);
+            compute_protocol_path(ty, &foreign_type, universe).ok()?.into_iter().next()
+        });
+    Ok((param_paths, return_path))
 }
 
 /// Look up the foreign protocol category for a Briev type, then map it
@@ -571,20 +638,32 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_single_frgn_web_protocol_resolves_by_name() {
-        // 2026-10-06 (#Web genericization, Option A): `#Web` resolves to the
-        // GLUE target named "web" BY NAME — no compiler hardcoding.
-        let fb = ForeignBinding::new(
+    fn test_resolve_single_frgn_web_retired_and_host_module_path() {
+        // 2026-10-07 (host-boundary decision record, D1/D7): `#Web` is
+        // retired as a protocol — a browser host import is now a `.js`
+        // host-module path on the webstack target.
+        let targets = sample_glue_targets();
+
+        let old = ForeignBinding::new(
             "log".to_string(),
             None,
             FromSpec::Protocol("#Web".to_string()),
             ForeignTarget::Native,
         );
-        let targets = sample_glue_targets();
-        let result = resolve_single_frgn(&fb, "", &targets, BackendKind::Llvm, None).unwrap();
+        let err = resolve_single_frgn(&old, "", &targets, BackendKind::Llvm, None).unwrap_err();
+        assert!(err.contains("retired"), "should report #Web retired (got: '{}')", err);
+
+        let host = ForeignBinding::new(
+            "now".to_string(),
+            None,
+            FromSpec::Literal(std::path::PathBuf::from("glue/web/web.js")),
+            ForeignTarget::Native,
+        );
+        let result =
+            resolve_single_frgn(&host, "js", &targets, BackendKind::Webstack, None).unwrap();
         match result {
             ResolvedFrgn::Bridge { language, .. } => assert_eq!(language, "web"),
-            other => panic!("Expected Bridge to the web target, got {:?}", other),
+            other => panic!("Expected Bridge to the web host, got {:?}", other),
         }
     }
 

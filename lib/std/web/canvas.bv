@@ -1,7 +1,7 @@
-// 2026-07-26: HTML Canvas API wrappers for frgn from #Web.
+// 2026-07-26: HTML Canvas API wrappers for frgn from "glue/web/web.js".
 // get_canvas retrieves a WebGL2 rendering context by canvas element ID.
 // present_frame is a no-op for WebGPU (frame submission is automatic).
 // For WebGL, the browser swaps buffers at the next vsync automatically.
 
-frgn get_canvas(id: String) -> CanvasContext from #Web;
-frgn present_frame(ctx: CanvasContext) from #Web;
+frgn get_canvas(id: String) -> CanvasContext from "glue/web/web.js";
+frgn present_frame(ctx: CanvasContext) from "glue/web/web.js";

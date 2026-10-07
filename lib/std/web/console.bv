@@ -1,8 +1,8 @@
-// 2026-07-26: Browser console API wrappers for frgn from #Web.
+// 2026-07-26: Browser console API wrappers for frgn from "glue/web/web.js".
 // Each declaration wraps a browser console method as a Briev function.
 // The GLUE [web] target generates JS import stubs from the type signatures
 // — no compiler knowledge of these function names.
 
-frgn log(msg: String) : console_log from #Web;
-frgn warn(msg: String) : console_warn from #Web;
-frgn error(msg: String) : console_error from #Web;
+frgn log(msg: String) : console_log from "glue/web/web.js";
+frgn warn(msg: String) : console_warn from "glue/web/web.js";
+frgn error(msg: String) : console_error from "glue/web/web.js";

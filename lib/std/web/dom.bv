@@ -1,7 +1,7 @@
-// 2026-07-26: DOM manipulation wrappers for frgn from #Web.
+// 2026-07-26: DOM manipulation wrappers for frgn from "glue/web/web.js".
 // These are low-level building blocks for render struct/obj bindings.
 // The view compiler generates higher-level bindings from b-* directives;
 // these frgn wrappers are for custom DOM operations.
 
-frgn set_text(elem: Element, text: String) from #Web;
-frgn get_element_by_id(id: String) -> Element from #Web;
+frgn set_text(elem: Element, text: String) from "glue/web/web.js";
+frgn get_element_by_id(id: String) -> Element from "glue/web/web.js";

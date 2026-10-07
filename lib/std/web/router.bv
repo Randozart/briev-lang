@@ -35,8 +35,8 @@
 
 import "std/types/bootstrap.bv";
 
-frgn location() -> String from #Web;
-frgn navigate(url: String) from #Web;
+frgn location() -> String from "glue/web/web.js";
+frgn navigate(url: String) from "glue/web/web.js";
 
 // The current URL path, read from the host.
 defn current_path() -> String {

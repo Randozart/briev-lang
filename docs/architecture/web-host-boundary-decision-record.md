@@ -224,9 +224,19 @@ The event loop, DOM consistency, and security are enforced at runtime (the
 reactor + the browser host). The compiler declares and type-checks the
 boundary; it does not encode web policy.
 
-**D7 — The host-import provenance syntax is OPEN. (OPEN)**
-How a `.rbv` frgn names its JS host import without `#Web`. Options in §11.
-The migration proceeds only after D7 is decided; D1–D6 are independent of it.
+**D7 — The host-import provenance is a path to a JS host file. (DECIDED
+2026-10-07)**
+A browser host import is declared `frgn f(...) from "<path>.js";` — a path
+resolved like an `import`, naming a real JS host-module file whose
+`export const` bodies are inlined into the generated shim. The file IS the
+host module. `#Web` is retired as a protocol. *Alternatives rejected:*
+implicit-by-target (weak against explicit provenance); a generic `#Host`
+marker (unneeded vocabulary); naming the language (`from js` — conflates
+host and language; browser vs node are both JS). *Landed:* the `.js`
+dispatch branch (`frgn_dispatch::resolve_host_module_frgn`), the host-module
+reader/inliner (`compile.rs::read_web_host_modules`, `web_generator::
+with_host_module_src`), `lib/glue/web/web.js`, and the `lib/std/web/*.bv`
+migration.
 
 ---
 
@@ -262,17 +272,26 @@ name (`web`) in config; the *source-visible* `#Web` protocol is what retires.
 The `.rbv` router smoke fixture (`/tmp`-style) and the runtime gate are the
 gate.
 
+**Progress (2026-10-07).** Landed: the `.mjs` extension-routing
+determinism fix + missing `lib/glue/node/types.bv`; D7's `.js` host-module
+path end-to-end (`lib/glue/web/web.js`, dispatch, `compile.rs` reader,
+`web_generator` inliner); all `lib/std/web/*.bv` migrated; `#Web` now
+**errors** with a fix ("`#Web` is retired — use `from \"glue/web/web.js\"`").
+Gates: `cargo test --lib` 2917 green; router gate 11/11; all `.rbv`
+examples build. Remaining: Phase 1 (move the wasm-import ABI out of the
+`web` GLUE target into a host profile — currently transitional); Phase 2b
+(`node`→`js`, remove `web` from the language registry); Phase 4 (`type
+Element: #Web` parent drop); Phase 5 (delete the `#Web` token path).
+
 ---
 
 # Part V — Contract
 
 ## 11. Open items
 
-1. **D7 — host-import provenance.** (a) implicit by target (`.rbv` ⇒ JS host
-   import); (b) a language-name form (`from js`, no hashword); (c) one
-   generic marker (`from #Host` = the target's host environment). (a) is
-   weakest against Briev's explicit-provenance principle; (b) aligns with
-   "languages are named"; (c) is one hashword for a compiler-known boundary.
+1. **D7 — host-import provenance. (DECIDED 2026-10-07)** A path to a JS
+   host file (`from "glue/web/web.js"`), resolved like an import; the file
+   is the host module. See D7 above.
 2. **Platform axis — separate or subsumed?** Is a host/platform concept real
    enough to name, or does the target/backend fully subsume it? Lean:
    target subsumes platform; the only hashword left is `#System`.

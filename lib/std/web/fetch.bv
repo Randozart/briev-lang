@@ -1,5 +1,5 @@
-// 2026-07-26: HTTP fetch API wrapper for frgn from #Web.
+// 2026-07-26: HTTP fetch API wrapper for frgn from "glue/web/web.js".
 // Returns response body as String. For streaming or binary responses,
 // use the lower-level fetch with callbacks (future enhancement).
 
-frgn fetch(url: String) -> String : fetch_url from #Web;
+frgn fetch(url: String) -> String : fetch_url from "glue/web/web.js";

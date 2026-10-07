@@ -8880,20 +8880,23 @@ view-directives builds with exactly the three correct unfired warnings
 (`cycle_color`, `toggle_dark`, `toggle_sidebar`); view-bind-edge emits
 `set_greeting` with no false warning.
 
-## GLUE extension routing is nondeterministic — two targets claim `.mjs` — 2026-10-07 OPEN
+## GLUE extension routing is nondeterministic — two targets claim `.mjs` — 2026-10-07 FIXED
 
 **Date:** 2026-10-07 (found auditing the `#Web` host boundary)
-**Status:** OPEN — filed as part of the host-boundary migration
-(`docs/architecture/web-host-boundary-decision-record.md`).
+**Status:** FIXED — the determinism + missing-file halves landed
+(`b4cc3ceb`); the `node`→`js` rename is a tracked follow-up in
+`docs/architecture/web-host-boundary-decision-record.md`.
 
 `lib/glue/node/glue.dbv` and `lib/glue/web/glue.dbv` both declare
-`extension: "mjs"`. `find_language_by_extension` scans `HashMap::values()`
+`extension: "mjs"`. `find_language_by_extension` scanned `HashMap::values()`
 (`src/glue/config.rs:400-406`), so `frgn f() from "x.mjs"`
-(`src/analysis/frgn_dispatch.rs:178`) resolves to `node` or `web` by hash
-order — up to run-to-run variation, a direct HashMap-determinism-rule
-violation. Also: `lib/glue/node/types.bv` is referenced by
-`types_module: "glue/node/types.bv"` but does not exist.
+(`src/analysis/frgn_dispatch.rs:178`) resolved to `node` or `web` by hash
+order — a direct HashMap-determinism-rule violation. Also,
+`lib/glue/node/types.bv` was referenced by `types_module` but did not exist.
 
-**Fix:** the migration renames `node`→`js` (the one JS language target) and
-removes `web` from the language registry, leaving a single `.mjs` owner; add
-the missing `js/types.bv`; key any residual routing on `bridge_kind`.
+**Fix (landed):** `find_language_by_extension` iterates in sorted key order
+and excludes host runtimes (`bridge_kind == "wasm_runtime"`) — a host is
+reached by provenance, never by a source extension. `node` owns `.mjs`.
+Added `lib/glue/node/types.bv`. Test:
+`mjs_extension_excludes_host_runtime_and_is_deterministic`. Follow-up: rename
+`node`→`js` and remove `web` from the language registry (Phase 2b).

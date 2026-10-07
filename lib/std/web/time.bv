@@ -1,4 +1,4 @@
 // 2026-07-26: High-resolution time API (browser performance.now).
 // Returns milliseconds since page load as Float.
 
-frgn now() -> Float : performance_now from #Web;
+frgn now() -> Float : performance_now from "glue/web/web.js";

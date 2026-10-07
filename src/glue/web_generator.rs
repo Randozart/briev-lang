@@ -259,6 +259,11 @@ pub struct GlueWebGenerator {
     /// the web runtime's platform surface, from the GLUE `[web]` config. The
     /// shim emits each at module scope so a `#Web` frgn import stub resolves.
     host_fns: HashMap<String, String>,
+    /// 2026-10-07 (host-boundary decision record, D7): the raw source of the
+    /// web host module(s) referenced by a `.js` `from` path. Inlined verbatim
+    /// at module scope — the file IS the host module, so its `export const`
+    /// bodies resolve the frgn stubs by name.
+    host_module_src: String,
 }
 
 /// JS marshalling category for a `b-bind:value` transaction parameter,
@@ -318,6 +323,7 @@ impl GlueWebGenerator {
             collection_iterables: HashSet::new(),
             collection_string_iterables: HashSet::new(),
             host_fns: HashMap::new(),
+            host_module_src: String::new(),
         }
     }
 
@@ -351,6 +357,14 @@ impl GlueWebGenerator {
         self
     }
 
+    /// 2026-10-07 (host-boundary decision record, D7): the raw source of the
+    /// web host module(s) named by a `frgn ... from "<path>.js"`. Inlined
+    /// verbatim at module scope.
+    pub fn with_host_module_src(mut self, src: String) -> Self {
+        self.host_module_src = src;
+        self
+    }
+
     /// Generate the JS runtime shim and TS declarations.
     /// 2026-07-26: Phase 3 — Produces ES module with WasmDomRuntime class.
     pub fn generate(&self) -> Result<GlueWebOutput, String> {
@@ -377,12 +391,13 @@ impl GlueWebGenerator {
                 .map(|n| format!("const {} = {};\n", n, self.host_fns[*n]))
                 .collect::<String>()
         };
+        let host_module_src = self.host_module_src.as_str();
 
         format!(
             r#"// dom-shim.mjs — Auto-generated GLUE web runtime for {app_name}
 // Reads WASM linear memory at known state offsets.
 
-{host_fns_js}
+{host_fns_js}{host_module_src}
 export class WasmDomRuntime {{
   constructor(wasmBytes) {{
     this._handles = [null];

@@ -229,6 +229,57 @@ fn apply_abv_accel_default(items: &mut Vec<briev_compiler::ast::TopLevel>, file_
     }
 }
 
+/// 2026-10-07 (host-boundary decision record, D7): read the web host
+/// module(s) named by `frgn ... from "<path>.js"` and concatenate their
+/// source for inlining into the generated shim. Paths resolve like imports:
+/// `<resource_root>/lib/<path>`, then `<resource_root>/<path>`, then as-is.
+fn read_web_host_modules(
+    decls: &[briev_compiler::ast::ForeignBinding],
+) -> Result<String, String> {
+    let mut paths: Vec<String> = decls
+        .iter()
+        .filter_map(|fb| match &fb.from {
+            briev_compiler::ast::FromSpec::Literal(p) => Some(p.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    paths.sort();
+    paths.dedup();
+    let mut out = String::new();
+    for rel in paths {
+        let path = resolve_web_host_path(&rel).ok_or_else(|| {
+            format!(
+                "web host module '{}' not found (referenced by a `frgn ... from` clause)",
+                rel
+            )
+        })?;
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read web host module '{}': {}", path.display(), e))?;
+        out.push_str(&content);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve a `frgn ... from "<path>.js"` host-module path like an import:
+/// stdlib-relative (`<root>/lib/<path>`), then compiler-root-relative, then
+/// as-is.
+fn resolve_web_host_path(rel: &str) -> Option<std::path::PathBuf> {
+    let root = briev_compiler::resource_root();
+    for cand in [
+        root.join("lib").join(rel),
+        root.join(rel),
+        std::path::PathBuf::from(rel),
+    ] {
+        if cand.exists() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
 pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Result<(), String> {
     // ── Macro lockfile handling ────────────────────────────────────
     // 2026-07-23: If --update-lockfile, regenerate macro-lock.toml from
@@ -1195,11 +1246,18 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                 }
             }
 
-            // 2026-07-26: Phase 6c — Generate dom-shim.mjs + .d.ts from frgn decls.
+            // 2026-10-07 (host-boundary decision record, D7): the web host
+            // module(s). A `frgn ... from "<path>.js"` names a host file — the
+            // FILE IS the host module: its source is inlined into the shim at
+            // module scope, and the import stub calls the function by name. No
+            // protocol hashword, no GLUE language target.
             let frgn_decls: Vec<briev_compiler::ast::ForeignBinding> = items.iter()
                 .filter_map(|item| {
                     if let briev_compiler::ast::TopLevel::ForeignBinding(fb) = item {
-                        if matches!(fb.from, briev_compiler::ast::FromSpec::Protocol(ref p) if p == "#Web") {
+                        if matches!(&fb.from,
+                            briev_compiler::ast::FromSpec::Literal(p)
+                            if p.extension().and_then(|e| e.to_str()) == Some("js"))
+                        {
                             Some(fb.clone())
                         } else {
                             None
@@ -1209,6 +1267,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                     }
                 })
                 .collect();
+            let host_module_src = read_web_host_modules(&frgn_decls)?;
             // 2026-10-06 (web bundling): the shim source is captured here so
             // the default bundle can inline it.
             let mut web_shim_src: Option<String> = None;
@@ -1243,12 +1302,10 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                 .with_bind_routes(resolved_routes)
                 .with_collection_iterables(collection_iterables.clone())
                 .with_collection_string_iterables(collection_string_iterables.clone())
-                // 2026-10-06 (web host-JS shipping): the web runtime's host
-                // functions come from the GLUE `[web]` config, so a `#Web` frgn
-                // stub resolves without user JS.
-                .with_host_fns(
-                    glue_targets.get("web").map(|t| t.host_fns.clone()).unwrap_or_default(),
-                );
+                // 2026-10-07 (host-boundary decision record, D7): the browser
+                // host module's source (from the `frgn ... from "<path>.js"`
+                // file) is inlined into the shim at module scope.
+                .with_host_module_src(host_module_src);
                 match web_gen.generate() {
                     Ok(output) => {
                         // 2026-10-06 (web bundling): keep the shim source for
