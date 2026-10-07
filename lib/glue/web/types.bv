@@ -1,22 +1,22 @@
-// 2026-07-26: Web/WASM type declarations for Briev's type universe.
-// Types are defined against the #Web protocol hashword so GLUE can
-// route frgn declarations through the wasm_runtime bridge target.
+// lib/glue/web/types.bv — browser boundary types.
 //
-// #Web protocol types are opaque i32 handles in WASM linear memory,
-// backed by native JS objects in the runtime's handle table.
-// The compiler resolves `from #Web` to the GLUE `[web]` target config.
+// 2026-10-07 (host-boundary decision record): the browser is a LIBRARY over
+// the webstack target's host-import namespace, not a protocol. These are
+// ordinary opaque types (no `#Web` parent — that parent was inert and is
+// retired with the protocol). They are opaque i32 handles in WASM linear
+// memory, backed by native JS objects in the runtime's handle table.
 
-type Element: #Web {
+type Element {
     // Opaque handle — i32 in WASM, HTMLElement in JS.
-    // No CastTo/CastFrom to Bits — Element cannot be constructed from
-    // raw bytes; it's created via frgn from #Web (create_element, etc.)
+    // No CastTo/CastFrom to Bits — Element cannot be constructed from raw
+    // bytes; it is created by a browser host import (get_element_by_id, etc.).
     spec MaxBits: 32;
     spec Alignment: 4;
 };
 
-type CanvasContext: #Web {
+type CanvasContext {
     // Opaque handle — i32 in WASM, WebGLRenderingContext or GPUDevice in JS.
-    // Passed from JS to WASM during initialization handoff via frgn from #Web.
+    // Passed from JS to WASM during initialization handoff.
     spec MaxBits: 32;
     spec Alignment: 4;
 };

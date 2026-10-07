@@ -593,9 +593,13 @@ rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "exter
     #[test]
     fn baked_glue_dbvl_shape() {
         let config = load_glue_config(None).expect("config/glue.dbv should load");
-        for lang in ["python", "rust", "node", "web"] {
+        // 2026-10-07 (host-boundary decision record): `web` is no longer a
+        // GLUE language target — the browser is a host-module path
+        // (`lib/glue/web/web.js`), not a registry entry.
+        for lang in ["python", "rust", "node"] {
             assert!(config.contains_key(lang), "missing '{}' target", lang);
         }
+        assert!(!config.contains_key("web"), "web must not be a GLUE target");
         let python = &config["python"];
         assert_eq!(python.calling_convention, "c_abi");
         assert!(python.module_init);
@@ -611,8 +615,5 @@ rust: { types_module: "glue/rust/types.bv"; extension: "rs"; bridge_kind: "exter
         assert!(rust.templates.contains_key("src/lib.rs"), "rust src/lib.rs template");
         let node = &config["node"];
         assert!(node.templates.contains_key("index.mjs"), "node index.mjs template");
-        let web = &config["web"];
-        assert_eq!(web.calling_convention, "wasm_import");
-        assert!(web.templates.contains_key("dom-shim.mjs"), "web dom-shim.mjs template");
     }
 }

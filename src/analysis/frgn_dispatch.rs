@@ -170,7 +170,7 @@ pub fn resolve_single_frgn(
     // stub calls them by name (see `compile.rs` + `web_generator`). No
     // protocol hashword, no GLUE language target: the browser is a library
     // over the webstack target's host-import namespace.
-    if let Some(resolved) = resolve_host_module_frgn(fb, backend, glue_targets, universe) {
+    if let Some(resolved) = resolve_host_module_frgn(fb, backend) {
         return resolved;
     }
 
@@ -300,31 +300,32 @@ pub fn compute_protocol_path(
 /// `None` when `fb` is not such a path (so the caller falls through to the
 /// extension/GLUE resolution). The file's source is read + inlined by
 /// `compile.rs`; this resolves only the dispatch (ABI) side.
+///
+/// The boundary is IDENTITY-marshalled: the webstack backend emits the wasm
+/// ABI (i32/f64 per the target) and the generated shim (from the host file)
+/// unmarshals each parameter. No GLUE protocol map is consulted — a host is
+/// not a language bridge. (Verified: the old `web` target's protocol map only
+/// ever produced Identity steps here.)
 fn resolve_host_module_frgn(
     fb: &ForeignBinding,
     backend: BackendKind,
-    glue_targets: &HashMap<String, GlueTarget>,
-    universe: Option<&crate::type_universe::TypeUniverse>,
 ) -> Option<Result<ResolvedFrgn, String>> {
     let FromSpec::Literal(path) = &fb.from else { return None };
     let is_js = path.extension().and_then(|e| e.to_str()) == Some("js");
     if !is_js || backend != BackendKind::Webstack {
         return None;
     }
-    // Transitional (Phase 1 moves these widths to a host profile): the web
-    // GLUE target still carries the wasm_import protocol map.
-    let Some(target) = glue_targets.get("web") else {
-        return Some(Err(format!(
-            "frgn '{}': the web host ABI is unavailable (lib/glue/web/glue.dbv missing)",
-            fb.effective_briev_name()
-        )));
+    let identity = |t: &crate::ast::Type| ProtocolStep {
+        source: t.clone(),
+        target: t.clone(),
+        kind: TransformKind::Identity,
     };
-    Some(bridge_protocol_paths(fb, target, universe).map(|(param_paths, return_path)| {
-        ResolvedFrgn::Bridge {
-            language: "web".to_string(),
-            param_paths,
-            return_path,
-        }
+    let param_paths = fb.inputs.iter().map(|(_, t)| identity(t)).collect();
+    let return_path = fb.success_output.first().map(|(_, t)| identity(t));
+    Some(Ok(ResolvedFrgn::Bridge {
+        language: "web".to_string(),
+        param_paths,
+        return_path,
     }))
 }
 

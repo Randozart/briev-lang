@@ -8898,5 +8898,7 @@ order — a direct HashMap-determinism-rule violation. Also,
 and excludes host runtimes (`bridge_kind == "wasm_runtime"`) — a host is
 reached by provenance, never by a source extension. `node` owns `.mjs`.
 Added `lib/glue/node/types.bv`. Test:
-`mjs_extension_excludes_host_runtime_and_is_deterministic`. Follow-up: rename
-`node`→`js` and remove `web` from the language registry (Phase 2b).
+`mjs_extension_excludes_host_runtime_and_is_deterministic`. Follow-up:
+`web` is removed from the language registry (2026-10-07) — the browser is a
+host-module path now; the `node`→`js` rename was reconsidered (Node-specific
+target, kept).

@@ -207,12 +207,16 @@ boundary types become ordinary opaque stdlib types. The GLUE `.dbv` config +
 *Consequence:* `type Element`/`CanvasContext` drop the inert `#Web` parent
 (keep `spec MaxBits: 32`).
 
-**D4 — GLUE is languages only; languages get no hashword. (DECIDED)**
+**D4 — GLUE is languages/hosts only; languages get no hashword. (DECIDED)**
 A language is reached by file extension (`from "x.py"`, `from "x.rs"`) or by
 name for `brievc export|bindings|extension`. `#` marks compiler-known
-boundaries only. Rename `node` → `js` (it is the JS language target:
-`esm_module` + `c_abi`). *Rationale:* adding a language is a config-only
-folder drop; the `#` vocabulary must never grow with languages.
+boundaries only. **`web` is removed from the registry** — the browser is a
+host-module path, not a GLUE target. *Reconsideration (2026-10-07):* the
+originally-proposed `node`→`js` rename is **deferred** — the `node` target
+is Node-specific (ffi-napi, `.node` native module, `node -p` include probe),
+not a generic JS target; a future browser/deno/bun target is a separate
+concern. `node` keeps its name. *Rationale:* adding a language is a
+config-only folder drop; the `#` vocabulary must never grow with languages.
 
 **D5 — The platform is the target/backend. (DECIDED)**
 `.rbv` selects webstack/wasm32, as `.bv`/`.abv`/`.ebv`/`.sbv` select theirs.
@@ -272,16 +276,31 @@ name (`web`) in config; the *source-visible* `#Web` protocol is what retires.
 The `.rbv` router smoke fixture (`/tmp`-style) and the runtime gate are the
 gate.
 
-**Progress (2026-10-07).** Landed: the `.mjs` extension-routing
-determinism fix + missing `lib/glue/node/types.bv`; D7's `.js` host-module
-path end-to-end (`lib/glue/web/web.js`, dispatch, `compile.rs` reader,
-`web_generator` inliner); all `lib/std/web/*.bv` migrated; `#Web` now
-**errors** with a fix ("`#Web` is retired — use `from \"glue/web/web.js\"`").
-Gates: `cargo test --lib` 2917 green; router gate 11/11; all `.rbv`
-examples build. Remaining: Phase 1 (move the wasm-import ABI out of the
-`web` GLUE target into a host profile — currently transitional); Phase 2b
-(`node`→`js`, remove `web` from the language registry); Phase 4 (`type
-Element: #Web` parent drop); Phase 5 (delete the `#Web` token path).
+**Progress (2026-10-07).** Landed:
+- Phase 2a: the `.mjs` extension-routing determinism fix + missing
+  `lib/glue/node/types.bv`.
+- D7 + Phase 3: the `.js` host-module path end-to-end (`lib/glue/web/web.js`,
+  `frgn_dispatch::resolve_host_module_frgn`, `compile.rs::read_web_host_modules`,
+  `web_generator::with_host_module_src`); all `lib/std/web/*.bv` migrated;
+  `#Web` now **errors** with a fix.
+- Phase 1: **the host boundary is identity-marshalled** — the webstack
+  backend emits the wasm ABI and the shim (from the host file) unmarshals.
+  Verified the old `web` target's protocol map only ever produced Identity
+  steps, so `resolve_host_module_frgn` no longer consults it. No separate
+  host-profile config is needed.
+- Phase 2b: **`web` removed from the language registry**
+  (`lib/glue/web/glue.dbv` deleted; `web.js` + `types.bv` remain as the
+  host's data). `node`→`js` deferred (see D4).
+- Phase 4: the inert `#Web` type parent dropped from
+  `lib/glue/web/types.bv`.
+
+Gates: `cargo test --lib` 2917 green; router gate 11/11; `check_calls.py`
+clean; all `.rbv` examples build; Praetor no new diagnostics.
+
+Remaining: Phase 5 — delete the `#Web` token/dispatch path entirely (it
+currently errors with a fix) and sweep the remaining docs
+(`data-briev.md`, `rendered-briev-wasm.md`, `hash-words.md`, `glue-ffi.md`,
+`conditional-ffi.md`) for the retired framing.
 
 ---
 
