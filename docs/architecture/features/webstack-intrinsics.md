@@ -114,7 +114,7 @@ the implementation.
 | `Errno#` | `call @Errno` | `() => 0` (no errno in JS) |
 | `Sleep#` | `call @Sleep` | `(ms) => new Promise(r => setTimeout(r, Number(ms)))` |
 
-**Migration path:** These intrinsics are superseded by `frgn from #Web` + stdlib.
+**Migration path:** These intrinsics are superseded by `frgn from "glue/web/web.js"` + stdlib.
 `PrintInt#` → `import "web/console.bv"` → `log(n)`.
 `Time#` → `import "web/time.bv"` → `now()`.
 The intrinsic forms are kept for backward compat during the migration period.
@@ -130,7 +130,7 @@ Intrinsic '<name>' is not supported by the webstack/WebAssembly backend.
 
 | Intrinsic | Reason |
 |-----------|--------|
-| `GetEnv#` | No environment variables in browser. Use `frgn from #Web` + JS impl. |
+| `GetEnv#` | No environment variables in browser. Use `frgn from "glue/web/web.js"` + JS impl. |
 | `GetEnvInt#` | Same — no environment variables. |
 | `SysCall#` | No OS syscalls in WASM. No Linux `syscall` instruction. |
 | `SysConf#` | No OS sysconf in WASM. |
@@ -138,8 +138,8 @@ Intrinsic '<name>' is not supported by the webstack/WebAssembly backend.
 | `DlSym#` | No dynamic symbol lookup. |
 | `DlClose#` | No dynamic library unloading. |
 | `Backtrace#` | No stack trace intrinsic in WASM. |
-| `ReadFile#` | No filesystem in browser WASM. Use `fetch()` via `frgn from #Web`. |
-| `HttpFetch#` | No HTTP intrinsic. Use `fetch()` via `frgn from #Web`. |
+| `ReadFile#` | No filesystem in browser WASM. Use `fetch()` via `frgn from "glue/web/web.js"`. |
+| `HttpFetch#` | No HTTP intrinsic. Use `fetch()` via `frgn from "glue/web/web.js"`. |
 | `ShellCmd#` | No shell in browser. |
 | `SetStdoutBuf#` | No stdout buffer concept in browser. |
 | `GetGlobalId#` | No GPU compute shader mapping in standard WASM. Stub would return 0. |
@@ -150,7 +150,7 @@ Intrinsic '<name>' is not supported by the webstack/WebAssembly backend.
 | `WorkgroupSize#` | Same. |
 | `Dims#` | Same. |
 | `StrSplit#` | No WASM string model. Use `import "string.bv"` at the Briev level. |
-| `EnvGet#` | No environment. Use `frgn from #Web` to expose JS env vars if needed. |
+| `EnvGet#` | No environment. Use `frgn from "glue/web/web.js"` to expose JS env vars if needed. |
 | `SysQuery#` | No system query mechanism. |
 | `TimeNow#` | No nanosecond clock. Use `time.bv` `now()` for milliseconds. |
 
@@ -191,7 +191,7 @@ intrinsics and `None` for Tiers 1-3.
 
 ```
 error: Intrinsic 'SysCall#' is not supported by the webstack/WebAssembly backend.
-  No OS syscalls in WASM. Use frgn from #Web to call browser APIs.
+  No OS syscalls in WASM. Use frgn from "glue/web/web.js" to call browser APIs.
   --> my_file.bv:12:5
 ```
 
