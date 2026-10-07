@@ -576,7 +576,7 @@ target.wasm32: 4294967295; 4.0; 4;
         // must recognize the opening `"` as a named-field start (fixed 2026-08-03).
         let src = "\
 x86_64-linux: { \"#System\": \"c\" };
-wasm32-wasi: { \"#System\": \"wasi_snapshot_preview1\"; \"#Web\": \"wasm_runtime\" };
+wasm32-wasi: { \"#System\": \"wasi_snapshot_preview1\"; \"#Vendor\": \"custom\" };
 ";
         let db = ConfigDb::from_quoted_str(src).unwrap();
         match db.field("x86_64-linux", 0) {
@@ -586,7 +586,7 @@ wasm32-wasi: { \"#System\": \"wasi_snapshot_preview1\"; \"#Web\": \"wasm_runtime
         match db.field("wasm32-wasi", 0) {
             Some(DataValue::Map(m)) => {
                 assert_eq!(m.get("#System"), Some(&DataValue::String("wasi_snapshot_preview1".into())));
-                assert_eq!(m.get("#Web"), Some(&DataValue::String("wasm_runtime".into())));
+                assert_eq!(m.get("#Vendor"), Some(&DataValue::String("custom".into())));
             }
             other => panic!("expected map, got {:?}", other),
         }

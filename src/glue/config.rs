@@ -75,9 +75,10 @@ pub struct GlueTarget {
     /// 2026-10-06 (web host-JS shipping): host function JS bodies for the
     /// `wasm_runtime`/web target — `name -> JS function expression` (e.g.
     /// `"log": "(msg) => console.log(msg)"`). The generated shim emits each at
-    /// MODULE SCOPE as `const <name> = <body>;` so a `#Web` frgn's import stub
-    /// (which calls `<name>(...)`) resolves. This is the web runtime's platform
-    /// surface, declared as data — the compiler carries no web vocabulary.
+    /// MODULE SCOPE as `const <name> = <body>;` so a web host frgn's import
+    /// stub (which calls `<name>(...)`) resolves. Retained for the legacy
+    /// config-driven path; the current browser host module is a `.js` file
+    /// (`lib/glue/web/web.js`, host-boundary decision record D7).
     pub host_fns: HashMap<String, String>,
     /// Literal output suffix for the built extension (e.g. node: ".node").
     pub native_suffix: Option<String>,

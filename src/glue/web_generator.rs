@@ -228,7 +228,7 @@ pub struct GlueWebOutput {
 ///   1. Instantiates the WASM module with __web_flush_state import
 ///   2. Reads state_layout() export at init to build the binding table
 ///   3. Applies DOM mutations when __web_flush_state is called
-///   4. (Phase 6) Generates frgn from #Web import stubs for DOM/Canvas operations
+///   4. (Phase 6) Generates import stubs for browser host frgns (DOM/Canvas)
 ///      and wraps render_frame in requestAnimationFrame loop when present.
 pub struct GlueWebGenerator {
     /// The compiled WASM module bytes (or empty during testing).
@@ -239,7 +239,8 @@ pub struct GlueWebGenerator {
     state_layout: StateLayout,
     /// Protocol mappings from GLUE config (for type resolution).
     protocol_mappings: HashMap<String, crate::glue::config::ProtocolEntry>,
-    /// 2026-07-26: Phase 6 — Foreign function declarations using from #Web protocol.
+    /// 2026-07-26: Phase 6 — Foreign function declarations for browser host
+    /// imports (a `frgn ... from "<path>.js"` on the webstack backend).
     /// Each produces a JS import stub in the WASM instantiation's import object.
     frgn_decls: Vec<crate::ast::top::ForeignBinding>,
     /// 2026-08-11 (Phase 2a2, SPEC 21.4): `b-bind:value` input routing. Maps a
@@ -256,8 +257,9 @@ pub struct GlueWebGenerator {
     /// shim decodes each snapshot word as a `[len][bytes]` string pointer.
     collection_string_iterables: HashSet<String>,
     /// 2026-10-06 (web host-JS shipping): `name -> JS function expression` for
-    /// the web runtime's platform surface, from the GLUE `[web]` config. The
-    /// shim emits each at module scope so a `#Web` frgn import stub resolves.
+    /// the web runtime's platform surface. Retained for the legacy
+    /// config-driven path; the current browser host module is a `.js` file
+    /// (`host_module_src`, host-boundary decision record D7).
     host_fns: HashMap<String, String>,
     /// 2026-10-07 (host-boundary decision record, D7): the raw source of the
     /// web host module(s) referenced by a `.js` `from` path. Inlined verbatim

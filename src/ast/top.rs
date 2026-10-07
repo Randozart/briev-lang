@@ -845,8 +845,10 @@ pub enum FromSpec {
     /// from <name> — compiler-relative lookup (same pattern as import <name>).
     CompilerRegistry(String),
     /// from #System — the base protocol (platform system library linking).
-    /// 2026-10-06 (#Web genericization, Option A): `#System` is the ONE base
-    /// protocol; any other `#<Name>` is a GLUE target resolved by name.
+    /// 2026-10-07 (host-boundary decision record): `#System` is the ONLY
+    /// protocol hashword; there is no `#<Name>` protocol namespace (a
+    /// language is reached by file extension, a browser host by a
+    /// host-module path).
     Protocol(String),
     /// 2026-07-26: from #Link<user32> — link against system library -l<name>.
     /// No per-target config or registry lookup. `-l<name>` is emitted directly.
