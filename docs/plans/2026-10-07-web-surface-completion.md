@@ -1,0 +1,77 @@
+# Web surface completion — regression gate, obj fix, multi-page (2026-10-07)
+
+**Status:** Active
+**Umbrella:** `docs/plans/2026-10-04-three-surfaces-functional.md` Phase 3 (`.rbv`)
+**Predecessors:** `docs/plans/2026-10-06-web-routing-and-bundling.md` (Parts
+0–4 landed), `docs/plans/2026-10-06-wasm32-pointer-width.md` (the wasm32
+codegen fixes that unblocked Part 4),
+`docs/architecture/web-host-boundary-decision-record.md` (`#Web` retired; the
+browser is a host-module path).
+
+## Goal
+
+Close the web surface: (1) put this session's wasm32 fixes behind an in-repo
+regression gate, (2) fix the unpacked-obj codegen defect that blocks the
+`Router` obj shape, (3) finish multi-page.
+
+## Workstream 1 — In-repo regression gate
+
+**Problem.** The router smoke fixture and its gates live only in
+`/tmp/opencode/rs/` (`rs_tmp.rbv`, `gate.mjs`, `check_calls.py`). Nothing in
+the repo guards the pointer-width / void-frgn / view-liveness fixes; a future
+change can silently reintroduce a wasm32 trap stub.
+
+**Deliverables.**
+- `tests/fixtures/router.rbv` — the router smoke (imports `std/web/router.bv`,
+  `path`/`route` state, `go` txn, `b-trigger`/`b-when` view).
+- `tests/rbv_router.rs` — Rust integration test (no node): build the fixture
+  in a temp dir via `compile_source`, read the `.ll`, run the mechanical
+  call-vs-declare check (port of `check_calls.py`), assert zero mismatches and
+  that `@go`/`@navigate` are defined. The always-on guard.
+- `benchmarks/rbv_gate.sh` + `benchmarks/rbv_gate.mjs` — node runtime gate
+  (11 behavioral checks). Mirrors the existing `*_gate.sh` shape.
+
+**Gate.** `cargo test --lib` green; `tests/rbv_router.rs` green;
+`bash benchmarks/rbv_gate.sh` exits 0.
+
+## Workstream 2 — Unpacked-obj String-field fix (BUGS.md:8800)
+
+**Defect.** An obj with a txn held as top-level state is unpacked into `%State`
+(`[1 x ptr]`), but its `StructLiteral` initializer stores the field value (a
+`ptr`) with the aggregate type → `store [1 x ptr] <ptr>, ptr <dst>`. Blocks
+the `Router` obj shape.
+
+**Sites.** `emit_init_state` (`src/backend/llvm/emit_toplevel.rs:2503-2614`),
+`Expr::StructLiteral` emission (`src/backend/llvm/emit_expr.rs:979,1801`),
+`obj_instance_inits` (`src/backend/llvm/mod.rs:6252`).
+
+**Approach (measure first).** Reproduce; dump the `.ll`; form the hypothesis;
+fix in the unpacked-instance init path (per-field GEP+store, or box on a
+`StructLiteral` init like the plain-obj path); preserve the object-instance
+pool path (`self_prefix`, `instance_prefix_for`). Add the obj-form fixture;
+then add the `Router` obj to `lib/std/web/router.bv`.
+
+**Gate.** obj-form fixture builds + runs; pool tests green; Praetor clean;
+BUGS.md:8800 → FIXED.
+
+## Workstream 3 — Part 5 multi-page
+
+- **B2:** one bundled HTML per `.rbv`, `<a href>` between pages (zero external
+  refs); a two-page example.
+- **B1:** one bundle + the Part-4 router (the `router.rbv` shape) documented;
+  popstate deferred (needs a callback-frgn ABI).
+- **File-based routing:** folio `[pages]` over multiple `.rbv` → a generated
+  route table (build/framework convention, never a compiler keyword).
+
+**Gate.** Per the web plan — bundle e2e (zero external refs); `rbv_gate.sh`
+extended.
+
+## Riders
+- Doc sweep: `docs/architecture/features/webstack-intrinsics.md`,
+  `docs/architecture/features/rendered-briev-wasm.md` still say `from #Web`.
+- Deferred (not here): `node`→`js` rename (D4); popstate.
+
+## Sequencing
+`1 → 2 → 3`, continuous commits; per landing `cargo test --lib` green +
+Praetor no new diagnostics + docs in the same commit. Risk concentrates in W2
+(object-instance-pool codegen is intricate) — measure before building.

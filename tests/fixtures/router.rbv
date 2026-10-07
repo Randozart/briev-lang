@@ -1,0 +1,24 @@
+// tests/fixtures/router.rbv — the web router smoke fixture (regression gate).
+//
+// 2026-10-07 (plan 2026-10-07-web-surface-completion.md, W1): guards the
+// wasm32 codegen fixes that unblocked the router (pointer width, void-frgn
+// signatures, view-surface liveness). Built by benchmarks/rbv_gate.sh and
+// tests/rbv_router.rs; the runtime behavior is asserted by
+// benchmarks/rbv_gate.mjs.
+//
+// Exercises: a host-module frgn String return (`location`), a void host
+// frgn (`navigate`), runtime string comparison (`route_name` -> briev_str_eq),
+// and a view-trigger-bound callable txn (`go` must be emitted and run).
+import "std/web/router.bv";
+
+let path: String = current_path();
+let route: String = route_name(path);
+
+txn go(url: String) [path != url][path == url] {
+    path = url;
+    route = route_name(url);
+    navigate(url);
+    term;
+};
+
+<view><button b-trigger:click="go">Home</button><section b-when="route == 'home'">home</section></view>
