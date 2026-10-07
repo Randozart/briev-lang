@@ -75,3 +75,19 @@ extended.
 `1 → 2 → 3`, continuous commits; per landing `cargo test --lib` green +
 Praetor no new diagnostics + docs in the same commit. Risk concentrates in W2
 (object-instance-pool codegen is intricate) — measure before building.
+
+## Progress log
+
+- **W1 DONE** `ec3c7cd6` — in-repo router regression gate
+  (`tests/fixtures/router.rbv`, `tests/rbv_router.rs`,
+  `benchmarks/rbv_gate.{sh,mjs}`, `benchmarks/rbv_ir_check.py`).
+- **W2 DONE** — `BUGS.md:8800` fixed: `emit_instance_init`'s StructLiteral
+  branch stored the column's row-0 element with the column ARRAY type
+  (`[1 x ptr]`) instead of the inner type; now derives `load_ty` from the
+  column's LLVM string (mirrors `emit_instance_column_row`). Gate:
+  `tests/fixtures/obj_init.rbv` built by `rbv_gate.sh`; `cargo test --lib`
+  2917 green; Praetor no new diagnostics. **Follow-up filed:** a member txn
+  is not a top-level wasm export, so a view `b-trigger` cannot fire it — the
+  `Router` obj is expressible but not yet view-bindable (BUGS.md, new entry).
+- **W3** not started.
+

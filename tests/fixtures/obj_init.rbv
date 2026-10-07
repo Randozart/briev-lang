@@ -1,0 +1,16 @@
+// tests/fixtures/obj_init.rbv — unpacked-obj String-field init (BUGS.md:8800).
+//
+// An obj WITH a txn held as top-level state is unpacked into %State as
+// `[rows x member]` columns; its StructLiteral initializer must store the
+// member value at the column's row-0 element (the MEMBER type), not the
+// column array type. Regression: the old emitter produced
+// `store [1 x ptr] <ptr>, ptr <elem>` — llc rejected the module
+// ("'%t3' defined with type 'ptr' but expected '[1 x ptr]'").
+obj R {
+    path: String;
+    txn go(u: String) [true][path == u] { path = u; term; };
+};
+
+let r: R = R { path: "/" };
+
+<view><p b-text="r.path">.</p></view>

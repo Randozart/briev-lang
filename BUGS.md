@@ -8797,7 +8797,10 @@ and must NOT be width-derived. The genuine latent sites are `emit_toplevel.rs`
 unexercised by any `.rbv`/fixture today; their correct form depends on the
 on_exit frgn / op ABI convention and needs its own gated change.
 
-## Webstack (wasm32): unpacked obj with a txn + String field emits invalid IR — 2026-10-06 OPEN
+## Webstack (wasm32): unpacked obj with a txn + String field emits invalid IR — 2026-10-06 FIXED
+
+**Date:** 2026-10-06 (found smoke-testing the router framework)
+**Status:** FIXED (2026-10-07).
 
 **Repro:**
 ```
@@ -8815,9 +8818,21 @@ unpacked `[1 x ptr]`).
 top-level state var is UNPACKED into state (`%State` field `[1 x ptr]` = the
 obj's inline fields), but its literal initializer stores the FIELD value (a
 `ptr`) with the AGGREGATE type annotation. A plain obj without a txn is boxed
-(`%State = { i64 }`) and builds fine. This blocks the nicer `Router` obj shape;
-the router ships as free functions (`current_path`/`route_name`/`navigate`)
-until this lands.
+(`%State = { i64 }`) and builds fine.
+
+**Fix (2026-10-07):** `emit_instance_init`'s StructLiteral branch
+(`src/backend/llvm/emit_toplevel.rs`) used `field_briev_types[idx]` — which for
+a non-dependent pool column is the COLUMN ARRAY type (e.g. `Vector(ptr,[1])`
+→ `[1 x ptr]`) — as the store type. The store target is the column's row-0
+element, so the store type must be the column's INNER type (strip the row
+dimension), exactly as `emit_instance_column_row`'s `load_ty` does. The fix
+derives `load_ty` from the column's LLVM string.
+
+**Gate:** `tests/fixtures/obj_init.rbv` built by `benchmarks/rbv_gate.sh`
+(build + IR call/declare check); `cargo test --lib` 2917 green.
+**Follow-up (filed separately):** a member txn is not emitted as a top-level
+wasm export, so a view `b-trigger` cannot fire it — the `Router` obj is
+expressible but not yet view-bindable; the router ships free functions.
 
 ## Webstack (wasm32): a `frgn` with no result emits `call i32` against `declare void` — 2026-10-07 FIXED
 
@@ -8902,3 +8917,32 @@ Added `lib/glue/node/types.bv`. Test:
 `web` is removed from the language registry (2026-10-07) — the browser is a
 host-module path now; the `node`→`js` rename was reconsidered (Node-specific
 target, kept).
+
+## Webstack: a member txn is not emitted as a top-level wasm export — not view-bindable — 2026-10-07 OPEN
+
+**Date:** 2026-10-07 (found after fixing BUGS.md:8800 — the unpacked-obj init)
+**Status:** OPEN.
+
+**Repro:**
+```
+obj Router {
+    path: String;
+    txn go(url: String) [true][path == url] { path = url; navigate(url); term; };
+};
+let router: Router = Router { path: current_path() };
+<view><button b-trigger:click="go">Home</button></view>
+```
+The module builds and the IR is sound, but the generated shim binds the
+button to `this._txn("go")` while the wasm exports **no `go`** (no `@go`
+define) — the click resolves a missing export at runtime. A member txn on an
+obj is emitted only as part of the obj's member bodies, never as a top-level
+export; `pipeline::view_trigger_txns` roots only top-level trigger txns.
+
+**Impact:** the `Router` obj form is expressible (after 8800) but not
+view-bindable; the router ships the free-function form
+(`current_path`/`route_name`/`navigate`).
+
+**Fix direction:** emit member txns that are view-bound as top-level exports
+(and root them in defn-liveness), or extend the view binding to invoke a
+member txn through the instance. Gate: an obj-form router fixture whose
+`b-trigger` fires the member txn (extend `benchmarks/rbv_gate.sh`).

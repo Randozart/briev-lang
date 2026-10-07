@@ -1922,17 +1922,23 @@ impl LlvmBackend {
                 writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 0, i64 0", indent, gep, col_ty, base_gep).ok();
                 let val_tmp = self.fun.gen_reg();
                 let val = self.emit_expr_inner(out, &val_tmp, value, indent);
-                let field_ty = self.ctx.field_briev_types[idx].clone();
-                let llvm_ty = if matches!(field_ty, Type::Ptr(_)) {
-                    "i64".to_string()
-                } else {
-                    self.llvm_type(&field_ty)
-                };
+                // 2026-10-07 (BUGS.md:8800): the store target is the column's
+                // row-0 element, so the store type is the column's INNER type
+                // (strip the row dimension) — NOT the column array type. The
+                // old code used `field_briev_types[idx]` (the column Vector)
+                // and emitted `store [1 x ptr] <ptr>, ptr <elem>` → invalid IR
+                // ("'%t3' defined with type 'ptr' but expected '[1 x ptr]'").
+                // Mirrors `emit_instance_column_row`'s load_ty computation.
+                let load_ty = col_ty
+                    .strip_prefix('[')
+                    .and_then(|rest| rest.split_once('x'))
+                    .map(|(_, t)| t.trim().trim_end_matches(']').trim().to_string())
+                    .unwrap_or_else(|| "i64".to_string());
                 let store_val = self.ensure_typed_value(
-                    out, indent, &llvm_ty, &val.name, Some(val.ty.clone()),
+                    out, indent, &load_ty, &val.name, Some(val.ty.clone()),
                     self.ctx.type_universe.clone().as_ref(),
                 );
-                writeln!(out, "{}store {} {}, ptr {}", indent, llvm_ty, store_val, gep).ok();
+                writeln!(out, "{}store {} {}, ptr {}", indent, load_ty, store_val, gep).ok();
             }
             return;
         }

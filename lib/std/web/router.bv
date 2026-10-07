@@ -27,11 +27,13 @@
 //     <section b-when="route_name(path) != 'home'">...other...</section>
 //   </view>
 //
-// NOTE: a `Router` *obj* (state + `go` txn in one type) is the nicer shape but
-// is blocked by a codegen bug — an obj with a txn and a String field, held as a
-// top-level state var, is unpacked to `[1 x ptr]` and its literal initializer
-// emits invalid wasm IR (`store [1 x ptr] %ptr`). See BUGS.md 2026-10-06.
-// Until that lands, the framework is the free-function form above.
+// NOTE: a `Router` *obj* (state + `go` txn in one type) is now EXPRESSIBLE —
+// the unpacked-obj String-field init codegen bug is fixed (BUGS.md:8800,
+// 2026-10-07), so `let router: Router = Router { path: current_path() };`
+// builds. It is not yet USABLE for a view trigger: a member txn is not
+// emitted as a top-level wasm export, so `b-trigger:click="go"` resolves to
+// a missing export (BUGS.md, member-txn view binding). Until that lands, the
+// framework is the free-function form above.
 
 import "std/types/bootstrap.bv";
 
