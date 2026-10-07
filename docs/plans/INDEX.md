@@ -278,16 +278,25 @@ small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ## Workstream 3b — `.rbv` web surface
 
-Active plan: `docs/plans/2026-10-06-web-routing-and-bundling.md` (Parts 0–4
-landed; the router's wasm32 blockers were fixed in
-`docs/plans/2026-10-06-wasm32-pointer-width.md`). **2026-10-07 decision:**
-`#Web` is **not a protocol** —
+**Status 2026-10-07:** W1–W3 + rider DONE (`docs/plans/2026-10-07-web-surface-completion.md`).
+- **W1** — in-repo router regression gate (`tests/fixtures/router.rbv`,
+  `tests/rbv_router.rs`, `benchmarks/rbv_gate.{sh,mjs}`, `benchmarks/rbv_ir_check.py`).
+- **W2** — `BUGS.md:8800` FIXED (unpacked-obj String-field init).
+- **W3** — multi-page B2 (`examples/multi_page_{a,b}.rbv`); B1 covered by the
+  router fixture in bundle mode; file-based routing deferred.
+- **Rider** — `#Web` swept from feature docs; `warn_undispatched_txns` no longer
+  false-warns a view-bound no-param txn.
+
+**Decision (2026-10-07):** `#Web` is **not a protocol** —
 `docs/architecture/web-host-boundary-decision-record.md` supersedes
 web-routing decision #4. The browser is a **library over a host-import
 namespace** (the JS/Web + wasm-embedder shape); `#System` is the one base
-host namespace; GLUE stays **languages only** (no language hashwords,
-`node`→`js`). Migration phased + gated in that record (D7 host-import
-provenance OPEN).
+host namespace; GLUE stays **languages only**. D7 host-import provenance
+**landed** (`1dc1bd80`); `node`→`js` rename deferred.
+
+**OPEN (BUGS.md):** member txn on a plain top-level obj var is not
+emitted/bound (the `render <Obj>` component form does emit them). Gate:
+extend `benchmarks/rbv_gate.sh` with an obj-form router fixture.
 
 ---
 
