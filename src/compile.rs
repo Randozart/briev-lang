@@ -873,6 +873,9 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         String,
         briev_compiler::analysis::component_instances::MountSpec,
     > = std::collections::HashMap::new();
+    let mut top_level_variants: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut init_roots: std::collections::HashSet<String> = std::collections::HashSet::new();
     if opts.backend == BackendKind::Webstack {
         let view_html = effective_view_html(opts, &preprocessed, &items).unwrap_or_default();
         match briev_compiler::analysis::component_instances::expand_component_instances(
@@ -883,6 +886,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                 component_specs = plan.mounts;
                 component_initializers = plan.initializers;
                 instance_specs = plan.instance_specs;
+                top_level_variants = plan.top_level_variants;
+                init_roots = plan.init_roots;
             }
             Err(msg) => return Err(format!("{}: component instance error: {}", file_path, msg)),
         }
@@ -891,6 +896,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         compile_view(file_path, &items, opts, &preprocessed, &ViewMountSpecs {
             pools: component_specs.clone(),
             instances: instance_specs.clone(),
+            top_level_variants,
         })?
     } else {
         CompiledView {
@@ -923,7 +929,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         Result<briev_compiler::glue::web_generator::BindRoute, String>,
     >> = None;
 
-    let (codegen_output, ext) = codegen(&items, &mut universe, &pm, opts, alloc_strategies, needs_arena, resolved_frgns, enable_module_init, &mut web_layout, &view_signals, &view_bindings, &collection_iterables, &mut bind_routes, &component_initializers)?;
+    let (codegen_output, ext) = codegen(&items, &mut universe, &pm, opts, alloc_strategies, needs_arena, resolved_frgns, enable_module_init, &mut web_layout, &view_signals, &view_bindings, &collection_iterables, &mut bind_routes, &component_initializers, &init_roots)?;
 
     // 2026-10-06 (BUGS.md:5698): a user-declared `txn` that liveness drops is
     // never called and never fired — without this the program compiles to an
@@ -1602,6 +1608,10 @@ fn codegen(
         Result<briev_compiler::glue::web_generator::BindRoute, String>,
     >>,
     component_initializers: &std::collections::HashMap<String, briev_compiler::ast::Expr>,
+    // 2026-10-07 (member-txn-on-plain-obj-var): call names inside a consumed
+    // instance `let`'s initializer — the `let` is removed from `items` before
+    // liveness indexes it, so its callees must be re-rooted here.
+    init_roots: &std::collections::HashSet<String>,
 ) -> Result<(String, &'static str), String> {
     // 2026-07-20: Extract operator definitions from AST for backend dispatch.
     let mut operator_defs: std::collections::HashMap<String, Vec<briev_compiler::ast::top::OperatorDef>> = std::collections::HashMap::new();
@@ -1902,9 +1912,16 @@ fn codegen(
                 universe,
             );
             let web_roots = view_external_roots(view_bindings, &route_map);
+            // 2026-10-07 (member-txn-on-plain-obj-var): a consumed instance
+            // `let` (e.g. `let router: Router = Router { path: current_path() }`)
+            // is removed from `items` by `expand_component_instances` before
+            // liveness indexes it — its initializer's callees (`current_path`)
+            // must be re-rooted or the emitted init call trips the soundness net.
+            let mut all_roots = web_roots;
+            all_roots.extend(init_roots.iter().cloned());
             analysis.defn_liveness =
                 briev_compiler::analysis::defn_liveness::DefnLiveness::build_with_roots(
-                    items, &web_roots,
+                    items, &all_roots,
                 );
             let mut b = LlvmBackend::new()
                 .with_webstack(true)
@@ -3313,7 +3330,7 @@ node go [done == false][done == true] {
         let pre = preprocessed_with_view(
             r#"<div><span b-text="count">0</span><button b-trigger:click="bump">+</button></div>"#,
         );
-        let cv = compile_view("/tmp/app.rbv", &items, &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new() }).expect("view compiles");
+        let cv = compile_view("/tmp/app.rbv", &items, &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).expect("view compiles");
         assert!(!cv.bindings.is_empty(), "b-text/b-trigger bindings extracted");
         let html = cv.modified_html.expect("modified html present");
         assert!(
@@ -3333,7 +3350,7 @@ node go [done == false][done == true] {
     fn test_compile_view_rejects_b_if() {
         let opts = webstack_opts("/tmp/app.rbv");
         let pre = preprocessed_with_view(r#"<div b-if="x">bad</div>"#);
-        let err = compile_view("/tmp/app.rbv", &[], &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new() }).unwrap_err();
+        let err = compile_view("/tmp/app.rbv", &[], &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).unwrap_err();
         assert!(
             err.contains("`b-if` is invalid"),
             "b-if rejected per SPEC 21.4: {err}"
@@ -3344,7 +3361,7 @@ node go [done == false][done == true] {
     fn test_compile_view_strict_rejects_undefined_signal() {
         let opts = webstack_opts("/tmp/ui.s.rbv");
         let pre = preprocessed_with_view(r#"<span b-text="nope">x</span>"#);
-        let err = compile_view("/tmp/ui.s.rbv", &[], &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new() }).unwrap_err();
+        let err = compile_view("/tmp/ui.s.rbv", &[], &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).unwrap_err();
         assert!(
             err.contains("SRBV001") && err.contains("'nope'"),
             "strict profile rejects undefined signal: {err}"
@@ -3357,7 +3374,7 @@ node go [done == false][done == true] {
         // warnings — SRBV reference errors are a `.s` strict-profile feature.
         let opts = webstack_opts("/tmp/app.rbv");
         let pre = preprocessed_with_view(r#"<span b-text="nope">x</span>"#);
-        let cv = compile_view("/tmp/app.rbv", &[], &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new() }).expect("non-strict view compiles");
+        let cv = compile_view("/tmp/app.rbv", &[], &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).expect("non-strict view compiles");
         assert!(
             cv.bindings.iter().any(|b| {
                 matches!(
@@ -3386,7 +3403,7 @@ node go [done == false][done == true] {
             style_css: None,
             view_html: None,
         };
-        let cv = compile_view("/tmp/app.bv", &items, &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new() }).expect("render block compiles");
+        let cv = compile_view("/tmp/app.bv", &items, &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).expect("render block compiles");
         let html = cv.modified_html.expect("html from render block");
         assert!(html.contains("b-text") || html.contains("rbv-"));
         assert!(!cv.bindings.is_empty());

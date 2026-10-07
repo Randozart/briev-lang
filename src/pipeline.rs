@@ -121,6 +121,12 @@ pub struct ViewMountSpecs {
         String,
         crate::analysis::component_instances::MountSpec,
     >,
+    /// 2026-10-07 (member-txn-on-plain-obj-var): bare member-txn name → the
+    /// emitted top-level variant (`go` → `go_router`) for a plain top-level obj
+    /// var whose view `b-trigger` references the member txn. The top-level
+    /// `<view>` has no mount tag to rewrite through, so the rewrite is applied
+    /// to the view itself. Empty for non-plain-var programs.
+    pub top_level_variants: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -469,6 +475,17 @@ pub fn compile_view(
     vc.set_render_blocks(raw_blocks);
     vc.set_component_specs(specs.pools.clone());
     vc.set_instance_specs(specs.instances.clone());
+    // 2026-10-07 (member-txn-on-plain-obj-var): a plain top-level obj var's
+    // view references a member txn by BARE name — the view has no mount tag to
+    // rewrite through, so rewrite the view's own directive values to the
+    // emitted top-level variant (matching `@go_<var>`). Applied before
+    // `vc.compile` so the bindings carry the variant (the liveness root then
+    // matches the emitted export).
+    let html = if specs.top_level_variants.is_empty() {
+        html
+    } else {
+        crate::view_compiler::ViewCompiler::rewrite_top_level_txn_variants(&html, &specs.top_level_variants)
+    };
     for item in items {
         match item {
             crate::ast::TopLevel::StateDecl(sd) => {

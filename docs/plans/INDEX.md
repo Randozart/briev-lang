@@ -294,9 +294,11 @@ namespace** (the JS/Web + wasm-embedder shape); `#System` is the one base
 host namespace; GLUE stays **languages only**. D7 host-import provenance
 **landed** (`1dc1bd80`); `node`→`js` rename deferred.
 
-**OPEN (BUGS.md):** member txn on a plain top-level obj var is not
-emitted/bound (the `render <Obj>` component form does emit them). Gate:
-extend `benchmarks/rbv_gate.sh` with an obj-form router fixture.
+**FIXED (2026-10-07):** member txn on a plain top-level obj var is emitted as
+a top-level variant (`@go_<var>`) and the view's bare-name `b-trigger` is
+rewritten to it (BUGS.md:8921). Gate: `tests/fixtures/obj_router.rbv`
+(`rbv_gate.sh` step 3). Both the plain-var and `render <Obj>` component forms
+now emit + bind member txns.
 
 ---
 

@@ -1,0 +1,22 @@
+// tests/fixtures/obj_router.rbv — member txn on a plain top-level obj var.
+//
+// 2026-10-07 (member-txn-on-plain-obj-var, BUGS.md:8921): the `Router` obj's
+// member txn `go` is referenced by a view `b-trigger` BARE name — no `render`
+// block, no mount tag. The member txn must be emitted as a top-level variant
+// (`@go_router`) and the view's `b-trigger` rewritten to it (the shim resolves
+// `_txn("go_router")` against the export table). Before the fix the wasm
+// exported no `go`, so the click resolved a missing export at runtime.
+//
+// Exercises: a plain top-level obj var (unpacked into %State), a member txn
+// variant emitted as a top-level export, and a view bare-name b-trigger
+// rewritten to the variant.
+import "std/web/router.bv";
+
+obj Router {
+    path: String;
+    txn go(url: String) [path != url][path == url] { path = url; navigate(url); term; };
+};
+
+let router: Router = Router { path: current_path() };
+
+<view><button b-trigger:click="go('/')">Home</button><p b-text="router.path">.</p></view>

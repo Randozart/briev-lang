@@ -99,3 +99,25 @@ Praetor no new diagnostics + docs in the same commit. Risk concentrates in W2
   txns (a live-but-uncalled txn is root-dispatched). Surfaced by the B2
   example; gated in `rbv_gate.sh`.
 
+## Workstream 4 — Member txn on a plain top-level obj var (BUGS.md:8921)
+
+**Defect.** A member txn on a plain top-level obj var (no `render` block) is
+not emitted as a top-level export; the view's bare-name `b-trigger` resolves a
+missing wasm export at runtime.
+
+**Root cause.** `collect_instance_lets` only consumed `let <name>: <Obj>` where
+`<Obj>` has a `render` block. A plain var was never consumed, so its member
+txns were never emitted and the bare-name `b-trigger` had no mount tag to
+rewrite through.
+
+**Fix.** Extend `collect_instance_lets` to also consume `let <name>: <Obj>`
+where the view references a member txn by bare name. `build_plain_var_instance`
+emits the variant (`@go_<var>`); the view compiler rewrites the top-level view's
+directive values (`top_level_variants`). The consumed `let`'s initializer
+callees are re-rooted via `plan.init_roots` (the `let` is removed before
+liveness indexes it). Gate: `tests/fixtures/obj_router.rbv` (step 3 in
+`rbv_gate.sh`).
+
+**Status:** DONE — `cargo test --lib` 2919 green; `rbv_gate.sh` OK; Praetor no
+new diagnostics.
+

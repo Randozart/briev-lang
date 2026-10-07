@@ -8918,10 +8918,13 @@ Added `lib/glue/node/types.bv`. Test:
 host-module path now; the `node`→`js` rename was reconsidered (Node-specific
 target, kept).
 
-## Webstack: a member txn on a plain top-level obj var is not emitted/bound — 2026-10-07 OPEN
+## Webstack: a member txn on a plain top-level obj var is not emitted/bound — 2026-10-07 FIXED
 
 **Date:** 2026-10-07 (found after fixing BUGS.md:8800 — the unpacked-obj init)
-**Status:** OPEN (limitation).
+**Status:** FIXED — member txns of a plain top-level obj var are emitted as
+top-level variants (`@go_<var>`) and the view's bare-name `b-trigger` is
+rewritten to the variant (the shim resolves `_txn("go_<var>")` against the
+export table).
 
 **Repro:**
 ```
@@ -8932,23 +8935,23 @@ obj Router {
 let router: Router = Router { path: current_path() };
 <view><button b-trigger:click="go">Home</button></view>
 ```
-The module builds and the IR is sound, but the shim binds the button to
-`this._txn("go")` while the wasm exports no `go` — the click resolves a
-missing export at runtime.
+Before the fix: the module built and the IR was sound, but the shim bound the
+button to `this._txn("go")` while the wasm exported no `go` — the click
+resolved a missing export at runtime.
 
-**Scope:** a member txn reached through the `render <Obj> { … }` component
-form IS emitted (mangled `@<member>_<n>` / `@<member>_main`) and bound
-(`examples/counter.rbv`). The gap is specifically an obj held as a **plain
-top-level state variable** (no `render`): its member txns are never emitted as
-top-level exports, and `pipeline::view_trigger_txns` roots only top-level
-trigger txns.
+**Root cause:** `collect_instance_lets` (src/analysis/component_instances.rs)
+only consumed `let <name>: <Obj>` where `<Obj>` has a `render` block. A plain
+top-level obj var (no `render`) was never consumed, so its member txns were
+never emitted as top-level exports and the view's bare-name `b-trigger` had no
+mount tag to rewrite through.
 
-**Impact:** the `Router` obj (after 8800) is expressible but not
-view-bindable in the plain-var form; the router ships free functions. A
-`render Router` component needs a field initializer for `path`
-(`current_path()`), which is a separate question.
-
-**Fix direction:** either emit/bind member txns of a top-level obj instance, or
-express the router as a `render` component with a `path` initializer. Gate: an
-obj-form router fixture whose `b-trigger` fires the member txn (extend
-`benchmarks/rbv_gate.sh`).
+**Fix:** extend `collect_instance_lets` to also consume `let <name>: <Obj>`
+where the view references one of the obj's member txns by bare name. The
+member txn is emitted as a top-level variant (`@go_<var>`) via
+`build_plain_var_instance`; the view compiler rewrites the top-level view's
+directive values to the variant (`top_level_variants`). The consumed `let`'s
+initializer callees (e.g. `current_path`) are re-rooted via
+`plan.init_roots` — the `let` is removed from `items` before defn-liveness
+indexes it, so the emitted init call would trip the soundness net otherwise.
+Gate: `tests/fixtures/obj_router.rbv` (build + IR + variant-export + shim
+bind); `benchmarks/rbv_gate.sh` step 3.

@@ -58,7 +58,21 @@ fi
 OBJ_OUT="$(build_fixture "$ROOT/tests/fixtures/obj_init.rbv")" || exit 1
 check_ir "$OBJ_OUT" obj_init || exit 1
 
-# 3. Multi-page B2 — each .rbv bundles to ONE self-contained HTML with a
+# 3. Member txn on a plain top-level obj var (BUGS.md:8921) — build + IR +
+#    the member-txn variant must be a top-level export and the shim must
+#    reference it. Before the fix the wasm exported no `go`, so the click
+#    resolved a missing export at runtime.
+OBJ_ROUTER_OUT="$(build_fixture "$ROOT/tests/fixtures/obj_router.rbv")" || exit 1
+check_ir "$OBJ_ROUTER_OUT" obj_router || exit 1
+if ! grep -q "define void @go_router" "$OBJ_ROUTER_OUT/obj_router.ll"; then
+    echo "obj_router: member txn variant @go_router not emitted" >&2; exit 1
+fi
+if ! grep -q "_txn(\"go_router\")" "$OBJ_ROUTER_OUT/obj_router.mjs"; then
+    echo "obj_router: shim does not bind the member txn variant" >&2; exit 1
+fi
+echo "OK obj_router (member txn variant emitted + bound)"
+
+# 4. Multi-page B2 — each .rbv bundles to ONE self-contained HTML with a
 #    plain <a href> cross-link (zero external refs).
 check_bundle() {
     local fixture="$1" name="$2" expect_link="$3"

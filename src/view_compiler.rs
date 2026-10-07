@@ -225,6 +225,26 @@ impl ViewCompiler {
         self.instance_specs = specs;
     }
 
+    /// 2026-10-07 (member-txn-on-plain-obj-var): rewrite a top-level view's
+    /// directive values — bare member-txn names become the emitted top-level
+    /// variants (`go` → `go_router`). A plain top-level obj var has no mount
+    /// tag to rewrite through, so the analysis supplies the (orig → variant)
+    /// pairs and the view layer applies them to the view itself. This is the
+    /// same `replace_directive_value` pass `apply_mount_spec` uses for a
+    /// mount's fragment — the plain-var view is the fragment.
+    pub fn rewrite_top_level_txn_variants(
+        html: &str,
+        variants: &std::collections::HashMap<String, String>,
+    ) -> String {
+        let mut out = html.to_string();
+        let mut pairs: Vec<(&String, &String)> = variants.iter().collect();
+        pairs.sort();
+        for (orig, variant) in pairs {
+            out = Self::replace_directive_value(&out, orig, variant);
+        }
+        out
+    }
+
     /// 2026-08-11 (2b2 slice 2a/2b): apply a mount's rewrite SPEC to the raw
     /// fragment — the view layer's formatting (analysis supplies only the
     /// decisions): field directive values become the instance-qualified slots,

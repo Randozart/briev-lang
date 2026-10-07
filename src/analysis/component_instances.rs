@@ -62,6 +62,19 @@ pub struct ComponentInstancePlan {
     /// per-instance reset so a b-when unmount re-applies the instance's seeds
     /// (remount = fresh).
     pub instances: Vec<(String, usize)>,
+    /// 2026-10-07 (member-txn-on-plain-obj-var): bare member-txn name → the
+    /// emitted top-level variant for a PLAIN top-level obj var (no `render`
+    /// block) whose view `b-trigger` references the member txn. The top-level
+    /// `<view>` has no mount tag to rewrite through, so the view compiler
+    /// applies these to the view itself. Empty for component-form programs.
+    pub top_level_variants: std::collections::HashMap<String, String>,
+    /// 2026-10-07 (member-txn-on-plain-obj-var): call names inside a consumed
+    /// instance `let`'s initializer. The `let` is REMOVED from `items` (its
+    /// state becomes the `name.<field>` slots) before defn-liveness indexes
+    /// top-level statements, so its initializer's callees (e.g. `current_path`
+    /// in `Router { path: current_path() }`) must be re-rooted here or they
+    /// are judged dead and the emitted init call trips the soundness net.
+    pub init_roots: std::collections::HashSet<String>,
 }
 
 /// An obj's component-relevant surface: its state slots (name → type) and its
@@ -100,12 +113,22 @@ pub fn expand_component_instances(
         instance_specs: HashMap::new(),
         initializers: HashMap::new(),
         instances: Vec::new(),
+        top_level_variants: HashMap::new(),
+        init_roots: HashSet::new(),
     };
     // 2026-08-12 (2b3 slice 2): Briev-side instances — `let <name>: <Obj> =
     // <StructLiteral>` where the type has a render block. The PROGRAM owns
     // these: seeds are the literal's field values (Briev source), and the
     // `<name />` tag mounts the fragment routed to the instance's slots.
-    let instance_infos = collect_instance_lets(items, &render_blocks, &obj_defs)?;
+    // 2026-10-07 (member-txn-on-plain-obj-var): ALSO collect `let <name>: <Obj>`
+    // where the view references one of the obj's member txns by bare name — a
+    // plain top-level obj var (no `render` block) whose view `b-trigger` fires
+    // a member txn. The member txn gets emitted as a top-level variant
+    // (`@go_<var>`) and the view's bare `b-trigger` is rewritten to it.
+    let view_txn_names: std::collections::HashSet<String> =
+        collect_fragment_refs(view_html).txns;
+    let instance_infos =
+        collect_instance_lets(items, &render_blocks, &obj_defs, &view_txn_names)?;
     let mut pending_resets: Vec<(String, HashMap<String, Type>)> = Vec::new();
     for (component, fragment_html) in &render_blocks {
         let refs = collect_fragment_refs(fragment_html);
@@ -149,16 +172,107 @@ pub fn expand_component_instances(
     }
     // Briev-side instances: their specs (slots + variants, routed to the
     // instance-name prefix) are added to the plan after the pool pass.
-    for (var_name, component, literal) in &instance_infos {
+    apply_instance_specs(items, &instance_infos, &obj_defs, &render_blocks, view_html, &mut plan)?;
+    Ok(plan)
+}
+
+/// 2026-08-12 (2b3) / 2026-10-07 (member-txn-on-plain-obj-var): apply the
+/// instance specs — a `render`-backed instance routes through its fragment; a
+/// plain top-level obj var (no `render`) routes through the view's bare-name
+/// rewrite.
+fn apply_instance_specs(
+    items: &mut Vec<TopLevel>,
+    instance_infos: &[(String, String, Option<HashMap<String, Expr>>, Option<Box<Expr>>)],
+    obj_defs: &HashMap<String, ObjInfo>,
+    render_blocks: &std::collections::BTreeMap<String, String>,
+    view_html: &str,
+    plan: &mut ComponentInstancePlan,
+) -> Result<(), String> {
+    for (var_name, component, literal, init_expr) in instance_infos {
         let Some(obj) = obj_defs.get(component) else { continue };
-        let Some(fragment_html) = render_blocks.get(component) else { continue };
+        // 2026-10-07 (member-txn-on-plain-obj-var): the consumed `let` is
+        // removed from `items` before liveness indexes it — re-root its
+        // initializer's callees (e.g. `current_path`) or the emitted init
+        // call trips the soundness net.
+        if let Some(expr) = init_expr {
+            collect_init_call_names(expr, &mut plan.init_roots);
+        }
+        let Some(fragment_html) = render_blocks.get(component) else {
+            // 2026-10-07 (member-txn-on-plain-obj-var): a plain top-level obj
+            // var (no `render` block) whose view references a member txn by
+            // bare name. The view is the fragment — no mount tag to splice, so
+            // the bare-name rewrite goes into `top_level_variants` and the view
+            // compiler applies it to the top-level view. `refs` is derived from
+            // the view's own directives (the obj's slots are qualified to
+            // `<var>.<field>`; the member txn is variant-ized to `go_<var>`).
+            let refs = collect_fragment_refs(view_html);
+            build_plain_var_instance(items, obj, &refs, &(var_name, component, literal), plan)?;
+            continue;
+        };
         let refs = collect_fragment_refs(fragment_html);
         if refs.fields.is_empty() && refs.txns.is_empty() {
             continue;
         }
-        build_instance_spec(items, obj, &refs, &(var_name, component, literal), &mut plan)?;
+        build_instance_spec(items, obj, &refs, &(var_name, component, literal), plan)?;
     }
-    Ok(plan)
+    Ok(())
+}
+
+/// 2026-10-07 (member-txn-on-plain-obj-var): build a plain top-level obj var's
+/// instance spec — member-txn variants emitted as top-level txns (`@go_<var>`)
+/// + the view's bare-name rewrite recorded for the view compiler. No `render`
+/// fragment, no mount tag, no data-instance marker: the var's slots are the
+/// unpacked-obj columns and the view binds directly to the member-txn variant
+/// by name.
+fn build_plain_var_instance(
+    items: &mut Vec<TopLevel>,
+    obj: &ObjInfo,
+    refs: &FragmentRefs,
+    instance: &(&String, &String, &Option<HashMap<String, Expr>>),
+    plan: &mut ComponentInstancePlan,
+) -> Result<(), String> {
+    let (var_name, component, literal) = instance;
+    let var_name = var_name.as_str();
+    let slot_set = instance_slot_set(items, obj, refs, var_name);
+    let qualifier = |id: &str| -> Option<String> {
+        if slot_set.contains(id) {
+            Some(format!("{}.{}", var_name, id))
+        } else {
+            None
+        }
+    };
+    let variant_txns = build_txn_variants(items, obj, var_name, refs, &qualifier);
+    // The literal's field values seed the instance slots (Briev source).
+    if let Some(literal) = literal {
+        for (field, value) in literal {
+            plan.initializers
+                .insert(format!("{}.{}", var_name, field), value.clone());
+        }
+    }
+    // The view references the member txn by BARE name (`go`) — the variant is
+    // `go_<var>`. The view compiler rewrites the top-level view's directive
+    // values to the variant (no mount tag to splice through).
+    for (orig, variant) in &variant_txns {
+        plan.top_level_variants.insert(orig.clone(), variant.clone());
+    }
+    // Record the instance spec (no fragment, no marker — the plain var is not
+    // a mounted component; the view binds directly).
+    let fields = refs
+        .fields
+        .iter()
+        .map(|field| (field.clone(), format!("{}.{}", var_name, field)))
+        .collect();
+    plan.instance_specs.insert(
+        var_name.to_string(),
+        MountSpec {
+            component: component.to_string(),
+            index: 0,
+            marker: var_name.to_string(),
+            fields,
+            txn_variants: variant_txns,
+        },
+    );
+    Ok(())
 }
 
 /// The obj a stateful `render Name` fragment must pair with — a render without
@@ -464,15 +578,21 @@ const RESERVED_TAG_NAMES: &[&str] = &[
 ];
 
 /// Collect Briev-side component instances: top-level `let <name>: <Obj> =
-/// <StructLiteral>` where `<Obj>` has a render block. Returns `(var name,
-/// component, literal field values)`. The consumed lets are removed (their
-/// state becomes the `name.<field>` slots).
+/// <StructLiteral>` where `<Obj>` has a render block, OR (2026-10-07,
+/// member-txn-on-plain-obj-var) where the view references one of the obj's
+/// member txns by bare name. Returns `(var name, component, literal field
+/// values, full init expr)`. The consumed lets are removed (their state
+/// becomes the `name.<field>` slots); the init expr is returned so its
+/// callees can be re-rooted by defn-liveness (the `let` is gone from `items`
+/// before liveness indexes top-level statements).
 fn collect_instance_lets(
     items: &mut Vec<TopLevel>,
     render_blocks: &std::collections::BTreeMap<String, String>,
     obj_defs: &HashMap<String, ObjInfo>,
-) -> Result<Vec<(String, String, Option<HashMap<String, Expr>>)>, String> {
-    let mut infos: Vec<(String, String, Option<HashMap<String, Expr>>)> = Vec::new();
+    view_txn_names: &std::collections::HashSet<String>,
+) -> Result<Vec<(String, String, Option<HashMap<String, Expr>>, Option<Box<Expr>>)>, String> {
+    let mut infos: Vec<(String, String, Option<HashMap<String, Expr>>, Option<Box<Expr>>)> =
+        Vec::new();
     let mut to_remove: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for item in items.iter() {
@@ -482,7 +602,18 @@ fn collect_instance_lets(
         };
         let Some(Type::Custom(base)) = ty else { continue };
         let Some(obj) = obj_defs.get(base) else { continue };
-        let Some(_frag) = render_blocks.get(base) else { continue };
+        // A `let` is a component instance when the obj has a render block,
+        // OR (2026-10-07) when the view references one of the obj's member
+        // txns by bare name (a plain top-level obj var whose view `b-trigger`
+        // fires a member txn).
+        let has_render = render_blocks.contains_key(base);
+        let view_refs_member_txn = obj
+            .member_txns
+            .keys()
+            .any(|t| view_txn_names.contains(t));
+        if !has_render && !view_refs_member_txn {
+            continue;
+        }
         if !seen.insert(name.clone()) {
             continue;
         }
@@ -523,7 +654,7 @@ fn collect_instance_lets(
             }
             None => None,
         };
-        infos.push((name.clone(), base.clone(), literal_fields));
+        infos.push((name.clone(), base.clone(), literal_fields, expr.as_ref().cloned().map(Box::new)));
         to_remove.push(name.clone());
     }
     if !to_remove.is_empty() {
@@ -1023,6 +1154,89 @@ fn rewrite_expr(e: &Expr, qualifier: &dyn Fn(&str) -> Option<String>) -> Expr {
     cloned
 }
 
+/// 2026-10-07 (member-txn-on-plain-obj-var): collect the call names in an
+/// expression — the callees of a consumed instance `let`'s initializer. The
+/// `let` is removed from `items` before defn-liveness indexes it, so these
+/// names must be re-rooted or the emitted init call trips the soundness net
+/// ("emitted code calls unreached defn").
+fn collect_init_call_names(expr: &Expr, out: &mut HashSet<String>) {
+    match expr {
+        Expr::Call(name, args, _) => {
+            out.insert(name.clone());
+            for a in args {
+                collect_init_call_names(a, out);
+            }
+        }
+        Expr::MethodCall(recv, name, args, _, _) => {
+            out.insert(name.clone());
+            collect_init_call_names(recv, out);
+            for a in args {
+                collect_init_call_names(a, out);
+            }
+        }
+        Expr::Spawn { args, .. } => {
+            for a in args {
+                collect_init_call_names(a, out);
+            }
+        }
+        Expr::BinaryOp(_, l, r) => {
+            collect_init_call_names(l, out);
+            collect_init_call_names(r, out);
+        }
+        Expr::UnaryOp(_, i) => collect_init_call_names(i, out),
+        Expr::Field(o, _) | Expr::Deref(o) | Expr::AddrOf(o) | Expr::Consume(o)
+        | Expr::Await(o) | Expr::IsType(o, _) | Expr::Cast(o, _) => {
+            collect_init_call_names(o, out);
+        }
+        Expr::Index(o, i) => {
+            collect_init_call_names(o, out);
+            collect_init_call_names(i, out);
+        }
+        Expr::StructLiteral { fields, specs, .. } => {
+            for (_, e) in fields.iter().chain(specs.iter()) {
+                collect_init_call_names(e, out);
+            }
+        }
+        Expr::Tuple(es) | Expr::List(es) => {
+            for e in es {
+                collect_init_call_names(e, out);
+            }
+        }
+        Expr::If(c, t, e) => {
+            collect_init_call_names(c, out);
+            collect_init_call_names(t, out);
+            if let Some(e) = e {
+                collect_init_call_names(e, out);
+            }
+        }
+        Expr::Block(b) => {
+            for s in b {
+                collect_init_call_names_stmt(s, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_init_call_names_stmt(stmt: &Statement, out: &mut HashSet<String>) {
+    match stmt {
+        Statement::Let { expr: Some(e), .. } => collect_init_call_names(e, out),
+        Statement::Assign(l, r) => {
+            collect_init_call_names(l, out);
+            collect_init_call_names(r, out);
+        }
+        Statement::ArrowAssign { target: Some(l), value: r, .. } => {
+            collect_init_call_names(l, out);
+            collect_init_call_names(r, out);
+        }
+        Statement::Term(Some(e)) | Statement::Check(e) | Statement::Expression(e)
+        | Statement::Gate(e) => {
+            collect_init_call_names(e, out);
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1511,6 +1725,71 @@ render Root {
         assert!(
             !plan.initializers.contains_key("Counter.0.count"),
             "HTML-side spawn stays zero-init"
+        );
+    }
+
+    /// 2026-10-07 (member-txn-on-plain-obj-var): a plain top-level obj var
+    /// (no `render` block) whose view references a member txn by bare name
+    /// gets a variant emitted + the view's bare-name rewrite recorded.
+    /// (`<view>` is extracted during preprocessing, not parsed here — the
+    /// view HTML is passed to `expand_component_instances` directly.)
+    #[test]
+    fn plain_var_member_txn_gets_variant_and_rewrite() {
+        let src = r#"
+obj Router {
+    path: String;
+    txn go(url: String) [true][path == url] { path = url; term; };
+};
+let router: Router = Router { path: "/" };
+"#;
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let view_html = "<button b-trigger:click=\"go\">Go</button>".to_string();
+        let plan = expand_component_instances(&mut items, &view_html).unwrap();
+        // The `let` is consumed — its state becomes `router.path`.
+        assert!(
+            !items.iter().any(|i| matches!(i, TopLevel::Statement(s)
+                if matches!(s.as_ref(), crate::ast::Statement::Let { name, .. } if name == "router"))),
+            "the consumed let must be removed from items"
+        );
+        // The member txn variant is emitted as a top-level txn.
+        let names: Vec<String> = items.iter().filter_map(|i| match i {
+            TopLevel::Transaction(t) => Some(t.name.clone()),
+            _ => None,
+        }).collect();
+        assert!(names.contains(&"go_router".to_string()), "go_router variant missing: {names:?}");
+        // The view's bare-name rewrite is recorded for the view compiler.
+        assert_eq!(
+            plan.top_level_variants.get("go").map(|v| v.as_str()),
+            Some("go_router"),
+            "view bare-name rewrite: {:#?}", plan.top_level_variants
+        );
+        // The instance spec is registered (keyed by the var name).
+        assert!(plan.instance_specs.contains_key("router"));
+    }
+
+    /// 2026-10-07 (member-txn-on-plain-obj-var): the consumed `let`'s
+    /// initializer callees are re-rooted — `current_path` in
+    /// `Router { path: current_path() }` must land in `plan.init_roots` so
+    /// the emitted init call doesn't trip the liveness soundness net.
+    #[test]
+    fn plain_var_init_callees_are_rooted() {
+        let src = r#"
+obj Router {
+    path: String;
+    txn go(url: String) [true][path == url] { path = url; term; };
+};
+let router: Router = Router { path: current_path() };
+"#;
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let view_html = "<button b-trigger:click=\"go\">Go</button>".to_string();
+        let plan = expand_component_instances(&mut items, &view_html).unwrap();
+        assert!(
+            plan.init_roots.contains("current_path"),
+            "current_path must be re-rooted: {:#?}", plan.init_roots
         );
     }
 }
