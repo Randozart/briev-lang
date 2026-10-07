@@ -1,0 +1,5 @@
+// node/types.bv — Node.js boundary representations for GLUE.
+// 2026-10-07: the file was referenced by `node/glue.dbv`
+// (`types_module: "glue/node/types.bv"`) but never existed. Node bridges
+// through the C ABI (ffi-napi / N-API), so the boundary vocabulary is C's.
+import "glue/c.bv";

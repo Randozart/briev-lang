@@ -397,19 +397,30 @@ fn string_map_from(v: Option<&DataValue>) -> HashMap<String, String> {
 /// 2026-07-22: Matches the file extension (without dot) against known
 /// language targets. Returns the language name and its GlueTarget.
 /// This is the primary lookup used during frgn dispatch resolution.
+///
+/// 2026-10-07 (host-boundary decision record): DETERMINISTIC. A HashMap's
+/// iteration order is seed-dependent; `node` and `web` both claimed `.mjs`,
+/// so `from "x.mjs"` resolved by hash order (a determinism-rule violation).
+/// Two fixes: iterate in sorted key order, and exclude host runtimes
+/// (`bridge_kind == "wasm_runtime"`) — a host is reached by provenance
+/// (`#System`/host marker), never by a source-file extension, so it must not
+/// compete for one.
 pub fn find_language_by_extension<'a>(
     targets: &'a HashMap<String, GlueTarget>,
     ext: &str,
 ) -> Option<&'a GlueTarget> {
     let ext = ext.trim_start_matches('.');
-    targets.values().find(|t| t.extension == ext)
+    let mut keys: Vec<&String> = targets.keys().collect();
+    keys.sort();
+    keys.into_iter()
+        .map(|k| &targets[k])
+        .find(|t| t.extension == ext && t.bridge_kind != "wasm_runtime")
 }
 
 /// Map a file extension to a language identifier using the loaded targets.
 /// Returns Some(language_name) if the extension is recognized, None otherwise.
 pub fn extension_to_language<'a>(ext: &str, targets: &'a HashMap<String, GlueTarget>) -> Option<&'a str> {
-    let ext = ext.trim_start_matches('.');
-    targets.values().find(|t| t.extension == ext).map(|t| t.language.as_str())
+    find_language_by_extension(targets, ext).map(|t| t.language.as_str())
 }
 
 #[cfg(test)]
@@ -477,6 +488,30 @@ mod tests {
         // Should work with or without leading dot
         assert_eq!(find_language_by_extension(&targets, ".py").unwrap().language, "python");
         assert_eq!(find_language_by_extension(&targets, "py").unwrap().language, "python");
+    }
+
+    #[test]
+    fn mjs_extension_excludes_host_runtime_and_is_deterministic() {
+        // 2026-10-07 (host-boundary decision record): node (esm_module) and
+        // web (wasm_runtime) both claimed ".mjs". A host runtime is reached
+        // by provenance, never by a source extension, so it must not win
+        // extension routing — and the result must not depend on HashMap
+        // iteration order.
+        let mut targets = HashMap::new();
+        for (name, bridge_kind) in [("web", "wasm_runtime"), ("node", "esm_module")] {
+            targets.insert(name.to_string(), GlueTarget {
+                language: name.to_string(),
+                extension: "mjs".to_string(),
+                bridge_kind: bridge_kind.to_string(),
+                ..Default::default()
+            });
+        }
+        assert_eq!(
+            find_language_by_extension(&targets, ".mjs").unwrap().language,
+            "node",
+            "the host runtime (wasm_runtime) must not be reachable by extension"
+        );
+        assert_eq!(extension_to_language("mjs", &targets), Some("node"));
     }
 
     #[test]
