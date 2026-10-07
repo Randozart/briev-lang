@@ -297,10 +297,15 @@ gate.
 Gates: `cargo test --lib` 2917 green; router gate 11/11; `check_calls.py`
 clean; all `.rbv` examples build; Praetor no new diagnostics.
 
-Remaining: Phase 5 — delete the `#Web` token/dispatch path entirely (it
-currently errors with a fix) and sweep the remaining docs
-(`data-briev.md`, `rendered-briev-wasm.md`, `hash-words.md`, `glue-ffi.md`,
-`conditional-ffi.md`) for the retired framing.
+- Phase 5: **the `#<Name>` protocol namespace is removed** — `#System` is the
+  only protocol hashword; any other `#<Name>` (including `#Web`) errors with
+  a fix naming the host-module path. Docs swept (`hash-words.md`,
+  `agent-reference.md`, `conditional-ffi.md`, `SPEC.md` §19.2, the router
+  header).
+
+**Migration complete.** The browser is a library over a host-module path;
+`#Web` is retired as a protocol; the `web` GLUE target is gone; `#System`
+is the one protocol hashword.
 
 ---
 

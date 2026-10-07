@@ -738,7 +738,7 @@ The names `sed`, `pvt`, and `reg` remain reserved for future language contracts.
 
 | Form | Meaning |
 |---|---|
-| `#Target` | target/protocol hashword (`#System`, `#Web`, `#Link<name>`) — routes a declaration to a bridge target; never a type category |
+| `#Target` | target hashword (`#System`, `#Link<name>`) — the base system library or a linker flag; never a type category. There is no `#<Name>` protocol namespace: a language is reached by file extension, a browser host by a host-module path (`from "glue/web/web.js"`) |
 | `Intrinsic#` | compiler intrinsic |
 | `$name` | compile-time-only declaration/binding |
 | `name!(...)` | explicit compile-time expansion |

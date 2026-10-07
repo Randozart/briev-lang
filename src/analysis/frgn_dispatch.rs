@@ -97,12 +97,11 @@ pub fn resolve_single_frgn(
     backend: BackendKind,
     universe: Option<&crate::type_universe::TypeUniverse>,
 ) -> Result<ResolvedFrgn, String> {
-    // 2026-10-06 (#Web genericization, Option A): `#System` is the ONE special
-    // base protocol — the platform's standard system library (libc / libSystem
-    // / WASI), the C-era ABI every target has. Every OTHER `#<Name>` protocol
-    // is a GLUE target resolved BY NAME (`#Web` -> lib/glue/web/glue.dbv). The
-    // compiler carries no host vocabulary: a new host is a new
-    // lib/glue/<host>/ folder, with zero compiler change.
+    // 2026-10-07 (host-boundary decision record): `#System` is the ONE
+    // protocol hashword — the platform's standard system library (libc /
+    // libSystem / WASI), the C-era base ABI. There is no `#<Name>` protocol
+    // namespace: a language is reached by file extension (`from "x.py"`) and
+    // a browser host by a host-module path (`from "glue/web/web.js"`).
     if let FromSpec::Protocol(proto) = &fb.from {
         if proto == "#System" {
             let protocol_config = crate::target::ProtocolConfig::load();
@@ -120,13 +119,9 @@ pub fn resolve_single_frgn(
                 protocol_lib: lib.map(|s| s.to_string()),
             });
         }
-        // Generic: `#<Name>` -> the GLUE target named `<name>` (lowercased).
-        let name = proto.trim_start_matches('#').to_lowercase();
-        // 2026-10-07 (host-boundary decision record, D1/D7): `#Web` is
-        // retired as a protocol. The browser is a library over the webstack
-        // target's host-import namespace — declare the host with a
-        // host-module path instead.
-        if name == "web" {
+        // `#Web` is retired (D1/D7): the browser is a library over the
+        // webstack target's host-import namespace.
+        if proto == "#Web" {
             return Err(format!(
                 "frgn '{}': `#Web` is retired. Declare the browser host import \
                  as a host-module path, e.g. `frgn {} from \"glue/web/web.js\";`.",
@@ -134,24 +129,14 @@ pub fn resolve_single_frgn(
                 fb.effective_briev_name(),
             ));
         }
-        let target = glue_targets.get(&name).ok_or_else(|| {
-            let mut available: Vec<&String> = glue_targets.keys().collect();
-            available.sort();
-            format!(
-                "frgn '{}': protocol '{}' is not a known GLUE target. \
-                 Available targets: {}. Add lib/glue/{}/glue.dbv to bind it.",
-                fb.effective_briev_name(),
-                proto,
-                available.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "),
-                name,
-            )
-        })?;
-        let (param_paths, return_path) = bridge_protocol_paths(fb, target, universe)?;
-        return Ok(ResolvedFrgn::Bridge {
-            language: target.language.clone(),
-            param_paths,
-            return_path,
-        });
+        return Err(format!(
+            "frgn '{}': '{}' is not a valid provenance. `#System` is the only \
+             protocol hashword — reach a language by file extension \
+             (`from \"x.py\"`) or a browser host by a host-module path \
+             (`from \"glue/web/web.js\"`).",
+            fb.effective_briev_name(),
+            proto,
+        ));
     }
 
     // 2026-07-26: Resolve #Link<name> — direct linker directive.
@@ -202,20 +187,7 @@ pub fn resolve_single_frgn(
 
     // 2026-07-22: If a GLUE language target exists, this is a bridge call.
     if let Some(target) = language {
-        // 2026-07-22: Compute protocol transform for each parameter (one step each),
-        // using the target's protocol mapping to derive the foreign type.
-        let param_paths: Vec<ProtocolStep> = fb.inputs.iter()
-            .map(|(_, briev_type)| {
-                let foreign_type = lookup_foreign_type(briev_type, &target.protocols, universe);
-                compute_protocol_path(briev_type, &foreign_type, universe)
-                    .and_then(|steps| steps.into_iter().next().ok_or_else(|| "empty path".to_string()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let return_path: Option<ProtocolStep> = fb.success_output.first()
-            .and_then(|(_, ty)| {
-                let foreign_type = lookup_foreign_type(ty, &target.protocols, universe);
-                compute_protocol_path(ty, &foreign_type, universe).ok()?.into_iter().next()
-            });
+        let (param_paths, return_path) = bridge_protocol_paths(fb, target, universe)?;
         return Ok(ResolvedFrgn::Bridge {
             language: target.language.clone(),
             param_paths,
@@ -621,8 +593,8 @@ mod tests {
 
     #[test]
     fn test_resolve_single_frgn_protocol_unknown() {
-        // 2026-10-06 (#Web genericization): an unknown `#<Name>` protocol is
-        // not a hardcoded-protocol error — it is an unknown GLUE target.
+        // 2026-10-07 (host-boundary decision record, D4): there is no
+        // `#<Name>` protocol namespace — `#System` is the only hashword.
         let fb = ForeignBinding::new(
             "foo".to_string(),
             None,
@@ -632,10 +604,10 @@ mod tests {
         let targets = sample_glue_targets();
         let result = resolve_single_frgn(&fb, "", &targets, BackendKind::Llvm, None);
         let err = result.unwrap_err();
-        assert!(err.contains("not a known GLUE target"),
-            "should report an unknown GLUE target (got: '{}')", err);
-        assert!(err.contains("lib/glue/somethingelse/"),
-            "should name the folder to add (got: '{}')", err);
+        assert!(err.contains("not a valid provenance"),
+            "should reject the unknown protocol (got: '{}')", err);
+        assert!(err.contains("#System"),
+            "should name the only valid protocol hashword (got: '{}')", err);
     }
 
     #[test]

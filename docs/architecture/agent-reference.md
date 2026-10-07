@@ -19,9 +19,10 @@ The **fundamental types** (`Data`, `Bit<N>`, `Int`, `UInt`, `Float`,
 primordials — they appear directly in op signatures (`op Add(Int)`) and
 carry no `#`. Parameterized protocol variants (`String<UTF8>`,
 `Float<IEEE754>`) keep their `#` and select representations; `#Link<name>`
-emits `-l<name>`; `#System` is the base protocol hashword (the platform's
-system library); any other `#<Name>` protocol (e.g. `#Web`) is a GLUE target
-resolved by name. `Data` is
+emits `-l<name>`; `#System` is the only protocol hashword (the platform's
+system library). There is no `#<Name>` protocol namespace — a language is
+reached by file extension (`from "x.py"`), a browser host by a host-module
+path (`from "glue/web/web.js"`); `#Web` is retired. `Data` is
 the universal reflective floor (every value observable as raw storage — not
 a supertype, no universal inheritance edge); `Bit<N>` is the unified bit type
 at any declared width (`Bit` bare = flexible); `Blob` is the `[len][bytes]`

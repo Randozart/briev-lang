@@ -1,8 +1,8 @@
 // lib/std/web/router.bv
 // 2026-10-06 (web plan, Part 4): routing as a STDLIB FRAMEWORK — standard
-// Briev only. No compiler keyword, no intrinsic, no new hashword: the URL is
-// reached through the web runtime's `#Web` host functions (`location` /
-// `navigate`, shipped in lib/glue/web/glue.dbv), and the view is driven by
+// Briev only. No compiler keyword, no intrinsic, no hashword: the URL is
+// reached through the browser host module (`location` / `navigate`, declared
+// `from "glue/web/web.js"`), and the view is driven by
 // `b-when` / `b-trigger`. This mirrors how the web language itself routes — a
 // library over the browser's location/history primitives, never the language.
 //

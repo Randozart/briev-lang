@@ -21,10 +21,13 @@ type AND the protocol.** One name, two roles.
   ("#Float is retired — write Float"). No deprecation alias. Their
   `Type::HashWord` / `Type::HashWordVariant` AST variants are deleted.
 - Target/protocol hashwords are a DIFFERENT mechanism and remain:
-  `#System` is the ONE base protocol (the platform's standard system library
-  — libc/libSystem/WASI); any other `#<Name>` protocol (e.g. `#Web`) is a
-  GLUE target resolved by name (`lib/glue/<name>/glue.dbv`), and
-  `#Link<name>` emits linker flags. They never named types or categories.
+  `#System` is the ONLY protocol hashword (the platform's standard system
+  library — libc/libSystem/WASI); `#Link<name>` emits linker flags. There is
+  no `#<Name>` protocol namespace: a language is reached by file extension
+  (`from "x.py"`) and a browser host by a host-module path
+  (`from "glue/web/web.js"`) — `#Web` is retired
+  (`docs/architecture/web-host-boundary-decision-record.md`). They never
+  named types or categories.
 - Operand markers remain: `#Lh` / `#Rh` / `#T` / `#Self` in op bindings.
 - Field markers remain: `#Stack` / `#Heap` / `#Scalar` on declarations.
 
