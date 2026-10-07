@@ -107,6 +107,9 @@ runtime gate green.**
   fixtures; view-directives emits exactly its three correct unfired warnings;
   view-bind-edge no false warning. Praetor: no new diagnostics on changed
   files (`index_item` improved 2→1 by extracting `root_txn_dispatch`).
-- **Still OPEN (unchanged):** unpacked-obj String-field store; remaining
-  hardcoded-`i64` call sites (next-char / op-Identifier / on_exit /
-  `__briev_coll_resize`).
+- **Still OPEN (unchanged):** unpacked-obj String-field store. The other
+  hardcoded-`i64` call sites were MEASURED (2026-10-07): `__briev_coll_resize`
+  and `briev_str_next_char` are `out defn` external-symbol ABI — their `i64`
+  calls are correct and must stay. The genuine latent sites are
+  `emit_on_exit_cleanup` and `emit_operator_call`'s Identifier arm (both
+  unexercised; need a gated ABI-convention change).

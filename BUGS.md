@@ -8787,9 +8787,15 @@ passes the runtime gate: `node gate.mjs` → 11/11 (route matching, `briev_str_e
 equal/different/length-mismatch, `str_len_bytes`, plus the four view-surface
 checks). Mechanical sweep `check_calls.py` is clean on the router, view-
 directives, and view-bind-edge IR, and on 25 buildable native fixtures.
-Remaining hardcoded-`i64` call sites (separate latent class, same family):
-`emit_stmt.rs` `briev_str_next_char`, `helpers.rs` op-Identifier,
-`emit_toplevel.rs` `on_exit`, `intrinsics.rs` `__briev_coll_resize`.
+Remaining hardcoded-`i64` call sites, MEASURED 2026-10-07: the collection/
+string helpers `__briev_coll_resize` and `briev_str_next_char` are `out defn`
+(external-symbol ABI, declared via `protocol_llvm_type` → i64 on every target
+because `Int`'s metadata is 8 bytes) — their hardcoded `i64` calls are CORRECT
+and must NOT be width-derived. The genuine latent sites are `emit_toplevel.rs`
+`emit_on_exit_cleanup` (`call i64 @on_exit_fn` where the comment says void) and
+`helpers.rs` `emit_operator_call` Identifier (a user op-impl defn) — both
+unexercised by any `.rbv`/fixture today; their correct form depends on the
+on_exit frgn / op ABI convention and needs its own gated change.
 
 ## Webstack (wasm32): unpacked obj with a txn + String field emits invalid IR — 2026-10-06 OPEN
 
