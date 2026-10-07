@@ -26,6 +26,13 @@ new hashword** — routing is a stdlib framework over standard Briev FFI.
    - Rationale (the user's framing): `#System` is the C-era base ABI — the
      eternal thing compilers exist to abstract. A *specific runtime* (web,
      node, deno) is temporal and belongs in GLUE configs.
+   - **SUPERSEDED 2026-10-07** by
+     `docs/architecture/web-host-boundary-decision-record.md`. Option A kept
+     `#Web` as a GLUE target; that record concludes `#Web` is **not a
+     protocol** and retires it, reframing the browser as a **library over a
+     host-import namespace** (the JS/Web + wasm-embedder shape). `#System`
+     remains the one base host namespace. This decision item is retained for
+     the historical record only.
 5. **Host JS shipping: option (c)** — GLUE `[web]` templates gain a per-frgn JS
    body so a framework's host functions ship inside the generated shim
    (bundles for free).

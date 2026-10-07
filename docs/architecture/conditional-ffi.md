@@ -146,7 +146,10 @@ The compiler maps `#System` to the appropriate library per target in
 "#System" = "wasi_snapshot_preview1"
 ```
 
-Any bare protocol hashword other than `#System` produces a compile error.
+Any other `#<Name>` protocol is a GLUE target resolved by name
+(`lib/glue/<name>/glue.dbv`) and links no system library — it is not an
+entry in `config/protocols.dbvl`. (2026-10-07: `#Web` is being retired as a
+protocol; see `web-host-boundary-decision-record.md`.)
 
 ## `#Link<name>` — Direct System Library Linking
 

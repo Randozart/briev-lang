@@ -276,6 +276,21 @@ small-N defect) + vocabulary retirement + the escape-ladder test.
 
 ---
 
+## Workstream 3b — `.rbv` web surface
+
+Active plan: `docs/plans/2026-10-06-web-routing-and-bundling.md` (Parts 0–4
+landed; the router's wasm32 blockers were fixed in
+`docs/plans/2026-10-06-wasm32-pointer-width.md`). **2026-10-07 decision:**
+`#Web` is **not a protocol** —
+`docs/architecture/web-host-boundary-decision-record.md` supersedes
+web-routing decision #4. The browser is a **library over a host-import
+namespace** (the JS/Web + wasm-embedder shape); `#System` is the one base
+host namespace; GLUE stays **languages only** (no language hashwords,
+`node`→`js`). Migration phased + gated in that record (D7 host-import
+provenance OPEN).
+
+---
+
 ## Workstream 4 — Runtime elimination (`briev_rt.c`)
 
 `lib/runtime/briev_rt.c` is still ~20 KB on main. Families A+B+C (cast lanes,

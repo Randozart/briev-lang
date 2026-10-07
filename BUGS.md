@@ -8879,3 +8879,21 @@ including `go("/about")` fires `navigate` and commits a state flush;
 view-directives builds with exactly the three correct unfired warnings
 (`cycle_color`, `toggle_dark`, `toggle_sidebar`); view-bind-edge emits
 `set_greeting` with no false warning.
+
+## GLUE extension routing is nondeterministic — two targets claim `.mjs` — 2026-10-07 OPEN
+
+**Date:** 2026-10-07 (found auditing the `#Web` host boundary)
+**Status:** OPEN — filed as part of the host-boundary migration
+(`docs/architecture/web-host-boundary-decision-record.md`).
+
+`lib/glue/node/glue.dbv` and `lib/glue/web/glue.dbv` both declare
+`extension: "mjs"`. `find_language_by_extension` scans `HashMap::values()`
+(`src/glue/config.rs:400-406`), so `frgn f() from "x.mjs"`
+(`src/analysis/frgn_dispatch.rs:178`) resolves to `node` or `web` by hash
+order — up to run-to-run variation, a direct HashMap-determinism-rule
+violation. Also: `lib/glue/node/types.bv` is referenced by
+`types_module: "glue/node/types.bv"` but does not exist.
+
+**Fix:** the migration renames `node`→`js` (the one JS language target) and
+removes `web` from the language registry, leaving a single `.mjs` owner; add
+the missing `js/types.bv`; key any residual routing on `bridge_kind`.
