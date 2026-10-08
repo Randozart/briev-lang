@@ -124,6 +124,32 @@ manipulation.
 | portable `cp.async`/mbarrier/TMA | n/a | not in portable SPIR-V; the vendor-projection path (`abv-gpu-doctrine.md` per-tier) carries them — PTX tier first |
 | `Asm#` raw / abstract | X | **OPEN** (§2): no assembler in the emission path; design before filling |
 
+## 4b. Embedded ladder surface (`.bld` → `.bad`, 2026-10-08)
+
+The BILLD lane (`docs/architecture/bld-dialect.md`) gives the embedded
+tier its own named surface — the gap class here shifts from **X** to
+**I-class verbs over data rows**: every capability below is a registry
+row (`config/bld-intrinsics.dbvl` + `config/bad-isa.dbvl`), exercised
+by QEMU gates on real emulation, never a Rust match.
+
+| Capability | Class | Evidence / gap |
+|---|---|---|
+| CR/CSR read-write | I | `ReadControlReg`/`WriteControlReg` rows → `readcr`/`writecr` (x86 `movq %crN` with the number spliced bare; riscv `csrr`/`csrw` with decimal CSR — mstatus = 768). Gate: `tests/bare/qemu-bld-rv64.sh` boots with PMP grants via `WriteControlReg` |
+| interrupt mask/unmask | I | `DisableInterrupts`/`EnableInterrupts` → `cli`/`sti`, riscv `csrrc/csrrs` mstatus. aarch64 DAIF = X (verified `S3_x` encodings pending — loud refusal, never guessed) |
+| halt / wait | I | `Halt`/`WaitForInterrupt` → `halt`/`wfi` rows (x86 renders `hlt`). Gate: all three qemu-bld gates park via them |
+| memory barrier | I | `MemoryBarrier` → `mfence`/`dsb sy`/`fence iorw, iorw` |
+| TLB invalidate | I | `InvalidateTlb` → CR3 reload (clobbers %rax — row contract) / `tlbi vmalle1` / `sfence.vma` |
+| descriptor table load | I | `LoadDescriptorTable` → `lgdt` (x86-only; others = loud capability error) |
+| far jump | I | `FarJump` → `ljmp seg, off` (x86-only; segmentation is x86 — others refuse rather than drop the segment) |
+| MMIO load/store | I | `Store`/`Load` verbs over the universal `store`/`load` core ops (immediates materialize per the rows' ImmHandling — aarch64/riscv need registers). Gate: `tests/bare/qemu-bld-aarch64.sh` prints "Briev" through PL011 stores only |
+| far-mode entry sequence | S+R | the multiboot2/long-mode prologue stays a `bad { }` raw block (disclosed escape, `examples/bld/boot_protected_x86.bld`) — structure, not a verb |
+
+**Ladder note**: `.bld` lowers to a `BadProgram` and emits through the
+unchanged `.bad` backend — this surface inherits every `.bad` row
+(e.g. the riscv `csrw` family the bootstrap-bad gates already
+exercise). New engine capability = one `bld-intrinsics` row + the
+`.bad` rows it composes, with a QEMU gate.
+
 ## 5. Gap ledger (ordered by leverage)
 
 | # | Gap | Fill | Class |

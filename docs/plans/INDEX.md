@@ -47,6 +47,7 @@ territory — read the linked plan before starting a workstream.
 |------|----------|--------|
 | `feat/e14a-intent-synthesis` | `../briev-e14a` | Electronics `.ebv` (component laws, tolerance model, ERC) — **C2's parked remainder belongs here** |
 | `feat/bad-dialect` | `../briv-compiler-bad-dialect` | Embedded / bad-dialect bootstrapper |
+| `feat/billd-dialect` | `../briev-billd` | BILLD `.bld` recipe dialect (M2–M7 done 2026-10-08: parser, lowering, allocator, engine-verb registry, bit stdlib, `brievc bld` + 3 QEMU-boot gates; M8 docs landed with the merge) — plan `2026-10-08-billd-intermediate-dialect.md`, ref `docs/architecture/bld-dialect.md` |
 | (baseline) | `../briev-compiler-baseline` | Rule 12b A/B worktree — measure `main` only |
 
 Standing exclusion (`2026-09-24-followup-stages.md` §Exclusion): never merge,

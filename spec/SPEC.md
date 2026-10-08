@@ -3302,6 +3302,43 @@ cross toolchains from config. A pure-.bad stdlib lives in `std/bad/`. The gramma
 strictly line-oriented with no braces; the full dialect reference is
 `docs/architecture/bad-dialect.md`.
 
+### 20.2 The .bld recipe dialect (BILLD)
+
+`.bld` files (BILLD — Briev Intermediate Low-Level Dialect) are
+execution recipes: the architecture of the machine without the chore
+of the scratchpad. They lower to a `BadProgram` and emit through the
+unchanged `.bad` backend — same registries, same targets — via
+`brievc bld <file.bld>`; they never enter the .bv pipeline. Statements
+are braced and Briev-shaped: `let`/assignment (compound forms
+desugar), calls, `when`/`else` (Briev has no `if` in any dialect),
+unbounded `loop`/`while` with `break`/`continue`, naked `return`, and
+verbatim `bad { }` passthrough blocks. Values carry one of four
+classes (Int, Float, Bool, Ptr) from annotations or propagation;
+Int↔Float promotes automatically, constants fold exactly (overflow
+and division by zero are loud), and non-constant values name virtual
+registers the allocator resolves — linear scan over
+registry-derived pools, loop-carried live ranges extended across
+backedges, call-crossing values forced to callee-saved registers or
+frame slots, spilled values reloaded through reserved scratches.
+Naked semantics: no prologue, no auto-`ret`; a recipe that touches
+`sp` cannot take a compiler frame. Calls: `defn`s use the C-ABI
+(argument registers per `abi_args`/`abi_args_fp`, result in r0/f0);
+engine verbs — `ReadControlReg`, `WriteControlReg`,
+`DisableInterrupts`, `Halt`, `WaitForInterrupt`, `MemoryBarrier`,
+`InvalidateTlb`, `LoadDescriptorTable`, `FarJump`, `Store`, `Load` —
+are data rows in `config/bld-intrinsics.dbvl` (never Rust matches)
+and inline at the call site with per-target sequences; a verb
+without the target's row is a loud capability error naming the
+available targets. Imported `.bad` labels are external calls; `.bad`
+sequence `defn`s are inline material for `bad { }` blocks only.
+Ownership items (sections, data labels) inside `bad { }` attach only
+at the recipe's first or last statement. Entry:
+`bootstrap Name() { … }`, exactly one per image, `.global`-exported.
+Bit functions live in `lib/std/bld/bits.bld` (the `.bv` twins in
+`lib/std/bits.bv`); boot examples with QEMU gates live in
+`examples/bld/` + `tests/bare/qemu-bld-*.sh`. The full dialect
+reference is `docs/architecture/bld-dialect.md`.
+
 ## 21. Rendered Briev
 
 ### 21.1 Document structure

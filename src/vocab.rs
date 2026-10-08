@@ -282,7 +282,9 @@ impl LanguageVocab {
                 "#Category", "Intrinsic#", "$name", "name!(...)", "$(Stage)",
                 ".^Field", ".^^Field", "!value", "?",
             ]),
-            extensions: ss(&["bv", "ebv", "abv", "sbv", "rbv", "dbv", "dbvl"]),
+            // 2026-10-08 (BILLD plan M8): .bld — the recipe dialect joins the
+            // extension vocabulary.
+            extensions: ss(&["bv", "ebv", "abv", "sbv", "rbv", "dbv", "dbvl", "bld"]),
             profiles: ss(&["s", "f"]),
             hashwords: ss(&[
                 "Int", "Float", "Bool", "String", "Char", "Bits", "Ptr", "Void",
