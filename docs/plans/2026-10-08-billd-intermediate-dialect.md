@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 # BILLD — Briev Intermediate Low-Level Dialect (`.bld`)
 
-**Status: M2 DONE 2026-10-08** (parser + AST + 26 tests, suite 2954 green,
-Praetor clean; plan originally PLANNED same day). Milestones below; check
+**Status: M3 DONE 2026-10-08** (lowering core + 55 tests, suite 3011 green,
+Praetor clean; M2: parser + AST + 26 tests same day). Milestones below; check
 them off as they land.
 
 Plan-driven work; Rule 13 docs named in §Milestones. Separate worktree:
@@ -113,8 +113,68 @@ documented exception; frameless spill refuses loudly.)
    `defn`, `loop`/`while`/`when`/`break`/`continue`, `let`, PascalCase calls,
    `bad { }` blocks, `import`. Round-trip + house-style error tests
    (what/why/fix, `src/errors.rs`).
-3. **Lowering core** — expressions, assignment, structured CF → labels,
-   `bootstrap` export; golden tests on emitted `BadProgram`/`.s` fragments.
+3. **Lowering core** — DONE 2026-10-08: `src/backend/bld/{mod,lower}.rs`,
+   55 tests (`backend::bld`), one end-to-end `.s` triple. Also in this
+   commit: `bad-registers.dbvl`'s `abi_args_fp` listed as a scalar row
+   (it parsed as a register row and silently emptied the accessor).
+
+   M3 decisions (each test-pinned in `src/backend/bld/mod.rs`):
+   - **Virtual registers in the emitted BadProgram are intentional.**
+     The .bad backend resolves only real register names on value
+     operands, so M3 golden tests assert on the `BadProgram` shape;
+     only const/physical recipes reach `.s` (three do, end to end).
+     Virtuals are `vN` (Int/Bool/Ptr) and `fvN` (Float) — the class
+     rides the name so the M4 allocator reads it off the BadProgram
+     with no extra state; neither prefix collides with a register name.
+   - **`let` adopts freshly emitted single-def value registers** (the
+     `Lowered::temp` flag): `let b = a + 1` emits `add v0, …` with no
+     second copy. Values read from existing bindings never adopt
+     (adopting would alias `let x = y` with `y`).
+   - **ABI convention** (mirrors `compile.rs` `bad_param_env`):
+     integer-class parameters/consumers take the `abi_args` order,
+     float parameters the `abi_args_fp` order (class-separate
+     counters), results return in r0/f0. Register-budget overflow is
+     loud (frameless v1); `.bv`-lane `bad fn` starts at register index
+     1 for the state pointer — `.bld` defns start at index 0 (no state
+     pointer; `.bld` calls are `.bld`-to-`.bld` or C-ABI external).
+   - **Calls stage through fresh virtuals first** (parallel-move
+     safety): `f(b, a)` with both args already in argument registers
+     must not clobber a source mid-copy.
+   - **Float compare/branch operands materialize to float registers**
+     before the branch — the `fj*` rows have no immediate form, and a
+     pooled literal substituted into a register slot mis-assembles.
+     Integer immediates pass directly (every `j*` row accepts them).
+   - **No-immediate ops materialize via the registry** (`ImmHandling::
+     Illegal`): `mul`/`div`/`mod` on aarch64/riscv/thumb, all `f*` ops
+     — one generic check, no per-op knowledge.
+   - **Numeric promotion is the defined semantics**: Int↔Float
+     converts automatically (itof/ftoi; constants fold exactly, a
+     fractional Float → Int is loud). Int/Bool/Ptr interchange as the
+     same machine word (class relabel, no instruction).
+   - **`>>` folds as a LOGICAL shift** (`(x as u64) >> n`), matching
+     the .bad `shr` (shrq/lsr/srl) on every target; `<<` wraps bits.
+     Const division by zero is loud; float division by zero folds to
+     inf (hardware behavior).
+   - **`bad { }` ownership rule**: instruction lines splice into the
+     recipe body anywhere (parsed inside a `_bldwrap:` label so they
+     can never orphan); ownership items (sections, data labels, defns,
+     raw blocks) attach only at the recipe's FIRST or LAST statement —
+     .bad ownership is positional, a mid-recipe owner would steal the
+     instructions after it.
+   - **`.bad` imports** pass through as directives (absolutized paths)
+     and their labels/named raw blocks are harvested as external call
+     signatures (C-ABI, result assumed r0/Int, arity unchecked);
+     `.bad` sequence defns keep their arity. `.bld` imports merge
+     recursively (canonical-path dedup; `root_path` seeds it so cycles
+     back to the root file terminate — without it, a root cycle is
+     still loud via duplicate-declaration errors, never silent).
+   - **Conditions are branch-shaped** (`lower_cond(e, target,
+     when_true)`): `when`/`while` jump on false polarity, `&&`/`||`
+     short-circuit with explicit dual-polarity tables (`branch_op` +
+     `dual`), and boolean VALUES use the dance (`mov 1` / branch /
+     `mov 0` / labels). Labels: `whe/whend/wlp/wlpend/lpe/lpend/bf/be`.
+   - **`when`, never `if`** — enforced at the parser (2026-10-08
+     amendment, commit `47ef9b55`); the lowerer matches `BldStmt::When`.
 4. **Register allocator** — linear scan + frame spill; Kani harness
    (no two simultaneously-live values share a reg; frameless-spill error).
 5. **Intrinsic registry + engine intrinsics** — `bld-intrinsics.dbvl`,

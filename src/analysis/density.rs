@@ -164,7 +164,11 @@ fn float_fixpoint(bindings: &[(String, Option<Type>, &Expr)]) -> HashSet<String>
 /// graph into analysis. The primitive float set is closed in Briev's
 /// bootstrap; a user float type carries an `op Add(Float)` binding and is
 /// caught by the literal/operation propagation instead.
-fn is_float_type(ty: &Type) -> bool {
+///
+/// 2026-10-08 (BILLD M3): `pub` — the .bld lowerer derives its value
+/// classes from annotations and shares this closed float set rather than
+/// growing a second copy (Rule 17).
+pub fn is_float_type(ty: &Type) -> bool {
     match ty {
         Type::Custom(n) => matches!(
             n.as_str(),
