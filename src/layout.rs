@@ -179,6 +179,11 @@ fn is_trailing_op(tok: &Token) -> bool {
             | Token::MinusEq
             | Token::StarEq
             | Token::SlashEq
+            | Token::PipeEq
+            | Token::AmpEq
+            | Token::CaretEq
+            | Token::ShlEq
+            | Token::ShrEq
     )
 }
 

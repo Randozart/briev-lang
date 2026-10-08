@@ -1,9 +1,13 @@
 <!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 # BILLD — Briev Intermediate Low-Level Dialect (`.bld`)
 
-**Status: PLANNED 2026-10-08.** Plan-driven work; Rule 13 docs named in
-§Milestones. Separate worktree: `../briev-billd`, branch `feat/billd-dialect`
-(does not touch main; foreign-lane rules of `docs/plans/INDEX.md` apply).
+**Status: M2 DONE 2026-10-08** (parser + AST + 26 tests, suite 2954 green,
+Praetor clean; plan originally PLANNED same day). Milestones below; check
+them off as they land.
+
+Plan-driven work; Rule 13 docs named in §Milestones. Separate worktree:
+`../briev-billd`, branch `feat/billd-dialect` (does not touch main;
+foreign-lane rules of `docs/plans/INDEX.md` apply).
 
 ## The gap
 

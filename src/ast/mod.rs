@@ -15,6 +15,7 @@ mod canonical;
 mod expr;
 pub mod top;
 pub mod bad;
+pub mod bld;
 mod types;
 pub mod visit;
 

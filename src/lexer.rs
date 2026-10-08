@@ -364,6 +364,21 @@ pub enum Token {
     #[token("|")]
     Pipe,
 
+    // 2026-10-08 (BILLD plan): compound bit/shift assignment. Additive —
+    // `|=` &co. previously lexed as two tokens (`|` `=`) and was never
+    // valid anywhere, so no existing program changes meaning. The .bld
+    // statement parser desugars them to `x = x <op> rhs`.
+    #[token("|=")]
+    PipeEq,
+    #[token("&=")]
+    AmpEq,
+    #[token("^=")]
+    CaretEq,
+    #[token("<<=")]
+    ShlEq,
+    #[token(">>=")]
+    ShrEq,
+
     #[token("||")]
     OrOr,
 
@@ -685,6 +700,11 @@ impl std::fmt::Display for Token {
             Token::Shl => write!(f, "<<"),
             Token::Shr => write!(f, ">>"),
             Token::Pipe => write!(f, "|"),
+            Token::PipeEq => write!(f, "|="),
+            Token::AmpEq => write!(f, "&="),
+            Token::CaretEq => write!(f, "^="),
+            Token::ShlEq => write!(f, "<<="),
+            Token::ShrEq => write!(f, ">>="),
             Token::OrOr => write!(f, "||"),
             Token::AndAnd => write!(f, "&&"),
             Token::Not => write!(f, "!"),
@@ -1277,7 +1297,11 @@ pub fn tokenize(source: &str) -> Result<Vec<(Token, std::ops::Range<usize>)>, St
     let mut lexer = Token::lexer(source);
     let mut tokens = Vec::new();
     while let Some(result) = lexer.next() {
-        let token = result.map_err(|_| "lex error".to_string())?;
+        let token = result.map_err(|_| {
+            let at = lexer.span().start;
+            let line = source[..at].lines().count();
+            format!("lex error at byte {at} (line {line})")
+        })?;
         let span = lexer.span();
         tokens.push((token, span));
     }
