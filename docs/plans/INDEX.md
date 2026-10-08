@@ -309,6 +309,13 @@ the shim picks the listener target by scope. The event name is not validated
 directive, SRBV004/005 existence, precondition lint, liveness root) is shared
 across scopes. Gate: `tests/fixtures/popstate.rbv` (`rbv_gate.sh` step 4).
 
+**`b-window:` on a `b-each` container (2026-10-08):** allowed as a single
+global Window-scope binding (one listener, not per-item) + an informational
+`note[RBV012]` teaching the semantics. Uniform rule: a `b-window:` directive
+is always a Window-scope trigger, wherever it appears. The shared
+`trigger_scope_and_prefix` helper is the single source of truth for scope
+(Rule 17). See the amendment in the plan doc.
+
 ---
 
 ## Workstream 4 — Runtime elimination (`briev_rt.c`)

@@ -154,8 +154,60 @@ diagnostics; docs in the same commit.
   writes the invariant; the compiler typechecks it.
 - **Two writers of `path`** (`go`, `sync_route`): fine — `path` is read by
   `b-text`/`b-when`, not `b-bind`, so no unique-writer requirement.
-- **`b-window:` inside `b-each`**: rejected with a diagnostic (never silently
-  dead).
+- **`b-window:` on a `b-each` container**: ALLOWED as a single global window
+  binding (not per-item) + an informational `note[RBV012]`. See the amendment
+  below. The inner-element case is likewise a Window-scope binding.
 - **Validity inference preserved**: `b-window:` shares the `b-trigger:`
   extraction + validation path (the table above) — the compiler still tells
   valid from invalid identically.
+
+## Amendment (2026-10-08): `b-window:` on a `b-each` container — allow + note
+
+**Decision.** A `b-window:` directive produces a Window-scope trigger binding
+**wherever it appears** — a plain element, an inner `b-each` element, or a
+`b-each` container. There is one `window`, so there is exactly one listener;
+the container case emits a single global `Trigger { scope: Window }` binding,
+not a per-item one. The container case additionally emits an informational
+`note[RBV012]` explaining the semantics, because the likely author intent
+("each item reacts to a window event") does not map to DOM reality.
+
+**Why allow, not reject.**
+- **Consistency.** We already allow `b-window:` on an inner `b-each` element
+  (Window-scope binding) and `b-trigger:` on a `b-each` container (item-scoped
+  `ItemDirective::Trigger`). Rejecting `b-window:` on a container specifically
+  would be a one-off special case — the kind of arbitrary rule the architecture
+  forbids. The uniform rule ("a `b-window:` directive is always a Window-scope
+  trigger, wherever it appears") is simpler to state and to maintain.
+- **Opportunity.** The directive covers `popstate`, `hashchange`, `resize`,
+  `keydown`, `online`, `message`, … Allowing it everywhere keeps the door open
+  for legitimate year-two uses (e.g. a global `keydown` declared inside a list
+  template) without a per-location exception or a compiler change
+  (proofs-not-shapes, Rule 24).
+- **The `note[RBV012]` is the teaching mechanism.** It converts the
+  "works but maybe-not-what-you-thought" case into "works *and* you now know
+  exactly what it does." The compiler stays permissive where the code is valid
+  and informative where the intent is likely mistaken.
+
+**The DRY payoff.** The container case now *uses* the shared
+`trigger_scope_and_prefix` helper (instead of a rejection branch), so the
+helper is the single source of truth for "what scope does this trigger have?"
+in both `extract_directives` and `capture_item_directives`. Adding a fourth
+scope later (e.g. `b-document:`) is a one-line change to the helper, not a
+two-site edit (Rule 17).
+
+**Change surface (this amendment).**
+1. `src/view_compiler.rs`:
+   - `trigger_scope_and_prefix(attr) -> Option<(TriggerScope, &'static str)>`
+     helper (near the other trigger helpers).
+   - `extract_directives`: replace the inline three-way chain with the helper.
+   - `capture_item_directives`: when it sees `b-window:` on a `b-each`
+     container, push a `Trigger { scope: Window }` into the global bindings
+     list (not the item list) and emit `note[RBV012]`.
+   - Tests: `b_window_on_b_each_container_is_a_global_trigger` (container →
+     one Window-scope binding + the note), `b_trigger_on_b_each_container_
+     still_works` (regression: `b-trigger:` on a container → item-scoped
+     `ItemDirective::Trigger`).
+2. `spec/SPEC.md` §21.4: `b-window:` is global — one listener regardless of
+   location; on a `b-each` container it is a single global binding (not
+   per-item), with an informational note.
+3. `docs/plans/INDEX.md`: note the container-case decision.

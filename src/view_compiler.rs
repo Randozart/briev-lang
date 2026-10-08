@@ -837,6 +837,34 @@ impl ViewCompiler {
                         .unwrap_or_else(|| "click".to_string());
                     out.push(ItemBinding { marker, directive: ItemDirective::Trigger { event, txn } });
                 }
+            } else if attr.starts_with("b-window:") {
+                // 2026-10-08 (popstate, container case): a `b-window:` on a
+                // `b-each` container is a single GLOBAL window listener — not
+                // per-item (there is one `window`). It is NOT captured as an
+                // item binding (which would attach it to the rendered clone);
+                // it is emitted as a global `Trigger { scope: Window }` binding
+                // so the shim binds `window.addEventListener`. An informational
+                // note teaches the semantics: the likely author intent ("each
+                // item reacts to a window event") does not map to DOM reality.
+                let result = self.extract_trigger_value_from_tag(tag, "b-window:");
+                let event = self
+                    .extract_event_suffix(&tag_lower, "b-window")
+                    .unwrap_or_else(|| "click".to_string());
+                if let Some((txn_name, _params)) = result {
+                    self.user_triggered_txns.insert(txn_name.clone());
+                    self.bindings.push(Binding {
+                        element_id: "window".to_string(),
+                        directive: Directive::Trigger {
+                            event,
+                            txn: txn_name,
+                            params: Vec::new(),
+                            scope: TriggerScope::Window,
+                        },
+                    });
+                    self.diagnostics.push(format!(
+                        "note[RBV012]: b-window: on a b-each container binds a single global window listener (not per-item)"
+                    ));
+                }
             }
         }
     }
@@ -1088,18 +1116,13 @@ if attr.starts_with("b-text") {
                         directive: Directive::Bind { target },
                     });
                 }
-            } else if attr.starts_with("b-trigger:") || attr.starts_with("b-on:") || attr.starts_with("b-window:") {
-                // 2026-10-07 (popstate): `b-window:<event>` binds a WINDOW event
-                // (popstate, hashchange, …) to a txn — parallel to the element-
-                // scoped `b-trigger:`/`b-on:`. Same extraction + validity
-                // inference (txn existence/contract/precondition); only the
-                // shim's listener target differs (`window` vs the element).
-                let scope = if attr.starts_with("b-window:") {
-                    TriggerScope::Window
-                } else {
-                    TriggerScope::Element
-                };
-                let prefix = if attr.starts_with("b-trigger:") { "b-trigger:" } else if attr.starts_with("b-on:") { "b-on:" } else { "b-window:" };
+            } else if let Some((scope, prefix)) = Self::trigger_scope_and_prefix(attr) {
+                // 2026-10-07 (popstate) / 2026-10-08 (DRY): `b-window:<event>`
+                // binds a WINDOW event (popstate, hashchange, …) to a txn —
+                // parallel to the element-scoped `b-trigger:`/`b-on:`. Same
+                // extraction + validity inference (txn
+                // existence/contract/precondition); only the shim's listener
+                // target differs (`window` vs the element).
                 let result = self.extract_trigger_value_from_tag(tag, prefix);
                 let event = self.extract_event_suffix(&tag_lower, prefix.trim_end_matches(':'));
                 if let Some((txn_name, params)) = result {
@@ -1175,6 +1198,26 @@ if attr.starts_with("b-text") {
                     }
                 }
             }
+        }
+    }
+
+    /// 2026-10-08 (popstate DRY, Rule 17): the single source of truth for
+    /// "what scope does this trigger directive have?" Both the element path
+    /// (`extract_directives`) and the `b-each` container path
+    /// (`capture_item_directives`) call this — the three-way chain lives in
+    /// exactly one place. Adding a scope later (e.g. `b-document:`) is a
+    /// one-line change here, not a two-site edit. Returns `(scope, prefix)`;
+    /// the prefix is the directive WITH its colon (used for value/event
+    /// extraction).
+    fn trigger_scope_and_prefix(attr: &str) -> Option<(TriggerScope, &'static str)> {
+        if attr.starts_with("b-trigger:") {
+            Some((TriggerScope::Element, "b-trigger:"))
+        } else if attr.starts_with("b-on:") {
+            Some((TriggerScope::Element, "b-on:"))
+        } else if attr.starts_with("b-window:") {
+            Some((TriggerScope::Window, "b-window:"))
+        } else {
+            None
         }
     }
 
@@ -2494,6 +2537,77 @@ mod tests {
             }
             other => panic!("expected Trigger, got {other:?}"),
         }
+    }
+
+    /// 2026-10-08 (popstate, container case): `b-window:` on a `b-each`
+    /// container produces a SINGLE global Window-scope `Trigger` binding
+    /// (not per-item — there is one `window`) + an informational
+    /// `note[RBV012]`. The note teaches that the likely author intent
+    /// ("each item reacts to a window event") does not map to DOM reality.
+    #[test]
+    fn b_window_on_b_each_container_is_a_global_trigger() {
+        let mut vc = ViewCompiler::new();
+        let (bindings, _, diagnostics) = vc.compile(
+            r#"<div b-each:item="items" b-key="item" b-window:popstate="sync_route">i</div>"#,
+        );
+        // A Window-scope Trigger binding exists (global, not per-item).
+        let t = bindings
+            .iter()
+            .find(|b| matches!(&b.directive, Directive::Trigger { .. }))
+            .expect("global window trigger binding");
+        match &t.directive {
+            Directive::Trigger { txn, scope, .. } => {
+                assert_eq!(txn, "sync_route", "txn name");
+                assert_eq!(*scope, TriggerScope::Window, "window scope");
+            }
+            other => panic!("expected Trigger, got {other:?}"),
+        }
+        // Exactly ONE such binding (one window, one listener).
+        assert_eq!(
+            bindings
+                .iter()
+                .filter(|b| matches!(&b.directive, Directive::Trigger { .. }))
+                .count(),
+            1,
+            "a b-window: on a container must produce exactly one binding"
+        );
+        // The informational note is emitted.
+        assert!(
+            diagnostics.iter().any(|d| d.contains("note[RBV012]")),
+            "expected the RBV012 note: {diagnostics:?}"
+        );
+    }
+
+    /// Regression: `b-trigger:` on a `b-each` container is STILL captured as
+    /// an item-scoped `ItemDirective::Trigger` (per-item, attached to the
+    /// rendered clone) — unchanged by the `b-window:` container handling.
+    /// No `note[RBV012]` for element-scoped triggers.
+    #[test]
+    fn b_trigger_on_b_each_container_still_works() {
+        let mut vc = ViewCompiler::new();
+        let (bindings, _, diagnostics) = vc.compile(
+            r#"<div b-each:item="items" b-key="item" b-trigger:click="go">i</div>"#,
+        );
+        let each = bindings
+            .iter()
+            .find(|b| matches!(&b.directive, Directive::Each { .. }))
+            .expect("the b-each binding");
+        match &each.directive {
+            Directive::Each { item_bindings, .. } => {
+                assert!(
+                    item_bindings
+                        .iter()
+                        .any(|ib| matches!(&ib.directive, ItemDirective::Trigger { .. })),
+                    "b-trigger on a b-each container must remain an item binding"
+                );
+            }
+            other => panic!("expected Each, got {other:?}"),
+        }
+        // Element-scoped triggers do NOT get the RBV012 note.
+        assert!(
+            !diagnostics.iter().any(|d| d.contains("note[RBV012]")),
+            "element trigger must not emit RBV012: {diagnostics:?}"
+        );
     }
 
     /// Validity inference: a `b-window:` to an undefined txn is caught by the

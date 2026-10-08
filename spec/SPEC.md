@@ -3394,6 +3394,14 @@ inference: an unknown directive is a warning, a non-existent transaction is a
 compile error (SRBV004/SRBV005), and the transaction's precondition is linted.
 The event name is not validated (the browser owns the event vocabulary).
 
+`b-window:event` is **global**: there is one `window`, so exactly one listener
+is emitted regardless of where the directive appears. On a `b-each` container
+(or an inner element) it produces a single Window-scope trigger binding — not
+a per-item one — and the compiler emits an informational note explaining the
+semantics (the likely author intent, "each item reacts to a window event,"
+does not map to DOM reality). A per-item trigger uses `b-trigger:event`/
+`b-on:event`.
+
 `b-when` structurally mounts/unmounts a subtree. `b-show` changes presentation only and preserves identity/state.
 
 Dynamic repetition requires a stable `b-key` whenever children may be inserted, removed, or reordered.
