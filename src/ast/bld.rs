@@ -10,7 +10,7 @@
 //   gives precedence, calls, and arithmetic for free (DRY).
 // - STATEMENTS/DECLARATIONS are BILLD's own small set: unbounded
 //   `loop`/`while` (the physical world spins — polling, spinlocks, idle),
-//   `if`/`else`, PascalCase engine-intrinsic calls, naked `return`, and
+//   `when`/`else`, PascalCase engine-intrinsic calls, naked `return`, and
 //   verbatim `bad { … }` passthrough blocks into .bad grammar.
 //
 // The parser (src/parser/bld.rs) produces these; the backend
@@ -123,9 +123,12 @@ pub enum BldStmt {
         body: Vec<BldStmt>,
         span: Span,
     },
-    /// `if cond { … } else if cond { … } else { … }` — `otherwise` holds
-    /// the else branch (an else-if is a nested `If` inside it).
-    If {
+    /// `when cond { … } else when cond { … } else { … }` — `otherwise`
+    /// holds the else branch (an else-when is a nested `When` inside it).
+    /// 2026-10-08: `when`, never `if` — Briev's conditional is `when`
+    /// across dialects (.bv `parse_guard_statement_when`); one grammar
+    /// habit, no second spelling.
+    When {
         cond: Expr,
         then: Vec<BldStmt>,
         otherwise: Option<Vec<BldStmt>>,

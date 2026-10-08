@@ -5,19 +5,22 @@
 // braced, Briev-shaped parser for .bld — the execution-recipe tier.
 // Shares the Briev TOKEN stream and the shared expression/type parsers;
 // owns its own top-level and statement dispatch because .bld permits
-// what .bv forbids (unbounded `loop`/`while`, `if`/`else`, `return`) and
+// what .bv forbids (unbounded `loop`/`while`, `when`/`else`, `return`) and
 // forbids what .bv requires (reactor statements, `term`, `foreach` …).
 //
 // Contextual keywords (documented dialect boundary, no global lexer
-// change): `if`, `else`, `loop`, `while`, `continue`, `return`, `bad`
+// change): `else`, `loop`, `while`, `continue`, `return`, `bad`
 // are ordinary identifiers in the shared lexer and only recognized at
 // .bld statement heads — a .bv identifier named `loop` keeps working.
-// Conversely `halt;`, `term;`, `foreach …` are SHARED keyword tokens that
-// .bld REJECTS with a fix (one honest spelling per meaning, Rule 3).
+// `when` is a SHARED keyword token (.bv's conditional) that .bld ACCEPTS
+// — the conditional spelling is `when` in every dialect (Briev has no
+// `if`; a statement-head `if` gets a fix pointing at `when`). Conversely
+// `halt;`, `term;`, `foreach …` are SHARED keyword tokens that .bld
+// REJECTS with a fix (one honest spelling per meaning, Rule 3).
 //
 // Grammar sketch:
 //   item     := import | const | defn | bootstrap
-//   stmt     := let | assign/compound | call | if | loop | while
+//   stmt     := let | assign/compound | call | when | loop | while
 //            |  break | continue | return | block | bad-block
 //   expr     := the shared Briev expression parser
 //
@@ -122,6 +125,11 @@ impl<'a> Parser<'a> {
     /// House-style message for an unknown .bld top-level word: names the
     /// .bld item set, and says when the word is a .bv-only keyword.
     fn bld_unknown_top_level(&self, name: &str) -> String {
+        if name == "if" {
+            return "`if` is not a Briev keyword — the conditional is `when` in every \
+                     dialect: `when cond { … } else { … }`"
+                .to_string();
+        }
         let fix = "a .bld file holds `import \"…\";`, `const NAME = …;`, \
                    `defn name(…) { … }`, and `bootstrap Name() { … }`";
         if crate::vocab::LanguageVocab::canonical().is_canonical_keyword(name) {
@@ -281,6 +289,7 @@ impl<'a> Parser<'a> {
         }
         match tok {
             Token::Let => self.parse_bld_let(),
+            Token::When => self.parse_bld_when(),
             Token::Break => {
                 self.pos += 1;
                 self.expect(Token::Semicolon)?;
@@ -310,9 +319,14 @@ impl<'a> Parser<'a> {
         &mut self, name: &str, span: crate::errors::Span,
     ) -> Result<BldStmt, SyntaxError> {
         match name {
-            "if" => self.parse_bld_if(),
             "loop" => self.parse_bld_loop(),
             "while" => self.parse_bld_while(),
+            "if" => Err(SyntaxError::InvalidStatement {
+                reason: "`if` is not a Briev keyword — the conditional is `when` in \
+                         every dialect: `when cond { … } else { … }`"
+                    .to_string(),
+                span,
+            }),
             "else" => Err(SyntaxError::InvalidStatement {
                 reason: "stray `else` — it belongs to the `if` directly above it"
                     .to_string(),
@@ -365,22 +379,22 @@ impl<'a> Parser<'a> {
         Ok(BldStmt::Let { name, ty, value, span })
     }
 
-    /// `if cond { … } else if cond { … } else { … }`
-    fn parse_bld_if(&mut self) -> Result<BldStmt, SyntaxError> {
+    /// `when cond { … } else when cond { … } else { … }`
+    fn parse_bld_when(&mut self) -> Result<BldStmt, SyntaxError> {
         let span = self.current_span();
-        self.pos += 1; // `if`
+        self.pos += 1; // `when`
         let cond = self.parse_expression()?;
         let then = self.parse_bld_body()?;
         let mut otherwise = None;
         if self.eat_identifier("else") {
-            if self.check_identifier("if") {
-                let nested = self.parse_bld_if()?;
+            if self.check(&Token::When) {
+                let nested = self.parse_bld_when()?;
                 otherwise = Some(vec![nested]);
             } else {
                 otherwise = Some(self.parse_bld_body()?);
             }
         }
-        Ok(BldStmt::If { cond, then, otherwise, span })
+        Ok(BldStmt::When { cond, then, otherwise, span })
     }
 
     /// `loop { … }` — unbounded spin. The body block is mandatory so the
@@ -544,8 +558,7 @@ fn bv_keyword_rejection(tok: &Token) -> Option<(&'static str, &'static str)> {
             "`loop { … }` / `while cond { … }` (unbounded — this tier does not \
              prove termination)",
         ),
-        (Token::When, "when", "`if cond { … } else { … }`"),
-        (Token::Match, "match", "`if`/`else` chains (no reactor dispatch in .bld)"),
+        (Token::Match, "match", "`when`/`else` chains (no reactor dispatch in .bld)"),
         (Token::Trap, "trap", "`Halt();`"),
         (Token::Txn, "txn", "a `defn` (reactor constructs do not exist in .bld)"),
         (Token::Node, "node", "a `defn` (reactor constructs do not exist in .bld)"),
@@ -630,7 +643,7 @@ mod tests {
                 WriteControlReg(0, val);
                 loop {
                     let status = ReadRegister(0x3fd);
-                    if status & 0x20 != 0 {
+                    when status & 0x20 != 0 {
                         break;
                     }
                 }
@@ -680,20 +693,28 @@ mod tests {
     }
 
     #[test]
-    fn if_else_if_chain_parses() {
+    fn when_else_when_chain_parses() {
         let p = parse(
             "bootstrap B() {\n\
-                 if a == 1 { x(); } else if a == 2 { y(); } else { z(); }\n\
+                 when a == 1 { x(); } else when a == 2 { y(); } else { z(); }\n\
              }\n",
         );
         let BldTopLevel::Bootstrap(bs) = &p.items[0] else {
             panic!("expected bootstrap")
         };
-        let BldStmt::If { otherwise, .. } = &bs.body[0] else {
-            panic!("expected if")
+        let BldStmt::When { otherwise, .. } = &bs.body[0] else {
+            panic!("expected when")
         };
         let inner = otherwise.as_ref().expect("else branch");
-        assert!(matches!(inner[0], BldStmt::If { .. }), "else-if nests as If");
+        assert!(matches!(inner[0], BldStmt::When { .. }), "else-when nests as When");
+    }
+
+    /// Briev has no `if` — a statement-head `if` gets the one honest
+    /// spelling (`when`), never a silent reparse.
+    #[test]
+    fn if_statement_rejected_with_when_fix() {
+        let err = parse_err("bootstrap B() { if x == 1 { y(); } }");
+        assert!(err.contains("`when`"), "{err}");
     }
 
     #[test]
@@ -908,7 +929,8 @@ mod tests {
     #[test]
     fn context_keywords_work_as_ordinary_names_in_let() {
         // `if`/`loop` are contextual — legal as VALUES, reserved only at
-        // statement heads. A `let` binding named `loop` parses.
+        // statement heads (where `if` gets a `when` fix). A `let`
+        // binding named `loop` parses.
         let p = parse("defn f() { let if = 1; let loop = if; return; }");
         let BldTopLevel::Defn(d) = &p.items[0] else {
             panic!("expected defn")

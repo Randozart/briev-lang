@@ -36,7 +36,7 @@ symbolic dataflow + PascalCase engine verbs (`DisableInterrupts()`,
 |---|---|---|
 | Extension | `.bld` | free (grepped zero hits), matches 3-letter dialect convention |
 | Intrinsics | bare PascalCase, dialect-gated | extension boundary IS the Rule-3 disclosure; registry = config data (Rules 3/15/23) |
-| Keywords | lowercase (`loop`, `if`, `break`, `let`, `defn`, `bootstrap`) | one grammar habit across dialects; contextual in the BILLD parser — NO global lexer keyword change (a `.bv` identifier `loop` must not break) |
+| Keywords | lowercase (`when`, `loop`, `break`, `let`, `defn`, `bootstrap`) | one grammar habit across dialects; contextual in the BILLD parser — NO global lexer keyword change (a `.bv` identifier `loop` must not break). **2026-10-08 amendment**: the conditional is `when` in EVERY dialect — Briev has no `if` (`.bv` never had it); a statement-head `if` errors with a `when` fix |
 | Lowering | `.bld` AST → `BadProgram` AST → existing `.bad` backend | reuses `bad-isa.dbvl`, `bad-registers.dbvl`, contracts, raw blocks, `--raw-bin`, `--run`, all targets; ladder: BILLD → .bad → machine |
 | Targets | all `.bad` targets (x86_64, aarch64, riscv64, thumbv7m) | ISA rows are data; per-target absence = loud capability error |
 | Registers | SSA-shaped values → linear scan over r0-r15 → frame spill (`loadoff`/`storeoff`); frameless spill = loud error naming the value | Rule 2 efficient default; LuaJIT/clang -O1 class allocator; boot recipes rarely spill |
@@ -110,7 +110,7 @@ documented exception; frameless spill refuses loudly.)
 
 1. **Plan doc (this file) + worktree setup.**
 2. **Parser + AST** — `src/parser/bld.rs`, `src/ast/bld.rs`: `bootstrap`,
-   `defn`, `loop`/`while`/`if`/`break`/`continue`, `let`, PascalCase calls,
+   `defn`, `loop`/`while`/`when`/`break`/`continue`, `let`, PascalCase calls,
    `bad { }` blocks, `import`. Round-trip + house-style error tests
    (what/why/fix, `src/errors.rs`).
 3. **Lowering core** — expressions, assignment, structured CF → labels,
