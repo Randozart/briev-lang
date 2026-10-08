@@ -141,6 +141,34 @@ grep -q 'data-briev-page="a"' "$WEB_OUT/multi_page_a.html" || { echo "page a mis
 grep -q 'data-briev-page="b"' "$WEB_OUT/multi_page_b.html" || { echo "page b missing stamped key" >&2; exit 1; }
 echo "OK brievc web (nav.json + nav.html + stamped keys)"
 
+# 5c. Dev loop (stabilise-for-use T3): `brievc watch <dir> --once` builds the
+#     page set (including the multi-component worked example that exercises
+#     b-each over an obj vector + a member txn). The --once flag runs the
+#     build path without the live watcher, so the gate is deterministic.
+WATCH_OUT="$OUT_ROOT/watch_dir"
+mkdir -p "$WATCH_OUT"
+cp "$ROOT/examples/multi_page_a.rbv" "$ROOT/examples/multi_page_b.rbv" "$ROOT/examples/todo-list.rbv" "$WATCH_OUT/" || exit 1
+cat > "$WATCH_OUT/folio.toml" <<'FOLIO'
+[project]
+name = "watch-gate"
+version = "0.1.0"
+entry = "multi_page_a.rbv"
+
+[web]
+[web.pages]
+a = "multi_page_a.rbv"
+b = "multi_page_b.rbv"
+todo = "todo-list.rbv"
+FOLIO
+"$BRIEVC" watch "$WATCH_OUT" --once >/dev/null 2>"$WATCH_OUT/watch.err" || {
+    echo "brievc watch --once failed:" >&2; cat "$WATCH_OUT/watch.err" >&2; exit 1;
+}
+[ -f "$WATCH_OUT/todo-list.html" ] || { echo "worked example (todo-list) not built" >&2; exit 1; }
+[ -f "$WATCH_OUT/nav.json" ] || { echo "no nav.json from watch --once" >&2; exit 1; }
+grep -q "\"key\": \"todo\"" "$WATCH_OUT/nav.json" || { echo "nav.json missing key todo" >&2; exit 1; }
+grep -q 'data-briev-page="todo"' "$WATCH_OUT/todo-list.html" || { echo "todo page missing stamped key" >&2; exit 1; }
+echo "OK brievc watch --once (dev-loop build path + worked example)"
+
 # 6. Stranger-loads-page smoke (Phase 3.1 gate): build the counter in bundle
 #    mode and load it in a real Chromium — the node gate (step 1) stubs the
 #    host and cannot prove the page loads from file://, the boot flush lands,

@@ -339,6 +339,14 @@ implemented as a **seam, not a compiler route-table** (plan
 `route_name`, `current_path` over the browser host) is a swappable convenience,
 NOT load-bearing. Gate: `rbv_gate.sh` step 5b.
 
+**`.rbv` dev loop (2026-10-08, stabilise-for-use T3):** `brievc watch <dir>
+[--split] [--once]` — rebuild the page set on change (dev loop). Thin
+orchestration over the per-file build (Part 1 seam) + the existing `src/watch.rs`
+debouncer (notify 6.1) — no new codegen, no new deps. `--once` is the testable
+path. Worked example beyond the counter: `examples/todo-list.rbv` (multi-
+component, `b-each` over an obj vector + a member txn). Gate: `rbv_gate.sh`
+step 5c. Plan: `docs/plans/2026-10-08-stabilise-for-use.md`.
+
 ---
 
 ## Workstream 4 — Runtime elimination (`briev_rt.c`)

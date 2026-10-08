@@ -1,0 +1,84 @@
+// todo-list.rbv — Worked example beyond the counter (stabilise-for-use T3).
+//
+// A multi-component page exercising the two richest .rbv surfaces:
+//   1. An obj-backed component (TodoItem) with a member txn — the same
+//      pattern as counter.rbv (components ARE objects).
+//   2. b-each over a static vector — one TodoItem component per item.
+// This is the "one worked example beyond the counter" that Phase 3.3 of the
+// three-surfaces umbrella calls for: it proves the dev loop has a real
+// multi-component target, not a re-skin of the counter.
+
+obj TodoItem {
+    label: String;
+    done: Bool;
+
+    txn toggle [done == !done][done == !done] {
+        done = !done;
+        term;
+    };
+};
+
+render TodoItem {
+    <li class="todo-item">
+        <span b-text="label"></span>
+        <button b-trigger:click="toggle" b-class="{ 'done': done }">
+            <span b-text="done">false</span>
+        </button>
+    </li>
+};
+
+// Two seeded items.
+let item_1: TodoItem = TodoItem { label: "write the plan", done: false };
+let item_2: TodoItem = TodoItem { label: "get to work", done: false };
+
+let items: TodoItem[2] = [item_1, item_2];
+
+<view>
+  <div class="container">
+    <h1>Todo List</h1>
+    <ul>
+      <TodoItem b-each:item="items" b-key="idx" />
+    </ul>
+    <p class="hint">Click an item to toggle it (member txn through b-each).</p>
+  </div>
+</view>
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .container {
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    padding: 40px;
+    text-align: center;
+  }
+  h1 { color: #333; margin-bottom: 20px; font-size: 1.5em; }
+  ul { list-style: none; }
+  .todo-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px;
+    border-radius: 8px;
+    margin: 8px 0;
+    background: #f5f5f7;
+  }
+  .todo-item button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    background: #667eea;
+    color: white;
+  }
+  .todo-item button.done { background: #34c759; }
+  .hint { color: #888; margin-top: 16px; font-size: 0.9em; }
+</style>
