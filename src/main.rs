@@ -56,6 +56,10 @@ fn main() {
         // folio.toml [web.pages] set + generate the shared nav. Thin
         // orchestration over `run_build` per page — no new codegen.
         "web" => run_web(&args[2..]),
+        // 2026-10-08 (stabilise-for-use T3): rebuild the .rbv page set on
+        // change (dev loop). Thin orchestration over the per-file build (the
+        // Part 1 seam) + the existing watch.rs debouncer — no new codegen.
+        "watch" => run_watch(&args[2..]),
         "vocab" => run_vocab(&args[2..]),
         "grammar" => run_grammar(&args[2..]),
         "fmt" => run_fmt(&args[2..]),
@@ -1153,6 +1157,187 @@ fn run_web(args: &[String]) -> Result<(), String> {
     println!("wrote {}", nav_html_path.display());
     println!("built {} page(s)", built.len());
     Ok(())
+}
+
+/// 2026-10-08 (stabilise-for-use T3): `brievc watch <dir>` — the .rbv dev
+/// loop. Builds every page in the folio.toml `[web.pages]` set once, then
+/// watches the directory and rebuilds on change (debounced via watch.rs).
+/// Thin orchestration over the per-file build (Part 1 seam) — NO new codegen.
+///
+/// Usage: `brievc watch <dir> [--split] [--once]`
+///   <dir>      the project directory containing folio.toml with [web.pages]
+///   --split    emit separate web assets (default: one bundled HTML per page)
+///   --once     build once and exit (no watch loop) — for CI / testing the
+///              rebuild path without a live watcher.
+fn run_watch(args: &[String]) -> Result<(), String> {
+    let dir = args.first().ok_or("usage: brievc watch <dir> [--split] [--once]")?;
+    let split = args.iter().any(|a| a == "--split");
+    let once = args.iter().any(|a| a == "--once");
+    let dir_path = std::path::Path::new(dir);
+    if !dir_path.exists() {
+        return Err(format!("'{}' does not exist", dir_path.display()));
+    }
+
+    // Resolve the folio.toml for <dir> (and its parents) + the page set.
+    let manifest_path = briev_compiler::manifest::find_manifest(dir_path)
+        .ok_or_else(|| format!("no folio.toml found in '{}' or any parent", dir))?;
+    let manifest = briev_compiler::manifest::Manifest::load(&manifest_path)
+        .map_err(|e| format!("cannot load '{}': {}", manifest_path.display(), e))?;
+    if manifest.web.pages.is_empty() {
+        return Err(format!(
+            "folio.toml at '{}' has no [web.pages] section — declare pages as [web.pages] <key> = \"<file>\"",
+            manifest_path.display()
+        ));
+    }
+
+    // Deterministic build order: sort by page key (Rule: HashMap iteration
+    // must be sorted for deterministic output).
+    let mut pages: Vec<(String, String)> = manifest.web.pages.iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    pages.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+
+    // Initial build + nav.
+    let built = built_pages(dir_path, &pages, split)?;
+    write_nav_into(dir_path, &built)?;
+    println!("built {} page(s)", built.len());
+
+    if once {
+        return Ok(());
+    }
+
+    // Watch loop: rebuild on change, debounced (300 ms).
+    run_watch_loop(dir_path, &pages, split)
+}
+
+/// 2026-10-08 (stabilise-for-use T3): build every page in the set (the Part 1
+/// seam) and return the (key, stem) pairs.
+fn built_pages(dir_path: &std::path::Path, pages: &[(String, String)], split: bool) -> Result<Vec<(String, String)>, String> {
+    let mut built: Vec<(String, String)> = Vec::new();
+    for (key, file) in pages {
+        let file_path = dir_path.join(file);
+        if !file_path.exists() {
+            return Err(format!("page '{}' -> '{}' does not exist", key, file_path.display()));
+        }
+        let source = std::fs::read_to_string(&file_path)
+            .map_err(|e| format!("page '{}': cannot read: {}", key, e))?;
+        let mut page_opts = parse_build_args(&[file_path.to_string_lossy().to_string()])
+            .map_err(|e| format!("page '{}': {}", key, e))?;
+        page_opts.split = split;
+        page_opts.web_page_key = Some(key.clone());
+        compile::compile_source(&file_path.to_string_lossy(), &source, &page_opts)?;
+        let stem = std::path::Path::new(file)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| key.clone());
+        built.push((key.clone(), stem));
+    }
+    Ok(built)
+}
+
+/// 2026-10-08 (stabilise-for-use T3): write nav.json + nav.html for the built
+/// page set into `dir` (same as `brievc web`).
+fn write_nav_into(dir: &std::path::Path, built: &[(String, String)]) -> Result<(), String> {
+    let nav_json_path = dir.join("nav.json");
+    let nav_html_path = dir.join("nav.html");
+    std::fs::write(&nav_json_path, render_nav_json(built))
+        .map_err(|e| format!("cannot write '{}': {}", nav_json_path.display(), e))?;
+    std::fs::write(&nav_html_path, render_nav_html(built))
+        .map_err(|e| format!("cannot write '{}': {}", nav_html_path.display(), e))?;
+    Ok(())
+}
+
+/// 2026-10-08 (stabilise-for-use T3): the live watch loop — poll for a changed
+/// `.rbv` / `folio.toml` and rebuild (debounced to 300 ms).
+fn run_watch_loop(dir_path: &std::path::Path, pages: &[(String, String)], split: bool) -> Result<(), String> {
+    let manager = briev_compiler::watch::WatchManager::new(300);
+    manager.start(dir_path).map_err(|e| format!("watcher start failed: {}", e))?;
+    println!("watching {} — press Ctrl-C to stop", dir_path.display());
+
+    let nav_json_path = dir_path.join("nav.json");
+    let nav_html_path = dir_path.join("nav.html");
+    let mut last_build_time = std::time::SystemTime::now();
+    let mut last_build_attempt = std::time::Instant::now();
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Some(changed) = find_changed_rbv(dir_path, &last_build_time) {
+            if last_build_attempt.elapsed() >= std::time::Duration::from_millis(300) {
+                rebuild_and_write_nav(dir_path, pages, split, &nav_html_path, &mut last_build_time);
+                last_build_attempt = std::time::Instant::now();
+            }
+            println!("change detected ({})", changed.display());
+        }
+    }
+}
+
+/// 2026-10-08 (stabilise-for-use T3): rebuild the page set + rewrite the nav.
+/// The nav.json path is derived from `dir_path` (nav.json lives beside nav.html).
+fn rebuild_and_write_nav(
+    dir_path: &std::path::Path,
+    pages: &[(String, String)],
+    split: bool,
+    nav_html_path: &std::path::Path,
+    last_build_time: &mut std::time::SystemTime,
+) {
+    let nav_json_path = dir_path.join("nav.json");
+    match built_pages(dir_path, pages, split) {
+        Ok(built) => {
+            let _ = std::fs::write(&nav_json_path, render_nav_json(&built));
+            let _ = std::fs::write(nav_html_path, render_nav_html(&built));
+            println!("rebuilt {} page(s)", built.len());
+        }
+        Err(e) => {
+            eprintln!("rebuild failed: {}", e);
+        }
+    }
+    *last_build_time = std::time::SystemTime::now();
+}
+
+/// 2026-10-08 (stabilise-for-use T3): find the most recently modified `.rbv`
+/// (or `folio.toml`) under `dir` that changed after `since`. None if no file
+/// changed. Used by the `brievc watch` loop to detect edits.
+fn find_changed_rbv(dir: &std::path::Path, since: &std::time::SystemTime) -> Option<std::path::PathBuf> {
+    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    walk_rbv(dir, &mut newest);
+    newest.and_then(|(mtime, path)| {
+        if mtime > *since {
+            Some(path)
+        } else {
+            None
+        }
+    })
+}
+
+/// 2026-10-08 (stabilise-for-use T3): recursively find `.rbv` + `folio.toml`
+/// files, tracking the one with the newest mtime.
+fn walk_rbv(dir: &std::path::Path, newest: &mut Option<(std::time::SystemTime, std::path::PathBuf)>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_rbv(&path, newest);
+            continue;
+        }
+        if !is_watchable(&path) {
+            continue;
+        }
+        if let Some(mtime) = path_modified(&path) {
+            if newest.is_none() || mtime > newest.as_ref().unwrap().0 {
+                *newest = Some((mtime, path));
+            }
+        }
+    }
+}
+
+/// 2026-10-08 (stabilise-for-use T3): true for a `.rbv` or `folio.toml` file.
+fn is_watchable(path: &std::path::Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("rbv")
+        || path.file_name().and_then(|n| n.to_str()) == Some("folio.toml")
+}
+
+/// 2026-10-08 (stabilise-for-use T3): a file's mtime, if it can be read.
+fn path_modified(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 /// 2026-10-08 (file-based routing, Part 2b): the ordered page set as JSON.
