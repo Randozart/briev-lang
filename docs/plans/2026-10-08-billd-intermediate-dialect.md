@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 # BILLD — Briev Intermediate Low-Level Dialect (`.bld`)
 
-**Status: M3 DONE 2026-10-08** (lowering core + 55 tests, suite 3011 green,
-Praetor clean; M2: parser + AST + 26 tests same day). Milestones below; check
-them off as they land.
+**Status: M4 DONE 2026-10-08** (register allocator + 10 tests, suite 3021
+green, Praetor clean; M3: lowering core + 55 tests; M2: parser + AST + 26
+tests — all same day). Milestones below; check them off as they land.
 
 Plan-driven work; Rule 13 docs named in §Milestones. Separate worktree:
 `../briev-billd`, branch `feat/billd-dialect` (does not touch main;
@@ -175,8 +175,64 @@ documented exception; frameless spill refuses loudly.)
      `mov 0` / labels). Labels: `whe/whend/wlp/wlpend/lpe/lpend/bf/be`.
    - **`when`, never `if`** — enforced at the parser (2026-10-08
      amendment, commit `47ef9b55`); the lowerer matches `BldStmt::When`.
-4. **Register allocator** — linear scan + frame spill; Kani harness
-   (no two simultaneously-live values share a reg; frameless-spill error).
+4. **Register allocator** — DONE 2026-10-08: `src/backend/bld/alloc.rs`,
+   wired into `generate_with` (`lower_to_bad` stays allocator-free for
+   the M3 golden tests). Kani harness drafted and DROPPED by decision
+   (2026-10-08): Kani is retired on this lane — the repo's kani gate
+   currently verifies nothing (harnesses gated on `feature = "kani"`,
+   which `cargo kani` does not set, so no harness ever runs), and full
+   runs cost minutes of whole-crate codegen for proofs nobody executes.
+   Repo-wide Kani policy cleanup belongs to the main lane (BUGS.md
+   candidate). The allocator's safety invariant — no two allocated
+   intervals share a register slot — is held constructively by the scan
+   (expiry at `end < start`, one free-list, no reuse while active) and
+   pinned by the emitted-shape tests.
+
+   M4 decisions (test-pinned in `src/backend/bld/mod.rs`):
+   - **Intervals are linear-order with loop extension.** A virtual's
+     interval is [first def, max(last def/use)], extended to every
+     loop's backedge when the value is defined before the loop and used
+     inside it — the conservative fix that makes linear-order intervals
+     SAFE under backedges (a loop-carried value must survive
+     iterations). Extension only widens; overlap checks stay
+     conservative (safe), never optimistic (wrong).
+   - **Call walls**: a value whose interval contains a `call` takes a
+     callee-saved register (registry `RegProp`) or a frame slot — never
+     caller-saved. Call-argument staging copies run BEFORE the call, so
+     argument intervals end at the wall (no forced spill). Float
+     values crossing a call always spill on x86_64 (no callee f-regs);
+     aarch64/riscv64 route to their callee f-regs.
+   - **Pools come from the registry**: r0-r15/f0-f15 that resolve on
+     the family, minus the ABI argument registers and the return
+     registers (r0/f0). Two scratch registers per class are reserved
+     from the callee-saved TAIL — scratches are never live across
+     anything (a reload feeds the next instruction), so their property
+     is irrelevant, and keeping caller-saved registers free lets the
+     common recipe allocate with no frame at all.
+   - **Frames**: opened iff something spilled OR a callee-saved
+     register was used; callee-saved regs are push/pop-saved in the
+     prologue and restored in the epilogue (C-ABI callers own them).
+     Frame size = spill slots × 8 + push_width × saves, 16-aligned; the
+     epilogue runs BEFORE every `ret` and at fall-off-the-end (the
+     frame the compiler opened is undone — no auto-ret, naked
+     semantics stand). First cut emitted the epilogue AFTER the ret —
+     unreachable dead code; the .bad W3 sp-tracker caught it.
+   - **`sp` guard**: a recipe whose assembly touches `sp` cannot take a
+     frame — ANY frame (saves push/pop too, not just spills) — so spill
+     needs there are loud, naming the values.
+   - **Param stash**: a recipe whose body contains any call cannot keep
+     parameters in caller-saved ABI argument registers (the callee
+     clobbers them — the M3 design note's caveat, now closed):
+     `bind_params` stashes each parameter into a virtual at entry and
+     the allocator routes it like any call-crossing value. Leaf recipes
+     keep the zero-cost ABI binding.
+   - **`vN`/`fvN` namespace reserved**: internal defn/bootstrap names
+     matching the virtual pattern are rejected at collect — the
+     allocator rewrites those operand names mechanically. External
+     `.bad` labels named `vN` stay legal (the allocator works from
+     operand roles, not name patterns).
+   - **`bad { }` blocks naming a `vN` are loud**: raw assembly works in
+     physical registers; compiler-managed names are not addressable.
 5. **Intrinsic registry + engine intrinsics** — `bld-intrinsics.dbvl`,
    new `bad-isa.dbvl` rows (CR/MRS/MSR), per-target capability-error tests.
    (Lane bypasses the `.bv` interpreter like `.bad` does — Rule 5 applies

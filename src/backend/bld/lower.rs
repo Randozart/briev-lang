@@ -557,12 +557,26 @@ impl<'a> BldLowerer<'a> {
                 Stream::Defn(d) => {
                     self.cur_span = d.span;
                     self.cur_file = file;
+                    if Self::is_virtual_name(&d.name) {
+                        return Err(self.fail(
+                            &format!("`defn {}`", d.name),
+                            "the name is in the compiler's value namespace (vN / fvN)",
+                            "rename it — recipe names must not look like compiler-managed value registers",
+                        ));
+                    }
                     let sig = self.sig_for_defn(&d)?;
                     self.declare_sig(&d.name, sig)?;
                 }
                 Stream::Bootstrap(b) => {
                     self.cur_span = b.span;
                     self.cur_file = file.clone();
+                    if Self::is_virtual_name(&b.name) {
+                        return Err(self.fail(
+                            &format!("`bootstrap {}`", b.name),
+                            "the name is in the compiler's value namespace (vN / fvN)",
+                            "rename it — entry names must not look like compiler-managed value registers",
+                        ));
+                    }
                     self.bootstraps += 1;
                     if self.bootstraps > 1 {
                         return Err(self.fail(
@@ -584,6 +598,17 @@ impl<'a> BldLowerer<'a> {
             }
         }
         Ok(())
+    }
+
+    /// The compiler-managed value namespace (`vN` / `fvN`): internal
+    /// recipe names may not collide with it — the M4 allocator rewrites
+    /// those operand names mechanically.
+    pub(super) fn is_virtual_name(name: &str) -> bool {
+        let rest = name
+            .strip_prefix("fv")
+            .or_else(|| name.strip_prefix('v'))
+            .unwrap_or("");
+        !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
     }
 
     fn declare_sig(&mut self, name: &str, sig: Sig) -> Result<(), String> {
@@ -871,7 +896,8 @@ impl<'a> BldLowerer<'a> {
     /// One recipe = ownership frame + exported label + lowered body.
     fn recipe_core(&mut self, head: RecipeHead<'_>) -> Result<(), String> {
         self.body = Body::new(head.name, head.ret);
-        self.bind_params(head.name, head.params)?;
+        let stash = stmts_contain_call(head.stmts);
+        self.bind_params(head.name, head.params, stash)?;
         let stmts = head.stmts;
         let last = stmts.len().saturating_sub(1);
         for (i, st) in stmts.iter().enumerate() {
@@ -904,7 +930,19 @@ impl<'a> BldLowerer<'a> {
     /// order — the class-separate C-ABI convention the call site's
     /// staging mirrors. Exhausting the register budget is loud: stack
     /// parameters need a frame, and .bld stays frameless in v1.
-    fn bind_params(&mut self, name: &str, params: &[(String, VClass)]) -> Result<(), String> {
+    ///
+    /// `stash` (2026-10-08, M4): a recipe that calls anything cannot keep
+    /// its parameters in caller-saved ABI argument registers — the callee
+    /// clobbers them — so each parameter first copies into a
+    /// compiler-managed value register the M4 allocator treats like any
+    /// other value (call-crossing → callee-saved or spill). Leaf recipes
+    /// keep the zero-cost ABI binding.
+    fn bind_params(
+        &mut self,
+        name: &str,
+        params: &[(String, VClass)],
+        stash: bool,
+    ) -> Result<(), String> {
         let abi = ArgRegs::load(self.regs, &self.family);
         let mut cur = ArgCursor::default();
         for (pname, class) in params {
@@ -925,7 +963,15 @@ impl<'a> BldLowerer<'a> {
                 }
             };
             cur.take(*class);
-            let binding = Binding { reg: Some(reg), class: *class, konst: None };
+            let home = if stash {
+                let v = self.fresh_vreg(*class);
+                let src = BadOperand::Name(reg);
+                self.emit_copy(&v, src, *class)?;
+                v
+            } else {
+                reg
+            };
+            let binding = Binding { reg: Some(home), class: *class, konst: None };
             self.scopes_insert(pname, binding)?;
         }
         Ok(())
@@ -2093,6 +2139,23 @@ fn fold_float(op: BinaryOpKind, x: f64, y: f64) -> Result<ConstVal, String> {
         }
     };
     Ok(v)
+}
+
+/// Does any statement in this list call anything? A calling recipe's
+/// parameters cannot stay in caller-saved ABI argument registers (the
+/// callee clobbers them), so `bind_params` stashes them into
+/// compiler-managed value registers at entry.
+fn stmts_contain_call(stmts: &[BldStmt]) -> bool {
+    stmts.iter().any(|st| match st {
+        BldStmt::Call { .. } => true,
+        BldStmt::Block { body, .. } => stmts_contain_call(body),
+        BldStmt::When { then, otherwise, .. } => {
+            stmts_contain_call(then)
+                || otherwise.as_ref().map_or(false, |o| stmts_contain_call(o))
+        }
+        BldStmt::Loop { body, .. } | BldStmt::While { body, .. } => stmts_contain_call(body),
+        _ => false,
+    })
 }
 
 /// The head-token span of a statement — diagnostics point here.

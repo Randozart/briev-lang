@@ -12,6 +12,7 @@
 // To undo: delete src/backend/bld/ and revert `pub mod bld;` in
 // src/backend/mod.rs.
 
+pub mod alloc;
 pub mod lower;
 
 use crate::ast::bad::BadProgram;
@@ -53,6 +54,9 @@ pub fn generate_with(
     let family = target_triple.split('-').next().unwrap_or(target_triple);
     let program = lower_to_bad(source, family, base_dir, root_path)?;
     let (isa, regs) = super::bad::registries();
+    // M4 (2026-10-08): virtual value registers resolve to physical
+    // registers (or frame slots) before the .bad backend sees them.
+    let program = self::alloc::allocate(program, &regs, family)?;
     let mut lw = super::bad::lower::Lowerer::new(&isa, &regs, family)
         .with_base_dir(base_dir.map(|p| p.to_path_buf()));
     lw.run(&program)
@@ -654,5 +658,153 @@ mod tests {
         let src = "defn id(x: Float) -> Float { return x; }";
         let s = generate(src, "x86_64-unknown-linux-gnu").unwrap();
         assert!(s.contains("movsd %xmm0, %xmm0"), "{s}");
+    }
+
+    // ── M4: register allocation ───────────────────────────────────────
+
+    fn alloc_ok(src: &str) -> BadProgram {
+        let family = "x86_64";
+        let prog = lower_to_bad(src, family, None, None)
+            .unwrap_or_else(|e| panic!("lower failed: {e}"));
+        let (_, regs) = crate::backend::bad::registries();
+        alloc::allocate(prog, &regs, family)
+            .unwrap_or_else(|e| panic!("alloc failed: {e}"))
+    }
+
+    #[test]
+    fn temps_get_real_registers() {
+        let p = alloc_ok("defn f(a: Int) -> Int { return a + 1; }");
+        let items = instrs(&p, "f");
+        // leaf recipe: param stays in r5; the temp lands in the first
+        // allocatable register (x86_64: r3 after scratch reservation)
+        assert_eq!(mnems(&items), vec!["add", "mov", "ret"]);
+        // first allocatable caller-saved register (r8; r12/r13 went to
+        // the scratch reserve)
+        assert_eq!(ops_of(items[0]), vec!["r8", "r5", "1"]);
+        assert_eq!(ops_of(items[1]), vec!["r0", "r8"]);
+    }
+
+    #[test]
+    fn leaf_param_stays_in_abi_register() {
+        let p = alloc_ok("defn f(a: Int) -> Int { return a; }");
+        let items = instrs(&p, "f");
+        assert_eq!(mnems(&items), vec!["mov", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r0", "r5"]);
+    }
+
+    #[test]
+    fn param_is_stashed_when_the_body_calls() {
+        let src = "defn g(x: Int) -> Int { return x; }\n\
+                   defn f(a: Int) -> Int { g(1); return a; }";
+        let p = alloc_ok(src);
+        let items = instrs(&p, "f");
+        // entry stash copy into a call-crossing (callee-saved) register,
+        // staged call, return read back from the stash
+        assert_eq!(
+            mnems(&items),
+            vec!["push", "mov", "mov", "mov", "call", "mov", "mov", "pop", "ret"]
+        );
+        assert_eq!(ops_of(items[1]), vec!["r3", "r5"]);
+        assert_eq!(ops_of(items[6]), vec!["r0", "r3"]);
+    }
+
+    #[test]
+    fn spill_opens_a_frame() {
+        let src = "defn f(a: Int) -> Int { let p = a + 1; let q = p + 1; \
+                   let r = q + 1; let s = r + 1; let t = s + 1; let u = t + 1; \
+                   return p + q + r + s + t + u; }";
+        let p = alloc_ok(src);
+        let items = instrs(&p, "f");
+        let m = mnems(&items);
+        assert!(m.contains(&"loadoff".to_string()), "{m:?}");
+        assert!(m.contains(&"storeoff".to_string()), "{m:?}");
+        // frame prologue/epilogue bracket the body
+        assert_eq!(m.first().map(String::as_str), Some("push"));
+        // The chain's intermediate temps legitimately spill too (six
+        // values live at once, five registers): the first reload serves
+        // the second chain link, hence slot 1 (offset 8), not slot 0.
+        let load = items.iter().find(|i| matches!(i, BadBodyItem::Instr(x) if x.mnemonic == "loadoff"));
+        assert_eq!(ops_of(load.unwrap()), vec!["r13", "sp", "8"], "scratch reload");
+    }
+
+    #[test]
+    fn spilled_s_carries_the_frame() {
+        let src = "defn f(a: Int) -> Int { let p = a + 1; let q = p + 1; \
+                   let r = q + 1; let s = r + 1; let t = s + 1; let u = t + 1; \
+                   return p + q + r + s + t + u; }";
+        let s = generate(src, "x86_64-unknown-linux-gnu").unwrap();
+        // 2 spill slots (16 bytes) + 3 callee saves (24) → 48 total,
+        // aligned; the sub is the tail: 48 - 24 = 24.
+        assert!(s.contains("pushq %rbx"), "{s}");
+        assert!(s.contains("subq $24, %rsp"), "{s}");
+        assert!(s.contains("addq $24, %rsp"), "{s}");
+        assert!(s.contains("popq %rbx"), "{s}");
+        assert!(s.contains("movq 0(%rsp)"), "{s}");
+        // the frame restores BEFORE the ret, never after
+        let ret = s.find("ret").unwrap();
+        let add = s.find("addq $24, %rsp").unwrap();
+        assert!(add < ret, "epilogue must precede ret: {s}");
+    }
+
+    #[test]
+    fn float_crossing_a_call_spills_on_x86() {
+        let src = "defn g(x: Float) -> Float { return x; }\n\
+                   defn f(y: Float) -> Float { let a2 = y * 2.0; let b2 = g(a2); \
+                   return a2 + b2; }";
+        let p = alloc_ok(src);
+        let items = instrs(&p, "f");
+        let m = mnems(&items);
+        // x86_64 has no callee-saved float registers: `a2` spills
+        assert!(m.contains(&"storeoff".to_string()), "{m:?}");
+        assert!(m.contains(&"loadoff".to_string()), "{m:?}");
+    }
+
+    #[test]
+    fn sp_recipe_refuses_a_frame() {
+        let src = "defn f(a: Int) -> Int { bad { mov sp, r8 }\n\
+                   let p = a + 1; let q = p + 1; let r = q + 1; let s = r + 1; \
+                   let t = s + 1; let u = t + 1; \
+                   return p + q + r + s + t + u; }";
+        let prog = lower_to_bad(src, "x86_64", None, None).unwrap();
+        let (_, regs) = crate::backend::bad::registries();
+        let e = alloc::allocate(prog, &regs, "x86_64").err().unwrap();
+        assert!(e.contains("cannot open a frame"), "{e}");
+    }
+
+    #[test]
+    fn defn_named_v1_is_rejected() {
+        let e = lower_err("defn v1() { return; }");
+        assert!(e.contains("value namespace"), "{e}");
+    }
+
+    #[test]
+    fn loop_carried_binding_stays_in_a_register() {
+        let src = "defn f(a: Int) -> Int { let n = a; \
+                   loop { when n == 0 { break; } n = n - 1; } return n; }";
+        let p = alloc_ok(src);
+        let items = instrs(&p, "f");
+        let m = mnems(&items);
+        assert!(!m.contains(&"storeoff".to_string()), "{m:?}");
+        assert!(!m.contains(&"loadoff".to_string()), "{m:?}");
+    }
+
+    #[test]
+    fn loop_counter_binds_one_register_through_the_loop() {
+        let src = "defn f(a: Int) -> Int { let n = a; \
+                   loop { when n == 0 { break; } n = n - 1; } return n; }";
+        let p = alloc_ok(src);
+        let items = instrs(&p, "f");
+        // every mov/sub touching `n` uses the SAME physical register
+        let n_ops: Vec<String> = items
+            .iter()
+            .filter_map(|i| match i {
+                BadBodyItem::Instr(x) if x.mnemonic == "mov" || x.mnemonic == "sub" => {
+                    Some(ops_of(i))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(n_ops.iter().filter(|o| o.as_str() == "r8").count() >= 3, "{n_ops:?}");
     }
 }
