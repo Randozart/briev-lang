@@ -121,3 +121,38 @@ liveness indexes it). Gate: `tests/fixtures/obj_router.rbv` (step 3 in
 **Status:** DONE — `cargo test --lib` 2919 green; `rbv_gate.sh` OK; Praetor no
 new diagnostics.
 
+## Workstream 5 — Stranger-loads-page probe (Phase 3.1 gate) — 2026-10-08
+
+**Goal.** Prove the Phase 3 acceptance criterion — "a stranger loads a `.rbv`
+page" — end-to-end in a real browser. The node gate (W1) stubs the host and
+cannot prove the page loads from `file://`, the boot flush lands, or a real
+click round-trips to the DOM.
+
+**Deliverables.**
+- `benchmarks/rbv_browser_smoke.mjs` — Playwright/Chromium smoke: build
+  `counter.rbv` in bundle mode, load the `.html` from `file://`, assert
+  (a) zero console/page errors, (b) the seeded `b-text` reflects the Briev-side
+  seed on load, (c) the `+`/`Reset` click round-trip, (d) the anonymous
+  `<Counter />` instance renders.
+- `rbv_gate.sh` step 6 — runs the smoke if Playwright/Chromium is available
+  (browser downloads to `~/.cache/ms-playwright` via `npx playwright install
+  chromium` — no sudo/pacman); skips gracefully otherwise.
+
+**Two real stranger-relevant bugs found + fixed (BUGS.md, 2026-10-08):**
+1. **`createApp` null-exports race** — the constructor fired `_init` (async)
+   without awaiting it, then `createApp` read `runtime._instance.exports`
+   synchronously (`null.exports`) → a page error in a real browser. Fix: store
+   the init promise as `_ready` and await it in `createApp`.
+2. **`__web_boot` initial-flush gap** — `__web_boot` ran `init_state` but never
+   flushed the initial state, so the seeded `b-text` showed the HTML literal
+   (`0`), not the Briev-side seed (`5`). Fix: `__web_boot` emits a per-field
+   initial flush (flush buffer sized to `max(largest txn write_set,
+   field_count)`), AND the shim reorders `_loadStateLayout()` before
+   `__web_boot()` so the flush lands against a populated binding table.
+
+**Docs (same commit):** `b-` = binding rationale (SPEC §21.4 + feature doc);
+artifact story + Phase 3 gate (SPEC §21.1); BUGS.md entries; INDEX.
+
+**Status:** DONE — `cargo test --lib` 2928 green; `rbv_gate.sh` OK (incl. the
+new step 6); Praetor no new diagnostics.
+

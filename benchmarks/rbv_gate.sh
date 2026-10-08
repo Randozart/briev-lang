@@ -119,4 +119,22 @@ check_bundle() {
 check_bundle "$ROOT/examples/multi_page_a.rbv" multi_page_a "multi_page_b.html" || exit 1
 check_bundle "$ROOT/examples/multi_page_b.rbv" multi_page_b "multi_page_a.html" || exit 1
 
+# 6. Stranger-loads-page smoke (Phase 3.1 gate): build the counter in bundle
+#    mode and load it in a real Chromium — the node gate (step 1) stubs the
+#    host and cannot prove the page loads from file://, the boot flush lands,
+#    or a real click round-trips to the DOM. Skips gracefully if Playwright /
+#    Chromium is unavailable (no sudo / pacman needed — the browser downloads
+#    to ~/.cache/ms-playwright via `npx playwright install chromium`).
+if command -v node >/dev/null && node -e "import('playwright')" >/dev/null 2>&1; then
+    COUNTER_OUT="$OUT_ROOT/counter"
+    mkdir -p "$COUNTER_OUT"
+    "$BRIEVC" build "$ROOT/examples/counter.rbv" --out "$COUNTER_OUT" >/dev/null || {
+        echo "counter build failed" >&2; exit 1;
+    }
+    node "$ROOT/benchmarks/rbv_browser_smoke.mjs" "$COUNTER_OUT/counter.html" || exit 1
+    echo "OK counter (stranger-loads-page smoke: real browser, file://, click round-trip)"
+else
+    echo "SKIP: stranger-loads-page smoke (Playwright/Chromium not available)"
+fi
+
 echo "rbv_gate: OK"

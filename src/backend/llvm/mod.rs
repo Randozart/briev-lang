@@ -5220,8 +5220,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // starting at the pointer __web_flush_state receives. Sized to the
             // largest transaction write_set (each txn's update batch fits; the
             // shim loops count records, so unused tail entries are harmless).
-            let max_entries = self.ctx.web_max_entries.max(1);
-            writeln!(out, "@__web_flush_buf = private global [{} x {{ i32, i32, i32 }}] zeroinitializer", max_entries).ok();
+            // 2026-10-08 (Phase 3.1 stranger probe): ALSO sized to the number
+            // of state fields, because __web_boot emits an initial flush of
+            // EVERY field after init_state (otherwise the seeded b-text shows
+            // the HTML literal, not the Briev-side seed). The buffer is
+            // declared after the layout loop, once field_count is known.
             // State layout function — returns ptr to a constant layout table
             // consumed by the JS shim (glue/web_generator.rs). Table layout:
             //   +0 field_count u32, +4 generation_off u32, +8 flush_off u32,
@@ -5235,6 +5238,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // real @__web_flush_buf (resolved via ptrtoint at link time).
             let mut rows = String::new();
             let mut types_ll = Vec::new();
+            // 2026-10-08 (Phase 3.1 stranger probe): collect the valid field
+            // rows (handle = field index, offset, byte size) so __web_boot can
+            // emit an initial flush of EVERY state field after init_state —
+            // otherwise the seeded b-text shows the HTML literal, not the
+            // Briev-side seed (the display silently diverges from the real
+            // state on load).
+            let mut flush_rows: Vec<(u32, u32, u32)> = Vec::new();
             let mut offset = 0u64;
             let mut field_count = 0u32;
             for (i, briev_ty) in self.ctx.field_briev_types.iter().enumerate() {
@@ -5253,9 +5263,16 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 };
                 rows.push_str(&format!("i32 {}, i32 {}, i32 {}, i32 {}, ", i as u32, offset, size, tag));
                 types_ll.push(format!("i32, i32, i32, i32"));
+                flush_rows.push((i as u32, offset as u32, size as u32));
                 offset += size;
                 field_count += 1;
             }
+            // 2026-10-08 (Phase 3.1 stranger probe): size the flush buffer to
+            // the max of (largest txn write_set, number of state fields) so it
+            // fits both a per-txn batch AND the initial full-state flush that
+            // __web_boot emits after init_state.
+            let max_entries = self.ctx.web_max_entries.max(field_count).max(1);
+            writeln!(out, "@__web_flush_buf = private global [{} x {{ i32, i32, i32 }}] zeroinitializer", max_entries).ok();
             // The LLVM struct TYPE is plain i32 fields; the INITIALIZER body
             // carries the values (including link-time-resolved ptrtoint of the
             // generation counter and flush buffer). A ptrtoint in the type
@@ -5286,6 +5303,31 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             writeln!(out, "}}").ok();
             writeln!(out, "define void @__web_boot() {{").ok();
             writeln!(out, "  call void @init_state(ptr @__web_state)").ok();
+            // 2026-10-08 (Phase 3.1 stranger probe): after init_state populates
+            // @__web_state, emit an initial flush of EVERY state field so the
+            // shim's b-text bindings render the Briev-side seed on load.
+            // Without this, the seeded b-text shows the HTML literal (the
+            // display silently diverges from the real state). value_ptr points
+            // at the field slot inside @__web_state (the long-lived state the
+            // txns and render loop operate on). value_len = the field's byte
+            // width; the shim decodes by the field's type tag.
+            for (i, (handle, _off, size)) in flush_rows.iter().enumerate() {
+                // GEP the field slot by FIELD INDEX within @__web_state (%State is
+                // a struct of word fields; the handle == the field index, so the
+                // second GEP index is the field ordinal, not a byte offset).
+                writeln!(out, "  %boot_vptr{} = getelementptr inbounds %State, ptr @__web_state, i32 0, i32 {}", i, handle).ok();
+                // Flush record: { field_handle, value_ptr, value_len }.
+                writeln!(out, "  %boot_r{} = getelementptr inbounds [{} x {{ i32, i32, i32 }}], ptr @__web_flush_buf, i32 0, i32 {}, i32 0", i, max_entries, i).ok();
+                writeln!(out, "  store i32 {}, ptr %boot_r{}", handle, i).ok();
+                writeln!(out, "  %boot_vp{} = getelementptr inbounds [{} x {{ i32, i32, i32 }}], ptr @__web_flush_buf, i32 0, i32 {}, i32 1", i, max_entries, i).ok();
+                writeln!(out, "  %boot_vpi{} = ptrtoint ptr %boot_vptr{} to i32", i, i).ok();
+                writeln!(out, "  store i32 %boot_vpi{}, ptr %boot_vp{}", i, i).ok();
+                writeln!(out, "  %boot_len{} = getelementptr inbounds [{} x {{ i32, i32, i32 }}], ptr @__web_flush_buf, i32 0, i32 {}, i32 2", i, max_entries, i).ok();
+                writeln!(out, "  store i32 {}, ptr %boot_len{}", size, i).ok();
+            }
+            if !flush_rows.is_empty() {
+                writeln!(out, "  call void @__web_flush_state(i32 ptrtoint (ptr @__web_flush_buf to i32), i32 {})", flush_rows.len()).ok();
+            }
             writeln!(out, "  ret void").ok();
             writeln!(out, "}}").ok();
             writeln!(out, "define void @render_frame() {{").ok();

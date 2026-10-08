@@ -3308,6 +3308,18 @@ strictly line-oriented with no braces; the full dialect reference is
 
 An `.rbv` document contains Briev source plus `<view>` and optional `<style>` blocks. Legacy `<script>` wrappers are invalid.
 
+**Artifact.** `brievc build <file>.rbv` emits ONE self-contained `.html` by
+default (inline `<style>`, inline shim module, inline wasm as base64) — zero
+external references, so it opens from `file://` or any static host. `--split`
+keeps the separate assets (`.html` + `.mjs` + `.wasm` + `.css`) for a dev server
+or a bundler. The runtime boots via `__web_boot` (runs `init_state` into the
+long-lived state, then emits an initial flush of every state field so the
+`b-text` bindings render the Briev-side seed, not the HTML literal); the shim
+loads the state layout before `__web_boot` so that initial flush lands. A
+stranger loads the page: `brievc build counter.rbv`, open `counter.html`, the
+seeded value shows and a click round-trips to the DOM — the Phase 3 gate,
+guarded by `benchmarks/rbv_browser_smoke.mjs` (`rbv_gate.sh` step 6).
+
 ### 21.2 View attachment
 
 ```briev
@@ -3369,6 +3381,12 @@ neither a seed nor a type default is a compile error, never silently left
 stale.
 
 ### 21.4 Directives
+
+The view directives use the `b-` prefix (**binding**): each directive binds a
+signal, event, or transaction to an element. The prefix is a compiler-side
+parsing convention — the `b-*` attributes are legal HTML attribute names and
+are emitted verbatim into the rendered page (inert in the browser; the shim
+binds via the injected `id` and its own binding table, not the `b-*` attrs).
 
 Canonical directives include:
 

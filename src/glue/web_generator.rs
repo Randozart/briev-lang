@@ -415,7 +415,10 @@ export class WasmDomRuntime {{
     this._generationOffset = {generation_offset};
     this._flushBufferOffset = {flush_buffer_offset};
     this._maxFlushEntries = {max_flush_entries};
-    this._init(wasmBytes);
+    // 2026-10-08 (Phase 3.1 stranger probe): keep the init promise so
+    // createApp can await it — reading `_instance.exports` before init
+    // resolved threw "Cannot read properties of null (reading 'exports')".
+    this._ready = this._init(wasmBytes);
   }}
 
   async _init(wasmBytes) {{
@@ -425,16 +428,21 @@ export class WasmDomRuntime {{
     const wasm = await WebAssembly.instantiate(wasmBytes, importObject);
     this._instance = wasm.instance;
     this._memory = wasm.instance.exports.memory;
-    // 2026-08-12 (Iterable protocol, slice 4): run init_state into the
-    // long-lived @__web_state and remember its pointer — EVERY txn export
-    // takes `%state` as its first param, and the shim must pass it (the
-    // exports were previously called with no state, silently operating on
-    // garbage at the wasm heap base).
-    if (this._instance.exports.__web_boot) this._instance.exports.__web_boot();
+    // 2026-10-08 (Phase 3.1 stranger probe): load the state layout (which
+    // populates _bindingTable + the per-handle view-effects that write to the
+    // DOM) BEFORE __web_boot. __web_boot emits an initial flush of every state
+    // field after init_state; that flush runs _applyFlush against _bindingTable,
+    // so the table must be populated or the flush is a no-op and the seeded
+    // b-text shows the HTML literal instead of the Briev-side seed.
     this._statePtr = this._instance.exports.__briev_state_ptr
       ? this._instance.exports.__briev_state_ptr()
       : 0;
     this._loadStateLayout();
+    // Run init_state into the long-lived @__web_state (and emit the initial
+    // flush). EVERY txn export takes `%state` as its first param; the shim
+    // passes _statePtr (the exports previously operated on garbage at the wasm
+    // heap base when called with no state).
+    if (this._instance.exports.__web_boot) this._instance.exports.__web_boot();
     this._startRenderLoop();
   }}
 
@@ -647,6 +655,12 @@ export class WasmDomRuntime {{
 
 export async function createApp(wasmBytes) {{
   const runtime = new WasmDomRuntime(wasmBytes);
+  // 2026-10-08 (Phase 3.1 stranger probe): the constructor fires `_init`
+  // (async) but does not await it, so reading `runtime._instance.exports`
+  // synchronously here threw "Cannot read properties of null (reading
+  // 'exports')" in a real browser. Await the init promise before returning
+  // the exports.
+  if (runtime._ready) await runtime._ready;
   return runtime._instance.exports;
 }}
 "#,

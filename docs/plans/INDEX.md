@@ -316,6 +316,16 @@ is always a Window-scope trigger, wherever it appears. The shared
 `trigger_scope_and_prefix` helper is the single source of truth for scope
 (Rule 17). See the amendment in the plan doc.
 
+**Stranger-loads-page probe (2026-10-08, Phase 3.1 gate):** the web surface is
+now proven end-to-end in a real browser. `benchmarks/rbv_browser_smoke.mjs`
+(Playwright/Chromium, `rbv_gate.sh` step 6) loads `counter.rbv`'s bundle from
+`file://` and asserts zero console/page errors, the seeded `b-text` reflects
+the Briev-side seed on load, and the `+`/`Reset` click round-trip. The probe
+found + fixed two stranger-relevant bugs (BUGS.md, 2026-10-08): the
+`createApp` null-exports race and the `__web_boot` initial-flush gap (the
+seeded `b-text` now shows the real seed, not the HTML literal). `b-` =
+"binding" documented in SPEC §21.4 + the feature doc.
+
 ---
 
 ## Workstream 4 — Runtime elimination (`briev_rt.c`)

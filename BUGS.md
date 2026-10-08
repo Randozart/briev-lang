@@ -8955,3 +8955,61 @@ initializer callees (e.g. `current_path`) are re-rooted via
 indexes it, so the emitted init call would trip the soundness net otherwise.
 Gate: `tests/fixtures/obj_router.rbv` (build + IR + variant-export + shim
 bind); `benchmarks/rbv_gate.sh` step 3.
+
+## Webstack: `createApp` read `_instance.exports` before the async `_init` resolved — page error in a real browser — 2026-10-08 FIXED
+
+**Date:** 2026-10-08 (found by the Phase 3.1 stranger-loads-page probe,
+`benchmarks/rbv_browser_smoke.mjs`, loading `counter.rbv` in a real Chromium)
+**Status:** FIXED — `createApp` now awaits the init promise before returning the
+exports.
+
+**Repro:** build any `.rbv` in bundle mode (`brievc build counter.rbv`), open the
+emitted `.html` in a browser. The page threw:
+`TypeError: Cannot read properties of null (reading 'exports')` at
+`createApp` — a stranger sees a console error and a non-functional page.
+
+**Root cause:** the `WasmDomRuntime` constructor fires `this._init(wasmBytes)`
+(async) but does not await it; `_init` is the only place that sets
+`this._instance`. `createApp` then did `return runtime._instance.exports`
+synchronously — reading `null.exports` before `_init`'s
+`await WebAssembly.instantiate` resolved.
+
+**Fix:** store the init promise as `this._ready = this._init(wasmBytes)` in the
+constructor and `await runtime._ready` in `createApp` before returning the
+exports (src/glue/web_generator.rs). The function was already `async`, so
+`createApp(__briev_wasm)` returns a promise the bundle ignores — the await
+just orders the reads correctly.
+
+**Gate:** `benchmarks/rbv_browser_smoke.mjs` asserts zero page errors + zero
+console errors on load (`rbv_gate.sh` step 6).
+
+## Webstack: `__web_boot` ran `init_state` but never flushed the initial state — the seeded `b-text` showed the HTML literal, not the Briev-side seed — 2026-10-08 FIXED
+
+**Date:** 2026-10-08 (same Phase 3.1 probe; the probe first saw `main.count`
+render as `0` (the HTML literal) while a `+` click jumped to `6`, proving the
+real state was `5` but the boot flush never reached the DOM)
+**Status:** FIXED — `__web_boot` emits an initial flush of every state field
+after `init_state`, and the shim loads the state layout *before* calling
+`__web_boot`.
+
+**Repro:** `brievc build counter.rbv` (the Briev-side seed is
+`let main: Counter = Counter { count: 5 }`). On load the `b-text` bound to
+`main.count` showed `0` (the HTML literal), not `5` — the displayed value
+silently diverged from the real state.
+
+**Root cause:** two compounding gaps. (1) `__web_boot` called `init_state`
+(populating `@__web_state`) but emitted no flush, and `render_frame` is a
+no-op for a folded program (no live reactive nodes), so nothing pushed the
+initial state to the DOM. (2) Even after adding the flush, the shim's `_init`
+called `__web_boot()` *before* `_loadStateLayout()`, so the initial flush ran
+`_applyFlush` against an empty `_bindingTable` (the per-handle view-effects
+that write to the DOM are registered in `_loadStateLayout`) and was a no-op.
+
+**Fix:** (a) `__web_boot` now emits a per-field initial flush of every state
+field (flush buffer sized to `max(largest txn write_set, field_count)`);
+(b) the shim's `_init` reorders `_loadStateLayout()` before `__web_boot()`.
+src/backend/llvm/mod.rs + src/glue/web_generator.rs.
+
+**Gate:** `benchmarks/rbv_browser_smoke.mjs` asserts the seeded `b-text` shows
+the Briev-side seed (`5`) on load, then the click round-trip (`+`→`6`,
+`+`→`7`, `Reset`→`0`) (`rbv_gate.sh` step 6).
