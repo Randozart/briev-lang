@@ -209,6 +209,11 @@ impl BadRegisters {
             "comment",
             "declare",
             "abi_args",
+            // 2026-10-08 (BILLD M3): listed — the row and the accessor
+            // both existed, but the unlisted key parsed as a register row
+            // and `abi_args_fp()` silently returned empty (the compile.rs
+            // `f{idx}` fallback masked it).
+            "abi_args_fp",
             "push_width",
             "dynamic_linker",
             "cross_as",
@@ -288,10 +293,17 @@ impl BadRegisters {
             .unwrap_or_default()
     }
 
-    /// 2026-09-21: The portable float-arg registers in C-ABI order.
+    /// The portable float-arg registers in C-ABI order. Empty entries
+    /// filtered (the thumb `abi_args_fp: "thumb:"` row means "no FPU arg
+    /// registers", not one empty name).
     pub fn abi_args_fp(&self, family: &str) -> Vec<String> {
         self.scalar("abi_args_fp", family)
-            .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+            .map(|s| {
+                s.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -447,5 +459,17 @@ mod tests {
         assert_eq!(regs.imm_prefix("x86_64"), "$");
         assert_eq!(regs.imm_prefix("aarch64"), "#");
         assert_eq!(regs.imm_prefix("riscv64"), "");
+    }
+
+    /// 2026-10-08 (BILLD M3): the `abi_args_fp` row must reach the
+    /// accessor — an unlisted scalar row parses as a register row and
+    /// empties the accessor silently.
+    #[test]
+    fn abi_args_fp_scalar_row_loads() {
+        let regs = BadRegisters::load();
+        let fp = regs.abi_args_fp("x86_64");
+        assert_eq!(fp.first().map(String::as_str), Some("f0"), "{fp:?}");
+        assert_eq!(regs.abi_args_fp("aarch64").first().map(String::as_str), Some("f0"));
+        assert!(regs.abi_args_fp("thumb").is_empty(), "thumb has no FPU arg row");
     }
 }
