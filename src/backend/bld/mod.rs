@@ -14,6 +14,7 @@
 
 pub mod alloc;
 pub mod lower;
+pub mod registry;
 
 use crate::ast::bad::BadProgram;
 
@@ -786,6 +787,136 @@ mod tests {
         let m = mnems(&items);
         assert!(!m.contains(&"storeoff".to_string()), "{m:?}");
         assert!(!m.contains(&"loadoff".to_string()), "{m:?}");
+    }
+
+    // ── M5: engine intrinsics ─────────────────────────────────────────
+
+    fn lower_family(src: &str, family: &str) -> Result<BadProgram, String> {
+        let prog = lower_to_bad(src, family, None, None);
+        prog
+    }
+
+    #[test]
+    fn halt_inlines_the_target_sequence() {
+        let p = lower_family("defn stop() { Halt(); }", "x86_64").unwrap();
+        let items = instrs(&p, "stop");
+        assert_eq!(mnems(&items), vec!["cli", "halt"]);
+        // aarch64 has no cli row — the aarch64 Halt row is just halt
+        let p = lower_family("defn stop() { Halt(); }", "aarch64").unwrap();
+        assert_eq!(mnems(&instrs(&p, "stop")), vec!["halt"]);
+    }
+
+    #[test]
+    fn wait_for_interrupt_on_every_provided_target() {
+        for family in ["x86_64", "aarch64", "riscv64"] {
+            let p = lower_family("defn idle() { WaitForInterrupt(); }", family).unwrap();
+            assert_eq!(mnems(&instrs(&p, "idle")), vec!["wfi"], "{family}");
+        }
+    }
+
+    #[test]
+    fn read_control_reg_substitutes_and_returns() {
+        let src = "defn f() -> Int { return ReadControlReg(0); }";
+        let p = lower_family(src, "x86_64").unwrap();
+        let items = instrs(&p, "f");
+        assert_eq!(mnems(&items), vec!["readcr", "mov", "mov", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r0", "0"]);
+    }
+
+    #[test]
+    fn write_control_reg_takes_two_args() {
+        let src = "defn f() { WriteControlReg(0, 0x8000); }";
+        let p = lower_family(src, "x86_64").unwrap();
+        let items = instrs(&p, "f");
+        assert_eq!(mnems(&items), vec!["writecr"]);
+        assert_eq!(ops_of(items[0]), vec!["0", "32768"]);
+    }
+
+    #[test]
+    fn cr_number_must_be_a_constant() {
+        let src = "defn f(n: Int) -> Int { return ReadControlReg(n); }";
+        let e = lower_family(src, "x86_64").err().unwrap();
+        assert!(e.contains("compile-time constant"), "{e}");
+    }
+
+    #[test]
+    fn missing_target_row_names_the_available_targets() {
+        let src = "defn f() -> Int { return ReadControlReg(0); }";
+        let e = lower_family(src, "aarch64").err().unwrap();
+        assert!(e.contains("aarch64"), "{e}");
+        assert!(e.contains("x86_64"), "{e}");
+    }
+
+    #[test]
+    fn far_jump_is_x86_only() {
+        let src = "bootstrap B() { FarJump(8, 4096); }";
+        let p = lower_family(src, "x86_64").unwrap();
+        let items = instrs(&p, "B");
+        assert_eq!(mnems(&items), vec!["ljmp"]);
+        assert_eq!(ops_of(items[0]), vec!["8", "4096"]);
+        let e = lower_family(src, "riscv64").err().unwrap();
+        assert!(e.contains("riscv64"), "{e}");
+    }
+
+    #[test]
+    fn intrinsic_arity_is_checked() {
+        let e = lower_family("defn f() { Halt(1); }", "x86_64").err().unwrap();
+        assert!(e.contains("takes 0 argument"), "{e}");
+    }
+
+    #[test]
+    fn defn_shadowing_an_intrinsic_is_loud() {
+        let e = lower_family("defn Halt() { return; }", "x86_64").err().unwrap();
+        assert!(e.contains("engine intrinsic"), "{e}");
+    }
+
+    #[test]
+    fn intrinsic_args_read_values_not_registers() {
+        // a value argument rides the recipe's own value register into the
+        // template slot — no ABI staging
+        let src = "defn f(a: Int) { WriteControlReg(3, a + 1); }";
+        let p = lower_family(src, "x86_64").unwrap();
+        let items = instrs(&p, "f");
+        // the recipe calls something, so the param stashes at entry
+        assert_eq!(mnems(&items), vec!["mov", "add", "writecr"]);
+        assert_eq!(ops_of(items[2]), vec!["3", "v1"]);
+    }
+
+    #[test]
+    fn end_to_end_cr_read_renders_the_encoded_number() {
+        let src = "defn f() -> Int { return ReadControlReg(0); }";
+        let s = generate(src, "x86_64-unknown-linux-gnu").unwrap();
+        assert!(s.contains("movq %cr0, %rax"), "{s}");
+    }
+
+    #[test]
+    fn end_to_end_halt_renders() {
+        let src = "bootstrap Halt() { Halt(); }";
+        let e = lower_err(src);
+        // `Halt` as a bootstrap name collides with the verb
+        assert!(e.contains("engine intrinsic"), "{e}");
+        let src = "bootstrap Reset() { Halt(); }";
+        let s = generate(src, "x86_64-unknown-linux-gnu").unwrap();
+        assert!(s.contains("cli"), "{s}");
+        assert!(s.contains("hlt"), "{s}");
+    }
+
+    #[test]
+    fn bad_defns_are_not_call_targets() {
+        // a .bad sequence defn has no label — calling one from .bld would
+        // link-fail; it is inline material for `bad { }` blocks
+        let dir = temp_dir("baddefn");
+        std::fs::write(dir.join("mach.bad"), "defn seq1 a\nret\n").unwrap();
+        let e = lower_to_bad(
+            "import \"mach.bad\";\ndefn f() { seq1(1); }",
+            "x86_64",
+            Some(&dir),
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(e.contains("no `defn`"), "{e}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -1,0 +1,54 @@
+// ── .bld engine intrinsics — config registry ──────────────────────────
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// 2026-10-08 (BILLD plan M5): the engine-verb registry. Data, NOT Rust
+// string matches (Rules 3/15/23): each row maps ONE PascalCase engine
+// verb to an arity, a result flag, and per-target lowering sequences of
+// `.bad` core instructions. The .bld lowerer splices the call's argument
+// operands into `$N` slots and inlines the sequence at the call site —
+// no call convention, no ABI staging, boot-friendly.
+//
+// Row shape (quoted mode):
+//   Name: "<arity>"; "ret"|"void"; "target:instr; instr"; ...
+//
+// - `$N` substitutes the Nth argument's operand; `$N!` (bare) requires
+//   the argument to be a compile-time constant and splices it bare —
+//   for opcode-encoded numbers (CR/CSR numbers), where a register
+//   operand would mis-assemble.
+// - A `"ret"` intrinsic's result arrives in r0 (the .bld return
+//   convention); the lowerer copies it into a fresh value.
+// - A target with no row = loud capability error naming the family and
+//   the available targets (use-site capability doctrine). An engine verb
+//   that cannot express its sequence falls to a `bad { }` raw block.
+//
+// Deliberate v1 gaps (each = loud capability error until verified rows
+// land; guessed encodings are worse than honest refusals):
+// - aarch64 has no CR/CSR rows (MRS/MSR with numeric S3_x encodings
+//   unverified) and no DAIF rows.
+// - `FarJump` is x86_64-only (segmentation is an x86 concept; the
+//   other targets refuse rather than silently drop the segment).
+//
+// To undo: delete this file, src/backend/bld/registry.rs, and revert the
+// intrinsic plumbing in src/backend/bld/lower.rs.
+
+// CR / CSR access (riscv: CSR numbers are decimal — mstatus = 0x300).
+ReadControlReg: "1"; "ret"; "x86_64:readcr r0, $1!"; "riscv64:readcr r0, $1!";
+WriteControlReg: "2"; "void"; "x86_64:writecr $1!, $2"; "riscv64:writecr $1!, $2";
+
+// Interrupt control.
+DisableInterrupts: "0"; "void"; "x86_64:cli"; "riscv64:mov r9, 8; csrrc r0, 768, r9";
+EnableInterrupts: "0"; "void"; "x86_64:sti"; "riscv64:mov r9, 8; csrrs r0, 768, r9";
+
+// Stop and wait.
+Halt: "0"; "void"; "x86_64:cli; halt"; "aarch64:halt"; "riscv64:halt";
+WaitForInterrupt: "0"; "void"; "x86_64:wfi"; "aarch64:wfi"; "riscv64:wfi";
+
+// Memory and translation.
+MemoryBarrier: "0"; "void"; "x86_64:fence"; "aarch64:fence"; "riscv64:fence";
+InvalidateTlb: "0"; "void"; "x86_64:tlbflush"; "aarch64:tlbflush"; "riscv64:tlbflush";
+
+// x86 table load: the argument points at [limit, base] memory.
+LoadDescriptorTable: "1"; "void"; "x86_64:lgdt $1";
+
+// Far jump: segment and offset as constants (x86 segmentation).
+FarJump: "2"; "void"; "x86_64:ljmp $1, $2";

@@ -38,6 +38,7 @@ use crate::ast::bad::{
 use crate::ast::bld::{BldBootstrap, BldConst, BldDefn, BldStmt, BldTopLevel};
 use crate::ast::{BinaryOpKind, Expr, Type, UnaryOpKind};
 use crate::backend::bad::registry::{BadIsa, BadIsaLowering, BadRegisters, ImmHandling};
+use super::registry::{BldIntrinsics, IntrinsicLowering};
 use crate::errors::Span;
 use crate::parser::bad::parse_bad;
 use crate::parser::bld::parse_bld;
@@ -165,18 +166,6 @@ impl Sig {
         }
     }
 
-    /// A `.bad` sequence defn: arity known, classes unknown (values pass
-    /// as their own class), no result.
-    fn external_defn(n: usize, span: Span, file: &str) -> Self {
-        Sig {
-            params: vec![VClass::Int; n],
-            ret: None,
-            external: true,
-            check_arity: true,
-            span,
-            file: file.to_string(),
-        }
-    }
 }
 
 /// Where a statement sits in its recipe — .bad ownership items (sections,
@@ -305,6 +294,7 @@ enum Stream {
 pub struct BldLowerer<'a> {
     isa: &'a BadIsa,
     regs: &'a BadRegisters,
+    intrinsics: BldIntrinsics,
     family: String,
     base_dir: Option<std::path::PathBuf>,
     root_path: Option<std::path::PathBuf>,
@@ -338,9 +328,11 @@ impl<'a> BldLowerer<'a> {
     ) -> Self {
         let empty = Body::new("", None);
         let span = Span { start: 0, end: 0, line: 1, column: 1 };
+        let intrinsics = BldIntrinsics::load();
         BldLowerer {
             isa,
             regs,
+            intrinsics,
             family: family.to_string(),
             base_dir,
             root_path,
@@ -518,9 +510,9 @@ impl<'a> BldLowerer<'a> {
                     Some(n) => (n.clone(), Sig::external_label(r.span, &file)),
                     None => continue,
                 },
-                BadTopLevel::Defn(d) => {
-                    (d.name.clone(), Sig::external_defn(d.params.len(), d.span, &file))
-                }
+                // Sequence defns are inline expansion material for
+                // `bad { }` blocks — NOT call targets (no label exists
+                // for them, so a `call` would link-fail).
                 _ => continue,
             };
             self.cur_span = sig.span;
@@ -564,6 +556,16 @@ impl<'a> BldLowerer<'a> {
                             "rename it — recipe names must not look like compiler-managed value registers",
                         ));
                     }
+                    if self.intrinsics.is_intrinsic(&d.name) {
+                        return Err(self.fail(
+                            &format!("`defn {}`", d.name),
+                            "it shadows an engine intrinsic",
+                            &format!(
+                                "rename it — `{}` is the dialect's built-in verb; call it directly",
+                                d.name
+                            ),
+                        ));
+                    }
                     let sig = self.sig_for_defn(&d)?;
                     self.declare_sig(&d.name, sig)?;
                 }
@@ -575,6 +577,16 @@ impl<'a> BldLowerer<'a> {
                             &format!("`bootstrap {}`", b.name),
                             "the name is in the compiler's value namespace (vN / fvN)",
                             "rename it — entry names must not look like compiler-managed value registers",
+                        ));
+                    }
+                    if self.intrinsics.is_intrinsic(&b.name) {
+                        return Err(self.fail(
+                            &format!("`bootstrap {}`", b.name),
+                            "it shadows an engine intrinsic",
+                            &format!(
+                                "rename it — `{}` is the dialect's built-in verb",
+                                b.name
+                            ),
                         ));
                     }
                     self.bootstraps += 1;
@@ -1751,6 +1763,118 @@ impl<'a> BldLowerer<'a> {
 
     // ── calls ─────────────────────────────────────────────────────────
 
+    /// An engine verb call: the registry's per-target sequence inlines at
+    /// the call site — arguments substitute into `$N` slots, no ABI
+    /// staging, and a `"ret"` verb's result arrives in r0.
+    fn lower_intrinsic(
+        &mut self,
+        callee: &str,
+        args: &[Expr],
+        lox: IntrinsicLowering,
+    ) -> Result<Option<Lowered>, String> {
+        let arity = self.intrinsics.arity(callee).ok_or_else(|| {
+            self.fail(
+                &format!("engine verb `{callee}`"),
+                "it lost its registry row",
+                "report this — every routed verb carries its row",
+            )
+        })?;
+        if args.len() != arity {
+            return Err(self.fail(
+                &format!("call to `{callee}`"),
+                &format!("it takes {arity} argument(s), got {}", args.len()),
+                &format!("match the `{callee}` signature"),
+            ));
+        }
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(self.expr(a)?);
+        }
+        for line in lox.seq.split(';') {
+            self.emit_template_line(line, &vals, callee)?;
+        }
+        Ok(match self.intrinsics.returns(callee) {
+            Some(true) => {
+                let dst = self.fresh_vreg(VClass::Int);
+                let src = BadOperand::Name(ret_reg(VClass::Int).to_string());
+                self.emit_copy(&dst, src, VClass::Int)?;
+                Some(Lowered::temp_reg(dst, VClass::Int))
+            }
+            _ => None,
+        })
+    }
+
+    /// One `;`-separated template line: mnemonic + operand tokens, with
+    /// commas as pure separators.
+    fn emit_template_line(
+        &mut self,
+        line: &str,
+        vals: &[Lowered],
+        callee: &str,
+    ) -> Result<(), String> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(());
+        }
+        let owned = line.replace(',', " ");
+        let mut tokens = owned.split_whitespace();
+        let Some(mn) = tokens.next() else {
+            return Ok(());
+        };
+        let mut ops = Vec::new();
+        for tok in tokens {
+            ops.push(self.template_operand(tok, vals, callee)?);
+        }
+        self.emit(mn, ops, VClass::Int)
+    }
+
+    /// One template operand: `$N` splices the argument's operand, `$N!`
+    /// additionally demands a compile-time constant (opcode-encoded
+    /// numbers), literal integers ride as immediates, everything else is
+    /// a verbatim name (a register the template author named).
+    fn template_operand(
+        &self,
+        tok: &str,
+        vals: &[Lowered],
+        callee: &str,
+    ) -> Result<BadOperand, String> {
+        let (spec, bare) = match tok.strip_suffix('!') {
+            Some(s) => (s, true),
+            None => (tok, false),
+        };
+        if let Some(idx) = spec.strip_prefix('$') {
+            let n: usize = idx.parse().map_err(|_| {
+                self.fail(
+                    &format!("engine verb `{callee}`"),
+                    &format!("its lowering names the malformed slot `{tok}`"),
+                    "report this — registry slots are $1, $2, …",
+                )
+            })?;
+            let v = vals.get(n - 1).ok_or_else(|| {
+                self.fail(
+                    &format!("engine verb `{callee}`"),
+                    &format!("its lowering names slot `{tok}`, beyond the argument count"),
+                    "report this — registry slots must match the arity",
+                )
+            })?;
+            if bare {
+                return match v.op {
+                    BadOperand::Int(_) | BadOperand::Float(_) => Ok(v.op.clone()),
+                    _ => Err(self.fail(
+                        &format!("call to `{callee}`"),
+                        &format!("argument #{n} must be a compile-time constant here — the machine encodes it in the instruction itself"),
+                        "pass a literal or a `const`",
+                    )),
+                };
+            }
+            return Ok(v.op.clone());
+        }
+        if let Ok(n) = tok.parse::<i64>() {
+            return Ok(BadOperand::Int(n));
+        }
+        Ok(BadOperand::Name(tok.to_string()))
+    }
+
     fn lower_call(&mut self, callee: &str, args: &[Expr]) -> Result<Option<Lowered>, String> {
         if callee.contains('.') {
             return Err(self.fail(
@@ -1758,6 +1882,20 @@ impl<'a> BldLowerer<'a> {
                 "a .bld call names the function directly — there are no module paths in calls",
                 "call the bare name; its `import \"…\";` already brought it in",
             ));
+        }
+        if self.intrinsics.is_intrinsic(callee) {
+            let lox = self.intrinsics.lookup(callee, &self.family).cloned().ok_or_else(|| {
+                let targets = self.intrinsics.targets(callee).join(", ");
+                self.fail(
+                    &format!("engine verb `{callee}`"),
+                    &format!("the `{}` target has no row for it", self.family),
+                    &format!(
+                        "write the sequence in a `bad {{ }}` block for `{}` — the verb provides: {targets}",
+                        self.family
+                    ),
+                )
+            })?;
+            return self.lower_intrinsic(callee, args, lox);
         }
         let sig = match self.sigs.get(callee) {
             Some(s) => s.clone(),

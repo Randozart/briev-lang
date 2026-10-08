@@ -211,3 +211,32 @@ mret: "0"; "riscv64:mret";
 rdtid: "1"; "ptx:mov.u32 %rt1, %tid.x; cvt.u64.u32 $1, %rt1;";
 rdctaid: "1"; "ptx:mov.u32 %rt1, %ctaid.x; cvt.u64.u32 $1, %rt1;";
 barrier: "0"; "ptx:bar.sync 0;";
+
+// ── engine primitives (BILLD M5, 2026-10-08) ─────────────────────────
+// Rows the .bld intrinsic templates compose. Rows are target-gated like
+// every other row: a missing target = loud capability error at emission.
+// Template-only physical-register clobbers are the row author's contract
+// (precedent: csrrs $0, time, zero).
+//
+// CR access: the CR/CSR number is opcode-encoded, never a runtime value
+// — the `$N!` bare form splices the constant into the mnemonic text
+// (`movq %cr0, %rax`, `csrr a0, 768`). A register operand there
+// mis-assembles; the .bld intrinsic layer rejects non-constant $N!
+// arguments loudly.
+readcr: "2"; "x86_64:movq %cr$2!, $1"; "riscv64:csrr $1, $2!";
+writecr: "2"; "x86_64:movq $2, %cr$1!"; "riscv64:csrw $1!, $2";
+cli: "0"; "x86_64:cli";
+sti: "0"; "x86_64:sti";
+// wfi — wait for interrupt, intent-named (x86 wakes with IRQs on; pair
+// with `cli` for a permanent halt).
+wfi: "0"; "x86_64:hlt"; "aarch64:wfi"; "riscv64:wfi";
+// lgdt m — load the descriptor table from [limit, base] memory at m.
+lgdt: "1"; "x86_64:lgdt ($1)";
+// invlpg a — invalidate the TLB entry holding a.
+invlpg: "1"; "x86_64:invlpg ($1)";
+// tlbflush — flush the whole TLB (x86: CR3 reload, clobbers %rax).
+tlbflush: "0"; "x86_64:movq %cr3, %rax; movq %rax, %cr3"; "aarch64:tlbi vmalle1"; "riscv64:sfence.vma";
+// ljmp seg, off — far jump to a constant segment:offset.
+ljmp: "2"; "x86_64:ljmp $1, $2";
+// fence — full memory barrier.
+fence: "0"; "x86_64:mfence"; "aarch64:dsb sy"; "riscv64:fence iorw, iorw";

@@ -1,9 +1,10 @@
 <!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 # BILLD — Briev Intermediate Low-Level Dialect (`.bld`)
 
-**Status: M4 DONE 2026-10-08** (register allocator + 10 tests, suite 3021
-green, Praetor clean; M3: lowering core + 55 tests; M2: parser + AST + 26
-tests — all same day). Milestones below; check them off as they land.
+**Status: M5 DONE 2026-10-08** (engine intrinsics + 17 tests, suite 3038
+green, Praetor clean; M4: register allocator + 10 tests; M3: lowering core
++ 55 tests; M2: parser + AST + 26 tests — all same day). Milestones below;
+check them off as they land.
 
 Plan-driven work; Rule 13 docs named in §Milestones. Separate worktree:
 `../briev-billd`, branch `feat/billd-dialect` (does not touch main;
@@ -233,11 +234,51 @@ documented exception; frameless spill refuses loudly.)
      operand roles, not name patterns).
    - **`bad { }` blocks naming a `vN` are loud**: raw assembly works in
      physical registers; compiler-managed names are not addressable.
-5. **Intrinsic registry + engine intrinsics** — `bld-intrinsics.dbvl`,
-   new `bad-isa.dbvl` rows (CR/MRS/MSR), per-target capability-error tests.
-   (Lane bypasses the `.bv` interpreter like `.bad` does — Rule 5 applies
-   to the `.bv` surface; interpreter-first addition rule does not apply to
-   a lane that never enters it.)
+5. **Intrinsic registry + engine intrinsics** — DONE 2026-10-08:
+   `config/bld-intrinsics.dbvl` + loader `src/backend/bld/registry.rs` +
+   lowerer plumbing in `lower.rs` (`lower_intrinsic` / `emit_template_line`
+   / `template_operand`); new `bad-isa.dbvl` rows (`readcr`, `writecr`,
+   `cli`, `sti`, `wfi`, `lgdt`, `invlpg`, `tlbflush`, `fence`, `ljmp`).
+
+   M5 decisions (test-pinned in `src/backend/bld/{mod,registry}.rs`):
+   - **Rows are data**: `Name: "<arity>"; "ret"|"void"; "target:instr;
+     instr"`. The lowerer consults the table generically — nothing in
+     Rust knows an individual verb's name (Rules 3/15/23). The plan's
+     "observable flag" became the `ret`/`void` flag — what emission
+     actually needs (statements always emit; there is no DCE to gate).
+   - **Templates inline at the call site**: `$N` splices the argument's
+     operand (a virtual, a constant, a param's ABI register) — no ABI
+     staging, no call convention. This is why the verbs are registry
+     rows and not stdlib `.bld` defns: `bad { }` text cannot bind `.bld`
+     parameters, so arg-taking verbs need the splice. `"ret"` verbs
+     leave the result in r0; the lowerer copies it into a fresh value
+     (the defn-call convention, reuse verbatim).
+   - **`$N!` (bare) demands a compile-time constant** — for
+     opcode-encoded numbers (CR/CSR numbers are IN the instruction, a
+     register operand there mis-assembles). The x86 templates splice it
+     into the mnemonic text (`movq %cr0, %rax`); riscv takes decimal CSR
+     numbers (`csrr a0, 768`, mstatus = 0x300).
+   - **Capability doctrine**: a verb without a row for the target is
+     loud, naming the family and the available targets. Template-only
+     physical-register clobbers (tlbflush clobbers %rax on x86) are the
+     row author's contract — precedent: asm-lowering's `csrrs $0, time,
+     zero`.
+   - **Deliberate v1 gaps (loud, not guessed)**: aarch64 has NO CR/CSR
+     or DAIF rows — the plan table's "aarch64 MRS/MSR / DAIF" rows need
+     verified S3_x encodings; guessed encodings are worse than honest
+     refusals (zero-tolerance beats table completeness). `FarJump` is
+     x86-only: the other targets refuse rather than silently drop the
+     segment (the plan's "unconditional jmp" would need a pc-relative
+     semantic the verb does not have).
+   - **M3 harvest narrowed**: `.bad` sequence defns are NO LONGER
+     harvested as callable signatures — they are inline expansion
+     material for `bad { }` blocks; calling one emitted `call` to a name
+     that has no label (link-fail). Imported `.bad` labels and named raw
+     blocks stay callable.
+   - **Name collisions are loud**: a `defn`/`bootstrap` named like an
+     engine verb (`defn Halt()`) is rejected at collect — verbs are the
+     dialect's built-in surface. Intrinsic calls count as calls for the
+     M4 param stash (conservative, correct).
 6. **Bit functions** — `lib/std/bits.bv` additions (checked by `.bv` tests)
    + `lib/std/bld/bits.bld`.
 7. **End-to-end examples** — `examples/bld/boot_protected_x86.bld` (the
