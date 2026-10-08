@@ -1315,6 +1315,7 @@ mod tests {
                 event: "click".to_string(),
                 txn: txn.to_string(),
                 params: vec![],
+                scope: crate::view_compiler::TriggerScope::Element,
             },
         }
     }
@@ -1347,6 +1348,28 @@ mod tests {
         assert!(set.contains("go"));
         assert!(set.contains("toggle"));
         assert_eq!(set.len(), 2, "b-bind contributes no trigger root");
+    }
+
+    /// 2026-10-07 (popstate): a Window-scope trigger is liveness-rooted exactly
+    /// like an Element-scope trigger — the scope does not affect the root set,
+    /// so a window-bound txn is emitted (no dead button).
+    #[test]
+    fn window_scope_trigger_is_rooted() {
+        let bindings = vec![Binding {
+            element_id: "root".to_string(),
+            directive: Directive::Trigger {
+                event: "popstate".to_string(),
+                txn: "sync_route".to_string(),
+                params: vec![],
+                scope: crate::view_compiler::TriggerScope::Window,
+            },
+        }];
+        let set = view_trigger_txns(&bindings);
+        assert!(
+            set.contains("sync_route"),
+            "window-scope trigger txn must be rooted: {set:?}"
+        );
+        assert_eq!(set.len(), 1, "one root from the window trigger");
     }
 
     #[test]

@@ -1004,23 +1004,35 @@ export async function createApp(wasmBytes) {{
                     }
                 }
             }
-            Directive::Trigger { event, txn, params } => {
+            Directive::Trigger { event, txn, params, scope } => {
                 // 2026-08-10: wire a DOM event listener that calls the WASM
                 // transaction export (b._instance.exports[<txn>]) with the
                 // binding's static params. The listener is attached once, at
                 // shim init, outside the per-flush binding table.
+                // 2026-10-07 (popstate): a `b-window:` trigger binds the
+                // WINDOW (`window.addEventListener`), not the element — the
+                // element-scope triggers (`b-trigger:`/`b-on:`) keep
+                // `el.addEventListener`. Same `_txn` resolution either way.
                 let arg_str = if params.is_empty() {
                     String::new()
                 } else {
                     let args: Vec<String> = params.iter().map(|(_, v)| v.clone()).collect();
                     format!(", {}", args.join(", "))
                 };
-                format!(
-                    "(() => {{\n\
-                     \x20         const el = {el};\n\
-                     \x20         if (el) el.addEventListener({event:?}, () => this._txn({txn:?})({arg_str}));\n\
-                     \x20       }})();"
-                )
+                if *scope == crate::view_compiler::TriggerScope::Window {
+                    format!(
+                        "(() => {{\n\
+                         \x20         window.addEventListener({event:?}, () => this._txn({txn:?})({arg_str}));\n\
+                         \x20       }})();"
+                    )
+                } else {
+                    format!(
+                        "(() => {{\n\
+                         \x20         const el = {el};\n\
+                         \x20         if (el) el.addEventListener({event:?}, () => this._txn({txn:?})({arg_str}));\n\
+                         \x20       }})();"
+                    )
+                }
             }
             Directive::Each {
                 iterable,
@@ -1698,6 +1710,7 @@ mod tests {
                     event: "click".to_string(),
                     txn: "increment".to_string(),
                     params: vec![],
+                    scope: crate::view_compiler::TriggerScope::Element,
                 },
             },
         ];
@@ -1744,6 +1757,51 @@ mod tests {
         assert!(output.dom_shim.contains("addEventListener(\"click\"")
             && output.dom_shim.contains("this._txn(\"increment\")"),
             "trigger binding must wire the event listener; got:\n{}", output.dom_shim);
+    }
+
+    // 2026-10-07 (popstate): a Window-scope trigger binds `window`, not the
+    // element — the shim emits `window.addEventListener`, unlike the
+    // Element-scope triggers that use `el.addEventListener`.
+    #[test]
+    fn test_generate_window_scope_trigger() {
+        let bindings = vec![
+            crate::view_compiler::Binding {
+                element_id: "root".to_string(),
+                directive: crate::view_compiler::Directive::Trigger {
+                    event: "popstate".to_string(),
+                    txn: "sync_route".to_string(),
+                    params: vec![],
+                    scope: crate::view_compiler::TriggerScope::Window,
+                },
+            },
+        ];
+        let g = GlueWebGenerator::new(
+            Vec::new(),
+            bindings,
+            StateLayout {
+                app_name: "popstate_app".to_string(),
+                generation_offset: 0,
+                flush_buffer_offset: 64,
+                max_flush_entries: 8,
+                fields: vec![],
+            },
+            HashMap::new(),
+            Vec::new(),
+        );
+        let output = g.generate().expect("generate should succeed");
+        assert!(
+            output.dom_shim.contains("window.addEventListener(\"popstate\"")
+                && output.dom_shim.contains("this._txn(\"sync_route\")"),
+            "window-scope trigger must bind window + fire the txn; got:\n{}",
+            output.dom_shim
+        );
+        // The Element-scope path must NOT have been used for a Window-scope
+        // binding (no `getElementById` listener for it).
+        assert!(
+            !output.dom_shim.contains("const el = document.getElementById(\"root\")\n         if (el) el.addEventListener(\"popstate\""),
+            "window-scope binding must not use the element listener; got:\n{}",
+            output.dom_shim
+        );
     }
 
     #[test]

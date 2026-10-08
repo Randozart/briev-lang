@@ -300,6 +300,15 @@ rewritten to it (BUGS.md:8921). Gate: `tests/fixtures/obj_router.rbv`
 (`rbv_gate.sh` step 3). Both the plain-var and `render <Obj>` component forms
 now emit + bind member txns.
 
+**Popstate (2026-10-07):** real back/forward routing via the window-scoped
+trigger `b-window:popstate` (parallel to `b-trigger:`/`b-on:`; plan
+`docs/plans/2026-10-07-rbv-popstate.md`). `TriggerScope` distinguishes
+`Element` (`el.addEventListener`) from `Window` (`window.addEventListener`);
+the shim picks the listener target by scope. The event name is not validated
+(the browser owns the vocabulary); the txn validity inference (unknown
+directive, SRBV004/005 existence, precondition lint, liveness root) is shared
+across scopes. Gate: `tests/fixtures/popstate.rbv` (`rbv_gate.sh` step 4).
+
 ---
 
 ## Workstream 4 — Runtime elimination (`briev_rt.c`)

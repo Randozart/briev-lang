@@ -122,6 +122,15 @@ When the WASM module calls `__web_flush_state(updates_ptr: i32, count: i32)`:
 3. Applies the DOM mutation synchronously — `element.textContent = decoded_value`, `element.classList.toggle(class, bool)`, etc.
 4. Returns control to WASM. Total JS execution time: microseconds per transaction.
 
+Event bindings are a separate, eager path (not part of the flush): `b-trigger:event`
+registers `el.addEventListener(event, ...)` on the bound element, and
+`b-window:event` (2026-10-07, popstate) registers `window.addEventListener(event, ...)`
+on the `window` — the listener target is chosen by the directive's
+`TriggerScope` (`Element` vs `Window`). Both fire `this._txn(...)` into the same
+wasm transaction surface as the flush path; the validity inference (unknown
+directive warning, transaction-existence check, precondition lint) is shared
+across all trigger scopes.
+
 The key property: **no JS runs unless a transaction actually commits.** Briev's convergence semantics guarantee that if the pre-condition is false, the transaction body does not execute and `__web_flush_state` is never called. Zero overhead in the idle state.
 
 ### Zero Overhead Guarantee

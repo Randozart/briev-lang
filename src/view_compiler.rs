@@ -24,7 +24,7 @@ use crate::ast::{self, Contract, Expr, TopLevel};
 use std::collections::{HashMap, HashSet};
 
 const KNOWN_DIRECTIVES: &[&str] = &[
-    "b-text", "b-show", "b-hide", "b-when", "b-on:", "b-trigger:",
+    "b-text", "b-show", "b-hide", "b-when", "b-on:", "b-trigger:", "b-window:",
     "b-class", "b-attr", "b-style", "b-each", "b-key", "b-bind",
 ];
 
@@ -58,10 +58,17 @@ pub enum Directive {
     Bind {
         target: String,
     },
+    /// `b-trigger:<event>` / `b-on:<event>` (element-scoped) and, 2026-10-07,
+    /// `b-window:<event>` (window-scoped — popstate, hashchange, resize, …):
+    /// a DOM event fires `txn`. The `scope` decides the shim's listener target
+    /// (the element vs `window`); the validity inference (txn existence,
+    /// contract, precondition) is identical for both — see
+    /// `verify_srbv`'s `Directive::Trigger { txn, .. }` arm.
     Trigger {
         event: String,
         txn: String,
         params: Vec<(String, String)>, // parameter name -> value (as string for JS)
+        scope: TriggerScope,
     },
     Class {
         pairs: Vec<(String, String)>,
@@ -88,6 +95,16 @@ pub enum Directive {
         /// The `b-key` expression (stable identity for reconciliation).
         key_expr: String,
     },
+}
+
+/// 2026-10-07 (popstate): the listener target for a `b-trigger`/`b-on`/
+/// `b-window` trigger — the bound element (Element) or `window` (Window).
+/// The validity inference is identical for both; only the shim's listener
+/// target differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerScope {
+    Element,
+    Window,
 }
 
 /// 2026-08-11 (Phase 2a3): an item-scoped directive inside a `b-each`
@@ -607,6 +624,7 @@ impl ViewCompiler {
                         || tag_lower.contains("b-when")
                         || tag_lower.contains("b-trigger")
                         || tag_lower.contains("b-on")
+                        || tag_lower.contains("b-window")
                         || tag_lower.contains("b-bind")
                         || has_b_class
                         || tag_lower.contains("b-attr")
@@ -1012,8 +1030,15 @@ impl ViewCompiler {
                 } else {
                     attr[..].to_string()
                 };
+                // 2026-10-07 (popstate): match the directive WITH its colon
+                // boundary — `b-trigger:click` matches `b-trigger:` (the colon
+                // is part of the directive), but `b-windowX:popstate` must NOT
+                // match `b-window:` (a typo'd longer word is not `b-window`).
+                // The old `starts_with(k.trim_end_matches(':'))` was too loose:
+                // it matched `b-windowX…` as a prefix of `b-window`, so a
+                // typo'd window directive silently passed the known check.
                 let is_known = KNOWN_DIRECTIVES.iter().any(|k| {
-                    prefix == *k || prefix.starts_with(k.trim_end_matches(':'))
+                    prefix == *k || prefix.starts_with(k)
                 });
                 if !is_known {
                     self.diagnostics.push(format!(
@@ -1063,8 +1088,18 @@ if attr.starts_with("b-text") {
                         directive: Directive::Bind { target },
                     });
                 }
-            } else if attr.starts_with("b-trigger:") || attr.starts_with("b-on:") {
-                let prefix = if attr.starts_with("b-trigger:") { "b-trigger:" } else { "b-on:" };
+            } else if attr.starts_with("b-trigger:") || attr.starts_with("b-on:") || attr.starts_with("b-window:") {
+                // 2026-10-07 (popstate): `b-window:<event>` binds a WINDOW event
+                // (popstate, hashchange, …) to a txn — parallel to the element-
+                // scoped `b-trigger:`/`b-on:`. Same extraction + validity
+                // inference (txn existence/contract/precondition); only the
+                // shim's listener target differs (`window` vs the element).
+                let scope = if attr.starts_with("b-window:") {
+                    TriggerScope::Window
+                } else {
+                    TriggerScope::Element
+                };
+                let prefix = if attr.starts_with("b-trigger:") { "b-trigger:" } else if attr.starts_with("b-on:") { "b-on:" } else { "b-window:" };
                 let result = self.extract_trigger_value_from_tag(tag, prefix);
                 let event = self.extract_event_suffix(&tag_lower, prefix.trim_end_matches(':'));
                 if let Some((txn_name, params)) = result {
@@ -1077,6 +1112,7 @@ if attr.starts_with("b-text") {
                             event: event.unwrap_or_else(|| "click".to_string()),
                             txn: txn_name,
                             params,
+                            scope,
                         },
                     });
                 }
@@ -1144,7 +1180,8 @@ if attr.starts_with("b-text") {
 
     fn extract_trigger_value(&self, attr: &str) -> Option<(String, Vec<(String, String)>)> {
         let after_colon = attr.strip_prefix("b-trigger:")
-            .or_else(|| attr.strip_prefix("b-on:"))?;
+            .or_else(|| attr.strip_prefix("b-on:"))
+            .or_else(|| attr.strip_prefix("b-window:"))?;
         let after_event = after_colon.find('=')?;
         let value_part = &after_colon[after_event + 1..];
 
@@ -2390,6 +2427,102 @@ mod tests {
             !diagnostics.iter().any(|d| d.contains("not pure")),
             "{:?}",
             diagnostics
+        );
+    }
+
+    // ── 2026-10-07 (popstate): `b-window:<event>` ─────────────────────
+
+    /// A window-scoped trigger parses to a `Directive::Trigger` with
+    /// `scope = Window` and the event name — the shim binds `window`.
+    #[test]
+    fn b_window_parses_to_window_scope_trigger() {
+        let mut vc = ViewCompiler::new();
+        let (bindings, _, _) = vc.compile(r#"<div b-window:popstate="sync_route"></div>"#);
+        let t = bindings
+            .iter()
+            .find(|b| matches!(&b.directive, Directive::Trigger { .. }))
+            .expect("window trigger binding");
+        match &t.directive {
+            Directive::Trigger { event, txn, scope, .. } => {
+                assert_eq!(event, "popstate", "event name");
+                assert_eq!(txn, "sync_route", "txn name");
+                assert_eq!(*scope, TriggerScope::Window, "window scope");
+            }
+            other => panic!("expected Trigger, got {other:?}"),
+        }
+        // The txn is tracked as user-triggered (non-deterministic host input).
+        assert!(
+            vc.get_user_triggered_transactions().contains("sync_route"),
+            "window trigger txn must be user-triggered"
+        );
+    }
+
+    /// An element-scoped trigger keeps `scope = Element` (regression: the
+    /// existing `b-trigger:`/`b-on:` behavior is unchanged).
+    #[test]
+    fn b_trigger_keeps_element_scope() {
+        let mut vc = ViewCompiler::new();
+        let (bindings, _, _) = vc.compile(r#"<button b-trigger:click="go"></button>"#);
+        let t = bindings
+            .iter()
+            .find(|b| matches!(&b.directive, Directive::Trigger { .. }))
+            .expect("element trigger binding");
+        match &t.directive {
+            Directive::Trigger { scope, .. } => assert_eq!(*scope, TriggerScope::Element),
+            other => panic!("expected Trigger, got {other:?}"),
+        }
+    }
+
+    /// `b-window:` on a `b-each` inner element is processed by the same
+    /// element-path extraction as `b-trigger:` (the two-pass architecture does
+    /// not item-scope trigger directives) — it produces a Window-scope
+    /// `Trigger` binding, exactly paralleling the Element-scope binding that
+    /// `b-trigger:` produces. The validity inference (txn existence, contract,
+    /// precondition) is identical; only the shim's listener target differs.
+    #[test]
+    fn b_window_in_b_each_is_a_window_trigger() {
+        let mut vc = ViewCompiler::new();
+        let (bindings, _, _) = vc.compile(r#"<div b-each="items, item"><li b-window:popstate="sync">i</li></div>"#);
+        let t = bindings
+            .iter()
+            .find(|b| matches!(&b.directive, Directive::Trigger { .. }))
+            .expect("window trigger binding on the inner element");
+        match &t.directive {
+            Directive::Trigger { txn, scope, .. } => {
+                assert_eq!(txn, "sync", "txn name");
+                assert_eq!(*scope, TriggerScope::Window, "window scope");
+            }
+            other => panic!("expected Trigger, got {other:?}"),
+        }
+    }
+
+    /// Validity inference: a `b-window:` to an undefined txn is caught by the
+    /// strict-profile check (`verify_srbv`'s `Directive::Trigger { txn, .. }`
+    /// arm) — identical to the element-trigger case.
+    #[test]
+    fn b_window_undefined_txn_fails_srbv() {
+        let mut vc = ViewCompiler::new();
+        let (bindings, _, _) = vc.compile(r#"<div b-window:popstate="nonexistent"></div>"#);
+        let items: Vec<ast::TopLevel> = Vec::new();
+        let errors = verify_srbv(&bindings, &items);
+        assert!(
+            errors.iter().any(|e| e.contains("SRBV004") && e.contains("nonexistent")),
+            "undefined window trigger txn must fail SRBV004: {errors:?}"
+        );
+    }
+
+    /// A typo'd directive (`b-windowX:`) still trips the unknown-directive
+    /// guard — the compiler still infers invalidity (the `KNOWN_DIRECTIVES`
+    /// gate is intact). The diagnostic carries the lowercased attr.
+    #[test]
+    fn b_windowx_is_an_unknown_directive() {
+        let mut vc = ViewCompiler::new();
+        let (_, _, diagnostics) = vc.compile(r#"<div b-windowX:popstate="x"></div>"#);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.contains("unknown directive") && d.contains("b-windowx:popstate")),
+            "typo'd window directive must warn unknown: {diagnostics:?}"
         );
     }
 }

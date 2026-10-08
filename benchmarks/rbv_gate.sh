@@ -72,7 +72,25 @@ if ! grep -q "_txn(\"go_router\")" "$OBJ_ROUTER_OUT/obj_router.mjs"; then
 fi
 echo "OK obj_router (member txn variant emitted + bound)"
 
-# 4. Multi-page B2 — each .rbv bundles to ONE self-contained HTML with a
+# 4. Popstate (back/forward) — the window-scoped trigger `b-window:popstate`
+#    must bind `window` in the shim and the sync txn must be a top-level
+#    export. Before the window-scope parse, the shim used `el.addEventListener`
+#    (the element, not `window`) and the txn was not routed to a window
+#    listener.
+POP_OUT="$(build_fixture "$ROOT/tests/fixtures/popstate.rbv")" || exit 1
+check_ir "$POP_OUT" popstate || exit 1
+if ! grep -q "window.addEventListener(\"popstate\"" "$POP_OUT/popstate.mjs"; then
+    echo "popstate: shim does not bind window.popstate" >&2; exit 1
+fi
+if ! grep -q "_txn(\"sync_route\")" "$POP_OUT/popstate.mjs"; then
+    echo "popstate: shim does not bind the sync_route txn" >&2; exit 1
+fi
+if ! grep -q "define void @sync_route" "$POP_OUT/popstate.ll"; then
+    echo "popstate: sync_route txn variant not emitted" >&2; exit 1
+fi
+echo "OK popstate (window listener + sync_route exported)"
+
+# 5. Multi-page B2 — each .rbv bundles to ONE self-contained HTML with a
 #    plain <a href> cross-link (zero external refs).
 check_bundle() {
     local fixture="$1" name="$2" expect_link="$3"

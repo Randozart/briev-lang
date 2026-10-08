@@ -3380,9 +3380,19 @@ Canonical directives include:
 - `b-each:name`;
 - `b-key`;
 - `b-bind:value`;
-- `b-trigger:event`.
+- `b-trigger:event`;
+- `b-window:event`.
 
 `b-if` is invalid.
+
+`b-trigger:event` binds a DOM event on the element (`el.addEventListener`).
+`b-window:event` binds a browser window event (`window.addEventListener`) —
+the listener target is the `window`, not the element. It is the canonical way
+to wire `popstate` (back/forward) and other global browser events to a
+transaction. Both resolve their transaction through the same validity
+inference: an unknown directive is a warning, a non-existent transaction is a
+compile error (SRBV004/SRBV005), and the transaction's precondition is linted.
+The event name is not validated (the browser owns the event vocabulary).
 
 `b-when` structurally mounts/unmounts a subtree. `b-show` changes presentation only and preserves identity/state.
 

@@ -1,0 +1,36 @@
+// tests/fixtures/popstate.rbv — the popstate (back/forward) regression gate.
+//
+// 2026-10-07 (plan 2026-10-07-rbv-popstate.md): guards the window-scoped
+// trigger `b-window:popstate` (parallel to `b-trigger:`/`b-on:`). The window
+// event is bound to `window` (not the element) and the sync txn must be
+// emitted as a top-level export so the shim's `window.addEventListener` can
+// fire it. Built by benchmarks/rbv_gate.sh.
+//
+// Exercises: the window-scope parse (TriggerScope::Window), the shim binding
+// `window` + the sync txn, and the sync_route txn (app writes `path` from the
+// host URL on back/forward).
+import "std/web/router.bv";
+
+let path: String = current_path();
+let route: String = route_name(path);
+
+txn go(url: String) [path != url][path == url] {
+    path = url;
+    route = route_name(url);
+    navigate(url);
+    term;
+};
+
+// Back/forward: the browser fires popstate; sync `path` from the host URL.
+txn sync_route [path != current_path()][path == current_path()] {
+    path = current_path();
+    route = route_name(path);
+    term;
+};
+
+<view>
+  <button b-trigger:click="go('/')">Home</button>
+  <button b-window:popstate="sync_route"></button>
+  <section b-when="route == 'home'">home</section>
+  <section b-when="route != 'home'">other</section>
+</view>

@@ -50,6 +50,23 @@
 //
 // The `render <Obj> { … }` component form also emits and binds member txns
 // (`examples/counter.rbv`). Both forms now work.
+//
+// 2026-10-07 (popstate): real back/forward. `navigate` is `history.pushState`,
+// so forward nav fires no browser event — `go` sets `path` itself. Back/forward
+// fires the browser `popstate` event; wire it to a sync txn via the window-
+// scoped trigger `b-window:popstate` (parallel to `b-trigger:`/`b-on:`). The
+// app owns the sync txn (it writes app state); the router supplies the URL:
+//
+//   txn sync_route [path != current_path()][path == current_path()] {
+//       path = current_path();
+//       term;
+//   };
+//
+//   <view>
+//     <button b-trigger:click="go('/')">Home</button>
+//     <button b-window:popstate="sync_route"></button>
+//     <section b-when="route_name(path) == 'home'">home</section>
+//   </view>
 
 import "std/types/bootstrap.bv";
 

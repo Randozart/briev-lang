@@ -3431,6 +3431,7 @@ node go [done == false][done == true] {
                     event: "click".to_string(),
                     txn: "bump".to_string(),
                     params: vec![],
+                    scope: crate::view_compiler::TriggerScope::Element,
                 },
             },
         ];
