@@ -1,11 +1,14 @@
 <!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 # BILLD — Briev Intermediate Low-Level Dialect (`.bld`)
 
-**Status: M7 DONE 2026-10-08** (CLI route + boot examples + 3 QEMU gates,
-suite 3041 green; M6: stdlib bit functions + 3 tests; M5: engine
-intrinsics + 17 tests; M4: register allocator + 10 tests; M3: lowering
-core + 55 tests; M2: parser + AST + 26 tests — all same day). Milestones
-below; check them off as they land.
+**Status: M8 DONE 2026-10-08 — ALL MILESTONES COMPLETE.** M8: docs
+(bld-dialect.md, SPEC 20.2, vocab, INDEX row, coverage-ledger 4b).
+Also merged main's web-routing surface into the lane (merge
+`4ad52f0f` — the branch is a strict superset of local main; suite 3045
+green on the merged tree). M7: CLI route + boot examples + 3 QEMU
+gates; M6: stdlib bit functions; M5: engine intrinsics + 17 tests;
+M4: register allocator + 10 tests; M3: lowering core + 55 tests; M2:
+parser + AST + 26 tests — all same day.
 
 Plan-driven work; Rule 13 docs named in §Milestones. Separate worktree:
 `../briev-billd`, branch `feat/billd-dialect` (does not touch main;
@@ -324,9 +327,13 @@ documented exception; frameless spill refuses loudly.)
    - **A `.bld` data label rides a FIRST-statement block** (ownership
      doctrine applied) and the sweep's `frontend_check` grew a `.bld`
      arm (lower_to_bad as the front-end check).
-8. **Docs** — `docs/architecture/bld-dialect.md` (grammar table, tier table,
-   registry, **To undo** section), SPEC §20.2, `vocab.rs`, INDEX.md row,
-   `primitive-coverage.md` gap closure. Syntax highlighter updated.
+8. **Docs** — DONE 2026-10-08: `docs/architecture/bld-dialect.md` (tier
+   table, grammar, storage ladder, registry, **To undo**), SPEC §20.2,
+   `vocab.rs` extension list (+`bld`), INDEX.md lane row,
+   `primitive-coverage.md` §4b (the embedded-ladder surface: every
+   engine capability an I-class registry row with a QEMU gate as
+   evidence). The editor syntax highlighter consumes `vocab.rs`'s
+   extension list — no separate file needed.
 
 **Non-goals v1**: `.bv` ↔ `.bld` bridge (`bld fn`, phase 2 mirrors
 `bad fn`), contracts in `.bld` grammar, PTX family, LSP beyond basics,
