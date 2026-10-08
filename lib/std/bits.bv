@@ -55,3 +55,20 @@ defn rotate_left(x: Int, n: Int) -> Int {
 defn rotate_right(x: Int, n: Int) -> Int {
     term (x >> n) | (x << (64 - n));
 };
+// ===== SINGLE-BIT ACCESS =====
+
+defn set_bit(x: Int, i: Int) -> Int {
+    term x | (1 << i);
+};
+
+defn clear_bit(x: Int, i: Int) -> Int {
+    term x & ~(1 << i);
+};
+
+defn toggle_bit(x: Int, i: Int) -> Int {
+    term x ^ (1 << i);
+};
+
+defn test_bit(x: Int, i: Int) -> Bool {
+    term (x >> i) & 1 == 1;
+};

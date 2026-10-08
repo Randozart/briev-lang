@@ -919,6 +919,52 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // ── M6: stdlib bit wrappers ───────────────────────────────────────
+
+    #[test]
+    fn stdlib_bit_wrappers_lower() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let src = "import \"lib/std/bld/bits.bld\";\n\
+                   defn f(a: Int) -> Bool { return test_bit(a, 3); }";
+        let p = lower_to_bad(src, "x86_64", Some(&dir), None).unwrap();
+        // the call site
+        let items = instrs(&p, "f");
+        // the recipe calls, so the param stashes, then staging copies,
+        // then the call itself
+        let call_pos = mnems(&items)
+            .iter()
+            .position(|m| m == "call")
+            .unwrap_or_else(|| panic!("no call: {:?}", mnems(&items)));
+        assert_eq!(ops_of(items[call_pos]), vec!["test_bit"]);
+        // the wrapper body: shift, mask, then the equality dance
+        let body = instrs(&p, "test_bit");
+        let m = mnems(&body);
+        assert!(m.contains(&"shr".to_string()), "{m:?}");
+        assert!(m.contains(&"and".to_string()), "{m:?}");
+    }
+
+    #[test]
+    fn stdlib_set_bit_clears_through_not() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let src = "import \"lib/std/bld/bits.bld\";\n\
+                   defn f(a: Int) -> Int { return clear_bit(a, 5); }";
+        let p = lower_to_bad(src, "x86_64", Some(&dir), None).unwrap();
+        let body = instrs(&p, "clear_bit");
+        let m = mnems(&body);
+        assert!(m.contains(&"not".to_string()), "{m:?}");
+        assert!(m.contains(&"and".to_string()), "{m:?}");
+    }
+
+    #[test]
+    fn end_to_end_bit_wrapper_assembles() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let src = "import \"lib/std/bld/bits.bld\";\n\
+                   defn f(a: Int) -> Int { return set_bit(a, 3); }";
+        let s = generate_with(src, "x86_64-unknown-linux-gnu", Some(&dir), None).unwrap();
+        assert!(s.contains("set_bit:"), "{s}");
+        assert!(s.contains("orq"), "{s}");
+    }
+
     #[test]
     fn loop_counter_binds_one_register_through_the_loop() {
         let src = "defn f(a: Int) -> Int { let n = a; \

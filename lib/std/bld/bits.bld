@@ -1,0 +1,25 @@
+// ── lib/std/bld/bits.bld — single-bit access, recipe tier ─────────────
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// 2026-10-08 (BILLD plan M6): the .bld wrappers over the shared bit
+// vocabulary — mirrors the `std/bad/` vs `lib/std/` split. Plain
+// operator recipes; no compiler knowledge, no ISA rows (Rule 14).
+// The .bv twins live in lib/std/bits.bv.
+//
+// To undo: delete this file.
+
+defn set_bit(v: Int, i: Int) -> Int {
+    return v | (1 << i);
+}
+
+defn clear_bit(v: Int, i: Int) -> Int {
+    return v & ~(1 << i);
+}
+
+defn toggle_bit(v: Int, i: Int) -> Int {
+    return v ^ (1 << i);
+}
+
+defn test_bit(v: Int, i: Int) -> Bool {
+    return (v >> i) & 1 == 1;
+}

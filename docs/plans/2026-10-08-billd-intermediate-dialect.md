@@ -1,10 +1,10 @@
 <!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 # BILLD — Briev Intermediate Low-Level Dialect (`.bld`)
 
-**Status: M5 DONE 2026-10-08** (engine intrinsics + 17 tests, suite 3038
-green, Praetor clean; M4: register allocator + 10 tests; M3: lowering core
-+ 55 tests; M2: parser + AST + 26 tests — all same day). Milestones below;
-check them off as they land.
+**Status: M6 DONE 2026-10-08** (stdlib bit functions + 3 tests, suite 3041
+green, Praetor clean; M5: engine intrinsics + 17 tests; M4: register
+allocator + 10 tests; M3: lowering core + 55 tests; M2: parser + AST + 26
+tests — all same day). Milestones below; check them off as they land.
 
 Plan-driven work; Rule 13 docs named in §Milestones. Separate worktree:
 `../briev-billd`, branch `feat/billd-dialect` (does not touch main;
@@ -279,8 +279,13 @@ documented exception; frameless spill refuses loudly.)
      engine verb (`defn Halt()`) is rejected at collect — verbs are the
      dialect's built-in surface. Intrinsic calls count as calls for the
      M4 param stash (conservative, correct).
-6. **Bit functions** — `lib/std/bits.bv` additions (checked by `.bv` tests)
-   + `lib/std/bld/bits.bld`.
+6. **Bit functions** — DONE 2026-10-08: `lib/std/bits.bv` gained the
+   single-bit section (`set_bit`/`clear_bit`/`toggle_bit`/`test_bit`,
+   `term` bodies, conformance-sweep checked like the rest of lib/std);
+   `lib/std/bld/bits.bld` holds the recipe-tier twins — plain operator
+   defns, no compiler knowledge, no ISA rows (Rule 14). Lowerer tests
+   import the file and pin the lowered shapes (shl/not/xor/shr + the
+   equality dance), plus an end-to-end `.s` gate.
 7. **End-to-end examples** — `examples/bld/boot_protected_x86.bld` (the
    CR0/protected-mode recipe), `boot_rv64.bld`, `boot_aarch64.bld`; gate =
    QEMU output equality via the `.bad` `--run` harness pattern (toolchain
