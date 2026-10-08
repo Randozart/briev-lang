@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception -->
 # BILLD — Briev Intermediate Low-Level Dialect (`.bld`)
 
-**Status: M6 DONE 2026-10-08** (stdlib bit functions + 3 tests, suite 3041
-green, Praetor clean; M5: engine intrinsics + 17 tests; M4: register
-allocator + 10 tests; M3: lowering core + 55 tests; M2: parser + AST + 26
-tests — all same day). Milestones below; check them off as they land.
+**Status: M7 DONE 2026-10-08** (CLI route + boot examples + 3 QEMU gates,
+suite 3041 green; M6: stdlib bit functions + 3 tests; M5: engine
+intrinsics + 17 tests; M4: register allocator + 10 tests; M3: lowering
+core + 55 tests; M2: parser + AST + 26 tests — all same day). Milestones
+below; check them off as they land.
 
 Plan-driven work; Rule 13 docs named in §Milestones. Separate worktree:
 `../briev-billd`, branch `feat/billd-dialect` (does not touch main;
@@ -286,10 +287,43 @@ documented exception; frameless spill refuses loudly.)
    defns, no compiler knowledge, no ISA rows (Rule 14). Lowerer tests
    import the file and pin the lowered shapes (shl/not/xor/shr + the
    equality dance), plus an end-to-end `.s` gate.
-7. **End-to-end examples** — `examples/bld/boot_protected_x86.bld` (the
-   CR0/protected-mode recipe), `boot_rv64.bld`, `boot_aarch64.bld`; gate =
-   QEMU output equality via the `.bad` `--run` harness pattern (toolchain
-   absent = printed skip, never silent).
+7. **End-to-end examples** — DONE 2026-10-08:
+   `examples/bld/{boot_protected_x86,boot_rv64,boot_aarch64}.bld` +
+   gates `tests/bare/qemu-bld-{x86,rv64,aarch64}.sh` (mirror the .bad
+   gate pattern: toolchain absent = printed SKIP, never silent). The
+   registration checklist landed with them: `BackendKind::Bld` +
+   resolve + golden row, `SourceKind::Bld` + classify + sweep arm,
+   `brievc bld` subcommand + `.bld` default-path route, compile.rs
+   exhaustive-match arms, `emit_asm_artifacts` extracted as the shared
+   dialect CLI tail. Gates: x86 multiboot2 (raw prologue in the FIRST
+   statement's `bad { }`, .bld value loop + engine verbs as the 64-bit
+   body), rv64 (WriteControlReg PMP verbs + bad{} UART loop →
+   "Briev rv64 boot" on qemu virt), aarch64 (PL011 via the Store verb →
+   "Briev").
+
+   M7 fixes the examples forced (each a general mechanism, none a
+   special case):
+   - **Every recipe re-states `section .text` before its label** — an
+     ownership block may switch sections (a .rodata data label), and the
+     recipe's instructions must stay .text (the rv64 banner initially
+     swallowed the entry into .rodata, misaligning it to 0x80000011).
+   - **`store`/`load` rows marked imm-Illegal on aarch64/riscv/thumb
+     (and x86 for store)**: those templates need register operands —
+     the old shared form silently mis-assembled for immediates; the
+     allocator materializes generically per the rows.
+   - **aarch64 `mov` row split reg|imm** — constants ride the literal
+     pool (`ldr x0, =K`), which assembles for EVERY constant (0x09000030
+     proved `mov xN, #imm` wrong); the bad golden tests updated to the
+     valid render.
+   - **`WriteControlReg` rows**: CR writes need a register source
+     (x86 stages via %rax); riscv splits reg|imm (`mv|li` into t1) —
+     and row templates contain FINAL assembly (`t1`, not the canonical
+     `r9`; row text is never re-mapped).
+   - **`Store`/`Load` engine verbs**: the tier's memory statements —
+     one registry row each over the universal `store`/`load` core ops.
+   - **A `.bld` data label rides a FIRST-statement block** (ownership
+     doctrine applied) and the sweep's `frontend_check` grew a `.bld`
+     arm (lower_to_bad as the front-end check).
 8. **Docs** — `docs/architecture/bld-dialect.md` (grammar table, tier table,
    registry, **To undo** section), SPEC §20.2, `vocab.rs`, INDEX.md row,
    `primitive-coverage.md` gap closure. Syntax highlighter updated.

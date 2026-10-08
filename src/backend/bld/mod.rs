@@ -150,8 +150,11 @@ mod tests {
             &p.items[1],
             BadTopLevel::Directive(d) if d.name == "global" && d.args == "Reset"
         ));
+        // items[2] = the per-recipe `section .text` (M7): an ownership
+        // block may have switched sections, so every recipe re-states it
+        // before its label.
         assert!(matches!(
-            &p.items[2],
+            &p.items[3],
             BadTopLevel::Label(l) if l.name == "Reset" && !l.local
         ));
     }
@@ -520,7 +523,7 @@ mod tests {
             .filter(|(_, i)| matches!(i, BadTopLevel::Directive(d) if d.name == "section"))
             .map(|(i, _)| i)
             .collect();
-        assert_eq!(sections.len(), 2, "preamble + block section");
+        assert_eq!(sections.len(), 3, "preamble + block + per-recipe section");
         let idx_label = p
             .items
             .iter()

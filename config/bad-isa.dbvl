@@ -34,7 +34,7 @@
 arg: "2";
 
 // ── Data movement ────────────────────────────────────────────────────
-mov: "2"; "thumb:movs $1, $2|ldr $1, =$2!"; "x86_64:movq $2, $1"; "aarch64:mov $1, $2"; "riscv64:mv $1, $2|li $1, $2"; "ptx:mov.u64 $1, $2";
+mov: "2"; "thumb:movs $1, $2|ldr $1, =$2!"; "x86_64:movq $2, $1"; "aarch64:mov $1, $2|ldr $1, =$2!"; "riscv64:mv $1, $2|li $1, $2"; "ptx:mov.u64 $1, $2";
 // addr d, sym — address-of a data label, the portable way. Symbols in
 // other non-branch ops are a loud error (x86 `movq msg, %rdi` would load
 // MEMORY, not the address — the classic footgun this op exists to close).
@@ -55,8 +55,8 @@ mul: "3"; "thumb:muls $1, $2, $3|-"; "x86_64:imulq $3, $2; movq $2, $1"; "aarch6
 div: "3"; "thumb:sdiv $1, $2, $3|-"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rax, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rax, $1"; "aarch64:sdiv $1, $2, $3|-"; "riscv64:div $1, $2, $3|-"; "ptx:div.u64 $1, $2, $3";
 
 // ── Memory ───────────────────────────────────────────────────────────
-load: "2"; "thumb:ldr $1, [$2]"; "x86_64:movq ($2), $1"; "aarch64:ldr $1, [$2]"; "riscv64:ld $1, 0($2)"; "ptx:ld.global.u64 $1, [$2]";
-store: "2"; "thumb:str $1, [$2]"; "x86_64:movq $1, ($2)"; "aarch64:str $1, [$2]"; "riscv64:sd $1, 0($2)"; "ptx:st.global.u64 [$2], $1";
+load: "2"; "thumb:ldr $1, [$2]"; "x86_64:movq ($2), $1"; "aarch64:ldr $1, [$2]|-"; "riscv64:ld $1, 0($2)|-"; "ptx:ld.global.u64 $1, [$2]";
+store: "2"; "thumb:str $1, [$2]|-"; "x86_64:movq $1, ($2)|-"; "aarch64:str $1, [$2]|-"; "riscv64:sd $1, 0($2)|-"; "ptx:st.global.u64 [$2], $1|-";
 
 // ── Control flow ─────────────────────────────────────────────────────
 // Branches are compare-and-branch (3 operands) so they port to riscv64,
@@ -224,7 +224,10 @@ barrier: "0"; "ptx:bar.sync 0;";
 // mis-assembles; the .bld intrinsic layer rejects non-constant $N!
 // arguments loudly.
 readcr: "2"; "x86_64:movq %cr$2!, $1"; "riscv64:csrr $1, $2!";
-writecr: "2"; "x86_64:movq $2, %cr$1!"; "riscv64:csrw $1!, $2";
+// CR writes take a register source; the row stages the value through
+// %rax / r9 first (the clobber is the row author's contract). The
+// riscv form splits reg|imm — csrw itself needs a register operand.
+writecr: "2"; "x86_64:movq $2, %rax; movq %rax, %cr$1!"; "riscv64:mv t1, $2; csrw $1!, t1|li t1, $2; csrw $1!, t1";
 cli: "0"; "x86_64:cli";
 sti: "0"; "x86_64:sti";
 // wfi — wait for interrupt, intent-named (x86 wakes with IRQs on; pair

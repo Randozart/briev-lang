@@ -630,6 +630,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // `brievc bad <file.bad>`; this arm exists only to keep the
             // BackendKind match exhaustive.
         }
+        BackendKind::Bld => {
+            // 2026-10-08 (BILLD plan): .bld lowers to a BadProgram and
+            // emits through the .bad backend — compiled via
+            // `brievc bld <file.bld>`; this arm keeps the match
+            // exhaustive.
+        }
     }
 
     emit_beast_snapshot(file_path, BeastStage::Normalize, BeastPosition::Before, &items, &universe, opts)?;
@@ -2426,6 +2432,15 @@ fn codegen(
             // the dispatch exhaustive; reaching it is a routing bug.
             return Err(
                 "bad: route .bad programs through `brievc bad <file.bad>` - they do not \
+                 enter the .bv pipeline"
+                    .to_string(),
+            );
+        }
+        BackendKind::Bld => {
+            // 2026-10-08 (BILLD plan): same lane shape as .bad — the
+            // `brievc bld <file.bld>` entry owns the route.
+            return Err(
+                "bld: route .bld programs through `brievc bld <file.bld>` - they do not \
                  enter the .bv pipeline"
                     .to_string(),
             );

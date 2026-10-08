@@ -926,6 +926,14 @@ impl<'a> BldLowerer<'a> {
         }
         let b = std::mem::replace(&mut self.body, Body::new("", None));
         self.out.extend(b.own_first);
+        // An ownership block may have switched sections (a .rodata data
+        // label); the recipe's own instructions are .text — say so
+        // explicitly before the label (repeating it is a no-op).
+        self.out.push(BadTopLevel::Directive(BadDirective {
+            name: "section".to_string(),
+            args: ".text".to_string(),
+            span: head.span,
+        }));
         self.out.push(BadTopLevel::Label(BadLabel {
             name: head.name.to_string(),
             local: false,

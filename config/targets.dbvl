@@ -22,6 +22,7 @@
 // target triple comes from --target (or host default); the backend lowers
 // the portable core ISA through config/bad-isa.dbvl + bad-registers.dbvl.
 .bad: bad; ; prelude;
+.bld: bld; ; prelude;
 
 // ── Per-target tuning (plan §8.1, frontend-driven-dispatch) ──────────
 // Looked up by matching the compiler's target_triple PREFIX. Absent prefix →

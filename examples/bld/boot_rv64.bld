@@ -1,0 +1,40 @@
+// ── boot_rv64.bld — a riscv64 QEMU-virt kernel in .bld ────────────────
+// 2026-10-08 (BILLD plan M7): the authored machine entry is a .bld
+// bootstrap. The PMP grant rides the WriteControlReg engine verb (CSR
+// numbers are constants — 928 = pmpcfg0, 944 = pmpaddr0); the UART
+// banner is a `bad { }` MMIO loop; Halt parks the hart.
+//
+// Build: brievc bld examples/bld/boot_rv64.bld --target riscv64-unknown-none --emit-asm
+// Boot:  qemu-system-riscv64 -machine virt -bios none -kernel <elf>
+// Gate:  tests/bare/qemu-bld-rv64.sh (links with lib/targets/qemu-virt-rv64.ld)
+bootstrap Reset_Handler() {
+    // The banner rides a FIRST-statement `bad { }` block: data labels
+    // are ownership items, and ownership attaches only at the recipe's
+    // first or last statement (a mid-recipe owner would steal the
+    // instructions after it).
+    bad {
+        // .rodata — the script places it after all .text, keeping the
+        // entry instruction-aligned at 0x80000000.
+        section .rodata
+        banner: .asciz "Briev rv64 boot\n"
+    }
+    // PMP: grant U-mode fetch/load/store (pmpcfg0 = R|W|X|A, pmpaddr0 =
+    // all) — without a matching PMP entry, U-mode access faults.
+    WriteControlReg(928, 15);
+    WriteControlReg(944, -1);
+    // UART banner: QEMU virt 16550, TX at 0x10000000; full-width stores
+    // (the virt UART ignores byte stores).
+    bad {
+        addr r1, banner
+        mov r2, 0x10000000
+        mov r3, 0
+        .loop:
+        ldub r4, r1
+        jz r4, r3, .done
+        store r4, r2
+        add r1, r1, 1
+        jmp .loop
+        .done:
+    }
+    Halt();
+}

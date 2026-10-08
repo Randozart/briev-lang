@@ -50,6 +50,7 @@ fn main() {
         "remove" => run_remove(&args[2..]),
         "bounty" => run_bounty(&args[2..]),
         "bad" => run_bad(&args[2..]),
+        "bld" => run_bld(&args[2..]),
         "registry" => run_registry(&args[2..]),
         "register" => run_register(&args[2..]),
         "vocab" => run_vocab(&args[2..]),
@@ -63,18 +64,7 @@ fn main() {
             println!("brievc {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => {
-        // Default: compile the file
-        if args[1].ends_with(".bv") || args[1].ends_with(".rbv") || args[1].ends_with(".abv") {
-            run_build(&args[1..])
-        } else if args[1].ends_with(".bad") {
-            run_bad(&args[1..])
-        } else {
-                eprintln!("unknown command: {}", args[1]);
-                print_usage(&args[0]);
-                Ok(())
-            }
-        }
+        _ => route_by_extension(&args),
     };
 
     if let Err(e) = result {
@@ -525,6 +515,24 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     })
 }
 
+/// The subcommand-less route: the file extension picks the dialect
+/// pipeline (2026-10-08 — extracted so `main`'s dispatch stays flat).
+fn route_by_extension(args: &[String]) -> Result<(), String> {
+    let file = &args[1];
+    if file.ends_with(".bv") || file.ends_with(".rbv") || file.ends_with(".abv") {
+        return run_build(&args[1..]);
+    }
+    if file.ends_with(".bad") {
+        return run_bad(&args[1..]);
+    }
+    if file.ends_with(".bld") {
+        return run_bld(&args[1..]);
+    }
+    eprintln!("unknown command: {}", args[1]);
+    print_usage(&args[0]);
+    Ok(())
+}
+
 /// `brievc bad <file.bad> [--target <triple>] [--emit-asm]` — compile a
 /// .bad (Briev Assembly Dialect) program: lower through the config
 /// registries, emit target assembly, assemble to an object, and link a
@@ -546,13 +554,29 @@ struct BadCli {
 }
 
 fn parse_bad_cli(args: &[String]) -> Result<BadCli, String> {
-    let file_path = args.first().ok_or(
-        "usage: brievc bad <file.bad> [--target <triple>] [--emit-asm] [--with-libc] \
-         [--raw-bin] [--run]",
-    )?;
-    if !file_path.ends_with(".bad") {
+    parse_dialect_cli(args, "bad", ".bad")
+}
+
+/// The .bld CLI reuses the dialect flag set (the artifact tail is the
+/// same pipeline after lowering).
+fn parse_bld_cli(args: &[String]) -> Result<BadCli, String> {
+    parse_dialect_cli(args, "bld", ".bld")
+}
+
+fn parse_dialect_cli(
+    args: &[String],
+    dialect: &str,
+    ext: &str,
+) -> Result<BadCli, String> {
+    let file_path = args.first().ok_or_else(|| {
+        format!(
+            "usage: {dialect} <file{ext}> [--target <triple>] [--emit-asm] [--with-libc] \
+             [--raw-bin] [--run]"
+        )
+    })?;
+    if !file_path.ends_with(ext) {
         return Err(format!(
-            "bad: `{file_path}` is not a .bad file - the dialect compiles .bad sources only"
+            "{dialect}: `{file_path}` is not a {ext} file - the dialect compiles {ext} sources only"
         ));
     }
     let mut cli = BadCli {
@@ -571,7 +595,10 @@ fn parse_bad_cli(args: &[String]) -> Result<BadCli, String> {
         match args[i].as_str() {
             "--target" => {
                 i += 1;
-                cli.triple = args.get(i).cloned().ok_or("bad: --target needs a triple")?;
+                cli.triple = args
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| format!("{dialect}: --target needs a triple"))?;
             }
             "--emit-asm" => cli.emit_asm = true,
             "--with-libc" => cli.with_libc = true,
@@ -584,7 +611,7 @@ fn parse_bad_cli(args: &[String]) -> Result<BadCli, String> {
             // 2026-09-22: with --raw-bin, skip the link (flat boot sectors
             // with 16-bit relocs cannot link); objcopy the object directly.
             "--no-link" => cli.no_link = true,
-            other => return Err(format!("bad: unknown option `{other}`")),
+            other => return Err(format!("{dialect}: unknown option `{other}`")),
         }
         i += 1;
     }
@@ -719,6 +746,32 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     )
     .map_err(|e| format!("bad: {e}"))?;
 
+    emit_asm_artifacts(asm, &cli)
+}
+
+/// `brievc bld <file.bld> [--target <triple>] ...` — compile a .bld
+/// (BILLD) recipe: lower to a BadProgram (M3), allocate registers (M4),
+/// then the .bad artifact pipeline (2026-10-08, BILLD plan M7). Imports
+/// resolve against the file's directory; the file's own path seeds the
+/// module dedup so import cycles terminate.
+fn run_bld(args: &[String]) -> Result<(), String> {
+    let cli = parse_bld_cli(args)?;
+    let source = std::fs::read_to_string(&cli.file_path)
+        .map_err(|e| format!("bld: cannot read '{}': {}", cli.file_path, e))?;
+    let base_dir = std::path::Path::new(&cli.file_path).parent().map(|p| p.to_path_buf());
+    let asm = briev_compiler::backend::bld::generate_with(
+        &source,
+        &cli.triple,
+        base_dir.as_deref(),
+        Some(std::path::Path::new(&cli.file_path)),
+    )
+    .map_err(|e| format!("bld: {e}"))?;
+    emit_asm_artifacts(asm, &cli)
+}
+
+/// The artifact tail shared by the dialect CLIs: write the .s, assemble,
+/// link (or flatten), optionally run.
+fn emit_asm_artifacts(asm: String, cli: &BadCli) -> Result<(), String> {
     let stem = std::path::Path::new(&cli.file_path)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())

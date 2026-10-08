@@ -553,7 +553,11 @@ mod tests {
         let arm = lower_ok(THREE_WAY, "aarch64-linux-gnu");
         let riscv = lower_ok(THREE_WAY, "riscv64-unknown-linux-gnu");
         assert!(x86.contains("movq $42, %rax"), "{}", x86);
-        assert!(arm.contains("mov x0, #42"), "{}", arm);
+        // 2026-10-08 (BILLD M7): the aarch64 mov row split reg|imm — a
+        // constant operand rides the literal pool, which assembles for
+        // EVERY constant (the old shared form mis-assembled for
+        // unencodable immediates like 0x09000030).
+        assert!(arm.contains("ldr x0, =42"), "{}", arm);
         assert!(riscv.contains("li a0, 42"), "{}", riscv);
     }
 
@@ -1434,7 +1438,7 @@ _start:
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("xor %rbx, %rbx, %rbx"), "{}", x86);
         let arm = lower_ok(src, "aarch64");
-        assert!(arm.contains("mov x3, #0"), "{}", arm);
+        assert!(arm.contains("ldr x3, =0"), "{}", arm);
     }
 }
 

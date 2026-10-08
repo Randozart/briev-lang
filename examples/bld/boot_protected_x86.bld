@@ -1,0 +1,68 @@
+// ── boot_protected_x86.bld — a multiboot2 x86_64 kernel in .bld ───────
+// 2026-10-08 (BILLD plan M7): the 32-bit protected-mode prologue
+// (multiboot2 header, GDT, PAE/LME, long-mode jump) is a `bad { }` block
+// at the recipe's FIRST statement — ownership items ride ahead of the
+// entry label. The 64-bit body is BILLD statements: values, a loop, MMIO
+// stores through the tier, then the engine verbs.
+//
+// Build: brievc bld examples/bld/boot_protected_x86.bld --target x86_64
+// Boot:  qemu-system-x86_64 -kernel boot_protected_x86.bin
+// Gate:  tests/bare/qemu-bld-x86.sh
+//
+// The multiboot2 header must sit in the first 32768 bytes, 8-aligned, in
+// the same load segment as the code (objcopy -O binary flattens only the
+// first LOAD segment) — the first-statement block puts it at image start.
+bootstrap Reset() {
+    bad {
+        section .text
+        mh_start:
+        .long 0xE85250D6
+        .long 0
+        .long mh_end - mh_start
+        .set mh_checksum, -(0xE85250D6 + 0 + (mh_end - mh_start))
+        .long mh_checksum
+        .long 0
+        .long 8
+        mh_end:
+        raw x86_64
+        .code32
+        cli
+        .align 8
+        gdt32:
+        .quad 0
+        .quad 0x00AF9A000000FFFF
+        .quad 0x00CF92000000FFFF
+        gdt32_end:
+        movl $(gdt32_end - gdt32 - 1), %eax
+        lgdt gdt32
+        xorl %eax, %eax
+        movl %eax, %cr3
+        movl %cr4, %eax
+        orl $0x20, %eax
+        movl %eax, %cr4
+        movl $0xC0000080, %ecx
+        rdmsr
+        orl $0x100, %eax
+        wrmsr
+        movl %cr0, %eax
+        orl $0x80000001, %eax
+        movl %eax, %cr0
+        ljmp $0x08, $Reset
+        .code64
+        .align 8
+        end raw
+    }
+    // 64-bit BILLD body — VGA text memory at 0xB8000, 'B' 'r' 'i'.
+    let vga: Ptr = 0xB8000;
+    let c = 66;
+    loop {
+        when c > 68 {
+            break;
+        }
+        Store(c, vga);
+        vga = vga + 2;
+        c = c + 1;
+    }
+    DisableInterrupts();
+    Halt();
+}

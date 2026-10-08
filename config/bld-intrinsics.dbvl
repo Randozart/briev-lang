@@ -47,6 +47,13 @@ WaitForInterrupt: "0"; "void"; "x86_64:wfi"; "aarch64:wfi"; "riscv64:wfi";
 MemoryBarrier: "0"; "void"; "x86_64:fence"; "aarch64:fence"; "riscv64:fence";
 InvalidateTlb: "0"; "void"; "x86_64:tlbflush"; "aarch64:tlbflush"; "riscv64:tlbflush";
 
+// Memory access — the tier's load/store statements. One row each:
+// the `store`/`load` core ISA ops are universal, so the verb carries
+// every target (immediate values materialize per the store/load rows'
+// ImmHandling — aarch64/riscv need registers, x86 takes them directly).
+Store: "2"; "void"; "x86_64:store $1, $2"; "aarch64:store $1, $2"; "riscv64:store $1, $2"; "thumbv7m:store $1, $2";
+Load: "1"; "ret"; "x86_64:load r0, $1"; "aarch64:load r0, $1"; "riscv64:load r0, $1"; "thumbv7m:load r0, $1";
+
 // x86 table load: the argument points at [limit, base] memory.
 LoadDescriptorTable: "1"; "void"; "x86_64:lgdt $1";
 

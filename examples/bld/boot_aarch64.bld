@@ -1,0 +1,22 @@
+// ── boot_aarch64.bld — an aarch64 QEMU-virt kernel in .bld ────────────
+// 2026-10-08 (BILLD plan M7): the whole machine entry is BILLD
+// statements — PL011 UART at 0x09000000, one store per transmitted
+// character (the PL011 transmits the low byte of each DR write), then
+// Halt parks the core (wfi).
+//
+// Build: brievc bld examples/bld/boot_aarch64.bld --target aarch64-unknown-none --emit-asm
+// Boot:  qemu-system-aarch64 -machine virt -cpu cortex-a72 -bios none -kernel <elf>
+// Gate:  tests/bare/qemu-bld-aarch64.sh (links with lib/targets/qemu-virt-aarch64.ld)
+bootstrap Reset_Handler() {
+    // The PL011 must be enabled before DR writes: CR (base + 0x30) =
+    // UARTEN | TXE = 0x101.
+    Store(257, 150995000);
+    let uart: Ptr = 0x09000000;
+    Store(66, uart);
+    Store(114, uart);
+    Store(105, uart);
+    Store(101, uart);
+    Store(118, uart);
+    Store(10, uart);
+    Halt();
+}
