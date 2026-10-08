@@ -1,0 +1,18 @@
+# examples/folio.toml — the multi-page B2 demo's project manifest.
+#
+# 2026-10-08 (file-based routing, Part 2c): declares the page set so
+# `brievc web examples/` builds both pages + generates the shared nav.
+# The page KEY is the map key (stamped into each page's HTML as
+# data-briev-page="<key>"); the VALUE is the .rbv file to compile.
+#
+# The two pages (multi_page_a.rbv / multi_page_b.rbv) are self-contained
+# bundles that cross-link by plain <a href> to the sibling's <stem>.html.
+[project]
+name = "multi-page-b2-demo"
+version = "0.1.0"
+entry = "multi_page_a.rbv"
+
+[web]
+[web.pages]
+a = "multi_page_a.rbv"
+b = "multi_page_b.rbv"

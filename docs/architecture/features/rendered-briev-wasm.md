@@ -19,6 +19,15 @@ This is not a "transpile to JS" approach. WASM runs the application logic at nea
 
 A `.bv` compiled with `--backend webstack` produces a logic-only WASM module with no DOM bindings — for web workers, compute kernels, or shared libraries consumed by JS/TS. An `.rbv` produces a full rendered application.
 
+**Multi-page routing (the seam, 2026-10-08).** A multi-page site is a *project*
+declared by `folio.toml [web.pages]` (page key → `.rbv`). The compiler's seam is
+provenance-only and eternal: it stamps each page's key as
+`data-briev-page="<key>"` on `<body>`, emits a `<stem>.page.json` manifest in
+`--split`, and provides `brievc web <dir>` (thin orchestration → `nav.json` +
+`nav.html`). The compiler never interprets a key as a route. Route *policy* is
+the framework's: `std/web/pages.bv` is a swappable convenience, NOT
+load-bearing. See `docs/architecture/web-routing-boundary.md`.
+
 ## The `render` Keyword
 
 The `render` keyword attaches view information to types:
@@ -46,6 +55,12 @@ render obj Observable {
 - `render struct <name> { <html> }` — attaches a view to an existing `StaticStruct`. The struct fields become state signals; each `txn` on the struct becomes a method.
 - `render obj <name> { <html> }` — attaches a view to an existing `obj` type. The obj's methods with contracts become reactive transactions.
 - Both desugar into `TopLevel::RenderBlock` (defined at `src/ast/top.rs:1007`) but with richer metadata: struct fields, transaction references, and typed signal bindings.
+
+The view directives use the `b-` prefix (**binding**): each directive binds a
+signal, event, or transaction to an element. The `b-*` attributes are legal
+HTML attribute names and are emitted verbatim into the rendered page (inert in
+the browser; the shim binds via the injected `id` and its own binding table,
+not the `b-*` attrs).
 
 ### Desugaring
 

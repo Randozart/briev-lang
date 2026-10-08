@@ -119,4 +119,44 @@ check_bundle() {
 check_bundle "$ROOT/examples/multi_page_a.rbv" multi_page_a "multi_page_b.html" || exit 1
 check_bundle "$ROOT/examples/multi_page_b.rbv" multi_page_b "multi_page_a.html" || exit 1
 
+# 5b. File-based routing (Part 2c): `brievc web examples/` builds every page in
+#     the folio.toml [web.pages] set + generates the shared nav. Check the
+#     generated nav.html has the cross-links, the nav.json lists both pages,
+#     and each page's HTML carries its declared key (data-briev-page).
+WEB_OUT="$OUT_ROOT/web_dir"
+mkdir -p "$WEB_OUT"
+# Copy the page set + folio.toml into an isolated dir (so the build doesn't
+# write artifacts into examples/).
+cp "$ROOT/examples/multi_page_a.rbv" "$ROOT/examples/multi_page_b.rbv" "$ROOT/examples/folio.toml" "$WEB_OUT/" || exit 1
+"$BRIEVC" web "$WEB_OUT" >/dev/null 2>"$WEB_OUT/web.err" || {
+    echo "brievc web failed:" >&2; cat "$WEB_OUT/web.err" >&2; exit 1;
+}
+[ -f "$WEB_OUT/nav.html" ] || { echo "no nav.html generated" >&2; exit 1; }
+[ -f "$WEB_OUT/nav.json" ] || { echo "no nav.json generated" >&2; exit 1; }
+grep -q "<a href=\"multi_page_a.html\">a</a>" "$WEB_OUT/nav.html" || { echo "nav missing link to page a" >&2; exit 1; }
+grep -q "<a href=\"multi_page_b.html\">b</a>" "$WEB_OUT/nav.html" || { echo "nav missing link to page b" >&2; exit 1; }
+grep -q "\"key\": \"a\"" "$WEB_OUT/nav.json" || { echo "nav.json missing key a" >&2; exit 1; }
+grep -q "\"key\": \"b\"" "$WEB_OUT/nav.json" || { echo "nav.json missing key b" >&2; exit 1; }
+grep -q 'data-briev-page="a"' "$WEB_OUT/multi_page_a.html" || { echo "page a missing stamped key" >&2; exit 1; }
+grep -q 'data-briev-page="b"' "$WEB_OUT/multi_page_b.html" || { echo "page b missing stamped key" >&2; exit 1; }
+echo "OK brievc web (nav.json + nav.html + stamped keys)"
+
+# 6. Stranger-loads-page smoke (Phase 3.1 gate): build the counter in bundle
+#    mode and load it in a real Chromium — the node gate (step 1) stubs the
+#    host and cannot prove the page loads from file://, the boot flush lands,
+#    or a real click round-trips to the DOM. Skips gracefully if Playwright /
+#    Chromium is unavailable (no sudo / pacman needed — the browser downloads
+#    to ~/.cache/ms-playwright via `npx playwright install chromium`).
+if command -v node >/dev/null && node -e "import('playwright')" >/dev/null 2>&1; then
+    COUNTER_OUT="$OUT_ROOT/counter"
+    mkdir -p "$COUNTER_OUT"
+    "$BRIEVC" build "$ROOT/examples/counter.rbv" --out "$COUNTER_OUT" >/dev/null || {
+        echo "counter build failed" >&2; exit 1;
+    }
+    node "$ROOT/benchmarks/rbv_browser_smoke.mjs" "$COUNTER_OUT/counter.html" || exit 1
+    echo "OK counter (stranger-loads-page smoke: real browser, file://, click round-trip)"
+else
+    echo "SKIP: stranger-loads-page smoke (Playwright/Chromium not available)"
+fi
+
 echo "rbv_gate: OK"

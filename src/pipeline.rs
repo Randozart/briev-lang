@@ -291,6 +291,14 @@ pub struct BuildOptions {
     /// link and objcopy the flat image from the object directly (an
     /// MBR-style `.code16`/`.org 510` body cannot link in a 64-bit ELF).
     pub no_link: bool,
+    /// 2026-10-08 (file-based routing, Part 1b): the page key for this
+    /// `.rbv` file, resolved from the folio.toml `[web.pages]` section.
+    /// When set, the webstack emitter stamps `data-briev-page="<key>"` on
+    /// `<body>` and (in `--split` mode) writes a `<stem>.page.json`
+    /// manifest. None = the page has no declared key (attr omitted, no
+    /// manifest). Provenance only — the compiler never interprets the key as
+    /// a route (route policy is the stdlib's, Part 2).
+    pub web_page_key: Option<String>,
 }
 
 /// 2026-09-25 (interop Wave 1 C3): the de-facto default option set, lifted
@@ -326,7 +334,7 @@ impl Default for BuildOptions {
             accel_cpu_fallback: None, isr_mechanism: None,
             triple_override: None, linker_script_override: None,
             entry_override: None, raw_bin: false,
-            no_link: false,
+            no_link: false, web_page_key: None,
         }
     }
 }
