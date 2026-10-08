@@ -326,6 +326,18 @@ found + fixed two stranger-relevant bugs (BUGS.md, 2026-10-08): the
 seeded `b-text` now shows the real seed, not the HTML literal). `b-` =
 "binding" documented in SPEC §21.4 + the feature doc.
 
+**File-based routing seam (2026-10-08):** the deferred multi-page routing is
+implemented as a **seam, not a compiler route-table** (plan
+`docs/plans/2026-10-08-file-based-routing.md`, decision record
+`docs/architecture/web-routing-boundary.md`). The compiler owns only the
+*eternal*: a `folio.toml [web.pages]` section (page key → `.rbv`), a
+`data-briev-page="<key>"` stamp on `<body>`, a `<stem>.page.json` manifest in
+`--split`, and `brievc web <dir>` (thin orchestration over the per-file build →
+`nav.json` + `nav.html`). The compiler never interprets a key as a route. Route
+*policy* is the **framework**'s: `lib/std/web/pages.bv` (`page_href`,
+`route_name`, `current_path` over the browser host) is a swappable convenience,
+NOT load-bearing. Gate: `rbv_gate.sh` step 5b.
+
 ---
 
 ## Workstream 4 — Runtime elimination (`briev_rt.c`)

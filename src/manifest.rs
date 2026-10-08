@@ -49,6 +49,14 @@ pub struct Manifest {
     /// Defined as `[target.<name>]` sections in folio.toml.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub target: HashMap<String, TargetProfile>,
+    /// 2026-10-08 (file-based routing, Part 1a): the web page set.
+    /// Defined as a `[web.pages]` section in folio.toml: page key -> file path.
+    /// The key is the page's declared identity (stamped into the artifact as
+    /// `data-briev-page="<key>"`); the value is the `.rbv` file to compile. The
+    /// compiler carries only this identity + a per-file manifest — it never
+    /// interprets the key as a route (route policy is the stdlib's, Part 2).
+    #[serde(default, skip_serializing_if = "WebConfig::is_empty")]
+    pub web: WebConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -94,6 +102,27 @@ pub struct TargetProfile {
     /// config/isr-targets.dbvl; absent + no explicit mechanism = compile
     /// error (the compiler never invents a vector table layout).
     pub isr_mechanism: Option<String>,
+}
+
+/// 2026-10-08 (file-based routing, Part 1a): the web page set from a
+/// folio.toml `[web]` section. `pages` maps page key -> `.rbv` file path.
+/// The key is the page's declared identity (stamped into the artifact as
+/// `data-briev-page="<key>"`); the file is what `brievc build` compiles. The
+/// compiler carries only this identity + a per-file manifest — it never
+/// interprets the key as a route (route policy + nav generation is the
+/// stdlib's, Part 2 — a swappable convenience, not load-bearing).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebConfig {
+    /// Page key -> `.rbv` file path. Defined as a `[web.pages]` section.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub pages: HashMap<String, String>,
+}
+
+impl WebConfig {
+    /// True when no pages are declared (so `[web]` is omitted from the TOML).
+    pub fn is_empty(&self) -> bool {
+        self.pages.is_empty()
+    }
 }
 
 fn default_introspection() -> String {
@@ -369,6 +398,7 @@ pub fn create_default_manifest(path: &Path) -> Result<Manifest, ManifestError> {
         },
         dependencies: HashMap::new(),
         target: HashMap::new(),
+        web: WebConfig::default(),
     };
     manifest.save(path)?;
     Ok(manifest)
@@ -409,5 +439,39 @@ utils = { path = "lib/utils.bv" }
         let found = find_manifest(&project_dir.join("src").join("main.bv"));
         assert!(found.is_some());
         assert_eq!(found.unwrap(), manifest_path);
+    }
+
+    // 2026-10-08 (file-based routing, Part 1a): the [web.pages] section
+    // parses into WebConfig; an absent [web] section yields an empty config.
+    #[test]
+    fn test_parse_web_section() {
+        let content = r#"
+[project]
+name = "test-project"
+version = "0.1.0"
+entry = "src/main.rbv"
+
+[web]
+[web.pages]
+counter = "counter.rbv"
+about   = "about.rbv"
+"#;
+        let manifest = Manifest::parse(content).unwrap();
+        assert_eq!(manifest.web.pages.len(), 2);
+        assert_eq!(manifest.web.pages.get("counter").unwrap(), "counter.rbv");
+        assert_eq!(manifest.web.pages.get("about").unwrap(), "about.rbv");
+    }
+
+    #[test]
+    fn test_parse_manifest_without_web_section() {
+        let content = r#"
+[project]
+name = "test-project"
+version = "0.1.0"
+entry = "src/main.bv"
+"#;
+        let manifest = Manifest::parse(content).unwrap();
+        assert!(manifest.web.is_empty());
+        assert!(manifest.web.pages.is_empty());
     }
 }

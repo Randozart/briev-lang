@@ -1,0 +1,82 @@
+// lib/std/web/pages.bv
+// 2026-10-08 (file-based routing, Part 2a): the FILE-BASED routing framework —
+// a STDLIB LIBRARY, not a compiler feature. Standard Briev only: the page set
+// is the folio.toml [web.pages] page set (each page a self-contained .html),
+// and this module supplies the URL <-> page mapping so an app can route across
+// sibling pages by their declared keys.
+//
+// The boundary (docs/architecture/web-routing-boundary.md):
+//   - the COMPILER stamps each page's declared key onto the artifact
+//     (data-briev-page="<key>") and (in --split) emits a <stem>.page.json
+//     manifest. That is PROVENANCE — the compiler carries its declared
+//     identity, nothing more.
+//   - THIS library (and the brievc web <dir> build tool) own the ROUTE POLICY:
+//     which key maps to which URL, and how the shared nav is generated. That
+//     is temporal knowledge — it lives in the language/stdlib so it evolves
+//     without touching the compiler (the Rule 24 test: delete this library and
+//     write next year's routing with contracts; zero compiler changes).
+//
+// This module is the ROUTE POLICY layer. It is a swappable convenience, NOT
+// load-bearing: the compiler's seam (Part 1) works without it, and an app can
+// route with plain <a href> to a sibling's <stem>.html if it prefers.
+//
+// Usage (an app):
+//
+//   import "std/web/pages.bv";
+//
+//   let path: String = current_path();
+//
+//   txn go(key: String) [path != key][path == key] {
+//       path = key;
+//       navigate(page_href(key));
+//       term;
+//   };
+//
+//   <view>
+//     <nav>
+//       <a href="about.html">About</a>
+//     </nav>
+//     <section b-when="route_name(path) == 'home'">...home...</section>
+//   </view>
+
+import "std/types/bootstrap.bv";
+import { concat, len } from "std/string.bv";
+
+frgn location() -> String from "glue/web/web.js";
+frgn navigate(url: String) from "glue/web/web.js";
+
+// The current URL path, read from the host.
+defn current_path() -> String {
+    term location();
+};
+
+// The href for a page key — the sibling's self-contained <key>.html. This is
+// the file-based routing convention: each page key maps to a sibling HTML
+// file of the same name. (An app that wants a different convention — e.g.
+// clean URLs, nested layouts — overrides this in its own module.)
+defn page_href(key: String) [true][CharCount#(term) == CharCount#(key) + 5] -> String {
+    term concat(key, ".html");
+};
+
+// True when `s` ends with `suf`. Pure-Briev comparison over the tail.
+defn ends_with(s: String, suf: String) -> Bool {
+    let ls: Int = CharCount#(s);
+    let lf: Int = CharCount#(suf);
+    when lf > ls {
+        term false;
+    };
+    term s[ls - lf : ls] == suf;
+};
+
+// The route NAME for a path — the app's mapping. A full URL or a bare key both
+// reduce to the key: strip a ".html" suffix if present, else use the path as
+// is. The root "/" maps to "home".
+defn route_name(path: String) -> String {
+    when path == "/" || path == "" {
+        term "home";
+    };
+    when len(path) >= 5 && ends_with(path, ".html") {
+        term path[0 : len(path) - 5];
+    };
+    term path;
+};

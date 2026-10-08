@@ -1197,6 +1197,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                         html,
                         binary_base,
                         style_css.is_some(),
+                        opts.web_page_key.as_deref(),
                     );
                     std::fs::write(&index_path, &index_content)
                         .map_err(|e| format!("cannot write '{}': {}", index_path, e))?;
@@ -1326,6 +1327,22 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                             std::fs::write(&dts_path, &output.dts)
                                 .map_err(|e| format!("cannot write '{}': {}", dts_path, e))?;
                             println!("wrote {}", dts_path);
+                            // 2026-10-08 (file-based routing, Part 1c): the per-file
+                            // page.json manifest, written beside the --split assets
+                            // when the page has a declared key. Provenance only —
+                            // the stdlib nav generator (Part 2) consumes it to wire
+                            // cross-page links; the compiler never interprets the
+                            // key as a route.
+                            if let Some(page_key) = &opts.web_page_key {
+                                let manifest_path = format!("{}.page.json", binary_base);
+                                let manifest = briev_compiler::glue::web_generator::render_page_manifest(
+                                    page_key,
+                                    binary_base,
+                                );
+                                std::fs::write(&manifest_path, manifest)
+                                    .map_err(|e| format!("cannot write '{}': {}", manifest_path, e))?;
+                                println!("wrote {}", manifest_path);
+                            }
                         }
                     }
                     Err(e) => {
@@ -1343,11 +1360,14 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                         .map_err(|e| format!("cannot read '{}': {}", wasm_path, e))?;
                     let shim_src = web_shim_src.clone().unwrap_or_default();
                     let bundle = briev_compiler::glue::web_generator::render_bundle_html(
-                        html,
-                        binary_base,
-                        style_css.map(|s| s.as_str()),
-                        &shim_src,
-                        &wasm_bytes,
+                        &briev_compiler::glue::web_generator::BundleRender {
+                            view_html: html.to_string(),
+                            stem: binary_base.to_string(),
+                            css: style_css.as_deref().map(|s| s.to_string()),
+                            shim_src,
+                            wasm_bytes,
+                            page_key: opts.web_page_key.clone(),
+                        },
                     );
                     let bundle_path = format!("{}.html", binary_base);
                     std::fs::write(&bundle_path, bundle)

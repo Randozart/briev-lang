@@ -3320,6 +3320,21 @@ stranger loads the page: `brievc build counter.rbv`, open `counter.html`, the
 seeded value shows and a click round-trips to the DOM — the Phase 3 gate,
 guarded by `benchmarks/rbv_browser_smoke.mjs` (`rbv_gate.sh` step 6).
 
+**File-based routing (the seam).** A multi-page site is a *project* declared by
+`folio.toml [web.pages]` (page key → `.rbv` file). The compiler's seam is
+provenance-only and eternal: it stamps each page's declared key onto `<body>`
+as `data-briev-page="<key>"` and (in `--split`) writes a `<stem>.page.json`
+manifest (`{page, html, wasm, shim}`) beside the assets. `brievc web <dir>` is
+thin orchestration over the per-file build — it compiles every page in the
+`[web.pages]` set and writes `nav.json` (the ordered page set) + `nav.html`
+(the shared `<a href>` set) from the per-file manifests. **The compiler never
+interprets a key as a route.** Route *policy* (which key maps to which URL, how
+the shared nav is generated) is the **framework**'s: the stdlib library
+`std/web/pages.bv` (`page_href`, `route_name`, `current_path` over the browser
+host) is a swappable convenience, NOT load-bearing — the seam works without it,
+and an app can route with a plain `<a href>` to a sibling's `<stem>.html`. See
+`docs/architecture/web-routing-boundary.md` for the full derivation.
+
 ### 21.2 View attachment
 
 ```briev

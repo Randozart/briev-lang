@@ -231,6 +231,7 @@ mod tests {
                 }),
             )]),
             target: HashMap::new(),
+            web: crate::manifest::WebConfig::default(),
         };
         manifest.save(&manifest_path).unwrap();
 
@@ -258,6 +259,7 @@ mod tests {
             project: crate::manifest::Project::default(),
             dependencies: std::collections::HashMap::new(),
             target: std::collections::HashMap::new(),
+            web: crate::manifest::WebConfig::default(),
         };
         manifest.save(&manifest_path).unwrap();
 

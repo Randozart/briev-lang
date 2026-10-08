@@ -40,13 +40,19 @@ fn js_literal(s: &str) -> String {
 ///
 /// `stem` is the output basename (a full path is reduced to its file name).
 /// The CSS link is emitted only when a `<style>` block was compiled.
-pub fn render_index_html(view_html: &str, stem: &str, has_css: bool) -> String {
+pub fn render_index_html(view_html: &str, stem: &str, has_css: bool, page_key: Option<&str>) -> String {
     let stem = basename(stem);
     let css_link = if has_css {
         format!("<link rel=\"stylesheet\" href=\"{stem}.css\">\n")
     } else {
         String::new()
     };
+    // 2026-10-08 (file-based routing, Part 1b): the page key, when declared in
+    // folio.toml [web.pages], is stamped on <body> as data-briev-page="<key>".
+    // Provenance only — the compiler never interprets the key as a route.
+    let body_attr = page_key
+        .map(|k| format!(" data-briev-page=\"{k}\""))
+        .unwrap_or_default();
     format!(
         "<!DOCTYPE html>\n\
          <html lang=\"en\">\n\
@@ -54,7 +60,7 @@ pub fn render_index_html(view_html: &str, stem: &str, has_css: bool) -> String {
          <meta charset=\"UTF-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
          {css_link}</head>\n\
-         <body>\n\
+         <body{body_attr}>\n\
          {view_html}\n\
          <script type=\"module\">\n\
          import {{ createApp }} from './{stem}.mjs';\n\
@@ -66,20 +72,37 @@ pub fn render_index_html(view_html: &str, stem: &str, has_css: bool) -> String {
     )
 }
 
+/// 2026-10-08 (file-based routing, Part 1b): the bundle-render inputs, bundled
+/// into one struct to keep the renderer's parameter count at the Datalog Rule 4
+/// limit (≤ 6). Kept additive — the fields are exactly the prior scalars.
+pub struct BundleRender {
+    pub view_html: String,
+    pub stem: String,
+    pub css: Option<String>,
+    pub shim_src: String,
+    pub wasm_bytes: Vec<u8>,
+    /// 2026-10-08 (file-based routing): the declared page key (folio.toml
+    /// [web.pages]), stamped on <body> as data-briev-page="<key>". None = no
+    /// attr (provenance only; the compiler never interprets the key as a route).
+    pub page_key: Option<String>,
+}
+
 /// 2026-10-06 (web bundling): build a SINGLE self-contained HTML page — inline
 /// `<style>`, inline the shim module, and inline the wasm as base64. No
 /// external references, so it opens from `file://` and any static host. This is
 /// the default `.rbv` output; `--split` keeps the separate assets.
-pub fn render_bundle_html(
-    view_html: &str,
-    stem: &str,
-    css: Option<&str>,
-    shim_src: &str,
-    wasm_bytes: &[u8],
-) -> String {
-    let title = basename(stem);
-    let style = css.map(|c| format!("<style>\n{c}</style>\n")).unwrap_or_default();
-    let b64 = base64_encode(wasm_bytes);
+pub fn render_bundle_html(r: &BundleRender) -> String {
+    let title = basename(&r.stem);
+    let style = r.css.as_deref().map(|c| format!("<style>\n{c}</style>\n")).unwrap_or_default();
+    let b64 = base64_encode(&r.wasm_bytes);
+    // 2026-10-08 (file-based routing, Part 1b): stamp the declared page key on
+    // <body> as data-briev-page="<key>" (provenance only).
+    let body_attr = r.page_key
+        .as_deref()
+        .map(|k| format!(" data-briev-page=\"{k}\""))
+        .unwrap_or_default();
+    let view_html = r.view_html.as_str();
+    let shim_src = r.shim_src.as_str();
     format!(
         "<!DOCTYPE html>\n\
          <html lang=\"en\">\n\
@@ -88,7 +111,7 @@ pub fn render_bundle_html(
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n\
          <title>{title}</title>\n\
          {style}</head>\n\
-         <body>\n\
+         <body{body_attr}>\n\
          {view_html}\n\
          <script type=\"module\">\n\
          {shim_src}\n\
@@ -97,6 +120,27 @@ pub fn render_bundle_html(
          </script>\n\
          </body>\n\
          </html>\n"
+    )
+}
+
+/// 2026-10-08 (file-based routing, Part 1c): the per-file `page.json` manifest
+/// written beside the `--split` assets. Provenance only — the compiler stamps
+/// its declared identity + the sibling asset names so the stdlib nav
+/// generator (Part 2) can wire cross-page links without the compiler knowing
+/// what navigation means. Fields:
+///   `page`    — the declared page key (from folio.toml [web.pages])
+///   `html`    — the emitted `<stem>.html`
+///   `wasm`    — the emitted `<stem>.wasm`
+///   `shim`    — the emitted `<stem>.mjs`
+pub fn render_page_manifest(page_key: &str, stem: &str) -> String {
+    let stem = basename(stem);
+    format!(
+        "{{\n\
+         \"page\": \"{page_key}\",\n\
+         \"html\": \"{stem}.html\",\n\
+         \"wasm\": \"{stem}.wasm\",\n\
+         \"shim\": \"{stem}.mjs\"\n\
+         }}\n"
     )
 }
 
@@ -1599,7 +1643,7 @@ mod tests {
     /// `app.css` / `dom-shim.mjs`, and never an absolute fetch path.
     #[test]
     fn index_html_references_sibling_artifacts() {
-        let html = render_index_html("<div>x</div>", "counter", true);
+        let html = render_index_html("<div>x</div>", "counter", true, None);
         assert!(html.contains("href=\"counter.css\""), "{html}");
         assert!(html.contains("from './counter.mjs'"), "{html}");
         assert!(html.contains("fetch('counter.wasm')"), "{html}");
@@ -1609,14 +1653,14 @@ mod tests {
 
     #[test]
     fn index_html_omits_css_link_without_a_style_block() {
-        let html = render_index_html("<div>x</div>", "app", false);
+        let html = render_index_html("<div>x</div>", "app", false, None);
         assert!(!html.contains(".css"), "no css link when no <style>: {html}");
         assert!(html.contains("from './app.mjs'"), "{html}");
     }
 
     #[test]
     fn index_html_reduces_a_path_to_its_basename() {
-        let html = render_index_html("<div>x</div>", "/tmp/out/counter", true);
+        let html = render_index_html("<div>x</div>", "/tmp/out/counter", true, None);
         assert!(html.contains("fetch('counter.wasm')"), "{html}");
         assert!(!html.contains("/tmp/out/counter.wasm"), "{html}");
     }
@@ -1626,7 +1670,14 @@ mod tests {
     #[test]
     fn bundle_html_is_self_contained() {
         let shim = "export function createApp(bytes) { return bytes; }\n";
-        let html = render_bundle_html("<div>x</div>", "counter", Some("body{color:red}"), shim, &[0, 1, 2, 3, 4]);
+        let html = render_bundle_html(&BundleRender {
+            view_html: "<div>x</div>".to_string(),
+            stem: "counter".to_string(),
+            css: Some("body{color:red}".to_string()),
+            shim_src: shim.to_string(),
+            wasm_bytes: vec![0, 1, 2, 3, 4],
+            page_key: None,
+        });
         assert!(html.contains("<style>\nbody{color:red}</style>"), "{html}");
         assert!(html.contains("createApp"), "shim must be inlined");
         assert!(html.contains("atob(\""), "wasm must be inlined as base64");
@@ -1635,6 +1686,38 @@ mod tests {
         assert!(!html.contains("src=\""), "no external script: {html}");
         assert!(!html.contains("fetch("), "no fetch: {html}");
         assert!(!html.contains(".wasm"), "no external wasm: {html}");
+    }
+
+    /// 2026-10-08 (file-based routing, Part 1b): a declared page key is stamped
+    /// on <body> as data-briev-page="<key>" in both the bundle and the split
+    /// index; an undeclared page (None) omits the attr entirely.
+    #[test]
+    fn page_key_is_stamped_on_body_when_declared() {
+        let shim = "export function createApp(bytes) { return bytes; }\n";
+        let html = render_bundle_html(&BundleRender {
+            view_html: "<div>x</div>".to_string(),
+            stem: "counter".to_string(),
+            css: None,
+            shim_src: shim.to_string(),
+            wasm_bytes: vec![0],
+            page_key: Some("counter".to_string()),
+        });
+        assert!(html.contains("<body data-briev-page=\"counter\">"), "bundle stamps key: {html}");
+
+        let idx = render_index_html("<div>x</div>", "about", false, Some("about"));
+        assert!(idx.contains("<body data-briev-page=\"about\">"), "index stamps key: {idx}");
+
+        let html_none = render_bundle_html(&BundleRender {
+            view_html: "<div>x</div>".to_string(),
+            stem: "counter".to_string(),
+            css: None,
+            shim_src: shim.to_string(),
+            wasm_bytes: vec![0],
+            page_key: None,
+        });
+        assert!(!html_none.contains("data-briev-page"), "no attr when undeclared: {html_none}");
+        let idx_none = render_index_html("<div>x</div>", "counter", false, None);
+        assert!(!idx_none.contains("data-briev-page"), "no attr when undeclared: {idx_none}");
     }
 
     #[test]
@@ -1646,6 +1729,20 @@ mod tests {
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    /// 2026-10-08 (file-based routing, Part 1c): the per-file page.json
+    /// manifest carries the declared page key + the sibling asset names, so the
+    /// stdlib nav generator can wire cross-page links from provenance alone.
+    #[test]
+    fn page_manifest_carries_key_and_sibling_assets() {
+        let m = render_page_manifest("counter", "/tmp/out/counter");
+        assert!(m.contains("\"page\": \"counter\""), "{m}");
+        assert!(m.contains("\"html\": \"counter.html\""), "{m}");
+        assert!(m.contains("\"wasm\": \"counter.wasm\""), "{m}");
+        assert!(m.contains("\"shim\": \"counter.mjs\""), "{m}");
+        // basename reduction — the input path's directory must not leak.
+        assert!(!m.contains("/tmp/out/"), "{m}");
     }
 
     fn make_empty_generator() -> GlueWebGenerator {

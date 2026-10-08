@@ -19,6 +19,15 @@ This is not a "transpile to JS" approach. WASM runs the application logic at nea
 
 A `.bv` compiled with `--backend webstack` produces a logic-only WASM module with no DOM bindings — for web workers, compute kernels, or shared libraries consumed by JS/TS. An `.rbv` produces a full rendered application.
 
+**Multi-page routing (the seam, 2026-10-08).** A multi-page site is a *project*
+declared by `folio.toml [web.pages]` (page key → `.rbv`). The compiler's seam is
+provenance-only and eternal: it stamps each page's key as
+`data-briev-page="<key>"` on `<body>`, emits a `<stem>.page.json` manifest in
+`--split`, and provides `brievc web <dir>` (thin orchestration → `nav.json` +
+`nav.html`). The compiler never interprets a key as a route. Route *policy* is
+the framework's: `std/web/pages.bv` is a swappable convenience, NOT
+load-bearing. See `docs/architecture/web-routing-boundary.md`.
+
 ## The `render` Keyword
 
 The `render` keyword attaches view information to types:

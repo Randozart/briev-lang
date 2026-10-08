@@ -52,6 +52,10 @@ fn main() {
         "bad" => run_bad(&args[2..]),
         "registry" => run_registry(&args[2..]),
         "register" => run_register(&args[2..]),
+        // 2026-10-08 (file-based routing, Part 2b): build every page in a
+        // folio.toml [web.pages] set + generate the shared nav. Thin
+        // orchestration over `run_build` per page — no new codegen.
+        "web" => run_web(&args[2..]),
         "vocab" => run_vocab(&args[2..]),
         "grammar" => run_grammar(&args[2..]),
         "fmt" => run_fmt(&args[2..]),
@@ -522,6 +526,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         entry_override: None,
         raw_bin,
         no_link,
+        web_page_key: None,
     })
 }
 
@@ -821,6 +826,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         entry_override: None,
         raw_bin: false,
         no_link: false,
+        web_page_key: None,
     };
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
@@ -1044,6 +1050,19 @@ fn run_build(args: &[String]) -> Result<(), String> {
             target_opts.entry_override = Some(e.clone());
         }
 
+        // 2026-10-08 (file-based routing, Part 1b): resolve this file's page
+        // key from the folio.toml [web.pages] section (key -> file path). The
+        // webstack emitter stamps it as data-briev-page and (in --split) writes
+        // a per-file page.json manifest. None when the file is not a declared
+        // page.
+        let file_path = std::path::Path::new(&opts.file_path);
+        target_opts.web_page_key = manifest
+            .as_ref()
+            .and_then(|m| m.web.pages.iter().find(|(_, f)| {
+                std::path::Path::new(f).file_name() == file_path.file_name()
+            }))
+            .map(|(k, _)| k.clone());
+
         // Per-target output directory
         if *target_name != "default" {
             let orig = target_opts.out_dir.clone();
@@ -1057,6 +1076,101 @@ fn run_build(args: &[String]) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// 2026-10-08 (file-based routing, Part 2b): `brievc web <dir>` — build every
+/// page in the folio.toml `[web.pages]` set for `<dir>` and generate the shared
+/// nav. Thin orchestration over `run_build` per page — NO new codegen. The
+/// compiler seam (Part 1) stamps each page's key + emits a per-file page.json
+/// (in `--split`); this tool reads those manifests and emits `nav.json` (the
+/// ordered page set) + `nav.html` (the shared `<a href>` set) so the stdlib
+/// routing library (`std/web/pages.bv`) can wire cross-page links.
+///
+/// Usage: `brievc web <dir> [--split]`
+///   <dir>      the project directory containing folio.toml with [web.pages]
+///   --split    emit separate web assets (default: one bundled HTML per page)
+fn run_web(args: &[String]) -> Result<(), String> {
+    let dir = args.first().ok_or("usage: brievc web <dir> [--split]")?;
+    let split = args.iter().any(|a| a == "--split");
+
+    // Resolve the folio.toml for <dir> (and its parents).
+    let dir_path = std::path::Path::new(dir);
+    let manifest_path = briev_compiler::manifest::find_manifest(dir_path)
+        .ok_or_else(|| format!("no folio.toml found in '{}' or any parent", dir))?;
+    let manifest = briev_compiler::manifest::Manifest::load(&manifest_path)
+        .map_err(|e| format!("cannot load '{}': {}", manifest_path.display(), e))?;
+
+    if manifest.web.pages.is_empty() {
+        return Err(format!(
+            "folio.toml at '{}' has no [web.pages] section — declare pages as [web.pages] <key> = \"<file>\"",
+            manifest_path.display()
+        ));
+    }
+
+    // Deterministic build order: sort by page key (Rule: HashMap iteration must
+    // be sorted for deterministic output).
+    let mut pages: Vec<(String, String)> = manifest.web.pages.iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    pages.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+
+    // Build each page via the existing per-file compile path (Part 1 seam).
+    let mut built: Vec<(String, String)> = Vec::new(); // (key, html basename)
+    for (key, file) in &pages {
+        let file_path = dir_path.join(file);
+        if !file_path.exists() {
+            return Err(format!("page '{}' -> '{}' does not exist", key, file_path.display()));
+        }
+        let source = std::fs::read_to_string(&file_path)
+            .map_err(|e| format!("page '{}': cannot read: {}", key, e))?;
+        // Inherit the full CLI flag surface from parse_build_args, then set the
+        // page-specific overrides (split mode + the declared page key the seam
+        // stamps).
+        let mut page_opts = parse_build_args(&[file_path.to_string_lossy().to_string()])
+            .map_err(|e| format!("page '{}': {}", key, e))?;
+        page_opts.split = split;
+        page_opts.web_page_key = Some(key.clone());
+        compile::compile_source(&file_path.to_string_lossy(), &source, &page_opts)?;
+        // The emitted html basename is the file's stem (render_bundle_html /
+        // render_index_html write <stem>.html).
+        let stem = std::path::Path::new(file)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| key.clone());
+        built.push((key.clone(), stem));
+    }
+
+    // Generate the shared nav from the built page set.
+    let nav_json = render_nav_json(&built);
+    let nav_html = render_nav_html(&built);
+    let nav_json_path = dir_path.join("nav.json");
+    let nav_html_path = dir_path.join("nav.html");
+    std::fs::write(&nav_json_path, &nav_json)
+        .map_err(|e| format!("cannot write '{}': {}", nav_json_path.display(), e))?;
+    std::fs::write(&nav_html_path, &nav_html)
+        .map_err(|e| format!("cannot write '{}': {}", nav_html_path.display(), e))?;
+    println!("wrote {}", nav_json_path.display());
+    println!("wrote {}", nav_html_path.display());
+    println!("built {} page(s)", built.len());
+    Ok(())
+}
+
+/// 2026-10-08 (file-based routing, Part 2b): the ordered page set as JSON.
+fn render_nav_json(pages: &[(String, String)]) -> String {
+    let entries: Vec<String> = pages
+        .iter()
+        .map(|(key, stem)| format!("{{\"key\": \"{}\", \"html\": \"{}.html\"}}", key, stem))
+        .collect();
+    format!("[\n{}\n]\n", entries.join(",\n"))
+}
+
+/// 2026-10-08 (file-based routing, Part 2b): the shared `<a href>` nav.
+fn render_nav_html(pages: &[(String, String)]) -> String {
+    let links: Vec<String> = pages
+        .iter()
+        .map(|(key, stem)| format!("<a href=\"{}.html\">{}</a>", stem, key))
+        .collect();
+    format!("<nav class=\"briev-pages\">\n{}\n</nav>\n", links.join("\n"))
 }
 
 fn run_check(args: &[String]) -> Result<(), String> {
