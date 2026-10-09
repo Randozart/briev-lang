@@ -253,7 +253,7 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
     writeln!(out, "  br label %.loop").ok();
     writeln!(out, ".loop:").ok();
     let state_bytes = self.compute_state_size_bytes() as i64;
-    writeln!(out, "  call void @llvm.memcpy.p0p0i64(ptr %state_save, ptr %state, i64 {}, i1 false)",
+    writeln!(out, "  call void @llvm.memcpy.p0.p0.i64(ptr %state_save, ptr %state, i64 {}, i1 false)",
         state_bytes).ok();
     // 2026-07-14: Use async phase for async programs
     if self.has_async_txns && !self.is_lightweight_async {

@@ -658,6 +658,8 @@ impl LlvmBackend {
         writeln!(out, "declare i64 @llvm.cttz.i64(i64, i1) #1").ok();
         writeln!(out, "declare i64 @llvm.abs.i64(i64, i1) #1").ok();
         writeln!(out, "declare i64 @llvm.bitreverse.i64(i64) #1").ok();
+        writeln!(out, "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1) #1").ok();
+        writeln!(out, "declare void @llvm.memset.p0.i64(ptr, i8, i64, i1) #1").ok();
         // Runtime support functions
         // (__thread_pool_init__ deleted with the pthread pool - Family H.)
         // 2026-07-01: Stores the current state snapshot pointer for worker threads.

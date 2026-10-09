@@ -9261,6 +9261,31 @@ fn test_trap_statement_emits_llvm_trap() {
 
 // ── atomic field modifier (layout-keywords plan Phase 5) ───────────────
 
+// -- memcpy/memset intrinsic declarations (2026-10-09 bugfix) ----------
+
+#[test]
+fn test_memcpy_memset_intrinsics_declared() {
+    // 2026-10-09: three sites emit llvm.memcpy and one emits llvm.memset,
+    // but emit_declares() never declared them -> clang rejected every
+    // program that copied memory (use of undefined value @llvm.memcpy...).
+    // The module must declare both intrinsics in the canonical opaque-
+    // pointer form, and must NOT emit the legacy p0i8 / malformed p0p0
+    // manglings that predated the fix.
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
+    let program = vec![packed_main_def(vec![
+        Statement::Term(Some(Expr::Decimal(0))),
+    ])];
+    let ir = backend.generate(&program, None);
+    assert!(ir.contains("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)"),
+        "module must declare llvm.memcpy; got:\\n{ir}");
+    assert!(ir.contains("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)"),
+        "module must declare llvm.memset; got:\\n{ir}");
+    assert!(!ir.contains("memcpy.p0i8"),
+        "legacy p0i8 memcpy mangling must not be emitted; got:\\n{ir}");
+    assert!(!ir.contains("memcpy.p0p0"),
+        "malformed p0p0 memcpy mangling must not be emitted; got:\\n{ir}");
+}
+
 #[test]
 fn test_atomic_field_load_store_rmw() {
     // 2026-08-13 (Phase 5): `atomic` fields read/write with seq_cst atomic
