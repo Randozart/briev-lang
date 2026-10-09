@@ -1,9 +1,31 @@
 # `dyn Trait` — Derive, Don't Fix (Dispatch-Shape Cost Model)
 
 **Date:** 2026-10-09
-**Status:** Active
+**Status:** Active — Phase A + Phase B landed; Phase B follow-up (identity-in-value) + Phase C pending
 **Doctrine:** SPEC §8.6.1 (dispatch is a derived shape, not a fixed mechanism)
 **Supersedes:** the fixed fat-pointer `{ptr, ptr}` representation (Phase 5c T1)
+
+## Status (2026-10-09)
+
+- **Phase A (landed, `081b555d`):** vtable fallback, conformance derived from the
+  impl block (not `td.traits`). SPEC §8.6.1 doctrine written. Greeter repro
+  prints 703.
+- **Phase B (landed, `14cd7027`):** the INLINE form is now the default — the
+  single-concrete `dyn` case inlines the impl body and erases the `dyn` (no
+  vtable, no tag, no payload move). The vtable is the fallback. `emit_method_call`
+  refactored flat (Praetor cognitive ≤ 15). 3046 tests green, rbv_gate PASS.
+- **Phase B follow-up (PENDING — identity-in-value):** when a `dyn` value FLOWS
+  through a function (e.g. `defn make(k) -> dyn Greeter`), the concrete is lost
+  at the use-site (`dyn_concrete_of` is keyed by the local binding, not tracked
+  through the return), so neither Inline nor Vtable fires — the dispatch panics.
+  The fix is to make the **tag ride in the value** (the value carries
+  `{tag, payload}`; the tag survives arg-passing/return/field-store/phi), so the
+  use-site can resolve the concrete (or the open set) without a name-keyed side
+  table. This is what enables the Vtable form for an open concrete set AND
+  Phase C (heterogeneous collections). Not yet built.
+- **Phase C (PENDING):** heterogeneous `[dyn Trait]` collections — each row a
+  `(tag, payload)` pair, per-row dispatch by the cost model. Requires the
+  Phase B follow-up (tag-in-value) first.
 
 ---
 
