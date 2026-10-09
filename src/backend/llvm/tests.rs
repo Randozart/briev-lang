@@ -10179,3 +10179,56 @@ fn test_node_at_vector_dissolves_isr_keyword() {
     assert!(ir.contains("call __isr_body_tick"), "typed body called:\n{ir}");
     assert!(ir.contains("mret"), "returns via mret:\n{ir}");
 }
+
+// ── 2026-10-08 (stabilise-for-use T1, Phase 5c): dyn Trait thunk table ──
+
+/// A `dyn <Trait>` member call must emit the per-(trait, concrete) thunk table
+/// and an indirect call through it (the interpreter's Phase 5b dynamic
+/// dispatch has an LLVM counterpart). The repro is the Greeter/Dog fixture:
+/// `g.greet(3)` where `g: dyn Greeter = Dog { base: 7 }` must dispatch to
+/// `@__dyn_Greeter_Dog_greet`, threading the data half as the Self receiver,
+/// and produce `7*100+3 = 703`.
+#[test]
+fn test_dyn_trait_emits_thunk_table_and_indirect_call() {
+    let src = r#"
+trait Greeter {
+    defn greet(me: Self, times: Int) -> Int;
+};
+type Dog: Greeter { base: Int; };
+impl Dog {
+    defn greet(me: Dog, times: Int) -> Int { term me.base * 100 + times; }
+};
+let total: Int = 0;
+let i: Int = 0;
+node run [i < 1][i == 1] {
+  when i == 0 {
+    let g: dyn Greeter = Dog { base: 7 };
+    total = g.greet(3);
+    endprogram Print#(total);
+  };
+  i = i + 1;
+  term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let ir = backend.generate(&items, None);
+    // The thunk fn for (Greeter, Dog, greet) is emitted with the impl body
+    // inlined (Self-first, i64 %self, i64 %targ0).
+    assert!(
+        ir.contains("define i64 @__dyn_Greeter_Dog_greet("),
+        "thunk fn missing:\n{ir}"
+    );
+    // The thunk table holds the fn pointer (declaration order = 1 slot).
+    assert!(
+        ir.contains("@__dyn_Greeter_Dog = private constant [1 x ptr] [ptr @__dyn_Greeter_Dog_greet]"),
+        "thunk table missing:\n{ir}"
+    );
+    // The dyn call site loads the table slot and indirect-calls through the
+    // loaded fn pointer (a ptr callee + explicit i64 ret + i64-typed args).
+    assert!(
+        ir.contains("load ptr, ptr"),
+        "dyn call must load the fn pointer from the thunk table:\n{ir}"
+    );
+}

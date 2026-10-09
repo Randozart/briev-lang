@@ -760,16 +760,19 @@ impl LlvmBackend {
         if matches!(ty, Type::Union(_)) {
             return "i64".to_string();
         }
-        // 2026-08-22 (Phase 5): `dyn Trait` execution needs the thunk-table
-        // ABI (fat pointer {data, table} + per-(trait, concrete) tables).
-        // Until Phase 5b lands, reject explicitly — never emit silently-
-        // wrong dispatch. Parse/typecheck/coercion are complete.
+        // 2026-10-08 (stabilise-for-use T1, Phase 5c): a `dyn Trait` value is a
+        // FAT POINTER — the LLVM struct `{ ptr data, ptr table }`.
+        //   `data`  — a pointer to the concrete value's heap image (the payload
+        //             the impl methods operate on; threaded as the Self arg).
+        //   `table` — a pointer to the per-(trait, concrete) thunk table
+        //             `@__dyn_<Trait>_<Concrete>` (one slot per required fn,
+        //             trait-declaration order). Member calls load the slot by
+        //             requirement index and indirect-call through it.
+        // Parse/typecheck/coercion were already complete (Phase 5b); this is
+        // the codegen the panic was guarding. See emit_dyn_thunk_tables + the
+        // dyn arm in emit_method_call.
         if matches!(ty, Type::Dyn(_)) {
-            panic!(
-                "`dyn Trait` values cannot be compiled yet — the thunk-table ABI \
-                 is not landed. Track Phase 5b in BUGS.md; the interpreter and \
-                 typechecker accept dyn programs."
-            );
+            return "{ ptr, ptr }".to_string();
         }
         // 2026-08-13 (Phase 6): `Bits<N>` (both AST forms) is exactly N bits —
         // resolve the Applied("Bits", [Number(N)]) alias here so a `Bits<32>`
@@ -2662,6 +2665,31 @@ impl LlvmBackend {
             let llvm_ty = protocol_llvm_type(&init.ty, self.ctx.type_universe.as_ref());
             if let Some(value) = &init.value {
                 let reg = self.emit_expr(out, value, indent);
+                // 2026-10-08 (stabilise-for-use T1, Phase 5c): a top-level
+                // `let g: dyn Trait = Concrete { .. }` seeds through the init
+                // path (not emit_statement's Let arm), so the dyn coercion +
+                // concrete-type recording must happen here too. The A5 rule
+                // re-types the binding to `dyn Trait`, erasing the concrete.
+                let reg = if matches!(init.ty, crate::ast::Type::Dyn(_)) {
+                    let concrete = match &reg.ty {
+                        crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
+                        other => panic!(
+                            "dyn coercion (top-level let): RHS type {:?} is not a concrete struct/obj",
+                            other
+                        ),
+                    };
+                    let trait_name = match &init.ty {
+                        crate::ast::Type::Dyn(inner) => match inner.as_ref() {
+                            crate::ast::Type::Custom(n) => n.clone(),
+                            other => panic!("dyn <...>: inner trait type {:?} is not a named trait", other),
+                        },
+                        _ => unreachable!(),
+                    };
+                    self.ctx.dyn_concrete_of.insert(name.clone(), concrete.clone());
+                    self.coerce_to_dyn(out, indent, &reg.name, &trait_name, &concrete, indent)
+                } else {
+                    reg
+                };
                 writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, reg.name, name).ok();
             } else {
                 self.emit_init_seeding_body(out, indent, name, &init);

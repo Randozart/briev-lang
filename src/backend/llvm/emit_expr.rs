@@ -2599,6 +2599,37 @@ impl LlvmBackend {
         None
     }
 
+    /// 2026-10-08 (stabilise-for-use T1, Phase 5c): the `dyn <Trait>`
+    /// COERCION — wrap a concrete value's heap handle into the fat-pointer
+    /// `{ i64 data, i64 table }` heap block. `data` is the concrete heap
+    /// handle (threaded as the Self arg in member calls); `table` is the
+    /// address of `@__dyn_<Trait>_<Concrete>` (the thunk table). Returns the
+    /// fat pointer's i64 handle typed as `dyn <Trait>`.
+    pub(crate) fn coerce_to_dyn(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        data_handle: &str,
+        trait_name: &str,
+        concrete: &str,
+        indent: &str,
+    ) -> TypedRegister {
+        let thunk_table = format!("@__dyn_{}_{concrete}", trait_name);
+        let fat_p = self.fun.gen_reg();
+        writeln!(out, "{}{} = call ptr @malloc(i64 16)", indent, fat_p).ok();
+        let data_slot = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 0", indent, data_slot, fat_p).ok();
+        writeln!(out, "{}  store i64 {}, ptr {}", indent, data_handle, data_slot).ok();
+        let table_slot = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 1", indent, table_slot, fat_p).ok();
+        let table_addr = self.fun.gen_reg();
+        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, table_addr, thunk_table).ok();
+        writeln!(out, "{}  store i64 {}, ptr {}", indent, table_addr, table_slot).ok();
+        let fat_handle = self.fun.gen_reg();
+        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, fat_handle, fat_p).ok();
+        TypedRegister { name: fat_handle, ty: Type::Dyn(Box::new(Type::Custom(trait_name.to_string()))) }
+    }
+
     fn emit_field_access(
         &mut self,
         out: &mut String,
@@ -2884,6 +2915,134 @@ impl LlvmBackend {
                     }
                 }
             }
+        }
+        // 2026-10-08 (stabilise-for-use T1, Phase 5c): a `dyn <Trait>` receiver is
+        // a FAT POINTER `{ ptr data, ptr table }` (i64 address). Member calls
+        // load the thunk-table slot at the requirement's index and indirect-call
+        // through it, threading the data half as the Self receiver. The trait's
+        // required slots are `dyn_trait_slots`; the concrete half (which thunk
+        // table to use) is `dyn_concrete_pairs`.
+        let recv_is_dyn = matches!(recv_reg.ty, Type::Dyn(_));
+        if recv_is_dyn {
+            let trait_name = match &recv_reg.ty {
+                Type::Dyn(inner) => match inner.as_ref() {
+                    Type::Custom(n) => n.clone(),
+                    _ => panic!("dyn receiver: inner trait type expected, got {:?}", inner),
+                },
+                _ => unreachable!(),
+            };
+            // The concrete half is resolved from the binding that created the
+            // dyn value: the coercion site (`let g: dyn Trait = Concrete { .. }`)
+            // recorded the concrete type in `ctx.dyn_concrete_of` (the A5 rule
+            // re-types the binding to `dyn Trait`, erasing the concrete from
+            // let_original_types, so that map is the only reliable source).
+            let concrete = if let Expr::Identifier(rname) = recv {
+                self.ctx.dyn_concrete_of.get(rname).cloned()
+            } else {
+                None
+            };
+            let concrete = match concrete {
+                Some(c) => c,
+                None => {
+                    // Fall back: the struct literal type name, if the receiver is
+                    // a struct literal expression (a fresh, unbound dyn value).
+                    if let Expr::StructLiteral { type_name: tn, .. } = recv {
+                        tn.clone()
+                    } else {
+                        panic!(
+                            "dyn receiver: cannot resolve the concrete type for member '{}.{}()'",
+                            trait_name, name
+                        );
+                    }
+                }
+            };
+            // Requirement slot index = the member's position in the trait's
+            // declared slot order (declaration order — matches the interpreter).
+            let slots = self
+                .ctx
+                .dyn_trait_slots
+                .get(&trait_name)
+                .cloned()
+                .unwrap_or_default();
+            let lookup_name = name.trim_end_matches('#');
+            let slot_idx = slots.iter().position(|s| s == lookup_name).unwrap_or_else(|| {
+                panic!(
+                    "dyn receiver: '{}' is not a required method of trait '{}' (slots: {:?})",
+                    lookup_name, trait_name, slots
+                )
+            });
+            let thunk_table = format!("@__dyn_{}_{concrete}", trait_name);
+            // The thunk fn's return type (the impl defn's ret type) — the call
+            // emits `call <thunk_ret> <fn_ptr>(args)`, matching the `define`
+            // line emit_dyn_thunk_fn emits (ret(params...)).
+            let impl_key = format!("{}::{}", concrete, lookup_name);
+            let impl_def = self.ctx.dyn_impl_bodies.get(&impl_key).cloned();
+            let thunk_ret = impl_def
+                .as_ref()
+                .and_then(|d| d.output_type.as_ref().and_then(|ot| match ot {
+                    crate::ast::OutputType::Single(t) => Some(self.llvm_ret_abi_type(t)),
+                    _ => None,
+                }))
+                .unwrap_or_else(|| "i64".to_string());
+            // Load the table slot: `ptr %slot = getelementptr [N x ptr], <table>, i32 0, i32 <idx>`
+            // then `ptr %fn = load ptr, ptr %slot` (the slot holds an opaque
+            // fn pointer; the call's arg/ret types come from the thunk's
+            // define line).
+            let table_p = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = getelementptr inbounds [{} x ptr], ptr {}, i32 0, i32 {}",
+                indent, table_p, slots.len(), thunk_table, slot_idx
+            )
+            .ok();
+            // The slot holds a ptr (LLVM opaque function pointer). Load as ptr;
+            // the indirect call's signature is resolved from the callee's
+            // define line (the thunk), so a raw ptr callee + explicit ret type
+            // + i64-typed args is sufficient.
+            let fn_v = self.fun.gen_reg();
+            writeln!(out, "{}{} = load ptr, ptr {}", indent, fn_v, table_p).ok();
+            // The receiver register is the fat pointer's i64 ADDRESS. Convert
+            // it to a ptr, load the DATA half (first slot, an i64 handle) to
+            // thread as the Self arg.
+            let fat_p = self.fun.gen_reg();
+            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, fat_p, recv_reg.name).ok();
+            let data_p = self.fun.gen_reg();
+            writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 0", indent, data_p, fat_p).ok();
+            let data_v = self.fun.gen_reg();
+            writeln!(out, "{}{} = load i64, ptr {}", indent, data_v, data_p).ok();
+            // Emit the call args (after the Self).
+            let mut arg_regs: Vec<String> = Vec::new();
+            for a in args {
+                let arg_tmp = self.fun.gen_reg();
+                let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+                // The thunk fn's params are declared in their native LLVM types
+                // (i64 for Int, etc.). adapt_to_i64 the boxed scalars.
+                arg_regs.push(self.adapt_to_i64(out, indent, &r));
+            }
+            let result = self.fun.gen_reg();
+            // Annotate every arg with `i64` — the thunk's params are all i64
+            // (Int → i64), and an un-annotated arg in the call is invalid IR.
+            let mut all_args = vec![format!("i64 {}", data_v)];
+            for a in &arg_regs {
+                all_args.push(format!("i64 {}", a));
+            }
+            let args_str = all_args.join(", ");
+            // The callee is the loaded fn pointer (a ptr); the call's ret type
+            // matches the thunk's define line, and the args are i64-typed to
+            // match the thunk's params.
+            writeln!(
+                out,
+                "{}{} = call {} {}({})",
+                indent,
+                result,
+                thunk_ret,
+                fn_v,
+                args_str
+            )
+            .ok();
+            self.fun.chain_depth -= 1;
+            // The thunk returns the impl's ret type (i64 for Int); wrap as Int.
+            return TypedRegister { name: result, ty: Type::int() };
         }
         // 2026-09-16: record the receiver on the chain stack. Nested
         // MethodCall/Capture receivers already pushed their own result; a plain

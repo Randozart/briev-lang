@@ -253,6 +253,28 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// by type name. Used by MethodCall codegen to emit the member body with
     /// `self` bound to the receiver instance.
     pub obj_members: HashMap<String, Vec<crate::ast::TopLevel>>,
+    /// 2026-10-08 (stabilise-for-use T1, Phase 5c): trait requirement slot
+    /// order — trait name → the ordered member names (defn/txn/op order, as
+    /// declared in the trait). A `dyn <Trait>` member call loads the thunk
+    /// table slot at the requirement's index. Sorted at iteration (Rule:
+    /// deterministic IR).
+    pub dyn_trait_slots: HashMap<String, Vec<String>>,
+    /// 2026-10-08 (T1): the concrete types that appear in a `dyn` coercion in
+    /// this program — trait name → set of concrete type names (from
+    /// `let x: dyn Trait = Concrete { .. }` sites). Only these (trait,
+    /// concrete) pairs get a thunk table emitted.
+    pub dyn_concrete_pairs: HashMap<String, std::collections::BTreeSet<String>>,
+    /// 2026-10-08 (T1): the impl `defn` bodies, keyed by `"<concrete>::<slot>"`
+    /// — the `Definition` from the `impl <concrete> { defn <slot> ... }` block.
+    /// Populated once during register_dyn_thunks; emitted as thunk fns at
+    /// module end by emit_dyn_thunk_fn (no repeated AST scan per thunk).
+    pub dyn_impl_bodies: HashMap<String, crate::ast::Definition>,
+    /// 2026-10-08 (T1): the concrete type of each `dyn`-typed binding, keyed by
+    /// binding name. Recorded at the coercion site (`let g: dyn Trait =
+    /// Concrete { .. }`) so a later `g.member()` member call can recover which
+    /// concrete's thunk table to load (the A5 rule re-types the binding to
+    /// `dyn Trait`, erasing the concrete from let_original_types).
+    pub dyn_concrete_of: HashMap<String, String>,
     /// 2026-07-31 (A8): obj declared type-parameter names, keyed by type name
     /// (`obj Stack<T, N>` → ["T", "N"]). Used to substitute a receiver's
     /// concrete type args into the generic slots/members (monomorphization).
@@ -529,6 +551,10 @@ impl CompilerContext {
             unions: HashSet::new(),
             obj_types: std::collections::HashSet::new(),
             obj_members: HashMap::new(),
+            dyn_trait_slots: HashMap::new(),
+            dyn_concrete_pairs: HashMap::new(),
+            dyn_impl_bodies: HashMap::new(),
+            dyn_concrete_of: HashMap::new(),
             obj_type_params: HashMap::new(),
             enum_types: HashMap::new(),
             cell_defs: HashMap::new(),
