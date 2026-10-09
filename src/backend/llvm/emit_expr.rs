@@ -1923,25 +1923,14 @@ impl LlvmBackend {
                         };
                         return self.box_gather_as_tier_list(out, indent, &buf, elem_ty);
                     }
-                    let helper = if is_f32 {
-                        "@briev_slice_range_f32"
-                    } else {
-                        "@briev_slice_range64"
-                    };
-                    // 2026-09-10 (Family D): state prefix for pure-Briev gathers.
-                    let gp = if self.ctx.defn_takes_state(&helper[1..]) { "ptr %state, " } else { "" };
-                    let buf = self.fun.gen_reg();
-                    writeln!(
-                        out,
-                        "{}{} = call ptr {}({}ptr {}, i64 {}, i64 {}, i64 {})",
-                        indent, buf, helper, gp, data_ptr, n, lo.name, hi.name
-                    )
-                    .ok();
-                    let elem_ty = match &vec_ty {
-                        Type::Vector(inner, _) => (**inner).clone(),
-                        _ => Type::int(),
-                    };
-                    return self.box_gather_as_tier_list(out, indent, &buf, elem_ty);
+                    // 2026-10-09 (T2b, slice/view): the CONTIGUOUS slice is a
+                    // ZERO-COPY VIEW into the source column (no `Alloc# +
+                    // Copy#`). `data[a:b]` yields a `{ base, len, len }` header
+                    // whose `base` points at source element `a`, so `sub[i]` =
+                    // `data[a+i]` with no per-iteration copy. (The copy path
+                    // `briev_slice_range64` is retired for the contiguous case;
+                    // the strided gather stays for `data[a:b:c]`.)
+                    return self.emit_contiguous_slice_view(out, indent, fidx, &data_ptr, &vec_ty, &lo, &hi, n);
                 }
                 if let Some(s) = start { self.emit_expr(out, s, indent); }
                 if let Some(e) = end { self.emit_expr(out, e, indent); }
@@ -2041,6 +2030,87 @@ impl LlvmBackend {
     /// 2026-08-22 (Phase 6a/6b, DRY): box a `[len, e0, e1, …]` gather/slice
     /// buffer as a tier List handle (`[data, cap, len]`, data = pointer to
     /// slot 1). Consumers (`picked[i]`, `Count#`) read this layout.
+    /// 2026-10-09 (T2b, slice/view): a ZERO-COPY VIEW for a CONTIGUOUS slice
+    /// `data[a:b]` of a 1-D vector state column. Replaces the copy path
+    /// (`briev_slice_range64` = `Alloc# + Copy#` into a fresh `[len][elems]`
+    /// buffer). The view's header block is `{ data_ptr, len, len }` — the SAME
+    /// shape `box_gather_as_tier_list` produces — but `data_ptr` points
+    /// DIRECTLY into the source column at element `lo` (no copy). Downstream
+    /// `Index`/foreach consumers read `data_ptr + i` = source element `lo+i`,
+    /// so `sub[i]` = `data[lo+i]` (correct) and `Count#` = `len`. The view is
+    /// an alias of the source (a mutation of the source is reflected); for a
+    /// read-only reduction (the benchmark) it saves the per-iteration copy.
+    fn emit_contiguous_slice_view(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        fidx: usize,
+        data_ptr: &str,
+        vec_ty: &crate::ast::Type,
+        lo: &TypedRegister,
+        hi: &TypedRegister,
+        n: i64,
+    ) -> TypedRegister {
+        let elem_ty = match vec_ty {
+            Type::Vector(inner, _) => (**inner).clone(),
+            _ => Type::int(),
+        };
+        // Clamp lo/hi into [0, n] and hi >= lo (mirrors the runtime gather's
+        // coll_min/coll_hi_fix contract). min(x,n) = (x<n ? x : n);
+        // max(a,b) = (a>b ? a : b) — icmp+select (valid LLVM IR).
+        let lo_lt_n = self.fun.gen_reg();
+        writeln!(out, "{}{} = icmp slt i64 {}, {}", indent, lo_lt_n, lo.name, n).ok();
+        let lo_c = self.fun.gen_reg();
+        writeln!(out, "{}{} = select i1 {}, i64 {}, i64 {}", indent, lo_c, lo_lt_n, lo.name, n).ok();
+        let hi_lt_n = self.fun.gen_reg();
+        writeln!(out, "{}{} = icmp slt i64 {}, {}", indent, hi_lt_n, hi.name, n).ok();
+        let hi_c = self.fun.gen_reg();
+        writeln!(out, "{}{} = select i1 {}, i64 {}, i64 {}", indent, hi_c, hi_lt_n, hi.name, n).ok();
+        let hi_gt_lo = self.fun.gen_reg();
+        writeln!(out, "{}{} = icmp sgt i64 {}, {}", indent, hi_gt_lo, hi_c, lo_c).ok();
+        let hi_f = self.fun.gen_reg();
+        writeln!(out, "{}{} = select i1 {}, i64 {}, i64 {}", indent, hi_f, hi_gt_lo, hi_c, lo_c).ok();
+        let len = self.fun.gen_reg();
+        writeln!(out, "{}{} = sub i64 {}, {}", indent, len, hi_f, lo_c).ok();
+        // len == 0 when hi < lo (empty range).
+        let hi_ge_lo = self.fun.gen_reg();
+        writeln!(out, "{}{} = icmp sge i64 {}, {}", indent, hi_ge_lo, hi_f, lo_c).ok();
+        let len0 = self.fun.gen_reg();
+        writeln!(out, "{}{} = select i1 {}, i64 {}, i64 0", indent, len0, hi_ge_lo, len).ok();
+        // The view's data pointer = the source column's element base. The
+        // state column for a Vector field is `[N x elem]` (element 0 is the
+        // base), so GEP by element index `lo_c` lands on source element lo.
+        // (Matches the contiguous gather's e0 = slot 1 of [1, e0, …].)
+        let agg_ty = self
+            .ctx
+            .field_types
+            .get(fidx)
+            .cloned()
+            .unwrap_or_else(|| "i64".to_string());
+        let base_ptr = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr {}, ptr {}, i32 0, i64 {}", indent, base_ptr, agg_ty, data_ptr, lo_c).ok();
+        // Emit the { base_ptr, len, len } header block (NO copy — zero-copy view).
+        let block = self.fun.gen_reg();
+        writeln!(out, "{}{} = call ptr @malloc(i64 24)", indent, block).ok();
+        let d0 = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 0", indent, d0, block).ok();
+        let base_h = self.fun.gen_reg();
+        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, base_h, base_ptr).ok();
+        writeln!(out, "{}  store i64 {}, ptr {}", indent, base_h, d0).ok();
+        let d1 = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 8", indent, d1, block).ok();
+        writeln!(out, "{}  store i64 {}, ptr {}", indent, len0, d1).ok();
+        let d2 = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 16", indent, d2, block).ok();
+        writeln!(out, "{}  store i64 {}, ptr {}", indent, len0, d2).ok();
+        let handle = self.fun.gen_reg();
+        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, block).ok();
+        TypedRegister {
+            name: handle,
+            ty: crate::ast::Type::Applied("List".into(), vec![elem_ty]),
+        }
+    }
+
     fn box_gather_as_tier_list(
         &mut self,
         out: &mut String,

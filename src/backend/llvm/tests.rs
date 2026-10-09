@@ -10293,9 +10293,64 @@ node run [i < 1][i == 1] {
     );
 }
 
+/// 2026-10-09 (T2b, slice/view): a CONTIGUOUS slice `data[a:b]` over a 1-D
+/// vector state column is a ZERO-COPY VIEW — a `{ base, len, len }` header
+/// whose `base` points into the source column at element `a` (no `Alloc# +
+/// Copy#`). This test pins the IR: the view's base-pointer GEP into the state
+/// column and the header `malloc` are present, and there is NO per-slice
+/// `briev_slice_range64` gather call (the copy path is retired for contiguous
+/// slices). The benchmark (`benchmarks/slice_reduce.bv`) measures the A/B:
+/// view ≈ 0.001s vs copy ≈ 0.37s at BOUND=5M (both correct).
+#[test]
+fn test_contiguous_slice_emits_zero_copy_view() {
+    // `data` is a plain state column (mutated each fire so the slice is a
+    // runtime value, not precomputable — the observability trap). The slice is
+    // taken in a REACTIVE node body (matching the benchmark, which loads the
+    // stdlib so `List.At#` resolves). The contiguous slice lowers to the
+    // zero-copy VIEW (a { base, len, len } header whose base GEPs the state
+    // column at element `lo`), NOT the copy gather.
+    let src = r#"
+import { List } from "std/collections.bv";
+let data: Int[8];
+let i: Int = 0;
+let done: Bool = false;
+node run [done == false][done == true] {
+  data[0] = i;
+  let sub: List<Int> = data[1:5];
+  endprogram Print#(sub.At#(0));
+  done = true;
+  term;
+};
+"#;
+    // parse_and_check resolves the import (so List.At# is available) and
+    // type-checks — the same path the benchmark takes.
+    let root = env!("CARGO_MANIFEST_DIR");
+    let items = crate::library::parse_and_check("benchmarks/slice_reduce.bv", &src)
+        .expect("parse_and_check failed");
+    let (items, universe) = items;
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    // The view builds a 24-byte header block ({ base, len, len }).
+    assert!(
+        ir.contains("call ptr @malloc(i64 24)"),
+        "the contiguous slice view must allocate the header block:\n{ir}"
+    );
+    // The view's base pointer GEPs the state column (no copy).
+    assert!(
+        ir.contains("getelementptr [8 x i64]") || ir.contains("getelementptr [8 x"),
+        "the contiguous slice view must GEP the state column (zero-copy):\n{ir}"
+    );
+    // The contiguous COPY gather is retired (not called for a contiguous slice).
+    assert!(
+        !ir.contains("call ptr @briev_slice_range64")
+            && !ir.contains("call i64 @briev_slice_range64"),
+        "a contiguous slice must NOT call the copy gather (it is a zero-copy view):\n{ir}"
+    );
+}
+
 /// 2026-10-09 (dyn identity-in-value): when TWO concretes conform to a trait,
 /// the dispatch is the SWITCH form — a `switch` on the tag (the identity that
-/// rides in the value), each arm inlining that concrete's impl body. Cheaper
+/// rides in the value), each arm inlining its impl body. Cheaper
 /// than the Vtable fallback (no thunk-table load, no indirect call) for a
 /// closed small set.
 #[test]
