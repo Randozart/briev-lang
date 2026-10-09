@@ -10225,10 +10225,29 @@ node run [i < 1][i == 1] {
         ir.contains("@__dyn_Greeter_Dog = private constant [1 x ptr] [ptr @__dyn_Greeter_Dog_greet]"),
         "thunk table missing:\n{ir}"
     );
-    // The dyn call site loads the table slot and indirect-calls through the
-    // loaded fn pointer (a ptr callee + explicit i64 ret + i64-typed args).
+    // 2026-10-09 (dyn derive-don't-fix, Phase B): the single-concrete case is
+    // INLINED — the impl body (`me.base * 100 + times`) is inlined at the call
+    // site, the `dyn` is erased, and there is NO indirect call through a thunk
+    // table. The dispatch form is Inline (cheapest provable), not Vtable.
+    //
+    // The call site loads the fat pointer's DATA half (slot 0, the Dog heap
+    // handle) and threads it as the Self receiver into the inlined impl body.
+    // The result is `7*100 + 3 = 703`.
+    //
+    // Verify the inline form: the impl body's math (`mul nsw i64 <base>, <100>`
+    // then `add nsw i64 <mul>, <times>`) appears in the node body, and there is
+    // NO `load ptr, ptr` (no thunk-table fn-pointer load) at the call site.
     assert!(
-        ir.contains("load ptr, ptr"),
-        "dyn call must load the fn pointer from the thunk table:\n{ir}"
+        ir.contains("mul nsw i64") && ir.contains("add nsw i64"),
+        "inline form must emit the impl body's math (me.base*100 + times):\n{ir}"
+    );
+    assert!(
+        !ir.contains("load ptr, ptr"),
+        "inline form must NOT indirect-call through the thunk table (no `load ptr, ptr`):\n{ir}"
+    );
+    // The fat pointer's data half is loaded to thread as the Self receiver.
+    assert!(
+        ir.contains("getelementptr inbounds [2 x i64]"),
+        "inline form must load the fat pointer's data half (the Self receiver):\n{ir}"
     );
 }

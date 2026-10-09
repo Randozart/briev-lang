@@ -269,6 +269,15 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// Populated once during register_dyn_thunks; emitted as thunk fns at
     /// module end by emit_dyn_thunk_fn (no repeated AST scan per thunk).
     pub dyn_impl_bodies: HashMap<String, crate::ast::Definition>,
+    /// 2026-10-09 (dyn derive-don't-fix, Phase B): the impl `defn` bodies as
+    /// `TopLevel::Definition`, keyed by `"<concrete>::<slot>"` — the same key as
+    /// dyn_impl_bodies. Stored as a TopLevel so emit_member_body (the A5
+    /// self-bound member emission) can inline the impl body directly for the
+    /// INLINE dispatch form (the concrete is provable at the use-site, so the
+    /// `dyn` is erased and the body inlined — no vtable, no tag, no payload
+    /// move). Distinct from dyn_impl_bodies (the raw Definition) only in the
+    /// wrapper so emit_member_body's match arm can consume it.
+    pub dyn_impl_member: HashMap<String, crate::ast::TopLevel>,
     /// 2026-10-08 (T1): the concrete type of each `dyn`-typed binding, keyed by
     /// binding name. Recorded at the coercion site (`let g: dyn Trait =
     /// Concrete { .. }`) so a later `g.member()` member call can recover which
@@ -554,6 +563,7 @@ impl CompilerContext {
             dyn_trait_slots: HashMap::new(),
             dyn_concrete_pairs: HashMap::new(),
             dyn_impl_bodies: HashMap::new(),
+            dyn_impl_member: HashMap::new(),
             dyn_concrete_of: HashMap::new(),
             obj_type_params: HashMap::new(),
             enum_types: HashMap::new(),

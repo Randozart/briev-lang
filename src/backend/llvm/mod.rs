@@ -6209,11 +6209,18 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
 
         // Pass 4: cache each impl member body keyed by "<concrete>::<slot>" so
         // emit_dyn_thunk_fn can inline it without re-scanning the AST per thunk.
+        // Also store it as a TopLevel::Definition so emit_member_body (the A5
+        // self-bound member emission) can inline the body directly for the
+        // INLINE dispatch form (Phase B) — the concrete is provable at the
+        // use-site, so the `dyn` is erased and the body inlined (no vtable).
         for item in items {
             if let TopLevel::Impl(imp) = item {
                 for d in &imp.functions {
                     let key = format!("{}::{}", imp.target, d.name);
-                    self.ctx.dyn_impl_bodies.insert(key, d.clone());
+                    self.ctx.dyn_impl_bodies.insert(key.clone(), d.clone());
+                    self.ctx
+                        .dyn_impl_member
+                        .insert(key, TopLevel::Definition(d.clone()));
                 }
             }
         }
