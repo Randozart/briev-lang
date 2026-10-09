@@ -284,6 +284,17 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// concrete's thunk table to load (the A5 rule re-types the binding to
     /// `dyn Trait`, erasing the concrete from let_original_types).
     pub dyn_concrete_of: HashMap<String, String>,
+    /// 2026-10-09 (dyn identity-in-value, Phase B follow-up): the concrete
+    /// TAG of each `dyn`-typed binding, keyed by binding name. The tag is a
+    /// small per-trait concrete index (the identity of the concrete) that
+    /// RIDES IN THE VALUE — it survives a `dyn` flowing through a `defn`
+    /// return, a call argument, a field store, or a phi (the name-keyed
+    /// `dyn_concrete_of` does not). At the use-site, the tag selects the
+    /// dispatch form: a compile-time-constant tag → Inline (erase the dyn); a
+    /// small known set of tags → Switch (a `switch` on the tag, each arm
+    /// inlines its impl body); an open set → Vtable (the fallback). See
+    /// docs/plans/2026-10-09-dyn-identity-in-value.md.
+    pub dyn_concrete_tag_of: HashMap<String, i64>,
     /// 2026-07-31 (A8): obj declared type-parameter names, keyed by type name
     /// (`obj Stack<T, N>` → ["T", "N"]). Used to substitute a receiver's
     /// concrete type args into the generic slots/members (monomorphization).
@@ -565,6 +576,7 @@ impl CompilerContext {
             dyn_impl_bodies: HashMap::new(),
             dyn_impl_member: HashMap::new(),
             dyn_concrete_of: HashMap::new(),
+            dyn_concrete_tag_of: HashMap::new(),
             obj_type_params: HashMap::new(),
             enum_types: HashMap::new(),
             cell_defs: HashMap::new(),

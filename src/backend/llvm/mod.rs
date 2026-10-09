@@ -6185,6 +6185,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.ctx.dyn_trait_slots.clear();
         self.ctx.dyn_concrete_pairs.clear();
         self.ctx.dyn_impl_bodies.clear();
+        self.ctx.dyn_concrete_tag_of.clear();
 
         // Pass 1: collect trait slot order (declaration order — the interpreter
         // resolves the same order via the trait's `functions` list).
@@ -6199,12 +6200,29 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // provided methods prove (derived from behavior, not td.traits — see
         // register_dyn_conformance).
         let pairs = Self::register_dyn_conformance(&traits, &provided);
-        for (trait_name, concretes) in pairs {
+        for (trait_name, concretes) in &pairs {
             self.ctx
                 .dyn_concrete_pairs
-                .entry(trait_name)
+                .entry(trait_name.clone())
                 .or_default()
-                .extend(concretes);
+                .extend(concretes.iter().cloned());
+        }
+
+        // Pass 3b (2026-10-09, dyn identity-in-value): assign each concrete a
+        // small per-trait TAG (its sorted position among that trait's
+        // conforming concretes). The tag is the identity that rides in the
+        // `dyn` value (a plain i64 that survives return/arg/field/phi). The
+        // use-site reads it to select the dispatch form (Inline / Switch /
+        // Vtable). Deterministic: sorted concrete order (Rule: no per-process
+        // variation in emitted IR).
+        for (trait_name, concretes) in &pairs {
+            let mut sorted: Vec<&String> = concretes.iter().collect();
+            sorted.sort();
+            for (tag, concrete) in sorted.iter().enumerate() {
+                self.ctx
+                    .dyn_concrete_tag_of
+                    .insert(format!("{trait_name}::{concrete}"), tag as i64);
+            }
         }
 
         // Pass 4: cache each impl member body keyed by "<concrete>::<slot>" so

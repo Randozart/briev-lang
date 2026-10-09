@@ -2686,7 +2686,12 @@ impl LlvmBackend {
                         _ => unreachable!(),
                     };
                     self.ctx.dyn_concrete_of.insert(name.clone(), concrete.clone());
-                    self.coerce_to_dyn(out, indent, &reg.name, &trait_name, &concrete, indent)
+                    let tag = self.ctx.dyn_concrete_tag_of
+                        .get(&format!("{trait_name}::{concrete}"))
+                        .copied()
+                        .unwrap_or(0);
+                    self.ctx.dyn_concrete_tag_of.insert(name.clone(), tag);
+                    self.coerce_to_dyn(out, indent, &reg.name, &trait_name, &concrete, tag, indent)
                 } else {
                     reg
                 };

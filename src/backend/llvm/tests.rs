@@ -10246,8 +10246,126 @@ node run [i < 1][i == 1] {
         "inline form must NOT indirect-call through the thunk table (no `load ptr, ptr`):\n{ir}"
     );
     // The fat pointer's data half is loaded to thread as the Self receiver.
+    // (2026-10-09 identity-in-value: the fat pointer is { data, tag, table },
+    // a [3 x i64] block.)
     assert!(
-        ir.contains("getelementptr inbounds [2 x i64]"),
+        ir.contains("getelementptr inbounds [3 x i64]"),
         "inline form must load the fat pointer's data half (the Self receiver):\n{ir}"
+    );
+}
+
+/// 2026-10-09 (dyn identity-in-value): when TWO concretes conform to a trait,
+/// the dispatch is the SWITCH form — a `switch` on the tag (the identity that
+/// rides in the value), each arm inlining that concrete's impl body. Cheaper
+/// than the Vtable fallback (no thunk-table load, no indirect call) for a
+/// closed small set.
+#[test]
+fn test_dyn_trait_switch_form_for_two_concretes() {
+    let src = r#"
+trait Greeter {
+    defn greet(me: Self, times: Int) -> Int;
+};
+type Dog: Greeter { base: Int; };
+type Cat: Greeter { base: Int; };
+impl Dog {
+    defn greet(me: Dog, times: Int) -> Int { term me.base * 100 + times; }
+};
+impl Cat {
+    defn greet(me: Cat, times: Int) -> Int { term me.base * 10 + times; }
+};
+let total: Int = 0;
+let i: Int = 0;
+node run [i < 1][i == 1] {
+  when i == 0 {
+    let a: dyn Greeter = Dog { base: 7 };
+    let b: dyn Greeter = Cat { base: 9 };
+    total = a.greet(1) + b.greet(2);
+    endprogram Print#(total);
+  };
+  i = i + 1;
+  term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let ir = backend.generate(&items, None);
+    // Both concretes conform (each provides `greet`), so two thunk tables are
+    // emitted (the Vtable fallback is available).
+    assert!(
+        ir.contains("@__dyn_Greeter_Dog = private constant [1 x ptr]")
+            && ir.contains("@__dyn_Greeter_Cat = private constant [1 x ptr]"),
+        "both (Greeter, Dog) and (Greeter, Cat) thunk tables must be emitted:\n{ir}"
+    );
+    // The SWITCH form: a `switch` on the tag, with arms for tag 0 (Dog) and
+    // tag 1 (Cat). The tag is loaded from the fat pointer's tag slot (slot 1).
+    assert!(
+        ir.contains("switch i64") && ir.contains("label dynsw"),
+        "two-concrete dispatch must be the Switch form (a `switch` on the tag):\n{ir}"
+    );
+    // The tag is loaded from the fat pointer's TAG slot (slot 1 of [3 x i64]).
+    assert!(
+        ir.contains("getelementptr inbounds [3 x i64], ptr %")
+            && ir.contains("i32 1"),
+        "the Switch form must load the tag from the fat pointer's tag slot:\n{ir}"
+    );
+    // Both impl bodies are inlined (Dog's `*100`, Cat's `*10`) — no indirect
+    // call through a thunk table.
+    assert!(
+        ir.contains("mul nsw i64") ,
+        "the Switch form must inline both impl bodies (the math is present):\n{ir}"
+    );
+    // NOT the Vtable fallback: no thunk-table fn-pointer load.
+    assert!(
+        !ir.contains("load ptr, ptr"),
+        "the Switch form must NOT indirect-call through the thunk table:\n{ir}"
+    );
+}
+
+/// 2026-10-09 (dyn identity-in-value): a `dyn` that FLOWS through a `defn`
+/// return keeps its dispatch identity — the tag rides in the value (the name-
+/// keyed `dyn_concrete_of` does not survive the return). This is the case that
+/// used to panic ("cannot resolve the concrete type"). The single-concrete
+/// case is Inline; the flowed value's tag is irrelevant (cardinality == 1).
+#[test]
+fn test_dyn_trait_flows_through_defn_return() {
+    let src = r#"
+trait Greeter {
+    defn greet(me: Self, times: Int) -> Int;
+};
+type Dog: Greeter { base: Int; };
+impl Dog {
+    defn greet(me: Dog, times: Int) -> Int { term me.base * 100 + times; }
+};
+defn make(k: Int) -> dyn Greeter {
+    term Dog { base: k };
+};
+let total: Int = 0;
+let i: Int = 0;
+node run [i < 1][i == 1] {
+  when i == 0 {
+    let g: dyn Greeter = make(7);
+    total = g.greet(3);
+    endprogram Print#(total);
+  };
+  i = i + 1;
+  term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    // This MUST NOT panic (the flowed `dyn`'s concrete is resolvable via the
+    // single-concrete Inline form, independent of the name-keyed map).
+    let ir = backend.generate(&items, None);
+    // The Inline form fires (single concrete): the impl body's math is present
+    // and there is no indirect call.
+    assert!(
+        ir.contains("mul nsw i64"),
+        "the flowed dyn must dispatch (Inline form, the impl body's math present):\n{ir}"
+    );
+    assert!(
+        !ir.contains("load ptr, ptr"),
+        "the flowed single-concrete dyn must be Inline (no thunk-table indirect call):\n{ir}"
     );
 }

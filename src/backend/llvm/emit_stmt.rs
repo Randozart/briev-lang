@@ -487,29 +487,49 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // records the declared type as the binding type).
                     match ty {
                         Some(crate::ast::Type::Dyn(trait_ty)) => {
-                            // The RHS must be a concrete value whose type is a
-                            // struct/obj (the struct literal's type). Recover the
-                            // concrete name from the emitted register's type.
-                            let concrete = match &v.ty {
-                                crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
-                                other => panic!(
-                                    "dyn coercion: RHS type {:?} is not a concrete struct/obj (expected a struct literal)",
-                                    other
-                                ),
-                            };
-                            let trait_name = match trait_ty.as_ref() {
-                                crate::ast::Type::Custom(n) => n.clone(),
-                                other => panic!(
-                                    "dyn <...>: inner trait type {:?} is not a named trait",
-                                    other
-                                ),
-                            };
-                            // Record the concrete type of this binding so a later
-                            // `g.member()` member call can recover which thunk
-                            // table to load (the A5 rule below re-types the
-                            // binding to `dyn Trait`, erasing the concrete).
-                            backend.ctx.dyn_concrete_of.insert(name.clone(), concrete.clone());
-                            backend.coerce_to_dyn(out, indent, &v.name, &trait_name, &concrete, indent)
+                            // 2026-10-09 (dyn identity-in-value): if the RHS is
+                            // ALREADY a `dyn` of the same trait (a flowed value —
+                            // e.g. the return of `defn make(k) -> dyn Trait`),
+                            // pass it through unchanged. The tag (the concrete's
+                            // identity) is already in the value's tag slot, so
+                            // no re-coercion — re-wrapping would double-box the
+                            // fat pointer. The binding is re-typed to `dyn Trait`
+                            // by the A5 rule below (which runs after this match).
+                            let already_dyn = matches!(&v.ty, crate::ast::Type::Dyn(rhs)
+                                if matches!((trait_ty.as_ref(), rhs.as_ref()),
+                                    (crate::ast::Type::Custom(a), crate::ast::Type::Custom(b)) if a == b));
+                            if already_dyn {
+                                v
+                            } else {
+                                // The RHS must be a concrete value whose type is a
+                                // struct/obj (the struct literal's type). Recover the
+                                // concrete name from the emitted register's type.
+                                let concrete = match &v.ty {
+                                    crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
+                                    other => panic!(
+                                        "dyn coercion: RHS type {:?} is not a concrete struct/obj (expected a struct literal or an already-dyn value of the same trait)",
+                                        other
+                                    ),
+                                };
+                                let trait_name = match trait_ty.as_ref() {
+                                    crate::ast::Type::Custom(n) => n.clone(),
+                                    other => panic!(
+                                        "dyn <...>: inner trait type {:?} is not a named trait",
+                                        other
+                                    ),
+                                };
+                                // Record the concrete type of this binding so a later
+                                // `g.member()` member call can recover which thunk
+                                // table to load (the A5 rule below re-types the
+                                // binding to `dyn Trait`, erasing the concrete).
+                                backend.ctx.dyn_concrete_of.insert(name.clone(), concrete.clone());
+                                let tag = backend.ctx.dyn_concrete_tag_of
+                                    .get(&format!("{trait_name}::{concrete}"))
+                                    .copied()
+                                    .unwrap_or(0);
+                                backend.ctx.dyn_concrete_tag_of.insert(name.clone(), tag);
+                                backend.coerce_to_dyn(out, indent, &v.name, &trait_name, &concrete, tag, indent)
+                            }
                         }
                         Some(declared) => backend.coerce_register_value(out, indent, &v, &declared),
                         None => v,

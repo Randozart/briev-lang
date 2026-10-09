@@ -2599,12 +2599,16 @@ impl LlvmBackend {
         None
     }
 
-    /// 2026-10-08 (stabilise-for-use T1, Phase 5c): the `dyn <Trait>`
-    /// COERCION — wrap a concrete value's heap handle into the fat-pointer
-    /// `{ i64 data, i64 table }` heap block. `data` is the concrete heap
-    /// handle (threaded as the Self arg in member calls); `table` is the
-    /// address of `@__dyn_<Trait>_<Concrete>` (the thunk table). Returns the
-    /// fat pointer's i64 handle typed as `dyn <Trait>`.
+    /// 2026-10-08 (stabilise-for-use T1, Phase 5c) / 2026-10-09 (identity-
+    /// in-value): the `dyn <Trait>` COERCION — wrap a concrete value's heap
+    /// handle into the fat-pointer `{ i64 data, i64 tag, i64 table }` heap
+    /// block. `data` is the concrete heap handle (threaded as the Self arg in
+    /// member calls); `tag` is the concrete's per-trait index (the identity
+    /// that RIDES IN THE VALUE — it survives the `dyn` flowing through a
+    /// return/arg/field/phi, which the name-keyed dyn_concrete_of does not);
+    /// `table` is the address of `@__dyn_<Trait>_<Concrete>` (the thunk table,
+    /// the Vtable fallback). Returns the fat pointer's i64 handle typed as
+    /// `dyn <Trait>`.
     pub(crate) fn coerce_to_dyn(
         &mut self,
         out: &mut String,
@@ -2612,16 +2616,22 @@ impl LlvmBackend {
         data_handle: &str,
         trait_name: &str,
         concrete: &str,
+        tag: i64,
         indent: &str,
     ) -> TypedRegister {
         let thunk_table = format!("@__dyn_{}_{concrete}", trait_name);
         let fat_p = self.fun.gen_reg();
-        writeln!(out, "{}{} = call ptr @malloc(i64 16)", indent, fat_p).ok();
+        writeln!(out, "{}{} = call ptr @malloc(i64 24)", indent, fat_p).ok();
         let data_slot = self.fun.gen_reg();
-        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 0", indent, data_slot, fat_p).ok();
+        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 0", indent, data_slot, fat_p).ok();
         writeln!(out, "{}  store i64 {}, ptr {}", indent, data_handle, data_slot).ok();
+        // 2026-10-09 (identity-in-value): the TAG slot — the concrete's identity
+        // that rides in the value. Slot 1 (data=0, tag=1, table=2).
+        let tag_slot = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 1", indent, tag_slot, fat_p).ok();
+        writeln!(out, "{}  store i64 {tag}, ptr {}", indent, tag_slot).ok();
         let table_slot = self.fun.gen_reg();
-        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 1", indent, table_slot, fat_p).ok();
+        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 2", indent, table_slot, fat_p).ok();
         let table_addr = self.fun.gen_reg();
         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, table_addr, thunk_table).ok();
         writeln!(out, "{}  store i64 {}, ptr {}", indent, table_addr, table_slot).ok();
@@ -3114,31 +3124,13 @@ impl LlvmBackend {
             },
             _ => unreachable!(),
         };
-        // The concrete half is resolved from the binding that created the
-        // dyn value: the coercion site (`let g: dyn Trait = Concrete { .. }`)
-        // recorded the concrete type in `ctx.dyn_concrete_of` (the A5 rule
-        // re-types the binding to `dyn Trait`, erasing the concrete from
-        // let_original_types, so that map is the only reliable source).
-        let concrete = if let Expr::Identifier(rname) = recv {
-            self.ctx.dyn_concrete_of.get(rname).cloned()
-        } else {
-            None
-        };
-        let concrete = match concrete {
-            Some(c) => c,
-            None => {
-                // Fall back: the struct literal type name, if the receiver is
-                // a struct literal expression (a fresh, unbound dyn value).
-                if let Expr::StructLiteral { type_name: tn, .. } = recv {
-                    tn.clone()
-                } else {
-                    panic!(
-                        "dyn receiver: cannot resolve the concrete type for member '{}.{}()'",
-                        trait_name, name
-                    );
-                }
-            }
-        };
+        // 2026-10-09 (dyn identity-in-value): the TAG rides in the value (the
+        // fat pointer's slot 1). It is the identity that survives the `dyn`
+        // flowing through a return/arg/field/phi — the name-keyed
+        // `dyn_concrete_of` (and `dyn_concrete_tag_of`) only covers the binding
+        // that created the value, not a flowed one. We read the tag from the
+        // VALUE, so a flowed `dyn` still dispatches.
+        //
         // Requirement slot order = the trait's declared member order
         // (declaration order — matches the interpreter).
         let slots = self
@@ -3148,19 +3140,207 @@ impl LlvmBackend {
             .cloned()
             .unwrap_or_default();
         let lookup_name = name.trim_end_matches('#');
-        // Inline form (the default): the impl body is inlined directly, the
-        // `dyn` erased, no vtable.
-        let impl_key = format!("{}::{}", concrete, lookup_name);
-        // Clone the impl member body out of ctx (owned) so the subsequent
-        // mutable calls (emit_expr_inner / emit_member_body) do not conflict
-        // with an immutable borrow of self.ctx.
-        let member_owned: Option<crate::ast::TopLevel> = self.ctx.dyn_impl_member.get(&impl_key).cloned();
-        if let Some(member) = member_owned.as_ref() {
-            return self.emit_dyn_inline(out, v, recv_reg, &concrete, member, args, recv_prefix, indent);
+        // The per-trait concrete registry (sorted, deterministic): tag -> concrete.
+        let concrete_pairs = self
+            .ctx
+            .dyn_concrete_pairs
+            .get(&trait_name)
+            .cloned()
+            .unwrap_or_default();
+        let mut concretes: Vec<String> = concrete_pairs.into_iter().collect();
+        concretes.sort();
+        // Derive the dispatch form by the cost model (SPEC §8.6.1), by SET
+        // CARDINALITY (the tag is stored in the value's memory, so it is never
+        // a compile-time constant — the concrete set is the provable fact):
+        //   Inline  — exactly one concrete conforms to the trait. Provable
+        //             unconditionally (Phase B): inline the impl body, erase the
+        //             `dyn`. No tag load, no vtable.
+        //   Switch  — a small known set of concretes (2..=threshold). A `switch`
+        //             on the tag (loaded from the value), each arm inlines its
+        //             impl body. Cheaper than the Vtable (no indirect call).
+        //   Vtable  — the fallback (the set is open/large). Load the thunk-
+        //             table slot by the tag's concrete and indirect-call.
+        if concretes.len() == 1 {
+            let concrete = concretes[0].clone();
+            let impl_key = format!("{}::{}", concrete, lookup_name);
+            let member_owned: Option<crate::ast::TopLevel> = self.ctx.dyn_impl_member.get(&impl_key).cloned();
+            if let Some(member) = member_owned.as_ref() {
+                return self.emit_dyn_inline(out, v, recv_reg, &concrete, member, args, recv_prefix, indent);
+            }
         }
-        // Vtable form (the fallback): load the thunk-table slot by requirement
-        // index and indirect-call through the loaded fn pointer.
+        // The tag the VALUE carries (loaded from the fat pointer's tag slot) —
+        // needed only for the Switch/Vtable forms (not Inline).
+        let tag_reg = self.load_dyn_tag(out, indent, recv_reg);
+        // Switch form: a small known set of concretes (2..=threshold) → a
+        // `switch` on the tag, each arm inlines its impl body.
+        let switch_threshold = 4;
+        if concretes.len() > 1 && concretes.len() <= switch_threshold {
+            return self.emit_dyn_switch(out, v, recv_reg, &concretes, &lookup_name, args, recv_prefix, tag_reg, indent);
+        }
+        // Vtable form (the fallback): the set is open/large → load the
+        // thunk-table slot by the tag's concrete and indirect-call.
+        let concrete = self.resolve_dyn_concrete(recv, &trait_name, &concretes, &tag_reg);
         self.emit_dyn_vtable(out, v, &trait_name, &concrete, &lookup_name, &slots, recv_reg, args, indent)
+    }
+
+    /// 2026-10-09 (dyn identity-in-value): load the TAG the `dyn` value carries
+    /// (the fat pointer's slot 1) into a fresh i64 register. The tag is the
+    /// concrete's per-trait index — the identity that rides in the value.
+    fn load_dyn_tag(&mut self, out: &mut String, indent: &str, recv_reg: &TypedRegister) -> String {
+        let fat_p = self.fun.gen_reg();
+        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, fat_p, recv_reg.name).ok();
+        let tag_p = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 1", indent, tag_p, fat_p).ok();
+        let tag_v = self.fun.gen_reg();
+        writeln!(out, "{}{} = load i64, ptr {}", indent, tag_v, tag_p).ok();
+        tag_v
+    }
+
+    /// 2026-10-09 (dyn identity-in-value): if `reg` is a constant i64, its value.
+    fn constant_value_of(&self, reg: &str) -> Option<i64> {
+        let n: i64 = reg.trim_start_matches('%').parse().ok()?;
+        Some(n)
+    }
+
+    /// 2026-10-09 (dyn identity-in-value): resolve the concrete type for the
+    /// Vtable fallback. Prefer the name-keyed map (a fresh value's binding);
+    /// else map the tag's constant value (if provable) to its concrete; else the
+    /// struct-literal receiver's type name; else panic (an unresolvable open set).
+    fn resolve_dyn_concrete(
+        &self,
+        recv: &Expr,
+        trait_name: &str,
+        concretes: &[String],
+        tag_reg: &str,
+    ) -> String {
+        if let Expr::Identifier(rname) = recv {
+            if let Some(c) = self.ctx.dyn_concrete_of.get(rname).cloned() {
+                return c;
+            }
+        }
+        if let Some(t) = self.constant_value_of(tag_reg) {
+            if let Some(c) = concretes.get(t as usize).cloned() {
+                return c;
+            }
+        }
+        if let Expr::StructLiteral { type_name: tn, .. } = recv {
+            return tn.clone();
+        }
+        panic!(
+            "dyn receiver: cannot resolve the concrete type for member '{}.{}()'",
+            trait_name, ""
+        );
+    }
+
+    /// 2026-10-09 (dyn identity-in-value): the SWITCH dispatch form — the tag
+    /// (loaded into `tag_reg`) is one of a small known set of concrete tags,
+    /// so a `switch` on the tag dispatches, each arm inlining that concrete's
+    /// impl body. The tag is the discriminator (the identity rides in the
+    /// value, so a flowed `dyn` still dispatches). Cheaper than the Vtable
+    /// fallback (no thunk-table load, no indirect call) for a closed small set.
+    /// Arms emit in sorted concrete order (deterministic, Rule: no per-process
+    /// variation).
+    fn emit_dyn_switch(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        recv_reg: &TypedRegister,
+        concretes: &[String],
+        lookup_name: &str,
+        args: &[Expr],
+        recv_prefix: Option<(String, String)>,
+        tag_reg: String,
+        indent: &str,
+    ) -> TypedRegister {
+        // Load the fat pointer's DATA half once (the concrete heap handle) to
+        // thread as the Self receiver in every arm.
+        let fat_p = self.fun.gen_reg();
+        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, fat_p, recv_reg.name).ok();
+        let data_p = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 0", indent, data_p, fat_p).ok();
+        let data_v = self.fun.gen_reg();
+        writeln!(out, "{}{} = load i64, ptr {}", indent, data_v, data_p).ok();
+        // Pre-emit the call args (after the Self) once — shared by every arm
+        // (SSA registers are valid in any block that dominates their def).
+        let mut arg_regs: Vec<(String, Type)> = Vec::new();
+        for a in args {
+            let arg_tmp = self.fun.gen_reg();
+            let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+            arg_regs.push((r.name, r.ty));
+        }
+        // Labels: one per arm, plus the default and the end (phi) block.
+        let mut arm_labels: Vec<String> = Vec::with_capacity(concretes.len());
+        for _ in concretes {
+            arm_labels.push(self.fun.next_label("dynsw"));
+        }
+        let default_label = self.fun.next_label("dynswd");
+        let end_label = self.fun.next_label("dynswend");
+        // Emit the `switch` on the tag (the discriminator — the identity rides
+        // in the value).
+        writeln!(out, "{}switch i64 {}, label {} [", indent, tag_reg, default_label).ok();
+        for (i, concrete) in concretes.iter().enumerate() {
+            writeln!(out, "  i64 {i}, label {}", arm_labels[i]).ok();
+        }
+        writeln!(out, "  ]").ok();
+        // Emit each arm: label, inline the impl body (its `term` records
+        // member_result — the arm's result register), br to the end block.
+        let mut arm_results: Vec<(String, &String)> = Vec::new();
+        for (i, concrete) in concretes.iter().enumerate() {
+            writeln!(out, "{}:", arm_labels[i]).ok();
+            let impl_key = format!("{}::{}", concrete, lookup_name);
+            let member_owned: Option<crate::ast::TopLevel> = self.ctx.dyn_impl_member.get(&impl_key).cloned();
+            let member = match member_owned.as_ref() {
+                Some(m) => m,
+                None => {
+                    // No impl body for this concrete/slot — fall through to the
+                    // default (which traps). Unreachable for a well-typed program
+                    // (the typechecker's coherence pass proves conformance).
+                    writeln!(out, "{}  br label {}", indent, default_label).ok();
+                    arm_results.push((String::new(), concrete));
+                    continue;
+                }
+            };
+            // The arm's arg registers: the Self (data half, typed as the
+            // concrete) first, then the pre-emitted call args.
+            let arm_args: Vec<(String, Type)> = vec![(data_v.clone(), Type::Custom(concrete.clone()))]
+                .into_iter()
+                .chain(arg_regs.iter().cloned())
+                .collect();
+            let arm_result = self.emit_member_body(
+                out,
+                v,
+                MemberInvocation {
+                    recv_reg: &TypedRegister { name: data_v.clone(), ty: Type::Custom(concrete.clone()) },
+                    type_name: concrete,
+                    member,
+                    arg_regs: &arm_args,
+                    prefix: recv_prefix.clone(),
+                },
+                indent,
+            );
+            // emit_member_body took the arm's term value from member_result; the
+            // returned register IS the arm's result.
+            arm_results.push((arm_result.name.clone(), concrete));
+            writeln!(out, "{}  br label {}", indent, end_label).ok();
+        }
+        // The default arm: trap (an unresolvable tag is a soundness violation).
+        writeln!(out, "{}:", default_label).ok();
+        writeln!(out, "{}  call void @__briev_trap()", indent).ok();
+        writeln!(out, "{}  unreachable", indent).ok();
+        // The end block: phi over the arm result registers (one per arm that
+        // inlined a body). The incoming block of arm i is arm_labels[i].
+        // The result type is the impl's ret type (Int → i64 for the
+        // Greeter-scale case).
+        writeln!(out, "{}:", end_label).ok();
+        let result = self.fun.gen_reg();
+        let phi_list: Vec<String> = arm_results
+            .iter()
+            .enumerate()
+            .filter(|(_, (r, _))| !r.is_empty())
+            .map(|(i, (r, _))| format!("[%{}, {}]", r, arm_labels[i]))
+            .collect();
+        writeln!(out, "{}{} = phi i64 {}", indent, result, phi_list.join(", ")).ok();
+        TypedRegister { name: result, ty: Type::int() }
     }
 
     /// 2026-10-09 (Phase B): the INLINE dispatch form — inline the impl body
@@ -3180,11 +3360,12 @@ impl LlvmBackend {
         indent: &str,
     ) -> TypedRegister {
         // Load the fat pointer's DATA half (slot 0, the concrete heap handle)
-        // to thread as the Self receiver.
+        // to thread as the Self receiver. The fat pointer is { data, tag, table }
+        // (2026-10-09 identity-in-value: the tag slot sits between).
         let fat_p = self.fun.gen_reg();
         writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, fat_p, recv_reg.name).ok();
         let data_p = self.fun.gen_reg();
-        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 0", indent, data_p, fat_p).ok();
+        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 0", indent, data_p, fat_p).ok();
         let data_v = self.fun.gen_reg();
         writeln!(out, "{}{} = load i64, ptr {}", indent, data_v, data_p).ok();
         // Build the arg register list: the Self receiver (data half) first,
@@ -3272,7 +3453,7 @@ impl LlvmBackend {
         let fat_p = self.fun.gen_reg();
         writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, fat_p, recv_reg.name).ok();
         let data_p = self.fun.gen_reg();
-        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 0", indent, data_p, fat_p).ok();
+        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 0", indent, data_p, fat_p).ok();
         let data_v = self.fun.gen_reg();
         writeln!(out, "{}{} = load i64, ptr {}", indent, data_v, data_p).ok();
         // Emit the call args (after the Self).
