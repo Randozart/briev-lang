@@ -1859,12 +1859,6 @@ impl LlvmBackend {
                     _ => None,
                 };
                 if let Some((fidx, vec_ty)) = vec_field {
-                    if stride.is_some() {
-                        panic!(
-                            "strided vector slicing (`data[a:b:c]`) is not yet supported — \
-                             use a contiguous slice or foreach"
-                        );
-                    }
                     let n = self.vector_element_count(&vec_ty) as i64;
                     let data_ptr = self.emit_state_gep(out, indent, "f", "%state", fidx);
                     let is_f32 = matches!(&vec_ty, Type::Vector(inner, _)
@@ -1900,6 +1894,35 @@ impl LlvmBackend {
                             ty: Type::int(),
                         },
                     };
+                    // 2026-10-09 (T2a, slice): STRIDED slice `data[a:b:c]` —
+                    // unblock the old `panic!` with a strided GATHER. A strided
+                    // view cannot use the contiguous tier-list layout (element i
+                    // is NOT at base + i*elem_bytes), so a gather that builds a
+                    // contiguous `[len][elems]` block with the stride baked in
+                    // is the correct, additive lowering. The contiguous
+                    // zero-copy VIEW is T2b (separate).
+                    if let Some(stride_expr) = stride {
+                        let helper = if is_f32 {
+                            "@briev_slice_strided_f32"
+                        } else {
+                            "@briev_slice_strided64"
+                        };
+                        let st = self.emit_expr(out, stride_expr, indent);
+                        // 2026-09-10 (Family D): state prefix for pure-Briev gathers.
+                        let gp = if self.ctx.defn_takes_state(&helper[1..]) { "ptr %state, " } else { "" };
+                        let buf = self.fun.gen_reg();
+                        writeln!(
+                            out,
+                            "{}{} = call ptr {}({}ptr {}, i64 {}, i64 {}, i64 {}, i64 {})",
+                            indent, buf, helper, gp, data_ptr, n, lo.name, hi.name, st.name
+                        )
+                        .ok();
+                        let elem_ty = match &vec_ty {
+                            Type::Vector(inner, _) => (**inner).clone(),
+                            _ => Type::int(),
+                        };
+                        return self.box_gather_as_tier_list(out, indent, &buf, elem_ty);
+                    }
                     let helper = if is_f32 {
                         "@briev_slice_range_f32"
                     } else {

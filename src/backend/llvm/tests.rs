@@ -10254,6 +10254,45 @@ node run [i < 1][i == 1] {
     );
 }
 
+/// 2026-10-09 (T2a, slice): a STRIDED slice `data[a:b:c]` over a 1-D vector
+/// state column unblocks the old `panic!` — it lowers to a strided GATHER
+/// (`briev_slice_strided64`) that builds a contiguous `[len][elems]` block with
+/// the stride baked in, so downstream `Index`/foreach consumers are unchanged.
+///
+/// The test is IR-focused (no stdlib loaded, so the result is not consumed) —
+/// it asserts the strided gather is emitted and the old `panic!` is gone.
+#[test]
+fn test_strided_slice_emits_strided_gather() {
+    let src = r#"
+let data: Int[8] = [1, 2, 3, 4, 5, 6, 7, 8];
+let sub: List<Int> = data[0:6:2];
+let i: Int = 0;
+node run [i < 1][i == 1] {
+  when i == 0 {
+    let _u: Int = data[2:6:2];
+    endprogram Print#(0);
+  };
+  i = i + 1;
+  term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    // This MUST NOT panic (the strided slice previously panicked at
+    // emit_expr.rs:1863). The strided slice lowers to the strided gather.
+    let ir = backend.generate(&items, None);
+    assert!(
+        ir.contains("@briev_slice_strided64"),
+        "a strided slice must call the strided gather helper:\n{ir}"
+    );
+    // NOT the contiguous gather (that would ignore the stride).
+    assert!(
+        !ir.contains("call ptr @briev_slice_range64"),
+        "a strided slice must NOT use the contiguous range gather (the stride must be honored):\n{ir}"
+    );
+}
+
 /// 2026-10-09 (dyn identity-in-value): when TWO concretes conform to a trait,
 /// the dispatch is the SWITCH form — a `switch` on the tag (the identity that
 /// rides in the value), each arm inlining that concrete's impl body. Cheaper

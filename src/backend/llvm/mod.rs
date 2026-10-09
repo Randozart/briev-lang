@@ -3805,6 +3805,17 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         if !defined.contains("briev_slice_range_f32") {
             writeln!(out, "declare i64 @briev_slice_range_f32(ptr, i64, i64, i64) #1").ok();
         }
+        // 2026-10-09 (T2a): strided range slice over a state column —
+        // `data[lo:hi:step]`. Element i is source[lo + i*step]; builds a
+        // contiguous [len][elems] block (the same layout the contiguous
+        // gather produces), so downstream `Index`/foreach consumers are
+        // unchanged. Unblocks the old strided-slice `panic!`.
+        if !defined.contains("briev_slice_strided64") {
+            writeln!(out, "declare i64 @briev_slice_strided64(ptr, i64, i64, i64, i64) #1").ok();
+        }
+        if !defined.contains("briev_slice_strided_f32") {
+            writeln!(out, "declare i64 @briev_slice_strided_f32(ptr, i64, i64, i64, i64) #1").ok();
+        }
         // 2026-08-01 (Phase 3): CLI argv capture. The emitted main stores
         // its argc/argv into these globals; the runtime argv helpers
         // (briev_rt.c) read them as externs. The compiler OWNS the globals
