@@ -2659,6 +2659,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.ctx.density = analysis.density.clone();
         self.ctx.inline_decisions = analysis.inline_decisions.clone();
         self.ctx.modulo_partition = analysis.modulo_partition.clone();
+        // 2026-10-12 (SPEC §8.6.1 Option B): per-collection dyn concrete sets
+        // + dispatch forms — the frontend's decision the element read-sites
+        // consume (never re-derived).
+        self.ctx.dyn_collection_info = analysis.dyn_collection_info.clone();
 
         let cg = &analysis.call_graph;
         self.ctx.has_cycles = cg.has_cycle();

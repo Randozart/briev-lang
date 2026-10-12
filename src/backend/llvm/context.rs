@@ -295,6 +295,17 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// inlines its impl body); an open set → Vtable (the fallback). See
     /// docs/plans/2026-10-09-dyn-identity-in-value.md.
     pub dyn_concrete_tag_of: HashMap<String, i64>,
+    /// 2026-10-12 (SPEC §8.6.1 Option B, plan 2026-10-11-coll-element-size.md):
+    /// per-`Collection<dyn Trait>`-binding concrete sets + the dispatch form
+    /// (§8.6.1 Inline/Switch/Vtable) each element-read site is licensed to
+    /// use. Computed ONCE in the frontend (dyn_concrete_sets pass, mirroring
+    /// the interpreter's reference resolution) and read here — the backend
+    /// consumes the decision, never re-derives (frontend-driven-dispatch).
+    /// Keyed by the COLLECTION BINDING name (`handlers`), not the trait: the
+    /// set is per-collection, not the global per-trait conformance set
+    /// (`dyn_concrete_pairs`).
+    pub dyn_collection_info:
+        std::collections::HashMap<String, crate::analysis::dyn_concrete_sets::DynCollectionInfo>,
     /// 2026-07-31 (A8): obj declared type-parameter names, keyed by type name
     /// (`obj Stack<T, N>` → ["T", "N"]). Used to substitute a receiver's
     /// concrete type args into the generic slots/members (monomorphization).
@@ -577,6 +588,7 @@ impl CompilerContext {
             dyn_impl_member: HashMap::new(),
             dyn_concrete_of: HashMap::new(),
             dyn_concrete_tag_of: HashMap::new(),
+            dyn_collection_info: std::collections::HashMap::new(),
             obj_type_params: HashMap::new(),
             enum_types: HashMap::new(),
             cell_defs: HashMap::new(),
