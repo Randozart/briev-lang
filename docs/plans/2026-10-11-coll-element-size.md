@@ -248,3 +248,65 @@ expression's value"). The factually-wrong "printf + return 0" comment in
 `cast_lanes.bv` was rewritten (C's `printf` returns the byte count — that
 was the original bug, not the convention). `__eprint_str` was aligned to
 `term 0` (it was the last print-family outlier returning the count).
+
+## ADDENDUM 2 — Phase 4 complete: tagged-box backend (2026-10-12)
+
+### The shipped design
+
+Construction and read are symmetric around a **global per-trait tag**:
+
+- **Construction** (`emit_init_op_construction` → `dyn_collection_element_box`,
+  emit_toplevel.rs): when the frontend's per-collection decision says Switch
+  (a closed set of 2..=4 concretes), each element is stored as a 16-byte
+  TAGGED BOX `[tag, payload]` — tag = the concrete's GLOBAL per-trait index
+  (`dyn_concrete_tag_of`, sorted position — the same discriminant the dispatch
+  switch selects on), payload = the boxed-concrete handle. The buffer slot
+  holds the box's ADDRESS (8-byte stride unchanged — grow/resize/Pop#/At stay
+  width-agnostic). Inline (1 concrete) and Vtable (open/>4) collections store
+  the payload handle directly — no box, no tag.
+- **Read** (Index arm, emit_expr.rs): the tier2 `op At` dispatch records the
+  collection binding in `FunctionContext.current_dyn_collection`; the inner
+  `data[i]` load — a re-entry into the Index arm with `obj = Identifier("data")`
+  (the buffer field, NOT the binding) — consults it. For a tagged `dyn`
+  element it reconstructs the 24-byte fat pointer `[payload, tag, table]` the
+  dispatch machinery already consumes (`malloc(24)` per READ — no allocation
+  is stored, so no ownership/lifetime change; the box in the buffer stays the
+  single source of truth).
+- **Dispatch**: unchanged — `emit_dyn_switch` maps tag i → concretes[i] over
+  the global per-trait sorted set, which is exactly what the box tag indexes.
+
+Controls verified: bare `dyn` (scalar coercion, 701), `List<Big>` (non-dyn
+elements, 3) — both unchanged paths still pass. `cargo test --lib` 3058/0;
+rbv_gate PASS; Praetor clean (no new diagnostics).
+
+### The double-construction bug (found by -O0 assembly tracing)
+
+The first cut boxed element 0, bailed MID-LOOP at element 1 (the insert-member
+lookup used the MONOMORPHIZED key — `operator_defs` is keyed by the plain
+base name "List", while `type_key` is `resolve_obj_key`'s monomorphized
+form), and the caller then re-ran the LEGACY path on top: a second `op Init`
+allocated a fresh buffer (the boxed one leaked), Dog was constructed twice,
+and Cat was stored RAW. Runtime symptom: exit 132 (SIGILL — the switch's
+default trap) at both -O0 and -O3 (at -O3 the whole `main` folded to `ud2`).
+
+Two lessons encoded in the code:
+
+1. **Feasibility pre-pass before any emission** (`dyn_element_tags`): the box
+   path must be total — once it emits one element it cannot bail, or the
+   caller's fallback double-constructs. The pre-pass proves every element (a
+   struct literal with a registered tag) and the insert member BEFORE the
+   first store.
+2. **`operator_defs` is keyed by the base name, `obj_members` by the
+   monomorphized key** — resolve lookups from the caller's already-resolved
+   `defs`/`members` (the `DynBoxCtor` now carries the resolved insert member),
+   never re-derive from `type_key`.
+
+### Measurement protocol note
+
+Per the performance-recovery protocol: probes were verified at a print
+boundary before timing discipline applied (701/91 exact stdout, exit 0,
+harness-exact clang command). The tagged box adds one 16-byte malloc per
+ELEMENT at construction and one 24-byte malloc per element READ — the read
+allocation is the cost of not changing the dispatch ABI (Phase 5's bare-dyn
+unification can retire it by making the box itself the fat pointer: 24 bytes
+`[tag, payload, reserved]`, store once, read with zero reconstruction).

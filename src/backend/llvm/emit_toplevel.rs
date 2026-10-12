@@ -33,6 +33,19 @@ struct ProbeCmpArg<'a> {
     next: &'a str,
 }
 
+/// 2026-10-12 (SPEC §8.6.1 Option B): the construction context a tagged
+/// `Collection<dyn Trait>` literal builds through — the binding whose frontend
+/// decision gates the box shape, the receiver (the collection instance handle
+/// + its monomorphized type key), and the two construction members (Init for
+/// the first element, InsertAt for the tail).
+struct DynBoxCtor<'a> {
+    field_name: &'a str,
+    type_key: &'a str,
+    box_recv: &'a TypedRegister,
+    init_member: &'a crate::ast::TopLevel,
+    insert_member: Option<&'a crate::ast::TopLevel>,
+}
+
 impl LlvmBackend {
     /// 2026-08-04 (compiler-in-Briev): top-level `let` names in a body that are
     /// ASSIGNED later (incl. inside when/if/foreach/sync blocks). Such lets get
@@ -1481,21 +1494,8 @@ impl LlvmBackend {
                     );
                 }
             } else {
-                let arg_tmp = self.fun.gen_reg();
-                let first = self.emit_expr_inner(out, &arg_tmp, &elems[0], indent);
-                let out_tmp = self.fun.gen_reg();
-                self.emit_member_body(
-                    out,
-                    &out_tmp,
-                    super::emit_expr::MemberInvocation {
-                        recv_reg: &box_recv,
-                        type_name: &type_key,
-                        member: &member,
-                        arg_regs: &[(first.name, first.ty)],
-                        prefix: None,
-                    },
-                    indent,
-                );
+                // The tail-insert member — resolved ONCE (the box path and the
+                // legacy path both consume it).
                 let insert_member = {
                     let insert_def = defs.iter().find(|d| d.op == "InsertAt").cloned();
                     insert_def.and_then(|d| match d.impl_args.as_ref() {
@@ -1505,23 +1505,58 @@ impl LlvmBackend {
                         _ => None,
                     })
                 };
-                if let Some(insert_member) = insert_member {
-                    for e in elems.iter().skip(1) {
-                        let arg_tmp = self.fun.gen_reg();
-                        let ar = self.emit_expr_inner(out, &arg_tmp, e, indent);
-                        let out_tmp = self.fun.gen_reg();
-                        self.emit_member_body(
-                            out,
-                            &out_tmp,
-                            super::emit_expr::MemberInvocation {
-                                recv_reg: &box_recv,
-                                type_name: &type_key,
-                                member: &insert_member,
-                                arg_regs: &[(ar.name, ar.ty)],
-                                prefix: None,
-                            },
-                            indent,
-                        );
+                // 2026-10-12 (SPEC §8.6.1 Option B): a `Collection<dyn Trait>`
+                // whose dispatch form needs a tag (Switch/Vtable, per the
+                // frontend's per-collection concrete-set analysis) stores each
+                // element as a 16-byte TAGGED BOX `[tag, payload]` — tag = the
+                // concrete's global per-trait index (the switch discriminant),
+                // payload = the boxed-concrete handle. The buffer slot holds the
+                // box's ADDRESS (8-byte stride unchanged); the read site
+                // reconstructs the fat pointer the dispatch machinery consumes.
+                // An Inline collection stores the payload handle directly (the
+                // legacy shape) — no tag, no box.
+                let ctor = DynBoxCtor {
+                    field_name,
+                    type_key: &type_key,
+                    box_recv: &box_recv,
+                    init_member: &member,
+                    insert_member: insert_member.as_ref(),
+                };
+                let dyn_box = self.dyn_collection_element_box(out, indent, elems, ctor);
+                if !dyn_box {
+                    let arg_tmp = self.fun.gen_reg();
+                    let first = self.emit_expr_inner(out, &arg_tmp, &elems[0], indent);
+                    let out_tmp = self.fun.gen_reg();
+                    self.emit_member_body(
+                        out,
+                        &out_tmp,
+                        super::emit_expr::MemberInvocation {
+                            recv_reg: &box_recv,
+                            type_name: &type_key,
+                            member: &member,
+                            arg_regs: &[(first.name, first.ty)],
+                            prefix: None,
+                        },
+                        indent,
+                    );
+                    if let Some(insert_member) = insert_member {
+                        for e in elems.iter().skip(1) {
+                            let arg_tmp = self.fun.gen_reg();
+                            let ar = self.emit_expr_inner(out, &arg_tmp, e, indent);
+                            let out_tmp = self.fun.gen_reg();
+                            self.emit_member_body(
+                                out,
+                                &out_tmp,
+                                super::emit_expr::MemberInvocation {
+                                    recv_reg: &box_recv,
+                                    type_name: &type_key,
+                                    member: &insert_member,
+                                    arg_regs: &[(ar.name, ar.ty)],
+                                    prefix: None,
+                                },
+                                indent,
+                            );
+                        }
                     }
                 }
             }
@@ -1551,6 +1586,115 @@ impl LlvmBackend {
         writeln!(out, "{}store {} {}, ptr {}", indent, field_ty, addr, gep).ok();
         let _ = field_name;
         true
+    }
+
+    /// 2026-10-12 (SPEC §8.6.1 Option B): construct a `Collection<dyn Trait>`
+    /// whose dispatch form needs a tag (Switch) by storing each element as a
+    /// 16-byte TAGGED BOX `[tag, payload]`. `true` when the box path was taken
+    /// (the caller must skip the legacy raw-handle construction); `false` when
+    /// the collection is not a tagged `dyn` (the caller uses the legacy path
+    /// unchanged).
+    ///
+    /// The box's TAG is the concrete's GLOBAL per-trait index
+    /// (`dyn_concrete_tag_of` — the same discriminant the dispatch switch
+    /// selects on); the PAYLOAD is the boxed-concrete handle (what
+    /// `emit_struct_literal` produces). The buffer slot holds the box's ADDRESS
+    /// (the 8-byte stride is unchanged); the read site (the Index arm)
+    /// reconstructs the fat pointer the dispatch machinery consumes.
+    ///
+    /// Only SYNTACTICALLY-provable elements are boxed (a struct literal names
+    /// its concrete). The feasibility pre-pass (`dyn_element_tags`) makes the
+    /// emit loop TOTAL: a bail MID-EMISSION would leave a partially-built
+    /// collection under the caller's legacy re-run (the double-Init bug).
+    fn dyn_collection_element_box(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        elems: &[Expr],
+        ctor: DynBoxCtor<'_>,
+    ) -> bool {
+        // The frontend decision: only a Switch collection (a closed set of
+        // 2..=4 concretes) uses the per-element tag box. Inline (1) needs no
+        // tag; Vtable (open or >4) resolves the concrete from the payload
+        // handle, not a tag.
+        let info = self.ctx.dyn_collection_info.get(ctor.field_name);
+        let Some(info) = info else { return false };
+        if info.dispatch_form != crate::analysis::dyn_concrete_sets::DynDispatchForm::Switch {
+            return false;
+        }
+        // Feasibility pre-pass — no emission before every step is proved.
+        let Some(tags) = self.dyn_element_tags(&info.trait_name, elems) else { return false };
+        if elems.len() > 1 && ctor.insert_member.is_none() {
+            return false;
+        }
+        // Emit loop — total (the pre-pass proved every step succeeds).
+        for (i, e) in elems.iter().enumerate() {
+            let member = if i == 0 {
+                ctor.init_member
+            } else {
+                ctor.insert_member.unwrap()
+            };
+            let box_handle = self.emit_dyn_tagged_box(out, indent, e, tags[i]);
+            // Store the box handle into the collection (Init first, InsertAt rest).
+            let out_tmp = self.fun.gen_reg();
+            self.emit_member_body(
+                out,
+                &out_tmp,
+                super::emit_expr::MemberInvocation {
+                    recv_reg: ctor.box_recv,
+                    type_name: ctor.type_key,
+                    member,
+                    arg_regs: &[(box_handle, Type::int())],
+                    prefix: None,
+                },
+                indent,
+            );
+        }
+        true
+    }
+
+    /// The per-element global tags of a Switch-form collection literal, or
+    /// `None` when any element's concrete is not syntactically provable (a
+    /// struct literal names its concrete) or unregistered in the per-trait
+    /// tag map. The SAME provenance rule the frontend analysis applies — the
+    /// two derivations agree for a well-typed program.
+    fn dyn_element_tags(&self, trait_name: &str, elems: &[Expr]) -> Option<Vec<i64>> {
+        let mut tags = Vec::with_capacity(elems.len());
+        for e in elems {
+            let concrete = match e {
+                crate::ast::Expr::StructLiteral { type_name, .. } => type_name.clone(),
+                _ => return None,
+            };
+            let tag_key = format!("{}::{}", trait_name, concrete);
+            tags.push(*self.ctx.dyn_concrete_tag_of.get(&tag_key)?);
+        }
+        Some(tags)
+    }
+
+    /// Emit ONE tagged box: evaluate the element (the boxed-concrete payload),
+    /// malloc the 16-byte `[tag, payload]` block, store both slots, and return
+    /// the box's i64 handle (what the collection's InsertAt/init stores into
+    /// the data buffer).
+    fn emit_dyn_tagged_box(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        e: &Expr,
+        tag: i64,
+    ) -> String {
+        let arg_tmp = self.fun.gen_reg();
+        let payload = self.emit_expr_inner(out, &arg_tmp, e, indent);
+        let box_ptr = self.fun.gen_reg();
+        writeln!(out, "{}{} = call ptr @malloc(i64 16)", indent, box_ptr).ok();
+        let tag_slot = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 0", indent, tag_slot, box_ptr).ok();
+        writeln!(out, "{}store i64 {}, ptr {}", indent, tag, tag_slot).ok();
+        let pay_slot = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 1", indent, pay_slot, box_ptr).ok();
+        writeln!(out, "{}store i64 {}, ptr {}", indent, payload.name, pay_slot).ok();
+        let box_handle = self.fun.gen_reg();
+        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, box_handle, box_ptr).ok();
+        box_handle
     }
 
     /// 2026-08-12 (Iterable protocol): construct a LOCAL collection value

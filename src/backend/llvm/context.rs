@@ -886,6 +886,14 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// store (write), so `txn push(val) { data[len] = val; len = len + 1; }`
     /// mutates the receiver instance.
     pub self_binding: Option<(String, String)>,
+    /// 2026-10-12 (SPEC §8.6.1 Option B): the COLLECTION BINDING whose element
+    /// is currently being read (set by the Index arm's tier2 `op At` dispatch
+    /// and restored after). While set, the inner `data[i]` load knows the
+    /// collection's frontend `dyn_collection_info` and can reconstruct the
+    /// fat pointer for a tagged `dyn` element (a 16-byte box `[tag, payload]`
+    /// → the 24-byte fat pointer the dispatch machinery consumes). `None` for
+    /// a non-collection index or a non-dyn element.
+    pub current_dyn_collection: Option<String>,
     /// 2026-08-07 (object instance pools): the unpacked obj instance prefix
     /// (`st`) while emitting a member body. Bare member names (`data`, `len`)
     /// resolve to the `{prefix}.{member}` top-level field slots instead of a
@@ -1223,6 +1231,7 @@ impl FunctionContext {
             pending_struct_allocas: Vec::new(),
             defer_struct_allocas: false,
             self_binding: None,
+            current_dyn_collection: None,
             self_prefix: None,
             foreach_break_labels: Vec::new(),
             chain_stack: Vec::new(),

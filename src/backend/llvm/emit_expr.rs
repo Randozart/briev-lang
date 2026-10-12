@@ -1175,8 +1175,19 @@ impl LlvmBackend {
                     // `term inner.data[i]` already unboxes String/Data elements
                     // (the Index arm's String-element path inttoprts), so no
                     // extra conversion here.
+                    // 2026-10-12 (SPEC §8.6.1 Option B): record the collection
+                    // binding so the inner `data[i]` load (a re-entry into this
+                    // Index arm with `obj = Identifier("data")`) can reconstruct
+                    // the fat pointer for a tagged `dyn` element — the frontend
+                    // decision is keyed by the binding, not the buffer field.
+                    let saved_dyn_coll = self.fun.current_dyn_collection.clone();
+                    if let crate::ast::Expr::Identifier(name) = obj.as_ref() {
+                        self.fun.current_dyn_collection = Some(name.clone());
+                    }
                     let out_tmp = self.fun.gen_reg();
-                    return self.emit_method_call(out, &out_tmp, obj, "At", &[(**index).clone()], &[], indent);
+                    let r = self.emit_method_call(out, &out_tmp, obj, "At", &[(**index).clone()], &[], indent);
+                    self.fun.current_dyn_collection = saved_dyn_coll;
+                    return r;
                 }
                 let idx_reg = self.emit_expr(out, index, indent);
                 // 2026-08-10: clone so gep_index can take &mut self while the
@@ -1478,6 +1489,55 @@ impl LlvmBackend {
                         writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
                             if self.fun.volatile_read { "volatile " } else { "" },
                             self.llvm_type(&index_elem_ty), gep).ok();
+                    } else if self.is_tagged_dyn_element(&index_elem_ty) {
+                        // 2026-10-12 (SPEC §8.6.1 Option B): the element is a `dyn
+                        // Trait` and the enclosing collection (recorded at the
+                        // tier2 `op At` dispatch) is tagged (Switch form). The
+                        // loaded i64 is a 16-byte TAGGED BOX address `[tag,
+                        // payload]`; reconstruct the 24-byte fat pointer `[data,
+                        // tag, table]` the dispatch machinery consumes. An
+                        // Inline collection (no box) never reaches here — the
+                        // frontend decision gates it.
+                        let raw = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load i64, ptr {}", indent, raw, gep).ok();
+                        let box_p = self.fun.gen_reg();
+                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, box_p, raw).ok();
+                        let fat_p = self.fun.gen_reg();
+                        writeln!(out, "{}{} = call ptr @malloc(i64 24)", indent, fat_p).ok();
+                        // payload = box slot 1 → fat slot 0 (the concrete handle).
+                        let box_pay = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 1", indent, box_pay, box_p).ok();
+                        let payload_v = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load i64, ptr {}", indent, payload_v, box_pay).ok();
+                        let fat_data = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 0", indent, fat_data, fat_p).ok();
+                        writeln!(out, "{}store i64 {}, ptr {}", indent, payload_v, fat_data).ok();
+                        // tag = box slot 0 → fat slot 1 (the switch discriminant).
+                        let box_tag = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 0", indent, box_tag, box_p).ok();
+                        let tag_v = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load i64, ptr {}", indent, tag_v, box_tag).ok();
+                        let fat_tag = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 1", indent, fat_tag, fat_p).ok();
+                        writeln!(out, "{}store i64 {}, ptr {}", indent, tag_v, fat_tag).ok();
+                        // table slot 2: the per-trait thunk table for the tag's
+                        // concrete (the Vtable form loads it by tag; the Switch
+                        // form inlines the bodies and never reads this slot).
+                        let trait_name = match &index_elem_ty {
+                            Type::Dyn(inner) => match inner.as_ref() {
+                                Type::Custom(n) => n.clone(),
+                                _ => String::new(),
+                            },
+                            _ => String::new(),
+                        };
+                        let concrete = self.tag_concrete_for_read(&trait_name, &tag_v);
+                        let thunk_table = format!("@__dyn_{}_{concrete}", trait_name);
+                        let fat_table = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 2", indent, fat_table, fat_p).ok();
+                        let table_addr = self.fun.gen_reg();
+                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, table_addr, thunk_table).ok();
+                        writeln!(out, "{}store i64 {}, ptr {}", indent, table_addr, fat_table).ok();
+                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, fat_p).ok();
                     } else {
                         writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
                             if self.fun.volatile_read { "volatile " } else { "" }, "i64", gep).ok();
@@ -3290,7 +3350,7 @@ impl LlvmBackend {
     }
 
     /// 2026-10-09 (dyn identity-in-value): if `reg` is a constant i64, its value.
-    fn constant_value_of(&self, reg: &str) -> Option<i64> {
+    pub(super) fn constant_value_of(&self, reg: &str) -> Option<i64> {
         let n: i64 = reg.trim_start_matches('%').parse().ok()?;
         Some(n)
     }

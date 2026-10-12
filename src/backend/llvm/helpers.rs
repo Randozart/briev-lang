@@ -1396,6 +1396,68 @@ impl LlvmBackend {
         self.is_protocol_member(ty, "String")
     }
 
+    /// 2026-10-12 (SPEC §8.6.1 Option B): is `elem_ty` a `dyn Trait` element of a
+    /// tagged (Switch-form) collection — i.e. its buffer slot holds a 16-byte
+    /// TAGGED BOX `[tag, payload]` that the read site must reconstruct into the
+    /// 24-byte fat pointer the dispatch machinery consumes? `false` for:
+    /// non-`dyn` elements, Inline collections (no box), Vtable collections
+    /// (open — the vtable resolves from the payload handle, no per-element tag),
+    /// and any index not reached through the tier2 `op At` dispatch (the
+    /// enclosing collection is unknown, so the box shape cannot be assumed).
+    /// Matched by the frontend's per-collection decision (`dyn_collection_info`),
+    /// never by a collection type name (Rule 19).
+    pub(super) fn is_tagged_dyn_element(&self, elem_ty: &Type) -> bool {
+        // The element must be a `dyn Trait`.
+        let trait_name = match elem_ty {
+            Type::Dyn(inner) => match inner.as_ref() {
+                Type::Custom(n) => n.clone(),
+                _ => return false,
+            },
+            _ => return false,
+        };
+        // The enclosing collection must be recorded (tier2 `op At` dispatch set
+        // it) and its frontend decision must be Switch.
+        let Some(name) = self.fun.current_dyn_collection.clone() else {
+            return false;
+        };
+        let info = self.ctx.dyn_collection_info.get(&name);
+        match info {
+            Some(i) => i.dispatch_form == crate::analysis::dyn_concrete_sets::DynDispatchForm::Switch,
+            None => false,
+        }
+    }
+
+    /// 2026-10-12 (SPEC §8.6.1 Option B): the concrete type whose per-trait
+    /// thunk table a tagged-dyn read's fat-pointer table slot points at. The
+    /// tag is the concrete's GLOBAL per-trait index; the per-collection set
+    /// (from `dyn_collection_info`) maps the tag back to its concrete. For the
+    /// Switch form the slot is unused (the switch inlines the impl bodies
+    /// directly) — the value is a fallback for the Vtable form. Returns the
+    /// first concrete in the per-collection set when the tag is not a
+    /// compile-time constant (the switch form never reads this slot, so any
+    /// concrete's table is a valid fallback address).
+    pub(super) fn tag_concrete_for_read(&self, trait_name: &str, tag_reg: &str) -> String {
+        let name = match self.fun.current_dyn_collection.clone() {
+            Some(n) => n,
+            None => return trait_name.to_string(),
+        };
+        let info = match self.ctx.dyn_collection_info.get(&name) {
+            Some(i) => i,
+            None => return trait_name.to_string(),
+        };
+        let mut concretes: Vec<String> = info.concrete_set.iter().cloned().collect();
+        concretes.sort();
+        // Prefer the tag's concrete if the tag is a compile-time constant
+        // (a fresh element's tag is known at the read site for a literal);
+        // else the first concrete (the switch form never uses this slot).
+        if let Some(tag) = self.constant_value_of(tag_reg) {
+            if (tag as usize) < concretes.len() {
+                return concretes[tag as usize].clone();
+            }
+        }
+        concretes.into_iter().next().unwrap_or_else(|| trait_name.to_string())
+    }
+
     /// 2026-08-07 (Phase 7): is `ty` a Blob operand (the [len][bytes]
     /// byte-buffer protocol)? Resolved via the casting graph — never by type
     /// name (rules 14/18). 2026-08-15 (fundamentals): `Blob` → `Blob`.
