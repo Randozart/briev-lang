@@ -69,8 +69,10 @@ pub fn dispatch_form_for(set: &BTreeSet<String>) -> DynDispatchForm {
 
 /// The `dyn Trait` parameter of a collection annotation, if any —
 /// `Collection<dyn Trait>` → `Some("Trait")`. Matched structurally by the
-/// type argument, never by collection name.
-fn collection_dyn_trait(ty: &crate::ast::Type) -> Option<String> {
+/// type argument, never by collection name. (pub(crate): the backend's local
+/// collection construction consumes the same annotation rule — one
+/// definition, two consumers.)
+pub(crate) fn collection_dyn_trait(ty: &crate::ast::Type) -> Option<String> {
     let args = match ty {
         crate::ast::Type::Applied(_, args) | crate::ast::Type::Generic(_, args) => args,
         _ => return None,

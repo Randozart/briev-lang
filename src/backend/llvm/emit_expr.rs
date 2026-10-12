@@ -3324,11 +3324,39 @@ impl LlvmBackend {
         // The tag the VALUE carries (loaded from the fat pointer's tag slot) —
         // needed only for the Switch/Vtable forms (not Inline).
         let tag_reg = self.load_dyn_tag(out, indent, recv_reg);
+        // 2026-10-12 (SPEC §8.6.1 Option B): a COLLECTION-ELEMENT receiver is
+        // always boxed (construction wraps every provable element in the
+        // [tag, payload] box — the frontend's per-collection decision, `ctx.
+        // dyn_collection_info`), so the tag is sound for ANY cardinality. The
+        // dispatch is a Switch over the GLOBAL per-trait set (arm values ==
+        // global tag positions; LLVM lowers a wide switch to a jump table —
+        // competitive with the vtable's load + indirect call). The Vtable
+        // fallback never fires for elements: resolve_dyn_concrete cannot name
+        // an Index receiver's concrete (it panicked — the 5-concrete crash).
+        let is_collection_element = match recv {
+            Expr::Index(obj, _) => match obj.as_ref() {
+                Expr::Identifier(n) => {
+                    self.ctx.dyn_collection_info.contains_key(n)
+                        || self.fun.dyn_boxed_bindings.contains_key(n)
+                }
+                _ => false,
+            },
+            _ => false,
+        };
         // Switch form: a small known set of concretes (2..=threshold) → a
-        // `switch` on the tag, each arm inlines its impl body.
+        // `switch` on the tag, each arm inlines its impl body. Collection
+        // elements: any cardinality (always boxed, tag always sound).
         let switch_threshold = 4;
-        if concretes.len() > 1 && concretes.len() <= switch_threshold {
+        if concretes.len() > 1 && (concretes.len() <= switch_threshold || is_collection_element) {
             return self.emit_dyn_switch(out, v, recv_reg, &concretes, &lookup_name, args, recv_prefix, tag_reg, indent);
+        }
+        if is_collection_element {
+            panic!(
+                "dyn collection element dispatch: trait '{}' has no registered conforming concretes \
+                 (the program declares `impl` bodies for none of the element types) — \
+                 add an impl for the element type or remove the dispatch",
+                trait_name
+            );
         }
         // Vtable form (the fallback): the set is open/large → load the
         // thunk-table slot by the tag's concrete and indirect-call.
@@ -5582,7 +5610,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                             if matches!(a, crate::ast::Expr::List(_))
                                 && self.tier2_collection_type(pt)
                             {
-                                if let Some(reg) = self.construct_local_collection(
+                                if let Some((reg, _)) = self.construct_local_collection(
                                     out, indent, pt, a,
                                 ) {
                                     return reg;

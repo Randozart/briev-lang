@@ -310,3 +310,52 @@ ELEMENT at construction and one 24-byte malloc per element READ — the read
 allocation is the cost of not changing the dispatch ABI (Phase 5's bare-dyn
 unification can retire it by making the box itself the fat pointer: 24 bytes
 `[tag, payload, reserved]`, store once, read with zero reconstruction).
+
+## ADDENDUM 3 — Phase 4b: soundness closure (2026-10-12, same day)
+
+The tagged-box commit left three holes, found by probing past the happy path.
+All closed in the same increment:
+
+1. **The dispatch form was still backend-derived.** `emit_dyn_method_call`
+   chose Inline/Switch/Vtable from the GLOBAL per-trait set cardinality — a
+   5-concrete program (global set > the Switch threshold) crashed
+   `resolve_dyn_concrete` (the panic at emit_expr.rs:3382) even for a
+   2-element collection, because construction only boxed Switch-form
+   collections. Fix: a COLLECTION-ELEMENT receiver (recv = `Index` over a
+   binding with a `dyn_collection_info` entry or a `fun.dyn_boxed_bindings`
+   entry) dispatches Inline (set of 1) or Switch over the GLOBAL per-trait set
+   for ANY cardinality — the box tag is always a global index, so the
+   global-set switch is always sound, and LLVM lowers a wide switch to a jump
+   table (competitive with the vtable's load + indirect call). The Vtable form
+   never fires for elements.
+2. **Node-body LOCAL `List<dyn>` crashed** (exit 132): the frontend analysis
+   only walks top-level lets, so locals got no box, no reconstruction. Fix:
+   `construct_local_collection` gained the dyn arm (`construct_local_dyn_boxed`,
+   reusing the SAME pre-pass + box-emission helpers — one contract, two
+   construction sites) and records the binding in
+   `FunctionContext.dyn_boxed_bindings` — PER-FUNCTION state, so two nodes
+   using the same local name cannot collide. The read gates and the
+   dispatch-site check consult BOTH maps (ctx for top-level, fun for locals).
+3. **`-O3 -flto` masked an invalid IR.** The local read's fat-pointer table
+   slot pointed at `@__dyn_<Trait>_<Trait>` (the tag→concrete lookup fell back
+   to the trait name for locals) — an UNDEFINED symbol. `clang -O0` rejects it
+   outright; `-O3 -flto` materialized/ELIMINATED the dead store and linked
+   fine, then trapped at runtime. The new local-list behavioral test links at
+   `-O0` as the IR-validity gate (the LTO lesson, inverted: -O0 catches what
+   -O3 hides).
+
+Probes (all harness-exact clang, print-boundary-verified, exit 0):
+`701` (top-level elem 0), `91` (elem 1, differing layout), `1 5` (5-concrete
+global set), `44 11` (2-element collection inside the 5-concrete global set —
+the case that panicked pre-fix), `7 8` (node-body local). `cargo test --lib`
+3059/0 (2 compiled behavioral tests); rbv_gate PASS; Praetor: no new flagged
+functions (`construct_local_collection` was baseline-flagged; same 2 kinds).
+
+Known remaining holes (next increment, same mechanism — push-site boxing):
+- `h.push(Dog{..})` on an empty-init dyn collection stores the RAW handle
+  (the push argument is not boxed) → dispatch reads garbage. The push site
+  needs the same box-with-provable-arg treatment at the member-call boundary.
+- A dyn list passed as a defn ARGUMENT (a call-arg list literal) constructs
+  via the legacy path (no binding name at the call site) → same hole.
+Both predate this work (they crashed identically before the tagged box) and
+end in a LOUD failure (trap/panic), never silent wrong data.

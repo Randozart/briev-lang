@@ -429,7 +429,21 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         }).unwrap_or(false);
                         if is_coll && matches!(e, crate::ast::Expr::List(_)) {
                             let briev = ty.clone().unwrap_or(crate::ast::Type::int());
-                            backend.construct_local_collection(out, indent, &briev, e)
+                            // 2026-10-12 (SPEC §8.6.1 Option B): a boxed dyn
+                            // literal records the binding in
+                            // `fun.dyn_boxed_bindings` — the element read path's
+                            // box check consults it (per-function, keyed by the
+                            // binding name the caller owns).
+                            match backend.construct_local_collection(out, indent, &briev, e) {
+                                Some((reg, Some(boxed))) => {
+                                    backend.fun.dyn_boxed_bindings.insert(
+                                        name.clone(),
+                                        boxed.info,
+                                    );
+                                    Some(reg)
+                                }
+                                other => other.map(|(reg, _)| reg),
+                            }
                         } else if is_coll {
                             // 2026-08-16 (hashmap redesign): a LOCAL collection
                             // with a SEED init (`let m: HashMap<K,V> = 0`)

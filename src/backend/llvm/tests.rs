@@ -10541,6 +10541,94 @@ node go [done == false][done == true] {
     );
 }
 
+/// 2026-10-12 (SPEC §8.6.1 Option B): a node-BODY local `List<dyn Trait>` —
+/// the same tagged-box contract as the top-level construction, keyed
+/// per-function (`fun.dyn_boxed_bindings` — no cross-function name
+/// collisions). Also covers the >threshold dispatch: the global per-trait set
+/// here is exactly 2, so this pins the local box + reconstruct + switch chain
+/// end to end.
+#[test]
+fn test_dyn_list_local_binding_dispatch_compiled() {
+    if !Command::new("clang").arg("--version").output().is_ok() {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let src = r#"
+struct ListBuffer<T> { data: Ptr<T>; };
+coll obj List<T> { inner: ListBuffer<T>; };
+trait Greeter {
+    defn greet(me: Self, times: Int) -> Int;
+};
+type Dog: Greeter { base: Int; };
+type Cat: Greeter { lives: Int; };
+impl Dog {
+    defn greet(me: Dog, times: Int) -> Int { term me.base * 100 + times; }
+};
+impl Cat {
+    defn greet(me: Cat, times: Int) -> Int { term me.lives * 10 + times; }
+};
+let done: Bool = false;
+node go [done == false][done == true] {
+  when done == false {
+    let hs: List<dyn Greeter> = [Dog { base: 7 }, Cat { lives: 9 }];
+    println!(hs[0].greet(1));
+    println!(hs[1].greet(1));
+    done = true;
+  };
+  term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.register(Box::new(crate::plugin::print_plugin::PrintPlugin));
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    use std::process::Command;
+    let stub = "#include <stdio.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\nint64_t __print_int(int64_t n) { printf(\"%ld\", (long)n); return 0; }\nint64_t __print_char(int64_t c) { putchar((int)c); return 0; }\nint64_t __briev_coll_resize(int64_t handle, int64_t new_cap) {\n    if (!handle || new_cap < 0) return 1;\n    int64_t* block = (int64_t*)handle;\n    int64_t old_data = block[0];\n    int64_t len = block[2];\n    if (new_cap == 0) { free((void*)old_data); block[0] = 0; block[1] = 0; return 0; }\n    int64_t* nd = (int64_t*)malloc((size_t)(new_cap * 8));\n    if (!nd) return 1;\n    int64_t copy_n = len < new_cap ? len : new_cap;\n    if (old_data && copy_n > 0) memcpy(nd, (void*)old_data, (size_t)(copy_n * 8));\n    if (old_data) free((void*)old_data);\n    block[0] = (int64_t)nd;\n    block[1] = new_cap;\n    return 0;\n}\n";
+    let rt = std::env::temp_dir().join(format!("briev_dynlocal_{}.c", std::process::id()));
+    std::fs::write(&rt, stub).expect("write stub");
+    let out = std::env::temp_dir().join(format!(
+        "briev_dynlocal_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    let ll = out.with_extension("ll");
+    let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\n";
+    let mut ir_full = ir.clone();
+    if let Some(pos) = ir.find("target triple") {
+        let end = ir[pos..].find('\n').map(|e| pos + e + 1).unwrap_or(ir.len());
+        ir_full.insert_str(end, prelude);
+    } else {
+        ir_full.insert_str(0, prelude);
+    }
+    std::fs::write(&ll, &ir_full).expect("write .ll");
+    // The -O0 link is the IR-validity gate: an undefined table symbol
+    // (@__dyn_<Trait>_<Trait> — the trait-name fallback bug) passes -O3 -flto
+    // (dead store, LTO-materialized) but fails -O0 outright.
+    let compile = Command::new("clang").arg("-O0").arg(&ll).arg(&rt).arg("-lm").arg("-o").arg(&out).output().unwrap();
+    assert!(
+        compile.status.success(),
+        "link failed (the IR must be valid at -O0 — no undefined table symbols): {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&out).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = (std::fs::remove_file(&ll), std::fs::remove_file(&out), std::fs::remove_file(&rt));
+    assert!(
+        run.status.success(),
+        "local dyn list dispatch must not trap: {}\n---\n{ir}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        stdout.trim(),
+        "701\n91",
+        "local hs[0].greet(1) = 701, hs[1].greet(1) = 91 — got:\n{stdout}"
+    );
+}
+
 /// 2026-10-09 (dyn identity-in-value): a `dyn` that FLOWS through a `defn`
 /// return keeps its dispatch identity — the tag rides in the value (the name-
 /// keyed `dyn_concrete_of` does not survive the return). This is the case that

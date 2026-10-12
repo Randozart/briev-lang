@@ -40,10 +40,19 @@ struct ProbeCmpArg<'a> {
 /// the first element, InsertAt for the tail).
 struct DynBoxCtor<'a> {
     field_name: &'a str,
+    trait_name: &'a str,
     type_key: &'a str,
     box_recv: &'a TypedRegister,
-    init_member: &'a crate::ast::TopLevel,
+    init_member: Option<&'a crate::ast::TopLevel>,
     insert_member: Option<&'a crate::ast::TopLevel>,
+}
+
+/// 2026-10-12 (SPEC §8.6.1 Option B): a dyn-typed LOCAL collection literal's
+/// boxed-binding record — the caller inserts it into `fun.dyn_boxed_bindings`
+/// under its own binding name (the name lives at the call site).
+pub(super) struct LocalDynBoxed {
+    pub binding: String,
+    pub info: crate::analysis::dyn_concrete_sets::DynCollectionInfo,
 }
 
 impl LlvmBackend {
@@ -1515,14 +1524,23 @@ impl LlvmBackend {
                 // reconstructs the fat pointer the dispatch machinery consumes.
                 // An Inline collection stores the payload handle directly (the
                 // legacy shape) — no tag, no box.
-                let ctor = DynBoxCtor {
-                    field_name,
-                    type_key: &type_key,
-                    box_recv: &box_recv,
-                    init_member: &member,
-                    insert_member: insert_member.as_ref(),
-                };
-                let dyn_box = self.dyn_collection_element_box(out, indent, elems, ctor);
+                let dyn_trait = self
+                    .ctx
+                    .dyn_collection_info
+                    .get(field_name)
+                    .map(|i| i.trait_name.clone());
+                let mut dyn_box = false;
+                if let Some(trait_name) = dyn_trait {
+                    let ctor = DynBoxCtor {
+                        field_name,
+                        trait_name: &trait_name,
+                        type_key: &type_key,
+                        box_recv: &box_recv,
+                        init_member: Some(&member),
+                        insert_member: insert_member.as_ref(),
+                    };
+                    dyn_box = self.dyn_collection_element_box(out, indent, elems, ctor);
+                }
                 if !dyn_box {
                     let arg_tmp = self.fun.gen_reg();
                     let first = self.emit_expr_inner(out, &arg_tmp, &elems[0], indent);
@@ -1613,28 +1631,38 @@ impl LlvmBackend {
         elems: &[Expr],
         ctor: DynBoxCtor<'_>,
     ) -> bool {
-        // The frontend decision: only a Switch collection (a closed set of
-        // 2..=4 concretes) uses the per-element tag box. Inline (1) needs no
-        // tag; Vtable (open or >4) resolves the concrete from the payload
-        // handle, not a tag.
-        let info = self.ctx.dyn_collection_info.get(ctor.field_name);
-        let Some(info) = info else { return false };
-        if info.dispatch_form != crate::analysis::dyn_concrete_sets::DynDispatchForm::Switch {
-            return false;
-        }
+        // The caller gated on the frontend decision (any `dyn_collection_info`
+        // entry boxes its elements — the tag is the dispatch discriminant for
+        // any cardinality). The trait comes from the same entry via the ctor.
+        let trait_name = ctor.trait_name.to_string();
         // Feasibility pre-pass — no emission before every step is proved.
-        let Some(tags) = self.dyn_element_tags(&info.trait_name, elems) else { return false };
+        // An UNPROVABLE element (not a struct literal, no registered tag) can
+        // never dispatch soundly (the read path reads the box tag; a raw
+        // handle reads garbage) — reject with the fix instead of emitting a
+        // crashing binary.
+        let Some(tags) = self.dyn_element_tags(&trait_name, elems) else {
+            panic!(
+                "dyn collection element with no provable concrete in the '{}' initializer \
+                 (an element that is not a constructor or `dyn` binding cannot carry a dispatch tag) — \
+                 construct elements inline (`Type {{ .. }}`) or bind them via a `dyn`-annotated let first",
+                ctor.field_name
+            );
+        };
         if elems.len() > 1 && ctor.insert_member.is_none() {
             return false;
         }
+        let init_m = match ctor.init_member {
+            Some(m) => m,
+            None => return false,
+        };
         // Emit loop — total (the pre-pass proved every step succeeds).
         for (i, e) in elems.iter().enumerate() {
             let member = if i == 0 {
-                ctor.init_member
+                init_m
             } else {
                 ctor.insert_member.unwrap()
             };
-            let box_handle = self.emit_dyn_tagged_box(out, indent, e, tags[i]);
+            let box_handle = self.emit_dyn_tagged_box(out, indent, e, tags[i].1);
             // Store the box handle into the collection (Init first, InsertAt rest).
             let out_tmp = self.fun.gen_reg();
             self.emit_member_body(
@@ -1653,12 +1681,16 @@ impl LlvmBackend {
         true
     }
 
-    /// The per-element global tags of a Switch-form collection literal, or
-    /// `None` when any element's concrete is not syntactically provable (a
-    /// struct literal names its concrete) or unregistered in the per-trait
-    /// tag map. The SAME provenance rule the frontend analysis applies — the
-    /// two derivations agree for a well-typed program.
-    fn dyn_element_tags(&self, trait_name: &str, elems: &[Expr]) -> Option<Vec<i64>> {
+    /// The per-element (concrete, global tag) pairs of a dyn collection
+    /// literal, or `None` when any element's concrete is not syntactically
+    /// provable (a struct literal names its concrete) or unregistered in the
+    /// per-trait tag map. The SAME provenance rule the frontend analysis
+    /// applies — the two derivations agree for a well-typed program.
+    fn dyn_element_tags(
+        &self,
+        trait_name: &str,
+        elems: &[Expr],
+    ) -> Option<Vec<(String, i64)>> {
         let mut tags = Vec::with_capacity(elems.len());
         for e in elems {
             let concrete = match e {
@@ -1666,7 +1698,10 @@ impl LlvmBackend {
                 _ => return None,
             };
             let tag_key = format!("{}::{}", trait_name, concrete);
-            tags.push(*self.ctx.dyn_concrete_tag_of.get(&tag_key)?);
+            tags.push((
+                concrete,
+                *self.ctx.dyn_concrete_tag_of.get(&tag_key)?,
+            ));
         }
         Some(tags)
     }
@@ -1704,13 +1739,16 @@ impl LlvmBackend {
     /// local List literal emitted the hardcoded `[len][elem]` heap-seq buffer,
     /// which the At/Count members (expecting the List STRUCT layout) read as
     /// garbage (segfault). Mirrors emit_init_op_construction for locals.
+    /// 2026-10-12 (SPEC §8.6.1 Option B): a dyn-typed literal also returns the
+    /// boxed-binding record — the CALLER (which owns the binding name) inserts
+    /// it into `fun.dyn_boxed_bindings` (per-function, no name collisions).
     pub(super) fn construct_local_collection(
         &mut self,
         out: &mut String,
         indent: &str,
         briev_ty: &Type,
         list_literal: &Expr,
-    ) -> Option<TypedRegister> {
+    ) -> Option<(TypedRegister, Option<LocalDynBoxed>)> {
         use crate::ast::TopLevel;
         let (base, args) = match briev_ty {
             Type::Custom(n) => (n.clone(), Vec::new()),
@@ -1733,7 +1771,8 @@ impl LlvmBackend {
             self.ctx.coll_storage.get(&base),
             Some(crate::backend::llvm::coll_scaffold::CollStorage::InlineFixed)
         ) {
-            return self.construct_local_fixed_collection(out, indent, briev_ty, list_literal);
+            let reg = self.construct_local_fixed_collection(out, indent, briev_ty, list_literal)?;
+            return Some((reg, None));
         }
         // 2026-08-16 (hashmap redesign): a collection literal constructs when
         // the type declares the CONSTRUCTION ops — `op Init`/`op InitEmpty`/
@@ -1793,6 +1832,37 @@ impl LlvmBackend {
                         .find(|m| super::emit_expr::member_briev_name(m) == s).cloned(),
                     _ => None,
                 });
+            let insert_member = defs.iter().find(|d| d.op == "InsertAt").cloned()
+                .and_then(|d| match d.impl_args.as_ref() {
+                    Some(crate::ast::PropertyValue::Identifier(s)) => members.iter()
+                        .find(|m| super::emit_expr::member_briev_name(m) == s).cloned(),
+                    _ => None,
+                });
+            // 2026-10-12 (SPEC §8.6.1 Option B): a dyn-typed LOCAL collection
+            // boxes every element — the SAME contract as the top-level
+            // construction. The read path reconstructs the fat pointer for a
+            // boxed binding; the CALLER (which owns the binding name) records
+            // the returned LocalDynBoxed in `fun.dyn_boxed_bindings`.
+            if let Some(trait_name) =
+                crate::analysis::dyn_concrete_sets::collection_dyn_trait(briev_ty)
+            {
+                let ctor = DynBoxCtor {
+                    field_name: "local",
+                    trait_name: &trait_name,
+                    type_key: &type_key,
+                    box_recv: &box_recv,
+                    init_member: init_member.as_ref(),
+                    insert_member: insert_member.as_ref(),
+                };
+                let boxed = self.construct_local_dyn_boxed(out, indent, &elems, ctor);
+                return Some((
+                    TypedRegister {
+                        name: addr,
+                        ty: briev_ty.clone(),
+                    },
+                    Some(boxed),
+                ));
+            }
             if let Some(member) = init_member {
                 let arg_tmp = self.fun.gen_reg();
                 let first = self.emit_expr_inner(out, &arg_tmp, &elems[0], indent);
@@ -1803,12 +1873,6 @@ impl LlvmBackend {
                         arg_regs: &[(first.name, first.ty)], prefix: None,
                     }, indent);
             }
-            let insert_member = defs.iter().find(|d| d.op == "InsertAt").cloned()
-                .and_then(|d| match d.impl_args.as_ref() {
-                    Some(crate::ast::PropertyValue::Identifier(s)) => members.iter()
-                        .find(|m| super::emit_expr::member_briev_name(m) == s).cloned(),
-                    _ => None,
-                });
             if let Some(member) = insert_member {
                 for e in elems.iter().skip(1) {
                     let arg_tmp = self.fun.gen_reg();
@@ -1823,10 +1887,90 @@ impl LlvmBackend {
             }
         }
         let _ = args;
-        Some(TypedRegister {
-            name: addr,
-            ty: briev_ty.clone(),
-        })
+        Some((
+            TypedRegister {
+                name: addr,
+                ty: briev_ty.clone(),
+            },
+            None,
+        ))
+    }
+
+    /// 2026-10-12 (SPEC §8.6.1 Option B): the dyn-typed arm of a LOCAL
+    /// collection literal — box every element into the 16-byte `[tag, payload]`
+    /// shape, store through the collection's construction members, and return
+    /// the boxed-binding record. Panics on an unprovable element (a tag-less dyn
+    /// element can never dispatch soundly — reject with the fix, never emit a
+    /// crashing binary).
+    fn construct_local_dyn_boxed(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        elems: &[Expr],
+        ctor: DynBoxCtor<'_>,
+    ) -> LocalDynBoxed {
+        let trait_name = ctor.trait_name.to_string();
+        // Feasibility pre-pass — the emit loop must be total (a bail
+        // mid-emission would double-construct under the legacy path).
+        let Some(tags) = self.dyn_element_tags(&trait_name, elems) else {
+            panic!(
+                "dyn collection element with no provable concrete in the local '{}' initializer \
+                 (an element that is not a constructor or `dyn` binding cannot carry a dispatch tag) — \
+                 construct elements inline (`Type {{ .. }}`) or bind them via a `dyn`-annotated let first",
+                ctor.field_name
+            );
+        };
+        if elems.len() > 1 && ctor.insert_member.is_none() {
+            panic!(
+                "local '{}' is a {}-element dyn collection but its type declares `op Init` \
+                 without an `op InsertAt` binding — the tail elements cannot construct",
+                ctor.field_name,
+                elems.len()
+            );
+        }
+        let init_m = match ctor.init_member {
+            Some(m) => m,
+            None => panic!(
+                "local '{}' is a non-empty dyn collection but its type declares no `op Init` \
+                 binding — the first element cannot construct",
+                ctor.field_name
+            ),
+        };
+        for (i, e) in elems.iter().enumerate() {
+            let member = if i == 0 {
+                init_m
+            } else {
+                ctor.insert_member.unwrap()
+            };
+            let box_handle = self.emit_dyn_tagged_box(out, indent, e, tags[i].1);
+            let out_tmp = self.fun.gen_reg();
+            self.emit_member_body(
+                out,
+                &out_tmp,
+                super::emit_expr::MemberInvocation {
+                    recv_reg: ctor.box_recv,
+                    type_name: ctor.type_key,
+                    member,
+                    arg_regs: &[(box_handle, Type::int())],
+                    prefix: None,
+                },
+                indent,
+            );
+        }
+        let mut concrete_set = std::collections::BTreeSet::new();
+        for (c, _) in &tags {
+            concrete_set.insert(c.clone());
+        }
+        let dispatch_form =
+            crate::analysis::dyn_concrete_sets::dispatch_form_for(&concrete_set);
+        LocalDynBoxed {
+            binding: ctor.field_name.to_string(),
+            info: crate::analysis::dyn_concrete_sets::DynCollectionInfo {
+                trait_name,
+                concrete_set,
+                dispatch_form,
+            },
+        }
     }
 
     /// 2026-08-16 (hashmap redesign): construct a LOCAL collection VALUE from
