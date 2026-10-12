@@ -2206,6 +2206,117 @@ fn push_element(name: &str, val: &Value, bindings: &mut HashMap<String, Value>) 
     }
 }
 
+// ── 2026-10-12 (List<dyn> contract, SPEC §8.6.1): let-binding coercion ───
+// The annotation is the coercion site's license. A scalar `dyn Trait` wraps
+// the whole value (Phase 5b); a collection annotation whose parameter is
+// `dyn Trait` wraps EACH element. Both resolve the concrete type name from
+// the expression SYNTACTICALLY (constructor or another dyn binding) — there
+// is no runtime type reflection over plain products. The annotation shape is
+// matched structurally (`Applied`/`Generic` argument positions), never by
+// collection name.
+
+/// The `dyn Trait` parameter of a collection annotation, if any:
+/// `Collection<dyn Trait>` → `Some("Trait")`.
+fn collection_dyn_trait(ty: Option<&crate::ast::Type>) -> Option<String> {
+    let args = match ty? {
+        crate::ast::Type::Applied(_, args) | crate::ast::Type::Generic(_, args) => args,
+        _ => return None,
+    };
+    let arg = args.iter().find(|a| matches!(a, crate::ast::Type::Dyn(_)))?;
+    match arg {
+        crate::ast::Type::Dyn(inner) => Some(match inner.as_ref() {
+            crate::ast::Type::Custom(n) => n.clone(),
+            other => format!("{}", other),
+        }),
+        _ => None,
+    }
+}
+
+/// The trait of a scalar `dyn Trait` annotation.
+fn scalar_dyn_trait(ty: Option<&crate::ast::Type>) -> Option<String> {
+    match ty? {
+        crate::ast::Type::Dyn(inner) => Some(match inner.as_ref() {
+            crate::ast::Type::Custom(n) => n.clone(),
+            other => format!("{}", other),
+        }),
+        _ => None,
+    }
+}
+
+/// Resolve an element's concrete type name from its syntax — a constructor
+/// names itself; an identifier must be another dyn binding. The error states
+/// exactly what works today (the Phase 5c provenance limit, BUGS.md).
+fn dyn_concrete_name(expr: &Expr, bindings: &HashMap<String, Value>, trait_name: &str) -> Result<String, RuntimeError> {
+    match expr {
+        Expr::StructLiteral { type_name, .. } => Ok(type_name.clone()),
+        Expr::Identifier(src_name) => match bindings.get(src_name) {
+            Some(Value::Dyn { concrete, .. }) => Ok(concrete.clone()),
+            _ => Err(RuntimeError::TypeError {
+                expected: format!(
+                    "a constructor or another `dyn` binding to coerce into dyn {}",
+                    trait_name
+                ),
+                found: "a plain value — bind it via a dyn-annotated let at the constructor site".into(),
+            }),
+        },
+        _ => Err(RuntimeError::TypeError {
+            expected: format!(
+                "a constructor or another `dyn` binding to coerce into dyn {}",
+                trait_name
+            ),
+            found: "this expression form".into(),
+        }),
+    }
+}
+
+/// Evaluate a `let` initializer, applying the dyn coercion the annotation
+/// demands: collection-of-dyn wraps each element, scalar `dyn` wraps the
+/// whole value.
+fn eval_let_binding(
+    ty: Option<&crate::ast::Type>,
+    expr: &Expr,
+    heap: &mut VirtualHeap,
+    bindings: &mut HashMap<String, Value>,
+    functions: &HashMap<String, crate::interpreter::FunctionDef>,
+) -> Result<Value, RuntimeError> {
+    // Collection-of-dyn: every element coerces at the construction site so a
+    // fetched element dispatches to its impl body. A non-list initializer
+    // under a collection-of-dyn annotation is refused loudly (the elements'
+    // provenance is unknowable after the fact).
+    if let Some(trait_name) = collection_dyn_trait(ty) {
+        let elem_exprs = match expr {
+            Expr::List(elem_exprs) => elem_exprs,
+            _ => {
+                return Err(RuntimeError::TypeError {
+                    expected: format!(
+                        "a list literal whose elements are constructors or `dyn` bindings, for the {}<dyn {}> annotation",
+                        // The annotation's own shape, not a guessed name.
+                        match ty.unwrap() {
+                            crate::ast::Type::Applied(n, _) | crate::ast::Type::Generic(n, _) => n.clone(),
+                            _ => String::new(),
+                        },
+                        trait_name
+                    ),
+                    found: "this expression form — element coercion happens only at the literal".into(),
+                })
+            }
+        };
+        let mut elems = Vec::with_capacity(elem_exprs.len());
+        for el in elem_exprs {
+            let v = eval_expr(el, heap, bindings, functions)?;
+            let concrete = dyn_concrete_name(el, bindings, &trait_name)?;
+            elems.push(Value::Dyn { trait_name: trait_name.clone(), concrete, inner: Box::new(v) });
+        }
+        return Ok(Value::product(elems));
+    }
+    let val = eval_expr(expr, heap, bindings, functions)?;
+    // Scalar `dyn Trait`: the annotation wraps the whole value — the
+    // Phase 5b coercion site (concrete name from the expression syntactically).
+    let Some(trait_name) = scalar_dyn_trait(ty) else { return Ok(val) };
+    let concrete = dyn_concrete_name(expr, bindings, &trait_name)?;
+    Ok(Value::Dyn { trait_name, concrete, inner: Box::new(val) })
+}
+
 pub fn eval_statement(
     stmt: &Statement,
     heap: &mut VirtualHeap,
@@ -2231,54 +2342,7 @@ pub fn eval_statement(
         }
         Statement::Let { name, ty, expr, .. } => {
             if let Some(expr) = expr {
-                let val = eval_expr(expr, heap, bindings, functions)?;
-                // 2026-08-22 (Phase 5b): an explicit `dyn Trait` annotation
-                // wraps the value — the coercion site. The concrete type name
-                // comes from the expression syntactically (constructor call or
-                // another dyn binding); there is no runtime type reflection
-                // over plain products.
-                // 2026-08-22 (Phase 5b v1): coercions resolve the concrete
-                // type from a CONSTRUCTOR expression or another dyn binding.
-                // Identifier-of-typed-let needs binding-type provenance
-                // threaded through EvalScope — tracked as a Phase 5c limit
-                // in BUGS.md; the error says exactly what works today.
-                let val = match ty.as_ref().and_then(|t| match t {
-                    crate::ast::Type::Dyn(inner) => Some(&**inner),
-                    _ => None,
-                }) {
-                    Some(tr) => {
-                        let trait_name = match tr {
-                            crate::ast::Type::Custom(n) => n.clone(),
-                            other => format!("{}", other),
-                        };
-                        let concrete = match expr {
-                            Expr::StructLiteral { type_name, .. } => type_name.clone(),
-                            Expr::Identifier(src_name) => match bindings.get(src_name) {
-                                Some(Value::Dyn { concrete, .. }) => concrete.clone(),
-                                _ => {
-                                    return Err(RuntimeError::TypeError {
-                                        expected: format!(
-                                            "a constructor or another `dyn` binding to coerce into dyn {}",
-                                            trait_name
-                                        ),
-                                        found: "a plain value — bind it via a dyn-annotated let at the constructor site".into(),
-                                    });
-                                }
-                            },
-                            _ => {
-                                return Err(RuntimeError::TypeError {
-                                    expected: format!(
-                                        "a constructor or another `dyn` binding to coerce into dyn {}",
-                                        trait_name
-                                    ),
-                                    found: "this expression form".into(),
-                                });
-                            }
-                        };
-                        Value::Dyn { trait_name, concrete, inner: Box::new(val) }
-                    }
-                    _ => val,
-                };
+                let val = eval_let_binding(ty.as_ref(), expr, heap, bindings, functions)?;
                 bindings.insert(name.clone(), val);
             }
             Ok(Value::Void)

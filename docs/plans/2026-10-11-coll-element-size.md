@@ -158,3 +158,93 @@ The fix proceeds under SPEC §8.6.1 Option B: the element payload keeps
 its native shape; a tag rides alongside only when the read site's
 dispatch form (frontend-derived) needs Switch/Vtable. See the
 dyn-derived-shape plan (2026-10-12) for the live design.
+
+## ADDENDUM — Phase 1 complete: interpreter contract pin (2026-10-12)
+
+### The interpreter gap (and its fix)
+
+The interpreter (reference, Rule 5) had the SAME class of bug the backend
+exhibits: a `List<dyn Trait>` literal's elements were NOT wrapped in
+`Value::Dyn`. The `Statement::Let` coercion site (Phase 5b, 2026-08-22)
+handled only the scalar case — `let g: dyn Greeter = Dog{..}` — by reading
+the *annotation* (`Type::Dyn`) and wrapping the whole value. A list literal
+under a `List<dyn Greeter>` annotation evaluates via `Expr::List` →
+`Value::product` with no coercion, so `handlers[0]` returned a plain
+`Product { fields: [7], names: ["base"] }` and the dispatch
+`dispatch_method_value` fell through the `Value::Dyn` arm to the
+"not a known function" fallback, returning `Void` (→ 0). The probe printed
+`0` instead of `701`.
+
+Fix (src/interpreter/eval.rs): the `Let` arm now delegates to
+`eval_let_binding`, which handles two coercion shapes:
+
+- **Collection-of-dyn** — the annotation is `Applied(_ , [Dyn(T)])` or
+  `Generic(_ , [Dyn(T)])` (matched STRUCTURALLY by the type argument, never
+  by collection name — Rule 19 compliant). Each element of a list literal is
+  evaluated and wrapped in `Value::Dyn { trait_name: T, concrete, inner }`,
+  where `concrete` comes from the element's syntax (constructor name or
+  another dyn binding) — the same provenance rule as the scalar case. A
+  non-literal initializer under a collection-of-dyn annotation is refused
+  loudly (the elements' provenance is unknowable after the fact).
+- **Scalar `dyn`** — unchanged behavior (the whole value is wrapped), now
+  via the shared `dyn_concrete_name` helper.
+
+Contract pin (tests/dyn_list_interpreter_parity.rs): two probes, both
+heterogeneous `List<dyn Greeter>` (`Dog{base:7}`, `Cat{lives:9}` — differing
+field layouts, the exact shape the backend corrupts):
+
+- **Probe A** — `handlers[0].greet(1)` exits the program → 701.
+- **Probe B** — `handlers[1].greet(1)` (element 1, differing layout) → 91.
+
+Both pass. The contract is: whatever the interpreter computes, the backend
+must reproduce.
+
+### The reactor harness subtleties
+
+Two traps in driving the interpreter for a contract pin (both cost an hour):
+
+1. **Top-level `let`s must seed via `exec_stmt`, not `eval_expr`.** The
+   coercion lives in the *statement* path (`eval_statement` →
+   `eval_let_binding`); a raw `interp.eval_expr(initializer)` skips it and
+   produces an uncoerced value.
+2. **No `clear_dirty()` before the first `run()`.** `build_from_program`
+   marks every reactive txn dirty (the bootstrap wake). `run_reactor`
+   (reactor.rs:428) clears that set before its first `run()`, so it can
+   never fire anything (`dependency_map` is never populated — `mark_dirty`
+   is a no-op). The working pattern: call `reactor.run(&mut interp)`
+   directly in a loop, no pre-clear; `endprogram` surfaces as
+   `RuntimeError::ProgramExit(value)`. `run_reactor_continuous`
+   (reactor.rs:452) is the only production driver with this lifecycle and
+   is the working reference. See BUGS.md for the `run_reactor` bug.
+
+### The `endprogram Print#(x)` exit-code convention
+
+`endprogram Print#(greet(1))` prints `701` and exits `0`, NOT `701`. This is
+by design, both sides:
+
+- `Print#` is a side-effect intrinsic. Defns cannot be void (Family B ABI),
+  so it claims the neutral success value `0`. (The 2026-09-23
+  exit-code-parity fix aligned the backend's `__print_*` to the
+  interpreter's `Print#` — both return 0.)
+- `endprogram code;` evaluates `code` (the print is the last action) and
+  exits with the expression's VALUE. `Print#`'s value is `0`, so the exit
+  code is `0`. `endprogram greet(1)` exits with `701` — a genuine value
+  carries to the exit code.
+- The same consumption rule as `term`: the value flows to whatever
+  consumes it (the term postcondition, the process exit code), and a
+  side-effect expression's neutral value satisfies both without
+  distortion.
+
+**Probe design consequence:** to observe a dispatch result as the exit
+value, the probe must print AND pass the value to `endprogram` separately:
+
+```briev
+Print#(handlers[0].greet(1));      // observable stdout
+endprogram handlers[0].greet(1);   // exit value = 701
+```
+
+This convention is documented in SPEC §11.5 ("The exit code is the
+expression's value"). The factually-wrong "printf + return 0" comment in
+`cast_lanes.bv` was rewritten (C's `printf` returns the byte count — that
+was the original bug, not the convention). `__eprint_str` was aligned to
+`term 0` (it was the last print-family outlier returning the count).

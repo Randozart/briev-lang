@@ -1390,6 +1390,17 @@ no heap). The transform is emitted by the boundary-marshal machinery, the same
 way any protocol value adapts at a boundary — the `dyn` does not carry a fixed
 shape into the edge.
 
+**Collection elements coerce at the literal.** A `Collection<dyn Trait>`
+annotation coerces each element of a list literal at the construction site, the
+same as a scalar `dyn Trait` annotation coerces its initializer. Each element's
+concrete type name is resolved from its *syntax* — the element must be a
+constructor (the struct literal names its type) or another `dyn` binding (the
+binding's provenance carries the concrete name). A list literal initializer
+under a `Collection<dyn Trait>` annotation that is not a literal is refused
+with a fix hint: the elements' provenance is unknowable after the fact, so
+coercion happens only at the literal. This is the reference (interpreter)
+behavior; the backend must reproduce it.
+
 > **Doctrine (2026-10-09, dispatch derivation):** a `dyn <Trait>` is a
 > capability, not a representation. The compiler derives its dispatch form
 > (inline → switch → vtable → omit) and its value shape (tag only when needed,
@@ -2308,6 +2319,17 @@ runs applicable `defer` cleanup and terminates the process. Unlike `term`,
 which only ends the current transaction, `endprogram` exits the process even
 when a node's precondition remains satisfiable. Abrupt termination is not
 currently a source-language feature.
+
+**The exit code is the expression's value.** `endprogram code;` evaluates
+`code` — its side effects run (a print, an FFI call) — and the process exits
+with the value the expression yields. A side-effect intrinsic like `Print#`
+returns the neutral `0` (defns cannot be void, so a side-effect-only call
+claims the success value, not a payload); `endprogram Print#(x)` therefore
+prints `x` as the swan song and exits `0`. `endprogram greet(1)` exits with
+`greet`'s return — a genuine value carries to the exit code. The same
+consumption rule as `term`: the value flows to whatever consumes it (the
+term postcondition, the process exit code), and a side-effect expression's
+neutral value satisfies both without distortion.
 
 There is no `main` declaration in Briev. The program entry is either an
 explicit `beginprogram` node (§11.5.1) or, absent one, whichever reactive

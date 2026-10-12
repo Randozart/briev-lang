@@ -9055,3 +9055,45 @@ class of bug impossible. Deferred — the minimal fix unifies the spelling now.
 **Regression test:** test_memcpy_memset_intrinsics_declared in
 src/backend/llvm/tests.rs asserts the declares are present and that no legacy
 p0i8 / malformed p0p0 manglings are emitted.
+
+---
+
+## run_reactor: bootstrap dirty set cleared before first run (2026-10-12)
+
+**Status: OPEN — latent, no callers.**
+
+`run_reactor` (src/reactor.rs:427) calls `clear_dirty()` *before* the first
+`run()`. `build_from_program` marks every reactive txn dirty as the bootstrap
+wake, so the pre-clear wipes the only dirty set that exists. With
+`dependency_map` never populated (`mark_dirty` is a no-op map lookup), nothing
+can re-dirty any txn — `run_reactor` can never fire any node.
+
+`run_reactor_continuous` (src/reactor.rs:452) has no pre-clear and works. The
+bug is latent because `run_reactor` has zero callers in production code (only
+its own tests, which call `reactor.run` directly, bypassing the loop).
+
+**Fix (when the API is revived):** drop the leading `clear_dirty()`, or
+restructure so the bootstrap set is consumed before the first clear.
+
+## .gitignore ignores all of tests/ while 105 test files are tracked (2026-10-12)
+
+**Status: OPEN — policy hazard.**
+
+`.gitignore:14` lists `tests/`, ignoring the entire directory. The 105
+existing tracked test files are grandfathered (git does not untrack files
+already in the index), but any *new* test file under `tests/` is silently
+invisible to `git status` and `git add`. The contract-pin test for
+`List<dyn>` (tests/dyn_list_interpreter_parity.rs) was nearly lost to this.
+
+**Fix:** add a `!tests/*.rs` negation to un-ignore hand-written top-level
+integration tests while keeping generated `.bv` fixtures ignored.
+
+## __eprint_str returned the byte count (2026-10-12)
+
+**Status: FIXED.**
+
+`__eprint_str` (lib/std/cast_lanes.bv:667) was the one print-family member
+returning the byte count instead of the neutral 0 — the same convention
+violation the 2026-09-23 exit-code-parity fix resolved for the rest of the
+family. Aligned to `term 0`. No consumer of its return was found in any
+Briev source, so the change is behavior-neutral for existing programs.

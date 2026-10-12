@@ -651,10 +651,11 @@ defn write_all(fd: Int, s: String) [fd >= 0][term >= 0] -> Int {
 };
 
 out defn __print_str(s: String) [true][term >= 0] -> Int {
-    // 2026-09-23 (term_guard_value exit-code parity): return 0, matching
-    // the interpreter's Print# and the retired C __print_* (printf +
-    // return 0). The byte-count return made `endprogram Print#(x)` exit with
-    // the string length instead of 0.
+    // 2026-09-23 (term_guard_value exit-code parity): defns cannot be void,
+    // so a side-effect-only print claims the neutral success value, 0 — not
+    // the byte count (the old return made `endprogram Print#(x)` exit with the
+    // string length). Matching the interpreter's Print# (intrinsics.rs) and
+    // every sibling in this family.
     let _r: Int = write_all(1, s);
     term 0;
 };
@@ -665,7 +666,10 @@ out defn __print(s: String) [true][term >= 0] -> Int {
 };
 
 out defn __eprint_str(s: String) [true][term >= 0] -> Int {
-    term write_all(2, s);
+    // 2026-10-12: aligned to the family's neutral-0 convention — the
+    // byte-count return was the one outlier in the print family.
+    let _r: Int = write_all(2, s);
+    term 0;
 };
 
 out defn __print_int(n: Int) [true][term >= 0] -> Int {
