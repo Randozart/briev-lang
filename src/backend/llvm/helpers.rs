@@ -1038,7 +1038,7 @@ impl LlvmBackend {
         .ok();
         writeln!(
             out,
-            "{}call void @llvm.memcpy.p0i8.p0i8.i64(i8* {}, ptr {}, i64 {}, i1 false)",
+            "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
             indent, dest, src, length
         )
         .ok();

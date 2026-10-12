@@ -9013,3 +9013,45 @@ src/backend/llvm/mod.rs + src/glue/web_generator.rs.
 **Gate:** `benchmarks/rbv_browser_smoke.mjs` asserts the seeded `b-text` shows
 the Briev-side seed (`5`) on load, then the click round-trip (`+`→`6`,
 `+`→`7`, `Reset`→`0`) (`rbv_gate.sh` step 6).
+
+## LLVM backend: llvm.memcpy/llvm.memset called but never declared, plus three inconsistent memcpy manglings — 2026-10-09 FIXED
+
+Any .bv program that copied memory (string concat, the state-snapshot in the
+reactor main loop, Alloc/Copy/Fill# intrinsics) emitted calls to @llvm.memcpy
+but the module never declared the intrinsic. clang rejected it with
+"use of undefined value @llvm.memcpy.p0.p0.i64". emit_declares() in
+src/backend/llvm/emit_toplevel.rs declares 100+ intrinsics explicitly (the
+backend emits textual IR and relies on these declares) but memcpy/memset were
+missing from the list.
+
+Compounding it, the three memcpy emission sites each spelled the intrinsic
+differently:
+- src/backend/llvm/intrinsics.rs: @llvm.memcpy.p0.p0.i64 (correct opaque form)
+- src/backend/llvm/helpers.rs: @llvm.memcpy.p0i8.p0i8.i64 with an i8* arg (legacy
+  typed-pointer mangling, rejected by modern LLVM)
+- src/backend/llvm/loop_engine/mod.rs: @llvm.memcpy.p0p0i64 (malformed name, no
+  dots — not a recognized intrinsic at all)
+
+Found while bringing up the full-stack-webapp net stack: a trivial firing
+node that prints a string literal (endprogram Print#("...")) failed to link.
+
+**Repro (before fix):**
+```
+node entry [beginprogram][true] {
+    endprogram Print#("Hello from Briev");
+};
+```
+brievc build hello.bv -> wrote hello.ll, then clang: use of undefined value.
+
+**Fix:** unify all three sites on the canonical @llvm.memcpy.p0.p0.i64(ptr,
+ptr, i64, i1 false) form, and add declares for both memcpy and memset to
+emit_declares() alongside the other llvm.* intrinsics. After the fix the repro
+builds and prints "Hello from Briev".
+
+**Note (follow-up):** the three-sites-three-spellings situation is a DRY
+violation (AGENTS.md Rule 17). A single emit_memcpy helper would make this
+class of bug impossible. Deferred — the minimal fix unifies the spelling now.
+
+**Regression test:** test_memcpy_memset_intrinsics_declared in
+src/backend/llvm/tests.rs asserts the declares are present and that no legacy
+p0i8 / malformed p0p0 manglings are emitted.
