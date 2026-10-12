@@ -2231,14 +2231,38 @@ impl LlvmBackend {
                         if is_coll_struct {
                             members = synth;
                         } else {
+                            // 2026-10-11 (mono member freshness): the base
+                            // generic `List`'s scaffolded members were
+                            // synthesized with the UNRESOLVED element param
+                            // (`elem_ty = T`), while the mono re-synthesis
+                            // carries the CONCRETE element type (`dyn Greeter`,
+                            // `Big`). Merging by name skipped the mono
+                            // re-synthesis whenever the base already had a
+                            // same-name member, so element-type-directed
+                            // lowering (parameter types, boxing, casts) ran
+                            // against the stale `T` signatures. For a
+                            // HeapGrowable coll the mono synth members REPLACE
+                            // the base scaffolded ones (same name → replace);
+                            // user-declared members are kept.
+                            let growable = matches!(
+                                self.ctx.coll_storage.get(base),
+                                Some(crate::backend::llvm::coll_scaffold::CollStorage::HeapGrowable)
+                            );
                             for m in synth {
                                 let m_name = crate::backend::llvm::emit_expr::member_briev_name(&m);
-                                let dup = members.iter().any(|ex| {
+                                if growable {
+                                    // Replace any existing member with the same
+                                    // name (the base scaffolded one is stale for
+                                    // the concrete element size).
+                                    members.retain(|ex| {
+                                        crate::backend::llvm::emit_expr::member_briev_name(ex) != m_name
+                                    });
+                                } else if members.iter().any(|ex| {
                                     crate::backend::llvm::emit_expr::member_briev_name(ex) == m_name
-                                });
-                                if !dup {
-                                    members.push(m);
+                                }) {
+                                    continue;
                                 }
+                                members.push(m);
                             }
                         }
                         self.ctx.obj_members.insert(key.clone(), members);

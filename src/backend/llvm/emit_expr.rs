@@ -3369,12 +3369,18 @@ impl LlvmBackend {
         let default_label = self.fun.next_label("dynswd");
         let end_label = self.fun.next_label("dynswend");
         // Emit the `switch` on the tag (the discriminator — the identity rides
-        // in the value).
-        writeln!(out, "{}switch i64 {}, label {} [", indent, tag_reg, default_label).ok();
-        for (i, concrete) in concretes.iter().enumerate() {
-            writeln!(out, "  i64 {i}, label {}", arm_labels[i]).ok();
+        // in the value). LLVM form: `switch <ty> <val>, <default> [ <cases> ]`
+        // — the default label comes FIRST (with a `%`), then the cases in
+        // brackets, each `i64 <tag>, label %<arm>`. Cases are NEWLINE-separated
+        // (a `;` between cases is rejected by clang: "expected type"); the
+        // multi-line form matches `ssa.rs:123` and `llvm-spec/06-MATCH-TO-
+        // SWITCH.md:7-13`. (A default placed after the value, or a label without
+        // `%`, is also rejected.)
+        writeln!(out, "{}switch i64 {}, label %{} [", indent, tag_reg, default_label).ok();
+        for (i, _c) in concretes.iter().enumerate() {
+            writeln!(out, "    i64 {i}, label %{}", arm_labels[i]).ok();
         }
-        writeln!(out, "  ]").ok();
+        writeln!(out, "{}]", indent).ok();
         // Emit each arm: label, inline the impl body (its `term` records
         // member_result — the arm's result register), br to the end block.
         let mut arm_results: Vec<(String, &String)> = Vec::new();
@@ -3388,7 +3394,7 @@ impl LlvmBackend {
                     // No impl body for this concrete/slot — fall through to the
                     // default (which traps). Unreachable for a well-typed program
                     // (the typechecker's coherence pass proves conformance).
-                    writeln!(out, "{}  br label {}", indent, default_label).ok();
+                    writeln!(out, "{}  br label %{}", indent, default_label).ok();
                     arm_results.push((String::new(), concrete));
                     continue;
                 }
@@ -3399,6 +3405,10 @@ impl LlvmBackend {
                 .into_iter()
                 .chain(arg_regs.iter().cloned())
                 .collect();
+            // The Self is the `me` param (the fat pointer's DATA half, bound to
+            // the impl's first param). prefix: None routes the body's `me`
+            // through the param binding (the standard member path) — the
+            // enclosing scope's `recv_prefix` is not the arm's self.
             let arm_result = self.emit_member_body(
                 out,
                 v,
@@ -3407,30 +3417,41 @@ impl LlvmBackend {
                     type_name: concrete,
                     member,
                     arg_regs: &arm_args,
-                    prefix: recv_prefix.clone(),
+                    prefix: None,
                 },
                 indent,
             );
             // emit_member_body took the arm's term value from member_result; the
-            // returned register IS the arm's result.
+            // returned register IS the arm's result. It is already percent-
+            // prefixed (the `term` value's register name), so use it verbatim
+            // in the phi — prefixing another `%` would yield `%%t99` (invalid
+            // IR). The phi cites the register by name.
             arm_results.push((arm_result.name.clone(), concrete));
-            writeln!(out, "{}  br label {}", indent, end_label).ok();
+            writeln!(out, "{}  br label %{}", indent, end_label).ok();
         }
         // The default arm: trap (an unresolvable tag is a soundness violation).
+        // Use the runtime's declared `@llvm.trap()` (emit_toplevel.rs:639);
+        // `@__briev_trap` is never declared, so referencing it is an undefined
+        // value.
         writeln!(out, "{}:", default_label).ok();
-        writeln!(out, "{}  call void @__briev_trap()", indent).ok();
+        writeln!(out, "{}  call void @llvm.trap()", indent).ok();
         writeln!(out, "{}  unreachable", indent).ok();
         // The end block: phi over the arm result registers (one per arm that
         // inlined a body). The incoming block of arm i is arm_labels[i].
         // The result type is the impl's ret type (Int → i64 for the
-        // Greeter-scale case).
+        // Greeter-scale case). Each arm-result register is ALREADY
+        // percent-prefixed (it came from gen_reg via the member body's term
+        // value), so cite it verbatim — adding a `%` to the value would yield
+        // `%%t99` (invalid IR). The incoming BLOCK label, however, is a bare
+        // name (no `%` from next_label), so it needs a `%` prefix: `[%t94,
+        // %dynsw_89]`.
         writeln!(out, "{}:", end_label).ok();
         let result = self.fun.gen_reg();
         let phi_list: Vec<String> = arm_results
             .iter()
             .enumerate()
             .filter(|(_, (r, _))| !r.is_empty())
-            .map(|(i, (r, _))| format!("[%{}, {}]", r, arm_labels[i]))
+            .map(|(i, (r, _))| format!("[{}, %{}]", r, arm_labels[i]))
             .collect();
         writeln!(out, "{}{} = phi i64 {}", indent, result, phi_list.join(", ")).ok();
         TypedRegister { name: result, ty: Type::int() }

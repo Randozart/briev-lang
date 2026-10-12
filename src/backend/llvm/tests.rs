@@ -10393,8 +10393,11 @@ node run [i < 1][i == 1] {
     );
     // The SWITCH form: a `switch` on the tag, with arms for tag 0 (Dog) and
     // tag 1 (Cat). The tag is loaded from the fat pointer's tag slot (slot 1).
+    // 2026-10-11: the multi-line LLVM form — default label FIRST, `%`-prefixed
+    // labels, newline-separated cases (the old single-line/`label dynsw`
+    // spellings were rejected by clang; see emit_dyn_switch).
     assert!(
-        ir.contains("switch i64") && ir.contains("label dynsw"),
+        ir.contains("switch i64") && ir.contains("label %dynsw"),
         "two-concrete dispatch must be the Switch form (a `switch` on the tag):\n{ir}"
     );
     // The tag is loaded from the fat pointer's TAG slot (slot 1 of [3 x i64]).
