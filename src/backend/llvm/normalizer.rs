@@ -137,10 +137,18 @@ fn build_supported_ops() -> HashSet<String> {
     for name in &["GetEnv#", "GetEnvInt#",
                    "ToInt#", "ToFloat#", "ToString#", "Length#",
                    "AddressOf#", "SysCall#", "SysConf#",
-                   // 2026-09-23 (frgn-elimination round 2): Environ#() loads
-                   // the compiler-owned @__briev_environ global (env.bv
-                   // threads it to the pure-Briev environ walkers).
-                   "Environ#",
+    // 2026-09-23 (frgn-elimination round 2): Environ#() loads
+    // the compiler-owned @__briev_environ global (env.bv
+    // threads it to the pure-Briev environ walkers).
+    "Environ#",
+    // 2026-10-12 (daily-driver quick wins): Alloc# has a working
+    // lowering (emit_alloc, intrinsics.rs) and is used by the
+    // prelude-injected cast_lanes.bv buffered stdout lane
+    // (__stdout_byte) and the environ walkers — a bare `__print_str`
+    // (or any defn whose body reaches those helpers) walked into this
+    // gate and was rejected even though the arm exists. Malloc/Free
+    // join via STANDARD_OPS; Alloc# is the pure-Briev heap sibling.
+    "Alloc#",
                    // 2026-08-03 (callbacks): CallPtr# calls a fn-value
                    // operand — emit_call_ptr exists (intrinsics.rs); the
                    // supported set must admit it (c_driver_callback).

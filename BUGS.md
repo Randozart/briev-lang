@@ -9097,3 +9097,64 @@ returning the byte count instead of the neutral 0 — the same convention
 violation the 2026-09-23 exit-code-parity fix resolved for the rest of the
 family. Aligned to `term 0`. No consumer of its return was found in any
 Briev source, so the change is behavior-neutral for existing programs.
+
+## LLVM gate rejected `Alloc#` despite a working arm — FIXED 2026-10-12
+
+**Symptom:** any program with a BARE `__print_str(...)`/`__print(...)` call
+(e.g. `tests/tier1/daily_use_smoke.bv`) failed at the LLVM normalizer with
+`intrinsic 'Alloc#' is not supported by this backend` — while `println!`
+programs built fine.
+
+**Root cause:** the prelude-injected cast_lanes.bv buffered-stdout lane
+routes `__print_str → write_all → __stdout_byte → Alloc#` (the 64 KiB
+buffer). `Alloc#` HAS a working lowering (`emit_alloc`,
+src/backend/llvm/intrinsics.rs) but was never admitted to the LLVM
+`build_supported_ops()` gate (normalizer.rs) when the buffered lane landed
+(2026-09-11). `println!` dodged the gate because the macro expands to the
+`Print#` intrinsic (harvester sees `Print#`, not the defn body); only a
+direct call to the cast_lanes defn walked into `Alloc#`.
+
+**Fix:** admit `"Alloc#"` to the LLVM supported set (with provenance —
+Malloc/Free already join via STANDARD_OPS; Alloc# is the pure-Briev heap
+sibling).
+
+**How to undo:** remove the entry — a bare `__print_str` program gate-fails
+again while every `println!` program stays green.
+
+## `get_env_int!` panicked the defn-liveness net — FIXED 2026-10-12
+
+**Symptom:** `get_env_int!("BOUND")` in a node body crashed the compiler
+(`defn liveness: emitted code calls unreached defn(s)
+["briev_str_substr", "str_to_int"]`, mod.rs:5484).
+
+**Root cause:** the `Environ#` intrinsic→helper row (defn_liveness.rs)
+rooted only the two walker impls. The emitted code ALSO calls the cast-lane
+helpers: env.bv's String-param contract (`key >= 0`) elaborates through the
+String↔Int cast lanes (str_to_int/int_to_str) and the String-returning
+sibling routes Slice#→briev_str_substr + the auto-free lane — the exact set
+the Print# row already documents.
+
+**Fix:** the Environ# row gains the four cast-lane names (same provenance
+as the Print# row).
+
+**How to undo:** drop the names — `get_env_int!` panics the net again at
+every build.
+
+## tier1 fixtures: two never parsed, two export-surface — FIXED 2026-10-12
+
+**Symptom:** the first run of the new E2E gate (tests/daily_use_smoke.rs)
+found `test_char.bv` and `test_stringbuilder.bv` failing at PARSE
+(pre-`when` `[cond] { ... }` block syntax, unmigrated since the when-keyword
+migration — nothing had ever compiled them; they were orphaned fixtures),
+and `strexp.bv`/`strexp2.bv` misclassified as run programs (they are
+export-only surfaces — `brievc lib` builds `libstrexp.a` cleanly).
+
+**Fix:** both fixtures migrated to `when`+node form (now run green:
+char-classify/convert/unicode-ok, stringbuilder-ok); the E2E gate
+classifies `export defn` with no node/txn as library surface and builds
+those via `brievc lib`. Same pass fixed the .gitignore hazard that had left
+`daily_use_smoke.bv` silently untracked (`tests/*` negation now re-includes
+`tests/tier1` and `tests/fixtures`).
+
+**How to undo:** revert the fixtures — the gate reports parse failures
+again (honest, but the corpus stops guarding the char/StringBuilder paths).

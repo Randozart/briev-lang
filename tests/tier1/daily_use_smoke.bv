@@ -1,0 +1,31 @@
+// Daily-use smoke test — verifies the core language paths that a user
+// would hit on day one: string ops, collections, env, arithmetic,
+// sync<group> nodes, println! inside when-guards.
+//
+// This is the regression gate for the SyncGroup plugin gap (env, print,
+// inline_frgn) and the struct-typed field init (Stack<Int,256> = 0).
+import "std/string.bv";
+import { Stack } from "std/collections.bv";
+
+let done: Int = 0;
+let st: Stack<Int, 256> = 0;
+
+node main [done == 0][done == 1] {
+    // String ops
+    let s: String = "world";
+    let len: Int = len(s);
+    __print_str(s);
+    // Collection (Stack via <- InsertAt / <- ExtractFrom)
+    st <- 42;
+    st <- 99;
+    // Env
+    let b: Int = get_env_int!("BOUND");
+    // Arithmetic
+    let x: Int = 7 * 8 - 3;
+    // sync<group> + when + println! (the paths that used to panic)
+    when done == 0 {
+        println!("ready");
+    };
+    done = 1;
+    term;
+};
