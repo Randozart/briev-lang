@@ -2078,6 +2078,18 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
     if let Some(resolved) = resolve_bound_param_call(name, args, ctx)? {
         return Ok(resolved);
     }
+    // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S3): the
+    // free-call form of a trait method — including a trait DEFAULT — on a
+    // CONCRETE conforming value: `bump_twice(tally, 5)`. `Tally` provides
+    // `Counter`'s required `bump`, so it inherits the default `bump_twice`.
+    // The first argument is the `Self` receiver; the rest match the trait
+    // function's remaining parameters.
+    if let Some((receiver, rest)) = args.split_first() {
+        let receiver_ty = infer_type_only(receiver, ctx)?;
+        if let Some(resolved) = resolve_conforming_trait_call(name, &receiver_ty, rest, ctx)? {
+            return Ok(resolved);
+        }
+    }
     // 2026-07-25: Fallback — bind all destructured names to Int.
     Ok(Type::int())
 }
@@ -2156,6 +2168,105 @@ fn resolve_bound_param_call(
             context: format!(
                 "argument {} of trait '{}' method '{}' on bound type param '{}'",
                 index, trait_name, name, param_name
+            ),
+        });
+    }
+    let result = requirement
+        .output_type
+        .as_ref()
+        .and_then(|ot| ot.all_types().into_iter().next())
+        .map(|ret| substitute_type_params(&ret, &self_key, &self_subst))
+        .unwrap_or_else(Type::void);
+    Ok(Some(result))
+}
+
+/// 2026-10-13 (static trait-constrained generics, SPEC §8.6): does the concrete
+/// type `type_name` STRUCTURALLY conform to `trait_name`? Conformance here means
+/// the type provides a member for every REQUIRED (empty-body) function of the
+/// trait — defaults are supplied by the trait itself, so they are not required
+/// of the type. This is the structural reading of SPEC §8.6: a type conforms by
+/// providing the operations, with no explicit `: Trait` assertion needed.
+/// Member provision is read from `ctx.type_members` (an obj/struct's own defn
+/// members), the same source method resolution uses.
+fn type_conforms_to_trait(ctx: &TypecheckContext, type_name: &str, trait_name: &str) -> bool {
+    let Some(trait_def) = ctx.trait_defs.get(trait_name) else {
+        return false;
+    };
+    let members = ctx.type_members.get(type_name).cloned().unwrap_or_default();
+    trait_def.functions.iter().all(|requirement| {
+        if !requirement.body.is_empty() {
+            return true; // a default is provided by the trait, not required
+        }
+        members.iter().any(|member| member_name(member) == requirement.name)
+    })
+}
+
+/// 2026-10-13 (static trait-constrained generics, SPEC §8.6): resolve a call
+/// `name(args)` where the receiver is a CONCRETE type that conforms to a trait
+/// declaring `name` — e.g. `bump_twice(tally, 5)` / `tally.bump_twice(5)` where
+/// `Tally` provides `Counter`'s `bump`, so it inherits the default `bump_twice`.
+/// `receiver_ty` is the already-inferred type of the receiver argument; `args`
+/// are the remaining (non-receiver) argument expressions, matched against the
+/// trait function's parameters AFTER the leading `Self`. Returns `Ok(None)` when
+/// the receiver is not a concrete conforming type whose trait declares `name`.
+///
+/// Mirrors `resolve_bound_param_call`, but the receiver is a concrete type (so
+/// `Self -> Tally`) found via structural conformance rather than a type-param
+/// bound. Covers both the free-call and method-call surfaces through one path.
+fn resolve_conforming_trait_call(
+    name: &str,
+    receiver_ty: &Type,
+    args: &[Expr],
+    ctx: &mut TypecheckContext,
+) -> Result<Option<Type>, TypeError> {
+    let Type::Custom(type_name) = receiver_ty else {
+        return Ok(None);
+    };
+    // Find a trait this concrete type conforms to that declares `name`. The
+    // trait set is small; a deterministic scan over the sorted names keeps the
+    // choice stable (HashMap iteration order is seed-randomized).
+    let mut trait_names: Vec<String> = ctx.trait_defs.keys().cloned().collect();
+    trait_names.sort();
+    let resolved = trait_names.iter().find_map(|trait_name| {
+        let trait_def = ctx.trait_defs.get(trait_name)?;
+        let requirement = trait_def.functions.iter().find(|fn_def| fn_def.name == name)?;
+        if !type_conforms_to_trait(ctx, type_name, trait_name) {
+            return None;
+        }
+        Some(requirement.clone())
+    });
+    let Some(requirement) = resolved else {
+        return Ok(None);
+    };
+    // `Self` in the requirement is this concrete type. The first parameter is
+    // the `Self` receiver (supplied by `receiver_ty`); the written `args` match
+    // the parameters after it.
+    let self_subst = [receiver_ty.clone()];
+    let self_key = ["Self".to_string()];
+    let value_params: Vec<Type> = requirement
+        .parameters
+        .iter()
+        .skip(1)
+        .map(|(_, ty)| substitute_type_params(ty, &self_key, &self_subst))
+        .collect();
+    if value_params.len() != args.len() {
+        return Err(TypeError::TypeMismatch {
+            expected: format!("{} argument(s) after the receiver", value_params.len()),
+            found: format!("{} argument(s)", args.len()),
+            context: format!("call to trait method '{}' on '{}'", name, type_name),
+        });
+    }
+    for (index, (expected, arg)) in value_params.iter().zip(args.iter()).enumerate() {
+        let actual = infer_type_only(arg, ctx)?;
+        if &actual == expected || types_compatible(expected, &actual, ctx) {
+            continue;
+        }
+        return Err(TypeError::TypeMismatch {
+            expected: format!("{}", expected),
+            found: format!("{}", actual),
+            context: format!(
+                "argument {} of trait method '{}' on '{}'",
+                index, name, type_name
             ),
         });
     }
@@ -5171,6 +5282,50 @@ pub fn check_program_with_target(
         }
     }
 
+    // 2026-10-13 (static trait-constrained generics, SPEC §8.6): type-check
+    // trait DEFAULT bodies. A default (`defn bump_twice(this: Self, …) { … }`
+    // with a body) must itself type-check once, generically over `Self`. Before
+    // this, trait function bodies were never visited at all — a default calling
+    // a required method would never be checked. We check it with `self`/`Self`
+    // in scope and `active_type_param_bounds = {"Self": trait}`, so a call to a
+    // sibling requirement inside the body (`bump(this, amount)`, `this: Self`)
+    // resolves through the SAME bound-param path S2 built — `Self` is just the
+    // bound param here, bound to its own trait. Required functions (empty body)
+    // have nothing to check and are skipped.
+    for item in items.iter() {
+        let TopLevel::Trait(trait_def) = item else {
+            continue;
+        };
+        let self_ty = Type::Custom("Self".to_string());
+        for requirement in &trait_def.functions {
+            if requirement.body.is_empty() {
+                continue;
+            }
+            let member = TopLevel::Definition(requirement.clone());
+            let mut mctx = build_member_ctx(
+                &trait_def.name, &self_ty, &[], &[], &[], &member, &mut errors,
+            );
+            // `Self` is a bound type param of this trait while the default is
+            // checked — this is what lets `bump(this, amount)` resolve. The
+            // trait registry must be present too: `build_member_ctx` builds a
+            // bare context without it, so a trait-method call in the body would
+            // otherwise find no trait and fall through to the Int fallback.
+            mctx.trait_defs = all_trait_defs.clone();
+            mctx.active_type_param_bounds =
+                std::collections::HashMap::from([("Self".to_string(), trait_def.name.clone())]);
+            for (param_name, param_ty) in &requirement.parameters {
+                mctx.bindings.insert(param_name.clone(), param_ty.clone());
+            }
+            mctx.current_output_type =
+                requirement.output_type.as_ref().map(output_type_to_type);
+            for stmt in &requirement.body {
+                if let Err(e) = infer_statement(stmt, &mut mctx) {
+                    errors.push(e);
+                }
+            }
+        }
+    }
+
 
     for item in items.iter() {
         if let Err(e) = check_top_level(item, universe, &env) {
@@ -6657,6 +6812,18 @@ fn resolve_method_call(
             }
             if ctx.fn_return_types.contains_key(name) {
                 return infer_call(name, &all, ctx);
+            }
+            // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S3):
+            // the method-call form of a trait method — including a trait
+            // DEFAULT — on a concrete conforming receiver: `tally.bump_twice(5)`.
+            // The receiver IS the `Self` argument; the chain back-refs and
+            // written args are the value parameters after it.
+            let mut rest = leading.exprs.clone();
+            rest.extend(args.iter().cloned());
+            if let Some(resolved) =
+                resolve_conforming_trait_call(name, receiver, &rest, ctx)?
+            {
+                return Ok(resolved);
             }
             return Err(TypeError::InvalidOperation {
                 operation: format!("method call '.{}()'", name),

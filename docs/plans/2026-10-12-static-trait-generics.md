@@ -97,3 +97,36 @@ S7 - Tests + docs.
   check signatures only and note contract-refinement as a follow-up.
 - Codegen: confirm the boxed-i64 erasure already routes member calls correctly;
   the dyn backend path is broken, so DO NOT depend on it.
+
+## Implementation log (append-only)
+
+2026-10-13 - S1+S2 DONE (commit 5034ed41). S1: fn_type_param_bounds (per-defn
+registry) + active_type_param_bounds (transient, set while a defn body is
+checked) + type_param_bounds() helper, threaded through CheckEnv /
+make_typecheck_context. S2: resolve_bound_param_call() - an additive branch in
+infer_call before the Int fallback. If a call argument's type is a bound type
+param T:C and trait C declares the function, validate (Self->T) and return the
+requirement's result (Self->T). Gate P3 passes (bump_twice<T: Counter> checks OK,
+returns T). cargo test --lib: no regressions (the one non-GPU conformance failure
+is a pre-existing malformed .dbvl fixture, BUGS.md).
+
+2026-10-13 - S3 implemented. Three additive pieces, all reusing S2 machinery:
+  (A) Trait DEFAULT bodies are now type-checked (they never were). A loop in
+      check_program_with_target, modeled on the obj-member loop, checks each
+      body-carrying trait function with self/params bound and
+      active_type_param_bounds = {"Self": trait_name} - so a call to a sibling
+      requirement inside the default (bump(this,amount), this: Self) resolves
+      through resolve_bound_param_call with Self as the bound param.
+  (B) Free-call form on a concrete conforming value (bump_twice(tally,5)): a
+      sibling branch in infer_call after resolve_bound_param_call. First arg is
+      the Self receiver; the rest match the trait fn's params after Self.
+  (C) Method-call form (tally.bump_twice(5)): a branch in resolve_method_call's
+      None-member arm, after the fn_return_types UFCS check and before the error.
+  Shared: type_conforms_to_trait() (structural - the concrete type provides every
+  REQUIRED (empty-body) trait fn; defaults are supplied by the trait) and
+  resolve_conforming_trait_call() (finds a conforming trait declaring `name`,
+  validates args Self->concrete, returns result Self->concrete). Trait scan is
+  sorted for determinism. Gate: P2 (t.bump_twice(5)) and P2b (bump_twice(t,5)).
+  Note: a concrete type's OWN member of the same name still wins - resolve_method_
+  call finds it in type_members FIRST; the conformance branch only runs when the
+  member is absent (the default-inheritance case).
