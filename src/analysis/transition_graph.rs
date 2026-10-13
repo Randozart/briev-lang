@@ -1016,11 +1016,18 @@ fn scan_for_state_identifiers(stmts: &[Statement], state_fields: &HashSet<String
             | Statement::Let { expr: Some(expr), .. } => {
                 collect_state_identifiers(expr, state_fields, out);
             }
+            Statement::Let { expr: None, .. } => {}
             Statement::Assign(lhs, expr) => {
                 collect_state_identifiers(lhs, state_fields, out);
                 collect_state_identifiers(expr, state_fields, out);
             }
-            Statement::Guarded(_, statements) => {
+            // 2026-10-12: the Guarded CONDITION is a read — a `when` guard on
+            // a state field (or an entry-plugin snapshot field like
+            // `arg_verbose`) must not be dead-eliminated. Previously only the
+            // body was scanned, so a field used solely in the cond emitted an
+            // undefined `@name` load after apply_field_modes pruned it.
+            Statement::Guarded(cond, statements) => {
+                collect_state_identifiers(cond, state_fields, out);
                 scan_for_state_identifiers(statements, state_fields, out);
             }
             Statement::Block(body) => {
@@ -1064,7 +1071,39 @@ fn scan_for_state_identifiers(stmts: &[Statement], state_fields: &HashSet<String
                 collect_state_identifiers(list, state_fields, out);
                 scan_for_state_identifiers(body, state_fields, out);
             }
-            _ => {}
+            // 2026-10-12: remaining statement forms carrying expressions —
+            // each was a liveness hole (field used only here was Never-pruned
+            // → undefined `@name` load at emit). Check/Open read their exprs;
+            // statement-level match reads the scrutinee + walks arm bodies;
+            // defer/mutex are transparent scopes.
+            Statement::Check(cond) => {
+                collect_state_identifiers(cond, state_fields, out);
+            }
+            Statement::Open(a, b) => {
+                collect_state_identifiers(a, state_fields, out);
+                collect_state_identifiers(b, state_fields, out);
+            }
+            Statement::Match { expr, arms } => {
+                collect_state_identifiers(expr, state_fields, out);
+                for arm in arms {
+                    scan_for_state_identifiers(&arm.body, state_fields, out);
+                }
+            }
+            Statement::Defer(body) | Statement::Mutex(body) => {
+                scan_for_state_identifiers(body, state_fields, out);
+            }
+            Statement::MetadataAssignment(_, _)
+            | Statement::Break
+            | Statement::Trap
+            | Statement::Halt
+            | Statement::Yield
+            | Statement::FreeHint(_)
+            | Statement::KeepHint(_)
+            | Statement::InlineAsm { .. }
+            | Statement::InlineDefn(_) => {}
+            Statement::TrgBinding { instance, .. } => {
+                collect_state_identifiers(instance, state_fields, out);
+            }
         }
     }
 }
@@ -1117,11 +1156,7 @@ fn collect_state_identifiers(expr: &Expr, state_fields: &HashSet<String>, out: &
             collect_state_identifiers(recv, state_fields, out);
         }
         Expr::Block(stmts) => {
-            for stmt in stmts {
-                if let Statement::Expression(e) = stmt {
-                    collect_state_identifiers(e, state_fields, out);
-                }
-            }
+            scan_for_state_identifiers(stmts, state_fields, out);
         }
         Expr::Tuple(exprs) | Expr::List(exprs) => {
             for e in exprs {
@@ -1160,6 +1195,48 @@ fn collect_state_identifiers(expr: &Expr, state_fields: &HashSet<String>, out: &
         Expr::Range { start, end, inclusive: _ } => {
             collect_state_identifiers(start, state_fields, out);
             collect_state_identifiers(end, state_fields, out);
+        }
+        // 2026-10-12: remaining expression forms carrying sub-exprs — each was
+        // a liveness hole (field used only here was Never-pruned → undefined
+        // `@name` load at emit). Slice bounds, spawn args, struct-literal
+        // field values/specs, is-type scrutinee, and await operand are reads.
+        Expr::Slice { array, start, end, stride } => {
+            collect_state_identifiers(array, state_fields, out);
+            if let Some(s) = start { collect_state_identifiers(s, state_fields, out); }
+            if let Some(e) = end { collect_state_identifiers(e, state_fields, out); }
+            if let Some(s) = stride { collect_state_identifiers(s, state_fields, out); }
+        }
+        Expr::Spawn { args, .. } => {
+            for e in args {
+                collect_state_identifiers(e, state_fields, out);
+            }
+        }
+        Expr::StructLiteral { fields, specs, .. } => {
+            for (_, e) in fields.iter().chain(specs.iter()) {
+                collect_state_identifiers(e, state_fields, out);
+            }
+        }
+        Expr::IsType(inner, _) | Expr::Await(inner) => {
+            collect_state_identifiers(inner, state_fields, out);
+        }
+        Expr::DerivationBlock(db) => {
+            if let Some(s) = &db.synthesized {
+                collect_state_identifiers(s, state_fields, out);
+            }
+            if let Some(post) = &db.postcondition {
+                collect_state_identifiers(post, state_fields, out);
+            }
+            if let Some(pre) = &db.precondition {
+                collect_state_identifiers(pre, state_fields, out);
+            }
+        }
+        Expr::PluginIntercept { args, receiver, .. } => {
+            if let Some(r) = receiver {
+                collect_state_identifiers(r, state_fields, out);
+            }
+            for e in args {
+                collect_state_identifiers(e, state_fields, out);
+            }
         }
         _ => {}
     }

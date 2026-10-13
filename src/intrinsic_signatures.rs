@@ -292,6 +292,29 @@ pub fn get_intrinsic_signature(name: &str) -> Option<Signature> {
             variadic: false,
         }),
 
+        // ── Captured-argv (daily-driver quick wins, 2026-10-12) ──────
+        // `Argc#()` / `Args#()` — the captured argc/argv globals the
+        // backend-owned main stores (@__briev_argc / @__briev_argv).
+        // The Environ# global-load shape; cli.bv's pure-Briev walkers
+        // (cstr_len + byte compare) compose them. The interpreter
+        // materializes the process argv into its virtual heap as a real
+        // NULL-terminated C-string pointer array (Rule 5 — same walkers,
+        // both engines).
+        "Argc#" => Some(Signature {
+            name: "Argc#",
+            parameters: vec![],
+            return_kind: ReturnKind::Native("Int"),
+            observable: false,
+            variadic: false,
+        }),
+        "Args#" => Some(Signature {
+            name: "Args#",
+            parameters: vec![],
+            return_kind: ReturnKind::Native("Int"),
+            observable: false,
+            variadic: false,
+        }),
+
         // ── OS SysCall (observable, variadic) ──────────────────────────
         // 2026-07-15: Returns native Int (result or errno).
         // 2026-07-26: variadic — first arg is syscall number, up to 6 more args.
@@ -570,7 +593,9 @@ pub const REGISTERED_INTRINSICS: &[&str] = &[
     // section 1): both names below predate their list entries — Fma#
     // (registered, emitted by both GPU lanes) and Environ# were missing
     // from this completion list.
-    "Fma#", "Environ#",
+    // 2026-10-12 (daily-driver quick wins): Argc#/Args# join their
+    // Environ# sibling (captured-argv globals, cli.bv walkers).
+    "Fma#", "Environ#", "Argc#", "Args#",
     // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md): element-
     // addressed atomics (the kernel family).
     "AtomicAddAt#", "AtomicSubAt#", "AtomicXchgAt#", "AtomicCasAt#",

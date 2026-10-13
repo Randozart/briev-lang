@@ -255,7 +255,9 @@ Generative op-member forms (dispatch to declared `op` members):
 ### Process & environment
 
 `Spawn#` `SpawnWithOutput#` `SetEnv#` `GetCwd#` `ChDir#` — `Environ#`
-(the C `environ` base pointer, an `Int`)
+(the C `environ` base pointer, an `Int`), `Argc#` (process argv count, an
+`Int`), `Args#` (the C `argv` base pointer, an `Int` — walkers in
+`std/cli.bv`)
 
 ### Compile-time address
 

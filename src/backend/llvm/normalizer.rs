@@ -137,10 +137,15 @@ fn build_supported_ops() -> HashSet<String> {
     for name in &["GetEnv#", "GetEnvInt#",
                    "ToInt#", "ToFloat#", "ToString#", "Length#",
                    "AddressOf#", "SysCall#", "SysConf#",
-    // 2026-09-23 (frgn-elimination round 2): Environ#() loads
-    // the compiler-owned @__briev_environ global (env.bv
-    // threads it to the pure-Briev environ walkers).
-    "Environ#",
+                    // 2026-09-23 (frgn-elimination round 2): Environ#() loads
+                    // the compiler-owned @__briev_environ global (env.bv
+                    // threads it to the pure-Briev environ walkers).
+                    "Environ#",
+                    // 2026-10-12 (daily-driver quick wins): Argc#/Args# load
+                    // the captured argc/argv globals (@__briev_argc /
+                    // @__briev_argv) — same shape as Environ#; cli.bv
+                    // composes them.
+                    "Argc#", "Args#",
     // 2026-10-12 (daily-driver quick wins): Alloc# has a working
     // lowering (emit_alloc, intrinsics.rs) and is used by the
     // prelude-injected cast_lanes.bv buffered stdout lane

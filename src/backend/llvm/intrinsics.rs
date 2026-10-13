@@ -205,6 +205,26 @@ pub fn emit_intrinsic_call(
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, env).ok();
             return BTypedRegister { name: ptr.to_string(), ty: Type::int() };
         }
+        // 2026-10-12 (daily-driver quick wins): `Argc#()` / `Args#()` —
+        // load the captured argc/argv globals the backend-owned main
+        // stores (@__briev_argc / @__briev_argv, mod.rs globals block).
+        // Same global-load shape as Environ# above; cli.bv's pure-Briev
+        // walkers (cstr_len + byte compare over the C-string pointer
+        // array) compose them into arg_count/arg/has_flag/entry_cmd.
+        "Argc#" => {
+            let n = backend.fun.gen_reg();
+            writeln!(out, "{}{} = load i32, ptr @__briev_argc", indent, n).ok();
+            let z = backend.fun.gen_reg();
+            writeln!(out, "{}{} = zext i32 {} to i64", indent, z, n).ok();
+            return BTypedRegister { name: z.to_string(), ty: Type::int() };
+        }
+        "Args#" => {
+            let argv = backend.fun.gen_reg();
+            writeln!(out, "{}{} = load ptr, ptr @__briev_argv", indent, argv).ok();
+            let ptr = backend.fun.gen_reg();
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, argv).ok();
+            return BTypedRegister { name: ptr.to_string(), ty: Type::int() };
+        }
         // 2026-10-05 (Phase 0.6, gate-membership<->arm rule): the GPU
         // launch-dimension builtins are DE-LISTED from this lane.
         // GetGlobalSize#/GetLocalId# had NO lowering (the removed arms fell

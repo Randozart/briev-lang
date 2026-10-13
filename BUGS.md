@@ -9158,3 +9158,73 @@ those via `brievc lib`. Same pass fixed the .gitignore hazard that had left
 
 **How to undo:** revert the fixtures — the gate reports parse failures
 again (honest, but the corpus stops guarding the char/StringBuilder paths).
+
+## field-liveness: Guarded (when) CONDITION invisible — FIXED 2026-10-12
+
+**Symptom:** a state field referenced ONLY inside a `when` cond (e.g. the
+entry-plugin snapshot `arg_verbose`, rewritten from `when args!("--verbose")`)
+was marked FieldMode::Never by `apply_field_modes` and eliminated from
+%State; the identifier emit fell through to the global-load fallback and
+clang rejected the IR with `use of undefined value '@arg_verbose'`.
+
+**Root cause:** `scan_for_state_identifiers` (src/analysis/transition_graph.rs)
+had `Statement::Guarded(_, statements)` — it scanned the body but not the
+cond. The cond is a read. The same sweep closed the remaining statement
+holes (Check/Open read their exprs; statement-level Match reads the
+scrutinee and walks arm bodies; Defer/Mutex are transparent scopes;
+TrgBinding reads its `instance`) and the remaining Expr holes (Slice bounds,
+Spawn args, StructLiteral field/spec values, IsType/Await inner,
+DerivationBlock synthesized/pre/post, PluginIntercept receiver+args;
+Expr::Block now delegates to the statement scanner so nested Lets count).
+
+**How to undo:** revert the Guarded arm — the plugin probes (target/cli_probe)
+fail at link with `@arg_*` undefined again.
+
+## reactive-loop with local let: non-dominating alloca — OPEN 2026-10-12
+
+**Symptom:** `examples/cli-args.bv` first draft used a reactor-internal loop
+(`let i: Int = 0; when repeats > 0 { i = 1; }; when i < repeats { i = i + 1; }`)
+— clang rejected the IR: `Instruction does not dominate all uses!` for the
+`i` alloca (load/store in a loop body block that does not dominate).
+
+**Scope:** local-let inside a multi-when reactive loop shape. Worked around
+in the example (dropped the loop); the shape itself needs a codegen fix
+(alloca placement or phi for loop-carried locals). Repro: restore the loop
+in examples/cli-args.bv and link.
+
+**How to undo:** n/a — open bug, not a fix.
+
+## byte_at WASM emission: i64 length load vs i32 param — OPEN 2026-10-12
+
+**Symptom:** `brievc build <x>.rbv --split` (webstack → llc WASM) rejects IR
+when cast_lanes' `byte_at` is emitted: `%t14 = load i64` (the String
+`^.Length` lane) feeds `icmp sge i32 %arg1, %t14` — type mismatch. On x86
+the same function never emitted before (liveness killed it), so the latent
+width bug was invisible.
+
+**Exposure path:** the (same-day reverted) coarse Cast-family mark in
+defn_liveness rooted str_to_int → parse_int_ws → byte_at in every unit with
+any cast; the webstack path then hit the broken emission. With the mark
+reverted, byte_at only emits when explicitly called — still broken on WASM.
+
+**Repro:** root str_to_int on a .rbv target (e.g. a defn that calls
+`str_to_int` or cli.bv's `arg_int`) and run the rbv_gate build.
+
+**Fix direction:** the reflect `^.Length` on String must adapt to the
+operand/param width on the wasm ABI (trunc/zext at the comparison), or the
+webstack Int ABI must be i64-consistent with the length lane.
+
+**How to undo:** n/a — open bug, not a fix.
+
+## entry-plugin cli.bv import is the prelude anchor — LESSON 2026-10-12
+
+The entry plugin's UNCONDITIONAL `import "std/cli.bv"` injection looks like
+a bug (it drags a module into every unit) but is LOAD-BEARING: prelude-native
+branches on `Tag$("import")` matching, so a unit with no user import and no
+txn (bare `defn` files — most of lib/std) gets NO stdlib family without it.
+Making the inject conditional broke the defn-only conformance corpus
+(unknown names fell to the Int fallback: env.bv "found Int", glue-macro
+"no op Count"). The real conflict (string.bv exports colliding across
+stdlib) was fixed at the SOURCE: cli.bv is import-free (uses cast_lanes'
+str_to_int/str_to_float, which the prelude injects). Do not re-narrow the
+inject without replacing the anchor mechanism.

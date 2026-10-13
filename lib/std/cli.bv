@@ -1,12 +1,142 @@
-// 2026-08-01 (Phase 3): CLI argv access — RETIRED 2026-09-10 (Family F).
+// 2026-10-12 (daily-driver quick wins): CLI argv — REVIVED over the
+// Argc#/Args# intrinsics. The backend-owned main captures argc/argv into
+// @__briev_argc / @__briev_argv (mod.rs globals block); the interpreter
+// materializes the process argv into its virtual heap as the same
+// NULL-terminated C-string pointer array (Rule 5 — one walker set, both
+// engines). argv[0] is the program name; flags are matched from index 1.
 //
-// The __argv_* accessors lived in briev_rt.c and had ZERO shipped users;
-// their `-> String` frgns were also latently broken (they forwarded raw
-// char* — not the [len][bytes] Briev String ABI). Deleted with the C
-// runtime (see docs/architecture/briev-native-runtime.md).
+// entry_plugin.rs expands `entry!("cmd")` / `args!("--flag")` to
+// entry_cmd()/__argv_has/__argv_value below and injects this import —
+// these defns are the honest stdlib surface behind those compiler-known
+// macro names (no hidden Rust string matches; Rule 3).
 //
-// CLI argv access returns as an Args# intrinsic over the captured
-// argv/environ globals (@__briev_argv / @__briev_environ — both stored by
-// the backend-owned _start) when a CLI surface is actually needed. Until
-// then, `entry!`/`args!` expansions fail to resolve with a loud
-// undefined-symbol error — the honest signal that the surface is retired.
+// String ABI: a Briev String is [len: i64][bytes...] behind a Data value;
+// a C string here is a bare pointer (argv entries). cstr_len (cast_lanes)
+// scans the C form; the builders below copy into the Briev form. str_to_int/
+// str_to_float (cast_lanes) back the typed arg_int/arg_float snapshots.
+//
+// 2026-10-12: NO import of std/string.bv here — this module is injected into
+// EVERY compilation unit by the entry plugin (the unconditional import in
+// src/plugin/entry_plugin.rs is the prelude anchor: it guarantees the
+// prelude family loads even in units with no user import), and the prelude
+// deliberately excludes string.bv ("collides on to_string with
+// string_builder.bv"). Importing string.bv here dragged its exports
+// (count_char_loop, len, to_string, ends_with) into every unit, colliding
+// with the stdlib modules that declare their own copies. str_to_int/
+// str_to_float live in cast_lanes.bv, which the prelude DOES inject.
+
+// arg_count — argc (the program name included).
+defn arg_count() [term >= 0] -> Int {
+    term Argc#();
+};
+
+// arg_ptr — the address of argv[i]'s C string, or 0 past the end.
+defn arg_ptr(i: Int, argv: Int) [i >= 0 && argv >= 0][term >= 0] -> Int {
+    when i >= Argc#() {
+        term 0;
+    };
+    term Load#(argv + 8 * i, 8);
+};
+
+// arg — argv[i] as a Briev String (empty when out of range).
+defn arg(i: Int) [i >= 0][true] -> String {
+    let argv: Int = Args#();
+    let p: Int = arg_ptr(i, argv);
+    when p == 0 {
+        term "";
+    };
+    let n: Int = cstr_len(p);
+    let buf: Int = Alloc#(8 + n + 1) as Int;
+    Store#(buf, n, 8);
+    Copy#(buf + 8, p, n);
+    Store#(buf + 8 + n, 0, 1);
+    term (buf as Data) as String;
+};
+
+// cstr_equals — C-string p equals the Briev String key (byte compare).
+defn cstr_equals(p: Int, key: Int, klen: Int, i: Int)
+    [p >= 0 && key >= 0 && klen >= 0 && i >= 0][term == true || term == false] -> Bool {
+    when i >= klen {
+        term Load#(p + i, 1) == 0;
+    };
+    when Load#(p + i, 1) != Load#(key + 8 + i, 1) {
+        term false;
+    };
+    term cstr_equals(p, key, klen, i + 1);
+};
+
+// argv_find — the index of the argv entry equal to key (scanning from
+// `from`), or -1. The KEY=VALUE walk shape of environ_find, over argv.
+defn argv_find(key: Int, klen: Int, argv: Int, from: Int)
+    [key >= 0 && klen >= 0 && argv >= 0 && from >= 0][term >= -1] -> Int {
+    when from >= Argc#() {
+        term 0 - 1;
+    };
+    let p: Int = Load#(argv + 8 * from, 8);
+    when cstr_equals(p, key, klen, 0) {
+        term from;
+    };
+    term argv_find(key, klen, argv, from + 1);
+};
+
+// is_flag — does the String begin with '-'? (argv[0] is never a flag
+// candidate for entry_cmd; user flags live at index ≥ 1.)
+defn is_flag(s: String) [true][term == true || term == false] -> Bool {
+    let addr: Int = (s as Data) as Int;
+    when Load#(addr, 8) == 0 {
+        term false;
+    };
+    term Load#(addr + 8, 1) == 45;
+};
+
+// ── entry! / args! plugin surface ────────────────────────────────────────
+
+// entry_cmd — the first non-flag argument (the subcommand entry! keys
+// on); empty when none.
+defn entry_cmd() [true] -> String {
+    term entry_cmd_walk(1);
+};
+
+defn entry_cmd_walk(i: Int) [i >= 0][true] -> String {
+    when i >= Argc#() {
+        term "";
+    };
+    let a: String = arg(i);
+    when !is_flag(a) {
+        term a;
+    };
+    term entry_cmd_walk(i + 1);
+};
+
+// __argv_has — `args!("--flag")` (Bool snapshot): is the flag present?
+defn __argv_has(flag: String) [true][term == true || term == false] -> Bool {
+    let key: Int = (flag as Data) as Int;
+    let klen: Int = Load#(key, 8);
+    when klen == 0 {
+        term false;
+    };
+    term argv_find(key, klen, Args#(), 1) >= 0;
+};
+
+// __argv_value — `args!("--flag")` (String snapshot): the argument
+// AFTER the flag, or empty when the flag is absent.
+defn __argv_value(flag: String) [true] -> String {
+    let key: Int = (flag as Data) as Int;
+    let klen: Int = Load#(key, 8);
+    let idx: Int = argv_find(key, klen, Args#(), 1);
+    when idx < 0 {
+        term "";
+    };
+    term arg(idx + 1);
+};
+
+// arg_int / arg_float — the typed args! snapshot initializers (the
+// plugin wraps __argv_value with these for Int/Float fields; the
+// cast_lanes parse lanes own the digit logic).
+defn arg_int(flag: String) [true][term == 0 || term != 0] -> Int {
+    term str_to_int(__argv_value(flag));
+};
+
+defn arg_float(flag: String) [true][term >= 0.0 || term < 0.0] -> Float {
+    term str_to_float(__argv_value(flag));
+};

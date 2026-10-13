@@ -289,6 +289,34 @@ pub fn execute_intrinsic(
         // __briev_set_cancel is the real path).
         "CancelRequested#" => Ok(Value::Atom(Atom::Bool(false))),
         "ClearCancel#" => Ok(Value::Void),
+        // 2026-10-12 (daily-driver quick wins): Argc#/Args# — the
+        // interpreter materializes the PROCESS argv into its virtual heap
+        // as a real NULL-terminated C-string pointer array, so the SAME
+        // pure-Briev cli.bv walkers (cstr_len + byte compare over
+        // Load#/Store#) run in both engines (Rule 5: the interpreter is
+        // the reference). Args# returns the array base as an address,
+        // matching the backend's @__briev_argv global load.
+        "Argc#" => Ok(Value::Atom(Atom::Int(std::env::args().len() as i64))),
+        "Args#" => {
+            let argv: Vec<String> = std::env::args().collect();
+            let mut ptrs: Vec<i64> = Vec::with_capacity(argv.len() + 1);
+            for a in &argv {
+                let n = a.len() as u64;
+                let buf = heap.allocate((n + 1) as usize);
+                heap.write(buf, a.as_bytes())
+                    .map_err(|_| RuntimeError::HeapError("Args# write failed".into()))?;
+                heap.write(buf + n, &[0])
+                    .map_err(|_| RuntimeError::HeapError("Args# NUL failed".into()))?;
+                ptrs.push(buf as i64);
+            }
+            ptrs.push(0);
+            let base = heap.allocate(ptrs.len() * 8);
+            for (i, p) in ptrs.iter().enumerate() {
+                heap.write(base + (i as u64) * 8, &p.to_le_bytes())
+                    .map_err(|_| RuntimeError::HeapError("Args# array write failed".into()))?;
+            }
+            Ok(i64_to_bits(base as i64))
+        }
          "Load#" => {
             let addr = arg_as_i64(args, 0)? as u64;
             let bytes = args.get(1).and_then(|a| if let Value::Atom(Atom::Int(n)) = a { Some(*n as usize) } else { None }).unwrap_or(8);
