@@ -866,7 +866,21 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
         // threading the compiler-owned @__briev_environ via `Environ#()`.
         // The deleted C __getenv_int must NOT come back. Root the impls so
         // a runtime get_env!() keeps them emitted.
-        "Environ#" => &["briev_getenv_briev_impl", "briev_getenv_int_impl"],
+        // 2026-10-12 (daily-driver quick wins): the walker ROOTS also need
+        // the Print# cast-lane set — env.bv's String param contract
+        // (`key >= 0`) elaborates through the String↔Int cast lanes
+        // (str_to_int/int_to_str) and the String-returning sibling routes
+        // Slice#→briev_str_substr + the auto-free lane (same provenance
+        // as the Print# row above); without them the liveness net panics
+        // on `get_env_int!("BOUND")`.
+        "Environ#" => &[
+            "briev_getenv_briev_impl",
+            "briev_getenv_int_impl",
+            "str_to_int",
+            "int_to_str",
+            "briev_str_substr",
+            "__briev_free",
+        ],
         // Lifetime + time (the backend's free/now emissions prefer the
         // pure-Briev defns when present).
         "Free#" => &["__briev_free"],

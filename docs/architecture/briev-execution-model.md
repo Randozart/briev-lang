@@ -143,6 +143,29 @@ loop). The only difference is calling convention — `node` waits for its
 precondition, `txn` waits for a caller. See `txn-semantics.md` for the full
 treatment.
 
+## Reactor Dirty Lifecycle
+
+The interpreter reactor fires nodes driven by a **dirty precondition set**, not
+a global re-scan:
+
+- `build_from_program` marks every reactive txn dirty — the **bootstrap
+  wake**: every node's precondition is evaluated at least once at program
+  start.
+- `run()` iterates the dirty set: for each txn, evaluate its precondition;
+  if true, fire the body (convergence loop via `term` checkpoints); if false,
+  skip. `run()` does NOT clear the set.
+- The driver clears between rounds. The correct lifecycle is
+  `run() → clear_dirty() → run() → …`, or no clear at all for a single-shot
+  program (the bootstrap set is consumed by the first `run()`).
+- `dependency_map` is currently never populated — `mark_dirty` is a no-op.
+  Re-firing after a state mutation relies on the pre-condition being
+  re-evaluated in the next round, not on a dirty propagation.
+
+**Trap:** a driver that calls `clear_dirty()` *before* the first `run()`
+wipes the bootstrap set and can never fire any node (`run_reactor`,
+reactor.rs:428, has exactly this bug — see BUGS.md). `run_reactor_continuous`
+(reactor.rs:452, no pre-clear) is the working driver.
+
 ## Codegen Dispatch
 
 The compiler generates one of two codegen paths (see `a006-dispatch.md`):

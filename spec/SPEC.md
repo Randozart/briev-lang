@@ -1317,6 +1317,97 @@ Static trait-constrained generics are monomorphized by default.
 
 Trait node templates never activate through inferred conformance. A type or object must import them explicitly.
 
+#### 8.6.1 Dispatch is a derived shape, not a fixed mechanism
+
+A `dyn <Trait>` value declares a **capability** — "this value carries a concrete
+that implements `<Trait>`" — not a **representation**. It is a protocol with a
+dispatch requirement, in the same sense that `String` is a protocol with an
+encoding requirement. The compiler owns the representation; the user owns the
+observable input→output contract; strategy keywords are the only lever between
+them.
+
+Consequently, **the compiler does not emit a vtable for a `dyn` value by
+default.** A vtable (a per-trait table of function pointers, loaded and
+indirect-called at runtime) is the *most expensive* way to dispatch, and the
+compiler emits it only when a cheaper provable form is impossible. The
+dispatch **form is chosen per use-site by a cost model**, in ascending order of
+expense:
+
+1. **Inline** (cheapest). When the concrete type is provable at the use-site —
+   the `dyn` value's concrete is known from the coercion that created it and the
+   value has not since been aliased to a different concrete — the compiler
+   **inlines the impl directly** and erases the `dyn` at that site. No tag, no
+   payload move, no table. This is the default. `let g: dyn Greeter = Dog{..};
+   g.greet(3)` lowers to the body of `Dog::greet` with `g`'s payload as the
+   Self argument.
+2. **Switch.** When a small *closed* set of concretes can reach a use-site
+   (e.g. a function that may return `Dog` or `Cat`, and the caller dispatches),
+   the compiler emits a **tag switch** (jump table or if-chain) over the known
+   set. The tag rides in the value (a derived shape — see below); the switch is
+   compile-time-known. No table indirection.
+3. **Vtable** (fallback). When the concrete set is open, or the value crosses a
+   FFI/GLUE boundary whose other side requires a native vtable, the compiler
+   emits the **per-trait vtable**: the value carries a tag (an index into the
+   trait's conformance set) and a payload pointer, and the dispatch loads
+   `table[tag][slot]` and indirect-calls. This is the last resort.
+4. **Omit.** When a `dyn` value is never method-dispatched — stored but never
+   called, or its method is an observable identity — the compiler **omits the
+   payload** (and may eliminate the value entirely, per § the observability-as-
+   liveness rule). A `dyn` that needs no data movement carries none.
+
+The form is a **frontend decision**, computed once (the value's reachable
+concrete set at each use-site) and read by the backend — the same
+frontend-driven-dispatch pillar that chooses loop shapes and GPU tiles. The
+backend consumes the decision; it does not make it.
+
+**The value's shape is derived, not fixed.** A `dyn` value is *tag + payload*,
+where:
+
+- the **tag** (the concrete's index in the trait's conformance set) is present
+  **only** when the dispatch form is Switch or Vtable (i.e. when the concrete is
+  not provable inline). An inline-dispatched `dyn` carries no tag.
+- the **payload** is the concrete value, in whatever shape that concrete already
+  uses (a heap object, a pool row, a boxed primitive). The payload is present
+  **only** when the value is live (dispatched or otherwise observably consumed).
+
+The compiler therefore never hardcodes a `dyn` representation. Its LLVM type is
+resolved through the casting graph from `(protocol, metadata)`, exactly as every
+other type is; the tag/payload decomposition is a property of the dispatch
+form the cost model chose, not a constant.
+
+**Strategy keywords opt out of the default.** As with all of the language's
+dataflow, the default is the most efficient provable form; a strategy keyword
+(`seq`, `vol`, `atomic`, …) on a `dyn` value or its call **demands the
+predictable form** (e.g. the vtable/indirect dispatch) and pays its cost. A
+keyword is for correctness and intent, never for speed — here it means "I need
+the indirect dispatch shape" (e.g. to preserve a stable call address across a
+boundary), not "make it faster."
+
+**Boundaries adapt.** When a `dyn` value crosses an FFI/GLUE edge, the shape on
+each side is whatever that edge's ABI requires (a native vtable for C, an
+inlined identity for an LTO bridge, a clear diagnostic for a GPU kernel that has
+no heap). The transform is emitted by the boundary-marshal machinery, the same
+way any protocol value adapts at a boundary — the `dyn` does not carry a fixed
+shape into the edge.
+
+**Collection elements coerce at the literal.** A `Collection<dyn Trait>`
+annotation coerces each element of a list literal at the construction site, the
+same as a scalar `dyn Trait` annotation coerces its initializer. Each element's
+concrete type name is resolved from its *syntax* — the element must be a
+constructor (the struct literal names its type) or another `dyn` binding (the
+binding's provenance carries the concrete name). A list literal initializer
+under a `Collection<dyn Trait>` annotation that is not a literal is refused
+with a fix hint: the elements' provenance is unknowable after the fact, so
+coercion happens only at the literal. This is the reference (interpreter)
+behavior; the backend must reproduce it.
+
+> **Doctrine (2026-10-09, dispatch derivation):** a `dyn <Trait>` is a
+> capability, not a representation. The compiler derives its dispatch form
+> (inline → switch → vtable → omit) and its value shape (tag only when needed,
+> payload only when live) per use-site, from the value's provable concrete
+> set. The vtable is a fallback, never the default. Data that does not need to
+> flow does not; the observable contract is the only thing that must hold.
+
 ### 8.7 `proto`
 
 A protocol is a compiler-visible semantic category and cast-coherence domain. Protocols do not prescribe one layout.
@@ -2228,6 +2319,17 @@ runs applicable `defer` cleanup and terminates the process. Unlike `term`,
 which only ends the current transaction, `endprogram` exits the process even
 when a node's precondition remains satisfiable. Abrupt termination is not
 currently a source-language feature.
+
+**The exit code is the expression's value.** `endprogram code;` evaluates
+`code` — its side effects run (a print, an FFI call) — and the process exits
+with the value the expression yields. A side-effect intrinsic like `Print#`
+returns the neutral `0` (defns cannot be void, so a side-effect-only call
+claims the success value, not a payload); `endprogram Print#(x)` therefore
+prints `x` as the swan song and exits `0`. `endprogram greet(1)` exits with
+`greet`'s return — a genuine value carries to the exit code. The same
+consumption rule as `term`: the value flows to whatever consumes it (the
+term postcondition, the process exit code), and a side-effect expression's
+neutral value satisfies both without distortion.
 
 There is no `main` declaration in Briev. The program entry is either an
 explicit `beginprogram` node (§11.5.1) or, absent one, whichever reactive

@@ -1,0 +1,43 @@
+// slice_reduce — hot-loop-over-slice benchmark (T2b, 2026-10-09).
+//
+// Each iteration takes a CONTIGUOUS SLICE of a state column
+// (`data[off:off+LEN]`) and reduces it to a checksum by index-reading every
+// element. This is the workload where a slice COVERAGE matters: the current
+// lowering COPIES the slice (Alloc# + Copy# into a fresh [len][elems] buffer)
+// on every iteration, then the loop reads the copy. A zero-copy VIEW (T2b)
+// would skip the per-iteration copy and index the source column directly.
+//
+// `data` is MUTATED each iteration (data[0] = i) so the slice is a RUNTIME
+// value, not precomputable — this measures the view's real throughput, not
+// a fold. (The non-mutating variant folds the whole reduction to O(1) — the
+// observability trap; that fold is correct, not a bug, but it is not a
+// throughput measurement.)
+//
+// Self-contained (Briev vs Briev A/B): the baseline is the copy path; the
+// view is measured against it. BOUND from the environment; a runtime print at
+// the end keeps the reduction live (the swan song).
+
+let data: Int[128];
+let i: Int = 0;
+let k: Int = 0;
+let acc: Int = 0;
+let total: Int = get_env_int!("BOUND");
+const LEN: Int = 32;
+const OFF: Int = 16;
+
+node tick [
+    i < total
+][i == total] {
+    data[0] = i;
+    let sub: List<Int> = data[OFF:OFF + LEN];
+    foreach j in 0..LEN {
+        let e: Int = sub.At#(j);
+        acc = acc + e + k;
+    };
+    i = i + 1;
+    k = k + 1;
+    when i == total - 1 {
+        endprogram Print#(acc);
+    };
+    term;
+};

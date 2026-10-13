@@ -270,6 +270,59 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// by type name. Used by MethodCall codegen to emit the member body with
     /// `self` bound to the receiver instance.
     pub obj_members: HashMap<String, Vec<crate::ast::TopLevel>>,
+    /// 2026-10-08 (stabilise-for-use T1, Phase 5c): trait requirement slot
+    /// order — trait name → the ordered member names (defn/txn/op order, as
+    /// declared in the trait). A `dyn <Trait>` member call loads the thunk
+    /// table slot at the requirement's index. Sorted at iteration (Rule:
+    /// deterministic IR).
+    pub dyn_trait_slots: HashMap<String, Vec<String>>,
+    /// 2026-10-08 (T1): the concrete types that appear in a `dyn` coercion in
+    /// this program — trait name → set of concrete type names (from
+    /// `let x: dyn Trait = Concrete { .. }` sites). Only these (trait,
+    /// concrete) pairs get a thunk table emitted.
+    pub dyn_concrete_pairs: HashMap<String, std::collections::BTreeSet<String>>,
+    /// 2026-10-08 (T1): the impl `defn` bodies, keyed by `"<concrete>::<slot>"`
+    /// — the `Definition` from the `impl <concrete> { defn <slot> ... }` block.
+    /// Populated once during register_dyn_thunks; emitted as thunk fns at
+    /// module end by emit_dyn_thunk_fn (no repeated AST scan per thunk).
+    pub dyn_impl_bodies: HashMap<String, crate::ast::Definition>,
+    /// 2026-10-09 (dyn derive-don't-fix, Phase B): the impl `defn` bodies as
+    /// `TopLevel::Definition`, keyed by `"<concrete>::<slot>"` — the same key as
+    /// dyn_impl_bodies. Stored as a TopLevel so emit_member_body (the A5
+    /// self-bound member emission) can inline the impl body directly for the
+    /// INLINE dispatch form (the concrete is provable at the use-site, so the
+    /// `dyn` is erased and the body inlined — no vtable, no tag, no payload
+    /// move). Distinct from dyn_impl_bodies (the raw Definition) only in the
+    /// wrapper so emit_member_body's match arm can consume it.
+    pub dyn_impl_member: HashMap<String, crate::ast::TopLevel>,
+    /// 2026-10-08 (T1): the concrete type of each `dyn`-typed binding, keyed by
+    /// binding name. Recorded at the coercion site (`let g: dyn Trait =
+    /// Concrete { .. }`) so a later `g.member()` member call can recover which
+    /// concrete's thunk table to load (the A5 rule re-types the binding to
+    /// `dyn Trait`, erasing the concrete from let_original_types).
+    pub dyn_concrete_of: HashMap<String, String>,
+    /// 2026-10-09 (dyn identity-in-value, Phase B follow-up): the concrete
+    /// TAG of each `dyn`-typed binding, keyed by binding name. The tag is a
+    /// small per-trait concrete index (the identity of the concrete) that
+    /// RIDES IN THE VALUE — it survives a `dyn` flowing through a `defn`
+    /// return, a call argument, a field store, or a phi (the name-keyed
+    /// `dyn_concrete_of` does not). At the use-site, the tag selects the
+    /// dispatch form: a compile-time-constant tag → Inline (erase the dyn); a
+    /// small known set of tags → Switch (a `switch` on the tag, each arm
+    /// inlines its impl body); an open set → Vtable (the fallback). See
+    /// docs/plans/2026-10-09-dyn-identity-in-value.md.
+    pub dyn_concrete_tag_of: HashMap<String, i64>,
+    /// 2026-10-12 (SPEC §8.6.1 Option B, plan 2026-10-11-coll-element-size.md):
+    /// per-`Collection<dyn Trait>`-binding concrete sets + the dispatch form
+    /// (§8.6.1 Inline/Switch/Vtable) each element-read site is licensed to
+    /// use. Computed ONCE in the frontend (dyn_concrete_sets pass, mirroring
+    /// the interpreter's reference resolution) and read here — the backend
+    /// consumes the decision, never re-derives (frontend-driven-dispatch).
+    /// Keyed by the COLLECTION BINDING name (`handlers`), not the trait: the
+    /// set is per-collection, not the global per-trait conformance set
+    /// (`dyn_concrete_pairs`).
+    pub dyn_collection_info:
+        std::collections::HashMap<String, crate::analysis::dyn_concrete_sets::DynCollectionInfo>,
     /// 2026-07-31 (A8): obj declared type-parameter names, keyed by type name
     /// (`obj Stack<T, N>` → ["T", "N"]). Used to substitute a receiver's
     /// concrete type args into the generic slots/members (monomorphization).
@@ -550,6 +603,13 @@ impl CompilerContext {
             unions: HashSet::new(),
             obj_types: std::collections::HashSet::new(),
             obj_members: HashMap::new(),
+            dyn_trait_slots: HashMap::new(),
+            dyn_concrete_pairs: HashMap::new(),
+            dyn_impl_bodies: HashMap::new(),
+            dyn_impl_member: HashMap::new(),
+            dyn_concrete_of: HashMap::new(),
+            dyn_concrete_tag_of: HashMap::new(),
+            dyn_collection_info: std::collections::HashMap::new(),
             obj_type_params: HashMap::new(),
             enum_types: HashMap::new(),
             cell_defs: HashMap::new(),
@@ -847,6 +907,23 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// store (write), so `txn push(val) { data[len] = val; len = len + 1; }`
     /// mutates the receiver instance.
     pub self_binding: Option<(String, String)>,
+    /// 2026-10-12 (SPEC §8.6.1 Option B): the COLLECTION BINDING whose element
+    /// is currently being read (set by the Index arm's tier2 `op At` dispatch
+    /// and restored after). While set, the inner `data[i]` load knows the
+    /// collection's frontend `dyn_collection_info` and can reconstruct the
+    /// fat pointer for a tagged `dyn` element (a 16-byte box `[tag, payload]`
+    /// → the 24-byte fat pointer the dispatch machinery consumes). `None` for
+    /// a non-collection index or a non-dyn element.
+    pub current_dyn_collection: Option<String>,
+    /// 2026-10-12 (SPEC §8.6.1 Option B): the FUNCTION-LOCAL bindings whose
+    /// value is a boxed `Collection<dyn Trait>` (construct_local_collection
+    /// boxed every element at the literal), with their per-collection concrete
+    /// info (the tag→concrete mapping the read path's table slot needs).
+    /// Per-function — no cross-function name collisions; the element read path
+    /// consults it (with the top-level `dyn_collection_info`) to decide the
+    /// box reconstruction.
+    pub dyn_boxed_bindings:
+        std::collections::HashMap<String, crate::analysis::dyn_concrete_sets::DynCollectionInfo>,
     /// 2026-08-07 (object instance pools): the unpacked obj instance prefix
     /// (`st`) while emitting a member body. Bare member names (`data`, `len`)
     /// resolve to the `{prefix}.{member}` top-level field slots instead of a
@@ -1184,6 +1261,8 @@ impl FunctionContext {
             pending_struct_allocas: Vec::new(),
             defer_struct_allocas: false,
             self_binding: None,
+            current_dyn_collection: None,
+            dyn_boxed_bindings: std::collections::HashMap::new(),
             self_prefix: None,
             foreach_break_labels: Vec::new(),
             chain_stack: Vec::new(),

@@ -1,30 +1,21 @@
-// Test Char type
-let c: Char = 'A';
-let newline: Char = '\n';
-let emoji: Char = '\u{1F600}';
+// Test Char type — everyday-features gate.
+// Migrated 2026-10-12 from the pre-`when` `[cond] { ... }` block form
+// (the old guards had not parsed on the current surface since the
+// when-keyword migration; this fixture had never been compiled).
+import "std/char.bv";
 
-defn test_char_classification() -> Bool {
-    [is_whitespace(' ')] {
-        [is_digit('5')] {
-            [is_alpha('A')] {
-                term true;
-            };
-        };
+let done: Int = 0;
+
+node main [done == 0][done == 1] {
+    when is_whitespace(' ') && is_digit('5') && is_alpha('A') {
+        println!("char-classify-ok");
     };
-    term false;
-};
-
-defn test_char_conversion() -> Bool {
-    let upper = to_upper('a');
-    let lower = to_lower('Z');
-    [upper == 'A'] {
-        [lower == 'z'] {
-            term true;
-        };
+    when to_upper('a') == 'A' && to_lower('Z') == 'z' {
+        println!("char-convert-ok");
     };
-    term false;
-};
-
-txn main() [test_char_classification()][test_char_conversion()] {
+    when int_to_char(char_to_int('\u{1F600}')) == '\u{1F600}' {
+        println!("char-unicode-ok");
+    };
+    done = 1;
     term;
 };

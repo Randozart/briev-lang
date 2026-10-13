@@ -429,7 +429,21 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         }).unwrap_or(false);
                         if is_coll && matches!(e, crate::ast::Expr::List(_)) {
                             let briev = ty.clone().unwrap_or(crate::ast::Type::int());
-                            backend.construct_local_collection(out, indent, &briev, e)
+                            // 2026-10-12 (SPEC §8.6.1 Option B): a boxed dyn
+                            // literal records the binding in
+                            // `fun.dyn_boxed_bindings` — the element read path's
+                            // box check consults it (per-function, keyed by the
+                            // binding name the caller owns).
+                            match backend.construct_local_collection(out, indent, &briev, e) {
+                                Some((reg, Some(boxed))) => {
+                                    backend.fun.dyn_boxed_bindings.insert(
+                                        name.clone(),
+                                        boxed.info,
+                                    );
+                                    Some(reg)
+                                }
+                                other => other.map(|(reg, _)| reg),
+                            }
                         } else if is_coll {
                             // 2026-08-16 (hashmap redesign): a LOCAL collection
                             // with a SEED init (`let m: HashMap<K,V> = 0`)
@@ -479,14 +493,59 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         None => backend.emit_expr(out, e, indent),
                     };
                     backend.fun.volatile_read = false;
-                    // 2026-10-05 (BUGS.md int-literal-float-init): the
-                    // DECLARED type wins for the VALUE too, not just the
-                    // binding label (the A5 rule below retypes the binding).
-                    // An Int-literal init of a `Float` let bound the i64
-                    // register under a Float label; every later float-context
-                    // use (the demotion store, fadd) then emitted invalid IR.
+                    // 2026-10-08 (stabilise-for-use T1, Phase 5c): a `dyn <Trait>`
+                    // let coerces its concrete RHS into the FAT POINTER
+                    // `{ i64 data, i64 table }` — `data` is the concrete heap
+                    // handle, `table` is `@__dyn_<Trait>_<Concrete>`. The
+                    // binding is re-typed to `dyn <Trait>` (the A5 rule below
+                    // records the declared type as the binding type).
                     match ty {
-                        Some(declared) => backend.coerce_register_value(out, indent, &v, declared),
+                        Some(crate::ast::Type::Dyn(trait_ty)) => {
+                            // 2026-10-09 (dyn identity-in-value): if the RHS is
+                            // ALREADY a `dyn` of the same trait (a flowed value —
+                            // e.g. the return of `defn make(k) -> dyn Trait`),
+                            // pass it through unchanged. The tag (the concrete's
+                            // identity) is already in the value's tag slot, so
+                            // no re-coercion — re-wrapping would double-box the
+                            // fat pointer. The binding is re-typed to `dyn Trait`
+                            // by the A5 rule below (which runs after this match).
+                            let already_dyn = matches!(&v.ty, crate::ast::Type::Dyn(rhs)
+                                if matches!((trait_ty.as_ref(), rhs.as_ref()),
+                                    (crate::ast::Type::Custom(a), crate::ast::Type::Custom(b)) if a == b));
+                            if already_dyn {
+                                v
+                            } else {
+                                // The RHS must be a concrete value whose type is a
+                                // struct/obj (the struct literal's type). Recover the
+                                // concrete name from the emitted register's type.
+                                let concrete = match &v.ty {
+                                    crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
+                                    other => panic!(
+                                        "dyn coercion: RHS type {:?} is not a concrete struct/obj (expected a struct literal or an already-dyn value of the same trait)",
+                                        other
+                                    ),
+                                };
+                                let trait_name = match trait_ty.as_ref() {
+                                    crate::ast::Type::Custom(n) => n.clone(),
+                                    other => panic!(
+                                        "dyn <...>: inner trait type {:?} is not a named trait",
+                                        other
+                                    ),
+                                };
+                                // Record the concrete type of this binding so a later
+                                // `g.member()` member call can recover which thunk
+                                // table to load (the A5 rule below re-types the
+                                // binding to `dyn Trait`, erasing the concrete).
+                                backend.ctx.dyn_concrete_of.insert(name.clone(), concrete.clone());
+                                let tag = backend.ctx.dyn_concrete_tag_of
+                                    .get(&format!("{trait_name}::{concrete}"))
+                                    .copied()
+                                    .unwrap_or(0);
+                                backend.ctx.dyn_concrete_tag_of.insert(name.clone(), tag);
+                                backend.coerce_to_dyn(out, indent, &v.name, &trait_name, &concrete, tag, indent)
+                            }
+                        }
+                        Some(declared) => backend.coerce_register_value(out, indent, &v, &declared),
                         None => v,
                     }
                 }
@@ -569,7 +628,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // (async-ready-gate: `produced` from briev_await). Mirrors the
             // reassigned-lets entry-alloca path above.
             let is_struct_ty = match &val.ty {
-                Type::Custom(n) | Type::Applied(n, _) => backend.ctx.struct_types.contains_key(n),
+                Type::Custom(n) | Type::Applied(n, _) => backend.ctx.struct_types.contains_key(n.as_str()),
                 _ => false,
             };
             if backend.fun.swan_song_locals.contains(name)

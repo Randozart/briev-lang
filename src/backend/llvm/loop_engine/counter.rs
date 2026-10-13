@@ -1886,8 +1886,48 @@ impl LlvmBackend {
         while i < body.len() {
             let stmt = &body[i];
             match stmt {
-                Statement::Let { name, expr: Some(e), .. } => {
+                Statement::Let { name, expr: Some(e), ty, .. } => {
                     let reg = self.emit_expr(out, e, "  ");
+                    // 2026-10-08 (stabilise-for-use T1, Phase 5c): a `dyn <Trait>`
+                    // let inside a countable loop body coerces its concrete RHS
+                    // into the fat pointer (the loop engine has its own Let path
+                    // — emit_statement's dyn arm is bypassed), and records the
+                    // concrete type for the member-call dispatch.
+                    let reg = match ty {
+                        Some(crate::ast::Type::Dyn(inner)) => {
+                            // 2026-10-09 (dyn identity-in-value): if the RHS is
+                            // ALREADY a `dyn` of the same trait (a flowed value —
+                            // e.g. the return of a `defn`), pass it through
+                            // unchanged (the tag is already in the value's tag
+                            // slot). Re-wrapping would double-box the fat pointer.
+                            let already_dyn = matches!(&reg.ty, crate::ast::Type::Dyn(rhs)
+                                if matches!((inner.as_ref(), rhs.as_ref()),
+                                    (crate::ast::Type::Custom(a), crate::ast::Type::Custom(b)) if a == b));
+                            if already_dyn {
+                                reg
+                            } else {
+                                let concrete = match &reg.ty {
+                                    crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
+                                    other => panic!(
+                                        "dyn coercion (loop body): RHS type {:?} is not a concrete struct/obj or an already-dyn value of the same trait",
+                                        other
+                                    ),
+                                };
+                                let trait_name = match inner.as_ref() {
+                                    crate::ast::Type::Custom(n) => n.clone(),
+                                    other => panic!("dyn <...>: inner trait type {:?} is not a named trait", other),
+                                };
+                                self.ctx.dyn_concrete_of.insert(name.clone(), concrete.clone());
+                                let tag = self.ctx.dyn_concrete_tag_of
+                                    .get(&format!("{trait_name}::{concrete}"))
+                                    .copied()
+                                    .unwrap_or(0);
+                                self.ctx.dyn_concrete_tag_of.insert(name.clone(), tag);
+                                self.coerce_to_dyn(out, "  ", &reg.name, &trait_name, &concrete, tag, "  ")
+                            }
+                        }
+                        _ => reg,
+                    };
                     // 2026-09-07 (swan-song dominance fix): a let-local read by
                     // the pending post-hoist binds through a preheader-flushed
                     // alloca (pending_struct_allocas) instead of its body SSA

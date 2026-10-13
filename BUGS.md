@@ -9040,3 +9040,148 @@ src/backend/llvm/mod.rs + src/glue/web_generator.rs.
 **Gate:** `benchmarks/rbv_browser_smoke.mjs` asserts the seeded `b-text` shows
 the Briev-side seed (`5`) on load, then the click round-trip (`+`→`6`,
 `+`→`7`, `Reset`→`0`) (`rbv_gate.sh` step 6).
+
+## LLVM backend: llvm.memcpy/llvm.memset called but never declared, plus three inconsistent memcpy manglings — 2026-10-09 FIXED
+
+Any .bv program that copied memory (string concat, the state-snapshot in the
+reactor main loop, Alloc/Copy/Fill# intrinsics) emitted calls to @llvm.memcpy
+but the module never declared the intrinsic. clang rejected it with
+"use of undefined value @llvm.memcpy.p0.p0.i64". emit_declares() in
+src/backend/llvm/emit_toplevel.rs declares 100+ intrinsics explicitly (the
+backend emits textual IR and relies on these declares) but memcpy/memset were
+missing from the list.
+
+Compounding it, the three memcpy emission sites each spelled the intrinsic
+differently:
+- src/backend/llvm/intrinsics.rs: @llvm.memcpy.p0.p0.i64 (correct opaque form)
+- src/backend/llvm/helpers.rs: @llvm.memcpy.p0i8.p0i8.i64 with an i8* arg (legacy
+  typed-pointer mangling, rejected by modern LLVM)
+- src/backend/llvm/loop_engine/mod.rs: @llvm.memcpy.p0p0i64 (malformed name, no
+  dots — not a recognized intrinsic at all)
+
+Found while bringing up the full-stack-webapp net stack: a trivial firing
+node that prints a string literal (endprogram Print#("...")) failed to link.
+
+**Repro (before fix):**
+```
+node entry [beginprogram][true] {
+    endprogram Print#("Hello from Briev");
+};
+```
+brievc build hello.bv -> wrote hello.ll, then clang: use of undefined value.
+
+**Fix:** unify all three sites on the canonical @llvm.memcpy.p0.p0.i64(ptr,
+ptr, i64, i1 false) form, and add declares for both memcpy and memset to
+emit_declares() alongside the other llvm.* intrinsics. After the fix the repro
+builds and prints "Hello from Briev".
+
+**Note (follow-up):** the three-sites-three-spellings situation is a DRY
+violation (AGENTS.md Rule 17). A single emit_memcpy helper would make this
+class of bug impossible. Deferred — the minimal fix unifies the spelling now.
+
+**Regression test:** test_memcpy_memset_intrinsics_declared in
+src/backend/llvm/tests.rs asserts the declares are present and that no legacy
+p0i8 / malformed p0p0 manglings are emitted.
+
+---
+
+## run_reactor: bootstrap dirty set cleared before first run (2026-10-12)
+
+**Status: OPEN — latent, no callers.**
+
+`run_reactor` (src/reactor.rs:427) calls `clear_dirty()` *before* the first
+`run()`. `build_from_program` marks every reactive txn dirty as the bootstrap
+wake, so the pre-clear wipes the only dirty set that exists. With
+`dependency_map` never populated (`mark_dirty` is a no-op map lookup), nothing
+can re-dirty any txn — `run_reactor` can never fire any node.
+
+`run_reactor_continuous` (src/reactor.rs:452) has no pre-clear and works. The
+bug is latent because `run_reactor` has zero callers in production code (only
+its own tests, which call `reactor.run` directly, bypassing the loop).
+
+**Fix (when the API is revived):** drop the leading `clear_dirty()`, or
+restructure so the bootstrap set is consumed before the first clear.
+
+## .gitignore ignores all of tests/ while 105 test files are tracked (2026-10-12)
+
+**Status: OPEN — policy hazard.**
+
+`.gitignore:14` lists `tests/`, ignoring the entire directory. The 105
+existing tracked test files are grandfathered (git does not untrack files
+already in the index), but any *new* test file under `tests/` is silently
+invisible to `git status` and `git add`. The contract-pin test for
+`List<dyn>` (tests/dyn_list_interpreter_parity.rs) was nearly lost to this.
+
+**Fix:** add a `!tests/*.rs` negation to un-ignore hand-written top-level
+integration tests while keeping generated `.bv` fixtures ignored.
+
+## __eprint_str returned the byte count (2026-10-12)
+
+**Status: FIXED.**
+
+`__eprint_str` (lib/std/cast_lanes.bv:667) was the one print-family member
+returning the byte count instead of the neutral 0 — the same convention
+violation the 2026-09-23 exit-code-parity fix resolved for the rest of the
+family. Aligned to `term 0`. No consumer of its return was found in any
+Briev source, so the change is behavior-neutral for existing programs.
+
+## LLVM gate rejected `Alloc#` despite a working arm — FIXED 2026-10-12
+
+**Symptom:** any program with a BARE `__print_str(...)`/`__print(...)` call
+(e.g. `tests/tier1/daily_use_smoke.bv`) failed at the LLVM normalizer with
+`intrinsic 'Alloc#' is not supported by this backend` — while `println!`
+programs built fine.
+
+**Root cause:** the prelude-injected cast_lanes.bv buffered-stdout lane
+routes `__print_str → write_all → __stdout_byte → Alloc#` (the 64 KiB
+buffer). `Alloc#` HAS a working lowering (`emit_alloc`,
+src/backend/llvm/intrinsics.rs) but was never admitted to the LLVM
+`build_supported_ops()` gate (normalizer.rs) when the buffered lane landed
+(2026-09-11). `println!` dodged the gate because the macro expands to the
+`Print#` intrinsic (harvester sees `Print#`, not the defn body); only a
+direct call to the cast_lanes defn walked into `Alloc#`.
+
+**Fix:** admit `"Alloc#"` to the LLVM supported set (with provenance —
+Malloc/Free already join via STANDARD_OPS; Alloc# is the pure-Briev heap
+sibling).
+
+**How to undo:** remove the entry — a bare `__print_str` program gate-fails
+again while every `println!` program stays green.
+
+## `get_env_int!` panicked the defn-liveness net — FIXED 2026-10-12
+
+**Symptom:** `get_env_int!("BOUND")` in a node body crashed the compiler
+(`defn liveness: emitted code calls unreached defn(s)
+["briev_str_substr", "str_to_int"]`, mod.rs:5484).
+
+**Root cause:** the `Environ#` intrinsic→helper row (defn_liveness.rs)
+rooted only the two walker impls. The emitted code ALSO calls the cast-lane
+helpers: env.bv's String-param contract (`key >= 0`) elaborates through the
+String↔Int cast lanes (str_to_int/int_to_str) and the String-returning
+sibling routes Slice#→briev_str_substr + the auto-free lane — the exact set
+the Print# row already documents.
+
+**Fix:** the Environ# row gains the four cast-lane names (same provenance
+as the Print# row).
+
+**How to undo:** drop the names — `get_env_int!` panics the net again at
+every build.
+
+## tier1 fixtures: two never parsed, two export-surface — FIXED 2026-10-12
+
+**Symptom:** the first run of the new E2E gate (tests/daily_use_smoke.rs)
+found `test_char.bv` and `test_stringbuilder.bv` failing at PARSE
+(pre-`when` `[cond] { ... }` block syntax, unmigrated since the when-keyword
+migration — nothing had ever compiled them; they were orphaned fixtures),
+and `strexp.bv`/`strexp2.bv` misclassified as run programs (they are
+export-only surfaces — `brievc lib` builds `libstrexp.a` cleanly).
+
+**Fix:** both fixtures migrated to `when`+node form (now run green:
+char-classify/convert/unicode-ok, stringbuilder-ok); the E2E gate
+classifies `export defn` with no node/txn as library surface and builds
+those via `brievc lib`. Same pass fixed the .gitignore hazard that had left
+`daily_use_smoke.bv` silently untracked (`tests/*` negation now re-includes
+`tests/tier1` and `tests/fixtures`).
+
+**How to undo:** revert the fixtures — the gate reports parse failures
+again (honest, but the corpus stops guarding the char/StringBuilder paths).

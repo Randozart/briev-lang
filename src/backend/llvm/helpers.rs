@@ -1038,7 +1038,7 @@ impl LlvmBackend {
         .ok();
         writeln!(
             out,
-            "{}call void @llvm.memcpy.p0i8.p0i8.i64(i8* {}, ptr {}, i64 {}, i1 false)",
+            "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
             indent, dest, src, length
         )
         .ok();
@@ -1394,6 +1394,70 @@ impl LlvmBackend {
     /// per op.
     pub(super) fn is_string_operand(&self, ty: &Type) -> bool {
         self.is_protocol_member(ty, "String")
+    }
+
+    /// 2026-10-12 (SPEC §8.6.1 Option B): is `elem_ty` a `dyn Trait` element of
+    /// an analyzed collection — i.e. its buffer slot holds a 16-byte TAGGED BOX
+    /// `[tag, payload]` that the read site must reconstruct into the 24-byte
+    /// fat pointer the dispatch machinery consumes? Construction boxes EVERY
+    /// element of an analyzed collection (any dispatch form), so the pair
+    /// (element is `dyn`, collection has a `dyn_collection_info` entry) is the
+    /// exact box contract. `false` for non-`dyn` elements and any index not
+    /// reached through the tier2 `op At` dispatch (the enclosing collection is
+    /// unknown, so the box shape cannot be assumed). Matched by the frontend's
+    /// per-collection decision, never by a collection type name (Rule 19).
+    pub(super) fn is_tagged_dyn_element(&self, elem_ty: &Type) -> bool {
+        if !matches!(elem_ty, Type::Dyn(_)) {
+            return false;
+        }
+        // The enclosing collection must be recorded (tier2 `op At` dispatch set
+        // it) and its construction must have boxed every element — top-level
+        // bindings live in `ctx.dyn_collection_info`, function-locals in
+        // `fun.dyn_boxed_bindings`.
+        match self.fun.current_dyn_collection.as_ref() {
+            Some(name) => {
+                self.ctx.dyn_collection_info.contains_key(name)
+                    || self.fun.dyn_boxed_bindings.contains_key(name)
+            }
+            None => false,
+        }
+    }
+
+    /// 2026-10-12 (SPEC §8.6.1 Option B): the concrete type whose per-trait
+    /// thunk table a tagged-dyn read's fat-pointer table slot points at. The
+    /// tag is the concrete's GLOBAL per-trait index; the per-collection set
+    /// (from `dyn_collection_info`) maps the tag back to its concrete. For the
+    /// Switch form the slot is unused (the switch inlines the impl bodies
+    /// directly) — the value is a fallback for the Vtable form. Returns the
+    /// first concrete in the per-collection set when the tag is not a
+    /// compile-time constant (the switch form never reads this slot, so any
+    /// concrete's table is a valid fallback address).
+    pub(super) fn tag_concrete_for_read(&self, trait_name: &str, tag_reg: &str) -> String {
+        // The per-collection concrete set: top-level bindings live in
+        // `ctx.dyn_collection_info`, function-locals in `fun.dyn_boxed_bindings`.
+        let concretes: Vec<String> = match self.fun.current_dyn_collection.as_ref() {
+            Some(name) => {
+                if let Some(info) = self.ctx.dyn_collection_info.get(name) {
+                    info.concrete_set.iter().cloned().collect()
+                } else if let Some(info) = self.fun.dyn_boxed_bindings.get(name) {
+                    info.concrete_set.iter().cloned().collect()
+                } else {
+                    vec![trait_name.to_string()]
+                }
+            }
+            None => vec![trait_name.to_string()],
+        };
+        let mut concretes = concretes;
+        concretes.sort();
+        // Prefer the tag's concrete if the tag is a compile-time constant
+        // (a fresh element's tag is known at the read site for a literal);
+        // else the first concrete (the switch form never uses this slot).
+        if let Some(tag) = self.constant_value_of(tag_reg) {
+            if (tag as usize) < concretes.len() {
+                return concretes[tag as usize].clone();
+            }
+        }
+        concretes.into_iter().next().unwrap_or_else(|| trait_name.to_string())
     }
 
     /// 2026-08-07 (Phase 7): is `ty` a Blob operand (the [len][bytes]

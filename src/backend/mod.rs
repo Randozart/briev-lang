@@ -137,6 +137,15 @@ pub struct AnalysisResults {
     /// reflection). Imports grant capability; liveness gates emission cost.
     /// See docs/architecture/defn-liveness.md.
     pub defn_liveness: crate::analysis::defn_liveness::DefnLiveness,
+    /// 2026-10-12 (SPEC §8.6.1 Option B, plan 2026-10-11-coll-element-size.md):
+    /// per-`Collection<dyn Trait>`-binding concrete sets + the dispatch form
+    /// (§8.6.1 Inline/Switch/Vtable) each use-site is licensed to use.
+    /// Computed once in the frontend (dyn_concrete_sets pass, mirroring the
+    /// interpreter's reference resolution); the backend reads it at a
+    /// collection-element read site to pick the dispatch form and to index
+    /// the PER-COLLECTION tag table — never the global per-trait set.
+    pub dyn_collection_info:
+        std::collections::HashMap<String, crate::analysis::dyn_concrete_sets::DynCollectionInfo>,
 }
 
 /// Intent: Run shared program analysis for backend code generation.
@@ -211,6 +220,11 @@ pub fn analyze_program(
     let observable_names = collect_observable_names(items);
     let coll_safe_txns = crate::analysis::coll_length::analyze(items);
     let coll_pregrow = crate::analysis::coll_length::analyze_pregrow(items);
+    // 2026-10-12 (SPEC §8.6.1 Option B): per-`Collection<dyn Trait>`-binding
+    // concrete sets + the dispatch form each use-site may use. Computed once
+    // in the frontend; the backend reads it at element read-sites (never
+    // re-derives — the frontend-driven-dispatch pillar).
+    let dyn_collection_info = crate::analysis::dyn_concrete_sets::analyze(items);
     let (spawn_pools, dependent_pools, _spawn_errors, spawn_storage) = crate::analysis::spawn_pool::analyze(items);
     // 2026-08-26 (async Phase C): segment every SPAWN-TARGETED defn once.
     // Non-targeted defns keep their ordinary single-body lowering.
@@ -334,6 +348,7 @@ pub fn analyze_program(
         boundary_ownership,
         electronics: crate::analysis::electronics::derive_netlist(items),
         defn_liveness: crate::analysis::defn_liveness::DefnLiveness::build(items),
+        dyn_collection_info,
     }
 }
 

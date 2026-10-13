@@ -651,10 +651,11 @@ defn write_all(fd: Int, s: String) [fd >= 0][term >= 0] -> Int {
 };
 
 out defn __print_str(s: String) [true][term >= 0] -> Int {
-    // 2026-09-23 (term_guard_value exit-code parity): return 0, matching
-    // the interpreter's Print# and the retired C __print_* (printf +
-    // return 0). The byte-count return made `endprogram Print#(x)` exit with
-    // the string length instead of 0.
+    // 2026-09-23 (term_guard_value exit-code parity): defns cannot be void,
+    // so a side-effect-only print claims the neutral success value, 0 — not
+    // the byte count (the old return made `endprogram Print#(x)` exit with the
+    // string length). Matching the interpreter's Print# (intrinsics.rs) and
+    // every sibling in this family.
     let _r: Int = write_all(1, s);
     term 0;
 };
@@ -665,7 +666,10 @@ out defn __print(s: String) [true][term >= 0] -> Int {
 };
 
 out defn __eprint_str(s: String) [true][term >= 0] -> Int {
-    term write_all(2, s);
+    // 2026-10-12: aligned to the family's neutral-0 convention — the
+    // byte-count return was the one outlier in the print family.
+    let _r: Int = write_all(2, s);
+    term 0;
 };
 
 out defn __print_int(n: Int) [true][term >= 0] -> Int {
@@ -956,6 +960,83 @@ defn slice_f32_copy(data: Int, obuf: Int, l: Int, len: Int, i: Int)
     let bits: Int = Load#(data + 4 * (l + i), 4);
     Store#(obuf + 8 * (1 + i), bits, 8);
     term slice_f32_copy(data, obuf, l, len, i + 1);
+};
+
+// briev_slice_strided64 — strided range slice of an i64 state column:
+// element i is source[lo + i*step] (step >= 1), lo/hi clamped to [0,n],
+// len = floor((hi-lo)/step)+1 (0 if hi<lo). Builds a contiguous [len][elems]
+// block ([len, e0, e1, …]) — the same layout the contiguous gather produces —
+// so downstream `Index`/foreach consumers are unchanged. Unblocks the old
+// strided-slice `panic!` (2026-10-09, T2a).
+out defn briev_slice_strided64(data: Int, n: Int, lo: Int, hi: Int, step: Int)
+    [data >= 0 && n >= 0 && lo >= 0 && hi >= 0 && step >= 0][term >= 0]
+    -> Int
+{
+    let l: Int = coll_min(lo, n);
+    let h0: Int = coll_min(hi, n);
+    let h: Int = coll_hi_fix(h0, l);
+    let s: Int = coll_step_fix(step);
+    let span: Int = h - l;
+    let len: Int = span / s + 1;
+    let len0: Int = coll_len_fix(h, l, len);
+    let obuf: Int = Alloc#(8 * (1 + len0)) as Int;
+    Store#(obuf, len0, 8);
+    when len0 > 0 {
+        foreach i in 0..len0 {
+            let src_idx: Int = l + i * s;
+            let v: Int = Load#(data + 8 * src_idx, 8);
+            Store#(obuf + 8 * (1 + i), v, 8);
+        };
+    };
+    term obuf;
+};
+
+// coll_step_fix — clamp step to >= 1 (a 0/negative stride would loop forever).
+defn coll_step_fix(step: Int) [step >= 0][term >= 1] -> Int {
+    when step < 1 {
+        term 1;
+    };
+    term step;
+};
+
+// coll_len_fix — 0 when hi < lo (empty range), else the computed len.
+defn coll_len_fix(h: Int, l: Int, len: Int) [h >= 0 && l >= 0][term >= 0] -> Int {
+    when h < l {
+        term 0;
+    };
+    term len;
+};
+
+// briev_slice_strided_f32 — strided range slice of an f32 state column:
+// element i is source[lo + i*step], widened into 8-bit-pattern slots (the
+// List<Float> convention), same layout as briev_slice_range_f32.
+out defn briev_slice_strided_f32(data: Int, n: Int, lo: Int, hi: Int, step: Int)
+    [data >= 0 && n >= 0 && lo >= 0 && hi >= 0 && step >= 0][term >= 0]
+    -> Int
+{
+    let l: Int = coll_min(lo, n);
+    let h0: Int = coll_min(hi, n);
+    let h: Int = coll_hi_fix(h0, l);
+    let s: Int = coll_step_fix(step);
+    let span: Int = h - l;
+    let len: Int = span / s + 1;
+    let len0: Int = coll_len_fix(h, l, len);
+    let obuf: Int = Alloc#(8 * (1 + len0)) as Int;
+    Store#(obuf, len0, 8);
+    term slice_f32_strided_copy(data, obuf, l, s, len0, 0);
+};
+
+// slice_f32_strided_copy — widen strided f32 elements into obuf slots 1..
+defn slice_f32_strided_copy(data: Int, obuf: Int, l: Int, s: Int, len: Int, i: Int)
+    [l >= 0 && s >= 0 && len >= 0 && i >= 0][term >= 0]
+    -> Int
+{
+    when i >= len {
+        term obuf;
+    };
+    let bits: Int = Load#(data + 4 * (l + i * s), 4);
+    Store#(obuf + 8 * (1 + i), bits, 8);
+    term slice_f32_strided_copy(data, obuf, l, s, len, i + 1);
 };
 
 // __briev_coll_resize — grow a coll handle's [data, cap, len] block to

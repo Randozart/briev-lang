@@ -1,19 +1,22 @@
-// Test StringBuilder
-let builder: StringBuilder;
+// StringBuilder everyday-features gate.
+// Migrated 2026-10-12 from the pre-`when` `[cond] { ... }` block form
+// (the old guards had not parsed on the current surface since the
+// when-keyword migration; this fixture had never been compiled).
+import "std/string_builder.bv";
 
-defn test_builder() -> Bool {
+let done: Int = 0;
+
+node main [done == 0][done == 1] {
     let sb = new_builder();
     sb = sb.append_char('H');
     sb = sb.append_char('e');
     sb = sb.append_char('l');
     sb = sb.append_char('l');
     sb = sb.append_char('o');
-    [sb.to_string() == "Hello"] {
-        term true;
+    sb = sb.append_str("!");
+    when to_string(sb) == "Hello!" {
+        println!("stringbuilder-ok");
     };
-    term false;
-};
-
-txn main() [test_builder()][true] {
+    done = 1;
     term;
 };

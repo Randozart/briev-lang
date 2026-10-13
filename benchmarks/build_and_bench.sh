@@ -122,6 +122,11 @@ TAG[linked_list]=runtime
 TAG[hash_ops]=runtime
 TAG[hash_ops_idio]=runtime
 TAG[enemy_swarm]=runtime
+# 2026-10-09 (T2b): hot-loop-over-slice — measures the contiguous-slice
+# zero-copy VIEW vs the copy path. Self-contained (Briev vs Briev A/B); no C
+# reference, so it is NOT in the BENCHMARKS timing list (would SKIP on the
+# missing C ref). Built+timed ad hoc for the T2b A/B; see the plan.
+TAG[slice_reduce]=runtime
 
 BENCHMARKS=(
     "iir_filter"
