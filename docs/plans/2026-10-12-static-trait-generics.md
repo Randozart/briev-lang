@@ -130,3 +130,23 @@ is a pre-existing malformed .dbvl fixture, BUGS.md).
   Note: a concrete type's OWN member of the same name still wins - resolve_method_
   call finds it in type_members FIRST; the conformance branch only runs when the
   member is absent (the default-inheritance case).
+
+2026-10-13 - S4 DONE. Call-site conformance check for trait-bounded generics.
+  check_type_param_bounds() runs in infer_call's generic-defn branch right after
+  infer_defn_type_args binds the type params: for each bounded param <T: C> it
+  verifies the inferred concrete type conforms (type_conforms_to_trait), else a
+  hard error naming the generic, the bound, the concrete type, the MISSING
+  required op(s) (missing_trait_requirements), and the fix. Closes the soundness
+  hole where a non-conforming concrete type silently returned a bogus type.
+  Gate P4 (bump_twice(MyGadget, 5), MyGadget has no bump) is rejected:
+  "'bump_twice' requires T: Counter, but 'MyGadget' does not provide bump. Add
+  bump to 'MyGadget', or pass a type that conforms to Counter". P1/P2/P2b/P3
+  unchanged. cargo test --lib: no regressions (same baseline failure set).
+
+  KNOWN LIMITATION (follow-up): conformance is read from ctx.type_members (an
+  obj/struct's OWN defn members) only. A type that provides a trait's methods
+  through an `impl` block is NOT recognized as conforming by S3/S4 (it would be
+  rejected). check_trait_assertion already merges impl functions via
+  type_function_names; type_conforms_to_trait should do the same once a
+  trait-bounded generic is called with an impl-conforming type. No test currently
+  exercises this (the full suite passes), so it is deferred, not blocking.

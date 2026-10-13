@@ -2006,6 +2006,14 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
     if let Some(params) = ctx.fn_type_params.get(name).cloned() {
         if !params.is_empty() {
             if let Some(args_conc) = infer_defn_type_args(name, &params, args, ctx)? {
+                // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S4):
+                // a type param with a trait bound (`<T: Counter>`) binds here to
+                // a concrete type. Verify that type actually PROVIDES the trait's
+                // required operations — otherwise the generic would silently
+                // return a bogus type and the missing op would only surface at
+                // codegen (or never). The bound → concrete pairing is read from
+                // the per-defn bounds registry (S1).
+                check_type_param_bounds(name, &params, &args_conc, ctx)?;
                 for (i, arg) in args.iter().enumerate() {
                     let arg_ty = infer_type_only(arg, ctx)?;
                     if let Some(param_ty) = ctx.fn_param_types.get(name).and_then(|p| p.get(i)) {
@@ -2199,6 +2207,80 @@ fn type_conforms_to_trait(ctx: &TypecheckContext, type_name: &str, trait_name: &
         }
         members.iter().any(|member| member_name(member) == requirement.name)
     })
+}
+
+/// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S4): the trait
+/// requirements a concrete type is MISSING — the required (empty-body) trait
+/// functions whose names the type does not provide. Empty ⇒ it conforms.
+fn missing_trait_requirements(ctx: &TypecheckContext, type_name: &str, trait_name: &str) -> Vec<String> {
+    let Some(trait_def) = ctx.trait_defs.get(trait_name) else {
+        return Vec::new();
+    };
+    let members = ctx.type_members.get(type_name).cloned().unwrap_or_default();
+    trait_def
+        .functions
+        .iter()
+        .filter(|requirement| requirement.body.is_empty())
+        .filter(|requirement| !members.iter().any(|member| member_name(member) == requirement.name))
+        .map(|requirement| requirement.name.clone())
+        .collect()
+}
+
+/// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S4): at a call to a
+/// trait-bounded generic (`bump_twice<T: Counter>(…)`), verify every bounded
+/// type param's inferred concrete type conforms to its bound. `params` and
+/// `concrete` are aligned by declared order; each param's bound is read from the
+/// per-defn registry. A non-conforming binding is a hard error naming the type,
+/// the trait, the missing operation(s), and the fix — not a silent fallthrough.
+fn check_type_param_bounds(
+    name: &str,
+    params: &[String],
+    concrete: &[Type],
+    ctx: &mut TypecheckContext,
+) -> Result<(), TypeError> {
+    let Some(bounds) = ctx.fn_type_param_bounds.get(name).cloned() else {
+        return Ok(());
+    };
+    for (param, concrete_ty) in params.iter().zip(concrete.iter()) {
+        let Some(trait_name) = bounds
+            .iter()
+            .find(|(bound_param, _)| bound_param == param)
+            .and_then(|(_, bound)| bound.clone())
+        else {
+            continue; // unbounded param — nothing to require
+        };
+        // Only a nominal concrete type can structurally conform. A non-nominal
+        // binding (e.g. a tuple) cannot satisfy a trait of named methods.
+        let Type::Custom(type_name) = concrete_ty else {
+            return Err(TypeError::InvalidOperation {
+                operation: format!(
+                    "'{}' requires {}: {}, but {} is not a type that can provide trait methods",
+                    name, param, trait_name, concrete_ty
+                ),
+                type_name: format!("{}", concrete_ty),
+            });
+        };
+        let missing = missing_trait_requirements(ctx, type_name, &trait_name);
+        if missing.is_empty() {
+            continue;
+        }
+        return Err(TypeError::InvalidOperation {
+            operation: format!(
+                "'{}' requires {}: {}, but '{}' does not provide {}. \
+                 Add {} to '{}', or pass a type that conforms to {}",
+                name,
+                param,
+                trait_name,
+                type_name,
+                missing.join(", "),
+                missing.join(", "),
+                type_name,
+                trait_name
+            ),
+            type_name: type_name.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// 2026-10-13 (static trait-constrained generics, SPEC §8.6): resolve a call
