@@ -33,6 +33,33 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Conformance sweep fails on `adapters.dbvl` — PRE-EXISTING, OBSERVED 2026-10-13
+
+**Symptom:** `conformance::tests::conformance_sweep_every_active_source_parses_and_checks`
+fails with:
+`examples/data-briev/adapters.dbvl: schema validation failed … group 0 entry 0:
+too many positional fields (12, schema 'RegistryEntry' has 4 fields)`.
+
+**Root cause (data, not compiler):** `adapters.dbvl` holds three line entries of
+4 fields each (`rust; glue/adapters/rust.bv; rs; src;` …), and its schema
+`RegistryEntry` (imported from `registry.dbv`) declares 4 fields. The DataLine
+reader (`SourceKind::DataLine` → `check_data_source`) collapses all three lines
+into ONE group of 12 positional fields instead of three entries of 4 — a
+line-terminator/entry-splitting defect in the `.dbvl` reader. No `.bv`/`.rbv`
+source in the sweep is affected (all print `OK`).
+
+**Scope / provenance:** independent of the typechecker. `adapters.dbvl` was last
+touched by the unrelated "Massive rename" commit (`62ae145d`); it is NOT modified
+by the static trait-generics work (branch `feat/trait-system-implementation`,
+which changes only trait resolution in `src/typechecker/mod.rs`). The `.dbvl`
+validation path never flows through `infer_call`/`check_top_level`.
+
+**Undo/fix path:** fix in the DataLine entry splitter (treat each
+semicolon-terminated line as one `RegistryEntry`), OR correct the fixture to the
+reader's expected shape. Tracked here so the trait-generics branch is not blamed;
+the sweep's single failure is this fixture, the GPU/spirv/qemu failures are the
+known no-toolchain-in-WSL set.
+
 ## Split OOB partial writes poisoned the reference — FIXED 2026-10-01
 
 **Symptom:** the declared-`split<8>` softmax fixture failed

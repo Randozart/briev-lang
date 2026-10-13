@@ -81,6 +81,20 @@ pub struct TypecheckContext<'a> {
     /// params (e.g. `["T"]` for `defn first<T>`), so call sites can infer and
     /// substitute concrete args. Populated alongside fn_return_types.
     fn_type_params: HashMap<String, Vec<String>>,
+    /// 2026-10-13 (static trait-constrained generics, SPEC §8.6): per-defn
+    /// type-param BOUNDS. defn name → list of (param name, Some(trait name) if
+    /// `<T: Counter>`, else None for an unbounded `<T>`). `fn_type_params`
+    /// records only the names; this records what each name REQUIRES, so that
+    /// inside the body a trait method called on a bound param (`bump(this,_)`
+    /// with `this: T`, `T: Counter`) resolves against the trait's declared
+    /// functions instead of falling through to the `Int` fallback.
+    fn_type_param_bounds: HashMap<String, Vec<(String, Option<String>)>>,
+    /// 2026-10-13: the ACTIVE type-param bounds while checking one defn body —
+    /// param name → bound trait name (only bounded params appear). Set when a
+    /// generic defn body check begins (from the defn's own `type_params`),
+    /// cleared after (transient, like `current_output_type`). The
+    /// trait-method resolution for a call on a bound param reads this.
+    active_type_param_bounds: HashMap<String, String>,
     /// 2026-08-14 (generic `defn f<T>` dispatch): the expected type of the
     /// enclosing `let` initializer, consulted when a nullary generic
     /// (`new_stack<T>()` with no type-constraining args) needs its param bound
@@ -194,6 +208,8 @@ impl<'a> TypecheckContext<'a> {
             type_parents: HashMap::new(),
             fn_return_types: HashMap::new(),
             fn_type_params: HashMap::new(),
+            fn_type_param_bounds: HashMap::new(),
+            active_type_param_bounds: HashMap::new(),
             expected_call_type: None,
             optional_frgns: std::collections::HashSet::new(),
             regular_ops: HashMap::new(),
@@ -2053,8 +2069,103 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
     if let Some(ty) = ctx.fn_return_types.get(name) {
         return Ok(ty.clone());
     }
+    // 2026-10-13 (static trait-constrained generics, SPEC §8.6): the free-call
+    // form of a trait method inside a generic body — `bump(this, amount)` where
+    // `this: T` and `T: Counter`. `bump` is NOT a user defn (it is a trait
+    // requirement), so every lookup above missed and the call would fall to the
+    // `Int` fallback. If an argument's type is a bound type param whose trait
+    // declares `name`, resolve against the trait with `Self -> T`.
+    if let Some(resolved) = resolve_bound_param_call(name, args, ctx)? {
+        return Ok(resolved);
+    }
     // 2026-07-25: Fallback — bind all destructured names to Int.
     Ok(Type::int())
+}
+
+/// 2026-10-13 (static trait-constrained generics, SPEC §8.6): resolve a call
+/// `name(args)` whose first bound-type-param argument supplies the trait. If an
+/// argument's type is a type param `T` that `active_type_param_bounds` binds to
+/// a trait declaring a function `name`, this validates the call against that
+/// requirement (with `Self` substituted by `T`) and returns its result type
+/// (`Self` → `T`). Returns `Ok(None)` when no argument is a bound param whose
+/// trait provides `name` — the caller then keeps its existing behavior.
+///
+/// Models the `Type::Dyn` branch of `resolve_method_call`: the trait's declared
+/// signature is the shape the call must satisfy. Here the receiver is a static
+/// type param rather than a `dyn` value, so monomorphization (the concrete `T`)
+/// happens at the call site that instantiates the generic — this is only the
+/// in-body static check that the trait provides the operation.
+fn resolve_bound_param_call(
+    name: &str,
+    args: &[Expr],
+    ctx: &mut TypecheckContext,
+) -> Result<Option<Type>, TypeError> {
+    if ctx.active_type_param_bounds.is_empty() {
+        return Ok(None);
+    }
+    // Infer the argument types once; find the first that is a bound type param.
+    let arg_tys: Vec<Type> = args
+        .iter()
+        .map(|arg| infer_type_only(arg, ctx))
+        .collect::<Result<_, _>>()?;
+    let Some((param_name, trait_name)) = arg_tys.iter().find_map(|ty| match ty {
+        Type::Custom(candidate) => ctx
+            .active_type_param_bounds
+            .get(candidate)
+            .map(|trait_name| (candidate.clone(), trait_name.clone())),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    // The bound trait must declare `name`; otherwise this is not a trait call
+    // (leave it to the caller's fallback — a genuinely unknown free call).
+    let Some(trait_def) = ctx.trait_defs.get(&trait_name).cloned() else {
+        return Ok(None);
+    };
+    let Some(requirement) = trait_def.functions.iter().find(|fn_def| fn_def.name == name) else {
+        return Ok(None);
+    };
+    // `Self` in the requirement signature is this concrete type param.
+    let self_subst = [Type::Custom(param_name.clone())];
+    let self_key = ["Self".to_string()];
+    let expected_tys: Vec<Type> = requirement
+        .parameters
+        .iter()
+        .map(|(_, ty)| substitute_type_params(ty, &self_key, &self_subst))
+        .collect();
+    if expected_tys.len() != arg_tys.len() {
+        return Err(TypeError::TypeMismatch {
+            expected: format!("{} argument(s)", expected_tys.len()),
+            found: format!("{} argument(s)", arg_tys.len()),
+            context: format!(
+                "call to trait '{}' method '{}' on bound type param '{}'",
+                trait_name, name, param_name
+            ),
+        });
+    }
+    for (index, (expected, actual)) in expected_tys.iter().zip(arg_tys.iter()).enumerate() {
+        if expected == actual {
+            continue;
+        }
+        if types_compatible(expected, actual, ctx) {
+            continue;
+        }
+        return Err(TypeError::TypeMismatch {
+            expected: format!("{}", expected),
+            found: format!("{}", actual),
+            context: format!(
+                "argument {} of trait '{}' method '{}' on bound type param '{}'",
+                index, trait_name, name, param_name
+            ),
+        });
+    }
+    let result = requirement
+        .output_type
+        .as_ref()
+        .and_then(|ot| ot.all_types().into_iter().next())
+        .map(|ret| substitute_type_params(&ret, &self_key, &self_subst))
+        .unwrap_or_else(Type::void);
+    Ok(Some(result))
 }
 
 /// Type-check an intrinsic call against its signature.
@@ -4472,6 +4583,31 @@ pub fn check_program_with_target(
         })
         .collect();
 
+    // 2026-10-13 (static trait-constrained generics, SPEC §8.6): the BOUND of
+    // each type param, parallel to `fn_type_params`. `<T: Counter>` records
+    // `("T", Some("Counter"))`; a plain `<T>` records `("T", None)`. The trait
+    // name is read from a `Type::Custom` bound (the only bound form a single
+    // trait constraint takes). Built for every defn WITH type params, so the
+    // body check can learn what each param requires.
+    let fn_type_param_bounds: HashMap<String, Vec<(String, Option<String>)>> = items
+        .iter()
+        .filter_map(|item| {
+            let (name, type_params) = match item {
+                TopLevel::Definition(d) => (&d.name, &d.type_params),
+                TopLevel::Transaction(t) => (&t.name, &t.type_params),
+                TopLevel::Export(e) => match &*e.inner {
+                    TopLevel::Definition(d) => (&d.name, &d.type_params),
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            if type_params.is_empty() {
+                return None;
+            }
+            Some((name.clone(), type_param_bounds(type_params)))
+        })
+        .collect();
+
     // 2026-08-09 (Phase 12, SPEC §18.2): the meld declaration collection is
     // removed — foreign shapes adapt through EXPLICIT protocol cast edges,
     // not an implicit meld admission; `meld_coercible` was removed.
@@ -4797,6 +4933,7 @@ pub fn check_program_with_target(
         optional_frgns: &optional_frgns,
         fn_param_types: &fn_param_types,
         fn_type_params: &fn_type_params,
+        fn_type_param_bounds: &fn_type_param_bounds,
         all_parse_bindings: &all_parse_bindings,
         all_type_parents: &all_type_parents,
         all_regular_ops: &all_regular_ops,
@@ -5476,6 +5613,9 @@ struct CheckEnv<'a> {
     fn_param_types: &'a HashMap<String, Vec<Type>>,
     /// 2026-08-14 (generic `defn f<T>`): declared type params per defn.
     fn_type_params: &'a HashMap<String, Vec<String>>,
+    /// 2026-10-13 (static trait-constrained generics): per-defn type-param
+    /// bounds (param → optional trait name). See the context field.
+    fn_type_param_bounds: &'a HashMap<String, Vec<(String, Option<String>)>>,
     all_parse_bindings: &'a HashMap<String, Vec<OperatorBinding>>,
     all_type_parents: &'a HashMap<String, String>,
     all_regular_ops: &'a HashMap<String, Vec<crate::ast::top::OperatorDef>>,
@@ -5537,6 +5677,7 @@ fn make_typecheck_context<'a>(env: &CheckEnv<'a>, universe: &'a TypeUniverse) ->
     ctx.type_params = env.all_type_params.clone();
     ctx.fn_param_types = env.fn_param_types.clone();
     ctx.fn_type_params = env.fn_type_params.clone();
+    ctx.fn_type_param_bounds = env.fn_type_param_bounds.clone();
     ctx.type_protocols = env.all_type_protocols.clone();
     // 2026-09-02: width metadata for the float-literal admission gate.
     ctx.type_max_bits = env.all_type_max_bits.clone();
@@ -5622,9 +5763,20 @@ fn check_top_level<'a>(
                 ctx.bindings.insert(name.clone(), ty.clone());
             }
             ctx.current_output_type = defn.output_type.as_ref().map(output_type_to_type);
+            // 2026-10-13 (static trait-constrained generics, SPEC §8.6): make
+            // this defn's type-param bounds (`<T: Counter>`) visible while the
+            // body is checked, so a trait method called on a bound param
+            // resolves against the trait. Derived directly from the defn's own
+            // type_params (not the pre-collected map) — this is the one site
+            // that knows WHICH defn is being checked.
+            ctx.active_type_param_bounds = type_param_bounds(&defn.type_params)
+                .into_iter()
+                .filter_map(|(param, bound)| bound.map(|trait_name| (param, trait_name)))
+                .collect();
             for stmt in &defn.body {
                 infer_statement(stmt, &mut ctx)?;
             }
+            ctx.active_type_param_bounds.clear();
             Ok(())
         }
         // 2026-07-25: Unwrap exports so exported defns are type-checked.
@@ -6942,6 +7094,24 @@ fn substitute_type_params(ty: &Type, params: &[String], args: &[Type]) -> Type {
         ),
         _ => ty.clone(),
     }
+}
+
+/// 2026-10-13 (static trait-constrained generics, SPEC §8.6): extract each
+/// type param's bound trait name. `<T: Counter, U>` → `[("T", Some("Counter")),
+/// ("U", None)]`. A bound is a single trait reference, carried as a
+/// `Type::Custom(trait_name)` on the `TypeParam`; any other bound shape (none,
+/// or a non-nominal type) records `None` (unbounded for resolution purposes).
+fn type_param_bounds(type_params: &[crate::ast::top::TypeParam]) -> Vec<(String, Option<String>)> {
+    type_params
+        .iter()
+        .map(|tp| {
+            let bound = match &tp.bound {
+                Some(Type::Custom(trait_name)) => Some(trait_name.clone()),
+                _ => None,
+            };
+            (tp.name.clone(), bound)
+        })
+        .collect()
 }
 
 fn obj_type_params(ctx: &TypecheckContext, type_name: &str) -> Vec<String> {
