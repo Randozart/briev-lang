@@ -2969,6 +2969,18 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 TopLevel::Definition(d) => {
                     let tys: Vec<Type> = d.parameters.iter().map(|(_, t)| t.clone()).collect();
                     self.ctx.defn_params.insert(d.name.clone(), tys);
+                    // 2026-10-13 (static trait-constrained generics, SPEC §8.6,
+                    // S6): a GENERIC defn (type_params non-empty) is retained in
+                    // full so the backend can monomorphize it per concrete
+                    // instantiation at the call site (a trait-bounded param's
+                    // body needs the concrete type to resolve its trait calls).
+                    if !d.type_params.is_empty() {
+                        self.ctx.generic_defns.insert(d.name.clone(), d.clone());
+                        self.ctx.generic_defn_type_params.insert(
+                            d.name.clone(),
+                            d.type_params.iter().map(|p| p.name.clone()).collect(),
+                        );
+                    }
                     // 2026-07-18: Populate return types from output_type (-> Type) as
                     // well as legacy outputs. output_type is the primary metadata source.
                     let ret_tys = if !d.outputs.is_empty() {
@@ -4036,6 +4048,16 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(&d.name) {
                         continue;
                     }
+                    // 2026-10-13 (static trait-constrained generics, SPEC §8.6,
+                    // S6): a GENERIC defn is NOT emitted type-erased — a
+                    // trait-bounded param's body would dangle (`@bump`
+                    // undefined). It is emitted per concrete instantiation as a
+                    // monomorphized specialization (drained after the reactor).
+                    // A generic defn with no instantiation emits nothing, which
+                    // is correct: an uninstantiated generic is dead code.
+                    if self.ctx.generic_defn_type_params.contains_key(&d.name) {
+                        continue;
+                    }
                     // 2026-09-23 (stateless-defn mechanism): a regular defn
                     // carries `%state` ONLY when it transitively needs it.
                     // Pure helpers (cstr doors over Load#/Alloc#, arithmetic
@@ -4782,6 +4804,18 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 }
             }
             }
+        }
+
+        // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): emit
+        // the monomorphized specializations enqueued during body/reactor
+        // emission. Drained in a loop — a specialization's own body may call
+        // another generic, enqueuing more. The emitted-set dedups, so this
+        // terminates (a finite set of (defn, concrete-args) instantiations).
+        while let Some((mangled, base, subst)) =
+            self.ctx.pending_defn_specializations.pop()
+        {
+            self.emit_specialized_definition(&mut out, &mangled, &base, &subst);
+            writeln!(out).ok();
         }
 
         // ── DEAD-FIELD INFO DIAGNOSTICS (A002/A003) ─────────

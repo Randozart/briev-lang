@@ -104,6 +104,52 @@ pub(crate) struct MemberInvocation<'a> {
     pub prefix: Option<(String, String)>,
 }
 
+/// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): bind a
+/// generic defn's type params from a (declared param type, concrete arg type)
+/// pair. A declared type that IS a type param binds to the concrete arg;
+/// structured types recurse (`List<T>` vs `List<Int>` binds `T=Int`). Only
+/// the type params in `params` are bound; everything else is left alone.
+fn unify_generic_binding(
+    declared: &Type,
+    concrete: &Type,
+    params: &[String],
+    subst: &mut std::collections::HashMap<String, Type>,
+) {
+    if let Type::Custom(declared_name) = declared {
+        if params.iter().any(|p| p == declared_name) {
+            subst.entry(declared_name.clone()).or_insert_with(|| concrete.clone());
+            return;
+        }
+    }
+    match (declared, concrete) {
+        (Type::Applied(_, dps), Type::Applied(_, cps)) if dps.len() == cps.len() => {
+            for (dp, cp) in dps.iter().zip(cps.iter()) {
+                unify_generic_binding(dp, cp, params, subst);
+            }
+        }
+        (Type::Ptr(dp), Type::Ptr(cp)) | (Type::PtrConst(dp), Type::PtrConst(cp)) => {
+            unify_generic_binding(dp, cp, params, subst);
+        }
+        _ => {}
+    }
+}
+
+/// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): the mangled
+/// LLVM symbol for a specialization — `bump_twice$Tally` for one concrete arg,
+/// multiple joined by `$`. The `$` is a legal LLVM identifier character, so no
+/// quoting is needed; a nominal type name is already identifier-safe.
+fn mangle_specialization(name: &str, concrete: &[Type]) -> String {
+    let args = concrete
+        .iter()
+        .map(|ty| match ty {
+            Type::Custom(n) => n.clone(),
+            other => format!("{}", other),
+        })
+        .collect::<Vec<_>>()
+        .join("$");
+    format!("{}${}", name, args)
+}
+
 /// Pack an SVO inline header: `len` and `cap` into disjoint bit ranges with
 /// bit 0 as the inline tag.
 ///
@@ -4872,6 +4918,128 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         TypedRegister { name: handle, ty: Type::int() }
     }
 
+    /// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6-M2):
+    /// monomorphize a call to a generic defn. If `name` is a registered generic
+    /// defn, infer its type params' concrete bindings from the argument
+    /// registers, emit (once) a specialized copy under a mangled symbol with
+    /// the concrete types substituted into its params/return/body, and emit the
+    /// call to that symbol. `None` when `name` is not a generic defn or the
+    /// instantiation cannot be inferred — the caller falls back to the ordinary
+    /// (type-erased) path. The specialization gives the body concrete parameter
+    /// types so trait-method calls inside it resolve (via M1) to real members.
+    fn try_emit_monomorphized_generic_call(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        name: &str,
+        arg_regs: &[TypedRegister],
+        indent: &str,
+    ) -> Option<TypedRegister> {
+        let type_params = self.ctx.generic_defn_type_params.get(name).cloned()?;
+        if type_params.is_empty() {
+            return None;
+        }
+        let defn = self.ctx.generic_defns.get(name).cloned()?;
+        // Infer each type param's concrete binding by unifying the declared
+        // parameter types against the argument registers' concrete types.
+        let mut subst: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+        for (idx, (_, declared)) in defn.parameters.iter().enumerate() {
+            if let Some(reg) = arg_regs.get(idx) {
+                unify_generic_binding(declared, &reg.ty, &type_params, &mut subst);
+            }
+        }
+        // Every type param must be bound to a concrete nominal type for the
+        // specialization to be meaningful; otherwise fall back.
+        let concrete: Vec<Type> = type_params
+            .iter()
+            .map(|param| subst.get(param).cloned())
+            .collect::<Option<Vec<_>>>()?;
+        if !concrete.iter().all(|ty| matches!(ty, Type::Custom(_))) {
+            return None;
+        }
+        let mangled = mangle_specialization(name, &concrete);
+        // Enqueue the specialization once (dedup across call sites). Register
+        // its ABI metadata so the call tail resolves params/return/state.
+        if self.ctx.emitted_defn_specializations.insert(mangled.clone()) {
+            let param_tys: Vec<Type> = defn
+                .parameters
+                .iter()
+                .map(|(_, ty)| crate::typechecker::substitute_type(ty, &subst))
+                .collect();
+            self.ctx.defn_params.insert(mangled.clone(), param_tys);
+            let ret_tys: Vec<Type> = self
+                .ctx
+                .defn_return_types
+                .get(name)
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|ty| crate::typechecker::substitute_type(ty, &subst))
+                .collect();
+            self.ctx.defn_return_types.insert(mangled.clone(), ret_tys);
+            // The specialization needs state iff the base defn does.
+            let needs_state = self.ctx.defn_needs_state.get(name).copied().unwrap_or(true);
+            self.ctx.defn_needs_state.insert(mangled.clone(), needs_state);
+            // A specialization is live by construction — it exists only because
+            // a live call site referenced it, and it is always emitted via the
+            // worklist drain. Root it so the defn-liveness IR-scan net (which
+            // iterates defn_params ∖ live_defns) does not flag the emitted call.
+            self.ctx.live_defns.insert(mangled.clone());
+            self.ctx
+                .pending_defn_specializations
+                .push((mangled.clone(), name.to_string(), subst));
+        }
+        Some(self.finish_user_call(out, v, &mangled, arg_regs, indent))
+    }
+
+    /// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6-M1):
+    /// resolve a bare free call `name(arg0, …)` to a member of `arg0`'s obj
+    /// type (UFCS). `None` when `name` is a known top-level defn (never shadow
+    /// one), when there are no args, or when arg0's type is not an obj
+    /// providing a member `name` — the caller then emits the ordinary call.
+    /// The receiver is arg0; the remaining registers are the member's value
+    /// arguments. Dispatches through the same inline member path the `.m()`
+    /// form uses (`prefix: None` — the boxed-self convention for a struct value).
+    fn try_emit_free_call_as_member(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        name: &str,
+        arg_regs: &[TypedRegister],
+        indent: &str,
+    ) -> Option<TypedRegister> {
+        if self.ctx.defn_params.contains_key(name) {
+            return None; // a real top-level defn — not a UFCS member call
+        }
+        let (recv_reg, _rest) = arg_regs.split_first()?;
+        let type_name = self.resolve_obj_key(&recv_reg.ty)?;
+        let members = self.ctx.obj_members.get(&type_name).cloned().unwrap_or_default();
+        let member = members
+            .iter()
+            .find(|m| member_briev_name(m) == name)
+            .cloned()?;
+        // emit_member_body binds the member's parameters POSITIONALLY from
+        // arg_regs over the FULL parameter list (including the `this`/`Self`
+        // receiver param). For a free call `bump(this, amount)` the arguments
+        // already line up with `[this, amount]`, so pass the whole arg list;
+        // arg0 doubles as the self-binding receiver via `recv_reg`.
+        let member_args: Vec<(String, Type)> =
+            arg_regs.iter().map(|reg| (reg.name.clone(), reg.ty.clone())).collect();
+        let recv = recv_reg.clone();
+        Some(self.emit_member_body(
+            out,
+            v,
+            MemberInvocation {
+                recv_reg: &recv,
+                type_name: &type_name,
+                member: &member,
+                arg_regs: &member_args,
+                prefix: None,
+            },
+            indent,
+        ))
+    }
+
     pub(super) fn emit_user_call(
         &mut self,
         out: &mut String,
@@ -4969,6 +5137,45 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 })
                 .collect()
         };
+        // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6-M2):
+        // a trait-bounded generic defn (`bump_twice<T: Counter>`) is emitted
+        // ONCE type-erased, so inside its body `this: T` and a trait call on
+        // it dangles (`@bump` undefined). Specialize per concrete instantiation
+        // instead: infer the concrete type args from the argument registers,
+        // emit (once) a monomorphized copy whose params carry the concrete
+        // types, and call that specialization. Inside the specialization `this`
+        // is the concrete type, so M1 (below) resolves the trait method.
+        if let Some(reg) = self.try_emit_monomorphized_generic_call(out, v, name, &arg_regs, indent) {
+            return reg;
+        }
+        // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6-M1):
+        // free-call UFCS. A bare call `name(a, …)` that is NOT a top-level
+        // defn, whose first argument's concrete type is an obj providing a
+        // member `name`, dispatches to that member (the receiver is arg0) —
+        // the same inline path the `.m()` method form uses, and the same UFCS
+        // the typechecker applies. This is what resolves `bump(this, amount)`
+        // inside a monomorphized trait-generic body (`this: Tally`).
+        if let Some(reg) = self.try_emit_free_call_as_member(out, v, name, &arg_regs, indent) {
+            return reg;
+        }
+        self.finish_user_call(out, v, name, &arg_regs, indent)
+    }
+
+    /// 2026-10-13 (refactor for S6): the ABI-adapting call tail of
+    /// `emit_user_call`, keyed by `callee`. Shared by the ordinary user-call
+    /// path and the monomorphized-generic path (which passes the specialized
+    /// symbol). Builds the argument list with %state threading and
+    /// ptr/i64 marshalling from the callee's registered `defn_params`, then
+    /// emits `call @callee`.
+    fn finish_user_call(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        callee: &str,
+        arg_regs: &[TypedRegister],
+        indent: &str,
+    ) -> TypedRegister {
+        let name = callee;
         // 2026-07-17: Look up defn parameter types for type adaptation.
         let defn_param_tys = self.ctx.defn_params.get(name).cloned();
         let is_defn = defn_param_tys.is_some();
@@ -5016,7 +5223,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }
             }
         } else {
-            for reg in &arg_regs {
+            for reg in arg_regs {
                 // 2026-07-30: Non-defn calls (or calls where defn not found in
                 // defn_params) also need inttoptr for Ptr-typed arguments, since
                 // the register holds the i64 internal representation.

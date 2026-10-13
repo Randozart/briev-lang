@@ -3056,10 +3056,40 @@ impl LlvmBackend {
             }
             writeln!(out, ") local_unnamed_addr #0").ok();
             writeln!(out, "  ret {} %res", ll_ret_ty).ok();
-        writeln!(out, "}}").ok();
+            writeln!(out, "}}").ok();
+        }
     }
 
-}
+    /// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): emit a
+    /// monomorphized copy of a generic defn under `mangled`, with `subst`
+    /// (type param → concrete type) applied to its parameter types and return
+    /// type. The body is unchanged — it references parameters by name, and
+    /// because each parameter now carries its concrete type, a trait-method
+    /// call inside the body resolves against the concrete type (the free-call
+    /// UFCS in emit_user_call). `type_params` is cleared so the copy is treated
+    /// as an ordinary (concrete) defn by emit_definition.
+    pub(crate) fn emit_specialized_definition(
+        &mut self,
+        out: &mut String,
+        mangled: &str,
+        base: &str,
+        subst: &std::collections::HashMap<String, crate::ast::Type>,
+    ) {
+        let Some(base_defn) = self.ctx.generic_defns.get(base).cloned() else {
+            return;
+        };
+        let mut specialized = base_defn;
+        specialized.name = mangled.to_string();
+        specialized.type_params = Vec::new();
+        for (_, ty) in specialized.parameters.iter_mut() {
+            *ty = crate::typechecker::substitute_type(ty, subst);
+        }
+        specialized.output_type = specialized
+            .output_type
+            .map(|ot| substitute_output_type(&ot, subst));
+        let needs_state = self.ctx.defn_needs_state.get(mangled).copied().unwrap_or(true);
+        self.emit_definition(out, &specialized, needs_state);
+    }
 
     // 2026-06-13: Added ptr %state param — definitions can access global state.
 
@@ -5116,6 +5146,31 @@ fn probe_ok_checks(
         }
         if !self.fun.terminated { writeln!(out, "  ret void").ok(); }
         writeln!(out, "}}").ok();
+    }
+}
+
+/// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): apply a
+/// type-param → concrete substitution through an OutputType (the generic
+/// return `-> T` becomes `-> Tally` in a specialization).
+fn substitute_output_type(
+    ot: &crate::ast::top::OutputType,
+    subst: &std::collections::HashMap<String, crate::ast::Type>,
+) -> crate::ast::top::OutputType {
+    use crate::ast::top::OutputType;
+    match ot {
+        OutputType::Single(ty) => OutputType::Single(crate::typechecker::substitute_type(ty, subst)),
+        OutputType::Union(items) => {
+            OutputType::Union(items.iter().map(|o| substitute_output_type(o, subst)).collect())
+        }
+        OutputType::Tuple(items) => {
+            OutputType::Tuple(items.iter().map(|o| substitute_output_type(o, subst)).collect())
+        }
+        OutputType::Array(inner) => {
+            OutputType::Array(Box::new(substitute_output_type(inner, subst)))
+        }
+        OutputType::Named(name, inner) => {
+            OutputType::Named(name.clone(), Box::new(substitute_output_type(inner, subst)))
+        }
     }
 }
 

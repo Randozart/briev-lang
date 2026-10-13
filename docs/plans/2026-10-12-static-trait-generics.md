@@ -150,3 +150,73 @@ is a pre-existing malformed .dbvl fixture, BUGS.md).
   type_function_names; type_conforms_to_trait should do the same once a
   trait-bounded generic is called with an impl-conforming type. No test currently
   exercises this (the full suite passes), so it is deferred, not blocking.
+
+2026-10-13 - S5/S6 PLAN DEVIATION (decided with the human). The plan said
+"interpreter is the reference (Rule 5): make the interpreter resolve trait
+generics first, then the backend". Reconnaissance refuted the premise for this
+feature:
+  - `brievc run` is NOT the tree-walking interpreter — it compiles via LLVM and
+    runs the native binary. No CLI path executes a .bv through src/interpreter/.
+    The interpreter is an internal oracle only (derivation assertions, PGO).
+  - The tree-walking interpreter has NO UFCS and NO trait awareness: a bare call
+    `bump(this, amount)` is looked up in a flat map where obj members live under
+    qualified keys (`Tally::bump`), so it raises UndefinedFunction — it cannot
+    run even a plain bare-call-to-member program, trait or not. It also never
+    registers trait default bodies.
+  - The LLVM backend ALREADY has UFCS (`a.f(b)` -> `f(a,b)`, emit_expr.rs:2947)
+    and generic monomorphization — it is the path a user's program executes on.
+  So "interpreter first" would mean building a large new resolution layer into a
+  component users don't run programs through, to catch up to a backend that is
+  already ahead. Decision: S5 and S6 MERGE into one "backend execution" step —
+  prove the feature RUNS via `brievc build` -> native binary -> correct output.
+  Rule 5's spirit (a reference that must run it correctly) is honored by the
+  native binary plus the type system built in S1-S4. The interpreter's missing
+  UFCS/trait-default layer is a separate pre-existing gap, logged for later, not
+  blocking this branch.
+
+S5+S6 - Backend execution (in progress). Gate: `brievc build` of the P3 program
+produces a native binary that prints 10 (bump adds amount; bump_twice applies it
+twice; 0 -> 5 -> 10). Then P2/P2b (trait-default forms) build + run to the same.
+
+## S6 design (option b: monomorphize trait-bounded generic defns)
+
+Reconnaissance verdict: top-level generic defns emit ONCE, type-erased (T -> i64);
+inside the body `this: Custom("T")`; obj members are INLINED (no callable symbol),
+resolved from `obj_members[type_name]` via the receiver register's concrete `.ty`.
+So the concrete T is lost inside the single erased body — resolve-at-emit fails.
+Fix = per-instantiation monomorphization so the body sees `this: Tally`, plus a
+free-call UFCS so the bare `bump(this,amount)` routes to the member.
+
+Two mechanisms (both additive):
+
+M1 - FREE-CALL UFCS in the backend. In emit_user_call (emit_expr.rs ~5063, before
+  `let symbol = name`): if `name` is NOT a known top-level defn/frgn/closure AND
+  arg_regs[0].ty resolves to an obj type (resolve_obj_key) whose obj_members has a
+  member named `name`, dispatch through the member-inline path (the same
+  emit_member_body the `.m()` method form uses), with arg0 as the receiver. This
+  mirrors the existing METHOD-form UFCS (emit_expr.rs:2947) and the typechecker's
+  free-call UFCS. Independently useful: a plain bare-call-to-member works too.
+
+M2 - MONOMORPHIZE the trait-bounded generic defn. Needs:
+  (a) Context: retain generic defn AST (name -> Definition) + a set of generic defn
+      names (type_params non-empty) + a pending-specialization worklist +
+      an emitted-specializations set (dedup). Registered in the same pass that
+      fills defn_params (mod.rs ~2970).
+  (b) Call site (emit_user_call): if `name` is a generic defn, infer concrete type
+      args by unifying arg_regs' types against the declared param types (reuse the
+      same name->concrete mapping idea as mono_subst; the receiver arg gives T).
+      Compute a mangled key `name$Concrete...`, enqueue the specialization if new,
+      and emit `call @<mangled>` instead of @name.
+  (c) Specialized emission (after the main defn loop, drain the worklist): emit a
+      copy of the Definition with its params/return/body type-substituted
+      (T -> concrete) under the mangled name. Reuse emit_definition by substituting
+      the AST node's parameter types first (crate::typechecker::substitute_type with
+      the T->concrete map). Inside this body `this: Tally`, so M1 resolves
+      `bump(this,amount)` to Tally::bump. Register the specialization's params/return
+      so call-site ABI (defn_takes_state, return type) is correct.
+  Mangling: `bump_twice$Tally` (one concrete arg) / join multiple with `$`. Must be
+  a valid LLVM identifier (quote if needed).
+
+Gate: P3 builds to a native binary that prints 10; P2/P2b (default forms) build+run
+to 10; cargo test --lib no regressions. Non-generic bare-call-to-member (M1 alone)
+keeps working across the suite.

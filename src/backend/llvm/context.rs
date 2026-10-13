@@ -167,6 +167,23 @@ pub struct CompilerContext {
     pub frgn_map: HashMap<String, ForeignSignature>,
     pub defn_params: HashMap<String, Vec<Type>>,
     pub defn_return_types: HashMap<String, Vec<Type>>,
+    /// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): the AST
+    /// of every GENERIC top-level defn (type_params non-empty), keyed by name.
+    /// A generic defn is emitted ONCE type-erased today; for a trait-bounded
+    /// param the body's trait call dangles. The backend monomorphizes per
+    /// concrete instantiation at the call site, reading the body/params from
+    /// here, substituting the type params, and emitting a specialized symbol.
+    pub generic_defns: HashMap<String, crate::ast::top::Definition>,
+    /// 2026-10-13 (S6): type-param names per generic defn (`bump_twice` →
+    /// ["T"]), the substitution key order for mangling + param substitution.
+    pub generic_defn_type_params: HashMap<String, Vec<String>>,
+    /// 2026-10-13 (S6): pending specializations to emit after the main defn
+    /// loop — (mangled symbol, base defn name, type-param → concrete subst).
+    /// Enqueued at a call site when a new instantiation is first seen.
+    pub pending_defn_specializations: Vec<(String, String, HashMap<String, Type>)>,
+    /// 2026-10-13 (S6): mangled symbols already enqueued/emitted — dedups the
+    /// worklist so one instantiation is emitted once.
+    pub emitted_defn_specializations: std::collections::HashSet<String>,
     /// 2026-09-13 (defn-liveness emission): the frontend-computed set of
     /// call-reachable defn/txn names. The Definitions/callable-txn emission
     /// gates SKIP anything outside it (`emit_all_defns` overrides —
@@ -510,6 +527,10 @@ impl CompilerContext {
             frgn_map: HashMap::new(),
             defn_params: HashMap::new(),
             defn_return_types: HashMap::new(),
+            generic_defns: HashMap::new(),
+            generic_defn_type_params: HashMap::new(),
+            pending_defn_specializations: Vec::new(),
+            emitted_defn_specializations: std::collections::HashSet::new(),
             live_defns: std::collections::HashSet::new(),
             emit_all_defns: false,
             force_emit_all: false,
