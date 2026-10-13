@@ -3002,6 +3002,47 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     };
                     self.ctx.defn_return_types.insert(d.name.clone(), ret_tys);
                 }
+                // 2026-10-13 (static trait-constrained generics, SPEC §8.6,
+                // S6): a trait DEFAULT (a body-carrying trait function) is
+                // registered as a generic defn over `Self` — the SAME
+                // monomorphization machinery (M2) specializes it per conforming
+                // concrete type (`bump_twice` → `bump_twice$Tally`, Self→Tally),
+                // and inside the body a call to a sibling requirement resolves
+                // to the concrete member via the free-call UFCS (M1). Required
+                // (empty-body) functions are not registered — they ARE the
+                // concrete type's own members. A concrete type's own member of
+                // the same name still wins (its top-level/obj registration
+                // shadows the default at resolution).
+                TopLevel::Trait(t) => {
+                    for func in &t.functions {
+                        if func.body.is_empty() {
+                            continue;
+                        }
+                        if self.ctx.generic_defns.contains_key(&func.name) {
+                            continue; // a real top-level defn of this name wins
+                        }
+                        let mut as_generic = func.clone();
+                        // `Self` is the single type param the default is generic
+                        // over; it binds to the concrete receiver at the call.
+                        as_generic.type_params = vec![crate::ast::top::TypeParam {
+                            name: "Self".to_string(),
+                            bound: Some(Type::Custom(t.name.clone())),
+                        }];
+                        let tys: Vec<Type> =
+                            func.parameters.iter().map(|(_, ty)| ty.clone()).collect();
+                        self.ctx.defn_params.insert(func.name.clone(), tys);
+                        let ret_tys = func
+                            .output_type
+                            .as_ref()
+                            .map(|ot| ot.all_types())
+                            .unwrap_or_default();
+                        self.ctx.defn_return_types.insert(func.name.clone(), ret_tys);
+                        self.ctx.generic_defns.insert(func.name.clone(), as_generic);
+                        self.ctx
+                            .generic_defn_type_params
+                            .insert(func.name.clone(), vec!["Self".to_string()]);
+                    }
+                }
                 TopLevel::AsmFn(asm_fn) => {
                     let tys: Vec<Type> = asm_fn.params.iter().map(|(_, t)| t.clone()).collect();
                     self.ctx.defn_params.insert(asm_fn.name.clone(), tys);
