@@ -4204,12 +4204,27 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 self.ctx.internal_fold_txns.insert(name.clone());
             }
         }
+        // 2026-10-14 (tier2 phase 1, daily-driver-tier2 plan): under the
+        // direct-SSA dispatch, `emit_ssa_main` (below) inlines every txn body
+        // into main() — the txn loop's reactive `txn_main` copy is DEAD, and
+        // worse, both emissions share one FunctionContext: the second
+        // emission's binding stores clobber the first's, so a bare-let
+        // collection in main dereferenced the other copy's handle slot
+        // (segfault; the doubles were invisible while both copies happened
+        // to be self-consistent — dead code, linker-GC'd). Skip the entry in
+        // the loop exactly when the SSA branch will fire (mirror of the
+        // dispatch condition at ~4802). Callable txns are unaffected. To
+        // undo: delete this skip; the double emission returns.
+        let ssa_dispatch = self.async_txn_names.is_empty() && self.ctx.mmio_fields.is_empty();
         for (name, txn) in &txns {
             // 2026-09-13 (defn-liveness emission): reactive txns are roots
             // (always live); this skips only unreachable callable txns —
             // the same "'X' is never dispatched" population the dead-txn
             // warning already reports.
             if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(name) {
+                continue;
+            }
+            if ssa_dispatch && *name == "main" {
                 continue;
             }
             if self.ctx.internal_fold_txns.contains(name) {

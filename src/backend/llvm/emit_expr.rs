@@ -7932,6 +7932,7 @@ impl crate::backend::llvm::LlvmBackend {
     ) -> TypedRegister {
         let slot = self.fun.gen_reg();
         writeln!(out, "{indent}{slot} = alloca i64, align 8").ok();
+            if std::env::var("BRIEV_DBG_ALLOCA").is_ok() { eprintln!("[dbg-alloca] site 416075 in src/backend/llvm/emit_expr.rs"); }
         let r = self.fun.gen_reg();
         let slot_i = self.fun.gen_reg();
             writeln!(out, "{indent}{slot_i} = ptrtoint ptr {slot} to i64").ok();

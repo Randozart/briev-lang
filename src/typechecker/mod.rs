@@ -2196,6 +2196,22 @@ fn resolve_bound_param_call(
 /// providing the operations, with no explicit `: Trait` assertion needed.
 /// Member provision is read from `ctx.type_members` (an obj/struct's own defn
 /// members), the same source method resolution uses.
+/// 2026-10-14 (tier2 phase 1, coll-element-size ADDENDUM 3 hole 1): pushing
+/// a CONCRETE into a `List<dyn Trait>` — the dyn coercion at the push
+/// boundary. The concrete must structurally PROVIDE the trait (the same
+/// conformance rule as a bounded generic call site); the backend boxes it
+/// (tag + fat pointer) at the store. Extracted as a helper — the arrow
+/// check sits deep in `check_program_with_target` (nesting gate).
+fn dyn_push_admitted(ctx: &TypecheckContext, elem_ty: &Type, value_ty: &Type) -> bool {
+    let Type::Dyn(trait_ty) = elem_ty else {
+        return false;
+    };
+    let Type::Custom(trait_name) = trait_ty.as_ref() else {
+        return false;
+    };
+    type_conforms_to_trait(ctx, &value_ty.to_string(), trait_name)
+}
+
 fn type_conforms_to_trait(ctx: &TypecheckContext, type_name: &str, trait_name: &str) -> bool {
     let Some(trait_def) = ctx.trait_defs.get(trait_name) else {
         return false;
@@ -3826,6 +3842,8 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 if let Some(elem_ty) = ctx.push_element_type(t) {
                     if value_ty == elem_ty || try_coerce_via_parse(value, &value_ty, &elem_ty, ctx) {
                         arrow_ok = true;
+                    } else if dyn_push_admitted(ctx, &elem_ty, &value_ty) {
+                        arrow_ok = true;
                     }
                 }
                 if !arrow_ok {
@@ -4892,6 +4910,22 @@ pub fn check_program_with_target(
         }
     }
     let mut all_type_members: HashMap<String, Vec<TopLevel>> = HashMap::new();
+    // 2026-10-14 (tier2 phase 1; closes the PR-15 known limitation):
+    // impl-block members participate in STRUCTURAL CONFORMANCE —
+    // `impl Dog { defn greet(...) }` is how a type-decl proves its trait,
+    // and `type_conforms_to_trait` (bounded generics, dyn push) reads
+    // type_members only. Collect the impl functions per target here and
+    // merge them into the type's members below. To undo: delete this map +
+    // the merge at the TypeDef insertion.
+    let mut impl_fn_members: HashMap<String, Vec<TopLevel>> = HashMap::new();
+    for item in items.iter() {
+        if let TopLevel::Impl(i) = item {
+            let entry = impl_fn_members.entry(i.target.clone()).or_default();
+            for f in &i.functions {
+                entry.push(TopLevel::Definition(f.clone()));
+            }
+        }
+    }
     let mut all_type_params: HashMap<String, Vec<String>> = HashMap::new();
     // 2026-08-15 (coll plan): `coll obj`/`coll struct` type names — they
     // accept empty list literals and have a compiler-scaffolded op surface.
@@ -5002,8 +5036,26 @@ pub fn check_program_with_target(
                     }
                 }
                 all_type_members.insert(td.name.clone(), merged);
-            } else if !td.body.members.is_empty() {
-                all_type_members.insert(td.name.clone(), td.body.members.clone());
+            } else {
+                let mut merged = td.body.members.clone();
+                if let Some(imembers) = impl_fn_members.get(&td.name) {
+                    for m in imembers {
+                        let m_name =
+                            crate::backend::llvm::emit_expr::member_briev_name(m);
+                        let dup = merged.iter().any(|ex| {
+                            crate::backend::llvm::emit_expr::member_briev_name(ex) == m_name
+                        });
+                        if !dup {
+                            merged.push(m.clone());
+                        }
+                    }
+                }
+                // A fields-only type-decl (`type Dog: Greeter { base: Int; }`)
+                // has NO body members — its trait proof lives entirely in the
+                // impl block. Insert whenever ANYTHING merged.
+                if !merged.is_empty() {
+                    all_type_members.insert(td.name.clone(), merged);
+                }
             }
             if !td.type_params.is_empty() {
                 all_type_params.insert(

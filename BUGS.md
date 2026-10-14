@@ -9419,3 +9419,65 @@ retired variadic surface takes `[nr >= 0 && nr < 512][true]`: the `nr > 0`
 clause was a bug, not a standard; the 512 upper bound is real (x86_64 max
 ~447) and stays. The uncontracted `lib/std/posix/syscall.bv` family is
 subsumed by the same strengthened contract.
+
+## bare-let collection + first insert: uninitialized handle slot — FIXED 2026-10-14
+
+`let xs: List<Int>;` followed by `xs <- 5` in a node body segfaulted. The
+construction pre-pass fired on `~<-` extract and `= 0` init but NOT on a
+bare declaration + first insert: the binding got a naked `alloca i64`, the
+insert loaded the uninitialized slot and dereferenced stack garbage.
+
+Two stacked causes surfaced while fixing:
+1. **The construction itself** — the bare-let arm now constructs through
+   the SAME machinery as the initializer paths (op InitEmpty for the empty
+   literal; op Init(0) — the `= 0` idiom — when only the seeded Init
+   exists, e.g. hand-written HashMap).
+2. **A latent DOUBLE EMISSION**: under direct-SSA dispatch, `main` was
+   emitted TWICE — once by the txn loop (`emit_transaction`, a dead
+   `txn_main`) and once by `emit_ssa_main` (the live `main()`) — sharing
+   one FunctionContext. The dead copy was invisible while both emissions
+   happened to be self-consistent (linker-GC'd); the bare-let coll made
+   the second emission's binding stores clobber the first's, and the live
+   body dereferenced a handle from the other copy. The txn loop now skips
+   the entry when the SSA branch will fire (mirror of the dispatch
+   condition). Every SSA-dispatched program was double-emitting; the
+   "t193/t196" call sites seen in earlier IR reviews were this.
+
+**Verified:** tests/tier2_payload_abi.rs (all linked at -O0, the
+IR-validity gate); full suite 3080/0; rbv_gate OK.
+
+## dyn push-site: concrete into List<dyn Trait> stored raw — FIXED 2026-10-14
+
+`hs <- Dog { base: 7 }` into a `List<dyn Greeter>` was rejected at
+typecheck (no dyn coercion at the push boundary), and — once admitted —
+the backend stored the RAW concrete handle (dispatch read garbage;
+coll-element-size ADDENDUM 3 hole 1). Fixed at both layers:
+- **typechecker**: a dyn-element arrow push admits a concrete that
+  structurally PROVIDES the trait (`dyn_push_admitted` →
+  `type_conforms_to_trait`).
+- **impl-block conformance** (closes the PR-15 known limitation):
+  `type_conforms_to_trait` reads type_members, which held only
+  type-decl-body members — `impl Dog { defn greet ... }` (the natural
+  proof syntax) was invisible. Impl-block functions now merge into the
+  type's members (dedup by name).
+- **backend**: the push gate admits the dyn element, and the push site
+  boxes the concrete (tag + fat pointer) via `coerce_to_dyn` — the same
+  box the let-coercion emits. The concrete name comes from the RESOLVED
+  value type (a struct literal's register carries no type info).
+
+Dyn list across a defn-call boundary (ADDENDUM 3 hole 2) works through
+the same fixes. Verified: tier2_payload_abi dyn tests (701/92, 703).
+
+## Result payload shape-sensitivity: root causes — FIXED 2026-10-14
+
+`Result<T,E>` access needed different forms per payload shape:
+- Int payloads "worked" because the undefined-generic `Int` fallback was
+  accidentally right (missing `import "std/result.bv"` resolved `unwrap`
+  to the fallback silently);
+- String payloads needed `match` (pattern binding, no call);
+- List payloads mis-lowered through a let binding (the bare-let bug above).
+
+With the bare-let fix + the PR-15 generic-defn monomorphization fixes
+(same day, `ee21c3f4`), ONE form works for every payload: predicate +
+`unwrap`. fs_smoke's shape-sensitive comments are historical; the
+tier2 suite pins the unified surface.
