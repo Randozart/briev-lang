@@ -74,6 +74,61 @@ impl HardwareValidator {
         diagnostics
     }
 
+    /// 2026-10-14 (fix/sbv-hardware-validator-gate): the `.sbv` (Silicon)
+    /// synthesizability gate, wired into the compile pipeline for
+    /// `SourceKind::Silicon` roots (src/pipeline.rs `parse_and_check` +
+    /// src/compile.rs `compile_source`). Returns ONLY the synthesizability
+    /// diagnostics (`check_hebv_restrictions`): `frgn`/`link` import bans,
+    /// unsized `Int`/`Float`/`String` type rejection (B5006–B5008), and total
+    /// `[true]`-contract rejection (B5004/B5005).
+    ///
+    /// Deliberately NOT the reactive-liveness heuristics
+    /// (`check_orphan_variables`/`check_untriggerable_transactions`/
+    /// `check_unused_variables`): a `.sbv` file's file-scope bare `let`s are
+    /// boundary pins (see examples/silicon/sensor_die.sbv) that are legitimately
+    /// never written by any transaction — the driver decides at runtime — so
+    /// flipping "never written"/"never triggered" to Error for Silicon would
+    /// falsely reject every well-formed die. Those checks belong to the
+    /// `.ebv` reactive tier and need their own wiring (full `validate` with
+    /// `is_embedded=true` and a `TargetSpec`), tracked separately.
+    ///
+    /// To undo: remove the two pipeline call sites (grep `validate_silicon`);
+    /// the module returns to dead code and `.sbv` synthesizability is
+    /// unenforced again (the BUGS.md state before this fix).
+    pub fn validate_silicon(items: &[TopLevel]) -> Vec<Diagnostic> {
+        Self::check_hebv_restrictions(items)
+    }
+
+    /// 2026-10-14 (fix/sbv-hardware-validator-gate): the pipeline entry — run
+    /// the Silicon synthesizability gate for a `.sbv` (`SourceKind::Silicon`)
+    /// root and translate any Error-severity diagnostic into an aborting
+    /// `Err`. A non-Silicon source is a no-op `Ok`. Called from BOTH frontends
+    /// (`src/pipeline.rs` `parse_and_check`, `src/compile.rs` `compile_source`)
+    /// so acceptance never diverges; keeping the classify+format logic here (as
+    /// one line at each call site) keeps the two large host functions off the
+    /// complexity gate.
+    pub fn enforce_silicon(
+        file_path: &str,
+        items: &[TopLevel],
+        source: &str,
+    ) -> Result<(), String> {
+        if crate::conformance::classify(std::path::Path::new(file_path))
+            != Some(crate::conformance::SourceKind::Silicon)
+        {
+            return Ok(());
+        }
+        let errs: Vec<String> = Self::validate_silicon(items)
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.format(source, file_path))
+            .collect();
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(".sbv synthesizability errors:\n{}", errs.join("\n")))
+        }
+    }
+
     fn check_hebv_restrictions(items: &[TopLevel]) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         for item in items {
@@ -123,6 +178,20 @@ impl HardwareValidator {
                 TopLevel::StateDecl(decl) => {
                     Self::check_type_synthesizable(&decl.ty, &mut diagnostics, &decl.name);
                 }
+                // 2026-10-14 (fix/sbv-hardware-validator-gate): a file-scope
+                // `let x: T [= e];` parses to TopLevel::Statement(Let) — NOT
+                // StateDecl — at the frontend hook (the parser emits Statement
+                // for every top-level let, src/parser/definitions.rs; the
+                // Let→StateDecl lowering is a later backend-normalizer pass that
+                // runs AFTER this gate). So the synthesizability type check must
+                // also walk the declared type of a top-level let, or every
+                // `.sbv` state field (which is written exactly this way, e.g.
+                // examples/silicon/sensor_die.sbv) escapes the gate.
+                TopLevel::Statement(stmt) => {
+                    if let Statement::Let { name, ty: Some(ty), .. } = stmt.as_ref() {
+                        Self::check_type_synthesizable(ty, &mut diagnostics, name);
+                    }
+                }
                 _ => {}
             }
         }
@@ -168,8 +237,20 @@ impl HardwareValidator {
             Type::Custom(_) => {
                 // Struct/enum — assumed synthesizable if fields are
             }
-            Type::Constrained(inner, _) => Self::check_type_synthesizable(inner, diagnostics, context),
-            Type::Custom(__t) if __t == "Data" => {} // OK
+            // 2026-10-14 (fix/sbv-hardware-validator-gate): a `Constrained`
+            // wrapper over `Int`/`UInt` IS the sized form — `UInt<8>` parses to
+            // `Constrained(Custom("UInt"), BitRange::Single(8))`
+            // (src/parser/types.rs). That is exactly the synthesizable shape the
+            // B5006 message asks for, so it must PASS, not recurse into the bare
+            // `Custom("UInt")` (which would be flagged unsized). Any other
+            // constrained inner type recurses normally.
+            Type::Constrained(inner, _) => {
+                if matches!(inner.as_ref(), Type::Custom(n) if n == "Int" || n == "UInt") {
+                    // sized integer — OK for hardware
+                } else {
+                    Self::check_type_synthesizable(inner, diagnostics, context);
+                }
+            }
             Type::Void => {} // OK
             _ => {}
         }
