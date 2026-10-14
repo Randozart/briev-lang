@@ -1692,7 +1692,11 @@ Rules:
   `name__arity` in generated IR (e.g. `sum__3` for `sum(1, 2, 3)`); the
   author's source name is unchanged.
 - `txn` takes the same rest rule; reactor analysis runs per
-  specialization.
+  specialization. First retired surface (2026-10-14): the `syscall0..6`
+  wrapper families collapsed into one variadic
+  `syscall(nr, ...args: Int[<=6])` (std/posix/syscall.bv) — the body
+  dispatches on `args.Count#()`, folded to the live arm per instantiation.
+
 
 ### 9.2 Callable types and closures
 

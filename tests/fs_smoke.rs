@@ -189,3 +189,30 @@ node main [n == 0][n == 1] {
         "O_TRUNC: second write replaces content; read returns only it"
     );
 }
+
+/// The variadic `syscall(nr, ...args)` retirement (2026-10-14): the
+/// ZERO-rest instantiation (SYS_GETPID = 39) runs E2E — POSIX guarantees a
+/// pid > 0, so the assertion is real, not a smoke.
+#[test]
+fn fs_syscall_variadic_getpid() {
+    let src = r#"
+import "std/posix/syscall.bv";
+
+let n: Int = 0;
+node main [n == 0][n == 1] {
+    let pid: Int = syscall(39);
+    when pid > 0 {
+        println!(pid);
+    };
+    n = 1;
+    term;
+};
+"#;
+    let (out, code) = build_link_run("getpid", src, "unused-scratch");
+    assert_eq!(code, 0, "getpid program exit code");
+    let pid: i64 = out
+        .trim()
+        .parse()
+        .expect("getpid printed a positive integer");
+    assert!(pid > 0, "getpid returned {pid}");
+}

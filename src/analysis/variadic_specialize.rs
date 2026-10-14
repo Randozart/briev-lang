@@ -64,6 +64,23 @@ fn is_value_type(t: &Type) -> bool {
     !matches!(t, Type::Custom(n) if n == "Expr" || n == "ExprItem")
 }
 
+/// A declared callable may be wrapped in `export` (`export defn syscall(...)`
+/// → `TopLevel::Export(Export { inner: Definition })`) — the variadic data
+/// lives on the INNER decl.
+fn unwrap_export(item: &TopLevel) -> &TopLevel {
+    match item {
+        TopLevel::Export(e) => &e.inner,
+        other => other,
+    }
+}
+
+fn unwrap_export_mut(item: &mut TopLevel) -> &mut TopLevel {
+    match item {
+        TopLevel::Export(e) => &mut e.inner,
+        other => other,
+    }
+}
+
 /// Specialize all typed-variadic `defn`/`txn` declarations in `items`.
 /// Appends one instantiation per (callable, arity) pair and retargets the
 /// call sites. The original declaration is retained (diagnostics + name
@@ -75,7 +92,13 @@ pub fn specialize_variadic(
     // Index the variadic declarations by name → (item index, is_txn).
     let mut variadics: HashMap<String, (usize, bool)> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
-        match item {
+        // 2026-10-14: `export defn syscall(...)` parses to
+        // TopLevel::Export(Export { inner: Definition }) — the rest lives on
+        // the INNER decl. Without the unwrap, an exported variadic is
+        // invisible to the pass: the original body (args.Count#()) reaches
+        // the typechecker and every `brievc check` of the declaring module
+        // fails (the conformance sweep caught it on posix/syscall.bv).
+        match unwrap_export(item) {
             TopLevel::Definition(d) => {
                 if d.variadic_param
                     .as_ref()
@@ -110,7 +133,7 @@ pub fn specialize_variadic(
     let mut new_items: Vec<TopLevel> = Vec::new();
     for item in items.iter() {
         let mut rewritten = item.clone();
-        match &mut rewritten {
+        match unwrap_export_mut(&mut rewritten) {
             TopLevel::Definition(d) => rewrite_definition(d, &mut ctx)?,
             TopLevel::Transaction(t) => rewrite_transaction(t, &mut ctx)?,
             _ => {}
@@ -123,7 +146,7 @@ pub fn specialize_variadic(
         // GUARD: only items that ARE declared variadic get emptied — a
         // non-variadic defn/node/txn must keep its body (the unconditional
         // wipe here emptied `node main`'s body, dropping its statements).
-        match &mut rewritten {
+        match unwrap_export_mut(&mut rewritten) {
             TopLevel::Definition(d) => {
                 if d.variadic_param.is_some() {
                     d.variadic_param = None;
@@ -198,7 +221,7 @@ fn ensure_instantiation(
     }
     let emit_name = emitted_instantiation_name(name, arity);
     let (i, is_txn) = ctx.variadics.get(name).copied().unwrap_or((0, false));
-    let (rest_name, elem_type, min, max) = match &ctx.items[i] {
+    let (rest_name, elem_type, min, max) = match unwrap_export(&ctx.items[i]) {
         TopLevel::Definition(d) => {
             let vp = d.variadic_param.as_ref().ok_or_else(|| {
                 format!("'{name}' lost its rest parameter during specialization")
@@ -243,7 +266,7 @@ fn ensure_instantiation(
     // params, so the ghost rest entry is replaced by those elements:
     // [fixed…, __va_0, __va_1, …]. Keeping the ghost would leave a dead param
     // at position `fixed` and shift the element positions.
-    let mut new_item: TopLevel = match &ctx.items[i] {
+    let mut new_item: TopLevel = match unwrap_export(&ctx.items[i]) {
         TopLevel::Definition(d) => {
             let mut d2 = d.clone();
             d2.name = emit_name.clone();
@@ -617,6 +640,46 @@ fn rewrite_stmt_elems(stmt: &mut Statement, ec: &ElemCtx) -> Result<(), String> 
     Ok(())
 }
 
+/// 2026-10-14 (syscall retirement): fold a match whose scrutinee is (now) a
+/// CONSTANT to its live arm BEFORE the elems walk — the walk's out-of-bounds
+/// rule would otherwise reject dead arms (a `syscall(nr, ...args)` body
+/// dispatches on `args.Count#()` and indexes `args[0..5]` in arms 4..6,
+/// which are out of bounds for an arity-3 instantiation but never executed
+/// there). General constant-match folding: the scrutinee was folded to a
+/// literal by the Count# rule, the arm pattern is a literal equal to it, and
+/// the arm has no guard. Unguarded, unmatched, or non-literal: leave as-is
+/// (the ordinary constant-fold pass still sees it). To undo: delete this fn
+/// + the Match arm in rewrite_expr_elems_form.
+fn rewrite_match_constant_fold(expr: &mut Expr, ec: &ElemCtx) -> Result<(), String> {
+    // Fold the scrutinee FIRST (the Count# rule turns `args.Count#()` into
+    // the arity literal), then look at it.
+    if let Expr::Match(scrut, _) = expr {
+        rewrite_expr_elems(scrut, ec)?;
+    }
+    let scrut = match expr {
+        Expr::Match(scrut, _) => scrut.as_ref().clone(),
+        _ => unreachable!("matched Match"),
+    };
+    if let Expr::Decimal(n) = scrut {
+        let arms = match expr {
+            Expr::Match(_, arms) => arms,
+            _ => unreachable!("matched Match"),
+        };
+        let live = arms.iter().position(|arm| match &arm.pattern {
+            crate::ast::Pattern::Literal(Expr::Decimal(j)) => *j == n,
+            crate::ast::Pattern::Wildcard => true,
+            _ => false,
+        });
+        if let Some(idx) = live {
+            if arms[idx].guard.is_none() {
+                let body = arms[idx].body.as_ref().clone();
+                let _ = std::mem::replace(expr, body);
+            }
+        }
+    }
+    rewrite_expr_elems_children(expr, ec)
+}
+
 /// Rewrite the rest name at use sites in an expression (instantiation
 /// body/contract): the rest-specific forms plus child recursion.
 fn rewrite_expr_elems(expr: &mut Expr, ec: &ElemCtx) -> Result<(), String> {
@@ -688,6 +751,7 @@ fn rewrite_expr_elems_form(expr: &mut Expr, ec: &ElemCtx) -> Result<(), String> 
             }
             Ok(())
         }
+        Expr::Match(_, _) => rewrite_match_constant_fold(expr, ec),
         _ => Ok(()),
     }
 }
@@ -1280,6 +1344,99 @@ mod tests {
         let debug = format!("{:?}", inst.body);
         assert!(!debug.contains("\"x\""), "loop var leaked: {debug}");
         assert_eq!(debug.matches("__va_0").count() + debug.matches("__va_1").count() + debug.matches("__va_2").count() >= 3, true, "unroll missing: {debug}");
+    }
+
+    #[test]
+    fn exported_variadic_is_specialized() {
+        // 2026-10-14 (syscall retirement): `export defn` wraps the decl in
+        // TopLevel::Export — the pass must see through it, or the declaring
+        // module's own check typechecks the raw rest body.
+        let inner = match var_defn("sum", "xs", 0, 8, sum_body("xs", &[0])) {
+            TopLevel::Definition(d) => d,
+            _ => unreachable!(),
+        };
+        let mut items = vec![
+            TopLevel::Export(crate::ast::top::Export {
+                inner: Box::new(TopLevel::Definition(inner)),
+                export_name: None,
+            }),
+            plain_txn("main", vec![Statement::Term(Some(call("sum", vec![7])))]),
+        ];
+        specialize_variadic(&mut items).unwrap();
+        // The export survives, wrapping the WIPED original; the instantiation
+        // is a plain (internal, unexported) definition.
+        let names = inst_names(&items);
+        assert!(names.contains(&"sum__1".to_string()), "{names:?}");
+        match items.iter().find(|it| matches!(it, TopLevel::Export(_))) {
+            Some(TopLevel::Export(e)) => match e.inner.as_ref() {
+                TopLevel::Definition(d) => {
+                    assert_eq!(d.name, "sum");
+                    assert!(d.body.is_empty());
+                    assert!(d.variadic_param.is_none());
+                }
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn constant_scrutinee_match_folds_to_the_live_arm() {
+        // 2026-10-14 (syscall retirement): a body dispatching on
+        // `xs.Count#()` must fold to the live arm BEFORE the elems walk —
+        // dead arms index out of bounds for smaller arities. Mirrors the
+        // syscall surface: match xs.Count#() { 0 => xs[0], 1 => xs[0]+xs[1] }.
+        let body = vec![Statement::Term(Some(Expr::Match(
+            Box::new(Expr::MethodCall(
+                Box::new(Expr::Identifier("xs".to_string())),
+                "Count#".to_string(),
+                vec![],
+                None,
+                vec![],
+            )),
+            vec![
+                crate::ast::MatchArm {
+                    pattern: crate::ast::Pattern::Literal(Expr::Decimal(0)),
+                    guard: None,
+                    body: Box::new(Expr::Index(
+                        Box::new(Expr::Identifier("xs".to_string())),
+                        Box::new(Expr::Decimal(0)),
+                    )),
+                },
+                crate::ast::MatchArm {
+                    pattern: crate::ast::Pattern::Literal(Expr::Decimal(1)),
+                    guard: None,
+                    body: Box::new(Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Index(
+                            Box::new(Expr::Identifier("xs".to_string())),
+                            Box::new(Expr::Decimal(0)),
+                        )),
+                        Box::new(Expr::Index(
+                            Box::new(Expr::Identifier("xs".to_string())),
+                            Box::new(Expr::Decimal(0)),
+                        )),
+                    )),
+                },
+            ],
+        )))];
+        let mut items = vec![
+            var_defn("sum", "xs", 0, 8, body),
+            plain_txn("main", vec![Statement::Term(Some(call("sum", vec![7])))]),
+        ];
+        specialize_variadic(&mut items).unwrap();
+        let inst = items
+            .iter()
+            .find_map(|it| match it {
+                TopLevel::Definition(d) if d.name == "sum__1" => Some(d),
+                _ => None,
+            })
+            .expect("sum__1 emitted");
+        // The fold replaced the whole match with arm 1's body; both `xs`
+        // references became `__va_0`. No Match survives, no bare `xs`.
+        let debug = format!("{:?}", inst.body);
+        assert!(!debug.contains("Match("), "match not folded: {debug}");
+        assert!(!debug.contains("\"xs\""), "rest name leaked: {debug}");
     }
 
     #[test]

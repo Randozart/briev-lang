@@ -17,11 +17,11 @@
 // with the length stored at offset 0. Syscall returns: fd >= 0 ok, negative
 // = -errno; read() 0 = EOF; write() short counts are looped.
 
-// SELECTIVE import — lib/std/syscall.bv declares its own syscall1..6, and
-// this module loads in EVERY unit via the prelude, so a full import would
-// collide the two syscall families everywhere (the resolver's "selective
-// import" fix). fs.bv uses only the wrappers it needs + the SYS_* numbers.
-import { syscall3, syscall1, SYS_OPEN, SYS_READ, SYS_WRITE, SYS_CLOSE }
+// SELECTIVE import — the SYS_* numbers + the ONE variadic syscall
+// (2026-10-14: the syscall0..6 wrapper families retired into it, so there
+// is no second syscall family to collide with). fs.bv pulls exactly the
+// names it uses.
+import { syscall, SYS_OPEN, SYS_READ, SYS_WRITE, SYS_CLOSE }
     from "std/posix/syscall.bv";
 import "std/string_c.bv";
 // SELECTIVE import — option.bv declares its own `unwrap` (same name,
@@ -54,21 +54,21 @@ const MODE_0644: Int = 420;
 
 defn fs_open(path: Int, flags: Int, mode: Int)
     [path >= 0 && flags >= 0 && mode >= 0][term >= -4096] -> Int {
-    term syscall3(SYS_OPEN, path, flags, mode);
+    term syscall(SYS_OPEN, path, flags, mode);
 };
 
 defn fs_read(fd: Int, buf: Int, count: Int)
     [fd >= 0 && buf >= 0 && count >= 0][term >= -4096] -> Int {
-    term syscall3(SYS_READ, fd, buf, count);
+    term syscall(SYS_READ, fd, buf, count);
 };
 
 defn fs_write(fd: Int, buf: Int, count: Int)
     [fd >= 0 && buf >= 0 && count >= 0][term >= -4096] -> Int {
-    term syscall3(SYS_WRITE, fd, buf, count);
+    term syscall(SYS_WRITE, fd, buf, count);
 };
 
 defn fs_close(fd: Int) [fd >= 0][true] -> Int {
-    term syscall1(SYS_CLOSE, fd);
+    term syscall(SYS_CLOSE, fd);
 };
 
 // ── public API ────────────────────────────────────────────────────────────

@@ -31,31 +31,31 @@ export let O_APPEND: Int = 1024;
 export defn print_char(c: Int) -> Int {
     let buf = Alloc#(8) as Ptr<Int>;
     *buf = c;
-    term syscall3(SYS_WRITE, FD_STDOUT, buf as Int, 1);
+    term syscall(SYS_WRITE, FD_STDOUT, buf as Int, 1);
 };
 
 export defn exit(code: Int) -> Int {
-    term syscall1(SYS_EXIT_GROUP, code);
+    term syscall(SYS_EXIT_GROUP, code);
 };
 
 // ── File I/O ──────────────────────────────────────────────────────────────
 
 export defn open(path: Int, flags: Int, mode: Int) -> Int {
-    term syscall3(SYS_OPEN, path, flags, mode);
+    term syscall(SYS_OPEN, path, flags, mode);
 };
 
 export defn read(fd: Int, buf: Int, count: Int) -> Int {
-    term syscall3(SYS_READ, fd, buf, count);
+    term syscall(SYS_READ, fd, buf, count);
 };
 
 export defn write(fd: Int, buf: Int, count: Int) -> Int {
-    term syscall3(SYS_WRITE, fd, buf, count);
+    term syscall(SYS_WRITE, fd, buf, count);
 };
 
 export defn close(fd: Int) -> Int {
-    term syscall1(SYS_CLOSE, fd);
+    term syscall(SYS_CLOSE, fd);
 };
 
 export defn lseek(fd: Int, offset: Int, whence: Int) -> Int {
-    term syscall3(SYS_LSEEK, fd, offset, whence);
+    term syscall(SYS_LSEEK, fd, offset, whence);
 };

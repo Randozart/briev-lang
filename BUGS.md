@@ -9409,3 +9409,13 @@ unwrapped at the wrong layer, so selectively-imported names did not
 resolve (the `syscall3`/`unwrap` collision diagnostics recommended
 selective imports that then could not resolve). Fixed together with the
 fs.bv selective imports; fs_smoke exercises the path E2E.
+
+## syscall.bv [nr > 0] contract rejected SYS_READ — FIXED 2026-10-14
+
+`lib/std/syscall.bv` (deleted) carried `[nr > 0][nr < 512]` on every
+wrapper. `SYS_READ = 0` — a valid Linux syscall number — violated the
+precondition, so every read through that family was contract-invalid. The
+retired variadic surface takes `[nr >= 0 && nr < 512][true]`: the `nr > 0`
+clause was a bug, not a standard; the 512 upper bound is real (x86_64 max
+~447) and stays. The uncontracted `lib/std/posix/syscall.bv` family is
+subsumed by the same strengthened contract.

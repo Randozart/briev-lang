@@ -1124,6 +1124,13 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     // `brievc check` and the conformance sweep must see the same ONE IR
     // the build path sees (the divergence class this fn's doc records).
     crate::plugin::composite::expand_composites(&mut items, &pm)?;
+    // 2026-10-14 (typed variadic defn/txn plan): the check path MUST mirror
+    // the build path's pipeline (the 2026-08-18 divergence discipline at the
+    // top of this fn) — without the specialization here, `brievc check`
+    // typechecked the ORIGINAL rest body (args.Count#() against the ghost
+    // Int param) and rejected every variadic source that `build` accepted
+    // (the conformance sweep caught it when syscall.bv joined the corpus).
+    crate::analysis::variadic_specialize::specialize_variadic(&mut items)?;
     // 2026-10-05: the pre-typecheck DESUGARS run here too — the check path
     // had missed them since their introduction (multi-index markers
     // typechecked as unknown calls; wildcard lifts typechecked as Int),

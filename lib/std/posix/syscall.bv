@@ -93,30 +93,29 @@ export let SYS_RT_SIGPROCMASK: Int = 14;
 
 // ── Syscall helpers ───────────────────────────────────────────────────────
 
-export defn syscall0(n: Int) -> Int {
-    term SysCall#(n);
-};
-
-export defn syscall1(n: Int, a1: Int) -> Int {
-    term SysCall#(n, a1);
-};
-
-export defn syscall2(n: Int, a1: Int, a2: Int) -> Int {
-    term SysCall#(n, a1, a2);
-};
-
-export defn syscall3(n: Int, a1: Int, a2: Int, a3: Int) -> Int {
-    term SysCall#(n, a1, a2, a3);
-};
-
-export defn syscall4(n: Int, a1: Int, a2: Int, a3: Int, a4: Int) -> Int {
-    term SysCall#(n, a1, a2, a3, a4);
-};
-
-export defn syscall5(n: Int, a1: Int, a2: Int, a3: Int, a4: Int, a5: Int) -> Int {
-    term SysCall#(n, a1, a2, a3, a4, a5);
-};
-
-export defn syscall6(n: Int, a1: Int, a2: Int, a3: Int, a4: Int, a5: Int, a6: Int) -> Int {
-    term SysCall#(n, a1, a2, a3, a4, a5, a6);
+// 2026-10-14 (typed-variadic retirement, plan
+// 2026-10-14-increment3-closeout-and-syscall-retirement.md): ONE variadic
+// `syscall` replaces the syscall0..6 wrapper families. Each call-site arity
+// instantiates one monomorphized copy (SPEC §9.1); the body dispatches on
+// args.Count#(), which the specialization pass folds to a literal — the
+// optimizer kills the six dead arms, so the emitted body is the direct
+// SysCall# call the old wrappers were. NO splice-apply (that stays a v1.1
+// exclusion). To undo: restore the syscall0..6 export blocks from history
+// and retarget the callers.
+//
+// Contract: [nr >= 0 && nr < 512][true]. The old lib/std/syscall.bv family
+// carried [nr > 0][nr < 512] — nr > 0 was a latent bug: SYS_READ = 0 is a
+// valid call. The upper bound is real (x86_64 max ~447). The postcondition
+// stays unconstrained: syscalls return -errno on failure — that IS the API.
+export defn syscall(nr: Int, ...args: Int[<=6]) -> Int
+    [nr >= 0 && nr < 512][true] {
+    term match args.Count#() {
+        0 => SysCall#(nr),
+        1 => SysCall#(nr, args[0]),
+        2 => SysCall#(nr, args[0], args[1]),
+        3 => SysCall#(nr, args[0], args[1], args[2]),
+        4 => SysCall#(nr, args[0], args[1], args[2], args[3]),
+        5 => SysCall#(nr, args[0], args[1], args[2], args[3], args[4]),
+        6 => SysCall#(nr, args[0], args[1], args[2], args[3], args[4], args[5]),
+    };
 };

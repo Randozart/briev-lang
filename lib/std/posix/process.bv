@@ -7,15 +7,15 @@ export let CLONE_VM:      Int = 0x100;
 export let SIGCHLD:       Int = 17;
 
 export defn clone(flags: Int, stack: Int) -> Int {
-    term syscall2(SYS_CLONE, flags, stack);
+    term syscall(SYS_CLONE, flags, stack);
 };
 
 export defn execve(path: Int, argv: Int, envp: Int) -> Int {
-    term syscall3(SYS_EXECVE, path, argv, envp);
+    term syscall(SYS_EXECVE, path, argv, envp);
 };
 
 export defn wait4(pid: Int, wstatus: Int, options: Int) -> Int {
-    term syscall3(SYS_WAIT4, pid, wstatus, options);
+    term syscall(SYS_WAIT4, pid, wstatus, options);
 };
 
 // Linux x86_64 syscall numbers (asm/unistd.h)
