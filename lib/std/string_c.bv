@@ -5,10 +5,26 @@
 // 2026-08-23: migrated to typed String parameters (the old Int-handle
 // string ABI predates the string unification).
 
-defn to_c_string(s: String) -> Ptr<Bit<8>> {
+// 2026-10-12 (daily-driver quick wins, os/fs): Copy#/Fill# take INTEGER
+// addresses (the module-wide convention — every walker passes `(x as Data)
+// as Int`). Passing the String operand directly hit an ambiguity the type
+// system cannot express: a String register is i64-valued when it came from
+// state/a load but ptr-valued when it is a function parameter, and
+// Copy#'s inttoptr assumed i64. Route both operands through explicit Int
+// casts so the battle-tested cast-emitter paths decide the representation.
+// The Int is the String HEADER address ([len][bytes]) — the bytes live at
+// +8 (cli.bv's Load#(key, 8) len-read proves the offset).
+// First real emitter user: string_c.bv has no prelude import, so this defn
+// never emitted before os/fs.bv.
+//
+// Returns the address as an Int (the module-wide address convention) — a
+// Ptr-typed RETURN is physically ptr-valued at the call site while every
+// other Ptr register is i64-valued (Malloc# ptrtoints at emission), and the
+// two representations are indistinguishable to the cast emitters.
+defn to_c_string(s: String) -> Int {
     let len: Int = s .^Length;
     let cstr: Ptr<Bit<8>> = Malloc#(len + 1);
-    Copy#(cstr, s, len);
+    Copy#(cstr, (s as Data) as Int + 8, len);
     Fill#(cstr as Int + len, 0, 1);
-    term cstr;
+    term cstr as Int;
 };

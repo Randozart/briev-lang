@@ -25,7 +25,6 @@ $(Parsed @ highest) {
             // user import. Dead defns are never emitted (defn-liveness), so this
             // costs parse/typecheck time only, not binary size.
             Import$("std/iterator.bv"),
-            Import$("std/os/fs.bv"),
             Import$("std/os/net.bv"),
             Import$("std/os/signal.bv"),
             Import$("std/os/ipc.bv"),
@@ -62,8 +61,7 @@ $(Parsed @ highest) {
                 // user import. Dead defns are never emitted (defn-liveness), so this
                 // costs parse/typecheck time only, not binary size.
                 Import$("std/iterator.bv"),
-                Import$("std/os/fs.bv"),
-                Import$("std/os/net.bv"),
+                    Import$("std/os/net.bv"),
                 Import$("std/os/signal.bv"),
                 Import$("std/os/ipc.bv"),
                 Import$("std/os/thread.bv"),

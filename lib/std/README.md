@@ -169,6 +169,26 @@ frgn __write_file(path: String, content: String) -> Result<Void, IOError>
 frgn __file_exists(path: String) -> Result<Bool, IOError>
 ```
 
+### OS / File System (`os/fs.bv`)
+**Status:** ✅ Native (2026-10-14, Increment 3) — real syscall file layer
+over `SysCall#` (open/read/write/close, `SYS_*` numbers from
+`std/posix/syscall.bv` via selective imports). A CAPABILITY module: NOT in
+the prelude — import it explicitly where file I/O is used.
+
+```briev
+import "std/os/fs.bv";
+
+defn read_file(path: String) -> Result<String, Int>
+defn write_file(path: String, content: String) -> Result<Int, Int>  // Ok: bytes written (O_TRUNC)
+defn file_exists(path: String) -> Bool
+defn read_lines(path: String) -> Result<List<String>, Int>
+defn read_line_count(path: String) -> Result<Int, Int>
+defn count_lines(content: String) -> Int
+```
+
+E2E: `tests/fs_smoke.rs` (write→read→read_lines round trip, O_TRUNC
+overwrite, missing-file `Err`).
+
 ### JSON (`json.bv`)
 **Status:** ✅ 100% native
 

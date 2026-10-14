@@ -1137,6 +1137,27 @@ impl ImportResolver {
         if import.path().contains("glue/c") {
         }
 
+        // 2026-10-12 (daily-driver quick wins): a module's `export defn`/
+        // `export let` items — the export marker publishes the item as the
+        // module's public surface, but the IMPORTER wants the item, not the
+        // wrapper. `export import` is the only re-export form (SPEC 7.3) and
+        // keeps its wrapper (the re-export path matches on it); every other
+        // Export inner unwraps 1:1 so origins stay aligned. Without this,
+        // item_name() (no Export arm) dropped the wrapper from the filter's
+        // keep-set and every exported defn vanished for importers — os/fs.bv
+        // file_exists/read_file fell to the unknown-name Int fallback.
+        let mut resolved = resolved;
+        resolved = resolved
+            .into_iter()
+            .map(|item| match item {
+                TopLevel::Export(e) => match e.inner.as_ref() {
+                    TopLevel::Import(_) => TopLevel::Export(e),
+                    _ => *e.inner,
+                },
+                other => other,
+            })
+            .collect();
+
         // Cache the fully resolved program (origins ride along — a cache
         // hit must attribute items to the SAME module id: diamond test).
         self.loaded_modules.insert(

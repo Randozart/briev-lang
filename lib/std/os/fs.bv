@@ -1,61 +1,225 @@
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
+// 2026-10-12 (daily-driver quick wins, Increment 3): the REAL file layer —
+// replaces the duplicated-const stub. String-path API over the raw syscall
+// wrappers; errors are values (Result — SPEC §16.3).
+//
+// IMPORT DISCIPLINE: this module is PRELUDE-INJECTED into every compilation
+// unit (prelude-native imports "std/os/fs.bv"), so its import set joins
+// every unit's namespace — the same constraint as cli.bv. Deliberately NOT
+// imported here: std/string.bv (its to_string/count_char_loop/len/ends_with
+// collide with the string_builder/hashmap/encoding copies when those load),
+// std/posix/io.bv (its open/read/write/close/print_char/exit names are too
+// generic to risk in every unit). Line splitting is a local byte scan over
+// cast_lanes' byte_at (cast_lanes IS prelude-guaranteed); C-string building
+// is string_c.bv (to_c_string only — collision-free).
+//
+// ABI notes: a Briev String is [len: i64][bytes...] behind a Data value, so
+// byte i lives at (s as Int) + 8 + i and a fresh String is Alloc#(8 + len)
+// with the length stored at offset 0. Syscall returns: fd >= 0 ok, negative
+// = -errno; read() 0 = EOF; write() short counts are looped.
+
+// SELECTIVE import — lib/std/syscall.bv declares its own syscall1..6, and
+// this module loads in EVERY unit via the prelude, so a full import would
+// collide the two syscall families everywhere (the resolver's "selective
+// import" fix). fs.bv uses only the wrappers it needs + the SYS_* numbers.
+import { syscall3, syscall1, SYS_OPEN, SYS_READ, SYS_WRITE, SYS_CLOSE }
+    from "std/posix/syscall.bv";
+import "std/string_c.bv";
+// SELECTIVE import — option.bv declares its own `unwrap` (same name,
+// different body), and this module loads in EVERY unit via the prelude, so
+// a full import would collide the two unwraps everywhere (the resolver's
+// "selective import" fix). fs.bv uses only the constructors + the totality
+// predicates.
+import { Ok, Err, is_ok, is_err, unwrap, unwrap_err } from "std/result.bv";
+import "std/cast_lanes.bv";
+
+// ── open flags + mode (Linux x86_64) ─────────────────────────────────────
+// The SYS_* syscall NUMBERS come from std/posix/syscall.bv (imported above,
+// `export let`) — redeclaring them here as `const` collides with those
+// state-field bindings (both names in one unit; the identifier then
+// resolves to whichever registration won, and the print family's
+// __stdout_fill clobbered the shared slot mid-program — the -EBADF probe
+// lesson, 2026-10-12). The O_* flags appear in no imported module, so they
+// are file-local consts here.
+
+const O_RDONLY: Int = 0;
+const O_WRONLY: Int = 1;
+const O_CREAT:  Int = 64;
+const O_TRUNC:  Int = 512;
+// S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH = 0644 octal = 420 decimal.
+// Literal, not `416 + 4`: a const initializer must be a literal — a
+// BinaryOp folds to 0 and the file is created mode 0000 (probe lesson).
+const MODE_0644: Int = 420;
+
+// ── raw syscall wrappers (fs-prefixed: this namespace is universal) ──────
+
+defn fs_open(path: Int, flags: Int, mode: Int)
+    [path >= 0 && flags >= 0 && mode >= 0][term >= -4096] -> Int {
+    term syscall3(SYS_OPEN, path, flags, mode);
+};
+
+defn fs_read(fd: Int, buf: Int, count: Int)
+    [fd >= 0 && buf >= 0 && count >= 0][term >= -4096] -> Int {
+    term syscall3(SYS_READ, fd, buf, count);
+};
+
+defn fs_write(fd: Int, buf: Int, count: Int)
+    [fd >= 0 && buf >= 0 && count >= 0][term >= -4096] -> Int {
+    term syscall3(SYS_WRITE, fd, buf, count);
+};
+
+defn fs_close(fd: Int) [fd >= 0][true] -> Int {
+    term syscall1(SYS_CLOSE, fd);
+};
+
+// ── public API ────────────────────────────────────────────────────────────
+
+// file_exists — opens O_RDONLY and closes; a successful open is existence.
+export defn file_exists(path: String) [true][term == true || term == false] -> Bool {
+    let cpath: Int = to_c_string(path);
+    let fd: Int = fs_open(cpath, O_RDONLY, 0);
+    Free#(cpath as Ptr<Bit<8>>);
+    when fd < 0 {
+        term false;
+    };
+    fs_close(fd);
+    term true;
+};
+
+// read_file — whole file as a Briev String. Error = the open(2) or read(2)
+// negative return (-errno); a read error discards the partial buffer.
+export defn read_file(path: String) [true][is_ok(term) || is_err(term)] -> Result<String, Int> {
+    let cpath: Int = to_c_string(path);
+    let fd: Int = fs_open(cpath, O_RDONLY, 0);
+    Free#(cpath as Ptr<Bit<8>>);
+    when fd < 0 {
+        term Err(fd);
+    };
+    let cap: Int = 4096;
+    let s: Int = Alloc#(8 + cap) as Int;
+    term read_whole(fd, s, cap, 0);
+};
+
+// read_whole — reads into the String-shaped buffer (header at s, data at
+// s+8), doubling the data capacity when full. The length header is stored
+// at EOF; the buffer is freed on the error path.
+defn read_whole(fd: Int, s: Int, cap: Int, total: Int)
+    [fd >= 0 && s >= 0 && cap >= 0 && total >= 0][is_ok(term) || is_err(term)]
+    -> Result<String, Int> {
+    when total >= cap {
+        let ns: Int = Alloc#(8 + cap * 2) as Int;
+        Copy#(ns, s, 8 + total);
+        Free#(s as Ptr<Bit<8>>);
+        term read_whole(fd, ns, cap * 2, total);
+    };
+    let n: Int = fs_read(fd, s + 8 + total, cap - total);
+    when n < 0 {
+        Free#(s as Ptr<Bit<8>>);
+        term Err(n);
+    };
+    when n == 0 {
+        Store#(s, total, 8);
+        term Ok((s as Data) as String);
+    };
+    term read_whole(fd, s, cap, total + n);
+};
+
+// write_file — creates-or-truncates (O_WRONLY|O_CREAT|O_TRUNC, 0644).
+// Ok = bytes written; Err = the open(2)/write(2) negative return.
+export defn write_file(path: String, data: String)
+    [true][is_ok(term) || is_err(term)] -> Result<Int, Int> {
+    let cpath: Int = to_c_string(path);
+    let fd: Int = fs_open(cpath, O_WRONLY + O_CREAT + O_TRUNC, MODE_0644);
+    Free#(cpath as Ptr<Bit<8>>);
+    when fd < 0 {
+        term Err(fd);
+    };
+    let len: Int = data .^Length;
+    let written: Int = write_loop(fd, data, len, 0);
+    fs_close(fd);
+    when written < 0 {
+        term Err(written);
+    };
+    term Ok(written);
+};
+
+// write_loop — short-write loop over the String's data area (base + 8).
+defn write_loop(fd: Int, data: String, len: Int, done: Int)
+    [fd >= 0 && len >= 0 && done >= 0][term >= -4096] -> Int {
+    when done >= len {
+        term done;
+    };
+    let n: Int = fs_write(fd, (data as Data) as Int + 8 + done, len - done);
+    when n < 0 {
+        term n;
+    };
+    term write_loop(fd, data, len, done + n);
+};
+
+// read_lines — the file split on '\n' (a trailing newline yields no empty
+// tail piece; a missing final newline still yields the last line).
+export defn read_lines(path: String) [true][is_ok(term) || is_err(term)] -> Result<List<String>, Int> {
+    // Predicate + unwrap, NOT match: an enum `match` in a defn/node body
+    // mis-lowers in the backend (payload-type dependent — Result<Int,Int>
+    // hangs the reactor, Result<List<String>,Int> falls through both arms
+    // silently; fe14/fe15 probes, 2026-10-12). is_ok/is_err/unwrap are the
+    // proven paths (BUGS.md — open backend bug for the match form).
+    let r: Result<String, Int> = read_file(path);
+    when is_err(r) {
+        term Err(unwrap_err(r));
+    };
+    term Ok(split_lines(unwrap(r)));
+};
+
+// read_line_count — the number of lines read_lines would return, without
+// materializing the List. 2026-10-12 probe lesson: consuming a
+// List-payload Result through a `let` binding in a node body mis-lowers
+// (the binding lowers as construct-and-insert — BUGS.md); counting inside
+// this defn stays on the proven Int/byte paths.
+export defn read_line_count(path: String) [true][is_ok(term) || is_err(term)] -> Result<Int, Int> {
+    let r: Result<String, Int> = read_file(path);
+    when is_err(r) {
+        term Err(unwrap_err(r));
+    };
+    term Ok(count_lines(unwrap(r), 0, 0));
+};
+
+// count_lines — newline (10) separators + a final unterminated segment;
+// empty data
+// counts 0 (read_lines of "" yields an empty List).
+defn count_lines(data: String, i: Int, lines: Int)
+    [i >= 0 && lines >= 0][lines >= 0] -> Int {
+    when i >= data .^Length {
+        when data .^Length == 0 {
+            term 0;
+        };
+        when byte_at(data, data .^Length - 1) == 10 {
+            term lines;
+        };
+        term lines + 1;
+    };
+    when byte_at(data, i) == 10 {
+        term count_lines(data, i + 1, lines + 1);
+    };
+    term count_lines(data, i + 1, lines);
+};
+
+defn split_lines(data: String) [data .^Length >= 0] -> List<String> {
+    let acc: List<String> = [];
+    term split_lines_loop(data, acc, 0, 0);
+};
+
+txn split_lines_loop(data: String, acc: List<String>, last: Int, i: Int)
+    [i >= 0 && last >= 0][i >= last] -> List<String> {
+    when i >= data .^Length {
+        when last < i {
+            acc <- data[last:i];
+        };
+        term acc;
+    };
+    when byte_at(data, i) == 10 {
+        acc <- data[last:i];
+        last = i + 1;
+    };
+    i = i + 1;
+    term split_lines_loop(data, acc, last, i);
+};
