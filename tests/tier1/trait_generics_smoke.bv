@@ -1,0 +1,44 @@
+// Static trait-constrained generics — end-to-end gate (SPEC §8.6).
+//
+// 2026-10-13 (trait-system branch): the native build+link+run net for the
+// trait-generics feature. Exercises all three resolution forms through the
+// monomorphizing backend and pins the printed result:
+//   - a <T: Counter> generic calling the trait method on the bound param,
+//   - a trait DEFAULT called as a method on a conforming concrete type,
+//   - the same default called as a free function.
+// Each `bump` adds `amount`; `bump_twice` applies it twice. Starting from 0:
+//   bump_twice(_, 5) = 0 -> 5 -> 10. Three independent tallies, summed = 30.
+
+trait Counter {
+    defn bump(this: Self, amount: Int) -> Self;
+    // default: written once in the trait, inherited by every conforming type
+    defn bump_twice(this: Self, amount: Int) -> Self {
+        term bump(bump(this, amount), amount);
+    };
+};
+
+obj Tally {
+    total: Int;
+    defn bump(this: Tally, amount: Int) -> Tally {
+        term Tally { total: this.total + amount };
+    };
+};
+
+// Trait-constrained generic over the bound param (resolves `bump` on T).
+defn bump_twice_generic<T: Counter>(this: T, amount: Int) -> T {
+    term bump(bump(this, amount), amount);
+};
+
+node entry [beginprogram][true] {
+    // Form 1: the <T: Counter> generic.
+    let a: Tally = Tally { total: 0 };
+    let a2: Tally = bump_twice_generic(a, 5);
+    // Form 2: the trait default, method form.
+    let b: Tally = Tally { total: 0 };
+    let b2: Tally = b.bump_twice(5);
+    // Form 3: the trait default, free form.
+    let c: Tally = Tally { total: 0 };
+    let c2: Tally = bump_twice(c, 5);
+    let sum: Int = a2.total + b2.total + c2.total;
+    endprogram Print#(sum);
+};

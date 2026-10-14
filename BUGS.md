@@ -33,6 +33,47 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Trait-constrained generics returned Int instead of the trait type — FIXED 2026-10-13
+
+**Symptom:** a trait method called on a bound type param inside a generic body
+returned `Int`, not the trait's declared result. `defn bump_twice<T: Counter>(…)
+-> T { term bump(bump(this, amount), amount); }` type-checked as returning Int,
+so `let t2: Tally = bump_twice(t, 5)` was rejected (Int ≠ Tally). SPEC §8.6
+specifies trait-constrained generics (monomorphized), so this was a missing
+feature, not a contract to weaken.
+
+**Root cause (two layers):**
+- Typecheck: `fn_type_params` stored only the NAMES of a defn's type params, not
+  their bounds, so inside the body the checker did not know `T: Counter`.
+  `infer_call`/`resolve_method_call` had no branch for a call whose receiver/arg
+  was a bound type param → the call fell through to the `Ok(Type::int())`
+  fallback.
+- Backend: a top-level generic defn was emitted ONCE type-erased (`T` → i64), so
+  inside the single body `this: T` and the trait call lowered to a dangling
+  `call @bump` (no top-level `bump`; the obj member is `Tally::bump`, and members
+  are inlined, not symbols).
+
+**Fix (branch feat/trait-system-implementation, S1–S6):**
+- Typecheck: carry each type param's bound into context
+  (`fn_type_param_bounds` + the transient `active_type_param_bounds`);
+  `resolve_bound_param_call` resolves a trait method on a bound param with
+  `Self→T`; `resolve_conforming_trait_call` + `type_conforms_to_trait` resolve a
+  trait DEFAULT on a structurally-conforming concrete type (method + free form);
+  `check_type_param_bounds` rejects a non-conforming concrete type at the call
+  site with a what/why/fix diagnostic.
+- Backend: monomorphize a trait-bounded generic defn per concrete instantiation
+  (`bump_twice` → `bump_twice$Tally`, params/return/body substituted), with a
+  free-call UFCS so the inlined body's trait call resolves to the concrete
+  member; trait defaults are registered as `Self`-generic defns so the same
+  machinery specializes them onto conforming types.
+
+**Verified:** probes P1–P4 (`.kiro/specs/fullstack-webapp/scratch/probe_trait_*`)
+and the tracked tests — typechecker `trait_*` unit tests + the
+`tests/tier1/trait_generics_smoke.bv` E2E fixture (builds, links, prints 30).
+A non-conforming type is rejected. Scope: static monomorphized generics; `dyn`
+runtime dispatch remains deferred. Known follow-up: structural conformance reads
+an obj's OWN members only, not `impl`-block functions (no test exercises it yet).
+
 ## Conformance sweep fails on `adapters.dbvl` — PRE-EXISTING, OBSERVED 2026-10-13
 
 **Symptom:** `conformance::tests::conformance_sweep_every_active_source_parses_and_checks`

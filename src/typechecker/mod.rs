@@ -10710,3 +10710,111 @@ txn go [base == 0][base == 0] {
 "#;
         check(src).expect("a valid chained plugin receiver must typecheck");
     }
+
+    #[cfg(test)]
+    mod trait_generics_tests {
+        use super::*;
+
+        fn check(src: &str) -> Result<(), Vec<TypeError>> {
+            let tokens = crate::lexer::tokenize(src).unwrap();
+            let mut parser = crate::parser::Parser::new(tokens, src);
+            let mut items = parser.parse_program().unwrap();
+            let universe = crate::type_universe::TypeUniverse::new();
+            check_program(&mut items, &universe)
+        }
+
+        // ── Static trait-constrained generics (SPEC §8.6) ───────────────────
+    // 2026-10-13: the behavioral gates for the trait-generics feature. These
+    // test the CONTRACT (a trait method on a bound/conforming type resolves to
+    // the member's result type, not the Int fallback; a non-conformer is
+    // rejected), not the implementation — they must survive refactoring.
+
+    /// A trait-constrained generic resolves the trait method on its bound type
+    /// param: `bump_twice<T: Counter>` returns `T`, so binding its result to a
+    /// `Tally` typechecks (pre-fix it fell to Int and the `let` was rejected).
+    #[test]
+    fn trait_bounded_generic_resolves_trait_method() {
+        let src = r#"
+trait Counter {
+    defn bump(this: Self, amount: Int) -> Self;
+};
+obj Tally {
+    total: Int;
+    defn bump(this: Tally, amount: Int) -> Tally {
+        term Tally { total: this.total + amount };
+    };
+};
+defn bump_twice<T: Counter>(this: T, amount: Int) -> T {
+    term bump(bump(this, amount), amount);
+};
+node entry [beginprogram][true] {
+    let t: Tally = Tally { total: 0 };
+    let t2: Tally = bump_twice(t, 5);
+    endprogram Print#(t2.total);
+};
+"#;
+        check(src).expect("a trait-bounded generic must resolve its trait method to T");
+    }
+
+    /// A trait DEFAULT (body-carrying trait function) resolves on a concrete
+    /// type that structurally conforms, in BOTH the method form (`t.m()`) and
+    /// the free form (`m(t)`). `Tally` provides `bump`, so it inherits the
+    /// default `bump_twice` without an explicit assertion.
+    #[test]
+    fn trait_default_resolves_on_conforming_type_both_forms() {
+        let method_form = r#"
+trait Counter {
+    defn bump(this: Self, amount: Int) -> Self;
+    defn bump_twice(this: Self, amount: Int) -> Self {
+        term bump(bump(this, amount), amount);
+    };
+};
+obj Tally {
+    total: Int;
+    defn bump(this: Tally, amount: Int) -> Tally {
+        term Tally { total: this.total + amount };
+    };
+};
+node entry [beginprogram][true] {
+    let t: Tally = Tally { total: 0 };
+    let t2: Tally = t.bump_twice(5);
+    endprogram Print#(t2.total);
+};
+"#;
+        check(method_form).expect("a trait default must resolve on a conforming type (method form)");
+
+        let free_form = method_form.replace("t.bump_twice(5)", "bump_twice(t, 5)");
+        check(&free_form).expect("a trait default must resolve on a conforming type (free form)");
+    }
+
+    /// A non-conforming concrete type passed to a `<T: Counter>` generic is
+    /// REJECTED at the call site — not silently accepted and left to dangle at
+    /// codegen. The diagnostic names the generic, the bound, the type, the
+    /// missing operation, and the fix.
+    #[test]
+    fn non_conforming_type_at_bound_call_is_rejected() {
+        let src = r#"
+trait Counter {
+    defn bump(this: Self, amount: Int) -> Self;
+};
+obj Widget {
+    size: Int;
+};
+defn bump_twice<T: Counter>(this: T, amount: Int) -> T {
+    term bump(bump(this, amount), amount);
+};
+node entry [beginprogram][true] {
+    let w: Widget = Widget { size: 0 };
+    let w2: Widget = bump_twice(w, 5);
+    endprogram Print#(w2.size);
+};
+"#;
+        let e = check(src);
+        assert!(e.is_err(), "a non-conforming type at a T: Counter call must be rejected, got: {:?}", e);
+        let msg = e.err().map(|errs| errs.iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n")).unwrap_or_default();
+        assert!(
+            msg.contains("Counter") && msg.contains("Widget") && msg.contains("bump"),
+            "the diagnostic must name the trait, the type, and the missing op, got: {msg}"
+        );
+    }
+}

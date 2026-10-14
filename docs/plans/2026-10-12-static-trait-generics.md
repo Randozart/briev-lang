@@ -220,3 +220,32 @@ M2 - MONOMORPHIZE the trait-bounded generic defn. Needs:
 Gate: P3 builds to a native binary that prints 10; P2/P2b (default forms) build+run
 to 10; cargo test --lib no regressions. Non-generic bare-call-to-member (M1 alone)
 keeps working across the suite.
+
+2026-10-13 - S7 DONE. Tracked tests + docs.
+  - 3 typechecker behavioral tests (src/typechecker/mod.rs, mod
+    trait_generics_tests): a bound generic resolves its trait method to T; a
+    trait default resolves on a conforming concrete type in BOTH method and
+    free form; a non-conforming type at a T:C call is rejected with the
+    what/why/fix diagnostic. All pass (cargo test --lib -- trait: 3/3).
+  - E2E fixture tests/tier1/trait_generics_smoke.bv (program surface, picked up
+    by tier1_corpus_compiles_links_and_runs) + golden test
+    trait_generics_golden_output in tests/daily_use_smoke.rs: builds, links,
+    runs, prints 30 (three tallies of bump_twice(_,5)=10 across all three
+    forms). Golden test passes.
+  - BUGS.md: FIXED entry documenting the pre-fix gap (Int fallback) and the
+    S1-S6 fix.
+  - SPEC §8.6 unchanged: it already specified "monomorphized by default" and
+    structural conformance; the implementation now fulfils the existing spec
+    (contract-first — no spec weakening).
+
+  ENV NOTE (not a regression): tier1_corpus_compiles_links_and_runs fails in
+  THIS WSL env on the pre-existing library-surface fixtures strexp/strexp2 —
+  `brievc lib` shells out to `llc`, which is not installed here (clang-17 is).
+  Same class as the GPU/qemu env failures. The trait fixture is program-surface
+  (clang via build_link_run) and builds+runs fine (golden test green). On a CI
+  host with llc the corpus test passes.
+
+## STATUS: feature COMPLETE (S1-S7). Static trait-constrained generics work
+end-to-end — typecheck (bounds, resolution, defaults, call-site conformance) +
+native monomorphizing codegen. dyn runtime dispatch remains deferred (separate
+campaign). Follow-up: impl-block conformance in type_conforms_to_trait.
