@@ -99,6 +99,36 @@ impl HardwareValidator {
         Self::check_hebv_restrictions(items)
     }
 
+    /// 2026-10-14 (fix/sbv-hardware-validator-gate): the pipeline entry — run
+    /// the Silicon synthesizability gate for a `.sbv` (`SourceKind::Silicon`)
+    /// root and translate any Error-severity diagnostic into an aborting
+    /// `Err`. A non-Silicon source is a no-op `Ok`. Called from BOTH frontends
+    /// (`src/pipeline.rs` `parse_and_check`, `src/compile.rs` `compile_source`)
+    /// so acceptance never diverges; keeping the classify+format logic here (as
+    /// one line at each call site) keeps the two large host functions off the
+    /// complexity gate.
+    pub fn enforce_silicon(
+        file_path: &str,
+        items: &[TopLevel],
+        source: &str,
+    ) -> Result<(), String> {
+        if crate::conformance::classify(std::path::Path::new(file_path))
+            != Some(crate::conformance::SourceKind::Silicon)
+        {
+            return Ok(());
+        }
+        let errs: Vec<String> = Self::validate_silicon(items)
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.format(source, file_path))
+            .collect();
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(".sbv synthesizability errors:\n{}", errs.join("\n")))
+        }
+    }
+
     fn check_hebv_restrictions(items: &[TopLevel]) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         for item in items {

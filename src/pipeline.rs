@@ -1147,25 +1147,7 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     // synthesizability gate. `check` and `build` must not diverge on
     // acceptance (the check/build-divergence discipline documented at the top
     // of this fn), so the mirrored call lives in src/compile.rs `compile_source`.
-    // Guarded by the Silicon classification; `check_hebv_restrictions` only
-    // reports Error-severity synthesizability violations, so there are no
-    // warnings to drain here.
-    if crate::conformance::classify(std::path::Path::new(file_path))
-        == Some(crate::conformance::SourceKind::Silicon)
-    {
-        let diags = crate::hardware_validator::HardwareValidator::validate_silicon(&items);
-        let errs: Vec<String> = diags
-            .iter()
-            .filter(|d| d.severity == crate::errors::Severity::Error)
-            .map(|d| d.format(source.as_str(), file_path))
-            .collect();
-        if !errs.is_empty() {
-            return Err(format!(
-                ".sbv synthesizability errors:\n{}",
-                errs.join("\n")
-            ));
-        }
-    }
+    crate::hardware_validator::HardwareValidator::enforce_silicon(file_path, &items, &source)?;
     // 2026-08-01 (C4): watchdog contract checks also run on the `check` path
     // (parse_and_check) — `brievc check` must catch trigger/handler violations
     // and missing on-fire handlers the same way `brievc build` does.
