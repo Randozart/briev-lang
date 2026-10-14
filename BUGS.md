@@ -9348,3 +9348,64 @@ Making the inject conditional broke the defn-only conformance corpus
 stdlib) was fixed at the SOURCE: cli.bv is import-free (uses cast_lanes'
 str_to_int/str_to_float, which the prelude injects). Do not re-narrow the
 inject without replacing the anchor mechanism.
+
+## trait-generic monomorphizer: compound-T bare calls + body rebox — FIXED 2026-10-14
+
+**Found:** fs_smoke (roundtrip, trunc) broke after merging PR #15 (static
+trait-constrained generics, cb149de7). The pre-merge fs_smoke green predated
+the merge; `cargo test --lib` does not run integration targets — the stack
+verification missed it. LESSON: run the integration test targets on a PR
+stack, not just `--lib`.
+
+**Bug 1 (bare calls for compound concrete args):** `try_emit_monomorphized_generic_call`
+rejected every non-`Type::Custom` concrete binding
+(`!concrete.iter().all(|ty| matches!(ty, Type::Custom(_)))` → fall back to
+the plain-name call path), and post-#15 an uninstantiated generic emits
+nothing. `is_err(lres)` with `lres: Result<List<String>, Int>` emitted
+`call i8 @is_err` with no define — link failure
+(`use of undefined value '@is_err'`). The guard existed because
+`mangle_specialization` used `Display`, which produces `List<String>` —
+invalid in an LLVM identifier.
+
+**Fix 1:** recursive identifier-safe `mangle_type_suffix` (`List<String>` →
+`List$String`); guard deleted. `is_err$List$String$Int` now defined and
+called.
+
+**Bug 2 (body rebox):** `emit_specialized_definition` substituted the
+params and return type but NOT the body's inline type annotations. In
+`unwrap<T,E>`, the arm `Err(_) => 0 as T` kept the generic cast target `T`:
+the match arms were judged heterogeneous, every arm value was union-boxed
+(tag = arm index), and the Ok arm returned a fresh box handle where the
+signature says `T = Int` — `println!(unwrap(wres))` printed a heap pointer
+(94638504666256 ≈ 0x56…).
+
+**Fix 2:** `typechecker::substitute_stmt_types`/`substitute_expr_types` walk
+the body's inline type annotations (`let` annotations, `as`/`is` casts,
+typed match bindings); called from `emit_specialized_definition`.
+`unwrap$Int$Int` now loads the payload and returns it — zero mallocs.
+
+**Verified:** fs_smoke 2/2; IR shows no malloc in `unwrap$Int$Int` and the
+`$List$String$Int` specialization defined + called; full `cargo test --lib`
+3078/0.
+
+## fs.bv prelude injection grew every GPU state struct — FIXED 2026-10-14
+
+The committed prelude injected `std/os/fs.bv` into every unit. When fs.bv
+gained real state fields (Increment 3), every GPU target's SSBO state
+struct grew past the `ssbo_members <= 3` assertion
+(`image_plan_partitions_ssbo_and_writes_texel`), and fs.bv's own imports
+(result.bv `unwrap`, posix `syscall3`) collided with option.bv/syscall.bv
+decls inside every unit (conformance sweep: "import name 'unwrap'
+conflicts"). fs.bv is a CAPABILITY, not a universal: removed from
+`prelude.bv` + `prelude-native.bv`; programs import it explicitly
+(Rule 14). The A/B that isolated this from the PR-15 breakage above
+restored the injection and reproduced the failures — the prelude edit was
+exonerated and re-applied.
+
+## import resolver: Export unwrap + selective imports — FIXED 2026-10-14
+
+`src/import_resolver.rs`: a selective import's `Export` wrapper was
+unwrapped at the wrong layer, so selectively-imported names did not
+resolve (the `syscall3`/`unwrap` collision diagnostics recommended
+selective imports that then could not resolve). Fixed together with the
+fs.bv selective imports; fs_smoke exercises the path E2E.

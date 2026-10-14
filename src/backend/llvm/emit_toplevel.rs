@@ -3434,6 +3434,16 @@ impl LlvmBackend {
         specialized.output_type = specialized
             .output_type
             .map(|ot| substitute_output_type(&ot, subst));
+        // 2026-10-14 (PR-15 follow-up fix): substitute the BODY's inline type
+        // annotations too — the S6 pass substituted params/return only, so a
+        // body cast like `0 as T` (result.bv unwrap) kept the generic target,
+        // the match arms were judged heterogeneous, and every arm value was
+        // union-boxed: `unwrap: Result<Int, Int> -> Int` returned a box
+        // handle and fs_smoke trunc printed a heap pointer. To undo: remove
+        // this walk + typechecker::substitute_stmt_types.
+        for stmt in specialized.body.iter_mut() {
+            crate::typechecker::substitute_stmt_types(stmt, subst);
+        }
         let needs_state = self.ctx.defn_needs_state.get(mangled).copied().unwrap_or(true);
         self.emit_definition(out, &specialized, needs_state);
     }

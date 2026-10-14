@@ -7372,6 +7372,184 @@ fn obj_type_params(ctx: &TypecheckContext, type_name: &str) -> Vec<String> {
 
 /// 2026-07-31: Substitute a type's generic parameters. `Type::Custom("T")`
 /// names matching a substitution key become the mapped concrete type.
+/// 2026-10-14 (PR-15 follow-up fix): substitute type-param bindings into the
+/// INLINE type annotations of a generic defn body — `let` annotations, `as T`
+/// casts, `is T` tests, and typed match bindings. The S6 specialization
+/// (emit_specialized_definition) substituted the params and return type but
+/// not the body, so `0 as T` kept the generic cast target: the match arms
+/// were judged heterogeneous, every arm value was union-boxed, and
+/// `unwrap: Result<Int, Int> -> Int` returned a box handle (fs_smoke
+/// trunc printed a heap pointer). To undo: revert this fn + the call in
+/// emit_specialized_definition.
+pub(crate) fn substitute_stmt_types(stmt: &mut Statement, subst: &HashMap<String, Type>) {
+    match stmt {
+        Statement::Let { ty, expr, .. } => {
+            if let Some(t) = ty {
+                *t = substitute_type(t, subst);
+            }
+            if let Some(e) = expr {
+                substitute_expr_types(e, subst);
+            }
+        }
+        Statement::Assign(l, r) => {
+            substitute_expr_types(l, subst);
+            substitute_expr_types(r, subst);
+        }
+        Statement::ArrowAssign { target, value, .. } => {
+            if let Some(t) = target {
+                substitute_expr_types(t, subst);
+            }
+            substitute_expr_types(value, subst);
+        }
+        Statement::Term(e) | Statement::EndProgram(e) | Statement::Rollback(e) => {
+            if let Some(e) = e {
+                substitute_expr_types(e, subst);
+            }
+        }
+        Statement::Check(e) | Statement::Gate(e) | Statement::Expression(e) => {
+            substitute_expr_types(e, subst);
+        }
+        Statement::Guarded(c, body) => {
+            substitute_expr_types(c, subst);
+            for s in body.iter_mut() {
+                substitute_stmt_types(s, subst);
+            }
+        }
+        Statement::Block(body)
+        | Statement::SyncBlock(body)
+        | Statement::Defer(body)
+        | Statement::Mutex(body) => {
+            for s in body.iter_mut() {
+                substitute_stmt_types(s, subst);
+            }
+        }
+        Statement::Foreach { list, body, .. } => {
+            substitute_expr_types(list, subst);
+            for s in body.iter_mut() {
+                substitute_stmt_types(s, subst);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(crate) fn substitute_expr_types(expr: &mut Expr, subst: &HashMap<String, Type>) {
+    // The special forms — the only nodes carrying INLINE types. Everything
+    // else is child recursion (split keeps both fns under the complexity
+    // gate; same shape as the variadic walkers' form/children split).
+    match expr {
+        Expr::Cast(e, ty) | Expr::IsType(e, ty) => {
+            substitute_expr_types(e, subst);
+            *ty = substitute_type(ty, subst);
+            return;
+        }
+        _ => {}
+    }
+    substitute_expr_types_children(expr, subst)
+}
+
+fn substitute_match_arm(arm: &mut crate::ast::MatchArm, subst: &HashMap<String, Type>) {
+    if let crate::ast::Pattern::TypedBinding(_, ty) = &mut arm.pattern {
+        *ty = Box::new(substitute_type(ty, subst));
+    }
+    if let Some(g) = &mut arm.guard {
+        substitute_expr_types(g, subst);
+    }
+    substitute_expr_types(&mut arm.body, subst);
+}
+
+fn substitute_expr_types_children(expr: &mut Expr, subst: &HashMap<String, Type>) {
+    match expr {
+        Expr::Call(_, args, _) => {
+            for a in args.iter_mut() {
+                substitute_expr_types(a, subst);
+            }
+        }
+        Expr::BinaryOp(_, l, r) => {
+            substitute_expr_types(l, subst);
+            substitute_expr_types(r, subst);
+        }
+        Expr::UnaryOp(_, e) => substitute_expr_types(e, subst),
+        Expr::Field(e, _) => substitute_expr_types(e, subst),
+        Expr::MethodCall(recv, _, args, _, _) => {
+            substitute_expr_types(recv, subst);
+            for a in args.iter_mut() {
+                substitute_expr_types(a, subst);
+            }
+        }
+        Expr::Reflect(e, _, _) => substitute_expr_types(e, subst),
+        Expr::Index(l, r) => {
+            substitute_expr_types(l, subst);
+            substitute_expr_types(r, subst);
+        }
+        Expr::Slice { array, start, end, stride } => {
+            substitute_expr_types(array, subst);
+            for part in [start, end, stride].into_iter().flatten() {
+                substitute_expr_types(part, subst);
+            }
+        }
+        Expr::Range { start, end, .. } => {
+            substitute_expr_types(start, subst);
+            substitute_expr_types(end, subst);
+        }
+        Expr::Block(body) => {
+            for s in body.iter_mut() {
+                substitute_stmt_types(s, subst);
+            }
+        }
+        Expr::If(c, t, e) => {
+            substitute_expr_types(c, subst);
+            substitute_expr_types(t, subst);
+            if let Some(e) = e {
+                substitute_expr_types(e, subst);
+            }
+        }
+        Expr::Match(scrut, arms) => {
+            substitute_expr_types(scrut, subst);
+            for arm in arms.iter_mut() {
+                substitute_match_arm(arm, subst);
+            }
+        }
+        Expr::Tuple(items) | Expr::List(items) => {
+            for e in items.iter_mut() {
+                substitute_expr_types(e, subst);
+            }
+        }
+        Expr::StructLiteral { fields, specs, .. } => {
+            for (_, v) in fields.iter_mut() {
+                substitute_expr_types(v, subst);
+            }
+            for (_, v) in specs.iter_mut() {
+                substitute_expr_types(v, subst);
+            }
+        }
+        Expr::Lambda(_, body) => substitute_expr_types(body, subst),
+        Expr::Spawn { args, .. } => {
+            for a in args.iter_mut() {
+                substitute_expr_types(a, subst);
+            }
+        }
+        Expr::Within(l, r) => {
+            substitute_expr_types(l, subst);
+            substitute_expr_types(r, subst);
+        }
+        Expr::DerivationBlock(_) => {}
+        Expr::Deref(e) | Expr::AddrOf(e) | Expr::Consume(e) | Expr::Await(e) => {
+            substitute_expr_types(e, subst)
+        }
+        Expr::PluginIntercept { args, receiver, .. } => {
+            if let Some(r) = receiver {
+                substitute_expr_types(r, subst);
+            }
+            for a in args.iter_mut() {
+                substitute_expr_types(a, subst);
+            }
+        }
+        Expr::Capture { expr, .. } => substitute_expr_types(expr, subst),
+        _ => {}
+    }
+}
+
 pub(crate) fn substitute_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
     match ty {
         Type::Custom(n) => subst.get(n).cloned().unwrap_or_else(|| ty.clone()),
