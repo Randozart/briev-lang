@@ -133,3 +133,13 @@ feature itself is independent and stays.
 - Final gates: `cargo test --lib` 3080/0 (14 pass unit tests), fs_smoke 3/3,
   daily_use 3/3, cli_args 5/5, conformance sweep green, Praetor no new
   diagnostics in touched files.
+
+### Fixup (2026-10-14, same day)
+
+`d0705f5f` staged the Phase-2 edits but never staged the DELETION of
+`lib/std/syscall.bv` — the pushed main still shipped the old wrapper
+family (inert: nothing imports it; buggy `[nr > 0]` contract; contradicts
+BUGS.md/SPEC). All local gates had run against the correct working tree
+(the file was already deleted on disk), so no behavior changed — this is
+a tree-hygiene commit. LESSON (third staging miss): commit by
+`git status` sweep, never by file list.
