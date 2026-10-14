@@ -335,6 +335,29 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 }
                 _ => {}
             }
+            // 2026-10-14 (tier2 phase 2): a PRE-DECLARED bare let (the
+            // SSA main's reassigned-let entry allocas, BUGS.md 9303) binds
+            // the slot DIRECTLY — falling through created a SECOND alloca
+            // and the reassigned branch then stored the fresh alloca
+            // pointer into the slot (`type 'ptr' but expected 'i64'`).
+            // A CONSTRUCTABLE collection bare-let must NOT take this path —
+            // it needs the construction below (the pre-declared i64 slot is
+            // not a list). Only scalar bare-lets bind the slot directly.
+            let bare_coll = expr.is_none()
+                && ty.as_ref().map(|t| match t {
+                    crate::ast::Type::Applied(n, _) | crate::ast::Type::Custom(n) => {
+                        backend.is_coll_type(t) || backend.is_op_surface_coll(n)
+                    }
+                    _ => false,
+                }).unwrap_or(false);
+            if expr.is_none() && !bare_coll && backend.fun.reassigned_lets.contains_key(name) {
+                if let Some(slot) = backend.fun.let_bindings.get(name).cloned() {
+                    return TypedRegister {
+                        name: slot,
+                        ty: ty.clone().unwrap_or(Type::int()),
+                    };
+                }
+            }
             let mut via_scaffolded_construction = false;
             let mut val = match expr {
                 Some(crate::ast::Expr::Identifier(alias))
@@ -671,9 +694,18 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // never demoting at the assignment site (dominance violation).
             if backend.fun.reassigned_lets.contains_key(name) {
                 if let Some(slot) = backend.fun.let_bindings.get(name).cloned() {
-                    let store_ty = backend.llvm_type(&val.ty);
-                    let store_val = backend.ensure_typed_value(out, indent, &store_ty, &val.name, Some(val.ty.clone()), backend.ctx.type_universe.clone().as_ref());
-                    writeln!(out, "{}store {} {}, ptr {}", indent, store_ty, store_val, slot).ok();
+                    // 2026-10-14 (tier2 phase 2): a BARE let's `val` IS the
+                    // pre-declared slot itself (the naked alloca — no
+                    // initializer to store). Storing it into itself stored a
+                    // pointer as i64 (`%t defined with type 'ptr' but
+                    // expected 'i64'`). Skip the self-store; the slot is
+                    // already the binding.
+                    let is_self_slot = expr.is_none() && slot == val.name;
+                    if !is_self_slot {
+                        let store_ty = backend.llvm_type(&val.ty);
+                        let store_val = backend.ensure_typed_value(out, indent, &store_ty, &val.name, Some(val.ty.clone()), backend.ctx.type_universe.clone().as_ref());
+                        writeln!(out, "{}store {} {}, ptr {}", indent, store_ty, store_val, slot).ok();
+                    }
                     backend.fun.let_binding_allocas.insert(slot.clone());
                     // 2026-08-28 (String ABI fix): the pre-declaration
                     // (emit_definition) registered a PROVISIONAL Int type —

@@ -64,7 +64,7 @@ impl LlvmBackend {
     /// lived in guard.endN (LLVM: "instruction does not dominate all uses").
     /// Only TOP-LEVEL lets are collected (a nested let's alloca would land in
     /// the nested block and re-introduce the same violation).
-    fn collect_reassigned_lets(stmts: &[Statement]) -> std::collections::HashMap<String, Option<Type>> {
+    pub(crate) fn collect_reassigned_lets(stmts: &[Statement]) -> std::collections::HashMap<String, Option<Type>> {
         use std::collections::HashMap;
         // 2026-08-28 (String ABI fix): recurse into EVERY body-carrying
         // statement form. Previously only top-level lets were pre-declared,

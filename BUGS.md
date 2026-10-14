@@ -9481,3 +9481,27 @@ With the bare-let fix + the PR-15 generic-defn monomorphization fixes
 (same day, `ee21c3f4`), ONE form works for every payload: predicate +
 `unwrap`. fs_smoke's shape-sensitive comments are historical; the
 tier2 suite pins the unified surface.
+
+## SSA main: nested-block assign alloca non-dominating — FIXED 2026-10-14
+
+A node-body local assigned inside a `when` block and read in a sibling
+(`let i: Int = 0; when up > 0 { i = 1; }; when i < 5 { i = i + 1; }`) —
+the assign-site alloca demotion landed INSIDE the first block, which does
+not dominate the sibling read (clang: `Instruction does not dominate all
+uses!`). The 2026-08-28 fix covered DEFNS (`emit_definition` pre-declares
+reassigned lets); the SSA main path never ran the same pre-declaration.
+
+**Fix:** `emit_ssa_main` pre-declares entry allocas for every reassigned
+let across the inlined txn bodies (the emit_definition pattern) — the
+let's seed store and all later stores target a slot that dominates
+everything. Two interactions handled:
+- a BARE scalar let binds the pre-declared slot directly (falling through
+  created a second alloca and the reassigned branch stored the fresh
+  alloca pointer into the slot — `type 'ptr' but expected 'i64'`,
+  test_arrow_consume_selects);
+- a CONSTRUCTABLE collection bare-let must NOT bind the slot — it needs
+  the construction (phase 1); the direct bind starved it (tier2 suite
+  caught it).
+
+**Verified:** tests/tier2_loop_locals.rs (both-when + false-branch-seed,
+linked at -O0); full suite 3080/0; rbv_gate OK.

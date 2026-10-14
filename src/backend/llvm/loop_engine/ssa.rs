@@ -384,6 +384,42 @@ impl LlvmBackend {
         if let Some(ref slot) = active_slot {
             writeln!(out, "  {} = alloca i64, align 8", slot).ok();
         }
+        // 2026-10-14 (tier2 phase 2, BUGS.md 9303): a node-body local
+        // ASSIGNED inside a nested block (`when c { i = 1; }`) and READ in a
+        // sibling — the assign-site alloca demotion landed INSIDE the block,
+        // which does not dominate the sibling read ("Instruction does not
+        // dominate all uses!"). Pre-declare entry allocas for every
+        // reassigned let across the inlined txn bodies (the emit_definition
+        // pattern): the let's seed store and all later stores target the
+        // entry slot, which dominates everything. To undo: delete this block.
+        {
+            let reassigned = txns
+                .iter()
+                .flat_map(|(_, t)| {
+                    crate::backend::llvm::LlvmBackend::collect_reassigned_lets(&t.body)
+                })
+                .collect::<std::collections::HashMap<String, Option<crate::ast::Type>>>();
+            self.fun.reassigned_lets = reassigned
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (name, ty) in &reassigned {
+                let slot = self.fun.gen_reg();
+                let slot_ty = ty
+                    .as_ref()
+                    .map(|t| self.llvm_type(t))
+                    .unwrap_or_else(|| "i64".to_string());
+                writeln!(out, "  {} = alloca {}, align 8", slot, slot_ty).ok();
+                self.fun.let_bindings.insert(name.clone(), slot.clone());
+                self.fun.let_binding_allocas.insert(slot.clone());
+                self.fun
+                    .let_binding_types
+                    .insert(name.clone(), ty.clone().unwrap_or_else(crate::ast::Type::int));
+                self.fun
+                    .let_original_types
+                    .insert(name.clone(), ty.clone().unwrap_or_else(crate::ast::Type::int));
+            }
+        }
         // 2026-08-17 (Phase B reactor fix): buffer the loop construction so a
         // constant-element tuple arg to a member call in a reactive body can be
         // flushed into the PREHEADER (before `.ss_main_loop`) via
