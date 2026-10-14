@@ -276,6 +276,7 @@ mod tests {
 
     fn make_txn(name: &str, body: Vec<Statement>) -> TopLevel {
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: name.to_string(),
             body,
             contract: Contract {

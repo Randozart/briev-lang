@@ -280,6 +280,7 @@ mod tests {
 
     fn make_txn(name: &str, pre: Expr, post: Expr, body: Vec<Statement>) -> Transaction {
         Transaction {
+            variadic_param: None,
             name: name.to_string(),
             is_reactive: false,
             is_async: false,

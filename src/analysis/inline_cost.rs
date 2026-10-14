@@ -131,6 +131,7 @@ mod tests {
 
     fn txn(name: &str, body: Vec<Statement>) -> Transaction {
         Transaction {
+            variadic_param: None,
             name: name.to_string(),
             is_reactive: false,
             is_async: false,

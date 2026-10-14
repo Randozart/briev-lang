@@ -680,6 +680,7 @@ mod tests {
 
     fn txn_with(body: Vec<Statement>) -> Vec<TopLevel> {
         vec![TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".into(),
             is_reactive: true,
             is_async: false,

@@ -1586,6 +1586,7 @@ mod tests {
 
     fn txn_with(name: &str, pre: Expr, body: Vec<Statement>) -> TopLevel {
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: name.to_string(),
             is_reactive: true,
             is_async: false,

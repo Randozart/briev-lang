@@ -703,6 +703,7 @@ mod tests {
         use crate::ast::{Contract, PropertyValue, Transaction, TypeParam};
         use crate::errors::Span;
         let txn = Transaction {
+            variadic_param: None,
             name: "loop_txn".to_string(),
             is_reactive: false,
             is_async: false,

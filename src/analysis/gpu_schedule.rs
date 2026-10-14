@@ -803,6 +803,7 @@ mod tests {
         // Fake transactions so build_schedule sees the nodes in reverse order.
         let txn = |name: &str, pre: &str| -> TopLevel {
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: name.into(),
                 is_reactive: false,
                 is_async: true,
@@ -897,6 +898,7 @@ mod tests {
         );
         let txn = |name: &str, pre: &str| -> TopLevel {
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: name.into(),
                 is_reactive: false,
                 is_async: true,
@@ -979,6 +981,7 @@ mod tests {
         accel.insert("pv".into(), mk("pv", &["s2", "kt"], &["o"]));
         let txn = |name: &str, pre: &str| -> TopLevel {
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: name.into(),
                 is_reactive: false,
                 is_async: true,
@@ -1085,6 +1088,7 @@ mod tests {
         accel.insert("pv".into(), entry(mk_shape(&["s2", "v"], &["o"], vec![])));
         let txn = |name: &str, pre: &str| -> TopLevel {
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: name.into(),
                 is_reactive: false,
                 is_async: true,

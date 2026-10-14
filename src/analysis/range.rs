@@ -216,6 +216,7 @@ mod tests {
         pre: Expr,
     ) -> TopLevel {
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: param_names.iter().map(|n| (n.to_string(), Type::int())).collect(),

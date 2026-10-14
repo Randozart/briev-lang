@@ -945,6 +945,7 @@ mod tests {
         // mandelbrot pattern: `escapes = nesc` binds the let to a state field;
         // the hoisted swan song `PrintLn!(nesc)` must be remapped to `escapes`.
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "mb".to_string(),
             is_reactive: true,
             is_async: false,

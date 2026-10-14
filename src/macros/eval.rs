@@ -3456,6 +3456,7 @@ mod tests {
 
     fn scale_txn() -> Transaction {
         Transaction {
+            variadic_param: None,
             name: "scale".into(),
             is_reactive: true,
             is_async: false,

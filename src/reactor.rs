@@ -478,6 +478,7 @@ mod tests {
 
     fn make_rct_txn(name: &str, pre: Expr, post: Expr, body: Vec<Statement>) -> TopLevel {
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: name.to_string(),
             is_reactive: true,
             is_async: false,
@@ -541,6 +542,7 @@ mod tests {
                 doc: None,
             }),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "bar".into(), is_reactive: false, is_async: false, type_params: vec![], parameters: vec![],
                 contract: Contract::new(Expr::Bool(true), Expr::Bool(true)), body: vec![],
                 span: None, modifiers: vec![], outputs: vec![],
@@ -676,6 +678,7 @@ mod tests {
     #[test]
     fn test_build_from_program_with_async_txn() {
         let txn = Transaction {
+            variadic_param: None,
             name: "polled".to_string(),
             is_reactive: true,
             is_async: true,
@@ -711,6 +714,7 @@ mod tests {
             Statement::Term(None),
         ];
         let txn = Transaction {
+            variadic_param: None,
             name: "async_test".to_string(),
             is_reactive: true,
             is_async: true,
@@ -750,6 +754,7 @@ mod tests {
     #[test]
     fn test_fire_due_async_txns_skips_before_interval() {
         let txn = Transaction {
+            variadic_param: None,
             name: "slow".to_string(),
             is_reactive: true,
             is_async: true,

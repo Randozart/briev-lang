@@ -130,6 +130,7 @@ mod tests {
 
     fn txn(name: &str, body: Vec<Statement>) -> TopLevel {
         TopLevel::Transaction(crate::ast::Transaction {
+            variadic_param: None,
             name: name.to_string(),
             is_reactive: true,
             is_async: false,

@@ -1630,6 +1630,7 @@ mod tests {
             ),
         )];
         let txn1 = Transaction {
+            variadic_param: None,
             name: "txn_a".to_string(),
             is_reactive: true,
             is_async: false,
@@ -1674,6 +1675,7 @@ mod tests {
             Expr::Decimal(2),
         )];
         let txn_a = Transaction {
+            variadic_param: None,
             name: "txn_a".to_string(),
             is_reactive: true,
             is_async: false,
@@ -1712,6 +1714,7 @@ mod tests {
     fn test_is_uniform_body_group_single() {
         let body = vec![];
         let txn = Transaction {
+            variadic_param: None,
             name: "only".to_string(),
             is_reactive: true,
             is_async: false,
@@ -1743,6 +1746,7 @@ mod tests {
             make_state("count", Type::int()),
             make_state("total", Type::int()),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "inc".to_string(),
                 is_reactive: true,
                 is_async: false,
@@ -1788,6 +1792,7 @@ mod tests {
         let items = vec![
             make_state("x", Type::int()),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "t".into(),
                 type_params: vec![],
                 parameters: vec![],
@@ -1810,6 +1815,7 @@ mod tests {
         let items = vec![
             make_state("x", Type::int()),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "t".into(),
                 type_params: vec![],
                 parameters: vec![],
@@ -1997,6 +2003,7 @@ mod tests {
             make_state("count", Type::int()),
             make_state("total", Type::int()),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "work".to_string(),
                 is_reactive: true,
                 is_async: false,
@@ -2038,6 +2045,7 @@ mod tests {
             make_state("count", Type::int()),
             make_state("total", Type::int()),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "work".to_string(),
                 is_reactive: true,
                 is_async: false,
@@ -2097,6 +2105,7 @@ mod tests {
                 modifiers: vec![Annotation { name: "out".to_string(), value: None }],
             })),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "work".to_string(),
                 is_reactive: true,
                 is_async: false,
@@ -2148,6 +2157,7 @@ mod tests {
             TopLevel::SyncGroup {
                 domains: vec!["step".to_string()],
                 item: Box::new(TopLevel::Transaction(Transaction {
+                    variadic_param: None,
                     name: name.to_string(),
                     type_params: vec![],
                     parameters: vec![],

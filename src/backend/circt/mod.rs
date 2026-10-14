@@ -1917,6 +1917,7 @@ mod tests {
 
     fn make_txn(name: &str, body: Vec<Statement>, pre: Expr, post: Expr) -> TopLevel {
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             is_async: false, is_reactive: true,
             name: name.to_string(),
             type_params: vec![],

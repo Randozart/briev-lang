@@ -368,6 +368,7 @@ mod tests {
             Expr::BinaryOp(BinaryOpKind::Add, Box::new(binary[0].clone()), Box::new(binary[1].clone()))
         };
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: format!("txn_{}", lhs),
             is_reactive: false,
             is_async: false,

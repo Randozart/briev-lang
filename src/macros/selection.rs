@@ -716,6 +716,7 @@ mod tests {
                 doc: None,
             }),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "compute".into(),
                 is_reactive: true,
                 is_async: false,

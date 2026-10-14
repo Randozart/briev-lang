@@ -31,6 +31,7 @@ fn accel_kernel_program() -> Vec<TopLevel> {
         span: None,
     });
     let force = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "force".to_string(),
         is_reactive: true,
         is_async: false,
@@ -122,6 +123,7 @@ fn test_no_accel_no_kernel_blob() {
 
 fn make_txn(name: &str, modifiers: Vec<Annotation>) -> TopLevel {
     TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: name.to_string(),
         is_reactive: true,
         is_async: false,
@@ -190,6 +192,7 @@ fn test_init_emits_global_seeding_and_read() {
     });
     // A node that reads the init, so a load of the global is emitted.
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "go".to_string(),
         is_reactive: true,
         is_async: false,
@@ -248,6 +251,7 @@ fn test_init_bound_loop_folds_against_seeded_global() {
         span: None,
     });
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "work".to_string(),
         is_reactive: true,
         is_async: false,
@@ -307,6 +311,7 @@ fn mask_index_program() -> Vec<TopLevel> {
         modifiers: vec![],
     }));
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "s".to_string(),
         is_reactive: true,
         is_async: false,
@@ -370,6 +375,7 @@ fn mask_index_typed_program() -> Vec<TopLevel> {
         modifiers: vec![],
     }));
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "s".to_string(),
         is_reactive: true,
         is_async: false,
@@ -455,6 +461,7 @@ fn mask_index_f32_program() -> Vec<TopLevel> {
         modifiers: vec![],
     }));
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "s".to_string(),
         is_reactive: true,
         is_async: false,
@@ -505,6 +512,7 @@ fn test_mask_index_f32_emits_float_gather() {
 /// counted-iteration loop lowering (2026-08-07, Phase 7).
 fn foreach_range_program() -> Vec<TopLevel> {
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "s".to_string(),
         is_reactive: true,
         is_async: false,
@@ -599,6 +607,7 @@ fn test_foreach_assigned_inside_mutex_gets_alloca() {
         Statement::Term(None),
     ];
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "s".to_string(),
         is_reactive: true,
         is_async: false,
@@ -651,6 +660,7 @@ fn test_foreach_assigned_inside_mutex_gets_alloca() {
 /// exercises the `break` early-exit lowering (2026-08-17).
 fn foreach_break_program() -> Vec<TopLevel> {
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "s".to_string(),
         is_reactive: true,
         is_async: false,
@@ -1175,6 +1185,7 @@ fn multidim_program() -> Vec<TopLevel> {
         modifiers: vec![],
     }));
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "s".to_string(),
         is_reactive: true,
         is_async: false,
@@ -1258,6 +1269,7 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
             op_bindings: vec![],
             constraints: vec![],
             members: vec![TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "init".to_string(),
                 is_reactive: true,
                 is_async: false,
@@ -1300,6 +1312,7 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
         modifiers: vec![],
     }));
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "s".to_string(),
         is_reactive: true,
         is_async: false,
@@ -1373,6 +1386,7 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
             op_bindings: vec![],
             constraints: vec![],
             members: vec![TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "inc".to_string(),
                 is_reactive: true,
                 is_async: false,
@@ -1424,6 +1438,7 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
         modifiers: vec![],
     }));
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "work".to_string(),
         is_reactive: true,
         is_async: false,
@@ -1573,6 +1588,7 @@ fn spawn_pool_countdown_program_storage(
             op_bindings: vec![],
             constraints: vec![],
             members: vec![TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "inc".to_string(),
                 is_reactive: true,
                 is_async: false,
@@ -1625,6 +1641,7 @@ fn spawn_pool_countdown_program_storage(
     }));
     // `let N: Int = get_env_int!("BOUND")` — a runtime-bound field value.
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "work".to_string(),
         is_reactive: true,
         is_async: false,
@@ -1808,6 +1825,7 @@ fn counter_type_def() -> TopLevel {
             op_bindings: vec![],
             constraints: vec![],
             members: vec![TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "inc".to_string(),
                 is_reactive: true,
                 is_async: false,
@@ -1857,6 +1875,7 @@ fn spawn_work_state_and_node() -> [TopLevel; 2] {
         modifiers: vec![],
     }));
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "work".to_string(),
         is_reactive: true,
         is_async: false,
@@ -1957,6 +1976,7 @@ fn match_range_program() -> Vec<TopLevel> {
         span: None,
     });
     let node = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "s".to_string(),
         is_reactive: true,
         is_async: false,
@@ -2131,6 +2151,7 @@ fn test_llvm_generates_transaction() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".to_string(),
             is_reactive: true,
             is_async: false,
@@ -2170,6 +2191,7 @@ fn test_llvm_emits_sync_block_body() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".to_string(),
             is_reactive: true,
             is_async: false,
@@ -2216,6 +2238,7 @@ fn test_llvm_has_noalias() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".to_string(),
             is_reactive: true,
             is_async: false,
@@ -2649,6 +2672,7 @@ fn test_endprogram_emits_process_exit() {
     let program = vec![
         state_count(),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "report".to_string(),
             is_reactive: true,
             is_async: false,
@@ -2684,6 +2708,7 @@ fn test_beginprogram_entry_loop_emits_flag_and_goal_clear() {
         span: None,
     });
     let init = TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "init".to_string(),
         is_reactive: true,
         is_async: false,
@@ -2757,6 +2782,7 @@ fn test_no_range_lower_bound_defaults_to_i64_min() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".to_string(),
             is_reactive: true,
             is_async: false,
@@ -2800,6 +2826,7 @@ fn test_binop_no_nuw_nsw() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".to_string(),
             is_reactive: true,
             is_async: false,
@@ -2849,6 +2876,7 @@ fn test_range_metadata_suppressed_for_written_field() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".to_string(),
             is_reactive: true,
             is_async: false,
@@ -2900,6 +2928,7 @@ fn test_range_metadata_kept_for_read_only_field() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".to_string(),
             is_reactive: true,
             is_async: false,
@@ -2939,6 +2968,7 @@ fn test_float_binary_add() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".to_string(),
             is_reactive: true,
             is_async: false,
@@ -3200,6 +3230,7 @@ fn make_point_program(body: Vec<Statement>) -> Vec<TopLevel> {
             ty: Type::int(), span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "main".to_string(),
             is_reactive: true,
             is_async: false,
@@ -3228,6 +3259,7 @@ fn test_string_state_init_not_null() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".to_string(),
             is_reactive: true,
             is_async: false,
@@ -3267,6 +3299,7 @@ fn test_const_trg_write_emits_error() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".to_string(),
             is_reactive: true,
             is_async: false,
@@ -3301,6 +3334,7 @@ fn test_local_float_binding() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".to_string(),
             is_reactive: true,
             is_async: false,
@@ -3358,6 +3392,7 @@ fn make_wake_program_no_triggers() -> Vec<TopLevel> {
             section: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "work".to_string(),
             is_reactive: true,
             is_async: false,
@@ -3439,6 +3474,7 @@ fn make_exit_program(exit_expr: Option<Expr>, is_wake: bool) -> Vec<TopLevel> {
         Box::new(Expr::BinaryOp(BinaryOpKind::Lt,
             Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Identifier("N".to_string())))));
     let txn = Transaction {
+        variadic_param: None,
         name: "work".to_string(),
         is_reactive: true,
         is_async: false,
@@ -3583,6 +3619,7 @@ fn test_natural_death_skipped_for_persistent_txn() {
 fn make_two_counter_program() -> Vec<TopLevel> {
     let counter_txn = |name: &str, var: &str| {
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: name.to_string(),
             is_reactive: true,
             is_async: false,
@@ -3674,6 +3711,7 @@ fn make_dead_txn_program(with_reactive_node: bool) -> Vec<TopLevel> {
     ];
     if with_reactive_node {
         items.push(TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "run".to_string(),
             is_reactive: true,
             is_async: false,
@@ -3711,6 +3749,7 @@ fn make_dead_txn_program(with_reactive_node: bool) -> Vec<TopLevel> {
     }
     // A plain top-level txn: zero-param, no-output, called by nothing.
     items.push(TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "unused_helper".to_string(),
         is_reactive: false,
         is_async: false,
@@ -3781,6 +3820,7 @@ fn make_slp_float_program(n_floats: usize, cross_body: Vec<Statement>, precondit
         span: None,
     }));
     items.push(TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "tick".to_string(),
         is_reactive: true,
         is_async: false,
@@ -3986,6 +4026,7 @@ fn test_imported_alias_is_mmio() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "main".to_string(),
             type_params: vec![],
             parameters: vec![],
@@ -4029,6 +4070,7 @@ fn test_unimported_alias_not_mmio() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "t".to_string(),
             is_reactive: true,
             is_async: false,
@@ -4065,6 +4107,7 @@ fn test_unimported_alias_not_mmio() {
 fn make_intrinsic_program(intrinsic: Expr) -> Vec<TopLevel> {
     vec![
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "main".to_string(),
             is_reactive: true,
             is_async: false,
@@ -4094,6 +4137,7 @@ fn make_intrinsic_program(intrinsic: Expr) -> Vec<TopLevel> {
 fn make_float_intrinsic_program(intrinsic: Expr) -> Vec<TopLevel> {
     vec![
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "main".to_string(),
             is_reactive: true,
             is_async: false,
@@ -4127,6 +4171,7 @@ fn test_emit_cast_int_to_string() {
     let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "main".to_string(),
             is_reactive: true,
             is_async: false,
@@ -4166,6 +4211,7 @@ fn test_emit_cast_string_to_int() {
     let mut backend = LlvmBackend::new();
     let program = vec![
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "main".to_string(),
             is_reactive: true,
             is_async: false,
@@ -4211,6 +4257,7 @@ fn test_tuple_emits_2slot_header() {
             name: "t".to_string(), ty: Type::int(), span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "mktup".to_string(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![],
             output_type: None, outputs: vec![],
@@ -4254,6 +4301,7 @@ fn make_chain_program(
         let pre = Expr::BinaryOp(BinaryOpKind::Lt,
             Box::new(Expr::Identifier("count".to_string())), Box::new(Expr::Identifier("total".to_string())));
         items.push(TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: txn_name.to_string(),
             is_reactive: true,
             is_async: false,
@@ -4455,6 +4503,7 @@ fn make_async_pair_program() -> Vec<TopLevel> {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "inc_a".to_string(),
             is_reactive: true,
             is_async: true,
@@ -4474,6 +4523,7 @@ fn make_async_pair_program() -> Vec<TopLevel> {
             doc: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "inc_b".to_string(),
             is_reactive: true,
             is_async: true,
@@ -4755,6 +4805,7 @@ fn test_event_model_trigger_handling() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "pump".to_string(),
             is_reactive: true,
             is_async: false,
@@ -4788,6 +4839,7 @@ fn make_fn_ptr_program() -> Vec<TopLevel> {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "apply".to_string(),
             is_reactive: true,
             is_async: false,
@@ -4822,6 +4874,7 @@ fn test_emit_address_of() {
     // AddressOf#("uart") should emit inttoptr with uart's address (0xFFE01000)
     let program = vec![
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "main".to_string(),
             is_reactive: true,
             is_async: false,
@@ -5183,6 +5236,7 @@ fn test_trg_deref_error_flag() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "pump".to_string(),
             is_reactive: true,
             is_async: false,
@@ -5227,6 +5281,7 @@ fn test_trg_deref_warn_default_no_null_check() {
             span: None,
         }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "pump".to_string(),
             is_reactive: true,
             is_async: false,
@@ -5562,6 +5617,7 @@ fn test_modulo_partition_drives_rotated_loop() {
                 Box::new(Expr::Decimal(i as i64)))),
         );
         program.push(TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: name.clone(),
             is_reactive: true,
             is_async: false,
@@ -5688,6 +5744,7 @@ fn density_consumer_body() -> Vec<Statement> {
 fn density_consumer_program() -> Vec<TopLevel> {
     let mut program = density_consumer_declarations();
     program.push(TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "propagate".to_string(),
         is_reactive: true,
         is_async: false,
@@ -5770,6 +5827,7 @@ fn test_batch_loop_dispatch_post_increment() {
         vec![Statement::Expression(Expr::Call("__print_float".into(), vec![Expr::Identifier("f0".into())], None))]));
     body.push(Statement::Term(None));
     program.push(TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "tick".into(),
         is_reactive: true,
         is_async: false,
@@ -5837,6 +5895,7 @@ fn test_countdown_field_backedge_copies_are_fast() {
         Statement::Term(None),
     ];
     program.push(TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "tick".into(),
         is_reactive: true,
         is_async: false,
@@ -5877,6 +5936,7 @@ fn test_batch_loop_rejects_pre_increment() {
         TopLevel::StateDecl(StateDecl { name: "total".into(), ty: Type::int(), span: None }),
         TopLevel::StateDecl(StateDecl { name: "acc".into(), ty: Type::int(), span: None }),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "tick".into(),
             is_reactive: true,
             is_async: false,
@@ -8297,6 +8357,7 @@ fn test_counter_loop_guard_read_uses_phi_not_state() {
 
 fn txn_with_body(body: Vec<Statement>) -> TopLevel {
     TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "c".to_string(),
         is_reactive: true,
         is_async: false,
@@ -8721,6 +8782,7 @@ fn test_webstack_flush_batch_covers_written_fields() {
             modifiers: vec![], names: vec![],
         })),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".into(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
             contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
@@ -8761,6 +8823,7 @@ fn test_webstack_flush_empty_write_set_is_noop() {
             modifiers: vec![], names: vec![],
         })),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "tick".into(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
             contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
@@ -8788,6 +8851,7 @@ fn test_webstack_layout_header_describes_real_buffer() {
             modifiers: vec![], names: vec![],
         })),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".into(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
             contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
@@ -8826,6 +8890,7 @@ fn test_web_state_layout_carries_field_names() {
             modifiers: vec![], names: vec![],
         })),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".into(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
             contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
@@ -8872,6 +8937,7 @@ fn test_webstack_ssa_precondition_emits_valid_bool_branch() {
             modifiers: vec![], names: vec![],
         })),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".into(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
             contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
@@ -8906,6 +8972,7 @@ fn test_webstack_int_literal_emits_target_width() {
             modifiers: vec![], names: vec![],
         })),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".into(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
             contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
@@ -8942,6 +9009,7 @@ fn test_webstack_state_int_slots_are_target_width() {
             modifiers: vec![], names: vec![],
         })),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".into(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
             contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
@@ -8978,6 +9046,7 @@ fn test_webstack_folded_loop_is_width_consistent() {
             modifiers: vec![], names: vec![],
         })),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "increment".into(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
             contract: Contract {
@@ -9024,6 +9093,7 @@ fn test_webstack_array_field_store_gep_widens_index() {
             modifiers: vec![], names: vec![],
         })),
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: "fill".into(), is_reactive: true, is_async: false,
             type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
             contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
@@ -9596,6 +9666,7 @@ node go [done == 0][done == 1] {
 /// to the catch-all and vanished, leaving an empty convergent loop.
 fn stmt_match_program() -> Vec<TopLevel> {
     vec![TopLevel::Transaction(Transaction {
+        variadic_param: None,
         name: "dispatch".to_string(),
         is_reactive: false,
         is_async: false,

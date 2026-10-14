@@ -221,6 +221,7 @@ mod tests {
             }),
             state_decl("out", 1024),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "scale".into(),
                 is_reactive: true,
                 is_async: false,
@@ -352,6 +353,7 @@ mod tests {
             }),
             state_decl("total", 8),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "acc".into(),
                 is_reactive: true,
                 is_async: false,
@@ -579,6 +581,7 @@ mod tests {
             state_decl("b", 256),
             state_decl("out", 256),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "mad".into(),
                 is_reactive: true,
                 is_async: false,
@@ -676,6 +679,7 @@ mod tests {
             float_state("b", 128),
             float_state("dst", 128),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "fmad".into(),
                 is_reactive: true,
                 is_async: false,
@@ -821,6 +825,7 @@ mod tests {
             state_decl("a", 256),
             state_decl("out", 256),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "ls".into(),
                 is_reactive: true,
                 is_async: false,
@@ -942,6 +947,7 @@ mod tests {
             TopLevel::StateDecl(StateDecl { name: "i".into(), ty: Type::int(), span: None }),
             TopLevel::StateDecl(StateDecl { name: "total".into(), ty: Type::int(), span: None }),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "bad".into(),
                 is_reactive: true,
                 is_async: false,
@@ -994,6 +1000,7 @@ mod tests {
             TopLevel::StateDecl(StateDecl { name: "i".into(), ty: Type::int(), span: None }),
             state_decl("a", 16),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "wbad".into(),
                 is_reactive: true,
                 is_async: false,
@@ -1085,6 +1092,7 @@ mod tests {
             TopLevel::StateDecl(StateDecl { name: "i".into(), ty: Type::int(), span: None }),
             TopLevel::StateDecl(StateDecl { name: "t".into(), ty: Type::Custom("Temp".into()), span: None }),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "tk".into(),
                 is_reactive: true,
                 is_async: false,
@@ -1137,6 +1145,7 @@ mod tests {
         let program = vec![
             TopLevel::StateDecl(StateDecl { name: "i".into(), ty: Type::int(), span: None }),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "sk".into(),
                 is_reactive: true,
                 is_async: false,
@@ -1189,6 +1198,7 @@ mod tests {
         let program = vec![
             TopLevel::StateDecl(StateDecl { name: "s".into(), ty: Type::Custom("String".into()), span: None }),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "sk".into(),
                 is_reactive: true,
                 is_async: false,
@@ -1427,6 +1437,7 @@ mod tests {
             float_state("a", 4096),
             float_state("out", 4096),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "axpy".into(),
                 is_reactive: true,
                 is_async: false,
@@ -1564,6 +1575,7 @@ mod tests {
             float_state("a", 4096),
             float_state("out", 4096),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "copy".into(),
                 is_reactive: true,
                 is_async: false,
@@ -1700,6 +1712,7 @@ mod tests {
             span: None,
         });
         let txn = |name: &str, dst: &str, src: &str, fold: f64| TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: name.into(),
             is_reactive: true,
             is_async: false,
@@ -1940,6 +1953,7 @@ async node fill [i < N][i == N] {
             float_state("a", 1024),
             float_state("out", 1024),
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "map".into(),
                 is_reactive: true,
                 is_async: false,
@@ -2304,6 +2318,7 @@ async node gemm [i < M * N][i == M * N] {
             float_state("d", 1024),
             // k2: reads a, writes b.
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "k2".into(),
                 is_reactive: true, is_async: false,
                 type_params: vec![], parameters: vec![],
@@ -2333,6 +2348,7 @@ async node gemm [i < M * N][i == M * N] {
             // skipped aliased member c, exercising the member-index drift
             // the AccessChain remap must correct).
             TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "k3".into(),
                 is_reactive: true, is_async: false,
                 type_params: vec![], parameters: vec![],

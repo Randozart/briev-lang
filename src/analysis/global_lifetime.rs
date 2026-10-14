@@ -259,6 +259,7 @@ mod tests {
     #[test]
     fn single_consumer_schedules_free_after_it() {
         let items = vec![TopLevel::Transaction(crate::ast::Transaction {
+            variadic_param: None,
             name: "life".into(),
             is_reactive: true,
             is_async: false,
@@ -288,6 +289,7 @@ mod tests {
     #[test]
     fn non_heap_field_is_never_scheduled() {
         let items = vec![TopLevel::Transaction(crate::ast::Transaction {
+            variadic_param: None,
             name: "life".into(),
             is_reactive: true,
             is_async: false,
@@ -319,6 +321,7 @@ mod tests {
         // 2026-08-01 (D2): a manual `Free#(buf)` means the user manages the
         // field — the scheduler must not ALSO free it (a double-free).
         let items = vec![TopLevel::Transaction(crate::ast::Transaction {
+            variadic_param: None,
             name: "life".into(),
             is_reactive: true,
             is_async: false,
@@ -359,6 +362,7 @@ mod tests {
     fn last_of_ordered_consumers_is_the_scheduler_point() {
         let mk = |name: &str, body: Vec<crate::ast::Statement>| {
             TopLevel::Transaction(crate::ast::Transaction {
+                variadic_param: None,
                 name: name.into(),
                 is_reactive: true,
                 is_async: false,
@@ -398,6 +402,7 @@ mod tests {
     fn non_foldable_last_consumer_is_not_scheduled() {
         let mk = |name: &str, body: Vec<crate::ast::Statement>| {
             TopLevel::Transaction(crate::ast::Transaction {
+                variadic_param: None,
                 name: name.into(),
                 is_reactive: true,
                 is_async: false,

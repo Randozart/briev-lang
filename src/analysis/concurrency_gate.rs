@@ -172,6 +172,7 @@ mod tests {
         let mut p = Parser::new(pre_tokens, pre);
         let pre_expr = p.parse_expression().unwrap();
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             name: name.into(),
             is_reactive: true,
             is_async: false,

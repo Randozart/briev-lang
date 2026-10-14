@@ -75,6 +75,7 @@ pub fn arb_transaction(max_depth: usize) -> impl Strategy<Value = TopLevel> {
         prop_oneof![Just(false), Just(true)],
     ).prop_map(|(name, contract, body, is_reactive)| {
         TopLevel::Transaction(Transaction {
+            variadic_param: None,
             is_async: false,
             is_reactive,
             name,

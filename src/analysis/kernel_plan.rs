@@ -910,6 +910,7 @@ mod tests {
         use crate::ast::{Annotation, Transaction};
         let mk = |mods: Vec<Annotation>| {
             vec![TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "u".into(),
                 is_reactive: true,
                 is_async: false,
@@ -949,6 +950,7 @@ mod tests {
         use crate::ast::{Annotation, Transaction};
         let mk = |mods: Vec<Annotation>| {
             vec![TopLevel::Transaction(Transaction {
+                variadic_param: None,
                 name: "red".into(),
                 is_reactive: true,
                 is_async: false,
