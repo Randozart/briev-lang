@@ -2979,6 +2979,18 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 TopLevel::Definition(d) => {
                     let tys: Vec<Type> = d.parameters.iter().map(|(_, t)| t.clone()).collect();
                     self.ctx.defn_params.insert(d.name.clone(), tys);
+                    // 2026-10-13 (static trait-constrained generics, SPEC §8.6,
+                    // S6): a GENERIC defn (type_params non-empty) is retained in
+                    // full so the backend can monomorphize it per concrete
+                    // instantiation at the call site (a trait-bounded param's
+                    // body needs the concrete type to resolve its trait calls).
+                    if !d.type_params.is_empty() {
+                        self.ctx.generic_defns.insert(d.name.clone(), d.clone());
+                        self.ctx.generic_defn_type_params.insert(
+                            d.name.clone(),
+                            d.type_params.iter().map(|p| p.name.clone()).collect(),
+                        );
+                    }
                     // 2026-07-18: Populate return types from output_type (-> Type) as
                     // well as legacy outputs. output_type is the primary metadata source.
                     let ret_tys = if !d.outputs.is_empty() {
@@ -2989,6 +3001,47 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         vec![]
                     };
                     self.ctx.defn_return_types.insert(d.name.clone(), ret_tys);
+                }
+                // 2026-10-13 (static trait-constrained generics, SPEC §8.6,
+                // S6): a trait DEFAULT (a body-carrying trait function) is
+                // registered as a generic defn over `Self` — the SAME
+                // monomorphization machinery (M2) specializes it per conforming
+                // concrete type (`bump_twice` → `bump_twice$Tally`, Self→Tally),
+                // and inside the body a call to a sibling requirement resolves
+                // to the concrete member via the free-call UFCS (M1). Required
+                // (empty-body) functions are not registered — they ARE the
+                // concrete type's own members. A concrete type's own member of
+                // the same name still wins (its top-level/obj registration
+                // shadows the default at resolution).
+                TopLevel::Trait(t) => {
+                    for func in &t.functions {
+                        if func.body.is_empty() {
+                            continue;
+                        }
+                        if self.ctx.generic_defns.contains_key(&func.name) {
+                            continue; // a real top-level defn of this name wins
+                        }
+                        let mut as_generic = func.clone();
+                        // `Self` is the single type param the default is generic
+                        // over; it binds to the concrete receiver at the call.
+                        as_generic.type_params = vec![crate::ast::top::TypeParam {
+                            name: "Self".to_string(),
+                            bound: Some(Type::Custom(t.name.clone())),
+                        }];
+                        let tys: Vec<Type> =
+                            func.parameters.iter().map(|(_, ty)| ty.clone()).collect();
+                        self.ctx.defn_params.insert(func.name.clone(), tys);
+                        let ret_tys = func
+                            .output_type
+                            .as_ref()
+                            .map(|ot| ot.all_types())
+                            .unwrap_or_default();
+                        self.ctx.defn_return_types.insert(func.name.clone(), ret_tys);
+                        self.ctx.generic_defns.insert(func.name.clone(), as_generic);
+                        self.ctx
+                            .generic_defn_type_params
+                            .insert(func.name.clone(), vec!["Self".to_string()]);
+                    }
                 }
                 TopLevel::AsmFn(asm_fn) => {
                     let tys: Vec<Type> = asm_fn.params.iter().map(|(_, t)| t.clone()).collect();
@@ -4057,6 +4110,16 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(&d.name) {
                         continue;
                     }
+                    // 2026-10-13 (static trait-constrained generics, SPEC §8.6,
+                    // S6): a GENERIC defn is NOT emitted type-erased — a
+                    // trait-bounded param's body would dangle (`@bump`
+                    // undefined). It is emitted per concrete instantiation as a
+                    // monomorphized specialization (drained after the reactor).
+                    // A generic defn with no instantiation emits nothing, which
+                    // is correct: an uninstantiated generic is dead code.
+                    if self.ctx.generic_defn_type_params.contains_key(&d.name) {
+                        continue;
+                    }
                     // 2026-09-23 (stateless-defn mechanism): a regular defn
                     // carries `%state` ONLY when it transitively needs it.
                     // Pure helpers (cstr doors over Load#/Alloc#, arithmetic
@@ -4812,6 +4875,18 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 }
             }
             }
+        }
+
+        // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): emit
+        // the monomorphized specializations enqueued during body/reactor
+        // emission. Drained in a loop — a specialization's own body may call
+        // another generic, enqueuing more. The emitted-set dedups, so this
+        // terminates (a finite set of (defn, concrete-args) instantiations).
+        while let Some((mangled, base, subst)) =
+            self.ctx.pending_defn_specializations.pop()
+        {
+            self.emit_specialized_definition(&mut out, &mangled, &base, &subst);
+            writeln!(out).ok();
         }
 
         // ── DEAD-FIELD INFO DIAGNOSTICS (A002/A003) ─────────

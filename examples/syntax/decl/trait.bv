@@ -6,8 +6,9 @@ trait Measured {
     // Required signature: implementing types must prove refinement.
     defn magnitude(self) -> Int;
 
-    // Default function — provided behavior, overridable.
-    defn describe(self) -> Measured { term 0; }
+    // Default function — provided behavior, overridable. The body is
+    // type-checked like any defn (S3): the declared return type must match.
+    defn describe(self) -> Int { term 0; }
 };
 
 struct Magnitude {

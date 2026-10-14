@@ -187,3 +187,19 @@ fn daily_use_smoke_golden_output() {
     let out = build_link_run("daily_use_smoke", "golden", &[("BOUND", "5")]);
     assert_eq!(out, "worldready\n", "flagship golden stdout drifted: {out:?}");
 }
+
+/// 2026-10-13 (trait-system branch, SPEC §8.6): static trait-constrained
+/// generics, end to end through the monomorphizing backend. The fixture runs
+/// all three resolution forms — a `<T: Counter>` generic, a trait default
+/// called as a method, and the same default called as a free function — each
+/// a tally of `bump_twice(_, 5)` = 10, summed = 30. Pins the printed result so
+/// a codegen regression in trait-generic monomorphization is caught in CI.
+#[test]
+fn trait_generics_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("trait_generics_smoke", "golden", &[]);
+    assert_eq!(out, "30", "trait-generics golden stdout drifted: {out:?}");
+}
