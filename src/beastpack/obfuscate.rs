@@ -280,6 +280,7 @@ fn rename_toplevel(item: &TopLevel, map: &HashMap<String, String>) -> TopLevel {
             derivation: t.derivation.clone(),
             modifiers: t.modifiers.clone(),
             span: t.span,
+            variadic_param: t.variadic_param.clone(),
             doc: t.doc.clone(),
         }),
         TopLevel::Constant(c) => TopLevel::Constant(Constant {

@@ -39,9 +39,13 @@ pub struct Parser<'a> {
     /// 2026-09-22 (unified-metaprogramming plan): the most recently parsed
     /// `...name` rest parameter (TypeScript-style), recorded by
     /// `parse_parameter_list`. Compile-time `$defn`/`$txn` paths consume it
-    /// into `Definition.variadic_param`; runtime `defn`/`txn`/op paths
+    /// into `Definition.variadic_param`; runtime `isr`/`op member` paths
     /// reject it.
-    pub pending_variadic: Option<String>,
+    /// 2026-10-13 (typed variadic defn/txn plan): widened to the full
+    /// `VariadicParam` — runtime `defn`/`txn` now ACCEPT a typed rest
+    /// (`...xs: Int[<=8]`) and specialize it per call-site arity (the
+    /// `isr`/`op member` rejection is unchanged).
+    pub pending_variadic: Option<crate::ast::VariadicParam>,
 }
 
 impl<'a> Parser<'a> {

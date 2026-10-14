@@ -227,6 +227,23 @@ pub enum BoundTerm {
     Ref(String),
 }
 
+// ── Variadic parameter ────────────────────────────────────────────────
+
+/// 2026-10-13 (typed variadic defn/txn plan): the final `...name: T[bound]`
+/// rest parameter on a `defn`/`txn`/`$defn`/`$txn`. `element_type` is the
+/// homogeneous element type — a VALUE type on a runtime `defn`/`txn`
+/// (static-arity specialization, SPEC §9.1 2026-10-13) or `Expr` on a
+/// compile-time composite (§18.2). `min`/`max` are the arity bounds
+/// (0 ≤ count ≤ max; default min = 0, default max = 16, hard ceiling 64).
+/// A composite rest ignores the bounds (its `...` is unbounded by design).
+#[derive(Debug, Clone)]
+pub struct VariadicParam {
+    pub name: String,
+    pub element_type: Type,
+    pub min: usize,
+    pub max: Option<usize>,
+}
+
 // ── Definition ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -248,7 +265,12 @@ pub struct Definition {
     /// ALL trailing call-site arguments as a compile-time list — the
     /// sanctioned compile-time iteration channel (a `foreach` over it unrolls
     /// at expansion). `None` = not variadic.
-    pub variadic_param: Option<String>,
+    /// 2026-10-13 (typed variadic defn/txn plan): widened from
+    /// `Option<String>` to `Option<VariadicParam>` — runtime `defn`/`txn`
+    /// now carry a TYPED rest (`...xs: Int[<=8]`) specialized per call-site
+    /// arity before typecheck; composites keep the unbounded `Expr` rest
+    /// (the element type distinguishes the two, SPEC §9.1 + §18.2).
+    pub variadic_param: Option<VariadicParam>,
     /// 2026-07-24: Doc comment text (/// or /** */), without the /// prefix.
     pub doc: Option<String>,
 }
@@ -270,6 +292,11 @@ pub struct Transaction {
     pub derivation: Option<DerivationBlock>,
     pub modifiers: Vec<Annotation>,
     pub span: Option<Span>,
+    /// 2026-10-13 (typed variadic defn/txn plan): the final `...name: T[bound]`
+    /// rest parameter on a `txn` — same rule as `defn` (SPEC §9.3):
+    /// specialized per call-site arity, reactor analyzes each
+    /// specialization as an ordinary transaction.
+    pub variadic_param: Option<VariadicParam>,
     /// 2026-07-24: Doc comment text.
     pub doc: Option<String>,
 }

@@ -62,7 +62,7 @@ fn composite_signature(
     for (n, t) in &def.parameters {
         match t {
             crate::ast::Type::Custom(k) if k == "Expr" => {
-                if Some(n) == def.variadic_param.as_ref() {
+                if def.variadic_param.as_ref().is_some_and(|vp| vp.name == *n) {
                     // The rest parameter is NOT substituted positionally — it
                     // binds ALL trailing arguments as a compile-time list.
                     continue;
@@ -75,7 +75,7 @@ fn composite_signature(
             _ => return None,
         }
     }
-    Some((subst, exposed, def.variadic_param.clone()))
+    Some((subst, exposed, def.variadic_param.as_ref().map(|vp| vp.name.clone())))
 }
 
 /// Validate call-site arity against the fixed params and the optional
@@ -1293,6 +1293,7 @@ fn build_emit_node(args: &[Expr]) -> Result<Transaction, String> {
         derivation: None,
         modifiers,
         span: None,
+        variadic_param: None,
         doc: None,
     })
 }

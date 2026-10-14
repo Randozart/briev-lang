@@ -348,6 +348,7 @@ mod tests {
     fn test_check_reactive_rejects_dead() {
         // A reactive txn with no live field bindings and no entry
         let txn = Transaction {
+            variadic_param: None,
             name: "work".into(),
             is_reactive: true,
             is_async: false,

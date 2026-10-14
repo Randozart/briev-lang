@@ -536,6 +536,7 @@ fn emit_reset_txn(
         derivation: None,
         modifiers: Vec::new(),
         span: None,
+        variadic_param: None,
         doc: None,
     }));
     Ok(())
@@ -906,6 +907,7 @@ fn build_txn_variants(
             derivation: t.derivation,
             modifiers: t.modifiers,
             span: None,
+            variadic_param: t.variadic_param,
             doc: None,
         };
         items.push(TopLevel::Transaction(new_txn));

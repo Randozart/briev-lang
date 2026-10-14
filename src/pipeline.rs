@@ -1006,6 +1006,10 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
     // ONE IR afterwards: typecheck, contracts, accel analysis, and both
     // backends see the expanded body as if hand-written.
     crate::plugin::composite::expand_composites(&mut items, &pm)?;
+    // 2026-10-13 (typed variadic defn/txn plan): specialize typed rest
+    // parameters per call-site arity before typecheck (SPEC §9.1).
+    // Additive: appends instantiations + retargets call sites.
+    crate::analysis::variadic_specialize::specialize_variadic(&mut items)?;
     let mut universe = TypeUniverse::new();
     check_types(
         &mut items,

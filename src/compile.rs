@@ -419,6 +419,10 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // desugar and typecheck — ONE IR: every analysis and backend sees the
     // expanded body as if hand-written.
     briev_compiler::plugin::composite::expand_composites(&mut items, &pm)?;
+    // 2026-10-13 (typed variadic defn/txn plan): specialize typed rest
+    // parameters per call-site arity before typecheck (SPEC §9.1).
+    // Additive: appends instantiations + retargets call sites.
+    briev_compiler::analysis::variadic_specialize::specialize_variadic(&mut items)?;
     // 2026-09-17 (plan 2026-09-17-row-2d-index-desugar): `a[i, j]` markers
     // → 1D row-major arithmetic. MUST run before check_types (the marker is
     // a parse artifact, not a resolvable call) and before every analysis —

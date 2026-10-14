@@ -479,6 +479,7 @@ fn make_wrapper(d: &crate::ast::Definition, entries: &[String]) -> TopLevel {
         derivation: None,
         modifiers: vec![],
         span: None,
+        variadic_param: None,
         doc: None,
     })
 }

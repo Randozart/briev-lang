@@ -119,6 +119,12 @@ impl DefnLiveness {
 /// The fix direction is diagnosis, not semantics: a plain `txn` is the
 /// CALLABLE form (only `node` is reactive), so the message tells the author
 /// how to fire it. To undo: delete this fn and its call in the build path.
+///
+/// 2026-10-14 (typed-variadic plan): a variadic original is called THROUGH
+/// its per-arity instantiations — every call site retargets to `name__N`,
+/// so the original itself is never directly live. Skip the warning when a
+/// live emitted instantiation exists (naming convention via
+/// `variadic_specialize::is_instantiation_name`, the single source of truth).
 pub fn unfired_txn_warnings(
     items: &[TopLevel],
     user_txns: &HashSet<String>,
@@ -131,6 +137,7 @@ pub fn unfired_txn_warnings(
             _ => None,
         })
         .filter(|name| user_txns.contains(*name) && !liveness.is_live(name))
+        .filter(|name| !live_instantiation_exists(items, name, liveness))
         .collect();
     names.sort_unstable();
     names
@@ -143,6 +150,24 @@ pub fn unfired_txn_warnings(
             )
         })
         .collect()
+}
+
+/// True when `name` has an emitted `name__N` instantiation in `items` that
+/// liveness keeps (the variadic original served its purpose through it).
+fn live_instantiation_exists(
+    items: &[TopLevel],
+    name: &str,
+    liveness: &DefnLiveness,
+) -> bool {
+    let mut declared = HashMap::new();
+    declared.insert(name.to_string(), (0usize, false));
+    items.iter().any(|it| match it {
+        TopLevel::Transaction(t) => {
+            crate::analysis::variadic_specialize::is_instantiation_name(&t.name, &declared)
+                && liveness.is_live(&t.name)
+        }
+        _ => false,
+    })
 }
 
 /// Temporary diagnostic (2026-09-13): BRIEV_DEBUG_LIVENESS=1 dumps roots.
@@ -1112,6 +1137,7 @@ mod tests {
         contract: Contract,
     ) -> TopLevel {
         TopLevel::Transaction(crate::ast::Transaction {
+            variadic_param: None,
             name: name.to_string(),
             is_reactive,
             is_async: false,

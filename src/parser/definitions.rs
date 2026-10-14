@@ -978,6 +978,7 @@ impl<'a> Parser<'a> {
                 derivation: None,
                 modifiers: vec![],
                 span: None,
+                variadic_param: None,
                 doc: None,
             }));
             if let Some(s) = signoff {
@@ -1002,7 +1003,6 @@ impl<'a> Parser<'a> {
         let parameters = if self.eat(&Token::LParen) {
             let p = self.parse_parameter_list()?;
             self.expect(Token::RParen)?;
-            self.reject_runtime_variadic("defn")?;
             p
         } else {
             Vec::new()
@@ -1018,6 +1018,10 @@ impl<'a> Parser<'a> {
         };
         let derivation = self.parse_derivation_block()?;
         let metadata = self.parse_body_metadata()?;
+        // 2026-10-13 (typed variadic defn/txn plan): the rest parameter is
+        // ACCEPTED on a runtime `defn` — it is specialized per call-site
+        // arity before typecheck (SPEC §9.1). The old reject call is gone.
+        let variadic_param = self.pending_variadic.take();
         Ok(Definition {
             name,
             type_params,
@@ -1030,7 +1034,7 @@ impl<'a> Parser<'a> {
             derivation,
             modifiers: vec![],
             annotations: vec![],
-            variadic_param: self.pending_variadic.take(),
+            variadic_param,
             span: None,
             doc: self.take_doc(),
         })
@@ -1156,7 +1160,6 @@ impl<'a> Parser<'a> {
         let parameters = if self.eat(&Token::LParen) {
             let p = self.parse_parameter_list()?;
             self.expect(Token::RParen)?;
-            self.reject_runtime_variadic("txn")?;
             p
         } else {
             Vec::new()
@@ -1172,6 +1175,9 @@ impl<'a> Parser<'a> {
         };
         let derivation = self.parse_derivation_block()?;
         let doc = self.take_doc();
+        // 2026-10-13 (typed variadic defn/txn plan): the rest parameter is
+        // ACCEPTED on a runtime `txn` — same rule as `defn` (SPEC §9.3).
+        let variadic_param = self.pending_variadic.take();
         Ok(Transaction {
             name,
             is_reactive,
@@ -1186,6 +1192,7 @@ impl<'a> Parser<'a> {
             derivation,
             modifiers: vec![],
             span: None,
+            variadic_param,
             doc,
         })
     }
@@ -1270,6 +1277,7 @@ impl<'a> Parser<'a> {
                     derivation: None,
                     modifiers: vec![],
                     span: None,
+                    variadic_param: None,
                     doc: self.take_doc(),
                 }));
             }
@@ -1331,6 +1339,7 @@ impl<'a> Parser<'a> {
             derivation,
             modifiers: vec![],
             span: None,
+            variadic_param: None,
             doc: self.take_doc(),
         }))
     }
@@ -1396,6 +1405,7 @@ impl<'a> Parser<'a> {
             derivation,
             modifiers: vec![],
             span: None,
+            variadic_param: None,
             doc: self.take_doc(),
         };
         txn.modifiers.push(Annotation {
@@ -2473,7 +2483,13 @@ impl<'a> Parser<'a> {
                              it binds all trailing arguments",
                         );
                     }
-                    self.pending_variadic = Some(name.clone());
+                    let (min, max) = self.parse_rest_bound(&name)?;
+                    self.pending_variadic = Some(crate::ast::VariadicParam {
+                        name: name.clone(),
+                        element_type: ty.clone(),
+                        min,
+                        max,
+                    });
                 }
                 // 2026-08-14 (generic `defn f<T>` dispatch): a function-typed
                 // parameter — `f: T -> U` or `f: (U, T) -> U` — parses the base
@@ -2499,14 +2515,90 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
+    /// 2026-10-13 (typed variadic defn/txn plan): parse the optional rest
+    /// bound suffix on a `...` rest parameter — `[<=N]`, `[>=M]`, or
+    /// `[>=M, <=N]` (delimiter contract: `[]` is containment/bound). The
+    /// bound is read DIRECTLY here (not through `parse_type`) — a rest is a
+    /// COUNT bound on trailing arguments, not a fixed-size array value, and
+    /// conflating the two would be Rule 3 obfuscation. No suffix → default
+    /// min = 0, max = None (default cap 16 + warning at the call site).
+    fn parse_rest_bound(&mut self, rest_name: &str) -> Result<(usize, Option<usize>), SyntaxError> {
+        let mut min = 0usize;
+        let mut max: Option<usize> = None;
+        if self.check(&Token::LBracket) {
+            self.pos += 1; // consume '['
+            loop {
+                if self.eat(&Token::Le) {
+                    let n = self.rest_bound_number(rest_name, "max")?;
+                    max = Some(n);
+                } else if self.eat(&Token::Ge) {
+                    let n = self.rest_bound_number(rest_name, "min")?;
+                    min = n;
+                } else {
+                    return self.error_at_current(
+                        &format!(
+                            "the rest bound on `...{rest_name}` must be `[<=N]`, \
+                             `[>=M]`, or `[>=M, <=N]`"
+                        ),
+                    );
+                }
+                if self.eat(&Token::Comma) {
+                    continue;
+                }
+                break;
+            }
+            self.expect(Token::RBracket)?;
+        }
+        if min > 64 {
+            return self.error_at_current(&format!(
+                "the rest MINIMUM bound on `...{rest_name}` is {min} — the hard \
+                 ceiling is 64; for runtime-determined counts use a `List<T>` \
+                 parameter instead"
+            ));
+        }
+        if let Some(m) = max {
+            if m > 64 {
+                return self.error_at_current(&format!(
+                    "the rest MAXIMUM bound on `...{rest_name}` is {m} — the hard \
+                     ceiling is 64; for runtime-determined counts use a `List<T>` \
+                     parameter instead"
+                ));
+            }
+            if m < min {
+                return self.error_at_current(&format!(
+                    "the rest bound on `...{rest_name}` has max {m} below min {min}"
+                ));
+            }
+        }
+        Ok((min, max))
+    }
+
+    /// Read a rest-bound integer literal, directing to `List<T>` for counts
+    /// beyond the 64-element ceiling (runtime-determined counts belong on a
+    /// `List<T>` parameter, SPEC §9.1 2026-10-13).
+    fn rest_bound_number(&mut self, rest_name: &str, what: &str) -> Result<usize, SyntaxError> {
+        let n = match self.peek() {
+            Some(Token::Integer(n)) => {
+                let n = *n as usize;
+                self.pos += 1;
+                n
+            }
+            _ => return self.error_at_current(&format!(
+                "the rest {what} bound on `...{rest_name}` must be an integer \
+                 literal"
+            )),
+        };
+        Ok(n)
+    }
+
     /// Consume a `...` rest parameter if the compile-time path allows it,
     /// returning the rest name; the RUNTIME paths reject it with a directed
     /// diagnostic.
     fn take_variadic_param(&mut self, kind: &str) -> Result<Option<String>, SyntaxError> {
         match self.pending_variadic.take() {
-            Some(name) => Err(SyntaxError::UnexpectedToken {
+            Some(vp) => Err(SyntaxError::UnexpectedToken {
                 expected: format!("{kind} parameters"),
-                found: format!("a `...` rest parameter ('{name}')"),
+                found: format!("a `...` rest parameter ('{}')", vp.name),
                 span: self
                     .tokens
                     .get(self.pos.saturating_sub(1))
@@ -2520,13 +2612,18 @@ impl<'a> Parser<'a> {
     /// 2026-09-22 (unified-metaprogramming plan): a runtime declaration may
     /// not declare a `...` rest parameter — rest params are the compile-time
     /// iteration channel and live on `$defn` composites only.
+    /// 2026-10-13 (typed variadic defn/txn plan): NARROWED — `defn` and
+    /// `txn` now ACCEPT a typed rest (specialized per call-site arity,
+    /// SPEC §9.1); the rejection remains for `isr` and `op member`, whose
+    /// rest channel stays compile-time-only.
     fn reject_runtime_variadic(&mut self, kind: &str) -> Result<(), SyntaxError> {
-        if let Some(name) = self.pending_variadic.take() {
+        if let Some(vp) = self.pending_variadic.take() {
             Err(SyntaxError::UnexpectedToken {
                 expected: format!("{kind} parameters"),
                 found: format!(
-                    "a `...` rest parameter ('{name}') — rest params are \
-                     compile-time-only; declare a `$defn` composite"
+                    "a `...` rest parameter ('{}') — rest params on {} are \
+                     compile-time-only; declare a `$defn` composite",
+                    vp.name, kind
                 ),
                 span: self
                     .tokens
@@ -4787,11 +4884,11 @@ impl<'a> Parser<'a> {
         // loop may iterate over an unknown-size set (the sanctioned
         // compile-time iteration channel). Stored on the Transaction's
         // modifiers as a `variadic` annotation (the stage evaluator reads it).
-        if let Some(rest_name) = self.pending_variadic.take() {
+        if let Some(vp) = self.pending_variadic.take() {
             let mut modifiers = Vec::new();
             modifiers.push(Annotation {
                 name: "variadic".to_string(),
-                value: Some(Expr::Quoted(rest_name.as_bytes().to_vec())),
+                value: Some(Expr::Quoted(vp.name.as_bytes().to_vec())),
             });
             Ok(TopLevel::CompileTimeTxn(Transaction {
                 name, type_params, parameters,
@@ -4799,7 +4896,7 @@ impl<'a> Parser<'a> {
                 outputs: vec![],
                 contract, body, metadata,
                 is_reactive: true, is_async: false,
-                derivation, modifiers, span: None, doc: self.take_doc(),
+                derivation, modifiers, span: None, variadic_param: None, doc: self.take_doc(),
             }))
         } else {
             Ok(TopLevel::CompileTimeTxn(Transaction {
@@ -4808,7 +4905,7 @@ impl<'a> Parser<'a> {
                 outputs: vec![],
                 contract, body, metadata,
                 is_reactive: true, is_async: false,
-                derivation, modifiers: vec![], span: None, doc: self.take_doc(),
+                derivation, modifiers: vec![], span: None, variadic_param: None, doc: self.take_doc(),
             }))
         }
     }

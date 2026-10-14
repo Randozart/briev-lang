@@ -1651,6 +1651,49 @@ binds its type param from the enclosing binding's annotation when the
 arguments do not constrain it. An argument that cannot unify with the
 generic parameter shape is a type error.
 
+**2026-10-13 (typed variadic `defn`/`txn`).** A runtime `defn` or `txn`
+may declare a final TYPED rest parameter:
+
+```briev
+defn sum(...xs: Int[<=8]) -> Int [true][term >= 0] {
+    term fold the rest elements;
+};
+// sum(1, 2, 3) and sum(7) are both valid; sum() is not (min defaults 0 —
+// adjust with [>=1] when an empty call is a mistake).
+```
+
+The rest is a STATIC-arity specialization: each distinct call-site arity
+instantiates one monomorphized copy of the callable before typecheck.
+There is no allocation and no per-call cost — the emitted body is a
+fixed-arity function taking the rest elements as ordinary parameters.
+
+In the body and contracts, the rest name is the compile-time list of the
+received elements: `xs[0]`, `xs[1]`, …, `xs.Count#()` — all static per
+instantiation. Element access uses the ordinary index/length operations.
+
+Rules:
+- `...` must be the FINAL parameter and carries the ELEMENT TYPE — a value
+  type (`Int`, `Float`, `String`, …), not `Expr`. A `...name: Expr` rest
+  remains the §18.2 compile-time composite channel; the two are
+  distinguished by the element type.
+- Bound suffix (delimiter contract, §5.1 — `[]` is containment/bound):
+  `[<=N]` maximum count, `[>=M]` minimum count, `[>=M, <=N]` both. No
+  suffix → default cap 16 with a warning; the hard ceiling is 64 (beyond
+  it the diagnostic directs to a `List<T>` parameter).
+- Call-site count below the minimum or above the bound is a compile error
+  naming the callable, the declared bound, and the received count.
+- Runtime-determined arity is a `List<T>` parameter — that is the tool for
+  dynamic counts. There is no runtime splice (`f(a, ...list)`); a rest
+  binds only statically-counted trailing arguments.
+- Instantiations are internal (like generic instantiation): the original
+  declaration remains the author's source for diagnostics; errors inside a
+  specialized body carry provenance back to the call site. Each
+  instantiation is emitted as an ordinary fixed-arity callable named
+  `name__arity` in generated IR (e.g. `sum__3` for `sum(1, 2, 3)`); the
+  author's source name is unchanged.
+- `txn` takes the same rest rule; reactor analysis runs per
+  specialization.
+
 ### 9.2 Callable types and closures
 
 Callable types use signature shape directly:
@@ -1686,6 +1729,10 @@ when invalid_input {
 ```
 
 `rollback` is invalid outside rollback-capable transaction/reactive contexts.
+
+A `txn` may declare a final typed rest parameter with the same rule as
+`defn` (§9.1, 2026-10-13); the reactor analyzes each specialization as an
+ordinary transaction.
 
 ### 9.4 Nodes
 
@@ -3087,7 +3134,11 @@ $defn execute_many(...calls: Expr) {
 
 Rules:
 - `...` must be the FINAL parameter.
-- Compile-time-only: a runtime `defn` declaring `...` is an error.
+- A composite rest declares `...name: Expr` — a compile-time list. A
+  runtime `defn`/`txn` rest declares a VALUE type element
+  (`...name: Int`, `...name: Int[<=N]`) and is handled by static-arity
+  specialization instead (§9.1, 2026-10-13). The element type distinguishes
+  the two; both remain the `...` syntax.
 - Each call-site argument is emitted in order (sequential calls, order
   guaranteed).
 - Zero trailing arguments is a mistake, not a no-op — the expansion errors

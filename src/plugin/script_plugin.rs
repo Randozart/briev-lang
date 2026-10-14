@@ -256,6 +256,7 @@ fn synthesize(program: &mut Vec<TopLevel>, body: Vec<Statement>) -> Result<(), S
         derivation: None,
         modifiers: vec![],
         span: None,
+        variadic_param: None,
         doc: None,
     });
     // Prepend the done-flag so the typechecker sees it declared; the node

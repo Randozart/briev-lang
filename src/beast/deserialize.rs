@@ -309,7 +309,7 @@ fn parse_transaction(parts: &[SExpr]) -> Result<Transaction, String> {
     }
     Ok(Transaction { name, parameters: params, type_params: vec![], is_reactive, is_async,
         contract, body, outputs: vec![], output_type: None, metadata,
-        derivation: None, modifiers: vec![], span: None, doc: None })
+        derivation: None, modifiers: vec![], span: None, variadic_param: None, doc: None })
 }
 
 fn parse_contract(expr: &SExpr) -> Result<Contract, String> {
