@@ -106,6 +106,7 @@ proptest-regressions/
 briev-self-hosted
 metrod*
 test_*
+!src/test_runner.rs
 test_cases/
 test_rstruct-build/
 test_schema/
