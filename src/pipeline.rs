@@ -1143,6 +1143,29 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
         effective_isr_mechanism(opts).as_deref(),
         opts.file_path.ends_with(".ebv"),
     )?;
+    // 2026-10-14 (fix/sbv-hardware-validator-gate): the `.sbv` (Silicon)
+    // synthesizability gate. `check` and `build` must not diverge on
+    // acceptance (the check/build-divergence discipline documented at the top
+    // of this fn), so the mirrored call lives in src/compile.rs `compile_source`.
+    // Guarded by the Silicon classification; `check_hebv_restrictions` only
+    // reports Error-severity synthesizability violations, so there are no
+    // warnings to drain here.
+    if crate::conformance::classify(std::path::Path::new(file_path))
+        == Some(crate::conformance::SourceKind::Silicon)
+    {
+        let diags = crate::hardware_validator::HardwareValidator::validate_silicon(&items);
+        let errs: Vec<String> = diags
+            .iter()
+            .filter(|d| d.severity == crate::errors::Severity::Error)
+            .map(|d| d.format(source.as_str(), file_path))
+            .collect();
+        if !errs.is_empty() {
+            return Err(format!(
+                ".sbv synthesizability errors:\n{}",
+                errs.join("\n")
+            ));
+        }
+    }
     // 2026-08-01 (C4): watchdog contract checks also run on the `check` path
     // (parse_and_check) — `brievc check` must catch trigger/handler violations
     // and missing on-fire handlers the same way `brievc build` does.
@@ -1429,5 +1452,68 @@ mod tests {
             Err("multiple writers".to_string()),
         );
         assert!(view_external_roots(&bindings, &routes).is_empty());
+    }
+
+    // ── .sbv synthesizability gate (fix/sbv-hardware-validator-gate, 2026-10-14) ──
+    // These prove the HardwareValidator — previously dead code with zero call
+    // sites — now runs on the `check`/`build` frontend for Silicon roots. They
+    // drive the FULL pipeline via `check_source` (the `brievc check` entry), so
+    // a regression that un-wires the gate turns the three "rejects" tests red.
+    // Behavioral: they assert the acceptance decision, not the diagnostic text.
+
+    #[test]
+    fn sbv_well_formed_die_passes_the_gate() {
+        // Sized register + total contracts: the synthesizable shape. Must pass
+        // (same shape as tests/silicon/sized_register.sbv).
+        let src = "import \"std/types.bv\";\n\
+                   reg let count: UInt<8> = 0;\n\
+                   txn inc [count < 255] [count == count + 1] {\n\
+                   count = count + 1;\n}\n";
+        assert!(
+            check_source("chip.sbv", src).is_ok(),
+            "a sized-type, total-contract .sbv must pass the synthesizability gate"
+        );
+    }
+
+    #[test]
+    fn sbv_float_state_is_rejected() {
+        // Float is not synthesizable (B5007). The gate must fire for a .sbv.
+        let src = "let temperature: Float = 0.0;\n";
+        let err = check_source("chip.sbv", src)
+            .expect_err("a .sbv with a Float state must be rejected");
+        assert!(
+            err.contains("synthesizability"),
+            "expected the .sbv synthesizability gate to fire, got: {err}"
+        );
+    }
+
+    #[test]
+    fn sbv_true_precondition_is_rejected() {
+        // A `[true]` (default/trivial) precondition is not total — B5004.
+        let src = "import \"std/types.bv\";\n\
+                   reg let count: UInt<8> = 0;\n\
+                   txn tick [true] [count == count + 1] {\n\
+                   count = count + 1;\n}\n";
+        let err = check_source("chip.sbv", src)
+            .expect_err("a .sbv txn with a [true] precondition must be rejected");
+        assert!(
+            err.contains("synthesizability"),
+            "expected the .sbv synthesizability gate to fire, got: {err}"
+        );
+    }
+
+    #[test]
+    fn non_sbv_float_state_is_not_gated() {
+        // The SAME Float state in a plain `.bv` must NOT trip the Silicon gate —
+        // the guard is the Silicon classification, nothing else.
+        let src = "let temperature: Float = 0.0;\n";
+        // A `.bv` with only a bare state may fail other frontend gates, but it
+        // must never fail with the .sbv synthesizability message.
+        if let Err(e) = check_source("script.bv", src) {
+            assert!(
+                !e.contains("synthesizability"),
+                ".bv must not hit the .sbv synthesizability gate, got: {e}"
+            );
+        }
     }
 }

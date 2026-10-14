@@ -460,6 +460,27 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         check_isr_mechanism.as_deref(),
         file_path.ends_with(".ebv"),
     )?;
+    // 2026-10-14 (fix/sbv-hardware-validator-gate): the `.sbv` (Silicon)
+    // synthesizability gate — mirrors the `check`-path call in
+    // src/pipeline.rs `parse_and_check` so acceptance never diverges between
+    // `brievc check` and `brievc build`. See HardwareValidator::validate_silicon.
+    if briev_compiler::conformance::classify(std::path::Path::new(file_path))
+        == Some(briev_compiler::conformance::SourceKind::Silicon)
+    {
+        let diags =
+            briev_compiler::hardware_validator::HardwareValidator::validate_silicon(&items);
+        let errs: Vec<String> = diags
+            .iter()
+            .filter(|d| d.severity == briev_compiler::errors::Severity::Error)
+            .map(|d| d.format(source.as_str(), file_path))
+            .collect();
+        if !errs.is_empty() {
+            return Err(format!(
+                ".sbv synthesizability errors:\n{}",
+                errs.join("\n")
+            ));
+        }
+    }
     // 2026-08-04: term termination diagnostics — unreachable code after a
     // terminating `term <value>`/`term! <value>` and the bare-term-guard
     // hint. Runs here (typed AST, pre-normalizer) so the backend never sees

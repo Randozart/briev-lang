@@ -7448,7 +7448,7 @@ distinct body of work before "ERC-clean" can be claimed for them.
 **Undo:** revert the four emitter lines (uuid `{:012x}`→`{:012}`, the
 label justify, the `sheet_instances` block, the two `hide`→`hide yes`).
 
-## 2026-09-28 — `hardware_validator` is dead code (the .sbv synthesizability gate never runs) [LEDGER 2026-10-06: OPEN]
+## 2026-09-28 — `hardware_validator` is dead code (the .sbv synthesizability gate never runs) [RESOLVED 2026-10-14 — addendum below]
 
 **Found:** Wave 2 C1 (die-graft work), while checking whether imported die
 items pass any hardware gate.
@@ -7468,6 +7468,58 @@ then, treat `.sbv` synthesizability as UNENFORCED.
 **Class:** a validator with no caller is documentation, not a gate —
 the failure mode is silent contract erosion, the exact thing the
 validator was written to prevent.
+
+**RESOLVED 2026-10-14 (branch fix/sbv-hardware-validator-gate):** the
+synthesizability gate now runs on every `.sbv` (`SourceKind::Silicon`)
+root. Wiring:
+- `HardwareValidator::validate_silicon(items)` — a new public entry that
+  returns ONLY the synthesizability diagnostics (`check_hebv_restrictions`:
+  B5001–B5008). It deliberately does NOT run the reactive-liveness
+  heuristics (`check_orphan_variables`/`check_untriggerable_transactions`/
+  `check_unused_variables` via the full `validate(..., is_embedded=true,
+  ...)`): a `.sbv` file's file-scope bare `let`s are boundary pins
+  (examples/silicon/sensor_die.sbv) that are legitimately never written, so
+  `is_embedded=true` would flip "never written" to Error and falsely reject
+  every well-formed die (and break the conformance sweep). Those checks are
+  the `.ebv` reactive tier's concern and remain unwired (need a `TargetSpec`).
+- Called from BOTH frontends so `check` and `build` never diverge on
+  acceptance: `src/pipeline.rs` `parse_and_check` (the `brievc check` path)
+  and `src/compile.rs` `compile_source` (the `brievc build` path), each
+  right after `check_types`, aborting via `return Err` on any Error-severity
+  diagnostic.
+
+**Two representation facts the fix had to absorb** (both would have made the
+gate a silent no-op or a false-positive):
+1. A top-level `let x: T [= e];` parses to `TopLevel::Statement(Let)`, NOT
+   `TopLevel::StateDecl` (src/parser/definitions.rs — the parser emits
+   `Statement` for every top-level let; the `Let`→`StateDecl` lowering is a
+   later backend-normalizer pass that runs AFTER this gate). So
+   `check_hebv_restrictions` now also walks the declared type of a top-level
+   `Statement::Let`, or every `.sbv` state field escaped the type check.
+2. `UInt<8>`/`Int<8>` parse to `Type::Constrained(Custom("UInt"|"Int"),
+   BitRange::Single(w))` (src/parser/types.rs) — that IS the sized,
+   synthesizable form the B5006 message asks for. The `Constrained` arm of
+   `check_type_synthesizable` must treat a wrapped `Int`/`UInt` as OK, not
+   recurse into the bare `Custom("UInt")` (which the unsized rule flags).
+
+**Verified (debug brievc, WSL, ~/briev-target):**
+- 4 behavioral tests in `src/pipeline.rs` driving the real `check_source`
+  entry: `sbv_well_formed_die_passes_the_gate` (sized `UInt<8>` + total
+  contracts PASS), `sbv_float_state_is_rejected` (B5007 fires),
+  `sbv_true_precondition_is_rejected` (B5004 fires),
+  `non_sbv_float_state_is_not_gated` (a plain `.bv` is never gated). All green.
+- The validator's own `hebv` module tests: 6/6 still green.
+- Controlled A/B on the full `cargo test --lib`: baseline (changes stashed)
+  3021 passed / 38 failed; with the fix 3025 passed / 38 failed — SAME 38
+  failures (the known no-toolchain-in-WSL PTX/SPIR-V/cross-assembler set +
+  the pre-existing `adapters.dbvl` `.dbvl`-reader defect), +4 passing (the
+  new tests). Zero regressions.
+
+**How to undo:** remove the two call sites (grep `validate_silicon`) and
+`validate_silicon` itself; the module returns to dead code and `.sbv`
+synthesizability is unenforced again. The `Statement::Let` arm and the
+`Constrained` Int/UInt arm in `check_type_synthesizable` can stay (they are
+correct regardless) but become unreachable without a caller.
 
 ## 2026-09-30 — NVIDIA driver 615.71.09 regressed the workgroup-smem + barrier compute path ~2.5× (RTX 3060, Vulkan) [OPEN — vendor] [LEDGER 2026-10-06: OPEN-UNVERIFIED]
 
