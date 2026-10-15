@@ -265,6 +265,67 @@ fn referenced_type_names(item: &TopLevel) -> Vec<String> {
 /// body referencing its `_loop` sibling resolved to the raw-type fallback
 /// (the call's return became Int, and the body failed to typecheck:
 /// "expected Bool for term value ... found Int").
+/// A module's `let`/`const` state that a kept defn READS (or writes). The
+/// import filter keeps only the named symbols plus referenced functions/types;
+/// without this, an `out defn` that touches the module's own top-level `let`
+/// state loses that state at splice and its body fails to typecheck
+/// ("undefined variable"). Mirrors `referenced_function_names` but walks
+/// identifier reads (`Expr::Identifier`) instead of calls. An Assign LHS is a
+/// write to state whose type is already declared by the `let`, so pulling it
+/// in is harmless.
+fn referenced_state_names(item: &TopLevel) -> Vec<String> {
+    fn expr_vars(e: &crate::ast::Expr, acc: &mut Vec<String>) {
+        acc.extend(e.collect_vars());
+    }
+    fn stmt_vars(s: &crate::ast::Statement, acc: &mut Vec<String>) {
+        match s {
+            crate::ast::Statement::Expression(e) => expr_vars(e, acc),
+            crate::ast::Statement::Let { expr: Some(e), .. } => expr_vars(e, acc),
+            crate::ast::Statement::Let { .. } => {}
+            crate::ast::Statement::Assign(lhs, rhs) => {
+                expr_vars(lhs, acc);
+                expr_vars(rhs, acc);
+            }
+            crate::ast::Statement::ArrowAssign { value, .. } => expr_vars(value, acc),
+            crate::ast::Statement::Term(Some(e)) => expr_vars(e, acc),
+            crate::ast::Statement::EndProgram(Some(e)) => expr_vars(e, acc),
+            crate::ast::Statement::Guarded(cond, b) => {
+                expr_vars(cond, acc);
+                for s in b {
+                    stmt_vars(s, acc);
+                }
+            }
+            crate::ast::Statement::Block(b) => {
+                for s in b {
+                    stmt_vars(s, acc);
+                }
+            }
+            crate::ast::Statement::Foreach { list, body, .. } => {
+                expr_vars(list, acc);
+                for s in body {
+                    stmt_vars(s, acc);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    match item {
+        TopLevel::Definition(d) => {
+            for s in &d.body {
+                stmt_vars(s, &mut out);
+            }
+        }
+        TopLevel::Transaction(t) => {
+            for s in &t.body {
+                stmt_vars(s, &mut out);
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 fn referenced_function_names(item: &TopLevel) -> Vec<String> {
     fn expr_calls(e: &crate::ast::Expr, acc: &mut Vec<String>) {
         match e {
@@ -1357,6 +1418,11 @@ impl ImportResolver {
                         refs.insert(r);
                     }
                     for r in referenced_function_names(item) {
+                        refs.insert(r);
+                    }
+                    // A kept defn's reads/writes of module `let`/`const` state
+                    // must keep that state, or the body loses it at splice.
+                    for r in referenced_state_names(item) {
                         refs.insert(r);
                     }
                 }
@@ -3224,6 +3290,39 @@ fn test_dbv_import_rejected() {
         assert!(
             names.contains(&"c2") && !names.contains(&"counter"),
             "renamed state binds the local name: {names:?}"
+        );
+    }
+
+    #[test]
+    fn named_import_keeps_module_state_read_by_kept_defn() {
+        // 2026-10-15 (state closure): a module's top-level `let` that a KEPT
+        // `out defn` reads must survive the import filter, else the defn body
+        // loses the variable at splice ("undefined variable"). This is the
+        // rand.bv shape: `let rand_state` read/written by seed_rand/rand_u64,
+        // imported by name.
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("stateful.bv"),
+            "let count: Int = 0;\nout defn get() -> Int { term count; };\n",
+        )
+        .unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let items = import_program("stateful.bv", vec!["get".to_string()]);
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        let names: Vec<&str> = result.iter().filter_map(ImportResolver::item_name).collect();
+        assert!(
+            names.contains(&"get"),
+            "the named import keeps the defn: {names:?}"
+        );
+        assert!(
+            names.contains(&"count"),
+            "module state read by a kept defn must be pulled in by the \
+             state-closure pass: {names:?}"
         );
     }
 }
