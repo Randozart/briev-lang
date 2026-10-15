@@ -73,6 +73,7 @@ impl DefnLiveness {
             txns: HashMap::new(),
             contracts: HashMap::new(),
             type_members: HashMap::new(),
+            member_bodies: HashMap::new(),
             roots: HashSet::new(),
             live: HashSet::new(),
             keep_all: false,
@@ -102,6 +103,17 @@ impl DefnLiveness {
             }
             if let Some(c) = pass.contracts.get(&name) {
                 pass.walk_contract(c, &mut queue);
+            }
+            // 2026-10-15 (member-name collision): `defns`/`txns`/`contracts`
+            // retain only ONE same-named member body (first/last-wins). Walk
+            // EVERY member body+contract registered under this name so no
+            // obj's member call edges are missed (e.g. GrowBuf.put_u8 →
+            // grow_to_fit when ByteBuf.put_u8 won the bare-name slot).
+            if let Some(entries) = pass.member_bodies.get(&name).cloned() {
+                for (body, contract) in entries {
+                    pass.walk_stmts(body, &mut queue);
+                    pass.walk_contract(contract, &mut queue);
+                }
             }
         }
 
@@ -202,6 +214,19 @@ struct Builder<'a> {
     /// implementation bodies (coll growth → malloc) that a program using
     /// no collections must not pay for.
     type_members: HashMap<String, Vec<String>>,
+    /// 2026-10-15 (member-name collision, found by Design D's GrowBuf):
+    /// obj MEMBER defns share a name across objs by design — a trait
+    /// requirement like `put_u8` is provided by both `ByteBuf` and
+    /// `GrowBuf`. `defns`/`txns` are keyed by bare name with first/last-wins,
+    /// so only ONE same-named member body is retained there. When a member
+    /// is rooted by construction, the worklist would walk the WRONG obj's
+    /// body and miss its call edges (e.g. `GrowBuf.put_u8` → `grow_to_fit`),
+    /// so the free-standing helper is judged dead and the IR-scan net fires.
+    /// Keep EVERY member body+contract under its bare name here and walk them
+    /// ALL when the name goes live. Over-approximation (walking a member body
+    /// for an unconstructed obj) only keeps a few extra helpers live — the
+    /// pass's deliberate, harmless coarse-sound stance.
+    member_bodies: HashMap<String, Vec<(&'a [Statement], &'a Contract)>>,
     roots: HashSet<String>,
     live: HashSet<String>,
     keep_all: bool,
@@ -220,6 +245,26 @@ impl<'a> Builder<'a> {
     fn index_txn(&mut self, t: &'a crate::ast::Transaction) {
         self.txns.entry(t.name.clone()).or_insert(&t.body);
         self.contracts.entry(t.name.clone()).or_insert(&t.contract);
+    }
+
+    /// 2026-10-15 (member-name collision): record a member's body+contract
+    /// under its bare name in the collision-safe multimap. `index_defn`/
+    /// `index_txn` key by bare name with first/last-wins, so same-named
+    /// members across objs (a trait requirement like `put_u8` on both
+    /// `ByteBuf` and `GrowBuf`) overwrite each other there — only ONE body
+    /// survives for the worklist to walk. Appending here keeps ALL of them,
+    /// and the worklist walks every one when the name goes live, so no
+    /// member's call edges are lost. See `member_bodies`.
+    fn index_member_body(
+        &mut self,
+        name: &str,
+        body: &'a [Statement],
+        contract: &'a Contract,
+    ) {
+        self.member_bodies
+            .entry(name.to_string())
+            .or_default()
+            .push((body, contract));
     }
 
     /// 2026-10-07 (view-surface liveness): dispatch-name roots for a txn.
@@ -262,10 +307,12 @@ impl<'a> Builder<'a> {
             match m {
                 TopLevel::Definition(d) => {
                     self.index_defn(d);
+                    self.index_member_body(&d.name, &d.body, &d.contract);
                     members.push(d.name.clone());
                 }
                 TopLevel::Transaction(t) => {
                     self.index_txn(t);
+                    self.index_member_body(&t.name, &t.body, &t.contract);
                     members.push(t.name.clone());
                 }
                 TopLevel::TypeDefOperator(op) => {
@@ -384,6 +431,7 @@ impl<'a> Builder<'a> {
                 // `obj Enemy { … }`) — usage-rooted via construction.
                 let members = s.transactions.iter().map(|t| {
                     self.index_txn(t);
+                    self.index_member_body(&t.name, &t.body, &t.contract);
                     t.name.clone()
                 }).collect();
                 self.type_members.insert(s.name.clone(), members);
@@ -1195,6 +1243,81 @@ mod tests {
 
     fn call(name: &str) -> Statement {
         Statement::Expression(Expr::Call(name.to_string(), vec![], None))
+    }
+
+    /// Parse real Briev source into top-level items (behavioral tests —
+    /// AGENTS "test the contract, not the implementation"). Same helper
+    /// shape as the other analysis-pass test modules (casing, coll_length).
+    fn parse(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        parser.parse_program().expect("parse")
+    }
+
+    #[test]
+    fn same_named_member_bodies_all_contribute_call_edges() {
+        // 2026-10-15 (member-name collision, Design D GrowBuf): two objs each
+        // provide a same-named member `bump`. Alpha's (declared FIRST) calls
+        // nothing; Beta's calls free-standing `helper`. Only Beta is
+        // constructed+used. Before the fix, `defns["bump"]` held only Alpha's
+        // body (first-wins), so rooting Beta's `bump` walked Alpha's body,
+        // missed the `helper` edge, and `helper` was judged dead — the IR-scan
+        // soundness net then panicked at emission. Now EVERY member body under
+        // the bare name is walked, so `helper` is live.
+        let src = r#"
+            defn helper(val: Int) -> Int { term val + 1; };
+            obj Alpha {
+                n: Int;
+                defn bump(sink: Alpha, val: Int) -> Alpha {
+                    term Alpha { n: sink.n + 1 };
+                };
+            };
+            obj Beta {
+                n: Int;
+                defn bump(sink: Beta, val: Int) -> Beta {
+                    let bumped: Int = helper(sink.n);
+                    term Beta { n: bumped };
+                };
+            };
+            node entry [beginprogram][true] {
+                let beta0: Beta = Beta { n: 6 };
+                let beta1: Beta = bump(beta0, 0);
+                endprogram Print#(beta1.n);
+            };
+        "#;
+        let items = parse(src);
+        let l = DefnLiveness::build(&items);
+        // Beta's member body is reached (via construction + the top-level call)
+        // and its call edge into `helper` must keep `helper` live.
+        assert!(
+            l.is_live("helper"),
+            "helper reached only through Beta.bump must be live despite the \
+             same-named Alpha.bump winning the bare-name slot"
+        );
+    }
+
+    #[test]
+    fn single_member_body_edge_is_followed() {
+        // Control: one obj, one member calling a helper — the single-member
+        // path has always worked (confirms the fix did not change it).
+        let src = r#"
+            defn helper(val: Int) -> Int { term val + 1; };
+            obj Beta {
+                n: Int;
+                defn bump(sink: Beta, val: Int) -> Beta {
+                    let bumped: Int = helper(sink.n);
+                    term Beta { n: bumped };
+                };
+            };
+            node entry [beginprogram][true] {
+                let beta0: Beta = Beta { n: 6 };
+                let beta1: Beta = bump(beta0, 0);
+                endprogram Print#(beta1.n);
+            };
+        "#;
+        let items = parse(src);
+        let l = DefnLiveness::build(&items);
+        assert!(l.is_live("helper"));
     }
 
     #[test]

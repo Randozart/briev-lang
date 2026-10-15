@@ -9564,3 +9564,43 @@ state-taking. `or_insert` preserves the "a real top-level defn of this name wins
 precedence. Gates A–E green (probe_sink_generic→2, probe_sink_nodefault→2,
 probe_trait_3→10; 4 regression tests in export_abi::tests). Branch:
 fix/trait-default-needs-state.
+## Same-named obj members collided in defn-liveness → free-standing helper judged dead — FIXED 2026-10-15
+
+A free-standing defn called ONLY from an obj member body is wrongly judged dead
+when ANOTHER obj declares a same-named member first, so the IR-scan soundness net
+panics at emission: `defn liveness: emitted code calls unreached defn(s)
+["grow_to_fit"]` (mod.rs:5574).
+
+DISCRIMINATOR (controlled A/B, proves it is the collision, not the member path):
+a SINGLE obj whose member calls a free-standing helper builds + runs fine (prints
+7). Adding a SECOND obj with a same-named member declared BEFORE it — whose body
+does NOT call the helper — makes the helper be judged dead and the build panic.
+Only the same-name collision triggers it.
+
+ROOT CAUSE: src/analysis/defn_liveness.rs — `index_defn`/`index_txn` key obj
+MEMBER bodies by BARE name with `or_insert`/`insert` (first/last-wins). Obj
+members share a name across objs BY DESIGN (a trait requirement like `put_u8` is
+provided by both `ByteBuf` and `GrowBuf`). So `defns["put_u8"]` retained only ONE
+body. When construction rooted the OTHER obj's `put_u8`, the worklist walked the
+wrong obj's body (`ByteBuf.put_u8`, which calls nothing), missed the call edge
+into `grow_to_fit`, and judged it dead. The emitted (inlined) `GrowBuf.put_u8`
+DOES call `grow_to_fit`, so the post-emission IR scan caught the drop.
+
+REPRO (minimal, confirmed): two objs Alpha then Beta each with a `bump` member
+under one trait; Alpha.bump calls nothing, Beta.bump calls free-standing
+`helper`; construct+use only Beta → panic `unreached defn [helper]`. The real
+trigger was Design D's bytes.bv: ByteBuf.put_u8/put_bytes (no free calls) are
+declared before GrowBuf.put_u8/put_bytes (call grow_to_fit).
+
+FIX 2026-10-15: added a collision-safe multimap `member_bodies: HashMap<String,
+Vec<(&[Statement], &Contract)>>` that keeps EVERY member body+contract under its
+bare name (populated by `index_member_body` from `index_typedef` and the
+`TopLevel::Obj` arm). The worklist closure walks ALL member bodies+contracts
+registered under a live name, in addition to the single `defns`/`txns`/`contracts`
+entry — so no obj's member call edges are lost. Over-approximation (walking a
+member body for an unconstructed obj) only keeps a few extra helpers live, which
+is the pass's deliberate, documented coarse-sound stance. Top-level last-wins
+semantics and the construction-rooting path are untouched. Regression tests:
+`same_named_member_bodies_all_contribute_call_edges` (the bug) +
+`single_member_body_edge_is_followed` (the control) in defn_liveness::tests.
+Branch: fix/liveness-member-name-collision.
