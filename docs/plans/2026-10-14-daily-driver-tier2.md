@@ -117,3 +117,36 @@ Each phase is one commit; revert restores the prior behavior. Phase 4
 deletes back to a stub; Phase 3 removes a subcommand; Phases 1–2 fix
 codegen at boundaries — revert returns to the miscompiles, which are
 documented in BUGS.md.
+
+## Status (2026-10-14, session close) — ALL FOUR PHASES SHIPPED
+
+- **Phase 1** (`1be6a61a`): the probe evidence rewrote the plan's
+  assumption — the four symptoms were NOT one mechanism but a family with
+  three roots: (a) the bare-let construction gap, (b) a LATENT SSA DOUBLE
+  EMISSION of main (txn loop + emit_ssa_main, one shared FunctionContext —
+  every SSA-dispatched program, invisible while self-consistent), (c) the
+  dyn push gate + missing push-site box. Plus the PR-15 impl-block
+  conformance gap closed on the way (it blocked the dyn-push typecheck).
+  Result-payload shapes UNIFIED: predicate + unwrap for every T.
+  `tests/tier2_payload_abi.rs` (4 tests, -O0-linked).
+- **Phase 2** (`2edc570e`): emit_ssa_main now pre-declares reassigned-let
+  entry allocas (the emit_definition pattern) — the assign-site demotion
+  never lands inside a non-dominating block. Two interactions handled
+  (bare scalar direct-bind; coll bare-lets keep their construction).
+  `tests/tier2_loop_locals.rs` (2 tests).
+- **Phase 3** (`4f330675`): `brievc test <file|dir>` — exit-code +
+  golden contract, documented footgun (a false precondition never runs
+  the body). `tests/tier2_test_runner.rs`. The .gitignore `test_*`
+  scratch pattern needed a `!src/test_runner.rs` negation (BUGS.md 9198's
+  hazard class; full sweep of the un-anchoring collateral is that
+  entry's scope).
+- **Phase 4** (`09b44a91`): time.bv real — now_ns/sleep_ms, pure stdlib
+  over the variadic syscall (no new intrinsics), timespec via
+  Alloc#/Store#/Load# (the (addr, byte-width) convention), freed on every
+  path. `tests/tier2_time.rs` (monotonicity + a real 30 ms wall-clock
+  measurement).
+
+**Final gates:** cargo test --lib 3080/0 · tier2 suites 7/7 · fs_smoke
+3/3 · daily_use 3/3 · cli_args 5/5 · lsp_smoke 1/1 · conformance sweep ·
+rbv_gate · Praetor (no new issue kinds; the `infer_statement` metric
+drift is on an already-flagged 541-line baseline fn).
