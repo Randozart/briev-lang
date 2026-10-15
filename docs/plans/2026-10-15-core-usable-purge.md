@@ -303,4 +303,10 @@ committed under the normal Phase-1 rules.
   latent bugs fixed in the same pass (see BUGS.md 2026-10-15): the
   stateless `event_strict_trap` call (missing `%state`) and the void
   `@__watchdog_fail()` second-engine shape.
-- Dunder grep-gate test: lands at Phase-1 end (empty allowlist).
+- Dunder grep-gate test: COMPLETE — `tests/core_usable_gate.rs` (2/2):
+  `no_dunder_defn_let_in_shipped_bv` (zero `defn __`/`out defn __`/`let __`
+  under `lib/**/*.bv` + `plugins/parsed/*.bv`, allowlist empty, comments
+  stripped) and `no_dunder_llvm_symbol_in_shipped_bv` (zero live `@__`
+  outside the dogfood `lib/compiler/**`, which legitimately writes IR-text
+  string literals). Verified non-vacuous (injected `defn __leak` → fails,
+  reverted → passes). Phase 1 COMPLETE.
