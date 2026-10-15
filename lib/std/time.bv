@@ -1,15 +1,12 @@
-// Standard Time Library
+// Standard Time Library — duration helpers (pure Briev arithmetic).
 //
-// Functions marked with 'frgn' require foreign implementation.
-// Functions with 'defn' are implemented natively in Briev.
+// 2026-10-15 (core-usable purge): the old 'frgn' time surface (current
+// time / component extraction / formatting / parsing) was REMOVED — those
+// are no longer foreign bindings. The real monotonic clock and sleep live
+// in std/os/time.bv (`now_ns`, `sleep_ms` over SYS_CLOCK_GETTIME /
+// SYS_NANOSLEEP). Import that for wall/monotonic time; this module is only
+// the pure duration arithmetic below.
 
-// ===== PURE FOREIGN (requires system time) =====
-
-// Current time
-// Time component extraction
-// Time creation
-// Formatting
-// Parsing
 // ===== NATIVE DEFINITIONS =====
 
 // Duration helpers - native arithmetic
@@ -60,4 +57,4 @@ defn diff_days(t1: Int, t2: Int) [term == (t1 - t2) / 86400] -> Int {
   term (t1 - t2) / 86400;
 };
 
-// Constants - these could be frgn or defn
+// Constants (durations) are plain native Ints — no frgn involvement.

@@ -1,0 +1,18 @@
+// Briev FFI Library — umbrella re-export.
+//
+// Import this module to pull in the common std surfaces (io, string,
+// time, collections, encoding, json). The underlying helpers are pure
+// Briev (2026-10-15 core-usable purge: the frgn/`__` bindings were
+// removed); `frgn` now lives only in the interop lanes (lib/std/web/,
+// lib/tamer/, lib/glue/).
+//
+// 2026-10-15: renamed from __init__.bv (the `__` frgn marker is retired
+// from the source-visible surface). No module imports this file — it is a
+// convenience entry point.
+
+import "std/io";
+import "std/string";
+import "std/time";
+import "std/collections";
+import "std/encoding";
+import "std/json";
