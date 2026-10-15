@@ -2520,6 +2520,19 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
 self.ctx.live_defns = analysis.defn_liveness.live.clone();
          self.ctx.emit_all_defns =
              analysis.defn_liveness.keep_all || self.ctx.library_mode || self.ctx.force_emit_all;
+        // 2026-10-15 (lifecycle laws): termination-reachability warning.
+        // The frontend lowered `when G { endprogram; }` laws into monitor
+        // txns (their endprogram counts), reside laws suppress. Stalling
+        // stays LEGAL — this informs, it does not reject.
+        if !self.ctx.library_mode && !self.ctx.is_shared_lib {
+            let term = crate::analysis::lifecycle::analyze_termination(
+                items,
+                &analysis.defn_liveness.live,
+            );
+            if let Some(warn) = crate::analysis::lifecycle::termination_warning(&term) {
+                self.warnings.push(format!("warning: {warn}"));
+            }
+        }
         // 2026-09-23 (async-events empty-output fix): the epilogue-flush gate
         // must read the NOW-populated live set. Previously computed at the
         // top of generate() it always saw the default-empty live_defns and

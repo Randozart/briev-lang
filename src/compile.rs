@@ -423,6 +423,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // parameters per call-site arity before typecheck (SPEC §9.1).
     // Additive: appends instantiations + retargets call sites.
     briev_compiler::analysis::variadic_specialize::specialize_variadic(&mut items)?;
+    // 2026-10-15 (lifecycle laws): `when G { endprogram; }` lowers to a
+    // reactive monitor txn before typecheck; reside laws stay for the
+    // termination pass. This pipeline (compile.rs) is the BUILD path the
+    // CLI drives — pipeline.rs::compile_to_typed carries the same lowering
+    // (the three-pipeline divergence discipline this file's stage block
+    // documents).
     // 2026-09-17 (plan 2026-09-17-row-2d-index-desugar): `a[i, j]` markers
     // → 1D row-major arithmetic. MUST run before check_types (the marker is
     // a parse artifact, not a resolvable call) and before every analysis —
@@ -471,6 +477,15 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     briev_compiler::hardware_validator::HardwareValidator::enforce_silicon(
         file_path, &items, &source,
     )?;
+    // 2026-10-15 (lifecycle laws): `when G { endprogram; }` lowers to a
+    // reactive monitor txn; reside laws stay for the termination pass.
+    // AFTER typecheck deliberately: the monitor reuses the law's guard
+    // verbatim (laws are proof-checked), and a synthesized txn would trip
+    // the source-syntax contract requirement (explicit, non-tautological)
+    // that authored txns must satisfy. Both pipeline surfaces (this build
+    // path + pipeline.rs compile_to_typed/check_source_for) carry the same
+    // lowering — the divergence discipline this file's stage block records.
+    briev_compiler::analysis::lifecycle::lower_lifecycle_laws(&mut items);
     // 2026-08-04: term termination diagnostics — unreachable code after a
     // terminating `term <value>`/`term! <value>` and the bare-term-guard
     // hint. Runs here (typed AST, pre-normalizer) so the backend never sees

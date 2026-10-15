@@ -2326,14 +2326,33 @@ impl<'a> Parser<'a> {
     /// static when law. Parses the same shape as a guarded statement but
     /// yields a TopLevel so the analysis treats it as a forced fact, not
     /// reactive behavior.
+    /// 2026-10-15 (lifecycle laws, plan
+    /// docs/plans/2026-10-15-lifecycle-laws-termination-warning.md): a
+    /// lifecycle arm — `when G { endprogram; }` or `when G { reside; }` —
+    /// replaces facts. `reside;` parses as a bare identifier expression (no
+    /// new grammar); the arm is stripped out of `facts` so the fact-law
+    /// consumers see an empty list. A lifecycle law carries EXACTLY ONE arm
+    /// — anything else is a fact law (unchanged path).
     fn parse_top_level_when_law(&mut self) -> Result<TopLevel, SyntaxError> {
         self.pos += 1; // consume 'when'
         let guard = self.parse_expression()?;
-        let facts = self.parse_block()?;
+        let mut facts = self.parse_block()?;
         self.eat(&Token::Semicolon);
+        let lifecycle = match facts.as_slice() {
+            [Statement::EndProgram(None)] => {
+                facts.clear();
+                Some(crate::ast::top::LifeCycleArm::EndProgram)
+            }
+            [Statement::Expression(Expr::Identifier(id))] if id == "reside" => {
+                facts.clear();
+                Some(crate::ast::top::LifeCycleArm::Reside)
+            }
+            _ => None,
+        };
         Ok(TopLevel::WhenLaw(crate::ast::top::WhenLawDecl {
             guard,
             facts,
+            lifecycle,
             span: None,
         }))
     }
@@ -2421,9 +2440,12 @@ impl<'a> Parser<'a> {
         let guard = self.parse_expression()?;
         let facts = self.parse_block()?;
         self.eat(&Token::Semicolon);
+        // Type-body laws are FACT laws only — lifecycle arms are a
+        // top-level construct (residency/termination are program-scoped).
         Ok(crate::ast::top::WhenLawDecl {
             guard,
             facts,
+            lifecycle: None,
             span: None,
         })
     }

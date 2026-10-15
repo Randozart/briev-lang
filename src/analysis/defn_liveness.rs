@@ -571,11 +571,19 @@ impl<'a> Builder<'a> {
                 self.root_task_event_family(queue);
                 self.walk_expr(value, queue);
             }
-            Statement::EndProgram(Some(e)) => {
+            Statement::EndProgram(maybe_e) => {
                 // `endprogram code;` → `call @exit_prog(code)` when defined
                 // (the C fallback keeps the `__exit` ABI name).
+                // 2026-10-15 (lifecycle laws): the BARE form matters now —
+                // the `when G { endprogram; }` monitor txns carry
+                // `EndProgram(None)` and reach endprogram with no other
+                // caller; without this row the IR-scan net rejected the
+                // whole program ("emitted code calls unreached defn
+                // exit_prog"). Same provider as the value form.
                 self.mark("exit_prog", queue);
-                self.walk_expr(e, queue);
+                if let Some(e) = maybe_e {
+                    self.walk_expr(e, queue);
+                }
             }
             Statement::Foreach { list, body, .. } => {
                 // foreach over String lowers to `briev_str_next_char` —

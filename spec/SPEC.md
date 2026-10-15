@@ -1826,6 +1826,27 @@ per instance). Mutually-exclusive guards never conflict — the
 satisfiability probe understands unit literals, pin-access chains, and
 opposite comparisons on the same lhs.
 
+#### 9.4.3 Lifecycle laws (2026-10-15)
+
+A top-level `when` law whose single arm is a lifecycle command states the
+program's **termination policy** instead of a fact:
+
+- `when G { endprogram; };` — the law `G ⟹ ended`. The compiler lowers it
+  to a reactive monitor (a `__briev_lifecycle_N` txn: the reactor
+  evaluates `G` every tick and ends the process when it holds — the same
+  cost class as any reactive txn watching `G`).
+- `when G { reside; };` — open-ended residency intent. Compile-time only:
+  residency is already the equilibrium behavior; the law suppresses the
+  no-terminator warning while `G` is satisfiable.
+
+A lifecycle law carries exactly one lifecycle arm and no facts; fact laws
+are separate declarations. Programs with no reachable process terminator
+(`endprogram`, `halt`, `trap`) and no reside law trigger a warning — the
+program runs until the process is killed. Stalling remains legal; the
+warning names the fix (`when <done> { endprogram; };` or `when true
+{ reside; };`). Embedded targets use the same rule: one `when true
+{ reside; };` declares the always-on intent.
+
 ### 9.5 Objects
 
 An object owns identity, lifecycle, logical state, ports, and reactive behavior in its parent reactor.

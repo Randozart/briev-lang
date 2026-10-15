@@ -1018,6 +1018,10 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
         opts.file_path.ends_with(".ebv"),
     )?;
     pm.run_ast(StageKind::Typed, &mut items, &mut universe)?;
+    // 2026-10-15 (lifecycle laws): monitor lowering AFTER typecheck — the
+    // monitor reuses the law's guard verbatim; a synthesized txn would trip
+    // the authored-txn contract requirement (explicit, non-tautological).
+    crate::analysis::lifecycle::lower_lifecycle_laws(&mut items);
     Ok((items, universe))
 }
 
@@ -1159,6 +1163,10 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     // acceptance (the check/build-divergence discipline documented at the top
     // of this fn), so the mirrored call lives in src/compile.rs `compile_source`.
     crate::hardware_validator::HardwareValidator::enforce_silicon(file_path, &items, &source)?;
+    // 2026-10-15 (lifecycle laws): same post-typecheck monitor lowering as
+    // the build paths (compile.rs + compile_to_typed) — the check/build
+    // divergence discipline documented at the top of this fn.
+    crate::analysis::lifecycle::lower_lifecycle_laws(&mut items);
     // 2026-08-01 (C4): watchdog contract checks also run on the `check` path
     // (parse_and_check) — `brievc check` must catch trigger/handler violations
     // and missing on-fire handlers the same way `brievc build` does.

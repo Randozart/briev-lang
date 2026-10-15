@@ -4050,8 +4050,19 @@ fn test_no_schema_import_no_validation() {
         }),
     ];
     let _output = backend.generate(&program, None);
-    assert!(backend.warnings().is_empty(),
-        "No schema import should produce no warnings");
+    // 2026-10-15 (lifecycle laws): the termination warning now fires for a
+    // program with no reachable terminator — this test's program is a bare
+    // StateDecl (a zombie by the new rule), so assert the SCHEMA contract
+    // specifically: no schema-validation warnings, not an empty warning
+    // list.
+    assert!(
+        backend
+            .warnings()
+            .iter()
+            .all(|w| w.contains("no path ends this program")),
+        "no schema import should produce no schema warnings: {:?}",
+        backend.warnings()
+    );
 }
 
 #[test]

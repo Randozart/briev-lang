@@ -12,6 +12,13 @@ no node can fire, the program is at **equilibrium** (idle). When a
 precondition becomes true (hardware interrupt, sensor read, timer tick), the
 reactor fires that node.
 
+**Lifecycle laws (2026-10-15, SPEC §9.4.3).** Equilibrium is forever unless
+the program declares otherwise. `when G { endprogram; };` lowers to a
+reactor monitor (a synthesized `__briev_lifecycle_N` txn) that ends the
+process when `G` holds; `when G { reside; };` declares open-ended residency
+at compile time. A program with no reachable terminator and no reside law
+warns — stalling stays legal, the warning names the fix.
+
 ```
 ┌─────────────────────────────────────────────┐
 │  Reactor Loop                               │
