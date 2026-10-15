@@ -1,7 +1,7 @@
 #!exit count == bound;
 
 frgn __get_env_int(name: String) -> Int;
-frgn #out __print_float(val: Float) -> Bool;
+frgn #out print_float(val: Float) -> Bool;
 
 let count: Int = 0;
 let bound: Int = __get_env_int("BOUND");
@@ -11,8 +11,8 @@ node compute [count < bound][count == bound] {
     let y: Float = 4.0;
     let dsq: Float = x * x + y * y;
     let d: Float = sqrt#(dsq);
-    let _p: Bool = __print_float(d);
+    let _p: Bool = print_float(d);
     &count = count + 1;
     term;
 };
-term! -> __print_float(sqrt#(2.0));
+term! -> print_float(sqrt#(2.0));

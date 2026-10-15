@@ -11,8 +11,8 @@
 import { get_env_int } from "std/env.bv";
 import "link/briev_rt.c";
 
-frgn #out __print_float(val: Float) -> Bool;
-frgn #out __print_int(n: Int) -> Bool;
+frgn #out print_float(val: Float) -> Bool;
+frgn #out print_int(n: Int) -> Bool;
 
 let bound: Int = get_env_int("BOUND");
 let count: Int = 0;
@@ -389,10 +389,10 @@ node simulate [
     let energy: Float = epp + ek0c + ek1c + ek2c + ek3c + ek4c;
 
     [count % 5000000 == 0] {
-        let __printed: Bool = __print_float(energy);
+        let __printed: Bool = print_float(energy);
     };
     [count == bound] {
-        term! -> __print_float(energy);
+        term! -> print_float(energy);
     };
     term;
 };

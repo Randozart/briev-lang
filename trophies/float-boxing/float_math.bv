@@ -3,7 +3,7 @@
 import { get_env_int } from "std/env.bv";
 import "link/briev_rt.c";
 
-frgn __print_float(d: Float) -> Bool ;
+frgn print_float(d: Float) -> Bool ;
 
 let x0: Float = 0.0;
 let x1: Float = 0.0;
@@ -58,7 +58,7 @@ node tick [
     &count = count + 1;
     [count % 5000000 == 0] {
         let trace: Float = p00 + p01 + p02 + p10 + p11 + p12 + p20 + p21 + p22;
-        __print_float(x0 + x1 + x2 + trace);
+        print_float(x0 + x1 + x2 + trace);
     };
     term;
 };
