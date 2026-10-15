@@ -116,6 +116,14 @@ pub struct CompilerContext {
     /// a clean C ABI. Previously every regular defn carried state, forcing
     /// all callers to too.
     pub defn_needs_state: HashMap<String, bool>,
+    /// 2026-10-15 (type-dependent member statefulness): concrete type names
+    /// with at least one state-taking member (export_abi::type_stateful_members).
+    /// A monomorphized trait default/generic specialized to such a type must
+    /// take `%state` even when the base (type-agnostic) verdict is stateless —
+    /// `put_cstr$GrowBuf` reaches `Malloc#` through `GrowBuf.put_u8`, while
+    /// `put_cstr$ByteBuf` does not. Consumed at the specialization site
+    /// (emit_expr.rs) to OR into the mono copy's `defn_needs_state`.
+    pub type_stateful_members: HashSet<String>,
     /// 2026-07-27: Reverse index from state field position to field name.
     /// Used by load_field_type() to look up !range metadata by field index.
     pub idx_to_field_name: HashMap<usize, String>,
@@ -561,6 +569,7 @@ impl CompilerContext {
             internal_fold_txns: std::collections::HashSet::new(),
             export_needs_state: HashMap::new(),
             defn_needs_state: HashMap::new(),
+            type_stateful_members: HashSet::new(),
             idx_to_field_name: HashMap::new(),
             collection_iterables: std::collections::HashSet::new(),
             has_reactor_tick: false,

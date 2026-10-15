@@ -145,6 +145,18 @@ fn unify_generic_binding(
 /// identifier), which is why the Custom-only guard below rejected every
 /// compound instantiation and its call sites fell back to the plain
 /// (never-emitted) name. To undo: revert to the Display fallback + guard.
+/// 2026-10-15 (type-dependent member statefulness): the bare nominal name of a
+/// concrete type binding, for looking it up in `type_stateful_members`
+/// (`Custom("GrowBuf")` / `Applied("Stack", …)` → the base name). Compound and
+/// primitive shapes without a nominal head have no obj members, so `None`.
+fn concrete_type_name(ty: &Type) -> Option<&str> {
+    match ty {
+        Type::Custom(n) => Some(n.as_str()),
+        Type::Applied(n, _) | Type::Generic(n, _) => Some(n.as_str()),
+        _ => None,
+    }
+}
+
 fn mangle_specialization(name: &str, concrete: &[Type]) -> String {
     let args = concrete
         .iter()
@@ -5693,8 +5705,25 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 .map(|ty| crate::typechecker::substitute_type(ty, &subst))
                 .collect();
             self.ctx.defn_return_types.insert(mangled.clone(), ret_tys);
-            // The specialization needs state iff the base defn does.
-            let needs_state = self.ctx.defn_needs_state.get(name).copied().unwrap_or(true);
+            // The specialization needs state iff the base defn does OR a
+            // concrete type it is specialized onto has a state-taking member.
+            // 2026-10-15 (type-dependent member statefulness): the base
+            // (type-agnostic) verdict cannot see that a trait default like
+            // `put_cstr` resolves its bare `put_bytes` call to the concrete
+            // `GrowBuf.put_bytes` (→ `grow_to_fit` → `Malloc#`, stateful) under
+            // `S = GrowBuf`, while `S = ByteBuf` resolves to a stateless member.
+            // So OR in whether ANY concrete binding has a stateful member — the
+            // specialized body may reach it. Over-approximation (an unused but
+            // threaded `%state` param) is sound and harmless; the alternative
+            // of walking the specialized body to resolve exact member calls is
+            // more fragile for no observable gain. See
+            // export_abi::type_stateful_members.
+            let base_needs = self.ctx.defn_needs_state.get(name).copied().unwrap_or(true);
+            let concrete_member_stateful = concrete.iter().any(|ty| {
+                concrete_type_name(ty)
+                    .is_some_and(|n| self.ctx.type_stateful_members.contains(n))
+            });
+            let needs_state = base_needs || concrete_member_stateful;
             self.ctx.defn_needs_state.insert(mangled.clone(), needs_state);
             // A specialization is live by construction — it exists only because
             // a live call site referenced it, and it is always emitted via the

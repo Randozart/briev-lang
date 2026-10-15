@@ -96,6 +96,27 @@ fn index_program(
             }
             TopLevel::AsmFn(a) => { always_stateful.insert(a.name.clone()); }
             TopLevel::BadFn(b) => { always_stateful.insert(b.name.clone()); }
+            // 2026-10-15 (type-dependent member statefulness, found by Design
+            // D's GrowBuf): obj MEMBER defns were never indexed here, so a
+            // member reaching a stateful intrinsic was invisible to the
+            // needs-state fixpoint. A trait default (`put_cstr`) calling a
+            // required method (`put_bytes`) by bare name saw `put_bytes` as an
+            // external/frgn call → stateless, even when the concrete member
+            // (`GrowBuf.put_bytes` → `grow_to_fit` → `Malloc#`) is stateful.
+            // Index each member under a TYPE-QUALIFIED key (`GrowBuf::put_bytes`)
+            // so ByteBuf's stateless members and GrowBuf's stateful members are
+            // DISTINCT fixpoint nodes (a bare-name key would collide them). The
+            // member body's calls to free-standing defns (grow_to_fit) resolve
+            // through `regular` normally, so the Malloc# path becomes visible.
+            // The monomorphization site reads these per-type verdicts (via
+            // `type_stateful_members`) to give `put_cstr$GrowBuf` the right
+            // state-taking verdict while `put_cstr$ByteBuf` stays stateless.
+            TopLevel::TypeDef(td) => {
+                index_type_members(&td.name, &td.body.members, &mut regular);
+            }
+            TopLevel::Impl(i) => {
+                index_impl_members(&i.target, &i.functions, &mut regular);
+            }
             // 2026-10-15 (fix: Monomorphized trait DEFAULT method wrongly
             // flagged state-taking, BUGS.md): a trait DEFAULT function (a trait
             // fn WITH a body) is a `Definition` the backend monomorphizes per
@@ -146,6 +167,77 @@ fn index_program(
         }
     }
     (regular, txns, state_fields, always_stateful)
+}
+
+/// 2026-10-15 (type-dependent member statefulness): the fixpoint key for an
+/// obj member — `Type::member`. Keeping members under a type-qualified key
+/// (never the bare member name) is what lets `ByteBuf::put_bytes` (stateless)
+/// and `GrowBuf::put_bytes` (stateful) be DISTINCT nodes. `type_member_key`
+/// is the single source of this format so the producer (indexing) and the
+/// consumer (`type_stateful_members`) cannot drift.
+pub fn type_member_key(type_name: &str, member: &str) -> String {
+    format!("{type_name}::{member}")
+}
+
+/// Index an obj type's member defns under type-qualified keys. Only body-ful
+/// `Definition` members are nodes (a body-less required-method stub carries no
+/// calls); member txns are reactor-threaded and handled by the txn set.
+fn index_type_members<'a>(
+    type_name: &str,
+    members: &'a [TopLevel],
+    regular: &mut HashMap<String, &'a Definition>,
+) {
+    for member in members {
+        if let TopLevel::Definition(d) = member {
+            if !d.body.is_empty() {
+                regular.insert(type_member_key(type_name, &d.name), d);
+            }
+        }
+    }
+}
+
+/// Index an `impl Target { … }` block's functions under type-qualified keys
+/// (same treatment as inherent obj members — inherent behavior attached to a
+/// data-only declaration).
+fn index_impl_members<'a>(
+    target: &str,
+    functions: &'a [Definition],
+    regular: &mut HashMap<String, &'a Definition>,
+) {
+    for d in functions {
+        if !d.body.is_empty() {
+            regular.insert(type_member_key(target, &d.name), d);
+        }
+    }
+}
+
+/// 2026-10-15 (type-dependent member statefulness): the set of concrete type
+/// names that have AT LEAST ONE state-taking member, derived from the same
+/// least-fixpoint as [`compute_defn_needs_state`]. The monomorphization site
+/// consults this: a trait default/generic specialized to a type whose members
+/// are stateful (e.g. `put_cstr$GrowBuf`, because `GrowBuf.put_u8/put_bytes`
+/// reach `Malloc#` via `grow_to_fit`) must itself take `%state`, while the
+/// same default on a stateless type (`put_cstr$ByteBuf`) stays stateless.
+///
+/// Over-approximation is deliberate and sound: a specialization gets a (valid,
+/// threaded) `%state` param even if it happens not to call the stateful member
+/// — the pass's standing "conservative keeping is harmless" stance. The ALT of
+/// walking each specialized body to resolve exactly which members it calls was
+/// rejected as more fragile for no observable benefit (an unused leading
+/// pointer param is free). Keyed by bare type name (`GrowBuf`), the shape the
+/// backend's `subst` yields.
+pub fn type_stateful_members(items: &[TopLevel]) -> HashSet<String> {
+    let per_defn = compute_defn_needs_state(items);
+    let mut out: HashSet<String> = HashSet::new();
+    for (key, needs) in &per_defn {
+        if !needs {
+            continue;
+        }
+        if let Some((type_name, _member)) = key.split_once("::") {
+            out.insert(type_name.to_string());
+        }
+    }
+    out
 }
 
 /// Does `d`'s body reference state under the current `needs` approximation?
@@ -410,8 +502,24 @@ fn expr_needs_state(
         // 2026-09-28 (E3): the `[*]` selector carries no runtime state — it is
         // a leaf, resolved by eager expansion before codegen.
         Expr::Wildcard => false,
-        // Field access always needs state (reads struct metadata)
-        Expr::Field(_, _) => true,
+        // 2026-10-15 (field-access scoping): a field read needs `%state` iff
+        // its BASE chain does. The previous `Expr::Field(_, _) => true` was
+        // unconditional — it predates the 2026-09-23 param-shadowing scoping
+        // (see the Identifier arm) and was never migrated, so ANY member
+        // touching a field of its receiver (`Store#(sink.ptr, val, 1)`, the
+        // bread-and-butter of every obj member) was judged state-taking even
+        // though the load reads the param's pointer, never `%state`. Sound
+        // but over-conservative: it blanket-defeated the stateless-defn
+        // mechanism for all obj members. Now: `sink.ptr` → rec(Identifier
+        // sink) → param → false; `global.field` → rec(Identifier global) →
+        // state field → true (the dde481af protection is preserved — a bare
+        // state-field base still forces state). Every base shape (Call,
+        // MethodCall, Index, Deref, Cast, StructLiteral, …) carries its own
+        // recursive arm, so the base chain is fully walked. Undo: restore
+        // `Expr::Field(_, _) => true` (re-introduces the member-wide
+        // statefulness over-approximation; their test
+        // obj_member_reaching_stateful_intrinsic_is_indexed_stateful fails).
+        Expr::Field(recv, _) => rec(recv),
         Expr::Call(name, args, _) => {
             // Observable/stateful intrinsics need state (unchanged from the
             // backend's original list).
@@ -882,5 +990,121 @@ mod tests {
         let items = vec![TopLevel::Definition(concrete), default];
         let map = compute_defn_needs_state(&items);
         assert_eq!(map.get("put"), Some(&false));
+    }
+
+    // 2026-10-15 (type-dependent member statefulness, found by Design D's
+    // GrowBuf): obj member defns are now indexed under type-qualified keys so a
+    // member reaching a stateful intrinsic is visible, and `type_stateful_members`
+    // reports which concrete types have such a member. The monomorphization site
+    // (emit_expr.rs) ORs that into a trait default/generic's per-instantiation
+    // verdict so `put_cstr$GrowBuf` is state-taking while `put_cstr$ByteBuf`
+    // stays stateless. These tests pin the analysis the backend consumes.
+
+    /// Parse real Briev source into top-level items — behavioral test input
+    /// (AGENTS: test the contract, not the implementation).
+    fn parse(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        parser.parse_program().expect("parse")
+    }
+
+    #[test]
+    fn obj_member_reaching_stateful_intrinsic_is_indexed_stateful() {
+        // A member whose body reaches a stateful intrinsic (Malloc#, via a
+        // free-standing helper) is a type-qualified fixpoint node and is
+        // judged state-taking; a sibling member that only does Store# is not.
+        // Before the fix, obj members were never indexed, so BOTH were
+        // invisible (and any default calling them was wrongly stateless).
+        let src = r#"
+            defn grow_it(addr: Int) -> Int { let fresh: Int = Malloc#(16) as Int; term fresh; };
+            obj Fixed {
+                ptr: Int;
+                defn put(sink: Fixed, val: Int) -> Fixed {
+                    Store#(sink.ptr, val, 1);
+                    term Fixed { ptr: sink.ptr };
+                };
+            };
+            obj Growing {
+                ptr: Int;
+                defn put(sink: Growing, val: Int) -> Growing {
+                    let moved: Int = grow_it(sink.ptr);
+                    Store#(moved, val, 1);
+                    term Growing { ptr: moved };
+                };
+            };
+        "#;
+        let items = parse(src);
+        let map = compute_defn_needs_state(&items);
+        // Type-qualified member keys exist and carry the right verdict.
+        assert_eq!(
+            map.get(&type_member_key("Growing", "put")),
+            Some(&true),
+            "Growing.put reaches Malloc# via grow_it and must be state-taking"
+        );
+        assert_eq!(
+            map.get(&type_member_key("Fixed", "put")),
+            Some(&false),
+            "Fixed.put only does Store# and must stay stateless"
+        );
+    }
+
+    #[test]
+    fn type_stateful_members_reports_only_types_with_a_stateful_member() {
+        // type_stateful_members: the set the monomorphization site consults.
+        // Growing (member reaches Malloc#) is in it; Fixed (stateless member)
+        // is not. This is what makes `put_cstr$GrowBuf` state-taking while
+        // `put_cstr$ByteBuf` stays stateless at the specialization site.
+        let src = r#"
+            defn grow_it(addr: Int) -> Int { let fresh: Int = Malloc#(16) as Int; term fresh; };
+            obj Fixed {
+                ptr: Int;
+                defn put(sink: Fixed, val: Int) -> Fixed {
+                    Store#(sink.ptr, val, 1);
+                    term Fixed { ptr: sink.ptr };
+                };
+            };
+            obj Growing {
+                ptr: Int;
+                defn put(sink: Growing, val: Int) -> Growing {
+                    let moved: Int = grow_it(sink.ptr);
+                    Store#(moved, val, 1);
+                    term Growing { ptr: moved };
+                };
+            };
+        "#;
+        let items = parse(src);
+        let stateful = type_stateful_members(&items);
+        assert!(stateful.contains("Growing"), "Growing has a stateful member");
+        assert!(!stateful.contains("Fixed"), "Fixed has no stateful member");
+    }
+
+    #[test]
+    fn global_state_field_member_access_stays_stateful() {
+        // 2026-10-15 (field-access scoping control): the Field arm now walks
+        // its base chain — this pins the SOUNDNESS direction of that change.
+        // A member reading a field of a GLOBAL state field (`global.ptr`)
+        // loads through `%state` and must stay state-taking; only param/local
+        // bases are exempt (their pointers arrive as arguments). Reverting
+        // the base-chain walk to `Expr::Field(_, _) => true` keeps this green
+        // but blanket-stateful; replacing it with `_ => false` would break it
+        // (the dde481af undefined-`%state` class).
+        let src = r#"
+            let counter: Fixed = Fixed { ptr: 0 };
+            obj Fixed {
+                ptr: Int;
+                defn bump(sink: Fixed) -> Fixed {
+                    let cur: Int = counter.ptr;
+                    term Fixed { ptr: cur };
+                };
+            };
+        "#;
+        let items = parse(src);
+        let map = compute_defn_needs_state(&items);
+        assert_eq!(
+            map.get(&type_member_key("Fixed", "bump")),
+            Some(&true),
+            "bump reads counter.ptr through the global state field and must \
+             take %state"
+        );
     }
 }

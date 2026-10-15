@@ -2604,6 +2604,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // ABI. Computed here once; the backend only consumes the decision.
         self.ctx.defn_needs_state =
             crate::analysis::export_abi::compute_defn_needs_state(items);
+        // 2026-10-15 (type-dependent member statefulness): concrete types with
+        // a state-taking member. A trait default/generic monomorphized onto
+        // such a type must itself take `%state` (its specialized body reaches a
+        // stateful member), while the same default on a stateless type stays
+        // stateless. Consumed at the specialization site (emit_expr.rs).
+        self.ctx.type_stateful_members =
+            crate::analysis::export_abi::type_stateful_members(items);
         // 2026-08-01 (Phase 5): a `keep x;` on a field the scheduler would not
         // auto-free anyway is redundant — surface it as a warning.
         for k in &analysis.global_lifetime.redundant_keeps {
