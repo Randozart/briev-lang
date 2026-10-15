@@ -5164,7 +5164,44 @@ fn probe_ok_checks(
         // convergence GOAL — satisfied → done (return), else → loop (body
         // re-runs). Unconditional for callable txns.
         if !matches!(txn.contract.post_condition, Expr::Bool(true)) {
+            // 2026-10-15 (gate term binding): the postcondition's `term`
+            // reads the txn's RESULT slot (`%result` — where `term <val>`
+            // stores), TYPED with the declared return type. Previously
+            // `term` fell to the global-identifier fallback (`@term` —
+            // never declared or written anywhere) and generic contract
+            // calls (`is_ok(term)` over `Result<T, E>`) saw an Int-typed
+            // argument, failed monomorphization unification, and emitted
+            // bare i64 calls to never-defined generics — undefined symbols
+            // at link. dir.bv's `dir_loop` is the first program to exercise
+            // a generic-Result contract through a callable-txn gate (defn
+            // contracts never emit gates). The declared type drives both
+            // the load's IR shape (the boxed handle is i64 either way) and
+            // the type-level unification. To undo: delete this binding —
+            // the gate regresses to `@term` loads and bare generic calls.
+            let term_ty = txn
+                .outputs
+                .first()
+                .cloned()
+                .or_else(|| {
+                    txn.output_type
+                        .as_ref()
+                        .and_then(|ot| ot.all_types().first().cloned())
+                });
+            if let Some(ty) = &term_ty {
+                self.fun.let_bindings.insert("term".to_string(), "%result".to_string());
+                // %result IS an alloca — register it so the identifier arm
+                // emits a LOAD (typed unbox path) instead of passing the
+                // slot pointer raw (`call i64 @is_ok(ptr %result)`).
+                self.fun.let_binding_allocas.insert("%result".to_string());
+                self.fun.let_binding_types.insert("term".to_string(), ty.clone());
+                self.fun.let_original_types.insert("term".to_string(), ty.clone());
+            }
             let cond = self.emit_expr(out, &txn.contract.post_condition, "  ");
+            if term_ty.is_some() {
+                self.fun.let_bindings.remove("term");
+                self.fun.let_binding_types.remove("term");
+                self.fun.let_original_types.remove("term");
+            }
             let i1 = format!("%pc{}", self.fun.txn_counter); self.fun.txn_counter += 1;
             if cond.ty == Type::bool_() {
                 writeln!(out, "  {} = trunc i8 {} to i1", i1, cond).ok();
@@ -6545,6 +6582,76 @@ mod tests {
         assert!(
             !ir.contains("= call void @bump()"),
             "a void result must not be bound to a register name: {ir}"
+        );
+    }
+
+    #[test]
+    fn coerce_to_i8_bool_normalizes_wide_registers() {
+        // 2026-10-15 (bool-width canonicalization): the helper must convert
+        // a wide register to the canonical i8 Bool (invariant I1) — the
+        // And/Or arms used to emit at the operand's width under a bool
+        // label, the desync that produced `or i64` feeding `trunc i8`.
+        let mut backend = LlvmBackend::new();
+        let mut out = String::new();
+        let wide = TypedRegister {
+            name: "%wide".to_string(),
+            ty: Type::int(),
+        };
+        let coerced = backend.coerce_to_i8_bool(&mut out, "  ", &wide);
+        assert_eq!(coerced.ty, Type::bool_(), "result must carry the bool label");
+        assert!(
+            out.contains("trunc i64 %wide to i8"),
+            "an i64-labeled operand must be truncated to the canonical i8: {out}"
+        );
+
+        let mut out2 = String::new();
+        let canonical = TypedRegister {
+            name: "%b".to_string(),
+            ty: Type::bool_(),
+        };
+        let same = backend.coerce_to_i8_bool(&mut out2, "  ", &canonical);
+        assert!(
+            out2.is_empty(),
+            "a canonical bool passes through without new IR: {out2}"
+        );
+        assert_eq!(same.name, "%b");
+    }
+
+    #[test]
+    fn result_gate_or_emits_canonical_i8() {
+        // 2026-10-15 (bool-width canonicalization): the callable-txn
+        // convergence gate `[yes(term) || no(term)]` must emit `or i8` under
+        // the bool label — the desync class produced `or i64` feeding the
+        // gate's `trunc i8`, which clang rejects ("defined with type 'i64'
+        // but expected 'i8'").
+        let src = r#"
+            defn yes(x: Int) -> Bool { term true; };
+            defn no(x: Int) -> Bool { term false; };
+            txn step(k: Int)
+                [k >= 0][yes(term) || no(term)] -> Int {
+                term k;
+            };
+            let n: Int = 0;
+            node main [n == 0][n == 1] {
+                let r: Int = step(3);
+                endprogram Print#(r);
+            };
+        "#;
+        let program = parse(src);
+        let mut backend = LlvmBackend::new();
+        let ir = backend.generate(&program, None);
+        assert!(
+            ir.contains("or i8"),
+            "the gate disjunction emits at the canonical width: {ir}"
+        );
+        assert!(
+            !ir.contains("= or i64"),
+            "no i64 disjunction may feed a bool-labeled gate: {ir}"
+        );
+        assert!(
+            ir.contains("%pc"),
+            "the convergence gate must be emitted (guards the vacuous pass \
+             where the txn folds away entirely)"
         );
     }
 }

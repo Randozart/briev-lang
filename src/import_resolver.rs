@@ -312,11 +312,24 @@ fn referenced_state_names(item: &TopLevel) -> Vec<String> {
     let mut out = Vec::new();
     match item {
         TopLevel::Definition(d) => {
+            // 2026-10-15 (contract closure): contracts are emitted code (the
+            // callable-txn gate) — their identifier reads belong in the state
+            // closure, mirroring referenced_function_names.
+            expr_vars(&d.contract.pre_condition, &mut out);
+            expr_vars(&d.contract.post_condition, &mut out);
+            if let Some(w) = &d.contract.watchdog {
+                expr_vars(&w.condition, &mut out);
+            }
             for s in &d.body {
                 stmt_vars(s, &mut out);
             }
         }
         TopLevel::Transaction(t) => {
+            expr_vars(&t.contract.pre_condition, &mut out);
+            expr_vars(&t.contract.post_condition, &mut out);
+            if let Some(w) = &t.contract.watchdog {
+                expr_vars(&w.condition, &mut out);
+            }
             for s in &t.body {
                 stmt_vars(s, &mut out);
             }
@@ -410,11 +423,28 @@ fn referenced_function_names(item: &TopLevel) -> Vec<String> {
     let mut out = Vec::new();
     match item {
         TopLevel::Definition(d) => {
+            // 2026-10-15 (contract closure): a contract is CODE the backend
+            // emits — the callable-txn convergence gate evaluates pre/post
+            // (and a watchdog fires) at runtime, so its calls belong in the
+            // transitive closure. `dir_loop`'s `[is_ok(term) ||
+            // is_err(term)]` was the first live case: the contract-only
+            // generics never spliced, and the gate emitted bare calls to
+            // never-defined generics (`use of undefined value '@is_err'`).
+            expr_calls(&d.contract.pre_condition, &mut out);
+            expr_calls(&d.contract.post_condition, &mut out);
+            if let Some(w) = &d.contract.watchdog {
+                expr_calls(&w.condition, &mut out);
+            }
             for s in &d.body {
                 stmt_calls(s, &mut out);
             }
         }
         TopLevel::Transaction(t) => {
+            expr_calls(&t.contract.pre_condition, &mut out);
+            expr_calls(&t.contract.post_condition, &mut out);
+            if let Some(w) = &t.contract.watchdog {
+                expr_calls(&w.condition, &mut out);
+            }
             for s in &t.body {
                 stmt_calls(s, &mut out);
             }
