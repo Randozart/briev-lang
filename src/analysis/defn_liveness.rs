@@ -73,6 +73,7 @@ impl DefnLiveness {
             txns: HashMap::new(),
             contracts: HashMap::new(),
             type_members: HashMap::new(),
+            member_bodies: HashMap::new(),
             roots: HashSet::new(),
             live: HashSet::new(),
             keep_all: false,
@@ -102,6 +103,17 @@ impl DefnLiveness {
             }
             if let Some(c) = pass.contracts.get(&name) {
                 pass.walk_contract(c, &mut queue);
+            }
+            // 2026-10-15 (member-name collision): `defns`/`txns`/`contracts`
+            // retain only ONE same-named member body (first/last-wins). Walk
+            // EVERY member body+contract registered under this name so no
+            // obj's member call edges are missed (e.g. GrowBuf.put_u8 →
+            // grow_to_fit when ByteBuf.put_u8 won the bare-name slot).
+            if let Some(entries) = pass.member_bodies.get(&name).cloned() {
+                for (body, contract) in entries {
+                    pass.walk_stmts(body, &mut queue);
+                    pass.walk_contract(contract, &mut queue);
+                }
             }
         }
 
@@ -202,6 +214,19 @@ struct Builder<'a> {
     /// implementation bodies (coll growth → malloc) that a program using
     /// no collections must not pay for.
     type_members: HashMap<String, Vec<String>>,
+    /// 2026-10-15 (member-name collision, found by Design D's GrowBuf):
+    /// obj MEMBER defns share a name across objs by design — a trait
+    /// requirement like `put_u8` is provided by both `ByteBuf` and
+    /// `GrowBuf`. `defns`/`txns` are keyed by bare name with first/last-wins,
+    /// so only ONE same-named member body is retained there. When a member
+    /// is rooted by construction, the worklist would walk the WRONG obj's
+    /// body and miss its call edges (e.g. `GrowBuf.put_u8` → `grow_to_fit`),
+    /// so the free-standing helper is judged dead and the IR-scan net fires.
+    /// Keep EVERY member body+contract under its bare name here and walk them
+    /// ALL when the name goes live. Over-approximation (walking a member body
+    /// for an unconstructed obj) only keeps a few extra helpers live — the
+    /// pass's deliberate, harmless coarse-sound stance.
+    member_bodies: HashMap<String, Vec<(&'a [Statement], &'a Contract)>>,
     roots: HashSet<String>,
     live: HashSet<String>,
     keep_all: bool,
@@ -222,6 +247,26 @@ impl<'a> Builder<'a> {
         self.contracts.entry(t.name.clone()).or_insert(&t.contract);
     }
 
+    /// 2026-10-15 (member-name collision): record a member's body+contract
+    /// under its bare name in the collision-safe multimap. `index_defn`/
+    /// `index_txn` key by bare name with first/last-wins, so same-named
+    /// members across objs (a trait requirement like `put_u8` on both
+    /// `ByteBuf` and `GrowBuf`) overwrite each other there — only ONE body
+    /// survives for the worklist to walk. Appending here keeps ALL of them,
+    /// and the worklist walks every one when the name goes live, so no
+    /// member's call edges are lost. See `member_bodies`.
+    fn index_member_body(
+        &mut self,
+        name: &str,
+        body: &'a [Statement],
+        contract: &'a Contract,
+    ) {
+        self.member_bodies
+            .entry(name.to_string())
+            .or_default()
+            .push((body, contract));
+    }
+
     /// 2026-10-07 (view-surface liveness): dispatch-name roots for a txn.
     /// Extracted from `index_item` (its cognitive complexity must stay in
     /// bounds — the arm had grown to the cap). Three independent classes:
@@ -234,7 +279,7 @@ impl<'a> Builder<'a> {
     ///   call edge. They are compiler-generated, never user dead code. The
     ///   prefix rule matches the bind-route exclusion in pipeline.rs.
     /// - An async txn makes the program reactive-unbounded — the main tail
-    ///   yields through `__wait_for_trigger__` (loop_engine's no-wake/no-exit
+    ///   yields through `wait_for_trigger` (loop_engine's no-wake/no-exit
     ///   branch). The call is backend-emitted, so liveness must root its
     ///   helper alongside the txn (2026-09-17, same class as the
     ///   stdout-flush gate fix).
@@ -246,7 +291,7 @@ impl<'a> Builder<'a> {
             self.roots.insert(t.name.clone());
         }
         if t.is_async {
-            self.roots.insert("__wait_for_trigger__".into());
+            self.roots.insert("wait_for_trigger".into());
         }
     }
 
@@ -262,10 +307,12 @@ impl<'a> Builder<'a> {
             match m {
                 TopLevel::Definition(d) => {
                     self.index_defn(d);
+                    self.index_member_body(&d.name, &d.body, &d.contract);
                     members.push(d.name.clone());
                 }
                 TopLevel::Transaction(t) => {
                     self.index_txn(t);
+                    self.index_member_body(&t.name, &t.body, &t.contract);
                     members.push(t.name.clone());
                 }
                 TopLevel::TypeDefOperator(op) => {
@@ -384,6 +431,7 @@ impl<'a> Builder<'a> {
                 // `obj Enemy { … }`) — usage-rooted via construction.
                 let members = s.transactions.iter().map(|t| {
                     self.index_txn(t);
+                    self.index_member_body(&t.name, &t.body, &t.contract);
                     t.name.clone()
                 }).collect();
                 self.type_members.insert(s.name.clone(), members);
@@ -449,9 +497,10 @@ impl<'a> Builder<'a> {
     /// 2026-09-23 (async Phase D soundness-net catch): a `spawn`/`await` in
     /// live code lowers to briev_task_spawn_impl / briev_await_impl, and the
     /// spawned tasks' port fire/read/ready lower to the event family
-    /// (briev_event_*_impl, __briev_event_strict_trap). Root the whole family
+    /// (briev_event_*_impl, event_strict_trap). Root the whole family
     /// — type-agnostic over-approx; `mark` is a no-op for helpers absent from
-    /// the unit. The event helpers' own callees (write_all/__print etc.) join
+    /// the unit. The event helpers' own callees (write_all/print_str_raw
+    /// etc.) join
     /// the closure when their bodies are walked from the worklist.
     fn root_task_event_family(&self, queue: &mut Vec<String>) {
         for h in [
@@ -462,7 +511,7 @@ impl<'a> Builder<'a> {
             "briev_event_ready_impl",
             "briev_event_read_impl",
             "briev_event_fire_impl",
-            "__briev_event_strict_trap",
+            "event_strict_trap",
         ] {
             self.mark(h, queue);
         }
@@ -509,7 +558,7 @@ impl<'a> Builder<'a> {
                             }
                         }
                         if name == "#StdErr" {
-                            self.mark("__eprint_str", queue);
+                            self.mark("eprint_str", queue);
                         }
                     }
                     self.walk_expr(t, queue);
@@ -523,8 +572,9 @@ impl<'a> Builder<'a> {
                 self.walk_expr(value, queue);
             }
             Statement::EndProgram(Some(e)) => {
-                // `endprogram code;` → `call @__exit(code)` when defined.
-                self.mark("__exit", queue);
+                // `endprogram code;` → `call @exit_prog(code)` when defined
+                // (the C fallback keeps the `__exit` ABI name).
+                self.mark("exit_prog", queue);
                 self.walk_expr(e, queue);
             }
             Statement::Foreach { list, body, .. } => {
@@ -536,12 +586,12 @@ impl<'a> Builder<'a> {
                 self.walk_stmts(body, queue);
             }
             Statement::FreeHint(_) => {
-                // Scheduler auto-free lowers to `__briev_free` for heap
+                // Scheduler auto-free lowers to `rt_free` for heap
                 // fields; the explicit hint is the AST-visible form.
                 // 2026-09-22 (soundness-net catch): a freed TASK HANDLE
                 // additionally lowers to `briev_task_cancel_impl` — root
                 // both so async programs pass the IR scan.
-                self.mark("__briev_free", queue);
+                self.mark("rt_free", queue);
                 self.mark("briev_task_cancel_impl", queue);
             }
             other => self.walk_stmt_rest(other, queue),
@@ -681,17 +731,17 @@ impl<'a> Builder<'a> {
                 self.mark("briev_str_eq", queue);
                 // 2026-09-23 (soundness-net catch, pp_roundtrip): `+` on a
                 // String lowers to inline concat, which frees its temporaries
-                // via `__briev_free` at the end of the enclosing statement.
+                // via `rt_free` at the end of the enclosing statement.
                 // Type-agnostic — any Add may be a String concat. Same
                 // coarse-sound over-approx as briev_str_eq above.
-                self.mark("__briev_free", queue);
+                self.mark("rt_free", queue);
                 // 2026-10-05 (json.bv): `+` on two COLLECTIONS concatenates,
                 // growing the target through the runtime realloc-or-copy
                 // helper. Type-agnostic — any Add may be a collection concat;
-                // root it so the emitted `__briev_coll_resize` call passes the
+                // root it so the emitted `coll_resize` call passes the
                 // soundness net (BUGS.md). Same coarse-sound over-approx.
                 if matches!(kind, crate::ast::BinaryOpKind::Add) {
-                    self.mark("__briev_coll_resize", queue);
+                    self.mark("coll_resize", queue);
                 }
                 self.walk_expr(l, queue);
                 self.walk_expr(r, queue);
@@ -868,28 +918,30 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
     match intrinsic {
         // Print# lowers per argument type (Int/Float/Float64/Bool/Char/
         // String) — root the whole family when any print appears. The
-        // main-tail `__stdout_flush` and `__print` (generic printer) are
-        // backend-emitted, not AST calls.
+        // main-tail `stdout_flush` and `print_str_raw` (generic printer) are
+        // backend-emitted, not AST calls. (2026-10-15 core-usable purge:
+        // family renamed from `__print_*` to plain names; `__print_float64`
+        // stays a bare C symbol — no defn, so its row is a documented no-op.)
         "Print#" => &[
-            "__print",
-            "__print_str",
-            "__print_int",
-            "__print_bool",
-            "__print_float",
+            "print_str_raw",
+            "print_str",
+            "print_int",
+            "print_bool",
+            "print_float",
             "__print_float64",
-            "__print_char",
-            "__stdout_byte",
-            "__stdout_flush",
+            "put_char",
+            "stdout_byte",
+            "stdout_flush",
             // 2026-09-23 (soundness-net catch, term fixtures/async): the
             // print/string lowering may emit these even in a trivial
             // `Print#(r)` program — the cast lanes route String↔Int through
             // str_to_int/int_to_str, the scheduler auto-free lowers to
-            // __briev_free, and Slice# on a String routes through
+            // rt_free, and Slice# on a String routes through
             // briev_str_substr. Root them with the family so a minimal print
             // program does not trip the net.
             "str_to_int",
             "int_to_str",
-            "__briev_free",
+            "rt_free",
             "briev_str_substr",
         ],
         // Slice# on `#String` values routes through the substring helper.
@@ -898,12 +950,12 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
         "Count#" | "CharCount#" => &["briev_char_len", "briev_str_next_char"],
         // Collection growth family realloc-or-copy via the runtime helper.
         "Resize#" | "EnsureCap#" | "TrimCap#" | "InsertAt#" | "Insert#" => {
-            &["__briev_coll_resize"]
+            &["coll_resize"]
         }
         // Working directory / environment.
-        "GetCwd#" => &["cstr_len", "__briev_getcwd"],
-        "ChDir#" => &["__briev_chdir"],
-        "GetEnv#" | "GetEnvInt#" => &["__briev_getcwd"],
+        "GetCwd#" => &["cstr_len", "rt_getcwd"],
+        "ChDir#" => &["rt_chdir"],
+        "GetEnv#" | "GetEnvInt#" => &["rt_getcwd"],
         // 2026-09-23 (frgn-elimination round 2): get_env!/get_env_int!
         // expand to stdlib defns (env.bv) whose bodies call the pure-Briev
         // environ walkers briev_getenv_{briev,int}_impl (cast_lanes.bv),
@@ -923,12 +975,12 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
             "str_to_int",
             "int_to_str",
             "briev_str_substr",
-            "__briev_free",
+            "rt_free",
         ],
         // Lifetime + time (the backend's free/now emissions prefer the
         // pure-Briev defns when present).
-        "Free#" => &["__briev_free"],
-        "Now#" => &["__briev_now"],
+        "Free#" => &["rt_free"],
+        "Now#" => &["rt_now_ns"],
         _ => &[],
     }
 }
@@ -1197,6 +1249,81 @@ mod tests {
         Statement::Expression(Expr::Call(name.to_string(), vec![], None))
     }
 
+    /// Parse real Briev source into top-level items (behavioral tests —
+    /// AGENTS "test the contract, not the implementation"). Same helper
+    /// shape as the other analysis-pass test modules (casing, coll_length).
+    fn parse(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        parser.parse_program().expect("parse")
+    }
+
+    #[test]
+    fn same_named_member_bodies_all_contribute_call_edges() {
+        // 2026-10-15 (member-name collision, Design D GrowBuf): two objs each
+        // provide a same-named member `bump`. Alpha's (declared FIRST) calls
+        // nothing; Beta's calls free-standing `helper`. Only Beta is
+        // constructed+used. Before the fix, `defns["bump"]` held only Alpha's
+        // body (first-wins), so rooting Beta's `bump` walked Alpha's body,
+        // missed the `helper` edge, and `helper` was judged dead — the IR-scan
+        // soundness net then panicked at emission. Now EVERY member body under
+        // the bare name is walked, so `helper` is live.
+        let src = r#"
+            defn helper(val: Int) -> Int { term val + 1; };
+            obj Alpha {
+                n: Int;
+                defn bump(sink: Alpha, val: Int) -> Alpha {
+                    term Alpha { n: sink.n + 1 };
+                };
+            };
+            obj Beta {
+                n: Int;
+                defn bump(sink: Beta, val: Int) -> Beta {
+                    let bumped: Int = helper(sink.n);
+                    term Beta { n: bumped };
+                };
+            };
+            node entry [beginprogram][true] {
+                let beta0: Beta = Beta { n: 6 };
+                let beta1: Beta = bump(beta0, 0);
+                endprogram Print#(beta1.n);
+            };
+        "#;
+        let items = parse(src);
+        let l = DefnLiveness::build(&items);
+        // Beta's member body is reached (via construction + the top-level call)
+        // and its call edge into `helper` must keep `helper` live.
+        assert!(
+            l.is_live("helper"),
+            "helper reached only through Beta.bump must be live despite the \
+             same-named Alpha.bump winning the bare-name slot"
+        );
+    }
+
+    #[test]
+    fn single_member_body_edge_is_followed() {
+        // Control: one obj, one member calling a helper — the single-member
+        // path has always worked (confirms the fix did not change it).
+        let src = r#"
+            defn helper(val: Int) -> Int { term val + 1; };
+            obj Beta {
+                n: Int;
+                defn bump(sink: Beta, val: Int) -> Beta {
+                    let bumped: Int = helper(sink.n);
+                    term Beta { n: bumped };
+                };
+            };
+            node entry [beginprogram][true] {
+                let beta0: Beta = Beta { n: 6 };
+                let beta1: Beta = bump(beta0, 0);
+                endprogram Print#(beta1.n);
+            };
+        "#;
+        let items = parse(src);
+        let l = DefnLiveness::build(&items);
+        assert!(l.is_live("helper"));
+    }
+
     #[test]
     fn dead_defn_is_not_live() {
         // A reactive txn calling nothing; an orphan defn nobody reaches.
@@ -1282,12 +1409,12 @@ mod tests {
                 vec![Expr::Decimal(1)],
                 None,
             ))]),
-            defn("__print_int", vec![Statement::Term(None)]),
-            defn("__print_str", vec![Statement::Term(None)]),
+            defn("print_int", vec![Statement::Term(None)]),
+            defn("print_str", vec![Statement::Term(None)]),
         ];
         let l = DefnLiveness::build(&items);
-        assert!(l.is_live("__print_int"));
-        assert!(l.is_live("__print_str"));
+        assert!(l.is_live("print_int"));
+        assert!(l.is_live("print_str"));
     }
 
     #[test]

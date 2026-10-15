@@ -5,19 +5,19 @@
 //
 // Two cases (plan §4.5):
 //   1. `defn main()` exists (no explicit entry!): synthesize
-//        let __script_done: Bool = false;
-//        node __script_main [__script_done == false][__script_done] {
+//        let script_done: Bool = false;
+//        node script_main [script_done == false][script_done] {
 //            <call to main() — emitted as briev_main by the backend>;
-//            __script_done = true;
+//            script_done = true;
 //        };
 //   2. Only bare top-level statements (TopLevel::Statement Let) and no
 //      defn/txn/node: synthesize the same one-shot node whose body runs the
 //      script statements in order.
 //
 // Rules:
-//   - `[true]` is never emitted — the guard `__script_done == false` is a
+//   - `[true]` is never emitted — the guard `script_done == false` is a
 //     real constraint, true exactly once.
-//   - `__script_main` / `__script_done` are compiler-reserved; collision with
+//   - `script_main` / `script_done` are compiler-reserved; collision with
 //     a user binding is a compile error (no silent shadowing).
 //   - Runs at Parsed stage (before typechecking) so the node is visible to
 //     the typechecker and the concurrency gate.
@@ -153,7 +153,7 @@ fn resolve_script(program: &mut Vec<TopLevel>) -> Result<(), String> {
             // in the AST resolves to the same defn.
             Statement::Expression(Expr::Call("main".into(), vec![], None)),
             Statement::Assign(
-                Expr::Identifier("__script_done".into()),
+                Expr::Identifier("script_done".into()),
                 Expr::Bool(true),
             ),
         ];
@@ -167,7 +167,7 @@ fn resolve_script(program: &mut Vec<TopLevel>) -> Result<(), String> {
         return Ok(()); // nothing to wrap
     }
     script_stmts.push(Statement::Assign(
-        Expr::Identifier("__script_done".into()),
+        Expr::Identifier("script_done".into()),
         Expr::Bool(true),
     ));
     synthesize(program, script_stmts)?;
@@ -210,29 +210,29 @@ fn reserved_collision(program: &[TopLevel]) -> Option<&'static str> {
             TopLevel::Init(i) => i.name.as_str(),
             _ => continue,
         };
-        if name == "__script_main" {
-            return Some("__script_main");
+        if name == "script_main" {
+            return Some("script_main");
         }
-        if name == "__script_done" {
-            return Some("__script_done");
+        if name == "script_done" {
+            return Some("script_done");
         }
     }
     None
 }
 
 
-/// Prepend `let __script_done: Bool = false;` and append the synthesized
+/// Prepend `let script_done: Bool = false;` and append the synthesized
 /// one-shot node. `[true]` is never emitted.
 fn synthesize(program: &mut Vec<TopLevel>, body: Vec<Statement>) -> Result<(), String> {
     let done = TopLevel::Statement(Box::new(Statement::Let {
-        name: "__script_done".into(),
+        name: "script_done".into(),
         names: vec![],
         ty: Some(Type::bool_()),
         expr: Some(Expr::Bool(false)),
         modifiers: vec![],
     }));
     let node = TopLevel::Transaction(crate::ast::Transaction {
-        name: "__script_main".into(),
+        name: "script_main".into(),
         is_reactive: true,
         is_async: false,
         type_params: vec![],
@@ -242,10 +242,10 @@ fn synthesize(program: &mut Vec<TopLevel>, body: Vec<Statement>) -> Result<(), S
         contract: crate::ast::Contract {
             pre_condition: Expr::BinaryOp(
                 crate::ast::BinaryOpKind::Eq,
-                Box::new(Expr::Identifier("__script_done".into())),
+                Box::new(Expr::Identifier("script_done".into())),
                 Box::new(Expr::Bool(false)),
             ),
-            post_condition: Expr::Identifier("__script_done".into()),
+            post_condition: Expr::Identifier("script_done".into()),
             watchdog: None,
             span: None,
             explicit: true,
@@ -290,23 +290,23 @@ mod tests {
         resolve_script(&mut program).unwrap();
         let debug = format!("{program:?}");
         assert!(
-            debug.contains("__script_main"),
-            "defn main must synthesize __script_main; got:\n{debug}"
+            debug.contains("script_main"),
+            "defn main must synthesize script_main; got:\n{debug}"
         );
         assert!(
-            debug.contains("__script_done"),
-            "defn main must synthesize __script_done; got:\n{debug}"
+            debug.contains("script_done"),
+            "defn main must synthesize script_done; got:\n{debug}"
         );
         assert!(
             debug.contains("Call(\"main\""),
             "the opening node must call main(); got:\n{debug}"
         );
         // [true] never emitted as the guard: the precondition is the real
-        // constraint `__script_done == false` (a Bool(true) in the defn's own
+        // constraint `script_done == false` (a Bool(true) in the defn's own
         // contract or the flip is legitimate, so assert on the node's guard).
         assert!(
-            debug.contains("BinaryOp(Eq, Identifier(\"__script_done\"), Bool(false))"),
-            "script guard must be __script_done == false (not [true]); got:\n{debug}"
+            debug.contains("BinaryOp(Eq, Identifier(\"script_done\"), Bool(false))"),
+            "script guard must be script_done == false (not [true]); got:\n{debug}"
         );
     }
 
@@ -321,8 +321,8 @@ mod tests {
         resolve_script(&mut program).unwrap();
         let debug = format!("{program:?}");
         assert!(
-            debug.contains("__script_main"),
-            "bare lets must synthesize __script_main; got:\n{debug}"
+            debug.contains("script_main"),
+            "bare lets must synthesize script_main; got:\n{debug}"
         );
         assert!(
             debug.contains("name: \"x\"")
@@ -346,7 +346,7 @@ mod tests {
         resolve_script(&mut program).unwrap();
         let debug = format!("{program:?}");
         assert!(
-            !debug.contains("__script_main"),
+            !debug.contains("script_main"),
             "a reactive program must NOT be wrapped; got:\n{debug}"
         );
     }
@@ -355,14 +355,14 @@ mod tests {
     fn test_reserved_collision_errors() {
         let mut program = parse(
             r#"
-            let __script_done: Bool = false;
+            let script_done: Bool = false;
             defn main() -> Int { term 0; };
             "#,
         );
         let err = resolve_script(&mut program).unwrap_err();
         assert!(
             err.contains("compiler-reserved"),
-            "collision with __script_done must error; got: {err}"
+            "collision with script_done must error; got: {err}"
         );
     }
 
@@ -382,7 +382,7 @@ mod tests {
         resolve_script(&mut program).unwrap();
         let debug = format!("{program:?}");
         assert!(
-            !debug.contains("__script_main"),
+            !debug.contains("script_main"),
             "sync<group> node must NOT be wrapped; got:\n{debug}"
         );
     }
@@ -398,7 +398,7 @@ mod tests {
         resolve_script(&mut program).unwrap();
         let debug = format!("{program:?}");
         assert!(
-            !debug.contains("__script_main"),
+            !debug.contains("script_main"),
             "entry! program must NOT be wrapped; got:\n{debug}"
         );
     }

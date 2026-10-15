@@ -6,7 +6,7 @@
 import { get_env_int } from "std/env.bv";
 import "link/briev_rt.c";
 
-frgn #out __print_float(val: Float) -> Bool;
+frgn #out print_float(val: Float) -> Bool;
 
 let bound: Int = get_env_int("BOUND");
 let count: Int = 0;
@@ -391,7 +391,7 @@ node simulate [
     let energy: Float = epp + ekc;
 
     [count == bound] {
-        let __printed: Bool = __print_float(energy);
+        let __printed: Bool = print_float(energy);
     };
     term;
 };

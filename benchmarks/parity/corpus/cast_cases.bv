@@ -1,7 +1,7 @@
 // Parity corpus — casting-graph lane gate (plan §6.2, Family A).
 // Pins the C cast lanes byte-for-byte: int_to_str (%ld), uint_to_str,
 // bool_to_str, float_to_str (%g, 6 sig digits), char_to_str (UTF8),
-// str_first_char. Each value is cast to String and printed via __print_str.
+// str_first_char. Each value is cast to String and printed via print_str.
 let done: Bool = false;
 node go [done == false][done == true] {
     when done == false {

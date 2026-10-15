@@ -1,7 +1,7 @@
 #!exit true;
 
-frgn #out __print_int(val: Int) -> Bool;
-frgn #out __print_float(val: Float) -> Bool;
+frgn #out print_int(val: Int) -> Bool;
+frgn #out print_float(val: Float) -> Bool;
 
 // Universal Bracket: every type decomposes to visual Char fragments
 let num: Int = 15561;
@@ -12,6 +12,6 @@ let every_other: Int = num[::2];
 // Explicit regex filter in bracket
 let matched: Int = num[; @"[15]"];
 
-let _p1: Bool = __print_int(filtered);
-let _p2: Bool = __print_int(every_other);
-let _p3: Bool = __print_int(matched);
+let _p1: Bool = print_int(filtered);
+let _p2: Bool = print_int(every_other);
+let _p3: Bool = print_int(matched);

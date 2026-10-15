@@ -37,7 +37,7 @@ import "std/cast_lanes.bv";
 // `export let`) — redeclaring them here as `const` collides with those
 // state-field bindings (both names in one unit; the identifier then
 // resolves to whichever registration won, and the print family's
-// __stdout_fill clobbered the shared slot mid-program — the -EBADF probe
+// stdout_fill clobbered the shared slot mid-program — the -EBADF probe
 // lesson, 2026-10-12). The O_* flags appear in no imported module, so they
 // are file-local consts here.
 

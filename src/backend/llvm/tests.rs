@@ -2696,6 +2696,61 @@ fn test_endprogram_emits_process_exit() {
 }
 
 #[test]
+fn test_endprogram_calls_exit_prog_when_defn_present() {
+    // 2026-10-15 (core-usable purge): with the stdlib exit_prog defn in the
+    // unit, `endprogram` calls the stateful Briev defn (i64, %state) — the
+    // void @__exit C wrapper is the fallback only (emit_stmt endprogram
+    // branch). Sibling of test_endprogram_emits_process_exit.
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
+    let program = vec![
+        state_count(),
+        TopLevel::Definition(crate::ast::Definition {
+            variadic_param: None,
+            name: "exit_prog".to_string(),
+            type_params: vec![],
+            parameters: vec![("code".to_string(), Type::int())],
+            outputs: vec![Type::int()],
+            output_type: None,
+            contract: default_contract(),
+            body: vec![Statement::Term(Some(Expr::Identifier("code".into())))],
+            modifiers: vec![],
+            metadata: HashMap::new(),
+            derivation: None,
+            annotations: vec![],
+            span: None,
+            doc: None,
+        }),
+        TopLevel::Transaction(Transaction {
+            variadic_param: None,
+            name: "report".to_string(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: default_contract(),
+            body: vec![Statement::EndProgram(Some(Expr::Decimal(7)))],
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
+        }),
+    ];
+    let output = backend.generate(&program, None);
+    assert!(
+        output.contains("call i64 @exit_prog(ptr %state, i64 "),
+        "stateful exit_prog call when the defn is present: {output}"
+    );
+    assert!(
+        !output.contains("call void @__exit(i64"),
+        "C-fallback exit must not fire when exit_prog is present: {output}"
+    );
+    assert!(output.contains("unreachable"), "unreachable after exit: {output}");
+}
+
+#[test]
 fn test_beginprogram_entry_loop_emits_flag_and_goal_clear() {
     // 2026-08-06 (beginprogram plan): a beginprogram node emits its entry flag
     // (@briev_begin_<name>, true until the goal) and a goal-check that clears
@@ -5824,7 +5879,7 @@ fn test_batch_loop_dispatch_post_increment() {
                 Box::new(Expr::Identifier("count".into())),
                 Box::new(Expr::Decimal(100)))),
             Box::new(Expr::Decimal(0))),
-        vec![Statement::Expression(Expr::Call("__print_float".into(), vec![Expr::Identifier("f0".into())], None))]));
+        vec![Statement::Expression(Expr::Call("print_float".into(), vec![Expr::Identifier("f0".into())], None))]));
     body.push(Statement::Term(None));
     program.push(TopLevel::Transaction(Transaction {
         variadic_param: None,
@@ -5891,7 +5946,7 @@ fn test_countdown_field_backedge_copies_are_fast() {
                     Box::new(Expr::Identifier("count".into())),
                     Box::new(Expr::Decimal(100)))),
                 Box::new(Expr::Decimal(0))),
-            vec![Statement::Expression(Expr::Call("__print_float".into(), vec![Expr::Identifier("f0".into())], None))]),
+            vec![Statement::Expression(Expr::Call("print_float".into(), vec![Expr::Identifier("f0".into())], None))]),
         Statement::Term(None),
     ];
     program.push(TopLevel::Transaction(Transaction {
@@ -5961,7 +6016,7 @@ fn test_batch_loop_rejects_pre_increment() {
                             Box::new(Expr::Identifier("count".into())),
                             Box::new(Expr::Decimal(100)))),
                         Box::new(Expr::Decimal(0))),
-                    vec![Statement::Expression(Expr::Call("__print_int".into(), vec![Expr::Identifier("acc".into())], None))]),
+                    vec![Statement::Expression(Expr::Call("print_int".into(), vec![Expr::Identifier("acc".into())], None))]),
                 Statement::Assign(Expr::Identifier("acc".into()),
                     Expr::BinaryOp(BinaryOpKind::Add,
                         Box::new(Expr::Identifier("acc".into())),
@@ -5982,12 +6037,14 @@ fn test_batch_loop_rejects_pre_increment() {
 
 // ── FFI regression guard (2026-08-01, Phase 0-1 of the plugin/macro rework) ──
 // print!/println! rewrite to the generic Print# intrinsic, which the
-// backend emits as `call i64 @__print_*` (dispatch by the argument's type).
+// backend emits as a direct `call i64 @print_*(...)` (dispatch by the
+// argument's type) when the stdlib helpers are present, or the C-fallback
+// `@__print_*` symbols in a bare unit (core-usable purge, 2026-10-15).
 // The syntax renames in the plugin/macro rework (PrintLn! -> println!,
 // GetEnvInt! -> get_env_int!) must never introduce an indirection layer (GLUE
 // bridge shims, protocol chains) between the macro and the C runtime call.
-// This test pins that contract: if a future rewrite stops emitting the direct
-// call, it fails here.
+// These tests pin that contract: if a future rewrite stops emitting the direct
+// call, they fail here.
 
 /// Lex + parse a .bv source string into an AST (test helper).
 fn parse_bv_source(src: &str) -> Vec<TopLevel> {
@@ -6019,11 +6076,52 @@ fn test_print_plugin_emits_direct_ffi_calls() {
     let ir = backend.generate(&items, None);
     assert!(
         ir.contains("call i64 @__print_int("),
-        "expected direct @__print_int call after plugin rewrite; got:\n{ir}"
+        "bare unit: expected direct C-fallback @__print_int call; got:\n{ir}"
     );
     assert!(
         ir.contains("call i64 @__print_char("),
-        "expected direct @__print_char newline call after plugin rewrite; got:\n{ir}"
+        "bare unit: expected direct C-fallback @__print_char newline call; got:\n{ir}"
+    );
+    assert!(
+        !ir.contains("bridge_"),
+        "print rewrite must not route through the GLUE bridge; got:\n{ir}"
+    );
+}
+
+#[test]
+fn test_print_plugin_dispatches_to_plain_helpers_when_present() {
+    // 2026-10-15 (core-usable purge): with the stdlib print defns in the
+    // unit (the real prelude pipeline), Print# resolves to the PLAIN helper
+    // names and passes %state — the C symbols are the --no-stdlib fallback
+    // only. Mirrors test_print_plugin_emits_direct_ffi_calls (bare unit).
+    let src = r#"
+        out defn print_int(n: Int) [true][term >= 0] -> Int { term 0; };
+        out defn put_char(c: Int) [true][term >= 0] -> Int { term 0; };
+        let x: Int = 5;
+        defn show(v: Int) -> Int {
+            println!(v);
+            term v;
+        };
+
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; show(0); };
+    "#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.register(Box::new(crate::plugin::print_plugin::PrintPlugin));
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("print plugin stage failed");
+
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    assert!(
+        ir.contains("call i64 @print_int("),
+        "expected direct @print_int call when the defn is present; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("call i64 @put_char("),
+        "expected direct @put_char newline call when the defn is present; got:\n{ir}"
     );
     assert!(
         !ir.contains("bridge_"),
@@ -6832,7 +6930,7 @@ fn test_arrow_only_collection_is_kept_in_state() {
 // ── Coll grow-on-full (2026-08-15) ────────────────────────────────────
 
 /// A `coll obj` push past the default cap (16) must emit the grow-on-full
-/// guard: `if len == cap { __briev_coll_resize(h, cap * 2) }` BEFORE the
+/// guard: `if len == cap { coll_resize(h, cap * 2) }` BEFORE the
 /// store, and re-read `data` from the slot after the join (the runtime
 /// mutates the `[data, cap, len]` block in place — no register merge).
 /// Pre-fix the scaffolded push had no guard and wrote OOB past the 16-slot
@@ -8544,7 +8642,7 @@ node start [true][false] {
 fn test_loop_txn_last_consumer_emits_free_after_loop() {
     // A countable-loop txn (the benchmark's countdown shape, with a periodic
     // `when` guard) that is a heap-backed field's last consumer must emit
-    // __briev_free AFTER the loop exits (never inside the iterating body).
+    // rt_free AFTER the loop exits (never inside the iterating body).
     let src = r#"
 let N: Int = GetEnvInt#("BOUND");
 let buf: Ptr<Int> = Malloc#(64) as Ptr<Int>;

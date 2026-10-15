@@ -16,7 +16,7 @@
 import "link/briev_rt.c";
 import { get_env_int } from "std/env.bv";
 
-frgn __print_int(n: Int) -> Bool ;
+frgn print_int(n: Int) -> Bool ;
 
 let ops: Int = 0;
 let N: Int = get_env_int("BOUND");
@@ -24,7 +24,7 @@ let N: Int = get_env_int("BOUND");
 node work [ops < N][ops == N] {
     &ops = ops + 1;
     [ops % 5000000 == 0] {
-        __print_int(ops);
+        print_int(ops);
     };
     term;
 };

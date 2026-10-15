@@ -1235,7 +1235,8 @@ pub struct LlvmBackend {
 
     // ── Async / Thread Pool ────────────────────────────────
     pub(crate) has_async_txns: bool,
-    /// 2026-09-11 (buffered stdout): `__stdout_flush` is defined in this
+    /// 2026-09-11 (buffered stdout): `stdout_flush` (was `__stdout_flush`;
+    /// renamed 2026-10-15, core-usable purge) is defined in this
     /// program (the print family is linked) — runtime mains call it before
     /// returning so the buffer tail reaches the fd. Bare/no-stdlib programs
     /// never set it, and no call or declare is emitted.
@@ -2461,7 +2462,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // 2026-09-11 (buffered stdout): gate the epilogue flush on the
         // stdlib lane actually being present — bare programs get no call.
         // 2026-09-17: ALSO gate on liveness — the defn existing is not
-        // enough (a program that never prints defines __stdout_flush but
+        // enough (a program that never prints defines stdout_flush but
         // nothing roots it, so the tail call would hit the defn-liveness
         // gate: "emitted code calls unreached defns"). Print# roots the
         // whole stdout family via intrinsic_helpers, so the tail fires
@@ -2522,12 +2523,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-09-23 (async-events empty-output fix): the epilogue-flush gate
         // must read the NOW-populated live set. Previously computed at the
         // top of generate() it always saw the default-empty live_defns and
-        // suppressed the main-tail __stdout_flush — a program printing via
+        // suppressed the main-tail stdout_flush — a program printing via
         // the buffered lane (buffered stdout) wrote into a buffer that was
         // never flushed (acc computed correctly, no output).
         self.has_stdout_flush = items.iter().any(|i| {
-            matches!(i, TopLevel::Definition(d) if d.name == "__stdout_flush")
-        }) && self.ctx.live_defns.contains("__stdout_flush");
+            matches!(i, TopLevel::Definition(d) if d.name == "stdout_flush")
+        }) && self.ctx.live_defns.contains("stdout_flush");
         // 2026-08-31 (plan abv-gpu-by-default): pre-register the accel kernel
         // index BEFORE host emission. The dispatch wrapper is decided at
         // txn-emission time via accel_kernel_idx — with kernel collection at
@@ -3709,7 +3710,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // These are called by inop declarations in lib/std/os/*.bv.
         // All take/return i64 (boxed value) matching Briev's ABI.
         // 2026-08-15 (coll plan §3.6): the coll capacity resize helper.
-        if !defined.contains("__briev_coll_resize") {
+        if !defined.contains("coll_resize") {
             writeln!(out, "declare i64 @__briev_coll_resize(i64, i64) #1").ok();
         }
         writeln!(out, "declare i64 @briev_open(i64, i64, i64) #1").ok();
@@ -3773,13 +3774,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-09-09 (Family B): skipped when a pure-Briev defn provides the
         // symbol (the declare-guard `defined` set) — a declare whose
         // signature differs from the define is an LLVM redefinition error.
-        if !defined.contains("__exit") {
+        // 2026-10-15 (core-usable purge): the helper is `exit_prog`; the C
+        // fallback symbol keeps its briev_rt.c ABI name (__exit).
+        if !defined.contains("exit_prog") {
             writeln!(out, "declare void @__exit(i64) #6").ok();
         }
         writeln!(out, "declare i64 @briev_futex(i64, i64, i64, i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @__ioctl__(i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @__isatty__(i64) #1").ok();
-        if !defined.contains("__print") {
+        if !defined.contains("print_str_raw") {
             writeln!(out, "declare i64 @__print(ptr) #1").ok();
         }
         // 2026-08-01 (B0): Print# intrinsic runtime symbol. The dead frgn
@@ -3787,7 +3790,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // symbol and a { i64, i64 } String type); the intrinsic owns this
         // call site, so the backend declares the ABI: String = ptr to a
         // length-prefixed [len][bytes] buffer.
-        if !defined.contains("__print_str") {
+        if !defined.contains("print_str") {
             writeln!(out, "declare i64 @__print_str(ptr) #1").ok();
         }
          // 2026-08-13 (dynamic String slice): `s[a:b]` emits a byte-wise
@@ -4268,7 +4271,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             if self.async_txn_names.iter().any(|n| n.as_str() == name.as_str()) && !self.is_lightweight_async {
                 // 2026-10-07 (view-surface liveness): same gate as the main
                 // loop — a dead async txn's worker wrapper is dead code;
-                // async roots `__wait_for_trigger__`, not the txn name, so
+                // async roots `wait_for_trigger`, not the txn name, so
                 // without this the wrapper body walked unclosed callees.
                 if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(name.as_str()) {
                     continue;
@@ -5606,7 +5609,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             "briev_host_arity_of",
             // __getenv_int/__getenv_briev are NOT here: they are adapter-
             // served (the backend emits C-ABI defines over the captured
-            // environ). Same for the __argv_* family (retired with cli.bv).
+            // environ). Same for the argv_* family (retired with cli.bv).
             // libc
             "malloc", "free", "realloc", "calloc", "getenv", "printf",
             "briev_getenv_int_impl", "briev_getenv_briev_impl",

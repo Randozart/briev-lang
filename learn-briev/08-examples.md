@@ -310,11 +310,11 @@ defn process(item: Int) {
 
 ```briev
 // file_processor.bv
-import "std/io";
 import "std/string";
-
-frgn read_file(path: String) -> Result<String, IOError> from "std/io.bv" fallback "";
-frgn write_file(path: String, content: String) -> Result<Void, IOError> from "std/io.bv";
+// File I/O is pure Briev (std/os/fs.bv) — no `frgn` needed. Ordinary
+// read/write ship as native defns; `frgn` is reserved for genuine foreign
+// code (see 07-ffi.md). Import the real helpers:
+import { read_file, write_file } from "std/os/fs.bv";
 
 txn process_file(input_path: String, output_path: String) 
     [true]

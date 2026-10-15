@@ -4,7 +4,7 @@
 // state space fits within the --optimize-budget and precompute all final
 // values at compile time.
 //
-// Uses endprogram __print_int at convergence so the program always produces
+// Uses endprogram print_int at convergence so the program always produces
 // observable output — LLVM cannot eliminate the loop, and the benchmark
 // can verify correctness against the C reference.
 //

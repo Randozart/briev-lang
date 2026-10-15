@@ -266,7 +266,7 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
     // - Exit condition set (natural death): loop back to entry check.
     // - No wake triggers & no restartable txns: one-shot program. Check
     //   if any txn precondition is still true; exit if all converged.
-    // - Otherwise: call __wait_for_trigger__() and loop (reactive system).
+    // - Otherwise: call wait_for_trigger() and loop (reactive system).
     let has_exit_cond = self.ctx.exit_condition.is_some();
     let is_one_shot = !has_wake_triggers && !self.has_async_txns;
     if has_wake_triggers {
@@ -282,7 +282,7 @@ pub(crate) fn emit_main(&mut self, out: &mut String, has_wake_triggers: bool) {
         // handled by the previous branch and run a proper loop.
         writeln!(out, "  br label %.end").ok();
     } else {
-        writeln!(out, "  call i64 @__wait_for_trigger__(ptr %state)").ok();
+        writeln!(out, "  call i64 @wait_for_trigger(ptr %state)").ok();
         writeln!(out, "  br label %.exit_check").ok();
     }
     writeln!(out, ".end:").ok();

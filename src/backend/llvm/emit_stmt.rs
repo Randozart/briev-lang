@@ -1435,12 +1435,18 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         } else {
                             let v = backend.emit_expr(out, value, indent);
                             let reg = backend.fun.gen_reg();
-                            // 2026-09-08 (anti-pattern audit): resolve the
-                            // stderr printer symbol via frgn_map; fallback is
-                            // the C symbol (io.bv declares frgn__eprint_str).
-                            let sym = backend.ctx.frgn_map.get("frgn__eprint_str")
-                                .map(|sig| sig.name.clone())
-                                .unwrap_or_else(|| "__eprint_str".to_string());
+                            // 2026-09-08 (anti-pattern audit): stderr printer
+                            // resolves to the pure-Briev `eprint_str` defn
+                            // when present (stateful call below), else the
+                            // frgn_map/C fallback (frgn__eprint_str → C).
+                            // 2026-10-15 (core-usable purge): plain helper name.
+                            let sym = if backend.ctx.defn_params.contains_key("eprint_str") {
+                                "eprint_str".to_string()
+                            } else {
+                                backend.ctx.frgn_map.get("frgn__eprint_str")
+                                    .map(|sig| sig.name.clone())
+                                    .unwrap_or_else(|| "__eprint_str".to_string())
+                            };
                             let st = if backend.ctx.defn_takes_state(&sym) { "ptr %state, " } else { "" };
                             writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, reg, sym, st, v.name).ok();
                         }
@@ -1791,7 +1797,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // 2026-08-06 (endprogram plan): `endprogram` genuinely exits the
             // process (SPEC §11.5) — unlike `term`, which ends the transaction.
             // Emit the value's side effects (the print), then call the
-            // runtime's `__exit` (briev_rt.c, runs atexit cleanup) with the
+            // runtime's `__exit` C fallback (briev_rt.c, runs atexit cleanup) or the
             // value's i64 result as the exit code (adapt_to_i64); the bare
             // form exits 0.
             if backend.ctx.webstack_enabled {
@@ -1803,11 +1809,11 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             } else {
                 "0".to_string()
             };
-            // 2026-09-09 (Family B): a pure-Briev __exit defn takes the hidden
+            // 2026-09-09 (Family B): a pure-Briev exit_prog defn takes the hidden
             // %state param and returns i64 (defns cannot be void); the C
             // wrapper was void. Adapt the call to whichever provider exists.
-            if backend.ctx.defn_params.contains_key("__exit") {
-                writeln!(out, "{}call i64 @__exit(ptr %state, i64 {})", indent, code).ok();
+            if backend.ctx.defn_params.contains_key("exit_prog") {
+                writeln!(out, "{}call i64 @exit_prog(ptr %state, i64 {})", indent, code).ok();
             } else {
                 writeln!(out, "{}call void @__exit(i64 {})", indent, code).ok();
             }

@@ -1,7 +1,11 @@
 // 2026-07-19: Terminal I/O. Replaces Print#/PutChar# intrinsics.
 // !Print(x) and !PrintLn(x) are dispatched by the print plugin (Mid stage)
-// to the appropriate C runtime function based on the argument type.
+// to the typed print helpers (pure Briev, lib/std/cast_lanes.bv: print_int,
+// print_str, put_char, … — write(2) via SysCall#, no C runtime).
 //
-// Users can also call __print_int() etc directly for typed output.
+// Users can also call print_int() etc directly for typed output.
+// 2026-10-15 (core-usable purge): the print family is pure Briev; the
+// frgn/C bindings were removed (Family A+B). This file re-exports the
+// std/ffi/io.bv wrappers over those helpers.
 
 import "std/ffi/io.bv";

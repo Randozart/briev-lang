@@ -33,6 +33,37 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Two latent IR bugs in event/watchdog emission — FIXED 2026-10-15
+
+**Symptom (latent — no committed test exercised the paths):**
+1. The strict-event trap call (`emit_expr.rs`, two sites) emitted a
+   stateless `call i64 @__briev_event_strict_trap()` even though the
+   `event_strict_trap` defn is transitively stateful (its body calls
+   `write_all` → `stdout_byte` → stdout state fields). The call could
+   never resolve to the defn's symbol, and no C fallback exists for it.
+2. The second scheduler engine's watchdog emission (`counter.rs`) wrote a
+   void no-state `call void @__watchdog_fail()` while the first engine
+   correctly wrote `call i64 @watchdog_fail(ptr %state)`. No C
+   `__watchdog_fail` exists either, so any program that reached the
+   second engine's required-watchdog path produced an unresolvable
+   `void @__watchdog_fail()` call.
+
+**Root cause:** both sites predate the stateless-defn fixpoint
+(`export_abi::compute_defn_needs_state`); the trap call predates the
+defn-takes-state gate entirely, and the second engine's watchdog shape
+was hand-copied from the C-fallback era.
+
+**Fix (family-4 core-usable rename, same commit):** the trap call is now
+emitted by `emit_event_trap_call`, which passes `%state` when
+`defn_takes_state("event_strict_trap")` is true. The second engine's
+watchdog writes the same shape as the first (`call i64 @watchdog_fail(ptr
+%state)`).
+
+**Verified:** full `cargo test --lib` (3086/0); the event/watchdog link
+tests continue to pass. No committed benchmark or test previously
+exercised either path (they were latent; the fixes keep every green
+assertion green).
+
 ## Trait-constrained generics returned Int instead of the trait type — FIXED 2026-10-13
 
 **Symptom:** a trait method called on a bound type param inside a generic body
@@ -9564,6 +9595,7 @@ state-taking. `or_insert` preserves the "a real top-level defn of this name wins
 precedence. Gates A–E green (probe_sink_generic→2, probe_sink_nodefault→2,
 probe_trait_3→10; 4 regression tests in export_abi::tests). Branch:
 fix/trait-default-needs-state.
+
 ## Monomorphized trait member's type-dependent statefulness lost — FIXED 2026-10-15
 
 A trait default/generic monomorphized onto a concrete type whose members are
@@ -9615,3 +9647,44 @@ green. Branch: fix/needs-state-type-dependent-members. NOTE: the two-same-named-
 members variant additionally needs the liveness member-collision fix
 (fix/liveness-member-name-collision) so the free-standing helper is not judged
 dead; the two fixes are independent and compose.
+
+## Same-named obj members collided in defn-liveness → free-standing helper judged dead — FIXED 2026-10-15
+
+A free-standing defn called ONLY from an obj member body is wrongly judged dead
+when ANOTHER obj declares a same-named member first, so the IR-scan soundness net
+panics at emission: `defn liveness: emitted code calls unreached defn(s)
+["grow_to_fit"]` (mod.rs:5574).
+
+DISCRIMINATOR (controlled A/B, proves it is the collision, not the member path):
+a SINGLE obj whose member calls a free-standing helper builds + runs fine (prints
+7). Adding a SECOND obj with a same-named member declared BEFORE it — whose body
+does NOT call the helper — makes the helper be judged dead and the build panic.
+Only the same-name collision triggers it.
+
+ROOT CAUSE: src/analysis/defn_liveness.rs — `index_defn`/`index_txn` key obj
+MEMBER bodies by BARE name with `or_insert`/`insert` (first/last-wins). Obj
+members share a name across objs BY DESIGN (a trait requirement like `put_u8` is
+provided by both `ByteBuf` and `GrowBuf`). So `defns["put_u8"]` retained only ONE
+body. When construction rooted the OTHER obj's `put_u8`, the worklist walked the
+wrong obj's body (`ByteBuf.put_u8`, which calls nothing), missed the call edge
+into `grow_to_fit`, and judged it dead. The emitted (inlined) `GrowBuf.put_u8`
+DOES call `grow_to_fit`, so the post-emission IR scan caught the drop.
+
+REPRO (minimal, confirmed): two objs Alpha then Beta each with a `bump` member
+under one trait; Alpha.bump calls nothing, Beta.bump calls free-standing
+`helper`; construct+use only Beta → panic `unreached defn [helper]`. The real
+trigger was Design D's bytes.bv: ByteBuf.put_u8/put_bytes (no free calls) are
+declared before GrowBuf.put_u8/put_bytes (call grow_to_fit).
+
+FIX 2026-10-15: added a collision-safe multimap `member_bodies: HashMap<String,
+Vec<(&[Statement], &Contract)>>` that keeps EVERY member body+contract under its
+bare name (populated by `index_member_body` from `index_typedef` and the
+`TopLevel::Obj` arm). The worklist closure walks ALL member bodies+contracts
+registered under a live name, in addition to the single `defns`/`txns`/`contracts`
+entry — so no obj's member call edges are lost. Over-approximation (walking a
+member body for an unconstructed obj) only keeps a few extra helpers live, which
+is the pass's deliberate, documented coarse-sound stance. Top-level last-wins
+semantics and the construction-rooting path are untouched. Regression tests:
+`same_named_member_bodies_all_contribute_call_edges` (the bug) +
+`single_member_body_edge_is_followed` (the control) in defn_liveness::tests.
+Branch: fix/liveness-member-name-collision.

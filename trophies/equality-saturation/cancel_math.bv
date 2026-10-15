@@ -19,7 +19,7 @@
 import { get_env_int } from "std/env.bv";
 import "link/briev_rt.c";
 
-frgn #out __print_int(n: Int) -> Bool ;
+frgn #out print_int(n: Int) -> Bool ;
 
 let N: Int = get_env_int("BOUND");
 let count: Int = 0;
@@ -32,7 +32,7 @@ node step [count < N][count == N] {
     &count = count + (R + 1 - R);
 
     [count % 5000000 == 0] {
-        __print_int(acc);
+        print_int(acc);
     };
 
     term;

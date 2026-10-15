@@ -14,7 +14,7 @@ node main [done == 0][done == 1] {
     // String ops
     let s: String = "world";
     let len: Int = len(s);
-    __print_str(s);
+    print_str(s);
     // Collection (Stack via <- InsertAt / <- ExtractFrom)
     st <- 42;
     st <- 99;
