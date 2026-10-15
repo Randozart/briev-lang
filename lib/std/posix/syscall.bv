@@ -118,5 +118,12 @@ export defn syscall(nr: Int, ...args: Int[<=6]) -> Int
         4 => SysCall#(nr, args[0], args[1], args[2], args[3]),
         5 => SysCall#(nr, args[0], args[1], args[2], args[3], args[4]),
         6 => SysCall#(nr, args[0], args[1], args[2], args[3], args[4], args[5]),
+        // 2026-10-15: the match must be TOTAL — `args.Count#()` folds to a
+        // literal per instantiation (dead arms killed) only on the paths that
+        // specialize; the named-import splice typechecks the raw body, where
+        // the count is an open Int and the exhaustiveness rule demands a
+        // trailing fallback. Unreachable for `Int[<=6]`; -1 follows the
+        // syscall -errno convention rather than guessing a call shape.
+        _ => 0 - 1,
     };
 };
