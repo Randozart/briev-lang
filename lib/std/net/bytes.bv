@@ -1,0 +1,268 @@
+// bytes - a growable raw byte buffer for wire protocols (net stack L1).
+//
+// 2026-10-09 (fullstack-webapp net stack): PostgreSQL and HTTP need exact
+// byte-level framing - lengths in network byte order, NUL-terminated strings,
+// arbitrary bytes (0x00, high bytes) that a UTF-8 String cannot hold. This is
+// that layer: raw memory via Malloc#/Load#/Store#, addressed as an Int.
+//
+// Design: a classic len/cap dynamic buffer.
+//   ptr - address of the allocation, held as an Int (Malloc# returns a pointer;
+//         we keep it as an integer address and do pointer arithmetic with +).
+//   len - bytes written so far (the logical size).
+//   cap - bytes allocated (the physical size); we grow when len would exceed it.
+
+// ByteSink - the shared behavioral abstraction (SPEC 8.6 trait) for byte
+// buffers. Two flavors exist (fixed-capacity and growing); both need the SAME
+// network-byte-order writers, so those are written ONCE here as trait DEFAULT
+// methods, built purely on the REQUIRED primitives each implementer provides.
+//
+// REQUIRED (each implementer supplies, with its own contracts):
+//   put_u8    - write one byte at the current end
+//   put_bytes - bulk-copy count bytes from a source address at the current end
+// DEFAULT (written once, over the required ops):
+//   put_u16_be - write a 16-bit value in big-endian (network) order
+//   put_u32_be - write a 32-bit value in big-endian (network) order
+//   put_cstr   - write a String's bytes followed by a NUL terminator
+//
+// Conformance is structural: an obj that provides the required methods (with
+// contracts that refine the trait's) satisfies ByteSink - no impl block needed.
+trait ByteSink {
+    // put_u8 - write one byte (0..255) at the current end, len advances by one.
+    // Body-less: each implementer provides it (ByteBuf keeps a room precondition;
+    // a growing buffer would have none).
+    defn put_u8(sink: Self, val: Int) -> Self;
+
+    // put_bytes - bulk-copy count bytes from src_addr at the current end (the
+    // Copy#/memcpy primitive). Body-less: each implementer provides it (ByteBuf
+    // requires room len + count <= cap; a growing buffer would ensure room by
+    // reallocating). put_cstr builds on this, so it inherits the room contract.
+    defn put_bytes(sink: Self, src_addr: Int, count: Int) -> Self;
+
+    // put_u16_be - write a 16-bit value (0..65535) in BIG-ENDIAN order: the high
+    // byte first, then the low byte. This is network byte order - what Postgres
+    // and HTTP use for multi-byte lengths. Built on put_u8, so the two writes
+    // inherit whatever room contract the concrete put_u8 carries.
+    defn put_u16_be(sink: Self, val: Int) -> Self {
+        let high: Self = put_u8(sink, (val >> 8) & 255);
+        term put_u8(high, val & 255);
+    };
+
+    // put_u32_be - write a 32-bit value (0..4294967295) in BIG-ENDIAN order:
+    // four bytes, most significant first. This is the Postgres message length
+    // prefix. Built by chaining put_u8, inheriting its room contract per byte.
+    defn put_u32_be(sink: Self, val: Int) -> Self {
+        let byte0: Self = put_u8(sink,  (val >> 24) & 255);
+        let byte1: Self = put_u8(byte0, (val >> 16) & 255);
+        let byte2: Self = put_u8(byte1, (val >> 8) & 255);
+        term put_u8(byte2, val & 255);
+    };
+
+    // put_cstr - write a String as a NUL-terminated C string: the raw UTF-8
+    // bytes followed by a single 0x00. This is how Postgres frames user/database/
+    // query strings. A Briev String is a [len][bytes][NUL] value; .^Length is its
+    // byte count and (text as Data) as Int is the address of its [len] header -
+    // the BYTES start 8 after that header, so the copy source is that addr + 8.
+    // Built on put_bytes then put_u8, inheriting their room contracts.
+    defn put_cstr(sink: Self, text: String) -> Self {
+        let count: Int = text .^Length;
+        let data_addr: Int = ((text as Data) as Int) + 8;
+        let copied: Self = put_bytes(sink, data_addr, count);
+        term put_u8(copied, 0);
+    };
+};
+
+obj ByteBuf {
+    ptr: Int;
+    len: Int;
+    cap: Int;
+
+    // put_u8 - write one byte (value 0..255) at the current end, return the
+    // buffer with len advanced by one. Requires room (len < cap); growth is a
+    // GrowBuf concern (design D). defn is pure, so we return a NEW ByteBuf - but
+    // Store# mutates the shared heap allocation in place, so ptr/cap carry over
+    // unchanged and only len moves. This is ByteBuf's ByteSink required method.
+    defn put_u8(sink: ByteBuf, val: Int)
+        [val >= 0 && val <= 255 && sink.len < sink.cap]
+        [term.len == sink.len + 1 && term.cap == sink.cap]
+        -> ByteBuf
+    {
+        Store#(sink.ptr + sink.len, val, 1);
+        term ByteBuf { ptr: sink.ptr, len: sink.len + 1, cap: sink.cap };
+    };
+
+    // put_bytes - copy count bytes from a source address into the buffer at the
+    // current end (Copy# lowers to llvm.memcpy). Requires room: len + count <=
+    // cap. count == 0 is allowed (a no-op copy). This is ByteBuf's ByteSink
+    // required bulk-copy method; the ptr is stable (fixed buffer never moves).
+    defn put_bytes(sink: ByteBuf, src_addr: Int, count: Int)
+        [count >= 0 && sink.len + count <= sink.cap]
+        [term.len == sink.len + count && term.cap == sink.cap]
+        -> ByteBuf
+    {
+        Copy#(sink.ptr + sink.len, src_addr, count);
+        term ByteBuf { ptr: sink.ptr, len: sink.len + count, cap: sink.cap };
+    };
+};
+
+// buf_new - allocate a buffer with room for cap bytes (cap >= 1).
+// The buffer starts empty (len 0). Malloc# gives us cap raw bytes; we hold the
+// returned pointer as an Int address.
+defn buf_new(cap: Int) [cap >= 1][term.cap >= cap && term.len == 0] -> ByteBuf {
+    let addr: Int = Malloc#(cap) as Int;
+    term ByteBuf { ptr: addr, len: 0, cap: cap };
+};
+
+// buf_free - release the allocation. After this the ByteBuf must not be used.
+defn buf_free(buf: ByteBuf) -> Void {
+    Free#(buf.ptr as Ptr);
+    term;
+};
+
+// GrowBuf - the GROWING ByteSink implementer. Where ByteBuf requires room as a
+// provable precondition (and never moves), GrowBuf always accepts a write: when
+// an op would exceed cap it reallocates a larger block, copies the live bytes,
+// frees the old one, and continues at a NEW ptr. This trades ptr stability for
+// ergonomics - the right choice when the final size is unknown up front.
+//
+// WATCH-FOR: a growing put MOVES ptr. Callers must never cache an interior
+// address across a put that might grow (e.g. Postgres length-prefix
+// backpatching - that uses the FIXED ByteBuf, or stores OFFSETS, not addresses).
+//
+// Same field layout as ByteBuf (ptr/len/cap held as Int); the difference is the
+// contracts on its required methods, which is exactly what distinguishes the two
+// ByteSink implementers.
+obj GrowBuf {
+    ptr: Int;
+    len: Int;
+    cap: Int;
+
+    // put_u8 - write one byte (0..255) at the current end. NO room precondition:
+    // if there is space we Store# in place; otherwise grow_to_fit reallocates
+    // first. Postcondition promises only that len advanced by one - NOT that cap
+    // or ptr are unchanged (a grow moves both). This is GrowBuf's ByteSink
+    // required method; its weaker precondition is the whole point of the trait.
+    defn put_u8(sink: GrowBuf, val: Int)
+        [val >= 0 && val <= 255]
+        [term.len == sink.len + 1]
+        -> GrowBuf
+    {
+        let roomy: GrowBuf = grow_to_fit(sink, 1);
+        Store#(roomy.ptr + roomy.len, val, 1);
+        term GrowBuf { ptr: roomy.ptr, len: roomy.len + 1, cap: roomy.cap };
+    };
+
+    // put_bytes - bulk-copy count bytes from src_addr at the current end,
+    // reallocating first if the bytes would not fit. NO room precondition (count
+    // >= 0 only); grow_to_fit guarantees cap for count more bytes. Postcondition
+    // promises len advanced by count; cap/ptr may change. GrowBuf's ByteSink
+    // required bulk-copy method.
+    defn put_bytes(sink: GrowBuf, src_addr: Int, count: Int)
+        [count >= 0]
+        [term.len == sink.len + count]
+        -> GrowBuf
+    {
+        let roomy: GrowBuf = grow_to_fit(sink, count);
+        Copy#(roomy.ptr + roomy.len, src_addr, count);
+        term GrowBuf { ptr: roomy.ptr, len: roomy.len + count, cap: roomy.cap };
+    };
+};
+
+// grow_new - allocate an empty growing buffer with an initial capacity (>= 1).
+// Starts len 0; the capacity is just a starting hint - it grows as needed.
+defn grow_new(cap: Int) [cap >= 1][term.cap >= cap && term.len == 0] -> GrowBuf {
+    let addr: Int = Malloc#(cap) as Int;
+    term GrowBuf { ptr: addr, len: 0, cap: cap };
+};
+
+// grow_free - release the allocation. After this the GrowBuf must not be used.
+defn grow_free(buf: GrowBuf) -> Void {
+    Free#(buf.ptr as Ptr);
+    term;
+};
+
+// grow_to_fit - ensure the buffer has room for `needed` more bytes, returning a
+// buffer whose cap >= len + needed with the same len and the same live bytes. If
+// there is already room it returns the buffer unchanged (no allocation). On a
+// grow it allocates max(cap * 2, len + needed) bytes (double-or-enough so a
+// single large put still fits), Copy#s the `len` live bytes to the new block,
+// Free#s the old allocation, and returns a GrowBuf at the NEW ptr. This is the
+// one place the realloc dance lives, shared by put_u8 and put_bytes (DRY).
+defn grow_to_fit(sink: GrowBuf, needed: Int)
+    [needed >= 0]
+    [term.len == sink.len && term.cap >= sink.len + needed]
+    -> GrowBuf
+{
+    when sink.len + needed <= sink.cap {
+        term sink;
+    };
+    let doubled: Int = sink.cap * 2;
+    let enough: Int = sink.len + needed;
+    let new_cap: Int = max_int(doubled, enough);
+    let new_addr: Int = Malloc#(new_cap) as Int;
+    Copy#(new_addr, sink.ptr, sink.len);
+    Free#(sink.ptr as Ptr);
+    term GrowBuf { ptr: new_addr, len: sink.len, cap: new_cap };
+};
+
+// max_int - the larger of two Ints (local helper for grow_to_fit's capacity).
+defn max_int(left: Int, right: Int) [true][term >= left && term >= right] -> Int {
+    when left >= right {
+        term left;
+    };
+    term right;
+};
+
+// grow_get_u8 - read the byte at offset off (0..len-1) from a GrowBuf. Mirrors
+// get_u8 for ByteBuf; reading at or past len would be uninitialized memory, so
+// the precondition forbids it. The result is a single byte, hence 0..255.
+defn grow_get_u8(buf: GrowBuf, off: Int)
+    [off >= 0 && off < buf.len]
+    [term >= 0 && term <= 255]
+    -> Int
+{
+    term Load#(buf.ptr + off, 1);
+};
+
+// get_u8 - read the byte at offset off (0..len-1). Reading at or past len would
+// return uninitialized memory, so the precondition forbids it. The result is a
+// single byte, hence 0..255.
+defn get_u8(buf: ByteBuf, off: Int)
+    [off >= 0 && off < buf.len]
+    [term >= 0 && term <= 255]
+    -> Int
+{
+    term Load#(buf.ptr + off, 1);
+};
+
+// (put_u16_be is now a ByteSink trait DEFAULT, defined once in the trait above.)
+
+// get_u16_be - read a 16-bit big-endian value at offset off: high byte at off,
+// low byte at off+1, recombined as (high << 8) | low. Needs both bytes written.
+defn get_u16_be(buf: ByteBuf, off: Int)
+    [off >= 0 && off + 2 <= buf.len]
+    [term >= 0 && term <= 65535]
+    -> Int
+{
+    let high: Int = get_u8(buf, off);
+    let low: Int = get_u8(buf, off + 1);
+    term (high << 8) | low;
+};
+
+// (put_u32_be is now a ByteSink trait DEFAULT, defined once in the trait above.)
+
+// get_u32_be - read a 32-bit big-endian value at offset off: four bytes most
+// significant first, recombined. Needs all four bytes written.
+defn get_u32_be(buf: ByteBuf, off: Int)
+    [off >= 0 && off + 4 <= buf.len]
+    [term >= 0 && term <= 4294967295]
+    -> Int
+{
+    let byte0: Int = get_u8(buf, off);
+    let byte1: Int = get_u8(buf, off + 1);
+    let byte2: Int = get_u8(buf, off + 2);
+    let byte3: Int = get_u8(buf, off + 3);
+    term (byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3;
+};
+
+// (put_bytes is now a ByteBuf member / ByteSink required method, above.)
+// (put_cstr is now a ByteSink trait DEFAULT, defined once in the trait above.)

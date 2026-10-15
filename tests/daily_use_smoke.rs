@@ -203,3 +203,28 @@ fn trait_generics_golden_output() {
     let out = build_link_run("trait_generics_smoke", "golden", &[]);
     assert_eq!(out, "30", "trait-generics golden stdout drifted: {out:?}");
 }
+
+/// 2026-10-15 (fullstack-webapp net stack, design D): the ByteSink trait end
+/// to end. lib/std/net/bytes.bv shares its derived network-byte-order writers
+/// (put_u16_be/put_cstr) as trait DEFAULTS over required primitives (put_u8/
+/// put_bytes), implemented by a FIXED ByteBuf and a GROWING GrowBuf. A single
+/// `write_tagged<S: ByteSink>` writes a u16-BE tag 0x1234 (18, 52) then a
+/// NUL-terminated "Hi" (72, 105, 0) into BOTH sinks and reads the bytes back —
+/// the GrowBuf starting at cap 2 so the 5-byte frame forces a mid-write
+/// realloc. Both sinks yield identical bytes, so the digit-by-digit print is
+/// "18527210501852721050". Pins that trait-default monomorphization onto a
+/// stateful growing buffer (reached through a generic) stays correct — a codegen
+/// regression in the member liveness or type-dependent needs-state paths is
+/// caught in CI.
+#[test]
+fn byte_sink_trait_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("byte_sink_trait_smoke", "golden", &[]);
+    assert_eq!(
+        out, "18527210501852721050",
+        "ByteSink trait golden stdout drifted: {out:?}"
+    );
+}

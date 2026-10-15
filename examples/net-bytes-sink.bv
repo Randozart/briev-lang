@@ -1,0 +1,53 @@
+// net-bytes-sink.bv — the ByteSink trait: one set of wire writers, two buffers.
+//
+// 2026-10-15 (net stack, design D): wire protocols (PostgreSQL, HTTP) need
+// byte buffers in two flavors — FIXED capacity (a provable room precondition,
+// stable pointer, for length-prefix backpatching and allocation-free paths)
+// and GROWING (always accepts a write, reallocates when full, for when the
+// size is unknown up front). Both need the SAME derived writers: multi-byte
+// values in network (big-endian) byte order, NUL-terminated strings, raw bytes.
+//
+// lib/std/net/bytes.bv shares that logic with ONE trait. ByteSink's REQUIRED
+// methods are the per-buffer primitives (put_u8, put_bytes), each carrying its
+// own contract — ByteBuf keeps a `len < cap` room precondition and a stable
+// ptr; GrowBuf has no room precondition and reallocates. The DERIVED writers
+// (put_u16_be, put_u32_be, put_cstr) are trait DEFAULTS, written once over the
+// required primitives, so they are NOT duplicated between the two buffers.
+//
+// A function generic over `<S: ByteSink>` therefore serves both buffers with
+// one implementation. Here `frame` writes a 2-byte big-endian length prefix
+// then a NUL-terminated label — the shape of a wire message header. We run it
+// against a fixed ByteBuf and a growing GrowBuf (started so small the frame
+// forces a reallocation mid-write), and read back identical bytes from each.
+import "std/net/bytes.bv";
+
+// Write a length-prefixed, NUL-terminated label into ANY byte sink. The length
+// prefix is big-endian (network byte order). Generic over the sink: the same
+// code drives the fixed and growing buffers.
+defn frame<S: ByteSink>(sink: S, length: Int, label: String) -> S {
+    let prefixed: S = put_u16_be(sink, length);
+    term put_cstr(prefixed, label);
+};
+
+node entry [beginprogram][true] {
+    // FIXED buffer: 16 bytes is plenty for our little frame.
+    let fixed_empty: ByteBuf = buf_new(16);
+    let fixed: ByteBuf = frame(fixed_empty, 258, "Ok");
+    // 258 = 0x0102 -> big-endian bytes 1 then 2; "Ok" -> 79, 107; then NUL 0.
+    Print#(get_u8(fixed, 0));
+    Print#(get_u8(fixed, 1));
+    Print#(get_u8(fixed, 2));
+    Print#(get_u8(fixed, 3));
+    Print#(get_u8(fixed, 4));
+
+    // GROWING buffer: start at cap 2 so the 5-byte frame must reallocate while
+    // being written. The ptr moves underneath `frame`, which neither knows nor
+    // cares — it threads the returned sink through each write. Same bytes out.
+    let grow_empty: GrowBuf = grow_new(2);
+    let grow: GrowBuf = frame(grow_empty, 258, "Ok");
+    Print#(grow_get_u8(grow, 0));
+    Print#(grow_get_u8(grow, 1));
+    Print#(grow_get_u8(grow, 2));
+    Print#(grow_get_u8(grow, 3));
+    endprogram Print#(grow_get_u8(grow, 4));
+};
