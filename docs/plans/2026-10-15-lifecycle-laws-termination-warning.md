@@ -121,3 +121,19 @@ Verified end to end (target/probe/lc1–lc4): zombie warns; reside
 suppresses; endprogram-law silences + emits `__briev_lifecycle_0`; a
 never-settling node ([true] precondition) exits 0 through the law's
 endprogram — the monitor runtime-fires.
+
+
+## Phase 4 close-out (2026-10-15, same session)
+
+- `lib/std/os/temp.bv` — `mktemp_file` (O_CREAT|O_EXCL + rand + retry,
+  probe-verified then committed `ddc515c4`).
+- 16 os stubs re-headed honestly (junk const spam removed; each states
+  what filling it needs + the undo path) — `4f73f70e`.
+- `tests/mini_cli.rs` — the daily-driver golden: args + fs round trip +
+  mktemp/remove + dir count + wall clock, build/link/run at
+  -O3 -flto through the harness flags.
+
+Remaining (parked, needs the maintainer rested): the term/tails language
+proposals (docs/plans/2026-10-15-term-tails-proposal.md) and the
+interpreter-side bare-term divergence. Everything decided is landed and
+pushed.
