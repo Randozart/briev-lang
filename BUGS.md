@@ -9688,3 +9688,63 @@ semantics and the construction-rooting path are untouched. Regression tests:
 `same_named_member_bodies_all_contribute_call_edges` (the bug) +
 `single_member_body_edge_is_followed` (the control) in defn_liveness::tests.
 Branch: fix/liveness-member-name-collision.
+
+## Callable-txn gate read undeclared `@term` and never monomorphized generic contract calls — FIXED 2026-10-15
+
+`dir_loop` (lib/std/os/dir.bv) was the first callable TXN with a
+generic-Result contract (`[is_ok(term) || is_err(term)] ->
+Result<List<String>, Int>`) to reach emission; export defns never emit
+convergence gates, so nothing had exercised the shape before. Two stacked
+defects, both fixed:
+
+1. **Gate `term` binding**: the postcondition's `term` identifier fell to
+   the global-identifier fallback — `load i64, ptr @term` — a global that
+   was never declared or written anywhere (`term <val>` stores to the
+   `%result` slot). Fix: the gate binds `term` to `%result` in
+   `let_bindings` (registered in `let_binding_allocas` so the read loads),
+   typed with the txn's DECLARED return type
+   (emit_toplevel.rs, "gate term binding"). The declared type is what
+   drives monomorphization unification.
+2. **Import-contract closure**: `referenced_function_names` /
+   `referenced_state_names` walked only defn/txn BODIES — contract calls
+   were invisible to the transitive import closure, so result.bv's
+   generics (`is_ok`, `is_err`) never spliced and the gate emitted bare
+   i64 calls to never-defined generics (`use of undefined value '@is_err'`).
+   Fix: both walkers also traverse `contract.pre_condition`,
+   `contract.post_condition`, and `contract.watchdog.condition`
+   (import_resolver.rs, "contract closure").
+
+With both fixes the gate emits `call i8 @is_ok$List$String$Int(i64 %t…)`
+against a defined monomorphized copy. Behavioral pin:
+`tests/dir_smoke.rs` (build + link + run + golden). Also en route: the
+bool-width hardening (`coerce_to_i8_bool`) is what kept this gate's
+disjunction valid once the call results were i64-typed during the broken
+intermediate states — `or i8` under a bool label throughout.
+
+## Interpreter/backend divergence: bare `term;` in a void-defn guard — OPEN (parked)
+
+The backend lowers `when cond { term; };` in a void defn as an
+early-return (guard inversion: `icmp slt` + body under `guard.then`);
+the interpreter treats `Term(None)` as a convergence checkpoint and
+CONTINUES past the guard (eval.rs:2447). print_all-style recursion on a
+List is the repro shape: backend lists exactly Count#() entries; the
+interpreter reads out of bounds past the guard. The intended semantics —
+"term returns iff the postcondition is met at the point term is called" —
+is decided in principle but PARKED pending a rested language decision:
+docs/plans/2026-10-15-term-tails-proposal.md (Proposal 1, together with
+tail expressions / when-expressions). Do not "fix" either side until that
+document is confirmed.
+
+## LESSON (testing discipline): probe crashes against inconsistent intermediate binaries — OBSERVED 2026-10-15
+
+The dir.bv E2E "segfault" consumed an hour of investigation that was
+unmoored from reality: probe runs executed `target/release/brievc` while
+`cargo build --release` had FAILED (E0382) or had not been rerun after
+edits — several "reproductions" ran binaries built from source states
+that never coexisted. The md5-stability check (3 identical runs) verified
+within-binary determinism but not WHICH binary. Rule: before chasing a
+runtime misbehavior, confirm the binary is fresher than every source file
+involved (`ls -la target/release/brievc` vs `git status --short`), and
+rebuild after ANY failed build before running probes. The genuine defects
+behind the noise were the gate/mono bugs above; the bare-term guard
+works end to end on the complete build.

@@ -1,80 +1,106 @@
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
+// dir — directory listing via getdents64, PURE BRIEV over the variadic
+// syscall. Tier 3: Utilities.
+//
+// 2026-10-15 (core-usable purge, Phase 3): fills the dir gap. No `frgn`, no
+// C helper — getdents64(2) over `syscall`, records walked in the kernel's
+// linux_dirent64 layout.
+//
+// linux_dirent64 (per <dirent.h>): d_ino u64 @0, d_off s64 @8, d_reclen u16
+// @16, d_type u8 @18, d_name[] @19 (NUL-terminated). A batch is `n` bytes of
+// back-to-back records; when the batch is consumed, getdents64 refills the
+// same buffer, and a 0 return is EOF.
+//
+// POSIX honesty: the returned names INCLUDE the "." and ".." entries the
+// kernel reports — this is a thin syscall pass-through, not a curated view.
+//
+// Usage:
+//   import { entries } from "std/os/dir.bv";
+//   match entries("/some/dir") {
+//       Ok(names) => foreach n in names { println!(n); },
+//       Err(e) => println!(e),
+//   };
+//
+// Undo: delete this module and its test; it carries no compiler coupling.
+
+import { syscall, SYS_OPEN, SYS_CLOSE, SYS_GETDENTS64 }
+    from "std/posix/syscall.bv";
+import "std/string_c.bv";
+import { Ok, Err, is_ok, is_err, unwrap, unwrap_err } from "std/result.bv";
+
+const O_RDONLY:    Int = 0;
+const O_DIRECTORY: Int = 65536;
+const DIRENT_CAP:  Int = 4096;
+const EIO:         Int = -84;
+
+// dirent_cstr_string — copy a NUL-terminated C string at p into a fresh
+// Briev String ([len: i64][bytes] behind a Data value; length at offset 0,
+// NUL-terminated). Length via the PRELUDE's cstr_len (cast_lanes is
+// prelude-guaranteed, so it needs no import here).
+defn dirent_cstr_string(p: Int) [p > 0][term > 0] -> Int {
+    let n: Int = cstr_len(p);
+    let s: Int = Alloc#(8 + n + 1) as Int;
+    Store#(s, n, 8);
+    Copy#(s + 8, p, n);
+    Store#(s + 8 + n, 0, 1);
+    term s;
+};
+
+defn dir_open(path: Int) [path >= 0][term >= -4096] -> Int {
+    term syscall(SYS_OPEN, path, O_RDONLY + O_DIRECTORY, 0);
+};
+
+defn dir_close(fd: Int) [fd >= 0][term >= -4096] -> Int {
+    term syscall(SYS_CLOSE, fd);
+};
+
+// entries — the directory's entry names (including "." and ".."). Ok = the
+// names in readdir order; Err = the open(2)/getdents64(2) negative return.
+export defn entries(path: String)
+    [true][is_ok(term) || is_err(term)] -> Result<List<String>, Int> {
+    let cpath: Int = to_c_string(path);
+    let fd: Int = dir_open(cpath);
+    Free#(cpath as Ptr<Bit<8>>);
+    when fd < 0 {
+        term Err(fd);
+    };
+    let buf: Int = Alloc#(DIRENT_CAP) as Int;
+    let n: Int = syscall(SYS_GETDENTS64, fd, buf, DIRENT_CAP);
+    when n < 0 {
+        dir_close(fd);
+        Free#(buf as Ptr<Bit<8>>);
+        term Err(n);
+    };
+    term dir_loop(fd, buf, [], 0, n);
+};
+
+// dir_loop — ONE recursive loop (no mutual recursion): walk records in
+// [off, n); at the batch end refill the same buffer (getdents64), and a 0
+// refill is EOF (close + free + Ok); a negative refill is an error. A
+// corrupt zero-length record aborts rather than looping forever.
+txn dir_loop(fd: Int, buf: Int, names: List<String>, off: Int, n: Int)
+    [fd >= 0 && buf > 0 && off >= 0 && n >= 0]
+    [is_ok(term) || is_err(term)] -> Result<List<String>, Int> {
+    when off >= n {
+        let m: Int = syscall(SYS_GETDENTS64, fd, buf, DIRENT_CAP);
+        when m < 0 {
+            dir_close(fd);
+            Free#(buf as Ptr<Bit<8>>);
+            term Err(m);
+        };
+        when m == 0 {
+            dir_close(fd);
+            Free#(buf as Ptr<Bit<8>>);
+            term Ok(names);
+        };
+        term dir_loop(fd, buf, names, 0, m);
+    };
+    let reclen: Int = Load#(buf + off + 16, 2);
+    when reclen <= 0 {
+        dir_close(fd);
+        Free#(buf as Ptr<Bit<8>>);
+        term Err(EIO);
+    };
+    let sp: Int = dirent_cstr_string(buf + off + 19);
+    names <- (sp as Data) as String;
+    term dir_loop(fd, buf, names, off + reclen, n);
+};
