@@ -9505,3 +9505,62 @@ everything. Two interactions handled:
 
 **Verified:** tests/tier2_loop_locals.rs (both-when + false-branch-seed,
 linked at -O0); full suite 3080/0; rbv_gate OK.
+
+## Monomorphized trait DEFAULT method wrongly flagged state-taking — FIXED 2026-10-15
+
+A monomorphized trait DEFAULT method is emitted with a hidden ptr %state
+parameter, but its (correctly stateless) caller passes no state, so clang/opt
+rejects the IR with use of undefined value %state. Static trait-constrained
+generics otherwise work (typecheck + run); this is specifically the trait-DEFAULT
+codegen path.
+
+ROOT CAUSE (located): src/backend/llvm/emit_toplevel.rs, the S6 monomorphization
+emitter (comment 2026-10-13 static trait-constrained generics S6), around line
+3447:
+    let needs_state = self.ctx.defn_needs_state.get(mangled).copied().unwrap_or(true);
+    self.emit_definition(out, &specialized, needs_state);
+The mangled monomorphized name (e.g. put_two\$FixedSink) was never registered in
+defn_needs_state (only the ORIGINAL generic/trait function names are), so the
+lookup misses and falls back to unwrap_or(true) = state-taking. The emitted
+put_two\$FixedSink then takes ptr %state; its stateless caller write_pair\$FixedSink
+does not supply it.
+
+FIX DIRECTION: derive the monomorphized copy needs_state from the ORIGINAL
+(unmangled) trait-default/generic functions analysis, or recompute needs_state
+from the specialized body, instead of defaulting to true. The default should
+almost certainly be false (a pure trait default that only calls other defns and
+constructs a struct touches no program state) — but prefer deriving it correctly
+over flipping the default.
+
+DISCRIMINATOR (proves it is defaults-only): a REQUIRED trait method called twice
+inside a generic (no default) builds+runs fine (write_pair<S: Sink> calling
+put_one(put_one(..))) prints 2). Only the monomorphized DEFAULT emits the bad
+state arg.
+
+REPRO (.kiro/specs/fullstack-webapp/scratch/probe_sink_generic.bv):
+  trait Sink { defn put_one(sink: Self, val: Int) -> Self;
+    defn put_two(sink: Self, val: Int) -> Self { term put_one(put_one(sink,val),val); }; };
+  obj FixedSink { len: Int; cap: Int;
+    defn put_one(sink: FixedSink, val: Int) -> FixedSink [sink.len<sink.cap][term.len==sink.len+1]
+    { term FixedSink { len: sink.len+1, cap: sink.cap }; }; };
+  defn write_pair<S: Sink>(sink: S, val: Int) -> S { term put_two(sink, val); };
+  node entry [beginprogram][true] { let f: FixedSink = FixedSink{len:0,cap:8};
+    let a: FixedSink = write_pair(f, 42); endprogram Print#(a.len); };
+Build emits put_two\$FixedSink(ptr %state, ...) called with undefined %state.
+Expected run output after fix: 2.
+
+Verified 2026-10-15 with ~/briev-target/debug/brievc (CARGO_TARGET_DIR build,
+see .kiro/specs/fullstack-webapp/WORKFLOW.md). The required-method repro:
+probe_sink_nodefault.bv (builds + prints 2).
+
+FIX 2026-10-15: src/analysis/export_abi.rs `index_program` now indexes trait
+DEFAULT methods (body-carrying trait fns) into the needs-state call graph, so the
+monomorphized copy inherits the ORIGINAL default's DERIVED verdict (via the
+emit_expr.rs registration under the unmangled name) instead of the mono emitter's
+`unwrap_or(true)` fallback. The verdict is derived through the same least-fixpoint
+walk every defn gets: a pure default (only calls sibling members + constructs a
+struct) is stateless; one touching a state field / txn / stateful intrinsic stays
+state-taking. `or_insert` preserves the "a real top-level defn of this name wins"
+precedence. Gates A–E green (probe_sink_generic→2, probe_sink_nodefault→2,
+probe_trait_3→10; 4 regression tests in export_abi::tests). Branch:
+fix/trait-default-needs-state.

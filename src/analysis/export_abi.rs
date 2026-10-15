@@ -96,6 +96,36 @@ fn index_program(
             }
             TopLevel::AsmFn(a) => { always_stateful.insert(a.name.clone()); }
             TopLevel::BadFn(b) => { always_stateful.insert(b.name.clone()); }
+            // 2026-10-15 (fix: Monomorphized trait DEFAULT method wrongly
+            // flagged state-taking, BUGS.md): a trait DEFAULT function (a trait
+            // fn WITH a body) is a `Definition` the backend monomorphizes per
+            // conforming type (`put_two` → `put_two$FixedSink`). The backend
+            // registers the mono copy's `needs_state` from the ORIGINAL
+            // (unmangled) name's verdict (emit_expr.rs), but the original
+            // trait-default name was NEVER indexed here (it lives inside a
+            // `TopLevel::Trait`, not as a `TopLevel::Definition`), so the lookup
+            // missed and both the call-site registration and the S6 emitter
+            // (emit_toplevel.rs) fell back to `unwrap_or(true)` = state-taking.
+            // Its stateless caller then supplied no `%state` → undefined
+            // `%state` in the IR. Indexing the default here derives its verdict
+            // through the same least-fixpoint call-graph walk every other defn
+            // gets (a pure default that only calls sibling members + constructs
+            // a struct is stateless; one that touches a state field or calls a
+            // txn/stateful intrinsic correctly stays state-taking). Required
+            // (body-less) trait fns are NOT indexed — they ARE the concrete
+            // type's own members, resolved by their obj registration. To undo:
+            // remove this arm (the mono copy reverts to `unwrap_or(true)`).
+            TopLevel::Trait(t) => {
+                for func in &t.functions {
+                    // `or_insert` mirrors the backend's "a real top-level defn
+                    // of this name wins" rule (mod.rs S6 registration): a
+                    // concrete defn already in `regular` is not shadowed by a
+                    // same-named trait default.
+                    if !func.body.is_empty() {
+                        regular.entry(func.name.clone()).or_insert(func);
+                    }
+                }
+            }
             // 2026-08-03: transactions always carry `ptr %state` (the reactor
             // threads state through them) — a caller must supply it.
             TopLevel::Transaction(t) => {
@@ -731,5 +761,126 @@ mod tests {
         let items = vec![TopLevel::Transaction(txn), exported(caller)];
         let map = compute_export_needs_state(&items);
         assert_eq!(map.get("f"), Some(&true));
+    }
+
+    // 2026-10-15 (fix: Monomorphized trait DEFAULT method wrongly flagged
+    // state-taking, BUGS.md): index_program now indexes trait DEFAULT methods
+    // (body-carrying trait fns) into the needs-state call graph, so the
+    // monomorphized copy (`put_two$FixedSink`) inherits the ORIGINAL default's
+    // DERIVED verdict instead of falling back to state-taking. These tests
+    // pin that behaviour at the analysis layer where the fix lives.
+
+    /// Build a `TopLevel::Trait` named `trait_name` with one DEFAULT function
+    /// (`func_name`, carrying `body`) — mirrors a `trait Sink { defn put_two(..)
+    /// { .. } }`. Required (body-less) members are not modelled; they are the
+    /// concrete type's own obj members, not needs-state call-graph nodes.
+    fn trait_with_default(trait_name: &str, func_name: &str, body: Vec<Statement>) -> TopLevel {
+        use crate::ast::top::TraitDef;
+        TopLevel::Trait(TraitDef {
+            name: trait_name.to_string(),
+            type_params: vec![],
+            functions: vec![defn(func_name, body)],
+            op_bindings: vec![],
+            fields: vec![],
+            span: None,
+        })
+    }
+
+    #[test]
+    fn pure_trait_default_is_stateless() {
+        // The repro default: `put_two` only calls a sibling REQUIRED member
+        // (`put_one`, resolved per concrete type — NOT a regular defn, txn, or
+        // stateful intrinsic) over its own params. It touches no program
+        // state, so its verdict must be `false`. Before the fix the default's
+        // base name was never indexed, so the lookup missed and the
+        // monomorphized `put_two$FixedSink` was emitted state-taking while its
+        // stateless caller supplied none → undefined `%state`.
+        let put_two = trait_with_default(
+            "Sink",
+            "put_two",
+            vec![Statement::Term(Some(Expr::Call(
+                "put_one".to_string(),
+                vec![Expr::Call(
+                    "put_one".to_string(),
+                    vec![
+                        Expr::Identifier("sink".to_string()),
+                        Expr::Identifier("val".to_string()),
+                    ],
+                    None,
+                ),
+                Expr::Identifier("val".to_string())],
+                None,
+            )))],
+        );
+        let map = compute_defn_needs_state(&[put_two]);
+        assert_eq!(map.get("put_two"), Some(&false));
+    }
+
+    #[test]
+    fn stateful_trait_default_keeps_state() {
+        // Gate D: a trait DEFAULT that reaches program state (here a stateful
+        // intrinsic) MUST remain state-taking — the fix derives the verdict,
+        // it does not blanket-flip defaults to stateless.
+        let put_logged = trait_with_default(
+            "Sink",
+            "put_logged",
+            vec![Statement::Term(Some(Expr::Call(
+                "StringNew#".to_string(),
+                vec![],
+                None,
+            )))],
+        );
+        let map = compute_defn_needs_state(&[put_logged]);
+        assert_eq!(map.get("put_logged"), Some(&true));
+    }
+
+    #[test]
+    fn trait_default_state_propagates_to_caller() {
+        // Transitivity: a generic defn that calls a STATELESS trait default
+        // stays stateless; one that calls a STATEFUL default becomes stateful.
+        // This is the chain `write_pair → put_two` that the mono emitter walks.
+        let pure_default = trait_with_default(
+            "Sink",
+            "put_two",
+            vec![Statement::Term(Some(Expr::Call(
+                "put_one".to_string(),
+                vec![Expr::Identifier("sink".to_string())],
+                None,
+            )))],
+        );
+        let caller = defn(
+            "write_pair",
+            vec![Statement::Term(Some(Expr::Call(
+                "put_two".to_string(),
+                vec![Expr::Identifier("sink".to_string())],
+                None,
+            )))],
+        );
+        let items = vec![pure_default, TopLevel::Definition(caller)];
+        let map = compute_defn_needs_state(&items);
+        assert_eq!(map.get("put_two"), Some(&false));
+        assert_eq!(map.get("write_pair"), Some(&false));
+    }
+
+    #[test]
+    fn concrete_defn_wins_over_same_named_trait_default() {
+        // The `or_insert` precedence: a real top-level defn of the same name as
+        // a trait default is NOT shadowed by the default's body (mirrors the
+        // backend's "a real top-level defn of this name wins" S6 rule). Here a
+        // STATELESS concrete `put` must not be overwritten by a STATEFUL
+        // same-named default.
+        let concrete = defn("put", vec![Statement::Term(Some(Expr::Decimal(1)))]);
+        let default = trait_with_default(
+            "Sink",
+            "put",
+            vec![Statement::Term(Some(Expr::Call(
+                "StringNew#".to_string(),
+                vec![],
+                None,
+            )))],
+        );
+        let items = vec![TopLevel::Definition(concrete), default];
+        let map = compute_defn_needs_state(&items);
+        assert_eq!(map.get("put"), Some(&false));
     }
 }
