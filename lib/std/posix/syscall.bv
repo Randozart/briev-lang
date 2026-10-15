@@ -49,6 +49,7 @@ export let SYS_GETRLIMIT:     Int = 97;
 export let SYS_SETRLIMIT:     Int = 98;
 export let SYS_MKSTEMP:       Int = 85;
 export let SYS_CLOCK_GETTIME: Int = 228;
+export let SYS_NANOSLEEP:      Int = 35;
 export let SYS_GETDENTS64:    Int = 217;
 export let SYS_NANO_SLEEP:    Int = 35;
 export let SYS_EXIT:          Int = 60;

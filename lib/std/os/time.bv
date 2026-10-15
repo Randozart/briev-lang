@@ -1,10 +1,49 @@
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
+// time — clock + sleep (tier2 phase 4, docs/plans/2026-10-14-daily-driver-tier2.md).
+//
+// Pure stdlib over the variadic `syscall` (std/posix/syscall.bv) — NO new
+// intrinsics (Rule 14: stdlib is the extension mechanism; the syscall
+// retirement's first real consumer). Linux x86_64 syscall numbers live in
+// std/posix/syscall.bv; the timespec is a 16-byte heap block
+// ({ i64 sec, i64 nsec }) built with the raw-memory intrinsics, freed on
+// every path.
+//
+// 2026-10-14: replaced the stub (ten duplicated `SYS_WRITE` consts — the
+// 21 os/*.bv stubs predate the fs.bv work; net/dir remain later tier).
+import { syscall, SYS_CLOCK_GETTIME, SYS_NANOSLEEP } from "std/posix/syscall.bv";
+
+// CLOCK_MONOTONIC — Linux's never-set-backwards clock (clockid 1).
+const CLOCK_MONOTONIC: Int = 1;
+
+// now_ns — monotonic nanoseconds since boot. Never goes backwards, so the
+// postcondition is provable: term >= 0 (a CLOCK_MONOTONIC clock_gettime
+// with a valid timespec pointer cannot fail; the -errno path is
+// unreachable and the postcondition says so).
+defn now_ns() -> Int [true][term >= 0] {
+    let ts: Int = Alloc#(16) as Int;
+    let r: Int = syscall(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, ts);
+    // Load#/Store# are (addr, byte-width) — addressing is pointer
+    // arithmetic (the fs.bv convention): sec at ts+0, nsec at ts+8.
+    let sec: Int = Load#(ts, 8);
+    let nsec: Int = Load#(ts + 8, 8);
+    Free#(ts as Ptr<Bit<8>>);
+    when r != 0 {
+        term 0 - 1;
+    };
+    term sec * 1000000000 + nsec;
+};
+
+// sleep_ms — suspend for at least `ms` milliseconds. Returns 0 when the
+// sleep completed (this process has no signal handlers, so nanosleep is
+// never interrupted) or the negative errno on failure. The remainder
+// timespec is passed as 0 (NULL) — Linux sleeps the full duration.
+defn sleep_ms(ms: Int) -> Int [ms >= 0][term <= 0] {
+    let req: Int = Alloc#(16) as Int;
+    Store#(req, ms / 1000, 8);
+    Store#(req + 8, (ms % 1000) * 1000000, 8);
+    let r: Int = syscall(SYS_NANOSLEEP, req, 0);
+    Free#(req as Ptr<Bit<8>>);
+    when r != 0 {
+        term r;
+    };
+    term 0;
+};
