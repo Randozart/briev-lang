@@ -1,6 +1,55 @@
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
+// rand — deterministic pseudo-random numbers (splitmix64), PURE BRIEV
+// Tier 3: Utilities
+//
+// 2026-10-15 (core-usable purge, Phase 3): fills the rand gap. No `frgn`,
+// no syscall — a pure splitmix64 (David Blackman & Sebastiano Vigna) over
+// wrapping i64. Deterministic: the same seed yields the same sequence, so
+// tests pin exact vectors.
+//
+// State: one top-level `let` (the reactor-state idiom — a defn mutates it
+// and the write persists across calls, verified). `seed_rand` sets it;
+// every `rand_u64` advances it by the splitmix64 gamma and mixes.
+//
+// Usage:
+//   import { seed_rand, rand_u64, rand_range } from "std/os/rand.bv";
+//   seed_rand(42);
+//   let x: Int = rand_range(0, 100);   // 0 <= x < 100
+//
+// Undo: delete this module and its test; it carries no compiler coupling.
+
+// The splitmix64 stream state. Advanced by rand_u64; set by seed_rand.
+let rand_state: Int = 0;
+
+// lshr64 — LOGICAL shift right (`>>` is arithmetic on i64). Mask off the
+// sign-extended high bits. k == 0 is the identity (the (1<<64) mask would
+// overflow). splitmix64's `>> 30/27/31` are logical on the u64 bit pattern.
+defn lshr64(x: Int, k: Int) [k >= 0 && k <= 63][term == 0 || term != 0] -> Int {
+    when k == 0 {
+        term x;
+    };
+    term (x >> k) & ((1 << (64 - k)) - 1);
+};
+
+// seed_rand — reset the stream. The same seed reproduces the same sequence.
+out defn seed_rand(seed: Int) -> Void {
+    rand_state = seed;
+};
+
+// rand_u64 — the next splitmix64 value (a full-range i64 / u64 bit pattern).
+// Advances the state by the golden-ratio gamma, then avalanches.
+out defn rand_u64() [term == 0 || term != 0] -> Int {
+    rand_state = rand_state + -7046029254386353131;
+    let z0: Int = rand_state;
+    let z1: Int = (z0 ^ lshr64(z0, 30)) * -4658895280553007687;
+    let z2: Int = (z1 ^ lshr64(z1, 27)) * -7723592293110705685;
+    term z2 ^ lshr64(z2, 31);
+};
+
+// rand_range — a value in [lo, hi). The double-modulo folds the signed
+// remainder into [0, span) before adding the base. Slight modulo bias
+// (no rejection sampling) — acceptable for a general-purpose stream and,
+// crucially, DETERMINISTIC.
+out defn rand_range(lo: Int, hi: Int) [lo < hi][lo <= term && term < hi] -> Int {
+    let span: Int = hi - lo;
+    term lo + ((rand_u64() % span) + span) % span;
+};

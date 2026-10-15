@@ -21,7 +21,7 @@
 // (2026-10-14: the syscall0..6 wrapper families retired into it, so there
 // is no second syscall family to collide with). fs.bv pulls exactly the
 // names it uses.
-import { syscall, SYS_OPEN, SYS_READ, SYS_WRITE, SYS_CLOSE }
+import { syscall, SYS_OPEN, SYS_READ, SYS_WRITE, SYS_CLOSE, SYS_UNLINK }
     from "std/posix/syscall.bv";
 import "std/string_c.bv";
 // SELECTIVE import — option.bv declares its own `unwrap` (same name,
@@ -83,6 +83,26 @@ export defn file_exists(path: String) [true][term == true || term == false] -> B
     };
     fs_close(fd);
     term true;
+};
+
+// fs_unlink — raw unlink(2) over a C-string path.
+defn fs_unlink(path: Int) [path >= 0][term >= -4096] -> Int {
+    term syscall(SYS_UNLINK, path);
+};
+
+// remove_file — delete a file by path. Ok(0) on success; Err(-errno) when
+// the path is missing (ENOENT = -2) or permission is denied. 2026-10-15
+// (core-usable purge, Phase 3): added so std/os/temp.bv can unlink its
+// scratch files without leaking them. Uses the proven C-string + syscall
+// path (same shape as file_exists).
+export defn remove_file(path: String) [true][is_ok(term) || is_err(term)] -> Result<Int, Int> {
+    let cpath: Int = to_c_string(path);
+    let rc: Int = fs_unlink(cpath);
+    Free#(cpath as Ptr<Bit<8>>);
+    when rc < 0 {
+        term Err(rc);
+    };
+    term Ok(0);
 };
 
 // read_file — whole file as a Briev String. Error = the open(2) or read(2)
