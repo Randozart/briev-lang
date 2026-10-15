@@ -9564,3 +9564,54 @@ state-taking. `or_insert` preserves the "a real top-level defn of this name wins
 precedence. Gates A–E green (probe_sink_generic→2, probe_sink_nodefault→2,
 probe_trait_3→10; 4 regression tests in export_abi::tests). Branch:
 fix/trait-default-needs-state.
+## Monomorphized trait member's type-dependent statefulness lost — FIXED 2026-10-15
+
+A trait default/generic monomorphized onto a concrete type whose members are
+STATEFUL was emitted stateless, so its body's call to a genuinely state-taking
+helper referenced an undefined `%state`: `.ll: use of undefined value '%state'`
+on `call i64 @grow_to_fit(ptr %state, ...)` inside a stateless-emitted
+`put_cstr$GrowBuf` / `write_tagged$GrowBuf`.
+
+DISCRIMINATOR (type-dependent): the SAME trait default is stateless on one impl
+and stateful on another. `put_cstr$ByteBuf` is genuinely stateless (ByteBuf's
+put_u8/put_bytes do Store#/Copy# only); `put_cstr$GrowBuf` is stateful (GrowBuf's
+put_u8/put_bytes call free-standing `grow_to_fit` → `Malloc#`). One type-agnostic
+verdict cannot be correct for both.
+
+ROOT CAUSE (two compounding gaps, src/analysis/export_abi.rs + emit_expr.rs):
+1. `index_program` had NO arm for `TopLevel::TypeDef`/`TopLevel::Impl`, so obj
+   members were NEVER nodes in the needs-state fixpoint. A trait default calling
+   a required method by bare name (`put_cstr` → `put_bytes`) saw `put_bytes` as
+   an unknown external/frgn call → stateless. The member → member → `Malloc#`
+   path was invisible.
+2. The monomorphization site (emit_expr.rs, `try_emit_monomorphized_generic_call`)
+   set the mangled copy's needs_state by COPYING the base (type-agnostic) bare-name
+   verdict (`defn_needs_state.get(name)`), with no per-instantiation recomputation.
+   Even with members indexed, a single bare-name verdict could not differ per
+   concrete `Self`.
+
+FIX 2026-10-15:
+- export_abi.rs: index obj/impl members under TYPE-QUALIFIED keys
+  (`type_member_key` → `GrowBuf::put_bytes`), so `ByteBuf::put_bytes` (stateless)
+  and `GrowBuf::put_bytes` (stateful via grow_it→Malloc#) are DISTINCT fixpoint
+  nodes — no bare-name collision. New `type_stateful_members(items)` derives, from
+  the same least-fixpoint, the set of concrete types with ≥1 state-taking member.
+- backend: thread `type_stateful_members` onto the codegen ctx (populated beside
+  compute_defn_needs_state in mod.rs). At the specialization site, the mangled
+  copy's verdict is `base_needs || any concrete binding ∈ type_stateful_members`.
+  So `put_cstr$GrowBuf`/`write_pair$Growing` take `%state`; `put_cstr$ByteBuf`
+  stays stateless. Over-approximation (a threaded-but-unused `%state` on a
+  specialization that doesn't call the stateful member) is sound and harmless —
+  the pass's standing conservative-keeping stance; the ALT of walking each
+  specialized body to resolve exact member calls was rejected as more fragile for
+  no observable gain.
+
+VERIFIED: self-contained probe (generic write_pair<S: Sink> over a Growing whose
+put_one reaches Malloc#) builds + runs (prints 9) where it previously failed the
+`%state` IR check. Regression tests in export_abi::tests:
+obj_member_reaching_stateful_intrinsic_is_indexed_stateful +
+type_stateful_members_reports_only_types_with_a_stateful_member. cargo test --lib
+green. Branch: fix/needs-state-type-dependent-members. NOTE: the two-same-named-
+members variant additionally needs the liveness member-collision fix
+(fix/liveness-member-name-collision) so the free-standing helper is not judged
+dead; the two fixes are independent and compose.
