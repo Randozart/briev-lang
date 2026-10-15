@@ -1,94 +1,109 @@
-# Core-usable purge — plain names, .bv-native logic, gap fill
+# Core-Usable Cleanup — plain names, .bv-native logic, gap fill
 
-**2026-10-15.** Goal: Briev's core must be *usable* — no `frgn` where a
-`.bv` implementation is possible, no dunder-prefixed entries anywhere in
-source-visible language surface, and the daily-driver gaps (directory
-listing, PRNG, temp files) filled. Follows the tier-2 close-out
-(`2026-10-14-daily-driver-tier2.md` — all four phases shipped).
+**2026-10-15.** Campaign: make Briev's core language surface daily-driver
+clean — zero `frgn` in anything core logic depends on, zero `__`-prefixed
+entries visible in `.bv` source, and the remaining daily-use gaps (dir
+listing, PRNG, temp files) filled.
 
-## Decisions (authoritative — do not re-litigate in-session)
+Decisions locked with the operator (2026-10-15):
 
-1. **Plain names.** The dunder prefix was originally a marker for
-   frgn-adjacent entries; the decision is to delete it from the language
-   surface entirely. cast_lanes' existing house style is already plain
-   (`byte_at`, `str_to_int`, `float_to_str`) — the `__` names are the
-   legacy minority.
-2. **`frgn` survives only where interop IS the feature**: `lib/std/web/`
-   (JS interop for the web backend), `lib/tamer/` (tooling host bridge),
-   `lib/glue/` (the GLUE product generates `frgn` for users — that is the
-   feature). Everywhere a `.bv` implementation is possible, we write the
-   `.bv` implementation.
-3. **Scope of the purge is Briev-source-visible identifiers**: `defn`/
-   `out defn` names, top-level state `let`s, locals/params, plugin-
-   injected names, backend-emitted call targets that resolve to `.bv`
-   defns, liveness-table rows, and every call site in `.bv`. NOT in
-   scope (out of reach, not entries): C-ABI pinned symbols in
-   `lib/runtime/briev_rt.c`, backend-emitted LLVM globals
-   (`@__briev_*` in IR text), Rust-side IR gensyms (`%__x`,
-   `__variant_`), and dogfood `lib/compiler/backends/llvm.bv`'s emitted
-   IR-text strings (`@__wait_for_event` etc. — those are C-ABI names in
-   generated IR, not Briev identifiers).
-4. **Intrinsic C implementations stay** (bootstrap exceptions, Rules 3/4:
-   `Spawn#`'s `__briev_spawn` C helper, the `--no-std` C print symbols).
-   That is the separate `briev-native-runtime` family; this campaign does
-   not touch it.
-5. **Stub modules**: fill `dir`, `rand`, `temp` now; the other 16 stubs
-   get an honest "not implemented — contributes constants only" header.
-   A fill-all campaign is future work.
-6. **No syntax change** → `spec/SPEC.md` untouched (verified: SPEC has no
-   `__print`/`__argv` references; its `frgn … from #System` design is the
-   FFI feature, unaffected).
+1. **frgn boundary** — "Wherever we can use `.bv`, try. JS interop may be
+   required. Same with GLUE — that is all about language interop. We just
+   shouldn't be reliant on another language to handle the core logic."
+   → frgn survives only where interop IS the feature: `lib/std/web/`
+   (JS), `lib/tamer/` (tooling host), `lib/glue/` (the GLUE product
+   emits frgn for user FFI). Everything else migrates to `.bv` or dies.
+2. **Dunder rename** — plain names, matching cast_lanes' house style
+   (`byte_at`, `str_to_int`, `float_to_str`). The `__` convention
+   historically marked frgn-adjacent helpers; regretted, removed.
+3. **Stub modules** — fill `dir` + `rand` + `temp` now; the other 16
+   `os/*.bv` stubs get honest headers, filled by a later campaign.
 
-## Inventory (2026-10-15, verified by grep)
+## What this campaign is NOT
 
-### `frgn` live declarations — 23 total, ZERO in the daily-driver core
+- **Not** the `briev-native-runtime` family (intrinsics whose C bodies
+  are the bootstrap exceptions — `Spawn#`, print `--no-std` path,
+  `Alloc#`). Rules 3/4 stand: primitives may be C-backed; frgn may not
+  be *core logic*.
+- **Not** renaming C-ABI pinned symbols (`briev_rt.c`, `@__briev_*`
+  globals emitted at IR level), Rust IR gensyms (`%__x`,
+  `__variant_`, `__arena_*`, `__trg_epfd`), or dogfood `llvm.bv`
+  IR-text strings. Those are not Briev entries.
+- **Not** SPEC syntax change: no keyword, delimiter, or grammar
+  change. SPEC.md's `frgn ... from #System` design is untouched.
+- **Not** the web backend, GLUE FFI, or tamer lanes (live foreign
+  work).
 
-| Location | Count | Disposition |
+## Inventory (verified 2026-10-15)
+
+### frgn — 23 live declarations, none in daily-driver core
+
+| Location | Count | Status |
 |---|---|---|
-| `lib/std/web/*.bv` | 13 | KEEP — web backend JS interop (`from "glue/web/web.js"`) |
-| `lib/tamer/*.bv` | 6 | KEEP — tooling host bridge (`from "host"`, `briev_rt.c`) |
-| `lib/std/ffi/xxhash.bv` | 2 | **REIMPLEMENT in pure .bv** (`XXH64`/`XXH32`; zero importers today) |
-| `lib/glue/generator.bv`, `test_bridge.bv` | (text) | KEEP — GLUE emits `frgn` into generated bindings |
-| Everything else (prelude, `plugins/parsed/*`, `lib/std` core) | 0 | Already frgn-free; remaining hits are comments |
+| `lib/std/web/*` (canvas, console, dom, fetch, router, time, pages) | 13 | KEEP — JS interop (decision 1) |
+| `lib/tamer/*` (emit, main, vm) | 6 | KEEP — tooling host bridge |
+| `lib/std/ffi/xxhash.bv` | 2 | MIGRATE — reimplement XXH64/XXH32 in pure `.bv` (zero importers today) |
+| `lib/glue/generator.bv`, `lib/glue/test_bridge.bv` | (0 decls; frgn *text* in generator output) | KEEP — GLUE product |
+| prelude (`plugins/parsed/*.bv`), `lib/std` core, `lib/compiler`, `lib/ffi` | 0 | already clean (comments only) |
 
-### Dunder source-visible definitions — 20 (all in prelude-loaded files)
+### Dunder — source-visible Briev identifiers (in scope)
 
-- `lib/std/cast_lanes.bv` (18 `out defn`): `__stdout_flush`,
-  `__stdout_byte`, `__print_str`, `__print`, `__eprint_str`,
-  `__print_int`, `__print_bool`, `__print_float`, `__print_char`,
-  `__exit`, `__briev_coll_resize`, `__briev_now`, `__watchdog_fail`,
-  `__briev_getcwd`, `__briev_chdir`, `__briev_free`,
-  `__wait_for_trigger__`, `__briev_event_strict_trap`
-- `lib/std/cast_lanes.bv` state: `let __stdout_buf`, `let __stdout_fill`
-- `lib/std/cli.bv` (2): `__argv_has`, `__argv_value`
+| Class | Definition sites | Reference sites |
+|---|---|---|
+| Print/stdout/exit family | `lib/std/cast_lanes.bv`: `out defn __stdout_flush`, `__stdout_byte`, `__print_str`, `__print`, `__eprint_str`, `__print_int`, `__print_bool`, `__print_float`, `__print_char`, `__exit`; top-level state `let __stdout_buf`, `let __stdout_fill` (+ their body-locals) | `print_plugin.rs` dispatch; backend emission strings (`intrinsics.rs` ×8, `mod.rs` ×6, `emit_stmt.rs`, `emit_toplevel.rs`); `defn_liveness.rs` `intrinsic_helpers` rows; `tests.rs` emission strings ×6 |
+| Argv family | `lib/std/cli.bv`: `defn __argv_has`, `defn __argv_value` | `entry_plugin.rs` (`args!`/`entry!` expansion emits calls) |
+| Runtime bridges | `lib/std/cast_lanes.bv`: `out defn __briev_coll_resize`, `__briev_now`, `__watchdog_fail`, `__briev_getcwd`, `__briev_chdir`, `__briev_free`, `__wait_for_trigger__`, `__briev_event_strict_trap` | backend emission (scheduler auto-free → `__briev_free`, idle-tick → `__wait_for_trigger__`, watchdog, capture paths); `defn_liveness.rs` rows |
+| Script state | injected by `src/plugin/script_plugin.rs`: `let __script_done`, `node __script_main` | same file (guard/body) |
+| Call sites | `tests/tier1/daily_use_smoke.bv`, `tests/fixtures/event_model.bv`, `tests/fixtures/phase4/ffi_print.bv`, `tests/fixtures/inop_{alias,meld,multi,state}.bv`, `examples/ptr-runtime.bv`, `lib/std/cli.bv` | — |
+| Filenames | `lib/ffi/__init__.bv` (dunder filename, zero importers found) | — |
 
-### Dunder call/reference sites
+Note: `__print_float64` appears in `defn_liveness.rs` rows and backend
+strings but NO `.bv` defn was found — Phase 0 probe resolves whether it
+is C-side only (`--no-std` symbol) or a missed defn.
 
-- Backend emission strings (call targets that resolve to the defns):
-  `src/backend/llvm/intrinsics.rs` (8), `mod.rs` (6), `emit_stmt.rs` (1),
-  `emit_toplevel.rs` (1), `tests.rs` (6)
-- `src/plugin/print_plugin.rs` (`!Print`/`println!` → `__print_*`)
-- `src/plugin/entry_plugin.rs` (`entry!`/`args!` → `__argv_has/value`)
-- `src/plugin/script_plugin.rs` (injects `__script_main`/`__script_done`)
-- `src/analysis/defn_liveness.rs` `intrinsic_helpers` rows (data rows)
-- `.bv` call sites: `tests/tier1/daily_use_smoke.bv`,
-  `tests/fixtures/event_model.bv`, `tests/fixtures/phase4/ffi_print.bv`,
-  `tests/fixtures/inop_{alias,meld,multi,state}.bv`,
-  `examples/ptr-runtime.bv`, `lib/std/cli.bv` (internal)
-- Comments: `lib/std/io.bv` header, cast_lanes headers, `lib/std/os/fs.bv:40`
+### Gaps (daily-driver surface)
 
-### Stub modules (19/21 `lib/std/os/*.bv` are duplicate-const stubs)
+- `lib/std/os/dir.bv` — stub (76 duplicate consts, 0 defns);
+  `SYS_GETDENTS64 = 217` const already exported by `posix/syscall.bv`.
+- PRNG — absent everywhere (no intrinsic, no stdlib).
+- `lib/std/os/temp.bv` — stub; mkstemp is not a raw syscall (compose:
+  `open(O_CREAT|O_EXCL)` + rand suffix + retry).
+- Legacy landmines: root `lib/std/time.bv` = 11 duration helpers but NO
+  clock (real clock is `lib/std/os/time.bv`, landed 2026-10-14);
+  `lib/std/io.bv` header still teaches `__print_int`.
+- 19/21 `lib/std/os/*.bv` are const-only stubs (fs.bv and time.bv are
+  the only two real modules).
 
-Filled this campaign: `dir.bv`, `rand.bv` (new), `temp.bv` (new).
-Honest-header sweep: `atomic`, `debug`, `dynlib`, `ipc`, `mem`, `net`,
-`process`, `resource`, `sched`, `signal`, `sysinfo`, `sysnum`, `thread`,
-`tty`, `user` (and any remaining after fills).
-Legacy landmines: root `lib/std/time.bv` (11 duration helpers, NO clock
-— users importing `std/time` get nothing time-like; the real clock is
-`std/os/time.bv`), root `lib/std/io.bv` header (teaches `__print_int`),
-`lib/ffi/__init__.bv` (dunder filename, zero import references).
+## Phase 0 — Probes (writes to `/tmp/opencode/core-usable/` only)
 
-## Rename table (final)
+No repo changes. Each probe records its finding in this file's
+"Phase 0 findings" section before Phase 1 starts.
+
+1. **Duplicate-defn behavior.** `brievc check` a file defining
+   `defn print_str(...)` with prelude active. Outcomes:
+   (a) loud diagnostic → plain rename safe as-is;
+   (b) silent override → MUST add a redefinition diagnostic in
+   Phase 1 (a user fn can hijack backend-lowered calls today —
+   independent soundness bug).
+2. **Mechanical sweep.** Grep-verify every in-scope `__` site across
+   `lib/`, `plugins/`, `tests/`, `examples/`, `src/`:
+   `defn __`, `out defn __`, `let __`, `@__`-in-`.bv`,
+   `"__`-strings in Rust, plugin injections. Reconcile against the
+   inventory table above; record deltas. Resolve `__print_float64`.
+3. **Name-contract map.** For each runtime bridge, enumerate exact
+   Rust emission sites (file:line) that spell the name, so both sides
+   rename in one commit. The backend IR-scan net is the safety net
+   (loud compile error naming the missing helper) but the map keeps
+   commits atomic anyway.
+4. **Wrapping arithmetic.** Confirm `Int` (i64) wrapping mul/shift/rotate
+   suffices for XXH64 u64 mixing — probe: does overflow trap or wrap?
+   Record the correct operator/intrinsic set for Phase 3's xxhash.
+
+## Phase 1 — Dunder purge → plain names
+
+Rename rule: drop the `__` prefix; disambiguate only on collision
+(Phase-0 probe 1/2 decide finals). Planned mapping (finals confirmed by
+probe):
 
 | Old | New | Old | New |
 |---|---|---|---|
@@ -97,125 +112,156 @@ Legacy landmines: root `lib/std/time.bv` (11 duration helpers, NO clock
 | `__print_float` | `print_float` | `__argv_value` | `argv_value` |
 | `__print_bool` | `print_bool` | `__briev_free` | `rt_free` |
 | `__print_char` | `print_char` | `__briev_now` | `rt_now_ns` |
-| `__print` | `print_str_raw` (probe-verified final) | `__briev_getcwd` | `rt_getcwd` |
+| `__print` | `print_str_raw` (probe: semantics = newline-less generic) | `__briev_getcwd` | `rt_getcwd` |
 | `__eprint_str` | `eprint_str` | `__briev_chdir` | `rt_chdir` |
 | `__stdout_flush` | `stdout_flush` | `__briev_coll_resize` | `coll_resize` |
 | `__stdout_byte` | `stdout_byte` | `__watchdog_fail` | `watchdog_fail` |
 | `__stdout_buf` | `stdout_buf` | `__wait_for_trigger__` | `wait_for_trigger` |
 | `__stdout_fill` | `stdout_fill` | `__briev_event_strict_trap` | `event_strict_trap` |
-| | | `__script_main`/`__script_done` | `script_main`/`script_done` |
+| `__script_main` | `script_main` | `__script_done` | `script_done` |
 
-Rules for the table: (a) both sides of the backend↔defn name contract
-rename atomically in one commit per family; (b) if a target name
-collides with an existing export in the flat namespace, the probe picks
-a distinct final (`print_str_raw` is already the reserved fallback for
-`__print`); (c) `__print_float64` has a liveness row but no `.bv` defn —
-Phase-0 probe decides whether it is C-side (leave the C symbol, drop the
-row if vestigial) or hidden somewhere (then rename).
+Rules for the rename:
 
-## Phases
+- **Atomic per family**: `.bv` defn + state + every Rust emission
+  string + liveness row + plugin injection + call sites + comments in
+  ONE commit per family (print/stdout/exit → argv → script →
+  runtime-bridges).
+- **Out of scope**: C-ABI symbols (`briev_rt.c`), IR-level
+  `@__briev_*` globals, IR gensyms, dogfood IR-text strings.
+- If a plain final collides with an existing export or a test fixture
+  name, pick the distinct final documented in the probe findings —
+  never keep a dunder to dodge a collision.
+- Redefinition diagnostic (if probe 1 = silent) lands in the FIRST
+  family commit, with a behavioral test.
 
-### Phase 0 — probes (writes only to `/tmp` or `target/`, no commits)
+Acceptance (per family commit and at phase end):
 
-1. Duplicate-defn behavior: a user `defn print_str` alongside the
-   prelude — loud error, or silent override (which today means a user fn
-   can hijack backend-lowered calls → soundness bug, diagnostic added in
-   Phase 1)?
-2. Mechanical sweep: re-verify every `__` site by grep (defs, state,
-   locals, params, plugin injections, emission strings, liveness rows,
-   call sites); resolve `__print_float64`.
-3. Enumerate the exact backend emission sites for the runtime-bridge
-   family (`rt_*`, `watchdog_fail`, `wait_for_trigger`,
-   `event_strict_trap`) so the contract renames atomically.
-4. Wrapping arithmetic: confirm `Int` wraps (or `Bits(64)`/bit
-   intrinsics suffice) for XXH64's u64 mixing (Phase 3 feasibility).
+- `cargo test --lib` green (updated `tests.rs` emission strings in the
+  same commit).
+- `fs_smoke`, `daily_use_smoke`, `cli_args_test`, `lsp_smoke` green.
+- New **dunder gate test**: assert zero `defn __` / `out defn __` /
+  `let __` / `@__` inside `lib/**/*.bv` and `plugins/parsed/*.bv`
+  (allowlist: empty). C-side/IR-level names are not in `.bv`, so the
+  gate is exact.
+- Praetor baseline-diff on every changed Rust file.
 
-### Phase 1 — dunder purge (one commit per family)
+## Phase 2 — frgn: `.bv`-native core, interop-only escape
 
-Family order: (1) print/stdout/exit in `cast_lanes.bv` + backend
-strings + `print_plugin` + liveness rows + call sites + `tests.rs`
-strings; (2) argv family (`cli.bv` + `entry_plugin.rs`); (3) script
-state (`script_plugin.rs`); (4) runtime bridges (`cast_lanes.bv` +
-backend contract, both sides atomic); (5) call-site sweep leftovers +
-comment headers (`io.bv`, cast_lanes, `os/fs.bv:40`).
-If Phase 0 found silent override: the redefinition diagnostic lands
-with family 1 (loud error naming both defns + the fix).
-**Closes with the dunder grep-gate test**: zero `defn __` / `let __` /
-`@__` inside any `.bv` under `lib/` + `plugins/` (empty allowlist).
+1. **xxhash in pure `.bv`** — rewrite `lib/std/ffi/xxhash.bv`:
+   XXH64 + XXH32 per spec (primes, avalanche, rotate), zero `frgn`.
+   Test against published vectors:
+   `XXH64("", 0) = EF46DB3751D8E999`, `XXH64("", 1) = 1F302D9C2A818D5D`
+   (verify exact vectors during implementation against the C source in
+   `lib/std/c/xxhash/`, which stays as the C-side reference only if
+   still referenced — else removed with the frgn it served).
+   Blocking on Phase-0 probe 4 (wrapping semantics).
+2. **frgn gate test** — parse all `lib/**/*.bv` line-wise for live
+   `frgn`/`export frgn` declarations (comments excluded); allowlist:
+   `lib/std/web/`, `lib/tamer/`, `lib/glue/`. Everything else → test
+   failure. `lib/std/ffi/` ends frgn-free.
+3. **Comment/doc cleanup** — `lib/std/time.bv` placeholder block
+   ("could be frgn or defn"), `lib/std/io.bv` header (`__print_int`
+   teaching — updated by Phase 1 anyway, re-checked here), any
+   `learn-briev/` line implying frgn for ordinary I/O (07-ffi.md is
+   the FFI lesson itself — keep).
 
-### Phase 2 — frgn: .bv-native core
+Acceptance: both gates green; `cargo test --lib`; conformance sweep;
+xxhash vector test green (backend AND interpreter if importable there
+— follow `json.bv` precedent).
 
-1. `lib/std/ffi/xxhash.bv` rewritten in pure `.bv` (XXH64/XXH32, i64
-   mixing per probe 4), contracts, tested against published vectors
-   (`XXH64("", 0) = EF46DB3751D8E999`, `XXH32("", 0) = 02CC5D05`).
-2. frgn **allowlist gate test**: live `frgn` declarations may appear
-   only under `lib/std/web/`, `lib/tamer/`, `lib/glue/`.
-3. Comment cleanup: `lib/std/time.bv` "could be frgn or defn" block,
-   `lib/std/io.bv` header, anywhere tutorials imply frgn for basic I/O
-   (`learn-briev/07-ffi.md` STAYS — it is the FFI lesson itself).
+## Phase 3 — Gap fill (dir + rand + temp + legacy)
 
-### Phase 3 — gap fill (dir + rand + temp + legacy)
+All pure stdlib over the variadic `syscall` (posix/syscall.bv) or
+existing intrinsics — Rule 14, no new intrinsics.
 
-1. `lib/std/os/dir.bv` — real module: `export defn entries(path: String)
-   -> Result<List<String>, Int>` over `SYS_GETDENTS64` (const already in
-   `posix/syscall.bv`; add if missing), fs.bv buffer/iteration idioms,
-   contracts, behavioral test (SysCall# executes in the interpreter —
-   `src/interpreter/intrinsics.rs:446` — so fs.bv precedent holds).
-2. `lib/std/os/rand.bv` — splitmix64: `seed_rand(s: Int)`,
-   `rand_u64() -> Int`, `rand_range(lo: Int, hi: Int) -> Int
-   [lo < hi]`; behavioral test: same seed → identical sequence; range
-   bounds; two successive draws differ.
-3. `lib/std/os/temp.bv` — `create_temp() -> Result<String, Int>`:
-   `open(O_RDWR|O_CREAT|O_EXCL, 0600)` + `rand.bv` suffix + bounded
-   retry (mkstemp is libc, not a raw syscall — stdlib composition,
-   Rule 14). Requires `remove_file(path)` in `lib/std/os/fs.bv`
-   (SYS_UNLINK — add const to `posix/syscall.bv` if missing) so temp
-   files do not leak; add and test it.
-4. Legacy surface sweep: root `lib/std/time.bv` de-landmined (`import
-   "std/time"` must provide the clock — re-export from `os/time.bv` or
-   migrate the duration helpers there); `lib/std/io.bv` header rewritten
-   to the new plain names; `lib/ffi/__init__.bv` renamed `init.bv`
-   (zero references verified).
-5. Honest-header sweep of the remaining 16 stubs (one commit).
+1. **`lib/std/os/dir.bv`** — replace stub with real module:
+   - `export defn entries(path: String) -> Result<List<String>, Int>`
+     — `Alloc#` buffer + `SYS_GETDENTS64` loop, names parsed from
+     `linux_dirent64` (offset 19, reclen at 16), buffer grown on
+     `EINVAL`, freed on every path; `Dir#`-style handle via
+     `SYS_OPENAT`/`SYS_OPEN` (fs.bv's `fs_open` reused).
+   - Contracts follow fs.bv style; entries exclude `.`/`..`? — NO,
+     POSIX-honest: include them, document. (Decision: raw fidelity;
+     callers filter. Deterministic contract beats magic.)
+   - Behavioral test: list a temp dir created by the test (with
+     `.bv` files), assert sorted contents.
+2. **`lib/std/os/rand.bv`** — splitmix64:
+   - `seed_rand(seed: Int)`, `rand_u64()`, `rand_range(lo, hi)
+     [lo < hi][lo <= term && term < hi]`.
+   - State: one top-level `let` (reactor-state idiom), advanced by
+     `rand_u64`. Deterministic: same seed → identical sequence.
+   - Tests: same-seed equality, range bounds across ≥1000 draws,
+     two consecutive draws differ.
+3. **`lib/std/os/temp.bv`** — `create_temp() -> Result<String, Int>`:
+   `open(O_RDWR|O_CREAT|O_EXCL, 0600)` with `rand.bv` suffix + bounded
+   retry; needs **`remove_file(path)`** added to `fs.bv`
+   (`SYS_UNLINK = 87` — add const to `posix/syscall.bv`) so temp files
+   do not leak. Test: create → exists → remove → gone.
+4. **Legacy surfaces**:
+   - Root `lib/std/time.bv`: de-landmine — becomes a re-export of the
+     real clock (`import "std/os/time"` + forwarding or file
+     replacement per probe of who imports it: `lib/ffi/__init__.bv`
+     today); placeholder comment block dies.
+   - `lib/std/io.bv` header: correct (Phase 1 already renames
+     `__print_int` mentions; verify final text).
+   - `lib/ffi/__init__.bv` → `lib/ffi/init.bv` (zero references
+     found; probe re-verifies before rename).
+   - Remaining 16 stubs: honest header — "Status: constants only, not
+     yet implemented — do not import expecting a working surface."
+     One sweep commit.
 
-### Phase 4 — end-to-end + gates
+Acceptance: new behavioral tests green under harness-exact
+`clang -O3 -flto` link AND at `-O0` if they catch dead-store class
+(ir-inversion gate: behavioral tests must NOT rely on `-O3` to pass);
+`brievc test` runs the new suites; full battery.
 
-Mini-CLI under `brievc test`: argv (`args!`) + `read_file`/`write_file`
-+ `entries` + `rand_range` + `now_ns`/`sleep_ms`, golden stdout.
+## Phase 4 — End-to-end + close
 
-## Gates (every commit)
+1. **Mini-CLI acceptance test** under `brievc test`: one `.bv` using
+   `entry!`/`args!` + `read_file`/`write_file` + `dir.entries` +
+   `rand_range` + `now_ns`/`sleep_ms`, golden stdout — the whole
+   daily-driver surface in one program.
+2. **Full gate battery**: `cargo test --lib` · `fs_smoke` ·
+   `daily_use_smoke` · `cli_args_test` · `lsp_smoke` · conformance
+   sweep · `rbv_gate` · Praetor baseline-diff · dunder gate · frgn
+   gate.
+3. **Docs**: this file's Status section appended (timestamped, never
+   retro-edited); architecture comments updated in the same commits as
+   the code they describe (`defn_liveness.rs` table header,
+   cast_lanes/io headers); root INDEX note if the reference index
+   changes; BUGS.md entry for the redefinition-diagnostic fix (if
+   probe 1 required it).
 
-`cargo test --lib` · `fs_smoke` · `daily_use_smoke` · `cli_args` ·
-`lsp_smoke` · conformance sweep · `rbv_gate` · Praetor baseline-diff on
-changed files (compare distinct `/tmp` dir names) · the two new
-grep-gates (dunder, frgn allowlist) once they exist.
+## Working rules for this campaign
 
-## Docs (same commit as the structural change)
-
-- This plan (written first, before work).
-- `lib/std/io.bv`, cast_lanes, `os/fs.bv` comments; root
-  `lib/std/time.bv` header; honest stub headers.
-- `src/analysis/defn_liveness.rs` table doc-comment (renamed rows).
-- `docs/plans/INDEX.md` one-line pointer after close-out.
-- `spec/SPEC.md`: untouched (no syntax change).
-
-## Risks
-
-- Backend↔defn contract breakage is caught loud by the existing
-  IR-scan net (missing helper → compile error naming the helper).
-- Plain-name collision: Phase-0 probe decides; silent-override ⇒ new
-  redefinition diagnostic first.
-- `src/backend/llvm/tests.rs` emission strings and any `.ll` snapshot
-  tests updated in-phase (same commit).
-- GPU IR byte-gates unaffected (kernels do not use the print helper
-  family); rbv_gate still run as the standing check.
-- Commit discipline: `git status`-sweep staging, never file-lists;
-  never stage `benchmarks/*_c`, `examples/gpu`, `libstrexp.a`,
-  `tests/ffi_*_tests.rs`, `target/cli_probe/*`.
+- One commit per family/feature; `cargo test --lib` before every
+  commit; `git add` by `git status` sweep of intended files — never
+  file-list guesswork (four staging misses documented this session).
+- Never `git checkout --` / `git restore` uncommitted work.
+- Praetor baseline-diff per changed Rust file (`/tmp` copies, unique
+  dir names — `mod.rs` name collision hazard documented).
+- Behavioral tests link with the harness's exact clang line; `-O0`
+  variants where the test targets the dead-store class.
+- No `todo!()`/stub restorations: every phase ends complete.
 
 ## Exit criterion
 
 A user can import std, print, read/write files, list a directory, draw
 random numbers, create and remove temp files, measure time, parse argv,
 and run `brievc test` — with zero `frgn` and zero dunder entries in any
-core surface, guaranteed forever by two grep-gate tests.
+core surface, guaranteed forever by the two grep-gate tests.
+
+## Session note (2026-10-15 11:11)
+
+Commit `561e4669` briefly replaced this file with a thinner rewrite;
+the operator's version (this document) is authoritative — restored with
+the exit criterion merged in, recorded as a forward fix (never amend).
+At 11:11 the tree also held abandoned in-flight Phase-1 family-1 work
+(print/stdout/exit rename across cast_lanes, liveness, intrinsics, mod,
+emit_*, print_plugin, daily_use_smoke; mtimes 10:43–10:48, no live
+process) following this plan's rename table — continued, completed, and
+committed under the normal Phase-1 rules.
+
+## Phase 0 findings
+
+(Recording zone — filled before Phase 1 starts.)
