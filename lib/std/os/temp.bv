@@ -1,20 +1,61 @@
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
+// mktemp — unique file creation (O_CREAT|O_EXCL + rand + retry), 2026-10-15
+// (core-usable purge Phase 4, plan docs/plans/2026-10-15-lifecycle-laws-
+// termination-warning.md).
+//
+// `mktemp_file(prefix)` behaves like mkstemp(3): it creates a file that did
+// not exist (O_EXCL guarantees no clobber race), closes the descriptor, and
+// returns the path. The random tag comes from lib/std/os/rand.bv
+// (splitmix64, seeded — call seed_rand once at startup for distinct tags
+// across runs). EEXIST retries up to MKTEMP_TRIES times; any other errno
+// propagates immediately. Pure .bv over the fs.bv syscall lanes — no frgn.
+
+import { fs_open, fs_close } from "std/os/fs.bv";
+import { rand_range } from "std/os/rand.bv";
+import { is_ok, is_err, unwrap_err } from "std/result.bv";
+
+// open(2) flags/mode — kept local so this module splices standalone (the
+// values mirror fs.bv's; O_EXCL is the one fs.bv does not declare).
+const O_WRONLY:  Int = 1;
+const O_CREAT:   Int = 64;
+const O_EXCL:    Int = 128;
+const MODE_0644: Int = 420;
+// -EEXIST: the only errno worth retrying.
+const EEXIST: Int = 17;
+const MKTEMP_TRIES: Int = 8;
+
+/// One O_EXCL create attempt. fd >= 0 → the file exists, close it and
+/// return the path; otherwise the negative errno.
+defn attempt(prefix: String, tag: Int) [tag >= 0][is_ok(term) || is_err(term)] -> Result<String, Int> {
+    let path: String = prefix + "-" + (tag as String);
+    let cpath: Int = to_c_string(path);
+    let fd: Int = fs_open(cpath, O_CREAT + O_EXCL + O_WRONLY, MODE_0644);
+    when fd >= 0 {
+        fs_close(fd);
+        term Ok(path);
+    };
+    term Err(fd);
+};
+
+/// Retry EEXIST collisions up to `tries` more times; anything else (or
+/// success) propagates. Bounded recursion — the convergence gate re-checks
+/// per attempt.
+defn mktemp_attempt(prefix: String, tries: Int) [tries >= 0][is_ok(term) || is_err(term)] -> Result<String, Int> {
+    let r: Result<String, Int> = attempt(prefix, rand_range(0, 1000000));
+    when is_ok(r) {
+        term r;
+    };
+    let e: Int = unwrap_err(r);
+    when e != 0 - EEXIST {
+        term r;
+    };
+    when tries <= 0 {
+        term r;
+    };
+    term mktemp_attempt(prefix, tries - 1);
+};
+
+/// Create a unique file `"<prefix>-<tag>"` and return its path. The caller
+/// owns the file (delete with fs.bv `remove_file`).
+export defn mktemp_file(prefix: String) [true][is_ok(term) || is_err(term)] -> Result<String, Int> {
+    term mktemp_attempt(prefix, MKTEMP_TRIES);
+};
