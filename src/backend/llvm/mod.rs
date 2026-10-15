@@ -5602,7 +5602,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             "briev_host_arity_of",
             // __getenv_int/__getenv_briev are NOT here: they are adapter-
             // served (the backend emits C-ABI defines over the captured
-            // environ). Same for the __argv_* family (retired with cli.bv).
+            // environ). Same for the argv_* family (retired with cli.bv).
             // libc
             "malloc", "free", "realloc", "calloc", "getenv", "printf",
             "briev_getenv_int_impl", "briev_getenv_briev_impl",

@@ -6,7 +6,7 @@
 // engines). argv[0] is the program name; flags are matched from index 1.
 //
 // entry_plugin.rs expands `entry!("cmd")` / `args!("--flag")` to
-// entry_cmd()/__argv_has/__argv_value below and injects this import —
+// entry_cmd()/argv_has/argv_value below and injects this import —
 // these defns are the honest stdlib surface behind those compiler-known
 // macro names (no hidden Rust string matches; Rule 3).
 //
@@ -108,8 +108,8 @@ defn entry_cmd_walk(i: Int) [i >= 0][true] -> String {
     term entry_cmd_walk(i + 1);
 };
 
-// __argv_has — `args!("--flag")` (Bool snapshot): is the flag present?
-defn __argv_has(flag: String) [true][term == true || term == false] -> Bool {
+// argv_has — `args!("--flag")` (Bool snapshot): is the flag present?
+defn argv_has(flag: String) [true][term == true || term == false] -> Bool {
     let key: Int = (flag as Data) as Int;
     let klen: Int = Load#(key, 8);
     when klen == 0 {
@@ -118,9 +118,9 @@ defn __argv_has(flag: String) [true][term == true || term == false] -> Bool {
     term argv_find(key, klen, Args#(), 1) >= 0;
 };
 
-// __argv_value — `args!("--flag")` (String snapshot): the argument
+// argv_value — `args!("--flag")` (String snapshot): the argument
 // AFTER the flag, or empty when the flag is absent.
-defn __argv_value(flag: String) [true] -> String {
+defn argv_value(flag: String) [true] -> String {
     let key: Int = (flag as Data) as Int;
     let klen: Int = Load#(key, 8);
     let idx: Int = argv_find(key, klen, Args#(), 1);
@@ -131,12 +131,12 @@ defn __argv_value(flag: String) [true] -> String {
 };
 
 // arg_int / arg_float — the typed args! snapshot initializers (the
-// plugin wraps __argv_value with these for Int/Float fields; the
+// plugin wraps argv_value with these for Int/Float fields; the
 // cast_lanes parse lanes own the digit logic).
 defn arg_int(flag: String) [true][term == 0 || term != 0] -> Int {
-    term str_to_int(__argv_value(flag));
+    term str_to_int(argv_value(flag));
 };
 
 defn arg_float(flag: String) [true][term >= 0.0 || term < 0.0] -> Float {
-    term str_to_float(__argv_value(flag));
+    term str_to_float(argv_value(flag));
 };
