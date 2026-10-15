@@ -1083,7 +1083,11 @@ fn emit_volatile_store(
     }
     writeln!(out, "{}store volatile {} {}, ptr {}, align {}", indent,
         llvm_ty, val_reg.name, addr_ptr, backend.align_of(&llvm_ty)).ok();
-    writeln!(out, "{}{} = add i64 0, 1", indent, v).ok();
+    // 2026-10-15 (bool-width canonicalization): the success result must be
+    // the canonical i8 Bool (invariant I1) — the old `add i64 0, 1` produced
+    // an i64 register labeled `bool_()`, exactly the And/Or label/width
+    // desync class: a consumer's `trunc i8` would hit an i64.
+    writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::bool_() }
 }
 

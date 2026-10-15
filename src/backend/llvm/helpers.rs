@@ -1821,8 +1821,15 @@ impl LlvmBackend {
             )
             .ok();
         }
+        // 2026-10-15 (bool-width canonicalization): both branches above emit
+        // an i1 (fcmp/icmp); I1 requires the canonical i8 Bool. (Note: this
+        // path currently has no callers — the emit_binary_op comparison arms
+        // carry their own fcmp+zext — fixed anyway so the helper upholds the
+        // invariant if ever wired.)
+        let z = self.fun.gen_reg();
+        writeln!(out, "{}{} = zext i1 {} to i8", indent, z, c).ok();
         TypedRegister {
-            name: c,
+            name: z,
             ty: Type::bool_(),
         }
     }

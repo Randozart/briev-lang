@@ -6805,6 +6805,44 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
     }
  
     /// Emit a binary operation.
+    /// 2026-10-15 (bool-width canonicalization, plan
+    /// docs/plans/2026-10-15-bool-width-canonicalization.md): the canonical
+    /// Bool register is an i8 holding 0/1 — invariant I1. The casting graph
+    /// fixes Bool at i8 (`Fixed("i8")`), comparisons emit `zext i1 to i8`,
+    /// and every consumer (`trunc i8 … to i1`, 11 sites) assumes it. The
+    /// logic ops (`&&`/`||`/`!`) were the one producer that emitted at the
+    /// OPERAND's width while still labeling the result `bool_()` — a wide
+    /// operand produced `or i64` under a bool label and the consumer's
+    /// `trunc i8` mis-typed (clang: "defined with type 'i64' but expected
+    /// 'i8'"). Normalize any operand to the canonical form so I1 holds by
+    /// construction. Undo: restore the And/Or/Not arms to direct
+    /// `llvm_type(&l.ty)` emission (re-opens the class; the IR regression
+    /// test catches it).
+    pub(super) fn coerce_to_i8_bool(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &TypedRegister,
+    ) -> TypedRegister {
+        if reg.ty == Type::bool_() {
+            return reg.clone();
+        }
+        let ty_str = self.llvm_type(&reg.ty);
+        if ty_str == "i8" {
+            return reg.clone();
+        }
+        let v = self.fun.gen_reg();
+        if ty_str == "i1" {
+            writeln!(out, "{}{} = zext i1 {} to i8", indent, v, reg.name).ok();
+        } else {
+            writeln!(out, "{}{} = trunc {} {} to i8", indent, v, ty_str, reg.name).ok();
+        }
+        TypedRegister {
+            name: v,
+            ty: Type::bool_(),
+        }
+    }
+
     fn emit_binary_op(
         &mut self,
         out: &mut String,
@@ -7206,26 +7244,26 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }
             }
             crate::ast::BinaryOpKind::And => {
-                let cmp_ty = self.llvm_type(&l.ty);
-                writeln!(
-                    out,
-                    "{}{} = and {} {}, {}",
-                    indent, v, cmp_ty, l.name, r.name
-                )
-                .ok();
+                // 2026-10-15 (bool-width canonicalization): normalize both
+                // operands to the canonical i8 Bool (invariant I1) — the old
+                // arm emitted at the operand's width while labeling the
+                // result `bool_()`, so a wide operand produced `and i64`
+                // under a bool label and the consumer's `trunc i8` hit an
+                // i64. See coerce_to_i8_bool.
+                let l = self.coerce_to_i8_bool(out, indent, l);
+                let r = self.coerce_to_i8_bool(out, indent, r);
+                writeln!(out, "{}{} = and i8 {}, {}", indent, v, l.name, r.name).ok();
                 TypedRegister {
                     name: v.to_string(),
                     ty: Type::bool_(),
                 }
             }
             crate::ast::BinaryOpKind::Or => {
-                let cmp_ty = self.llvm_type(&l.ty);
-                writeln!(
-                    out,
-                    "{}{} = or {} {}, {}",
-                    indent, v, cmp_ty, l.name, r.name
-                )
-                .ok();
+                // 2026-10-15 (bool-width canonicalization): same
+                // normalization as And — see coerce_to_i8_bool.
+                let l = self.coerce_to_i8_bool(out, indent, l);
+                let r = self.coerce_to_i8_bool(out, indent, r);
+                writeln!(out, "{}{} = or i8 {}, {}", indent, v, l.name, r.name).ok();
                 TypedRegister {
                     name: v.to_string(),
                     ty: Type::bool_(),
@@ -7303,10 +7341,16 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }
             }
             crate::ast::UnaryOpKind::Not => {
+                // 2026-10-15 (bool-width canonicalization): normalize the
+                // operand to the canonical i8 Bool and label the result
+                // `bool_()` unconditionally — the old arm propagated the
+                // operand's label (`operand.ty.clone()`), the mirror of the
+                // And/Or label/width desync. See coerce_to_i8_bool.
+                let operand = self.coerce_to_i8_bool(out, indent, &operand);
                 writeln!(out, "{}{} = xor i8 {}, 1", indent, v, operand.name).ok();
                 TypedRegister {
                     name: v.to_string(),
-                    ty: operand.ty.clone(),
+                    ty: Type::bool_(),
                 }
             }
             crate::ast::UnaryOpKind::BitNot => {
