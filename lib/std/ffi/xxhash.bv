@@ -1,29 +1,233 @@
-// xxhash — xxHash Fast Hash Function Bindings
+// xxhash — xxHash non-cryptographic hash, PURE BRIEV
 // Tier 3: Data & Encoding
 //
-// Provides Briev wrappers for the xxHash family of non-cryptographic
-// hash functions. xxHash is extremely fast and has excellent
-// distribution properties.
+// 2026-10-15 (core-usable purge, Phase 2): the two `frgn` bindings to the
+// vendored C (`lib/std/c/xxhash/xxhash.c`, compiled by
+// tests/vendored_c_libs.rs as an independent C-side reference) are
+// REPLACED by a pure-Briev implementation. Core logic must not rely on
+// another language (operator decision, plan 2026-10-15-core-usable-purge).
+// `lib/std/ffi/` is now frgn-free; the interop-only frgn lanes are
+// lib/std/web/ (JS), lib/tamer/ (host), lib/glue/ (product).
 //
-// Raw FFI:
-//   XXH64(data_ptr: Int, len: Int, seed: Int) -> Int
-//   XXH32(data_ptr: Int, len: Int, seed: Int) -> Int
+// Algorithm: xxHash64 / xxHash32 one-shot (Yann Collet, BSD-2). Validated
+// against the published vectors (tests/xxhash_parity_test.rs):
+//   XXH64("",0)=EF46DB3751D8E999   XXH32("",0)=02CC5D05
+//   XXH64("abc",0)=2869577D1BB4C57D XXH32("abc",0)=32D153FF
 //
-// Convenience wrappers accept String directly:
-//   xxh64(str: String, seed: Int) -> Int
-//   xxh32(str: String, seed: Int) -> Int
+// Arithmetic (Phase-0 probe 4): `Int` (i64) `+`/`*`/`<<` wrap mod 2^64, so
+// XXH64's u64 mixing needs no masking — signed i64 bit patterns ARE u64.
+// `>>` is ARITHMETIC, so logical shift right is emulated via mask
+// (`lshr64`/`lshr32`). XXH32 is mod 2^32 — every op is masked `& 0xFFFFFFFF`.
+// Primes above i64::MAX are written as signed i64 decimals. Hashing uses
+// the BYTE length (`str_len_bytes`), not `.^Length` (codepoints).
 //
 // Usage:
-//   import { xxh64, xxh32 } from "std/xxhash.bv";
-//   let h = xxh64("hello", 0);
-//   OUT__print_int(h);
+//   import { xxh64, xxh32 } from "std/ffi/xxhash.bv";
+//   let h: Int = xxh64("hello", 0);
+//   println!(h);
 //
+// Undo: restore the two `frgn` lines + the C-backed call, delete the
+// helpers below, re-point the parity test at the C reference.
 
-// ===== RAW FFI DECLARATIONS =====
-// Parameters: data pointer (Int = raw address), length (Int), seed (Int)
-// Returns: 64-bit or 32-bit hash value
+// ── 64-bit primitives ────────────────────────────────────────────────────
 
-frgn frgn__xxh64(data_ptr: Int, len: Int, seed: Int) -> Int : XXH64 from "lib/std/c/xxhash/xxhash.c";
-frgn frgn__xxh32(data_ptr: Int, len: Int, seed: Int) -> Int : XXH32 from "lib/std/c/xxhash/xxhash.c";
+// lshr64 — LOGICAL shift right (>> is arithmetic on i64). For k in 1..63:
+// arithmetic shift then mask off the sign-extended high bits. k == 0 is the
+// identity (the (1 << 64) mask would overflow, so it is special-cased).
+defn lshr64(x: Int, k: Int) [k >= 0 && k <= 63][term == 0 || term != 0] -> Int {
+    when k == 0 {
+        term x;
+    };
+    term (x >> k) & ((1 << (64 - k)) - 1);
+};
 
-// ===== CONVENIENCE WRAPPERS =====
+// rotl64 — 64-bit rotate left = (x << r) | (x >>> (64 - r)).
+defn rotl64(x: Int, r: Int) [r > 0 && r < 64][term == 0 || term != 0] -> Int {
+    term (x << r) | lshr64(x, 64 - r);
+};
+
+// read64le — 8 bytes at offset i, little-endian, as a u64 bit pattern.
+defn read64le(s: String, i: Int) [i >= 0][term == 0 || term != 0] -> Int {
+    term byte_at(s, i)
+        | (byte_at(s, i + 1) << 8)
+        | (byte_at(s, i + 2) << 16)
+        | (byte_at(s, i + 3) << 24)
+        | (byte_at(s, i + 4) << 32)
+        | (byte_at(s, i + 5) << 40)
+        | (byte_at(s, i + 6) << 48)
+        | (byte_at(s, i + 7) << 56);
+};
+
+// read32le — 4 bytes at offset i, little-endian, as a u32 (positive i64).
+defn read32le(s: String, i: Int) [i >= 0][term >= 0 && term <= 4294967295] -> Int {
+    term byte_at(s, i)
+        | (byte_at(s, i + 1) << 8)
+        | (byte_at(s, i + 2) << 16)
+        | (byte_at(s, i + 3) << 24);
+};
+
+// ── XXH64 ────────────────────────────────────────────────────────────────
+
+// xxh64_round — acc += input * P2; acc = rotl(acc,31); acc *= P1.
+defn xxh64_round(acc: Int, inp: Int) [true][term == 0 || term != 0] -> Int {
+    term rotl64(acc + inp * -4417276706812531889, 31) * -7046029288634856825;
+};
+
+// xxh64_merge — val = round(0,val); acc ^= val; acc = acc*P1 + P4.
+defn xxh64_merge(acc: Int, val: Int) [true][term == 0 || term != 0] -> Int {
+    let k: Int = xxh64_round(0, val);
+    term (acc ^ k) * -7046029288634856825 + -8796714831421723037;
+};
+
+// xxh64_stripes — fold 32-byte stripes from p while a full stripe remains,
+// threading the four lane accumulators. Returns (v1,v2,v3,v4) at the end.
+defn xxh64_stripes(s: String, p: Int, n: Int, v1: Int, v2: Int, v3: Int, v4: Int)
+    [p >= 0 && n >= 0][term == 0 || term != 0]
+    -> (Int, Int, Int, Int)
+{
+    when p + 32 > n {
+        term (v1, v2, v3, v4);
+    };
+    term xxh64_stripes(
+        s, p + 32, n,
+        xxh64_round(v1, read64le(s, p)),
+        xxh64_round(v2, read64le(s, p + 8)),
+        xxh64_round(v3, read64le(s, p + 16)),
+        xxh64_round(v4, read64le(s, p + 24)));
+};
+
+// xxh64_pre — the stripe-merge accumulator when len >= 32, else seed + P5.
+// (Guard idiom: the `when` early-terms the >=32 path; the fall-through is
+// the short-input seed mix. No `when`-expressions in Briev.)
+defn xxh64_pre(s: String, n: Int, seed: Int) [n >= 0][term == 0 || term != 0] -> Int {
+    when n >= 32 {
+        let lanes: (Int, Int, Int, Int) =
+            xxh64_stripes(s, 0, n,
+                seed + -7046029288634856825 + -4417276706812531889,
+                seed + -4417276706812531889,
+                seed,
+                seed + 7046029288634856825);
+        let (v1, v2, v3, v4): (Int, Int, Int, Int) = lanes;
+        let acc: Int = rotl64(v1, 1) + rotl64(v2, 7) + rotl64(v3, 12) + rotl64(v4, 18);
+        term xxh64_merge(xxh64_merge(xxh64_merge(xxh64_merge(acc, v1), v2), v3), v4);
+    };
+    term seed + 2870177450012600261;
+};
+
+// xxh64_tail — the sub-32-byte tail: 8-byte chunks, then a 4-byte chunk,
+// then single bytes. Returns the running hash.
+defn xxh64_tail(s: String, p: Int, n: Int, h: Int)
+    [p >= 0 && n >= 0][term == 0 || term != 0]
+    -> Int
+{
+    when p + 8 <= n {
+        let k1: Int = xxh64_round(0, read64le(s, p));
+        term xxh64_tail(s, p + 8, n, (rotl64(h ^ k1, 27) * -7046029288634856825) + -8796714831421723037);
+    };
+    when p + 4 <= n {
+        let k: Int = read32le(s, p) * -7046029288634856825;
+        term xxh64_tail(s, p + 4, n, (rotl64(h ^ k, 23) * -4417276706812531889) + 1609587929392839161);
+    };
+    when p < n {
+        let k: Int = byte_at(s, p) * 2870177450012600261;
+        term xxh64_tail(s, p + 1, n, rotl64(h ^ k, 11) * -7046029288634856825);
+    };
+    term h;
+};
+
+// xxh64 — the one-shot XXH64 of a String's bytes with a seed.
+out defn xxh64(s: String, seed: Int) [true][term == 0 || term != 0] -> Int {
+    let n: Int = str_len_bytes(s);
+    // Tail starts after the stripe region. n - (n % 32) is 0 when n < 32
+    // (n % 32 == n), so one expression covers both the stripe and short cases.
+    let tail_p: Int = n - (n % 32);
+    let mixed: Int = xxh64_pre(s, n, seed) + n;
+    let h: Int = xxh64_tail(s, tail_p, n, mixed);
+    // Avalanche.
+    let a1: Int = h ^ lshr64(h, 33);
+    let a2: Int = a1 * -4417276706812531889;
+    let a3: Int = a2 ^ lshr64(a2, 29);
+    let a4: Int = a3 * 1609587929392839161;
+    term a4 ^ lshr64(a4, 32);
+};
+
+// ── 32-bit primitives (mod 2^32) ─────────────────────────────────────────
+
+// lshr32 — logical shift right on a 32-bit value (positive, so >> is fine;
+// the mask keeps the result within 32 bits).
+defn lshr32(x: Int, k: Int) [k >= 0 && k <= 31][term >= 0 && term <= 4294967295] -> Int {
+    when k == 0 {
+        term x & 4294967295;
+    };
+    term (x >> k) & ((1 << (32 - k)) - 1);
+};
+
+// rotl32 — 32-bit rotate left, masked to 32 bits.
+defn rotl32(x: Int, r: Int) [r > 0 && r < 32][term >= 0 && term <= 4294967295] -> Int {
+    term ((x << r) | lshr32(x, 32 - r)) & 4294967295;
+};
+
+// xxh32_round — acc += input * P2; acc = rotl(acc,13); acc *= P1. (mod 2^32)
+defn xxh32_round(acc: Int, inp: Int) [true][term >= 0 && term <= 4294967295] -> Int {
+    term rotl32((acc + inp * 2246822519) & 4294967295, 13) * 2654435761 & 4294967295;
+};
+
+// xxh32_stripes — fold 16-byte stripes (4 lanes) from p. Returns (v1..v4).
+defn xxh32_stripes(s: String, p: Int, n: Int, v1: Int, v2: Int, v3: Int, v4: Int)
+    [p >= 0 && n >= 0][term == 0 || term != 0]
+    -> (Int, Int, Int, Int)
+{
+    when p + 16 > n {
+        term (v1, v2, v3, v4);
+    };
+    term xxh32_stripes(
+        s, p + 16, n,
+        xxh32_round(v1, read32le(s, p)),
+        xxh32_round(v2, read32le(s, p + 4)),
+        xxh32_round(v3, read32le(s, p + 8)),
+        xxh32_round(v4, read32le(s, p + 12)));
+};
+
+// xxh32_pre — the stripe accumulator when len >= 16, else seed + P5.
+defn xxh32_pre(s: String, n: Int, seed: Int) [n >= 0][term >= 0 && term <= 4294967295] -> Int {
+    when n >= 16 {
+        let lanes: (Int, Int, Int, Int) =
+            xxh32_stripes(s, 0, n,
+                (seed + 2654435761 + 2246822519) & 4294967295,
+                (seed + 2246822519) & 4294967295,
+                seed & 4294967295,
+                (seed + 4294967295 - 2654435761 + 1) & 4294967295);
+        let (v1, v2, v3, v4): (Int, Int, Int, Int) = lanes;
+        term (rotl32(v1, 1) + rotl32(v2, 7) + rotl32(v3, 12) + rotl32(v4, 18)) & 4294967295;
+    };
+    term (seed + 374761393) & 4294967295;
+};
+
+// xxh32_tail — sub-16-byte tail: 4-byte chunks, then single bytes.
+defn xxh32_tail(s: String, p: Int, n: Int, h: Int)
+    [p >= 0 && n >= 0][term >= 0 && term <= 4294967295]
+    -> Int
+{
+    when p + 4 <= n {
+        let k: Int = (h + read32le(s, p) * 3266489917) & 4294967295;
+        term xxh32_tail(s, p + 4, n, rotl32(k, 17) * 668265263 & 4294967295);
+    };
+    when p < n {
+        let k: Int = (h + byte_at(s, p) * 374761393) & 4294967295;
+        term xxh32_tail(s, p + 1, n, rotl32(k, 11) * 2654435761 & 4294967295);
+    };
+    term h;
+};
+
+// xxh32 — the one-shot XXH32 of a String's bytes with a seed.
+out defn xxh32(s: String, seed: Int) [true][term >= 0 && term <= 4294967295] -> Int {
+    let n: Int = str_len_bytes(s);
+    let tail_p: Int = n - (n % 16);
+    let mixed: Int = xxh32_pre(s, n, seed) + n & 4294967295;
+    let h: Int = xxh32_tail(s, tail_p, n, mixed);
+    let a1: Int = h ^ lshr32(h, 15);
+    let a2: Int = a1 * 2246822519 & 4294967295;
+    let a3: Int = a2 ^ lshr32(a2, 13);
+    let a4: Int = a3 * 3266489917 & 4294967295;
+    term a4 ^ lshr32(a4, 16);
+};

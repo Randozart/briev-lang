@@ -17,11 +17,13 @@
 // every check, so a `// defn __old_name` historical note is not a hit.
 //
 // Undo: if the `__` frgn marker is reintroduced as the source-visible
-// surface, delete this gate (the two grep-gate tests are the only thing
-// pinning the plain-name surface forever).
+// surface, delete this gate (the dunder + frgn gates are the only thing
+// pinning the plain-name, pure-Briev surface forever).
 //
-// Sibling: the frgn-allowlist gate (Phase 2) pins `frgn` to the interop
-// lanes (`lib/std/web/`, `lib/tamer/`, `lib/glue/`).
+// Sibling in this file: the frgn-allowlist gate (`frgn_only_in_interop_lanes`)
+// pins `frgn` to the interop lanes (`lib/std/web/`, `lib/tamer/`,
+// `lib/glue/`); after the Phase-2 pure-.bv xxhash rewrite, lib/std/ffi/ is
+// frgn-free.
 
 use std::path::{Path, PathBuf};
 
@@ -129,6 +131,51 @@ fn no_dunder_llvm_symbol_in_shipped_bv() {
         "core-usable dunder gate: the shipped .bv surface must not reference \
          a `@__` LLVM dunder symbol (lib/compiler dogfood is exempt; \
          comments are stripped). Hits:\n{}",
+        hits.join("\n")
+    );
+}
+
+// ── The frgn allowlist gate (Phase 2, same plan) ─────────────────────────
+//
+// `frgn` survives ONLY where interop IS the feature (operator decision):
+// lib/std/web/ (JS), lib/tamer/ (host), lib/glue/ (product). Core logic
+// must not lean on another language. After the Phase-2 pure-.bv xxhash
+// rewrite, lib/std/ffi/ is frgn-free. This gate pins that: any live
+// `frgn` / `export frgn` declaration in lib/**/*.bv OUTSIDE the allowlist
+// fails the suite. Undo: delete this test if the interop-lane policy
+// changes.
+
+/// The only directories in `lib/` allowed to carry a live `frgn`.
+const FRGN_ALLOWLIST: &[&str] = &["lib/std/web/", "lib/tamer/", "lib/glue/"];
+
+/// One file's live `frgn` declaration hits (comments stripped). Returns
+/// `path:line: text` for every declaration outside the allowlist.
+fn frgn_hits_in(path: &Path) -> Vec<String> {
+    let rel = path.strip_prefix(PROJECT_ROOT).unwrap_or(path);
+    let rel_str = rel.display().to_string();
+    if FRGN_ALLOWLIST.iter().any(|a| rel_str.starts_with(a)) {
+        return Vec::new();
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let code = strip_comment(line).trim_start();
+            let is_frgn = code.starts_with("frgn ") || code.starts_with("export frgn ");
+            is_frgn.then(|| format!("{}:{}: {}", rel_str, i + 1, line.trim()))
+        })
+        .collect()
+}
+
+#[test]
+fn frgn_only_in_interop_lanes() {
+    let hits: Vec<String> = gate_files().iter().flat_map(|f| frgn_hits_in(f)).collect();
+    assert!(
+        hits.is_empty(),
+        "frgn allowlist gate: `frgn` is permitted only in the interop lanes \
+         (lib/std/web/, lib/tamer/, lib/glue/). Core .bv must be pure Briev \
+         (plan 2026-10-15-core-usable-purge §Phase 2). Move the binding into \
+         an allowlisted lane or rewrite it in Briev. Hits:\n{}",
         hits.join("\n")
     );
 }

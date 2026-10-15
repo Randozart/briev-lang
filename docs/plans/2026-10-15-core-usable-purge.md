@@ -154,7 +154,23 @@ Acceptance (per family commit and at phase end):
    (verify exact vectors during implementation against the C source in
    `lib/std/c/xxhash/`, which stays as the C-side reference only if
    still referenced — else removed with the frgn it served).
-   Blocking on Phase-0 probe 4 (wrapping semantics).
+   **Probe 4 result (2026-10-15, COMPLETED — not blocking):**
+   - `Int` (i64) `+`/`*`/`<<` **wrap mod 2^64** (verified: `i64::MAX+1` →
+     i64::MIN, `i64::MAX*2` → -2, `-8<<61` → 0). So XXH64's u64 mixing
+     needs **no masking** — signed i64 bit patterns == u64.
+   - `>>` is **arithmetic** (ashr), not logical: `-8>>1` → -4. Emulate
+     logical shift right via mask: `lshr64(x,k) = (x>>k) & ((1<<(64-k))-1)`
+     (verified: `-8>>1 & (1<<63)-1` = 0x7FFFFFFFFFFFFFFC). Needed for
+     rotate-left and the avalanche `>>33/>>29/>>32`.
+   - `&`,`|`,`^` all exist on Int (verified). Bitwise ops on i64 = u64.
+   - Hex literals `0x…` lex only when ≤ i64::MAX (from_str_radix overflow
+     above); xxHash primes > i64::MAX are written as **signed decimals**
+     (P64_1 = -7046029288634856825, P64_2 = -4417276706812531889,
+     P64_4 = -8796714831421723037; P64_3/P64_5 positive). XXH32 is mod
+     2^32 — mask `& 0xFFFFFFFF` after every op.
+   - String bytes via `byte_at(s, i)` (cast_lanes.bv, pure-Briev Load#).
+   - Feasible; C stays as vendored reference (compiled by
+     `tests/vendored_c_libs.rs`, independent of the Briev frgn).
 2. **frgn gate test** — parse all `lib/**/*.bv` line-wise for live
    `frgn`/`export frgn` declarations (comments excluded); allowlist:
    `lib/std/web/`, `lib/tamer/`, `lib/glue/`. Everything else → test
