@@ -1,0 +1,44 @@
+// ByteSink trait — end-to-end gate (net stack, design D).
+//
+// 2026-10-15 (fullstack-webapp net stack): lib/std/net/bytes.bv exposes one
+// ByteSink trait with required put_u8/put_bytes and derived DEFAULT writers
+// (put_u16_be/put_u32_be/put_cstr), implemented by two concrete buffers — the
+// FIXED ByteBuf (room precondition, stable ptr) and the GROWING GrowBuf
+// (reallocates on overflow). This fixture pins that the SAME derived writers,
+// reached through BOTH a direct call and a <S: ByteSink> generic, produce
+// identical correct bytes on both sinks.
+//
+// Writes a u16 big-endian tag 0x1234 (-> 18, 52) then a NUL-terminated "Hi"
+// (-> 72, 105, 0) via a generic write_tagged<S: ByteSink> into:
+//   - a ByteBuf (cap 16): bytes read back 18 52 72 105 0
+//   - a GrowBuf (cap 2): the 5-byte frame forces a mid-write realloc; the
+//     growing buffer moves underneath the generic writer, yet reads back the
+//     SAME 18 52 72 105 0.
+// Summed digit-by-digit print = "18527210501852721050" (both sinks identical).
+import "std/net/bytes.bv";
+
+// One generic writer over any ByteSink — written once, serves both buffers.
+defn write_tagged<S: ByteSink>(sink: S, tag: Int, label: String) -> S {
+    let tagged: S = put_u16_be(sink, tag);
+    term put_cstr(tagged, label);
+};
+
+node entry [beginprogram][true] {
+    // Fixed sink.
+    let fixed0: ByteBuf = buf_new(16);
+    let fixed1: ByteBuf = write_tagged(fixed0, 4660, "Hi");
+    Print#(get_u8(fixed1, 0));
+    Print#(get_u8(fixed1, 1));
+    Print#(get_u8(fixed1, 2));
+    Print#(get_u8(fixed1, 3));
+    Print#(get_u8(fixed1, 4));
+
+    // Growing sink — same generic, tiny cap forces reallocation mid-write.
+    let grow0: GrowBuf = grow_new(2);
+    let grow1: GrowBuf = write_tagged(grow0, 4660, "Hi");
+    Print#(grow_get_u8(grow1, 0));
+    Print#(grow_get_u8(grow1, 1));
+    Print#(grow_get_u8(grow1, 2));
+    Print#(grow_get_u8(grow1, 3));
+    endprogram Print#(grow_get_u8(grow1, 4));
+};
