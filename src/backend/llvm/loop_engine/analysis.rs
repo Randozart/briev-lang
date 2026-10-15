@@ -264,7 +264,7 @@ pub fn is_output_call(expr: &Expr) -> bool {
     match expr {
         // 2026-09-08 (anti-pattern audit): Print#/Println# are the ONLY
         // canonical output intrinsics — print! / println! lower to them via
-        // the print plugin. The raw __print_* frgn names were a second
+        // the print plugin. The raw print-family names were a second
         // hardcoded copy; benchmark call sites migrated to println!().
         Expr::Call(name, _, _) if name == "Print#" || name == "Println#" => true,
         _ => false,
@@ -282,7 +282,7 @@ pub fn observable_field_refs(
             collect_expr_field_refs(e, &mut result, field_index_map);
         }
         // 2026-07-19: Detect output calls in Expression statements.
-        // These come from !Print/!PrintLn which resolve to __print_*
+        // These come from !Print/!PrintLn which resolve to the print family
         // frgn calls. The optimizer must not eliminate these.
         Statement::Expression(e) => {
             if contains_output_call(e) {

@@ -1,10 +1,13 @@
 // ── Print Plugin — Front Stage ────────────────────────────────────────
-// 2026-07-19: Resolves !Print(x) and !PrintLn(x) to typed C runtime calls
-// (__print_int, __print_str, __print_float, __print_char for newline).
+// 2026-07-19: Resolves !Print(x) and !PrintLn(x) — today via the
+// lowercase `print!`/`println!` macros to the `Print#` intrinsic, whose
+// typed dispatch lives in the backend (emit_intrinsic_print → the plain
+// cast-lane helpers print_int/print_str/print_float/put_char; renamed
+// 2026-10-15, core-usable purge).
 //
 // Runs at Front stage (before typechecking). Collects variable type
 // annotations from `let name: Type = ...` declarations. For literals
-// (Quoted, Decimal, Float) dispatches directly. Falls back to __print_int
+// (Quoted, Decimal, Float) dispatches directly. Falls back to print_int
 // when the type can't be determined (all benchmarks use Int as default).
 //
 // 2026-08-01: Phase 1 of the plugin-macro rework — the entry points are now

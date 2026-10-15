@@ -3,9 +3,12 @@
 //
 // 2026-09-09 (Family A+B, briev-native runtime): the print family frgns are
 // REMOVED — the symbols (__print_int, __print_float, __print_char,
-// __print_bool, __eprint_str) are now pure-Briev defns in
-// lib/std/cast_lanes.bv (write(2) via SysCall#, float_format for %.9g), and
-// the backend's emit_declares declare-guard skips them. Keeping an frgn here
+// __print_bool, __eprint_str) are pure-Briev defns in lib/std/cast_lanes.bv
+// (write(2) via SysCall#, float_format for %.9g), and the backend's
+// emit_declares declare-guard skips them. 2026-10-15 (core-usable purge):
+// the defns were renamed to plain print_int/print_float/put_char/
+// print_bool/eprint_str; the --no-stdlib fallback declares keep the __ C
+// ABI names. Keeping an frgn here
 // would (a) declare a symbol the defn defines and (b) keep pulling
 // briev_rt.o into every link for symbols the C file no longer contains.
 //

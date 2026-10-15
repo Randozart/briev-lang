@@ -1775,7 +1775,7 @@ fn eval_print_macro(
 /// Print a runtime value by its representation: Float, integer, character,
 /// boolean, or string bits — mirroring the generic `Print#` dispatch in
 /// codegen. Bool prints true/false (its natural representation; an explicit
-/// cast to Int is what yields 1/0), matching `__print_bool`.
+/// cast to Int is what yields 1/0), matching `print_bool`.
 fn print_value(value: &Value, heap: &mut VirtualHeap) -> Result<(), RuntimeError> {
     match value {
         Value::Atom(Atom::Float(f)) => {

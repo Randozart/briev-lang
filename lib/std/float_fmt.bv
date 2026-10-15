@@ -1,6 +1,6 @@
 // float_fmt.bv - pure-Briev %.9g / %g float formatting (plan 6.2 spike).
 //
-// 2026-09-09: float_to_str (the cast lane, %g) and __print_float (%.9g) must
+// 2026-09-09: float_to_str (the cast lane, %g) and print_float (%.9g) must
 // reproduce C printf byte-for-byte WITHOUT briev_rt.c. This implements exact
 // leading-digit extraction for float32 (24-bit mantissa x 2^E, E in
 // [-149, 104]) using only i64 arithmetic:

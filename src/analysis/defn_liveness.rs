@@ -451,7 +451,8 @@ impl<'a> Builder<'a> {
     /// spawned tasks' port fire/read/ready lower to the event family
     /// (briev_event_*_impl, __briev_event_strict_trap). Root the whole family
     /// — type-agnostic over-approx; `mark` is a no-op for helpers absent from
-    /// the unit. The event helpers' own callees (write_all/__print etc.) join
+    /// the unit. The event helpers' own callees (write_all/print_str_raw
+    /// etc.) join
     /// the closure when their bodies are walked from the worklist.
     fn root_task_event_family(&self, queue: &mut Vec<String>) {
         for h in [
@@ -509,7 +510,7 @@ impl<'a> Builder<'a> {
                             }
                         }
                         if name == "#StdErr" {
-                            self.mark("__eprint_str", queue);
+                            self.mark("eprint_str", queue);
                         }
                     }
                     self.walk_expr(t, queue);
@@ -523,8 +524,9 @@ impl<'a> Builder<'a> {
                 self.walk_expr(value, queue);
             }
             Statement::EndProgram(Some(e)) => {
-                // `endprogram code;` → `call @__exit(code)` when defined.
-                self.mark("__exit", queue);
+                // `endprogram code;` → `call @exit_prog(code)` when defined
+                // (the C fallback keeps the `__exit` ABI name).
+                self.mark("exit_prog", queue);
                 self.walk_expr(e, queue);
             }
             Statement::Foreach { list, body, .. } => {
@@ -868,18 +870,20 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
     match intrinsic {
         // Print# lowers per argument type (Int/Float/Float64/Bool/Char/
         // String) — root the whole family when any print appears. The
-        // main-tail `__stdout_flush` and `__print` (generic printer) are
-        // backend-emitted, not AST calls.
+        // main-tail `stdout_flush` and `print_str_raw` (generic printer) are
+        // backend-emitted, not AST calls. (2026-10-15 core-usable purge:
+        // family renamed from `__print_*` to plain names; `__print_float64`
+        // stays a bare C symbol — no defn, so its row is a documented no-op.)
         "Print#" => &[
-            "__print",
-            "__print_str",
-            "__print_int",
-            "__print_bool",
-            "__print_float",
+            "print_str_raw",
+            "print_str",
+            "print_int",
+            "print_bool",
+            "print_float",
             "__print_float64",
-            "__print_char",
-            "__stdout_byte",
-            "__stdout_flush",
+            "put_char",
+            "stdout_byte",
+            "stdout_flush",
             // 2026-09-23 (soundness-net catch, term fixtures/async): the
             // print/string lowering may emit these even in a trivial
             // `Print#(r)` program — the cast lanes route String↔Int through
@@ -1282,12 +1286,12 @@ mod tests {
                 vec![Expr::Decimal(1)],
                 None,
             ))]),
-            defn("__print_int", vec![Statement::Term(None)]),
-            defn("__print_str", vec![Statement::Term(None)]),
+            defn("print_int", vec![Statement::Term(None)]),
+            defn("print_str", vec![Statement::Term(None)]),
         ];
         let l = DefnLiveness::build(&items);
-        assert!(l.is_live("__print_int"));
-        assert!(l.is_live("__print_str"));
+        assert!(l.is_live("print_int"));
+        assert!(l.is_live("print_str"));
     }
 
     #[test]

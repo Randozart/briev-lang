@@ -2538,9 +2538,9 @@ fn emit_external_call(
 /// 2026-08-01 (audit): the generic `Print#` convenience intrinsic — dispatch
 /// the emission by the argument's protocol category, resolved via the casting
 /// graph's type_to_protocol (Cast. universe properties, never type names).
-/// `String` → `__print_str(ptr)`, `Char` → `__print_char`, `Bool` →
-/// `__print_bool` (true/false — an explicit cast to Int is what yields 1/0),
-/// `Float` → `__print_float`/`__print_float64`, else `__print_int`.
+/// `String` → `print_str(ptr)`, `Char` → `put_char`, `Bool` →
+/// `print_bool` (true/false — an explicit cast to Int is what yields 1/0),
+/// `Float` → `print_float`/`__print_float64`, else `print_int`.
 ///
 /// A boxed Bool/Char param is registered as `Type::int()` in SSA (its reg is
 /// the boxed i64), so the category must come from the DECLARED type
@@ -2576,35 +2576,35 @@ fn emit_intrinsic_print(
     match category.as_str() {
         "String" => {
             // A Briev String value IS the ptr to a length-prefixed
-            // [len][bytes] buffer; __print_str takes that pointer.
-            let sym = frgn_symbol(backend, "frgn__print_str", "__print_str");
+            // [len][bytes] buffer; print_str takes that pointer.
+            let sym = print_symbol(backend, "print_str", "frgn__print_str", "__print_str");
             writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, v, sym, defn_state_prefix(backend, &sym), a.name).ok();
         }
         "Char" => {
             if backend.fun.boxed_scalar_regs.contains(&a.name) {
                 // A boxed Char param is already i64 — pass directly.
-                let sym = frgn_symbol(backend, "frgn__print_char", "__print_char");
+                let sym = print_symbol(backend, "put_char", "frgn__print_char", "__print_char");
                 writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, defn_state_prefix(backend, &sym), a.name).ok();
             } else {
                 // Native Char regs are i32 (literal/let/field/cast) —
                 // widen to the i64 ABI before the call.
                 let wide = backend.fun.gen_reg();
                 writeln!(out, "{}{} = zext i32 {} to i64", indent, wide, a.name).ok();
-                let sym = frgn_symbol(backend, "frgn__print_char", "__print_char");
+                let sym = print_symbol(backend, "put_char", "frgn__print_char", "__print_char");
                 writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, defn_state_prefix(backend, &sym), wide).ok();
             }
         }
         "Bool" => {
             if backend.fun.boxed_scalar_regs.contains(&a.name) {
                 // A boxed Bool param is already i64 0/1 — pass directly.
-                let sym = frgn_symbol(backend, "frgn__print_bool", "__print_bool");
+                let sym = print_symbol(backend, "print_bool", "frgn__print_bool", "__print_bool");
                 writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, defn_state_prefix(backend, &sym), a.name).ok();
             } else {
                 // Bool regs are i8 (Expr::Bool emits `add i8 0, 1/0`);
                 // widen to the i64 ABI before the call.
                 let wide = backend.fun.gen_reg();
                 writeln!(out, "{}{} = zext i8 {} to i64", indent, wide, a.name).ok();
-                let sym = frgn_symbol(backend, "frgn__print_bool", "__print_bool");
+                let sym = print_symbol(backend, "print_bool", "frgn__print_bool", "__print_bool");
                 writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, defn_state_prefix(backend, &sym), wide).ok();
             }
         }
@@ -2614,17 +2614,19 @@ fn emit_intrinsic_print(
             // 2026-08-01 C3 fix).
             let unboxed = backend.fun.reg_float_cache.get(&a.name).cloned()
                 .unwrap_or_else(|| a.name.clone());
-            let (arg_llvm, briev_name, fallback_c) = if a.ty == Type::float64() {
-                ("double", "frgn__print_float64", "__print_float64")
+            let (arg_llvm, helper, briev_name, fallback_c) = if a.ty == Type::float64() {
+                // Float64 has no pure-Briev helper yet (C-backed, ffi/io.bv) —
+                // print_symbol finds no `print_float64` defn and falls back.
+                ("double", "print_float64", "frgn__print_float64", "__print_float64")
             } else {
-                ("float", "frgn__print_float", "__print_float")
+                ("float", "print_float", "frgn__print_float", "__print_float")
             };
-            let sym = frgn_symbol(backend, briev_name, fallback_c);
+            let sym = print_symbol(backend, helper, briev_name, fallback_c);
             writeln!(out, "{}{} = call i64 @{}({}{} {})", indent, v, sym, defn_state_prefix(backend, &sym), arg_llvm, unboxed).ok();
         }
         _ => {
             let llvm_ty = backend.llvm_type(&a.ty);
-            let sym = frgn_symbol(backend, "frgn__print_int", "__print_int");
+            let sym = print_symbol(backend, "print_int", "frgn__print_int", "__print_int");
             writeln!(out, "{}{} = call i64 @{}({}{} {})", indent, v, sym, defn_state_prefix(backend, &sym), llvm_ty, a.name).ok();
         }
     }
@@ -2655,4 +2657,19 @@ fn frgn_symbol(backend: &LlvmBackend, briev_name: &str, fallback_c: &str) -> Str
     backend.ctx.frgn_map.get(briev_name)
         .map(|sig| sig.name.clone())
         .unwrap_or_else(|| fallback_c.to_string())
+}
+
+/// 2026-10-15 (core-usable purge): a print-family call resolves to the
+/// pure-Briev helper's PLAIN name when its defn is in the unit (the helper
+/// then owns the symbol and takes %state — `defn_state_prefix` keys off the
+/// same set, so name and state stay coherent), else to the frgn_map/C
+/// fallback — the `--no-stdlib` C symbol (`__print_float64` is C-backed in
+/// every mode; ffi/io.bv).
+/// Undo: call `frgn_symbol(briev_name, fallback_c)` directly at the site.
+fn print_symbol(backend: &LlvmBackend, helper: &str, briev_name: &str, fallback_c: &str) -> String {
+    if backend.ctx.defn_params.contains_key(helper) {
+        helper.to_string()
+    } else {
+        frgn_symbol(backend, briev_name, fallback_c)
+    }
 }

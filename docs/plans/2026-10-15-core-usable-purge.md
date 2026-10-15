@@ -262,6 +262,36 @@ emit_*, print_plugin, daily_use_smoke; mtimes 10:43–10:48, no live
 process) following this plan's rename table — continued, completed, and
 committed under the normal Phase-1 rules.
 
-## Phase 0 findings
+## Phase 0 findings (recorded 2026-10-15 11:30)
 
-(Recording zone — filled before Phase 1 starts.)
+1. **Duplicate-defn = LOUD error, not silent override.** A user `defn
+   byte_at` alongside the prelude export fails with "import name
+   'byte_at' conflicts: provided by 'std/cast_lanes.bv' and also by the
+   main file — one shared root namespace means the winner would depend
+   on import order. Fix: rename one side with a selective import
+   (`{ Local: Exported }`) or make the two definitions identical."
+   Plain rename is safe as-is; no new redefinition diagnostic needed.
+2. **Sweep reconciliation.** Family-1 rename was already ~80% in-tree at
+   session start (10:43–48 work); remaining were `tests.rs` fixtures,
+   stale comments, and the two missing sibling tests. `__print_float64`
+   resolved: C-backed in EVERY mode (`kept_runtime_symbol` list,
+   mod.rs:5600; liveness row is a documented no-op — no defn). The
+   `__print_*` C-fallback strings in `print_symbol`/`declare` sites are
+   the `--no-stdlib` C ABI and stay (out of scope).
+3. **Name-contract map (family 1).** Plain helper resolves through
+   `print_symbol()`/`defn_state_prefix` (keyed on `defn_params`);
+   `stdout_flush` through `has_stdout_flush` (mod.rs:2529-2531, gated
+   on presence + liveness); `exit_prog` through the emit_stmt
+   endprogram branch + emit_toplevel #14 noreturn attr + liveness
+   `mark("exit_prog")`. All four verified in the committed tree.
+4. **Wrapping arithmetic** — deferred to Phase 2 (xxhash feasibility);
+   families 1-4 do not need it.
+
+## Phase 1 status
+
+- Family 1 (print/stdout/exit): COMPLETE — committed (see git log).
+- Family 2 (argv: `cli.bv` + `entry_plugin.rs`): pending.
+- Family 3 (script state: `script_plugin.rs`): pending.
+- Family 4 (runtime bridges: `rt_*`, `watchdog_fail`, `wait_for_trigger`,
+  `event_strict_trap` — backend contract both sides): pending.
+- Dunder grep-gate test: lands at Phase-1 end (empty allowlist).

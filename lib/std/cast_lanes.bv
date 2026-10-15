@@ -585,10 +585,11 @@ defn count_lead(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= 0] -> 
 //
 // briev_str_to_c / briev_cstr_to_briev / briev_cstring_concat — GLUE C-ABI
 // doors, pulled only by lib/glue users; follow-up increment.
-// The print plugin and #StdErr lower to `call i64 @__print_*(...)`; these
-// defns provide the symbols with byte-identical behavior to the C originals
-// (briev_rt.c 572-640). Output goes through write(2) — SYS_write=1 on
-// x86_64 Linux — and __exit through SYS_exit_group=231.
+// The print plugin lowers to the `Print#` intrinsic, which the backend
+// dispatches to these defns; they provide the symbols with byte-identical
+// behavior to the C originals (briev_rt.c 572-640). Output goes through
+// write(2) — SYS_write=1 on
+// x86_64 Linux — and exit_prog through SYS_exit_group=231.
 // TODO(arch): 64/94 are the aarch64 numbers; the source language has no arch
 // reflection yet (`.^` targets: Length/Ptr/Size/Bytes/Alignment/Type), so
 // the x86_64 numbers stand until a target-const mechanism exists.
@@ -602,32 +603,32 @@ defn count_lead(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= 0] -> 
 // per-byte print in a loop (fasta) cost one SYSCALL per byte — 10M
 // iterations, ~100x the C reference. The buffer is a fixed 64 KiB
 // block + fill pointer (LIBRARY STATE — lets import since 158ae9ec);
-// append is O(1) via Store#, flush at capacity, at __exit, and at the
-// main tail (the backend calls __stdout_flush when this lane is
+// append is O(1) via Store#, flush at capacity, at exit_prog, and at the
+// main tail (the backend calls stdout_flush when this lane is
 // linked). stderr stays unbuffered. Pipe semantics match the C
 // baseline (fully buffered); tty line-buffering is deferred.
 
-let __stdout_buf: Int = 0;
-let __stdout_fill: Int = 0;
-const __STDOUT_CAP: Int = 65536;
+let stdout_buf: Int = 0;
+let stdout_fill: Int = 0;
+const STDOUT_CAP: Int = 65536;
 
-out defn __stdout_flush() [true][term >= 0] -> Int {
-    when __stdout_fill > 0 {
-        let n: Int = SysCall#(1, 1, __stdout_buf, __stdout_fill, 0, 0, 0);
-        __stdout_fill = 0;
+out defn stdout_flush() [true][term >= 0] -> Int {
+    when stdout_fill > 0 {
+        let n: Int = SysCall#(1, 1, stdout_buf, stdout_fill, 0, 0, 0);
+        stdout_fill = 0;
         term n;
     };
     term 0;
 };
 
-out defn __stdout_byte(b: Int) [b >= 0][term >= 0] -> Int {
-    when __stdout_buf == 0 {
-        __stdout_buf = Alloc#(__STDOUT_CAP) as Int;
+out defn stdout_byte(b: Int) [b >= 0][term >= 0] -> Int {
+    when stdout_buf == 0 {
+        stdout_buf = Alloc#(STDOUT_CAP) as Int;
     };
-    Store#(__stdout_buf + __stdout_fill, b, 1);
-    __stdout_fill = __stdout_fill + 1;
-    when __stdout_fill == __STDOUT_CAP {
-        term __stdout_flush();
+    Store#(stdout_buf + stdout_fill, b, 1);
+    stdout_fill = stdout_fill + 1;
+    when stdout_fill == STDOUT_CAP {
+        term stdout_flush();
     };
     term 0;
 };
@@ -643,14 +644,14 @@ defn write_all(fd: Int, s: String) [fd >= 0][term >= 0] -> Int {
     };
     when fd == 1 {
         foreach i in 0..len {
-            let r: Int = __stdout_byte(Load#(addr + 8 + i, 1));
+            let r: Int = stdout_byte(Load#(addr + 8 + i, 1));
         };
         term len;
     };
     term SysCall#(1, fd, addr + 8, len, 0, 0, 0);
 };
 
-out defn __print_str(s: String) [true][term >= 0] -> Int {
+out defn print_str(s: String) [true][term >= 0] -> Int {
     // 2026-09-23 (term_guard_value exit-code parity): defns cannot be void,
     // so a side-effect-only print claims the neutral success value, 0 — not
     // the byte count (the old return made `endprogram Print#(x)` exit with the
@@ -660,47 +661,47 @@ out defn __print_str(s: String) [true][term >= 0] -> Int {
     term 0;
 };
 
-out defn __print(s: String) [true][term >= 0] -> Int {
+out defn print_str_raw(s: String) [true][term >= 0] -> Int {
     let _r: Int = write_all(1, s);
     term 0;
 };
 
-out defn __eprint_str(s: String) [true][term >= 0] -> Int {
+out defn eprint_str(s: String) [true][term >= 0] -> Int {
     // 2026-10-12: aligned to the family's neutral-0 convention — the
     // byte-count return was the one outlier in the print family.
     let _r: Int = write_all(2, s);
     term 0;
 };
 
-out defn __print_int(n: Int) [true][term >= 0] -> Int {
+out defn print_int(n: Int) [true][term >= 0] -> Int {
     let _r: Int = write_all(1, int_to_str(n));
     term 0;
 };
 
-out defn __print_bool(b: Int) [true][term >= 0] -> Int {
+out defn print_bool(b: Int) [true][term >= 0] -> Int {
     let _r: Int = write_all(1, bool_to_str(b));
     term 0;
 };
 
-out defn __print_float(f: Float) [true][term >= 0] -> Int {
+out defn print_float(f: Float) [true][term >= 0] -> Int {
     // C: printf("%.9g", (double)f) — float_format(f, 9) is byte-parity
     // (the float_cases corpus pins it). Return 0 like the C printf+0.
     let _r: Int = write_all(1, float_format(f, 9));
     term 0;
 };
 
-out defn __print_char(c: Int) [c >= 0][term >= 0] -> Int {
+out defn put_char(c: Int) [c >= 0][term >= 0] -> Int {
     // C: c==10 → puts("") (writes '\n'), else putchar(c) — one raw byte
     // either way. Buffered: O(1) append, flushed at capacity/main tail.
     // Return 0 like the C putchar+0.
-    let _r: Int = __stdout_byte(c);
+    let _r: Int = stdout_byte(c);
     term 0;
 };
 
-out defn __exit(code: Int) [true][term >= 0] -> Int {
+out defn exit_prog(code: Int) [true][term >= 0] -> Int {
     // Flush the stdout buffer before SYS_exit_group (231, x86_64) —
     // nothing runs after the process ends.
-    let f: Int = __stdout_flush();
+    let f: Int = stdout_flush();
     term SysCall#(231, code, 0, 0, 0, 0, 0);
 };
 

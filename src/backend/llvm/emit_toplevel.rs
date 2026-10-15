@@ -659,7 +659,7 @@ impl LlvmBackend {
         writeln!(out).ok();
         writeln!(out, "declare void @llvm.assume(i1) #1").ok();
         writeln!(out, "declare void @llvm.trap() noreturn").ok();
-        // 2026-09-11 (buffered stdout): NO declare — __stdout_flush is a
+        // 2026-09-11 (buffered stdout): NO declare — stdout_flush is a
         // Briev defn emitted in full in this module when present; a textual
         // declare duplicates it and LLVM rejects the redefinition. Bare
         // programs never call it (has_stdout_flush gate).
@@ -3207,7 +3207,7 @@ impl LlvmBackend {
         // exit_group — it never returns. #13's willreturn lied to LLVM and
         // -O3 LTO collapsed the whole main (the EndProgram call site's
         // `unreachable` became UB). Emit it noreturn (#14).
-        let attr_idx = if d.name == "__exit" { "#14" } else { attr_idx };
+        let attr_idx = if d.name == "exit_prog" { "#14" } else { attr_idx };
         writeln!(out, ") local_unnamed_addr {}{} {{", attr_idx, section_attr).ok();
         writeln!(out, "  entry:").ok();
         self.fun.ssa_old_int_regs.clear();

@@ -221,7 +221,7 @@ impl LlvmBackend {
             ".fmain", use_phi, body, 1, false, bound_literal, counter_var);
         // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
         // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
-        // programs have no __stdout_flush and get neither call nor declare.
+        // programs have no stdout_flush and get neither call nor declare.
         self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
@@ -628,7 +628,7 @@ impl LlvmBackend {
         if is_main {
             // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
         // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
-        // programs have no __stdout_flush and get neither call nor declare.
+        // programs have no stdout_flush and get neither call nor declare.
         self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
             writeln!(out, "}}").ok();
@@ -935,7 +935,7 @@ impl LlvmBackend {
         }
         // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
         // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
-        // programs have no __stdout_flush and get neither call nor declare.
+        // programs have no stdout_flush and get neither call nor declare.
         self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
 
@@ -1378,7 +1378,7 @@ impl LlvmBackend {
         self.emit_scheduled_frees(out, free_after);
         // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
         // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
-        // programs have no __stdout_flush and get neither call nor declare.
+        // programs have no stdout_flush and get neither call nor declare.
         self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
@@ -1806,7 +1806,7 @@ impl LlvmBackend {
         self.emit_scheduled_frees(out, free_after);
         // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
         // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
-        // programs have no __stdout_flush and get neither call nor declare.
+        // programs have no stdout_flush and get neither call nor declare.
         self.emit_stdout_flush_tail(out);
         writeln!(out, "  ret i32 0").ok();
         writeln!(out, "}}").ok();
@@ -2484,7 +2484,7 @@ impl LlvmBackend {
     /// must flush the buffered stdout lane at its host exit.
     pub(crate) fn emit_stdout_flush_tail(&mut self, out: &mut String) {
         if self.has_stdout_flush {
-            writeln!(out, "  %__flush = call i64 @__stdout_flush(ptr %state)").ok();
+            writeln!(out, "  %__flush = call i64 @stdout_flush(ptr %state)").ok();
         }
     }
 }

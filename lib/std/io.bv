@@ -2,6 +2,6 @@
 // !Print(x) and !PrintLn(x) are dispatched by the print plugin (Mid stage)
 // to the appropriate C runtime function based on the argument type.
 //
-// Users can also call __print_int() etc directly for typed output.
+// Users can also call print_int() etc directly for typed output.
 
 import "std/ffi/io.bv";
