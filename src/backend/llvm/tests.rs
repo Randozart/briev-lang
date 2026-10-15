@@ -6930,7 +6930,7 @@ fn test_arrow_only_collection_is_kept_in_state() {
 // ── Coll grow-on-full (2026-08-15) ────────────────────────────────────
 
 /// A `coll obj` push past the default cap (16) must emit the grow-on-full
-/// guard: `if len == cap { __briev_coll_resize(h, cap * 2) }` BEFORE the
+/// guard: `if len == cap { coll_resize(h, cap * 2) }` BEFORE the
 /// store, and re-read `data` from the slot after the join (the runtime
 /// mutates the `[data, cap, len]` block in place — no register merge).
 /// Pre-fix the scaffolded push had no guard and wrote OOB past the 16-slot
@@ -8642,7 +8642,7 @@ node start [true][false] {
 fn test_loop_txn_last_consumer_emits_free_after_loop() {
     // A countable-loop txn (the benchmark's countdown shape, with a periodic
     // `when` guard) that is a heap-backed field's last consumer must emit
-    // __briev_free AFTER the loop exits (never inside the iterating body).
+    // rt_free AFTER the loop exits (never inside the iterating body).
     let src = r#"
 let N: Int = GetEnvInt#("BOUND");
 let buf: Ptr<Int> = Malloc#(64) as Ptr<Int>;

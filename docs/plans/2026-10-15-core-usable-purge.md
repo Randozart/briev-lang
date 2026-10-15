@@ -289,9 +289,18 @@ committed under the normal Phase-1 rules.
 
 ## Phase 1 status
 
-- Family 1 (print/stdout/exit): COMPLETE — committed (see git log).
-- Family 2 (argv: `cli.bv` + `entry_plugin.rs`): pending.
-- Family 3 (script state: `script_plugin.rs`): pending.
-- Family 4 (runtime bridges: `rt_*`, `watchdog_fail`, `wait_for_trigger`,
-  `event_strict_trap` — backend contract both sides): pending.
+- Family 1 (print/stdout/exit): COMPLETE (`66b72b75`).
+- Family 2 (argv: `cli.bv` + `entry_plugin.rs`): COMPLETE (`692fb9bc`).
+- Family 3 (script state: `script_plugin.rs`): COMPLETE (`b48a74e3`).
+- Family 4 (runtime bridges): COMPLETE — `__briev_coll_resize`→`coll_resize`,
+  `__briev_now`→`rt_now_ns`, `__briev_getcwd`→`rt_getcwd`,
+  `__briev_chdir`→`rt_chdir`, `__briev_free`→`rt_free`,
+  `__watchdog_fail`→`watchdog_fail`, `__wait_for_trigger__`→`wait_for_trigger`,
+  `__briev_event_strict_trap`→`event_strict_trap`. Call sites resolve the
+  plain name when the defn is in the unit, else the C-fallback symbol
+  (presence-branch via `bridge_symbol`/`defn_params` — C declares in
+  `emit_toplevel`/`mod.rs` keep their `__` ABI names). Two pre-existing
+  latent bugs fixed in the same pass (see BUGS.md 2026-10-15): the
+  stateless `event_strict_trap` call (missing `%state`) and the void
+  `@__watchdog_fail()` second-engine shape.
 - Dunder grep-gate test: lands at Phase-1 end (empty allowlist).

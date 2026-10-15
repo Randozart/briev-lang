@@ -7922,6 +7922,15 @@ impl crate::backend::llvm::LlvmBackend {
     ///                 aggregate (the read heads its segment — presplit — so
     ///                 post-wake re-runs start here). Outside a task: trap.
     ///   strict (2)  → trap (read with no scheduler and no event).
+    /// 2026-10-15 (family-4 rename): emit the strict-trap call. The
+    /// `event_strict_trap` defn is stateful (write_all → stdout state), so
+    /// pass `%state` when present — the old stateless call could never
+    /// resolve to the defn (pre-existing latent bug, fixed here).
+    fn emit_event_trap_call(&mut self, out: &mut String) {
+        let st = if self.ctx.defn_takes_state("event_strict_trap") { "ptr %state, " } else { "" };
+        writeln!(out, "  call i64 @event_strict_trap({})", st).ok();
+    }
+
     fn emit_event_payload_read(
         &mut self,
         out: &mut String,
@@ -7988,7 +7997,7 @@ impl crate::backend::llvm::LlvmBackend {
             )
             .ok();
             writeln!(out, "evr.trap{uid}:").ok();
-            writeln!(out, "  call i64 @__briev_event_strict_trap()").ok();
+            self.emit_event_trap_call(out);
             writeln!(out, "  unreachable").ok();
             writeln!(out, "{blk_lbl}:").ok();
             // BLOCKED: cursor untouched, waiter registered. The migrated
@@ -7997,7 +8006,7 @@ impl crate::backend::llvm::LlvmBackend {
         } else {
             writeln!(out, "{indent}br i1 {is_ready}, label %{ready_lbl}, label %evr.trap{uid}").ok();
             writeln!(out, "evr.trap{uid}:").ok();
-            writeln!(out, "  call i64 @__briev_event_strict_trap()").ok();
+            self.emit_event_trap_call(out);
             writeln!(out, "  unreachable").ok();
         }
         writeln!(out, "{ready_lbl}:").ok();

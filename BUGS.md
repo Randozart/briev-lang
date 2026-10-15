@@ -33,6 +33,37 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Two latent IR bugs in event/watchdog emission — FIXED 2026-10-15
+
+**Symptom (latent — no committed test exercised the paths):**
+1. The strict-event trap call (`emit_expr.rs`, two sites) emitted a
+   stateless `call i64 @__briev_event_strict_trap()` even though the
+   `event_strict_trap` defn is transitively stateful (its body calls
+   `write_all` → `stdout_byte` → stdout state fields). The call could
+   never resolve to the defn's symbol, and no C fallback exists for it.
+2. The second scheduler engine's watchdog emission (`counter.rs`) wrote a
+   void no-state `call void @__watchdog_fail()` while the first engine
+   correctly wrote `call i64 @watchdog_fail(ptr %state)`. No C
+   `__watchdog_fail` exists either, so any program that reached the
+   second engine's required-watchdog path produced an unresolvable
+   `void @__watchdog_fail()` call.
+
+**Root cause:** both sites predate the stateless-defn fixpoint
+(`export_abi::compute_defn_needs_state`); the trap call predates the
+defn-takes-state gate entirely, and the second engine's watchdog shape
+was hand-copied from the C-fallback era.
+
+**Fix (family-4 core-usable rename, same commit):** the trap call is now
+emitted by `emit_event_trap_call`, which passes `%state` when
+`defn_takes_state("event_strict_trap")` is true. The second engine's
+watchdog writes the same shape as the first (`call i64 @watchdog_fail(ptr
+%state)`).
+
+**Verified:** full `cargo test --lib` (3086/0); the event/watchdog link
+tests continue to pass. No committed benchmark or test previously
+exercised either path (they were latent; the fixes keep every green
+assertion green).
+
 ## Trait-constrained generics returned Int instead of the trait type — FIXED 2026-10-13
 
 **Symptom:** a trait method called on a bound type param inside a generic body

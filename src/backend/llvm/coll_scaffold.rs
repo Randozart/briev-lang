@@ -165,7 +165,7 @@ fn synth_init_empty(
 }
 
 /// The default `op Grow` action: `Resize#(#Self, cap * 2)` — doubling.
-/// Routes through the runtime realloc-or-copy (`__briev_coll_resize`), which
+/// Routes through the runtime realloc-or-copy (`coll_resize`), which
 /// mutates the `[data, cap, len]` block in place.
 fn default_grow_action() -> Expr {
     Expr::Call(

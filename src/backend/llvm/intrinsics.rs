@@ -41,8 +41,12 @@ pub fn emit_intrinsic_call(
         "Free#" => return emit_free(backend, out, v, args, indent),
         "Now#" => {
             // 2026-08-01 (D2): `Now#` — monotonic clock in ns for the
-            // watchdog `within N ms` deadline compare.
-            writeln!(out, "{}{} = call i64 @__briev_now(%state)", indent, v).ok();
+            // watchdog `within N ms` deadline compare. Defn present →
+            // plain stateful rt_now_ns; else the C-fallback symbol
+            // (emit_toplevel declare; core-usable purge, family 4).
+            let sym = bridge_symbol(backend, "rt_now_ns", "__briev_now");
+            let st = if backend.ctx.defn_takes_state(&sym) { "%state" } else { "" };
+            writeln!(out, "{}{} = call i64 @{}({})", indent, v, sym, st).ok();
             let narrowed = narrow_int_result(backend, out, v, indent);
             return BTypedRegister { name: narrowed, ty: Type::int() };
         }
@@ -127,9 +131,9 @@ pub fn emit_intrinsic_call(
         }
         "GetCwd#" => {
             let cstr = backend.fun.gen_reg();
-            if backend.ctx.defn_params.contains_key("__briev_getcwd") {
+            if backend.ctx.defn_params.contains_key("rt_getcwd") {
                 let cwd_i = backend.fun.gen_reg();
-                writeln!(out, "{}{} = call i64 @__briev_getcwd(ptr %state)", indent, cwd_i).ok();
+                writeln!(out, "{}{} = call i64 @rt_getcwd(ptr %state)", indent, cwd_i).ok();
                 writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, cstr, cwd_i).ok();
             } else {
                 writeln!(out, "{}{} = call ptr @__briev_getcwd()", indent, cstr).ok();
@@ -161,8 +165,12 @@ pub fn emit_intrinsic_call(
             // Int — ptrtoint so the static arg types match (LTO hazard).
             let pi = backend.fun.gen_reg();
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, pi, pptr).ok();
-            writeln!(out, "{}{} = call i64 @__briev_chdir({}i64 {})", indent, r,
-                if backend.ctx.defn_takes_state("__briev_chdir") { "ptr %state, " } else { "" }, pi).ok();
+            // 2026-10-15 (family 4): defn present → plain rt_chdir
+            // (stateful); else the C-fallback symbol (emit_toplevel
+            // declare) — same shape as GetCwd# above.
+            let sym = bridge_symbol(backend, "rt_chdir", "__briev_chdir");
+            writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, r, &sym,
+                if backend.ctx.defn_takes_state(&sym) { "ptr %state, " } else { "" }, pi).ok();
             return BTypedRegister { name: r, ty: Type::int() };
         }
         // 2026-08-03: call a function-pointer value (host callback).
@@ -1197,7 +1205,7 @@ fn emit_capacity(
 /// 2026-08-15 (coll plan §3.6): `Resize#(h, cap)` — set the data buffer to
 /// exactly `cap` elements (realloc-or-copy), store the new cap.
 ///
-/// 2026-08-15 (grow-on-full): routes through the runtime `__briev_coll_resize`
+/// 2026-08-15 (grow-on-full): routes through the runtime `coll_resize`
 /// — malloc a fresh buffer of `cap * 8`, copy `min(len, cap)` elements, free
 /// the old buffer, store the new data + cap. The previous inline emission
 /// malloc'd fresh WITHOUT copying or freeing (data loss + leak); the runtime
@@ -1212,8 +1220,9 @@ fn emit_resize(
     let h = emit_arg(backend, out, &args[0], indent);
     let cap = emit_arg(backend, out, &args[1], indent);
     let call = backend.fun.gen_reg();
-    writeln!(out, "{}{} = call i64 @__briev_coll_resize({}i64 {}, i64 {})", indent, call,
-            if backend.ctx.defn_takes_state("__briev_coll_resize") { "ptr %state, " } else { "" }, h, cap).ok();
+    let rsym = bridge_symbol(backend, "coll_resize", "__briev_coll_resize");
+    writeln!(out, "{}{} = call i64 @{}({}i64 {}, i64 {})", indent, call, &rsym,
+            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, h, cap).ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
@@ -1241,8 +1250,9 @@ fn emit_ensure_cap(
     writeln!(out, "{}{} = icmp ult i64 {}, {}", indent, cmp, cur_cap, n).ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, grow).ok();
     writeln!(out, "{}{} = select i1 {}, i64 {}, i64 {}", indent, after, cmp, n, cur_cap).ok();
-    writeln!(out, "{}{} = call i64 @__briev_coll_resize({}i64 {}, i64 {})", indent, target,
-            if backend.ctx.defn_takes_state("__briev_coll_resize") { "ptr %state, " } else { "" }, h, after).ok();
+    let rsym = bridge_symbol(backend, "coll_resize", "__briev_coll_resize");
+    writeln!(out, "{}{} = call i64 @{}({}i64 {}, i64 {})", indent, target, &rsym,
+            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, h, after).ok();
     writeln!(out, "{}{} = add i64 {}, 0", indent, call, target).ok();
     let _ = (grow, call);
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
@@ -1263,8 +1273,9 @@ fn emit_trim_cap(
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, h).ok();
     writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 16", indent, len_gep, p).ok();
     writeln!(out, "{}{} = load i64, ptr {}", indent, len, len_gep).ok();
-    writeln!(out, "{}{} = call i64 @__briev_coll_resize({}i64 {}, i64 {})", indent, call,
-            if backend.ctx.defn_takes_state("__briev_coll_resize") { "ptr %state, " } else { "" }, h, len).ok();
+    let rsym = bridge_symbol(backend, "coll_resize", "__briev_coll_resize");
+    writeln!(out, "{}{} = call i64 @{}({}i64 {}, i64 {})", indent, call, &rsym,
+            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, h, len).ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
@@ -2671,5 +2682,18 @@ fn print_symbol(backend: &LlvmBackend, helper: &str, briev_name: &str, fallback_
         helper.to_string()
     } else {
         frgn_symbol(backend, briev_name, fallback_c)
+    }
+}
+
+/// 2026-10-15 (core-usable purge, family 4): runtime-bridge call sites —
+/// the pure-Briev defn's PLAIN name when present (it then owns the symbol
+/// and the %state gate keys off the same set), else the C-fallback symbol
+/// (the emit_toplevel/mod.rs declares — the __ ABI names, out of scope).
+/// Undo: hardcode `fallback_c` at the site.
+fn bridge_symbol(backend: &LlvmBackend, defn: &str, fallback_c: &str) -> String {
+    if backend.ctx.defn_params.contains_key(defn) {
+        defn.to_string()
+    } else {
+        fallback_c.to_string()
     }
 }

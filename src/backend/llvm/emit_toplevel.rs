@@ -696,29 +696,29 @@ impl LlvmBackend {
         // optional-frgn runtime availability check (briev_rt.c).
         writeln!(out, "declare i64 @briev_symbol_available(ptr)").ok();
         // 2026-08-01 (D2): garbage scheduling — scheduled frees route through
-        // __briev_free so a benchmark can assert frees == allocs. argmemonly:
+        // rt_free so a benchmark can assert frees == allocs. argmemonly:
         // the call only touches memory via its pointer arg, so a scheduled
         // free after a loop must not make LLVM treat the whole function's
         // memory as clobbered (without it, hash_ops' loop ran 23x slower —
         // LLVM could not promote the state slots to registers).
-        if !self.ctx.defn_params.contains_key("__briev_free") {
+        if !self.ctx.defn_params.contains_key("rt_free") {
             writeln!(out, "declare void @__briev_free(ptr) nounwind argmemonly").ok();
         }
         // 2026-08-01 (D2): `Now#` — monotonic clock for the watchdog
         // `within N ms` deadline compare.
         // 2026-09-10 (Family I): declare-guarded — the pure-Briev defn takes
         // the hidden %state, so an unconditional () declare would conflict.
-        if !self.ctx.defn_params.contains_key("__briev_now") {
+        if !self.ctx.defn_params.contains_key("rt_now_ns") {
             writeln!(out, "declare i64 @__briev_now() nounwind").ok();
         }
         // 2026-08-23 (process.bv revival): process/environment helpers.
         writeln!(out, "declare i64 @__briev_spawn(ptr) nounwind").ok();
         writeln!(out, "declare ptr @__briev_spawn_output(ptr)").ok();
         writeln!(out, "declare i64 @__briev_setenv(ptr, ptr) nounwind").ok();
-        if !self.ctx.defn_params.contains_key("__briev_getcwd") {
+        if !self.ctx.defn_params.contains_key("rt_getcwd") {
             writeln!(out, "declare ptr @__briev_getcwd()").ok();
         }
-        if !self.ctx.defn_params.contains_key("__briev_chdir") {
+        if !self.ctx.defn_params.contains_key("rt_chdir") {
             writeln!(out, "declare i64 @__briev_chdir(ptr) nounwind").ok();
         }
         // getenv/strlen already declared at line ~638 (GetEnv# path).

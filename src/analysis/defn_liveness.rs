@@ -234,7 +234,7 @@ impl<'a> Builder<'a> {
     ///   call edge. They are compiler-generated, never user dead code. The
     ///   prefix rule matches the bind-route exclusion in pipeline.rs.
     /// - An async txn makes the program reactive-unbounded — the main tail
-    ///   yields through `__wait_for_trigger__` (loop_engine's no-wake/no-exit
+    ///   yields through `wait_for_trigger` (loop_engine's no-wake/no-exit
     ///   branch). The call is backend-emitted, so liveness must root its
     ///   helper alongside the txn (2026-09-17, same class as the
     ///   stdout-flush gate fix).
@@ -246,7 +246,7 @@ impl<'a> Builder<'a> {
             self.roots.insert(t.name.clone());
         }
         if t.is_async {
-            self.roots.insert("__wait_for_trigger__".into());
+            self.roots.insert("wait_for_trigger".into());
         }
     }
 
@@ -449,7 +449,7 @@ impl<'a> Builder<'a> {
     /// 2026-09-23 (async Phase D soundness-net catch): a `spawn`/`await` in
     /// live code lowers to briev_task_spawn_impl / briev_await_impl, and the
     /// spawned tasks' port fire/read/ready lower to the event family
-    /// (briev_event_*_impl, __briev_event_strict_trap). Root the whole family
+    /// (briev_event_*_impl, event_strict_trap). Root the whole family
     /// — type-agnostic over-approx; `mark` is a no-op for helpers absent from
     /// the unit. The event helpers' own callees (write_all/print_str_raw
     /// etc.) join
@@ -463,7 +463,7 @@ impl<'a> Builder<'a> {
             "briev_event_ready_impl",
             "briev_event_read_impl",
             "briev_event_fire_impl",
-            "__briev_event_strict_trap",
+            "event_strict_trap",
         ] {
             self.mark(h, queue);
         }
@@ -538,12 +538,12 @@ impl<'a> Builder<'a> {
                 self.walk_stmts(body, queue);
             }
             Statement::FreeHint(_) => {
-                // Scheduler auto-free lowers to `__briev_free` for heap
+                // Scheduler auto-free lowers to `rt_free` for heap
                 // fields; the explicit hint is the AST-visible form.
                 // 2026-09-22 (soundness-net catch): a freed TASK HANDLE
                 // additionally lowers to `briev_task_cancel_impl` — root
                 // both so async programs pass the IR scan.
-                self.mark("__briev_free", queue);
+                self.mark("rt_free", queue);
                 self.mark("briev_task_cancel_impl", queue);
             }
             other => self.walk_stmt_rest(other, queue),
@@ -683,17 +683,17 @@ impl<'a> Builder<'a> {
                 self.mark("briev_str_eq", queue);
                 // 2026-09-23 (soundness-net catch, pp_roundtrip): `+` on a
                 // String lowers to inline concat, which frees its temporaries
-                // via `__briev_free` at the end of the enclosing statement.
+                // via `rt_free` at the end of the enclosing statement.
                 // Type-agnostic — any Add may be a String concat. Same
                 // coarse-sound over-approx as briev_str_eq above.
-                self.mark("__briev_free", queue);
+                self.mark("rt_free", queue);
                 // 2026-10-05 (json.bv): `+` on two COLLECTIONS concatenates,
                 // growing the target through the runtime realloc-or-copy
                 // helper. Type-agnostic — any Add may be a collection concat;
-                // root it so the emitted `__briev_coll_resize` call passes the
+                // root it so the emitted `coll_resize` call passes the
                 // soundness net (BUGS.md). Same coarse-sound over-approx.
                 if matches!(kind, crate::ast::BinaryOpKind::Add) {
-                    self.mark("__briev_coll_resize", queue);
+                    self.mark("coll_resize", queue);
                 }
                 self.walk_expr(l, queue);
                 self.walk_expr(r, queue);
@@ -888,12 +888,12 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
             // print/string lowering may emit these even in a trivial
             // `Print#(r)` program — the cast lanes route String↔Int through
             // str_to_int/int_to_str, the scheduler auto-free lowers to
-            // __briev_free, and Slice# on a String routes through
+            // rt_free, and Slice# on a String routes through
             // briev_str_substr. Root them with the family so a minimal print
             // program does not trip the net.
             "str_to_int",
             "int_to_str",
-            "__briev_free",
+            "rt_free",
             "briev_str_substr",
         ],
         // Slice# on `#String` values routes through the substring helper.
@@ -902,12 +902,12 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
         "Count#" | "CharCount#" => &["briev_char_len", "briev_str_next_char"],
         // Collection growth family realloc-or-copy via the runtime helper.
         "Resize#" | "EnsureCap#" | "TrimCap#" | "InsertAt#" | "Insert#" => {
-            &["__briev_coll_resize"]
+            &["coll_resize"]
         }
         // Working directory / environment.
-        "GetCwd#" => &["cstr_len", "__briev_getcwd"],
-        "ChDir#" => &["__briev_chdir"],
-        "GetEnv#" | "GetEnvInt#" => &["__briev_getcwd"],
+        "GetCwd#" => &["cstr_len", "rt_getcwd"],
+        "ChDir#" => &["rt_chdir"],
+        "GetEnv#" | "GetEnvInt#" => &["rt_getcwd"],
         // 2026-09-23 (frgn-elimination round 2): get_env!/get_env_int!
         // expand to stdlib defns (env.bv) whose bodies call the pure-Briev
         // environ walkers briev_getenv_{briev,int}_impl (cast_lanes.bv),
@@ -927,12 +927,12 @@ fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
             "str_to_int",
             "int_to_str",
             "briev_str_substr",
-            "__briev_free",
+            "rt_free",
         ],
         // Lifetime + time (the backend's free/now emissions prefer the
         // pure-Briev defns when present).
-        "Free#" => &["__briev_free"],
-        "Now#" => &["__briev_now"],
+        "Free#" => &["rt_free"],
+        "Now#" => &["rt_now_ns"],
         _ => &[],
     }
 }

@@ -3703,7 +3703,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // These are called by inop declarations in lib/std/os/*.bv.
         // All take/return i64 (boxed value) matching Briev's ABI.
         // 2026-08-15 (coll plan §3.6): the coll capacity resize helper.
-        if !defined.contains("__briev_coll_resize") {
+        if !defined.contains("coll_resize") {
             writeln!(out, "declare i64 @__briev_coll_resize(i64, i64) #1").ok();
         }
         writeln!(out, "declare i64 @briev_open(i64, i64, i64) #1").ok();
@@ -4264,7 +4264,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             if self.async_txn_names.iter().any(|n| n.as_str() == name.as_str()) && !self.is_lightweight_async {
                 // 2026-10-07 (view-surface liveness): same gate as the main
                 // loop — a dead async txn's worker wrapper is dead code;
-                // async roots `__wait_for_trigger__`, not the txn name, so
+                // async roots `wait_for_trigger`, not the txn name, so
                 // without this the wrapper body walked unclosed callees.
                 if !self.ctx.emit_all_defns && !self.ctx.live_defns.contains(name.as_str()) {
                     continue;

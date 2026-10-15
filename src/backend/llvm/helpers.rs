@@ -1131,17 +1131,17 @@ impl LlvmBackend {
         .ok();
         writeln!(out, "{}{}:", indent, fl).ok();
         let clean = self.emit_mask_tag(out, indent, boxed, &format!("cc{}", tag_prefix));
-        // 2026-09-10 (Family F): when the arena-aware __briev_free defn
+        // 2026-09-10 (Family F): when the arena-aware rt_free defn
         // exists (cast_lanes), route the temp free through it — a no-op that
         // keeps libc out of the symbol table for freestanding programs (the
         // concat epilogue was the last @free call site). The tag-bit flag
         // remains the gate: arena pointers are never tagged temp, so this
         // branch is dead at runtime either way.
-        if self.ctx.defn_params.contains_key("__briev_free") {
-            // 2026-09-23 (stateless-defn mechanism): __briev_free's body is
+        if self.ctx.defn_params.contains_key("rt_free") {
+            // 2026-09-23 (stateless-defn mechanism): rt_free's body is
             // `term 0;` — it takes NO state. Gate on defn_takes_state so a
             // stateless caller does not reference an undefined %state.
-            let st = if self.ctx.defn_takes_state("__briev_free") { "ptr %state, " } else { "" };
+            let st = if self.ctx.defn_takes_state("rt_free") { "ptr %state, " } else { "" };
             // 2026-10-07 (wasm32): the defn is `(p: Int) -> Int` — param and
             // return are i{int_bits} (i64 native, i32 wasm32). The old
             // hardcoded `call i64 @__briev_free(ptr ...)` mismatched the
@@ -1150,11 +1150,11 @@ impl LlvmBackend {
             let param_ll = self
                 .ctx
                 .defn_params
-                .get("__briev_free")
+                .get("rt_free")
                 .and_then(|ps| ps.first())
                 .map(|t| self.llvm_type(t))
                 .unwrap_or_else(|| self.llvm_type(&Type::int()));
-            let ret_ll = self.defn_call_ret_ll("__briev_free");
+            let ret_ll = self.defn_call_ret_ll("rt_free");
             // `clean` is the address as an i64 int (emit_mask_tag); adapt it
             // to the defn's param LLVM type (i64 → no-op, ptr → inttoptr,
             // narrower iN → trunc). i64 is the widest — never zext here.
@@ -1169,7 +1169,7 @@ impl LlvmBackend {
                 }
                 t
             };
-            writeln!(out, "{}call {} @__briev_free({}{} {})", indent, ret_ll, st, param_ll, p).ok();
+            writeln!(out, "{}call {} @rt_free({}{} {})", indent, ret_ll, st, param_ll, p).ok();
         } else {
             let free_ptr = self.emit_inttoptr_reg(out, indent, &format!("cf{}", tag_prefix), &clean);
             writeln!(out, "{}call void @free(ptr {})", indent, free_ptr).ok();
