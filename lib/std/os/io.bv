@@ -1,18 +1,10 @@
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_READ:          Int = 0;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
-const SYS_WRITE:         Int = 1;
+// STUB — deliberately unimplemented (18 junk lines
+// removed 2026-10-15, core-usable purge Phase 4). This module is a reserved
+// name in the os family: nothing here compiles into any program (liveness
+// drops empty modules), and importing it yields exactly nothing. Honest
+// header per the core-usable purge decision — the 16 other os stubs got the
+// same one. Fill order + shape: poll/epoll/select — needs the multiplexing syscall lanes; the wake-trigger runtime is the likely consumer
+//
+// Undo: replace this file with real lanes over the posix/syscall.bv idiom
+// (see fs.bv / dir.bv / rand.bv / temp.bv for the house pattern: pure .bv,
+// no frgn, contracts on every callable).
