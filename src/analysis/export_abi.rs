@@ -502,8 +502,24 @@ fn expr_needs_state(
         // 2026-09-28 (E3): the `[*]` selector carries no runtime state — it is
         // a leaf, resolved by eager expansion before codegen.
         Expr::Wildcard => false,
-        // Field access always needs state (reads struct metadata)
-        Expr::Field(_, _) => true,
+        // 2026-10-15 (field-access scoping): a field read needs `%state` iff
+        // its BASE chain does. The previous `Expr::Field(_, _) => true` was
+        // unconditional — it predates the 2026-09-23 param-shadowing scoping
+        // (see the Identifier arm) and was never migrated, so ANY member
+        // touching a field of its receiver (`Store#(sink.ptr, val, 1)`, the
+        // bread-and-butter of every obj member) was judged state-taking even
+        // though the load reads the param's pointer, never `%state`. Sound
+        // but over-conservative: it blanket-defeated the stateless-defn
+        // mechanism for all obj members. Now: `sink.ptr` → rec(Identifier
+        // sink) → param → false; `global.field` → rec(Identifier global) →
+        // state field → true (the dde481af protection is preserved — a bare
+        // state-field base still forces state). Every base shape (Call,
+        // MethodCall, Index, Deref, Cast, StructLiteral, …) carries its own
+        // recursive arm, so the base chain is fully walked. Undo: restore
+        // `Expr::Field(_, _) => true` (re-introduces the member-wide
+        // statefulness over-approximation; their test
+        // obj_member_reaching_stateful_intrinsic_is_indexed_stateful fails).
+        Expr::Field(recv, _) => rec(recv),
         Expr::Call(name, args, _) => {
             // Observable/stateful intrinsics need state (unchanged from the
             // backend's original list).
@@ -1060,5 +1076,35 @@ mod tests {
         let stateful = type_stateful_members(&items);
         assert!(stateful.contains("Growing"), "Growing has a stateful member");
         assert!(!stateful.contains("Fixed"), "Fixed has no stateful member");
+    }
+
+    #[test]
+    fn global_state_field_member_access_stays_stateful() {
+        // 2026-10-15 (field-access scoping control): the Field arm now walks
+        // its base chain — this pins the SOUNDNESS direction of that change.
+        // A member reading a field of a GLOBAL state field (`global.ptr`)
+        // loads through `%state` and must stay state-taking; only param/local
+        // bases are exempt (their pointers arrive as arguments). Reverting
+        // the base-chain walk to `Expr::Field(_, _) => true` keeps this green
+        // but blanket-stateful; replacing it with `_ => false` would break it
+        // (the dde481af undefined-`%state` class).
+        let src = r#"
+            let counter: Fixed = Fixed { ptr: 0 };
+            obj Fixed {
+                ptr: Int;
+                defn bump(sink: Fixed) -> Fixed {
+                    let cur: Int = counter.ptr;
+                    term Fixed { ptr: cur };
+                };
+            };
+        "#;
+        let items = parse(src);
+        let map = compute_defn_needs_state(&items);
+        assert_eq!(
+            map.get(&type_member_key("Fixed", "bump")),
+            Some(&true),
+            "bump reads counter.ptr through the global state field and must \
+             take %state"
+        );
     }
 }
