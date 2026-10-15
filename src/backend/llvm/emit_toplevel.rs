@@ -5657,7 +5657,14 @@ impl LlvmBackend {
     /// only the mechanical IR check or a runtime probe catches it).
     pub(super) fn callee_declares_void(&self, name: &str) -> bool {
         if let Some(types) = self.ctx.defn_return_types.get(name) {
-            return types.is_empty();
+            // `-> Void` registers as `[Void]` (OutputType::Single(Void) →
+            // all_types()), not `[]`. Both forms define a `void` function
+            // (emit_definition: Single(Void) → llvm_ret_abi_type → "void");
+            // recognize the single-Void form too, else the call site falls to
+            // the named path and emits `%t = call void @f(...)` — a void
+            // result given a register name, which clang rejects.
+            return types.is_empty()
+                || (types.len() == 1 && matches!(types[0], crate::ast::Type::Void));
         }
         self.ctx
             .frgn_map
@@ -6491,5 +6498,53 @@ impl crate::backend::llvm::LlvmBackend {
         writeln!(out, "  store i64 {finished}, ptr {outs}").ok();
         writeln!(out, "  ret i64 {finished}").ok();
         writeln!(out, "}}").ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse real Briev source into top-level items (behavioral tests —
+    /// AGENTS "test the contract, not the implementation"). Same helper
+    /// shape as the other analysis-pass test modules (defn_liveness,
+    /// export_abi).
+    fn parse(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        parser.parse_program().expect("parse")
+    }
+
+    #[test]
+    fn void_defn_call_site_binds_no_result() {
+        // 2026-10-15 (`-> Void` callees): a defn declared `-> Void` registers
+        // its return type as `[Void]` (OutputType::Single(Void) → all_types()),
+        // not `[]`. `callee_declares_void` must recognize BOTH forms, else the
+        // call site names the void result — `%tN = call void @bump()`, which
+        // clang rejects ("instructions returning void cannot have a name").
+        // The discriminator is the `= call void` binding: the buggy emitter
+        // contains it, the fixed one only a bare `call void`.
+        let src = r#"
+            defn bump() -> Void { Store#(8, 7, 1); };
+            node entry [beginprogram][true] {
+                bump();
+                endprogram Print#(7);
+            };
+        "#;
+        let program = parse(src);
+        let mut backend = LlvmBackend::new();
+        let ir = backend.generate(&program, None);
+        assert!(
+            ir.contains("define void @bump"),
+            "the `-> Void` defn must be emitted: {ir}"
+        );
+        assert!(
+            ir.contains("call void @bump()"),
+            "the call site must emit a plain void call: {ir}"
+        );
+        assert!(
+            !ir.contains("= call void @bump()"),
+            "a void result must not be bound to a register name: {ir}"
+        );
     }
 }
