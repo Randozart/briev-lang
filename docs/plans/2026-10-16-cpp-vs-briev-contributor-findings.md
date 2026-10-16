@@ -351,3 +351,27 @@ and shape-agnostic); Rule 22 (gate not weakened; `async` classification
 respected); Rule 13 (docs ledger above); Working Rules (plan before
 work, same-commit docs, helpful diagnostics, flat control flow, sorted
 HashMap iteration in any new IR-producing iteration).
+
+## Addendum (2026-10-16, later session): absolute-limit instrumentation
+
+Review challenge: the P2 threshold's "empirical calibration" (600) is
+box-dependent — the boundary between two corpus anecdotes. Decomposition
+agreed with the author: the "absolute limit on a single compilation target"
+is three distinct quantities, previously conflated:
+
+1. **Frame size — the true a-priori absolute.** Per-function Σ(alloca
+   bytes) is exactly computable in the frontend; the target's bound
+   (displacement cliffs / declared stack ceiling) is a machine fact →
+   `frame_limit_bytes` per target in `config/targets.dbvl`. Breach =
+   house-style diagnostic (what/why/fix). Absent key = hosted, skipped.
+2. **RA cost — no frontend-computable absolute; measured knee per
+   toolchain.** `benchmarks/ra_knee_sweep.sh` protocol: weight ladder,
+   compile time + spills, knee := superlinear jump, threshold := knee ÷ 4.
+   Result recorded as a dated measurement (toolchain version pinned),
+   replacing 600's corpus-derived value. Re-derivable when LLVM changes.
+3. **Backend defects — version-bounded ledger.** LLVM 17 greedy-RA
+   segfault enters BUGS.md as DEFECT (not limit): affected versions, the
+   valve covering it, retirement gate (floor toolchain > 17).
+
+Order: 3 → 1 → 2, per-commit gates as usual. The 600 valve stays in force
+until Part 2 replaces it with the derived value.
