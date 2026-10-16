@@ -120,6 +120,26 @@ pub(crate) fn llvm_type_bytes(ty: &str, state_size: Option<u64>) -> Option<u64> 
     }
 }
 
+/// Per-driver options for `emit_body_prologue` — which state resets each
+/// body-emission driver performed historically (the helper reproduces each
+/// driver's sequence EXACTLY; a flag left false preserves that driver's old
+/// behavior byte-for-byte). 2026-10-16 (stability S4).
+#[derive(Default)]
+struct PrologueOpts {
+    /// `ssa_old_int_regs`/`ssa_old_float_regs` clears (reactive emitters).
+    reset_ssa_caches: bool,
+    /// `clear_locals()` — binding maps, dedup caches, last-value temps
+    /// (reactive emitters; callable txns clear selectively instead).
+    clear_locals: bool,
+    /// `in_callable_txn = false` (reactive emitters; defns stay callable).
+    reset_callable_flag: bool,
+    /// `returns_i64 = false; fn_ret_ty = "void"` (standard `@txn_` only).
+    reset_return_state: bool,
+    /// `terminated = false` (defn and reactive drivers; `emit_async_body`
+    /// inherits the caller's state).
+    reset_terminated: bool,
+}
+
 impl LlvmBackend {
     /// 2026-08-04 (compiler-in-Briev): top-level `let` names in a body that are
     /// ASSIGNED later (incl. inside when/if/foreach/sync blocks). Such lets get
@@ -188,8 +208,45 @@ impl LlvmBackend {
     /// Centralizes the alloca-emission block that previously lived inline in
     /// emit_definition. Undo: delete this helper and restore the inline
     /// blocks at the three call sites.
-    fn predeclare_reassigned_lets(&mut self, out: &mut String, body: &[Statement]) {
-        self.fun.reassigned_lets = Self::collect_reassigned_lets(body);
+    /// The shared body-emission prologue: the per-driver state resets, then
+    /// the reassigned-let entry-alloca pre-declaration.
+    ///
+    /// 2026-10-16 (stability S4): flaw 4 happened because the reset+predeclare
+    /// sequence was hand-rolled in every body-emission driver and two of them
+    /// forgot the predeclare (guard-scoped allocas, non-dominating reads).
+    /// One helper, every driver calls it — the omission class is dead. The
+    /// `opts` reproduce each driver's historical reset set exactly; `###`
+    /// -pinned corpus byte-identity is the gate. The SSA main's cross-txn
+    /// aggregate (loop_engine/ssa.rs) is a DIFFERENT mechanism (one map over
+    /// all txns) and stays explicit with a cross-reference. Undo: re-inline
+    /// the sequences at the call sites.
+    fn emit_body_prologue(
+        &mut self,
+        out: &mut String,
+        body: &[Statement],
+        opts: PrologueOpts,
+    ) {
+        if opts.reset_ssa_caches {
+            self.fun.ssa_old_int_regs.clear();
+            self.fun.ssa_old_float_regs.clear();
+        }
+        if opts.clear_locals {
+            self.fun.clear_locals();
+        }
+        if opts.reset_terminated {
+            self.fun.terminated = false;
+        }
+        self.predeclare_reassigned_lets(out, body);
+        if opts.reset_callable_flag {
+            self.fun.in_callable_txn = false;
+        }
+        if opts.reset_return_state {
+            self.fun.returns_i64 = false;
+            self.fun.fn_ret_ty = "void".to_string();
+        }
+    }
+
+    fn predeclare_reassigned_lets(&mut self, out: &mut String, body: &[Statement]) {        self.fun.reassigned_lets = Self::collect_reassigned_lets(body);
         // Sorted by name: reassigned_lets is a HashMap, and unsorted
         // iteration assigns the entry-alloca register numbers in per-process
         // random order (house rule §4 — the .ll drift BUGS.md 9303 fixed for
@@ -3433,9 +3490,12 @@ impl LlvmBackend {
         // reassignment must NOT demote to an alloca at the assignment site
         // (dominance violation). The alloca is bound BEFORE the body so the
         // let's initial store and later stores both target the entry alloca.
-        // 2026-10-16 (flaw 4): migrated to the shared helper (DRY — the same
-        // block now serves the reactive @txn_<name> emitters too).
-        self.predeclare_reassigned_lets(out, &d.body);
+        // 2026-10-16 (flaw 4 → S4): the sequence lives in the shared
+        // emit_body_prologue (this defn driver resets `terminated` only).
+        self.emit_body_prologue(out, &d.body, PrologueOpts {
+            reset_terminated: true,
+            ..Default::default()
+        });
         let body_len = d.body.len();
         for (idx, s) in d.body.iter().enumerate() {
             if self.fun.terminated { break; }
@@ -4099,25 +4159,20 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             // Arena for body emission — same rationale as the standard path:
             // the reactor dispatch calls @txn_name as a separate function,
             // so arena allocas must live here, not in main().
-            self.emit_arena_init(out, "  ");            self.fun.ssa_old_int_regs.clear();
-            self.fun.ssa_old_float_regs.clear();
+            self.emit_arena_init(out, "  ");
             // 2026-06-28: Do NOT reset txn_counter here — this emits into the
             // existing @main() function. Resetting would produce duplicate
             // %t{N} registers across inlined transactions, violating SSA.
             // The counter keeps incrementing across all inlined transactions.
-            self.fun.clear_locals();
-            self.fun.terminated = false;
-            // 2026-10-16 (flaw 4): reactive txn bodies get the same
-            // reassigned-let entry allocas as defns — without them a
-            // `let` assigned inside a guard demoted the alloca into
-            // guard.thenN (non-dominating for the guard.end reads).
-            self.predeclare_reassigned_lets(out, &txn.body);
-            // 2026-06-26: Reset in_callable_txn — emit_definition may have left
-            // it true from a prior TopLevel::Definition. Reactive transactions
-            // use the non-callable code path (emit_stmt.rs:162). Without this,
-            // term!/TermBang inside guards takes the callable path, emits no
-            // ret/br, and leaves basic blocks unterminated.
-            self.fun.in_callable_txn = false;
+            // 2026-10-16 (S4): resets + the reassigned-let predeclare (flaw 4)
+            // live in the shared prologue.
+            self.emit_body_prologue(out, &txn.body, PrologueOpts {
+                reset_ssa_caches: true,
+                clear_locals: true,
+                reset_callable_flag: true,
+                reset_terminated: true,
+                ..Default::default()
+            });
             self.fun.returns_i64 = false;
             self.fun.fn_ret_ty = "void".to_string();
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
@@ -4365,18 +4420,17 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             self.fun.cur_block = None;
             writeln!(out, "define void @{}({}) local_unnamed_addr {}{}{} {{", cpu_name, self.ctx.state_ptr_param, local_txn_attr, alwaysinline, meta_attrs).ok();
             writeln!(out, "  entry:").ok();
-            self.fun.ssa_old_int_regs.clear();
-            self.fun.ssa_old_float_regs.clear();
-            self.fun.clear_locals();
-            self.fun.terminated = false;
-            self.fun.in_callable_txn = false;
-            self.fun.returns_i64 = false;
-            self.fun.fn_ret_ty = "void".to_string();
-            // 2026-10-16 (flaw 4): same reassigned-let entry allocas as the
-            // defn and assume_shape paths — the per-node reactive emitter was
-            // the third path and produced guard-scoped allocas for `let`s
-            // assigned inside `when` blocks (non-dominating reads).
-            self.predeclare_reassigned_lets(out, &txn.body);
+            // 2026-10-16 (S4): resets + the reassigned-let predeclare (flaw 4)
+            // live in the shared prologue; arena init stays between it and the
+            // precondition check, matching the pre-S4 emission order.
+            self.emit_body_prologue(out, &txn.body, PrologueOpts {
+                reset_ssa_caches: true,
+                clear_locals: true,
+                reset_callable_flag: true,
+                reset_return_state: true,
+                reset_terminated: true,
+                ..Default::default()
+            });
             self.emit_arena_init(out, "  ");
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");
@@ -5107,6 +5161,14 @@ fn probe_ok_checks(
         self.fun.param_slots.clear();
         self.fun.ssa_old_int_regs.clear();
         self.fun.ssa_old_float_regs.clear();
+        // 2026-10-16 (S4, fifth path): callable-txn bodies had the SAME flaw-4
+        // shape — no reassigned-let pre-declaration, so `let b = 0;` +
+        // `when c { b = …; }` demoted the alloca into the guard block while
+        // post-guard reads landed outside its dominance. The prologue runs
+        // before the parameter slots bind (:pN_s / let_bindings below), so a
+        // body let shadows nothing and params win any collision exactly as
+        // before. Default opts: this driver's selective clears above stand.
+        self.emit_body_prologue(out, &txn.body, PrologueOpts::default());
 
         let has_return = if let Some(ref ot) = txn.output_type {
             match ot {
@@ -5628,12 +5690,11 @@ fn probe_ok_checks(
             writeln!(out, "}}").ok();
             return;
         }
-        // 2026-10-16 (flaw 4): fourth and last body-emission path — async
-        // workers inlining their node body here need the same reassigned-let
-        // entry allocas. The allocas land at the top of the txn_fire_N block
-        // (entry is taken by the precondition branch), which dominates every
-        // guard.then/guard.end block the body emits.
-        self.predeclare_reassigned_lets(out, &txn.body);
+        // 2026-10-16 (flaw 4 → S4): async workers inlining their node body
+        // here get the shared prologue (default opts = predeclare only, the
+        // allocas land at the top of the txn_fire_N block — entry is taken by
+        // the precondition branch, so it dominates every guard block).
+        self.emit_body_prologue(out, &txn.body, PrologueOpts::default());
         for s in &txn.body {
             if self.fun.terminated { break; }
             emit_statement(self, out, s, "  ");

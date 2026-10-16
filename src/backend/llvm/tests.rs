@@ -984,6 +984,43 @@ node report [true][true] {
     );
 }
 
+/// 2026-10-16 (stability S4, fifth path): callable-txn bodies had the same
+/// flaw-4 shape — `let b = 0;` + `when c { b = …; }` demoted the alloca into
+/// the guard block while post-guard reads landed outside its dominance. The
+/// shared prologue pre-declares the entry alloca here too.
+#[test]
+fn test_callable_txn_reassigned_let_gets_entry_alloca() {
+    let src = r#"
+txn gated(bound: Int, b: Int) [b < bound][true] -> Int {
+    let v: Int = 0;
+    when bound > 0 {
+        v = 7;
+    };
+    term v;
+};
+let sink: Int;
+node report [true][true] {
+    sink = gated(1, 0);
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let f = function_body(&ir, "@gated(");
+    let alloca = f.find("= alloca i64")
+        .unwrap_or_else(|| panic!("@gated: no alloca:\n{f}"));
+    let guard = f.find("guard.then")
+        .unwrap_or_else(|| panic!("@gated: no guard:\n{f}"));
+    assert!(
+        alloca < guard,
+        "@gated: reassigned-let alloca must precede the guard block (entry, not guard.then):\n{f}"
+    );
+}
+
 /// 2026-10-05 (json.bv): a Char LOCAL read from a native-i32 register must
 /// NOT be truncated (`trunc i64 <i32>` is invalid IR). The else-branch Char
 /// unbox is only for boxed i64 params (`ty == Int`); a local typed Char is
