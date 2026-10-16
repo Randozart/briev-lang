@@ -6334,12 +6334,70 @@ fn test_batch_loop_rejects_pre_increment() {
 fn parse_bv_source(src: &str) -> Vec<TopLevel> {
     let tokens = crate::lexer::tokenize(src).expect("tokenize failed");
     let mut parser = crate::parser::Parser::new(tokens, src);
-    parser.parse_program().expect("parse failed")
+    let items = parser.parse_program().expect("parse failed");
+    // 2026-10-16 (stability): the backend test path bypasses the compile
+    // pipeline's analysis gates — six fixtures carried explicitly-written
+    // `[true][true]` contracts (rejected by prove_contract in every real
+    // `brievc build`) because nothing in THIS pipeline ever looked. The
+    // parse helper is the choke point every fixture flows through, so the
+    // proof-engine gate runs here: an illegal fixture fails the test that
+    // uses it, at the same site the pipeline would reject the source.
+    // Scope = contract legality (tautologies); the other pipeline gates
+    // (purity, concurrency classification) stay compile-side until a
+    // fixture needs them. Undo: delete this block.
+    for item in &items {
+        if let TopLevel::Transaction(t) = item {
+            if t.contract.explicit {
+                crate::proof_engine::prove_contract(
+                    &t.contract.pre_condition,
+                    &t.contract.post_condition,
+                    &t.parameters,
+                    true,
+                )
+                .unwrap_or_else(|errs| {
+                    panic!(
+                        "fixture contract rejected by the proof engine (this source \
+                         would not compile via `brievc build`): {} — {}",
+                        t.name,
+                        errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ")
+                    );
+                });
+            }
+        }
+    }
+    items
+}
+
+/// 2026-10-16 (stability): the fixture-legality gate in `parse_bv_source`
+/// must FIRE — an explicitly-written tautology contract is rejected here
+/// exactly as `brievc build` would reject it, instead of silently flowing
+/// into emission (the `[true][true]` escape that survived six fixtures).
+#[test]
+fn test_fixture_gate_rejects_tautology_contract() {
+    let src = r#"
+let sink: Int;
+node report [true][true] {
+    sink = 1;
+    term;
+};
+"#;
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parse_bv_source(src)
+    }))
+    .expect_err("tautology fixture must be rejected at the choke point");
+    let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(msg.contains("proof engine"), "names the gate: {msg}");
+    // The ProofError layer's canonical wording (the friendlier "true ⇒ true
+    // is trivial" render is added by the compile pipeline on top of it).
+    assert!(
+        msg.contains("unreachable precondition") || msg.contains("trivial"),
+        "carries the proof reason: {msg}"
+    );
+    assert!(msg.contains("report"), "names the txn: {msg}");
 }
 
 #[test]
-fn test_print_plugin_emits_direct_ffi_calls() {
-    let src = r#"
+fn test_print_plugin_emits_direct_ffi_calls() {    let src = r#"
         let x: Int = 5;
         defn show(v: Int) -> Int {
             println!(v);
