@@ -887,7 +887,7 @@ defn f() -> Int {
     }
 };
 let sink: Int[2];
-node report [true][true] {
+node report [beginprogram][true] {
     sink[0] = f();
     term;
 };
@@ -923,7 +923,7 @@ defn first(s: String) -> Int {
     term s[0];
 };
 let sink: Int[2];
-node report [true][true] {
+node report [beginprogram][true] {
     sink[0] = first("abc");
     term;
 };
@@ -961,7 +961,7 @@ txn sum_to(n: Int, i: Int, acc: Int)
     term acc;
 };
 let sink: Int[2];
-node report [true][true] {
+node report [beginprogram][true] {
     sink[0] = sum_to(5, 0, 0);
     term;
 };
@@ -999,7 +999,7 @@ txn gated(bound: Int, b: Int) [b < bound][true] -> Int {
     term v;
 };
 let sink: Int;
-node report [true][true] {
+node report [beginprogram][true] {
     sink = gated(1, 0);
     term;
 };
@@ -1034,7 +1034,7 @@ defn widen() -> Int {
     term c as Int;
 };
 let sink: Int[2];
-node report [true][true] {
+node report [beginprogram][true] {
     sink[0] = widen();
     term;
 };
@@ -1075,7 +1075,7 @@ defn rewrap(r: Result<Int, String>) -> Result<Int, String> {
     }
 };
 let sink: Int[2];
-node report [true][true] {
+node report [beginprogram][true] {
     let r = rewrap(Ok(5));
     match r {
         Ok(n) => { sink[0] = n; },
