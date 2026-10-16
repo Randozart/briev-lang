@@ -2406,6 +2406,11 @@ which only ends the current transaction, `endprogram` exits the process even
 when a node's precondition remains satisfiable. Abrupt termination is not
 currently a source-language feature.
 
+For the shapes of reactive programs that compile — the multi-node phase
+chain, counter-goal convergence, the `async` + distinct-phase classification
+— and the diagnostics each failure mode produces, see
+`docs/guides/reactive-recipes.md`.
+
 **The exit code is the expression's value.** `endprogram code;` evaluates
 `code` — its side effects run (a print, an FFI call) — and the process exits
 with the value the expression yields. A side-effect intrinsic like `Print#`
