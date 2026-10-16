@@ -9806,3 +9806,25 @@ implemented. The first one bit this session's own reconstruction:
    fires, but its advice ("add an explicit `as` cast") cannot help a
    range; suggest parenthesizing the range end instead (diagnostic-quality
    note, no new check needed).
+
+## LLVM 17 greedy register allocator segfault on whole-program-inlined reactive txn — DEFECT (upstream, version-bounded), LEDGER ENTRY 2026-10-16
+
+**Classification: backend defect, NOT a language/compiler limit.** LLVM 17's
+`RegAllocBase::allocatePhysRegs` segfaults when a single function concentrates
+the whole program (the pre-P2 emission inlined every acyclic node body into
+the dispatch loop; Otto Westerlund's single-node recommender,
+github.com/odecode/cpp-vs-briev, was the reported instance). Not present on
+clang 23.1.1 (verified: the identical full-inlined shape compiles and runs at
+-O0/-O1/-O2/-O3).
+
+- **Affected:** LLVM 17 (his WSL toolchain); floor supported toolchain of
+  this repo (clang 23) unaffected.
+- **Valve covering it:** `node_inline_weight_threshold`
+  (`config/ir-lowering.dbvl`, P2 commit `6e3a78ef`) — oversized node bodies
+  keep their own function, so no toolchain is handed the concentrated shape.
+- **Retirement gate:** when the floor supported LLVM rises above 17, the
+  defect no longer justifies the valve — it remains only as compile-resource
+  hygiene, with its value re-derived by the RA-knee sweep protocol
+  (`benchmarks/ra_knee_sweep.sh`, see the 2026-10-16 results file).
+- **Epistemic note:** the interim value 600 was the boundary between two
+  corpus data points, not a derived constant; the sweep protocol replaces it.
