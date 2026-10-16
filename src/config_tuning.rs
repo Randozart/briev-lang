@@ -53,6 +53,12 @@ pub struct IrLoweringSettings {
     /// SVO small-vector inline element cap.
     /// Weighted body-cost threshold for callable-txn auto-inline.
     pub callable_inline_weight_threshold: u32,
+    /// 2026-10-16 (cpp-vs-briev P1, flaw 1): aggregate zero-init at or above
+    /// this byte size lowers to `llvm.memset` instead of a single
+    /// `store [N x T] zeroinitializer` — multi-megabyte aggregate stores
+    /// crashed LLVM 17's X86 instruction selector (Otto Westerlund's
+    /// global-Float-array probe) and are pathological at any LLVM version.
+    pub aggregate_zero_init_memset_bytes: usize,
     /// Accel auto-tuning probe: full-map runs per lane (Phase 7).
     pub accel_probe_k: u64,
     /// Accel probe output-equality tolerance (relative per element).
@@ -379,6 +385,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     max_fields_per_alloca: 15,
     sso_max_bytes: 6,
     callable_inline_weight_threshold: 40,
+    aggregate_zero_init_memset_bytes: 4096,
     accel_probe_k: 2,
     accel_probe_tolerance: 0.0001,
     accel_probe_margin: 0.05,
@@ -521,6 +528,7 @@ const IR_LOWERING_KEYS: &[(&str, bool)] = &[
     ("max_fields_per_alloca", false),
     ("sso_max_bytes", false),
     ("callable_inline_weight_threshold", false),
+    ("aggregate_zero_init_memset_bytes", false),
     ("accel_probe_k", false),
     ("accel_probe_tolerance", true),
     ("accel_probe_margin", true),
@@ -584,6 +592,10 @@ fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
     push(
         "callable_inline_weight_threshold",
         s.callable_inline_weight_threshold.to_string(),
+    );
+    push(
+        "aggregate_zero_init_memset_bytes",
+        s.aggregate_zero_init_memset_bytes.to_string(),
     );
     push("accel_probe_k", s.accel_probe_k.to_string());
     push("accel_probe_tolerance", s.accel_probe_tolerance.to_string());
@@ -839,6 +851,10 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
         callable_inline_weight_threshold: db
             .field_int("callable_inline_weight_threshold", 0)
             .unwrap_or(DEFAULT_IR_LOWERING.callable_inline_weight_threshold as i64) as u32,
+        aggregate_zero_init_memset_bytes: db
+            .field_int("aggregate_zero_init_memset_bytes", 0)
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_IR_LOWERING.aggregate_zero_init_memset_bytes),
         accel_probe_k: db
             .field_int("accel_probe_k", 0)
             .map(|v| v.max(1) as u64)

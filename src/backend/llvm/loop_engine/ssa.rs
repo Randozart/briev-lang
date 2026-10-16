@@ -399,6 +399,13 @@ impl LlvmBackend {
                     crate::backend::llvm::LlvmBackend::collect_reassigned_lets(&t.body)
                 })
                 .collect::<std::collections::HashMap<String, Option<crate::ast::Type>>>();
+            // Sorted by name: the collected map is a HashMap and unsorted
+            // iteration assigns the entry-alloca register numbers in
+            // per-process random order (house rule §4, .ll determinism).
+            let mut reassigned: Vec<(String, Option<crate::ast::Type>)> = reassigned
+                .into_iter()
+                .collect();
+            reassigned.sort_by(|a, b| a.0.cmp(&b.0));
             self.fun.reassigned_lets = reassigned
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))

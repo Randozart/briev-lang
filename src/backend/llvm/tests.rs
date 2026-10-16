@@ -2305,8 +2305,71 @@ fn test_inline_directive_absent_no_extra_attr() {
 }
 
 #[test]
-fn test_reassigned_let_in_reactive_txn_gets_entry_alloca() {
-    // 2026-10-16 (cpp-vs-briev flaw 4, BUGS.md): a node-body let assigned
+fn test_aggregate_zero_init_memset_threshold() {
+    // 2026-10-16 (cpp-vs-briev P1, flaw 1): aggregate zero-init at/above
+    // `aggregate_zero_init_memset_bytes` (default 4096) lowers to
+    // llvm.memset instead of one multi-megabyte aggregate store (LLVM 17's
+    // X86 IS crashed on `store [1586126 x float] zeroinitializer`); below
+    // the threshold the emission is byte-identical to the old store.
+    let big_state = TopLevel::StateDecl(StateDecl {
+        name: "big".to_string(),
+        ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(1586126)]),
+        span: None,
+    });
+    let small_state = TopLevel::StateDecl(StateDecl {
+        name: "small".to_string(),
+        ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(16)]),
+        span: None,
+    });
+    let mut backend = LlvmBackend::new();
+    // A txn is required so the program takes the standard init-state emission
+    // path (a state-only program emits no init stores), and the arrays must
+    // be LIVE (observability-as-liveness: an unobserved field gets no init).
+    let touch = TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "touch".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body: vec![
+            Statement::Assign(
+                Expr::Identifier("count".to_string()),
+                Expr::Index(Box::new(Expr::Identifier("big".to_string())), Box::new(Expr::Decimal(0))),
+            ),
+            Statement::Assign(
+                Expr::Index(Box::new(Expr::Identifier("small".to_string())), Box::new(Expr::Decimal(1))),
+                Expr::Index(Box::new(Expr::Identifier("small".to_string())), Box::new(Expr::Decimal(0))),
+            ),
+            Statement::Term(None),
+        ],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    });
+    let output = backend.generate(&vec![big_state, small_state, state_count(), touch], None);
+    assert!(
+        output.contains("call void @llvm.memset.p0.i64(ptr %state, i8 0, i64 6344504, i1 false)")
+            || output.contains("call void @llvm.memset.p0.i64("),
+        "big aggregate zero-init must lower to llvm.memset"
+    );
+    assert!(
+        !output.contains("store [1586126 x float] zeroinitializer"),
+        "the giant aggregate store must be gone"
+    );
+    assert!(
+        output.contains("store [16 x float] zeroinitializer"),
+        "small aggregate zero-init must keep the plain store"
+    );
+}
+
+#[test]
+fn test_reassigned_let_in_reactive_txn_gets_entry_alloca() {    // 2026-10-16 (cpp-vs-briev flaw 4, BUGS.md): a node-body let assigned
     // inside a guard and read after it must have its alloca in the function
     // ENTRY. The reactive `@txn_<name>` and `@async_body_<name>` emitters
     // skipped the reassigned-let pre-declaration, demoting the alloca into

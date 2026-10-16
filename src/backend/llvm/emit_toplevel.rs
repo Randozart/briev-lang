@@ -55,6 +55,26 @@ pub(super) struct LocalDynBoxed {
     pub info: crate::analysis::dyn_concrete_sets::DynCollectionInfo,
 }
 
+/// Byte size of an LLVM `[N x T]` aggregate type string, recursing into
+/// nested arrays. `None` for anything this conservative parser cannot size
+/// exactly (structs — padding makes their size layout-dependent — and
+/// unknown element spellings); the aggregate-zero-init decision falls back
+/// to the plain store on `None`. 2026-10-16 (cpp-vs-briev P1, flaw 1).
+fn llvm_aggregate_byte_size(ty: &str) -> Option<u64> {
+    let inner = ty.strip_prefix('[')?.strip_suffix(']')?;
+    let (count_str, elem) = inner.split_once(" x ")?;
+    let count: u64 = count_str.trim().parse().ok()?;
+    let elem_bytes = match elem.trim() {
+        "float" => 4,
+        "double" => 8,
+        "ptr" | "i8*" => 8,
+        e if e.starts_with('[') => llvm_aggregate_byte_size(e)?,
+        e if e.starts_with('i') => e[1..].parse::<u64>().ok().map(|b| b.div_ceil(8))?,
+        _ => return None,
+    };
+    count.checked_mul(elem_bytes)
+}
+
 impl LlvmBackend {
     /// 2026-08-04 (compiler-in-Briev): top-level `let` names in a body that are
     /// ASSIGNED later (incl. inside when/if/foreach/sync blocks). Such lets get
@@ -125,8 +145,14 @@ impl LlvmBackend {
     /// blocks at the three call sites.
     fn predeclare_reassigned_lets(&mut self, out: &mut String, body: &[Statement]) {
         self.fun.reassigned_lets = Self::collect_reassigned_lets(body);
-        let reassigned: Vec<(String, Option<Type>)> = self.fun.reassigned_lets.iter()
+        // Sorted by name: reassigned_lets is a HashMap, and unsorted
+        // iteration assigns the entry-alloca register numbers in per-process
+        // random order (house rule §4 — the .ll drift BUGS.md 9303 fixed for
+        // the sa-slots). The pre-2026-10-16 emit_definition block had the
+        // same latent nondeterminism.
+        let mut reassigned: Vec<(String, Option<Type>)> = self.fun.reassigned_lets.iter()
             .map(|(n, t)| (n.clone(), t.clone())).collect();
+        reassigned.sort_by(|a, b| a.0.cmp(&b.0));
         for (name, ty) in &reassigned {
             let slot = self.fun.gen_reg();
             let slot_ty = ty.as_ref().map(|t| self.llvm_type(t)).unwrap_or_else(|| "i64".to_string());
@@ -135,6 +161,38 @@ impl LlvmBackend {
             self.fun.let_binding_allocas.insert(slot.clone());
             self.fun.let_binding_types.insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
             self.fun.let_original_types.insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
+        }
+    }
+
+    /// Zero-init an aggregate slot (`ty` is an LLVM `[N x T]` / `{ ... }`
+    /// string): `llvm.memset` at or above
+    /// `config_tuning::ir_lowering().aggregate_zero_init_memset_bytes`, the
+    /// plain `store <ty> zeroinitializer` below it (byte-identical to the
+    /// pre-2026-10-16 emission).
+    ///
+    /// 2026-10-16 (cpp-vs-briev P1, flaw 1): a 1.6M-element global array
+    /// lowered to one multi-megabyte aggregate store that crashed LLVM 17's
+    /// X86 instruction selector (Otto Westerlund's `probe_bigarray`;
+    /// ENVIRONMENT-DEPENDENT — clang 23 handles it) and is pathological at
+    /// any version. The memset intrinsic is declared unconditionally in the
+    /// module prelude. `llvm_struct_size` is a byte-accurate size for the
+    /// types this site sees; on a parse miss we keep the old store (no
+    /// speculative memset of a wrong length). Undo: point both call sites
+    /// back at the `store … zeroinitializer` write.
+    fn emit_aggregate_zero_init(&mut self, out: &mut String, indent: &str, ty: &str, gep: &str) {
+        let threshold = crate::config_tuning::ir_lowering().aggregate_zero_init_memset_bytes;
+        match llvm_aggregate_byte_size(ty) {
+            Some(bytes) if bytes as usize >= threshold => {
+                writeln!(
+                    out,
+                    "{}call void @llvm.memset.p0.i64(ptr {}, i8 0, i64 {}, i1 false)",
+                    indent, gep, bytes
+                )
+                .ok();
+            }
+            _ => {
+                writeln!(out, "{}store {} zeroinitializer, ptr {}, align {}", indent, ty, gep, self.align_of(ty)).ok();
+            }
         }
     }
     /// Check if any modifier has the given name and extract its export name.
@@ -2766,13 +2824,13 @@ impl LlvmBackend {
                 // Decimal), emit zeroinitializer for a zero value instead.
                 if ty.starts_with('[') || ty.starts_with('{') {
                     if n == 0 {
-                        writeln!(out, "{}store {} zeroinitializer, ptr {}, align {}", indent, ty, gep, self.align_of(ty)).ok();
+                        self.emit_aggregate_zero_init(out, indent, ty, gep);
                     } else {
                         // Non-zero scalar into a struct slot: zero-init the
                         // struct, then store the scalar into the first element.
                         // This is the op-Init fallback — correct for the
                         // common `obj` layout { data, len }.
-                        writeln!(out, "{}store {} zeroinitializer, ptr {}, align {}", indent, ty, gep, self.align_of(ty)).ok();
+                        self.emit_aggregate_zero_init(out, indent, ty, gep);
                         let first = field_reg("f");
                         let inner = &ty[2..ty.len() - 1]; // strip `[N x ` and `]`
                         writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 0", indent, first, inner, gep).ok();
@@ -2843,12 +2901,7 @@ impl LlvmBackend {
                 } else if ty.starts_with('[') {
                     // 2026-07-31 (A4): array state fields initialize to
                     // zeroinitializer (`store [16 x float] 0` is invalid IR).
-                    writeln!(
-                        out,
-                        "{}store {} zeroinitializer, ptr {}, align {}",
-                        indent, ty, gep, self.align_of(ty)
-                    )
-                    .ok();
+                    self.emit_aggregate_zero_init(out, indent, ty, gep);
                 } else {
                     writeln!(out, "{}store {} 0, ptr {}, align {}", indent, ty, gep, self.align_of(&ty)).ok();
                 }
