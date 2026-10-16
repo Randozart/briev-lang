@@ -5945,6 +5945,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         writeln!(out, "define void @txn_{}({}) local_unnamed_addr #0 noinline {{", name, self.ctx.state_ptr_param).ok();
         writeln!(out, "  entry:").ok();
         self.fun.txn_name = name.to_string();
+        self.fun.item_post = Some(txn.contract.post_condition.clone());
         self.fun.ssa_old_int_regs.clear();
         self.fun.ssa_old_float_regs.clear();
         self.fun.clear_locals();

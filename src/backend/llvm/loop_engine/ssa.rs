@@ -444,6 +444,9 @@ impl LlvmBackend {
                 // 2026-08-06 (beginprogram plan): the precondition may read the
                 // node's `@briev_begin_<name>` entry flag — bind the txn name.
                 self.fun.txn_name = name.clone();
+                // 2026-10-16 (term-semantics plan §1): the body's bare `term;`
+                // is P-gated against THIS txn's postcondition.
+                self.fun.item_post = Some(txn.contract.post_condition.clone());
                 let cond_val = self.emit_expr(out, pre, "  ");
                 let bool_reg = self.as_bool_reg(out, "  ", &cond_val);
                 let body_label = format!(".ssb_{}", name);

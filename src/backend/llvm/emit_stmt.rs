@@ -316,6 +316,27 @@ fn guard_cond_i1(backend: &mut LlvmBackend, out: &mut String, indent: &str, cond
     }
 }
 
+/// 2026-10-16 (term-semantics plan §1): the STOP half of a P-gated bare
+/// `term;` — the firing completes here (flush webstack batch + deferred
+/// cleanup, then branch/return), mirroring the `term <val>` exit paths.
+/// Reactive SSA txns unwind to the current txn's abort label (skip the rest
+/// of THIS body without returning from the reactor); callable txns branch to
+/// the post gate; per-txn void functions and members return.
+fn emit_bare_term_stop(backend: &mut LlvmBackend, out: &mut String, indent: &str) {
+    if backend.ctx.webstack_enabled {
+        emit_web_flush_batch(backend, out, indent);
+    }
+    backend.flush_defer_cleanup(out, indent);
+    if let Some(ref abort) = backend.fun.void_txn_abort_label {
+        writeln!(out, "{}br label %{}", indent, abort).ok();
+    } else if let Some(ref post) = backend.fun.callable_txn_post_label {
+        writeln!(out, "{}br label %{}", indent, post).ok();
+    } else {
+        writeln!(out, "{}ret void", indent).ok();
+    }
+    backend.fun.terminated = true;
+}
+
 pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statement, indent: &str) -> TypedRegister {
     match stmt {
         Statement::Let { name, names, ty, expr, modifiers, .. } => {
@@ -1782,14 +1803,37 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     backend.fun.terminated = true;
                 }
             } else {
-                // 2026-08-04 (term-termination-diagnostics): bare `term;` /
-                // `term!;` is a convergence checkpoint, NOT a terminator — the
-                // interpreter returns Ok(Void) and continues to the next
-                // statement (src/interpreter/eval.rs:646-657, 707-709). Setting
-                // terminated=true here made the async/callable/pre void paths
-                // stop the body mid-way, diverging from the interpreter. It now
-                // stays false so the body keeps emitting; the enclosing
-                // epilogue still terminates the function.
+                // 2026-10-16 (term-semantics plan §1): bare `term;` is
+                // P-gated — evaluate the enclosing item's post AT the term
+                // site: met → stop (emit_bare_term_stop), unmet → continue
+                // (no branch; the body keeps emitting). No post → trivially
+                // met → unconditional stop. Mirrors the interpreter's
+                // lower_bare_terms + TermReturn (Rule 5). (The 2026-08-04
+                // "bare term is a no-op" behaviour is superseded — it
+                // livelocked txns whose post only the skipped tail could
+                // satisfy, and the backend/interpreter disagreed on defn
+                // guards; BUGS.md divergence entry.)
+                let post_trivial = match &backend.fun.item_post {
+                    None | Some(Expr::Bool(true)) => true,
+                    Some(_) => false,
+                };
+                if post_trivial {
+                    emit_bare_term_stop(backend, out, indent);
+                } else {
+                    let post = backend.fun.item_post.clone().expect("post");
+                    let reg = backend.emit_expr(out, &post, indent);
+                    let pi1 = guard_cond_i1(backend, out, indent, &reg);
+                    let n = backend.fun.txn_counter;
+                    backend.fun.txn_counter += 1;
+                    let met = format!("term.met{}", n);
+                    let cont = format!("term.cont{}", n);
+                    writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, pi1, met, cont).ok();
+                    writeln!(out, "{}{}:", indent, met).ok();
+                    backend.fun.terminated = false;
+                    emit_bare_term_stop(backend, out, indent);
+                    writeln!(out, "{}{}:", indent, cont).ok();
+                    backend.fun.terminated = false;
+                }
             }
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }

@@ -3888,6 +3888,7 @@ impl LlvmBackend {
         let saved_ctr = self.fun.callable_txn_result.clone();
         let saved_ctpl = self.fun.callable_txn_post_label.clone();
         let saved_terminated = self.fun.terminated;
+        let saved_item_post = self.fun.item_post.take();
         self.fun.callable_txn_result = None;
         self.fun.callable_txn_post_label = None;
         self.fun.terminated = false;
@@ -3984,23 +3985,30 @@ impl LlvmBackend {
         // foreach in cursor ops from leaking stale entries into outer scope.
         let saved_allocas = self.fun.let_binding_allocas.clone();
         let saved_break_labels = self.fun.foreach_break_labels.clone();
-        let (params, body): (Vec<(String, Type)>, Vec<crate::ast::Statement>) = match member {
+        let (params, body, member_post): (Vec<(String, Type)>, Vec<crate::ast::Statement>, Expr) = match member {
             crate::ast::TopLevel::Transaction(t) => (
                 t.parameters.iter().map(|(n, ty)| (n.clone(), ty.clone())).collect(),
                 t.body.clone(),
+                t.contract.post_condition.clone(),
             ),
             crate::ast::TopLevel::Definition(d) => (
                 d.parameters.iter().map(|(n, ty)| (n.clone(), ty.clone())).collect(),
                 d.body.clone(),
+                d.contract.post_condition.clone(),
             ),
             // 2026-08-12 (Iterable protocol, op-as-member): an operator member
             // emits exactly like a defn member — the body is the implementation.
             crate::ast::TopLevel::TypeDefOperator(d) => (
                 d.parameters.iter().map(|(n, ty)| (n.clone(), ty.clone())).collect(),
                 d.body.clone(),
+                d.contract.post_condition.clone(),
             ),
-            _ => (Vec::new(), Vec::new()),
+            _ => (Vec::new(), Vec::new(), Expr::Bool(true)),
         };
+        // 2026-10-16 (term-semantics plan §1): the member's own post gates
+        // its bare `term;` sites (saved/restored above/below like the
+        // callable-txn state).
+        self.fun.item_post = Some(member_post);
         // 2026-08-12 (Iterable protocol, slice 4): substitute the member's
         // PARAM types with the collection's concrete args (`List<Int>` init's
         // `val: T` → `val: Int`) — without it a wasm32 member body bound `val`
@@ -4115,6 +4123,7 @@ impl LlvmBackend {
         self.fun.callable_txn_result = saved_ctr;
         self.fun.callable_txn_post_label = saved_ctpl;
         self.fun.terminated = saved_terminated;
+        self.fun.item_post = saved_item_post;
         let _ = v;
         // 2026-08-01 (D3): a defn member's `term` value is the call's result —
         // return it (the caller binds it). Otherwise fall back to a fresh

@@ -1029,6 +1029,12 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// there the term emits `ret void`. A bare `term;` / `term!;` is a
     /// convergence checkpoint and never uses this.
     pub void_txn_abort_label: Option<String>,
+    /// 2026-10-16 (term-semantics plan §1): the ENCLOSING item's
+    /// postcondition — bare `term;` is P-gated: evaluated at the term site,
+    /// met → stop (defn: ret void; txn: br post/abort), unmet → continue.
+    /// Set alongside `txn_name` at each body entry; `None`/`Bool(true)` =
+    /// no P → unconditional stop.
+    pub item_post: Option<crate::ast::Expr>,
 
     // SSA state
     pub ssa_state_reg: Option<String>,
@@ -1299,6 +1305,7 @@ impl FunctionContext {
             convergence_target: None,
             defer_bodies: Vec::new(),
             void_txn_abort_label: None,
+            item_post: None,
             ssa_state_reg: None,
             param_slots: HashMap::new(),
             state_reg_name: "%state".to_string(),
@@ -1406,6 +1413,7 @@ impl FunctionContext {
         self.callable_txn_post_label = None;
         self.convergence_target = None;
         self.void_txn_abort_label = None;
+        self.item_post = None;
         self.loop_exit_label = None;
         self.phi_induction_reg = None;
         self.arena_slots = None;

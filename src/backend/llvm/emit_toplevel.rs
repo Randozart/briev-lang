@@ -3123,6 +3123,9 @@ impl LlvmBackend {
     pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
+        // 2026-10-16 (term-semantics plan §1): bare `term;` in this defn is
+        // P-gated against the defn's postcondition.
+        self.fun.item_post = Some(d.contract.post_condition.clone());
         // 2026-09-24: a stateless body must never reference %state — arena
         // lowering (emit_arena_alloc) consults this and falls back to malloc.
         self.fun.stateless_body = !needs_state;
@@ -3658,6 +3661,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         }
         // 2026-07-27: Set txn_name for per-function arena gating.
         self.fun.txn_name = name.to_string();
+        self.fun.item_post = Some(txn.contract.post_condition.clone());
         self.fun.pending_cleanup.clear();
         // 2026-10-05 (json.bv): the local-binding caches are PER-FUNCTION.
         // A reactive node body resolved a match binding through a stale
@@ -4925,6 +4929,7 @@ fn probe_ok_checks(
     pub(super) fn emit_callable_txn(&mut self, out: &mut String, txn: &crate::ast::Transaction, name: &str) {
         // 2026-07-27: Set txn_name for per-function arena gating.
         self.fun.txn_name = name.to_string();
+        self.fun.item_post = Some(txn.contract.post_condition.clone());
         self.fun.pending_cleanup.clear();
         self.fun.let_bindings.clear();
         self.fun.let_binding_types.clear();
@@ -5418,6 +5423,7 @@ fn probe_ok_checks(
         // `@briev_begin_<name>` entry flag — bind the txn name for the body's
         // precondition check.
         self.fun.txn_name = name.to_string();
+        self.fun.item_post = Some(txn.contract.post_condition.clone());
         let async_name = format!("async_body_{}", name);
         let async_attr = "#0".to_string();
         writeln!(out, "define void @{}({}) local_unnamed_addr {} {{", async_name, self.ctx.state_ptr_param, async_attr).ok();
@@ -6583,6 +6589,73 @@ mod tests {
             !ir.contains("= call void @bump()"),
             "a void result must not be bound to a register name: {ir}"
         );
+    }
+
+    /// 2026-10-16 (term-semantics plan §1): a bare `term;` in a defn with a
+    /// real postcondition emits a conditional stop — the met block branches
+    /// to the exit, the cont block carries the rest of the body.
+    #[test]
+    fn bare_term_in_defn_is_p_gated() {
+        // The defn must be CALLED from a live node or liveness drops it
+        // (dead defns are never emitted — see src/analysis/defn_liveness.rs).
+        let src = r#"
+            defn f(x: Int) -> Void [true][x > 0] {
+                when x > 5 { term; };
+            };
+            node entry [beginprogram][true] {
+                f(3);
+                endprogram Print#(1);
+            };
+        "#;
+        let program = parse(src);
+        let mut backend = LlvmBackend::new();
+        let ir = backend.generate(&program, None);
+        assert!(ir.contains("define void @f"), "called defn emitted: {ir}");
+        assert!(ir.contains("term.met"), "P-gated stop block: {ir}");
+        assert!(ir.contains("term.cont"), "unmet path continues: {ir}");
+        assert!(ir.contains("br i1"), "P evaluated as a branch: {ir}");
+    }
+
+    /// A bare `term;` with NO postcondition is an unconditional stop.
+    #[test]
+    fn bare_term_without_post_stops_unconditionally() {
+        let src = r#"
+            defn g() -> Void {
+                term;
+                Store#(8, 7, 1);
+            };
+            node entry [beginprogram][true] {
+                g();
+                endprogram Print#(1);
+            };
+        "#;
+        let program = parse(src);
+        let mut backend = LlvmBackend::new();
+        let ir = backend.generate(&program, None);
+        assert!(ir.contains("define void @g"), "called defn emitted: {ir}");
+        assert!(
+            !ir.contains("term.met"),
+            "no P — no conditional stop: {ir}"
+        );
+    }
+
+    /// A reactive node's bare `term;` P-gates against the node's
+    /// postcondition (met → the abort/next-txn label, unmet → continue).
+    #[test]
+    fn bare_term_in_node_is_p_gated() {
+        let src = r#"
+            let n: Int = 0;
+            node main [n == 0][n == 1] {
+                when n == 0 { term; };
+                n = 1;
+                endprogram;
+            };
+        "#;
+        let program = parse(src);
+        let mut backend = LlvmBackend::new();
+        let ir = backend.generate(&program, None);
+        assert!(ir.contains("term.met"), "node bare term P-gated: {ir}");
+        assert!(ir.contains("term.cont"), "unmet path continues: {ir}");
     }
 
     #[test]
