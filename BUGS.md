@@ -9755,3 +9755,54 @@ involved (`ls -la target/release/brievc` vs `git status --short`), and
 rebuild after ANY failed build before running probes. The genuine defects
 behind the noise were the gate/mono bugs above; the bare-term guard
 works end to end on the complete build.
+
+## Reassigned-let alloca demoted into guard block in the reactive `@txn_<name>` emitters — FIXED 2026-10-16 (plan `2026-10-16-cpp-vs-briev-contributor-findings.md`, flaw 4)
+
+The 2026-08-04 reassigned-let entry-alloca pre-declaration (emit_definition)
+and its 2026-10-14 SSA-main cross-txn aggregation (BUGS.md 9303) covered two
+of the four body-emission paths. The reactive per-node emitters were missed:
+`@txn_<name>` (standard + `assume_shape`, emit_toplevel.rs) and
+`@async_body_<name>` (emit_async_body) demoted a `let b = 0;` +
+`when c { b = …; }` alloca into `guard.thenN` while the post-guard reads
+landed in `guard.endN` — "Instruction does not dominate all uses!", clang
+rejects the module at every -O level. Every program in Otto Westerlund's
+cpp-vs-briev recommender (github.com/odecode/cpp-vs-briev) hit it; his
+binaries predate the regression window (built from an earlier clone).
+
+**Resolution:** `predeclare_reassigned_lets(out, body)` helper (emit_toplevel.rs)
+called from all four paths after `clear_locals()` — the defn path migrated to
+it (DRY), the three reactive emitters newly call it; the cold-guard outliner
+clears `reassigned_lets` first to keep its param-binding behavior
+byte-identical. All four .ll outputs verify clean (giant single-node,
+7-node async, beginprogram probe). Behavioral pins: `backend::tests` —
+reassigned let across a guard in a reactive txn emits an entry alloca and
+the module verifies (added with this fix); giantnode/multinode compile
+at -O0/-O1/-O2/-O3 on clang 23 and produce identical outputs.
+
+## Candidate diagnostics from the cpp-vs-briev analysis — NOTED 2026-10-16, for review (no action taken)
+
+Recorded during P0 for possible future error/warning assignment; nothing
+implemented. The first one bit this session's own reconstruction:
+
+1. **Provable self-assignment / effectless reassignment** — `tr` bound from
+   `t1r`, then `t1r = tr;` two statements later (swap-typo shape,
+   `recommender_giantnode.bv`): accepted silently, corrupted the top-5
+   swap (`t2r` never restored). Candidate: purity-probe-style WARNING
+   (warn-the-default per keyword-taxonomy) — "assignment provably has no
+   effect; RHS is LHS's own value with no intervening write". Error is
+   too strong: effectless in isolation, bug only vs intent.
+2. **Unchecked `SysCall#` results** — `open(2)`/`read(2)` return codes
+   discarded everywhere in the corpus (`fd` used while `-1` on a missing
+   file → silent nonsense downstream). Candidate: warning on a syscall
+   result consumed without an error check, or stdlib `open_or_die!`-style
+   wrapper (stdlib-first per Rule 14).
+3. **Loop continues past its provable goal** — the sim-line scanner keeps
+   byte-scanning ~2M iterations after `line == QUERY_USER` is reached
+   (`foreach scan in 0..size` with a `when line < QUERY_USER` body).
+   Candidate: info/warning — "loop bound continues N iterations after its
+   postcondition goal is provably met" (the frontend already proves the
+   goal; it just doesn't report the waste).
+4. **`0..size + 1` parses as `(0..size) + 1`** — type error correctly
+   fires, but its advice ("add an explicit `as` cast") cannot help a
+   range; suggest parenthesizing the range end instead (diagnostic-quality
+   note, no new check needed).

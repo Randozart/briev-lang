@@ -105,6 +105,38 @@ impl LlvmBackend {
         for s in stmts { walk(s, &mut lets, &mut assigned); }
         lets.into_iter().filter(|(n, _)| assigned.contains(n)).collect()
     }
+
+    /// Pre-declare entry-block allocas for every let in `body` that is
+    /// reassigned inside a nested block, and bind them in `let_bindings` so
+    /// the let handler (emit_stmt.rs) stores into the entry slot instead of
+    /// demoting an alloca at the assignment site. Call AFTER clear_locals()
+    /// (it wipes the binding maps) and BEFORE the body loop.
+    ///
+    /// 2026-10-16 (cpp-vs-briev P0, flaw 4): the reactive `@txn_<name>`
+    /// emitters were a third emission path the two earlier fixes missed —
+    /// emit_definition (2026-08-04, compiler-in-Briev) and the SSA main's
+    /// cross-txn aggregation (2026-10-14, BUGS.md 9303) both pre-declare,
+    /// but `@txn_parse_data` et al. demoted `let b = 0;` + `when c { b = …; }`
+    /// into guard.thenN while the post-guard reads landed in guard.endN
+    /// ("Instruction does not dominate all uses!" — clang rejects the module
+    /// at every -O level; every Otto/Westerlund recommender program hit it).
+    /// Centralizes the alloca-emission block that previously lived inline in
+    /// emit_definition. Undo: delete this helper and restore the inline
+    /// blocks at the three call sites.
+    fn predeclare_reassigned_lets(&mut self, out: &mut String, body: &[Statement]) {
+        self.fun.reassigned_lets = Self::collect_reassigned_lets(body);
+        let reassigned: Vec<(String, Option<Type>)> = self.fun.reassigned_lets.iter()
+            .map(|(n, t)| (n.clone(), t.clone())).collect();
+        for (name, ty) in &reassigned {
+            let slot = self.fun.gen_reg();
+            let slot_ty = ty.as_ref().map(|t| self.llvm_type(t)).unwrap_or_else(|| "i64".to_string());
+            writeln!(out, "  {} = alloca {}, align 8", slot, slot_ty).ok();
+            self.fun.let_bindings.insert(name.clone(), slot.clone());
+            self.fun.let_binding_allocas.insert(slot.clone());
+            self.fun.let_binding_types.insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
+            self.fun.let_original_types.insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
+        }
+    }
     /// Check if any modifier has the given name and extract its export name.
     /// Returns Some(export_name) if #export or #export("name") was found.
     /// 2026-07-14: string_value() removed from Annotation. Extract from tag.value instead.
@@ -3299,22 +3331,13 @@ impl LlvmBackend {
         // this register. Reset per-defn so stale values never leak.
         self.fun.last_expr_reg = None;
         // 2026-08-04 (compiler-in-Briev): pre-declare entry-block allocas for
-        // top-level lets that are reassigned inside a guard/loop — the 
+        // top-level lets that are reassigned inside a guard/loop — the
         // reassignment must NOT demote to an alloca at the assignment site
         // (dominance violation). The alloca is bound BEFORE the body so the
         // let's initial store and later stores both target the entry alloca.
-        self.fun.reassigned_lets = Self::collect_reassigned_lets(&d.body);
-        let reassigned: Vec<(String, Option<Type>)> = self.fun.reassigned_lets.iter()
-            .map(|(n, t)| (n.clone(), t.clone())).collect();
-        for (name, ty) in &reassigned {
-            let slot = self.fun.gen_reg();
-            let slot_ty = ty.as_ref().map(|t| self.llvm_type(t)).unwrap_or_else(|| "i64".to_string());
-            writeln!(out, "  {} = alloca {}, align 8", slot, slot_ty).ok();
-            self.fun.let_bindings.insert(name.clone(), slot.clone());
-            self.fun.let_binding_allocas.insert(slot.clone());
-            self.fun.let_binding_types.insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
-            self.fun.let_original_types.insert(name.clone(), ty.clone().unwrap_or_else(Type::int));
-        }
+        // 2026-10-16 (flaw 4): migrated to the shared helper (DRY — the same
+        // block now serves the reactive @txn_<name> emitters too).
+        self.predeclare_reassigned_lets(out, &d.body);
         let body_len = d.body.len();
         for (idx, s) in d.body.iter().enumerate() {
             if self.fun.terminated { break; }
@@ -3973,6 +3996,11 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             // The counter keeps incrementing across all inlined transactions.
             self.fun.clear_locals();
             self.fun.terminated = false;
+            // 2026-10-16 (flaw 4): reactive txn bodies get the same
+            // reassigned-let entry allocas as defns — without them a
+            // `let` assigned inside a guard demoted the alloca into
+            // guard.thenN (non-dominating for the guard.end reads).
+            self.predeclare_reassigned_lets(out, &txn.body);
             // 2026-06-26: Reset in_callable_txn — emit_definition may have left
             // it true from a prior TopLevel::Definition. Reactive transactions
             // use the non-callable code path (emit_stmt.rs:162). Without this,
@@ -4233,6 +4261,11 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             self.fun.in_callable_txn = false;
             self.fun.returns_i64 = false;
             self.fun.fn_ret_ty = "void".to_string();
+            // 2026-10-16 (flaw 4): same reassigned-let entry allocas as the
+            // defn and assume_shape paths — the per-node reactive emitter was
+            // the third path and produced guard-scoped allocas for `let`s
+            // assigned inside `when` blocks (non-dominating reads).
+            self.predeclare_reassigned_lets(out, &txn.body);
             self.emit_arena_init(out, "  ");
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");
@@ -4485,6 +4518,12 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 let saved_let_original_types = self.fun.let_original_types.clone();
                 let saved_reg_float_cache = self.fun.reg_float_cache.clone();
                 let saved_reg_type_cache = self.fun.reg_type_cache.clone();
+                let saved_reassigned_lets = self.fun.reassigned_lets.clone();
+                // 2026-10-16 (flaw 4): cold-guard bodies were emitted with an
+                // empty reassigned_lets before the fix; keep their demotion
+                // behavior byte-identical (params bind via let_bindings below,
+                // not via pre-declaration).
+                self.fun.reassigned_lets.clear();
                 self.fun.let_bindings.clear();
                 self.fun.let_binding_types.clear();
                 self.fun.let_original_types.clear();
@@ -5478,6 +5517,12 @@ fn probe_ok_checks(
             writeln!(out, "}}").ok();
             return;
         }
+        // 2026-10-16 (flaw 4): fourth and last body-emission path — async
+        // workers inlining their node body here need the same reassigned-let
+        // entry allocas. The allocas land at the top of the txn_fire_N block
+        // (entry is taken by the precondition branch), which dominates every
+        // guard.then/guard.end block the body emits.
+        self.predeclare_reassigned_lets(out, &txn.body);
         for s in &txn.body {
             if self.fun.terminated { break; }
             emit_statement(self, out, s, "  ");

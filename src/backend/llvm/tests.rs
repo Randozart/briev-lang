@@ -2304,6 +2304,79 @@ fn test_inline_directive_absent_no_extra_attr() {
     assert!(output.contains("alwaysinline"), "cycle-free txn should have alwaysinline by default");
 }
 
+#[test]
+fn test_reassigned_let_in_reactive_txn_gets_entry_alloca() {
+    // 2026-10-16 (cpp-vs-briev flaw 4, BUGS.md): a node-body let assigned
+    // inside a guard and read after it must have its alloca in the function
+    // ENTRY. The reactive `@txn_<name>` and `@async_body_<name>` emitters
+    // skipped the reassigned-let pre-declaration, demoting the alloca into
+    // guard.thenN while the post-guard reads landed in guard.endN —
+    // "Instruction does not dominate all uses!" at every clang -O level.
+    // Pins the entry-vs-guard position in BOTH emitted functions.
+    let mut backend = LlvmBackend::new();
+    let body = vec![
+        Statement::Let {
+            name: "b".to_string(),
+            names: vec![],
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+        },
+        Statement::Guarded(
+            Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Gt,
+                Box::new(Expr::Identifier("count".to_string())),
+                Box::new(Expr::Decimal(0)),
+            ),
+            vec![Statement::Assign(
+                Expr::Identifier("b".to_string()),
+                Expr::Decimal(1),
+            )],
+        ),
+        Statement::Assign(
+            Expr::Identifier("count".to_string()),
+            Expr::Identifier("b".to_string()),
+        ),
+        Statement::Term(None),
+    ];
+    let txn = TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "guarded_let".to_string(),
+        is_reactive: true,
+        is_async: true,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body,
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    });
+    let program = vec![state_count(), txn];
+    let output = backend.generate(&program, None);
+    let slice = |fname: &str| -> String {
+        let start = output
+            .find(&format!("define void @{}(", fname))
+            .unwrap_or_else(|| panic!("missing function @{}", fname));
+        let end = output[start..].find("\n}").map(|e| start + e).unwrap_or(output.len());
+        output[start..end].to_string()
+    };
+    for fname in ["txn_guarded_let", "async_body_guarded_let"] {
+        let f = slice(fname);
+        let alloca = f.find("= alloca ").unwrap_or_else(|| panic!("@{}: no alloca", fname));
+        let guard = f.find("guard.then").unwrap_or_else(|| panic!("@{}: no guard", fname));
+        assert!(
+            alloca < guard,
+            "@{}: reassigned-let alloca must precede the guard block (entry, not guard.then)",
+            fname
+        );
+    }
+}
+
 
 #[test]
 fn test_atomic_add_at_lowers_to_element_atomicrmw() {

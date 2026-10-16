@@ -1,7 +1,12 @@
 # cpp-vs-briev contributor findings — assessment, compiler fixes, benchmark adoption
 
 **Date:** 2026-10-16
-**Status:** ACTIVE
+**Status:** P0 COMPLETE (see `benchmarks/results/2026-10-16-recommender-cpp-vs-briev.md`);
+flaw 4 (NEW — reassigned-let alloca demotion in the reactive txn emitters,
+blocked every compile) FOUND + FIXED + pinned by test; flaw 3 verdict:
+era-dependent, current diagnostics sufficient → documentation remainder;
+flaws 1-2 do not reproduce on clang 23 but the IR pathologies remain →
+P1/P2 continue as hardening. Results file is provisional until the P4 gate.
 **Trigger:** external contributor experiment reported via LinkedIn; repo
 analyzed at our request ("could you write up a PR with this? It might give me
 new ideas on how to optimise the backend" — R. Smits).
