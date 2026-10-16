@@ -131,18 +131,22 @@ pub fn analyze_termination(
 
 /// The house termination warning text: what, proof, fix (errors.rs house
 /// style lives in the caller — this is the payload).
-pub fn termination_warning(report: &TerminationReport) -> Option<String> {
+pub fn termination_warning(report: &TerminationReport) -> Option<crate::diagnostics::Block> {
     if report.has_terminator || report.has_reside {
         return None;
     }
     Some(
-        "no path ends this program — it runs until the process is killed. \
-         Proof: walked the live program (reactive txns, entry nodes, ISR \
-         handlers, and their callees); no endprogram, halt, or trap is \
-         reachable. Fix: end it where it settles — `when <done> \
-         { endprogram; };` — or declare open-ended residency: `when true \
-         { reside; };`."
-            .to_string(),
+        crate::diagnostics::Block::warning(
+            "no path ends this program — it runs until the process is killed",
+        )
+        .why(
+            "walked the live program (reactive txns, entry nodes, ISR handlers, \
+             and their callees); no endprogram, halt, or trap is reachable",
+        )
+        .fix(
+            "end it where it settles — `when <done> { endprogram; };` — or \
+             declare open-ended residency: `when true { reside; };`",
+        ),
     )
 }
 

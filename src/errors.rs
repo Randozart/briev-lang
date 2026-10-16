@@ -22,6 +22,13 @@
 
 use std::fmt;
 
+// 2026-10-16 (diagnostics-blocks plan): NEW user-facing diagnostics are
+// built as `crate::diagnostics::Block` values (what/why/fix + sites, one
+// block per serious diagnostic, composite analyses collected into one
+// block) and printed by the pipeline. This file keeps the existing error
+// enums and the structured `Diagnostic` for the typechecker surface;
+// scattered `eprintln!` sites migrate MIGRATE-WHEN-TOUCHED (Rule 18).
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,

@@ -2530,7 +2530,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 &analysis.defn_liveness.live,
             );
             if let Some(warn) = crate::analysis::lifecycle::termination_warning(&term) {
-                self.warnings.push(format!("warning: {warn}"));
+                self.warnings.push(warn.render());
             }
         }
         // 2026-09-23 (async-events empty-output fix): the epilogue-flush gate
