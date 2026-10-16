@@ -375,3 +375,11 @@ is three distinct quantities, previously conflated:
 
 Order: 3 → 1 → 2, per-commit gates as usual. The 600 valve stays in force
 until Part 2 replaces it with the derived value.
+
+**COMPLETE 2026-10-16.** Part 3: BUGS.md defect ledger (a2909c9a). Part 1:
+frame-limit check, `frame_limit_bytes` per target, `llvm_type_bytes` sizer,
+house-style rejection (63107709). Part 2: `benchmarks/ra_knee_sweep.sh` +
+live bisection — clang 23 linear through 51k weight (no resource knee); the
+binding constraint is the LLVM 17 defect boundary, bisected at (510, 1460);
+valve 600 = 1460/2.4, byte-identity held (58b292ca). Retires with the
+defect per the ledger.
