@@ -1,7 +1,13 @@
 # Stability remediation — determinism gate, diagnostics, recipes, prologue unification
 
 **Date:** 2026-10-16
-**Status:** ACTIVE
+**Status:** COMPLETE 2026-10-16 — S1 `e5dd108c`, S5-A `d7740513`, S2 `6d9d1cea`
+(recovery-cascade fix included), S3 `14d976d5`, S6 `27ff8d0c`, S4 `d7e2b10f`;
+fixture cleanup `44a75ddc` (six `[true][true]` test programs → legal
+`[beginprogram][true]`; found by author review — backend tests bypass the
+proof engine, so fixture legality needs the same review discipline as
+source). Standing guards: `ll_determinism_check.sh --quick` per commit,
+full mode + toolchain matrix on backend-touching commits.
 **Scope (locked in review):** S4 prologue-only; no CI (local scripts only);
 S6 ledger-only.
 **Trigger:** stability assessment after the cpp-vs-briev session

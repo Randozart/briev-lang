@@ -83,12 +83,12 @@ determinism script on backend-touching commits.
 | Piece | Status | Next |
 |-------|--------|------|
 | cpp-vs-briev fixes (flaw 4, memset, node-inline valve, frame limit, defect ledger) | **DONE** (`93be0795`, `a42de3c0`, `6e3a78ef`, `63107709`, `58b292ca`) | — |
-| S1 determinism gate | not started | first item |
-| S5-A toolchain matrix | not started | with S1 |
-| S2 reserved-word diagnostics | not started | — |
-| S3 reactive recipes | not started | — |
-| S6 config ledger | not started | — |
-| S4 shared prologue | not started | last; byte-identity gated |
+| S1 determinism gate | **DONE** (`e5dd108c`) | standing per-commit guard |
+| S5-A toolchain matrix | **DONE** (`d7740513`) | pre-release/backend ritual |
+| S2 reserved-word diagnostics + recovery cascade | **DONE** (`6d9d1cea`) | — |
+| S3 reactive recipes | **DONE** (`14d976d5`) | — |
+| S6 config ledger | **DONE** (`27ff8d0c`) | sweeps → followup-stages |
+| S4 shared prologue (5 drivers) | **DONE** (`d7e2b10f`, fixtures `44a75ddc`) | byte-identity held; SSA-main aggregate cross-referenced |
 
 ---
 
