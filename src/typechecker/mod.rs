@@ -10,6 +10,7 @@
 // - Literals → validate formatting compatibility
 // - Variables → look up in scope
 
+mod output_inference;
 mod validate;
 pub use validate::*;
 
@@ -4537,6 +4538,16 @@ pub fn check_program_with_target(
             }
         }
     }
+    // 2026-10-16 (term-semantics plan step 6): arrowless output inference —
+    // a defn/txn with NO `-> T` whose body's first value `term <e>;` or
+    // tail resolves to type T records T on the item, so every downstream
+    // consumer (the fn_return_types call table below, the Spawn Task<R>
+    // registration in the state pre-collect, the body's own output check,
+    // the backend's signature emission) sees one effective type. No value
+    // site, or one the minimal inference context cannot resolve, leaves
+    // the item arrowless = Void — the pre-existing behaviour, never an
+    // error. Runs BEFORE the pre-collects; fixpoint over forward refs.
+    output_inference::infer_arrowless_outputs(items, universe);
     // 2026-07-14: Pre-collect state variable bindings from top-level `let`
     // so they are visible to all transactions and definitions.
     let mut state_bindings: std::collections::HashMap<String, Type> = items

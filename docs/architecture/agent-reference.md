@@ -357,6 +357,23 @@ zero-copy view cast (validates `N * sizeof(T) == M * sizeof(U)`). `map`,
 regex; ambiguity = error. `sql"SELECT"` → `Expr::TaggedQuotedLiteral`;
 `42km`/`3.14f` → `Expr::TaggedLiteral`.
 
+### Arrowless output inference (2026-10-16, term-semantics plan step 6)
+
+A defn/txn with no `-> T` is not untyped: `infer_arrowless_outputs`
+(`src/typechecker/output_inference.rs`) runs at the top of
+`check_program_with_target`, BEFORE the state / `fn_return_types`
+pre-collects, as a fixpoint over forward references. The body's FIRST
+value-returning site (`term <e>;` or a tail) resolves to T and the type
+is recorded on the item's `output_type` — one effective type for the
+call-inference table, the `Spawn` Task<R> registration, the body's own
+output check, and the backend's signature emission. No value site, or
+one the minimal inference context cannot resolve (typeless locals, no
+self/slots/op overloads), leaves the item arrowless = the pre-existing
+behaviour (call sites see the legacy Int fallback, the backend emits
+void) — never an error. Scope: top-level defns/txns + `export`
+wrappers; obj/cell members keep today's behaviour. Nodes are always
+Void.
+
 ---
 
 ## 4. Modifiers and the concurrency gate (2026-07-31)
