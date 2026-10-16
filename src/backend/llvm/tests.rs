@@ -2304,9 +2304,109 @@ fn test_inline_directive_absent_no_extra_attr() {
     assert!(output.contains("alwaysinline"), "cycle-free txn should have alwaysinline by default");
 }
 
+// ── 2026-10-16 (absolute-limit addendum part 1): frame-limit check ──────────
+
 #[test]
-fn test_aggregate_zero_init_memset_threshold() {
-    // 2026-10-16 (cpp-vs-briev P1, flaw 1): aggregate zero-init at/above
+fn test_llvm_type_bytes_sizes() {
+    use crate::backend::llvm::emit_toplevel::llvm_type_bytes;
+    assert_eq!(llvm_type_bytes("i64", None), Some(8));
+    assert_eq!(llvm_type_bytes("i1", None), Some(1));
+    assert_eq!(llvm_type_bytes("float", None), Some(4));
+    assert_eq!(llvm_type_bytes("[1586126 x float]", None), Some(6344504));
+    assert_eq!(llvm_type_bytes("[4 x [8 x i64]]", None), Some(256));
+    // Structs: align-8 conservative sum of members.
+    assert_eq!(llvm_type_bytes("{ i64, float }", None), Some(16));
+    assert_eq!(llvm_type_bytes("%State", Some(1024)), Some(1024));
+    assert_eq!(llvm_type_bytes("%OpaqueChunk", None), None);
+}
+
+#[test]
+fn test_frame_limit_breach_rejects_with_fix() {
+    // thumbv7m declares frame_limit_bytes = 262144 (Cortex-M RAM stack
+    // policy); a 400 KB state array breaches it → house-style rejection with
+    // what/why/fix, not a downstream LLVM/linker mystery.
+    let big_state = TopLevel::StateDecl(StateDecl {
+        name: "big".to_string(),
+        ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(100000)]),
+        span: None,
+    });
+    let mut backend = LlvmBackend::new().with_target_triple("thumbv7m-none-eabi");
+    // The array must be LIVE (observability-as-liveness): an unobserved field
+    // is elided from %State and the frame never grows.
+    let touch = TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "touch".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body: vec![
+            Statement::Assign(
+                Expr::Identifier("count".to_string()),
+                Expr::Index(Box::new(Expr::Identifier("big".to_string())), Box::new(Expr::Decimal(0))),
+            ),
+            Statement::Term(None),
+        ],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    });
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        backend.generate(&vec![big_state, state_count(), touch], None)
+    }));
+    let err = result.expect_err("frame breach must reject");
+    let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(msg.contains("frame limit"), "message states what: {msg}");
+    assert!(msg.contains("400000") || msg.contains("409600") || msg.contains("bytes"),
+        "message states the measured frame: {msg}");
+    assert!(msg.contains("Malloc#") && msg.contains("frame_limit_bytes"),
+        "message supplies the concrete fix: {msg}");
+}
+
+#[test]
+fn test_frame_limit_silent_when_under() {
+    // Same array under the x86_64 ceiling (2 GiB): no rejection, module
+    // emitted untouched.
+    let big_state = TopLevel::StateDecl(StateDecl {
+        name: "big".to_string(),
+        ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(100000)]),
+        span: None,
+    });
+    let mut backend = LlvmBackend::new();
+    let touch = TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "touch".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body: vec![
+            Statement::Assign(
+                Expr::Identifier("count".to_string()),
+                Expr::Index(Box::new(Expr::Identifier("big".to_string())), Box::new(Expr::Decimal(0))),
+            ),
+            Statement::Term(None),
+        ],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    });
+    let output = backend.generate(&vec![big_state, state_count(), touch], None);
+    assert!(output.contains("define"), "module emitted");
+}
+
+#[test]
+fn test_aggregate_zero_init_memset_threshold() {    // 2026-10-16 (cpp-vs-briev P1, flaw 1): aggregate zero-init at/above
     // `aggregate_zero_init_memset_bytes` (default 4096) lowers to
     // llvm.memset instead of one multi-megabyte aggregate store (LLVM 17's
     // X86 IS crashed on `store [1586126 x float] zeroinitializer`); below

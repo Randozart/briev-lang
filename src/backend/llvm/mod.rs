@@ -5605,7 +5605,83 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             }
         }
 
+        // ── Frame-limit check (2026-10-16, absolute-limit addendum part 1) ──
+        // The one a-priori-computable absolute: every alloca's byte size is
+        // known from the emitted type string, so Σ(frame bytes) per function
+        // is exact for scalars/arrays and conservative (align-8 floors) for
+        // named structs. Enforced only when the target row declares
+        // `frame_limit_bytes` (machine fact — displacement cliffs / RAM
+        // stack); hosted targets without the field skip the check.
+        self.check_frame_limits(&out);
+
         out
+    }
+
+    /// Sum each emitted function's `alloca` sizes against the target's
+    /// `frame_limit_bytes`. Post-emission textual accounting: one choke point
+    /// over the finished module (44 alloca emission sites across 10 files —
+    /// instrumenting each would be churn). Single left-to-right pass, so the
+    /// diagnostics are deterministic (house rule §4).
+    fn check_frame_limits(&mut self, out: &str) {
+        let Some(limit) =
+            crate::config_tuning::target_settings_for(&self.ctx.target_triple).frame_limit_bytes
+        else {
+            return;
+        };
+        // %State's size from the declared field types; unknown spellings
+        // over-count at 8 bytes (safe direction for a limit).
+        let state_size: u64 = self
+            .ctx
+            .field_types
+            .iter()
+            .map(|t| {
+                crate::backend::llvm::emit_toplevel::llvm_type_bytes(t, None)
+                    .unwrap_or(8)
+                    .div_ceil(8)
+                    * 8
+            })
+            .sum();
+        let mut breaches: Vec<(String, u64)> = Vec::new();
+        for block in out.split("define ") {
+            let Some(name_end) = block.find('(') else { continue };
+            let name = block[..name_end].rsplit('@').next().unwrap_or("?").to_string();
+            let body_end = block.find("\n}").unwrap_or(block.len());
+            let mut total = 0u64;
+            for line in block[..body_end].lines() {
+                let Some(rest) = line.trim().strip_suffix(", align 8") else {
+                    continue;
+                };
+                let Some(ty) = rest.strip_prefix("%").and_then(|r| r.split("= alloca ").nth(1))
+                else {
+                    continue;
+                };
+                total = total
+                    .checked_add(
+                        crate::backend::llvm::emit_toplevel::llvm_type_bytes(ty, Some(state_size))
+                            .unwrap_or(8),
+                    )
+                    .unwrap_or(u64::MAX);
+            }
+            if total > limit {
+                breaches.push((name, total));
+            }
+        }
+        if !breaches.is_empty() {
+            breaches.sort();
+            panic!(
+                "frame limit: function(s) {} exceed the {} target's frame_limit_bytes ({}): \
+                 the stack frame would be unaddressable or overflow the target's RAM stack. \
+                 fix: split the node or move the large buffer to the heap (Malloc# + Ptr<T>), \
+                 or raise frame_limit_bytes for this deployment in config/targets.dbvl",
+                breaches
+                    .iter()
+                    .map(|(n, b)| format!("@{} ({} bytes)", n, b))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                self.ctx.target_triple,
+                limit
+            );
+        }
     }
 
     /// 2026-09-10 (Family F): does this call line target a symbol that is

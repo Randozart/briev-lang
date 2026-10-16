@@ -35,6 +35,12 @@ pub struct TargetSettings {
     /// the inference source for mechanism-less `node @ vector` declarations.
     /// None = the target declares no machine-entry convention (hosted).
     pub isr_mechanism: Option<String>,
+    /// 2026-10-16 (absolute-limit addendum part 1): the target's per-function
+    /// frame ceiling in bytes — a machine fact (x86-64: displacement-cliff
+    /// territory; embedded: declared RAM stack). The backend sums every
+    /// emitted function's `alloca` sizes exactly and rejects a breach. None =
+    /// no declared ceiling (hosted targets without a row field).
+    pub frame_limit_bytes: Option<u64>,
 }
 
 /// Global (target-independent) IR lowering tuning (plan §8.2).
@@ -388,6 +394,7 @@ pub const DEFAULT_TARGET_SETTINGS: TargetSettings = TargetSettings {
     dense_compute_density: 4.0,
     vector_min_width: 4,
     isr_mechanism: None,
+    frame_limit_bytes: None,
 };
 
 const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
@@ -811,6 +818,11 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
         // 2026-09-14 (machine-entry plan): field 3 — the target's ISR
         // mechanism row (inference source for `node @ vector`).
         let isr_mechanism = db.field_string(&key, 3).map(|v| v.to_string());
+        // 2026-10-16 (absolute-limit addendum part 1): field 4 — the
+        // per-function frame ceiling in bytes. Absent = no declared ceiling.
+        let frame_limit_bytes = db
+            .field_int(&key, 4)
+            .map(|v| v as u64);
         out.insert(
             prefix.to_string(),
             TargetSettings {
@@ -818,6 +830,7 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
                 dense_compute_density,
                 vector_min_width,
                 isr_mechanism,
+                frame_limit_bytes,
             },
         );
     }

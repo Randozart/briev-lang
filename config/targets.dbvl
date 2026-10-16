@@ -44,17 +44,21 @@
 //                          freestanding targets); 0 → prefer `.bv`. Absent →
 //                          default 0.
 
-target.x86_64: 16; 4.0; 4; 0;
-target.aarch64: 32; 4.0; 4; 1;
-target.arm64: 32; 4.0; 4; 1;
-target.wasm32: 4294967295; 4.0; 4; 1;
-target.wasm64: 4294967295; 4.0; 4; 1;
-target.spirv64: 32; 4.0; 4; 1;
+// 2026-10-16 (absolute-limit addendum part 1): field 4 = frame_limit_bytes —
+// the per-function frame ceiling the backend enforces (machine fact:
+// displacement cliffs on hosted ISAs, declared RAM stack on embedded).
+// Defaults below are policy starting points, overridable per deployment.
+target.x86_64: 16; 4.0; 4; 0; 2147483648;
+target.aarch64: 32; 4.0; 4; 1; 2147483648;
+target.arm64: 32; 4.0; 4; 1; 2147483648;
+target.wasm32: 4294967295; 4.0; 4; 1; 1073741824;
+target.wasm64: 4294967295; 4.0; 4; 1; 2147483648;
+target.spirv64: 32; 4.0; 4; 1; 1073741824;
 // 2026-09-14 (machine-entry plan): riscv64 bare metal (QEMU virt et al) —
 // M-mode machine-timer/soft interrupts; field 4 names the ISR mechanism row
 // (config/isr-targets.dbvl) that mechanism-less `node @ vector` declarations
 // resolve through.
-target.riscv64: 32; 4.0; 0; riscv_machine;
+target.riscv64: 32; 4.0; 0; riscv_machine; 1048576;
 // 2026-09-14 (rv64-finish plan Phase 5): ARM Cortex-M bare metal (QEMU MPS2 et al) —
 // SysTick/NVIC interrupts; field 4 names the ISR mechanism row.
-target.thumbv7m: 32; 4.0; 0; arm_cortex_m;
+target.thumbv7m: 32; 4.0; 0; arm_cortex_m; 262144;

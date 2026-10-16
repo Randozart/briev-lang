@@ -75,6 +75,51 @@ fn llvm_aggregate_byte_size(ty: &str) -> Option<u64> {
     count.checked_mul(elem_bytes)
 }
 
+/// Conservative byte size of any LLVM type string the backend emits in
+/// `alloca` positions — scalars exact, arrays exact, structs the align-8 sum
+/// of their members (over-counts padding, the safe direction for a LIMIT),
+/// `%State` the caller-provided field sum. `None` = unknown spelling; the
+/// frame-limit checker floors unknowns at 8 bytes. 2026-10-16 (absolute-limit
+/// addendum part 1).
+pub(crate) fn llvm_type_bytes(ty: &str, state_size: Option<u64>) -> Option<u64> {
+    let t = ty.trim();
+    match t {
+        "i1" => Some(1),
+        "i8" => Some(1),
+        "i16" => Some(2),
+        "i32" => Some(4),
+        "float" => Some(4),
+        "i64" | "double" | "ptr" | "i8*" => Some(8),
+        "%State" => state_size,
+        _ if t.starts_with('[') => llvm_aggregate_byte_size(t),
+        _ if t.starts_with('{') => {
+            // Split top-level commas only (nested braces/brackets).
+            let inner = &t[1..t.len() - 1];
+            let mut depth = 0i32;
+            let mut members: Vec<&str> = Vec::new();
+            let mut start = 0usize;
+            for (i, ch) in inner.char_indices() {
+                match ch {
+                    '[' | '{' => depth += 1,
+                    ']' | '}' => depth -= 1,
+                    ',' if depth == 0 => {
+                        members.push(&inner[start..i]);
+                        start = i + 1;
+                    }
+                    _ => {}
+                }
+            }
+            members.push(&inner[start..]);
+            let mut total = 0u64;
+            for m in members {
+                total = total.checked_add(llvm_type_bytes(m, state_size)?.div_ceil(8) * 8)?;
+            }
+            Some(total)
+        }
+        _ => None,
+    }
+}
+
 impl LlvmBackend {
     /// 2026-08-04 (compiler-in-Briev): top-level `let` names in a body that are
     /// ASSIGNED later (incl. inside when/if/foreach/sync blocks). Such lets get
