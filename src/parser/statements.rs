@@ -803,6 +803,39 @@ mod tests {
         assert_eq!(program.len(), 2, "both defn and node must parse");
     }
 
+    // 2026-10-16 (stability S2): a reserved word used as a name gets the
+    // what/why/fix message naming the word's meaning — and exactly ONE
+    // error, not a brace-cascade.
+    #[test]
+    fn reserved_word_as_node_name_single_precise_error() {
+        let src = "let phase: Int = 0;\n\nasync node halt [phase == 1][true] {\n    endprogram;\n};\n\nasync node mid [phase == 0][phase == 1] {\n    phase = 1;\n    term;\n};\n";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_program().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'halt' is a reserved keyword"), "names the word: {msg}");
+        assert!(msg.contains("bare-metal stop"), "carries the meaning: {msg}");
+        assert!(msg.contains("rename"), "carries the fix: {msg}");
+        // The recovery-consumes-boundary fix: no bogus cascade errors after
+        // the real one (they used to read "expected identifier, found '}'"
+        // at the following nodes' closing braces).
+        assert!(!msg.contains("found '}'"), "no brace-cascade after recovery: {msg}");
+        assert_eq!(msg.matches("parse error").count(), 1, "single error: {msg}");
+    }
+
+    // A genuinely wrong token keeps the generic message (the reserved-word
+    // table must never swallow unrelated syntax errors).
+    #[test]
+    fn genuine_syntax_error_keeps_generic_message() {
+        let src = "node [beginprogram][true] { };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_program().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("expected identifier"), "generic message kept: {msg}");
+        assert!(!msg.contains("reserved keyword"), "no reserved-word claim: {msg}");
+    }
+
     // 2026-08-22 (spec-conformance plan Phase 1b): SPEC §11.1 — no `if`/`else`.
     // The parser previously accepted full if/else trees; every form must now
     // fail with the message naming `match` / `when` as the replacements.

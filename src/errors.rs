@@ -712,6 +712,33 @@ pub enum SyntaxError {
     },
 }
 
+/// One-line meaning for each reserved keyword, surfaced in the
+/// ReservedKeyword diagnostic (stability S2, 2026-10-16). Kept in step
+/// with `Parser::reserved_keyword_name` (parser/helpers.rs) — the words
+/// there are the modifier/statement keywords the lexer makes into
+/// dedicated tokens. Undo: delete this fn and revert the ReservedKeyword
+/// render to the generic message.
+pub(crate) fn reserved_word_meaning(kw: &str) -> Option<&'static str> {
+    Some(match kw {
+        "halt" => "it is the bare-metal stop statement",
+        "trap" => "it is the hardware-abort statement",
+        "out" => "it marks definitions/reads as observable boundaries",
+        "vol" => "it demands volatile memory the optimizer must keep",
+        "seq" => "it forces precise declaration order",
+        "pack" => "it requests packed layout",
+        "coll" => "it is a collection layout flag",
+        "accel" => "it marks a GPU-offloaded node/txn",
+        "atomic" => "it is a memory-ordering modifier",
+        "relaxed" | "acquire" | "release" | "bartered" => {
+            "it is a memory-ordering modifier"
+        }
+        "union" => "it declares a union type",
+        "spawn" => "it is the task-spawn form",
+        "beginprogram" => "it marks the authored reset node",
+        _ => return None,
+    })
+}
+
 impl fmt::Display for SyntaxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // 2026-08-23 (F3): multi-error variant formats all collected errors.
@@ -747,7 +774,22 @@ impl fmt::Display for SyntaxError {
                 write!(f, "invalid expression: {}{}", reason, span_str)
             }
             SyntaxError::ReservedKeyword { keyword, .. } => {
-                write!(f, "'{}' is a reserved keyword and cannot be used as an identifier{}", keyword, span_str)
+                // 2026-10-16 (stability S2): the message carries the word's
+                // meaning + the fix — house style (what / why / fix). Meanings
+                // come from reserved_word_meaning (above); unknown words fall
+                // back to the generic line so the table can never lie.
+                match crate::errors::reserved_word_meaning(keyword) {
+                    Some(m) => write!(
+                        f,
+                        "'{}' is a reserved keyword — {} — and cannot be used as an identifier. fix: rename the identifier{}",
+                        keyword, m, span_str
+                    ),
+                    None => write!(
+                        f,
+                        "'{}' is a reserved keyword and cannot be used as an identifier. fix: rename the identifier{}",
+                        keyword, span_str
+                    ),
+                }
             }
             SyntaxError::InvalidStatement { reason, .. } => {
                 write!(f, "invalid statement: {}{}", reason, span_str)

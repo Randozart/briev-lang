@@ -848,6 +848,13 @@ impl<'a> Parser<'a> {
                     let line_start = self.source[..span_start.min(self.source.len())]
                         .rfind("\n").map(|p| p + 1).unwrap_or(0);
                     if span_start - line_start == 0 {
+                        // 2026-10-16 (stability S2): consume the boundary brace
+                        // (plus its trailing semicolons) — breaking ON it left
+                        // the leftover `}` for the top-level parser, which
+                        // reported a bogus "expected identifier, found '}'"
+                        // cascade after every real error.
+                        self.advance();
+                        while self.eat(&Token::Semicolon) {}
                         break;
                     }
                 }
