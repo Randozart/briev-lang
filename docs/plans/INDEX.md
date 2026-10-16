@@ -362,6 +362,16 @@ A–E, parity gates, allocator-ownership + `Asm#` amendments).
 
 ## Workstream 5 — Language features / expressiveness
 
+- **Term semantics + tails — LANDED 2026-10-16** (plan
+  `2026-10-16-term-semantics-and-tails.md`, steps 2–8; commits `9915c098`,
+  `72a80571`, `84d37a38`, `5fa723ca`, `442fbd31`): P-gated bare `term;`
+  (interpreter + backend, BUGS.md divergence resolved), defn-body tail
+  expressions (`Statement::Tail`), arrowless output inference
+  (`typechecker::output_inference`), the state-purity probe
+  (`analysis::purity`, first `diagnostics::Block` consumer), SPEC
+  §9.1/§9.3/§9.4 term rule + docs. Step 6 note: the `fn_return_types`
+  Int fallback for arrowless callables remains for the no-value-site
+  shape (pre-existing wart, documented).
 - **Collections/watchdogs/memory Phase E** — `seq`/`vol`/`async`/`sync<g>`
   modifiers + the Rule 22 concurrency-classification gate. User-deferred;
   full track (`2026-07-31-collections-watchdogs-memory.md`,
@@ -509,6 +519,7 @@ stage/execution plans are the concrete campaigns.
 
 | Plan | Closure |
 |------|---------|
+| `2026-10-16-term-semantics-and-tails.md` | Steps 1–8 DONE 2026-10-16 (`9915c098`…`442fbd31` + docs commit) — P-gated bare term, tails, output inference, purity probe, SPEC/execution-model docs |
 | `2026-09-28-daily-use-sweep-and-gpu-session.md` | Phase B GPU (B1–B4) DONE; Phase A core DONE 2026-10-01 (A1 name-capture fix, A2 Stack peek, D5 test_collections repair); A3 executable gate + A5 audit + A6 probe REMAIN |
 | `2026-09-30-stage5-re-rank-and-5c.md` | 5c DONE (`8c0ece90`, byte-identical IR gate + determinism fixes); 5a DONE (72.5 µs); session record `2026-09-30-5a-attention-decode.md` |
 | `2026-09-08-master-workstream.md` | Phases 1-6 DONE; Phase 7 optional, Phase 8 verified done |

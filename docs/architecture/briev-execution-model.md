@@ -129,6 +129,17 @@ node tick [count < total][count == total] {
 Without `term`, the reactor has no point at which to evaluate the goal.
 `term` is mandatory in looping bodies.
 
+> **2026-10-16 (term-semantics plan).** The checkpoint is P-gated in both
+> directions: postcondition MET ⇒ the firing stops here (the txn commits,
+> the node stops firing); postcondition UNMET ⇒ control CONTINUES past
+> the `term` into the rest of the body (the same convergence loop that a
+> body without `term` takes). Bare `term;` and value `term <e>;` are both
+> P-gated in txn/node bodies; in plain defns `term <e>;` is an
+> unconditional return and a final bare expression (a tail) is the
+> body's implicit value (SPEC §9.1). The reference interpreter implements
+> the identical rule (`interpreter::eval::pgated_term`); the backend's
+> P-gated emission landed with plan step 4, tails with step 5.
+
 ### Postcondition semantics
 
 | Postcondition | Behavior |

@@ -1480,7 +1480,7 @@ a statement, as a guarded (`when`) body, and as a `match`-arm body.
 
 ```briev
 defn parse(tag: Int) -> Int {
-    if tag > 4095 {
+    when tag > 4095 {
         trap;            // protocol violation — abort the process
     };
     term tag;
@@ -1638,6 +1638,14 @@ defn add(left: Int, right: Int) -> Int [true][term == left + right] {
 
 `term expression;` completes the current callable or convergence step. Briev has no `return` keyword.
 
+**The term rule (2026-10-16, term-semantics plan).** `term` has three shapes, and one gate:
+
+- `term expression;` — a VALUE term. In a defn it returns unconditionally. In a txn/node convergence body it is **P-gated**: when the item's precondition P still holds at the term, the firing stops (the txn commits, the node stops firing); when P no longer holds, control CONTINUES past the term into the rest of the body. A value term inside `when`/`match` targets the nearest enclosing item.
+- `term;` — the BARE term. P-gated by the same rule: P met ⇒ stop (returning void / stopping the firing); P unmet ⇒ continue into the rest of the body. With no enclosing contract it is an unconditional stop.
+- A final bare expression (no `;`) — the **tail** — is a defn body's implicit value, an UNconditional return: `defn double(x: Int) { x * 2 }`. A final `match` is the tail too (the json-shaped body). Tails are defn-only: txn/node convergence bodies spell `term` explicitly, and `when` bodies are execution blocks (a missing `;` there stays a syntax error). A VALUE tail in a `-> Void` body is a type error; a Void tail is fine.
+
+**Arrowless output inference (2026-10-16).** A defn/txn with no `-> T` is not untyped: the body's FIRST value site (`term <e>;` or the tail) gives the callable its output type, recorded at typecheck so call sites and the backend see one effective type. An arrowless body with no value site is void. Nodes are always void.
+
 A body-less internal signature uses `defn` with its contracts/effects and is staged until an implementation is supplied. There is no `sig` declaration.
 
 **2026-08-14 (generic `defn f<T>`):** a definition may declare type
@@ -1726,6 +1734,8 @@ transactions must express their postconditions without prior-state reads.
 
 A transaction is atomic with respect to its declared state transition. `rollback;` or `rollback reason;` aborts and reverts the current transaction/reactive firing.
 
+A txn body's `term` follows the term rule (§9.1, 2026-10-16): P met ⇒ the txn commits and the firing stops; P unmet ⇒ control continues into the rest of the body. A txn's output (if any) may be declared with `-> T` or inferred from its first value term.
+
 ```briev
 when invalid_input {
     rollback InvalidInput;
@@ -1757,6 +1767,10 @@ the contracts (who enables whom) and refuses any reactive cycle whose
 nodes declare no completion — a cycle that cannot be shown to quiesce
 carries no liveness obligation and does not compile. `--explain-causality`
 prints the derived wiring ("what fires into what") for inspection.
+
+A node body's `term` follows the term rule (§9.1, 2026-10-16): P met ⇒
+the node stops firing; P unmet ⇒ control continues into the rest of the
+body. Nodes are always void — no output, no tails.
 
 #### 9.4.1 Chains (`chain` / `into`, 2026-09-22)
 
@@ -2395,9 +2409,9 @@ currently a source-language feature.
 **The exit code is the expression's value.** `endprogram code;` evaluates
 `code` — its side effects run (a print, an FFI call) — and the process exits
 with the value the expression yields. A side-effect intrinsic like `Print#`
-returns the neutral `0` (defns cannot be void, so a side-effect-only call
-claims the success value, not a payload); `endprogram Print#(x)` therefore
-prints `x` as the swan song and exits `0`. `endprogram greet(1)` exits with
+returns the neutral `0` — a side-effect-only call claims the success value,
+not a payload (a `-> Void` callable's call site binds no result);
+`endprogram Print#(x)` therefore prints `x` as the swan song and exits `0`. `endprogram greet(1)` exits with
 `greet`'s return — a genuine value carries to the exit code. The same
 consumption rule as `term`: the value flows to whatever consumes it (the
 term postcondition, the process exit code), and a side-effect expression's
