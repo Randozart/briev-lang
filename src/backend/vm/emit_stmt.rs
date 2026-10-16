@@ -103,6 +103,11 @@ impl VmBackend {
                 self.asm.emit_ret();
             }
 
+            Statement::Tail(e) => {
+                self.emit_expr(&e);
+                self.asm.emit_ret();
+            }
+
             Statement::EndProgram(opt_expr) => {
                 if let Some(e) = opt_expr {
                     self.emit_expr(e);

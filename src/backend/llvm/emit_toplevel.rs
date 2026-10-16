@@ -2607,6 +2607,7 @@ impl LlvmBackend {
             Statement::Let { expr: Some(e), .. }
             | Statement::Expression(e)
             | Statement::Term(Some(e))
+            | Statement::Tail(e)
             | Statement::EndProgram(Some(e))
             | Statement::Gate(e) => Self::has_observable_expr(e, observable),
             Statement::Assign(_, e) => Self::has_observable_expr(e, observable),
@@ -3032,7 +3033,7 @@ impl LlvmBackend {
         let mut last = "".to_string();
         for stmt in &init.body {
             match stmt {
-                crate::ast::Statement::Term(Some(expr)) => {
+                crate::ast::Statement::Term(Some(expr)) | crate::ast::Statement::Tail(expr) => {
                     let reg = self.emit_expr(out, expr, indent);
                     last = reg.name;
                     break;
@@ -3492,7 +3493,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             Statement::Assign(l, r) => { expr_has(l, found); expr_has(r, found); }
             Statement::Expression(e) => expr_has(e, found),
             Statement::Let { expr: Some(e), .. } => expr_has(e, found),
-            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => expr_has(e, found),
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => expr_has(e, found),
             Statement::Guarded(_, b) | Statement::Block(b) | Statement::SyncBlock(b) => {
                 for x in b { stmt_has(x, found); }
             }
@@ -3602,6 +3603,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 )
             }
             Statement::Term(Some(e)) => Statement::Term(Some(Self::rewrite_expr_idents(e, field_names, param_names))),
+                Statement::Tail(e) => Statement::Tail(Self::rewrite_expr_idents(e, field_names, param_names)),
             Statement::EndProgram(Some(e)) => Statement::EndProgram(Some(Self::rewrite_expr_idents(e, field_names, param_names))),
             Statement::Guarded(cond, body) => {
                 Statement::Guarded(
@@ -3834,7 +3836,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             match stmt {
                 Statement::Let { expr: Some(e), .. } => is_ffi_call(e, observable),
                 Statement::Expression(e) => is_ffi_call(e, observable),
-                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => is_ffi_call(e, observable),
+                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => is_ffi_call(e, observable),
                 Statement::Assign(_, e) => is_ffi_call(e, observable),
                 Statement::Guarded(_, body) => body.iter().any(|s| has_ffi_call(s, observable)),
                 Statement::Block(body) => body.iter().any(|s| has_ffi_call(s, observable)),
@@ -3896,7 +3898,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             match stmt {
                 Statement::Expression(e) => outlinable_expr(e),
                 Statement::Let { expr: Some(e), .. } => outlinable_expr(e),
-                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => outlinable_expr(e),
+                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => outlinable_expr(e),
                 _ => false,
             }
         }
@@ -3904,7 +3906,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             match stmt {
                 Statement::Let { expr: Some(e), .. } => collect_expr_idents(e, names),
                 Statement::Expression(e) => collect_expr_idents(e, names),
-                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => collect_expr_idents(e, names),
+                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => collect_expr_idents(e, names),
                 Statement::Assign(lhs, rhs) => { collect_expr_idents(lhs, names); collect_expr_idents(rhs, names); }
                 Statement::Guarded(_, body) => { for s in body { collect_idents(s, names); } }
                 Statement::Block(body) => { for s in body { collect_idents(s, names); } }
@@ -4119,6 +4121,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                         Statement::Let { expr: Some(e), .. }
                         | Statement::Expression(e)
                         | Statement::Term(Some(e))
+            | Statement::Tail(e)
                         | Statement::EndProgram(Some(e)) => expr_has_user_call(e, &self.ctx.frgn_map),
                         Statement::Assign(_, r) => expr_has_user_call(r, &self.ctx.frgn_map),
                         _ => false,
@@ -5518,7 +5521,7 @@ fn probe_ok_checks(
     //   that A and B do not conflict on any state field.
     pub(super) fn emit_fused(&mut self, out: &mut String, a: &crate::ast::Transaction, b: &crate::ast::Transaction, name: &str) {
         let body_a: Vec<Statement> = a.body.iter()
-            .filter(|s| !matches!(s, Statement::Term(..) | Statement::EndProgram(..) | Statement::Rollback(_)))
+            .filter(|s| !matches!(s, Statement::Term(..) | Statement::EndProgram(..) | Statement::Rollback(_) | Statement::Tail(_)))
             .cloned().collect();
         let combined: Vec<Statement> = body_a.into_iter().chain(b.body.iter().cloned()).collect();
         let fused_attr = "#0";

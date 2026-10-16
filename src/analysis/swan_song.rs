@@ -34,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 /// the fold must be blocked exactly when a hoist fires.
 pub fn has_swan_song(body: &[Statement]) -> bool {
     let stmts: Vec<&Statement> = body.iter()
-        .filter(|s| !matches!(s, Statement::Term(..) | Statement::EndProgram(..)))
+        .filter(|s| !matches!(s, Statement::Term(..) | Statement::EndProgram(..) | Statement::Tail(_)))
         .collect();
     match stmts.last() {
         Some(Statement::Guarded(_, statements)) => {

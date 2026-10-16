@@ -654,7 +654,7 @@ impl ReadGraph {
                     read.extend(condition.collect_vars());
                     Self::collect_reads_stmts(statements, read);
                 }
-                Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) => {
+                Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) | Statement::Tail(expr) => {
                     read.extend(expr.collect_vars());
                 }
                 Statement::Rollback(Some(expr)) => {

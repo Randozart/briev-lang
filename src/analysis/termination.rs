@@ -55,7 +55,7 @@ pub fn analyze(items: &[TopLevel]) -> (Vec<String>, Vec<String>) {
 /// matter what, so it makes every later sibling unreachable.
 fn statement_always_terminates(s: &Statement) -> bool {
     match s {
-        Statement::Term(Some(_)) | Statement::EndProgram(Some(_)) => true,
+        Statement::Term(Some(_)) | Statement::EndProgram(Some(_)) | Statement::Tail(_) => true,
         Statement::Block(body) => list_always_terminates(body),
         _ => false,
     }

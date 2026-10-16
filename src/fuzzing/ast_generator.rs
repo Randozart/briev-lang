@@ -508,7 +508,7 @@ mod tests {
                     | Statement::Let { .. }
                     | Statement::Guarded(_, _)
                     | Statement::Gate(_)
-                    | Statement::Term(_) | Statement::EndProgram(_)
+                    | Statement::Term(_) | Statement::Tail(_) | Statement::EndProgram(_)
                     | Statement::Rollback(_)
                     | Statement::Expression(_)
             );

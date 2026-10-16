@@ -546,7 +546,7 @@ fn emit_host_stmt(
         // will re-check its pre next pass. Only `endprogram` exits the
         // reactor loop (the scheduler must reach LATER nodes; a mid-program
         // `term` jumping to `done` would skip gemm2 in a GEMM chain).
-        Statement::Term(_) => Ok(()),
+        Statement::Term(_) | Statement::Tail(_) => Ok(()),
         Statement::EndProgram(_) => {
             *exited = true;
             Ok(())

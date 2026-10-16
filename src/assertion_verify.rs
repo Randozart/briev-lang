@@ -91,7 +91,7 @@ fn check_all_paths(
                 );
             }
 
-            Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) => {
+            Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) | Statement::Tail(expr) => {
                 found_term = true;
                 // Check if this term produces true
                 if is_provably_true(expr, &vars) {

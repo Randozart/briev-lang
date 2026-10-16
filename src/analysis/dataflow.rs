@@ -212,7 +212,7 @@ impl<'a> DataflowAnalyzer<'a> {
             Statement::Expression(expr) => {
                 self.extract_ids_recursive(expr, ids);
             }
-            Statement::Term(Some(e)) => {
+            Statement::Term(Some(e)) | Statement::Tail(e) => {
                 self.extract_ids_recursive(e, ids);
             }
             Statement::EndProgram(Some(e)) => {

@@ -98,7 +98,7 @@ fn collect_calls(body: &[Statement]) -> Vec<String> {
                     collect_calls_from_expr(e, &mut calls);
                 }
             }
-            Statement::Term(Some(e)) => collect_calls_from_expr(e, &mut calls),
+            Statement::Term(Some(e)) | Statement::Tail(e) => collect_calls_from_expr(e, &mut calls),
             Statement::Guarded(_, inner) => calls.extend(collect_calls(inner)),
             Statement::Block(stmts) => calls.extend(collect_calls(stmts)),
             _ => {}

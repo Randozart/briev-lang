@@ -64,7 +64,7 @@ impl ReactorTransitionGraph {
         for txn in crate::analysis::effective_txns(items) {
             let body_no_term: Vec<Statement> = {
                         let mut filtered: Vec<&Statement> = txn.body.iter()
-                            .filter(|s| !matches!(s, Statement::Term(None) | Statement::EndProgram(None)))
+                            .filter(|s| !matches!(s, Statement::Term(None) | Statement::EndProgram(None) | Statement::Tail(_)))
                             .collect();
                         while filtered.last().map_or(false, |s| {
                             if let Statement::Guarded(_, statements) = s {
@@ -760,7 +760,7 @@ fn is_pure_body(
                     return false;
                 }
             }
-            Statement::Term(_) | Statement::EndProgram(_) => {}
+            Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_) => {}
             Statement::Rollback(_) => return false,
             Statement::Guarded(condition, statements) => {
                 if references_triggers_or_ffi_with_decls(condition) {
@@ -908,7 +908,7 @@ fn scan_for_projections_in_stmts(stmts: &[Statement], state_fields: &HashSet<Str
             Statement::Guarded(_, statements) => {
                 scan_for_projections_in_stmts(statements, state_fields, usage);
             }
-            Statement::Term(_) | Statement::EndProgram(_) => {}
+            Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_) => {}
             _ => {}
         }
     }
@@ -1036,7 +1036,7 @@ fn scan_for_state_identifiers(stmts: &[Statement], state_fields: &HashSet<String
             Statement::Gate(cond) => {
                 collect_state_identifiers(cond, state_fields, out);
             }
-            Statement::Term(Some(expr)) => {
+            Statement::Term(Some(expr)) | Statement::Tail(expr) => {
                 collect_state_identifiers(expr, state_fields, out);
             }
             Statement::EndProgram(Some(expr)) => {
@@ -1399,7 +1399,7 @@ pub(crate) fn statement_contains_ffi_with_decls(stmt: &Statement) -> bool {
         Statement::Assign(_, expr) => references_triggers_or_ffi_with_decls(expr),
         Statement::Let { expr, .. } => expr.as_ref().map_or(false, |e| references_triggers_or_ffi_with_decls(e)),
         Statement::Expression(e) => references_triggers_or_ffi_with_decls(e),
-        Statement::Term(Some(e)) => references_triggers_or_ffi_with_decls(e),
+        Statement::Term(Some(e)) | Statement::Tail(e) => references_triggers_or_ffi_with_decls(e),
         Statement::EndProgram(Some(e)) => references_triggers_or_ffi_with_decls(e),
         Statement::Guarded(condition, statements) => {
             references_triggers_or_ffi_with_decls(condition)

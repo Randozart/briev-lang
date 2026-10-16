@@ -693,7 +693,7 @@ impl LlvmBackend {
                     // 2026-07-17: The frontend swan-song hoist (analysis/swan_song.rs)
                     // wraps the swan song as Statement::Expression(swan_song_expr).
                     // Also handle TermBang/Term in case other paths produce those variants.
-                    Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) | Statement::Expression(e) => {
+                    Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Expression(e) => {
                         self.emit_expr(out, e, "  ");
                     }
                     // 2026-07-19: Emit let bindings inside the hoisted guard

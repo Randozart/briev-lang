@@ -312,6 +312,12 @@ impl<'a> FnLowerer<'a> {
                 self.terminated = true;
                 Ok(())
             }
+            Statement::Tail(e) => {
+                self.emit_expr(&e)?;
+                self.builder.ret();
+                self.terminated = true;
+                Ok(())
+            }
             // 2026-08-31 (VITRIOL GEMM comparison M1): a bounded foreach
             // lowers to a STRUCTURED loop (OpLoopMerge) over a Function-scope
             // loop variable. The loop var was pre-declared in the entry block

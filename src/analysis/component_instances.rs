@@ -963,7 +963,7 @@ fn stmt_vars(stmt: &Statement, out: &mut std::collections::HashSet<String>) {
             }
         }
         Statement::Expression(e) => expr_vars(e, out),
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) => {
+        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) | Statement::Tail(e) => {
             expr_vars(e, out)
         }
         _ => {}
@@ -1073,7 +1073,7 @@ fn rewrite_stmt(stmt: &mut Statement, qualifier: &dyn Fn(&str) -> Option<String>
             }
         }
         Statement::Expression(e) => rewrite_expr_mut(e, qualifier),
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) => {
+        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) | Statement::Tail(e) => {
             rewrite_expr_mut(e, qualifier)
         }
         _ => {}
@@ -1231,7 +1231,7 @@ fn collect_init_call_names_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             collect_init_call_names(l, out);
             collect_init_call_names(r, out);
         }
-        Statement::Term(Some(e)) | Statement::Check(e) | Statement::Expression(e)
+        Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Check(e) | Statement::Expression(e)
         | Statement::Gate(e) => {
             collect_init_call_names(e, out);
         }

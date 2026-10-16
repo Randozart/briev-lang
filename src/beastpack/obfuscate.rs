@@ -120,6 +120,7 @@ fn collect_stmt_names(stmt: &Statement, names: &mut HashSet<String>) {
                 collect_expr_names(e, names);
             }
         }
+        Statement::Tail(e) => collect_expr_names(e, names),
         Statement::Expression(e) => collect_expr_names(e, names),
         Statement::Block(stmts) => {
             for s in stmts { collect_stmt_names(s, names); }
@@ -306,6 +307,7 @@ fn rename_stmt(stmt: &Statement, map: &HashMap<String, String>) -> Statement {
             rename_expr(value, map),
         ),
         Statement::Term(opt) => Statement::Term(opt.as_ref().map(|e| rename_expr(e, map))),
+        Statement::Tail(e) => Statement::Tail(rename_expr(e, map)),
         Statement::EndProgram(opt) => Statement::EndProgram(opt.as_ref().map(|e| rename_expr(e, map))),
         Statement::Expression(e) => Statement::Expression(rename_expr(e, map)),
         Statement::Block(stmts) => Statement::Block(

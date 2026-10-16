@@ -179,7 +179,7 @@ fn evaluate_stage_statement(
             // Expression statement — could be a navigation chain
             evaluate_chain_expression(expr, ctx)
         }
-        Statement::Term(Some(expr)) => {
+        Statement::Term(Some(expr)) | Statement::Tail(expr) => {
             // Return value from a compile-time defn
             evaluate_chain_expression(expr, ctx)
         }

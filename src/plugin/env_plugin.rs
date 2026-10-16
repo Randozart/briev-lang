@@ -105,6 +105,7 @@ fn walk_stmt(stmt: &mut crate::ast::Statement) {
         }
         crate::ast::Statement::Expression(expr)
         | crate::ast::Statement::Term(Some(expr))
+        | crate::ast::Statement::Tail(expr)
         | crate::ast::Statement::EndProgram(Some(expr)) => {
             walk_expr(expr);
         }

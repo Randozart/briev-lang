@@ -249,7 +249,7 @@ impl<'a> DagBuilder<'a> {
                         _ => {}
                     }
                 }
-                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => {
+                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
                     let vars = self.collect_var_names(e);
                     self.graph.add_consumer(DagNode::Return { var: vars.first().cloned().unwrap_or_default() }, vars);
                     self.walk_expr(e);

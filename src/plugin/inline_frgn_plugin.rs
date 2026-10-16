@@ -143,7 +143,7 @@ fn collect_from_stmts(
                 rewrite_expr(e, synthesized, seen, rewrites)?;
             }
             Statement::Expression(e) => rewrite_expr(e, synthesized, seen, rewrites)?,
-            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => {
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
                 rewrite_expr(e, synthesized, seen, rewrites)?;
             }
             Statement::Guarded(_, body) | Statement::Block(body) | Statement::SyncBlock(body) => {
@@ -264,7 +264,7 @@ fn rewrite_stmts(stmts: &mut [crate::ast::Statement], intercept: &Expr, call: &E
             crate::ast::Statement::Expression(e) => {
                 if e == intercept { *e = call.clone(); }
             }
-            crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::EndProgram(Some(e)) => {
+            crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::EndProgram(Some(e)) | crate::ast::Statement::Tail(e) => {
                 if e == intercept { *e = call.clone(); }
             }
             // Descend into nested bodies (when-guards etc.) - the probe's

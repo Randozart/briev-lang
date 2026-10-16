@@ -111,6 +111,7 @@ fn stmt_references_any(
                 || expr_references_any(value, names)
         }
         Statement::Term(val) => val.as_ref().map_or(false, |e| expr_references_any(e, names)),
+        Statement::Tail(e) => expr_references_any(e, names),
         Statement::Expression(e) => expr_references_any(e, names),
         Statement::Guarded(_, body) => body.iter().any(|s| stmt_references_any(s, names)),
         _ => false,

@@ -257,6 +257,7 @@ fn display_stmt(s: &Statement) -> String {
         }
         Statement::Expression(e) => format!("{:?}", e),
         Statement::Term(_) => "term ...".into(),
+        Statement::Tail(e) => format!("{};", e).into(),
         Statement::Guarded(_, _) => "when ... { ... }".into(),
         _ => format!("{:?}", s).chars().take(60).collect(),
     }

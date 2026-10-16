@@ -1376,7 +1376,7 @@ fn has_ffi_or_terminator_stmt(stmt: &Statement) -> bool {
     let mut work: Vec<&Statement> = vec![stmt];
     while let Some(s) = work.pop() {
         match s {
-            Statement::Term(_) | Statement::EndProgram(_)
+            Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_)
             | Statement::InlineAsm { .. } => return true,
             // 2026-07-19: Block precomputation for non-# calls (frgn, pure-Briev).
             // # intrinsics are handled by the interpreter's execute_intrinsic
@@ -1430,7 +1430,7 @@ fn has_ffi_or_trigger_stmt(stmt: &Statement, trigger_vars: &HashSet<String>) -> 
     let mut work: Vec<&Statement> = vec![stmt];
     while let Some(s) = work.pop() {
         match s {
-            Statement::Term(_) | Statement::EndProgram(_)
+            Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_)
             | Statement::InlineAsm { .. } => return true,
             Statement::Assign(lhs, expr) => {
                 if expr_has_call(expr) { return true; }
@@ -1577,6 +1577,7 @@ fn substitute_stmt(stmt: &Statement, old_var: &str, new_expr: &Expr) -> Statemen
         }
         Statement::Expression(e) => Statement::Expression(substitute_expr(e, old_var, new_expr)),
         Statement::Term(Some(e)) => Statement::Term(Some(substitute_expr(e, old_var, new_expr))),
+        Statement::Tail(e) => Statement::Tail(substitute_expr(e, old_var, new_expr)),
         Statement::Term(None) => Statement::Term(None),
         Statement::EndProgram(Some(e)) => Statement::EndProgram(Some(substitute_expr(e, old_var, new_expr))),
         Statement::EndProgram(None) => Statement::EndProgram(None),

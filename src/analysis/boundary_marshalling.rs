@@ -186,6 +186,12 @@ fn rewrite_body(
                     }
                 }
             }
+            Statement::Tail(expr) => {
+                rewrite_expr(ctx, env, expr);
+                if let Some(out) = &current_output {
+                    wrap_if_marshalled(ctx, env, expr, out);
+                }
+            }
             Statement::Expression(expr) => rewrite_expr(ctx, env, expr),
             Statement::Let { name, expr, ty, .. } => {
                 if let Some(e) = expr.as_mut() {

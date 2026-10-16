@@ -598,6 +598,10 @@ fn check_stmt_flow(s: &Statement, caps: &BackendCapabilities, out: &mut Vec<Stri
                 check_expr(x, caps, out);
             }
         }
+        Statement::Tail(e) => {
+            require(caps.term_endprogram, "term/endprogram", caps, out);
+            check_expr(e, caps, out);
+        }
         Statement::Break => require(caps.break_stmt, "break", caps, out),
         Statement::Trap => require(caps.trap_stmt, "trap", caps, out),
         Statement::Gate(cond) => {

@@ -2516,6 +2516,12 @@ pub fn eval_statement(
                 }
             }
         }
+        // 2026-10-16 (tails plan §2): a defn-body tail is an
+        // UNCONDITIONAL value return (distinct from P-gated bare `term;`).
+        Statement::Tail(e) => {
+            let result = eval_expr(e, heap, bindings, functions)?;
+            Err(RuntimeError::TermReturn(result))
+        }
         Statement::Guarded(cond, body) => {
             let cv = eval_expr(cond, heap, bindings, functions)?;
             if cv.is_true() {
@@ -4612,5 +4618,76 @@ mod pgated_term {
             .eval_expr(&Expr::Identifier("probe".into()))
             .expect("probe reads");
         assert_eq!(probe.as_i64(), Some(9), "P unmet (-1 > 0 false) — continued");
+    }
+}
+
+// ── 2026-10-16 (tails plan §2): defn-body tails in the reference ──────────
+#[cfg(test)]
+mod tail_expr {
+    use super::*;
+    use crate::interpreter::Interpreter;
+
+    fn parse(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        p.parse_program().expect("parse")
+    }
+
+    /// A defn-body tail returns its value unconditionally (TermReturn).
+    #[test]
+    fn defn_tail_returns_value() {
+        let items = parse("defn double(x: Int) -> Int { x * 2 };");
+        let mut interp = Interpreter::new();
+        interp.load_program(&items);
+        let v = interp
+            .call_function("double", &[Value::Atom(Atom::Int(21))])
+            .expect("call");
+        assert_eq!(v, Value::Atom(Atom::Int(42)));
+    }
+
+    /// A Void tail in a `-> Void` defn — the trailing call's value (Void)
+    /// is the body's value (Rust `()` discipline: void tails are legal).
+    #[test]
+    fn void_defn_void_tail_ok() {
+        let items = parse(
+            "defn inner() -> Void { term; }\ndefn nudge() -> Void { inner() };",
+        );
+        let mut interp = Interpreter::new();
+        interp.load_program(&items);
+        let v = interp.call_function("nudge", &[]).expect("call");
+        assert_eq!(v, Value::Void);
+    }
+
+    /// Statements AFTER nothing: the tail is last — statements before it
+    /// still run (a tail is not an early jump).
+    #[test]
+    fn tail_runs_preceding_statements() {
+        let items = parse(
+            "defn f(x: Int) -> Int {\n    let y: Int = x + 1;\n    y * 3\n};",
+        );
+        let mut interp = Interpreter::new();
+        interp.load_program(&items);
+        let v = interp
+            .call_function("f", &[Value::Atom(Atom::Int(1))])
+            .expect("call");
+        assert_eq!(v, Value::Atom(Atom::Int(6)));
+    }
+
+    /// A match tail (json-shaped) — the arm's value is the defn's value.
+    #[test]
+    fn match_tail_returns_arm_value() {
+        let items = parse(
+            "defn pick(x: Int) -> Int { match x { 0 => 7, _ => 9 } };",
+        );
+        let mut interp = Interpreter::new();
+        interp.load_program(&items);
+        assert_eq!(
+            interp.call_function("pick", &[Value::Atom(Atom::Int(0))]).unwrap(),
+            Value::Atom(Atom::Int(7))
+        );
+        assert_eq!(
+            interp.call_function("pick", &[Value::Atom(Atom::Int(5))]).unwrap(),
+            Value::Atom(Atom::Int(9))
+        );
     }
 }

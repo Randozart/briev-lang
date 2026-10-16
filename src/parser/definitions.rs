@@ -1011,8 +1011,11 @@ impl<'a> Parser<'a> {
         // type (see parse_output_and_contract).
         let (output_type, contract) = self.parse_output_and_contract()?;
         // 2026-07-28: Body is optional — `defn f(x) -> T := { ... }` has no { body }.
+        // 2026-10-16 (tails plan §2): the body parses via parse_tail_body — a
+        // final bare expression (no `;`) is the body's implicit value
+        // (Statement::Tail), an unconditional return.
         let body = if self.check(&Token::LBrace) {
-            self.parse_block()?
+            self.parse_tail_body()?
         } else {
             Vec::new()
         };
@@ -6919,6 +6922,57 @@ mod tests {
             crate::ast::TopLevel::Transaction(t) => Ok(t),
             other => panic!("expected Transaction, got {:?}", std::mem::discriminant(&other)),
         }
+    }
+
+    // ── 2026-10-16 (tails plan §2): defn-body tails ──────────────────────
+
+    /// A defn body's final bare expression (no `;`) parses as Statement::Tail.
+    #[test]
+    fn defn_body_final_bare_expr_is_tail() {
+        let d = parse_defn("defn f(x: Int) -> Int { x * 2 }").expect("parse");
+        let last = d.body.last().expect("body");
+        match last {
+            crate::ast::Statement::Tail(e) => {
+                assert!(matches!(e, crate::ast::Expr::BinaryOp(..)), "{e:?}");
+            }
+            other => panic!("expected Tail, got {other:?}"),
+        }
+    }
+
+    /// A defn body with semicolons only parses as today (no Tail).
+    #[test]
+    fn defn_body_semicolon_statements_unchanged() {
+        let d = parse_defn("defn f(x: Int) -> Int { term x * 2; }").expect("parse");
+        assert!(matches!(
+            d.body.last(),
+            Some(crate::ast::Statement::Term(Some(_)))
+        ));
+    }
+
+    /// A mid-body missing `;` stays a syntax error (the honest one).
+    #[test]
+    fn defn_body_mid_missing_semicolon_is_error() {
+        let r = parse_defn("defn f(x: Int) -> Int { let y: Int = x + 1 term x; }");
+        assert!(r.is_err(), "mid-body missing `;` must not parse as a tail");
+    }
+
+    /// `when` bodies are execution blocks — no tails (missing `;` errors).
+    #[test]
+    fn when_body_has_no_tail() {
+        let r = parse_defn("defn f() -> Void { when true { Print#(1) }; }");
+        assert!(r.is_err(), "a when body is not a tail position");
+    }
+
+    /// A tail can be a match expression (the json-shaped body).
+    #[test]
+    fn defn_body_match_tail_parses() {
+        let d = parse_defn("defn f(x: Int) -> Int { match x { 0 => 1, _ => 2 } }")
+            .expect("parse");
+        assert!(
+            matches!(d.body.last(), Some(crate::ast::Statement::Tail(crate::ast::Expr::Match(..)))),
+            "{:?}",
+            d.body.last()
+        );
     }
 
     fn is_single(out: &Option<crate::ast::OutputType>) -> bool {

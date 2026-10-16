@@ -4177,7 +4177,7 @@ fn collect_written_arrays(stmts: &[Statement], out: &mut std::collections::HashS
                     }
                 }
             }
-            Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Term(Some(e)) | Statement::Gate(e) => {
+            Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Gate(e) => {
                 collect_written_expr_arrays(e, out);
             }
             Statement::Guarded(_, body) | Statement::Block(body) => {
@@ -4249,7 +4249,7 @@ fn gather_j_invariant_reads(stmts: &[Statement], j: &str, written: &std::collect
             match s {
                 Statement::Assign(_, rhs) => walk(rhs, j, written, reads),
                 Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Gate(e) => walk(e, j, written, reads),
-                Statement::Term(Some(e)) => walk(e, j, written, reads),
+                Statement::Term(Some(e)) | Statement::Tail(e) => walk(e, j, written, reads),
                 Statement::Guarded(_, body) | Statement::Block(body) => ws(body, j, written, reads),
                 Statement::Foreach { list, body, .. } => {
                     walk(list, j, written, reads);
@@ -4294,7 +4294,7 @@ fn rewrite_j_stmts(stmts: &mut [Statement], pairs: &[(String, Expr)]) {
                 rewrite_j_expr(lhs, pairs);
                 rewrite_j_expr(rhs, pairs);
             }
-            Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Gate(e) | Statement::Term(Some(e)) => {
+            Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Gate(e) | Statement::Term(Some(e)) | Statement::Tail(e) => {
                 rewrite_j_expr(e, pairs);
             }
             Statement::Guarded(_, body) | Statement::Block(body) => rewrite_j_stmts(body, pairs),
@@ -4404,7 +4404,7 @@ fn v4_first_d_idx(stmts: &[Statement], buf: &str, d: &str) -> Option<Expr> {
                 Statement::Let { expr: Some(e), .. }
                 | Statement::Expression(e)
                 | Statement::Gate(e)
-                | Statement::Term(Some(e)) => walk_expr(e, buf, d, out),
+                | Statement::Term(Some(e)) | Statement::Tail(e) => walk_expr(e, buf, d, out),
                 Statement::Guarded(_, body) | Statement::Block(body) => {
                     walk_stmts(body, buf, d, out)
                 }
@@ -4489,7 +4489,7 @@ fn v4_all_d_idxs(stmts: &[Statement], buf: &str, d: &str) -> Vec<Expr> {
                 Statement::Let { expr: Some(e), .. }
                 | Statement::Expression(e)
                 | Statement::Gate(e)
-                | Statement::Term(Some(e)) => walk_expr(e, buf, d, out),
+                | Statement::Term(Some(e)) | Statement::Tail(e) => walk_expr(e, buf, d, out),
                 Statement::Guarded(_, body) | Statement::Block(body) => {
                     walk_stmts(body, buf, d, out)
                 }

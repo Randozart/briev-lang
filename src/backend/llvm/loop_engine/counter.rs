@@ -2159,7 +2159,7 @@ impl LlvmBackend {
                         _ => {}
                     }
                 }
-                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => {
+                Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
                     let val = self.emit_expr(out, e, "  ");
                     let name = format!("%t{}", self.fun.txn_counter);
                     self.fun.txn_counter += 1;
@@ -2336,7 +2336,7 @@ impl LlvmBackend {
                     self.emit_expr(out, e, indent);
                 }
             }
-            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => {
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
                 self.emit_expr(out, e, indent);
             }
             Statement::ArrowAssign { .. } => {
@@ -2389,7 +2389,7 @@ impl LlvmBackend {
             Statement::Guarded(cond, body) => {
                 self.emit_guard_block(out, stmt, indent);
             }
-            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => {
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
                 self.emit_expr(out, e, indent);
             }
             Statement::Assign(lhs, expr) => {
@@ -2439,7 +2439,7 @@ fn collect_hoist_identifiers_stmt(
     out: &mut std::collections::HashSet<String>,
 ) {
     match s {
-        Statement::Expression(e) | Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) => {
+        Statement::Expression(e) | Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) | Statement::Tail(e) => {
             collect_hoist_identifiers(e, fields, constants, out);
         }
         Statement::Let { expr: Some(e), .. } => {

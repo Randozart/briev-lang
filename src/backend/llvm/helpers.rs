@@ -258,6 +258,9 @@ impl LlvmBackend {
                 e.as_ref()
                     .map(|e| Self::rewrite_cell_identifiers(e, cell_name)),
             ),
+            Statement::Tail(e) => {
+                Statement::Tail(Self::rewrite_cell_identifiers(e, cell_name))
+            }
             Statement::EndProgram(e) => Statement::EndProgram(
                 e.as_ref()
                     .map(|e| Self::rewrite_cell_identifiers(e, cell_name)),

@@ -167,7 +167,7 @@ pub fn expand_composite_value(
     // `term v`, drop the term marker — the block ends in `Expression(v)` so
     // eval/emit produce v as the block value (never a function return).
     if let Some(last) = body.last_mut() {
-        if matches!(last, Statement::Term(Some(_))) {
+        if matches!(last, Statement::Term(Some(_)) | Statement::Tail(_)) {
             *last = Statement::Expression(value);
         }
     }
@@ -239,7 +239,7 @@ fn expand_composite_body(
 /// only. Expression-position expansion requires a value and errors if absent.
 fn composite_value_expr(body: &[Statement]) -> Option<Expr> {
     match body.last() {
-        Some(Statement::Term(Some(e))) | Some(Statement::Expression(e)) => Some(e.clone()),
+        Some(Statement::Term(Some(e))) | Some(Statement::Tail(e)) | Some(Statement::Expression(e)) => Some(e.clone()),
         _ => None,
     }
 }
@@ -1400,7 +1400,7 @@ fn expand_nested(
                 expand_expr_values(e, registry, comptime, state_types)?;
             }
         }
-        Statement::Term(Some(e)) => {
+        Statement::Term(Some(e)) | Statement::Tail(e) => {
             expand_expr_values(e, registry, comptime, state_types)?;
         }
         Statement::Check(e) | Statement::Gate(e) => {
@@ -1639,6 +1639,7 @@ fn substitute_param(s: &mut Statement, param: &str, arg: &Expr) {
         }
         Statement::Expression(e)
         | Statement::Term(Some(e))
+        | Statement::Tail(e)
         | Statement::Check(e)
         | Statement::Gate(e)
         | Statement::Rollback(Some(e)) => subst_expr(e, param, arg),

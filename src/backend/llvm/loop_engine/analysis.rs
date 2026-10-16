@@ -13,7 +13,7 @@ use std::collections::HashSet;
 /// an expression — meaning the block always exits.
 pub fn terminating_guard(statements: &[Statement]) -> bool {
     statements.iter().any(|s| {
-        matches!(s, Statement::Term(Some(_)) | Statement::EndProgram(Some(_)))
+        matches!(s, Statement::Term(Some(_)) | Statement::EndProgram(Some(_)) | Statement::Tail(_))
     })
 }
 
@@ -278,7 +278,7 @@ pub fn observable_field_refs(
 ) -> HashSet<String> {
     let mut result = HashSet::new();
     match stmt {
-        Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) => {
+        Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) | Statement::Tail(e) => {
             collect_expr_field_refs(e, &mut result, field_index_map);
         }
         // 2026-07-19: Detect output calls in Expression statements.
@@ -323,7 +323,7 @@ pub fn seed_observable_idents(
         live.insert(f.clone());
     }
     match stmt {
-        Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) => {
+        Statement::EndProgram(Some(e)) | Statement::Term(Some(e)) | Statement::Tail(e) => {
             seed_from_expr(e, let_fields, live);
         }
         // 2026-07-19: Output calls in Expression statements (from !Print/!PrintLn)

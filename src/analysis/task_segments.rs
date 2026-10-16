@@ -173,6 +173,7 @@ fn stmt_exprs(s: &Statement) -> Vec<&Expr> {
         Statement::Assign(lhs, rhs) => vec![lhs, rhs],
         Statement::Expression(e)
         | Statement::Term(Some(e))
+        | Statement::Tail(e)
         | Statement::Rollback(Some(e))
         | Statement::EndProgram(Some(e))
         | Statement::Check(e)
@@ -245,6 +246,7 @@ pub fn mentions_param_field(stmt: &Statement, params: &[String]) -> bool {
             | Statement::Assign(_, e)
             | Statement::Expression(e)
             | Statement::Term(Some(e))
+        | Statement::Tail(e)
             | Statement::Rollback(Some(e))
             | Statement::EndProgram(Some(e))
             | Statement::Check(e)

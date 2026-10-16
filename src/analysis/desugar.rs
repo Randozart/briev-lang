@@ -179,7 +179,7 @@ fn rewrite_stmt(
             }
         }
         Statement::Expression(e) => rewrite_expr(e, universe, fields)?,
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) => {
+        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) | Statement::Tail(e) => {
             rewrite_expr(e, universe, fields)?
         }
         _ => {}
@@ -420,6 +420,7 @@ fn expand_stmt(
         }
         Statement::Expression(_)
         | Statement::Term(_)
+        | Statement::Tail(_)
         | Statement::EndProgram(_)
         | Statement::Rollback(_)
         | Statement::Let { .. } => {
@@ -572,7 +573,7 @@ fn stmt_has_wildcard(stmt: &Statement) -> bool {
     match stmt {
         Statement::Assign(l, r) => expr_has_wildcard(l) || expr_has_wildcard(r),
         Statement::Let { expr: Some(e), .. } => expr_has_wildcard(e),
-        Statement::Expression(e) | Statement::Term(Some(e))
+        Statement::Expression(e) | Statement::Term(Some(e)) | Statement::Tail(e)
         | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) => {
             expr_has_wildcard(e)
         }

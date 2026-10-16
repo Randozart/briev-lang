@@ -215,6 +215,10 @@ fn emit_statement(s: &Statement) -> SExpr {
                 None => list(&[atom("term")]),
             }
         }
+        // 2026-10-16 (tails): a defn-body tail round-trips as the
+        // value-term form — both are unconditional value returns; the AST
+        // shape differs, the semantics do not.
+        Statement::Tail(e) => list(&[atom("term"), emit_expr(e)]),
         Statement::EndProgram(e) => {
             match e {
                 Some(e) => list(&[atom("term!"), emit_expr(e)]),

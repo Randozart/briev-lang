@@ -1450,6 +1450,61 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
         self.expect(Token::RBrace)?;
         Ok(stmts)
     }
+
+    /// 2026-10-16 (tails plan §2): a defn body — statements, with a FINAL
+    /// bare expression (no `;`) becoming `Statement::Tail` (the body's
+    /// implicit value, an unconditional return; distinct from P-gated bare
+    /// `term;`). A statement-level parse failure that is not a valid tail
+    /// re-raises the STATEMENT's own error — a mid-body missing `;` stays
+    /// the honest syntax error, not a mislocated "expected }".
+    pub(crate) fn parse_tail_body(&mut self) -> Result<Vec<crate::ast::Statement>, SyntaxError> {
+        self.expect(Token::LBrace)?;
+        let mut stmts = Vec::new();
+        loop {
+            if self.check(&Token::RBrace) || self.is_at_end() {
+                break;
+            }
+            if self.check(&Token::Semicolon) {
+                self.advance();
+                continue;
+            }
+            // A final `match` (the statement form parses without `;`) is the
+            // body's tail too — the json-shaped defn. Only when it lands on
+            // the closing brace; a mid-body match stays a statement.
+            if self.check(&Token::Match) {
+                self.advance();
+                let expr = self.parse_match_expr()?;
+                if self.check(&Token::RBrace) || self.is_at_end() {
+                    stmts.push(crate::ast::Statement::Tail(expr));
+                    break;
+                }
+                stmts.push(crate::ast::Statement::Expression(expr));
+                continue;
+            }
+            let saved = self.pos;
+            match self.parse_statement() {
+                Ok(stmt) => {
+                    stmts.push(stmt);
+                    continue;
+                }
+                Err(e) => {
+                    self.pos = saved;
+                    match self.parse_expression() {
+                        Ok(t) if self.check(&Token::RBrace) || self.is_at_end() => {
+                            stmts.push(crate::ast::Statement::Tail(t));
+                            break;
+                        }
+                        _ => {
+                            self.pos = saved;
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+        }
+        self.expect(Token::RBrace)?;
+        Ok(stmts)
+    }
 }
 
 #[cfg(test)]

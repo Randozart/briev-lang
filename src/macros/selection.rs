@@ -450,6 +450,7 @@ pub fn stmt_tag(stmt: &Statement) -> &str {
         Statement::Halt => "halt",
         Statement::Break => "break",
         Statement::Term(_) => "term",
+        Statement::Tail(_) => "tail",
         Statement::EndProgram(_) => "term!",
         Statement::Guarded(_, _) => "when",
         Statement::Gate(_) => "gate",

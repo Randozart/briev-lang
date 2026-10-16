@@ -839,7 +839,7 @@ fn collect_free_stmts(
                 }
                 bound.insert(name.clone());
             }
-            crate::ast::Statement::Term(Some(v)) | crate::ast::Statement::EndProgram(Some(v)) => {
+            crate::ast::Statement::Term(Some(v)) | crate::ast::Statement::EndProgram(Some(v)) | crate::ast::Statement::Tail(v) => {
                 collect_free_expr(v, bound, free)
             }
             crate::ast::Statement::Expression(v) | crate::ast::Statement::Gate(v) => {

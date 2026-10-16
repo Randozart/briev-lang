@@ -333,7 +333,7 @@ fn collect_stmt_locals(stmts: &[Statement], out: &mut HashSet<String>) {
                 }
                 collect_expr_locals(value, out);
             }
-            Statement::Term(Some(e)) | Statement::Check(e) | Statement::Gate(e)
+            Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Check(e) | Statement::Gate(e)
             | Statement::Expression(e) => collect_expr_locals(e, out),
             Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) => collect_expr_locals(e, out),
             _ => {}
@@ -418,6 +418,7 @@ fn stmt_needs_state(
         | Statement::Rollback(opt) => {
             opt.as_ref().is_some_and(|e| any_expr(e))
         }
+        Statement::Tail(e) => any_expr(e),
         Statement::Expression(expr) => any_expr(expr),
         Statement::Check(expr) | Statement::Gate(expr) => any_expr(expr),
         Statement::Let { expr, .. } => {

@@ -201,7 +201,7 @@ pub fn arithmetic_op_count(body: &[Statement]) -> usize {
 fn stmt_arith_ops(s: &Statement) -> usize {
     match s {
         Statement::Assign(_, e) | Statement::Let { expr: Some(e), .. } => expr_arith_ops(e),
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Expression(e) => {
+        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) | Statement::Expression(e) => {
             expr_arith_ops(e)
         }
         Statement::Guarded(cond, body) => {

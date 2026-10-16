@@ -306,7 +306,7 @@ impl Reactor {
                 interp.eval_expr(expr)?;
                 Ok(StmtResult::Continue)
             }
-            Statement::Term(Some(expr)) => {
+            Statement::Term(Some(expr)) | Statement::Tail(expr) => {
                 let value = interp.eval_expr(expr)?;
                 if value .is_true() {
                     Ok(StmtResult::TermSuccess)

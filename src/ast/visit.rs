@@ -142,6 +142,7 @@ pub fn walk_stmts<F: FnMut(&Expr)>(stmts: &[Statement], f: &mut F) {
                     walk_expr(e, f);
                 }
             }
+            Statement::Tail(e) => walk_expr(e, f),
             Statement::Check(e) | Statement::Gate(e) => walk_expr(e, f),
             Statement::Guarded(cond, body) => {
                 walk_expr(cond, f);

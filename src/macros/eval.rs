@@ -716,6 +716,10 @@ fn evaluate_stage_stmt(
             };
             Ok(Some(val))
         }
+        Statement::Tail(expr) => {
+            let val = eval_nav_chain(expr, program, universe, stage, scope, sandbox, pm)?;
+            Ok(Some(val))
+        }
         // 2026-07-23: TermBang — evaluate for side effects, return Void.
         Statement::EndProgram(opt) => {
             if let Some(expr) = opt {
@@ -2127,6 +2131,7 @@ fn resolve_dollar_refs_in_stmt(stmt: &mut Statement, scope: &Scope) -> Result<()
             }
             Ok(())
         }
+        Statement::Tail(e) => resolve_dollar_refs_in_expr(e, scope),
         Statement::Expression(expr) => resolve_dollar_refs_in_expr(expr, scope),
         Statement::Guarded(guard, body) => {
             resolve_dollar_refs_in_expr(guard, scope)?;

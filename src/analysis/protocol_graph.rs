@@ -23,6 +23,9 @@ pub fn find_defn_param_body<'a>(name: &str, items: &'a [TopLevel]) -> Option<(St
                             return Some((param, expr));
                         }
                     }
+                    if let Statement::Tail(expr) = stmt {
+                        return Some((param, expr));
+                    }
                 }
                 return None;
             }

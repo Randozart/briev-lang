@@ -287,7 +287,7 @@ fn referenced_state_names(item: &TopLevel) -> Vec<String> {
                 expr_vars(rhs, acc);
             }
             crate::ast::Statement::ArrowAssign { value, .. } => expr_vars(value, acc),
-            crate::ast::Statement::Term(Some(e)) => expr_vars(e, acc),
+            crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::Tail(e) => expr_vars(e, acc),
             crate::ast::Statement::EndProgram(Some(e)) => expr_vars(e, acc),
             crate::ast::Statement::Guarded(cond, b) => {
                 expr_vars(cond, acc);
@@ -390,7 +390,7 @@ fn referenced_function_names(item: &TopLevel) -> Vec<String> {
             crate::ast::Statement::Let { .. } => {}
             crate::ast::Statement::Assign(_, e) => expr_calls(e, acc),
             crate::ast::Statement::ArrowAssign { value, .. } => expr_calls(value, acc),
-            crate::ast::Statement::Term(Some(e)) => expr_calls(e, acc),
+            crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::Tail(e) => expr_calls(e, acc),
             crate::ast::Statement::Term(None) => {}
             crate::ast::Statement::EndProgram(Some(e)) => expr_calls(e, acc),
             crate::ast::Statement::EndProgram(None) => {}

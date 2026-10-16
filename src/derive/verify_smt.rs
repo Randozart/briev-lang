@@ -25,7 +25,7 @@ fn block_to_smt_term(block: &[Statement], param_names: &[String]) -> String {
 
     for stmt in stmts.into_iter().rev() {
         match stmt {
-            Statement::Term(Some(expr)) => {
+            Statement::Term(Some(expr)) | Statement::Tail(expr) => {
                 // Final expression — this is what we need to convert
                 current_expr = Some(expr);
             }
@@ -119,6 +119,9 @@ fn substitute_var_local(expr: &Expr, var_name: &str, replacement: &Expr) -> Expr
                 }
                 Statement::Term(val) => {
                     Statement::Term(val.as_ref().map(|e| substitute_var_local(e, var_name, replacement)))
+                }
+                Statement::Tail(e) => {
+                    Statement::Tail(substitute_var_local(e, var_name, replacement))
                 }
                 Statement::Assign(lhs, rhs) => {
                     Statement::Assign(
@@ -712,6 +715,9 @@ fn rename_stmt(stmt: &Statement, from_names: &[String], to_names: &[String]) -> 
         }
         Statement::Term(val) => {
             Statement::Term(val.as_ref().map(|e| rename_variables(e, from_names, to_names)))
+        }
+        Statement::Tail(e) => {
+            Statement::Tail(rename_variables(e, from_names, to_names))
         }
         Statement::EndProgram(val) => {
             Statement::EndProgram(val.as_ref().map(|e| rename_variables(e, from_names, to_names)))

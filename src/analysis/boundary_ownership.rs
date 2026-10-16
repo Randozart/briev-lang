@@ -396,6 +396,7 @@ impl<'a> FlowCtx<'a> {
             | Statement::Rollback(opt) => {
                 opt.as_ref().and_then(|e| self.expr_ownership(e))
             }
+            Statement::Tail(e) => self.expr_ownership(e),
             Statement::Expression(expr) => self.expr_ownership(expr),
             Statement::Let { expr, .. } => expr.as_ref().and_then(|e| self.expr_ownership(e)),
             Statement::Assign(_, expr) => self.expr_ownership(expr),

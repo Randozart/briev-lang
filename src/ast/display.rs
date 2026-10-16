@@ -422,6 +422,7 @@ impl fmt::Display for Statement {
                     write!(f, "term;")
                 }
             }
+            Statement::Tail(e) => write!(f, "{}", e),
             Statement::Trap => write!(f, "trap;"),
             Statement::Halt => write!(f, "halt;"),
             Statement::Yield => write!(f, "yield;"),

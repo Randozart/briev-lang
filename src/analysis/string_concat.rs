@@ -55,6 +55,7 @@ fn rewrite_body(
                     rewrite_expr(expr, env, universe);
                 }
             }
+            Statement::Tail(expr) => rewrite_expr(expr, env, universe),
             Statement::Expression(expr) => rewrite_expr(expr, env, universe),
             Statement::Let { name, expr, ty, .. } => {
                 if let Some(e) = expr.as_mut() {

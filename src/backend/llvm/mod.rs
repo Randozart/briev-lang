@@ -110,7 +110,7 @@ fn collect_called_names_stmt(s: &Statement, out: &mut std::collections::HashSet<
         }
         Statement::Expression(e) => collect_called_names_expr(e, out),
         Statement::Let { expr: Some(e), .. } => collect_called_names_expr(e, out),
-        Statement::Term(Some(e)) => collect_called_names_expr(e, out),
+        Statement::Term(Some(e)) | Statement::Tail(e) => collect_called_names_expr(e, out),
         Statement::Guarded(cond, body) => {
             collect_called_names_expr(cond, out);
             for inner in body {
@@ -435,7 +435,7 @@ fn collect_bytes_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<Vec
                 collect_bytes_expr(e, seen, out);
             }
         }
-        Statement::Term(Some(expr)) => collect_bytes_expr(expr, seen, out),
+        Statement::Term(Some(expr)) | Statement::Tail(expr) => collect_bytes_expr(expr, seen, out),
         Statement::Assign(_, rhs) => collect_bytes_expr(rhs, seen, out),
         Statement::Expression(e) | Statement::Gate(e) => collect_bytes_expr(e, seen, out),
         Statement::Guarded(_, body) | Statement::Block(body) | Statement::SyncBlock(body) => {
@@ -541,7 +541,7 @@ fn collect_masks_tl(tl: &TopLevel, seen: &mut std::collections::HashSet<Vec<u8>>
 fn collect_masks_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<Vec<u8>>, out: &mut Vec<Vec<u8>>) {
     match stmt {
         Statement::Let { expr: Some(e), .. } => collect_masks_expr(e, seen, out),
-        Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) => collect_masks_expr(expr, seen, out),
+        Statement::Term(Some(expr)) | Statement::EndProgram(Some(expr)) | Statement::Tail(expr) => collect_masks_expr(expr, seen, out),
         Statement::Assign(_, rhs) => collect_masks_expr(rhs, seen, out),
         Statement::Expression(e) | Statement::Gate(e) => collect_masks_expr(e, seen, out),
         Statement::Guarded(_, body) | Statement::Block(body) | Statement::SyncBlock(body) => {
@@ -700,7 +700,7 @@ fn collect_strings_stmt(stmt: &Statement, seen: &mut std::collections::HashSet<S
         Statement::FreeHint(_) | Statement::KeepHint(_) | Statement::Trap | Statement::Halt => {}
         Statement::Break => {}
         Statement::Expression(e) => { collect_strings_expr(e, seen, out); }
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => { collect_strings_expr(e, seen, out); }
+        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => { collect_strings_expr(e, seen, out); }
         Statement::Term(None) | Statement::EndProgram(None) => {}
         Statement::Guarded(condition, statements) => {
             collect_strings_expr(condition, seen, out);
@@ -2323,7 +2323,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             Statement::Expression(e) => {
                 self.check_expr_embedded(e, ctx_name, threading_intrinsics);
             }
-            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => {
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
                 self.check_expr_embedded(e, ctx_name, threading_intrinsics);
             }
             Statement::Term(None) | Statement::EndProgram(None) => {}
@@ -6595,7 +6595,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 break;
             }
             match s {
-                crate::ast::Statement::Term(Some(e)) => {
+                crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::Tail(e) => {
                     let reg = self.emit_expr(out, e, "  ");
                     last_val = Some(self.adapt_to_i64(out, "  ", &reg));
                     self.fun.terminated = true;

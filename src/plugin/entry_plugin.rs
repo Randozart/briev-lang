@@ -238,6 +238,7 @@ fn collect_from_stmt(
         | Statement::Assign(_, e)
         | Statement::Expression(e)
         | Statement::Term(Some(e))
+        | Statement::Tail(e)
         | Statement::EndProgram(Some(e)) => collect_from_expr(e, entry_commands, arg_flags),
         // 2026-10-12 (daily-driver quick wins): args! in an arrow-push
         // (`x <- args!("--flag")`) was never collected nor rewritten — the
@@ -523,6 +524,7 @@ fn rewrite_stmt(
         ),
         Statement::Expression(e) => Statement::Expression(rewrite_expr(e, entries, arg_flags)?),
         Statement::Term(Some(e)) => Statement::Term(Some(rewrite_expr(e, entries, arg_flags)?)),
+        Statement::Tail(e) => Statement::Tail(rewrite_expr(e, entries, arg_flags)?),
         Statement::EndProgram(Some(e)) => Statement::EndProgram(Some(rewrite_expr(e, entries, arg_flags)?)),
         // 2026-10-12 (daily-driver quick wins): the arrow-push arm — see
         // the collect-side note.

@@ -389,6 +389,9 @@ fn rewrite_stmt_calls(stmt: &mut Statement, ctx: &mut Ctx) -> Result<(), String>
                 rewrite_expr_calls(e, ctx)?;
             }
         }
+        Statement::Tail(e) => {
+            rewrite_expr_calls(e, ctx)?;
+        }
         Statement::Guarded(c, body) => {
             rewrite_expr_calls(c, ctx)?;
             for s in body.iter_mut() {
@@ -586,6 +589,9 @@ fn rewrite_stmt_elems(stmt: &mut Statement, ec: &ElemCtx) -> Result<(), String> 
             if let Some(e) = e {
                 rewrite_expr_elems(e, ec)?;
             }
+        }
+        Statement::Tail(e) => {
+            rewrite_expr_elems(e, ec)?;
         }
         Statement::Guarded(c, body) => {
             rewrite_expr_elems(c, ec)?;
@@ -871,6 +877,9 @@ fn rename_item(stmt: &mut Statement, from: &Expr, to: &str) {
             if let Some(e) = e {
                 rename_expr(e, from, to);
             }
+        }
+        Statement::Tail(e) => {
+            rename_expr(e, from, to);
         }
         Statement::Guarded(c, body) => {
             rename_expr(c, from, to);

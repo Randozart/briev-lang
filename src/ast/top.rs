@@ -405,6 +405,14 @@ pub enum Statement {
     },
     /// term; or term expr;
     Term(Option<Expr>),
+    /// 2026-10-16 (tails plan §2): a defn-body tail — the final bare
+    /// expression of a defn body (no `;`), the block's implicit value. An
+    /// UNCONDITIONAL value return — NOT P-gated (distinct from
+    /// `Term(Some)`, which is P-gated in txn/node bodies; a tail must not
+    /// be). Parser sugar only: never user-spelled, no keyword. Produced
+    /// exclusively by the defn-body parser (match-arm block tails ride the
+    /// existing Expr::Block trailing-statement value machinery).
+    Tail(Expr),
     /// 2026-08-17 (foreach break): `break;` — exit the innermost enclosing
     /// `foreach` immediately (search-until-found early exit). Valid only
     /// lexically inside a `foreach` body. `foreach` stays exhaustive by

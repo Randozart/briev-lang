@@ -171,7 +171,7 @@ fn walk_stmt_for_storage(
             }
             walk_expr_for_storage(value, out);
         }
-        crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::EndProgram(Some(e)) => {
+        crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::EndProgram(Some(e)) | crate::ast::Statement::Tail(e) => {
             walk_expr_for_storage(e, out);
         }
         crate::ast::Statement::Expression(e) | crate::ast::Statement::Gate(e) => {
@@ -412,7 +412,7 @@ fn walk_stmt(
             walk_stmts(body, multiplier, ctx, live, terms, errors);
         }
         Statement::Assign(_, rhs) => walk_expr(rhs, multiplier, ctx, live, terms, errors),
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) => {
+        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
             walk_expr(e, multiplier, ctx, live, terms, errors);
         }
         Statement::Expression(e) | Statement::Gate(e) => walk_expr(e, multiplier, ctx, live, terms, errors),

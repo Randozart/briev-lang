@@ -463,7 +463,7 @@ fn expr_contains_push(e: &Expr, coll: &str) -> bool {
 fn walk_body(body: &[Statement], tracks: &mut HashMap<String, Track>, coll_obj: &HashSet<String>) {
     for stmt in body {
         walk_stmt(stmt, tracks, coll_obj);
-        if matches!(stmt, Statement::Term(_) | Statement::EndProgram(_)) {
+        if matches!(stmt, Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_)) {
             break;
         }
     }

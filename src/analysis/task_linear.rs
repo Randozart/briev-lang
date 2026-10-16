@@ -207,7 +207,7 @@ fn has_checkpoint(
     };
     fn walk(body: &[Statement]) -> bool {
         body.iter().any(|stmt| match stmt {
-            Statement::Yield | Statement::Term(_) | Statement::EndProgram(_) => true,
+            Statement::Yield | Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_) => true,
             Statement::Guarded(_, b) | Statement::Block(b) => walk(b),
             _ => false,
         })

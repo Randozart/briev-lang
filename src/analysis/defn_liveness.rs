@@ -615,7 +615,7 @@ impl<'a> Builder<'a> {
                 self.walk_expr(lhs, queue);
                 self.walk_expr(rhs, queue);
             }
-            Statement::Term(Some(e)) => self.walk_expr(e, queue),
+            Statement::Term(Some(e)) | Statement::Tail(e) => self.walk_expr(e, queue),
             Statement::Check(e) => self.walk_expr(e, queue),
             Statement::Guarded(cond, body) => {
                 self.walk_expr(cond, queue);
@@ -1029,7 +1029,7 @@ fn collect_call_names_stmt(stmt: &Statement, out: &mut Vec<String>) {
             }
             exprs.push(value);
         }
-        Statement::Term(Some(e)) | Statement::Check(e) | Statement::Expression(e) => {
+        Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Check(e) | Statement::Expression(e) => {
             exprs.push(e)
         }
         Statement::EndProgram(e) => {

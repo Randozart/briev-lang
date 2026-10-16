@@ -1666,6 +1666,13 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             }
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
+        // 2026-10-16 (tails plan §2): a defn-body tail is an
+        // UNCONDITIONAL value return — `term <value>` emission (the P-gate
+        // lives only on BARE `term;`). The parser scopes Tail to defn
+        // bodies, so the callable-txn convergence path is unreachable here.
+        Statement::Tail(e) => {
+            return emit_statement(backend, out, &Statement::Term(Some(e.clone())), indent);
+        }
         Statement::Term(val) => {
             // 2026-07-26: Phase 4 — webstack flush at term.
             // 2026-08-10: real update batch — each field the transaction wrote
