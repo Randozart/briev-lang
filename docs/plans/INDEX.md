@@ -71,6 +71,27 @@ the GEMM fill-pipeline campaign (see Workstream 3). Stage table:
 
 ---
 
+## Workstream 0 — Stability remediation (2026-10-16)
+
+Plan of record: `2026-10-16-stability-remediation.md`. From the
+cpp-vs-briev session's seven weaknesses: S1 `.ll` determinism gate →
+S5-A toolchain matrix → S2 reserved-word diagnostics → S3 reactive
+recipes doc → S6 config ledger → S4 shared body-emission prologue
+(prologue-only; walkers untouched). Standing guards after S1/S4: the
+determinism script on backend-touching commits.
+
+| Piece | Status | Next |
+|-------|--------|------|
+| cpp-vs-briev fixes (flaw 4, memset, node-inline valve, frame limit, defect ledger) | **DONE** (`93be0795`, `a42de3c0`, `6e3a78ef`, `63107709`, `58b292ca`) | — |
+| S1 determinism gate | not started | first item |
+| S5-A toolchain matrix | not started | with S1 |
+| S2 reserved-word diagnostics | not started | — |
+| S3 reactive recipes | not started | — |
+| S6 config ledger | not started | — |
+| S4 shared prologue | not started | last; byte-identity gated |
+
+---
+
 ## Workstream 1 — Cross-dialect interop
 
 Plan of record: `2026-09-21-cross-dialect-interop.md`;
@@ -520,6 +541,8 @@ stage/execution plans are the concrete campaigns.
 | Plan | Closure |
 |------|---------|
 | `2026-10-16-term-semantics-and-tails.md` | Steps 1–8 DONE 2026-10-16 (`9915c098`…`442fbd31` + docs commit) — P-gated bare term, tails, output inference, purity probe, SPEC/execution-model docs |
+| `2026-10-16-cpp-vs-briev-contributor-findings.md` | COMPLETE 2026-10-16 (`35092fe1`…`d79afb94`) — flaw-4 fix, memset threshold, node-inline valve (measured), frame limit, defect ledger, recommender benchmark + corpus |
+| `2026-10-16-stability-remediation.md` | ACTIVE — S1 gate → S5-A matrix → S2 diagnostics → S3 recipes → S6 ledger → S4 prologue |
 | `2026-09-28-daily-use-sweep-and-gpu-session.md` | Phase B GPU (B1–B4) DONE; Phase A core DONE 2026-10-01 (A1 name-capture fix, A2 Stack peek, D5 test_collections repair); A3 executable gate + A5 audit + A6 probe REMAIN |
 | `2026-09-30-stage5-re-rank-and-5c.md` | 5c DONE (`8c0ece90`, byte-identical IR gate + determinism fixes); 5a DONE (72.5 µs); session record `2026-09-30-5a-attention-decode.md` |
 | `2026-09-08-master-workstream.md` | Phases 1-6 DONE; Phase 7 optional, Phase 8 verified done |
