@@ -408,6 +408,9 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// `modulo_partition` (modulo-switch dispatch).
     pub density: HashMap<String, crate::analysis::density::ComputeDensity>,
     pub inline_decisions: HashMap<String, crate::analysis::inline_cost::InlineDecision>,
+    /// 2026-10-16 (cpp-vs-briev P2, flaw 2): reactive node-txn auto-inline
+    /// decision (weighted cost) — the alwaysinline fallback consumes it.
+    pub node_inline_decisions: HashMap<String, crate::analysis::inline_cost::InlineDecision>,
     pub modulo_partition: Option<crate::analysis::modulo_partition::ModuloPartition>,
     /// 2026-07-28: Per-transaction iteration bounds from RegionAnalyzer.
     /// Maps txn_name → iteration_count. Used with bounded_pre + increments for !prof.
@@ -652,6 +655,7 @@ impl CompilerContext {
             // of re-walking bodies. Set once in generate() from AnalysisResults.
             density: std::collections::HashMap::new(),
             inline_decisions: std::collections::HashMap::new(),
+            node_inline_decisions: std::collections::HashMap::new(),
             modulo_partition: None,
             iter_bounds: HashMap::new(),
             state_ptr_param: "ptr noundef noalias nocapture align 8 %state".to_string(),

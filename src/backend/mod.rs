@@ -58,6 +58,11 @@ pub struct AnalysisResults {
     pub image_storage: HashMap<String, Vec<crate::analysis::image_storage::ImageStoragePlan>>,
     pub has_unguarded_ffi: std::collections::HashSet<String>,
     pub inline_decisions: HashMap<String, crate::analysis::inline_cost::InlineDecision>,
+    // 2026-10-16 (cpp-vs-briev P2, flaw 2): the reactive node-txn auto-inline
+    // decision (weighted cost, `node_inline_weight_threshold`) — the backend's
+    // alwaysinline fallback consumes this instead of always inlining acyclic
+    // node bodies.
+    pub node_inline_decisions: HashMap<String, crate::analysis::inline_cost::InlineDecision>,
     // 2026-07-31: Batch-loop decomposition (plan 2026-07-31-regain-kalman-float-
     // math-parity §5, Fix 2) — the io boundary interval derived from the guard
     // precondition, consumed by the backend's emit_countable_batched_main.
@@ -186,6 +191,7 @@ pub fn analyze_program(
     let density = crate::analysis::density::compute_densities(items);
     let modulo_partition = crate::analysis::modulo_partition::detect_modulo_partition(items);
     let inline_decisions = build_inline_decisions(items);
+    let node_inline_decisions = build_node_inline_decisions(items);
     let has_unguarded_ffi = transition_graph.has_unguarded_ffi.clone();
     // 2026-07-31: Batch-loop decomposition derived from the swan-song-stripped
     // bodies (what the backend emits). The io boundary is the guard's
@@ -332,6 +338,7 @@ pub fn analyze_program(
         modulo_partition,
         has_unguarded_ffi,
         inline_decisions,
+        node_inline_decisions,
         batch_shape,
         global_lifetime,
         observable_names,
@@ -429,6 +436,22 @@ fn build_inline_decisions(items: &[TopLevel]) -> HashMap<String, crate::analysis
     for item in items {
         if let TopLevel::Transaction(t) = item {
             out.insert(t.name.clone(), crate::analysis::inline_cost::callable_inline_decision(t));
+        }
+    }
+    out
+}
+
+/// Compute the reactive node-txn auto-inline decision for every transaction.
+///
+/// 2026-10-16 (cpp-vs-briev P2, flaw 2): the reactive emitters' alwaysinline
+/// fallback consumes this instead of always inlining acyclic node bodies.
+/// Weighted cost only — see `node_inline_decision` for why FFI-calling node
+/// bodies stay eligible.
+fn build_node_inline_decisions(items: &[TopLevel]) -> HashMap<String, crate::analysis::inline_cost::InlineDecision> {
+    let mut out = HashMap::new();
+    for item in items {
+        if let TopLevel::Transaction(t) = item {
+            out.insert(t.name.clone(), crate::analysis::inline_cost::node_inline_decision(t));
         }
     }
     out

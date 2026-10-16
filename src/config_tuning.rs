@@ -59,6 +59,18 @@ pub struct IrLoweringSettings {
     /// crashed LLVM 17's X86 instruction selector (Otto Westerlund's
     /// global-Float-array probe) and are pathological at any LLVM version.
     pub aggregate_zero_init_memset_bytes: usize,
+    /// 2026-10-16 (cpp-vs-briev P2, flaw 2): weighted body-cost threshold for
+    /// the reactive node-txn auto-inline. Bodies above it lose the
+    /// unconditional `alwaysinline` (the whole-program-inlined-into-one-
+    /// function shape LLVM 17's greedy regalloc segfaults on); LLVM's own
+    /// inliner still inlines where profitable. Empirically calibrated
+    /// (2026-10-16) against Otto Westerlund's corpus: his largest single
+    /// healthy node (the 11-println report, weight ~500) stays alwaysinline
+    /// and the emitted module is byte-identical; his merged single-node
+    /// recommender (the whole-program-inlined shape, ~1900 .ll lines) loses
+    /// the attribute. Run-to-run .ll stability unaffected (weight is a pure
+    /// AST walk).
+    pub node_inline_weight_threshold: u32,
     /// Accel auto-tuning probe: full-map runs per lane (Phase 7).
     pub accel_probe_k: u64,
     /// Accel probe output-equality tolerance (relative per element).
@@ -386,6 +398,7 @@ const DEFAULT_IR_LOWERING: IrLoweringSettings = IrLoweringSettings {
     sso_max_bytes: 6,
     callable_inline_weight_threshold: 40,
     aggregate_zero_init_memset_bytes: 4096,
+    node_inline_weight_threshold: 600,
     accel_probe_k: 2,
     accel_probe_tolerance: 0.0001,
     accel_probe_margin: 0.05,
@@ -529,6 +542,7 @@ const IR_LOWERING_KEYS: &[(&str, bool)] = &[
     ("sso_max_bytes", false),
     ("callable_inline_weight_threshold", false),
     ("aggregate_zero_init_memset_bytes", false),
+    ("node_inline_weight_threshold", false),
     ("accel_probe_k", false),
     ("accel_probe_tolerance", true),
     ("accel_probe_margin", true),
@@ -596,6 +610,10 @@ fn render_ir_lowering(s: &IrLoweringSettings, skip: &[String]) -> String {
     push(
         "aggregate_zero_init_memset_bytes",
         s.aggregate_zero_init_memset_bytes.to_string(),
+    );
+    push(
+        "node_inline_weight_threshold",
+        s.node_inline_weight_threshold.to_string(),
     );
     push("accel_probe_k", s.accel_probe_k.to_string());
     push("accel_probe_tolerance", s.accel_probe_tolerance.to_string());
@@ -855,6 +873,9 @@ fn parse_ir_lowering(content: &str) -> IrLoweringSettings {
             .field_int("aggregate_zero_init_memset_bytes", 0)
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_IR_LOWERING.aggregate_zero_init_memset_bytes),
+        node_inline_weight_threshold: db
+            .field_int("node_inline_weight_threshold", 0)
+            .unwrap_or(DEFAULT_IR_LOWERING.node_inline_weight_threshold as i64) as u32,
         accel_probe_k: db
             .field_int("accel_probe_k", 0)
             .map(|v| v.max(1) as u64)

@@ -3851,7 +3851,20 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 Some("alwaysinline") => " alwaysinline",
                 Some("inlinehint") => " inlinehint",
                 _ => {
-                    if !self.ctx.has_cycles { " alwaysinline" } else { "" }
+                    if !self.ctx.has_cycles {
+                        // 2026-10-16 (cpp-vs-briev P2, flaw 2): the frontend's
+                        // weighted node-inline decision gates the fallback —
+                        // oversized node bodies stay real functions (LLVM 17's
+                        // greedy regalloc segfaults on the whole-program-
+                        // inlined shape at -O2/-O3). Explicit directives above
+                        // always win.
+                        match self.ctx.node_inline_decisions.get(name) {
+                            Some(crate::analysis::inline_cost::InlineDecision::AlwaysInline) => " alwaysinline",
+                            _ => "",
+                        }
+                    } else {
+                        ""
+                    }
                 }
             }
         };

@@ -46,6 +46,28 @@ pub fn callable_inline_decision(txn: &Transaction) -> InlineDecision {
     }
 }
 
+/// Decide the auto-inline attribute for a REACTIVE node-body txn.
+///
+/// 2026-10-16 (cpp-vs-briev P2, flaw 2): node-body txns were emitted
+/// `alwaysinline` whenever the call graph was acyclic, so a large single-node
+/// program inlined its whole body into the dispatch loop — the function shape
+/// LLVM 17's greedy register allocator segfaults on at -O2/-O3 (Otto
+/// Westerlund's giant single-node recommender). The weight budget gives LLVM
+/// a normal function for oversized bodies: LLVM's own inliner still inlines
+/// them where profitable at higher opt levels — we make the IR well-formed
+/// for LLVM, never compete with it. Unlike the callable decision there is no
+/// FFI/trigger exclusion: a node body legitimately contains syscalls/FFI and
+/// has exactly ONE call site (the dispatch loop), so the side-effect-hoisting
+/// rationale does not apply; only size disqualifies. Explicit `#inline` /
+/// `#?inline` directives always win over this decision (backend).
+pub fn node_inline_decision(txn: &Transaction) -> InlineDecision {
+    if weight_of_body(&txn.body) <= crate::config_tuning::ir_lowering().node_inline_weight_threshold {
+        InlineDecision::AlwaysInline
+    } else {
+        InlineDecision::No
+    }
+}
+
 /// Weighted instruction cost of a txn body.
 ///
 /// 2026-07-31: Statement base cost 1, plus expression weights
@@ -179,6 +201,43 @@ mod tests {
         }
         let t = txn("heavy", body);
         assert_eq!(callable_inline_decision(&t), InlineDecision::No);
+    }
+
+    // ── 2026-10-16 (cpp-vs-briev P2, flaw 2): node_inline_decision ──
+
+    /// A small node body stays on the alwaysinline path (every suite program
+    /// is below `node_inline_weight_threshold`; emission is unchanged).
+    #[test]
+    fn node_small_body_inlines() {
+        let body = vec![
+            stmt_let("a", add(id("x"), id("y"))),
+            Statement::Assign(id("out"), id("a")),
+        ];
+        let t = txn("small_node", body);
+        assert_eq!(node_inline_decision(&t), InlineDecision::AlwaysInline);
+    }
+
+    /// An oversized node body loses the unconditional alwaysinline — the
+    /// whole-program-inlined shape LLVM 17's greedy regalloc segfaults on.
+    #[test]
+    fn node_huge_body_not_inlined() {
+        let mut body = Vec::new();
+        for i in 0..200 {
+            body.push(stmt_let(&format!("v{}", i), add(id("x"), id("y"))));
+        }
+        let t = txn("huge_node", body);
+        assert_eq!(node_inline_decision(&t), InlineDecision::No);
+    }
+
+    /// Unlike the callable decision, an FFI-calling node body is still
+    /// eligible — a node has ONE call site (the dispatch loop), so the
+    /// side-effect-hoisting rationale does not apply; Otto's syscall-heavy
+    /// nodes stay inlined while small.
+    #[test]
+    fn node_ffi_body_still_eligible() {
+        let body = vec![stmt_let("v", call("frgn_fn"))];
+        let t = txn("ffi_node", body);
+        assert_eq!(node_inline_decision(&t), InlineDecision::AlwaysInline);
     }
 
     /// An FFI-calling body (non-# call) is never inlined, even if tiny.

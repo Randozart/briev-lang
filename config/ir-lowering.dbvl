@@ -130,3 +130,9 @@ ptx_deferred_region: 1;
 // lowers to llvm.memset instead of a single `store [N x T] zeroinitializer`
 // (multi-megabyte aggregate stores crash LLVM 17's X86 instruction selector).
 aggregate_zero_init_memset_bytes: 4096;
+
+// 2026-10-16 (cpp-vs-briev P2): reactive node txns above this weighted body
+// cost drop the unconditional alwaysinline (LLVM 17 greedy-regalloc segfault
+// shape); LLVM's own inliner still inlines where profitable. Explicit
+// #inline/#?inline always win.
+node_inline_weight_threshold: 600;
