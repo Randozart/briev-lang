@@ -1,0 +1,15 @@
+// handoff_repro3 — variant C: plain convergent nodes, counter-advancing
+// goals, sequential handoff via shared fields (the README's "single
+// convergent node stepping through phases on one tick each" split in two).
+let phase: Int = 0;
+let x: Int = 0;
+
+node first [beginprogram && x < 3][x == 3] {
+    x = x + 1;
+    term;
+};
+
+node second [x == 3 && phase == 0][phase == 1] {
+    phase = 1;
+    endprogram println!("{}", x);
+};

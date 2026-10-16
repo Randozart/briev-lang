@@ -332,6 +332,12 @@ contracts.
 - **Benchmark**: `bash benchmarks/build_and_bench.sh` — always use this harness.
   Ad-hoc timing produces false hangs and imprecise numbers.
 - **Compare against baseline**: `bash benchmarks/compare_baseline.sh <name>`
+- **`.ll` determinism gate**: `bash benchmarks/ll_determinism_check.sh --quick`
+  (per-commit) / full mode (backend-touching commits) — compiles the corpus
+  twice in separate processes and byte-compares; enforces the sorted-HashMap
+  iteration rule on emitted IR. `benchmarks/toolchain_matrix.sh` (S5-A):
+  run before releases and on backend commits — per-installed-clang corpus
+  verdicts.
 - **Praetor (changed files)**: `praetor validate --warn --target <dir>` where
   `<dir>` is the **directory** containing your changed files (e.g.
   `praetor validate --warn --target src/backend/llvm`). `--target` is a
