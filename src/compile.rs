@@ -504,6 +504,15 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     for w in briev_compiler::analysis::casing::analyze(&items) {
         eprintln!("warning: {w}");
     }
+    // 2026-10-16 (term-semantics plan step 7): the state-purity probe —
+    // observability as liveness. An effective-Void defn/txn whose body
+    // has no observable effect (no FFI/intrinsic call, no state write,
+    // no transitively-effectful call) is dead weight the reactor still
+    // schedules; the author almost certainly meant something else. Born
+    // composite via diagnostics::Block (what/why/fix); warn, never error.
+    for b in briev_compiler::analysis::purity::analyze(&items) {
+        eprintln!("{}", b.render().trim_end());
+    }
     // 2026-08-22 (spec-conformance plan Phase 9, SPEC §3.2): `.s` strict
     // profile — representation fallbacks become hard errors. The dotted-flag
     // forms only (`.s.bv`, `.s.rbv`); classify() already rejects compound
