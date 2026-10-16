@@ -580,8 +580,19 @@ fn eval_call(
                     }
                     // 2026-10-05 (callable-txn convergence): a `txn` loops
                     // until its postcondition holds; the pre gates each entry.
-                    // A `defn` (contract None) runs once. Mirrors the backend
-                    // (Rule 5).
+                    // 2026-10-16 (term-semantics plan §1): `kind` decides the
+                    // shape — a txn converges (below); a defn is LINEAR (runs
+                    // once; its P-gated bare terms were lowered into the body
+                    // at registration, so the post lives at the term sites,
+                    // not in a dispatch loop). Mirrors the backend (Rule 5).
+                    if fn_def.kind == crate::interpreter::FnKind::Defn {
+                        let block = Expr::Block(fn_def.body.clone());
+                        return match eval_expr(&block, heap, &mut local, functions) {
+                            Ok(v) => Ok(v),
+                            Err(RuntimeError::TermReturn(v)) => Ok(v),
+                            Err(e) => Err(e),
+                        };
+                    }
                     let mut result = Value::Atom(Atom::Int(0));
                     loop {
                         if let Some(c) = &fn_def.contract {
@@ -2067,6 +2078,64 @@ fn eval_block(
         result = eval_statement(stmt, heap, bindings, functions)?;
     }
     Ok(result)
+}
+
+// ── 2026-10-16 (term-semantics plan §1): P-gated bare `term;` ──────────────
+//
+// A bare `term;` is the item asking "am I done?": the postcondition is
+// evaluated AT the term site — met → return, unmet → continue. Lowering
+// rewrites each bare `Term(None)` into `when P { term <void>; }` ONCE at
+// FunctionDef construction, so every dispatch site (call, member dispatch,
+// segment executor) shares the semantics without threading the contract
+// through eval. A `Bool(true)` post (no P) lowers to an unconditional void
+// return — trivially met. `Term(Some)` sites are untouched: defn
+// value-terms return unconditionally; txn value-terms already gate at the
+// body-end post check.
+
+/// The void value a P-gated bare term returns: an empty block evaluates to
+/// `Value::Void` (eval_block initializes its result that way).
+fn term_void_expr() -> Expr {
+    Expr::Block(vec![])
+}
+
+/// Lower every bare `term;` in `body` against the item's postcondition.
+pub fn lower_bare_terms(body: &[Statement], post: &Expr) -> Vec<Statement> {
+    body.iter().map(|s| lower_stmt_bare_terms(s, post)).collect()
+}
+
+fn lower_stmt_bare_terms(s: &Statement, post: &Expr) -> Statement {
+    match s {
+        Statement::Term(None) => {
+            let ret = Statement::Term(Some(term_void_expr()));
+            match post {
+                Expr::Bool(true) => ret,
+                p => Statement::Guarded(p.clone(), vec![ret]),
+            }
+        }
+        Statement::Guarded(c, b) => Statement::Guarded(c.clone(), lower_bare_terms(b, post)),
+        Statement::Block(b) => Statement::Block(lower_bare_terms(b, post)),
+        Statement::SyncBlock(b) => Statement::SyncBlock(lower_bare_terms(b, post)),
+        Statement::Mutex(b) => Statement::Mutex(lower_bare_terms(b, post)),
+        Statement::Defer(b) => Statement::Defer(lower_bare_terms(b, post)),
+        Statement::Foreach { item, list, body } => Statement::Foreach {
+            item: item.clone(),
+            list: list.clone(),
+            body: lower_bare_terms(body, post),
+        },
+        Statement::Match { expr, arms } => Statement::Match {
+            expr: expr.clone(),
+            arms: arms
+                .iter()
+                .map(|a| crate::ast::StmtMatchArm {
+                    patterns: a.patterns.clone(),
+                    body: lower_bare_terms(&a.body, post),
+                })
+                .collect(),
+        },
+        // InlineDefn is its OWN item — its bare terms target it, not the
+        // enclosing callable. Left untouched.
+        other => other.clone(),
+    }
 }
 
 /// Evaluate an if expression.
@@ -3861,6 +3930,7 @@ defn go() -> Int {
             parameters: params.into_iter().map(|p| p.to_string()).collect(),
             body: vec![Statement::Term(Some(body))],
             contract: None,
+            kind: crate::interpreter::FnKind::Defn,
         }
     }
 
@@ -4393,4 +4463,154 @@ fn async_phase_d_ready_gate_interpreter_parity() {
         Some(11),
         "reference gate sees false→true identically"
     );
+}
+
+// ── 2026-10-16 (term-semantics plan §1): P-gated bare `term;` ─────────────
+
+mod pgated_term {
+    use super::*;
+    use crate::interpreter::Interpreter;
+
+    fn parse(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut p = crate::parser::Parser::new(tokens, src);
+        p.parse_program().expect("parse")
+    }
+
+    fn assign(name: &str, v: i64) -> Statement {
+        Statement::Assign(Expr::Identifier(name.into()), Expr::Decimal(v))
+    }
+
+    fn probe_eq(v: i64) -> Expr {
+        Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Identifier("probe".into())),
+            Box::new(Expr::Decimal(v)),
+        )
+    }
+
+    fn run_lowered(body: &[Statement], post: &Expr) -> (Result<Value, RuntimeError>, i64) {
+        let mut b: HashMap<String, Value> =
+            HashMap::from([("probe".into(), Value::Atom(Atom::Int(0)))]);
+        let r = eval_block(
+            &lower_bare_terms(body, post),
+            &mut VirtualHeap::new(),
+            &mut b,
+            &HashMap::new(),
+        );
+        let probe = match b.get("probe") {
+            Some(Value::Atom(Atom::Int(n))) => *n,
+            other => panic!("probe mutated oddly: {other:?}"),
+        };
+        (r, probe)
+    }
+
+    /// Lowering shape: bare term → guarded by post; value term untouched;
+    /// no post → unconditional void return; recurses into `when`.
+    #[test]
+    fn lowering_shapes() {
+        let id_post = Expr::Identifier("done".into());
+        let g = lower_bare_terms(&[Statement::Term(None)], &id_post);
+        match &g[0] {
+            Statement::Guarded(c, body) => {
+                assert!(matches!(c, Expr::Identifier(n) if n == "done"));
+                match &body[0] {
+                    Statement::Term(Some(Expr::Block(b))) => assert!(b.is_empty()),
+                    other => panic!("expected void term, got {other:?}"),
+                }
+            }
+            other => panic!("expected Guarded, got {other:?}"),
+        }
+        let plain = lower_bare_terms(&[Statement::Term(None)], &Expr::Bool(true));
+        match &plain[0] {
+            Statement::Term(Some(Expr::Block(b))) => assert!(b.is_empty()),
+            other => panic!("expected unconditional void term, got {other:?}"),
+        }
+        let mixed = lower_bare_terms(
+            &[
+                Statement::Term(Some(Expr::Decimal(1))),
+                Statement::Guarded(Expr::Bool(true), vec![Statement::Term(None)]),
+            ],
+            &Expr::Bool(true),
+        );
+        assert!(matches!(&mixed[0], Statement::Term(Some(Expr::Decimal(_)))));
+        match &mixed[1] {
+            Statement::Guarded(_, inner) => {
+                assert!(matches!(&inner[0], Statement::Term(Some(_))))
+            }
+            other => panic!("expected recursed Guarded, got {other:?}"),
+        }
+    }
+
+    /// The divergence (BUGS.md): a bare `term;` under a guard with the post
+    /// MET returns — statements after it never run.
+    #[test]
+    fn bare_term_returns_when_post_met() {
+        let body = vec![assign("probe", 1), Statement::Term(None), assign("probe", 9)];
+        let (r, probe) = run_lowered(&body, &probe_eq(1));
+        assert!(matches!(r, Err(RuntimeError::TermReturn(_))), "returns");
+        assert_eq!(probe, 1, "post met at the term site — tail never ran");
+    }
+
+    /// Post UNMET at the bare term: the body CONTINUES past the guard.
+    #[test]
+    fn bare_term_continues_when_post_unmet() {
+        let body = vec![assign("probe", 1), Statement::Term(None), assign("probe", 9)];
+        let (r, probe) = run_lowered(&body, &probe_eq(9));
+        assert!(r.is_ok(), "continues, body completes: {r:?}");
+        assert_eq!(probe, 9, "unmet post — tail ran");
+    }
+
+    /// End to end through the registry: a txn's bare term stops the firing
+    /// when the post is met (the old no-op livelocked — probe=9 kept the
+    /// post unmet forever).
+    #[test]
+    fn txn_bare_term_stops_firing_when_post_met() {
+        let src = "let probe: Int = 0;\n\
+                   txn step() [true][probe == 1] { probe = 1; term; probe = 9; };\n";
+        let items = parse(src);
+        let mut interp = Interpreter::new();
+        interp.load_program(&items);
+        for item in &items {
+            if let crate::ast::TopLevel::Statement(s) = item {
+                interp.exec_stmt(s).expect("seed state");
+            }
+        }
+        interp.call_function("step", &[]).expect("completes — no livelock");
+        let probe = interp
+            .eval_expr(&Expr::Identifier("probe".into()))
+            .expect("probe reads");
+        assert_eq!(probe.as_i64(), Some(1), "term returned before the tail");
+    }
+
+    /// End to end: a defn's bare term with an unmet post continues (the
+    /// other half of the divergence — backend used to early-return
+    /// unconditionally, the interpreter used to continue unconditionally).
+    #[test]
+    fn defn_bare_term_continues_when_post_unmet() {
+        let src = "let probe: Int = 0;\n\
+                   defn f(x: Int) [true][x > 0] { probe = 1; term; probe = 9; };\n";
+        let items = parse(src);
+        let mut interp = Interpreter::new();
+        interp.load_program(&items);
+        for item in &items {
+            if let crate::ast::TopLevel::Statement(s) = item {
+                interp.exec_stmt(s).expect("seed state");
+            }
+        }
+        interp
+            .call_function("f", &[Value::Atom(Atom::Int(5))])
+            .expect("f(5)");
+        let probe = interp
+            .eval_expr(&Expr::Identifier("probe".into()))
+            .expect("probe reads");
+        assert_eq!(probe.as_i64(), Some(1), "P met (5 > 0) — returned early");
+        interp
+            .call_function("f", &[Value::Atom(Atom::Int(-1))])
+            .expect("f(-1)");
+        let probe = interp
+            .eval_expr(&Expr::Identifier("probe".into()))
+            .expect("probe reads");
+        assert_eq!(probe.as_i64(), Some(9), "P unmet (-1 > 0 false) — continued");
+    }
 }

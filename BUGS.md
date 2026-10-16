@@ -9721,19 +9721,26 @@ bool-width hardening (`coerce_to_i8_bool`) is what kept this gate's
 disjunction valid once the call results were i64-typed during the broken
 intermediate states — `or i8` under a bool label throughout.
 
-## Interpreter/backend divergence: bare `term;` in a void-defn guard — OPEN (parked)
+## Interpreter/backend divergence: bare `term;` in a void-defn guard — RESOLVED 2026-10-16 (plan `2026-10-16-term-semantics-and-tails.md`)
 
-The backend lowers `when cond { term; };` in a void defn as an
+The backend lowered `when cond { term; };` in a void defn as an
 early-return (guard inversion: `icmp slt` + body under `guard.then`);
-the interpreter treats `Term(None)` as a convergence checkpoint and
-CONTINUES past the guard (eval.rs:2447). print_all-style recursion on a
-List is the repro shape: backend lists exactly Count#() entries; the
-interpreter reads out of bounds past the guard. The intended semantics —
-"term returns iff the postcondition is met at the point term is called" —
-is decided in principle but PARKED pending a rested language decision:
-docs/plans/2026-10-15-term-tails-proposal.md (Proposal 1, together with
-tail expressions / when-expressions). Do not "fix" either side until that
-document is confirmed.
+the interpreter treated `Term(None)` as a convergence checkpoint and
+CONTINUED past the guard (eval.rs:2447). print_all-style recursion on a
+List was the repro shape: backend listed exactly Count#() entries; the
+interpreter read out of bounds past the guard.
+
+**Resolution (rested decision, plan §1):** bare `term;` is P-gated
+everywhere — the postcondition is evaluated AT the term site: met →
+return, unmet → continue. The interpreter lowers each bare term into
+`when P { term <void>; }` once at FunctionDef registration
+(`lower_bare_terms`, eval.rs) and splits dispatch by `FnKind` (a defn is
+linear; a txn converges). The backend's early-return becomes correct
+under the rule; its next step is the explicit cond-P emission (plan step
+4). Behavioural pins: `interpreter::eval::pgated_term` — both divergence
+directions (met → tail never runs; unmet → tail runs) plus the txn
+livelock shape (bare term + unmet post used to loop forever). The
+dir_smoke print_all flip to the tail idiom lands with plan step 5.
 
 ## LESSON (testing discipline): probe crashes against inconsistent intermediate binaries — OBSERVED 2026-10-15
 

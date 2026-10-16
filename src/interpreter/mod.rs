@@ -41,18 +41,60 @@ use std::sync::Arc;
 /// FFI files import RuntimeError from crate::interpreter.
 pub use crate::errors::RuntimeError;
 
+/// Which callable kind a registry entry is — decides the dispatch shape.
+/// 2026-10-16 (term-semantics plan §1): a `txn` converges (its body
+/// re-runs until the postcondition holds); a `defn` is linear (runs once,
+/// P-gated bare terms live in the lowered body). The reference must match
+/// codegen (Rule 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FnKind {
+    Defn,
+    Txn,
+}
+
 /// 2026-07-28: Record for a parsed function definition stored in the
 /// interpreter's function registry.
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
     pub name: String,
     pub parameters: Vec<String>,
+    /// Bare `term;` sites are ALREADY P-gated here (lowered once at
+    /// registration — 2026-10-16 term-semantics plan §1).
     pub body: Vec<Statement>,
     /// 2026-10-05 (callable-txn convergence): a `txn` converges — its body
     /// re-runs until the postcondition holds (BUGS.md "callable txn"
-    /// 2392/2423, SPEC §1776); the pre gates each entry. `None` for a `defn`
-    /// (linear). The reference must match codegen (Rule 5).
+    /// 2392/2423, SPEC §1776); the pre gates each entry. Kept for BOTH
+    /// kinds since 2026-10-16: a defn's post feeds the term-site P-gate
+    /// lowering (the defn itself stays linear via `kind`).
     pub contract: Option<crate::ast::Contract>,
+    pub kind: FnKind,
+}
+
+impl FunctionDef {
+    /// 2026-10-16 (term-semantics plan §1, DRY Rule 17): the ONE
+    /// construction path for registry entries — bare `term;` is lowered
+    /// against the item's post at registration, contracts are kept for
+    /// both kinds (a defn's post feeds the term-site gate; a txn's also
+    /// drives the convergence loop), and the kind records the shape.
+    pub fn from_defn(d: &Definition) -> Self {
+        FunctionDef {
+            name: d.name.clone(),
+            parameters: d.parameters.iter().map(|(n, _)| n.clone()).collect(),
+            body: eval::lower_bare_terms(&d.body, &d.contract.post_condition),
+            contract: Some(d.contract.clone()),
+            kind: FnKind::Defn,
+        }
+    }
+
+    pub fn from_txn(t: &Transaction) -> Self {
+        FunctionDef {
+            name: t.name.clone(),
+            parameters: t.parameters.iter().map(|(n, _)| n.clone()).collect(),
+            body: eval::lower_bare_terms(&t.body, &t.contract.post_condition),
+            contract: Some(t.contract.clone()),
+            kind: FnKind::Txn,
+        }
+    }
 }
 
 /// 2026-08-22 (Phase 7b, SPEC §9.5): an obj's PORT/FIELD surface for the
@@ -188,25 +230,11 @@ impl Interpreter {
                     match m {
                         TopLevel::Definition(d) => {
                             let key = format!("{}::{}", td.name, d.name);
-                            let params: Vec<String> =
-                                d.parameters.iter().map(|(n, _)| n.clone()).collect();
-                            self.functions.insert(key, FunctionDef {
-                                name: d.name.clone(),
-                                parameters: params,
-                                body: d.body.clone(),
-                                contract: None,
-                            });
+                            self.functions.insert(key, FunctionDef::from_defn(d));
                         }
                         TopLevel::Transaction(t) => {
                             let key = format!("{}::{}", td.name, t.name);
-                            let params: Vec<String> =
-                                t.parameters.iter().map(|(n, _)| n.clone()).collect();
-                            self.functions.insert(key, FunctionDef {
-                                name: t.name.clone(),
-                                parameters: params,
-                                body: t.body.clone(),
-                                contract: Some(t.contract.clone()),
-                            });
+                            self.functions.insert(key, FunctionDef::from_txn(t));
                         }
                         _ => {}
                     }
@@ -229,25 +257,11 @@ impl Interpreter {
                 self.objs.insert(c.name.clone(), shape);
                 for t in &c.transactions {
                     let key = format!("{}::{}", c.name, t.name);
-                    let params: Vec<String> =
-                        t.parameters.iter().map(|(n, _)| n.clone()).collect();
-                    self.functions.insert(key, FunctionDef {
-                        name: t.name.clone(),
-                        parameters: params,
-                        body: t.body.clone(),
-                        contract: Some(t.contract.clone()),
-                    });
+                    self.functions.insert(key, FunctionDef::from_txn(t));
                 }
                 for d in &c.definitions {
                     let key = format!("{}::{}", c.name, d.name);
-                    let params: Vec<String> =
-                        d.parameters.iter().map(|(n, _)| n.clone()).collect();
-                    self.functions.insert(key, FunctionDef {
-                        name: d.name.clone(),
-                        parameters: params,
-                        body: d.body.clone(),
-                        contract: None,
-                    });
+                    self.functions.insert(key, FunctionDef::from_defn(d));
                 }
             }
         }
@@ -282,35 +296,17 @@ impl Interpreter {
             if let TopLevel::Impl(i) = item {
                 for d in &i.functions {
                     let key = format!("{}::{}", i.target, d.name);
-                    let param_names = d.parameters.iter().map(|(n, _)| n.clone()).collect();
-                    self.functions.insert(key, FunctionDef {
-                        name: d.name.clone(),
-                        parameters: param_names,
-                        body: d.body.clone(),
-                        contract: None,
-                    });
+                    self.functions.insert(key, FunctionDef::from_defn(d));
                 }
             }
         }
         for item in program {
             match item {
                 TopLevel::Definition(d) => {
-                    let param_names = d.parameters.iter().map(|(n, _)| n.clone()).collect();
-                    self.functions.insert(d.name.clone(), FunctionDef {
-                        name: d.name.clone(),
-                        parameters: param_names,
-                        body: d.body.clone(),
-                        contract: None,
-                    });
+                    self.functions.insert(d.name.clone(), FunctionDef::from_defn(d));
                 }
                 TopLevel::Transaction(t) => {
-                    let param_names = t.parameters.iter().map(|(n, _)| n.clone()).collect();
-                    self.functions.insert(t.name.clone(), FunctionDef {
-                        name: t.name.clone(),
-                        parameters: param_names,
-                        body: t.body.clone(),
-                        contract: Some(t.contract.clone()),
-                    });
+                    self.functions.insert(t.name.clone(), FunctionDef::from_txn(t));
                 }
                 _ => {}
             }
@@ -420,11 +416,21 @@ impl Interpreter {
 
         // 2026-10-05 (callable-txn convergence): a `txn` LOOPS until its
         // postcondition holds (BUGS.md "callable txn" 2392/2423); the pre
-        // gates each entry. A `defn` (contract None) runs once. Mirrors the
-        // backend's convergence loop (Rule 5).
+        // gates each entry. 2026-10-16 (term-semantics plan §1): `kind`
+        // decides — a defn is LINEAR (runs once; its P-gated bare terms
+        // were lowered into the body at registration, so the post lives at
+        // the term sites, not in this loop). Mirrors the backend (Rule 5).
         // 2026-07-28: Term with value signals early return via TermReturn.
         // 2026-08-09 (Phase 10): use exec_stmt so `defer` registers cleanup.
         let mut result = Value::Atom(Atom::Int(0));
+        if defn.kind == FnKind::Defn {
+            if let Some(v) = self.run_body_once(&defn.body)? {
+                result = v;
+            }
+            // 2026-08-09 (Phase 10): deferred cleanup runs on exit — normal
+            // fall-through AND term (the firing completed either way).
+            let _ = self.flush_defers();
+        } else {
         loop {
             if let Some(c) = &defn.contract {
                 if !matches!(c.pre_condition, Expr::Bool(true)) {
@@ -449,6 +455,7 @@ impl Interpreter {
                 }
                 _ => break,
             }
+        }
         }
 
         // Restore saved state
