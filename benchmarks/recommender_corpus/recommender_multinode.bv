@@ -1,0 +1,348 @@
+// =============================================================================
+//  recommender_multinode.bv  —  same algorithm as recommender_sparse.bv, but
+//  split into SEPARATE `async node`s, one per phase, instead of one giant
+//  single node. Goal: shrink each emitted LLVM function so -O2/-O3 don't crash
+//  LLVM 17's greedy register allocator on one monster @txn_run.
+//
+//  Node-sequencing pattern (from benchmarks/nbody_newton_accel.bv): every node
+//  is `async` and gated on a DISTINCT `phase` value, so exactly one is runnable
+//  at a time (no concurrency gate, no implicit overlap). Each node bumps
+//  `phase` to hand off. The first node also gates on `beginprogram`.
+//
+//  Same output + timing as recommender_sparse.bv. Build:
+//    brievc build .../recommender_multinode.bv --llvm --out .../out --stdlib-path .../lib
+//    clang -O3 -march=native .../out/recommender_multinode.ll lib/runtime/briev_rt.c -ldl -o .../out/rmn
+//    ./out/rmn
+// =============================================================================
+
+import "std/string_c.bv";
+
+const NROWS: Int = 943;
+const NCOLS: Int = 1682;
+const NCELLS: Int = 1586126;
+const MAXNZ: Int = 100000;
+const QUERY_USER: Int = 10;
+
+const PH_PARSE_DATA: Int = 1;
+const PH_READ_SIM: Int = 2;
+const PH_PARSE_SIM: Int = 3;
+const PH_BUILD_SPARSE: Int = 4;
+const PH_PREDICT: Int = 5;
+const PH_DONE: Int = 6;
+
+let phase: Int = 0;
+
+let mat_addr: Int = 0;
+let sim_addr: Int = 0;
+let start_addr: Int = 0;
+let curpos_addr: Int = 0;
+let nzuser_addr: Int = 0;
+let nzrat_addr: Int = 0;
+
+let src_addr: Int = 0;
+let src_len: Int = 0;
+let n_ratings: Int = 0;
+let i: Int = 0;
+let field: Int = 0;
+let cur: Int = 0;
+let in_num: Int = 0;
+let u_val: Int = 0;
+let it_val: Int = 0;
+let r_val: Int = 0;
+
+let sim_src: Int = 0;
+let sim_len: Int = 0;
+let sj: Int = 0;
+let stok: Int = 0;
+let scur: Int = 0;
+let sin: Int = 0;
+
+let item: Int = 0;
+let n_preds: Int = 0;
+let t_start: Int = 0;
+let timed: Int = 0;
+
+let t0i: Int = -1;  let t0r: Float = -1.0;
+let t1i: Int = -1;  let t1r: Float = -1.0;
+let t2i: Int = -1;  let t2r: Float = -1.0;
+let t3i: Int = -1;  let t3r: Float = -1.0;
+let t4i: Int = -1;  let t4r: Float = -1.0;
+
+// ── extracted hot path (its own non-inlined LLVM function) ──────────────────
+// Body weight > the auto-inline threshold and it contains memory-op "calls",
+// so inline_cost.rs emits it as a real call, NOT alwaysinline. This keeps the
+// predict node body tiny so the register allocator never sees one huge
+// function.
+defn predict_item(sim_a: Int, start_a: Int, nzuser_a: Int, nzrat_a: Int,
+                  it: Int) -> Float {
+    let sim: Ptr<Float> = sim_a as Ptr<Float>;
+    let st: Ptr<Int> = start_a as Ptr<Int>;
+    let nu: Ptr<Int> = nzuser_a as Ptr<Int>;
+    let nr: Ptr<Float> = nzrat_a as Ptr<Float>;
+    let blk_lo: Int = st[it];
+    let blk_hi: Int = st[it + 1];
+    let sa: Float = 0.0;
+    let sb: Float = 0.0;
+    let first_v: Int = -1;
+    let last_v: Int = -1;
+    let first_r: Float = 0.0;
+    let last_r: Float = 0.0;
+    foreach k in blk_lo..blk_hi {
+        let vv: Int = nu[k];
+        when vv != QUERY_USER {
+            let rv: Float = nr[k];
+            let w: Float = sim[vv];
+            sa = sa + w * (rv - 1.0);
+            sb = sb + w;
+            when first_v < 0 { first_v = vv; first_r = rv; };
+            last_v = vv; last_r = rv;
+        };
+    };
+    when first_v >= 0 {
+        let wf: Float = sim[first_v];
+        sa = sa + wf * (first_r - 1.0);
+        sb = sb + wf;
+    };
+    when last_v >= 0 {
+        let wl: Float = sim[last_v];
+        sa = sa - wl * (last_r - 1.0);
+        sb = sb - wl;
+    };
+    let denom: Float = sb;
+    when denom == 0.0 { denom = 0.00001; };
+    let pred: Float = 1.0 + sa / denom;
+    when pred > 5.0 { pred = 5.0; };
+    when pred < 0.0 { pred = 0.0; };
+    term pred;
+};
+
+// ── node 0: read u.data + allocate buffers (fires once at program start) ────
+async node read_data [beginprogram && phase == 0][true] {
+    let path: Int = to_c_string("u.data");
+    let fd: Int = SysCall#(2, path, 0, 0, 0, 0, 0);
+    let size: Int = SysCall#(8, fd, 0, 2, 0, 0, 0);
+    SysCall#(8, fd, 0, 0, 0, 0, 0);
+    let buf: Int = Alloc#(size + 1) as Int;
+    SysCall#(0, fd, buf, size, 0, 0, 0);
+    SysCall#(3, fd, 0, 0, 0, 0, 0);
+    let m: Ptr<Float> = Malloc#(NCELLS * 8) as Ptr<Float>;
+    let s: Ptr<Float> = Malloc#(NROWS * 8) as Ptr<Float>;
+    let stp: Ptr<Int> = Malloc#((NCOLS + 1) * 8) as Ptr<Int>;
+    let cp: Ptr<Int> = Malloc#(NCOLS * 8) as Ptr<Int>;
+    let nu: Ptr<Int> = Malloc#(MAXNZ * 8) as Ptr<Int>;
+    let nr: Ptr<Float> = Malloc#(MAXNZ * 8) as Ptr<Float>;
+    src_addr = buf;
+    src_len = size;
+    mat_addr = m as Int;
+    sim_addr = s as Int;
+    start_addr = stp as Int;
+    curpos_addr = cp as Int;
+    nzuser_addr = nu as Int;
+    nzrat_addr = nr as Int;
+    phase = PH_PARSE_DATA;
+    term;
+};
+
+// ── node 1: parse u.data, one byte per tick ─────────────────────────────────
+async node parse_data [phase == 1][phase == 2] {
+    let mat: Ptr<Float> = mat_addr as Ptr<Float>;
+    let b: Int = 0;
+    when i < src_len {
+        b = Load#(src_addr + i, 1);
+    };
+    let is_digit: Int = 0;
+    when b >= 48 && b <= 57 { is_digit = 1; };
+    when is_digit == 1 {
+        cur = cur * 10 + (b - 48);
+        in_num = 1;
+    };
+    when is_digit == 0 && in_num == 1 {
+        when field == 0 { u_val = cur; };
+        when field == 1 { it_val = cur; };
+        when field == 2 { r_val = cur; };
+        field = field + 1;
+        cur = 0;
+        in_num = 0;
+    };
+    when (b == 10 || i == src_len) && field >= 3 {
+        let row: Int = u_val - 1;
+        let col: Int = it_val - 1;
+        when row >= 0 && row < NROWS && col >= 0 && col < NCOLS {
+            mat[row * NCOLS + col] = r_val as Float;
+            n_ratings = n_ratings + 1;
+        };
+        field = 0;
+    };
+    i = i + 1;
+    when i > src_len {
+        phase = PH_READ_SIM;
+    };
+    term;
+};
+
+// ── node 2: read simlist.txt, locate active user's line ─────────────────────
+async node read_sim [phase == 2][true] {
+    let path: Int = to_c_string("simlist.txt");
+    let fd: Int = SysCall#(2, path, 0, 0, 0, 0, 0);
+    let size: Int = SysCall#(8, fd, 0, 2, 0, 0, 0);
+    SysCall#(8, fd, 0, 0, 0, 0, 0);
+    let buf: Int = Alloc#(size + 1) as Int;
+    SysCall#(0, fd, buf, size, 0, 0, 0);
+    SysCall#(3, fd, 0, 0, 0, 0, 0);
+    sim_src = buf;
+    sim_len = size;
+    let line: Int = 0;
+    let p: Int = 0;
+    let start: Int = 0;
+    foreach scan in 0..size {
+        when line < QUERY_USER {
+            let c: Int = Load#(buf + p, 1);
+            when c == 10 {
+                line = line + 1;
+                start = p + 1;
+            };
+            p = p + 1;
+        };
+    };
+    sj = start;
+    phase = PH_PARSE_SIM;
+    term;
+};
+
+// ── node 3: parse active user's sim row, one byte per tick ──────────────────
+async node parse_sim [phase == 3][phase == 4] {
+    let sim: Ptr<Float> = sim_addr as Ptr<Float>;
+    let atend: Int = 0;
+    let b: Int = 10;
+    when sj < sim_len {
+        b = Load#(sim_src + sj, 1);
+    };
+    when sj >= sim_len { atend = 1; };
+    let is_digit: Int = 0;
+    when b >= 48 && b <= 57 { is_digit = 1; };
+    when is_digit == 1 {
+        scur = scur * 10 + (b - 48);
+        sin = 1;
+    };
+    when is_digit == 0 && sin == 1 {
+        when stok < NROWS {
+            sim[stok] = scur as Float;
+        };
+        stok = stok + 1;
+        scur = 0;
+        sin = 0;
+    };
+    sj = sj + 1;
+    when b == 10 || atend == 1 {
+        phase = PH_BUILD_SPARSE;
+    };
+    term;
+};
+
+// ── node 4: build sparse per-item layout (count -> prefix -> fill) ──────────
+async node build_sparse [phase == 4][true] {
+    let mat: Ptr<Float> = mat_addr as Ptr<Float>;
+    let st: Ptr<Int> = start_addr as Ptr<Int>;
+    let cp: Ptr<Int> = curpos_addr as Ptr<Int>;
+    let nu: Ptr<Int> = nzuser_addr as Ptr<Int>;
+    let nr: Ptr<Float> = nzrat_addr as Ptr<Float>;
+    foreach c0 in 0..NCOLS {
+        st[c0] = 0;
+    };
+    foreach uu in 0..NROWS {
+        foreach it in 0..NCOLS {
+            let rv: Float = mat[uu * NCOLS + it];
+            when rv != 0.0 {
+                st[it] = st[it] + 1;
+            };
+        };
+    };
+    let acc: Int = 0;
+    foreach it2 in 0..NCOLS {
+        let c: Int = st[it2];
+        st[it2] = acc;
+        cp[it2] = acc;
+        acc = acc + c;
+    };
+    st[NCOLS] = acc;
+    foreach uu2 in 0..NROWS {
+        foreach it3 in 0..NCOLS {
+            let rv: Float = mat[uu2 * NCOLS + it3];
+            when rv != 0.0 {
+                let pos: Int = cp[it3];
+                nu[pos] = uu2;
+                nr[pos] = rv;
+                cp[it3] = pos + 1;
+            };
+        };
+    };
+    phase = PH_PREDICT;
+    term;
+};
+
+// ── node 5: predict one item per tick, over its sparse block only ───────────
+async node predict [phase == 5][phase == 6] {
+    let mat: Ptr<Float> = mat_addr as Ptr<Float>;
+
+    when timed == 0 {
+        let ts0: Int = Alloc#(16) as Int;
+        SysCall#(228, 1, ts0, 0, 0, 0, 0);
+        t_start = Load#(ts0, 8) * 1000000000 + Load#(ts0 + 8, 8);
+        Free#(ts0 as Ptr<Bit<8>>);
+        timed = 1;
+    };
+
+    let own: Float = mat[QUERY_USER * NCOLS + item];
+    when own == 0.0 {
+        let pred: Float = predict_item(sim_addr, start_addr, nzuser_addr, nzrat_addr, item);
+        n_preds = n_preds + 1;
+        when pred > t4r {
+            t4i = item; t4r = pred;
+            when t4r > t3r {
+                let ti: Int = t3i; let tr: Float = t3r;
+                t3i = t4i; t3r = t4r; t4i = ti; t4r = tr;
+            };
+            when t3r > t2r {
+                let ti: Int = t2i; let tr: Float = t2r;
+                t2i = t3i; t2r = t3r; t3i = ti; t3r = tr;
+            };
+            when t2r > t1r {
+                let ti: Int = t1i; let tr: Float = t1r;
+                t1i = t2i; t1r = t2r; t2i = ti; t2r = tr;
+            };
+            when t1r > t0r {
+                let ti: Int = t0i; let tr: Float = t0r;
+                t0i = t1i; t0r = t1r; t1i = ti; t1r = tr;
+            };
+        };
+    };
+
+    item = item + 1;
+    when item == NCOLS {
+        phase = PH_DONE;
+    };
+    term;
+};
+
+// ── node 6: report (fires once, when phase reaches DONE) ────────────────────
+async node report [phase == 6][phase == 7] {
+    let ts1: Int = Alloc#(16) as Int;
+    SysCall#(228, 1, ts1, 0, 0, 0, 0);
+    let t_end: Int = Load#(ts1, 8) * 1000000000 + Load#(ts1 + 8, 8);
+    Free#(ts1 as Ptr<Bit<8>>);
+    let elapsed_ns: Int = t_end - t_start;
+    let elapsed_ms: Float = (elapsed_ns as Float) / 1000000.0;
+    phase = 7;
+    println!("Top 5 recommended items for user 10:");
+    println!("{}", t0i); println!("{}", t0r);
+    println!("{}", t1i); println!("{}", t1r);
+    println!("{}", t2i); println!("{}", t2r);
+    println!("{}", t3i); println!("{}", t3r);
+    println!("{}", t4i); println!("{}", t4r);
+    println!("predictions:");
+    println!("{}", n_preds);
+    println!("prediction_time_ns:");
+    println!("{}", elapsed_ns);
+    println!("prediction_time_ms:");
+    endprogram println!("{}", elapsed_ms);
+};

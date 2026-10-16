@@ -1,0 +1,221 @@
+!> accel: try_all;
+
+// recommender — neighborhood-CF recommender core (AutAI, Ren et al. CIKM'12),
+// derived from Otto Westerlund's cpp-vs-briev corpus
+// (github.com/odecode/cpp-vs-briev, commit 714130e, Apache-2.0 WITH
+// LLVM-exception project; adopted 2026-10-16,
+// docs/plans/2026-10-16-cpp-vs-briev-contributor-findings.md).
+//
+// Self-contained isomorphism of his recommender_multinode.bv: the inputs he
+// loaded from MovieLens-100k `u.data` + `simlist.txt` are synthesized
+// in-program by a deterministic LCG (same shapes: ~100k ratings in a dense
+// 943x1682 matrix, one 943-value similarity row), so the benchmark needs no
+// data files and the correctness gate is byte-stable. The algorithm is his
+// verbatim: column-major per-item sparse layout (count -> prefix -> fill,
+// untimed setup), per-item prediction over the sparse block only with the
+// reference's `+first -last` off-by-one compensation, clamp to [0,5], top-5
+// by strictly-greater insertion (ties keep the lowest item index).
+//
+// Node-sequencing pattern: every node is `async`, gated on a DISTINCT phase
+// value (the nbody_newton_accel pattern; Rule 22 classification). The hot
+// per-item math lives in a standalone `defn predict_item` — a real
+// non-inlined function (analysis/inline_cost.rs), which keeps every emitted
+// function small enough that -O2/-O3 compile cleanly.
+//
+// The printed observable: the top-5 item indices and the prediction count —
+// integers, stable under float wobble (the top-5 slots are all exact-5.0
+// clamps; see the results file for the tie analysis).
+
+const NROWS: Int = 943;
+const NCOLS: Int = 1682;
+const MAXNZ: Int = 100000;
+const QUERY_USER: Int = 10;
+
+const PH_BUILD_SPARSE: Int = 1;
+const PH_PREDICT: Int = 2;
+const PH_DONE: Int = 3;
+
+let phase: Int = 0;
+let lcg: Int = 12345;
+
+let mat_addr: Int = 0;
+let sim_addr: Int = 0;
+let start_addr: Int = 0;
+let curpos_addr: Int = 0;
+let nzuser_addr: Int = 0;
+let nzrat_addr: Int = 0;
+
+let item: Int = 0;
+let n_ratings: Int = 0;
+let n_preds: Int = 0;
+
+let t0i: Int = -1;  let t0r: Float = -1.0;
+let t1i: Int = -1;  let t1r: Float = -1.0;
+let t2i: Int = -1;  let t2r: Float = -1.0;
+let t3i: Int = -1;  let t3r: Float = -1.0;
+let t4i: Int = -1;  let t4r: Float = -1.0;
+
+// ── extracted hot path (its own non-inlined LLVM function) ──────────────────
+defn predict_item(sim_a: Int, start_a: Int, nzuser_a: Int, nzrat_a: Int,
+                  it: Int) -> Float {
+    let sim: Ptr<Float> = sim_a as Ptr<Float>;
+    let st: Ptr<Int> = start_a as Ptr<Int>;
+    let nu: Ptr<Int> = nzuser_a as Ptr<Int>;
+    let nr: Ptr<Float> = nzrat_a as Ptr<Float>;
+    let blk_lo: Int = st[it];
+    let blk_hi: Int = st[it + 1];
+    let sa: Float = 0.0;
+    let sb: Float = 0.0;
+    let first_v: Int = -1;
+    let last_v: Int = -1;
+    let first_r: Float = 0.0;
+    let last_r: Float = 0.0;
+    foreach k in blk_lo..blk_hi {
+        let vv: Int = nu[k];
+        when vv != QUERY_USER {
+            let rv: Float = nr[k];
+            let w: Float = sim[vv];
+            sa = sa + w * (rv - 1.0);
+            sb = sb + w;
+            when first_v < 0 { first_v = vv; first_r = rv; };
+            last_v = vv; last_r = rv;
+        };
+    };
+    when first_v >= 0 {
+        let wf: Float = sim[first_v];
+        sa = sa + wf * (first_r - 1.0);
+        sb = sb + wf;
+    };
+    when last_v >= 0 {
+        let wl: Float = sim[last_v];
+        sa = sa - wl * (last_r - 1.0);
+        sb = sb - wl;
+    };
+    let denom: Float = sb;
+    when denom == 0.0 { denom = 0.00001; };
+    let pred: Float = 1.0 + sa / denom;
+    when pred > 5.0 { pred = 5.0; };
+    when pred < 0.0 { pred = 0.0; };
+    term pred;
+};
+
+// ── node 0: allocate buffers + synthesize the rating matrix ─────────────────
+// LCG: x = (x * 1103515245 + 12345) % 2147483647 — products stay below i64
+// range, so the sequence is identical on every platform/run. Density 1/16
+// yields ~99k nonzeros (Otto's dataset shape).
+async node build_data [beginprogram && phase == 0][true] {
+    let m: Ptr<Float> = Malloc#(NROWS * NCOLS * 8) as Ptr<Float>;
+    let s: Ptr<Float> = Malloc#(NROWS * 8) as Ptr<Float>;
+    let stp: Ptr<Int> = Malloc#((NCOLS + 1) * 8) as Ptr<Int>;
+    let cp: Ptr<Int> = Malloc#(NCOLS * 8) as Ptr<Int>;
+    let nu: Ptr<Int> = Malloc#(MAXNZ * 8) as Ptr<Int>;
+    let nr: Ptr<Float> = Malloc#(MAXNZ * 8) as Ptr<Float>;
+    mat_addr = m as Int;
+    sim_addr = s as Int;
+    start_addr = stp as Int;
+    curpos_addr = cp as Int;
+    nzuser_addr = nu as Int;
+    nzrat_addr = nr as Int;
+    foreach u in 0..NROWS {
+        foreach it in 0..NCOLS {
+            lcg = (lcg * 1103515245 + 12345) % 2147483647;
+            when lcg % 16 == 0 {
+                let r128: Int = lcg / 65536;
+                m[u * NCOLS + it] = (r128 % 5 + 1) as Float;
+                n_ratings = n_ratings + 1;
+            };
+        };
+    };
+    foreach v in 0..NROWS {
+        lcg = (lcg * 1103515245 + 12345) % 2147483647;
+        s[v] = (lcg % 997) as Float;
+    };
+    phase = PH_BUILD_SPARSE;
+    term;
+};
+
+// ── node 1: build the sparse per-item layout (count -> prefix -> fill) ──────
+async node build_sparse [phase == 1][phase == 2] {
+    let mat: Ptr<Float> = mat_addr as Ptr<Float>;
+    let st: Ptr<Int> = start_addr as Ptr<Int>;
+    let cp: Ptr<Int> = curpos_addr as Ptr<Int>;
+    let nu: Ptr<Int> = nzuser_addr as Ptr<Int>;
+    let nr: Ptr<Float> = nzrat_addr as Ptr<Float>;
+    foreach c0 in 0..NCOLS {
+        st[c0] = 0;
+    };
+    foreach uu in 0..NROWS {
+        foreach it in 0..NCOLS {
+            let rv: Float = mat[uu * NCOLS + it];
+            when rv != 0.0 {
+                st[it] = st[it] + 1;
+            };
+        };
+    };
+    let acc: Int = 0;
+    foreach it2 in 0..NCOLS {
+        let c: Int = st[it2];
+        st[it2] = acc;
+        cp[it2] = acc;
+        acc = acc + c;
+    };
+    st[NCOLS] = acc;
+    foreach uu2 in 0..NROWS {
+        foreach it3 in 0..NCOLS {
+            let rv2: Float = mat[uu2 * NCOLS + it3];
+            when rv2 != 0.0 {
+                let pos: Int = cp[it3];
+                nu[pos] = uu2;
+                nr[pos] = rv2;
+                cp[it3] = pos + 1;
+            };
+        };
+    };
+    phase = PH_PREDICT;
+    term;
+};
+
+// ── node 2: predict one item per tick, over its sparse block only ───────────
+async node predict [phase == 2][phase == 3] {
+    let mat: Ptr<Float> = mat_addr as Ptr<Float>;
+    let own: Float = mat[QUERY_USER * NCOLS + item];
+    when own == 0.0 {
+        let pred: Float = predict_item(sim_addr, start_addr, nzuser_addr, nzrat_addr, item);
+        n_preds = n_preds + 1;
+        when pred > t4r {
+            t4i = item; t4r = pred;
+            when t4r > t3r {
+                let ti: Int = t3i; let tr: Float = t3r;
+                t3i = t4i; t3r = t4r; t4i = ti; t4r = tr;
+            };
+            when t3r > t2r {
+                let ti: Int = t2i; let tr: Float = t2r;
+                t2i = t3i; t2r = t3r; t3i = ti; t3r = tr;
+            };
+            when t2r > t1r {
+                let ti: Int = t1i; let tr: Float = t1r;
+                t1i = t2i; t1r = t2r; t2i = ti; t2r = tr;
+            };
+            when t1r > t0r {
+                let ti: Int = t0i; let tr: Float = t0r;
+                t0i = t1i; t0r = t1r; t1i = ti; t1r = tr;
+            };
+        };
+    };
+    item = item + 1;
+    when item == NCOLS {
+        phase = PH_DONE;
+    };
+    term;
+};
+
+// ── node 3: report ──────────────────────────────────────────────────────────
+async node report [phase == 3][true] {
+    println!("{}", t0i);
+    println!("{}", t1i);
+    println!("{}", t2i);
+    println!("{}", t3i);
+    println!("{}", t4i);
+    println!("{}", n_preds);
+    endprogram;
+};

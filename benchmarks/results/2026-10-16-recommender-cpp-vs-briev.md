@@ -91,3 +91,41 @@ scheduler noise; p50 is the metric.
 - Otto's `recommender_multinode.bv` copied verbatim (post-fix it compiles).
 - Candidate compiler diagnostics (self-assignment warning etc.): BUGS.md
   "Candidate diagnostics" entry — for review, no action taken.
+
+## Fixes landed (2026-10-16, same day)
+
+| Fix | Commit | Gate |
+|---|---|---|
+| Flaw 4 — reassigned-let alloca demotion (4 emission paths, DRY'd) | `93be0795` | `test_reassigned_let_in_reactive_txn_gets_entry_alloca`; corpus compiles at -O0..-O3 |
+| Flaw 1 — `llvm.memset` ≥ `aggregate_zero_init_memset_bytes` (4096) | `a42de3c0` | `test_aggregate_zero_init_memset_threshold`; small arrays byte-identical |
+| `.ll` determinism — reassigned-let entry allocas sorted by name | `a42de3c0` | run-to-run .ll stable; pre-change output canonicalized |
+| Flaw 2 — `node_inline_weight_threshold` (600) node-inline decision | `6e3a78ef` | multinode byte-identical; giant-node de-inlined, compiles+runs -O1/-O3, timing unchanged (~0.14 ms), output identical |
+| Flaw 3 — verdict: era-dependent; current compile-time diagnostics sufficient | doc-only | execution-model note + handoff_repro{,2,3} probes |
+
+## Harness benchmark adopted — `benchmarks/recommender` + `recommender_c.c`
+
+Self-contained isomorphism of Otto's corpus (in-program LCG synthesis of the
+rating matrix + sim row — his MovieLens/simlist inputs are not committable);
+same algorithm verbatim (sparse layout, single-pass `+first −last`, clamp,
+top-5 strictly-greater). Correctness gate = byte-identical output (top-5
+item indices + prediction count — integers, exact-5.0-clamp stable):
+
+```
+861
+594
+427
+1103
+34
+1575
+```
+
+Briev == C MATCH at default build and at the harness link flags
+(`-O3 -flto -march=native -ffast-math …`). Corpus artifacts (his multinode
+verbatim, singlepass.cpp, giant-node + bigarray reconstructions, VCL stub)
+live in `benchmarks/recommender_corpus/` with full attribution. Timing runs
+through `build_and_bench.sh recommender` like every other benchmark; Otto's
+in-program prediction-phase numbers above remain the fine-grained record.
+
+**Status: gate passed — provisional marks on the P0 tables above are lifted
+for the harness benchmark; Otto's original-input numbers stay recorded as
+his claims (his inputs, his machine).**

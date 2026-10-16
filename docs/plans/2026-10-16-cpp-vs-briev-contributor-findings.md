@@ -1,7 +1,7 @@
 # cpp-vs-briev contributor findings — assessment, compiler fixes, benchmark adoption
 
 **Date:** 2026-10-16
-**Status:** P0 COMPLETE (see `benchmarks/results/2026-10-16-recommender-cpp-vs-briev.md`);
+**Status:** COMPLETE 2026-10-16 — all phases landed (P0 repro + flaw-4 fix `93be0795`; P1 memset `a42de3c0`; P2 node-inline budget `6e3a78ef`; P3 doc verdict; P4 harness benchmark + corpus + attribution). Full record:
 flaw 4 (NEW — reassigned-let alloca demotion in the reactive txn emitters,
 blocked every compile) FOUND + FIXED + pinned by test; flaw 3 verdict:
 era-dependent, current diagnostics sufficient → documentation remainder;

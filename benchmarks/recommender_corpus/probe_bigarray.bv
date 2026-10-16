@@ -1,0 +1,11 @@
+// probe_bigarray — reconstruction of Otto's probe_bigarray.bv (missing from
+// github.com/odecode/cpp-vs-briev; behavior per README: 1.6M-element global
+// Float[] → observe the emitted lowering at P0.4b).
+const NCELLS: Int = 1586126;
+let mat: Float[NCELLS];
+
+node run [beginprogram][true] {
+    mat[0] = 3.5;
+    mat[NCELLS - 1] = 4.0;
+    endprogram println!("{}", mat[0] + mat[NCELLS - 1]);
+};

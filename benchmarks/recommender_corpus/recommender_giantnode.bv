@@ -1,0 +1,263 @@
+// recommender_giantnode — reconstruction of Otto's single-node sparse version
+// (recommender_sparse.bv, missing from github.com/odecode/cpp-vs-briev): the
+// WHOLE pipeline in one convergent node → one huge @txn_run body → observed
+// LLVM 17 greedy-regalloc segfault at -O2/-O3 (README "Unlocking -O2/-O3").
+// Same algorithm as recommender_multinode.bv; foreach replaces per-tick steps.
+import "std/string_c.bv";
+
+const NROWS: Int = 943;
+const NCOLS: Int = 1682;
+const NCELLS: Int = 1586126;
+const MAXNZ: Int = 100000;
+const QUERY_USER: Int = 10;
+
+defn predict_item(sim_a: Int, start_a: Int, nzuser_a: Int, nzrat_a: Int,
+                  it: Int) -> Float {
+    let sim: Ptr<Float> = sim_a as Ptr<Float>;
+    let st: Ptr<Int> = start_a as Ptr<Int>;
+    let nu: Ptr<Int> = nzuser_a as Ptr<Int>;
+    let nr: Ptr<Float> = nzrat_a as Ptr<Float>;
+    let blk_lo: Int = st[it];
+    let blk_hi: Int = st[it + 1];
+    let sa: Float = 0.0;
+    let sb: Float = 0.0;
+    let first_v: Int = -1;
+    let last_v: Int = -1;
+    let first_r: Float = 0.0;
+    let last_r: Float = 0.0;
+    foreach k in blk_lo..blk_hi {
+        let vv: Int = nu[k];
+        when vv != QUERY_USER {
+            let rv: Float = nr[k];
+            let w: Float = sim[vv];
+            sa = sa + w * (rv - 1.0);
+            sb = sb + w;
+            when first_v < 0 { first_v = vv; first_r = rv; };
+            last_v = vv; last_r = rv;
+        };
+    };
+    when first_v >= 0 {
+        let wf: Float = sim[first_v];
+        sa = sa + wf * (first_r - 1.0);
+        sb = sb + wf;
+    };
+    when last_v >= 0 {
+        let wl: Float = sim[last_v];
+        sa = sa - wl * (last_r - 1.0);
+        sb = sb - wl;
+    };
+    let denom: Float = sb;
+    when denom == 0.0 { denom = 0.00001; };
+    let pred: Float = 1.0 + sa / denom;
+    when pred > 5.0 { pred = 5.0; };
+    when pred < 0.0 { pred = 0.0; };
+    term pred;
+};
+
+node run [beginprogram][true] {
+    // ── read u.data ─────────────────────────────────────────────────────────
+    let path: Int = to_c_string("u.data");
+    let fd: Int = SysCall#(2, path, 0, 0, 0, 0, 0);
+    let size: Int = SysCall#(8, fd, 0, 2, 0, 0, 0);
+    SysCall#(8, fd, 0, 0, 0, 0, 0);
+    let buf: Int = Alloc#(size + 1) as Int;
+    SysCall#(0, fd, buf, size, 0, 0, 0);
+    SysCall#(3, fd, 0, 0, 0, 0, 0);
+
+    let mat: Ptr<Float> = Malloc#(NCELLS * 8) as Ptr<Float>;
+    let sim: Ptr<Float> = Malloc#(NROWS * 8) as Ptr<Float>;
+    let st: Ptr<Int> = Malloc#((NCOLS + 1) * 8) as Ptr<Int>;
+    let cp: Ptr<Int> = Malloc#(NCOLS * 8) as Ptr<Int>;
+    let nu: Ptr<Int> = Malloc#(MAXNZ * 8) as Ptr<Int>;
+    let nr: Ptr<Float> = Malloc#(MAXNZ * 8) as Ptr<Float>;
+
+    // ── parse u.data (virtual trailing newline at i == size) ────────────────
+    let cur: Int = 0;
+    let field: Int = 0;
+    let in_num: Int = 0;
+    let u_val: Int = 0;
+    let it_val: Int = 0;
+    let r_val: Int = 0;
+    let n_ratings: Int = 0;
+    foreach i in 0..(size + 1) {
+        let b: Int = 10;
+        when i < size {
+            b = Load#(buf + i, 1);
+        };
+        let is_digit: Int = 0;
+        when b >= 48 && b <= 57 { is_digit = 1; };
+        when is_digit == 1 {
+            cur = cur * 10 + (b - 48);
+            in_num = 1;
+        };
+        when is_digit == 0 && in_num == 1 {
+            when field == 0 { u_val = cur; };
+            when field == 1 { it_val = cur; };
+            when field == 2 { r_val = cur; };
+            field = field + 1;
+            cur = 0;
+            in_num = 0;
+        };
+        when (b == 10 || i == size) && field >= 3 {
+            let row: Int = u_val - 1;
+            let col: Int = it_val - 1;
+            when row >= 0 && row < NROWS && col >= 0 && col < NCOLS {
+                mat[row * NCOLS + col] = r_val as Float;
+                n_ratings = n_ratings + 1;
+            };
+            field = 0;
+        };
+    };
+
+    // ── read simlist.txt, locate active user's line ─────────────────────────
+    let spath: Int = to_c_string("simlist.txt");
+    let sfd: Int = SysCall#(2, spath, 0, 0, 0, 0, 0);
+    let ssize: Int = SysCall#(8, sfd, 0, 2, 0, 0, 0);
+    SysCall#(8, sfd, 0, 0, 0, 0, 0);
+    let sbuf: Int = Alloc#(ssize + 1) as Int;
+    SysCall#(0, sfd, sbuf, ssize, 0, 0, 0);
+    SysCall#(3, sfd, 0, 0, 0, 0, 0);
+
+    let line: Int = 0;
+    let p: Int = 0;
+    let start: Int = 0;
+    foreach scan in 0..ssize {
+        when line < QUERY_USER {
+            let c: Int = Load#(sbuf + p, 1);
+            when c == 10 {
+                line = line + 1;
+                start = p + 1;
+            };
+            p = p + 1;
+        };
+    };
+
+    // ── parse active user's sim row (virtual trailing newline) ──────────────
+    let sj_end: Int = start;
+    let line_end: Int = 0;
+    foreach q in start..(ssize + 1) {
+        when line_end == 0 {
+            let c2: Int = 10;
+            when q < ssize {
+                c2 = Load#(sbuf + q, 1);
+            };
+            when c2 == 10 {
+                sj_end = q;
+                line_end = 1;
+            };
+        };
+    };
+    let scur: Int = 0;
+    let stok: Int = 0;
+    let sin: Int = 0;
+    foreach sj in start..(sj_end + 1) {
+        let b2: Int = 10;
+        when sj < sj_end {
+            b2 = Load#(sbuf + sj, 1);
+        };
+        let is_dig: Int = 0;
+        when b2 >= 48 && b2 <= 57 { is_dig = 1; };
+        when is_dig == 1 {
+            scur = scur * 10 + (b2 - 48);
+            sin = 1;
+        };
+        when is_dig == 0 && sin == 1 {
+            when stok < NROWS {
+                sim[stok] = scur as Float;
+            };
+            stok = stok + 1;
+            scur = 0;
+            sin = 0;
+        };
+    };
+
+    // ── build sparse per-item layout (count -> prefix -> fill) ──────────────
+    foreach c0 in 0..NCOLS {
+        st[c0] = 0;
+    };
+    foreach uu in 0..NROWS {
+        foreach it in 0..NCOLS {
+            let rv: Float = mat[uu * NCOLS + it];
+            when rv != 0.0 {
+                st[it] = st[it] + 1;
+            };
+        };
+    };
+    let acc: Int = 0;
+    foreach it2 in 0..NCOLS {
+        let c: Int = st[it2];
+        st[it2] = acc;
+        cp[it2] = acc;
+        acc = acc + c;
+    };
+    st[NCOLS] = acc;
+    foreach uu2 in 0..NROWS {
+        foreach it3 in 0..NCOLS {
+            let rv2: Float = mat[uu2 * NCOLS + it3];
+            when rv2 != 0.0 {
+                let pos: Int = cp[it3];
+                nu[pos] = uu2;
+                nr[pos] = rv2;
+                cp[it3] = pos + 1;
+            };
+        };
+    };
+
+    // ── predict one item per iteration, over its sparse block only ──────────
+    let ts0: Int = Alloc#(16) as Int;
+    SysCall#(228, 1, ts0, 0, 0, 0, 0);
+    let t_start: Int = Load#(ts0, 8) * 1000000000 + Load#(ts0 + 8, 8);
+    Free#(ts0 as Ptr<Bit<8>>);
+
+    let n_preds: Int = 0;
+    let t0i: Int = -1;  let t0r: Float = -1.0;
+    let t1i: Int = -1;  let t1r: Float = -1.0;
+    let t2i: Int = -1;  let t2r: Float = -1.0;
+    let t3i: Int = -1;  let t3r: Float = -1.0;
+    let t4i: Int = -1;  let t4r: Float = -1.0;
+    foreach item in 0..NCOLS {
+        let own: Float = mat[QUERY_USER * NCOLS + item];
+        when own == 0.0 {
+            let pred: Float = predict_item(sim as Int, st as Int, nu as Int, nr as Int, item);
+            n_preds = n_preds + 1;
+            when pred > t4r {
+                t4i = item; t4r = pred;
+                when t4r > t3r {
+                    let ti: Int = t3i; let tr: Float = t3r;
+                    t3i = t4i; t3r = t4r; t4i = ti; t4r = tr;
+                };
+                when t3r > t2r {
+                    let ti: Int = t2i; let tr: Float = t2r;
+                    t2i = t3i; t2r = t3r; t3i = ti; t3r = tr;
+                };
+                when t2r > t1r {
+                    let ti: Int = t1i; let tr: Float = t1r;
+                    t1i = t2i; t1r = t2r; t2i = ti; t2r = tr;
+                };
+                when t1r > t0r {
+                    let ti: Int = t0i; let tr: Float = t0r;
+                    t0i = t1i; t0r = t1r; t1i = ti; t1r = tr;
+                };
+            };
+        };
+    };
+
+    let ts1: Int = Alloc#(16) as Int;
+    SysCall#(228, 1, ts1, 0, 0, 0, 0);
+    let t_end: Int = Load#(ts1, 8) * 1000000000 + Load#(ts1 + 8, 8);
+    Free#(ts1 as Ptr<Bit<8>>);
+    let elapsed_ns: Int = t_end - t_start;
+    let elapsed_ms: Float = (elapsed_ns as Float) / 1000000.0;
+
+    // ── report ──────────────────────────────────────────────────────────────
+    println!("Top 5 recommended items for user 10:");
+    println!("{}", t0i); println!("{}", t0r);
+    println!("{}", t1i); println!("{}", t1r);
+    println!("{}", t2i); println!("{}", t2r);
+    println!("{}", t3i); println!("{}", t3r);
+    println!("{}", t4i); println!("{}", t4r);
+    println!("predictions:");
+    println!("{}", n_preds);
+    println!("prediction_time_ms:");
+    endprogram println!("{}", elapsed_ms);
+};

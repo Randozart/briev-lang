@@ -122,6 +122,7 @@ TAG[linked_list]=runtime
 TAG[hash_ops]=runtime
 TAG[hash_ops_idio]=runtime
 TAG[enemy_swarm]=runtime
+TAG[recommender]=runtime
 # 2026-10-09 (T2b): hot-loop-over-slice — measures the contiguous-slice
 # zero-copy VIEW vs the copy path. Self-contained (Briev vs Briev A/B); no C
 # reference, so it is NOT in the BENCHMARKS timing list (would SKIP on the
@@ -177,6 +178,13 @@ BENCHMARKS=(
     #                     # structure (was a 256-ring, a different workload).
     #                     # Verified MATCH at BOUND=50M, ~1.05x parity.
     "enemy_swarm"       # SoA reactive swarm (array-state)
+    # 2026-10-16 (plan 2026-10-16-cpp-vs-briev-contributor-findings.md):
+    # neighborhood-CF recommender core, derived from Otto Westerlund's
+    # cpp-vs-briev corpus (attributed in the .bv header). Self-contained —
+    # the MovieLens inputs are synthesized in-program by a shared LCG, so
+    # the correctness gate is byte-stable. Multi-node async + defn-extracted
+    # hot kernel; compiles clean at -O2/-O3.
+    "recommender"
     "bridge_glue"
     "bridge_multi"
     # "gpu/saxpy"        # no .bv file exists

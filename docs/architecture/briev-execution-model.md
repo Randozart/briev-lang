@@ -140,6 +140,23 @@ Without `term`, the reactor has no point at which to evaluate the goal.
 > the identical rule (`interpreter::eval::pgated_term`); the backend's
 > P-gated emission landed with plan step 4, tails with step 5.
 
+> **2026-10-16 (cpp-vs-briev findings).** Multi-node handoff via a shared
+> phase field: the compiler's front door now settles every shape a
+> contributor hit in the LLVM-17 era. A `beginprogram` (or any convergent)
+> node whose goal the body does not counter-advance toward is rejected at
+> compile time with the fix in the message; a reactive cycle with no
+> completion in any postcondition is rejected as non-convergent ("state
+> the completion in the nodes' postconditions … or make the exit
+> condition explicit in a pre"). Plain convergent counter nodes hand off
+> correctly without any keyword. For per-tick parallel-LOOKING nodes the
+> classification demand (Rule 22) stands: mark the pair `async` (the
+> `benchmarks/nbody_newton_accel.bv` distinct-phase-gate pattern — also
+> the shape of `benchmarks/recommender.bv`) or `sync<g>`. The
+> `__wait_for_trigger__` runtime panic reported against the LLVM-17-era
+> compiler no longer reproduces; the liveness analysis rejects those
+> shapes before emission. Probe programs: `benchmarks/recommender_corpus/`
+> reconstruction notes and the 2026-10-16 results file.
+
 ### Postcondition semantics
 
 | Postcondition | Behavior |
