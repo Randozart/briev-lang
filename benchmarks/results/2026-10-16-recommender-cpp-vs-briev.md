@@ -129,3 +129,47 @@ in-program prediction-phase numbers above remain the fine-grained record.
 **Status: gate passed — provisional marks on the P0 tables above are lifted
 for the harness benchmark; Otto's original-input numbers stay recorded as
 his claims (his inputs, his machine).**
+
+## Absolute-limit instrumentation (addendum part 2) — `node_inline_weight_threshold` derivation
+
+**Protocol:** `benchmarks/ra_knee_sweep.sh` (weight ladder ×3 clang -O3
+median, `###`-pinned concentrated shape) + weight bisection (threshold probe
+on the corpus programs). Instrument notes, all fixed en route: dead-code
+folding (independent lets vanish — chain them), LLVM strength-reduces the
+chained recurrence to a closed form (object size flat — compile TIME is the
+metric), `halt` is a reserved word, a `count +=` body makes an unbounded
+counter the liveness pass rightly rejects, `set -e` kills `[ ] || [ ] && x=`
+on non-improving timings, and beginprogram nodes must be single-pass `[true]`
+with a mid node declaring the completion.
+
+**(1) Resource truth — clang 23.1.1, 2026-10-16:**
+
+| body weight | clang -O3 ms (median of 3) |
+|---|---|
+| 208 | 631 |
+| 408 | 546 |
+| 808 | 584 |
+| 1608 | 536 |
+| 3208 | 539 |
+| 6408 | 554 |
+| 12808 | 620 |
+| 25608 | 790 |
+| 51208 | 1033 |
+
+Compile cost is LINEAR through 51k weight — no superlinear knee on the floor
+toolchain. The resource argument imposes no practical cap.
+
+**(2) Defect-truth bisection (LLVM 17 ledger, weight units):**
+- Largest known-HEALTHY node (multinode `txn_report`): weight ∈ (500, 520].
+- Known-CRASHING node (giant single node — LLVM 17 greedy-RA segfault):
+  weight ∈ (1450, 1480].
+- LLVM 17 defect boundary ∈ (510, 1460); valve 600 = boundary_min/2.4 with
+  the largest healthy node kept inline (510 < 600 → byte-identical
+  emission) and every known-crash shape excluded (1460 > 600).
+- Instrumentation facts, not tuning folklore: both weights bisected live;
+  re-derive after any toolchain change with the same two probes.
+
+**(3) Verdict:** valve stays 600 — grounded as measured-boundary ÷ 2.4
+safety, not a corpus anecdote; retirement per the BUGS.md defect ledger
+(floor toolchain > 17 makes it compile-resource hygiene only, at which point
+the linear sweep above says even that is belt-and-braces).

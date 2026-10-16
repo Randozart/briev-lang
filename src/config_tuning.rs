@@ -69,13 +69,15 @@ pub struct IrLoweringSettings {
     /// the reactive node-txn auto-inline. Bodies above it lose the
     /// unconditional `alwaysinline` (the whole-program-inlined-into-one-
     /// function shape LLVM 17's greedy regalloc segfaults on); LLVM's own
-    /// inliner still inlines where profitable. Empirically calibrated
-    /// (2026-10-16) against Otto Westerlund's corpus: his largest single
-    /// healthy node (the 11-println report, weight ~500) stays alwaysinline
-    /// and the emitted module is byte-identical; his merged single-node
-    /// recommender (the whole-program-inlined shape, ~1900 .ll lines) loses
-    /// the attribute. Run-to-run .ll stability unaffected (weight is a pure
-    /// AST walk).
+    /// inliner still inlines where profitable. Measured derivation
+    /// (2026-10-16, results file "absolute-limit instrumentation"): the
+    /// largest known-healthy node weighs ~510 (bisected; stays alwaysinline,
+    /// emission byte-identical); the lowest known-crashing shape ~1460
+    /// (LLVM 17 greedy-RA defect, BUGS.md ledger). 600 = 1460/2.4 safety,
+    /// inside the healthy/crashing gap. The RA-knee sweep
+    /// (benchmarks/ra_knee_sweep.sh) shows clang 23 compile cost is linear
+    /// through 51k weight — this valve guards only the ledgered defect and
+    /// retires with it (floor toolchain > 17).
     pub node_inline_weight_threshold: u32,
     /// Accel auto-tuning probe: full-map runs per lane (Phase 7).
     pub accel_probe_k: u64,
