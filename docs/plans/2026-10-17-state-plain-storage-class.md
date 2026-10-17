@@ -315,6 +315,72 @@ the same FMA shape and is still faster overall).
    `contains_key` gate silently dropped the `stdout_buf = Alloc#(...)`
    seed — risk R1, hit exactly as registered).
 
+### Full matrix (40 runtime + 4 optimizer + 2 bridges)
+
+Ratio = Briev/C at 50M iterations, 5×5 per bench, all rows MATCH/PASS.
+**Δ** = movement vs the morning post-dispatch-fix suite (same machine,
+same day). ⚠ = µs-scale bench (0.3–14ms absolute) — ratio amplifies
+machine jitter (C reference itself ran +28% vs the morning); treat as
+unresolved, not as regression. Raw data:
+`benchmarks/results/2026-10-17-state-plain-suite.md`.
+
+**Optimizer — 4/4 precomputed MATCH** (unchanged):
+iir_filter · precompute_sum · const_heavy · async_counters_idio.
+
+**Briev wins — 21:**
+
+| bench | ratio | Δ |
+|---|---|---|
+| arena_churn | 0.26x | = |
+| print_loop | 0.42x | = |
+| queue_drain | **0.45x** | ← 1.35x (plain target) |
+| queue_drain_sym | 0.45x | = |
+| queue_drain_idio | 0.46x | = |
+| global_lifetime | 0.49x | = |
+| linked_list | 0.49x | = |
+| stack_push_pop | 0.57x | = |
+| cancel_math | 0.58x | = |
+| interval_step | **0.61x** | ← 1.23x (plain target) |
+| fasta | 0.61x | ~ (0.58x) |
+| accumulator_flush | 0.72x | ~ (0.89x) |
+| hash_ops | 0.73x | ~ (0.74x) |
+| sparse_dispatch | 0.70x | ~ (0.76x) |
+| enemy_swarm | 0.79x | ~ (0.75x) |
+| ring_buffer | 0.82x | ~ (0.96x) |
+| nbody_sqrt | 0.84x | ~ (0.72x) |
+| mandelbrot | **0.91x** | ← 1.20x (plain recovery) |
+| knucleotide | **0.92x** | ← 1.22x (plain recovery) |
+| matrix_pipeline | 0.94x | ~ (0.99x) |
+| nbody_sqrt_idio | 0.95x | ~ (0.86x) |
+
+**Ties — 3:** telemetry_stream 1.03x (=) · hash_ops_idio 1.05x (~1.01x) ·
+fannkuch_redux 1.06x (~1.11x).
+
+**C wins — 13:**
+
+| bench | ratio | Δ | classification |
+|---|---|---|---|
+| series_converge ⚠ | 1.50x | ← 1.00x | µs jitter (0.6 vs 0.4ms); output MATCH incl. watchdog print |
+| deep_recursion ⚠ | 1.50x | ← 0.75x | µs jitter (0.3ms) |
+| bit_clear ⚠ | 1.40x | ← 0.60x | µs jitter (0.7ms) |
+| sweep_sparse | 1.44x | ← 1.30x | machine +~15% (C itself +28% today) |
+| sweep_mid | 1.33x | ← 1.30x | same |
+| recommender | 1.27x | ← 1.02x | ms-scale; re-measure |
+| pid_control | 1.23x | ← 0.99x | same |
+| sweep_dense | 1.21x | ← 1.14x | sweep family |
+| nbody_newton | 1.13x | ← 0.97x | machine-share; re-measure |
+| sweep_arr | 1.15x | ← 1.13x | sweep family |
+| **kalman_filter_runtime** | **1.28x** | ← 1.08x | **REAL −15%** (interleaved A/B vs pre-plain): FMA contraction trade; now matches C numerically |
+| **float_math** | **2.01x** | ← 0.90x | **NOT this change** (pre-plain binary identical, 1384 vs 1383ms/500M; 8962a2a1 baseline folds the program away) — pre-existing precompute gap |
+| nbody_newton_accel | 13.17x | ← 11.97x | accel-offload subject, unchanged |
+
+**Bridges:** bridge_glue MATCH · bridge_multi PASS.
+
+**Score: 21 Briev wins + 4 precomputed + 2 bridges vs 13 C-wins** — of
+which 4 µs-jitter-flagged, 3 sweep-family (stable historical gap,
+machine-inflated today), 2 with filed investigations (kalman
+contraction trade, float_math precompute gap), 1 accel handoff.
+
 ### Open items
 
 - kalman −15% (FMA contraction trade) — future work, understood.
