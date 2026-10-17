@@ -896,9 +896,51 @@ Provenance: every item in the resolved program carries its module of origin (the
 let counter: Int = 0;
 const MaxRetries: Int = 3;
 init BufSize: Int = get_env_int!("BUFSIZE");
+plain let stdout_buf: Int = 0;   // library plumbing — not machine state
+state let emissions: Int = 0;    // asserted machine state (checked)
 ```
 
-Top-level `let` declares reactive program state. Local `let` declares a local binding. There is no `state` keyword.
+Top-level `let` declares reactive program state. Local `let` declares a local binding.
+
+**Storage classes (2026-10-17).** A top-level `let` belongs to one of two
+storage classes, decided by the compiler and disclosed via an `info:` line:
+
+- **state** — machine state. The variable lives in the machine's state
+  struct; contracts, watchdogs, `#!exit` conditions, result expressions,
+  and view bindings may reference it; the transition graph, liveness, and
+  dead-field elimination govern it.
+- **plain** — an ordinary variable. Same name, type, initializer, and
+  read/write behavior, but the machine does not reason about it: no
+  contract may reference it, it is not part of the transition graph, and
+  defns that touch only plain lets do not carry machine state.
+
+**Inference.** A bare top-level `let` is **state** when the proof surface
+(contracts, watchdog conditions and on-fire arguments, `#!exit`
+conditions, out-pragmas, result expressions, view bindings) references
+it, and **plain** otherwise. Node and defn *bodies* never affect the
+classification — reading or writing a plain let from a body compiles to
+ordinary access to its storage.
+
+**Checked assertions.** `state let` and `plain let` assert a category;
+the compiler checks the assertion against inference and rejects a
+contradicted declaration as an error, quoting the contradicting
+reference:
+
+- `plain let x` referenced by any contract → *"declared `plain`, but …
+  references it — a contract makes a variable machine state. Remove the
+  reference or declare it `state`."*
+- `state let x` referenced by nothing in the proof surface → *"declared
+  `state`, but no contract, watchdog, exit condition, or result
+  expression references it — the machine never reasons about it.
+  Contract over it or declare it `plain`."*
+
+`state` and `plain` are contextual modifiers (they are only modifiers
+when they directly precede a top-level `let`; a variable named `state`
+or `plain` is unaffected). Both classes have identical semantics for
+reads, writes, and initialization; they differ only in machine
+membership and backing storage. Library plumbing (buffers, fill
+pointers, RNG state — anything no contract references) is the canonical
+`plain` use.
 
 `const` declares an immutable top-level value. `$const` is a separate compile-time-only binding erased before runtime.
 
