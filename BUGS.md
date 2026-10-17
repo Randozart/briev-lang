@@ -33,6 +33,28 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## compare_baseline.sh compared against stale binaries — FIXED 2026-10-17
+
+**Symptom:** three sweep A/B "regressions" (queue_drain 2.51x,
+float_math_nonzero 1.30x, interval_step 1.11x vs the baseline worktree)
+that (a) contradicted the harness's own suite numbers and (b) vanished
+when re-measured. Root cause: `compare_baseline.sh` rebuilt the baseline
+binary only `if [ ! -f ... ]`, so the baseline worktree's binaries were
+left from whatever compiler had last built them — queue_drain's binary
+was from **August 16** and float_math_nonzero/interval_step's from
+**September 7**, while the checked-out baseline commit was `13ee67fa`
+(September 30). The A/B silently compared against compilers *older than
+the baseline itself*.
+
+**Fix:** the script now rebuilds BOTH binaries on every invocation — an
+A/B verdict is only as good as the provenance of both binaries, and a
+release build of one benchmark is cheap.
+
+**Lesson:** any harness that caches compiled artifacts across compiler
+versions must key the cache on the compiler identity (or rebuild); an
+mtime alone can silently invalidate days of ratio conclusions. Full
+triage context: `docs/2026-10-17-dispatch-regression-report.md` §7.
+
 ## Dead callable txn knocked single-node programs off the watchdog fold — FIXED 2026-10-17
 
 **Symptom:** `benchmarks/series_converge` printed `""` (C reference

@@ -199,18 +199,48 @@ Runtime suite, same machine, same day: morning = pre-fix compiler
 (Plain `~` = within a few percent, likely noise; the suite is single-run.)
 
 **Reading:** 10 benches recovered or flipped to Briev wins — they were
-silently riding the direct-SSA path. Six rows **worsened**:
+silently riding the direct-SSA path. Six rows appeared to worsen:
 float_math_nonzero +0.27, sweep_sparse +0.34, sweep_dense +0.11,
-sweep_arr +0.11, nbody_sqrt +0.08, knucleotide +0.03. Mechanism
-hypothesis: the fix also tightened `internal_fold_info`'s early-out
-(raw node count → reactive count). A 1-reactive + callables program
-could pre-fix take an internal-fold path unlocked by the polluted count;
-post-fix it takes a different (slower for that shape) path. These need
-the controlled A/B before any action — single-run deltas under ~0.1 are
-also within known suite noise. Triage continues against a baseline
-repointed to `13ee67fa` (last pre-regression commit) — the current
-baseline worktree (`502ca764`) is post-regression and would produce
-fake wins for fold-affected benches.
+sweep_arr +0.11, nbody_sqrt +0.08, knucleotide +0.03.
+
+**The worsened set did not survive triage.** Controlled A/B against a
+baseline repointed to `13ee67fa` (last pre-regression commit, fresh
+release build) refuted every one, and exposed a second harness bug:
+`compare_baseline.sh` only rebuilt the baseline binary **if it was
+missing**, so the baseline worktree's binaries were whatever compiler had
+last built them — queue_drain's was from **August 16**,
+float_math_nonzero/interval_step's from **September 7**. Three
+"confirmed regressions" (queue_drain 2.51x, float_math_nonzero 1.30x,
+interval_step 1.11x) were comparisons against compilers *older than the
+baseline commit itself*; with fresh baseline builds all three read
+0.98–1.00. The script now always rebuilds both binaries.
+
+**Final triage verdicts (5×5 interleaved, BOUND=500M, baseline =
+`13ee67fa` fresh):**
+
+| bench | vs pre-regression | verdict |
+|---|---|---|
+| float_math_nonzero | 0.99x | OK |
+| sweep_sparse | 1.01x | OK |
+| sweep_dense | 1.04x | OK |
+| sweep_arr | 0.72x | faster |
+| nbody_sqrt | 0.96x | OK |
+| knucleotide | 1.00x | OK |
+| mandelbrot | 1.03x | OK (1.20x vs C = historical gap, not drift) |
+| fannkuch_redux | 1.02x | OK (1.11x vs C = historical gap) |
+| kalman_filter_runtime | 1.04x | OK (1.08x vs C = historical gap) |
+| queue_drain | 0.98x | OK (2.51x was a stale-baseline artifact) |
+| interval_step | 1.00x | OK (1.11x was a stale-baseline artifact) |
+| sweep_mid | 0.98x | OK |
+| nbody_newton_accel | **1.10x** | real >10% drift vs pre-regression |
+
+The single live signal is **nbody_newton_accel**: 1.10x over the
+pre-regression compiler, on top of the long-standing ~12x gap to the
+vectorized C reference (11.97x post-fix). That bench is the CPU
+accel-offload subject with its own plan; recorded as the triage handoff,
+not fixed here. The remaining C-wins are historical gaps of the same
+shape they had before the regression window — the sweep's "beats C
+everywhere" goal continues from a clean, honestly-measured baseline.
 
 ## 8. Optimizer suite (same day, post-fix)
 
@@ -228,7 +258,25 @@ MATCH. UTF8_ops row retired (§5). 4/4 clean.
    every folded-body engine honors the watchdog (header check + on-fire
    + early exit, mirroring `.cmwd_`) or refuses the dispatch with a
    diagnostic naming the dropped contract.
-2. **Triage the worsened set + remaining C-wins** against the
-   `13ee67fa` baseline (in progress).
+2. **nbody_newton_accel**: the one live triage signal (1.10x over
+   pre-regression, ~12x vs C) — handoff to the accel-offload plan.
 3. Full `cargo test` still blocked by the concurrent session's untracked
    dead-API `tests/ffi_*_tests.rs` (do not touch).
+
+## 10. Lessons (methodology)
+
+1. **Bisect gates must be compile-time deterministic properties** — the
+   runtime output gate flaked under load and produced two contradictory
+   bisects before the IR-string gate settled it in one clean run.
+2. **A/B provenance is part of the measurement** — a baseline binary
+   whose mtime predates the baseline commit invalidates the A/B.
+   `compare_baseline.sh` now rebuilds both sides every run; any future
+   harness must do the same.
+3. **Stale release binaries mislead** — the harness uses
+   `target/release/brievc`; rebuild release after any compiler fix
+   before drawing conclusions from harness output (the first post-fix
+   QUICK run still said MISMATCH for exactly this reason).
+4. **The regression hid in plain sight for 10 days** because the
+   affected benches still MATCHed (correct, just slow) — correctness
+   suites alone would not have caught it; the benchmark sweep's
+   "beats C" ratio gate did.

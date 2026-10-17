@@ -29,20 +29,22 @@ echo "Baseline: $(cd $BASELINE_DIR && git rev-parse --short HEAD)"
 echo "Current:  $(git rev-parse --short HEAD)"
 echo ""
 
-# Ensure both binaries exist
-if [ ! -f "$BASELINE_DIR/benchmarks/$NAME" ]; then
-    echo "Building baseline binary..."
-    cd "$BASELINE_DIR"
+# Build both binaries EVERY run.
+# 2026-10-17 (staleness hazard): the old `if [ ! -f ... ]` guard left the
+# baseline binary in place across baseline-worktree repoints, so an A/B
+# compared against an AUGUST compiler while believing it compared against
+# the checked-out baseline commit — three sweep "regressions"
+# (queue_drain 2.5x, float_math_nonzero 1.3x, interval_step 1.1x) were
+# pure artifacts and vanished with fresh baseline builds. An A/B verdict
+# is only as good as the provenance of both binaries; rebuild is cheap.
+echo "Building baseline binary..."
+(cd "$BASELINE_DIR" &&
     # 2026-08-01: binary renamed briev-compiler -> brievc long ago; the stale
     # name made baseline builds fail silently and the comparison compare only
     # the current binary (or error). Must match the harness's brievc binary.
-    BOUND="$BOUND" ./target/release/brievc build "benchmarks/${NAME}.bv" --out benchmarks 2>&1 | tail -1
-    cd "$CURRENT_DIR"
-fi
-if [ ! -f "benchmarks/$NAME" ]; then
-    echo "Building current binary..."
-    BOUND="$BOUND" ./target/release/brievc build "benchmarks/${NAME}.bv" --out benchmarks 2>&1 | tail -1
-fi
+    BOUND="$BOUND" ./target/release/brievc build "benchmarks/${NAME}.bv" --out benchmarks 2>&1 | tail -1)
+echo "Building current binary..."
+BOUND="$BOUND" ./target/release/brievc build "benchmarks/${NAME}.bv" --out benchmarks 2>&1 | tail -1
 
 time_binary() {
     local dir="$1"

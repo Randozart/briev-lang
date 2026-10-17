@@ -67,15 +67,21 @@ the 10-17 morning run (same commit, pre-fix):
 | nbody_newton | 1.09x | 0.97x Briev |
 | series_converge | MISMATCH | MATCH 1.00x |
 
-Remaining C-wins >10% (post-fix, honest ratios — these did NOT ride the
-regression): nbody_newton_accel 11.97x, queue_drain 1.35x,
-sweep_sparse/sweep_mid 1.30x, float_math_nonzero 1.24x, interval_step
-1.23x, knucleotide 1.22x, mandelbrot 1.20x, sweep_dense 1.14x,
-sweep_arr 1.13x, fannkuch_redux 1.11x. Triage continues against the
-pre-regression baseline — NOTE `compare_baseline.sh` compares against
-`502ca764`, which is post-regression: for fold-affected benches the
-baseline is the broken compiler; repoint the baseline worktree to
-`13ee67fa` (last pre-regression) before A/B-ing those.
+**Triage COMPLETE (2026-10-17, report:
+`docs/2026-10-17-dispatch-regression-report.md` §7).** Baseline
+repointed to `13ee67fa` (last pre-regression), release built, all
+candidates A/B'd 5×5 interleaved. Every "worsened" row and two of three
+"confirmed regressions" were **stale-baseline artifacts**:
+`compare_baseline.sh` only rebuilt the baseline binary when missing, so
+queue_drain (Aug 16 binary), float_math_nonzero and interval_step
+(Sep 7 binaries) were compared against compilers OLDER than the baseline
+commit — fresh builds read 0.98–1.04x across the board. The script now
+always rebuilds both binaries. Remaining C-wins (mandelbrot 1.20x,
+knucleotide 1.22x, fannkuch 1.11x, kalman 1.08x, sweep family,
+float_math_nonzero 1.24x) are at their pre-regression levels —
+historical gaps, not drift. The one live signal:
+**nbody_newton_accel 1.10x** over pre-regression (on top of the known
+~12x vs C) — handoff to the accel-offload plan.
 
 **Harness fixes landed with the sweep:** `build_c` cross-ref is not a
 build failure (queue_drain_idio row restored); dead `UTF8_ops` entry
