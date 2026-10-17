@@ -1317,6 +1317,22 @@ pub struct LlvmBackend {
     /// 2026-09-14 (machine-entry plan): `@__briev_trap_frame` emitted once
     /// per module when a `full_context` handler exists.
     trap_frame_emitted: bool,
+    /// 2026-10-17 (liveness fixpoint): helpers the IR-scan net found
+    /// EMITTED-but-unrooted in an earlier emission round, plus their
+    /// liveness closure — unioned into `live_defns` on re-entry so round
+    /// N+1 emits them. The net's under-approximation self-corrects from
+    /// ground truth (what emission actually called) instead of demanding
+    /// a hand-maintained table row per cast-lane class. Cleared by the
+    /// public `generate()` entry (state is per-generate, not per-backend).
+    /// Undo: delete this field + the fixpoint block in the IR-scan net.
+    liveness_fixpoint_extra: std::collections::HashSet<String>,
+    /// 2026-10-17 (liveness fixpoint): re-emission rounds consumed — each
+    /// round strictly grows `liveness_fixpoint_extra` (missed names are
+    /// filtered OUT of live sets, so they are always net-new), which
+    /// bounds rounds by the unit's name universe; 16 is a far-above-
+    /// practical guard (real chains resolve in 1–3) whose breach means
+    /// pathological emission, reported with the chain.
+    liveness_fixpoint_rounds: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1417,6 +1433,8 @@ impl LlvmBackend {
             bootstrap_txn: None,
             bootstrap_bad: None,
             trap_frame_emitted: false,
+            liveness_fixpoint_extra: std::collections::HashSet::new(),
+            liveness_fixpoint_rounds: 0,
         }
     }
 
@@ -2458,7 +2476,48 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         }
     }
 
+    /// 2026-10-17 (liveness fixpoint): public entry — resets per-generate
+    /// fixpoint state, snapshots pre-round warnings, acquires the analysis
+    /// ONCE, then runs the emission body via `generate_with_analysis` (the
+    /// fixpoint's re-entry target). External callers keep using `generate`.
     pub fn generate(&mut self, items: &[TopLevel], exit_condition: Option<Box<Expr>>) -> String {
+        self.liveness_fixpoint_extra.clear();
+        self.liveness_fixpoint_rounds = 0;
+        let entry_warnings = self.warnings.clone();
+        // 2026-08-23 (Plan 0.1): consume the pipeline-computed analysis when
+        // the caller provided it (.with_analysis); otherwise self-compute —
+        // identical inputs, identical result, so both paths agree. Taken
+        // ONCE per public entry: fixpoint re-runs MOVE the same analysis, so
+        // every round sees bit-identical analysis (only live_defns grows).
+        let analysis = match self.precomputed_analysis.take() {
+            Some(a) => a,
+            None => crate::backend::analyze_program(
+                items,
+                false,
+                // 2026-07-31: Phase 3 (§8.1) — vector-phi promotion gate from
+                // config/targets.dbvl `vector_min_width` for this target.
+                crate::config_tuning::target_settings_for(&self.ctx.target_triple).vector_min_width,
+                // 2026-08-06 (accel plan): the populated TypeUniverse for the
+                // flat-type proof in src/analysis/accel.rs (rule 18 — never name
+                // matching). Built by the normalizer before the backend runs.
+                self.ctx.type_universe.as_ref(),
+            ),
+        };
+        self.generate_with_analysis(items, exit_condition, analysis, entry_warnings)
+    }
+
+    /// 2026-10-17 (liveness fixpoint): the emission body, re-entrant by
+    /// design. The IR-scan net recurses here with the same `analysis`
+    /// (moved) after restoring `entry_warnings`, so a discarded round
+    /// leaves no trace. Do NOT route fixpoint re-runs through `generate`
+    /// (it would clear the accumulated extra roots).
+    fn generate_with_analysis(
+        &mut self,
+        items: &[TopLevel],
+        exit_condition: Option<Box<Expr>>,
+        mut analysis: crate::backend::AnalysisResults,
+        entry_warnings: Vec<String>,
+    ) -> String {
         // 2026-09-11 (buffered stdout): gate the epilogue flush on the
         // stdlib lane actually being present — bare programs get no call.
         // 2026-09-17: ALSO gate on liveness — the defn existing is not
@@ -2489,23 +2548,6 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 self.warnings.push(w.clone());
             }
         }
-        // 2026-08-23 (Plan 0.1): consume the pipeline-computed analysis when
-        // the caller provided it (.with_analysis); otherwise self-compute —
-        // identical inputs, identical result, so both paths agree.
-        let mut analysis = match self.precomputed_analysis.take() {
-            Some(a) => a,
-            None => crate::backend::analyze_program(
-                items,
-                false,
-                // 2026-07-31: Phase 3 (§8.1) — vector-phi promotion gate from
-                // config/targets.dbvl `vector_min_width` for this target.
-                crate::config_tuning::target_settings_for(&self.ctx.target_triple).vector_min_width,
-                // 2026-08-06 (accel plan): the populated TypeUniverse for the
-                // flat-type proof in src/analysis/accel.rs (rule 18 — never name
-                // matching). Built by the normalizer before the backend runs.
-                self.ctx.type_universe.as_ref(),
-            ),
-        };
         self.ctx.dep_graph = analysis.dependency_graph.clone();
         self.ctx.global_free_after = analysis.global_lifetime.free_after.clone();
         self.ctx.observable_names = analysis.observable_names.clone();
@@ -2518,6 +2560,11 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // overrides: the shim exports plain txns/defns as ABI symbols, so
         // every callable is live there.
 self.ctx.live_defns = analysis.defn_liveness.live.clone();
+        // 2026-10-17 (liveness fixpoint): union the roots derived from
+        // PREVIOUS rounds' emitted-but-unrooted calls — round N's emission
+        // gates see original ∪ derived.
+        self.ctx.live_defns
+            .extend(self.liveness_fixpoint_extra.iter().cloned());
          self.ctx.emit_all_defns =
              analysis.defn_liveness.keep_all || self.ctx.library_mode || self.ctx.force_emit_all;
         // 2026-10-15 (lifecycle laws): termination-reachability warning.
@@ -2698,7 +2745,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.check_embedded_restrictions(items);
         }
 
-        self.ctx.exit_condition = exit_condition;
+        // 2026-10-17 (liveness fixpoint): CLONE — the param must survive for
+        // the net's re-entry (the combined/mutated form lives on ctx).
+        self.ctx.exit_condition = exit_condition.clone();
         // 2026-07-13: normalize_to_old_recursive removed in new AST.
         // BinaryOp/UnaryOp exit conditions are already the canonical form.
         // 2026-07-29: Reorder state field declarations to SoA layout before
@@ -5595,12 +5644,50 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 .collect();
             missed.sort();
             if !missed.is_empty() {
-                panic!(
-                    "defn liveness: emitted code calls unreached defn(s) {:?} — \
-                     add the intrinsic→helper row in src/analysis/defn_liveness.rs \
-                     (intrinsic_helpers) or root the caller; see \
-                     docs/architecture/defn-liveness.md",
-                    missed
+                // ── 2026-10-17 (liveness fixpoint) ─────────────────────────
+                // Ground truth: emission actually CALLED these. The names are
+                // defn_params keys with a real `@name(` in the IR — not a
+                // declare false-positive (unit-defined symbols skip declares;
+                // `define` lines exist only for LIVE defns, and the filter
+                // above excluded live names). The type-agnostic liveness walk
+                // cannot see cast-LANE sources — an any-cast consuming root
+                // was tried 2026-10-12 and rejected (it rooted the parse
+                // family in every unit + exposed WASM byte_at) — so this
+                // class never gets an intrinsic_helpers row (a plain `as`
+                // cast has no intrinsic name). Derive instead of predicting:
+                // root the missed names + their liveness closure, restore
+                // the pre-round warnings (the discarded round leaves no
+                // trace), re-emit with the same analysis.
+                // Termination: missed ⊆ defn_params, missed ∩ (live ∪ extra)
+                // = ∅ (live names are filtered out above), so every round's
+                // extra set STRICTLY grows by ≥ |missed| — bounded by the
+                // unit's name universe. 16 = far-above-practical ceiling
+                // (real chains resolve in 1–3 rounds); breach = reportable
+                // pathological emission, surfaced with the chain.
+                if self.liveness_fixpoint_rounds >= 16 {
+                    let chain: Vec<&String> = missed.iter().copied().collect();
+                    panic!(
+                        "defn liveness: emitted code calls unreached defn(s) {:?} — \
+                         still unreached after {} re-emission rounds (chain too \
+                         deep to derive; please report this program); see \
+                         docs/architecture/defn-liveness.md",
+                        chain, self.liveness_fixpoint_rounds
+                    );
+                }
+                let extra_roots: std::collections::HashSet<String> =
+                    missed.iter().map(|n| (*n).clone()).collect();
+                let closure = crate::analysis::defn_liveness::DefnLiveness::build_with_roots(
+                    items, &extra_roots,
+                );
+                self.liveness_fixpoint_extra
+                    .extend(closure.live.iter().cloned());
+                self.liveness_fixpoint_rounds += 1;
+                self.warnings = entry_warnings.clone();
+                return self.generate_with_analysis(
+                    items,
+                    exit_condition,
+                    analysis,
+                    entry_warnings,
                 );
             }
         }

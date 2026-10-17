@@ -48,10 +48,25 @@ That mapping lives in exactly one place:
 `src/analysis/defn_liveness.rs :: intrinsic_helpers()`. Adding a row is a
 data change, never a pass change.
 
-**Safety net:** after emission the backend scans the IR for calls to
-program defns that were not marked live and fails the compile with the
-name to add. An incomplete table is an immediate compiler error — never a
-silent linker failure.
+**Safety net (emission-derived fixpoint since 2026-10-17, plan
+`2026-10-17-liveness-emission-fixpoint.md`):** after emission the backend
+scans the IR for calls to program defns that were not marked live. On a
+hit it derives the missing roots instead of demanding a table row: the
+missed names are re-rooted with their liveness closure
+(`DefnLiveness::build_with_roots`), unioned into the live set, and the
+module re-emitted (pre-round warnings restored — a discarded round leaves
+no trace). Termination is structural: missed ⊆ defn_params, missed ∩ live
+= ∅, so each round's extra set strictly grows; 16 rounds is the
+far-above-practical ceiling (real chains take 1–3) and a breach panics
+with the chain for reporting. The scan stays the ground truth — it only
+sees `defn_params` names with a real `@name(` in the IR (unit-defined
+symbols skip declares; `define` lines exist only for live defns), so no
+false positives. Why derivation and not an intrinsic→helper row: cast-lane
+calls (`frac[…] as Int` → `@str_to_int`) originate from a plain `as`, have
+no intrinsic name, and therefore can never have a table row — the fixpoint
+closes that whole class. The panic remains only for the terminal,
+non-converging case — an incomplete table is never a silent linker
+failure.
 
 ## What this fixed
 
@@ -71,6 +86,12 @@ pure-Briev briev_getenv_{briev,int}_impl walkers (cast_lanes.bv) directly,
 threading the compiler-owned `@__briev_environ` via the `Environ#()`
 intrinsic. The liveness table's `Environ#` row roots the two impls (a
 runtime get_env!() keeps them emitted).
+2026-10-17 (liveness fixpoint): the net's sixth incident had **no row
+slot** — `brievc build pp-types.bv` died on `@str_to_int` (strip_frac_zeros'
+String→Int cast lane; source is a plain `as`, not an intrinsic), blocking
+the benchmark harness's bridge build since 2026-10-13. Closed by the
+emission-derived fixpoint above: future misses of this class self-heal
+instead of needing a hand-added row.
 
 ## Interplay with `--no-std`
 

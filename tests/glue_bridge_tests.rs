@@ -23,8 +23,12 @@ fn sample_glue_targets() -> HashMap<String, GlueTarget> {
                 extension: "py".to_string(),
                 bridge_kind: "native_module".to_string(),
                 calling_convention: "c_abi".to_string(),
-                module_init: false,
-                protocols: HashMap::new(),
+            module_init: false,
+            // 2026-10-06 (aac37915, web host functions): field added to
+            // GlueTarget; these test fixtures predate it and blocked the
+            // entire `cargo test` build (2026-10-17 fix).
+            host_fns: HashMap::new(),
+            protocols: HashMap::new(),
                 templates: HashMap::new(),
             conversions: briev_compiler::glue::config::Conversions::default(),
             state: briev_compiler::glue::config::StateAbi::default(),
@@ -46,8 +50,12 @@ fn sample_glue_targets() -> HashMap<String, GlueTarget> {
                 extension: "rs".to_string(),
                 bridge_kind: "extern_c_crate".to_string(),
                 calling_convention: "lto".to_string(),
-                module_init: false,
-                protocols: HashMap::new(),
+            module_init: false,
+            // 2026-10-06 (aac37915, web host functions): field added to
+            // GlueTarget; these test fixtures predate it and blocked the
+            // entire `cargo test` build (2026-10-17 fix).
+            host_fns: HashMap::new(),
+            protocols: HashMap::new(),
                 templates: HashMap::new(),
             conversions: briev_compiler::glue::config::Conversions::default(),
             state: briev_compiler::glue::config::StateAbi::default(),

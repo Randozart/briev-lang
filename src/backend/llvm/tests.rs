@@ -944,6 +944,36 @@ node report [beginprogram][true] {
     );
 }
 
+/// 2026-10-17 (liveness fixpoint): a rooted defn whose lowering reaches an
+/// in-unit helper through a cast LANE (`s as Int` → str_to_int) used to trip
+/// the IR-scan net — the type-agnostic liveness pass cannot see lane SOURCES
+/// (a consuming-lane root was tried 2026-10-12 and reverted: the any-cast
+/// over-approximation rooted the parse family in every unit). Introduced
+/// live by `734a8dac` via `pp-types.bv` (bisect-verified parent PASS / commit
+/// FAIL). The net now DERIVES the missing roots from the emitted calls and
+/// re-emits (fixpoint): the helper's define must appear.
+#[test]
+fn test_liveness_fixpoint_roots_emitted_lane_helper() {
+    let src = r#"
+defn str_to_int(s: String) -> Int {
+    term 0;
+};
+export defn parse_one(s: String) -> Int {
+    term s as Int;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    assert!(
+        ir.contains("define i64 @str_to_int("),
+        "fixpoint must root the emitted lane helper's define:\n{ir}"
+    );
+}
+
 /// 2026-10-05 (callable-txn convergence): a `txn` must emit the convergence
 /// loop — the postcondition gates done/loop. The 2026-09-14 linear branch
 /// (`is_linear_defn = !txn.is_reactive`) made every callable txn run once and

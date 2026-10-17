@@ -9828,3 +9828,66 @@ clang 23.1.1 (verified: the identical full-inlined shape compiles and runs at
   (`benchmarks/ra_knee_sweep.sh`, see the 2026-10-16 results file).
 - **Epistemic note:** the interim value 600 was the boundary between two
   corpus data points, not a derived constant; the sweep protocol replaces it.
+
+## Defn-liveness net panic on cast-lane calls (`pp-types.bv` blocker) — FIXED 2026-10-17 (plan `2026-10-17-liveness-emission-fixpoint.md`)
+
+**Cause:** three commits each necessary — `734a8dac` 2026-10-05 (String-target
+family row roots `float_to_str` from `cstr_to_briev`'s `(buf as Data) as
+String`), frgn-elim `b78a03e7` 2026-09-24 (deleted C `str_to_int` from
+`briev_rt.c`), and the 10-13 revert `74ba6742` of the over-approximating
+consuming-lane root. Chain: `glue/c.bv` CastTo/CastFrom → `float_to_str` →
+`float_format` → … → `strip_frac_zeros`, whose `frac[…] as Int` is a
+String→Int ExtCall lane emitting `call i64 @str_to_int(…)` — a plain `as`,
+no intrinsic name, so no `intrinsic_helpers` row could ever cover it.
+`str_to_int` unrooted → IR-scan net panicked: `brievc build pp-types.bv`
+failed, aborting the benchmark suite at bridge_glue (`set -e`; no full
+suite ran 10-13→10-17). The net was CORRECT — unit-defined symbols skip
+`declare`, so the emitted `.ll` would reference undefined `@str_to_int`.
+
+**Why never flagged:** harness `set -e` abort + the exercising fixtures are
+integration tests (`pp_roundtrip_tests.rs`, `c_driver_library.rs`), excluded
+from the per-commit `cargo test --lib` gate; no CI; full `cargo test`
+hadn't compiled since `aac37915` 2026-10-06 (separate entry below).
+
+**Fix:** emission-derived fixpoint (Option A) in `src/backend/llvm/mod.rs`:
+on net hit, root the missed names + their liveness closure
+(`DefnLiveness::build_with_roots`), union into `live_defns`
+(`liveness_fixpoint_extra`), restore pre-round warnings, re-emit through
+the new `generate_with_analysis` (public `generate` = fresh-entry wrapper
+that clears fixpoint state and takes the analysis once). Termination:
+missed ⊆ defn_params, missed ∩ (live ∪ extra) = ∅ → extra strictly grows;
+cap 16 rounds → terminal panic with the chain. Kills the entire incident
+class (6th of its kind) — future misses self-heal; no over-approx, no
+bloat (respects the 10-13 revert). Regression test:
+`test_liveness_fixpoint_roots_emitted_lane_helper`.
+
+**Undo:** revert the mod.rs fixpoint commits; the net's panic returns
+(and pp-types/bridge stop compiling).
+
+**Verified 2026-10-17:** bare probe + pp-types + boundary/rank/bench/reader
+builds exit 0 (`define i64 @str_to_int` present); `cargo test --lib` 3152
+green; `pp_roundtrip_tests` + `c_driver_library` green; full determinism
+ALL DETERMINISTIC; Praetor 79=79 baseline diagnostics (only `generate`
+metric values drifted 423→424 / 1587→1590).
+
+## Full `cargo test` uncompilable since 2026-10-06 — FIXED 2026-10-17 (partial)
+
+**Cause:** `aac37915` 2026-10-06 (web `host_fns`) added a field to
+`GlueTarget` without updating `tests/glue_bridge_tests.rs` (two struct
+literals) → E0063 → the ENTIRE integration-test compilation failed; every
+`cargo test` since silently tested nothing outside `--lib`. Compounding
+rot in the same category: the 62ae145d "Massive rename" left
+`briv_compiler` crate paths in two FFI test files.
+
+**Fix (this commit):** `host_fns: HashMap::new()` added to both fixture
+literals; the two `tests/ffi_*_tests.rs` files are untracked WIP from a
+concurrent session (created 2026-10-17 09:49) — crate-path rename applied
+in passing, their remaining dead-API errors (`ffi::loader`,
+`typechecker::TypeChecker` — modules long removed) belong to their author.
+Full `cargo test` therefore still blocked on those two files; the
+per-commit `--lib` gate and the targeted integration runs
+(`pp_roundtrip_tests`, `c_driver_library`) are green.
+
+**Lesson:** an uncompilable test suite fails OPEN (looks green: nothing
+runs). Full `cargo test` now belongs to the pre-release ritual (alongside
+`toolchain_matrix.sh`) so rot cannot hide for 11 days.

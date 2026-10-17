@@ -1,7 +1,9 @@
 # Defn-liveness fixpoint — emission-derived roots (bridge_glue blocker)
 
 **Date:** 2026-10-17
-**Status:** ACTIVE
+**Status:** DONE 2026-10-17 (fix + tests + docs landed; verification results
+below). Suite enablers (harness tolerance, pp-types determinism corpus,
+baseline repoint, sweep resume) remain — see last section.
 **Blocks:** `benchmarks/build_and_bench.sh` full suite (`set -euo pipefail` →
 bridge build abort = whole suite); tests `pp_roundtrip_tests.rs`,
 `c_driver_library.rs`; `examples/glue-host/*`, possibly `lib/compiler/*.bv`.
@@ -101,6 +103,37 @@ with **no row slot** (a plain `as` cast has no intrinsic name).
 - Docs same commit: BUGS.md entry (dated, cause, fix, undo),
   `docs/architecture/defn-liveness.md` safety-net contract
   ("self-converges from emitted calls, then panics"), this plan.
+
+## Verification results (2026-10-17, all green)
+
+- Probe 1 (bisect pin): `1c8b0bc6` PASS / `734a8dac` FAIL / `7f8ac908` FAIL
+  / HEAD FAIL → window = `734a8dac` exactly (as hypothesized).
+- Probe 2 (bare case): FAIL pre-fix → exit 0 post-fix.
+- Probe 3 (blast radius): boundary/rank/bench/reader now exit 0.
+  `examples/glue-host/node_bridge.bv` progressed from the net panic to a
+  DIFFERENT latent defect — reflection `.^^Len` on an Int local
+  (`emit_expr.rs:4341`, Phase-1b boundary) inside the newly-rooted
+  `cstring_concat` closure the net had been masking. Logged in BUGS.md;
+  separate subsystem, not in this fix's scope (file untouched).
+- `cargo test --lib`: 3152 green (3151 + fixpoint regression test).
+- Targeted integration: `pp_roundtrip_tests` 1/1, `c_driver_library` 8/8
+  (both were hard-broken pre-fix).
+- Full determinism (`ll_determinism_check.sh`, backend-touching commit
+  rule): ALL DETERMINISTIC.
+- Praetor: `glue_bridge_tests.rs` PASS clean; `src/backend/llvm` at
+  HEAD-archive baseline 79 = working-tree 79 diagnostics — only `generate`
+  metric values drifted (423→424 cyclomatic, 1587→1590 cognitive) on the
+  pre-existing flag; zero new diagnostics.
+- Implementation deviations from the sketch (recorded, not deviations in
+  guarantee): analysis is MOVED through `generate_with_analysis` instead
+  of cloned (no `Clone` derive needed on `AnalysisResults`); the
+  defensive bound is `liveness_fixpoint_rounds < 16` (with chain in the
+  terminal panic) rather than an `extra.len()` bound.
+- Full `cargo test` (suite-level gate): BLOCKED — and the investigation
+  found why it was meaningless anyway: uncompilable since `aac37915`
+  2026-10-06 (`GlueTarget.host_fns`), fixed here; two remaining dead-API
+  test files are untracked WIP of a concurrent session (BUGS.md second
+  entry). Targeted integration runs cover this fix.
 
 ## Suite enablers (same workstream, separate commits)
 
