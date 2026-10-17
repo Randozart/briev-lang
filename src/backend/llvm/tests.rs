@@ -7424,9 +7424,23 @@ fn test_consumptive_op_on_const_let_in_txn() {
         .expect("plugin stage failed");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
+    // 2026-10-17 (plain storage): a/b are bare lets no contract references —
+    // they classify PLAIN and lower to module-scope globals with the
+    // LITERAL folded into the declaration (a runtime zero-seed store would
+    // defeat %State promotion in the loop; measured 879ms→457ms). The old
+    // failure mode was an UNDEFINED @b; the plain path must never
+    // reproduce it.
     assert!(
-        !ir.contains("load i64, ptr @b"),
-        "a consumed const-let must resolve as a %State field, not an undefined @b global; got:\n{ir}"
+        ir.contains("@b = global i64 3"),
+        "a consumed const-let must lower to a DEFINED plain global with its literal folded in; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("load i64, ptr @b"),
+        "the consumptive read must load the plain global; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("load i64, ptr @b"),
+        "the consumptive read must load the seeded plain global; got:\n{ir}"
     );
     assert!(
         ir.contains("add nsw i64") || ir.contains("add i64"),
@@ -11415,5 +11429,163 @@ node run [i < 1][i == 1] {
     assert!(
         !ir.contains("load ptr, ptr"),
         "the flowed single-concrete dyn must be Inline (no thunk-table indirect call):\n{ir}"
+    );
+}
+
+// ── 2026-10-17 (plain storage, SPEC §8.1) ────────────────────────────────
+// The buffered-stdout regression: library state fields put `ptr %state` on
+// the whole print chain; any loop containing a print made the %State alloca
+// escape and SROA refused promotion (interval_step 848ms → 414ms/500M in
+// the counterfactual). Plain storage makes plumbing non-state: the print
+// chain drops %state, the alloca never escapes, clang promotes.
+
+#[test]
+fn plain_stdlib_plumbing_print_chain_has_no_state_param() {
+    // A defn touching only plain lets must NOT take %state, and a node loop
+    // with a guarded println must compile to a print chain WITHOUT a state
+    // parameter — the exact counterfactual shape.
+    let src = r#"
+plain let stdout_buf: Int = 0;
+plain let stdout_fill: Int = 0;
+let count: Int = 0;
+defn put_byte(b: Int) -> Int [b >= 0][term >= 0] {
+    stdout_fill = stdout_fill + 1;
+    term 0;
+};
+node work [count < 3][count == 3] {
+    when count % 1 == 0 {
+        let _r: Int = put_byte(count);
+    };
+    count = count + 1;
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    assert!(
+        ir.contains("@stdout_buf = global i64 0") && ir.contains("@stdout_fill = global i64 0"),
+        "plain lets must lower to module-scope globals:\n{ir}"
+    );
+    assert!(
+        !ir.contains("@stdout_buf, ptr %state") && !ir.contains("%State, ptr %state, i32 0, i32 0, ptr @stdout"),
+        "plain storage must not alias into %State:\n{ir}"
+    );
+    // The needs-state verdict for the plumbing defn: its function signature
+    // must carry NO %state pointer.
+    assert!(
+        ir.contains("define i64 @put_byte(i64 %arg0)"),
+        "a plain-only defn must be emitted WITHOUT the %state param:\n{ir}"
+    );
+}
+
+#[test]
+fn state_declared_but_unreferenced_is_an_error() {
+    let src = r#"
+state let orphan: Int = 0;
+let count: Int = 0;
+node work [count < 3][count == 3] {
+    count = count + 1;
+    term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let errors = crate::analysis::storage_class::storage_assertion_errors(
+        &items,
+        None,
+        &std::collections::HashSet::new(),
+    );
+    assert!(
+        errors.iter().any(|e| e.contains("'orphan' is declared `state`")),
+        "a `state` declaration nothing proves over must error: {errors:?}"
+    );
+}
+
+#[test]
+fn plain_declared_but_contracted_is_an_error() {
+    let src = r#"
+plain let tracked: Int = 0;
+let count: Int = 0;
+node work [count < 3][count == 3 && tracked >= 0] {
+    count = count + 1;
+    term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let errors = crate::analysis::storage_class::storage_assertion_errors(
+        &items,
+        None,
+        &std::collections::HashSet::new(),
+    );
+    assert!(
+        errors.iter().any(|e| e.contains("'tracked' is declared `plain`")),
+        "a `plain` declaration the proof surface references must error: {errors:?}"
+    );
+}
+
+#[test]
+fn bare_let_contracted_infers_state_not_plain() {
+    // The contract makes `acc` machine state even though no body-writes and
+    // the init is scalar — the proof surface wins (R3: never demote a
+    // contracted field).
+    let src = r#"
+let acc: Int = 0;
+let count: Int = 0;
+node work [count < 3][count == 3 && acc >= 0] {
+    count = count + 1;
+    term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let plain = crate::analysis::storage_class::classify_plain_lets(
+        &items,
+        None,
+        &std::collections::HashSet::new(),
+    );
+    assert!(
+        !plain.contains("acc"),
+        "a contracted bare let must infer state, never plain: {plain:?}"
+    );
+    assert!(
+        plain.contains("acc") == false && plain.is_empty() || !plain.contains("acc"),
+        "sanity"
+    );
+}
+
+#[test]
+fn bare_plumbing_let_infers_plain() {
+    // Written only by a defn, referenced by no contract — the exact
+    // stdout_buf/stdout_fill/rand_state shape — must infer plain WITHOUT an
+    // annotation (inference-first; the info: line discloses it).
+    let src = r#"
+let fill: Int = 0;
+let count: Int = 0;
+defn bump() -> Int [true][term >= 0] {
+    fill = fill + 1;
+    term fill;
+};
+node work [count < 3][count == 3] {
+    let _r: Int = bump();
+    count = count + 1;
+    term;
+};
+"#;
+    let items = parse_bv_source(src);
+    let plain = crate::analysis::storage_class::classify_plain_lets(
+        &items,
+        None,
+        &std::collections::HashSet::new(),
+    );
+    assert!(
+        plain.contains("fill"),
+        "a defn-only-written bare let must infer plain: {plain:?}"
+    );
+    assert!(
+        !plain.contains("count"),
+        "a node-written let must stay state: {plain:?}"
     );
 }

@@ -2454,6 +2454,20 @@ impl LlvmBackend {
         name: &str,
         val: &str,
     ) -> Option<()> {
+        // 2026-10-17 (plain storage): a plain let stores to its module-scope
+        // @global — same value, no %State access (the alloca must never
+        // escape through plumbing writes).
+        if self.ctx.plain_lets.contains(name) {
+            let ty = self
+                .ctx
+                .plain_global_types
+                .get(name)
+                .map(|(t, _)| t.clone())
+                .unwrap_or(crate::ast::Type::int());
+            let llvm_ty = protocol_llvm_type(&ty, self.ctx.type_universe.as_ref());
+            writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, val, name).ok();
+            return Some(());
+        }
         let idx = *self.ctx.field_index_map.get(name)?;
         self.store_field_type(out, indent, idx, val)
     }

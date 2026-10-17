@@ -2659,19 +2659,56 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     .map(|params| (name.clone(), (segs.clone(), params.clone())))
             })
             .collect();
+        // 2026-10-17 (plain storage): classify top-level lets BEFORE any
+        // needs-state consumer reads them. Bare lets referenced by the proof
+        // surface (contracts, watchdogs, `#!exit`, `endprogram` output, view
+        // bindings) are machine state; everything else is plain (module-
+        // scope globals). Declared `state`/`plain` annotations are checked
+        // against this inference — a contradiction is a fatal error quoting
+        // the contradicting reference.
+        let plain_lets = crate::analysis::storage_class::classify_plain_lets(
+            items,
+            exit_condition.as_deref(),
+            &self.ctx.view_bound_fields,
+        );
+        for err in crate::analysis::storage_class::storage_assertion_errors(
+            items,
+            exit_condition.as_deref(),
+            &self.ctx.view_bound_fields,
+        ) {
+            eprintln!("{}", err);
+            std::process::exit(1);
+        }
+        self.ctx.plain_lets = plain_lets.clone();
+        // Bare lets that demoted: disclose the decision (the info: line is
+        // the classification's user-facing record — same convention as the
+        // dispatch info lines).
+        let mut demoted: Vec<String> = plain_lets
+            .iter()
+            .filter(|n| {
+                crate::analysis::storage_class::declared_storage(items, n).is_none()
+            })
+            .cloned()
+            .collect();
+        demoted.sort();
+        for name in &demoted {
+            self.warnings
+                .push(format!("info: '{}' lowered to plain storage — no contract references it", name));
+        }
+
         // 2026-08-03: Per-export ABI (needs_state) computed once up front by
         // the export ABI analysis — the backend only consumes the decision.
         // 2026-08-04 (compiler-in-Briev, P4): the Briev pass (briev_pass.rs)
         // computes it through the GLUE C ABI when its library is present;
         // otherwise the Rust reference runs.
         self.ctx.export_needs_state =
-            crate::glue::briev_pass::compute_export_needs_state(items);
+            crate::glue::briev_pass::compute_export_needs_state(items, &plain_lets);
         // 2026-09-23 (stateless-defn mechanism): the per-defn needs-state map
         // (ALL defns, not just exports) drives regular-defn emission — pure
         // helpers emit without `%state`, keeping GLUE exports on a clean C
         // ABI. Computed here once; the backend only consumes the decision.
         self.ctx.defn_needs_state =
-            crate::analysis::export_abi::compute_defn_needs_state(items);
+            crate::analysis::export_abi::compute_defn_needs_state(items, &plain_lets);
         // 2026-10-15 (type-dependent member statefulness): concrete types with
         // a state-taking member. A trait default/generic monomorphized onto
         // such a type must itself take `%state` (its specialized body reaches a
@@ -4123,6 +4160,34 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             writeln!(out, "@{} = global {} {}", name, llvm_ty, zero).ok();
         }
         if !self.ctx.inits.is_empty() { writeln!(out).ok(); }
+
+        // 2026-10-17 (plain storage): plain lets are module-scope mutable
+        // globals — same lowering shape as the `init` invariants (mutable,
+        // seeded in the pre-reactor phase when the initializer is a
+        // non-literal expression). Sorted iteration keeps emission
+        // deterministic. A LITERAL initializer folds into the declaration
+        // (`@name = global i64 3`) — no runtime store. This matters beyond
+        // tidiness: entry stores to the @globals DEFEAT clang's promotion of
+        // the %State alloca in the runtime loop (measured: interval_step
+        // 879ms with the zero-seed stores, 456ms without). The declared
+        // value IS the initial value — the static init is the single
+        // writer for literals, the seeding store for expressions.
+        let mut sorted_plain: Vec<String> = self.ctx.plain_global_types.keys().cloned().collect();
+        sorted_plain.sort();
+        for name in &sorted_plain {
+            let (ty, init) = &self.ctx.plain_global_types[name];
+            let llvm_ty = protocol_llvm_type(ty, self.ctx.type_universe.as_ref());
+            let zero = if llvm_ty == "float" { "0.0" } else if llvm_ty == "double" { "0.0" } else if llvm_ty == "ptr" { "null" } else { "0" };
+            let literal = match init {
+                Some(Expr::Decimal(n)) => Some(n.to_string()),
+                Some(Expr::Float(f)) => Some(float_to_llvm_str(*f, &llvm_ty)),
+                Some(Expr::Bool(b)) => Some((if *b { "true" } else { "false" }).to_string()),
+                _ => None,
+            };
+            let val_str = literal.unwrap_or_else(|| zero.to_string());
+            writeln!(out, "@{} = global {} {}", name, llvm_ty, val_str).ok();
+        }
+        if !self.ctx.plain_global_types.is_empty() { writeln!(out).ok(); }
 
         self.declare_state_type(&mut out);
         // %State no longer has a module-level global. Instead, main()
@@ -6919,6 +6984,35 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // can evaluate and store the runtime value at startup.
             } else if let TopLevel::Statement(stmt) = item {
                 if let crate::ast::Statement::Let { name, ty, expr, .. } = stmt.as_ref() {
+                    // 2026-10-17 (plain storage): plain lets are module-scope
+                    // globals, not %State fields — same name/type/init/
+                    // read/write semantics, no machine membership. Emitted as
+                    // `@name = global <ty> 0` beside the `init` globals; the
+                    // read/write resolvers check plain_lets before the field
+                    // map. Obj-instance unpacking stays a state-field feature
+                    // (plain plumbing is scalar) — an unpack candidate is a
+                    // fatal diagnostic, never a silent reclassification.
+                    if self.ctx.plain_lets.contains(name) {
+                        let field_ty = ty.clone().unwrap_or(crate::ast::Type::int());
+                        let unpack_candidate = match &field_ty {
+                            Type::Applied(base, _) | Type::Custom(base)
+                                if self.ctx.obj_members.contains_key(base) => true,
+                            _ => false,
+                        };
+                        if unpack_candidate {
+                            eprintln!(
+                                "error: '{}' is declared `plain`, but its type unpacks into \
+machine instance columns — plain storage is for scalar plumbing. Remove the \
+`plain` declaration (bare `let` infers state for instance types) or change the type.",
+                                name
+                            );
+                            std::process::exit(1);
+                        }
+                        self.ctx
+                            .plain_global_types
+                            .insert(name.clone(), (field_ty, expr.clone()));
+                        continue;
+                    }
                     let field_ty = ty.clone().unwrap_or(crate::ast::Type::int());
                     // 2026-08-07 (object instance pools): a top-level obj
                     // instance (`let st: Stack<Int, 256> = 0`) UNPACKS its

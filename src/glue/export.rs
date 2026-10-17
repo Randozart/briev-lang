@@ -121,7 +121,8 @@ fn extract_exports(
     // 2026-08-04 (compiler-in-Briev, P4): the Briev pass (briev_pass.rs)
     // computes this through the GLUE C ABI when its library is present;
     // otherwise the Rust reference runs.
-    let needs_state = crate::glue::briev_pass::compute_export_needs_state(items);
+    let plain = crate::analysis::storage_class::classify_plain_lets(items, None, &std::collections::HashSet::new());
+    let needs_state = crate::glue::briev_pass::compute_export_needs_state(items, &plain);
     // 2026-08-31 (boundary ownership plan): per-export param/return ownership
     // classes. The convention is defaulted to c_abi (the GLUE target config
     // is not threaded here); lto/wasm refinements are a later wiring step.

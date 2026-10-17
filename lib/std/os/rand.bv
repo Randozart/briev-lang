@@ -18,7 +18,10 @@
 // Undo: delete this module and its test; it carries no compiler coupling.
 
 // The splitmix64 stream state. Advanced by rand_u64; set by seed_rand.
-let rand_state: Int = 0;
+// 2026-10-17 (plain storage): RNG plumbing — mutated only by the defns
+// below, referenced by no contract; same demotion hazard as the stdout
+// buffer if it rode in %State.
+plain let rand_state: Int = 0;
 
 // lshr64 — LOGICAL shift right (`>>` is arithmetic on i64). Mask off the
 // sign-extended high bits. k == 0 is the identity (the (1<<64) mask would

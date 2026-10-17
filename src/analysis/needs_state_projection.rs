@@ -82,7 +82,7 @@ pub fn serialize_needs_state_projection(items: &[TopLevel]) -> String {
     // Computed from the SAME items the Rust analysis uses (single source of
     // truth: src/analysis/export_abi.rs), so the projection carries the
     // verdict and the Briev pass stays a faithful single-pass mirror.
-    let needs = crate::analysis::export_abi::compute_defn_needs_state(items);
+    let needs = crate::analysis::export_abi::compute_defn_needs_state(items, &crate::analysis::storage_class::classify_plain_lets(items, None, &std::collections::HashSet::new()));
     let mut stateless: Vec<String> = needs.iter()
         .filter(|(_, v)| !**v)
         .map(|(k, _)| k.clone())

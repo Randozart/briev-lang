@@ -7,6 +7,7 @@ pub mod electronics_dc;
 pub mod electronics_laws;
 pub mod footprints;
 pub mod placement;
+pub mod storage_class;
 pub mod strict;
 pub mod task_linear;
 pub mod task_segments;

@@ -139,6 +139,20 @@ pub struct CompilerContext {
     /// pruned by dead-field elimination. Frontend-computed (ViewCompiler
     /// root signals) and copied here before generate().
     pub view_bound_fields: std::collections::HashSet<String>,
+    /// 2026-10-17 (plain storage, SPEC §8.1): top-level lets classified
+    /// PLAIN — declared `plain`, or bare and unreferenced by the proof
+    /// surface (contracts, watchdogs, `#!exit`, `endprogram` output, view
+    /// bindings). Lowered to module-scope `@name` globals, NOT `%State`
+    /// fields: defns touching only plain lets carry no `%state`, so the
+    /// state alloca never escapes through them (the buffered-stdout
+    /// regression). Computed in generate_with_analysis before build_field_
+    /// index; the classification's check (declared-vs-inferred) fires there.
+    pub plain_lets: std::collections::HashSet<String>,
+    /// Plain-let lowering table: type + initializer expr for module-scope
+    /// `@name = global <ty> 0` emission and (when the init is non-trivial)
+    /// pre-reactor seeding beside the `init` invariants.
+    pub plain_global_types:
+        std::collections::HashMap<String, (crate::ast::Type, Option<crate::ast::Expr>)>,
     /// 2026-08-12 (Iterable protocol, slice 4): the `b-each` iterable fields
     /// that are generic collections — the backend emits a
     /// `__view_items_<field>()` snapshot materializer for each (driving the
@@ -582,6 +596,8 @@ impl CompilerContext {
             exit_condition: None,
             has_natural_exit: false,
             view_bound_fields: std::collections::HashSet::new(),
+            plain_lets: std::collections::HashSet::new(),
+            plain_global_types: std::collections::HashMap::new(),
             mmio_fields: HashMap::new(),
             mmio_initializers: HashMap::new(),
             mmio_prepopulated: false,

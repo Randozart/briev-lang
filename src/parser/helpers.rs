@@ -168,6 +168,31 @@ impl<'a> Parser<'a> {
                     prefix.sync_groups = Some(self.parse_sync_groups()?);
                 }
                 Some(Token::Identifier(s))
+                    if (s == "state" || s == "plain")
+                        && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Let)) =>
+                {
+                    // 2026-10-17 (plain storage, SPEC §8.1): `state let` /
+                    // `plain let` — checked storage-class assertions. A bare
+                    // top-level let is INFERRED (proof surface => state, else
+                    // plain); these declare the category and the compiler
+                    // checks the declaration against the inference (a
+                    // contradiction is an error). Contextual identifiers,
+                    // not reserved tokens: the arm only fires when directly
+                    // followed by `let` in a declaration prefix, so a
+                    // variable named `state` or `plain` is unaffected. The
+                    // check itself lives in analysis::storage_class (it needs
+                    // the whole resolved unit); the annotation rides the
+                    // existing let-modifiers plumbing.
+                    let keyword = s.clone();
+                    if prefix.annotations.iter().any(|a| a.name == keyword) {
+                        return Err(self.dup_modifier(&keyword));
+                    }
+                    if prefix.annotations.iter().any(|a| a.name == "state" || a.name == "plain") {
+                        return Err(self.dup_modifier("state/plain"));
+                    }
+                    self.record_annotation(&mut prefix, &keyword)?;
+                }
+                Some(Token::Identifier(s))
                     if (s == "net" || s == "stdnet")
                         && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
                 {

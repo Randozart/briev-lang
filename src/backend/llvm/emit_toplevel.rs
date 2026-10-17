@@ -3202,6 +3202,25 @@ impl LlvmBackend {
                 self.emit_init_seeding_body(out, indent, name, &init);
             }
         }
+        // 2026-10-17 (plain storage): seed plain lets whose initializer is a
+        // NON-LITERAL expression (literals fold into the module-scope
+        // declaration — a runtime store for them is dead weight AND defeats
+        // %State promotion; see the emission note in mod.rs). Same phase as
+        // the `init` invariants. Sorted for deterministic IR.
+        let mut sorted_plain: Vec<String> = self.ctx.plain_global_types.keys().cloned().collect();
+        sorted_plain.sort();
+        for name in &sorted_plain {
+            let (ty, init) = self.ctx.plain_global_types[name].clone();
+            let is_literal = matches!(&init, Some(Expr::Decimal(_)) | Some(Expr::Float(_)) | Some(Expr::Bool(_)));
+            if let Some(value) = &init {
+                if is_literal {
+                    continue;
+                }
+                let reg = self.emit_expr(out, value, indent);
+                let llvm_ty = protocol_llvm_type(&ty, self.ctx.type_universe.as_ref());
+                writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, reg.name, name).ok();
+            }
+        }
     }
 
     /// Emit a body-form init's seeding statements once, storing the yielded

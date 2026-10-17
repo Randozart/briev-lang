@@ -1458,6 +1458,17 @@ impl<'a> Parser<'a> {
     fn starts_modifier_run(&self) -> bool {
         match self.peek() {
             Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => true,
+            // 2026-10-17 (plain storage): `state let` / `plain let` — the
+            // storage-class assertions open a modifier run.
+            Some(Token::Identifier(s))
+                if (s == "state" || s == "plain")
+                    && matches!(
+                        self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                        Some(Token::Let)
+                    ) =>
+            {
+                true
+            }
             Some(Token::Identifier(s))
                 if s == "stage"
                     || s == "tile"
@@ -1499,12 +1510,14 @@ impl<'a> Parser<'a> {
             Some(Token::Node) => {
                 self.reject_memory_pins(&prefix, "a node has no memory pin")?;
                 self.reject_net_names(&prefix, "a node")?;
+                self.reject_storage_assertions(&prefix, "a node")?;
                 let txn = self.parse_node()?;
                 self.finish_reactive(txn, prefix)
             }
             Some(Token::Txn) => {
                 self.reject_memory_pins(&prefix, "a txn has no memory pin")?;
                 self.reject_net_names(&prefix, "a txn")?;
+                self.reject_storage_assertions(&prefix, "a txn")?;
                 let txn = self.parse_transaction(false, prefix.is_async)?;
                 self.finish_reactive(txn, prefix)
             }
@@ -1542,6 +1555,7 @@ impl<'a> Parser<'a> {
                 }
                 self.reject_net_names(&prefix, "a defn")?;
                 self.reject_shape_modifiers(&prefix, "a defn")?;
+                self.reject_storage_assertions(&prefix, "a defn")?;
                 let mut defn = self.parse_definition()?;
                 defn.modifiers.extend(prefix.annotations);
                 Ok(TopLevel::Definition(defn))
@@ -1592,6 +1606,26 @@ impl<'a> Parser<'a> {
             matches!(a.name.as_str(), "vol" | "mem" | "reg")
         }) {
             self.error_at_current(&format!("'vol'/'mem'/'reg' apply to `let` only — {why}"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// 2026-10-17 (plain storage): `state`/`plain` are top-level-let
+    /// storage-class assertions — reject them on a node/txn/defn.
+    fn reject_storage_assertions(
+        &self,
+        prefix: &ModifierPrefix,
+        why: &str,
+    ) -> Result<(), SyntaxError> {
+        if prefix
+            .annotations
+            .iter()
+            .any(|a| matches!(a.name.as_str(), "state" | "plain"))
+        {
+            self.error_at_current(&format!(
+                "'state'/'plain' apply to a top-level `let` only — {why}"
+            ))
         } else {
             Ok(())
         }

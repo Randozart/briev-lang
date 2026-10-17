@@ -1002,6 +1002,17 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // through and the assignment was silently DROPPED (the web
                     // counter's increment never moved the count; the volatile
                     // swan-song store to ptr 0 was all that remained).
+                    // 2026-10-17 (plain storage): a plain let stores to its
+                    // @global — BEFORE the field gate (this is exactly the
+                    // site whose `contains_key` gate silently DROPPED the
+                    // `stdout_buf = Alloc#(...)` seed in the first plain run;
+                    // R1 in the protocol's risk register).
+                    if backend.ctx.plain_lets.contains(name) {
+                        backend.emit_state_store_i64(out, indent, name, &val.name.clone());
+                        backend.fun.last_val_temps.insert(name.clone(), val.name.clone());
+                        backend.fun.last_val_types.insert(name.clone(), val.ty.clone());
+                        return TypedRegister { name: val.name, ty: Type::void() };
+                    }
                     if backend.ctx.field_index_map.contains_key(name) {
                         // 2026-08-22 (Phase 3b): a structural-sum FIELD stores
                         // the tagged handle — box a member value at the seam.

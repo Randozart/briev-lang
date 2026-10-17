@@ -94,7 +94,7 @@ fn needs_state_pass() -> Option<&'static LoadedPass> {
 /// Compute the needs_state map for a program, preferring the Briev pass when
 /// its library is present. Falls back to the Rust reference (export_abi.rs).
 /// The two must agree — asserted by tests/c_driver_needs_state.rs.
-pub fn compute_export_needs_state(items: &[TopLevel]) -> std::collections::HashMap<String, bool> {
+pub fn compute_export_needs_state(items: &[TopLevel], plain: &std::collections::HashSet<String>) -> std::collections::HashMap<String, bool> {
     if let Some(pass) = needs_state_pass() {
         let proj = crate::analysis::needs_state_projection::serialize_needs_state_projection(items);
         let mask = pass.compute(&proj);
@@ -116,7 +116,7 @@ pub fn compute_export_needs_state(items: &[TopLevel]) -> std::collections::HashM
         return map;
     }
     // Fallback: the Rust reference (also the source of truth on first build).
-    crate::analysis::export_abi::compute_export_needs_state(items)
+    crate::analysis::export_abi::compute_export_needs_state(items, plain)
 }
 
 // ── soa_reorder pass (P5) ──────────────────────────────────────────────
@@ -209,8 +209,9 @@ mod tests {
             let src = format!("{}/{}", root, rel);
             let source = std::fs::read_to_string(&src).unwrap();
             let (items, _) = crate::library::parse_and_check(&src, &source).unwrap();
-            let briev = compute_export_needs_state(&items);
-            let reference = crate::analysis::export_abi::compute_export_needs_state(&items);
+            let plain = crate::analysis::storage_class::classify_plain_lets(&items, None, &std::collections::HashSet::new());
+            let briev = compute_export_needs_state(&items, &plain);
+            let reference = crate::analysis::export_abi::compute_export_needs_state(&items, &plain);
             assert_eq!(briev, reference, "Briev pass diverged from reference for {}", rel);
             if needs_state_pass().is_some() {
                 used_briev = true;

@@ -608,8 +608,13 @@ defn count_lead(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= 0] -> 
 // linked). stderr stays unbuffered. Pipe semantics match the C
 // baseline (fully buffered); tty line-buffering is deferred.
 
-let stdout_buf: Int = 0;
-let stdout_fill: Int = 0;
+// 2026-10-17 (plain storage, SPEC §8.1): the buffer is library PLUMBING —
+// no contract references it, the machine never reasons about it. `plain`
+// keeps it out of %State, so the print chain carries no state pointer and
+// %State promotion in printing loops is never defeated (the
+// buffered-stdout regression, docs/plans/2026-10-17-state-plain-storage-class.md).
+plain let stdout_buf: Int = 0;
+plain let stdout_fill: Int = 0;
 const STDOUT_CAP: Int = 65536;
 
 out defn stdout_flush() [true][term >= 0] -> Int {

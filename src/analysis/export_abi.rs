@@ -31,8 +31,13 @@ use std::collections::{HashMap, HashSet};
 /// The returned map is the single source of truth for:
 ///   - export ABI (`compute_export_needs_state` — the subset for exports)
 ///   - regular-defn emission (backend emits `%state` iff needs it)
-pub fn compute_defn_needs_state(items: &[TopLevel]) -> HashMap<String, bool> {
-    let (regular, txns, state_fields, always_stateful) = index_program(items);
+pub fn compute_defn_needs_state(items: &[TopLevel], plain: &HashSet<String>) -> HashMap<String, bool> {
+    // 2026-10-17 (plain storage): plain lets are NOT machine state — a defn
+    // touching only plain lets stays stateless (the print chain drops
+    // `ptr %state`, unblocking SROA promotion of %State in printing loops).
+    // Excluded at the index so the least fixpoint never sees them as
+    // stateful leaves.
+    let (regular, txns, state_fields, always_stateful) = index_program(items, plain);
     // 2026-09-23 (stateless-defn mechanism): LEAST FIXPOINT, not DFS. The old
     // memoized-DFS `visiting ⇒ true` cycle rule marked self-recursive
     // STATELESS defns (cstr_len `1 + cstr_len(p+1)`, bytes_equal_at recursion)
@@ -62,10 +67,11 @@ pub fn compute_defn_needs_state(items: &[TopLevel]) -> HashMap<String, bool> {
 }
 
 /// Index the program into the sets the needs-state walker needs.
-fn index_program(
-    items: &[TopLevel],
+fn index_program<'a>(
+    items: &'a [TopLevel],
+    plain: &HashSet<String>,
 ) -> (
-    HashMap<String, &Definition>,
+    HashMap<String, &'a Definition>,
     HashSet<String>,
     HashSet<String>,
     HashSet<String>,
@@ -154,12 +160,19 @@ fn index_program(
             }
             TopLevel::Statement(stmt) => {
                 if let crate::ast::Statement::Let { name, .. } = stmt.as_ref() {
-                    state_fields.insert(name.clone());
+                    // 2026-10-17 (plain storage): plain lets are not machine
+                    // state — excluded from the needs-state leaf set.
+                    if !plain.contains(name) {
+                        state_fields.insert(name.clone());
+                    }
                 }
             }
-            TopLevel::Constant(c) => {
-                state_fields.insert(c.name.clone());
-            }
+            // 2026-10-17 (plain storage): CONSTANTS are not machine state —
+            // they lower to immutable `@name` constant loads, no %State
+            // access. Their presence here forced `stdout_byte` stateful via
+            // its `STDOUT_CAP` read (the buffered-stdout regression's last
+            // link). To undo: restore this insert.
+            TopLevel::Constant(_) => {}
             TopLevel::StateDecl(s) => {
                 state_fields.insert(s.name.clone());
             }
@@ -227,7 +240,7 @@ fn index_impl_members<'a>(
 /// pointer param is free). Keyed by bare type name (`GrowBuf`), the shape the
 /// backend's `subst` yields.
 pub fn type_stateful_members(items: &[TopLevel]) -> HashSet<String> {
-    let per_defn = compute_defn_needs_state(items);
+    let per_defn = compute_defn_needs_state(items, &crate::analysis::storage_class::classify_plain_lets(items, None, &HashSet::new()));
     let mut out: HashSet<String> = HashSet::new();
     for (key, needs) in &per_defn {
         if !needs {
@@ -262,8 +275,8 @@ fn defn_references_state(
 /// Compute `needs_state` for every EXPORTED defn — the subset of
 /// [`compute_defn_needs_state`] for GLUE ABI generation. A defn is exported
 /// if it appears as a `TopLevel::Export` (either direct or wrapping a defn).
-pub fn compute_export_needs_state(items: &[TopLevel]) -> HashMap<String, bool> {
-    let all = compute_defn_needs_state(items);
+pub fn compute_export_needs_state(items: &[TopLevel], plain: &HashSet<String>) -> HashMap<String, bool> {
+    let all = compute_defn_needs_state(items, plain);
     let mut exports: HashMap<String, bool> = HashMap::new();
     for item in items {
         if let TopLevel::Export(e) = item {
@@ -687,7 +700,7 @@ mod tests {
     fn pure_export_needs_no_state() {
         let d = defn("add", vec![Statement::Term(Some(Expr::Decimal(5)))]);
         let items = vec![exported(d)];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("add"), Some(&false));
     }
 
@@ -697,7 +710,7 @@ mod tests {
             Expr::Call("StringNew#".to_string(), vec![], None),
         ))]);
         let items = vec![exported(d)];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&true));
     }
 
@@ -711,7 +724,7 @@ mod tests {
             Expr::Call("helper".to_string(), vec![], None),
         ))]);
         let items = vec![TopLevel::Definition(helper), exported(caller)];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&false));
     }
 
@@ -726,7 +739,7 @@ mod tests {
             Expr::Call("helper".to_string(), vec![], None),
         ))]);
         let items = vec![TopLevel::Definition(helper), exported(caller)];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&true));
     }
 
@@ -743,7 +756,7 @@ mod tests {
             vec![Statement::Term(Some(Expr::Decimal(1)))],
         )]);
         let items = vec![TopLevel::Definition(helper), exported(caller)];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&true));
     }
 
@@ -756,7 +769,7 @@ mod tests {
             Expr::Call("StringNew#".to_string(), vec![], None),
         ))]);
         let items = vec![TopLevel::Definition(pure), TopLevel::Definition(impure)];
-        let map = compute_defn_needs_state(&items);
+        let map = compute_defn_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("pure_helper"), Some(&false));
         assert_eq!(map.get("impure_helper"), Some(&true));
     }
@@ -768,7 +781,7 @@ mod tests {
             Expr::Call("inner".to_string(), vec![], None),
         ))]);
         let items = vec![exported(inner), exported(outer)];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("inner"), Some(&false));
         assert_eq!(map.get("outer"), Some(&false));
     }
@@ -780,7 +793,7 @@ mod tests {
             Expr::Call("cstr_to_briev".to_string(), vec![], None),
         ))]);
         let items = vec![exported(d)];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&false));
     }
 
@@ -798,7 +811,7 @@ mod tests {
             Expr::Call("a".to_string(), vec![], None),
         ))]);
         let items = vec![exported(a), exported(b)];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("a"), Some(&false));
         assert_eq!(map.get("b"), Some(&false));
     }
@@ -831,7 +844,7 @@ mod tests {
             exported(a),
             exported(b),
         ];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("a"), Some(&true));
         assert_eq!(map.get("b"), Some(&true));
     }
@@ -868,7 +881,7 @@ mod tests {
             Expr::Call("loop_txn".to_string(), vec![], None),
         ))]);
         let items = vec![TopLevel::Transaction(txn), exported(caller)];
-        let map = compute_export_needs_state(&items);
+        let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&true));
     }
 
@@ -921,7 +934,7 @@ mod tests {
                 None,
             )))],
         );
-        let map = compute_defn_needs_state(&[put_two]);
+        let map = compute_defn_needs_state(&[put_two], &HashSet::new());
         assert_eq!(map.get("put_two"), Some(&false));
     }
 
@@ -939,7 +952,7 @@ mod tests {
                 None,
             )))],
         );
-        let map = compute_defn_needs_state(&[put_logged]);
+        let map = compute_defn_needs_state(&[put_logged], &HashSet::new());
         assert_eq!(map.get("put_logged"), Some(&true));
     }
 
@@ -966,7 +979,7 @@ mod tests {
             )))],
         );
         let items = vec![pure_default, TopLevel::Definition(caller)];
-        let map = compute_defn_needs_state(&items);
+        let map = compute_defn_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("put_two"), Some(&false));
         assert_eq!(map.get("write_pair"), Some(&false));
     }
@@ -989,7 +1002,7 @@ mod tests {
             )))],
         );
         let items = vec![TopLevel::Definition(concrete), default];
-        let map = compute_defn_needs_state(&items);
+        let map = compute_defn_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("put"), Some(&false));
     }
 
@@ -1035,7 +1048,7 @@ mod tests {
             };
         "#;
         let items = parse(src);
-        let map = compute_defn_needs_state(&items);
+        let map = compute_defn_needs_state(&items, &HashSet::new());
         // Type-qualified member keys exist and carry the right verdict.
         assert_eq!(
             map.get(&type_member_key("Growing", "put")),
@@ -1100,7 +1113,7 @@ mod tests {
             };
         "#;
         let items = parse(src);
-        let map = compute_defn_needs_state(&items);
+        let map = compute_defn_needs_state(&items, &HashSet::new());
         assert_eq!(
             map.get(&type_member_key("Fixed", "bump")),
             Some(&true),
