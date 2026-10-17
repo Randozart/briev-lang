@@ -95,17 +95,20 @@ callable txn → per-field-phi dispatch, `.cmwd_` check, on-fire call);
 `series_converge` output `0.500050008` MATCH; full `cargo test --lib`
 3154/0.
 
-**Known gap (OPEN):** watchdog emission exists ONLY on the counter-engine
-paths (per-field-phi `emit_countable_main`, countdown
-`emit_countable_countdown_main`). The InlineSsa fold engine
-(`emit_folded_main`), the version-DAG (`emit_version_dag_main`), the
-direct-SSA loop (`emit_ssa_main`), and the reactor loops silently drop
-the `?[...] -> action` contract for any program whose dispatch is not a
-single foldable reactive node — a multi-node watchdog program loses its
-on-fire call with no diagnostic. Fix shape: every engine that accepts a
-folded body must either honor the watchdog (header check + on-fire call
-+ early exit, mirroring `.cmwd_`) or refuse the dispatch with a
-diagnostic naming the dropped contract.
+**Known gap — CLOSED 2026-10-17 (readiness gate 1):** watchdog emission
+existed ONLY on the counter-engine paths; InlineSsa, version-DAG, the
+direct-SSA loop, the async-body phase, and the reactor tick silently
+dropped the `?[...] -> action` contract. Closed honor-or-refuse
+(docs/plans/2026-10-17-readiness-gates.md): the shared
+`emit_watchdog_gate` now honors the gate in InlineSsa, version-DAG, the
+direct-SSA loop, AND the async-body phase (Family-H sequential — the
+fire halts the main convergence loop); the reactor tick REFUSES with a
+diagnostic (its fire must latch the node off across ticks — machinery
+the tick does not have). `within N cycles` bounds are refused on
+non-counter dispatches (naming the node and the fix); `within N ms`
+deadlines are honored everywhere via a phase-entry clock. Behavioral
+tests per engine: `watchdog_fires_on_{direct_ssa,inline_ssa,version_dag}_dispatch`.
+
 
 ## Two latent IR bugs in event/watchdog emission — FIXED 2026-10-15
 

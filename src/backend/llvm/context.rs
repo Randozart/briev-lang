@@ -153,6 +153,11 @@ pub struct CompilerContext {
     /// pre-reactor seeding beside the `init` invariants.
     pub plain_global_types:
         std::collections::HashMap<String, (crate::ast::Type, Option<crate::ast::Expr>)>,
+    /// 2026-10-17 (readiness gate 1): async-dispatched nodes' watchdog specs
+    /// for emit_async_phase's gate (name, spec) — populated from the txn list
+    /// right before main emission; the phase needs &mut self, so the contracts
+    /// ride in ctx.
+    pub async_phase_watchdogs: Vec<(String, Option<crate::ast::top::WatchdogSpec>)>,
     /// 2026-08-12 (Iterable protocol, slice 4): the `b-each` iterable fields
     /// that are generic collections — the backend emits a
     /// `__view_items_<field>()` snapshot materializer for each (driving the
@@ -598,6 +603,7 @@ impl CompilerContext {
             view_bound_fields: std::collections::HashSet::new(),
             plain_lets: std::collections::HashSet::new(),
             plain_global_types: std::collections::HashMap::new(),
+            async_phase_watchdogs: Vec::new(),
             mmio_fields: HashMap::new(),
             mmio_initializers: HashMap::new(),
             mmio_prepopulated: false,

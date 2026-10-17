@@ -540,18 +540,19 @@ impl LlvmBackend {
     /// 2026-07-01: `reactor_tick` is now a no-op when the thread pool is
     /// active. Worker threads execute async bodies on the correct state
     /// snapshot (set via `__set_async_state__`), synchronized by barriers.
-    pub(crate) fn emit_async_phase(&self, out: &mut String, state_var: &str) {
+    pub(crate) fn emit_async_phase(&mut self, out: &mut String, state_var: &str) {
         if !self.has_async_txns || self.is_lightweight_async {
+            self.refuse_lightweight_watchdogs();
             return;
         }
-        // 2026-09-10 (Family H): the pthread pool is replaced by DIRECT
-        // sequential body calls — deterministic order, single-threaded, no
-        // libc. The bodies ran to completion per tick under the pool too
-        // (no cross-tick worker state), so the tick contract is unchanged;
-        // only the racy stdout interleaving becomes deterministic. Multicore
-        // parallelism is the documented clone+futex follow-on.
-        for name in &self.async_txn_names {
+        let deadline_start = self.async_phase_deadline_start(out);
+        let phase_watchdogs: Vec<(String, Option<crate::ast::top::WatchdogSpec>)> =
+            self.ctx.async_phase_watchdogs.clone();
+        for (name, wd) in &phase_watchdogs {
             writeln!(out, "  call void @async_body_{}(ptr noalias nocapture {})", name, state_var).ok();
+            if let Some(wd) = wd {
+                self.emit_async_node_watchdog_gate(out, name, wd, deadline_start.as_deref());
+            }
         }
         writeln!(
             out,
@@ -2735,5 +2736,181 @@ impl LlvmBackend {
             }
             _ => val.to_string(),
         }
+    }
+}
+
+/// Labels + bound inputs for [`LlvmBackend::emit_watchdog_gate`] —
+/// `counter_reg` feeds `within N cycles`; `start_reg` feeds
+/// `within N ms`; the fire path branches to `exit_label` and the
+/// continue path falls into `hold_label`.
+pub(crate) struct WatchdogGateLabels<'a> {
+    pub counter_reg: Option<&'a str>,
+    pub start_reg: Option<&'a str>,
+    pub hold_label: &'a str,
+    pub exit_label: &'a str,
+}
+
+impl LlvmBackend {
+    /// 2026-10-17 (readiness gate 1): the watchdog LIVENESS GATE for the
+    /// dispatch paths that previously dropped it (direct-SSA loop, InlineSsa,
+    /// version-DAG, reactor tick). Semantics mirror the counter engine's
+    /// `.cmwd_` gate (2026-08-01 C2/C3): CONTINUE while `?[cond]` holds —
+    /// plus `within N cycles` against `counter_reg` and `within N ms`
+    /// against `start_reg` when present — and on FALSE fire the on-fire
+    /// handler (or `watchdog_fail` for a required watchdog) and branch to
+    /// `exit_label` (the dispatch loop's exit). Control flow: this helper
+    /// emits the condition, the branch, the fire block, and then the
+    /// `hold_label:` block header, leaving `cur_block` at `hold_label` —
+    /// the caller continues the loop body there.
+    ///
+    /// The counter engine's inline gate is left untouched (existing,
+    /// proven path — Rule 6); this helper is the additive form for the
+    /// four new sites. A `cycles_bound` with no `counter_reg`, or a
+    /// `deadline_ns` with no `start_reg`, must be refused by the CALLER
+    /// before reaching here — a bound this engine cannot evaluate must
+    /// never be silently ignored.
+    /// The `within N cycles` / `within N ms` conjunction of the watchdog
+    /// liveness gate (readiness gate 1): folds the counter and deadline
+    /// bounds into `continue_cond` and returns the folded register. A bound
+    /// without its measurement input (no counter phi / no start clock) is
+    /// skipped — the CALLER must refuse that combination before calling.
+    fn watchdog_bounds_conj(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        wd: &crate::ast::top::WatchdogSpec,
+        counter_reg: Option<&str>,
+        start_reg: Option<&str>,
+        mut continue_cond: String,
+    ) -> String {
+        if let Some(cyc) = wd.cycles_bound {
+            if let Some(counter) = counter_reg {
+                let exp = self.fun.gen_reg();
+                writeln!(out, "{}{} = icmp slt i64 {}, {}", indent, exp, counter, cyc as i64).ok();
+                let andr = self.fun.gen_reg();
+                writeln!(out, "{}{} = and i1 {}, {}", indent, andr, continue_cond, exp).ok();
+                continue_cond = andr;
+            }
+        }
+        if let Some(secs) = wd.deadline_ns {
+            if let Some(start) = start_reg {
+                let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
+                let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
+                let now = self.fun.gen_reg();
+                writeln!(out, "{}{} = call i64 @{}({})", indent, now, nsym, nst).ok();
+                let el = self.fun.gen_reg();
+                writeln!(out, "{}{} = sub i64 {}, {}", indent, el, now, start).ok();
+                let db = self.fun.gen_reg();
+                writeln!(out, "{}{} = add i64 0, {}", indent, db, secs as i64).ok();
+                let exp = self.fun.gen_reg();
+                writeln!(out, "{}{} = icmp slt i64 {}, {}", indent, exp, el, db).ok();
+                let andr = self.fun.gen_reg();
+                writeln!(out, "{}{} = and i1 {}, {}", indent, andr, continue_cond, exp).ok();
+                continue_cond = andr;
+            }
+        }
+        continue_cond
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn emit_watchdog_gate(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        wd: &crate::ast::top::WatchdogSpec,
+        g: &WatchdogGateLabels<'_>,
+    ) {
+        let n = self.fun.txn_counter;
+        self.fun.txn_counter += 1;
+        let fire_label = format!(".wsf_{}", n);
+        let cond_reg = self.emit_expr(out, &wd.condition, indent);
+        let bool_reg = self.as_bool_reg(out, indent, &cond_reg);
+        let counter_reg = g.counter_reg.as_deref();
+        let start_reg = g.start_reg.as_deref();
+        let continue_cond =
+            self.watchdog_bounds_conj(out, indent, wd, counter_reg, start_reg, bool_reg);
+        writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, continue_cond, g.hold_label, fire_label).ok();
+        writeln!(out, "{}:", fire_label).ok();
+        self.fun.cur_block = Some(fire_label.clone());
+        if let Some(on_fire) = &wd.on_fire {
+            let call_reg = self.fun.gen_reg();
+            let args: Vec<Expr> = match &on_fire.arg {
+                Some(name) => vec![Expr::Identifier(name.clone())],
+                None => Vec::new(),
+            };
+            self.emit_user_call(out, &call_reg, &on_fire.handler, &args, indent);
+        } else if wd.is_required {
+            writeln!(out, "{}call i64 @watchdog_fail(ptr %state)", indent).ok();
+        }
+        writeln!(out, "{}br label %{}", indent, g.exit_label).ok();
+        writeln!(out, "{}:", g.hold_label).ok();
+        self.fun.cur_block = Some(g.hold_label.to_string());
+    }
+
+    /// Readiness gate 1: the lightweight-async phase does not run the bodies
+    /// through the sequential path, so a watchdog there would drop silently —
+    /// refuse it loudly.
+    fn refuse_lightweight_watchdogs(&self) {
+        for (name, wd) in &self.ctx.async_phase_watchdogs {
+            if wd.is_some() {
+                eprintln!(
+                    "error: node '{}' declares a watchdog, but its async dispatch is \
+the lightweight variant, which does not run the watchdog gate. Give the node a \
+bounded counter with increments (a counter-fold dispatch honors the watchdog).",
+                    name
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    /// Readiness gate 1: the phase-entry clock for `within N ms` watchdog
+    /// deadlines (captured once when any async node carries one).
+    fn async_phase_deadline_start(&mut self, out: &mut String) -> Option<String> {
+        let any = self
+            .ctx
+            .async_phase_watchdogs
+            .iter()
+            .any(|(_, w)| w.as_ref().map_or(false, |w| w.deadline_ns.is_some()));
+        if !any {
+            return None;
+        }
+        let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
+        let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
+        let s = self.fun.gen_reg();
+        writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
+        Some(s)
+    }
+
+    /// Readiness gate 1: the per-async-node watchdog gate — after the node's
+    /// body, continue while ?[cond] holds; on false fire the handler and
+    /// halt the main convergence loop (`.end` — the Family-H phase is
+    /// sequential, so the halt is deterministic). `within N cycles` is
+    /// refused: the async phase has no counter.
+    fn emit_async_node_watchdog_gate(
+        &mut self,
+        out: &mut String,
+        name: &str,
+        wd: &crate::ast::top::WatchdogSpec,
+        deadline_start: Option<&str>,
+    ) {
+        if wd.cycles_bound.is_some() {
+            eprintln!(
+                "error: node '{}' declares a watchdog `within {} cycles`, but its \
+dispatch is the async phase — a cycle bound needs a counter-fold dispatch (a bounded \
+counter with increments). Give the node a bounded counter or drop the cycles bound.",
+                name,
+                wd.cycles_bound.unwrap()
+            );
+            std::process::exit(1);
+        }
+        let hold = format!(".wsh_{}", name);
+        let g = WatchdogGateLabels {
+            counter_reg: None,
+            start_reg: deadline_start,
+            hold_label: &hold,
+            exit_label: ".end",
+        };
+        self.emit_watchdog_gate(out, "  ", wd, &g);
     }
 }

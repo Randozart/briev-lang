@@ -60,6 +60,29 @@ impl LlvmBackend {
             }
         }
 
+        // 2026-10-17 (readiness gate 1): honor-or-refuse. The reactor tick
+        // cannot honestly honor a watchdog: the fire must LATCH the node off
+        // across ticks (a bare in-tick check would re-fire the handler every
+        // tick while the condition stays false), which needs latch machinery
+        // this dispatch does not have. Rather than the historical silent
+        // drop, refuse the compile and say the fix. (Async-BODY nodes are
+        // honored in emit_async_phase — the Family-H sequential phase can
+        // halt the main loop. Counter-fold and direct-SSA dispatches honor
+        // via emit_watchdog_gate.)
+        for (n, t) in txns {
+            if t.is_reactive && t.contract.watchdog.is_some() && dispatch.contains(n) {
+                eprintln!(
+                    "error: node '{}' declares a watchdog (`?[...] -> ...`), but its dispatch is \
+the reactor tick — a watchdog there must latch the node off across ticks, which this \
+dispatch cannot do. Give the node a bounded counter with increments (it then folds \
+to a counter engine that honors the watchdog), or restructure it into a program whose \
+multi-node SSA loop can honor the gate.",
+                    n
+                );
+                std::process::exit(1);
+            }
+        }
+
         // 2026-07-27: Select reactor_tick attribute based on whether any
         // reactive txn has unguarded FFI. Guarded FFI (inside `when` blocks)
         // is outlined into cold functions — the hot path stays argmem: readwrite.

@@ -22,6 +22,7 @@ mod tests;
 
 pub use builder::LLVMBuilder;
 pub use context::{CompilerContext, FunctionContext, FunctionGuard};
+pub(crate) use helpers::WatchdogGateLabels;
 
 fn escape_llvm_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -5033,6 +5034,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 }
                 self.fun.txn_counter = 0;
                 self.fun.within_counter = 0;
+                // 2026-10-17 (readiness gate 1): async nodes' watchdog specs
+                // for the phase gate (emit_async_phase needs &mut self, so
+                // the contracts ride in ctx).
+                self.ctx.async_phase_watchdogs = txns
+                    .iter()
+                    .filter(|(n, t)| t.is_reactive && self.async_txn_names.contains(n))
+                    .map(|(n, t)| (n.clone(), t.contract.watchdog.clone()))
+                    .collect();
                 if !self.ctx.no_main {
                     self.emit_main(&mut out, has_wake_triggers);
                 }
@@ -6446,6 +6455,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             &body_stmts, &node.write_set, is_decreasing_vd, Some(&bp.var),
             analysis.global_lifetime.free_after.get(&node.name)
                 .map(|v| v.as_slice()).unwrap_or(&[]),
+            &node.name, watchdog,
         ) {
             return true;
         }
@@ -6463,7 +6473,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
 
             self.warnings.push(format!("info: txn '{}' dispatched via inline SSA ({} fields)", node.name, total_fields));
 
-            self.emit_folded_main(out, &node.name, counter_idx, total_idx, total_const_name, bp.bound_literal, false, Some(&body_stmts), Some(&bp.var));
+            self.emit_folded_main(out, &node.name, counter_idx, total_idx, total_const_name, bp.bound_literal, false, Some(&body_stmts), Some(&bp.var), watchdog);
             return true;
         }
 

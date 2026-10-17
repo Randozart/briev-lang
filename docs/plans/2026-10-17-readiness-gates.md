@@ -80,7 +80,52 @@ what works. Audit steps:
 - Integration-test unblock (belongs to the session that owns the
   untracked test files).
 
-## Results (to fill)
+## Results (2026-10-17)
 
-To be recorded: per-engine watchdog test outcomes, the web audit table,
-and any filed bugs.
+### Gate 1 — watchdog honor-or-refuse: LANDED
+
+Five dispatch paths had to be mapped, not four: the multi-node survey
+found the **async-body phase** (Family H sequential; all-eligible
+non-conflicting node sets classify as async) as a fifth silent dropper.
+
+- **Honoring (shared `emit_watchdog_gate`, helpers.rs):**
+  - direct-SSA loop (`emit_ssa_main`): per-txn gate after each body
+    (deadline clock captured in the preheader); also after the
+    internal-fold and accel-kernel single-call paths.
+  - InlineSsa (`emit_folded_loop`): gate between the bound check and the
+    body; the gate's condition resolves the counter to its LIVE PHI
+    (the %State slot is stored once after the loop — reading memory
+    compared 0 forever and never fired; found by the behavioral test).
+  - version-DAG (`emit_version_dag_main_inner`): gate between the bound
+    check and the absent/pre block (the gate's hold label IS that block).
+  - async-body phase (`emit_async_phase`): per-node gate after each
+    body; the fire branches to `.end`, halting the main convergence loop
+    (Family H is sequential → deterministic halt). Lightweight-async
+    watchdog nodes are refused (that phase never runs the gate).
+- **Refusing (fatal, naming the node and the fix):**
+  - reactor tick — the fire must latch the node off across ticks;
+    machinery the tick does not have.
+  - `within N cycles` on non-counter dispatches (SSA/version-DAG/async —
+    a cycle bound needs the counter-fold's counter). `within N ms` is
+    HONORED everywhere (phase-entry clock).
+
+**Tests:** `watchdog_fires_on_{direct_ssa,inline_ssa,version_dag}_dispatch`
+— behavioral (compile → link with a printf stub → run → assert the
+handler's output and termination). One discovery per test: the SSA
+fixture needed provable contracts (the fixture-legality gate rejects
+`[true][true]`), the InlineSsa gate needed live-phi resolution, and the
+SSA-shape program actually dispatched async (which found the fifth
+dropper). The reactor/async-lightweight refusals call `exit(1)` and are
+verified by inspection, not in-process.
+
+**Gates:** `cargo test --lib` 3162/0 (3 new); full
+`ll_determinism_check.sh` ALL DETERMINISTIC; Praetor — no new
+diagnostics on previously-clean functions (the two introduced by the
+first cut — `emit_async_phase` 27, `emit_watchdog_gate` 26/8-params —
+were removed by extracting `watchdog_bounds_conj`,
+`refuse_lightweight_watchdogs`, `async_phase_deadline_start`,
+`emit_async_node_watchdog_gate`, and the `WatchdogGateLabels` struct;
+the residue is metric drift on `emit_ssa_main`, an already-failing
+function, accepted per the 67dae3f8 precedent).
+
+### Gate 2 — web end-to-end audit: (next)

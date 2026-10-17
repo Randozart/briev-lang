@@ -11265,7 +11265,9 @@ node go [done == false][done == true] {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
     ));
     let ll = out.with_extension("ll");
-    let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\n";
+    // wait_for_trigger/watchdog_fail are emitted by the SSA loop's equilibrium
+    // path — declare them for the standalone link (compile.rs normally does).
+    let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\ndeclare void @wait_for_trigger(ptr)\ndeclare i64 @watchdog_fail(ptr)\n";
     if let Some(pos) = ir.find("target triple") {
         let end = ir[pos..].find('\n').map(|e| pos + e + 1).unwrap_or(ir.len());
         ir.insert_str(end, prelude);
@@ -11587,5 +11589,125 @@ node work [count < 3][count == 3] {
     assert!(
         !plain.contains("count"),
         "a node-written let must stay state: {plain:?}"
+    );
+}
+
+// ── 2026-10-17 (readiness gate 1): watchdog honor-or-refuse ─────────────
+// The watchdog `?[cond] -> handler(arg)` was emitted only on counter-engine
+// dispatches; InlineSsa, version-DAG, and the direct-SSA loop dropped it
+// silently (the reactor still refuses — its fire must latch across ticks).
+// Each test drives a program whose watchdog-carrying node dispatches to one
+// of the previously-dropping engines and asserts the handler FIRES (the
+// C-stub prints the fired value) and the program terminates.
+
+fn run_with_print_stub(src: &str, test_tag: &str) -> String {
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    use std::process::Command;
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let rt = std::env::temp_dir().join(format!("briev_wd_stub_{}.c", test_tag));
+    std::fs::write(&rt, "#include <stdio.h>\n#include <stdint.h>\nint64_t __print_int(int64_t n) { printf(\"%ld\", (long)n); return 0; }\nint64_t __print_char(int64_t c) { putchar((int)c); return 0; }\nint64_t wait_for_trigger(void* s) { (void)s; return 0; }\nint64_t watchdog_fail(void* s) { (void)s; return -1; }\n").expect("write stub");
+    let out = std::env::temp_dir().join(format!("briev_wd_{}_{}", test_tag, std::process::id()));
+    let ll = out.with_extension("ll");
+    let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\ndeclare void @wait_for_trigger(ptr)\ndeclare i64 @watchdog_fail(ptr)\n";
+    let ir = if let Some(pos) = ir.find("target triple") {
+        let end = ir[pos..].find('\n').map(|e| pos + e + 1).unwrap_or(ir.len());
+        format!("{}{}{}", &ir[..end], prelude, &ir[end..])
+    } else {
+        format!("{prelude}{ir}")
+    };
+    // The freestanding linux entry (@_start, naked asm) collides with the
+    // crt's _start under this plain clang link — strip it and let the crt
+    // call main (same convention as the printf-stub tests above).
+    let ir = match ir.find("define void @_start()") {
+        Some(pos) => {
+            let end = ir[pos..].find("\n}\n").map(|e| pos + e + 3).unwrap_or(ir.len());
+            format!("{}{}", &ir[..pos], &ir[end..])
+        }
+        None => ir,
+    };
+    std::fs::write(&ll, &ir).expect("write .ll");
+    let compile = Command::new("clang").arg("-O0").arg(&ll).arg(&rt).arg("-lm").arg("-o").arg(&out).output().unwrap();
+    assert!(
+        compile.status.success(),
+        "link failed: {}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    let run = Command::new(&out).output().unwrap();
+    let stdout = String::from_utf8_lossy(&run.stdout).to_string();
+    let _ = std::fs::remove_file(&ll);
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&rt);
+    assert!(
+        run.status.success(),
+        "program crashed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    stdout
+}
+
+#[test]
+fn watchdog_fires_on_direct_ssa_dispatch() {
+    // Two reactive nodes → direct-SSA loop (the biggest dropper: every
+    // prelude-importing multi-node program since 2026-10-06). `watch`'s
+    // liveness gate holds while count < 4; at count == 4 the handler fires
+    // with the live count and the dispatch loop exits.
+    let src = r#"
+let count: Int = 0;
+defn report(v: Int) -> Int [v >= 0][term >= 0] { term Print#(v); };
+node tick [count < 9][count == 9] { count = count + 1; term; };
+node watch [count >= 0][count >= 0] ?[count < 4] -> report(count) { term; };
+"#;
+    let out = run_with_print_stub(src, "ssa");
+    assert_eq!(
+        out.trim(),
+        "4",
+        "the SSA-dispatched watchdog must fire report(4) when the gate goes false; got:\n{out:?}"
+    );
+}
+
+#[test]
+fn watchdog_fires_on_inline_ssa_dispatch() {
+    // Single node, counter-only writes → InlineSsa (emit_folded_main) — the
+    // counter-only shape that previously dropped the watchdog entirely.
+    let src = r#"
+let count: Int = 0;
+defn report(v: Int) -> Int [v >= 0][term >= 0] { term Print#(v); };
+node tick [count < 9][count == 9] ?[count < 4] -> report(count) {
+    count = count + 1;
+    term;
+};
+"#;
+    let out = run_with_print_stub(src, "inline");
+    assert_eq!(
+        out.trim(),
+        "4",
+        "the InlineSsa-dispatched watchdog must fire report(4); got:\n{out:?}"
+    );
+}
+
+#[test]
+fn watchdog_fires_on_version_dag_dispatch() {
+    // Single node with a runtime `when` guard → version-DAG fold.
+    let src = r#"
+let count: Int = 0;
+let x: Int = 0;
+defn report(v: Int) -> Int [v >= 0][term >= 0] { term Print#(v); };
+node tick [count < 9][count == 9] ?[count < 4] -> report(count) {
+    when count > 2 { x = 5; };
+    count = count + 1;
+    term;
+};
+"#;
+    let out = run_with_print_stub(src, "vdag");
+    assert_eq!(
+        out.trim(),
+        "4",
+        "the version-DAG-dispatched watchdog must fire report(4); got:\n{out:?}"
     );
 }

@@ -438,6 +438,23 @@ impl LlvmBackend {
         let mut loop_buf = String::new();
         {
         let out = &mut loop_buf;
+        // 2026-10-17 (readiness gate 1): a watchdog `within N ms` deadline
+        // needs the loop-entry clock — capture it in the preheader when any
+        // reactive txn carries one (the gate itself runs per-txn below).
+        let deadline_start: Option<String> = {
+            let any_deadline = txns.iter().any(|(_, t)| {
+                t.is_reactive && t.contract.watchdog.as_ref().map_or(false, |w| w.deadline_ns.is_some())
+            });
+            if any_deadline {
+                let nsym = if self.ctx.defn_params.contains_key("rt_now_ns") { "rt_now_ns" } else { "__briev_now" };
+                let nst = if self.ctx.defn_takes_state(nsym) { "%state" } else { "" };
+                let s = self.fun.gen_reg();
+                writeln!(out, "  {} = call i64 @{}({})", s, nsym, nst).ok();
+                Some(s)
+            } else {
+                None
+            }
+        };
         writeln!(out, "  br label %.ss_main_loop").ok();
         writeln!(out, ".ss_main_loop:").ok();
         // Reset active flag each iteration
@@ -481,6 +498,9 @@ impl LlvmBackend {
                     writeln!(out, "  call void @txn_{}(ptr %state)", name).ok();
                     if !self.fun.terminated {
                         self.emit_beginprogram_goal_check(out, txn);
+                        // 2026-10-17 (readiness gate 1): the folded pass ran
+                        // inside @txn_<name> — its watchdog gates here too.
+                        let _gated = self.emit_ssa_watchdog_gate(out, txn, deadline_start.as_deref());
                         writeln!(out, "  br label %{}", next_label).ok();
                     }
                     writeln!(out, "{}:", next_label).ok();
@@ -499,6 +519,9 @@ impl LlvmBackend {
                     writeln!(out, "  call void @txn_{}(ptr %state)", name).ok();
                     if !self.fun.terminated {
                         self.emit_beginprogram_goal_check(out, txn);
+                        // 2026-10-17 (readiness gate 1): watchdog gates after
+                        // the kernel launch, same as the folded pass.
+                        let _gated = self.emit_ssa_watchdog_gate(out, txn, deadline_start.as_deref());
                         writeln!(out, "  br label %{}", next_label).ok();
                     }
                     writeln!(out, "{}:", next_label).ok();
@@ -513,6 +536,11 @@ impl LlvmBackend {
                     // 2026-08-06 (beginprogram plan): clear the entry flag when
                     // the entry loop's goal is met.
                     self.emit_beginprogram_goal_check(out, txn);
+                    // 2026-10-17 (readiness gate 1): the watchdog liveness gate
+                    // — continue while ?[cond] holds; on false fire the handler
+                    // and exit the dispatch loop. Previously this path DROPPED
+                    // the watchdog silently (BUGS.md; closed by this gate).
+                    let _gated = self.emit_ssa_watchdog_gate(out, txn, deadline_start.as_deref());
                     writeln!(out, "  br label %{}", next_label).ok();
                 }
                 writeln!(out, "{}:", next_label).ok();
@@ -773,4 +801,46 @@ impl LlvmBackend {
         // Placeholder: cycle counting is architecture-specific
     }
 
+}
+
+impl LlvmBackend {
+    /// 2026-10-17 (readiness gate 1): the per-txn watchdog liveness gate for
+    /// the direct-SSA dispatch. Emits nothing when the txn carries no
+    /// watchdog. A `cycles_bound` is REFUSED (fatal, naming the node and the
+    /// fix): a cycle bound needs a counter-fold dispatch (bounded counter +
+    /// increments), which this node by definition did not take — silently
+    /// ignoring the bound would re-open the dropped-contract class this gate
+    /// closes. On fire, control exits the dispatch loop at `.end` (the whole
+    /// program quiesces — the honest generalization of the counter engine's
+    /// single-node `.cm_end`). After the gate, `cur_block` sits at the hold
+    /// label and the caller branches to the next-txn label.
+    fn emit_ssa_watchdog_gate(
+        &mut self,
+        out: &mut String,
+        txn: &crate::ast::top::Transaction,
+        deadline_start: Option<&str>,
+    ) -> bool {
+        let Some(wd) = &txn.contract.watchdog else {
+            return false;
+        };
+        if wd.cycles_bound.is_some() {
+            eprintln!(
+                "error: node '{}' declares a watchdog `within {} cycles`, but its dispatch is \
+the multi-node SSA loop — a cycle bound needs a counter-fold dispatch (a bounded \
+counter with increments). Give the node a bounded counter or drop the cycles bound.",
+                txn.name,
+                wd.cycles_bound.unwrap()
+            );
+            std::process::exit(1);
+        }
+        let hold_label = format!(".wsh_{}", txn.name);
+        let g = crate::backend::llvm::WatchdogGateLabels {
+            counter_reg: None,
+            start_reg: deadline_start,
+            hold_label: &hold_label,
+            exit_label: ".end",
+        };
+        self.emit_watchdog_gate(out, "  ", wd, &g);
+        true
+    }
 }
