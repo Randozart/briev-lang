@@ -4510,14 +4510,32 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // this heuristic was removed 2026-07-31 as dead — the write set comes
         // from the transition graph's node.write_set, and the dispatch decision
         // now comes from the LoopShape, not a field count.)
-        let foldable = graph.nodes.len() == 1
+        //
+        // 2026-10-17 (reactive-only dispatch): a callable `txn` is never a
+        // reactor step — `txn` is always non-reactive (the remnant keyword for
+        // what nodes became). The transition graph and the `txns` list carry
+        // callables by design (the frontend filters them in build_loop_shapes
+        // and program_convergence), so every dispatch gate must count
+        // REACTIVE txns/nodes only. Counting raw entries broke single-node
+        // folding for every program that imports a stdlib module declaring a
+        // callable txn: the prelude imports std/iterator.bv (iter_chain
+        // elaboration, 2026-10-06), whose `iter_take_loop` pushed the counts
+        // to 2 and knocked series_converge off the per-field-phi fold — the
+        // only engine that emits the contract watchdog — onto the direct-SSA
+        // loop, silently dropping the `?[...] -> action` call. Undo: revert
+        // these gates to raw `graph.nodes.len()`/`txns.len()` counts and
+        // re-break series_converge.
+        let reactive_nodes: Vec<&crate::analysis::transition_graph::ReactorNode> =
+            graph.nodes.iter().filter(|n| n.is_reactive).collect();
+        let reactive_txns: Vec<&(String, &crate::ast::Transaction)> =
+            txns.iter().filter(|(_, t)| t.is_reactive).collect();
+        let foldable = reactive_nodes.len() == 1
             && !graph.has_triggers
-            && txns.len() == 1
-            && graph.nodes[0].bounded_pre.is_some()
-            && graph.nodes[0].increments.is_some()
-            && graph.nodes[0].is_reactive;
+            && reactive_txns.len() == 1
+            && reactive_nodes[0].bounded_pre.is_some()
+            && reactive_nodes[0].increments.is_some();
         let folded = if foldable {
-            let node = &graph.nodes[0];
+            let node = reactive_nodes[0];
             let bp = node.bounded_pre.as_ref().unwrap();
             let inc = node.increments.as_ref().unwrap();
             if bp.var != inc.var {
@@ -4563,11 +4581,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                                 // hoist_terminating_guard body re-walk.
                                 let (txn_body, post_hoist) = match analysis.swan_songs.get(&node.name) {
                                     Some((stripped, hoisted)) => (stripped.clone(), hoisted.clone()),
-                                    None => (txns[0].1.body.clone(), Vec::new()),
+                                    None => (reactive_txns[0].1.body.clone(), Vec::new()),
                                 };
                                 let folded = self.emit_folded_loop_shape(
                                     &mut out, &analysis, node, counter_idx, shape, &txn_body, post_hoist,
-                                    txns[0].1.contract.watchdog.as_ref(),
+                                    reactive_txns[0].1.contract.watchdog.as_ref(),
                                 );
                                 // 2026-08-06 (diagnostics): the fold was
                                 // attempted but could not be emitted for this
@@ -4607,6 +4625,24 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.emit_trg_step(&mut out, &analysis.dependency_graph, &trg_names);
         }
 
+        // 2026-08-26 (bug sweep B4): the never-dispatched plain-txn warning
+        // must fire for EVERY program dispatch mode, not just EmitSequentialSsa
+        // — folded mains, precomputed mains, enum switch-dispatch,
+        // parallel/sequential reactors all fire is_reactive txns only.
+        // 2026-10-17 (reactive-only dispatch): this call used to sit inside
+        // `!folded` only, and the test pinning it passed for the wrong reason —
+        // its dead callable txn broke the raw-count foldable gate, shunting the
+        // program into the `!folded` branch. With reactive-only counting the
+        // fold happens, so the warning lives here, mode-independent.
+        // Library/shared-lib shims legitimately export plain txns as symbols,
+        // so those two modes keep silence.
+        if !self.ctx.library_mode
+            && !self.ctx.is_shared_lib
+            && !txns.is_empty()
+        {
+            Self::warn_undispatched_txns(items, &txns, &self.ctx.live_defns, &mut self.warnings);
+        }
+
         if !folded {
             let precomputed = if let Some(ref final_values) = precomputed_final_values {
                 // EmitPureCounterFold: fully precomputed — no runtime loop emitted
@@ -4617,18 +4653,6 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             } else { false };
 
             if !precomputed {
-                // 2026-08-26 (bug sweep B4): the never-dispatched plain-txn
-                // warning must fire for EVERY program dispatch mode, not just
-                // EmitSequentialSsa — enum switch-dispatch, parallel/sequential
-                // reactors, and folded mains all fire is_reactive txns only.
-                // Library/shared-lib shims legitimately export plain txns as
-                // symbols, so those two modes keep silence.
-                if !self.ctx.library_mode
-                    && !self.ctx.is_shared_lib
-                    && !txns.is_empty()
-                {
-                    Self::warn_undispatched_txns(items, &txns, &self.ctx.live_defns, &mut self.warnings);
-                }
                 // A004: warn when a runtime loop has zero observability
                 if !txns.is_empty() {
                     let any_has_ffi = txns.iter().any(|(_, t)|
@@ -4666,6 +4690,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     for name in &self.async_txn_names {
                         let node = graph.nodes.iter().find(|n| n.name == *name);
                         let Some(node) = node else { multi_foldable = false; break };
+                        // 2026-10-17 (reactive-only dispatch): an `async txn`
+                        // callable is invoked, never dispatched — it neither
+                        // joins nor vetoes the multi-txn fold.
+                        if !node.is_reactive { continue; }
                         let (Some(bp), Some(inc)) = (&node.bounded_pre, &node.increments) else {
                             multi_foldable = false; break;
                         };
@@ -4691,6 +4719,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 if multi_foldable {
                     for txn_name in &self.async_txn_names {
                         if let Some(node) = graph.nodes.iter().find(|n| n.name == *txn_name) {
+                            // 2026-10-17 (reactive-only dispatch): callables
+                            // never join the fold.
+                            if !node.is_reactive { continue; }
                             if let Some(ref bp) = node.bounded_pre {
                                 if let Some(&cidx) = self.ctx.field_index_map.get(&bp.var) {
                                     let tidx = self.ctx.field_index_map.get(&bp.bound_var).copied();
@@ -4819,9 +4850,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     }
                     m
                 };
-                // Legacy single-txn params for chain composition (unchanged)
-                let (enum_ci, enum_ti, enum_tcn): (usize, Option<usize>, Option<String>) = if graph.nodes.len() == 1 && txns.len() == 1 {
-                    if let Some(bp) = graph.nodes[0].bounded_pre.as_ref() {
+                // Legacy single-txn params for chain composition (unchanged).
+                // 2026-10-17 (reactive-only dispatch): count reactive
+                // nodes/txns — callable `txn`s are not reactor steps.
+                let (enum_ci, enum_ti, enum_tcn): (usize, Option<usize>, Option<String>) = if reactive_nodes.len() == 1 && reactive_txns.len() == 1 {
+                    if let Some(bp) = reactive_nodes[0].bounded_pre.as_ref() {
                         if let Some(&cidx) = self.ctx.field_index_map.get(&bp.var) {
                             let tidx = self.ctx.field_index_map.get(&bp.bound_var).copied();
                             let tcname = if tidx.is_none() {
@@ -4988,6 +5021,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // ── DEAD-FIELD INFO DIAGNOSTICS (A002/A003) ─────────
         if !self.ctx.dead_info_disabled {
             for node in &graph.nodes {
+                // 2026-10-17 (reactive-only dispatch): these diagnostics speak
+                // for reactor-dispatched txns. A callable `txn` is invoked,
+                // never dispatched — when dead it is not even emitted, so
+                // "stores eliminated"/"folded to O(1)" claims are false for it
+                // (the prelude's iter_take_loop printed them on every build).
+                if !node.is_reactive {
+                    continue;
+                }
                 // 2026-08-11 (view wiring): view-bound fields are consumed by
                 // the DOM — observability-as-liveness. The transition graph's
                 // live_fields is body/contract-driven and knows nothing about
@@ -6031,7 +6072,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         analysis: &crate::backend::AnalysisResults,
     ) -> Option<InternalFoldInfo> {
         let nodes = &analysis.transition_graph.nodes;
-        if nodes.len() <= 1 {
+        // 2026-10-17 (reactive-only dispatch): "single-node main fold" means
+        // one REACTIVE node — callable `txn`s ride along in the graph but are
+        // not reactor steps, so they must not unlock (or starve) this path.
+        if nodes.iter().filter(|n| n.is_reactive).count() <= 1 {
             return None; // the single-node main fold handles this
         }
         if self.accel_kernel_idx.contains_key(name) {
@@ -6078,7 +6122,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 .into_iter()
                 .filter(|f| f != counter)
                 .collect();
-        for other in nodes {
+        // 2026-10-17 (reactive-only dispatch): eligibility is "no other
+        // REACTOR node can fire mid-pass" — callables are filtered before the
+        // proof (a callable's precondition speaks of its parameters at call
+        // time; the runtime call check is unaffected by folding).
+        for other in nodes.iter().filter(|n| n.is_reactive) {
             if other.name == *name {
                 continue;
             }

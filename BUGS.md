@@ -33,6 +33,58 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Dead callable txn knocked single-node programs off the watchdog fold — FIXED 2026-10-17
+
+**Symptom:** `benchmarks/series_converge` printed `""` (C reference
+`0.500050008`) — MISMATCH in every results file since 2026-10-13; last
+MATCH 2026-09-30. Bisect (deterministic IR-property gate:
+`txn 'converge' dispatched via per-field phi` present/absent) pinned the
+first bad commit to `eae6ab66` (2026-10-06, "List + List elaborates to
+iter_chain; arrow push").
+
+**Root cause:** `eae6ab66` added `Import$("std/iterator.bv")` to the
+native prelude. `txn iter_take_loop<T>(...)` is **callable** (`txn` is
+always non-reactive — the remnant keyword for what nodes became) and dead
+(never referenced, not emitted), but it enters the transition graph and
+the backend `txns` list (both carry callables by design — the frontend
+consumers filter). The backend dispatch gates re-derived counts WITHOUT
+the reactive filter: `foldable` (`graph.nodes.len() == 1 &&
+txns.len() == 1`) saw 2, went false, and dispatch fell to the direct-SSA
+loop — which never emits the contract watchdog. The watchdog
+`?[(x - last)^2 > eps] -> print_best(x)` (and any `-> action`) is emitted
+only by the counter engine, so the print went silent.
+
+**Fix (reactive-only dispatch):** every dispatch gate and diagnostic now
+counts REACTIVE txns/nodes only — `foldable`, the enum legacy single-txn
+params, the A003/dead-fields diagnostics (which also stopped printing the
+false `info: txn 'iter_take_loop' folded to O(1)` line), the
+`multi_foldable` async set (callables neither join nor veto), and
+`internal_fold_info` (reactive-count early-out; eligibility proof skips
+non-reactive others — a callable's precondition speaks of its parameters
+at call time, unaffected by folding). The B4 never-dispatched warning
+moved ahead of dispatch-mode selection so the folded and precomputed
+modes fire it too — the test pinning it had passed for the wrong reason
+(its dead callable broke the raw-count gate, shunting the program into
+`!folded`).
+
+**Verified:** new regression test
+`dead_callable_txn_does_not_break_single_node_fold` (node + dead generic
+callable txn → per-field-phi dispatch, `.cmwd_` check, on-fire call);
+`series_converge` output `0.500050008` MATCH; full `cargo test --lib`
+3154/0.
+
+**Known gap (OPEN):** watchdog emission exists ONLY on the counter-engine
+paths (per-field-phi `emit_countable_main`, countdown
+`emit_countable_countdown_main`). The InlineSsa fold engine
+(`emit_folded_main`), the version-DAG (`emit_version_dag_main`), the
+direct-SSA loop (`emit_ssa_main`), and the reactor loops silently drop
+the `?[...] -> action` contract for any program whose dispatch is not a
+single foldable reactive node — a multi-node watchdog program loses its
+on-fire call with no diagnostic. Fix shape: every engine that accepts a
+folded body must either honor the watchdog (header check + on-fire call
++ early exit, mirroring `.cmwd_`) or refuse the dispatch with a
+diagnostic naming the dropped contract.
+
 ## Two latent IR bugs in event/watchdog emission — FIXED 2026-10-15
 
 **Symptom (latent — no committed test exercised the paths):**

@@ -340,9 +340,16 @@ build_c() {
         src="benchmarks/${name}_c.c"
     else
         # 2026-07-27: No direct C source — check for cross-reference.
+        # 2026-10-17: a cross-reference is NOT a build failure — the timing
+        # phase reads `benchmarks/${ref_name}_c`, built by the reference's own
+        # build_c call (builds run before any timing). Returning 1 here made
+        # the build-failure tolerance record a false `queue_drain_idio:C`
+        # BUILD-FAIL and skip its row. Only a missing cross-ref target (or a
+        # failed clang, guarded below) is a real failure.
         local ref_name="${BRIEV_CROSS_REF[$name]:-}"
-        if [ -n "$ref_name" ]; then
+        if [ -n "$ref_name" ] && [ -f "benchmarks/${ref_name}_c.c" ]; then
             echo "  No C source — uses ${ref_name}_c for cross-reference timing"
+            return 0
         fi
         return 1
     fi
@@ -350,7 +357,9 @@ build_c() {
     # Build C reference with -O3 -ffast-math
     echo "  Building C reference..."
     extra_flags=${extra_flags:-""}
-    clang -O3 -march=native -ffast-math -o "benchmarks/${name}_c" "$src" ${extra_flags} 2>&1
+    if ! clang -O3 -march=native -ffast-math -o "benchmarks/${name}_c" "$src" ${extra_flags} 2>&1; then
+        return 1
+    fi
     echo "  C binary ready."
 }
 

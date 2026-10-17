@@ -4164,6 +4164,169 @@ fn library_mode_silences_undispatched_txn_warning() {
     );
 }
 
+// ── 2026-10-17 (reactive-only dispatch) ──────────────────────────────────
+// A dead callable `txn` declared in an imported stdlib module (the native
+// prelude imports std/iterator.bv, which ships `txn iter_take_loop<T>(...)`)
+// rides in the transition graph but is never a reactor step. Raw-count
+// dispatch gates counted it, knocking the single reactive node off the
+// per-field-phi fold — the only engine that emits the contract watchdog —
+// onto the direct-SSA loop, silently dropping the `-> handler` action
+// (series_converge printed nothing). Dispatch gates count REACTIVE
+// txns/nodes only.
+fn make_node_plus_dead_callable_program() -> Vec<TopLevel> {
+    let mut items: Vec<TopLevel> = vec![
+        TopLevel::StateDecl(StateDecl {
+            name: "i".to_string(),
+            ty: Type::int(),
+            span: None,
+        }),
+        TopLevel::StateDecl(StateDecl {
+            name: "x".to_string(),
+            ty: Type::float(),
+            span: None,
+        }),
+        // Runtime bound (`get_env_int!`) — a const bound + pure body would
+        // legitimately precompute instead of folding to the phi loop.
+        TopLevel::Statement(Box::new(Statement::Let {
+            name: "N".to_string(),
+            names: vec![],
+            ty: Some(Type::int()),
+            expr: Some(Expr::Call("get_env_int!".to_string(), vec![Expr::Quoted(b"BOUND".to_vec())], None)),
+            modifiers: vec![],
+        })),
+        TopLevel::Definition(Definition {
+            variadic_param: None,
+            name: "report".to_string(),
+            type_params: vec![],
+            parameters: vec![("v".to_string(), Type::float())],
+            outputs: vec![],
+            output_type: Some(OutputType::Single(Type::float())),
+            contract: default_contract(),
+            body: vec![Statement::Term(Some(Expr::Identifier("v".to_string())))],
+            modifiers: vec![],
+            metadata: HashMap::new(),
+            derivation: None,
+            annotations: vec![],
+            span: None,
+            doc: None,
+        }),
+    ];
+    items.push(TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "run".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: Contract {
+            pre_condition: Expr::BinaryOp(
+                BinaryOpKind::Lt,
+                Box::new(Expr::Identifier("i".to_string())),
+                Box::new(Expr::Identifier("N".to_string())),
+            ),
+            post_condition: Expr::Bool(true),
+            watchdog: Some(crate::ast::top::WatchdogSpec {
+                condition: Expr::BinaryOp(
+                    BinaryOpKind::Gt,
+                    Box::new(Expr::BinaryOp(
+                        BinaryOpKind::Mul,
+                        Box::new(Expr::Identifier("x".to_string())),
+                        Box::new(Expr::Identifier("x".to_string())),
+                    )),
+                    Box::new(Expr::Float(0.25)),
+                ),
+                is_required: false,
+                cycles_bound: None,
+                seconds_bound: None,
+                deadline_ns: None,
+                is_proven: true,
+                retries: 0,
+                fallback: None,
+                on_fire: Some(crate::ast::top::WatchdogOnFire {
+                    handler: "report".to_string(),
+                    arg: Some("x".to_string()),
+                }),
+            }),
+            explicit: true,
+            span: None,
+            post_authority: false,
+        },
+        body: vec![
+            Statement::Assign(
+                Expr::Identifier("i".to_string()),
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("i".to_string())),
+                    Box::new(Expr::Decimal(1)),
+                ),
+            ),
+            // A non-counter write — this is what routes series_converge to the
+            // per-field-phi engine (counter-only write sets take the InlineSsa
+            // engine, which is part of the filed watchdog-emission gap).
+            Statement::Assign(
+                Expr::Identifier("x".to_string()),
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("x".to_string())),
+                    Box::new(Expr::Float(0.5)),
+                ),
+            ),
+        ],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        doc: None,
+        span: None,
+    }));
+    // The iter_take_loop shape: a generic parameterized callable txn, never
+    // referenced — exactly what std/iterator.bv contributes via the prelude.
+    items.push(TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "iter_take_loop".to_string(),
+        is_reactive: false,
+        is_async: false,
+        type_params: vec![crate::ast::top::TypeParam { name: "T".to_string(), bound: None }],
+        parameters: vec![("n".to_string(), Type::int()), ("i".to_string(), Type::int())],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body: vec![Statement::Term(None)],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        doc: None,
+        span: None,
+    }));
+    items
+}
+
+#[test]
+fn dead_callable_txn_does_not_break_single_node_fold() {
+    let program = make_node_plus_dead_callable_program();
+    let mut backend = LlvmBackend::new();
+    let ir = backend.generate(&program, None);
+    assert!(
+        backend.warnings().iter().any(|w| w.contains("dispatched via per-field phi")),
+        "the single reactive node must keep the per-field-phi fold despite the \
+         dead callable txn, got: {:?}",
+        backend.warnings()
+    );
+    // The counter engine is the only watchdog emitter: the `.cmwd_` check and
+    // the on-fire call must both be present in main.
+    assert!(ir.contains(".cmwd_"), "watchdog check missing from the folded loop:\n{ir}");
+    assert!(
+        ir.contains("call i64 @report"),
+        "watchdog on-fire call missing from the folded loop:\n{ir}"
+    );
+    assert!(
+        !backend.warnings().iter().any(|w| w.contains("direct SSA loop")),
+        "the dead callable must not knock dispatch onto the SSA loop: {:?}",
+        backend.warnings()
+    );
+}
+
 // ── SLP Hazard Detection Tests ────────────────────────────
 
 fn make_slp_float_program(n_floats: usize, cross_body: Vec<Statement>, precondition: Option<Expr>) -> Vec<TopLevel> {
