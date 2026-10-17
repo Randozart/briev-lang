@@ -2518,6 +2518,14 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         mut analysis: crate::backend::AnalysisResults,
         entry_warnings: Vec<String>,
     ) -> String {
+        // 2026-10-17 (liveness fixpoint): one module's worth of emission per
+        // round — this is a dedup guard whose artifact (@__briev_trap_frame
+        // global) goes into the round's `out`, and a discarded round must
+        // not suppress it in the next. Single-round entry: already false
+        // (set only here-adjacent emission at emit_toplevel.rs:6490).
+        // Red-proven: without the reset, test_trap_frame_survives_fixpoint_round
+        // fails on the missing global.
+        self.trap_frame_emitted = false;
         // 2026-09-11 (buffered stdout): gate the epilogue flush on the
         // stdlib lane actually being present — bare programs get no call.
         // 2026-09-17: ALSO gate on liveness — the defn existing is not
@@ -6804,6 +6812,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
     fn build_field_index(&mut self, items: &[TopLevel]) {
         self.ctx.field_index_map.clear();
         self.ctx.field_types.clear();
+        // 2026-10-17 (liveness fixpoint): field_briev_types is documented
+        // parallel to field_types (push_field_type pushes both in lockstep),
+        // so the rebuild must clear it too — the fixpoint re-enters this
+        // function, and an uncleared parallel vector would only stay
+        // correct by coincidence (identical round inputs ⇒ identical prefix).
+        // Clearing makes the invariant structural instead.
+        self.ctx.field_briev_types.clear();
         self.ctx.field_initializers.clear();
         if !self.ctx.mmio_prepopulated {
             self.ctx.mmio_fields.clear();

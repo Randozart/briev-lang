@@ -972,6 +972,14 @@ export defn parse_one(s: String) -> Int {
         ir.contains("define i64 @str_to_int("),
         "fixpoint must root the emitted lane helper's define:\n{ir}"
     );
+    // Round-2 structural invariants (2026-10-17 re-entrancy audit): the
+    // parallel field vectors stay paired through build_field_index's
+    // rebuild, and the fixpoint's derived roots don't leak warnings.
+    assert_eq!(
+        backend.ctx.field_briev_types.len(),
+        backend.ctx.field_types.len(),
+        "field_briev_types must stay parallel to field_types across rounds"
+    );
 }
 
 /// 2026-10-05 (callable-txn convergence): a `txn` must emit the convergence
@@ -10615,6 +10623,35 @@ fn test_riscv_isr_full_context_scaffold() {
         "compiler-owned trap frame:\n{ir}");
     // riscv mechanism: no link-time table (runtime-built mtvec).
     assert!(!ir.contains("@tick_vec"), "no link-time table for riscv");
+}
+
+#[test]
+fn test_trap_frame_survives_fixpoint_round() {
+    // 2026-10-17 (liveness fixpoint re-entrancy): @__briev_trap_frame is
+    // written into the emitting round's `out` behind a dedup flag; when the
+    // net discards round 1 and re-emits, the flag must reset or the final
+    // module references an undeclared global. Fixture = the scaffold
+    // program + a net-missing cast lane so generate genuinely re-enters.
+    let src = "isr<riscv_machine> handler @ 7: tick() [true][n >= 0] { n = n; };\n\
+               defn str_to_int(s: String) -> Int {\n    term 0;\n};\n\
+               export defn parse_one(s: String) -> Int {\n    term s as Int;\n};\n\
+               let n: Int = 0;\n";
+    let mut program = parse_isr_program(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut program, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&program, None);
+    // The net actually fired (round 2 produced this output).
+    assert!(
+        ir.contains("define i64 @str_to_int("),
+        "fixture must exercise the fixpoint re-entry:\n{ir}"
+    );
+    assert!(
+        ir.contains("@__briev_trap_frame = global [32 x i64] zeroinitializer"),
+        "trap frame global must be re-emitted in the surviving round:\n{ir}"
+    );
+    assert!(ir.contains("define void @tick()"), "scaffold still emitted:\n{ir}");
 }
 
 #[test]
