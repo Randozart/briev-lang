@@ -31,11 +31,16 @@ CORPUS=(
     "giantnode|benchmarks/recommender_corpus/recommender_giantnode.bv|"
     "handoff|benchmarks/recommender_corpus/handoff_repro3.bv|"
     "queue_drain|benchmarks/queue_drain.bv|"
+    # 2026-10-17: pp-types exercises the defn-liveness fixpoint path
+    # (glue/c.bv cast lanes → @str_to_int round-2 re-emission) — a standing
+    # tripwire for IR stability of re-entrant emission.
+    "pp-types|pp-types.bv|"
 )
 if [ "${1:-}" = "--quick" ]; then
     CORPUS=(
         "recommender|benchmarks/recommender.bv|"
         "multinode|benchmarks/recommender_corpus/recommender_multinode.bv|"
+        "pp-types|pp-types.bv|"
     )
 fi
 
