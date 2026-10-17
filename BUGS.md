@@ -9968,3 +9968,25 @@ per-commit `--lib` gate and the targeted integration runs
 **Lesson:** an uncompilable test suite fails OPEN (looks green: nothing
 runs). Full `cargo test` now belongs to the pre-release ritual (alongside
 `toolchain_matrix.sh`) so rot cannot hide for 11 days.
+
+## rbv-no-script-tags emits raw Briev source into the JS bundle — OPEN (web audit, 2026-10-17)
+
+**Symptom:** `brievc build examples/rbv-no-script-tags.rbv` exits 0 and
+emits a bundled HTML whose JS contains the file's PROSE COMMENTS and RAW
+Briev source (`let count: Int = 0; ... <view>...`) — `node --check`
+rejects it. Every other .rbv example emits valid JS.
+
+**Root cause (initial):** the "Briev-as-default" .rbv format (no
+`<script>` wrapper) is not parsed as Briev — the non-view/style content
+falls through to the JS bundle verbatim. The compile should either
+parse the default content as Briev (the format's documented contract,
+per the fixture's own header comment) or reject the file with a
+diagnostic; silently pasting it into the JS is the dropped-contract
+class again, in the web lane.
+
+**Found by:** the readiness web audit
+(docs/plans/2026-10-17-readiness-gates.md §Results, gate 2). The other
+eight examples, the host-fn chain (console probe: module-scope emission
++ wasm import binding), wasm embedding, the state-layout table, the
+router fixture, AND the real-browser smoke gate (rbv_browser_smoke +
+rbv_gate: file:// load, click round-trip) all verified working.

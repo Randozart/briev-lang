@@ -128,4 +128,27 @@ were removed by extracting `watchdog_bounds_conj`,
 the residue is metric drift on `emit_ssa_main`, an already-failing
 function, accepted per the 67dae3f8 precedent).
 
-### Gate 2 — web end-to-end audit: (next)
+### Gate 2 — web end-to-end audit: DONE (2026-10-17)
+
+| check | result |
+|---|---|
+| `examples/*.rbv` compile (9/9) | all exit 0, bundled HTML + embedded wasm |
+| JS validity | 8/9 `node --check` clean; **rbv-no-script-tags FAILS** (bug filed) |
+| state-layout table | present in all (runtime calls `state_layout()`) |
+| wasm embedding | present in all |
+| host-fn chain (console probe) | `console_log` at module scope + wasm import binding + valid JS — the 10-06 host-fn shipping works end-to-end |
+| router fixture (`tests/fixtures/router.rbv`) | compiles + emits |
+| **real-browser smoke** | **rbv_browser_smoke OK + rbv_gate OK** — stranger-loads-page over file://, click round-trip, counter + router |
+
+**Verdict: the web layer is READY for the covered surface** (views,
+bindings, triggers, routing, host modules, wasm embed) — verified by
+the existing real-browser gate, now re-confirmed. One bug filed
+(BUGS.md: rbv-no-script-tags emits raw source into JS — the
+"Briev-as-default" format is silently unparsed).
+
+**Audit process notes:** the canonical web imports are the plain-path
+form (`import "std/web/console.bv";`); the JS default-import form
+(`import console from ...`) is unsupported — the parse error is clear
+but could name the correct form (minor UX, not filed). The host-fn
+examples in the corpus don't exercise console/dom (they use b-text
+bindings), which is why the audit added the explicit host probe.
