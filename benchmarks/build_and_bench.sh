@@ -115,7 +115,12 @@ TAG[stack_push_pop]=runtime
 TAG[interval_step]=runtime
 TAG[gpu/saxpy]=runtime
 TAG[iir_filter_runtime]=runtime
-TAG[UTF8_ops]=optimizer
+# 2026-10-17 (sweep): the UTF8_ops entry is RETIRED — `utf8_ops.bv` moved to
+# benchmarks/archive/legacy-stdlib/ in 80c89d4c when its dependencies
+# (std/core/ring_buffer, std/types/UTF8view) were deleted, so the entry can
+# never build again (adjudicated in benchmarks/results/2026-09-30-b1-rebaseline.md
+# §5). Every run recorded a false BUILD-FAIL/SKIP row for it. The C reference
+# (utf8_ops_c.c) stays for the archive.
 TAG[ring_buffer_runtime]=runtime
 TAG[precompute_sum_runtime]=runtime
 TAG[binary_trees]=runtime
@@ -150,7 +155,8 @@ BENCHMARKS=(
     "precompute_sum"
     "const_heavy"
     "async_counters_idio"
-    "UTF8_ops"
+    # "utf8_ops" retired 2026-10-17 — source archived in 80c89d4c, deps deleted
+    # (benchmarks/results/2026-09-30-b1-rebaseline.md §5).
     "ring_buffer"
     # "async_counters_sym"   # excluded from timing (40 min at 50M)
     "float_math"
