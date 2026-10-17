@@ -210,8 +210,114 @@ Ratios = Briev/C; C side rebuilt fresh each run.
 | R10 | Fold-dispatch counts shift (N fields written changes where fields demote) → dispatch changes on some programs | suite falsifiers; the existing per-field-phi/countdown info lines | disclosed; watch the suite; investigate before touching anything else |
 | R11 | Performance surprises on print-free benches | §3 falsifiers | investigate before touching anything else |
 
-## 5. Results (filled after implementation — do not edit predictions above)
+## 5. Results (2026-10-17, post-implementation)
 
-To be recorded: per-bench table (actual vs prediction, band verdict),
-gate outcomes, deviations and their explanations, A/B cross-check vs
-`8962a2a1` for the big movers, and the final BUGS.md close-out.
+Suite: `benchmarks/results/2026-10-17-state-plain-suite.md` (chunked —
+the first full run hit the 2h command timeout at nbody_newton_accel and
+was completed per-bench; the chunks are appended in file order).
+
+### Verdicts vs predictions
+
+| bench | pre-plain (morning) | plain (this suite) | prediction | verdict |
+|---|---|---|---|---|
+| interval_step | 1.23x | **0.61x** | ≤0.80x | **MET** |
+| queue_drain | 1.35x | **0.45x** | ≤1.05x | **MET (2-3x)** |
+| knucleotide | 1.22x | **0.92x** | ≤1.05x | **MET** |
+| mandelbrot | 1.20x | **0.91x** | ≤1.10x | **MET** |
+| queue_drain_sym/idio | 0.47/0.45x | 0.45/0.46x | hold | MET |
+| fasta | 0.58x | 0.61x | ≤0.73x | MET |
+| fannkuch_redux | 1.11x | 1.06x | 0.95–1.15x | MET |
+| hash_ops | 0.74x | 0.73x | hold | MET |
+| optimizer 4/4 | precomputed MATCH | precomputed MATCH | hold | MET |
+| bridges | MATCH/PASS | MATCH/PASS | hold | MET |
+| **kalman_filter_runtime** | 1.08x | **1.28x** | ≤1.05x | **MISSED — real, ~15% (see below)** |
+| float_math | 0.90x | 2.01x | hold | suite-vs-suite artifact (below) |
+| series/deep_recursion/bit_clear/recommender | 0.6–1.0x | 1.2–1.5x | hold | µs-scale machine jitter (below) |
+
+### The four primary targets: all recovered, two beyond prediction
+
+queue_drain 1.35x→0.45x, interval_step 1.23x→0.61x, knucleotide
+1.22x→0.92x, mandelbrot 1.20x→0.91x. interval_step cross-checked
+directly at BOUND=500M: **457ms vs pre-fix 848ms and C 589ms (0.78x)**,
+byte-identical output — matching the counterfactual (414ms).
+
+### The missed band: kalman, −15% (real)
+
+Interleaved same-day A/B vs the pre-plain compiler (3c15268a, fresh
+worktree build): pre-plain ≈252ms/50M, plain ≈292ms/50M. No kalman let
+demoted (all body-written/contracted ⇒ state) — the delta is codegen
+scheduling, not demotion: with the print chain stateless the guard no
+longer clobbers %State, and clang re-contracts the float chains (FMA),
+trading ILP across the 9 independent P-chains for fused latency.
+**The same re-contraction made kalman NUMERICALLY MATCH C for the first
+time** (8.15413382e+12 exactly; the pre-plain binary printed
+8.18814596e+12 — the old suite's MATCH was masking that drift). The
+trade: −15% throughput for +C-parity. Recorded as the known cost;
+revisiting the contraction shape is future work (the C reference pays
+the same FMA shape and is still faster overall).
+
+### Suite-vs-suite artifacts (not regressions)
+
+- **float_math 0.90x→2.01x**: NOT this change. Pre-plain (3c15268a) and
+  current binaries measure IDENTICAL (1384 vs 1383ms/500M; IR fadd
+  counts 64=64). The 8962a2a1 baseline FOLDS the whole program away
+  (4ms/500M — precompute), so the "2.93x A/B" compared real work
+  against no work. The real float_math story: it stopped precomputing
+  somewhere in the 08-01→10-16 window and now runs ~2.5x slower than C
+  — a PRE-EXISTING optimizer-category gap, filed for separate
+  investigation. Yesterday's 0.90x suite row (43.7ms/50M = 0.87ns/iter
+  for a ~30-op dependent float chain) was itself the anomaly — today's
+  steady state is 2.7-3.0ns/iter on the same-compiler binary.
+- **series_converge 1.50x, deep_recursion 1.50x, bit_clear 1.40x,
+  recommender 1.27x**: µs-scale benches (0.3-14ms absolute). Same-day
+  interleaved A/B for series: pre-plain 4.8-6.6ms vs plain 4.9-10.3ms —
+  jitter band, plain wins one run. The whole machine is slower today
+  (C reference times +28% vs yesterday); ratios on µs benches amplify
+  that into apparent regressions. Unresolvable today; re-measure on a
+  quiet machine before drawing conclusions.
+
+### Gates
+
+- `cargo test --lib` 3159/0 (6 new tests: print-chain signature
+  regression, both assertion errors, inference ×2, const-let plain
+  lowering).
+- Full `ll_determinism_check.sh`: ALL DETERMINISTIC.
+- Output parity: interval_step, float_math_nonzero, knucleotide,
+  mandelbrot, queue_drain, fannkuch_redux, fasta, hash_ops —
+  byte-identical vs pre-plain binaries.
+- kalman: output CHANGED vs pre-plain binary — now exactly C's values
+  (improvement, documented above).
+
+### Implementation deviations from the plan (§2)
+
+1. `scalar_type` restriction added: plain inference requires a scalar
+   TYPE (Int/Float/Float64/Bool), not just a scalar-shaped initializer —
+   `let p: Pool = 0` unpacks into instance columns (found by
+   test_consumptive_op's sibling; fatal diagnostic on explicit `plain`).
+2. Body-write guard added: a let written by any node body never demotes
+   (loop engines enumerate state fields by index; demoting a
+   body-written field would lose its store plumbing). The counterfactual
+   never needed body-written demotion — plumbing is defn-only by nature.
+3. `Term(Some(expr))` added to the proof surface: `term Print#(count)`
+   is a terminal observation (`endprogram` alone was insufficient —
+   found by test_state_layout).
+4. Constants excluded from needs-state's state_fields: the `STDOUT_CAP`
+   read forced `stdout_byte` stateful — the buffered-stdout regression's
+   last link.
+5. The main-tail `stdout_flush` call follows its needs-state verdict
+   (the hardcoded `ptr %state` emitted a signature-MISMATCHED call —
+   invalid IR the linker tolerated as UB; found because interval_step
+   measured 1223ms on the UB binary).
+6. Plain-global literal initializers fold into the module-scope
+   declaration; expression initializers seed at runtime. Entry stores to
+   the @globals DEFEAT %State promotion (measured 879ms→457ms).
+7. The Assign store site routes plain BEFORE the field gate (the
+   `contains_key` gate silently dropped the `stdout_buf = Alloc#(...)`
+   seed — risk R1, hit exactly as registered).
+
+### Open items
+
+- kalman −15% (FMA contraction trade) — future work, understood.
+- float_math precompute gap (pre-existing, optimizer category).
+- µs-bench re-measurement on a quiet machine.
+- nbody_newton_accel 13.17x — accel-offload subject, unchanged.
