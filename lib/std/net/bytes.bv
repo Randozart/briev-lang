@@ -376,6 +376,15 @@ defn ws_partial(buf: ByteBuf, off: Int, b0: Int, b1: Int, payload_len: Int, base
 // Err("protocol") on RFC 6455 length-field misuse (126 with a 16-bit length
 // <= 125, 127 with a 64-bit length <= 65535, or a 64-bit length with the top
 // bit set). No payload bytes are read.
+//
+// 2026-10-18 (fixture campaign): every length-class branch now TERMs
+// explicitly. Guards are SEQUENTIAL (SPEC 11.2 - no implicit else): a branch
+// whose body ends in a discarded tail value FALLS THROUGH to the next guard,
+// which then re-runs and overwrites the result. The len7 path masked this
+// for two commits (its body returns early); the len16 path hit it (the
+// len64 guard ran unconditionally after it and its result won). Discovered
+// by the ws_frame benchmark: every 7-bit frame decoded, every extended
+// frame failed.
 defn ws_decode(buf: ByteBuf, off: Int) -> Result<WsFrame, String> {
     when off < 0 || off + 2 > buf.len {
         term Err("incomplete");
@@ -384,7 +393,6 @@ defn ws_decode(buf: ByteBuf, off: Int) -> Result<WsFrame, String> {
     let b1: Int = get_u8(buf, off + 1);
     let len7: Int = b1 & 127;
 
-    // Resolve the length field per len7, enforcing the RFC minimality rules.
     when len7 <= 125 {
         term ws_decode_mask(buf, off, ws_partial(buf, off, b0, b1, len7, 2));
     };
@@ -394,10 +402,11 @@ defn ws_decode(buf: ByteBuf, off: Int) -> Result<WsFrame, String> {
             Ok(v) => ws_min_len16(buf, off, b0, b1, v),
             Err(e) => Err(e),
         };
-        match sized {
+        let fin: Result<WsFrame, String> = match sized {
             Ok(f) => ws_decode_mask(buf, off, f),
             Err(e) => Err(e),
-        }
+        };
+        term fin;
     };
     // len7 == 127 — the only remaining value of a 7-bit field.
     let ext: Result<Int, String> = ws_ext_len64(buf, off);
@@ -405,10 +414,11 @@ defn ws_decode(buf: ByteBuf, off: Int) -> Result<WsFrame, String> {
         Ok(v) => ws_min_len64(buf, off, b0, b1, v),
         Err(e) => Err(e),
     };
-    match sized {
+    let fin: Result<WsFrame, String> = match sized {
         Ok(f) => ws_decode_mask(buf, off, f),
         Err(e) => Err(e),
-    }
+    };
+    term fin;
 };
 
 // ws_min_len16 - RFC 6455 5.1: the 16-bit form MUST carry a length > 125

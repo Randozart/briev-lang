@@ -10182,3 +10182,89 @@ used ONLY inside a body's `let` annotation (never in a signature) would
 still be missed; no live case found. Pins:
 `tests/import_splice_closure.rs` (3 tests: mixed match arms, member→free
 call, real GrowBuf import).
+
+## 2026-10-18 — causality/concurrency write harvest: nested + indexed writes invisible (FIXED)
+
+**Symptom:** `brievc build benchmarks/ws_frame.bv` (stdlib fixture campaign,
+fixture 1) refused: "the reactive cycle (ws_build) has no provable
+convergence and no liveness obligation". The program HAS a completion —
+`ws_tick`'s post `[passes == 4]` — but the causal graph never saw the
+write that links the cycle: `phase = PH_REPORT;` sits inside two nested
+`when` blocks, and the write harvester only sees TOP-LEVEL bare-identifier
+assignments. `ws_build` (boot node, reads own `phase` via its pre, writes
+it top-level, post `[true]`) then formed a singleton self-loop SCC with no
+completion-declaring member → refusal. `brievc check` PASSED the same file
+(check does not run the causality gate — the known check/build divergence
+family, this time in build's favor being the stricter side).
+
+**Why every existing benchmark escaped:** the SCC only refuses when NO
+member declares completion. Recommender's cycle survives because
+`build_sparse` happens to write `phase` at TOP level (joining the SCC,
+declaring `[phase == 2]`); `async_counters` writes its counters at top
+level. A phase machine that performs its phase transition inside a
+`when` — the natural shape — is the first program to expose the
+harvester's blindness. Confirmed empirically: recommender builds at tip
+while the minimal nested-write shape refuses.
+
+**Root cause:** `collect_assigned_identifiers` (src/backend/mod.rs) walks
+only top-level `Statement::Assign` with a BARE-identifier LHS — no descent
+into Guarded/Foreach/Block/Match bodies, and `arr[i] = v` targets (Index
+LHS) are not writes at all. `collect_read_identifiers` descends Guarded
+only — no Foreach/Match arms. Both predate `ast::visit` (2026-10-05, the
+exhaustive visitor built to retire exactly this walker-drift class).
+
+**Blast radius beyond causality:** the same harvesters feed the Rule 22
+concurrency gate (`xor_overlap`) and `detect_fusable_pairs`. Missed writes
+make write-disjointness LOOK true when it is not — the async
+classification's soundness rests on a blind read of every nested/indexed
+write (e.g. ring_buffer's `data[tail % CAP] = ops` was never a write to
+the graph). No live misclassification found (the reactor is single-threaded
+today), but the proof was unsound.
+
+**Fix:** both harvesters rebuilt on `ast::visit`: new exhaustive
+`walk_assign_targets` (Assign LHS, ArrowAssign targets — bare identifiers
+AND Index bases count as writes) + read collection via the existing
+`walk_toplevel` (every statement form, match arms included). Consumers
+swapped: causality `collect_nodes`, concurrency gate, `detect_fusable_pairs`.
+Pins: causality unit tests (nested-when phase write joins the SCC; indexed
+write counts as a write; the ws_frame refusal shape now passes).
+
+## 2026-10-18 — sequential-guard fall-through: discarded tail values don't return (codec, FIXED)
+
+**Symptom:** the WebSocket codec's `ws_decode` decoded every 7-bit-length
+frame perfectly and mis-decoded EVERY 16/64-bit-length frame (the ws_frame
+benchmark: invalid = 10920 = exactly the 2/3 of frames with extended
+lengths; acc still matched C because 7-bit frames dominated the checksum
+XOR-symmetric). Found by the fixture campaign's C-reference parity gate
+after the compiler-side fixes; three hours of IR archaeology confirmed the
+COMPILER was correct at every level — call sites, branch IR, object
+layout, attributes, -O0 and -O3 alike.
+
+**Root cause — the SOURCE, not the compiler:** the decode body was a
+C-style `if / else if / else` chain written as three SEQUENTIAL guards:
+
+```briev
+when len7 <= 125 { term ...; };
+when len7 == 126 { ...no term on the last statement... };
+// "the only remaining value" — the len64 path
+```
+
+SPEC §11.2: a `when` block has no implicit complementary branch — guards
+are SEQUENTIAL STATEMENTS. The len7 path returns early (`term`), masking
+the trap; the len16 path's last statement was a match expression in
+STATEMENT position (its value discarded), so after completing it, control
+FELL THROUGH into the len64 guard, which re-ran `ws_ext_len64` at the same
+offset and overwrote the result (the wire's next 8 bytes, not the frame's
+length field). The compiler emits exactly the specified semantics: both
+guard bodies execute in order.
+
+**Lesson (general):** a branch that should EXHAUST a case must `term` on
+EVERY path — a tail expression in statement position is a discarded value,
+not a return. The per-byte interpreter would have caught this: the
+fixture's parity gate (compiled vs C) is what caught it here.
+
+**Fix:** all three length-class branches bind their match results to lets
+and `term` them explicitly. Pins: the ws_frame harness benchmark (all
+16,384 decodes validate; output byte-identical to the C reference) and the
+codec interpreter-parity test (all three length forms, truncation,
+encode/decode round-trip).
